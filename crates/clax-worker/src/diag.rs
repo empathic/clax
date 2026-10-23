@@ -17,10 +17,13 @@
 //!   while it is copied;
 //! - `GET /_diag/artifacts/tree?repo=<name>&ref=<ref>`: `log`, then
 //!   every tree under the ref's commit, recursively, as `readTree`
-//!   answers them, and `readFile` of each blob's path's size;
+//!   answers them, and `readFile` of each blob's path's size: of a probe's
+//!   scratch repository, or of an artifact's (`a-<ID>`) whose artifact
+//!   lies within the owner's reach (the owner made it), else 404;
 //! - `POST /_diag/repos/token?artifact=<ID>&scope=read|write`: a
 //!   repository token handed to the owner, as the server's git-token route
-//!   will mint one (`repos::worker::mint_git_token`);
+//!   will mint one (`repos::worker::mint_git_token`), for an artifact
+//!   within the owner's reach alone (404 otherwise);
 //! - `POST /_diag/reconcile?artifact=<ID>`: asks the instance to record
 //!   the artifact's pushed commits now, as an Artifacts `pushed` event
 //!   does, and answers its status.
@@ -184,6 +187,9 @@ mod wasm {
                 let Some(repo) = param(&url, "repo") else {
                     return Response::error("repo is required\n", 400);
                 };
+                if !repo_in_reach(env, &repo).await? {
+                    return Response::error("Not found\n", 404);
+                }
                 let rev = param(&url, "ref").unwrap_or_else(|| "main".into());
                 Response::from_json(&tree(env, &repo, &rev).await)
             }
@@ -195,6 +201,9 @@ mod wasm {
                     Ok(a) => a,
                     Err(e) => return Response::error(format!("{e}\n"), 400),
                 };
+                if !crate::owner_reaches(env, artifact.as_str()).await? {
+                    return Response::error("Not found\n", 404);
+                }
                 let scope = param(&url, "scope")
                     .as_deref()
                     .and_then(Scope::parse)
@@ -241,6 +250,22 @@ mod wasm {
             }
             _ => Response::error("Not found\n", 404),
         }
+    }
+
+    /// Whether repository `repo` is one the diagnostics may read: a probe's
+    /// scratch one (`clax-diag-…`), or an artifact's whose artifact lies
+    /// within the owner's reach (`crate::owner_reaches`).
+    async fn repo_in_reach(env: &Env, repo: &str) -> Result<bool> {
+        if repo.starts_with("clax-diag-") {
+            return Ok(true);
+        }
+        let Some(aid) = repo
+            .strip_prefix("a-")
+            .and_then(|a| clax_core::ArtifactId::parse(a).ok())
+        else {
+            return Ok(false);
+        };
+        crate::owner_reaches(env, aid.as_str()).await
     }
 
     fn binding(env: &Env, name: &str) -> JsValue {

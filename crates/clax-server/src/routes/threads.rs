@@ -372,9 +372,11 @@ pub struct AllQuery {
 }
 
 /// `GET /api/threads[?include_resolved=true]` (token): every thread of every
-/// live artifact, as `{artifacts: [{artifact_id, title, current_version,
-/// files, threads}]}`. `files` names the current version's files; each
-/// artifact's `threads` are thread views with `clip_path`, oldest first, and
+/// live artifact (on a hosted daemon, of every one the caller's reach
+/// lists: [`clax_http::agent::ReadRights`]), as `{artifacts: [{artifact_id,
+/// title, current_version, files, threads}]}`. `files` names the current
+/// version's files; each artifact's `threads` are thread views with
+/// `clip_path`, oldest first, and
 /// an artifact with none is left out. Artifacts come in the order of
 /// `GET /api/artifacts`. For the owner's agents each field goes through
 /// their visibility ([`clax_http::views::thread::Vis`]): a withheld title is null
@@ -388,12 +390,17 @@ pub async fn list_all(
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let codex = s.feedback_ctx().codex_push();
     let vf = VisFor::of(&agent.caller, &s);
+    // On a hosted daemon, the artifacts in the caller's reach alone.
+    let reads = s.hosted.is_some().then(|| agent.read_rights());
     // Every thread of the home: the bulk lane.
     let artifacts = s
         .store_call_bulk(move |st| {
             let vis = vf.build(st)?;
             let mut out = Vec::new();
             for a in st.list_artifacts()? {
+                if reads.as_ref().is_some_and(|r| !r.allows(&a)) {
+                    continue;
+                }
                 let id = ArtifactId::parse(&a.id)?;
                 let mut threads = Vec::new();
                 let mut cursor: Option<String> = None;

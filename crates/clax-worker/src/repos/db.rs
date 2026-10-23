@@ -568,16 +568,15 @@ pub fn due(conn: &Connection, now_ms: i64) -> Result<Vec<(String, String)>> {
     rows.collect::<rusqlite::Result<_>>().map_err(sql)
 }
 
-/// Every token live at `now_ms` (neither revoked nor expired) that was
-/// handed to a person, an agent session or a page's link, oldest first:
-/// what the server rechecks when rights, visibility, links or sessions
-/// change. The owner's own tokens (no person, no session, no link) are not
-/// listed.
+/// Every token live at `now_ms` (neither revoked nor expired), oldest
+/// first: handed to the owner (no person, no session, no link), a person,
+/// an agent session or a page's link. What the server rechecks when rights,
+/// visibility, shares, links or sessions change: on a hosted instance the
+/// owner too reaches only what the owner made or was shared.
 pub fn live_held_tokens(conn: &Connection, now_ms: i64) -> Result<Vec<TokenRow>> {
     let ids: Vec<String> = conn
         .prepare(
             "SELECT id FROM git_tokens WHERE revoked_ms IS NULL AND expires_ms > ?1
-               AND (person IS NOT NULL OR session IS NOT NULL OR link = 1)
              ORDER BY rowid",
         )
         .and_then(|mut s| {

@@ -93,6 +93,11 @@
 //! [n, …]}`; streams hear of each as of a publish. A missing or deleted
 //! artifact records nothing (200); a failure is 503.
 //!
+//! `POST /_internal/reach` there (`{"artifact"}`) answers 204 when the
+//! artifact lies within the owner's reach (`clax_store::Store::reach`: the
+//! owner made it), else 404: what the Worker's diagnostics ask before they
+//! read or hand out an artifact's repository.
+//!
 //! # Alarm
 //!
 //! The daemon's loops run from the object's alarm instead, set for when
@@ -1488,6 +1493,13 @@ impl DurableObject for InstanceDo {
         };
         let url = req.url()?;
         if url.host_str() == Some(crate::INSTANCE_INTERNAL) {
+            if url.path() == "/_internal/reach" {
+                let call: ReachCall = match req.json().await {
+                    Ok(c) => c,
+                    Err(e) => return Response::error(format!("{e}"), 400),
+                };
+                return self.owner_reaches(&inst, call).await;
+            }
             if url.path() != "/_internal/pushed" {
                 return Response::error("Not found", 404);
             }
@@ -1655,6 +1667,13 @@ impl InstanceDo {
     }
 }
 
+/// A question whether an artifact lies within the owner's reach (see
+/// Pushes).
+#[derive(Deserialize)]
+struct ReachCall {
+    artifact: String,
+}
+
 /// A call to record an artifact's pushed commits (see Pushes).
 #[derive(Deserialize)]
 struct PushedCall {
@@ -1664,6 +1683,22 @@ struct PushedCall {
 }
 
 impl InstanceDo {
+    /// 204 when `call`'s artifact lies within the owner's reach
+    /// (`clax_store::Store::reach`: the owner made it), else 404.
+    async fn owner_reaches(&self, inst: &Rc<Instance>, call: ReachCall) -> Result<Response> {
+        let within = inst
+            .app
+            .store_call(move |st| {
+                Ok(st.reach(&call.artifact, None)? == clax_store::reach::Reach::Within)
+            })
+            .await;
+        match within {
+            Ok(true) => Ok(Response::empty()?.with_status(204)),
+            Ok(false) => Response::error("Not found", 404),
+            Err(e) => Response::error(format!("{e:?}"), 503),
+        }
+    }
+
     /// Records `call`'s pushed commits and sends the streams their events.
     async fn record_pushes(&self, inst: &Rc<Instance>, call: PushedCall) -> Result<Response> {
         let Ok(id) = clax_core::ArtifactId::parse(&call.artifact) else {

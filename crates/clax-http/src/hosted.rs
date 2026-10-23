@@ -855,24 +855,62 @@ impl MemberRights {
     /// reaches the galleries that showed it. No for an unknown key or any
     /// error.
     pub fn gallery_reads(st: &clax_store::Store, key: &str, aid: &str) -> bool {
-        use clax_store::reach::Reach;
-        let (kind, action) = (RightType::Artifacts, "read");
         let scope = if key == OWNER_GALLERY {
             MemberRights::owner(st)
         } else {
             MemberRights::of_person(st, key)
         };
-        let Ok(m) = scope else { return false };
-        let person = m.person.as_deref();
+        scope.is_ok_and(|m| m.lists(st, aid))
+    }
+
+    /// Whether a listing of this scope's (its gallery, its inbox, its
+    /// history) names artifact `aid`: within the person's reach by their
+    /// granted rights, beyond it by their share rights, never by its link.
+    /// A deleted artifact counts as within the reach of the owner's (when
+    /// the owner made it) and its maker's, so what they listed before stays
+    /// named by its ID; one taken down with its revoked maker is no one
+    /// else's. No on any error.
+    pub fn lists(&self, st: &clax_store::Store, aid: &str) -> bool {
+        use clax_store::reach::Reach;
+        let (kind, action) = (RightType::Artifacts, "read");
+        let person = self.person.as_deref();
         let made = |x: &str, by: Option<&str>| st.artifact_created_by(x, by).unwrap_or(false);
         let own = |x: &str| made(x, person);
-        let within = || m.rights.allows(kind, action, Some(aid), &own);
+        let within = || self.rights.allows(kind, action, Some(aid), &own);
         match st.reach(aid, person) {
             Ok(Reach::Within) => within(),
-            Ok(Reach::Beyond) => m.shared.allows(kind, action, Some(aid), &|_| false),
+            Ok(Reach::Beyond) => self.shared.allows(kind, action, Some(aid), &|_| false),
             Ok(Reach::Gone) => (made(aid, None) || (person.is_some() && own(aid))) && within(),
             Err(_) => false,
         }
+    }
+}
+
+/// 404 `not_found` unless the caller of a request the gate let through
+/// (`h`, its [`HostedRequest`]) reaches artifact `aid` as their listings
+/// name it ([`MemberRights::lists`]: never by its link): what a route that
+/// names an artifact outside its `/api/artifacts/<aid>` path (a cross-app
+/// read's source, a consent's, a draft's) asks before it acts on it, so one
+/// out of reach answers as one that does not exist. Nothing on a local
+/// daemon; always for a hosted request with no scope.
+///
+/// # Errors
+/// As above; the store's.
+pub async fn require_reach(
+    s: &AppState,
+    h: Option<&HostedRequest>,
+    aid: &str,
+) -> Result<(), ApiError> {
+    if s.hosted.is_none() {
+        return Ok(());
+    }
+    let Some(m) = h.and_then(|h| h.member.clone()) else {
+        return Err(ApiError::not_found());
+    };
+    let aid = aid.to_string();
+    match s.store_call(move |st| Ok(m.lists(st, &aid))).await? {
+        true => Ok(()),
+        false => Err(ApiError::not_found()),
     }
 }
 

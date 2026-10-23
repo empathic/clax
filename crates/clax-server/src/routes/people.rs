@@ -193,12 +193,15 @@ pub async fn list_agents(
     let working = s.working.clone();
     let wakes = super::sessions::Wakes::for_caller(&s, &a.caller);
     let (bot, bot_for) = (s.bot.clone(), super::bot::acting_for(&a.caller));
+    let hosted = s.hosted.is_some();
     let v = s
         .store_call(move |st| {
             let unread: std::collections::HashMap<String, u32> = if agent {
                 Default::default()
             } else {
-                st.inbox_agents(recipient.as_deref())?
+                let hidden =
+                    clax_http::views::inbox::out_of_reach(st, recipient.as_deref(), hosted)?;
+                st.inbox_agents_but(recipient.as_deref(), &hidden)?
                     .into_iter()
                     .map(|g| (g.session_id, g.unread))
                     .collect()
@@ -276,12 +279,17 @@ pub async fn list_agents(
                 }
                 let mut kept = Vec::new();
                 let mut titles = Vec::new();
+                let mut withheld = 0;
                 for w in records {
                     let Some(art) = st.get_artifact(&clax_core::ArtifactId::parse(&w.artifact_id)?)?
                     else {
                         continue;
                     };
-                    if (!local && art.kind == clax_core::live::KIND_LIVE) || !reads.allows(&art) {
+                    if !local && art.kind == clax_core::live::KIND_LIVE {
+                        continue;
+                    }
+                    if !reads.allows(&art) {
+                        withheld += 1;
                         continue;
                     }
                     titles.push((!agent).then_some(art.title));
@@ -317,8 +325,15 @@ pub async fn list_agents(
                     "working": working,
                     "unread": (!agent).then(|| unread.get(&x.id).copied().unwrap_or(0)),
                 }));
-                if let (Some(w), Some(o)) = (wakes, out.last_mut()) {
-                    o["wakes"] = w;
+                if let Some(o) = out.last_mut() {
+                    if let Some(w) = wakes {
+                        o["wakes"] = w;
+                    }
+                    // On a hosted daemon, what it works at out of the
+                    // caller's reach is counted, never named.
+                    if hosted {
+                        o["working_withheld"] = json!(withheld);
+                    }
                 }
             }
             Ok(json!({"agents": out}))

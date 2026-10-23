@@ -293,7 +293,10 @@ where
 /// Admins export too (spec 2026-10-21-claxbot-design §9.2, who read every
 /// audit event): a connected person's browser whose person the owner made
 /// an admin, refused live pages (`live`, or an `artifact` that is one),
-/// which are the owner's alone.
+/// which are the owner's alone. On a hosted daemon it leaves out every
+/// step that names an artifact out of the owner's reach, and an `artifact`
+/// selector naming one is 400 `unknown_artifact`; steps that name no
+/// artifact stay.
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn export(
     axum::extract::State(s): axum::extract::State<AppState>,
@@ -330,11 +333,16 @@ pub async fn export(
     })?;
     let (view_base, version) = (s.browser_base.clone(), s.version);
     let store = s.store.clone();
+    let hosted = s.hosted.is_some();
     stream_export(content_type, &s.exports, move |mut w| {
         clax_rt::spawn(async move {
             store
                 .call(move |st| {
                     let _permit = permit;
+                    let mut req = req;
+                    if hosted {
+                        req.selection.out_of_reach = out_of_owners_reach(st)?;
+                    }
                     let env = project::ExportEnv {
                         render: RenderEnv::export(st.install_id()?, view_base),
                         clax_version: version.to_string(),
@@ -346,6 +354,21 @@ pub async fn export(
         })
     })
     .await
+}
+
+/// The artifacts out of the owner's reach on a hosted daemon, as the
+/// owner's listings decide it ([`clax_http::hosted::MemberRights::lists`]):
+/// what the owner's export leaves out.
+#[cfg(not(target_arch = "wasm32"))]
+fn out_of_owners_reach(
+    st: &clax_store::Store,
+) -> clax_core::Result<std::collections::BTreeSet<String>> {
+    let owner = clax_http::hosted::MemberRights::owner(st)?;
+    Ok(st
+        .artifacts_made_by_people()?
+        .into_iter()
+        .filter(|a| !owner.lists(st, a))
+        .collect())
 }
 
 /// `GET /api/toolpath/status` (spec §3.5, §8.3): the journal's state.

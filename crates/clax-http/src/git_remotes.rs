@@ -263,12 +263,21 @@ impl Asker {
 }
 
 /// Whether `asker`'s rights allow a token of `scope` at `aid`, and read
-/// at every artifact up its lineage, read on `st` now.
-fn allows(st: &Store, asker: &Asker, scope: Scope, aid: &str) -> clax_core::Result<bool> {
-    if matches!(asker, Asker::Owner | Asker::OwnerAgent { .. }) {
+/// at every artifact up its lineage, read on `st` now. On a hosted daemon
+/// (`hosted`) every asker is held to their reach, the owner and the
+/// owner's agents included ([`allows_one`]).
+fn allows(
+    st: &Store,
+    hosted: bool,
+    asker: &Asker,
+    scope: Scope,
+    aid: &str,
+) -> clax_core::Result<bool> {
+    let owners = matches!(asker, Asker::Owner | Asker::OwnerAgent { .. });
+    if owners && !hosted {
         return Ok(true);
     }
-    if !allows_one(st, asker, scope, aid)? {
+    if !allows_one(st, hosted, asker, scope, aid)? {
         return Ok(false);
     }
     // A clone carries a fork's lineage's history up to each forked version:
@@ -276,7 +285,7 @@ fn allows(st: &Store, asker: &Asker, scope: Scope, aid: &str) -> clax_core::Resu
     // included. A lineage that cannot be followed allows a person nothing;
     // an agent's history check refuses it, `withheld`.
     let Some(history) = st.repo_history(&ArtifactId::parse(aid)?)? else {
-        return Ok(matches!(asker, Asker::PersonAgent { .. }));
+        return Ok(owners || matches!(asker, Asker::PersonAgent { .. }));
     };
     let up: BTreeSet<&str> = history
         .versions
@@ -285,19 +294,38 @@ fn allows(st: &Store, asker: &Asker, scope: Scope, aid: &str) -> clax_core::Resu
         .filter(|a| *a != aid)
         .collect();
     for a in up {
-        if !allows_one(st, asker, Scope::Read, a)? {
+        if !allows_one(st, hosted, asker, Scope::Read, a)? {
             return Ok(false);
         }
     }
     Ok(true)
 }
 
-/// [`allows`] at `aid` alone.
-fn allows_one(st: &Store, asker: &Asker, scope: Scope, aid: &str) -> clax_core::Result<bool> {
+/// [`allows`] at `aid` alone. On a hosted daemon (`hosted`) the reach rule
+/// holds: the owner and the owner's agents by the owner's scope, a person
+/// by theirs ([`crate::hosted::MemberRights::allows_at`]: their reach, the
+/// artifacts shared with them, then the link), a person's agent by its
+/// grant within its person's reach ([`crate::agent::grant_at`]).
+fn allows_one(
+    st: &Store,
+    hosted: bool,
+    asker: &Asker,
+    scope: Scope,
+    aid: &str,
+) -> clax_core::Result<bool> {
     let (kind, action) = scope.right();
     match asker {
+        Asker::Owner | Asker::OwnerAgent { .. } if hosted => {
+            crate::hosted::MemberRights::owner(st)?.allows_at(st, (kind, action), aid)
+        }
         Asker::Owner | Asker::OwnerAgent { .. } => Ok(true),
-        Asker::Person(p) => person_allows(st, p, scope, aid),
+        Asker::Person(p) => person_allows(st, hosted, p, scope, aid),
+        Asker::PersonAgent { person, rights, .. } if hosted => {
+            Ok(
+                crate::agent::grant_at(st, true, rights, person.as_deref(), (kind, action), aid)?
+                    == Some(true),
+            )
+        }
         Asker::PersonAgent { person, rights, .. } => {
             let own = |x: &str| {
                 st.artifact_created_by(x, person.as_deref())
@@ -322,8 +350,15 @@ fn link_allows(st: &Store, scope: Scope, aid: &str) -> clax_core::Result<bool> {
 }
 
 /// Whether person `p`'s rights, or the artifact's link's, allow `scope` at
-/// `aid`; a person who is no longer one (revoked) is allowed nothing.
-fn person_allows(st: &Store, p: &str, scope: Scope, aid: &str) -> clax_core::Result<bool> {
+/// `aid` (on a hosted daemon, `hosted`, their scope's: the reach rule); a
+/// person who is no longer one (revoked) is allowed nothing.
+fn person_allows(
+    st: &Store,
+    hosted: bool,
+    p: &str,
+    scope: Scope,
+    aid: &str,
+) -> clax_core::Result<bool> {
     // A revoked person keeps their row, and their rights in it: they are a
     // plain viewer from then on.
     if st
@@ -331,6 +366,12 @@ fn person_allows(st: &Store, p: &str, scope: Scope, aid: &str) -> clax_core::Res
         .is_none_or(|v| v.person_revoked_at.is_some())
     {
         return Ok(false);
+    }
+    if hosted {
+        return match crate::hosted::MemberRights::of_person(st, p) {
+            Ok(m) => m.allows_at(st, scope.right(), aid),
+            Err(_) => Ok(false),
+        };
     }
     let Ok(rights) = st.person_rights(p) else {
         return Ok(false);
@@ -611,10 +652,11 @@ pub async fn mint_for(
         ));
     }
     let (a, id) = (asker.clone(), aid.clone());
+    let hosted = s.hosted.is_some();
     let allowed = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            allows(st, &a, scope, id.as_str())
+            allows(st, hosted, &a, scope, id.as_str())
         })
         .await?;
     if !allowed {
@@ -654,10 +696,11 @@ async fn still_allowed(
     aid: &ArtifactId,
 ) -> Result<(), ApiError> {
     let id = aid.clone();
+    let hosted = s.hosted.is_some();
     s.store_call(move |st| {
         st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
         Ok(match asker_now(st, &holder)? {
-            Some(now) if allows(st, &now, scope, id.as_str())? => Ok(()),
+            Some(now) if allows(st, hosted, &now, scope, id.as_str())? => Ok(()),
             _ => Err(not_permitted(scope)),
         })
     })
@@ -676,11 +719,12 @@ pub async fn scopes_for(
 ) -> Result<Vec<Scope>, ApiError> {
     let (a, id) = (asker.clone(), aid.clone());
     let host = s.git_remotes.get();
+    let hosted = s.hosted.is_some();
     s.store_call(move |st| {
         let mut out = Vec::new();
         for scope in [Scope::Read, Scope::Write] {
             let credited = host.as_deref().is_none_or(|h| credited(h, &a, scope));
-            if credited && allows(st, &a, scope, id.as_str())? {
+            if credited && allows(st, hosted, &a, scope, id.as_str())? {
                 out.push(scope);
             }
         }
@@ -742,15 +786,16 @@ fn asker_now(st: &Store, h: &Holder) -> clax_core::Result<Option<Asker>> {
     }
 }
 
-/// Whether the held token `t` should be revoked now (see the module docs).
-fn stale(st: &Store, t: &Held, generation: u64) -> clax_core::Result<bool> {
+/// Whether the held token `t` should be revoked now (see the module docs),
+/// on a hosted daemon when `hosted`.
+fn stale(st: &Store, hosted: bool, t: &Held, generation: u64) -> clax_core::Result<bool> {
     let Some(asker) = asker_now(st, &t.holder)? else {
         return Ok(true);
     };
     if st.get_artifact(&t.artifact)?.is_none() {
         return Ok(true);
     }
-    if !allows(st, &asker, t.scope, t.artifact.as_str())? {
+    if !allows(st, hosted, &asker, t.scope, t.artifact.as_str())? {
         return Ok(true);
     }
     Ok(match asker.reader() {
@@ -761,9 +806,10 @@ fn stale(st: &Store, t: &Held, generation: u64) -> clax_core::Result<bool> {
     })
 }
 
-/// Rechecks every live token the host lists as handed to a person or an
-/// agent (`only`: those of that artifact) and revokes each that its
-/// holder may no longer have (see the module docs). Answers how many were
+/// Rechecks every live token the host lists (`only`: those of that
+/// artifact), the owner's included, and revokes each that its holder may
+/// no longer have (see the module docs): on a hosted daemon the owner's
+/// at another person's artifact once its share ends. Answers how many were
 /// revoked; nothing on a daemon that serves no git.
 ///
 /// # Errors
@@ -781,11 +827,12 @@ pub async fn recheck(s: &AppState, only: Option<&ArtifactId>) -> Result<usize, A
         return Ok(0);
     }
     let generation = s.vis_gen.current();
+    let hosted = s.hosted.is_some();
     let stale_ids: Vec<(ArtifactId, String)> = s
         .store_call(move |st| {
             let mut out = Vec::new();
             for t in held {
-                if stale(st, &t, generation)? {
+                if stale(st, hosted, &t, generation)? {
                     out.push((t.artifact, t.id));
                 }
             }

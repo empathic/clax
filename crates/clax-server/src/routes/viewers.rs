@@ -322,12 +322,16 @@ pub struct AttentionQuery {
 /// `?artifact=` naming one is 404), as on every viewer route here.
 /// With `?artifact=<aid>`, on that artifact alone: `{artifacts: {<aid>:
 /// ...}}`, or `{artifacts: {}}` when it is not live (400 for a malformed ID).
+/// On a hosted daemon the whole listing holds only the artifacts the
+/// caller's reach lists ([`clax_http::hosted::MemberRights::lists`]); the
+/// gate checks a `?artifact=`.
 pub async fn attention(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     sees: clax_http::live_access::SeesLive,
+    hosted: Option<axum::Extension<clax_http::hosted::HostedRequest>>,
     q: Result<Query<AttentionQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
@@ -339,10 +343,17 @@ pub async fn attention(
     // Every artifact's attention costs what the viewer's threads do, so it
     // waits in the bulk lane; one artifact's is an interactive call.
     let whole = one.is_none();
+    let scope = hosted.and_then(|h| h.0.member);
     let job = move |st: &clax_store::Store| {
         Ok(match (who.viewer(st)?, one) {
             (None, _) => json!({}),
-            (Some(v), None) => json!(st.attention_all(&v.id)?),
+            (Some(v), None) => {
+                let mut all = st.attention_all(&v.id)?;
+                if let Some(m) = &scope {
+                    all.retain(|aid, _| m.lists(st, aid));
+                }
+                json!(all)
+            }
             (Some(v), Some(id)) => match st.attention_one(&v.id, &id)? {
                 Some(a) => Value::Object([(id.to_string(), json!(a))].into_iter().collect()),
                 None => json!({}),

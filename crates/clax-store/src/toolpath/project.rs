@@ -61,6 +61,10 @@ pub struct Selection {
     pub since: Option<String>,
     /// The `at` the range ends before, in the same forms.
     pub until: Option<String>,
+    /// Artifacts out of the reader's reach (on a hosted daemon): no step
+    /// naming one is exported, and a selector naming one names nothing in
+    /// the history. Not part of the selection's digest.
+    pub out_of_reach: BTreeSet<String>,
 }
 
 /// An export's shape (spec §8.1).
@@ -187,6 +191,8 @@ struct Resolved {
     session_artifacts: BTreeSet<String>,
     since: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
+    /// [`Selection::out_of_reach`].
+    out_of_reach: BTreeSet<String>,
     /// The selection as `graph.meta.clax.selection` names it.
     canonical: Value,
 }
@@ -245,6 +251,9 @@ fn row_artifacts(row: &AuditRow) -> impl Iterator<Item = &str> {
 impl Resolved {
     /// Whether `row` is selected where it is being placed.
     fn admits(&self, row: &AuditRow, place: Place<'_>) -> bool {
+        if row_artifacts(row).any(|a| self.out_of_reach.contains(a)) {
+            return false;
+        }
         if self.since.is_some() || self.until.is_some() {
             let Ok(at) = DateTime::parse_from_rfc3339(&row.at) else {
                 return false;
@@ -316,7 +325,7 @@ fn resolve(src: &dyn Source, sel: &Selection) -> Result<Resolved> {
                 format!("'{a}' is not an artifact ID"),
             ));
         }
-        if !src.artifact_known(a)? {
+        if sel.out_of_reach.contains(a) || !src.artifact_known(a)? {
             return Err(CoreError::invalid(
                 "unknown_artifact",
                 format!("no artifact {a} is in this install's history"),
@@ -328,7 +337,8 @@ fn resolve(src: &dyn Source, sel: &Selection) -> Result<Resolved> {
     let mut chosen = explicit.clone();
     for raw in &sel.live_pages {
         let key = parse_page_url(raw)?.key;
-        let found = src.live_artifacts(&key)?;
+        let mut found = src.live_artifacts(&key)?;
+        found.retain(|a| !sel.out_of_reach.contains(a));
         if found.is_empty() {
             return Err(CoreError::invalid(
                 "unknown_live_page",
@@ -367,6 +377,7 @@ fn resolve(src: &dyn Source, sel: &Selection) -> Result<Resolved> {
         session_artifacts,
         since,
         until,
+        out_of_reach: sel.out_of_reach.clone(),
         canonical,
     })
 }

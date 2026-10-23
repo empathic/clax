@@ -2986,13 +2986,16 @@ need the token:
   or 8 MiB (`docs_truncated` says the copy stopped, or that `of`'s rules
   did not parse and nothing was copied). Writes its page makes land in the
   copy only. 404 when `of` is missing, 400 `invalid_args` when `of` is a
-  draft, and a publish's validation errors otherwise.
+  draft, and a publish's validation errors otherwise. On a hosted Clax an
+  `of` out of the caller's reach is 404 too.
 - Later versions are published as to any artifact (`POST
   /api/artifacts/<draft>/versions`), without a session: one naming a
   session is 403 `draft`.
 - `GET /api/drafts` answers `{drafts: [{id, of, created_at}]}`, oldest
-  first; `DELETE /api/drafts/<id>` removes a draft, its versions' files and
-  its documents for good (`{deleted: true}`; 404 when `id` is no draft).
+  first (on a hosted Clax those in the caller's reach); `DELETE
+  /api/drafts/<id>` removes a draft, its versions' files and its documents
+  for good (`{deleted: true}`; 404 when `id` is no draft, or on a hosted
+  Clax one out of the caller's reach, as for its renders below).
   The daemon deletes drafts older than an hour at start and hourly, and
   the app deletes the ones an earlier run of it left when its agent first
   registers.
@@ -3080,9 +3083,9 @@ transaction with the step: either both exist, or neither does.
 | `DELETE /api/jobs/<id>/threads/<tid>` | token, owner token | — | `{job}` |
 | `PUT /api/jobs/<id>/questions/<qid>` | token, owner token | — | `{job}`, a `running` job `waiting` while the question is open (its answer, decline or withdrawal, `job_end` when the job ends first, is stored in the job and moves it back); 400 `invalid_question` for a question not of the `ask` tool or another job's |
 | `POST /api/jobs/<id>/steps/<key>` | token, owner token | `{result?, publish?, reply?, state?}`, one of `result`, `publish` and `reply`; `state` only `"done"` | `{job, step: {key, result, version_n, created_at}, replayed, version?}`; 409 `version_moved` `{current}`, `doc_moved` `{path}`, `not_rendered_clean`, `job_moved`, `version_present`; 400 `invalid_step` |
-| `GET /api/agent-read-consents` | token | — | `{consents: [{reader, source}]}` |
-| `PUT /api/agent-read-consents/<reader>/<source>` | token | — | 204; 404 when either artifact is missing |
-| `DELETE /api/agent-read-consents/<reader>/<source>` | token | — | `{deleted}` |
+| `GET /api/agent-read-consents` | token | — | `{consents: [{reader, source}]}`; on a hosted Clax those whose two artifacts are in the caller's reach |
+| `PUT /api/agent-read-consents/<reader>/<source>` | token | — | 204; 404 when either artifact is missing, or on a hosted Clax out of the caller's reach |
+| `DELETE /api/agent-read-consents/<reader>/<source>` | token | — | `{deleted}`; on a hosted Clax 404 when either artifact is out of the caller's reach |
 | `POST /api/client-imports/<key>` | token, owner token | `{client, files}` | `{import: {already, jobs, consents, skipped, left_out, done_at}}`; 400 `invalid_args` |
 
 **The app's JSON state, imported once.** `POST
@@ -4731,7 +4734,8 @@ cursor or body) and 404 `not_found`.
   400 `invalid_query`.
 - **`GET /api/agents`** → `{agents: [{handle, name, person, harness,
   project, live, state, since, blocked, threads_owned, working: [{artifact_id,
-  title, message}], unread}]}`: every live agent and every one that ended
+  title, message}], working_withheld?, unread}]}`: every live agent and
+  every one that ended
   within the hour, live ones first, newest first. `state` is `waiting` (an
   open question or `ask` approval request; `since` the oldest), `working`
   (`since` its oldest working record's start), `idle` (`since` the
@@ -4740,8 +4744,11 @@ cursor or body) and 404 `not_found`.
   full. A connected person, and an agent, see their person's agents in full
   and every other agent by `name`, `person`, `live`, `state` and `since`
   alone, the rest null. An agent's `working` carries no titles and leaves
-  out artifacts its rights exclude, and its `unread` is null. A LAN viewer
-  or no credential: 403.
+  out artifacts its rights exclude, and its `unread` is null. On a hosted
+  Clax `working` names only artifacts in the caller's reach (the owner's
+  included), `working_withheld` counts the records it leaves out, and
+  `unread` counts only the caller's items about artifacts in reach. A LAN
+  viewer or no credential: 403.
 - **`GET /api/inbox/summary`** → `{unread, questions, latest}`: the
   unread count, the open questions' views oldest first, and the five newest
   unread items other than questions (connection requests among them).
@@ -6552,6 +6559,10 @@ token:
 - `GET /api/artifacts/<A>/db-grants`: `{grants: [{source_id, granted_at}]}`,
   oldest first.
 
+On a hosted Clax a source B out of the caller's reach is 404 to the `PUT`
+and the `DELETE`, as an artifact that does not exist, and is left out of
+the listing.
+
 Each is 404 for an unknown or deleted artifact and 400 `invalid_args` when
 A and B are one. A grant and its removal are recorded as `artifact.update`
 of A. A grant follows A's declaration: a publish or `PATCH` whose
@@ -8192,7 +8203,11 @@ parameters (`artifact`, `live`, `by_session`, `since`, `until`, `shape`,
 only (403 for anyone else, LAN viewers included), runs one export at a
 time (503 `export_busy`), and refuses an unknown or repeated parameter, a
 selector naming nothing, a bad time or an empty range with 400 before any
-output.
+output. On a hosted Clax the export leaves out every step that names an
+artifact out of the owner's reach (another person's, unless shared with
+the owner), and a selector naming one names nothing (400
+`unknown_artifact`); steps that name no artifact, such as `person.*`,
+stay.
 
 - **Selection.** None means the whole install. `--artifact` and `--live`
   choose artifacts (a live page by origin and path); `--by-session` keeps
@@ -8646,6 +8661,27 @@ it starts, the runs a previous process left. A build without the
   (see "Event stream protocol"), its topics of a draft need the draft in
   reach, and `GET /api/events` is 403 `forbidden` to every caller: follow
   topics on `/api/stream`.
+  What reads across artifacts keeps to the same reach, the owner's
+  included: `GET /api/threads`; the inbox (its items, groups, agent strip,
+  unread counts, `GET /api/inbox/<id>` and its marks, and the `inbox`
+  events); `GET /api/agents` (see it); `GET /api/tags`' counts;
+  `GET /api/viewers/me/attention` without `?artifact=`; the
+  Toolpath export, which leaves out every step that names an artifact out
+  of the owner's reach (steps that name none stay) and answers an
+  `artifact` selector naming one 400 `unknown_artifact`; `GET /api/drafts`;
+  and a cross-app read's grants and consents (`/api/artifacts/<A>/db-grants`,
+  `/api/agent-read-consents`), where a source or reader out of reach is 404
+  and left out of their listings. The token's `db` level (`owner`, or
+  `admin` from a browser) holds only at artifacts the owner made: at one
+  shared with the owner or open by its link, the owner's browser is
+  `interact` and the token from no browser `view`, as a person's would be,
+  and its rules apply. Git tokens follow the reach too: the owner's and the
+  owner's agents' as the owner's, a person's and their agents' as that
+  person's; a token at another person's artifact lasts only while its
+  share (or, for a person, its link) does, and a fork's lineage is followed
+  only through artifacts in reach. A session route that names an artifact
+  out of reach (`/api/sessions/<sid>/git-token/<aid>`,
+  `…/drafts/<aid>`, `…/working/<aid>`) is 404.
 - Live pages (see "Live pages") are visible only to a loopback peer or a
   request with the token; to anyone else they do not exist (404, left out
   of lists and of the stream), and their snapshots are served with a policy

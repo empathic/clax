@@ -278,6 +278,31 @@ pub fn site_caller(st: &Store, site: &SiteCaller) -> clax_core::Result<Caller> {
     })
 }
 
+/// [`base_caller`] at artifact `aid`: on a hosted daemon (`hosted`) the
+/// token's level (`owner`, or `admin` from a browser) only at an artifact
+/// the owner made, the token holder's reach; elsewhere (one shared with
+/// the owner, or open by its link) the caller is as without the token, so
+/// a share or a link never makes the owner its maker's equal.
+///
+/// # Errors
+/// When reading the artifact or the viewer fails.
+pub fn base_caller_at(
+    st: &Store,
+    hosted: bool,
+    token: bool,
+    who: &Identity,
+    aid: &str,
+) -> clax_core::Result<Caller> {
+    base_caller(st, token_at(st, hosted, token, aid)?, who)
+}
+
+/// Whether the token (`token`) keeps its level at artifact `aid`: always
+/// on a local daemon, within the owner's reach alone on a hosted one
+/// (`hosted`).
+fn token_at(st: &Store, hosted: bool, token: bool, aid: &str) -> clax_core::Result<bool> {
+    Ok(token && (!hosted || st.reach(aid, None)? == clax_store::reach::Reach::Within))
+}
+
 /// The level and viewer of a caller that holds the token (`token`) with the
 /// credentials `who`, with the rules of the `db` routes (see `base_caller`).
 ///
@@ -295,6 +320,9 @@ pub fn caller_of(st: &Store, token: bool, who: &Identity) -> clax_core::Result<C
 /// that names no artifact with 400 `invalid_args`.
 pub struct CallerParts {
     pub token: bool,
+    /// On a hosted daemon, where the token's level holds only within the
+    /// owner's reach ([`base_caller_at`]).
+    pub hosted: bool,
     pub who: Identity,
     pub as_level: Option<Level>,
     /// A person's agent: its person (`None` for the owner's row) and
@@ -356,6 +384,7 @@ impl FromRequestParts<AppState> for CallerParts {
         };
         Ok(CallerParts {
             token: who.token,
+            hosted: state.hosted.is_some(),
             who,
             as_level,
             agent,
@@ -372,12 +401,13 @@ impl FromRequestParts<AppState> for CallerParts {
 
 impl CallerParts {
     /// The caller, looking up the cookie's viewer (a cookie with no viewer row
-    /// is no viewer), before any reader clamp; on a site host, the site's
-    /// caller ([`site_caller`]).
-    fn resolve(&self, st: &Store) -> clax_core::Result<Caller> {
+    /// is no viewer), before any reader clamp; `token` whether the token
+    /// counts ([`token_at`]); on a site host, the site's caller
+    /// ([`site_caller`]).
+    fn resolve(&self, st: &Store, token: bool) -> clax_core::Result<Caller> {
         let base = match &self.site {
             Some(site) => site_caller(st, site)?,
-            None => base_caller(st, self.token, &self.who)?,
+            None => base_caller(st, token, &self.who)?,
         };
         self.narrowed(base)
     }
@@ -408,11 +438,12 @@ impl CallerParts {
     /// are a copy of an app's at the owner's level, whatever rules the draft
     /// declares: a caller without the token is refused `NotFound`.
     pub fn resolve_for(&self, st: &Store, id: &ArtifactId) -> clax_core::Result<Caller> {
-        if !self.token && st.is_hidden(id.as_str()) {
+        let token = token_at(st, self.hosted, self.token, id.as_str())?;
+        if !token && st.is_hidden(id.as_str()) {
             return Err(CoreError::NotFound);
         }
         if let Some(reader) = &self.reader {
-            let level = self.resolve(st)?.level;
+            let level = self.resolve(st, token)?.level;
             return reader_caller(st, reader, id, level);
         }
         if let Some((person, rights)) = &self.agent {
@@ -438,10 +469,10 @@ impl CallerParts {
                 via_page: false,
             });
         }
-        if !self.token && !st.doc_declared(id)? {
+        if !token && !st.doc_declared(id)? {
             return Err(CoreError::NotDeclared { capability: "db" });
         }
-        self.resolve(st)
+        self.resolve(st, token)
     }
 }
 
@@ -516,6 +547,16 @@ impl Subscriber {
         match &self.site {
             Some(site) => site_caller(st, site),
             None => base_caller(st, self.token, &self.who),
+        }
+    }
+
+    /// The subscriber's level and viewer at artifact `aid`, as
+    /// [`base_caller_at`] decides them on a hosted daemon (`hosted`); on a
+    /// site host, the site's caller ([`site_caller`]).
+    pub fn resolve_at(&self, st: &Store, hosted: bool, aid: &str) -> clax_core::Result<Caller> {
+        match &self.site {
+            Some(site) => site_caller(st, site),
+            None => base_caller_at(st, hosted, self.token, &self.who, aid),
         }
     }
 }

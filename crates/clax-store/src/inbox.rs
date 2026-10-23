@@ -186,6 +186,9 @@ pub struct InboxQuery {
     /// of their items at all, so neither probes what they hold now (their
     /// comments, the tags they carry).
     pub text_withheld_at: Vec<String>,
+    /// Artifacts out of the recipient's reach (on a hosted daemon): none of
+    /// their items matches, is counted or is marked.
+    pub out_of_reach: Vec<String>,
 }
 
 /// One change to `inbox_items` in a committed transaction: the item `seq`
@@ -519,6 +522,15 @@ fn build(q: &InboxQuery, shape: Shape, now: &str) -> Built {
             ks.join(", ")
         ));
     }
+    if !q.out_of_reach.is_empty() {
+        let p = arg(
+            Sql::Text(super::feedback::id_array(&q.out_of_reach)),
+            &mut args,
+        );
+        wh.push(format!(
+            "+COALESCE(i.artifact_id, '') NOT IN (SELECT value FROM json_each({p}))"
+        ));
+    }
     match &q.agent {
         Some(Agent::Harness(h)) => {
             let p = arg(Sql::Text(h.clone()), &mut args);
@@ -735,6 +747,10 @@ pub(super) const ADDRESSED_QUOTES: &str = "SELECT group_concat(CASE WHEN json_va
       WHERE vt.artifact_id = ?1 AND vt.version_n = ?2";
 pub(super) const THREAD_MOVED: &str =
     "UPDATE inbox_items SET artifact_id = ?2 WHERE thread_id = ?1";
+/// The term that leaves the items about the artifacts `?2` (a JSON array)
+/// out of [`UNREAD_COUNT`] and [`UNREAD_BY_SESSION`].
+pub(super) const OUT_OF_REACH: &str =
+    "AND +COALESCE(artifact_id, '') NOT IN (SELECT value FROM json_each(?2))";
 /// Recipient `?1`'s unread items by agent session: the count and the
 /// newest `seq` of each (the agent strip, spec §13).
 pub(super) const UNREAD_BY_SESSION: &str = "SELECT session_id, count(*), max(seq)
@@ -1789,12 +1805,28 @@ impl Store {
 
     /// The number of `recipient`'s unread items (`None`: the owner's).
     pub fn inbox_unread(&self, recipient: Option<&str>) -> Result<u32> {
+        self.inbox_unread_but(recipient, &[])
+    }
+
+    /// [`Store::inbox_unread`] leaving out the items about the artifacts
+    /// `out_of_reach`.
+    pub fn inbox_unread_but(
+        &self,
+        recipient: Option<&str>,
+        out_of_reach: &[String],
+    ) -> Result<u32> {
         self.with_read(|c| {
-            Ok(
-                c.query_row(UNREAD_COUNT, params![recipient_key(recipient)], |r| {
-                    r.get(0)
-                })?,
-            )
+            let r = recipient_key(recipient);
+            Ok(if out_of_reach.is_empty() {
+                c.query_row(UNREAD_COUNT, params![r], |x| x.get(0))?
+            } else {
+                let sql = format!("{UNREAD_COUNT} {OUT_OF_REACH}");
+                c.query_row(
+                    &sql,
+                    params![r, super::feedback::id_array(out_of_reach)],
+                    |x| x.get(0),
+                )?
+            })
         })
     }
 
@@ -1964,8 +1996,19 @@ impl Store {
     /// unread item. Reads the recipient's unread items, open questions and
     /// open requests through their indexes, and each agent's session.
     pub fn inbox_agents(&self, recipient: Option<&str>) -> Result<Vec<AgentGroup>> {
+        self.inbox_agents_but(recipient, &[])
+    }
+
+    /// [`Store::inbox_agents`], its unread counts leaving out the items
+    /// about the artifacts `out_of_reach`.
+    pub fn inbox_agents_but(
+        &self,
+        recipient: Option<&str>,
+        out_of_reach: &[String],
+    ) -> Result<Vec<AgentGroup>> {
         use std::collections::BTreeMap;
         let r = recipient_key(recipient);
+        let hidden = super::feedback::id_array(out_of_reach);
         self.with_read(|c| {
             let mut by: BTreeMap<String, AgentGroup> = BTreeMap::new();
             let blank = |sid: &str| AgentGroup {
@@ -1982,8 +2025,18 @@ impl Store {
                 questions: 0,
                 approvals: 0,
             };
-            let mut st = c.prepare_cached(UNREAD_BY_SESSION)?;
-            for row in st.query_map(params![r], |x| {
+            let unread_by_session = if out_of_reach.is_empty() {
+                UNREAD_BY_SESSION.to_string()
+            } else {
+                UNREAD_BY_SESSION.replace(" GROUP BY", &format!(" {OUT_OF_REACH} GROUP BY"))
+            };
+            let mut st = c.prepare_cached(&unread_by_session)?;
+            let ps: Vec<&dyn rusqlite::ToSql> = if out_of_reach.is_empty() {
+                vec![&r]
+            } else {
+                vec![&r, &hidden]
+            };
+            for row in st.query_map(ps.as_slice(), |x| {
                 Ok((
                     x.get::<_, String>(0)?,
                     x.get::<_, u32>(1)?,

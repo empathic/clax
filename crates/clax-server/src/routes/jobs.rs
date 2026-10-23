@@ -878,14 +878,30 @@ fn after_publish_step(
 // ------------------------------------------------------------- consents
 
 /// `GET /api/agent-read-consents`: `{consents: [{reader, source}]}`, the
-/// agent's remembered consents to read `source`'s documents for `reader`.
+/// agent's remembered consents to read `source`'s documents for `reader`;
+/// on a hosted daemon those whose two artifacts are both in the caller's
+/// reach ([`clax_http::hosted::MemberRights::lists`]) alone.
 pub async fn consents(
     State(s): State<AppState>,
     d: DeniedToGrants,
     _t: RequireToken,
+    hosted: Option<axum::Extension<clax_http::hosted::HostedRequest>>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
-    let all = s.store_call(|st| st.agent_read_consents()).await?;
+    let scope = s.hosted.as_ref().map(|_| hosted.and_then(|h| h.0.member));
+    let all = s
+        .store_call(move |st| {
+            let mut all = st.agent_read_consents()?;
+            if let Some(scope) = scope {
+                all.retain(|(reader, source)| {
+                    scope
+                        .as_ref()
+                        .is_some_and(|m| m.lists(st, reader) && m.lists(st, source))
+                });
+            }
+            Ok(all)
+        })
+        .await?;
     let all: Vec<Value> = all
         .into_iter()
         .map(|(reader, source)| json!({"reader": reader, "source": source}))
@@ -895,16 +911,21 @@ pub async fn consents(
 
 /// `PUT /api/agent-read-consents/{reader}/{source}`: remembers the
 /// consent (204); 400 `invalid_id` for an ID that is not an artifact's,
-/// 404 when either artifact does not exist.
+/// 404 when either artifact does not exist, or on a hosted daemon is out of
+/// the caller's reach.
 pub async fn put_consent(
     State(s): State<AppState>,
     d: DeniedToGrants,
     _t: RequireToken,
+    hosted: Option<axum::Extension<clax_http::hosted::HostedRequest>>,
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
     d.refuse_agents()?;
     let (reader, source) = path(p)?;
     let (r, so) = (ArtifactId::parse(&reader)?, ArtifactId::parse(&source)?);
+    for a in [&r, &so] {
+        clax_http::hosted::require_reach(&s, hosted.as_deref(), a.as_str()).await?;
+    }
     s.store_call(move |st| {
         if st.get_artifact(&r)?.is_none() || st.get_artifact(&so)?.is_none() {
             return Err(CoreError::NotFound);
@@ -916,15 +937,23 @@ pub async fn put_consent(
 }
 
 /// `DELETE /api/agent-read-consents/{reader}/{source}`: forgets the
-/// consent; `{deleted}`, whether there was one.
+/// consent; `{deleted}`, whether there was one. On a hosted daemon 404 when
+/// either artifact is out of the caller's reach.
 pub async fn delete_consent(
     State(s): State<AppState>,
     d: DeniedToGrants,
     _t: RequireToken,
+    hosted: Option<axum::Extension<clax_http::hosted::HostedRequest>>,
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     let (reader, source) = path(p)?;
+    if s.hosted.is_some() {
+        let (r, so) = (ArtifactId::parse(&reader)?, ArtifactId::parse(&source)?);
+        for a in [&r, &so] {
+            clax_http::hosted::require_reach(&s, hosted.as_deref(), a.as_str()).await?;
+        }
+    }
     let deleted = s
         .store_call(move |st| st.delete_agent_read_consent(&reader, &source))
         .await?;

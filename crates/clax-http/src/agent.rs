@@ -1364,6 +1364,16 @@ impl<N: Need> FromRequestParts<AppState> for Agent<N> {
                 None => m.rights.allows_somewhere(kind, action),
             };
             if !allowed {
+                // Out of reach (a path outside `/api/artifacts/<aid>`,
+                // which the gate has not checked): as one that does not
+                // exist.
+                if let Some(a) = &artifact
+                    && !m
+                        .allows(s, (RightType::Artifacts, "read"), a.as_str())
+                        .await?
+                {
+                    return Err(ApiError::not_found());
+                }
                 return Err(member_not_permitted((kind, action)));
             }
         }

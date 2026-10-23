@@ -139,6 +139,41 @@ pub fn text_withheld_at(
     Ok(out)
 }
 
+/// The artifacts among `recipient`'s items (`None`: the owner's) that are
+/// out of their reach on a hosted daemon (`hosted`), as their listings
+/// decide it ([`crate::hosted::MemberRights::lists`]): what their inbox
+/// leaves out, its counts included. Every one for a recipient who is no
+/// person; none on a local daemon.
+///
+/// # Errors
+/// The store's.
+pub fn out_of_reach(
+    st: &Store,
+    recipient: Option<&str>,
+    hosted: bool,
+) -> clax_core::Result<Vec<String>> {
+    if !hosted {
+        return Ok(Vec::new());
+    }
+    let scope = match recipient {
+        None => crate::hosted::MemberRights::owner(st),
+        Some(pid) => crate::hosted::MemberRights::of_person(st, pid),
+    };
+    let all = st.inbox_artifacts(recipient)?;
+    let scope = match scope {
+        Ok(m) => m,
+        Err(
+            clax_core::CoreError::NotFound
+            | clax_core::CoreError::Invalid {
+                code: "not_a_person",
+                ..
+            },
+        ) => return Ok(all),
+        Err(e) => return Err(e),
+    };
+    Ok(all.into_iter().filter(|a| !scope.lists(st, a)).collect())
+}
+
 /// Whether `recipient`, a connected person, may read the comments on
 /// `artifact`: by their rights or the page's link, as the threads route
 /// decides. The owner and an item about no artifact are not limited, nor a
@@ -475,7 +510,8 @@ fn announcement(
     if changes.len() > MAX_ITEM_EVENTS {
         for r in db.inbox_recipients_of(&seqs)? {
             if held.contains(recipient_key(r.as_deref())) {
-                let unread = db.inbox_unread(r.as_deref())?;
+                let hidden = out_of_reach(db, r.as_deref(), hosted)?;
+                let unread = db.inbox_unread_but(r.as_deref(), &hidden)?;
                 out.push(Announce::Refetch(r, unread));
             }
         }
@@ -492,8 +528,15 @@ fn announcement(
             None => by.push((i.recipient.clone(), vec![i])),
         }
     }
-    for (r, rows) in by {
-        let unread = db.inbox_unread(r.as_deref())?;
+    for (r, mut rows) in by {
+        // An item of an artifact out of the recipient's reach is not theirs
+        // to hear of, nor counted.
+        let hidden = out_of_reach(db, r.as_deref(), hosted)?;
+        rows.retain(|i| i.artifact_id.as_ref().is_none_or(|a| !hidden.contains(a)));
+        if rows.is_empty() {
+            continue;
+        }
+        let unread = db.inbox_unread_but(r.as_deref(), &hidden)?;
         out.push(Announce::Items(r, views(db, &rows, hosted)?, unread));
     }
     Ok(out)

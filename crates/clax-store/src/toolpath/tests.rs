@@ -2478,6 +2478,72 @@ fn selectors_union_within_and_intersect_across() {
 }
 
 #[test]
+fn an_export_leaves_out_every_step_of_an_artifact_out_of_reach() {
+    let h = history();
+    let (_dir, st) = history_store(&h);
+    let hidden = "p7v2n4c8d1ef";
+    let out_of_reach: BTreeSet<String> = [hidden.to_string()].into();
+    let all = parse(&store_export(&st, &h, &select(Default::default())).unwrap());
+    let scoped = |shape: project::Shape| {
+        store_export(
+            &st,
+            &h,
+            &project::Export {
+                selection: project::Selection {
+                    out_of_reach: out_of_reach.clone(),
+                    ..Default::default()
+                },
+                shape,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    };
+    let doc = scoped(project::Shape::Artifacts);
+    assert!(!doc.contains(hidden), "{doc}");
+    // Its path goes, and so does every step of another path that names it
+    // too (a fork's from it); the other artifacts' paths stay.
+    let doc = parse(&doc);
+    let paths = path_ids(&doc);
+    assert!(
+        !paths.contains(&format!("clax-artifact-{hidden}")),
+        "{paths:?}"
+    );
+    for kept in ["b4ckf1llart0", "k3m9q2w8x1ab"] {
+        assert!(
+            paths.contains(&format!("clax-artifact-{kept}")),
+            "{paths:?}"
+        );
+    }
+    // The install path, of the steps naming no artifact, stays whole.
+    let install = |d: &Value| {
+        d["paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| {
+                !p["path"]["id"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("clax-artifact-")
+            })
+            .map(seqs_of)
+    };
+    assert_eq!(install(&doc), install(&all));
+    assert!(!scoped(project::Shape::Journal).contains(hidden));
+    // Naming it is naming nothing in the history.
+    let named = project::Selection {
+        artifacts: vec![hidden.into()],
+        out_of_reach,
+        ..Default::default()
+    };
+    assert_eq!(
+        store_export(&st, &h, &select(named)).unwrap_err(),
+        "unknown_artifact"
+    );
+}
+
+#[test]
 fn jsonl_requires_single_path() {
     let h = history();
     let (_dir, st) = history_store(&h);

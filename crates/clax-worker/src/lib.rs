@@ -394,6 +394,26 @@ pub(crate) async fn reconcile_pushes(
         .status_code())
 }
 
+/// Whether the instance answers that `artifact` lies within the owner's
+/// reach (`POST /_internal/reach`; see Pushes): what the diagnostics need
+/// before they read or hand out its repository.
+pub(crate) async fn owner_reaches(env: &Env, artifact: &str) -> Result<bool> {
+    let mut init = worker::RequestInit::new();
+    init.with_method(worker::Method::Post)
+        .with_body(Some(wasm_bindgen::JsValue::from_str(
+            &json!({ "artifact": artifact }).to_string(),
+        )));
+    let req = Request::new_with_init(
+        &format!("http://{INSTANCE_INTERNAL}/_internal/reach"),
+        &init,
+    )?;
+    Ok(instance_stub(env)?
+        .fetch_with_request(req)
+        .await?
+        .status_code()
+        == 204)
+}
+
 /// The consumer of the queue the Artifacts event subscription delivers to
 /// (`queues.consumers` in `wrangler.jsonc`; see Pushes): each artifact a
 /// pushed event names is reconciled once per batch; every other message is

@@ -2013,6 +2013,251 @@ async fn the_daemon_token_on_hosted_reaches_only_the_owners_reach() {
 }
 
 #[tokio::test]
+async fn no_owner_path_reads_a_members_page() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let plan = site.titled("Plan").await;
+    let (s, t) = site.thread(&owner, &plan, "the owner's").await;
+    assert_eq!(s, 201, "{t}");
+    let (_, v) = site.get(&owner, "/api/token").await;
+    let shell = v["token"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .post(&owner, "/api/tags", json!({"name": "urgent"}))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let owner_sid = site.ts.register_session("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // Mia's page, which her agent publishes and works at, holding a thread,
+    // a document, a draft and the owner's tag.
+    let mia = site.person(&owner, "Mia").await;
+    let mia_pid = site.pid(&mia).await;
+    let unread_before = site.get(&owner, "/api/inbox/summary").await.1["unread"].clone();
+    let mut agent = site.token_agent(&mia, "laptop").await;
+    assert_eq!(agent.initialize("claude-code").await, 200);
+    let (_, r) = agent
+        .call(
+            "publish",
+            json!({"html": "<h1>Mia's</h1>", "title": "Mia's", "capabilities": {"db": {}}}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    let mias = site
+        .ts
+        .store
+        .list_artifacts()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.title == "Mia's")
+        .unwrap()
+        .id;
+    let (s, t) = site.thread(&mia, &mias, "Mia's thread").await;
+    assert_eq!(s, 201, "{t}");
+    let (_, r) = agent
+        .call("working", json!({"url_or_id": mias, "message": "on it"}))
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    let as_agent = |m: reqwest::Method, p: &str| {
+        site.ts
+            .client
+            .request(m, site.url(p))
+            .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+            .header("x-clax-session", agent.sid())
+            .header(
+                clax_core::remote::SESSION_SECRET_HEADER,
+                agent.session.as_deref().unwrap().split_once('.').unwrap().1,
+            )
+            .bearer_auth(&agent.token)
+    };
+    let r = as_agent(
+        reqwest::Method::PUT,
+        &format!("/api/artifacts/{mias}/docs/notes/a"),
+    )
+    .json(&json!({"data": {"text": "Mia's note"}}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    let r = as_agent(
+        reqwest::Method::PUT,
+        &format!("/api/sessions/{}/drafts/{mias}", agent.sid()),
+    )
+    .json(&json!({"files": {"index.html": {"content": "<h1>next</h1>", "encoding": "utf8"}}}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/artifacts/{mias}/tags"),
+            json!({"tags": ["urgent"]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    // A person event, which every export keeps.
+    let (s, v) = site
+        .put(
+            &owner,
+            &format!("/api/people/{mia_pid}/rights"),
+            json!({"rights": null}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    // As the owner's browser (its shell token) and as the daemon token.
+    let callers: [(
+        &str,
+        Box<dyn Fn(reqwest::Method, &str) -> reqwest::RequestBuilder + '_>,
+    ); 2] = [
+        (
+            "browser",
+            Box::new(|m: reqwest::Method, p: &str| site.req(&owner, m, p).bearer_auth(&shell)),
+        ),
+        (
+            "daemon token",
+            Box::new(|m: reqwest::Method, p: &str| {
+                site.ts
+                    .client
+                    .request(m, site.url(p))
+                    .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+                    .bearer_auth(&site.ts.token)
+            }),
+        ),
+    ];
+    for (who, call) in &callers {
+        let get = async |p: &str| -> (u16, String) {
+            let r = call(reqwest::Method::GET, p).send().await.unwrap();
+            (r.status().as_u16(), r.text().await.unwrap())
+        };
+        // Listings name nothing of Mia's page.
+        for p in [
+            "/api/threads",
+            "/api/inbox",
+            "/api/inbox?group=artifact",
+            "/api/inbox?group=agent",
+            "/api/inbox/summary",
+            "/api/agents",
+            "/api/tags",
+            "/api/drafts",
+            "/api/agent-read-consents",
+            "/api/viewers/me/attention",
+            &format!("/api/artifacts/{plan}/db-grants"),
+        ] {
+            let (s, body) = get(p).await;
+            assert_eq!(s, 200, "{who}: {p}: {body}");
+            assert!(!body.contains(&mias), "{who}: {p}: {body}");
+        }
+        let (_, body) = get("/api/threads").await;
+        assert!(body.contains(&plan), "{who}: {body}");
+        // Its tag counts nothing here; its unread items count for no one.
+        let (_, body) = get("/api/tags").await;
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["tags"][0]["count"], 0, "{who}: {v}");
+        let (_, body) = get("/api/inbox/summary").await;
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["unread"], unread_before, "{who}: {v}");
+        // Mia's agent is listed, working at nothing named here.
+        let (_, body) = get("/api/agents").await;
+        let v: Value = serde_json::from_str(&body).unwrap();
+        let hers = v["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["person"] == json!(mia_pid))
+            .cloned()
+            .unwrap_or_else(|| panic!("{who}: {v}"));
+        assert_eq!(hers["working"], json!([]), "{who}: {hers}");
+        assert_eq!(hers["working_withheld"], 1, "{who}: {hers}");
+        assert_eq!(hers["unread"], 0, "{who}: {hers}");
+        assert_eq!(hers["state"], "working", "{who}: {hers}");
+        // The history keeps what names no artifact, and nothing of hers.
+        let (s, body) = get("/api/toolpath/export?shape=journal").await;
+        assert_eq!(s, 200, "{who}: {body}");
+        assert!(!body.contains(&mias), "{who}: {body}");
+        assert!(body.contains("person.rights"), "{who}: {body}");
+        let (s, body) = get(&format!("/api/toolpath/export?artifact={mias}")).await;
+        assert_eq!(s, 400, "{who}: {body}");
+        assert!(body.contains("unknown_artifact"), "{who}: {body}");
+        // Routes that name it answer as for one that does not exist.
+        for (m, p, b) in [
+            (
+                reqwest::Method::GET,
+                format!("/api/artifacts/{mias}/docs/notes/a"),
+                None,
+            ),
+            (
+                reqwest::Method::GET,
+                format!("/api/artifacts/{mias}/docs"),
+                None,
+            ),
+            (
+                reqwest::Method::GET,
+                format!("/api/artifacts/{mias}/assets"),
+                None,
+            ),
+            (
+                reqwest::Method::GET,
+                format!("/api/artifacts/{mias}/drafts"),
+                None,
+            ),
+            (
+                reqwest::Method::GET,
+                format!("/api/artifacts/{mias}/git-token"),
+                None,
+            ),
+            (
+                reqwest::Method::POST,
+                format!("/api/artifacts/{mias}/git-token"),
+                Some(json!({"scope": "read"})),
+            ),
+            (
+                reqwest::Method::POST,
+                format!("/api/sessions/{owner_sid}/git-token/{mias}"),
+                Some(json!({"scope": "read"})),
+            ),
+            (
+                reqwest::Method::PUT,
+                format!("/api/sessions/{owner_sid}/working/{mias}"),
+                Some(json!({"message": "here"})),
+            ),
+            (
+                reqwest::Method::PUT,
+                format!("/api/sessions/{owner_sid}/drafts/{mias}"),
+                Some(
+                    json!({"files": {"index.html": {"content": "<h1>x</h1>", "encoding": "utf8"}}}),
+                ),
+            ),
+            (
+                reqwest::Method::PUT,
+                format!("/api/artifacts/{plan}/db-grants/{mias}"),
+                Some(json!({})),
+            ),
+            (
+                reqwest::Method::DELETE,
+                format!("/api/artifacts/{plan}/db-grants/{mias}"),
+                None,
+            ),
+            (
+                reqwest::Method::PUT,
+                format!("/api/agent-read-consents/{plan}/{mias}"),
+                None,
+            ),
+        ] {
+            let mut r = call(m.clone(), &p);
+            if let Some(b) = b {
+                r = r.json(&b);
+            }
+            let (s, v) = json_of(r.send().await.unwrap()).await;
+            assert_eq!((s, code(&v)), (404, "not_found"), "{who}: {m} {p}: {v}");
+        }
+    }
+    // Mia's own listings still name it.
+    let (_, v) = site.get(&mia, "/api/inbox").await;
+    assert!(v.to_string().contains(&mias), "{v}");
+}
+
+#[tokio::test]
 async fn a_person_granted_any_reads_the_owners_and_their_own_alone() {
     let site = Site::new().await;
     let owner = site.owner().await;

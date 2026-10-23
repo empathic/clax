@@ -121,12 +121,7 @@ impl GitRemotes for FakeRemotes {
             Ok(self
                 .rows()
                 .into_iter()
-                .filter(|r| {
-                    !r.revoked
-                        && (r.holder.person.is_some()
-                            || r.holder.session.is_some()
-                            || r.holder.link)
-                })
+                .filter(|r| !r.revoked)
                 .map(|r| Held {
                     id: r.id,
                     artifact: r.artifact,
@@ -1517,4 +1512,61 @@ async fn a_person_who_reads_a_page_through_its_link_loses_its_tokens_when_sharin
     assert!(h.fake.row(&held[0]).revoked, "Mia's");
     assert!(!h.fake.row(&held[1]).revoked, "Sam's");
     assert_eq!(h.mint(&aid, "read", Some(&mia)).await.0, 404);
+}
+
+#[tokio::test]
+async fn a_share_is_all_that_reaches_another_persons_page_through_git() {
+    let h = Hosted::new().await;
+    let owner = h.owner().await;
+    let (_, me, _) = h
+        .send(reqwest::Method::GET, "/api/hosted/me", Some(&owner), None)
+        .await;
+    let owner_id = me["person"]["public_id"].as_str().unwrap().to_string();
+    // Mia and Sam each hold every right (`*`): within their own reach.
+    let all = json!("clax:collaborator");
+    let (mia, _) = h.member(&owner, "Mia", all.clone()).await;
+    let (sam, sam_id) = h.member(&owner, "Sam", all).await;
+    let (s, v, _) = h
+        .send(
+            reqwest::Method::POST,
+            "/api/artifacts:new",
+            Some(&mia),
+            Some(json!({"title": "Mia's", "brief": "a page"})),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let mias = v["artifact"]["id"].as_str().unwrap().to_string();
+    // Shared with each of them, each clones it.
+    let mut held = Vec::new();
+    for (cookie, pid) in [(&sam, &sam_id), (&owner, &owner_id)] {
+        assert_eq!(h.mint(&mias, "read", Some(cookie)).await.0, 404);
+        let (s, v, _) = h
+            .send(
+                reqwest::Method::PUT,
+                &format!("/api/hosted/artifacts/{mias}/shares"),
+                Some(&mia),
+                Some(json!({"person": pid, "access": "viewer"})),
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+        let share = v["share"]["id"].as_str().unwrap().to_string();
+        let (s, v) = h.mint(&mias, "read", Some(cookie)).await;
+        assert_eq!(s, 200, "{v}");
+        held.push((share, h.fake.rows().pop().unwrap().id));
+    }
+    // Ending a share revokes the token it gave: neither Sam's `*` nor the
+    // owner's rights reach Mia's page without it.
+    for (share, token) in &held {
+        let (s, v, _) = h
+            .send(
+                reqwest::Method::DELETE,
+                &format!("/api/hosted/artifacts/{mias}/shares/{share}"),
+                Some(&mia),
+                None,
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+        assert!(h.fake.row(token).revoked, "{:?}", h.fake.row(token));
+    }
+    assert_eq!(h.mint(&mias, "read", Some(&sam)).await.0, 404);
 }

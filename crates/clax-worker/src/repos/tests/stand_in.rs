@@ -605,12 +605,14 @@ fn the_held_tokens_are_listed_without_secrets_and_revoked_by_session_or_person()
                 &rae_agent_two.id,
                 &rae.id,
                 &owner_agent.id,
+                &owners.id,
                 &link.id
             ]
             .map(|s| s.as_str()),
-            "the owner's own token is not listed; a page link's is"
+            "the owner's own token is listed, and a page link's"
         );
-        assert!(held[4].link && held[4].person.is_none() && held[4].session.is_none());
+        assert!(!held[4].link && held[4].person.is_none() && held[4].session.is_none());
+        assert!(held[5].link && held[5].person.is_none() && held[5].session.is_none());
         assert!(!held[2].link);
         assert_eq!(held[2].scope, "write");
         assert_eq!(held[2].person.as_deref(), Some("p_rae"));
@@ -655,14 +657,24 @@ fn the_held_tokens_are_listed_without_secrets_and_revoked_by_session_or_person()
             .into_iter()
             .map(|h| h.id)
             .collect();
-        assert_eq!(left, [owner_agent.id.clone(), link.id.clone()]);
+        assert_eq!(
+            left,
+            [owner_agent.id.clone(), owners.id.clone(), link.id.clone()]
+        );
         assert_eq!(
             tokens::check(&host, "a-one", &link.token, now).unwrap(),
             Some(Access::Read)
         );
         // An expired token is no longer held.
         clock.advance(901);
-        assert!(api.held().await.unwrap().is_empty());
+        let left: Vec<String> = api
+            .held()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|h| h.id)
+            .collect();
+        assert_eq!(left, [owners.id.clone()]);
     });
 }
 

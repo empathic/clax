@@ -127,7 +127,8 @@ pub trait GitRemotes: Send + Sync {
         true
     }
 
-    /// Every live token handed to a person or an agent session.
+    /// Every live token: the owner's, and those handed to a person, an
+    /// agent session or a page's link.
     fn held(&self) -> RemoteFuture<'_, Vec<Held>>;
 
     /// Revokes token `id` of `artifact`'s repository; answers whether a

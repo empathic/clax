@@ -199,8 +199,12 @@ pub async fn room(
         Ok(c) => clax_http::seats::write_claim(&s, &c, &id).await?,
         Err(_) => None,
     };
+    let hosted = s.hosted.is_some();
     let (artifact, caller) = s
-        .store_call(move |st| Ok((st.get_artifact(&id)?, subscriber.resolve(st)?)))
+        .store_call(move |st| {
+            let caller = subscriber.resolve_at(st, hosted, id.as_str())?;
+            Ok((st.get_artifact(&id)?, caller))
+        })
         .await?;
     let declared = artifact
         .as_ref()
@@ -989,9 +993,10 @@ pub async fn room_socket(
     let site = extensions
         .get::<SiteCaller>()
         .and_then(|c| SiteCredentials::of(c, &extensions));
+    let hosted = s.hosted.is_some();
     let admitted = s
         .store_call(move |st| {
-            let resolved = subscriber.resolve(st)?;
+            let resolved = subscriber.resolve_at(st, hosted, &a)?;
             admission(st, &a, peer, caller.as_ref(), resolved, site)
         })
         .await?;
@@ -1077,7 +1082,7 @@ pub async fn reopen(
             {
                 return Err(CoreError::NotFound);
             }
-            let resolved = clax_http::db_caller::base_caller(st, who.token, &who)?;
+            let resolved = clax_http::db_caller::base_caller_at(st, hosted, who.token, &who, &a)?;
             admission(st, &a, peer, caller.as_ref(), resolved, None)
         })
         .await

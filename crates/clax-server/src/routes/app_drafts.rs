@@ -7,7 +7,7 @@
 use super::artifacts::{JsonBytes, parse_body, path};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection};
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use clax_core::CoreError;
 use clax_core::audit::AuditCtx;
@@ -15,6 +15,7 @@ use clax_core::publish::{FileInput, PublishRequest, validate};
 use clax_http::auth::RequireToken;
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
+use clax_http::hosted::HostedRequest;
 use clax_http::state::AppState;
 use clax_store::Store;
 use clax_store::drafts::DRAFT_MAX_AGE;
@@ -54,12 +55,14 @@ struct CreateBody {
 /// (each a string, or a publish's `{content, encoding, content_type}`),
 /// with a copy of `of`'s documents. Its fetches use `of`'s network grants
 /// unless `inherit_net` is false. 201 `{draft: {id, of, version, docs_copied,
-/// docs_truncated}}`; 404 when `of` is missing, 400 `invalid_args` when it
-/// is a draft, and a publish's validation errors.
+/// docs_truncated}}`; 404 when `of` is missing (or, on a hosted daemon, out
+/// of the caller's reach), 400 `invalid_args` when it is a draft, and a
+/// publish's validation errors.
 pub async fn create(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
+    hosted: Option<Extension<HostedRequest>>,
     audit: AuditCtx,
     req: Result<JsonBytes, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
@@ -90,6 +93,9 @@ pub async fn create(
         Ok((of, p, inherit_net))
     })
     .await?;
+    if let Some(of) = &of {
+        clax_http::hosted::require_reach(&s, hosted.as_deref(), of.as_str()).await?;
+    }
     let ctx = audit.clone();
     let mut d = {
         let of = of.clone();
@@ -133,13 +139,25 @@ pub async fn create(
     ))
 }
 
-/// `GET /api/drafts`: `{drafts: [{id, of, created_at}]}`, oldest first.
+/// `GET /api/drafts`: `{drafts: [{id, of, created_at}]}`, oldest first; on
+/// a hosted daemon those in the caller's reach alone.
 pub async fn list(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
+    hosted: Option<Extension<HostedRequest>>,
 ) -> Result<Json<Value>, ApiError> {
-    let drafts = s.store_call(|st| st.list_drafts()).await?;
+    // On a hosted daemon, the drafts in the caller's reach alone.
+    let scope = s.hosted.as_ref().map(|_| hosted.and_then(|h| h.0.member));
+    let drafts = s
+        .store_call(move |st| {
+            let mut drafts = st.list_drafts()?;
+            if let Some(scope) = scope {
+                drafts.retain(|d| scope.as_ref().is_some_and(|m| m.lists(st, &d.id)));
+            }
+            Ok(drafts)
+        })
+        .await?;
     Ok(Json(json!({ "drafts": drafts })))
 }
 
@@ -149,10 +167,12 @@ pub async fn delete(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
+    hosted: Option<Extension<HostedRequest>>,
     audit: AuditCtx,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(p)?)?;
+    clax_http::hosted::require_reach(&s, hosted.as_deref(), id.as_str()).await?;
     let cache = s.wrap_cache.clone();
     s.store_call(move |st| {
         if !st.delete_draft(&audit, &id)? {
@@ -186,11 +206,13 @@ pub async fn render(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
+    hosted: Option<Extension<HostedRequest>>,
     p: Result<Path<String>, PathRejection>,
     req: Result<JsonBytes, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     let id = parse_id(&path(p)?)?;
+    clax_http::hosted::require_reach(&s, hosted.as_deref(), id.as_str()).await?;
     let (digest, clean) = parse_body(req, "the request body limit", |b: RenderBody| {
         let hex = b.digest.strip_prefix("sha256:").unwrap_or_default();
         if hex.len() != 64 || !hex.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')) {

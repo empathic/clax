@@ -20,7 +20,9 @@ use clax_http::identity::Identity;
 use clax_http::state::AppState;
 use clax_http::viewer::SameOrigin;
 use clax_http::views::approval::fill_card_docs;
-use clax_http::views::inbox::{recipient_of, view as inbox_view, views as inbox_views};
+use clax_http::views::inbox::{
+    out_of_reach, recipient_of, view as inbox_view, views as inbox_views,
+};
 use clax_store::inbox::{
     Agent, InboxQuery, Kind, MAX_GROUP_ROWS, MAX_GROUPS, MAX_PAGE, ReadFilter, is_item_id,
     stored_time,
@@ -348,10 +350,11 @@ pub async fn list(
             }
             let out = s
                 .store_call(move |db| {
-                    let strip = db.inbox_agents(me.as_deref())?;
+                    let hidden = out_of_reach(db, me.as_deref(), hosted)?;
+                    let strip = db.inbox_agents_but(me.as_deref(), &hidden)?;
                     Ok(json!({
                         "agents": strip_view(db, &strip, me.as_deref())?,
-                        "unread": db.inbox_unread(me.as_deref())?,
+                        "unread": db.inbox_unread_but(me.as_deref(), &hidden)?,
                     }))
                 })
                 .await?;
@@ -421,6 +424,7 @@ pub async fn list(
     // unread count.
     let job = move |db: &clax_store::Store| {
         let mut iq = with_tags(db, iq)?;
+        iq.out_of_reach = out_of_reach(db, me.as_deref(), hosted)?;
         // What a person may not read is out of a search's and a tag
         // filter's reach.
         if iq.text.is_some() || !iq.tags.is_empty() {
@@ -455,7 +459,7 @@ pub async fn list(
                 "next_cursor": next.map(|n| n.to_string()),
             })
         };
-        out["unread"] = json!(db.inbox_unread(me.as_deref())?);
+        out["unread"] = json!(db.inbox_unread_but(me.as_deref(), &iq.out_of_reach)?);
         if filtered {
             let n = db.inbox_count(&iq, TOTAL_CAP + 1)?;
             out["total"] = if n > TOTAL_CAP {
@@ -497,6 +501,7 @@ pub async fn summary(
     let mut out = s
         .store_call(move |db| {
             let tag_ids = db.tag_filter_ids(&tags)?;
+            let hidden = out_of_reach(db, me.as_deref(), hosted)?;
             // What a person may not read matches no tag filter: its items
             // and questions would tell which tags it carries now.
             let withheld = if tag_ids.is_empty() {
@@ -512,7 +517,7 @@ pub async fn summary(
                     let Some(aid) = &q.artifact_id else {
                         return false;
                     };
-                    if withheld.contains(aid) {
+                    if withheld.contains(aid) || hidden.contains(aid) {
                         return false;
                     }
                     *carrying.entry(aid.clone()).or_insert_with(|| {
@@ -543,10 +548,11 @@ pub async fn summary(
                 limit: SUMMARY_LATEST,
                 tags: tag_ids,
                 text_withheld_at: withheld,
+                out_of_reach: hidden.clone(),
                 ..InboxQuery::default()
             })?;
             Ok(json!({
-                "unread": db.inbox_unread(me.as_deref())?,
+                "unread": db.inbox_unread_but(me.as_deref(), &hidden)?,
                 "questions": questions,
                 "latest": inbox_views(db, &rows, hosted)?,
             }))
@@ -554,6 +560,23 @@ pub async fn summary(
         .await?;
     fill_card_docs(&s, &mut out).await;
     Ok(Json(out))
+}
+
+/// `me`'s item `id`: 404 when they have none with that ID, or, on a hosted
+/// daemon (`hosted`), when it is about an artifact out of their reach.
+fn item_in_reach(
+    db: &clax_store::Store,
+    id: &str,
+    me: Option<&str>,
+    hosted: bool,
+) -> clax_core::Result<clax_store::inbox::ItemRow> {
+    let i = db.inbox_item(id, me)?.ok_or(CoreError::NotFound)?;
+    if let Some(aid) = &i.artifact_id
+        && out_of_reach(db, me, hosted)?.contains(aid)
+    {
+        return Err(CoreError::NotFound);
+    }
+    Ok(i)
 }
 
 /// The item ID in a path: 404 when it is not one.
@@ -581,9 +604,7 @@ pub async fn get_one(
     let id = item_id(p)?;
     let mut item = s
         .store_call(move |db| {
-            let i = db
-                .inbox_item(&id, me.as_deref())?
-                .ok_or(CoreError::NotFound)?;
+            let i = item_in_reach(db, &id, me.as_deref(), hosted)?;
             inbox_view(db, &i, hosted)
         })
         .await?;
@@ -602,10 +623,14 @@ async fn mark_one(
     let mut out = s
         .store_call(move |db| {
             let me = me.as_deref();
-            db.inbox_item(&id, me)?.ok_or(CoreError::NotFound)?;
+            item_in_reach(db, &id, me, hosted)?;
             db.inbox_mark(std::slice::from_ref(&id), read, me)?;
             let i = db.inbox_item(&id, me)?.ok_or(CoreError::NotFound)?;
-            Ok(json!({"item": inbox_view(db, &i, hosted)?, "unread": db.inbox_unread(me)?}))
+            let hidden = out_of_reach(db, me, hosted)?;
+            Ok(json!({
+                "item": inbox_view(db, &i, hosted)?,
+                "unread": db.inbox_unread_but(me, &hidden)?,
+            }))
         })
         .await?;
     fill_card_docs(&s, &mut out).await;
@@ -712,10 +737,12 @@ pub async fn read_many(
     let hosted = s.hosted.is_some();
     let out = s
         .store_call(move |db| {
+            let hidden = out_of_reach(db, me.as_deref(), hosted)?;
             let marked = match mark {
                 Mark::Ids(ids) => db.inbox_mark(&ids, true, me.as_deref())?,
                 Mark::All(q) => {
                     let mut q = with_tags(db, *q)?;
+                    q.out_of_reach = hidden.clone();
                     if q.text.is_some() || !q.tags.is_empty() {
                         q.text_withheld_at =
                             clax_http::views::inbox::text_withheld_at(db, me.as_deref(), hosted)?;
@@ -723,7 +750,7 @@ pub async fn read_many(
                     db.inbox_mark_all(&q)?
                 }
             };
-            Ok(json!({"marked": marked, "unread": db.inbox_unread(me.as_deref())?}))
+            Ok(json!({"marked": marked, "unread": db.inbox_unread_but(me.as_deref(), &hidden)?}))
         })
         .await?;
     Ok(Json(out))

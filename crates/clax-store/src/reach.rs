@@ -45,6 +45,17 @@ impl Store {
         })
     }
 
+    /// Every artifact a person made, deleted ones included: all that may
+    /// lie beyond the owner's reach.
+    pub fn artifacts_made_by_people(&self) -> Result<Vec<String>> {
+        self.with_read(|c| {
+            let mut st = c.prepare_cached("SELECT id FROM artifacts WHERE person IS NOT NULL")?;
+            Ok(st
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?)
+        })
+    }
+
     /// The rights the shares of viewer `public_id` alone hold (the owner's
     /// public ID included), at live artifacts whose maker is not revoked;
     /// none when it has none. Not the stored rights [`Store::person_rights`]

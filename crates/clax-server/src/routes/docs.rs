@@ -39,7 +39,7 @@
 use super::artifacts::{JsonBytes, body, parse_body, path};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::HeaderMap;
 use clax_core::audit::AuditCtx;
 use clax_core::db::{Caller, invalid_argument};
@@ -49,6 +49,7 @@ use clax_http::db_caller::CallerParts;
 use clax_http::db_caller::{not_granted, reader_of};
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
+use clax_http::hosted::HostedRequest;
 use clax_http::state::AppState;
 use clax_http::viewer::SameOrigin;
 use clax_http::views::thread::{Vis, VisFor};
@@ -661,16 +662,20 @@ type GrantParams = Result<Path<(String, String)>, PathRejection>;
 /// `PUT /api/artifacts/<reader>/db-grants/<source>` (token): the owner lets
 /// `reader` read `source`'s documents once it declares the read:
 /// `{grant: {source_id, granted_at}}`. Granting again keeps the first grant.
-/// 404 for an unknown artifact, 400 `invalid_args` when both are one.
+/// 404 for an unknown artifact, and on a hosted daemon for a source out of
+/// the caller's reach ([`clax_http::hosted::require_reach`]); 400
+/// `invalid_args` when both are one.
 pub async fn grant(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
+    hosted: Option<Extension<HostedRequest>>,
     audit: AuditCtx,
     p: GrantParams,
 ) -> Result<Json<Value>, ApiError> {
     let (reader, source) = path(p)?;
     let (reader, source) = (parse_id(&reader)?, parse_id(&source)?);
+    clax_http::hosted::require_reach(&s, hosted.as_deref(), source.as_str()).await?;
     let g = s
         .store_call(move |st| {
             st.grant_read(&audit, &reader, &source)?;
@@ -690,11 +695,13 @@ pub async fn revoke(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
+    hosted: Option<Extension<HostedRequest>>,
     audit: AuditCtx,
     p: GrantParams,
 ) -> Result<Json<Value>, ApiError> {
     let (reader, source) = path(p)?;
     let (reader, source) = (parse_id(&reader)?, parse_id(&source)?);
+    clax_http::hosted::require_reach(&s, hosted.as_deref(), source.as_str()).await?;
     let revoked = s
         .store_call(move |st| st.revoke_read(&audit, &reader, &source))
         .await?;
@@ -702,15 +709,26 @@ pub async fn revoke(
 }
 
 /// `GET /api/artifacts/<reader>/db-grants` (token): the owner's grants to
-/// `reader`, oldest first: `{grants: [{source_id, granted_at}]}`. 404 for an
+/// `reader`, oldest first: `{grants: [{source_id, granted_at}]}`, on a
+/// hosted daemon those of sources in the caller's reach alone. 404 for an
 /// unknown artifact.
 pub async fn grants(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
+    hosted: Option<Extension<HostedRequest>>,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
-    let gs = s.store_call(move |st| st.grants_of(&id)).await?;
+    let scope = s.hosted.as_ref().map(|_| hosted.and_then(|h| h.0.member));
+    let gs = s
+        .store_call(move |st| {
+            let mut gs = st.grants_of(&id)?;
+            if let Some(scope) = scope {
+                gs.retain(|g| scope.as_ref().is_some_and(|m| m.lists(st, &g.source_id)));
+            }
+            Ok(gs)
+        })
+        .await?;
     Ok(Json(json!({"grants": gs})))
 }

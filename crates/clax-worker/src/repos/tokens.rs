@@ -306,8 +306,8 @@ pub struct HeldToken {
     pub link: bool,
 }
 
-/// Every token live at `now_ms` that was handed to a person, an agent
-/// session or a page's link ([`db::live_held_tokens`]).
+/// Every token live at `now_ms`: the owner's, and those handed to a
+/// person, an agent session or a page's link ([`db::live_held_tokens`]).
 pub fn held<C: AsConn>(ledger: &LocalHost<C>, now_ms: i64) -> clax_git::Result<Vec<HeldToken>> {
     let rows = ledger.with(|c| db::live_held_tokens(c, now_ms))?;
     Ok(rows
