@@ -22,7 +22,13 @@ enum CallAs {
   content('content'),
 
   /// A scheme request to the shell's origin.
-  shellPage('shell-page');
+  shellPage('shell-page'),
+
+  /// A content frame's call to its own site's API (`/_clax/api/…` of the
+  /// site its host names), which the shell relays (`ChannelRelay`): the
+  /// app's WebViews give the scheme no request body, so a page's writes
+  /// cannot go by the scheme. The core adds the site's cookies and origin.
+  site('site');
 
   const CallAs(this.wire);
 
@@ -49,7 +55,8 @@ class CoreRequest {
   final Uint8List? body;
   final CallAs as;
 
-  /// The artifact ID a [CallAs.content] request's origin names.
+  /// The artifact ID a [CallAs.content] request's origin, or a
+  /// [CallAs.site] call's site, names.
   final String? host;
 
   /// The request frame, to write where it is needed. Empty headers and a

@@ -10,7 +10,8 @@
  * (target "*"; artifact, version, and the page's published file, no page
  * content), then takes orders only from `window.parent` at
  * an origin in `shellOrigins` of its tag's `data-origin` (the daemon's
- * public origin), and replies to that origin only:
+ * public origin, or the Clax app's shell origin), and replies to that
+ * origin only:
  * comment mode (hover outline, element and range picks with anchors and PNG
  * clips within the budget in `clip.ts`, drawn areas clipped to exactly the
  * rectangle, rendered only once the shell's composer for the pick has focus,
@@ -162,13 +163,17 @@ type PartName = keyof Parts;
     const next = retrying(name, load, failed(name), clock);
     return () => parsed ? next() : (wait(), whenDone.then(next));
   };
-  const parts = { comment: onNeed("comment", loaders.comment), clip: onNeed("clip", loaders.clip), caps: onNeed("caps", loaders.caps), origin: onNeed("origin", loaders.origin), room: onNeed("room", loaders.room), sample: onNeed("sample", loaders.sample), live: onNeed("live", loaders.live) };
+  const parts = Object.fromEntries(Object.entries(loaders).map(([name, load]) => [name, onNeed(name as PartName, load as (attempt: number) => Promise<unknown>)])) as unknown as { [K in PartName]: () => ReturnType<Parts[K]> };
   const clips = () => parts.clip();
   const rpc = new Rpc(m => post(m));
   // The origin's capabilities load the `origin` part, framed or not; the
   // shell's load the `caps` part, framed only: unframed they are null at once.
+  // A page the Clax app serves sends its site API writes by the shell
+  // (`data-api="shell"`, read now, before any page script runs).
+  const relay = framed && script?.dataset.api === "shell";
+  const noCookie = () => post({ type: "clax:no-cookie" });
   const resolveUse = (name: string) => ORIGIN_CAPABILITIES.includes(name)
-    ? parts.origin().then(o => o.originUse(name, framed && rpc, parts.room, undefined, () => post({ type: "clax:no-cookie" })))
+    ? parts.origin().then(o => o.originUse(name, framed && rpc, parts.room, relay ? o.relayedSite(rpc, noCookie) : undefined, noCookie))
     : framed ? parts.caps().then(c => c.resolveUse(name, { rpc, sample: parts.sample, env: { ctx: commentsContext, clip: clips } })) : null;
   // The page's claude.use() calls not yet answered: the inspect view's tests
   // start once they have (`usesSettled`), as a page that wires its controls
@@ -189,9 +194,10 @@ type PartName = keyof Parts;
     new Promise(r => setTimeout(r, ms)),
   ]);
 
-  // The URL of this artifact's asset `id`, as `assets` gives it: assets are
-  // served per artifact, and a page loads only its own.
-  const assetUrl = (id: unknown) => `/_blob/${meta.artifact}/${encodeURIComponent(String(id))}`;
+  // The URL of this artifact's asset `id` on its own site, where `assets`
+  // serves it: an asset is served only on the site of the artifact that
+  // holds it, so a page loads only its own.
+  const assetUrl = (id: unknown) => `${location.origin}/_clax/blob/${encodeURIComponent(String(id))}`;
 
   try {
     Object.defineProperty(window, "claude", {
@@ -368,7 +374,8 @@ type PartName = keyof Parts;
       // In place, with no entry of its own, and only ever its fragment: the
       // URL up to `#` is the page's own (absolute, so no <base> moves it).
       case "clax:hash": location.replace(location.href.split("#")[0] + "#" + m.hash.slice(1)); break;
-      case "clax:greet": post(helloFor(meta)); break;
+      case "clax:greet": post({ ...helloFor(meta), again: true }); routes?.report(); break;
+      case "clax:back": routes?.back(m.depth); break;
       // After this page reported clax:no-cookie: granted, the shell starts
       // the handshake again.
       case "clax:storage-access":

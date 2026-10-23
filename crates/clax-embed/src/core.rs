@@ -170,6 +170,9 @@ struct Shared {
     /// The sites' cookies, kept for the content frames
     /// ([`crate::site_jar`]).
     jar: crate::site_jar::SiteJar,
+    /// An artifact's content origin with `{id}` for its ID (the embed's
+    /// `content`): the `Origin` of the site calls the shell relays.
+    content: String,
     #[cfg(test)]
     panic_at: Option<PanicAt>,
     #[cfg(test)]
@@ -315,6 +318,7 @@ impl Embed {
             in_flight: watch::channel(0).0,
             drain,
             jar: crate::site_jar::SiteJar::default(),
+            content: opts.origins.content.clone(),
             #[cfg(test)]
             panic_at: PANIC_AT.take(),
             #[cfg(test)]
@@ -734,9 +738,23 @@ pub fn admit(head: &RequestHead) -> Result<(), &'static str> {
         // files under `/_clax/`. Content and assets are each site's.
         As::ShellPage => read && ["/a/", "/_clax/"].iter().any(|p| path.starts_with(p)),
         As::Content => read && head.host.as_deref().is_some_and(content_host),
+        // A content frame's own site API, any method, as the shell relays
+        // it; never the room, a socket that holds its connection open.
+        As::Site => {
+            head.host.as_deref().is_some_and(content_host)
+                && path.starts_with(SITE_API)
+                && path != SITE_ROOM
+                && !path.split('/').any(|seg| seg == "." || seg == "..")
+        }
     };
     if ok { Ok(()) } else { Err(REFUSED) }
 }
+
+/// Where a site serves its API, which an `as: site` frame alone reaches.
+const SITE_API: &str = "/_clax/api/";
+
+/// A site's room, a WebSocket: no call.
+const SITE_ROOM: &str = "/_clax/api/room";
 
 /// Whether `id` names an artifact's content host: an artifact ID, as
 /// `clax_http::host::artifact_host` reads `<id>.localhost`.
@@ -776,9 +794,11 @@ async fn answer(sh: Arc<Shared>, head: RequestHead, body: Bytes, prefix: Vec<u8>
         Err(e) => return error_frame(400, "bad_frame", &e),
     };
     // A content frame's site cookies are the core's to keep: no WebView
-    // keeps a cookie its scheme's answer sets (`crate::site_jar`).
+    // keeps a cookie its scheme's answer sets (`crate::site_jar`). A site
+    // call the shell relays for the frame carries the same cookies, and the
+    // site's own origin, which the site API asks of every write.
     let site = match (&head.as_, &head.host) {
-        (As::Content, Some(id)) => Some(id.clone()),
+        (As::Content | As::Site, Some(id)) => Some(id.clone()),
         _ => None,
     };
     if let Some(cookie) = site.as_deref().and_then(|id| sh.jar.cookie_header(id))
@@ -786,13 +806,20 @@ async fn answer(sh: Arc<Shared>, head: RequestHead, body: Bytes, prefix: Vec<u8>
     {
         req.headers_mut().insert(axum::http::header::COOKIE, v);
     }
+    if let (As::Site, Some(id)) = (&head.as_, &site)
+        && let Ok(v) = axum::http::HeaderValue::from_str(&sh.content.replace("{id}", id))
+    {
+        req.headers_mut().insert(axum::http::header::ORIGIN, v);
+    }
     let answered = async {
-        let res = router
+        let mut res = router
             .oneshot(req)
             .await
             .unwrap_or_else(|never| match never {});
         if let Some(id) = &site {
             sh.jar.take(id, res.headers());
+            // The jar has them: none reaches the WebView, or the app.
+            res.headers_mut().remove(axum::http::header::SET_COOKIE);
         }
         respond(res, RESPONSE_LIMIT, &prefix).await
     };
@@ -812,6 +839,24 @@ async fn answer(sh: Arc<Shared>, head: RequestHead, body: Bytes, prefix: Vec<u8>
 /// the app's own process costs nothing to send whole.
 const PAGE_HEADERS: [&str; 3] = ["range", "accept", "service-worker"];
 
+/// The headers a site call the shell relays keeps: `Content-Type`, which
+/// the site reads a write's body by (JSON, or an upload's multipart form),
+/// and `Accept`. Its `Origin` and `Cookie` are the core's to set.
+const SITE_HEADERS: [&str; 2] = ["content-type", "accept"];
+
+/// The headers a content frame keeps besides [`PAGE_HEADERS`]: where the
+/// request came from, as the WebView says (`Origin`, `Sec-Fetch-Site`,
+/// `-Mode`, `-Dest`), so the site's own checks hold in the app as in a
+/// browser: a site's API refuses a read another site's page makes
+/// (`Origin` or `Sec-Fetch-Site` naming elsewhere), whatever the content
+/// policy also stops.
+const CONTENT_HEADERS: [&str; 4] = [
+    "origin",
+    "sec-fetch-site",
+    "sec-fetch-mode",
+    "sec-fetch-dest",
+];
+
 /// Whether `path` asks for the shell document, `/a/…`: the one path a
 /// shell-page frame is asked for as the owner.
 fn is_shell_document(path: &str) -> bool {
@@ -822,7 +867,10 @@ fn is_shell_document(path: &str) -> bool {
 
 /// The router's request for `head`: its headers but those the core sets
 /// (an owner or owner-browser frame's all but an owner-browser frame's
-/// `Cookie`; a page frame's only [`PAGE_HEADERS`]), the `Host` and
+/// `Cookie`; a site frame's only [`SITE_HEADERS`]; any other page frame's
+/// only [`PAGE_HEADERS`], a content frame's with [`CONTENT_HEADERS`]), the
+/// `Host` (a content or site frame's its
+/// site's) and
 /// credential for who it speaks as (an owner frame the token, an
 /// owner-browser frame the token and the owner cookie, a shell-page frame
 /// for the shell document the owner cookie, any other page frame none),
@@ -841,9 +889,15 @@ pub(crate) fn request(
     let owner = browser || head.as_ == As::Owner;
     let mut authorized = false;
     let mut length = false;
+    let kept: &[&str] = if head.as_ == As::Site {
+        &SITE_HEADERS
+    } else {
+        &PAGE_HEADERS
+    };
     for (k, v) in &head.headers {
         let name = k.to_ascii_lowercase();
-        if !owner && !PAGE_HEADERS.contains(&name.as_str()) {
+        let from = head.as_ == As::Content && CONTENT_HEADERS.contains(&name.as_str());
+        if !owner && !kept.contains(&name.as_str()) && !from {
             continue;
         }
         match name.as_str() {
@@ -882,7 +936,7 @@ pub(crate) fn request(
         b = b.header("content-length", body.len());
     }
     let host = match (&head.as_, &head.host) {
-        (As::Content, Some(id)) => format!("{id}.localhost"),
+        (As::Content | As::Site, Some(id)) => format!("{id}.localhost"),
         _ => "localhost".to_string(),
     };
     let peer = SocketAddr::from((Ipv4Addr::LOCALHOST, 1));
@@ -1500,7 +1554,7 @@ mod tests {
     }
 
     #[test]
-    fn a_page_frame_keeps_only_range_accept_and_service_worker() {
+    fn a_page_frame_keeps_few_headers_and_a_content_frame_where_it_came_from() {
         let sent = [
             ("Range", "bytes=0-9"),
             ("If-None-Match", "\"v1\""),
@@ -1529,6 +1583,10 @@ mod tests {
             names.sort_unstable();
             names.dedup();
             let mut want = vec!["accept", "host", "range", "service-worker"];
+            if as_ == As::Content {
+                want.extend(["origin", "sec-fetch-site"]);
+                want.sort_unstable();
+            }
             if as_ == As::ShellPage {
                 want.push("cookie");
                 want.sort_unstable();
@@ -1542,6 +1600,34 @@ mod tests {
             assert_eq!(names, want, "{as_:?}");
             assert_ne!(req.headers()["host"], "elsewhere");
         }
+    }
+
+    #[test]
+    fn a_site_frame_keeps_only_its_content_type_and_accept_and_names_its_site() {
+        let sent = [
+            ("Content-Type", "application/json"),
+            ("Accept", "application/json"),
+            ("Range", "bytes=0-9"),
+            ("If-None-Match", "\"v1\""),
+            ("origin", "clax://elsewhere.c"),
+            ("cookie", "__Host-clax_site=planted"),
+            ("authorization", "Bearer forged"),
+            ("x-clax-session", "s1"),
+            ("host", "elsewhere"),
+        ];
+        let mut h = head("PUT", "/_clax/api/docs/a/b", As::Site, Some("7q3k9mzx2b4t"));
+        h.headers = sent
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let req = request(&h, Bytes::from_static(b"{}"), "t").unwrap();
+        assert_eq!(req.method(), "PUT");
+        let mut names: Vec<&str> = req.headers().keys().map(|k| k.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["accept", "content-length", "content-type", "host"]);
+        assert_eq!(req.headers()["host"], "7q3k9mzx2b4t.localhost");
+        assert_eq!(req.headers()["content-type"], "application/json");
+        assert_eq!(req.headers()["content-length"], "2");
     }
 
     #[test]
@@ -1682,6 +1768,27 @@ mod tests {
                 Some("x.localhost:1"),
                 false,
             ),
+            ("POST", "/_clax/api/docs/a/b", As::Content, id, false),
+            ("PUT", "/_clax/api/docs/a/b", As::Site, id, true),
+            ("PATCH", "/_clax/api/docs/a/b", As::Site, id, true),
+            ("DELETE", "/_clax/api/docs/a/b?lww=true", As::Site, id, true),
+            ("POST", "/_clax/api/assets", As::Site, id, true),
+            ("GET", "/_clax/api/whoami", As::Site, id, true),
+            ("POST", "/_clax/api/docs/a/b", As::Site, None, false),
+            (
+                "POST",
+                "/_clax/api/docs/a/b",
+                As::Site,
+                Some("not-an-id"),
+                false,
+            ),
+            ("GET", "/_clax/api/room", As::Site, id, false),
+            ("GET", "/_clax/api/room?peer=x", As::Site, id, false),
+            ("POST", "/_clax/session", As::Site, id, false),
+            ("GET", "/", As::Site, id, false),
+            ("POST", "/api/artifacts", As::Site, id, false),
+            ("POST", "/_clax/api/../api/artifacts", As::Site, id, false),
+            ("POST", "/_clax/api/./docs/a/b", As::Site, id, false),
         ] {
             assert_eq!(admit(&head(m, p, a, h)).is_ok(), ok, "{m} {p} {a:?} {h:?}");
         }

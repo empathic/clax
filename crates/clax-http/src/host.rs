@@ -129,7 +129,11 @@ fn site_request(sites: &SiteHosts, secure: bool, host: &str) -> Option<SiteReque
 /// local daemon), and leaves the path as it is: the router sends a site
 /// request to the site routes alone. Every site response, an error's
 /// included, carries the site's isolation headers
-/// ([`crate::site_access::site_response_headers`]). Other hosts are
+/// ([`crate::site_access::site_response_headers`]). A request there for a
+/// service worker's script (`Service-Worker: script`) is answered, before
+/// any route, with Clax's own script, which unregisters itself
+/// ([`crate::content_policy::SERVICE_WORKER_KILL_SWITCH`]): no page
+/// registers a worker of its own on a site host. Other hosts are
 /// untouched.
 pub async fn site_layer(State(s): State<AppState>, mut req: Request<Body>, next: Next) -> Response {
     let host = req
@@ -139,11 +143,30 @@ pub async fn site_layer(State(s): State<AppState>, mut req: Request<Body>, next:
         .unwrap_or("")
         .to_string();
     let secure = s.hosted.as_ref().is_some_and(|h| h.secure);
-    let Some(site) = site_request(s.sites(), secure, &host) else {
+    let Some(mut site) = site_request(s.sites(), secure, &host) else {
         return next.run(req).await;
     };
-    req.extensions_mut().insert(site);
-    let mut res = next.run(req).await;
+    // In an app that embeds the core, the site's pages run on the app's
+    // content origin, not on the `<id>.localhost` host the core asks with:
+    // that origin is the one the site's checks compare an `Origin` with.
+    if s.embed.as_ref().and_then(|e| e.site_hosts()).is_some() {
+        site.origin = crate::site_access::site_origin(&s, &site.artifact, &host);
+    }
+    let mut res = if crate::content_policy::wants_service_worker(req.headers()) {
+        use axum::response::IntoResponse;
+        (
+            axum::http::StatusCode::OK,
+            [
+                (axum::http::header::CONTENT_TYPE, "text/javascript"),
+                (axum::http::header::CACHE_CONTROL, "no-store"),
+            ],
+            crate::content_policy::SERVICE_WORKER_KILL_SWITCH,
+        )
+            .into_response()
+    } else {
+        req.extensions_mut().insert(site);
+        next.run(req).await
+    };
     crate::site_access::site_response_headers(&s, &host, &mut res);
     res
 }

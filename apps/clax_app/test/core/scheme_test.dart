@@ -107,7 +107,8 @@ void main() {
     },
   );
 
-  test('forwards only Range, Accept and Service-Worker, by any case', () async {
+  test('forwards only Range, Accept, Service-Worker and where the request '
+      'came from, by any case', () async {
     core.on('GET', '/v/{n}/sw.js', (r, p) => FakeCore.json({}));
     await scheme.answer(
       _get(
@@ -119,6 +120,9 @@ void main() {
           'Cookie': 'a=b',
           'Authorization': 'Bearer x',
           'Origin': 'https://$_id.c.clax.invalid',
+          'Sec-Fetch-Site': 'same-origin',
+          'sec-fetch-mode': 'cors',
+          'Sec-Fetch-Dest': 'empty',
           'Referer': 'https://app.clax.invalid/a/$_id?app=1',
           'User-Agent': 'x',
           'Host': 'evil',
@@ -129,6 +133,10 @@ void main() {
       ('range', 'bytes=0-9'),
       ('accept', '*/*'),
       ('service-worker', 'script'),
+      ('origin', 'https://$_id.c.clax.invalid'),
+      ('sec-fetch-site', 'same-origin'),
+      ('sec-fetch-mode', 'cors'),
+      ('sec-fetch-dest', 'empty'),
     ]);
   });
 
@@ -147,8 +155,8 @@ void main() {
     expect(core.requests.single.headers, isEmpty);
   });
 
-  test('drops every Access-Control-* header and the length, joins repeated '
-      'headers, keeps Cache-Control', () async {
+  test('drops every Access-Control-* header, the length and Set-Cookie, '
+      'joins repeated headers, keeps Cache-Control', () async {
     core.on(
       'GET',
       '/_clax/{f}',
@@ -161,6 +169,7 @@ void main() {
         ('cache-control', 'public, max-age=31536000, immutable'),
         ('vary', 'accept'),
         ('Vary', 'range'),
+        ('Set-Cookie', '__Host-clax_site=s; Path=/; Secure; HttpOnly'),
       ], utf8.encode('ok')),
     );
     final a = await scheme.answer(_get('https://app.clax.invalid/_clax/a.js'));

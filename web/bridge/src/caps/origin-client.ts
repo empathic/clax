@@ -10,6 +10,10 @@
 // changed since) stands for that answer. Another app's documents (`db.artifact(id)`)
 // are read through `read/<id>/docs…`, which the site serves for this app
 // alone, as the viewer the cookie names (docs/contract.md, "Cross-app reads").
+// With a `relay` (in the Clax app, whose WebViews give their scheme no
+// request body), every request but a read goes to the framing shell instead
+// (`site.fetch`, web/shell/src/caps/site.ts), which relays it to this same
+// site with this frame's site session and origin; reads still go by fetch.
 import { CapabilityError } from "../rpc";
 import { checkUpload } from "./asset-checks";
 
@@ -26,6 +30,13 @@ export type OriginClient = {
   /** The WebSocket at `/_clax/api/<path>` on the site. */
   socket(path: string): WebSocket;
 };
+
+/** A site request the framing shell makes for the page (its `site.fetch`):
+ * the path under the site's origin, the request's headers and its body. */
+export type SiteRelay = (r: { method: string; path: string; headers: [string, string][]; body: ArrayBuffer | null }) => Promise<{ status: number; headers: [string, string][]; body: ArrayBuffer | null }>;
+
+/** Statuses whose response has no body. */
+const NULL_BODY = new Set([101, 103, 204, 205, 304]);
 
 /** Where the site serves the runtime's backend. */
 export const API = "/_clax/api/";
@@ -98,8 +109,19 @@ function readError(status: number, err: ApiError): CapabilityError {
   return dbError(status, err, false);
 }
 
-/** The client of the site at `base` (its origin; the path is ignored). */
-export function originClient(base: URL): OriginClient {
+/** `url` with `init` as the shell relays it: its method, path, headers and
+ * body's bytes (a form's with its boundary in its `Content-Type`). */
+async function relayed(relay: SiteRelay, url: string, init: RequestInit): Promise<Response> {
+  const req = new Request(url, init);
+  const u = new URL(url);
+  const body = await req.arrayBuffer();
+  const r = await relay({ method: req.method, path: u.pathname + u.search, headers: [...req.headers], body: body.byteLength ? body : null });
+  return new Response(NULL_BODY.has(r.status) ? null : r.body, { status: r.status, headers: r.headers });
+}
+
+/** The client of the site at `base` (its origin; the path is ignored);
+ * with `relay`, its writes go by the framing shell. */
+export function originClient(base: URL, relay?: SiteRelay): OriginClient {
   const at = (path: string) => new URL(API + path, base).href;
 
   /** The docs reads' last answers by URL, with their `ETag`: sent again as
@@ -116,7 +138,8 @@ export function originClient(base: URL): OriginClient {
     if (kept) headers.set("if-none-match", kept.tag);
     let res: Response;
     try {
-      res = await fetch(url, { credentials: "same-origin", cache: "no-store", ...init, headers });
+      const go: RequestInit = { credentials: "same-origin", cache: "no-store", ...init, headers };
+      res = relay && !["GET", "HEAD"].includes((init.method ?? "GET").toUpperCase()) ? await relayed(relay, url, go) : await fetch(url, go);
     } catch {
       throw fail(0, {});
     }

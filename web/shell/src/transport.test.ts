@@ -27,6 +27,25 @@ describe("the transport", () => {
     expect(r.status).toBe(201);
     expect(await r.json()).toEqual({ ok: true });
   });
+  it("relays a call to an artifact's content origin under /_clax/api/ as that site's, and passes its other paths to the fallback", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const fb = vi.fn(async () => new Response("x"));
+    const t = transport(() => ({ postMessage: (m: string) => sent.push(JSON.parse(m) as Record<string, unknown>) }), fb, ORIGIN, NONCE, "https://{id}.c.clax.invalid");
+    const p = t.fetch("https://7q3k9mzx2b4t.c.clax.invalid/_clax/api/docs/notes/n1", { method: "PUT", headers: { "content-type": "application/json" }, body: "{}" });
+    await vi.waitFor(() => expect(sent.length).toBe(1));
+    expect(sent[0]).toMatchObject({ type: "call", method: "PUT", path: "/_clax/api/docs/notes/n1", site: "7q3k9mzx2b4t", body: "{}", nonce: NONCE });
+    t.callResult(NONCE, sent[0].id as number, { status: 200, headers: [["content-type", "application/json"]], body: "{}" });
+    expect((await p).status).toBe(200);
+    // A shell call names no site; a site's other paths, and a host that is no artifact's, are not the channel's.
+    void t.fetch("/api/x");
+    await vi.waitFor(() => expect(sent.length).toBe(2));
+    expect(sent[1].site).toBeUndefined();
+    await t.fetch("https://7q3k9mzx2b4t.c.clax.invalid/_clax/v/1/");
+    await t.fetch("https://x.y.c.clax.invalid/_clax/api/whoami");
+    await t.fetch("https://7q3k9mzx2b4t.c.clax.invalid/api/artifacts");
+    expect(fb).toHaveBeenCalledTimes(3);
+    expect(sent.length).toBe(2);
+  });
   it("passes anything but /api on its origin to the fallback", async () => {
     const fb = vi.fn(async () => new Response("x"));
     const f = transport(() => undefined, fb, ORIGIN).fetch;

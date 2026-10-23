@@ -3,9 +3,10 @@
 // its site, web/bridge/src/caps/origin.ts): the shell keeps only `db`'s
 // change reports, `room`'s viewer reports and `user`'s lookups of other
 // people. Those a page calls rarely, or only on a viewer's action
-// (downloads, sample, the room's and the lookups), are lazy chunks loaded on
-// the page's first call (lazy.ts), off the artifact entry.
-import { artifactHandler } from "./artifact";
+// (artifact's publish, downloads, sample, the room's and the lookups, the
+// device capabilities), are lazy chunks loaded on the page's first call
+// (lazy.ts), off the artifact entry; those that act only on the viewer's
+// gesture judge it when the call arrives.
 import { commentsHandler } from "./comments";
 import { dbHandler } from "./db";
 import type { LinkedCap } from "./device-link";
@@ -27,7 +28,7 @@ function strictAtArrival(): ArrivalGesture {
 const device = (cap: LinkedCap) => lazyHandler(() => import("./device").then(m => m.deviceHandler(cap)), composerAtArrival);
 
 export const REGISTRY: Record<string, HandlerFactory> = {
-  artifact: artifactHandler,
+  artifact: lazyHandler(() => import("./artifact").then(m => m.artifactHandler), strictAtArrival),
   comments: commentsHandler,
   db: dbHandler,
   notify: device("notify"),
@@ -41,5 +42,7 @@ export const REGISTRY: Record<string, HandlerFactory> = {
   permissions: permissionsHandler,
   room: lazyHandler(() => import("./room").then(m => m.roomHandler)),
   sample: lazyHandler(() => import("./sample").then(m => m.sampleHandler)),
+  // In the Clax app, a page's calls to its own site's API (site.ts).
+  site: lazyHandler(() => import("./site").then(m => m.siteHandler)),
   user: lazyHandler(() => import("./user").then(m => m.userHandler)),
 };

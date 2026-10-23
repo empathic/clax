@@ -19,7 +19,12 @@ import 'frame.dart';
 /// - `call {id, method, path, headers, body | body64, chunked?}` goes to
 ///   the core as an `as: owner-browser` frame (the owner's browser, as a
 ///   browser's shell is) with the message's headers but `Host`; a `chunked` call waits for its `callChunk {id, n, last,
-///   body64}`s, `n` from 0 (one out of order is dropped). The answer is
+///   body64}`s, `n` from 0 (one out of order is dropped). A call naming
+///   `site` (an artifact ID) is a content frame's call to its own site's API
+///   that the shell relays (`web/shell/src/caps/site.ts`): it goes as an
+///   `as: site` frame for that site, which the core limits to the site's
+///   `/_clax/api/` and gives the site's cookies and origin, never the
+///   owner's. The answer is
 ///   `claxTransport.callResult(nonce, id, {status, headers, body |
 ///   body64})`: `body` for a text or JSON answer that is valid UTF-8, else
 ///   `body64`. An answer of more than [partBytes] goes in parts, all as
@@ -123,7 +128,11 @@ class ChannelRelay {
               when k.toLowerCase() != 'host')
             (k, v),
     ];
-    final c = _Call(nonce, method, path, headers);
+    final site = msg['site'];
+    if (site != null && (site is! String || !_artifactId.hasMatch(site))) {
+      return;
+    }
+    final c = _Call(nonce, method, path, headers, site as String?);
     _calls[id] = c;
     if (msg['chunked'] == true) return;
     final Uint8List? body;
@@ -164,7 +173,8 @@ class ChannelRelay {
         c.path,
         headers: c.headers,
         body: bytes.isEmpty ? null : bytes.takeBytes(),
-        as: CallAs.ownerBrowser,
+        as: c.site == null ? CallAs.ownerBrowser : CallAs.site,
+        host: c.site,
       ),
     );
     c.tag = call.tag;
@@ -269,6 +279,9 @@ class ChannelRelay {
     }
   }
 
+  /// An artifact ID, as a `call`'s `site` names one.
+  static final _artifactId = RegExp(r'^[0-9a-hjkmnp-tv-z]{12}$');
+
   /// The content types the shell's transport reads as text.
   static final _textual = RegExp(
     r'^(text/|application/([\w.+-]*\+)?json\b|application/x-www-form-urlencoded\b)',
@@ -277,12 +290,15 @@ class ChannelRelay {
 }
 
 class _Call {
-  _Call(this.nonce, this.method, this.path, this.headers);
+  _Call(this.nonce, this.method, this.path, this.headers, this.site);
 
   final String nonce;
   final String method;
   final String path;
   final List<(String, String)> headers;
+
+  /// The artifact whose site API the call is, for a site call.
+  final String? site;
   final List<Uint8List> parts = [];
 
   /// The core call's tag, once sent.

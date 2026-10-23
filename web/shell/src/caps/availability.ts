@@ -6,7 +6,9 @@
 // `camera`, `location`) when declared and the Clax app hosts the view
 // (device-link.ts); `home` when declared, the Clax app hosts the view and
 // the app says this view is its home app (`home.available`); `net` to the
-// owner shell when declared; claude.ai's
+// owner shell when declared; `site` (no capability a page declares: the
+// relay of a page's own site API calls) where the Clax app hosts the view;
+// claude.ai's
 // `files` and `mcp` never.
 
 export type Declared = Record<string, Record<string, unknown> | undefined>;
@@ -14,7 +16,7 @@ export type Declared = Record<string, Record<string, unknown> | undefined>;
 /** The declarable capabilities this runtime serves, in the order `permissions.state()` lists them. */
 /** What this daemon serves beyond the declaration: `sample` needs a provider
  * (`GET /api/artifacts/<aid>/sample`), asked when the page names it. */
-export type Served = { sample?: boolean; device?: boolean; home?: boolean };
+export type Served = { sample?: boolean; device?: boolean; home?: boolean; site?: boolean };
 
 export const CAPABILITIES = ["artifact", "db", "downloads", "user", "comments", "assets", "room", "sample"] as const;
 
@@ -36,6 +38,9 @@ export function isAvailable(name: string, declared: Declared, owner: boolean, se
     case "home": return declares(name, declared) && served.home === true;
     // The owner's views only: the fetch route takes the token (net.ts).
     case "net": return owner && declares(name, declared);
+    // Not a capability a page declares: the relay of its own site's API
+    // calls, which the Clax app's shell alone makes (site.ts).
+    case "site": return served.site === true;
     default: return false;
   }
 }

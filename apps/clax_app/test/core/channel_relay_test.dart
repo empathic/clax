@@ -125,6 +125,50 @@ void main() {
     ]);
   });
 
+  test('a call naming a site goes to the core as that site\'s call, any '
+      'method, with its body; the answer is the site\'s', () async {
+    fake.on('PUT', '/_clax/api/docs/{c}/{d}', (r, p) {
+      return FakeCore.json({'doc': p['d']});
+    });
+    relay.handle({
+      ...call(
+        4,
+        'PUT',
+        '/_clax/api/docs/notes/n1',
+        body: '{"data":{"t":"hi"}}',
+        headers: [
+          ['content-type', 'application/json'],
+        ],
+      ),
+      'site': '7q3k9mzx2b4t',
+    });
+    await settle();
+    final r = fake.requests.single;
+    expect(r.as, CallAs.site);
+    expect(r.host, '7q3k9mzx2b4t');
+    expect(r.method, 'PUT');
+    expect(utf8.decode(r.body!), '{"data":{"t":"hi"}}');
+    final (method, args) = calls().single;
+    expect(method, 'callResult');
+    expect((args[2]! as Map)['status'], 200);
+  });
+
+  test('a call whose site is not an artifact ID is dropped unsent', () async {
+    for (final site in [7, '', 'app', '7Q3K9MZX2B4T', '7q3k9mzx2b4t.c']) {
+      relay.handle({...call(5, 'POST', '/_clax/api/docs:acquire'), 'site': site});
+    }
+    await settle();
+    expect(fake.requests, isEmpty);
+    expect(ran, isEmpty);
+  });
+
+  test('the core refuses a site call outside its site\'s API', () async {
+    relay.handle({...call(6, 'POST', '/api/artifacts'), 'site': '7q3k9mzx2b4t'});
+    await settle();
+    expect(fake.requests.single.as, CallAs.site);
+    expect((calls().single.$2[2]! as Map)['status'], 404);
+  });
+
   test('a body64 call reaches the core as its bytes', () async {
     fake.on('PUT', '/api/x', (r, p) => FakeCore.json({}));
     relay.handle(call(1, 'PUT', '/api/x', body64: base64Encode([0, 255, 1])));

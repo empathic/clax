@@ -26,6 +26,37 @@ const sized = (n: number) => ({ size: n, type: "", __proto__: Blob.prototype }) 
 describe("the origin client", () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
+  it("with a relay sends every write by it, with its path, headers and body, and reads by fetch", async () => {
+    const sent = stub(() => json({ doc: doc("notes/n1", 2) }));
+    const relayed: { method: string; path: string; headers: [string, string][]; body: string | null }[] = [];
+    const c = originClient(new URL(`${SITE}/x`), async r => {
+      relayed.push({ ...r, body: r.body ? new TextDecoder().decode(r.body) : null });
+      return r.method === "DELETE"
+        ? { status: 204, headers: [], body: null }
+        : { status: 200, headers: [["content-type", "application/json"]], body: new TextEncoder().encode(JSON.stringify({ doc: doc("notes/n1", 1) })).buffer as ArrayBuffer };
+    });
+    await c.call("db", "set", ["notes/n1", { t: 1 }]);
+    await c.call("db", "update", ["notes/n1", { u: 2 }]);
+    await c.call("db", "delete", ["notes/n1"]);
+    expect(await c.call("db", "get", ["notes/n1"])).toMatchObject({ path: "notes/n1", version: 2 });
+    expect(relayed.map(r => [r.method, r.path, r.body])).toEqual([
+      ["PUT", "/_clax/api/docs/notes/n1", JSON.stringify({ data: { t: 1 }, lww: true })],
+      ["PATCH", "/_clax/api/docs/notes/n1", JSON.stringify({ data: { u: 2 }, lww: true })],
+      ["DELETE", "/_clax/api/docs/notes/n1?lww=true", null],
+    ]);
+    expect(relayed[0].headers).toContainEqual(["content-type", "application/json"]);
+    // The read alone went by the page's own fetch.
+    expect(sent.map(x => [x.method, x.url])).toEqual([["GET", `${SITE}/_clax/api/docs/notes/n1`]]);
+  });
+
+  it("with a relay maps a refused write as a fetched one, and an unreachable shell as no answer", async () => {
+    stub(() => json({}));
+    const refusing = originClient(new URL(SITE), async () => ({ status: 403, headers: [["content-type", "application/json"]], body: new TextEncoder().encode(JSON.stringify({ error: { code: "forbidden", message: "no" } })).buffer as ArrayBuffer }));
+    await expect(refusing.call("db", "set", ["notes/n1", {}])).rejects.toMatchObject({ code: "invalid_argument" });
+    const gone = originClient(new URL(SITE), async () => { throw new Error("no shell"); });
+    await expect(gone.call("db", "set", ["notes/n1", {}])).rejects.toMatchObject({ code: "unavailable" });
+  });
+
   it("calls the site's own /_clax/api/ with its cookie alone, and never names an artifact ID", async () => {
     const sent = stub(s => {
       if (s.url.endsWith("/whoami")) return json({ kind: "visitor", id: "v_00000000000000000000aa", level: "public", can_edit: false });

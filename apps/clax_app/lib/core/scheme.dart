@@ -62,14 +62,19 @@ class SchemeAnswer {
 
 /// Answers one scheme request (spec §4.2) through the core:
 ///
-/// - `GET` and `HEAD` only, else 405.
+/// - `GET` and `HEAD` only, else 405: no WebView here hands a scheme a
+///   request's body (Android's `shouldInterceptRequest` has none), so a
+///   page's writes to its site's API go by the shell's relay instead
+///   ([CallAs.site], `ChannelRelay`).
 /// - The shell's host is a `shell-page` frame, an artifact's content host
 ///   (`<id>.c`) a `content` frame naming its ID; any other host 404.
 /// - A shell document (`/`, `/inbox`, `/people`, `/a/…` on the shell's
 ///   host) only for a request that carries a navigation number, and a
 ///   numbered request only for `/a/…`: else 403, before the core.
 /// - Of the request's headers only `Range`, `Accept` and
-///   `Service-Worker` go to the core; never `If-None-Match` or
+///   `Service-Worker` go to the core, and where the request came from as
+///   the WebView says (`Origin`, `Sec-Fetch-Site`, `-Mode`, `-Dest`), which
+///   a site's API checks a read by; never `If-None-Match` or
 ///   `If-Modified-Since`, since a 304 is a 3xx no WebView here takes.
 /// - A 3xx the core answers is followed in the core when its `Location`
 ///   is the request's own origin and directory (as `…/index.html` → `…/`
@@ -79,7 +84,8 @@ class SchemeAnswer {
 ///   (the shell's handshake, as in a browser), is a page that refreshes to
 ///   its `Location`; any other 3xx is a 404. The site's cookies the
 ///   handshake sets are the core's to keep: none reaches the WebView.
-/// - The answer loses every `Access-Control-*` header and its length.
+/// - The answer loses every `Access-Control-*` header, its length and any
+///   `Set-Cookie` (the core keeps a site's cookies; it sends none).
 /// - A shell document answered 200 to a numbered request gets a fresh
 ///   nonce, written as `<meta name="clax-nonce" content="…">` right after
 ///   its first literal `<head>`, and named in [SchemeAnswer.nonce]. One
@@ -97,7 +103,15 @@ class SchemeAnswerer {
   final void Function(String detail)? onFault;
 
   /// The request headers that reach the core.
-  static const forwarded = ['range', 'accept', 'service-worker'];
+  static const forwarded = [
+    'range',
+    'accept',
+    'service-worker',
+    'origin',
+    'sec-fetch-site',
+    'sec-fetch-mode',
+    'sec-fetch-dest',
+  ];
 
   /// The most redirects followed for one request.
   static const maxHops = 5;
@@ -151,8 +165,8 @@ class SchemeAnswerer {
         target = next;
         continue;
       }
-      final document = r.mainFrame || _wantsHtml(r.headers);
-      if (location != null && hop == 0 && document) {
+      final asDocument = r.mainFrame || _wantsHtml(r.headers);
+      if (location != null && hop == 0 && asDocument) {
         if (res.status == 308 && _isVersionRoot(path)) return _refresh(location);
         if (!shell &&
             path == '/_clax/session' &&
@@ -169,13 +183,13 @@ class SchemeAnswerer {
     final headers = <String, String>{};
     for (final (k, v) in res.headers) {
       final name = k.toLowerCase();
-      if (name.startsWith('access-control-') || name == 'content-length') {
+      if (name.startsWith('access-control-') ||
+          name == 'content-length' ||
+          name == 'set-cookie') {
         continue;
       }
       final had = headers[name];
-      headers[name] = had == null
-          ? v
-          : '$had${name == 'set-cookie' ? '\n' : ', '}$v';
+      headers[name] = had == null ? v : '$had, $v';
     }
     var body = res.body;
     String? nonce;

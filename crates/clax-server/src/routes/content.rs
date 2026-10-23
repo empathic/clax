@@ -13,28 +13,35 @@ use clax_core::model::FileMeta;
 use clax_core::publish::INDEX;
 use clax_core::wrap::wrap_page_framed_by;
 use clax_core::{ArtifactId, CoreError};
-use clax_http::content_policy::{ContentPolicySet, content_policy, own_host, plain_host};
+use clax_http::content_policy::ContentPolicySet;
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
 use clax_http::http_cache;
 use clax_http::state::AppState;
 use std::sync::Arc;
 
-/// The `Content-Security-Policy` of a content response on an artifact's
-/// site host: framed only by the artifact's own pages (`'self'`) and the
-/// shell (`clax_http::site_access::frame_ancestors`): a hosted daemon's at
-/// its public origin, a local daemon's at its loopback names on the same
-/// port.
-///
-/// The policy is a separate one: a page's own `<meta>` policy still applies
-/// in full beside it, and cannot set `frame-ancestors` itself.
-pub(crate) fn content_policy(s: &AppState, req: &HeaderMap) -> HeaderValue {
+/// The framing part of a content response's policy on an artifact's site
+/// host: framed only by the artifact's own pages (`'self'`) and the shell
+/// (`clax_http::site_access::frame_ancestors`): a hosted daemon's at its
+/// public origin, a local daemon's at its loopback names on the same port,
+/// and an embedding app's shell.
+fn framing(s: &AppState, req: &HeaderMap) -> String {
     let host = req
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
-    HeaderValue::from_str(&clax_http::site_access::frame_ancestors(s, host))
-        .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'"))
+    clax_http::site_access::frame_ancestors(s, host)
+}
+
+/// The `Content-Security-Policy` of a content response on an artifact's
+/// site host: [`framing`], and the lockdown that keeps the page to its own
+/// site (`clax_http::content_policy::lockdown`).
+///
+/// The policy is a separate one: a page's own `<meta>` policy still applies
+/// in full beside it, and cannot set `frame-ancestors` itself.
+pub(crate) fn content_policy(s: &AppState, req: &HeaderMap) -> HeaderValue {
+    HeaderValue::from_str(&clax_http::content_policy::lockdown(&framing(s, req)))
+        .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'; default-src 'none'"))
 }
 
 /// The host and port in the daemon's browser base URL.
@@ -70,22 +77,25 @@ fn snapshot_policy(scheme: &str, req: &HeaderMap, fallback: &str) -> HeaderValue
     .unwrap_or_else(|_| HeaderValue::from_static("script-src 'none'"))
 }
 
-/// Sets the content policy of artifact `id`'s content on `res` (`own`: the
-/// daemon's host): one that frames it and keeps it to its own files; or, for
-/// a `live` page's content, the framing policy and [`snapshot_policy`]
-/// beside it, both applying, so a snapshot still loads styles, images and
-/// fonts from its site. `Referrer-Policy: no-referrer` keeps the page's URL, which
-/// names its artifact ID and the daemon's port, out of the `Referer` of
-/// every request the page makes.
+/// Sets the content policy on `res` ([`content_policy`]); for a live page's
+/// content (`live`: the daemon's host, the policy's fallback) only its
+/// framing part, with [`snapshot_policy`] beside it, both applying, so a
+/// snapshot still loads styles, images and fonts from its site. Marked
+/// [`ContentPolicySet`], so the site layer adds no lockdown of its own.
 fn framed_by_shell(
     s: &AppState,
     mut res: Response,
     req: &HeaderMap,
-    (id, own, embed): (&str, &str, Option<&clax_http::state::EmbedOrigins>),
-    live: bool,
+    live: Option<&str>,
 ) -> Response {
+    res.extensions_mut().insert(ContentPolicySet);
+    let policy = match live {
+        Some(_) => HeaderValue::from_str(&framing(s, req))
+            .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'")),
+        None => content_policy(s, req),
+    };
     res.headers_mut()
-        .insert(header::CONTENT_SECURITY_POLICY, content_policy(s, req));
+        .insert(header::CONTENT_SECURITY_POLICY, policy);
     if let Some(fallback) = live {
         let scheme = if clax_http::site_access::secure(s) {
             "https"
@@ -97,7 +107,6 @@ fn framed_by_shell(
             snapshot_policy(scheme, req, fallback),
         );
     }
-    res.extensions_mut().insert(ContentPolicySet);
     res
 }
 
@@ -141,6 +150,8 @@ async fn lookup(
     // daemon's bridge takes its loopback names at that port), or in the
     // Clax app at the app's shell origin.
     let shell = clax_http::site_access::bridge_shell(s);
+    // In the Clax app a page's site API writes go by its shell.
+    let relay = s.embed.is_some();
     s.store_call_async(move |st| async move {
         // A deleted artifact's versions stay behind its row, and its files
         // until its content is removed: neither is served once it is gone.
@@ -171,6 +182,7 @@ async fn lookup(
                         &file,
                         &bridge,
                         Some(&shell),
+                        relay,
                     )),
                     Err(e) => {
                         unwrapped = Some(e.into_bytes());
@@ -368,30 +380,6 @@ mod tests {
                 .to_str()
                 .unwrap()
                 .contains("http://localhost:7480/_clax/")
-        );
-    }
-
-    #[test]
-    fn the_content_policy_names_a_plain_host_and_never_a_crafted_one() {
-        let mut h = HeaderMap::new();
-        h.insert(header::HOST, HeaderValue::from_static("x;script-src *:80"));
-        let p = content_policy(false, &h, "localhost:7480", Some("7q3k9mzx2b4t"), None);
-        let p = p.to_str().unwrap();
-        assert!(p.contains("http://localhost:7480/c/7q3k9mzx2b4t/ "), "{p}");
-        assert!(!p.contains('*') && !p.contains("x;"), "{p}");
-        assert!(p.contains("http://127.0.0.1:7480/_blob/"), "{p}");
-        assert!(
-            p.contains(
-                "connect-src http://localhost:7480/c/7q3k9mzx2b4t/ http://localhost:7480/_blob/"
-            ),
-            "{p}"
-        );
-        // Without the lockdown (a live page), the framing policy alone.
-        assert_eq!(
-            content_policy(false, &h, "localhost:7480", None, None)
-                .to_str()
-                .unwrap(),
-            clax_http::content_policy::SANDBOX
         );
     }
 }

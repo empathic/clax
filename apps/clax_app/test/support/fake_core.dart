@@ -174,7 +174,7 @@ class FakeCore implements CoreCalls {
   /// connection open and `/api/admin/shutdown`; the shell's page reads its
   /// document (`/a/`), the web UI's files (`/_clax/`), a version's files
   /// (`/c/`) and blobs (`/_blob/`); an artifact's content origin, named by
-  /// its host, reads.
+  /// its host, reads; a site call reaches its site's API but the room.
   static bool admits(CoreRequest r) {
     final path = r.path.split(RegExp('[?#]')).first;
     if (!path.startsWith('/')) return false;
@@ -186,6 +186,11 @@ class FakeCore implements CoreCalls {
         read &&
             const ['/a/', '/_clax/', '/c/', '/_blob/'].any(path.startsWith),
       CallAs.content => read && _artifactId.hasMatch(r.host ?? ''),
+      CallAs.site =>
+        _artifactId.hasMatch(r.host ?? '') &&
+            path.startsWith('/_clax/api/') &&
+            path != '/_clax/api/room' &&
+            !path.split('/').any((s) => s == '.' || s == '..'),
     };
   }
 

@@ -166,6 +166,8 @@ async fn handshake(embed: &Embed, id: &str) -> String {
     let (res, _) = call(embed, content("GET", &path, id), b"").await;
     assert_eq!(res.status, 302, "the code redeems");
     assert_eq!(header(&res, "location"), Some("/"));
+    // The site's session is the core's to keep: its cookie reaches no WebView.
+    assert_eq!(header(&res, "set-cookie"), None, "{:?}", res.headers);
     src
 }
 
@@ -241,7 +243,7 @@ async fn a_page_served_to_a_content_frame_names_the_apps_shell_for_its_bridge() 
         assert_eq!(res.status, 200, "{path}");
         let body = String::from_utf8_lossy(&body);
         assert_eq!(
-            body.matches(r#"data-origin="clax://app"></script>"#)
+            body.matches(r#"data-origin="clax://app" data-api="shell"></script>"#)
                 .count(),
             1,
             "{path}: {body}"
@@ -262,6 +264,169 @@ async fn a_content_frame_reaches_no_api() {
     not_in_app(status, &v);
     let (status, v) = call_json(&embed, content("GET", "/_clax/v/1/", "not-an-id"), None).await;
     not_in_app(status, &v);
+    embed.close();
+}
+
+/// A site call the shell relays for a content frame of artifact `id`.
+fn site(method: &str, path: &str, id: &str) -> RequestHead {
+    let mut h = head(method, path, As::Site);
+    h.host = Some(id.to_string());
+    h
+}
+
+/// Publishes an app that declares `db`; returns its ID.
+async fn publish_db(embed: &Embed) -> String {
+    let (status, v) = call_json(
+        embed,
+        head("POST", "/api/artifacts", As::Owner),
+        Some(json!({"title": "Board", "capabilities": {"db": {}},
+            "files": {"index.html": {"content": "<title>b</title><main></main>", "encoding": "utf8"}}})),
+    )
+    .await;
+    assert_eq!(status, 201, "{v}");
+    v["artifact"]["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn a_site_call_writes_a_document_its_frame_then_reads_with_the_sites_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let (embed, _rx) = open(dir.path());
+    let id = publish_db(&embed).await;
+    let doc = "/_clax/api/docs/notes/n1";
+    // Before the handshake the core holds no session for the site.
+    let (status, v) = call_json(
+        &embed,
+        site("PUT", doc, &id),
+        Some(json!({"data": {"n": 0}})),
+    )
+    .await;
+    assert_eq!(status, 401, "{v}");
+    handshake(&embed, &id).await;
+    // PUT, read back by the frame's own scheme request.
+    let (status, v) = call_json(
+        &embed,
+        site("PUT", doc, &id),
+        Some(json!({"data": {"text": "hello"}, "lww": true})),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let (status, v) = call_json(&embed, content("GET", doc, &id), None).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["doc"]["data"], json!({"text": "hello"}), "{v}");
+    // PATCH merges into it.
+    let (status, v) = call_json(
+        &embed,
+        site("PATCH", doc, &id),
+        Some(json!({"data": {"more": 1}, "lww": true})),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let (_, v) = call_json(&embed, site("GET", doc, &id), None).await;
+    assert_eq!(v["doc"]["data"], json!({"text": "hello", "more": 1}), "{v}");
+    // A POST: a lease on the document.
+    let (status, v) = call_json(
+        &embed,
+        site("POST", "/_clax/api/docs:acquire", &id),
+        Some(json!({"path": "notes/n1", "holder": "me"})),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["acquired"], true, "{v}");
+    // DELETE removes it.
+    let (h, _) = call(&embed, site("DELETE", &format!("{doc}?lww=true"), &id), b"").await;
+    assert!(h.status == 200 || h.status == 204, "{}", h.status);
+    let (status, _) = call_json(&embed, content("GET", doc, &id), None).await;
+    assert_eq!(status, 404);
+    // The site's store is the one the owner reads: the document is gone there too.
+    let (status, v) = call_json(
+        &embed,
+        head(
+            "GET",
+            &format!("/api/artifacts/{id}/docs/notes/n1"),
+            As::Owner,
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(status, 404, "{v}");
+    embed.close();
+}
+
+#[tokio::test]
+async fn a_scheme_request_never_writes_and_a_site_call_reaches_only_its_sites_api() {
+    let dir = tempfile::tempdir().unwrap();
+    let (embed, _rx) = open(dir.path());
+    let id = publish_db(&embed).await;
+    handshake(&embed, &id).await;
+    let doc = "/_clax/api/docs/notes/n1";
+    // The WebView's own request of the site is a read only.
+    let (status, v) = call_json(&embed, content("PUT", doc, &id), Some(json!({"data": {}}))).await;
+    not_in_app(status, &v);
+    // A site call reaches nothing but the site's API.
+    for (m, p) in [
+        ("POST", "/api/artifacts"),
+        ("GET", "/"),
+        ("GET", "/_clax/api/room"),
+        ("POST", "/_clax/session?code=c&next=%2F"),
+        ("PUT", "/_clax/api/../api/artifacts/x"),
+    ] {
+        let (status, v) = call_json(&embed, site(m, p, &id), None).await;
+        not_in_app(status, &v);
+    }
+    // Another artifact's site has none of this one's session.
+    let other = publish_db(&embed).await;
+    let (status, v) = call_json(
+        &embed,
+        site("PUT", doc, &other),
+        Some(json!({"data": {}, "lww": true})),
+    )
+    .await;
+    assert_eq!(status, 401, "{v}");
+    // An Origin the frame names is never the one the site sees: the core
+    // sends the site's own, so a write still passes the site's check.
+    let mut h = site("PUT", doc, &id);
+    h.headers
+        .push(("origin".into(), "clax://elsewhere.c".into()));
+    let (status, v) = call_json(&embed, h, Some(json!({"data": {"n": 1}, "lww": true}))).await;
+    assert_eq!(status, 200, "{v}");
+    embed.close();
+}
+
+#[tokio::test]
+async fn a_sites_api_refuses_a_read_another_sites_page_makes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (embed, _rx) = open(dir.path());
+    let id = publish_db(&embed).await;
+    handshake(&embed, &id).await;
+    let whoami = |headers: &[(&str, &str)]| {
+        let mut h = content("GET", "/_clax/api/whoami", &id);
+        h.headers = headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        h
+    };
+    // The site's own page, as the WebView sends its fetch.
+    let own = format!("clax://{id}.c");
+    let (status, v) = call_json(
+        &embed,
+        whoami(&[("origin", &own), ("sec-fetch-site", "same-origin")]),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let (status, v) = call_json(&embed, whoami(&[]), None).await;
+    assert_eq!(status, 200, "{v}");
+    // Another site's page: its Origin, or the WebView's word that it came
+    // from elsewhere, is refused by the site itself.
+    let (status, v) = call_json(&embed, whoami(&[("origin", "clax://7q3k9mzx2b4t.c")]), None).await;
+    assert_eq!(status, 403, "{v}");
+    assert_eq!(v["error"]["code"], "forbidden_origin", "{v}");
+    let (status, v) = call_json(&embed, whoami(&[("sec-fetch-site", "cross-site")]), None).await;
+    assert_eq!(status, 403, "{v}");
+    assert_eq!(v["error"]["code"], "forbidden_origin", "{v}");
+    let (status, v) = call_json(&embed, whoami(&[("sec-fetch-site", "same-site")]), None).await;
+    assert_eq!(status, 403, "{v}");
     embed.close();
 }
 

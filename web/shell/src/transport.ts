@@ -44,6 +44,12 @@
 //   `body64`. The parts wait on the call, so an abort frees them. A part,
 //   or the last one after parts, without a `body64` string rejects the call
 //   with a `TypeError`.
+//   A request to an artifact's content origin (the embed's `content`) under
+//   `/_clax/api/` is that site's API: its `call` names the artifact as
+//   `site`, and the app relays it to the site with the site's own session
+//   and origin, never the owner's (the shell makes one only for a page's
+//   call to its own site, caps/site.ts: the app's WebViews give the scheme
+//   no request body, so a page's writes cannot go by it).
 // - `callAbort {id}`: the call's signal aborted; its answer is dropped.
 // - `subscribe {id, lastEventId?}`: `GET /api/stream`, from the resume point
 //   the request names (its `Last-Event-ID`, or its `last_event_id` query),
@@ -156,12 +162,25 @@ function abortError(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
 }
 
+const ARTIFACT_ID = /^[0-9a-hjkmnp-tv-z]{12}$/;
+
+/** The artifact whose content origin `u` is under `content` (an origin
+ * with `{id}` for the ID), or null. */
+export function siteOfUrl(u: URL, content: string): string | null {
+  const [before, after] = content.split("{id}");
+  const o = originOf(u);
+  if (after === undefined || !o.startsWith(before) || !o.endsWith(after)) return null;
+  const id = o.slice(before.length, o.length - after.length);
+  return ARTIFACT_ID.test(id) ? id : null;
+}
+
 /** A transport over `channel` (read at each post): a request to `origin`
- * under `/api/` goes over it, anything else to `fallback`. `GET
- * /api/stream` answers a response whose body the app's pushed blocks fill.
- * `given`, when well formed, is the load's nonce from the start; else
+ * under `/api/`, or to an artifact's content origin under `content` (with
+ * `{id}`) under `/_clax/api/`, goes over it, anything else to `fallback`.
+ * `GET /api/stream` answers a response whose body the app's pushed blocks
+ * fill. `given`, when well formed, is the load's nonce from the start; else
  * `init` gives it. */
-export function transport(channel: () => Channel | undefined, fallback: typeof fetch, origin: string, given: string | null = null): Transport {
+export function transport(channel: () => Channel | undefined, fallback: typeof fetch, origin: string, given: string | null = null, content: string | null = null): Transport {
   const home = originOf(new URL(origin));
   // The calls waiting for their answer and the open streams, by ID.
   const calls = new Map<number, Pending>();
@@ -221,19 +240,21 @@ export function transport(channel: () => Channel | undefined, fallback: typeof f
 
   const hostFetch: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input), origin);
-    if (originOf(url) !== home || !url.pathname.startsWith("/api/")) return fallback(input, init);
+    const site = content === null ? null : siteOfUrl(url, content);
+    const relayed = site !== null ? url.pathname.startsWith("/_clax/api/") : originOf(url) === home && url.pathname.startsWith("/api/");
+    if (!relayed) return fallback(input, init);
     // The signal stays out of the Request: it is watched here.
     const signal = init?.signal ?? (input instanceof Request ? input.signal : null);
     const req = new Request(input instanceof Request ? input : url.href, { ...init, signal: null });
     if (signal?.aborted) throw abortError(signal);
-    if (req.method === "GET" && url.pathname === "/api/stream") return subscribe(req.headers.get("last-event-id") ?? url.searchParams.get("last_event_id"), signal);
+    if (site === null && req.method === "GET" && url.pathname === "/api/stream") return subscribe(req.headers.get("last-event-id") ?? url.searchParams.get("last_event_id"), signal);
     const bytes = new Uint8Array(await req.arrayBuffer());
     await untilOpen(signal);
     if (signal?.aborted) throw abortError(signal);
     needOpen();
     const id = ++lastId;
     const answer = new Promise<Response>((resolve, reject) => calls.set(id, { resolve, reject }));
-    const msg = { type: "call", id, method: req.method, path: url.pathname + url.search, headers: [...req.headers], body: null as string | null, body64: null as string | null };
+    const msg = { type: "call", id, method: req.method, path: url.pathname + url.search, headers: [...req.headers], body: null as string | null, body64: null as string | null, ...(site !== null ? { site } : {}) };
     if (bytes.length > CHUNKED_OVER) {
       post({ ...msg, chunked: true });
       const n = Math.ceil(bytes.length / CHUNK);
@@ -325,7 +346,7 @@ export function installTransport(win: Window = window): boolean {
   if (!embed) return false;
   const w = win as HostWindow;
   const nonce = doc.querySelector('meta[name="clax-nonce"]')?.getAttribute("content") ?? null;
-  const { fetch: f, ...receivers } = transport(() => w.ClaxHost, win.fetch.bind(win), embed.shell, nonce);
+  const { fetch: f, ...receivers } = transport(() => w.ClaxHost, win.fetch.bind(win), embed.shell, nonce, embed.content);
   win.fetch = f;
   const style = doc.createElement("style");
   style.textContent = ".conn-notice{display:none!important}";

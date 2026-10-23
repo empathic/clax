@@ -26,7 +26,10 @@
 //   every later request of the site, and never given to the WebView.
 // - Every request carries only its `Range`, `Accept` and `Service-Worker`
 //   (never `If-None-Match` or `If-Modified-Since`: no WebView here takes the
-//   304 they would bring); every answer loses its `Access-Control-*` headers.
+//   304 they would bring), and a site's request also where it came from as
+//   the WebView says (`Origin`, `Sec-Fetch-Site`, `-Mode`, `-Dest`), which
+//   the site's API checks a read by; every answer loses its
+//   `Access-Control-*` headers and any `Set-Cookie`.
 // - No answer is a 3xx, which no WebView here takes from its host: a
 //   redirect within the request's origin and directory (`…/index.html` to
 //   `…/`) is followed in the core and its target answered under the
@@ -61,7 +64,14 @@
 // shell's origin under the load's nonce. The relay answers `call`,
 // `callChunk`, `callAbort`, `subscribe` and `unsubscribe`:
 //
-// - `call` goes to the daemon as an `as: owner` frame: the message's
+// - `call` naming `site` (an artifact ID) is a framed page's call to its own
+//   site's API, which the shell relays (web/shell/src/caps/site.ts): it goes
+//   to the daemon as an `as: site` frame, any method, only under
+//   `/_clax/api/` but the room (else 404 `not_in_app`), with only its
+//   `Content-Type` and `Accept`, `Host: <id>.localhost`, the site's
+//   `Origin` (its content origin) and the site's own cookies, whose answer's
+//   cookies the core keeps as a content request's.
+// - Any other `call` goes to the daemon as an `as: owner` frame: the message's
 //   headers (but `Host`), `Authorization: Bearer <token>` unless it names
 //   one, `Host: localhost`; a held-open route (`/api/stream`, `/api/events`,
 //   `/api/artifacts/{aid}/room`, `/api/artifacts/{aid}/live`, `/mcp`) or
@@ -105,6 +115,11 @@ export const startEmbedDaemon = () => startDaemon({ args: ["--embed-origins", SH
 const SHELL_HOST = "app.clax.invalid";
 const CONTENT_HOST = /^([a-z0-9]+)\.c\.clax\.invalid$/;
 const PAGE_HEADERS = ["range", "accept", "service-worker"];
+/** What a site's request also carries: where it came from. */
+const CONTENT_HEADERS = ["origin", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest"];
+/** What a site call the shell relays carries of its own headers. */
+const SITE_HEADERS = ["content-type", "accept"];
+const ARTIFACT_ID = /^[0-9a-hjkmnp-tv-z]{12}$/;
 const SHELL_PATHS = ["/a/", "/_clax/"];
 /** The gallery's documents, which the app never loads. */
 const GALLERY = new Set(["/", "/inbox", "/people"]);
@@ -171,7 +186,7 @@ function utf8(b: Buffer): string | null {
 }
 
 /** A call the relay is answering. */
-type Call = { nonce: string; id: number; method: string; path: string; headers: [string, string][]; body: Buffer[]; chunked: boolean; ac: AbortController };
+type Call = { nonce: string; id: number; method: string; path: string; headers: [string, string][]; body: Buffer[]; chunked: boolean; ac: AbortController; site: string | null };
 /** A subscription the relay is pumping. */
 type Stream = { nonce: string; id: number; lastEventId: string | null; ac: AbortController };
 /** One load of the shell document: its candidates until one is pinned,
@@ -179,7 +194,7 @@ type Stream = { nonce: string; id: number; lastEventId: string | null; ac: Abort
 type Load = { url: string; candidates: Set<string>; nonce: string | null; loaded: boolean; inited: boolean; calls: Map<number, Call>; streams: Map<number, Stream> };
 
 /** A call the relay sent, and what it answered (`answered` once it has). */
-export type CallRecord = { nonce: string; id: number; method: string; path: string; chunked: boolean; body?: string | null; answered?: { status: number; text: string | null }; aborted?: boolean };
+export type CallRecord = { nonce: string; id: number; method: string; path: string; chunked: boolean; site?: string; body?: string | null; answered?: { status: number; text: string | null }; aborted?: boolean };
 /** A subscription the relay opened. */
 export type SubscriptionRecord = { nonce: string; id: number; lastEventId: string | null; ended?: string };
 
@@ -434,7 +449,7 @@ export class AppHost {
     const id = shell ? null : CONTENT_HOST.exec(url.hostname)![1];
     if (shell && !SHELL_PATHS.some(p => url.pathname.startsWith(p))) return errorAnswer(404, "not_in_app", `${url.pathname} is not served in the app`);
     const all = await req.allHeaders();
-    const headers: [string, string][] = PAGE_HEADERS.filter(h => all[h] !== undefined).map(h => [h, all[h]]);
+    const headers: [string, string][] = [...PAGE_HEADERS, ...(id === null ? [] : CONTENT_HEADERS)].filter(h => all[h] !== undefined).map(h => [h, all[h]]);
     headers.push(["host", id ? `${id}.localhost` : "localhost"]);
     // The core adds the owner cookie for the shell document's path alone,
     // and a site's own cookies to its requests.
@@ -583,9 +598,11 @@ export class AppHost {
       case "call": {
         const headers = Array.isArray(m.headers) ? (m.headers as [string, string][]).filter(([k]) => k.toLowerCase() !== "host") : [];
         const body = typeof m.body64 === "string" ? Buffer.from(m.body64, "base64") : typeof m.body === "string" ? Buffer.from(m.body) : Buffer.alloc(0);
-        const call: Call = { nonce, id, method: String(m.method), path: String(m.path), headers, body: m.chunked ? [] : [body], chunked: m.chunked === true, ac: new AbortController() };
+        if (m.site !== undefined && (typeof m.site !== "string" || !ARTIFACT_ID.test(m.site))) return;
+        const site = typeof m.site === "string" ? m.site : null;
+        const call: Call = { nonce, id, method: String(m.method), path: String(m.path), headers, body: m.chunked ? [] : [body], chunked: m.chunked === true, ac: new AbortController(), site };
         load.calls.set(id, call);
-        this.calls.push({ nonce: call.nonce, id, method: call.method, path: call.path, chunked: call.chunked });
+        this.calls.push({ nonce: call.nonce, id, method: call.method, path: call.path, chunked: call.chunked, ...(site ? { site } : {}) });
         if (!call.chunked) void this.answerCall(load, call);
         return;
       }
@@ -637,7 +654,25 @@ export class AppHost {
     const fault = this.callFaults.findIndex(f => f.match(record));
     let answer: Answer;
     if (fault >= 0) answer = this.callFaults.splice(fault, 1)[0].answer;
-    else if (HELD_OPEN.some(r => r.test(path))) answer = errorAnswer(404, "not_in_app", `${path} is not served in the app`);
+    else if (call.site !== null) {
+      const site = call.site;
+      const admitted = path.startsWith("/_clax/api/") && path !== "/_clax/api/room" && !path.split("/").some(g => g === "." || g === "..");
+      if (!admitted) answer = errorAnswer(404, "not_in_app", `${path} is not served in the app`);
+      else {
+        const headers: [string, string][] = call.headers.filter(([k]) => SITE_HEADERS.includes(k.toLowerCase()));
+        headers.push(["host", `${site}.localhost`], ["origin", content(site)]);
+        const kept = this.jar.get(site);
+        if (kept?.size) headers.push(["cookie", [...kept].map(([k, v]) => `${k}=${v}`).join("; ")]);
+        try {
+          answer = await readAll(await send(this.d, { method: call.method, path: call.path, headers, body: sent, signal: call.ac.signal }));
+        } catch (e) {
+          if (call.ac.signal.aborted) return;
+          answer = errorAnswer(502, "response_failed", String(e));
+        }
+        this.keep(site, answer);
+        answer = { ...answer, headers: answer.headers.filter(([k]) => k.toLowerCase() !== "set-cookie") };
+      }
+    } else if (HELD_OPEN.some(r => r.test(path))) answer = errorAnswer(404, "not_in_app", `${path} is not served in the app`);
     else {
       const headers = [...call.headers];
       if (!headers.some(([k]) => k.toLowerCase() === "authorization")) headers.push(["authorization", `Bearer ${this.d.token}`]);

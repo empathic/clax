@@ -19,6 +19,12 @@ pub enum As {
     Content,
     /// A scheme request to the shell's origin.
     ShellPage,
+    /// A content frame's call to its own site's API (`/_clax/api/…` of the
+    /// site `host` names), which the shell relays for it: the app's WebViews
+    /// give a scheme handler no request body (Android's
+    /// `shouldInterceptRequest`), so a page's writes cannot go by its
+    /// scheme. It carries the site's cookies and origin, never the owner's.
+    Site,
 }
 
 /// A request frame's header.

@@ -173,13 +173,26 @@ pub fn wrap_page(
     file: &str,
     bridge: &str,
 ) -> String {
-    wrap_page_framed_by(page, artifact_id, version, contract, file, bridge, None)
+    wrap_page_framed_by(
+        page,
+        artifact_id,
+        version,
+        contract,
+        file,
+        bridge,
+        None,
+        false,
+    )
 }
 
 /// [`wrap_page`], the bridge tag naming `shell`, when given, as the one
 /// origin whose window it talks to (`data-origin`, after the tag's other
 /// attributes): what a page served on a hosted daemon's content origin
-/// needs, as its own URL does not name the shell's origin.
+/// needs, as its own URL does not name the shell's origin. With `relay`
+/// (the Clax app, whose WebViews give their scheme no request body) the tag
+/// says `data-api="shell"` after it: the bridge sends its site API writes
+/// to the shell, which relays them, rather than fetching them itself.
+#[allow(clippy::too_many_arguments)]
 pub fn wrap_page_framed_by(
     page: &str,
     artifact_id: &str,
@@ -188,6 +201,7 @@ pub fn wrap_page_framed_by(
     file: &str,
     bridge: &str,
     shell: Option<&str>,
+    relay: bool,
 ) -> String {
     let page = strip_bridge_tags(page);
     let page = page.as_ref();
@@ -200,6 +214,10 @@ pub fn wrap_page_framed_by(
             .replace('>', "&gt;");
         let end = tag.len() - "></script>".len();
         tag.insert_str(end, &format!(" data-origin=\"{o}\""));
+    }
+    if relay {
+        let end = tag.len() - "></script>".len();
+        tag.insert_str(end, " data-api=\"shell\"");
     }
 
     if is_full_document(page) {
@@ -228,10 +246,27 @@ mod tests {
             "index.html",
             V,
             Some("https://clax.example"),
+            false,
         );
         assert!(
             out.contains("data-file=\"index.html\" data-origin=\"https://clax.example\"></script>")
         );
+        let app = wrap_page_framed_by(
+            "<p>hi</p>",
+            "7q3k9mzx2b4t",
+            2,
+            "0.2.61",
+            "index.html",
+            V,
+            Some("clax://app"),
+            true,
+        );
+        assert!(
+            app.contains("data-origin=\"clax://app\" data-api=\"shell\"></script>"),
+            "{app}"
+        );
+        let again = wrap_page(&app, "7q3k9mzx2b4t", 2, "0.2.61", "index.html", V);
+        assert!(!again.contains("data-api"), "{again}");
         assert!(is_bridge_tag(&out[out.find(BRIDGE_START).unwrap()..]));
         assert_eq!(out.matches(BRIDGE_START).count(), 1);
         // Served again, its own tag is stripped like any other.
