@@ -322,13 +322,12 @@ pub fn has_key_cookie(headers: &axum::http::HeaderMap, token: &str) -> bool {
         .any(|(_, v)| constant_time_eq(v.as_bytes(), token.as_bytes()))
 }
 
-/// Paths a daemon with `require_credential` serves without a credential:
-/// `/healthz`, the shell's static files (`/_clax/...`, code and no data),
-/// and content addressed by artifact ID (`/c/<id>/...`, which an artifact
-/// origin's `/v/...` is rewritten to, and `/_blob/<asset ID>`). The content
-/// frame on `<id>.localhost` is a cross-site frame of the shell, which an
-/// Android WebView sends no cookie for; IDs are 60 random bits, and every
-/// route that lists or names them needs a credential.
+/// Paths a daemon with `require_credential` serves without a credential on
+/// its own host: `/healthz`, the shell's static files (`/_clax/...`, code
+/// and no data), and the old addresses of content and assets (`/c/...`,
+/// none of which answers, and `/_blob/...`, which redirect to the asset's
+/// site). A site host's requests pass the gate whatever their path: the
+/// site's access decides each (`crate::site_access`).
 pub fn open_without_credential(path: &str) -> bool {
     path == "/healthz"
         || path.starts_with("/_clax/")
@@ -352,6 +351,7 @@ pub async fn require_credential(
     use axum::response::IntoResponse;
     if !s.require_credential
         || open_without_credential(req.uri().path())
+        || req.extensions().get::<crate::host::SiteRequest>().is_some()
         || has_token(req.headers(), &s.token)
         || has_key_cookie(req.headers(), &s.token)
         || crate::identity::has_owner_cookie(req.headers(), &s.token)

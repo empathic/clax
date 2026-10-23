@@ -99,11 +99,59 @@ pub fn start_src(site: &str, target: &str) -> String {
     format!("{site}/_clax/session/start?next={}", encode_component(next))
 }
 
+/// The name the Clax app's inspect view gives its content frame
+/// (`INSPECT_FRAME` in `web/bridge/src/protocol.ts`): the page's bridge keeps
+/// its errors from its first script only in a frame so named.
+pub const INSPECT_FRAME: &str = "clax-inspect";
+/// The name the Clax app's migration view gives its content frame
+/// (`MIGRATE_FRAME` in `web/bridge/src/protocol.ts`): the page's bridge ends
+/// the page's markup before any of it runs only in a frame so named.
+pub const MIGRATE_FRAME: &str = "clax-migrate";
+
+/// Whether a shell URL's query asks for the Clax app's inspect view, as the
+/// shell reads it (`inspectQuery` in `web/shell/src/route.ts`): the first
+/// `app` is `1` and the first `inspect` is `1`.
+pub fn inspect_query(query: Option<&str>) -> bool {
+    let Some(q) = query else { return false };
+    let first = |key: &str| {
+        url::form_urlencoded::parse(q.as_bytes())
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.into_owned())
+    };
+    first("app").as_deref() == Some("1") && first("inspect").as_deref() == Some("1")
+}
+
+/// The content frame's name for a shell URL's query, as `frameName` in
+/// `web/shell/src/view/frame-host.ts` gives it: [`MIGRATE_FRAME`] in the
+/// migration view (the inspect view's query with the first `migrate` `1`),
+/// [`INSPECT_FRAME`] in the inspect view, none elsewhere.
+pub fn frame_name(query: Option<&str>) -> Option<&'static str> {
+    if !inspect_query(query) {
+        return None;
+    }
+    let migrate = query.and_then(|q| {
+        url::form_urlencoded::parse(q.as_bytes())
+            .find(|(k, _)| k == "migrate")
+            .map(|(_, v)| v.into_owned())
+    });
+    Some(if migrate.as_deref() == Some("1") {
+        MIGRATE_FRAME
+    } else {
+        INSPECT_FRAME
+    })
+}
+
 /// The content frame's markup, with the attributes `FrameHost.show` in
-/// `web/shell/src/view/frame-host.ts` gives it.
-pub fn frame_html(src: &str) -> String {
+/// `web/shell/src/view/frame-host.ts` gives it, named `name`
+/// ([`frame_name`]), so the shell adopts it in the inspect and migration
+/// views too.
+pub fn frame_html(src: &str, name: Option<&str>) -> String {
+    let name = match name {
+        Some(n) => format!(" name=\"{}\"", html_escape(n)),
+        None => String::new(),
+    };
     format!(
-        "<iframe class=\"frame\" title=\"artifact content\" src=\"{}\" allow=\"{FRAME_ALLOW}\"></iframe>",
+        "<iframe class=\"frame\"{name} title=\"artifact content\" src=\"{}\" allow=\"{FRAME_ALLOW}\"></iframe>",
         html_escape(src)
     )
 }
@@ -119,8 +167,12 @@ fn host_port(host: &str) -> (&str, Option<&str>) {
 /// The site hosts the shell frames, as the bootstrap's `site` names them
 /// (`artifactOrigin` in `web/shell/src/origin.ts`): the site domain, the
 /// public origin's scheme, and the request's port unless it is the scheme's
-/// default.
+/// default. In an app that embeds the core, its content origins
+/// ([`clax_http::state::EmbedOrigins::site_hosts`]), with no port.
 pub fn site_of(s: &AppState, headers: &HeaderMap) -> Value {
+    if let Some((scheme, domain)) = s.embed.as_ref().and_then(|e| e.site_hosts()) {
+        return json!({"domain": domain, "scheme": scheme, "port": null});
+    }
     let host = headers
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
@@ -312,7 +364,10 @@ pub async fn assemble(
     let site = site_of(s, headers);
     let frame = holds.then(|| {
         let origin = site_origin(&site, id.as_str());
-        frame_html(&start_src(&origin, &page_src(&origin, n, &file)))
+        frame_html(
+            &start_src(&origin, &page_src(&origin, n, &file)),
+            frame_name(query),
+        )
     });
     let artifact = without_sessions(
         artifact_json,
@@ -447,11 +502,64 @@ mod tests {
             "frame-host.ts sandboxes a frame"
         );
         assert_eq!(
-            frame_html("http://x.localhost:1/_clax/v/1/\"><b>"),
+            frame_html("http://x.localhost:1/_clax/v/1/\"><b>", None),
             format!(
                 "<iframe class=\"frame\" title=\"artifact content\" src=\"http://x.localhost:1/_clax/v/1/&quot;&gt;&lt;b&gt;\" allow=\"{FRAME_ALLOW}\"></iframe>"
             )
         );
+    }
+
+    #[test]
+    fn the_inspect_views_frame_is_named_as_frame_host_names_it() {
+        let host = include_str!("../../../../web/shell/src/view/frame-host.ts");
+        assert!(host.contains(
+            "migrateQuery(location.search) ? MIGRATE_FRAME : inspecting() ? INSPECT_FRAME : null"
+        ));
+        let proto = include_str!("../../../../web/bridge/src/protocol.ts");
+        assert!(proto.contains(&format!(
+            "export const INSPECT_FRAME = \"{INSPECT_FRAME}\";"
+        )));
+        assert!(proto.contains(&format!(
+            "export const MIGRATE_FRAME = \"{MIGRATE_FRAME}\";"
+        )));
+        assert_eq!(
+            frame_html(
+                "http://x.localhost:1/_clax/v/1/",
+                frame_name(Some("app=1&inspect=1"))
+            ),
+            format!(
+                "<iframe class=\"frame\" name=\"clax-inspect\" title=\"artifact content\" src=\"http://x.localhost:1/_clax/v/1/\" allow=\"{FRAME_ALLOW}\"></iframe>"
+            )
+        );
+        assert!(
+            !frame_html("http://x.localhost:1/_clax/v/1/", frame_name(Some("app=1")))
+                .contains("name=")
+        );
+        for (q, want) in [
+            (Some("app=1&inspect=1&migrate=1"), Some(MIGRATE_FRAME)),
+            (Some("migrate=1&inspect=1&app=1"), Some(MIGRATE_FRAME)),
+            (Some("app=1&inspect=1&migrate=0"), Some(INSPECT_FRAME)),
+            (Some("app=1&migrate=1"), None),
+            (None, None),
+        ] {
+            assert_eq!(frame_name(q), want, "{q:?}");
+        }
+    }
+
+    #[test]
+    fn inspect_query_needs_app_and_inspect_as_the_shell_reads_them() {
+        for (q, want) in [
+            (Some("app=1&inspect=1"), true),
+            (Some("inspect=1&x=2&app=1"), true),
+            (Some("app=%31&inspect=1"), true),
+            (Some("inspect=1"), false),
+            (Some("app=1"), false),
+            (Some("app=1&inspect=0"), false),
+            (Some("app=2&app=1&inspect=1"), false),
+            (None, false),
+        ] {
+            assert_eq!(inspect_query(q), want, "{q:?}");
+        }
     }
 
     #[test]

@@ -320,13 +320,13 @@ void main() {
       expect(core.requests.last.headers, [('accept', 'text/html')]);
     });
 
-    test('a document request for /v/3 answered 308 answers a 200 meta '
+    test('a document request for /_clax/v/3 answered 308 answers a 200 meta '
         'refresh to its Location', () async {
-      core.on('GET', '/v/{n}', (r, p) => _redirect(308, '3/'));
+      core.on('GET', '/_clax/v/{n}', (r, p) => _redirect(308, '3/'));
       for (final r in [
-        _get('https://$_id.c.clax.invalid/v/3', mainFrame: true),
+        _get('https://$_id.c.clax.invalid/_clax/v/3', mainFrame: true),
         _get(
-          'https://$_id.c.clax.invalid/v/3',
+          'https://$_id.c.clax.invalid/_clax/v/3',
           headers: {'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8'},
         ),
       ]) {
@@ -338,9 +338,9 @@ void main() {
     });
 
     test('a meta refresh escapes its Location', () async {
-      core.on('GET', '/v/{n}', (r, p) => _redirect(308, '3/?a="b"&c=<d>'));
+      core.on('GET', '/_clax/v/{n}', (r, p) => _redirect(308, '3/?a="b"&c=<d>'));
       final a = await scheme.answer(
-        _get('https://$_id.c.clax.invalid/v/3', mainFrame: true),
+        _get('https://$_id.c.clax.invalid/_clax/v/3', mainFrame: true),
       );
       expect(
         _text(a),
@@ -349,13 +349,47 @@ void main() {
       );
     });
 
-    test('a non-document request for /v/3 answers 404', () async {
-      core.on('GET', '/v/{n}', (r, p) => _redirect(308, '3/'));
+    test('a non-document request for /_clax/v/3 answers 404', () async {
+      core.on('GET', '/_clax/v/{n}', (r, p) => _redirect(308, '3/'));
       final a = await scheme.answer(
-        _get('https://$_id.c.clax.invalid/v/3', headers: {'Accept': '*/*'}),
+        _get('https://$_id.c.clax.invalid/_clax/v/3', headers: {'Accept': '*/*'}),
       );
       expect(a.status, 404);
       expect(core.requests, hasLength(1));
+    });
+
+    test('the handshake\'s redemption answered 302 to a path of its site '
+        'answers a 200 meta refresh to it', () async {
+      core.on('GET', '/_clax/session', (r, p) => _redirect(302, '/'));
+      final a = await scheme.answer(
+        _get(
+          'https://$_id.c.clax.invalid/_clax/session?code=c1&next=%2F',
+          mainFrame: true,
+        ),
+      );
+      expect(a.status, 200);
+      expect(_text(a), '<meta http-equiv="refresh" content="0;url=/">');
+      expect(core.requests, hasLength(1));
+    });
+
+    test('the handshake\'s redemption to another origin, or for no '
+        'document, answers 404', () async {
+      core.on(
+        'GET',
+        '/_clax/session',
+        (r, p) => _redirect(302, 'https://example.com/'),
+      );
+      final away = await scheme.answer(
+        _get('https://$_id.c.clax.invalid/_clax/session', mainFrame: true),
+      );
+      expect(away.status, 404);
+      final fetch = await scheme.answer(
+        _get(
+          'https://$_id.c.clax.invalid/_clax/session',
+          headers: {'Accept': '*/*'},
+        ),
+      );
+      expect(fetch.status, 404);
     });
 
     test('a 302 or 304 of any other kind answers 404', () async {

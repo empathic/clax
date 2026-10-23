@@ -700,6 +700,10 @@ impl TestServer {
             // with `spawn_with_web`.
             web: web_ui(),
             hosted: None,
+            // No app links or store pages; tests of them set their own.
+            clax_app: Arc::default(),
+            build: None,
+            embed: None,
             git_remotes: Arc::default(),
             linked: Arc::new(clax_realtime::linked::Linked::new(Arc::new(
                 clax_realtime::questions::TokioSleeper,
@@ -968,6 +972,17 @@ impl TestServer {
         let rest = src.split_once("://").map_or(src, |(_, r)| r);
         let at = rest.find('/').unwrap_or(rest.len());
         let (host, path) = rest.split_at(at);
+        // An embedding app's content origin (`<id>.c`, no port) is the
+        // core's `<id>.localhost` site host.
+        let host = if host.contains(':') || host.ends_with(".localhost") {
+            host.to_string()
+        } else {
+            format!(
+                "{}.localhost:{}",
+                host.split('.').next().unwrap_or(host),
+                self.addr.port()
+            )
+        };
         let res = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()

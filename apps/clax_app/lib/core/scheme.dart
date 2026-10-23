@@ -74,8 +74,11 @@ class SchemeAnswer {
 /// - A 3xx the core answers is followed in the core when its `Location`
 ///   is the request's own origin and directory (as `…/index.html` → `…/`
 ///   is), at most 5 hops, and the target's answer is the request's; a
-///   document request for `/v/<n>` answered 308 is a page that refreshes
-///   to its `Location`; any other 3xx is a 404.
+///   document request for `/_clax/v/<n>` answered 308, or for the site
+///   handshake's `/_clax/session` answered 3xx to a path of its own site
+///   (the shell's handshake, as in a browser), is a page that refreshes to
+///   its `Location`; any other 3xx is a 404. The site's cookies the
+///   handshake sets are the core's to keep: none reaches the WebView.
 /// - The answer loses every `Access-Control-*` header and its length.
 /// - A shell document answered 200 to a numbered request gets a fresh
 ///   nonce, written as `<meta name="clax-nonce" content="…">` right after
@@ -148,12 +151,15 @@ class SchemeAnswerer {
         target = next;
         continue;
       }
-      if (res.status == 308 &&
-          location != null &&
-          hop == 0 &&
-          _isVersionRoot(path) &&
-          (r.mainFrame || _wantsHtml(r.headers))) {
-        return _refresh(location);
+      final document = r.mainFrame || _wantsHtml(r.headers);
+      if (location != null && hop == 0 && document) {
+        if (res.status == 308 && _isVersionRoot(path)) return _refresh(location);
+        if (!shell &&
+            path == '/_clax/session' &&
+            next != null &&
+            _sameOrigin(url, next)) {
+          return _refresh(location);
+        }
       }
       return _text(404, 'not found');
     }
@@ -267,9 +273,15 @@ class SchemeAnswerer {
   static String _dir(String path) =>
       path.substring(0, path.lastIndexOf('/') + 1);
 
-  /// `/v/<n>`, which the content routes redirect to `/v/<n>/`.
+  /// Whether [to] is [from]'s origin.
+  static bool _sameOrigin(Uri from, Uri to) =>
+      from.scheme == to.scheme &&
+      from.host.toLowerCase() == to.host.toLowerCase() &&
+      from.port == to.port;
+
+  /// `/_clax/v/<n>`, which a site redirects to `/_clax/v/<n>/`.
   static bool _isVersionRoot(String path) =>
-      RegExp(r'^/v/[0-9]+$').hasMatch(path);
+      RegExp(r'^/_clax/v/[0-9]+$').hasMatch(path);
 
   static bool _wantsHtml(Map<String, String> headers) =>
       (_header(headers, 'accept') ?? '').toLowerCase().contains('text/html');

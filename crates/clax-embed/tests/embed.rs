@@ -119,6 +119,56 @@ fn not_in_app(status: u16, v: &Value) {
     assert_eq!(v["error"]["code"], "not_in_app", "{v}");
 }
 
+/// A content frame's request of `path` on artifact `id`'s site.
+fn content(method: &str, path: &str, id: &str) -> RequestHead {
+    let mut h = head(method, path, As::Content);
+    h.host = Some(id.to_string());
+    h
+}
+
+/// The handshake the shell runs for a content frame of artifact `id`, as
+/// the web shell does (`web/shell/src/view/artifact-controller.ts`): the
+/// frame loads `/_clax/session/start`, whose state the shell passes to
+/// `POST /api/artifacts/<id>/site-code` (as the owner's browser), and then
+/// the code's `src`; the core keeps the site's cookies for the frame.
+/// Returns the `src` the shell was given.
+async fn handshake(embed: &Embed, id: &str) -> String {
+    let (res, body) = call(
+        embed,
+        content("GET", "/_clax/session/start?next=%2F", id),
+        b"",
+    )
+    .await;
+    assert_eq!(res.status, 200);
+    let page = String::from_utf8_lossy(&body).to_string();
+    let state = page
+        .split("\"state\":\"")
+        .nth(1)
+        .and_then(|r| r.split('"').next())
+        .unwrap_or_else(|| panic!("the start page names its state: {page}"))
+        .to_string();
+    let (status, v) = call_json(
+        embed,
+        head(
+            "POST",
+            &format!("/api/artifacts/{id}/site-code"),
+            As::OwnerBrowser,
+        ),
+        Some(json!({"next": "/", "partitioned": true, "state": state})),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let src = v["src"].as_str().unwrap().to_string();
+    let path = src
+        .strip_prefix(&format!("clax://{id}.c"))
+        .unwrap_or_else(|| panic!("the code is for the app's content origin: {src}"))
+        .to_string();
+    let (res, _) = call(embed, content("GET", &path, id), b"").await;
+    assert_eq!(res.status, 302, "the code redeems");
+    assert_eq!(header(&res, "location"), Some("/"));
+    src
+}
+
 #[tokio::test]
 async fn an_owner_call_lists_artifacts() {
     let dir = tempfile::tempdir().unwrap();
@@ -130,17 +180,43 @@ async fn an_owner_call_lists_artifacts() {
 }
 
 #[tokio::test]
-async fn an_owner_call_creates_and_a_content_frame_reads_its_page() {
+async fn a_content_frame_reads_its_site_only_after_the_shells_handshake() {
     let dir = tempfile::tempdir().unwrap();
     let (embed, _rx) = open(dir.path());
     let id = publish(&embed, "<title>t</title>hi", None).await;
-    let mut h = head("GET", "/v/1/", As::Content);
-    h.host = Some(id.clone());
-    let (res, body) = call(&embed, h, b"").await;
+    // Before the handshake the site is private to its frame.
+    let (res, _) = call(&embed, content("GET", "/_clax/api/whoami", &id), b"").await;
+    assert_eq!(res.status, 401);
+    // The site hosts the shell frames on are the app's content origins.
+    let (status, v) = call_json(
+        &embed,
+        head("GET", &format!("/api/artifacts/{id}"), As::Owner),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(
+        v["site"],
+        json!({"domain": "c", "scheme": "clax", "port": null})
+    );
+    handshake(&embed, &id).await;
+    let (res, body) = call(&embed, content("GET", "/", &id), b"").await;
     assert_eq!(res.status, 200);
     assert!(String::from_utf8_lossy(&body).contains("hi"));
     let csp = header(&res, "content-security-policy").expect("a content policy");
-    assert!(csp.contains("frame-ancestors clax://app"), "{csp}");
+    assert!(csp.starts_with("frame-ancestors 'self' "), "{csp}");
+    assert!(
+        csp.contains("clax://app"),
+        "the app's shell frames it: {csp}"
+    );
+    assert!(csp.contains("connect-src 'self'"), "{csp}");
+    let (status, v) = call_json(&embed, content("GET", "/_clax/api/whoami", &id), None).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["kind"], "owner", "{v}");
+    // Another artifact's frame has none of its cookies.
+    let other = publish(&embed, "<title>o</title>other", None).await;
+    let (res, _) = call(&embed, content("GET", "/_clax/api/whoami", &other), b"").await;
+    assert_eq!(res.status, 401);
     embed.close();
 }
 
@@ -159,10 +235,9 @@ async fn a_page_served_to_a_content_frame_names_the_apps_shell_for_its_bridge() 
     .await;
     assert_eq!(status, 201, "{v}");
     let id = v["artifact"]["id"].as_str().unwrap().to_string();
-    for path in ["/v/1/", "/v/1/about.html"] {
-        let mut h = head("GET", path, As::Content);
-        h.host = Some(id.clone());
-        let (res, body) = call(&embed, h, b"").await;
+    handshake(&embed, &id).await;
+    for path in ["/", "/about.html", "/_clax/v/1/", "/_clax/v/1/about.html"] {
+        let (res, body) = call(&embed, content("GET", path, &id), b"").await;
         assert_eq!(res.status, 200, "{path}");
         let body = String::from_utf8_lossy(&body);
         assert_eq!(
@@ -180,17 +255,12 @@ async fn a_content_frame_reaches_no_api() {
     let dir = tempfile::tempdir().unwrap();
     let (embed, _rx) = open(dir.path());
     let id = publish(&embed, "<title>t</title>hi", None).await;
-    let mut h = head("GET", "/api/artifacts", As::Content);
-    h.host = Some(id);
-    let (status, v) = call_json(&embed, h, None).await;
+    handshake(&embed, &id).await;
+    let (status, v) = call_json(&embed, content("GET", "/api/artifacts", &id), None).await;
     assert_eq!(status, 404, "{v}");
-    let mut h = head("POST", "/v/1/", As::Content);
-    h.host = Some("7q3k9mzx2b4t".into());
-    let (status, v) = call_json(&embed, h, None).await;
+    let (status, v) = call_json(&embed, content("POST", "/_clax/v/1/", "7q3k9mzx2b4t"), None).await;
     not_in_app(status, &v);
-    let mut h = head("GET", "/v/1/", As::Content);
-    h.host = Some("not-an-id".into());
-    let (status, v) = call_json(&embed, h, None).await;
+    let (status, v) = call_json(&embed, content("GET", "/_clax/v/1/", "not-an-id"), None).await;
     not_in_app(status, &v);
     embed.close();
 }
@@ -244,6 +314,7 @@ async fn a_page_frame_carrying_a_credential_reaches_no_api() {
         v["token"].as_str().unwrap().to_string()
     };
     let id = publish(&embed, "<title>t</title>hi", None).await;
+    handshake(&embed, &id).await;
     for (as_, host) in [(As::ShellPage, None), (As::Content, Some(id))] {
         let mut h = head("GET", "/api/token", as_);
         h.host = host;
@@ -299,7 +370,7 @@ async fn the_shell_document_and_its_files_answer_a_shell_page_frame_as_the_owner
 }
 
 #[tokio::test]
-async fn what_a_page_includes_from_the_shells_host_answers_with_no_credential() {
+async fn an_asset_is_its_sites_and_the_shells_host_serves_no_content() {
     let dir = tempfile::tempdir().unwrap();
     let (embed, _rx) = open(dir.path());
     let id = publish(&embed, "<title>t</title>hi", None).await;
@@ -320,17 +391,21 @@ async fn what_a_page_includes_from_the_shells_host_answers_with_no_credential() 
     let asset: Value = serde_json::from_slice(&body).unwrap();
     let blob = asset["url"].as_str().unwrap().to_string();
 
+    // On its site, a content frame of the artifact gets the asset.
+    assert!(blob.starts_with("/_clax/blob/"), "{blob}");
+    handshake(&embed, &id).await;
+    let (res, body) = call(&embed, content("GET", &blob, &id), b"").await;
+    assert_eq!(res.status, 200, "{}", String::from_utf8_lossy(&body));
     // `<script src="clax://app/c/…">` and `<img src="clax://app/_blob/…">`
-    // in a page: shell-page frames, asked for as no one, which these
-    // routes answer as they do on the daemon.
-    for path in [format!("/c/{id}/v/1/"), blob] {
-        let (res, body) = call(&embed, head("GET", &path, As::ShellPage), b"").await;
-        assert_eq!(
-            res.status,
-            200,
-            "{path}: {}",
-            String::from_utf8_lossy(&body)
-        );
+    // in a page: content is each site's, and the shell's host serves none.
+    let aid = blob.trim_start_matches("/_clax/blob/");
+    for path in [
+        format!("/c/{id}/v/1/"),
+        format!("/_blob/{aid}"),
+        format!("/_blob/{id}/{aid}"),
+    ] {
+        let (status, v) = call_json(&embed, head("GET", &path, As::ShellPage), None).await;
+        not_in_app(status, &v);
     }
     embed.close();
 }

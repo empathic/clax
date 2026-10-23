@@ -546,14 +546,15 @@ async fn an_embedded_core_marks_every_shell_document_and_frames_content_on_its_o
         json!({"transport": "host", "shell": "clax://app", "content": "clax://{id}.c"})
     );
     assert!(at < html.find("<script").unwrap(), "before any script");
+    // The frame opens on its site's handshake at the app's content origin,
+    // which the bootstrap names as the site hosts.
     let (_, b) = boot(&html);
-    assert_eq!(b["frame"]["mode"], "subdomain");
-    let src = b["frame"]["src"].as_str().unwrap();
-    assert!(src.starts_with(&format!("clax://{id}.c/v/1/")), "{src}");
-    assert!(
-        html.contains(&format!("src=\"clax://{id}.c/v/1/\"")),
-        "{html}"
+    assert_eq!(
+        b["site"],
+        json!({"domain": "c", "scheme": "clax", "port": null})
     );
+    let start = format!("clax://{id}.c/_clax/session/start?next=%2F_clax%2Fv%2F1%2F");
+    assert!(html.contains(&format!("src=\"{start}\"")), "{html}");
 
     let gallery = page(&embedded, "/", &[]).await.text().await.unwrap();
     assert!(embed_meta(&gallery).is_some(), "{gallery}");
@@ -579,28 +580,19 @@ async fn an_embedded_core_marks_every_shell_document_and_frames_content_on_its_o
 
     // The content frame's bridge takes orders from the app's shell, which
     // its own origin does not name.
-    let port = embedded.addr.port();
-    let content = page(
-        &embedded,
-        "/v/1/",
-        &[("host", format!("{id}.localhost:{port}"))],
-    )
-    .await
-    .text()
-    .await
-    .unwrap();
-    assert!(content.contains(r#"data-origin="clax://app""#), "{content}");
-
-    let plain = ts.publish("Report", &[("index.html", "<p>x</p>")]).await;
-    let pid = plain["artifact"]["id"].as_str().unwrap().to_string();
-    let port = ts.addr.port();
-    let content = page(&ts, "/v/1/", &[("host", format!("{pid}.localhost:{port}"))])
+    let content = embedded
+        .site_get(&id, "/_clax/v/1/")
         .await
         .text()
         .await
         .unwrap();
+    assert!(content.contains(r#"data-origin="clax://app""#), "{content}");
+
+    let plain = ts.publish("Report", &[("index.html", "<p>x</p>")]).await;
+    let pid = plain["artifact"]["id"].as_str().unwrap().to_string();
+    let content = ts.site_get(&pid, "/_clax/v/1/").await.text().await.unwrap();
     assert!(content.contains("<p>x</p>"), "{content}");
-    assert!(!content.contains("data-origin"), "{content}");
+    assert!(!content.contains("clax://app"), "{content}");
     let html = page(&ts, &format!("/a/{pid}?app=1"), &[])
         .await
         .text()

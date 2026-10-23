@@ -138,8 +138,9 @@ async fn lookup(
     // `?v=`; a debug build serves every bridge URL revalidated, current bytes.
     cache.follow_bridge(&bridge);
     // The bridge talks to the shell at the public origin alone (a local
-    // daemon's bridge takes its loopback names at that port).
-    let shell = clax_http::site_access::public_origin(s);
+    // daemon's bridge takes its loopback names at that port), or in the
+    // Clax app at the app's shell origin.
+    let shell = clax_http::site_access::bridge_shell(s);
     s.store_call_async(move |st| async move {
         // A deleted artifact's versions stay behind its row, and its files
         // until its content is removed: neither is served once it is gone.

@@ -23,6 +23,7 @@ mod events;
 pub mod ffi;
 pub mod frame;
 mod log;
+mod site_jar;
 mod web;
 
 pub use crate::core::{

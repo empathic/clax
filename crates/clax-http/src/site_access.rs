@@ -26,7 +26,7 @@
 //!   the session as requests do (at most once every
 //!   `clax_store::site_sessions::SITE_SESSION_RENEW_SECS`).
 //! - Without one, a navigation (top-level, or of a frame) is sent to the
-//!   public host's `/site-signin?host=<host>&next=<path>`, which makes a
+//!   public host's `/site-signin?host=<host>&next=<path>&state=<state>`, which makes a
 //!   session when the browser may read the artifact (partitioned for a
 //!   frame), except a frame that sends none of the site's cookies, which
 //!   gets [`no_cookie_page`] (the browser keeps them from it, so that
@@ -40,19 +40,14 @@
 //! shell's site; made for a top-level visit, `SameSite=Lax`.
 //!
 //! Every code is bound to a **state** the redeeming browser holds in a
-//! cookie of the site host ([`STATE_COOKIE`], `Path=/_clax/session`, ten
-//! minutes, shared by the browser's handshakes, [`state_for`]):
-//! `/_clax/session` redeems a code
+//! cookie of the site host ([`STATE_COOKIE`], on `https`
+//! [`SECURE_STATE_COOKIE`]: host-only, `Path=/`, ten minutes, shared by
+//! the browser's handshakes, [`state_for`]): `/_clax/session` redeems a code
 //! only beside it, so a code minted for one browser signs no other in. A
 //! top-level handshake's state is set by the site's redirect to
 //! `/site-signin`, which names it (`&state=`); a frame's by
 //! `/_clax/session/start`, which hands it to the shell (`postMessage`) for
 //! `POST /api/artifacts/<id>/site-code`.
-//!
-//! A response to a site that is not open to the world is private to its
-//! browser: `Cache-Control` says `private` (`public` becomes `private`,
-//! `no-cache` becomes `private, no-cache`) and it carries no
-//! `Access-Control-Allow-Origin`.
 
 use crate::error::ApiError;
 use crate::host::SiteRequest;
@@ -72,6 +67,21 @@ pub const SITE_COOKIE: &str = "clax_site";
 /// The site cookie's name on an `https` site: the `__Host-` prefix keeps a
 /// sibling host from setting one for this host.
 pub const SECURE_SITE_COOKIE: &str = "__Host-clax_site";
+
+/// The state cookie's name on an `http` site.
+pub const STATE_COOKIE: &str = "clax_site_state";
+/// The state cookie's name on an `https` site: the `__Host-` prefix makes
+/// the browser refuse one with a `Domain` (or another path, or unsecured),
+/// so a sibling site under the site domain cannot plant its own state in a
+/// victim's browser (until the site domain is on the Public Suffix List
+/// such a sibling is same-site).
+pub const SECURE_STATE_COOKIE: &str = "__Host-clax_site_state";
+/// The state cookie's path, as `__Host-` requires.
+pub const STATE_PATH: &str = "/";
+/// How long a handshake's state lasts.
+pub const STATE_TTL_SECS: i64 = 600;
+/// The longest `next` kept ([`safe_next`]).
+pub const MAX_NEXT: usize = 2048;
 
 /// The visitor cookie's name on an `http` site (a local daemon).
 pub const VISITOR_COOKIE: &str = "clax_visitor";
@@ -218,8 +228,20 @@ pub fn visitor_id(token: &str, aid: &ArtifactId, secret: &str) -> String {
     format!("v_{}", &mac[..22])
 }
 
-/// A site response's caching and CORS headers, by who it was answered to,
-/// in one place: it never carries `Access-Control-Allow-Origin`; one that
+/// Who the access layer ([`site_access_layer`]) answered a site response
+/// to, which it leaves on the response for [`site_response_headers`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SiteAnswer {
+    /// The site is open to the world: its responses may be embedded
+    /// elsewhere (`Cross-Origin-Resource-Policy: cross-origin`).
+    pub world: bool,
+    /// The answer is a world visitor's and may sit in a shared cache (never
+    /// the page runtime's, `/_clax/api/`).
+    pub public: bool,
+}
+
+/// A site response's caching and CORS headers, by who it was answered to:
+/// it never carries `Access-Control-Allow-Origin`; one that
 /// sets a cookie is `private, no-store`; a visitor's on a site open to the
 /// world (`world_visitor`) is `public, no-cache`, a version's files and an
 /// asset's `immutable` included, so a shared cache revalidates every one
@@ -237,15 +259,13 @@ fn cache_headers(h: &mut HeaderMap, world_visitor: bool) {
         );
         return;
     }
-    if !world_visitor {
-        return;
-    }
     let cc = h
         .get(header::CACHE_CONTROL)
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    let short = if cc.contains("no-store") || cc.contains("private") {
+        .map(str::to_string);
+    let lower = cc.as_deref().unwrap_or("").to_ascii_lowercase();
+    let directive = |d: &str| lower.split(',').any(|x| x.trim() == d);
+    let next = if directive("no-store") || directive("private") {
         None
     } else if world_visitor {
         // Shared, but revalidated on every request: the site may be made
@@ -254,10 +274,14 @@ fn cache_headers(h: &mut HeaderMap, world_visitor: bool) {
         h.append(header::VARY, HeaderValue::from_static("Cookie"));
         Some("public, no-cache".to_string())
     } else {
-        Some("public, no-cache")
+        Some(match cc.as_deref() {
+            Some(c) if lower.starts_with("public") => format!("private{}", &c["public".len()..]),
+            Some(c) if !c.is_empty() => format!("private, {c}"),
+            _ => "private".to_string(),
+        })
     };
-    if let Some(v) = short {
-        h.insert(header::CACHE_CONTROL, HeaderValue::from_static(v));
+    if let Some(v) = next.and_then(|v| HeaderValue::from_str(&v).ok()) {
+        h.insert(header::CACHE_CONTROL, v);
     }
 }
 
@@ -315,7 +339,7 @@ pub fn new_state() -> String {
 /// one cookie per host and partition holds one); a state is the browser's
 /// alone either way, and each code it is bound to redeems once.
 pub fn state_for(headers: &HeaderMap, secure: bool) -> String {
-    cookie_value(headers, state_cookie_name(secure))
+    state_in(headers, secure)
         .filter(|v| {
             v.len() == 43
                 && v.bytes()
@@ -408,9 +432,24 @@ pub fn public_origin(s: &AppState) -> String {
 /// is `host`: a hosted daemon's public origin; on a local daemon the
 /// shell's loopback names `localhost` and `127.0.0.1` at the
 /// `Host`'s port (CSP names no IPv6 literal, so a shell at `[::1]` frames
-/// no site).
+/// no site); and in an app that embeds the core, the app's shell origin
+/// too ([`crate::state::EmbedOrigins::shell`]).
 pub fn shell_origins(s: &AppState, host: &str) -> Vec<String> {
-    shell_origins_of(hosted_origin(s), host)
+    shell_origins_of(hosted_origin(s), embed_shell(s), host)
+}
+
+/// The shell origin of an app that embeds the core, when one does.
+fn embed_shell(s: &AppState) -> Option<&str> {
+    s.embed.as_ref().map(|e| e.shell.as_str())
+}
+
+/// The shell origin a site page's bridge talks to: an embedding app's
+/// shell, else [`public_origin`].
+pub fn bridge_shell(s: &AppState) -> String {
+    match &s.embed {
+        Some(e) => e.shell.clone(),
+        None => public_origin(s),
+    }
 }
 
 /// The public origin of a hosted daemon, `None` on a local one.
@@ -419,33 +458,41 @@ fn hosted_origin(s: &AppState) -> Option<&str> {
 }
 
 /// [`shell_origins`] from the hosted public origin (`None` on a local
-/// daemon).
-fn shell_origins_of(hosted: Option<&str>, host: &str) -> Vec<String> {
-    if let Some(origin) = hosted {
-        return vec![origin.to_string()];
+/// daemon) and an embedding app's shell origin.
+fn shell_origins_of(hosted: Option<&str>, embed: Option<&str>, host: &str) -> Vec<String> {
+    let mut out: Vec<String> = if let Some(origin) = hosted {
+        vec![origin.to_string()]
+    } else {
+        let port = host
+            .rsplit_once(':')
+            .filter(|(_, p)| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+            .map(|(_, p)| format!(":{p}"))
+            .unwrap_or_default();
+        ["localhost", "127.0.0.1"]
+            .iter()
+            .map(|n| format!("http://{n}{port}"))
+            .collect()
+    };
+    if let Some(e) = embed
+        && !out.iter().any(|o| o == e)
+    {
+        out.push(e.to_string());
     }
-    let port = host
-        .rsplit_once(':')
-        .filter(|(_, p)| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-        .map(|(_, p)| format!(":{p}"))
-        .unwrap_or_default();
-    ["localhost", "127.0.0.1"]
-        .iter()
-        .map(|n| format!("http://{n}{port}"))
-        .collect()
+    out
 }
 
 /// `frame-ancestors 'self' <shell origins>` for the site whose `Host` is
 /// `host` ([`shell_origins`]): only the artifact's own pages and the shell
 /// may frame a site page.
 pub fn frame_ancestors(s: &AppState, host: &str) -> String {
-    frame_ancestors_of(hosted_origin(s), host)
+    frame_ancestors_of(hosted_origin(s), embed_shell(s), host)
 }
 
-/// [`frame_ancestors`] from the hosted public origin.
-fn frame_ancestors_of(hosted: Option<&str>, host: &str) -> String {
+/// [`frame_ancestors`] from the hosted public origin and an embedding
+/// app's shell origin.
+fn frame_ancestors_of(hosted: Option<&str>, embed: Option<&str>, host: &str) -> String {
     let mut p = String::from("frame-ancestors 'self'");
-    for o in shell_origins_of(hosted, host) {
+    for o in shell_origins_of(hosted, embed, host) {
         p.push(' ');
         p.push_str(&o);
     }
@@ -459,31 +506,63 @@ pub const HSTS: &str = "max-age=31536000; includeSubDomains";
 pub const CORP: axum::http::HeaderName =
     axum::http::HeaderName::from_static("cross-origin-resource-policy");
 
-/// The headers every response of the site whose `Host` is `host` carries
-/// (the site layer, [`crate::host::site_layer`], sets them, an error's
-/// included): `Referrer-Policy: no-referrer`, `X-Content-Type-Options:
-/// nosniff`, `Cross-Origin-Resource-Policy: same-origin` unless the
-/// response named one (a site open to the world's are `cross-origin`,
-/// [`site_access_layer`]), `Strict-Transport-Security` ([`HSTS`]) on
-/// `https`, and on an HTML response without a policy of its own
-/// `Content-Security-Policy:` [`frame_ancestors`].
+/// The headers of a response of the site whose `Host` is `host`, in one
+/// place (the site layer, [`crate::host::site_layer`], sets them on every
+/// one, an error's included): `Referrer-Policy: no-referrer`,
+/// `X-Content-Type-Options: nosniff`, `Cross-Origin-Resource-Policy:
+/// same-origin` unless the response named one (`cross-origin` on a site
+/// open to the world), `Strict-Transport-Security` ([`HSTS`]) on `https`,
+/// and, unless a content route set the response's policy itself
+/// ([`ContentPolicySet`](crate::content_policy::ContentPolicySet)), the
+/// lockdown `Content-Security-Policy` after [`frame_ancestors`]
+/// ([`crate::content_policy::lockdown`]), beside any policy the response
+/// has (policies only narrow): a 404, a redirect, `/_clax/…` or a refusal
+/// a page frames or opens is held to the page's own rules. A response the
+/// access layer decided ([`SiteAnswer`]) also takes its caching and CORS
+/// headers by who it was answered to (see [`SiteAnswer`] and the module
+/// docs).
 pub fn site_response_headers(s: &AppState, host: &str, res: &mut Response) {
     let answer = res.extensions().get::<SiteAnswer>().copied();
-    site_headers(hosted_origin(s), secure(s), host, answer, res.headers_mut());
+    let set = res
+        .extensions()
+        .get::<crate::content_policy::ContentPolicySet>()
+        .is_some();
+    site_headers(
+        SitePolicy {
+            hosted: hosted_origin(s),
+            embed: embed_shell(s),
+            secure: secure(s),
+            policy_set: set,
+        },
+        host,
+        answer,
+        res.headers_mut(),
+    );
+}
+
+/// Who frames a site's pages and what its responses carry, for
+/// [`site_headers`]: a hosted daemon's public origin (`None` on a local
+/// one), an embedding app's shell origin, whether sites are served on
+/// `https`, and whether the response's route set its own policy.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SitePolicy<'a> {
+    pub hosted: Option<&'a str>,
+    pub embed: Option<&'a str>,
+    pub secure: bool,
+    pub policy_set: bool,
 }
 
 /// [`site_response_headers`] on response headers `h`, for a server that
 /// holds no [`AppState`] (a Worker serving the UI's files from its static
-/// assets): `hosted` is a hosted daemon's public origin (`None` on a local
-/// one), `secure` whether sites are served on `https`, `answer` what the
-/// access layer decided, if it decided the response.
-pub fn site_headers(
-    hosted: Option<&str>,
-    secure: bool,
-    host: &str,
-    answer: Option<SiteAnswer>,
-    h: &mut HeaderMap,
-) {
+/// assets): `p` says who frames the site and how it is served, `answer`
+/// what the access layer decided, if it decided the response.
+pub fn site_headers(p: SitePolicy<'_>, host: &str, answer: Option<SiteAnswer>, h: &mut HeaderMap) {
+    let SitePolicy {
+        hosted,
+        embed,
+        secure,
+        policy_set,
+    } = p;
     if let Some(a) = answer {
         cache_headers(h, a.public);
         if a.world {
@@ -507,15 +586,12 @@ pub fn site_headers(
             HeaderValue::from_static(HSTS),
         );
     }
-    let html = h
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|t| t.trim_start().to_ascii_lowercase().starts_with("text/html"));
-    if html
-        && !h.contains_key(header::CONTENT_SECURITY_POLICY)
-        && let Ok(v) = HeaderValue::from_str(&frame_ancestors_of(hosted, host))
+    if !policy_set
+        && let Ok(v) = HeaderValue::from_str(&crate::content_policy::lockdown(&frame_ancestors_of(
+            hosted, embed, host,
+        )))
     {
-        h.insert(header::CONTENT_SECURITY_POLICY, v);
+        h.append(header::CONTENT_SECURITY_POLICY, v);
     }
 }
 
@@ -523,6 +599,11 @@ pub fn site_headers(
 /// (the public host's or a site host's): the public origin's scheme, and
 /// the `Host`'s port unless it is the scheme's default.
 pub fn site_origin(s: &AppState, aid: &ArtifactId, host: &str) -> String {
+    // In an app that embeds the core, the app's content origin, which its
+    // core serves the site on.
+    if let Some((scheme, domain)) = s.embed.as_ref().and_then(|e| e.site_hosts()) {
+        return format!("{scheme}://{}.{domain}", aid.as_str());
+    }
     let port = host.rsplit_once(':').and_then(|(_, p)| p.parse().ok());
     let scheme = if secure(s) { "https" } else { "http" };
     s.sites().origin(aid, scheme, port)
@@ -734,12 +815,6 @@ pub async fn site_access_layer(
         Ok(h) => h,
         Err(e) => return e.into_response(),
     };
-    if let Some(h) = holder {
-        req.extensions_mut().insert(SiteCaller::Holder(h));
-        let mut res = next.run(req).await;
-        site_response_headers(&mut res, false);
-        return res;
-    }
     let aid = site.artifact.clone();
     let world = match s.store_call(move |st| st.site_open_to_world(&aid)).await {
         Ok(w) => w,
@@ -774,8 +849,10 @@ pub async fn site_access_layer(
             }
             // The runtime's answers are the caller's own (its documents,
             // its whoami): never a shared cache's.
-            let public = !path.starts_with("/_clax/api/");
-            site_response_headers(&mut res, public);
+            res.extensions_mut().insert(SiteAnswer {
+                world: true,
+                public: !path.starts_with("/_clax/api/"),
+            });
             return res;
         }
         None if navigation(req.method(), req.headers()) => {
@@ -801,12 +878,10 @@ pub async fn site_access_layer(
     };
     req.extensions_mut().insert(caller);
     let mut res = next.run(req).await;
-    if !world {
-        return private(res);
-    }
-    // A public site's images and files may be embedded elsewhere.
-    res.headers_mut()
-        .insert(CORP, HeaderValue::from_static("cross-origin"));
+    res.extensions_mut().insert(SiteAnswer {
+        world,
+        public: false,
+    });
     res
 }
 
@@ -979,8 +1054,8 @@ mod tests {
         assert_eq!(after(year, true, false), "private, no-store");
         assert_eq!(
             after("no-cache", false, false),
-            "no-cache",
-            "a holder's stays"
+            "private, no-cache",
+            "anyone else's is private"
         );
     }
 

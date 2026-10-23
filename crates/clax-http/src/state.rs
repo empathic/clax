@@ -74,6 +74,21 @@ impl EmbedOrigins {
     pub fn content_of(&self, id: &str) -> String {
         self.content.replace("{id}", id)
     }
+
+    /// The content origins as site hosts: the scheme and the domain of a
+    /// `content` of the form `<scheme>://{id}.<domain>` (no port, path or
+    /// user), which the core serves each artifact's site on; `None` for any
+    /// other form.
+    pub fn site_hosts(&self) -> Option<(&str, &str)> {
+        let (scheme, rest) = self.content.split_once("://")?;
+        let domain = rest.strip_prefix("{id}.")?;
+        let plain = |s: &str| {
+            !s.is_empty()
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b".-".contains(&b))
+        };
+        (plain(scheme) && plain(domain) && !domain.starts_with('.')).then_some((scheme, domain))
+    }
 }
 
 #[derive(Clone)]
@@ -195,6 +210,18 @@ pub struct AppState {
     pub vis_gen: VisGen,
     /// Hosted mode ([`crate::hosted`]); `None` for the local daemon.
     pub hosted: Option<Arc<crate::hosted::Hosted>>,
+    /// What a hosted Clax says about the Clax app: its app links and store
+    /// pages (`[hosted] app_links` and `stores`, or the Worker's vars),
+    /// which the host sets after [`AppState::assemble`]; none by default.
+    pub clax_app: Arc<clax_core::config::ClaxApp>,
+    /// The build identity the host was given, which `/healthz` reports as
+    /// `build`: on a Worker the `CLAX_BUILD` var a deploy sets, unique to
+    /// each upload, which the host sets after [`AppState::assemble`]; `None`
+    /// by default.
+    pub build: Option<String>,
+    /// The origins of the app that embeds this core, which its shell
+    /// documents and content policy name; `None` for a daemon.
+    pub embed: Option<EmbedOrigins>,
     /// The host's git remotes ([`crate::git_remotes`]), once it installs
     /// them; empty on the native daemon.
     pub git_remotes: Arc<crate::git_remotes::Slot>,
@@ -205,6 +232,9 @@ pub struct AppState {
     /// [`AppState::assemble`] sets the host's default (each artifact's file
     /// in the home natively), which a host with its own stores replaces.
     pub app_data: Arc<dyn crate::app_data_host::AppDataHost>,
+    /// The queue owner of each job client ([`crate::jobs_owner`]), in
+    /// memory only: empty at every start.
+    pub jobs_owners: Arc<crate::jobs_owner::JobsOwners>,
     /// Debug builds: whether this is the testkit's daemon, which honours
     /// the `x-clax-test-delay-ms` header (so a test can make a real route
     /// slow) and serves `GET /api/_test/audit/ctx` (`clax_server::router`).
@@ -323,6 +353,16 @@ impl AppState {
         let grant_auth = Arc::new(crate::grant_auth::GrantAuth::load(&p.store)?);
         let vis_gen = VisGen::install(&p.store);
         let app_data = crate::app_data_host::default_host(&p.store, &p.home);
+        let settings = Arc::new(crate::settings::Settings::at_start(
+            &p.home,
+            p.hosted.is_some(),
+        ));
+        // A hosted server, and the Worker always, send ClaxBot's instance
+        // key only to a public https host.
+        if p.hosted.is_some() || cfg!(target_arch = "wasm32") {
+            p.store
+                .set_base_url_policy(clax_store::bot_settings::BaseUrlPolicy::Hosted);
+        }
         Ok(AppState {
             settings,
             bot: Arc::default(),

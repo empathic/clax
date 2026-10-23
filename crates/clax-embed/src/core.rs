@@ -167,6 +167,9 @@ struct Shared {
     in_flight: watch::Sender<usize>,
     /// How long [`Embed::close`] lets calls in flight finish.
     drain: Duration,
+    /// The sites' cookies, kept for the content frames
+    /// ([`crate::site_jar`]).
+    jar: crate::site_jar::SiteJar,
     #[cfg(test)]
     panic_at: Option<PanicAt>,
     #[cfg(test)]
@@ -311,6 +314,7 @@ impl Embed {
             closing: AtomicBool::new(false),
             in_flight: watch::channel(0).0,
             drain,
+            jar: crate::site_jar::SiteJar::default(),
             #[cfg(test)]
             panic_at: PANIC_AT.take(),
             #[cfg(test)]
@@ -727,12 +731,8 @@ pub fn admit(head: &RequestHead) -> Result<(), &'static str> {
             !clax_server::router::held_open::matches(path) && path != "/api/admin/shutdown"
         }
         // The shell document and what the core serves it: the web UI's
-        // files under `/_clax/`, a version's files, and assets.
-        As::ShellPage => {
-            read && ["/a/", "/_clax/", "/c/", "/_blob/"]
-                .iter()
-                .any(|p| path.starts_with(p))
-        }
+        // files under `/_clax/`. Content and assets are each site's.
+        As::ShellPage => read && ["/a/", "/_clax/"].iter().any(|p| path.starts_with(p)),
         As::Content => read && head.host.as_deref().is_some_and(content_host),
     };
     if ok { Ok(()) } else { Err(REFUSED) }
@@ -771,15 +771,29 @@ async fn answer(sh: Arc<Shared>, head: RequestHead, body: Bytes, prefix: Vec<u8>
         Ok(Phase::Failed) => return error_frame(503, "core_failed", "the core did not open"),
         _ => return error_frame(503, "core_closed", "the core is closed"),
     };
-    let req = match request(&head, body, &token) {
+    let mut req = match request(&head, body, &token) {
         Ok(r) => r,
         Err(e) => return error_frame(400, "bad_frame", &e),
     };
+    // A content frame's site cookies are the core's to keep: no WebView
+    // keeps a cookie its scheme's answer sets (`crate::site_jar`).
+    let site = match (&head.as_, &head.host) {
+        (As::Content, Some(id)) => Some(id.clone()),
+        _ => None,
+    };
+    if let Some(cookie) = site.as_deref().and_then(|id| sh.jar.cookie_header(id))
+        && let Ok(v) = axum::http::HeaderValue::from_str(&cookie)
+    {
+        req.headers_mut().insert(axum::http::header::COOKIE, v);
+    }
     let answered = async {
         let res = router
             .oneshot(req)
             .await
             .unwrap_or_else(|never| match never {});
+        if let Some(id) = &site {
+            sh.jar.take(id, res.headers());
+        }
         respond(res, RESPONSE_LIMIT, &prefix).await
     };
     tokio::select! {
@@ -848,9 +862,10 @@ pub(crate) fn request(
     // page's `<script src>`, `<img src>` or fetch included), so a
     // shell-page frame is the owner's browser only for the shell document,
     // `/a/…`, which the host answers to the main frame's navigation alone
-    // (spec §4.2, §4.3). The rest it reaches (`/_clax/`, `/c/`, `/_blob/`)
-    // answers without a credential and is asked for with none. A content
-    // frame never carries one. The shell's API calls its host relays are
+    // (spec §4.2, §4.3). The rest it reaches (`/_clax/`) answers without a
+    // credential and is asked for with none. A content frame carries no
+    // credential of the owner's: only its own site's cookies, which the
+    // core adds from its jar (`crate::site_jar`). The shell's API calls its host relays are
     // the owner's browser's, as a browser's shell is with the owner cookie
     // its token request set.
     if browser || (head.as_ == As::ShellPage && is_shell_document(&head.path)) {
@@ -1500,7 +1515,10 @@ mod tests {
             ("authorization", "Bearer forged"),
             ("host", "elsewhere"),
         ];
-        for (as_, path) in [(As::Content, "/v/1/"), (As::ShellPage, "/a/7q3k9mzx2b4t")] {
+        for (as_, path) in [
+            (As::Content, "/_clax/v/1/"),
+            (As::ShellPage, "/a/7q3k9mzx2b4t"),
+        ] {
             let mut h = head("GET", path, as_, Some("7q3k9mzx2b4t"));
             h.headers = sent
                 .iter()
@@ -1531,12 +1549,7 @@ mod tests {
         // What a page can make the WebView ask of the shell's host, by
         // `<script src>`, `<img src>` or a fetch, reaches the core as a
         // shell-page frame too: none of it carries a credential.
-        for path in [
-            "/c/7q3k9mzx2b4t/v/1/app.js",
-            "/_blob/7q3k9mzx2b4t/01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            "/_blob/01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            "/_clax/shell/app.js",
-        ] {
+        for path in ["/_clax/shell/app.js", "/_clax/bridge.js"] {
             let req = request(&head("GET", path, As::ShellPage, None), Bytes::new(), "t").unwrap();
             assert!(req.headers().get("cookie").is_none(), "{path}");
             assert!(req.headers().get("authorization").is_none(), "{path}");
@@ -1635,12 +1648,40 @@ mod tests {
             ("GET", "/api/token", As::ShellPage, None, false),
             ("GET", "/", As::ShellPage, None, false),
             ("POST", "/a/x", As::ShellPage, None, false),
-            ("GET", "/v/1/", As::Content, id, true),
+            ("GET", "/c/7q3k9mzx2b4t/v/1/", As::ShellPage, None, false),
+            (
+                "GET",
+                "/_blob/01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                As::ShellPage,
+                None,
+                false,
+            ),
+            ("GET", "/", As::Content, id, true),
+            ("GET", "/_clax/v/1/", As::Content, id, true),
+            (
+                "GET",
+                "/_clax/session?code=c&next=%2F",
+                As::Content,
+                id,
+                true,
+            ),
             ("GET", "/api/artifacts", As::Content, id, true),
-            ("PUT", "/v/1/", As::Content, id, false),
-            ("GET", "/v/1/", As::Content, None, false),
-            ("GET", "/v/1/", As::Content, Some("7Q3K9MZX2B4T"), false),
-            ("GET", "/v/1/", As::Content, Some("x.localhost:1"), false),
+            ("PUT", "/_clax/v/1/", As::Content, id, false),
+            ("GET", "/_clax/v/1/", As::Content, None, false),
+            (
+                "GET",
+                "/_clax/v/1/",
+                As::Content,
+                Some("7Q3K9MZX2B4T"),
+                false,
+            ),
+            (
+                "GET",
+                "/_clax/v/1/",
+                As::Content,
+                Some("x.localhost:1"),
+                false,
+            ),
         ] {
             assert_eq!(admit(&head(m, p, a, h)).is_ok(), ok, "{m} {p} {a:?} {h:?}");
         }
