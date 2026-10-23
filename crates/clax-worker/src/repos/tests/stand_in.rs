@@ -674,7 +674,7 @@ fn the_held_tokens_are_listed_without_secrets_and_revoked_by_session_or_person()
             .into_iter()
             .map(|h| h.id)
             .collect();
-        assert_eq!(left, [owners.id.clone()]);
+        assert_eq!(left, std::slice::from_ref(&owners.id));
     });
 }
 

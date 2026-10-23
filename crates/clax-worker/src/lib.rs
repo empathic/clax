@@ -397,6 +397,7 @@ pub(crate) async fn reconcile_pushes(
 /// Whether the instance answers that `artifact` lies within the owner's
 /// reach (`POST /_internal/reach`; see Pushes): what the diagnostics need
 /// before they read or hand out its repository.
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn owner_reaches(env: &Env, artifact: &str) -> Result<bool> {
     let mut init = worker::RequestInit::new();
     init.with_method(worker::Method::Post)
