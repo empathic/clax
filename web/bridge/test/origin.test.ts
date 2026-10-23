@@ -273,6 +273,81 @@ describe("db.artifact(id) on the page's own origin", () => {
     await vi.advanceTimersByTimeAsync(UNWATCHED_POLL_MS[0]);
     expect(got.at(-1)).toMatchObject({ topic: "snapshot-error", data: { sub: "s1", code: "not_granted" } });
   });
+
+  /** A site whose reads of another app wait on `gate` while it is set. */
+  function gated() {
+    const state = { gate: null as Promise<void> | null, v: 1 };
+    const calls: string[] = [];
+    const client: OriginClient = {
+      call: async (_cap, method, a) => {
+        calls.push(method);
+        if (method === "read_get") {
+          if (state.gate) await state.gate;
+          return doc(String((a as unknown[])[1]), state.v);
+        }
+        return method === "get" ? doc("tasks/t1", 1) : null;
+      },
+      socket: () => { throw new Error("no socket"); },
+    };
+    let open = () => {};
+    const close = () => { state.gate = new Promise<void>(r => { open = r; }); };
+    return { client, calls, state, close, open: () => open() };
+  }
+  const readSub = (s: string, path = "runs/r1") => ({ op: "subscribe", artifact: B, sub: s, spec: sub(path) });
+
+  it("holds at most MAX_SUBSCRIPTIONS subscriptions of other apps, however many are asked for at once", async () => {
+    vi.useFakeTimers();
+    const g = gated();
+    const t = dbTransport(g.client, false);
+    g.close();
+    const all = Array.from({ length: 200 }, (_, i) => t.call("db", "read", [readSub(`s${i}`)]));
+    // Every slot is held while the first reads are out: this app's own
+    // subscription is refused too.
+    await expect(t.call("db", "subscribe", ["own", sub("tasks/t1")])).rejects.toMatchObject({ code: "resource_exhausted" });
+    g.open();
+    const results = await Promise.allSettled(all);
+    expect(results.filter(r => r.status === "fulfilled")).toHaveLength(MAX_SUBSCRIPTIONS);
+    const refusals = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(refusals).toHaveLength(200 - MAX_SUBSCRIPTIONS);
+    expect(refusals.every(r => r.reason.code === "resource_exhausted")).toBe(true);
+    // Each held subscription is polled, and no more.
+    const before = g.calls.filter(c => c === "read_get").length;
+    expect(before).toBe(MAX_SUBSCRIPTIONS * 2);
+    await vi.advanceTimersByTimeAsync(UNWATCHED_POLL_MS[0]);
+    expect(g.calls.filter(c => c === "read_get").length - before).toBe(MAX_SUBSCRIPTIONS);
+  });
+
+  it("drops a subscribe still waiting on its first read when it is unsubscribed or subscribed again", async () => {
+    vi.useFakeTimers();
+    for (const end of ["unsubscribe", "again"] as const) {
+      const g = gated();
+      const t = dbTransport(g.client, false);
+      const got = pushes(t);
+      g.close();
+      const pending = t.call("db", "read", [readSub("s1")]);
+      await vi.advanceTimersByTimeAsync(0);
+      const again = end === "again" ? t.call("db", "read", [readSub("s1", "runs/r2")]) : t.call("db", "read", [{ op: "unsubscribe", sub: "s1" }]);
+      g.open();
+      await expect(pending, end).resolves.toBeNull();
+      await again;
+      const reads = () => g.calls.filter(c => c === "read_get").length;
+      const n = reads();
+      await vi.advanceTimersByTimeAsync(POLL_MS * 4);
+      if (end === "unsubscribe") {
+        // Nothing was subscribed, so nothing is delivered or polled.
+        expect(got, end).toEqual([]);
+        expect(reads(), end).toBe(n);
+      } else {
+        // Only the later subscribe's document is delivered and polled.
+        expect(got.map(x => (x.data.docs as WireDoc[])[0].path), end).toEqual(["runs/r2"]);
+        expect(reads(), end).toBeGreaterThan(n);
+      }
+      // The slot is free again: MAX_SUBSCRIPTIONS more fit.
+      g.state.gate = null;
+      for (let i = 0; i < MAX_SUBSCRIPTIONS - (end === "again" ? 1 : 0); i++) await t.call("db", "read", [readSub(`n${i}`)]);
+      await expect(t.call("db", "read", [readSub("over")]), end).rejects.toMatchObject({ code: "resource_exhausted" });
+    }
+  });
 });
 
 describe("db in the Clax app's migration view", () => {

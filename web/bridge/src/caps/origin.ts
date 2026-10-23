@@ -16,6 +16,7 @@ import { avatarFor, colorFor } from "./avatar";
 import { makeDb } from "./db";
 import { type OriginClient, type WireDoc, originClient } from "./origin-client";
 import { originRoom } from "./room-socket";
+import { MIGRATE_FRAME } from "../protocol";
 
 export type Whoami = { kind: string; id?: string; name?: string; level: string; can_edit: boolean };
 type Declared = Record<string, Record<string, unknown> | undefined>;
@@ -61,7 +62,9 @@ export async function originUse(name: string, shell: Shell | false, room: () => 
   switch (name) {
     case "db": {
       if (!has("db")) return null;
-      const t = dbTransport(s.client, shell);
+      // In the Clax app's migration view the shell keeps each document's
+      // value before the migration's first write to it (its write journal).
+      const t = dbTransport(s.client, shell, !!shell && typeof window !== "undefined" && window.name === MIGRATE_FRAME);
       return buildNamespace("db", t, makeDb(t) as unknown as Local);
     }
     case "assets":
@@ -124,6 +127,14 @@ export function dbTransport(client: OriginClient, shell: Shell | false, journal 
   const listeners = new Map<string, Set<(d: unknown) => void>>();
   const emit = (topic: string, data: unknown) => { for (const fn of [...(listeners.get(topic) ?? [])]) fn(data); };
   const subs = new Map<string, Spec>();
+  // `read` subscriptions still waiting on their first read, each by the
+  // token of the subscribe that holds its slot: an unsubscribe or a later
+  // subscribe of the same ID takes it away, and that subscribe then ends
+  // without subscribing.
+  const pending = new Map<string, object>();
+  /** How many slots are held: subscriptions and pending first reads. */
+  const held = () => subs.size + [...pending.keys()].filter(k => !subs.has(k)).length;
+  const full = (sub: string) => !subs.has(sub) && !pending.has(sub) && held() >= MAX_SUBSCRIPTIONS;
   // The app each `read` subscription reads (none for this app's own).
   const sources = new Map<string, string>();
   // Per source: whether the shell's owner allowed the read, asked once.
@@ -143,6 +154,16 @@ export function dbTransport(client: OriginClient, shell: Shell | false, journal 
   const sigs = new Map<string, string>();
   let watched = false;
   let streamDown = false;
+  // Paths the shell's write journal has a value of: only a document's first
+  // write is journaled (a replay in reverse puts back the earliest anyway).
+  const journaled = new Set<string>();
+  /** Writes nothing to `path` until the journal (when one runs) has it. */
+  async function kept(path: string): Promise<void> {
+    if (!journal || !shell || journaled.has(path)) return;
+    const d = (await client.call("db", "get", [path])) as WireDoc | null;
+    await shell.call("db", "journal", [{ path, before: d ? d.data : null }]);
+    journaled.add(path);
+  }
   let poll: ReturnType<typeof setTimeout> | null = null;
   let step = 0;
   const hidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
@@ -260,6 +281,7 @@ export function dbTransport(client: OriginClient, shell: Shell | false, journal 
 
   function drop(sub: string): void {
     subs.delete(sub);
+    pending.delete(sub);
     sources.delete(sub);
     fetches.delete(sub);
     failures.delete(sub);
@@ -306,7 +328,7 @@ export function dbTransport(client: OriginClient, shell: Shell | false, journal 
       switch (method) {
         case "subscribe": {
           const sub = String(args[0]);
-          if (!subs.has(sub) && subs.size >= MAX_SUBSCRIPTIONS) throw new CapabilityError("resource_exhausted", `at most ${MAX_SUBSCRIPTIONS} subscriptions per view`);
+          if (full(sub)) throw new CapabilityError("resource_exhausted", `at most ${MAX_SUBSCRIPTIONS} subscriptions per view`);
           drop(sub);
           subs.set(sub, args[1] as Spec);
           repoll();
@@ -324,9 +346,21 @@ export function dbTransport(client: OriginClient, shell: Shell | false, journal 
             case "query": return readOf(src, "query", r.spec, true);
             case "subscribe": {
               const sub = String(r.sub);
-              if (!subs.has(sub) && subs.size >= MAX_SUBSCRIPTIONS) throw new CapabilityError("resource_exhausted", `at most ${MAX_SUBSCRIPTIONS} subscriptions per view`);
-              // The first read is the page's: it may ask the shell.
-              await readOf(src, (r.spec as Spec).kind === "query" ? "query" : "get", (r.spec as Spec).kind === "query" ? r.spec : (r.spec as { path: string }).path, true);
+              if (full(sub)) throw new CapabilityError("resource_exhausted", `at most ${MAX_SUBSCRIPTIONS} subscriptions per view`);
+              // The slot is held from now, before the first read answers.
+              const mine = {};
+              pending.set(sub, mine);
+              const spec = r.spec as Spec;
+              try {
+                // The first read is the page's: it may ask the shell.
+                await readOf(src, spec.kind === "query" ? "query" : "get", spec.kind === "query" ? spec : spec.path, true);
+              } catch (e) {
+                if (pending.get(sub) !== mine) return null;
+                pending.delete(sub);
+                throw e;
+              }
+              // Unsubscribed, or subscribed again, while the read was out.
+              if (pending.get(sub) !== mine) return null;
               drop(sub);
               subs.set(sub, r.spec as Spec);
               sources.set(sub, src);
@@ -342,11 +376,13 @@ export function dbTransport(client: OriginClient, shell: Shell | false, journal 
           }
         }
         case "set": case "update": case "delete": {
+          await kept(pathOf(args));
           const r = await client.call("db", method, args);
           echo(pathOf(args));
           return r;
         }
         case "acquire": {
+          await kept(pathOf(args));
           const r = (await client.call("db", method, args)) as { acquired: boolean };
           if (r.acquired) echo(pathOf(args));
           return r;
