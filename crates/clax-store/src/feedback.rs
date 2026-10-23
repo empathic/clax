@@ -508,6 +508,14 @@ impl<'a> Sight<'a> {
     fn names(&mut self, authors: &[Author]) -> Result<String> {
         let mut out = Vec::with_capacity(authors.len());
         for a in authors {
+            if let Author::Person(p) = a
+                && clax_core::visibility::is_remote_author(p)
+                && !self.names.contains_key(a)
+                && let Some(name) = super::linked::remote_author_name_in(self.c, p)?
+            {
+                // Someone on a public Clax, as their comments here name them.
+                self.names.insert(a.clone(), name);
+            }
             if !self.names.contains_key(a) {
                 let raw: Option<String> = match a {
                     Author::Owner => self

@@ -368,6 +368,49 @@ fn remote_twin_in(
     .optional()?)
 }
 
+/// [`Store::remote_author_name`], read on `c`.
+pub(crate) fn remote_author_name_in(c: &Connection, key: &str) -> Result<Option<String>> {
+    let row: Option<(Option<String>, String)> = c
+        .query_row(
+            "SELECT lc.author_name, lt.remote_name FROM linked_comments lc
+               JOIN linked_threads lt ON lt.thread_id = lc.thread_id
+             WHERE lc.author_key = ?1 ORDER BY lc.created_at DESC LIMIT 1",
+            params![key],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(row.map(|(name, remote)| remote_label(name.as_deref().unwrap_or("Someone"), &remote)))
+}
+
+/// The key a comment mirrored from remote `rid` by `author` is read by
+/// ([`clax_core::visibility::remote_author`]): `None` when the author is
+/// the person this Clax is signed in there as (their words are the
+/// owner's here), and for every comment read with an agent token
+/// ([`super::remotes::CLIENT_KIND_AGENT`]), whose reads the remote already
+/// filtered by that person's approvals there. An agent's comment with no
+/// person is that Clax's owner's agent's; a viewer's with none is an
+/// anonymous viewer's. A remote whose kind is not known yet keys them
+/// all, as a device's.
+fn mirrored_author_key(c: &Connection, rid: &str, author: &RemoteAuthor) -> Result<Option<String>> {
+    let (origin, me, kind): (String, Option<String>, Option<String>) = c.query_row(
+        "SELECT origin, person_public_id, client_kind FROM remotes WHERE id = ?1",
+        params![rid],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    if kind.as_deref() == Some(super::remotes::CLIENT_KIND_AGENT) {
+        return Ok(None);
+    }
+    let id = match (&author.public_id, author.kind.as_str()) {
+        (Some(p), _) => p.as_str(),
+        (None, "agent") => clax_core::visibility::OWNER,
+        (None, _) => clax_core::visibility::UNCONNECTED,
+    };
+    if me.as_deref() == Some(id) {
+        return Ok(None);
+    }
+    Ok(Some(clax_core::visibility::remote_author(&origin, id)))
+}
+
 impl Store {
     /// Records that local version `local_n` of `aid` was pushed as public
     /// version `remote_n` of `raid` on remote `rid`.
@@ -388,6 +431,20 @@ impl Store {
                 params![rid, aid, raid, local_n, remote_n],
             )?;
             Ok(())
+        })
+    }
+
+    /// How many public copies on remote `rid` local artifact `aid` has had
+    /// a version pushed to, linked or not: an unlink leaves their pushes
+    /// recorded.
+    pub fn remote_copies(&self, rid: &str, aid: &str) -> Result<u32> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT COUNT(DISTINCT remote_artifact_id) FROM remote_versions
+                 WHERE remote_id = ?1 AND artifact_id = ?2",
+                params![rid, aid],
+                |r| r.get(0),
+            )?)
         })
     }
 
@@ -645,7 +702,10 @@ impl Store {
         })
     }
 
-    /// Inserts mirrored comment `c` on thread `tid` of `aid` with its link.
+    /// Inserts mirrored comment `c` on thread `tid` of `aid` with its link,
+    /// keyed by its author there ([`mirrored_author_key`]). The first
+    /// comment here by someone else there changes what the owner's agents
+    /// may see (their fast path, [`Store::owner_sees_all`], ends).
     fn insert_mirrored(
         &self,
         tx: &Connection,
@@ -661,6 +721,17 @@ impl Store {
             super::threads::AUTHOR_VIEWER
         };
         let cid = new_ulid();
+        let key = mirrored_author_key(tx, rid, &c.author)?;
+        if key.is_some() {
+            let first: bool = tx.query_row(
+                "SELECT NOT EXISTS (SELECT 1 FROM linked_comments WHERE author_key IS NOT NULL)",
+                [],
+                |r| r.get(0),
+            )?;
+            if first {
+                self.visibility_changed();
+            }
+        }
         tx.execute(
             "INSERT INTO comments (id, thread_id, author_kind, author_name, author_public_id, via_session_id, via_page, body, created_at)
              VALUES (?1, ?2, ?3, ?4, NULL, NULL, 0, ?5, ?6)",
@@ -668,8 +739,8 @@ impl Store {
         )?;
         tx.execute(
             "INSERT INTO linked_comments (comment_id, thread_id, remote_id, remote_comment_id, idem_key,
-                origin, author_kind, author_public_id, author_name, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'remote', ?6, ?7, ?8, ?9)",
+                origin, author_kind, author_public_id, author_name, created_at, author_key)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'remote', ?6, ?7, ?8, ?9, ?10)",
             params![
                 cid,
                 tid,
@@ -679,7 +750,8 @@ impl Store {
                 c.author.kind,
                 c.author.public_id,
                 c.author.name,
-                now
+                now,
+                key
             ],
         )?;
         if kind == super::threads::AUTHOR_AGENT {
@@ -697,10 +769,18 @@ impl Store {
             created_at: now,
             page_authors: Vec::new(),
             agent_person: None,
+            remote_author: key,
             // A remote's comment came from no session here: agents read
             // its author through `remote_author_labels`.
             agent: None,
         })
+    }
+
+    /// How a mirrored author keyed `key` ([`clax_core::visibility::remote_author`])
+    /// is named: `<their name there> (on <remote>)` as their newest
+    /// mirrored comment names them; `None` for a key no comment here has.
+    pub fn remote_author_name(&self, key: &str) -> Result<Option<String>> {
+        self.with_read(|c| remote_author_name_in(c, key))
     }
 
     /// How agents read the author of each of `cids` that came from a
@@ -1635,6 +1715,91 @@ mod tests {
         assert_eq!(v.comments[&made.id].author_name.as_deref(), Some("Sam"));
         // Nothing mirrored goes back up.
         assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_mirrored_comment_is_keyed_unless_an_agent_token_read_it() {
+        use crate::remotes::{CLIENT_KIND_AGENT, CLIENT_KIND_APP};
+        for (kind, keyed) in [
+            (None, true),
+            (Some(CLIENT_KIND_APP), true),
+            (Some(CLIENT_KIND_AGENT), false),
+        ] {
+            let w = world();
+            if let Some(k) = kind {
+                w.st.set_remote_client_kind(&w.rid, k).unwrap();
+            }
+            let l = link(&w, (1, 1));
+            let mt = MirrorThread {
+                remote_thread_id: "rt1".into(),
+                remote_version: 1,
+                anchor: whole(),
+                first: mirror("make it bluer", "rc1"),
+            };
+            let remote = ("clax.example", "https://clax.example");
+            let t =
+                w.st.mirror_thread(&AuditCtx::DAEMON, &l, remote, 1, true, mt)
+                    .unwrap();
+            let c = &w.st.get_thread(&t.id).unwrap().unwrap().comments[0];
+            assert_eq!(
+                c.remote_author.as_deref(),
+                keyed.then_some("remote:https://clax.example#pub_sam"),
+                "{kind:?}"
+            );
+            // The owner's agents read everything only while nothing is keyed.
+            assert_eq!(w.st.owner_sees_all().unwrap(), !keyed, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_link_moved_to_another_public_copy_ends_the_old_copys_threads_and_read() {
+        let w = world();
+        let l = link(&w, (1, 1));
+        let mt = MirrorThread {
+            remote_thread_id: "rt1".into(),
+            remote_version: 1,
+            anchor: whole(),
+            first: mirror("make it bluer", "rc1"),
+        };
+        let remote = ("clax.example", "https://clax.example");
+        let t =
+            w.st.mirror_thread(&AuditCtx::DAEMON, &l, remote, 1, true, mt)
+                .unwrap();
+        w.st.set_sync_cursor(&w.aid, &w.rid, "2026-10-15T10:00:00.000Z")
+            .unwrap();
+        w.st.set_link_download_only(&w.aid, &w.rid, true).unwrap();
+        // Linked again to the same copy: nothing ends.
+        w.st.link_remote(&w.aid, &w.rid, "pub1", "https://clax.example/a/pub1", 1, 1)
+            .unwrap();
+        assert!(
+            w.st.linked_thread(&t.id)
+                .unwrap()
+                .unwrap()
+                .unlinked_at
+                .is_none()
+        );
+        let same = w.st.remote_link(&w.aid, &w.rid).unwrap().unwrap();
+        assert_eq!(
+            same.sync_cursor.as_deref(),
+            Some("2026-10-15T10:00:00.000Z")
+        );
+        assert!(same.download_only);
+        // Moved to another copy: the old copy's thread is history, and the
+        // new copy is read from the start, two-way.
+        w.clock.advance(1);
+        let moved =
+            w.st.link_remote(&w.aid, &w.rid, "pub2", "https://clax.example/a/pub2", 1, 3)
+                .unwrap();
+        assert_eq!(moved.remote_artifact_id, "pub2");
+        assert_eq!(moved.sync_cursor, None);
+        assert!(!moved.download_only);
+        assert!(
+            w.st.linked_thread(&t.id)
+                .unwrap()
+                .unwrap()
+                .unlinked_at
+                .is_some()
+        );
     }
 
     #[test]

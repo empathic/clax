@@ -172,6 +172,11 @@ pub struct Identity {
     ///
     /// [`cookie`]: Identity::cookie
     pub hosted_viewer: Option<Viewer>,
+    /// The person a person's own device speaks for, on one of
+    /// [`crate::agent::PERSON_DEVICE_ROUTES`]
+    /// ([`crate::agent::PersonDevice`]): the request is that person's, as
+    /// their browser's would be.
+    pub device: Option<clax_store::hosted::SessionViewer>,
 }
 
 use crate::headers::SESSION_HEADER;
@@ -208,6 +213,7 @@ impl Identity {
                 .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"agent")),
             hosted_owner: false,
             hosted_viewer: None,
+            device: None,
         }
     }
 
@@ -224,6 +230,9 @@ impl Identity {
             extension: !id.grant_header
                 && extensions.get::<crate::extension::ViaExtension>().is_some(),
             grant: extensions.get::<crate::agent::VerifiedGrant>().cloned(),
+            device: extensions
+                .get::<crate::agent::PersonDevice>()
+                .map(|d| d.who.clone()),
             ..id
         };
         match extensions.get::<crate::hosted::HostedRequest>() {
@@ -299,6 +308,16 @@ impl Identity {
     pub fn caller(&self, st: &Store, path_session: Option<&str>) -> Result<Caller, ApiError> {
         if let Some(c) = self.quick_caller(path_session) {
             return Ok(c);
+        }
+        if let Some(who) = self.device.as_ref().filter(|_| self.grant_header) {
+            // A person's own device is its person, as their browser is.
+            return Ok(if who.owner {
+                Caller::Owner { browser: true }
+            } else {
+                Caller::Person {
+                    viewer: who.viewer.clone(),
+                }
+            });
         }
         if self.grant_header {
             let Some(g) = &self.grant else {

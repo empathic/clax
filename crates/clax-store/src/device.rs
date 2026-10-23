@@ -21,7 +21,7 @@
 //! typed in lowercase or without its dash. Every time is the store's clock.
 
 use super::Store;
-use super::hosted::{AgentToken, agent_label};
+use super::hosted::{AgentToken, SessionViewer, agent_label, session_viewer};
 use chrono::Duration;
 use clax_core::audit::AuditCtx;
 use clax_core::secret::{self, Secret, sha256_hex};
@@ -39,6 +39,10 @@ pub const DEVICE_PREFIX: &str = "cxd_";
 /// `limit_reached` until some expire.
 pub const MAX_PENDING_DEVICES: i64 = 1000;
 
+/// The kind a device sign-in names when the Clax app makes it: its token
+/// is marked as the person's own device ([`Store::is_person_device_grant`]).
+pub const CLAX_APP_KIND: &str = "clax-app";
+
 /// A device sign-in just started: its codes, shown to the machine once.
 #[derive(Debug)]
 pub struct DeviceStart {
@@ -54,6 +58,9 @@ pub struct DeviceRequest {
     pub client_name: String,
     /// The address it asked from.
     pub peer_ip: String,
+    /// The kind it named ([`CLAX_APP_KIND`] for the Clax app, whose token
+    /// may manage sharing), if any (untrusted).
+    pub client_kind: Option<String>,
     pub created_at: String,
     pub expires_at: String,
 }
@@ -90,6 +97,32 @@ impl Store {
     /// `invalid_args` for a name over the label limit or with control
     /// characters; `limit_reached` with [`MAX_PENDING_DEVICES`] waiting.
     pub fn start_device(&self, client_name: &str, peer_ip: &str) -> Result<DeviceStart> {
+        self.start_device_kind(client_name, peer_ip, None)
+    }
+
+    /// [`Store::start_device`] for a machine that names its kind too:
+    /// approving a sign-in of kind [`CLAX_APP_KIND`] marks its token as the
+    /// person's own device. Any other kind is kept but marks nothing.
+    ///
+    /// # Errors
+    /// [`Store::start_device`]'s, and `invalid_args` for a kind over 64
+    /// characters or with any but ASCII letters, digits and `-`.
+    pub fn start_device_kind(
+        &self,
+        client_name: &str,
+        peer_ip: &str,
+        kind: Option<&str>,
+    ) -> Result<DeviceStart> {
+        if let Some(k) = kind
+            && (k.is_empty()
+                || k.len() > 64
+                || !k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+        {
+            return Err(CoreError::invalid(
+                "invalid_args",
+                "a client kind is 1 to 64 ASCII letters, digits and dashes",
+            ));
+        }
         let name = agent_label(client_name)?;
         self.with_tx(|tx| {
             let now = self.now();
@@ -127,8 +160,8 @@ impl Store {
             let expires_at = self.device_later(DEVICE_TTL_SECS);
             tx.execute(
                 "INSERT INTO device_codes (id, device_sha256, user_sha256, client_name, peer_ip,
-                    created_at, expires_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    created_at, expires_at, client_kind)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     new_ulid(),
                     device_code.sha256_hex(),
@@ -136,7 +169,8 @@ impl Store {
                     name,
                     peer_ip,
                     now,
-                    expires_at
+                    expires_at,
+                    kind
                 ],
             )?;
             Ok(DeviceStart {
@@ -156,15 +190,16 @@ impl Store {
         let now = self.now();
         self.with_read(|c| {
             Ok(c.query_row(
-                "SELECT client_name, peer_ip, created_at, expires_at FROM device_codes
+                "SELECT client_name, peer_ip, client_kind, created_at, expires_at FROM device_codes
                  WHERE user_sha256 = ?1 AND status = 'pending' AND expires_at > ?2",
                 params![hash, now],
                 |r| {
                     Ok(DeviceRequest {
                         client_name: r.get(0)?,
                         peer_ip: r.get(1)?,
-                        created_at: r.get(2)?,
-                        expires_at: r.get(3)?,
+                        client_kind: r.get(2)?,
+                        created_at: r.get(3)?,
+                        expires_at: r.get(4)?,
                     })
                 },
             )
@@ -175,7 +210,8 @@ impl Store {
     /// Approves the waiting sign-in whose user code is `user_code` as
     /// member `viewer_id`, recording `grant.approve` under `ctx`: a bearer
     /// grant of theirs labelled with the machine's name, whose token the
-    /// machine's next poll receives.
+    /// machine's next poll receives, marked as the person's own device when
+    /// the sign-in's kind is [`CLAX_APP_KIND`].
     ///
     /// # Errors
     /// `NotFound` for a code that is unknown, decided or expired;
@@ -189,22 +225,29 @@ impl Store {
         let hash = user_sha256(user_code).ok_or(CoreError::NotFound)?;
         self.with_tx(|tx| {
             let now = self.now();
-            let row: Option<(String, String, String)> = tx
+            let row: Option<(String, String, String, Option<String>)> = tx
                 .query_row(
-                    "SELECT id, client_name, peer_ip FROM device_codes
+                    "SELECT id, client_name, peer_ip, client_kind FROM device_codes
                      WHERE user_sha256 = ?1 AND status = 'pending' AND expires_at > ?2",
                     params![hash, now],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
                 .optional()?;
-            let (id, name, peer_ip) = row.ok_or(CoreError::NotFound)?;
+            let (id, name, peer_ip, kind) = row.ok_or(CoreError::NotFound)?;
             let grant = self.bearer_grant_in(tx, ctx, viewer_id, &name, &peer_ip)?;
+            let device = kind.as_deref() == Some(CLAX_APP_KIND);
+            if device {
+                tx.execute(
+                    "UPDATE grants SET person_device = 1 WHERE id = ?1",
+                    params![grant.id],
+                )?;
+            }
             tx.execute(
                 "UPDATE device_codes SET status = 'approved', viewer_id = ?2, grant_id = ?3,
                     decided_at = ?4 WHERE id = ?1",
                 params![id, viewer_id, grant.id, now],
             )?;
-            Ok(AgentToken::of(&grant))
+            Ok(AgentToken::of(&grant).device(device))
         })
     }
 
@@ -335,6 +378,42 @@ impl Store {
                 params![grant_id],
                 |r| r.get(0),
             )?)
+        })
+    }
+
+    /// Whether agent token `grant_id` was issued to the person's own
+    /// device: a device sign-in that named itself [`CLAX_APP_KIND`].
+    pub fn is_person_device_grant(&self, grant_id: &str) -> Result<bool> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM grants WHERE id = ?1 AND person_device = 1)",
+                params![grant_id],
+                |r| r.get(0),
+            )?)
+        })
+    }
+}
+
+impl Store {
+    /// The person agent token `grant_id` speaks for on the routes a
+    /// person's own device reaches (their artifacts' sharing, their apps):
+    /// `Some` only while it is an approved bearer grant marked as their
+    /// device ([`Store::is_person_device_grant`]) and they are still a
+    /// member here.
+    pub fn person_device_viewer(&self, grant_id: &str) -> Result<Option<SessionViewer>> {
+        self.with_read(|c| {
+            let viewer: Option<String> = c
+                .query_row(
+                    "SELECT viewer_id FROM grants
+                     WHERE id = ?1 AND person_device = 1 AND bearer = 1 AND status = 'approved'",
+                    params![grant_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(id) = viewer else {
+                return Ok(None);
+            };
+            Ok(session_viewer(c, &id)?.filter(SessionViewer::member))
         })
     }
 }
@@ -514,6 +593,72 @@ mod tests {
                 .unwrap(),
             DevicePoll::Denied
         ));
+    }
+
+    /// Approves a sign-in of `kind` and returns its grant's ID.
+    fn approved(st: &Store, ada: &str, kind: Option<&str>) -> String {
+        let s = st.start_device_kind("phone", "::1", kind).unwrap();
+        let peek = st.peek_device(s.user_code.expose()).unwrap().unwrap();
+        assert_eq!(peek.client_kind.as_deref(), kind);
+        st.approve_device(&AuditCtx::DAEMON, ada, s.user_code.expose())
+            .unwrap()
+            .id
+    }
+
+    #[test]
+    fn device_kind_clax_app_marks_grant() {
+        let (_d, st, _c) = store();
+        let ada = owner(&st);
+        let app = approved(&st, &ada, Some(CLAX_APP_KIND));
+        let other = approved(&st, &ada, Some("clax-cli"));
+        let none = approved(&st, &ada, None);
+        let plain = st.start_device("box", "::1").unwrap();
+        let plain = st
+            .approve_device(&AuditCtx::DAEMON, &ada, plain.user_code.expose())
+            .unwrap()
+            .id;
+        assert!(st.is_person_device_grant(&app).unwrap());
+        for g in [&other, &none, &plain] {
+            assert!(!st.is_person_device_grant(g).unwrap(), "{g}");
+            assert!(st.is_device_grant(g).unwrap(), "{g}");
+        }
+        assert!(!st.is_person_device_grant("no-such-grant").unwrap());
+        // The device speaks for its person while it is live; People lists
+        // it apart.
+        let who = st.person_device_viewer(&app).unwrap().unwrap();
+        assert_eq!(who.viewer.id, ada);
+        for g in [&other, &none, &plain] {
+            assert!(st.person_device_viewer(g).unwrap().is_none(), "{g}");
+        }
+        let kinds: Vec<(String, &str)> = st
+            .agent_tokens(&ada)
+            .unwrap()
+            .into_iter()
+            .map(|t| (t.id, t.kind))
+            .collect();
+        assert!(kinds.contains(&(app.clone(), "device")), "{kinds:?}");
+        assert_eq!(kinds.iter().filter(|(_, k)| *k == "agent").count(), 3);
+        st.revoke_grant(&AuditCtx::DAEMON, &app, crate::people::EndedBy::Person)
+            .unwrap();
+        assert!(st.person_device_viewer(&app).unwrap().is_none());
+        let kinds: Vec<Option<String>> = st
+            .with_read(|c| {
+                let mut s = c.prepare("SELECT client_kind FROM device_codes ORDER BY rowid")?;
+                Ok(s.query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?)
+            })
+            .unwrap();
+        assert_eq!(
+            kinds,
+            [Some("clax-app".into()), Some("clax-cli".into()), None, None]
+        );
+        for bad in ["", "clax app", "clax-app\n", &"k".repeat(65)] {
+            assert_eq!(
+                code_of(st.start_device_kind("phone", "::1", Some(bad))),
+                "invalid_args",
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

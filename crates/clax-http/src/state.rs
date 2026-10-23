@@ -195,6 +195,10 @@ pub struct AppState {
     pub vis_gen: VisGen,
     /// Hosted mode ([`crate::hosted`]); `None` for the local daemon.
     pub hosted: Option<Arc<crate::hosted::Hosted>>,
+    /// What a hosted Clax says about the Clax app: its app links and store
+    /// pages (`[hosted] app_links` and `stores`, or the Worker's vars),
+    /// which the host sets after [`AppState::assemble`]; none by default.
+    pub clax_app: Arc<clax_core::config::ClaxApp>,
     /// The origins of the app that embeds this core, which its shell
     /// documents and content policy name; `None` for a daemon.
     pub embed: Option<EmbedOrigins>,
@@ -368,6 +372,7 @@ impl AppState {
             test_daemon: false,
             web: p.web,
             embed: p.embed,
+            clax_app: Arc::default(),
             git_remotes: Arc::default(),
             linked: Arc::new(clax_realtime::linked::Linked::new(Arc::new(
                 clax_realtime::questions::TokioSleeper,

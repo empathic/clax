@@ -18,6 +18,30 @@ pub const UNCONNECTED: &str = "*unconnected";
 /// `comments.page_person`, `versions.file_authors_json`).
 pub const OWNER: &str = "*owner";
 
+/// What every key of an author on a public Clax starts with
+/// ([`remote_author`]).
+pub const REMOTE_AUTHOR_PREFIX: &str = "remote:";
+
+/// An agent on a public Clax whose person its view does not name (its
+/// session has no name there, or is gone): a [`remote_author`] `id` of its
+/// own, never taken for that Clax's owner's agents ([`OWNER`]).
+pub const UNKNOWN_AGENT: &str = "*agent";
+
+/// The key of author `id` on the public Clax at `origin`, for a comment
+/// mirrored from there: `id` is their public ID there, [`OWNER`] for that
+/// Clax's owner's agents, [`UNKNOWN_AGENT`] for an agent whose person is
+/// not named, or [`UNCONNECTED`] for an anonymous viewer. Such
+/// an author is never a viewer here, and no approval of [`UNCONNECTED`]
+/// covers them: only an approval of this key does.
+pub fn remote_author(origin: &str, id: &str) -> String {
+    format!("{REMOTE_AUTHOR_PREFIX}{origin}#{id}")
+}
+
+/// Whether `key` names an author on a public Clax ([`remote_author`]).
+pub fn is_remote_author(key: &str) -> bool {
+    key.starts_with(REMOTE_AUTHOR_PREFIX)
+}
+
 /// The person an agent channel reads for (spec §6.1): the owner, for the
 /// owner's agents and for agents of a grant of the owner's row; else the
 /// connected person, by public ID.
@@ -109,12 +133,17 @@ fn page_set(tokens: &[String]) -> Vec<Author> {
     out
 }
 
-/// A comment's body (§8.2): an agent comment's is its session's person;
+/// A comment's body (§8.2): a comment mirrored from a public Clax by
+/// someone else is that author's there ([`Comment::remote_author`]);
+/// otherwise an agent comment's is its session's person;
 /// a viewer comment's is its writer (anonymous, or from before public
 /// IDs: [`Author::Unconnected`]), and for one a page wrote (`via_page`)
 /// also every author of the page at write time (`page_authors`; none
 /// recorded: the owner).
 pub fn authors_of_comment(c: &Comment) -> Vec<Author> {
+    if let Some(key) = &c.remote_author {
+        return vec![Author::Person(key.clone())];
+    }
     if c.author_kind == crate::model::AUTHOR_AGENT {
         return vec![Author::of_token(c.agent_person.as_deref())];
     }
@@ -151,13 +180,24 @@ pub fn file_authors(a: &VersionAuthors, path: &str) -> Vec<Author> {
 /// A thread's anchor (quote, prefix, suffix, selector, and the other
 /// fields the anchored page gave it): the authors of the anchored file in
 /// the thread's version, `version` (the version's publisher when it has no
-/// such file). An anchor on the whole artifact is on no page and holds no
-/// one's words: it has no authors.
+/// such file), and for a thread mirrored from a public Clax whose first
+/// comment someone else wrote there, that author too
+/// ([`Comment::remote_author`]): their browser chose the anchor. An anchor
+/// on the whole artifact is on no page and holds no one's words: it has no
+/// authors.
 pub fn authors_of_anchor(thread: &Thread, version: &Version) -> Vec<Author> {
     if thread.anchor.is_whole() {
         return Vec::new();
     }
-    authors_of_file(version, &thread.anchor.file)
+    let mut out = authors_of_file(version, &thread.anchor.file);
+    if let Some(key) = thread
+        .comments
+        .first()
+        .and_then(|c| c.remote_author.as_ref())
+    {
+        push(&mut out, Author::Person(key.clone()));
+    }
+    out
 }
 
 /// A thread's clip: its first commenter and its anchor's authors.
@@ -311,9 +351,10 @@ pub mod placeholder {
 
     /// A thread's anchor: `quote`, `prefix`, `suffix` and `selector` null
     /// in its `anchor`, and everything else the anchored page gave it with
-    /// them (its `custom_name`, the anchored `file`'s name, the `html_hash`
-    /// of the anchored element's markup, and its drawn area's `tag`, `text`
-    /// and `children` fingerprint, which is left out); the thread marked
+    /// them (the quote's `label`, the element's `name`, its `custom_name`,
+    /// the anchored `file`'s name, the `html_hash` of the anchored element's
+    /// markup, and its drawn area's `tag`, `text` and `children`
+    /// fingerprint, which is left out); the thread marked
     /// `anchor_withheld: true`.
     pub fn anchor(thread: &mut Value) {
         if let Some(anchor) = thread.get_mut("anchor").and_then(Value::as_object_mut) {
@@ -322,6 +363,8 @@ pub mod placeholder {
                 "prefix",
                 "suffix",
                 "selector",
+                "label",
+                "name",
                 "custom_name",
                 "file",
                 "html_hash",

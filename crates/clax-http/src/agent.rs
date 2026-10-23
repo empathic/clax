@@ -162,6 +162,16 @@ need!(
     crate::limits::PUBLISH_BODY_LIMIT
 );
 need!(FilesList, Artifacts, "read", Filtered, DEFAULT_LIMIT);
+need!(ArtifactHead, Artifacts, "read", Filtered, DEFAULT_LIMIT);
+need!(BundleGet, Artifacts, "read", Filtered, DEFAULT_LIMIT);
+need!(
+    BundlePut,
+    Artifacts,
+    "update",
+    Own,
+    crate::limits::BUNDLE_BODY_LIMIT
+);
+need!(InstallsRecord, Artifacts, "read", Own, DEFAULT_LIMIT);
 // Tags are the owner's names, no person's text: `Own`. Making and changing
 // them is the owner's and the owner's agents' (the handlers check); applying
 // them is the artifact's administrators' (`administers`), as its pin.
@@ -291,6 +301,22 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
     ("POST", "/api/artifacts/{aid}/versions", Publish::INFO),
     ("POST", "/api/artifacts/{aid}/fork", ArtifactsFork::INFO),
     ("GET", "/api/artifacts/{aid}/files", FilesList::INFO),
+    ("GET", "/api/artifacts/{aid}/head", ArtifactHead::INFO),
+    (
+        "GET",
+        "/api/artifacts/{aid}/versions/{n}/bundle",
+        BundleGet::INFO,
+    ),
+    (
+        "PUT",
+        "/api/artifacts/{aid}/versions/{n}/bundle",
+        BundlePut::INFO,
+    ),
+    (
+        "POST",
+        "/api/artifacts/{aid}/installs",
+        InstallsRecord::INFO,
+    ),
     ("GET", "/api/tags", TagsList::INFO),
     ("POST", "/api/tags", TagsCreate::INFO),
     ("PATCH", "/api/tags/{tag_id}", TagsUpdate::INFO),
@@ -498,6 +524,10 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("artifacts::get_version", VersionGet),
     route_need!("artifacts::publish", Publish),
     route_need!("artifacts::files", FilesList),
+    route_need!("app_bundles::head", ArtifactHead),
+    route_need!("app_bundles::get_bundle", BundleGet),
+    route_need!("app_bundles::put_bundle", BundlePut),
+    route_need!("app_bundles::record_install", InstallsRecord),
     route_need!("tags::list", TagsList),
     route_need!("tags::create", TagsCreate),
     route_need!("tags::update", TagsUpdate),
@@ -592,6 +622,9 @@ pub const FILTERED_LIVE: &[&str] = &[
     "AssetsUpload",
     "WorkingForArtifact",
     "WorkingRoster",
+    // An app's head and bundles.
+    "ArtifactHead",
+    "BundleGet",
     // Documents (Task 11).
     "DocsGet",
     "DocsList",
@@ -1198,9 +1231,14 @@ impl<N: Need> FromRequestParts<AppState> for Agent<N> {
             }
         }
         // A hosted daemon's signed-in person: their rights limit their
-        // browser as a person's agent's limit it.
-        let member = match &caller {
-            Caller::Person { .. } => parts
+        // browser, and their own device, as a person's agent's limit it.
+        let member = match (&caller, parts.extensions.get::<PersonDevice>()) {
+            (Caller::Person { .. }, Some(d)) => {
+                let who = d.who.clone();
+                s.store_call(move |st| crate::hosted::MemberRights::of_session(st, &who))
+                    .await?
+            }
+            (Caller::Person { .. }, None) => parts
                 .extensions
                 .get::<crate::hosted::HostedRequest>()
                 .and_then(|h| h.member.clone()),
@@ -1709,6 +1747,57 @@ pub struct BearerGrant {
     pub grant_id: String,
 }
 
+/// The routes a person's own device reaches with its agent token, by
+/// method and route pattern: an artifact's sharing (its people, its
+/// general access, its Comments switch), the person's apps library
+/// (`clax_server::hosted`), and an artifact's head, versions, bundles,
+/// files and comment threads, which it reads as its person's browser does
+/// ([`crate::identity::Identity::caller`]: no agent channel's filter). A device is an agent token that the Clax app's
+/// device sign-in received ([`clax_store::Store::person_device_viewer`]);
+/// every other agent token, and every other route, is refused as before.
+pub const PERSON_DEVICE_ROUTES: &[(&str, &str)] = &[
+    ("GET", "/api/hosted/artifacts/{aid}/sharing"),
+    ("PUT", "/api/hosted/artifacts/{aid}/link"),
+    ("PUT", "/api/hosted/artifacts/{aid}/shares"),
+    ("DELETE", "/api/hosted/artifacts/{aid}/shares/{sid}"),
+    ("PUT", "/api/hosted/artifacts/{aid}/comments"),
+    ("GET", "/api/hosted/apps"),
+    ("GET", "/api/artifacts/{aid}/head"),
+    ("GET", "/api/artifacts/{aid}/versions/{n}"),
+    ("GET", "/api/artifacts/{aid}/versions/{n}/bundle"),
+    ("GET", "/api/artifacts/{aid}/versions/{n}/files/{*path}"),
+    ("GET", "/api/artifacts/{aid}/threads"),
+    ("GET", "/api/artifacts/{aid}/threads/{tid}"),
+    ("GET", "/api/artifacts/{aid}/threads/{tid}/clip"),
+];
+
+/// The most bytes a person's device's request body on
+/// [`PERSON_DEVICE_ROUTES`] may hold: each takes a small JSON object.
+pub const PERSON_DEVICE_BODY_LIMIT: usize = 64 * 1024;
+
+/// Whether `method` at route pattern `matched` is one of
+/// [`PERSON_DEVICE_ROUTES`] (`HEAD` as `GET`).
+pub fn person_device_route(method: &Method, matched: &str) -> bool {
+    let m = if method == Method::HEAD {
+        "GET"
+    } else {
+        method.as_str()
+    };
+    PERSON_DEVICE_ROUTES
+        .iter()
+        .any(|(rm, rp)| *rm == m && *rp == matched)
+}
+
+/// A person's own device on one of [`PERSON_DEVICE_ROUTES`], set by
+/// [`verify_layer`]: its grant, and the person it speaks for, a member
+/// here when the request was verified. The route acts for that person as
+/// their browser's session would.
+#[derive(Clone, Debug)]
+pub struct PersonDevice {
+    pub grant_id: String,
+    pub who: clax_store::hosted::SessionViewer,
+}
+
 /// The header checks of an agent token's request: no `Origin` or cookie
 /// (403 `forbidden_origin`), a hosted daemon (a local one takes no agent
 /// token: 401 `invalid_token`), one `Authorization`, naming a live token of
@@ -1938,7 +2027,11 @@ fn bearer_key(grant_id: &str) -> [u8; 32] {
 /// [`BearerGrant`] instead, its body read the same way within the publish
 /// limit. `DELETE` [`crate::hosted::SELF_REVOKE_PATH`], where the token
 /// revokes itself, is handed the [`BearerGrant`] too, its body unread (the
-/// handler reads none).
+/// handler reads none). On [`PERSON_DEVICE_ROUTES`], the token of a
+/// person's own device is handed [`PersonDevice`] beside its
+/// [`VerifiedGrant`] (which its audit rows name), its body read within
+/// [`PERSON_DEVICE_BODY_LIMIT`];
+/// any other token is refused there as on every route outside a grant's.
 async fn verify_bearer(s: &AppState, b: BearerGrant, mut req: Request, next: Next) -> Response {
     let matched = req.extensions().get::<MatchedPath>().map(|m| m.as_str());
     let self_revoke =
@@ -1957,6 +2050,28 @@ async fn verify_bearer(s: &AppState, b: BearerGrant, mut req: Request, next: Nex
         req.extensions_mut().insert(b);
         return next.run(req).await;
     }
+    if matched.is_some_and(|m| person_device_route(req.method(), m)) {
+        let gid = b.grant_id.clone();
+        let who = match s.store_call(move |st| st.person_device_viewer(&gid)).await {
+            Ok(w) => w,
+            Err(e) => return e.into_response(),
+        };
+        if let Some(who) = who {
+            req = match gated(s, &b, req, PERSON_DEVICE_BODY_LIMIT).await {
+                Ok(r) => r,
+                Err(e) => return e.into_response(),
+            };
+            note_use(s, &b.grant_id);
+            req.extensions_mut().insert(VerifiedGrant {
+                grant_id: b.grant_id.clone(),
+            });
+            req.extensions_mut().insert(PersonDevice {
+                grant_id: b.grant_id,
+                who,
+            });
+            return next.run(req).await;
+        }
+    }
     let need = req
         .extensions()
         .get::<MatchedPath>()
@@ -1971,19 +2086,24 @@ async fn verify_bearer(s: &AppState, b: BearerGrant, mut req: Request, next: Nex
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
+    note_use(s, &b.grant_id);
+    req.extensions_mut().insert(VerifiedGrant {
+        grant_id: b.grant_id,
+    });
+    next.run(req).await
+}
+
+/// Notes bearer grant `grant_id`'s use, when one is due, off the request.
+fn note_use(s: &AppState, grant_id: &str) {
     let now = s.store.now_utc().timestamp();
-    if s.grant_auth.use_due(&b.grant_id, now) {
-        let (store, gid) = (s.store.clone(), b.grant_id.clone());
+    if s.grant_auth.use_due(grant_id, now) {
+        let (store, gid) = (s.store.clone(), grant_id.to_string());
         clax_rt::spawn(async move {
             if let Err(e) = store.call(move |st| st.note_grant_use(&gid)).await {
                 tracing::warn!(error = %e, "noting a grant's use failed");
             }
         });
     }
-    req.extensions_mut().insert(VerifiedGrant {
-        grant_id: b.grant_id,
-    });
-    next.run(req).await
 }
 
 /// `req` with its body (at most `limit` bytes) read through the agent gate

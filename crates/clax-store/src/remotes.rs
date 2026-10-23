@@ -64,11 +64,26 @@ pub struct Remote {
     pub grant_id: Option<String>,
     pub created_at: String,
     pub connected_at: Option<String>,
+    /// The kind its sign-in named ([`CLIENT_KIND_APP`] or
+    /// [`CLIENT_KIND_AGENT`]); `None` for a remote signed in before kinds
+    /// were kept, until the sync asks the remote. Not served.
+    #[serde(skip)]
+    pub client_kind: Option<String>,
 }
+
+/// [`Remote::client_kind`] of the Clax app's sign-in: the remote's token
+/// is its person's device, which reads threads unfiltered, as the person's
+/// browser does.
+pub const CLIENT_KIND_APP: &str = "clax-app";
+
+/// [`Remote::client_kind`] of a sign-in that named no kind: the remote's
+/// token is an agent token, whose thread reads the remote filters by the
+/// person's approvals there.
+pub const CLIENT_KIND_AGENT: &str = "agent";
 
 const REMOTE_COLS: &str = "id, origin, name, status, user_code, verification_url,
     sign_in_expires_at, poll_interval_s, person_public_id, person_name, grant_id, created_at,
-    connected_at";
+    connected_at, client_kind";
 
 fn row_remote(r: &Row<'_>) -> rusqlite::Result<Remote> {
     Ok(Remote {
@@ -85,6 +100,7 @@ fn row_remote(r: &Row<'_>) -> rusqlite::Result<Remote> {
         grant_id: r.get(10)?,
         created_at: r.get(11)?,
         connected_at: r.get(12)?,
+        client_kind: r.get(13)?,
     })
 }
 
@@ -249,6 +265,18 @@ impl Store {
                 params![id],
                 row_remote,
             )?)
+        })
+    }
+
+    /// Records `kind` ([`CLIENT_KIND_APP`] or [`CLIENT_KIND_AGENT`]) as the
+    /// kind remote `id`'s sign-in named.
+    pub fn set_remote_client_kind(&self, id: &str, kind: &str) -> Result<()> {
+        self.with_tx(|tx| {
+            tx.execute(
+                "UPDATE remotes SET client_kind = ?2 WHERE id = ?1",
+                params![id, kind],
+            )?;
+            Ok(())
         })
     }
 
@@ -439,6 +467,59 @@ impl Store {
                     pushed_n = excluded.pushed_n, remote_n = excluded.remote_n,
                     auto = COALESCE(?7, remote_links.auto), pushed_at = excluded.pushed_at",
                 params![aid, rid, remote_aid, url, pushed_n, remote_n, auto, now],
+            )?;
+            Ok(tx.query_row(
+                &format!(
+                    "SELECT {LINK_COLS} FROM remote_links WHERE artifact_id = ?1 AND remote_id = ?2"
+                ),
+                params![aid, rid],
+                row_link,
+            )?)
+        })
+    }
+
+    /// Links `aid` to public artifact `remote_aid` on remote `rid` (at
+    /// `url`) without a push: local version `local_n` is public version
+    /// `remote_n`, the base the next push builds on (an app got from the
+    /// remote, or one whose public copy this device took). Makes the link
+    /// or moves it; agents may not push it without asking (`auto` off).
+    /// `pushed_at` becomes now, when the base was set. Moved to another
+    /// public artifact, the link starts over as a new one would: the old
+    /// copy's threads end as read-only history (as
+    /// [`Store::unlink_remote`] ends them), its read starts from nothing,
+    /// it is two-way, and only threads started from now on go up.
+    pub fn link_remote(
+        &self,
+        aid: &str,
+        rid: &str,
+        remote_aid: &str,
+        url: &str,
+        local_n: u32,
+        remote_n: u32,
+    ) -> Result<RemoteLink> {
+        self.with_tx(|tx| {
+            let now = self.now();
+            let moved = tx.execute(
+                "UPDATE remote_links SET sync_cursor = NULL, download_only = 0, threads_since = ?4
+                 WHERE artifact_id = ?1 AND remote_id = ?2 AND remote_artifact_id <> ?3",
+                params![aid, rid, remote_aid, now],
+            )?;
+            if moved > 0 {
+                tx.execute(
+                    "UPDATE linked_threads SET unlinked_at = ?3
+                     WHERE artifact_id = ?1 AND remote_id = ?2 AND unlinked_at IS NULL",
+                    params![aid, rid, now],
+                )?;
+            }
+            tx.execute(
+                "INSERT INTO remote_links (artifact_id, remote_id, remote_artifact_id, url,
+                    pushed_n, remote_n, auto, created_at, pushed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?7)
+                 ON CONFLICT (artifact_id, remote_id) DO UPDATE SET
+                    remote_artifact_id = excluded.remote_artifact_id, url = excluded.url,
+                    pushed_n = excluded.pushed_n, remote_n = excluded.remote_n, auto = 0,
+                    pushed_at = excluded.pushed_at",
+                params![aid, rid, remote_aid, url, local_n, remote_n, now],
             )?;
             Ok(tx.query_row(
                 &format!(
@@ -736,6 +817,45 @@ mod tests {
             code_of(st.add_pending_remote("https://b.example", "a b", &sign_in("cxd_4"))),
             "invalid_args"
         );
+    }
+
+    #[test]
+    fn link_remote_without_push_sets_base() {
+        let (_d, st) = store();
+        let r = st
+            .add_pending_remote("https://clax.example", "pub", &sign_in("cxd_1"))
+            .unwrap();
+        let l = st
+            .link_remote("a1", &r.id, "b1", "https://clax.example/a/b1", 1, 6)
+            .unwrap();
+        assert_eq!(
+            (
+                l.remote_artifact_id.as_str(),
+                l.pushed_n,
+                l.remote_n,
+                l.auto
+            ),
+            ("b1", 1, 6, false)
+        );
+        assert_eq!(st.remote_link("a1", &r.id).unwrap(), Some(l.clone()));
+        // Linked again (the public copy taken anew), on an auto link: the
+        // base moves and agents must ask again.
+        st.set_link_auto("a1", &r.id, true).unwrap();
+        let again = st
+            .link_remote("a1", &r.id, "b2", "https://clax.example/a/b2", 3, 9)
+            .unwrap();
+        assert_eq!(
+            (
+                again.remote_artifact_id.as_str(),
+                again.url.as_str(),
+                again.pushed_n,
+                again.remote_n,
+                again.auto
+            ),
+            ("b2", "https://clax.example/a/b2", 3, 9, false)
+        );
+        assert_eq!(again.created_at, l.created_at);
+        assert_eq!(st.remote_links("a1").unwrap(), vec![again]);
     }
 
     #[test]

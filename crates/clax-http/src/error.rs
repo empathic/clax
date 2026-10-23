@@ -159,7 +159,7 @@ impl From<CoreError> for ApiError {
             CoreError::Invalid {
                 code:
                     code @ ("denied" | "foreign_session" | "not_creator" | "beyond_your_rights"
-                    | "quota_exceeded" | "github_blocked" | "github_not_owner"),
+                    | "quota_exceeded" | "github_blocked" | "github_not_owner" | "comments_off"),
                 message,
             } => ApiError::new(StatusCode::FORBIDDEN, code, message),
             // A cross-app read without consent.

@@ -12,11 +12,19 @@ use clax_store::Store;
 use clax_store::approvals::{Approval, ApprovalRequest};
 use serde_json::{Value, json};
 
-/// `{public_id, name, owner}` of viewer `pid`: names are not filtered
+/// `{public_id, name, owner}` of viewer `pid`, or of an author on a public
+/// Clax keyed `pid` ([`visibility::remote_author`]): names are not filtered
 /// (§21.9). `owner` when `pid` is the owner's, who is named "The owner"
 /// until they choose a name, so a person named "Viewer" is not taken for
 /// them.
 fn person(st: &Store, pid: &str) -> clax_core::Result<Value> {
+    if visibility::is_remote_author(pid) {
+        // Someone on a public Clax: named as their comments here name them.
+        let name = st
+            .remote_author_name(pid)?
+            .unwrap_or_else(|| clax_core::feedback::display_name(""));
+        return Ok(json!({"public_id": pid, "name": name, "owner": false}));
+    }
     let owner = st.owner()?.is_some_and(|o| o.public_id == pid);
     let raw = st.viewer_by_public_id(pid)?.and_then(|v| v.display_name);
     let name = clax_core::feedback::person_name(raw.as_deref(), owner);

@@ -163,6 +163,116 @@ pub struct HostedConfig {
     /// people agree to (`legal`, or `terms_url`, `privacy_url` and
     /// `legal_version`); `None` shows none.
     pub legal: Option<Legal>,
+    /// What the instance says about the Clax app (`app_links` and
+    /// `stores`): none of it when absent.
+    pub clax_app: ClaxApp,
+}
+
+/// The Clax app's bundle ID on iOS and macOS, which the Apple app site
+/// association names after the team ID.
+pub const APPLE_BUNDLE_ID: &str = "dev.empathic.clax";
+
+/// What a hosted Clax says about the Clax app: the app links its
+/// `/.well-known` files declare, and the store pages its Get in Clax page
+/// offers (`[hosted] app_links = {apple_team_id, android_package,
+/// android_sha256}` and `stores = {ios, android}`, every key optional).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClaxApp {
+    /// The Apple developer team ID that signs the app (10 uppercase
+    /// letters and digits): `/.well-known/apple-app-site-association`
+    /// names `<team>.`[`APPLE_BUNDLE_ID`]. `None` serves no such file.
+    pub apple_team_id: Option<String>,
+    /// The Android app's package and its signing certificate's SHA-256
+    /// fingerprint (32 uppercase hex bytes joined by `:`):
+    /// `/.well-known/assetlinks.json` names them. `None` serves no such file.
+    pub android: Option<AndroidApp>,
+    /// The App Store page of the app (an `https://` URL).
+    pub ios_store: Option<String>,
+    /// The Play Store page of the app (an `https://` URL).
+    pub android_store: Option<String>,
+}
+
+/// [`ClaxApp::android`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AndroidApp {
+    pub package: String,
+    pub sha256: String,
+}
+
+impl ClaxApp {
+    /// The settings as given (empty counts as absent): a team ID of 10
+    /// uppercase letters and digits; a package (dot-separated Java
+    /// identifiers) and a fingerprint (32 hex bytes joined by `:`, read
+    /// in any case and kept in uppercase) together or neither; store pages
+    /// as `https://` URLs.
+    pub fn from_settings(
+        apple_team_id: Option<&str>,
+        android_package: Option<&str>,
+        android_sha256: Option<&str>,
+        ios_store: Option<&str>,
+        android_store: Option<&str>,
+    ) -> std::result::Result<ClaxApp, String> {
+        fn set(v: Option<&str>) -> Option<&str> {
+            v.map(str::trim).filter(|v| !v.is_empty())
+        }
+        let team = set(apple_team_id);
+        if let Some(t) = team {
+            let ok = t.len() == 10
+                && t.bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
+            if !ok {
+                return Err(format!(
+                    "apple_team_id is 10 uppercase letters and digits, not \"{t}\""
+                ));
+            }
+        }
+        let android = match (set(android_package), set(android_sha256)) {
+            (None, None) => None,
+            (Some(p), Some(f)) => {
+                let ident = |s: &str| {
+                    s.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                };
+                if !(p.contains('.') && p.split('.').all(ident)) {
+                    return Err(format!(
+                        "android_package is a package name such as dev.empathic.clax, not \"{p}\""
+                    ));
+                }
+                let f = f.to_ascii_uppercase();
+                let parts: Vec<&str> = f.split(':').collect();
+                let ok = parts.len() == 32
+                    && parts
+                        .iter()
+                        .all(|h| h.len() == 2 && h.bytes().all(|b| b.is_ascii_hexdigit()));
+                if !ok {
+                    return Err(
+                        "android_sha256 is a SHA-256 fingerprint: 32 hex bytes joined by ':'"
+                            .into(),
+                    );
+                }
+                Some(AndroidApp {
+                    package: p.into(),
+                    sha256: f,
+                })
+            }
+            _ => return Err("android_package and android_sha256 go together".into()),
+        };
+        let store = |name: &str, v: Option<&str>| match set(v) {
+            None => Ok(None),
+            Some(u) if u.to_ascii_lowercase().starts_with("https://") && base_url_ok(u) => {
+                Ok(Some(u.to_string()))
+            }
+            Some(u) => Err(format!(
+                "stores.{name} must be an https:// URL, not \"{u}\""
+            )),
+        };
+        Ok(ClaxApp {
+            apple_team_id: team.map(str::to_string),
+            android,
+            ios_store: store("ios", ios_store)?,
+            android_store: store("android", android_store)?,
+        })
+    }
 }
 
 /// The Terms of Service and Privacy Policy a hosted Clax shows: linked
@@ -291,6 +401,23 @@ struct HostedTable {
     terms_url: Option<String>,
     privacy_url: Option<String>,
     legal_version: Option<String>,
+    app_links: Option<AppLinksTable>,
+    stores: Option<StoresTable>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AppLinksTable {
+    apple_team_id: Option<String>,
+    android_package: Option<String>,
+    android_sha256: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoresTable {
+    ios: Option<String>,
+    android: Option<String>,
 }
 
 /// `origin` as hosted mode takes it ([`HostedConfig::public_origin`]): its
@@ -544,6 +671,16 @@ impl HomeConfig {
             t.legal_version.as_deref(),
         )
         .map_err(bad)?;
+        let links = t.app_links.as_ref();
+        let stores = t.stores.as_ref();
+        let clax_app = ClaxApp::from_settings(
+            links.and_then(|l| l.apple_team_id.as_deref()),
+            links.and_then(|l| l.android_package.as_deref()),
+            links.and_then(|l| l.android_sha256.as_deref()),
+            stores.and_then(|s| s.ios.as_deref()),
+            stores.and_then(|s| s.android.as_deref()),
+        )
+        .map_err(bad)?;
         Ok(Some(HostedConfig {
             public_origin,
             setup_secret_env,
@@ -552,6 +689,7 @@ impl HomeConfig {
             member_max_artifacts: t.member_max_artifacts.unwrap_or(DEFAULT_MAX_ARTIFACTS),
             public_gallery: t.public_gallery.unwrap_or(false),
             legal,
+            clax_app,
         }))
     }
 }
@@ -723,6 +861,52 @@ mod tests {
             "terms_url = \"/terms\"\nprivacy_url = \"https://example.org/p\"\nlegal_version = \"1\"\n",
         ] {
             let e = legal(bad).unwrap_err().to_string();
+            assert!(e.contains("hosted"), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn hosted_app_links_and_stores_are_checked_and_optional() {
+        let app = |extra: &str| {
+            with(&format!(
+                "[hosted]\npublic_origin = \"https://clax.example\"\n{extra}"
+            ))
+            .hosted()
+            .map(|h| h.unwrap().clax_app)
+        };
+        assert_eq!(app("").unwrap(), ClaxApp::default());
+        let fp = ["ab"; 32].join(":");
+        let a = app(&format!(
+            "app_links = {{apple_team_id = \"ABCDE12345\", android_package = \"dev.empathic.clax\", android_sha256 = \"{fp}\"}}\nstores = {{ios = \"https://apps.apple.com/app/id1\", android = \"https://play.google.com/store/apps/details?id=dev.empathic.clax\"}}\n"
+        ))
+        .unwrap();
+        assert_eq!(a.apple_team_id.as_deref(), Some("ABCDE12345"));
+        assert_eq!(
+            a.android,
+            Some(AndroidApp {
+                package: "dev.empathic.clax".into(),
+                sha256: fp.to_ascii_uppercase(),
+            })
+        );
+        assert_eq!(
+            a.ios_store.as_deref(),
+            Some("https://apps.apple.com/app/id1")
+        );
+        let team_only = app("app_links = {apple_team_id = \"ABCDE12345\"}\n").unwrap();
+        assert_eq!(team_only.android, None);
+        for bad in [
+            "app_links = {apple_team_id = \"abcde12345\"}\n".to_string(),
+            "app_links = {apple_team_id = \"ABCDE1234\"}\n".to_string(),
+            "app_links = {android_package = \"dev.empathic.clax\"}\n".to_string(),
+            format!("app_links = {{android_sha256 = \"{fp}\"}}\n"),
+            format!("app_links = {{android_package = \"clax\", android_sha256 = \"{fp}\"}}\n"),
+            "app_links = {android_package = \"dev.empathic.clax\", android_sha256 = \"AB:CD\"}\n"
+                .to_string(),
+            "app_links = {team = \"ABCDE12345\"}\n".to_string(),
+            "stores = {ios = \"http://apps.apple.com/x\"}\n".to_string(),
+            "stores = {web = \"https://example.org\"}\n".to_string(),
+        ] {
+            let e = app(&bad).unwrap_err().to_string();
             assert!(e.contains("hosted"), "{bad}: {e}");
         }
     }

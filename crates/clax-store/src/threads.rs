@@ -559,6 +559,7 @@ fn row_to_comment(r: &Row<'_>) -> rusqlite::Result<Comment> {
         created_at: r.get("created_at")?,
         page_authors: json_list(r.get("page_authors")?),
         agent_person: r.get("agent_person")?,
+        remote_author: r.get("remote_author")?,
         agent: comment_agent(
             r.get("agent_name")?,
             r.get("agent_person")?,
@@ -614,7 +615,8 @@ const COMMENT_SELECT: &str = "SELECT c.id, c.thread_id, c.author_kind, c.author_
                                    WHERE pa.kind = 'comment' AND pa.id = c.id) END AS page_authors,
         s.person AS agent_person, s.name AS agent_name,
         CASE WHEN s.id IS NULL THEN NULL WHEN s.person IS NULL THEN (SELECT display_name FROM viewers WHERE owner = 1)
-             ELSE (SELECT display_name FROM viewers WHERE public_id = s.person) END AS agent_person_name
+             ELSE (SELECT display_name FROM viewers WHERE public_id = s.person) END AS agent_person_name,
+        (SELECT lc.author_key FROM linked_comments lc WHERE lc.comment_id = c.id) AS remote_author
      FROM comments c LEFT JOIN sessions s ON s.id = c.via_session_id";
 
 fn load_comments(c: &Connection, thread_id: &str) -> Result<Vec<Comment>> {
@@ -632,7 +634,8 @@ pub(crate) const COMMENTS_OF_MANY: &str = "SELECT c.id, c.thread_id, c.author_ki
                                    WHERE pa.kind = 'comment' AND pa.id = c.id) END AS page_authors,
         s.person AS agent_person, s.name AS agent_name,
         CASE WHEN s.id IS NULL THEN NULL WHEN s.person IS NULL THEN (SELECT display_name FROM viewers WHERE owner = 1)
-             ELSE (SELECT display_name FROM viewers WHERE public_id = s.person) END AS agent_person_name
+             ELSE (SELECT display_name FROM viewers WHERE public_id = s.person) END AS agent_person_name,
+        (SELECT lc.author_key FROM linked_comments lc WHERE lc.comment_id = c.id) AS remote_author
      FROM json_each(?1) j CROSS JOIN comments c ON c.thread_id = j.value
      LEFT JOIN sessions s ON s.id = c.via_session_id
      ORDER BY c.thread_id, c.created_at, c.id";
@@ -705,6 +708,28 @@ pub(crate) fn thread_in(c: &Connection, thread_id: &str) -> Result<Option<Thread
             row.into_thread(comments).map(Some)
         }
     }
+}
+
+/// `comments_off` while artifact `id`'s Comments switch is off
+/// ([`Store::set_comments`]), read in the caller's transaction so a
+/// comment and the switch turning off are ordered: no thread or comment
+/// lands once the switch is off. An artifact with no row passes (the
+/// caller refuses it as missing).
+fn refuse_comments_off_in(c: &Connection, id: &str) -> Result<()> {
+    let on: Option<bool> = c
+        .query_row(
+            "SELECT comments FROM artifacts WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if on == Some(false) {
+        return Err(CoreError::invalid(
+            "comments_off",
+            "comments are off on this artifact",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn artifact_live(c: &Connection, id: &str) -> Result<bool> {
@@ -887,6 +912,7 @@ impl Store {
             if !artifact_live(tx, id.as_str())? {
                 return Err(CoreError::NotFound);
             }
+            refuse_comments_off_in(tx, id.as_str())?;
             if t.anchor.route.is_some() {
                 let kind: String = tx.query_row(
                     "SELECT kind FROM artifacts WHERE id = ?1",
@@ -980,6 +1006,7 @@ impl Store {
                 created_at: now.clone(),
                 page_authors,
                 agent_person: None,
+                remote_author: None,
                 agent: None,
             };
             self.record_audit(tx, ctx, comment_record(id.as_str(), &first))?;
@@ -1364,10 +1391,12 @@ impl Store {
             created_at: self.now(),
             page_authors: Vec::new(),
             agent_person: None,
+            remote_author: None,
             agent: None,
         };
         {
             let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
+            refuse_comments_off_in(tx, &t.artifact_id)?;
             if let Some(k) = key {
                 super::linked::record_comment_key_in(
                     tx,

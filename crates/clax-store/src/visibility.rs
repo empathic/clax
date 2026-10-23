@@ -7,7 +7,9 @@
 
 use crate::Store;
 use clax_core::Result;
-use clax_core::visibility::{Author, NOT_CONNECTED, OWNER, Reader, UNCONNECTED, normalise};
+use clax_core::visibility::{
+    Author, NOT_CONNECTED, OWNER, Reader, UNCONNECTED, is_remote_author, normalise,
+};
 use rusqlite::{OptionalExtension, params};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -266,7 +268,11 @@ impl Visibility {
             Author::Person(p) => {
                 matches!(reader, Some(Reader::Person(r)) if r == p)
                     || a.covers(p, artifact, thread)
-                    || (!a.people.contains(p) && a.covers(UNCONNECTED, artifact, thread))
+                    // Someone on a public Clax is no viewer here: only an
+                    // approval of them lets their words through.
+                    || (!a.people.contains(p)
+                        && !is_remote_author(p)
+                        && a.covers(UNCONNECTED, artifact, thread))
             }
             Author::Unconnected => a.covers(UNCONNECTED, artifact, thread),
         }
@@ -336,6 +342,30 @@ mod tests {
     use super::*;
     use clax_core::model::{Thread, Version};
     use clax_core::visibility::*;
+
+    #[test]
+    fn an_author_on_a_public_clax_is_withheld_whatever_covers_viewers_who_are_not_connected() {
+        let w = two_people();
+        let aid = w.publish_as(None, &[("index.html", "x")]);
+        let by_sam = w.thread_by(&aid, Some(&w.sam), false);
+        let by_lan = w.thread_by(&aid, Some(&w.lan), false);
+        let owner = w.reader(&Reader::Owner);
+        let sees = |t: &Thread, c: &clax_core::model::Comment| {
+            owner.sees(&authors_of_comment(c), aid.as_str(), Some(&t.id))
+        };
+        // As before: a person the owner has not approved is withheld; a
+        // viewer who is not connected passes under `*unconnected`.
+        assert!(!sees(&by_sam, &by_sam.comments[0]));
+        assert!(sees(&by_lan, &by_lan.comments[0]));
+        // The same words mirrored from someone on a public Clax are not.
+        let mut mirrored = by_lan.comments[0].clone();
+        mirrored.remote_author = Some(remote_author("https://clax.dev", "u_bob"));
+        assert_eq!(
+            authors_of_comment(&mirrored),
+            vec![Author::Person(remote_author("https://clax.dev", "u_bob"))]
+        );
+        assert!(!sees(&by_lan, &mirrored));
+    }
 
     #[test]
     fn only_authors_who_are_not_connected_are_marked() {
@@ -1706,7 +1736,7 @@ mod tests {
             json!({"id": "c1", "author_name": "Mia", "body": null, "withheld": true, "created_at": "t"})
         );
         let mut t = json!({"id": "t1", "anchor": {"kind": "element", "quote": "q", "prefix": "p", "suffix": "s", "selector": "#x",
-                               "custom_name": "c", "file": "MIA.html", "html_hash": "sha256:00",
+                               "label": "q", "name": "Mia's heading", "custom_name": "c", "file": "MIA.html", "html_hash": "sha256:00",
                                "area": {"x": 0.1, "y": 0.1, "w": 0.5, "h": 0.5, "tag": "h2", "text": "Mia's words", "children": 3}},
                            "has_clip": true, "clip_url": "/c.png", "clip_path": "/home/c.png",
                            "resolved_by": "viewer:u_1", "resolved_by_name": "Mia"});
@@ -1717,7 +1747,7 @@ mod tests {
         assert_eq!(
             t,
             json!({"id": "t1", "anchor": {"kind": "element", "quote": null, "prefix": null, "suffix": null, "selector": null,
-                       "custom_name": null, "file": null, "html_hash": null,
+                       "label": null, "name": null, "custom_name": null, "file": null, "html_hash": null,
                        "area": {"x": 0.1, "y": 0.1, "w": 0.5, "h": 0.5}},
                    "anchor_withheld": true, "has_clip": false, "clip_url": null, "clip_path": null, "clip_withheld": true,
                    "resolved_by": null, "resolved_by_name": null,
@@ -1730,7 +1760,7 @@ mod tests {
         assert_eq!(
             bare,
             json!({"id": "t2", "anchor": {"kind": "element", "quote": null, "prefix": null, "suffix": null, "selector": null,
-                       "custom_name": null, "file": null, "html_hash": null},
+                       "label": null, "name": null, "custom_name": null, "file": null, "html_hash": null},
                    "anchor_withheld": true, "clip_withheld": true})
         );
         let mut b = json!({"id": "b1", "note": "n"});

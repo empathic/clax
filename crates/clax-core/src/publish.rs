@@ -56,6 +56,17 @@ pub struct PublishRequest {
     /// IDs of the artifact's threads this version addresses.
     #[serde(default)]
     pub addresses: Option<Vec<String>>,
+    /// The new artifact's Comments switch, on when absent: set by the
+    /// request that creates an artifact (`POST /api/artifacts`) alone, and
+    /// not carried into [`ValidatedPublish`].
+    #[serde(default)]
+    pub comments: Option<bool>,
+    /// The artifact the new one comes from, recorded as its lineage at
+    /// that artifact's current version: set by the request that creates
+    /// an artifact on a hosted Clax (`POST /api/artifacts`) alone, and not
+    /// carried into [`ValidatedPublish`].
+    #[serde(default)]
+    pub forked_from: Option<String>,
 }
 
 /// A file's decoded bytes and resolved content type.

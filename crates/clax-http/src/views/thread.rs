@@ -838,6 +838,21 @@ impl Vis {
         }
     }
 
+    /// Whether the app bundle version `v` carries, uploaded by `uploader`
+    /// (a stored person value: `None` or `*owner` the owner, else a public
+    /// ID), is withheld from the reader: when it may not see a file of
+    /// `v` (the bundle holds them all) or the uploader (who chose the
+    /// bundle's bytes).
+    pub fn filter_bundle(&self, v: &Version, uploader: Option<&str>) -> bool {
+        match self.filtering() {
+            Some(vis) => {
+                !withheld_files(vis, v).is_empty()
+                    || !vis.sees(&[Author::of_token(uploader)], &v.artifact_id, None)
+            }
+            None => false,
+        }
+    }
+
     /// [`Vis::filter_version`] of each of `versions`, as views.
     pub fn filter_versions(&self, versions: &[Version]) -> Vec<Value> {
         versions
@@ -1114,6 +1129,24 @@ impl<'a> Withhold<'a> {
     fn named(&mut self, authors: &[Author]) -> clax_core::Result<Vec<WithheldAuthor>> {
         let mut out = Vec::with_capacity(authors.len());
         for a in authors {
+            if let Author::Person(p) = a
+                && visibility::is_remote_author(p)
+                && !self.names.contains_key(a)
+            {
+                // Someone on a public Clax: named as their comments here
+                // name them.
+                let name = self
+                    .st
+                    .remote_author_name(p)?
+                    .unwrap_or_else(|| clax_core::feedback::display_name(""));
+                self.names.insert(
+                    a.clone(),
+                    WithheldAuthor {
+                        public_id: Some(p.clone()),
+                        name,
+                    },
+                );
+            }
             if !self.names.contains_key(a) {
                 let viewer = match a {
                     Author::Owner => self.st.owner()?,

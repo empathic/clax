@@ -1385,6 +1385,64 @@ pub const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL,
         UNIQUE (job_id, key)
     );",
+    // 48: apps pushed from the Clax app to a hosted Clax and pulled from it.
+    // `app_bundles` keeps, per public version published from the app, the
+    // one `.clax` bundle it carries (its bytes in the content store as the
+    // artifact's asset `bundle-<sha256>.clax`): the bundle's lineage and
+    // release counter (`bundle_version`), the hash of the files it holds
+    // (equal to the version's `content_sha256`), the bundle's own hash and
+    // size, and the publishing account's public ID (NULL for the owner).
+    // `artifacts.comments` is the Comments switch, on for every existing
+    // artifact. `device_codes.client_kind` is what a device sign-in named
+    // itself (`clax-app` for the Clax app); `grants.person_device` marks the
+    // token such a sign-in made as the person's own device. `app_installs`
+    // counts distinct installs of an app by an opaque hash of the
+    // installing device. Deleting the artifact removes its bundle and
+    // install rows (the foreign keys on a row delete, the trigger on the
+    // soft delete). `linked_comments.author_key` is a mirrored comment's
+    // author on the public Clax (`clax_core::visibility::remote_author`),
+    // NULL for one by the person this Clax is signed in there as: what the
+    // local agents' approvals are checked against.
+    "CREATE TABLE app_bundles (
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        version INTEGER NOT NULL,
+        lineage TEXT NOT NULL,
+        bundle_version INTEGER NOT NULL,
+        content_sha256 TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        person TEXT,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, version)
+    ) WITHOUT ROWID;
+    ALTER TABLE artifacts ADD COLUMN comments INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE device_codes ADD COLUMN client_kind TEXT;
+    ALTER TABLE grants ADD COLUMN person_device INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE linked_comments ADD COLUMN author_key TEXT;
+    CREATE INDEX linked_comments_by_author ON linked_comments(author_key)
+        WHERE author_key IS NOT NULL;
+    CREATE TABLE app_installs (
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        install_sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, install_sha256)
+    ) WITHOUT ROWID;
+    CREATE TRIGGER app_bundles_on_delete AFTER UPDATE OF deleted_at ON artifacts
+    WHEN NEW.deleted_at IS NOT NULL
+    BEGIN
+        DELETE FROM app_bundles WHERE artifact_id = NEW.id;
+        DELETE FROM app_installs WHERE artifact_id = NEW.id;
+    END;",
+    // 49: what each remote's token reads threads as. `remotes.client_kind`
+    // is the kind its sign-in named: `clax-app` for the Clax app (the
+    // remote's token is its person's device, which reads threads as the
+    // person's browser, unfiltered), `agent` for a sign-in that named none
+    // (an agent token, whose reads the remote already filtered by the
+    // person's approvals there); NULL for a remote signed in before this
+    // migration, until the sync asks the remote. Its Rust step also adds
+    // `linked_comments.author_key` and its index where a database at 48
+    // lacks them (builds that ran migration 48 before it made them).
+    "ALTER TABLE remotes ADD COLUMN client_kind TEXT;",
 ];
 
 /// The audit journal's migration, as a schema version (the
@@ -1426,8 +1484,22 @@ pub const APP_MIGRATION: u32 = NUMBERING.app_first();
 
 /// The Clax app's jobs migration (its jobs, their steps and marks, and
 /// the agent's read consents), as a schema version: the sixth of the app's
-/// ([`APP_MIGRATION_MARKS`]), and this build's last.
+/// ([`APP_MIGRATION_MARKS`]), and the last any earlier numbering held.
 pub const JOBS_MIGRATION: u32 = APP_MIGRATION + 5;
+
+/// The migration that adds pushing apps to a hosted Clax and pulling them
+/// (`app_bundles`, `app_installs`, the Comments switch and person-device
+/// tokens), as a schema version: the seventh of the app's
+/// ([`APP_MIGRATION_MARKS`]), the one after [`JOBS_MIGRATION`], which no
+/// earlier numbering held.
+pub const APP_PUSH_MIGRATION: u32 = JOBS_MIGRATION + 1;
+
+/// The migration that records each remote's client kind
+/// (`remotes.client_kind`) and adds `linked_comments.author_key` where
+/// [`APP_PUSH_MIGRATION`] as first built left it out, as a schema version:
+/// the eighth of the app's ([`APP_MIGRATION_MARKS`]) and this build's
+/// last.
+pub const REMOTE_KIND_MIGRATION: u32 = APP_PUSH_MIGRATION + 1;
 
 /// The tables the jobs migration ([`JOBS_MIGRATION`]) makes, its mark
 /// (`jobs`) first. Adoption holds a database to have all of them, each as
@@ -1447,7 +1519,8 @@ pub(crate) const JOBS_TABLES: [&str; 8] = [
 /// before [`APP_MIGRATION`] leaves in the database, in order, so adoption
 /// tells from it which of them a database lacks. Taking a new migration
 /// of main's below the app's is adding it to [`MIGRATIONS`] and its
-/// [`Mark`] here, nothing else.
+/// [`Mark`] here, nothing else; one appended after the app's is the app's
+/// ([`APP_MIGRATION_MARKS`]).
 const MAIN_MARKS_ABOVE_38: [Mark<'static>; 3] = [
     Mark::Table("legal_agreements"),
     Mark::Table("briefs"),
@@ -1517,14 +1590,18 @@ pub(crate) const NUMBERING: Numbering<'static> = Numbering {
 };
 
 /// What each of the Clax app's migrations ([`APP_MIGRATION`] onwards, in
-/// order) leaves in the schema.
-const APP_MIGRATION_MARKS: [Mark<'static>; 6] = [
+/// order) leaves in the schema. Every migration after main's above
+/// [`WHERE_TO_ASK_MIGRATION`] is one of them: a new one appended to
+/// [`MIGRATIONS`] adds its mark here.
+const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
     Mark::Table("db_read_grants"),
     Mark::Column("artifacts", "draft_of"),
     Mark::Table("net_grants"),
     Mark::Table("sample_grants"),
     Mark::Column("artifacts", "draft_inherit_net"),
     Mark::Table(JOBS_TABLES[0]),
+    Mark::Table("app_bundles"),
+    Mark::Column("remotes", "client_kind"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -1820,6 +1897,27 @@ pub(super) fn rust_step(tx: &rusqlite::Transaction<'_>, version: u32) -> clax_co
     }
     if version == REPAIR_MIGRATION {
         repair(tx)?;
+    }
+    if version == REMOTE_KIND_MIGRATION {
+        mirrored_author_key(tx)?;
+    }
+    Ok(())
+}
+
+/// `linked_comments.author_key` and its index, as migration 48 makes them,
+/// where a database at 48 lacks them: builds that ran migration 48 before
+/// it made them left databases at 48 without (migration 49).
+fn mirrored_author_key(tx: &rusqlite::Transaction<'_>) -> clax_core::Result<()> {
+    if !has_column(tx, "linked_comments", "author_key")? {
+        tx.execute_batch("ALTER TABLE linked_comments ADD COLUMN author_key TEXT;")?;
+    }
+    if !has_mark(tx, &Mark::Index("linked_comments_by_author"))? {
+        // Spaced as migration 48 has it, so `sqlite_master` keeps the same
+        // text either way.
+        tx.execute_batch(
+            "CREATE INDEX linked_comments_by_author ON linked_comments(author_key)
+        WHERE author_key IS NOT NULL;",
+        )?;
     }
     Ok(())
 }
@@ -2443,6 +2541,94 @@ mod tests {
         ] {
             assert!(s.iter().any(|x| x == c), "sessions.{c}");
         }
+    }
+
+    #[test]
+    fn migration_48_adds_bundles_comments_device_and_installs() {
+        let (_d, st) = crate::test_util::store();
+        let cols = |t: &str| -> Vec<(String, Option<String>)> {
+            st.with_read(|c| {
+                let mut s = c.prepare(&format!(
+                    "SELECT name, dflt_value FROM pragma_table_info('{t}')"
+                ))?;
+                Ok(s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .unwrap()
+        };
+        let has = |t: &str, col: &str| cols(t).into_iter().find(|(n, _)| n == col);
+        assert_eq!(
+            cols("app_bundles")
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect::<Vec<_>>(),
+            [
+                "artifact_id",
+                "version",
+                "lineage",
+                "bundle_version",
+                "content_sha256",
+                "sha256",
+                "size",
+                "person",
+                "created_at"
+            ]
+        );
+        assert_eq!(
+            cols("app_installs")
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect::<Vec<_>>(),
+            ["artifact_id", "install_sha256", "created_at"]
+        );
+        assert_eq!(
+            has("artifacts", "comments").unwrap().1.as_deref(),
+            Some("1")
+        );
+        assert_eq!(has("device_codes", "client_kind").unwrap().1, None);
+        assert_eq!(
+            has("grants", "person_device").unwrap().1.as_deref(),
+            Some("0")
+        );
+        // An artifact made with no word on comments has them on.
+        let a = crate::test_util::artifact(&st, None);
+        let on: i64 = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT comments FROM artifacts WHERE id = ?1",
+                    [a.as_str()],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(on, 1);
+        // The soft delete takes the artifact's bundle and install rows.
+        st.with_tx(|tx| {
+            tx.execute(
+                "INSERT INTO app_bundles (artifact_id, version, lineage, bundle_version,
+                    content_sha256, sha256, size, created_at)
+                 VALUES (?1, 1, 'l', 1, 'c', 's', 1, 't')",
+                [a.as_str()],
+            )?;
+            tx.execute(
+                "INSERT INTO app_installs (artifact_id, install_sha256, created_at)
+                 VALUES (?1, 'i', 't')",
+                [a.as_str()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        st.delete_artifact(crate::test_util::DAEMON, &a).unwrap();
+        let left: i64 = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT (SELECT COUNT(*) FROM app_bundles) + (SELECT COUNT(*) FROM app_installs)",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(left, 0);
     }
 
     #[test]
@@ -4232,8 +4418,9 @@ mod tests {
                 assert!(!sql.contains(name), "{mark}");
             }
         }
-        assert_eq!(MIGRATIONS.len() as u32, APP_MIGRATION + 5);
+        assert_eq!(MIGRATIONS.len() as u32, APP_MIGRATION + 7);
         assert_eq!(super::JOBS_MIGRATION, APP_MIGRATION + 5);
+        assert_eq!(super::APP_PUSH_MIGRATION, APP_MIGRATION + 6);
         let first = APP_MIGRATION as usize - 1;
         assert!(MIGRATIONS[first].contains("CREATE TABLE db_read_grants"));
         assert!(MIGRATIONS[first + 1].contains("ADD COLUMN draft_of"));
@@ -4242,19 +4429,76 @@ mod tests {
         assert!(MIGRATIONS[first + 4].contains("ADD COLUMN draft_inherit_net"));
         assert!(MIGRATIONS[first + 5].contains("CREATE TABLE jobs ("));
         assert!(MIGRATIONS[first + 5].contains("CREATE TABLE job_step_marks ("));
+        assert!(MIGRATIONS[first + 6].contains("CREATE TABLE app_bundles ("));
+        assert_eq!(super::REMOTE_KIND_MIGRATION, APP_MIGRATION + 7);
+        assert!(MIGRATIONS[first + 7].contains("ADD COLUMN client_kind"));
     }
 
     #[test]
-    fn a_fresh_database_reaches_47() {
+    fn a_fresh_database_reaches_49() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(super::JOBS_MIGRATION, 47);
-        assert_eq!(user_version(&c), super::JOBS_MIGRATION);
+        assert_eq!(super::APP_PUSH_MIGRATION, 48);
+        assert_eq!(super::REMOTE_KIND_MIGRATION, 49);
+        assert_eq!(user_version(&c), super::REMOTE_KIND_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
+        }
+    }
+
+    /// Migration 48 as builds before `linked_comments.author_key` made it.
+    fn migration_48_without_author_key() -> String {
+        let made = "    ALTER TABLE linked_comments ADD COLUMN author_key TEXT;
+    CREATE INDEX linked_comments_by_author ON linked_comments(author_key)
+        WHERE author_key IS NOT NULL;
+";
+        let sql = MIGRATIONS[super::APP_PUSH_MIGRATION as usize - 1];
+        assert!(sql.contains(made), "migration 48 makes author_key so");
+        sql.replace(made, "")
+    }
+
+    #[test]
+    fn a_home_at_48_without_the_author_key_gets_it_and_the_fresh_schema() {
+        let fresh = {
+            let dir = tempfile::tempdir().unwrap();
+            let home = Home::at(dir.path().join("ax"));
+            drop(Store::open(&home).unwrap());
+            schema_of(&Connection::open(home.db_path()).unwrap())
+        };
+        for with_key in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let home = Home::at(dir.path().join("ax"));
+            home.ensure_dirs().unwrap();
+            {
+                let mut c = Connection::open(home.db_path()).unwrap();
+                for v in 1..=super::APP_PUSH_MIGRATION {
+                    let sql = if v == super::APP_PUSH_MIGRATION && !with_key {
+                        migration_48_without_author_key()
+                    } else {
+                        MIGRATIONS[v as usize - 1].to_string()
+                    };
+                    let tx = c.transaction().unwrap();
+                    tx.execute_batch(&sql).unwrap();
+                    super::rust_step(&tx, v).unwrap();
+                    tx.pragma_update(None, "user_version", v).unwrap();
+                    tx.commit().unwrap();
+                }
+                assert_eq!(
+                    super::has_column(&c, "linked_comments", "author_key").unwrap(),
+                    with_key
+                );
+            }
+            let st = Store::open(&home).unwrap();
+            // Every statement naming the column reads.
+            assert!(st.owner_sees_all().unwrap(), "with_key {with_key}");
+            drop(st);
+            let c = Connection::open(home.db_path()).unwrap();
+            assert_eq!(user_version(&c), super::REMOTE_KIND_MIGRATION);
+            assert_eq!(schema_of(&c), fresh, "with_key {with_key}");
         }
     }
 
@@ -4941,7 +5185,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::JOBS_MIGRATION);
+        assert_eq!(user_version(&c), super::REMOTE_KIND_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -5038,10 +5282,15 @@ mod tests {
         app_rows(&c, app)
     }
 
+    /// How many of the app's migrations any earlier numbering held: those
+    /// up to the jobs migration. The app push migration
+    /// ([`super::APP_PUSH_MIGRATION`]) came after every earlier layout.
+    const EARLIER_APP_MIGRATIONS: usize = (super::JOBS_MIGRATION - APP_MIGRATION + 1) as usize;
+
     #[test]
     fn each_app_prefix_at_the_old_numbering_is_adopted() {
         assert_eq!(installed_migrations().len(), 5);
-        for app in 1..=super::APP_MIGRATION_MARKS.len() {
+        for app in 1..=EARLIER_APP_MIGRATIONS {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
             app_numbered_from_39(&home, app);
@@ -5054,7 +5303,7 @@ mod tests {
                 "from {old}"
             );
         }
-        for app in 1..=super::APP_MIGRATION_MARKS.len() {
+        for app in 1..=EARLIER_APP_MIGRATIONS {
             assert_numbered_app_database_upgrades(
                 app,
                 WHERE_TO_ASK_MIGRATION,
@@ -5135,7 +5384,7 @@ mod tests {
             }
             drop(Store::open(&home).unwrap());
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::JOBS_MIGRATION, "from {old}");
+            assert_eq!(user_version(&c), super::REMOTE_KIND_MIGRATION, "from {old}");
             assert_eq!(shape_of(&c), fresh, "from {old}");
             assert_eq!(kept_rows(&c, 6), before, "from {old}");
             let mut c = c;
@@ -5426,20 +5675,20 @@ mod tests {
         let fresh = fresh_shape_of(&later);
 
         // The owner's home after this build's first open: 43 adopted to 46,
-        // then the jobs migration to 47.
+        // then the jobs migration to 47 and the app push migration to 48, the remote kind migration to 49.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), 47);
+            assert_eq!(user_version(&c), 49);
             (columns_of(&c), every_row(&c))
         };
 
         let copy = open_under(&home, &later);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), 48, "the app's 47 is its 48 now");
+        assert_eq!(user_version(&c), 50, "the app's 49 is its 50 now");
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
         assert_eq!(table_count(&c, "simulated_main_42"), 1);
@@ -5457,7 +5706,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), 47);
+        assert_eq!(user_version(&copied), 49);
         assert_eq!(
             every_row(&copied),
             before,
@@ -5471,7 +5720,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (48, schema, rows)
+            (50, schema, rows)
         );
     }
 
@@ -5508,7 +5757,7 @@ mod tests {
             }),
         ];
         for (layout, make, version) in layouts {
-            for app in 1..=super::APP_MIGRATION_MARKS.len() {
+            for app in 1..=EARLIER_APP_MIGRATIONS {
                 let dir = tempfile::tempdir().unwrap();
                 let home = Home::at(dir.path().join("ax"));
                 let before = make(&home, app);
@@ -5745,7 +5994,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, 47);
+        assert_eq!(last, 49);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
@@ -5864,7 +6113,7 @@ mod tests {
     #[test]
     fn the_frozen_app_migrations_are_this_numberings() {
         let frozen = app_migrations();
-        assert_eq!(frozen.len(), super::APP_MIGRATION_MARKS.len());
+        assert_eq!(frozen.len(), EARLIER_APP_MIGRATIONS);
         let first = APP_MIGRATION as usize - 1;
         for (i, sql) in frozen.iter().enumerate() {
             // Each is followed by the line break before the next.
@@ -5885,7 +6134,7 @@ mod tests {
     fn the_app_after_every_k_of_mains_migrations_opens_under_this_numbering() {
         let fresh = fresh_shape();
         for k in 0..=MAIN_MARKS_ABOVE_38.len() {
-            for app in 1..=super::APP_MIGRATION_MARKS.len() {
+            for app in 1..=EARLIER_APP_MIGRATIONS {
                 let dir = tempfile::tempdir().unwrap();
                 let home = Home::at(dir.path().join("ax"));
                 let before = app_after_main(&home, k, app);

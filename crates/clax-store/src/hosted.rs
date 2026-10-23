@@ -168,6 +168,10 @@ pub struct AgentToken {
     pub created_at: String,
     pub last_used_at: Option<String>,
     pub ended_at: Option<String>,
+    /// `device` for the person's own device (the Clax app's sign-in,
+    /// [`Store::is_person_device_grant`]), which People lists apart;
+    /// `agent` for every other.
+    pub kind: &'static str,
 }
 
 /// An agent token's label as typed: trimmed, `Agent` when empty.
@@ -191,7 +195,16 @@ impl AgentToken {
             created_at: g.created_at.clone(),
             last_used_at: g.last_used_at.clone(),
             ended_at: g.ended_at.clone(),
+            kind: "agent",
         }
+    }
+
+    /// This token, marked as the person's own device's when `device`.
+    pub(super) fn device(mut self, device: bool) -> AgentToken {
+        if device {
+            self.kind = "device";
+        }
+        self
     }
 }
 
@@ -259,7 +272,7 @@ fn not_found() -> CoreError {
 
 /// The viewer row `id` (the owner's included), with its owner and guest
 /// flags.
-fn session_viewer(c: &rusqlite::Connection, id: &str) -> Result<Option<SessionViewer>> {
+pub(super) fn session_viewer(c: &rusqlite::Connection, id: &str) -> Result<Option<SessionViewer>> {
     Ok(c.query_row(
         &format!("SELECT {VIEWER_COLS}, v.owner, v.guest FROM viewers v WHERE v.id = ?1"),
         params![id],
@@ -829,19 +842,22 @@ impl Store {
 
     /// Member `viewer_id`'s agent tokens, newest first, live and ended.
     pub fn agent_tokens(&self, viewer_id: &str) -> Result<Vec<AgentToken>> {
-        let ids: Vec<String> = self.with_read(|c| {
+        let ids: Vec<(String, bool)> = self.with_read(|c| {
             let mut stmt = c.prepare(
-                "SELECT id FROM grants WHERE viewer_id = ?1 AND bearer = 1
+                "SELECT id, person_device FROM grants WHERE viewer_id = ?1 AND bearer = 1
                  ORDER BY created_at DESC, id DESC",
             )?;
             Ok(stmt
-                .query_map(params![viewer_id], |r| r.get(0))?
+                .query_map(params![viewer_id], |r| Ok((r.get(0)?, r.get(1)?)))?
                 .collect::<rusqlite::Result<_>>()?)
         })?;
         self.with_read(|c| {
             ids.iter()
-                .filter_map(|gid| grant_in(c, gid).transpose())
-                .map(|g| g.map(|g| AgentToken::of(&g)))
+                .filter_map(|(gid, device)| {
+                    grant_in(c, gid)
+                        .transpose()
+                        .map(|g| g.map(|g| AgentToken::of(&g).device(*device)))
+                })
                 .collect()
         })
     }

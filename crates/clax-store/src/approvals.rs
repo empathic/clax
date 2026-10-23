@@ -441,8 +441,9 @@ impl Store {
     }
 
     /// §8.7's fast path: whether the owner's agents see everything, which
-    /// holds while no viewer is a person and the owner's `*unconnected`
-    /// approval everywhere is live. Answered from a cache for the current
+    /// holds while no viewer is a person, the owner's `*unconnected`
+    /// approval everywhere is live, and no comment here was mirrored from
+    /// someone else on a public Clax. Answered from a cache for the current
     /// generation (one atomic load) once asked in it.
     pub fn owner_sees_all(&self) -> Result<bool> {
         let g = self.visibility_generation();
@@ -454,7 +455,8 @@ impl Store {
             Ok(c.query_row(
                 "SELECT NOT EXISTS (SELECT 1 FROM viewers WHERE person = 1)
                     AND EXISTS (SELECT 1 FROM approvals WHERE COALESCE(approver, '') = ''
-                                  AND author = ?1 AND scope = 'everywhere' AND revoked_at IS NULL)",
+                                  AND author = ?1 AND scope = 'everywhere' AND revoked_at IS NULL)
+                    AND NOT EXISTS (SELECT 1 FROM linked_comments WHERE author_key IS NOT NULL)",
                 params![UNCONNECTED],
                 |r| r.get::<_, bool>(0),
             )?)
@@ -513,7 +515,8 @@ impl Store {
     /// # Errors
     /// `not_a_person` when `approver` names no connected person (a revoked
     /// one approves nothing); `invalid_author` for
-    /// an author that is not a known viewer's public ID, that is the
+    /// an author that is not a known viewer's public ID (or the key of an
+    /// author on a public Clax that a mirrored comment here has), that is the
     /// approver, or that is [`UNCONNECTED`] for anyone but the owner (§9.6);
     /// `unknown_thread` or `unknown_artifact` for a scope naming none.
     pub fn approve(
@@ -591,12 +594,21 @@ impl Store {
                 ));
             }
         } else {
-            let known: bool = is_public_id(author)
-                && tx.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM viewers WHERE public_id = ?1)",
+            let known: bool = if visibility::is_remote_author(author) {
+                // An author on a public Clax some mirrored comment here has.
+                tx.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM linked_comments WHERE author_key = ?1)",
                     params![author],
                     |r| r.get(0),
-                )?;
+                )?
+            } else {
+                is_public_id(author)
+                    && tx.query_row(
+                        "SELECT EXISTS (SELECT 1 FROM viewers WHERE public_id = ?1)",
+                        params![author],
+                        |r| r.get(0),
+                    )?
+            };
             let own = match approver {
                 Some(p) => p == author,
                 None => owner.as_deref() == Some(author),

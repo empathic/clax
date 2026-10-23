@@ -265,6 +265,48 @@ impl Store {
         )
     }
 
+    /// Turns the artifact's Comments switch on or off, recorded as
+    /// `artifact.update` (field `comments`) under `ctx`, even when it had
+    /// that value already (an explicit request). While it is off, every
+    /// new thread and comment on it is refused `comments_off`, in the
+    /// transaction that would write it (a keyed write's replay still
+    /// answers what it made); existing threads stay readable.
+    ///
+    /// # Errors
+    /// `NotFound` when the artifact does not exist or is deleted.
+    pub fn set_comments(&self, ctx: &AuditCtx, id: &ArtifactId, on: bool) -> Result<()> {
+        self.with_tx(|tx| {
+            let n = tx.execute(
+                "UPDATE artifacts SET comments = ?2 WHERE id = ?1 AND deleted_at IS NULL",
+                params![id.as_str(), on],
+            )?;
+            if n == 0 {
+                return Err(CoreError::NotFound);
+            }
+            let mut rec = AuditRecord::new(AuditKind::ArtifactUpdate, self.now())
+                .with("fields", serde_json::json!({ "comments": on }));
+            rec.ids.artifact = Some(id.as_str().to_string());
+            self.record_audit(tx, ctx, rec).map(drop)
+        })
+    }
+
+    /// Whether the artifact's Comments switch is on (it is unless turned
+    /// off).
+    ///
+    /// # Errors
+    /// `NotFound` when the artifact does not exist or is deleted.
+    pub fn comments_on(&self, id: &ArtifactId) -> Result<bool> {
+        self.with_read(|c| {
+            c.query_row(
+                "SELECT comments FROM artifacts WHERE id = ?1 AND deleted_at IS NULL",
+                params![id.as_str()],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or(CoreError::NotFound)
+        })
+    }
+
     /// Overwrites each field that is `Some` in `patch` (a `capabilities` value
     /// replaces the whole declaration; `{}` clears it) and leaves the others
     /// untouched; any other field therefore cannot be cleared through this
@@ -1088,6 +1130,74 @@ impl Store {
         self.create_artifact_then_async(ctx, &ArtifactId::generate(), p, session_id, |_, _| Ok(()))
             .await
             .map(|(a, v, ())| (a, v))
+    }
+
+    /// [`Store::create_artifact_async`] with the Comments switch set to
+    /// `comments` in version 1's transaction, so the artifact is never
+    /// live with any other value (an app's first publish makes it with
+    /// comments off).
+    pub async fn create_artifact_with_comments_async(
+        &self,
+        ctx: &AuditCtx,
+        p: ValidatedPublish,
+        session_id: Option<&str>,
+        comments: bool,
+    ) -> Result<(Artifact, Version)> {
+        self.create_artifact_forked_from_async(ctx, p, session_id, comments, None)
+            .await
+    }
+
+    /// [`Store::create_artifact_with_comments_async`] that also records
+    /// the new artifact as made from `forked_from`'s current version, read
+    /// in version 1's transaction. `NotFound` when `forked_from` is no
+    /// live artifact (deleted, or never here); nothing is made then.
+    pub async fn create_artifact_forked_from_async(
+        &self,
+        ctx: &AuditCtx,
+        p: ValidatedPublish,
+        session_id: Option<&str>,
+        comments: bool,
+        forked_from: Option<&ArtifactId>,
+    ) -> Result<(Artifact, Version)> {
+        let id = ArtifactId::generate();
+        let from = forked_from.map(|f| f.as_str().to_string());
+        self.create_artifact_then_async(ctx, &id, p, session_id, |tx, _| {
+            tx.execute(
+                "UPDATE artifacts SET comments = ?2 WHERE id = ?1",
+                params![id.as_str(), comments],
+            )?;
+            if let Some(from) = &from {
+                let n: Option<u32> = tx
+                    .query_row(
+                        "SELECT current_version FROM artifacts
+                         WHERE id = ?1 AND deleted_at IS NULL AND current_version > 0",
+                        params![from],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                let n = n.ok_or(CoreError::NotFound)?;
+                tx.execute(
+                    "UPDATE artifacts SET forked_from_id = ?2, forked_from_version = ?3
+                     WHERE id = ?1",
+                    params![id.as_str(), from, n],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .map(|(a, v, ())| (a, v))
+    }
+
+    /// [`Store::create_artifact_with_comments_async`], blocking on its
+    /// content store.
+    pub fn create_artifact_with_comments(
+        &self,
+        ctx: &AuditCtx,
+        p: ValidatedPublish,
+        session_id: Option<&str>,
+        comments: bool,
+    ) -> Result<(Artifact, Version)> {
+        self.block_on(self.create_artifact_with_comments_async(ctx, p, session_id, comments))
     }
 
     /// [`Store::create_artifact_async`] of artifact `id` (a fresh ID, or
@@ -1969,6 +2079,66 @@ mod tests {
         Store::open(&home).unwrap();
         Store::open(&home).unwrap();
         assert!(home.db_path().exists());
+    }
+
+    #[test]
+    fn an_artifact_is_created_with_the_comments_it_is_given() {
+        let (_d, store) = store();
+        let page = || {
+            let req: clax_core::publish::PublishRequest =
+                serde_json::from_value(serde_json::json!({
+                    "title": "Tide Clock",
+                    "files": {"index.html": {"content": "<p>tide</p>", "encoding": "utf8"}}
+                }))
+                .unwrap();
+            clax_core::publish::validate(req).unwrap()
+        };
+        for on in [false, true] {
+            let (a, v) = store
+                .create_artifact_with_comments(DAEMON, page(), None, on)
+                .unwrap();
+            assert_eq!(v.n, 1);
+            let id = clax_core::ArtifactId::parse(&a.id).unwrap();
+            assert_eq!(store.comments_on(&id).unwrap(), on, "{on}");
+        }
+    }
+
+    #[test]
+    fn comments_default_on_and_toggle() {
+        let (_d, store) = store();
+        let a = crate::test_util::artifact(&store, None);
+        assert!(store.comments_on(&a).unwrap());
+        store.set_comments(DAEMON, &a, false).unwrap();
+        assert!(!store.comments_on(&a).unwrap());
+        // Setting it to what it is changes nothing.
+        store.set_comments(DAEMON, &a, false).unwrap();
+        assert!(!store.comments_on(&a).unwrap());
+        store.set_comments(DAEMON, &a, true).unwrap();
+        assert!(store.comments_on(&a).unwrap());
+        // Each other artifact keeps its own.
+        let b = crate::test_util::artifact(&store, None);
+        store.set_comments(DAEMON, &b, false).unwrap();
+        assert!(store.comments_on(&a).unwrap());
+        let changes: i64 = store
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT COUNT(*) FROM audit_events WHERE kind = 'artifact.update'
+                     AND json_extract(body, '$.fields.comments') IS NOT NULL",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(changes, 4);
+        store.delete_artifact(DAEMON, &a).unwrap();
+        assert!(matches!(
+            store.comments_on(&a),
+            Err(clax_core::CoreError::NotFound)
+        ));
+        assert!(matches!(
+            store.set_comments(DAEMON, &a, true),
+            Err(clax_core::CoreError::NotFound)
+        ));
     }
 
     #[test]

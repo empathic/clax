@@ -31,7 +31,9 @@
 //!   on the machine), or an artifact's content host;
 //! - a write (any method but `GET`, `HEAD` and `OPTIONS`) without an
 //!   `Authorization` header must carry `Origin` equal to the public origin
-//!   (CSRF), else 403 `forbidden_origin`;
+//!   (CSRF), else 403 `forbidden_origin`; the one exception is counting an
+//!   app's install, which without `Origin` is taken as from no session
+//!   ([`anonymous_write`]);
 //! - the `clax connect` browser link answers 404, and `GET /api/token`
 //!   hands the owner's browser its session's shell token ([`shell_token`])
 //!   and anyone else 403 `not_owner`: no request is from this machine, so
@@ -173,6 +175,9 @@ pub enum Attempt {
     GitToken,
     /// A GitHub sign-in that makes a new person ([`crate::github`]).
     SignUp,
+    /// Counting an install of an app (`POST /api/artifacts/<id>/installs`):
+    /// a row each.
+    Install,
 }
 
 impl Attempt {
@@ -185,6 +190,7 @@ impl Attempt {
             Attempt::Device => (5.0, 60.0),
             Attempt::DevicePoll => (30.0, 2.0),
             Attempt::SignUp => (5.0, 600.0),
+            Attempt::Install => (10.0, 60.0),
         }
     }
 }
@@ -1194,6 +1200,15 @@ pub fn guest_need(method: &Method, path: &str, query: Option<&str>) -> GuestNeed
         ["api", "artifacts", aid, "snapshot"] if get => {
             at(aid, RightType::Artifacts, "read", false)
         }
+        // An app's head and bundles, and counting an install of it: anyone
+        // who may open it, as the Clax app does without signing in.
+        ["api", "artifacts", aid, "head"] if get => at(aid, RightType::Artifacts, "read", false),
+        ["api", "artifacts", aid, "versions", _, "bundle"] if get => {
+            at(aid, RightType::Artifacts, "read", false)
+        }
+        ["api", "artifacts", aid, "installs"] if post => {
+            at(aid, RightType::Artifacts, "read", false)
+        }
         // Anyone who reads a page through its link may clone it read-only
         // (`crate::git_remotes::Asker::Link`): what the Clone dialog offers,
         // and the token.
@@ -1446,6 +1461,10 @@ pub const OWN_PAGES: &[&str] = &[
     "/device",
     "/auth/github",
     crate::github::CALLBACK_PATH,
+    // The Clax app's links, which Apple and Google fetch with no session;
+    // each handler answers only on the public host.
+    "/.well-known/apple-app-site-association",
+    "/.well-known/assetlinks.json",
 ];
 
 /// The bundled legal documents' pages ([`Hosted::serves_legal`]).
@@ -1465,6 +1484,16 @@ pub fn own_route(path: &str, serves_legal: bool) -> bool {
             }
         })
         || (serves_legal && LEGAL_PAGES.contains(&path))
+}
+
+/// Whether `method` `path` is a change the gate takes without the public
+/// `Origin`, as from no session: counting an app's install
+/// (`POST /api/artifacts/<id>/installs`), which the Clax app sends
+/// outside any browser. Without `Origin` its cookie is not read, so a
+/// page elsewhere cannot make it speak for a signed-in browser.
+pub fn anonymous_write(method: &Method, path: &str) -> bool {
+    let segs: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    method == Method::POST && matches!(segs.as_slice(), ["api", "artifacts", _, "installs"])
 }
 
 /// The gate of a hosted daemon, before every route (see the module docs).
@@ -1579,10 +1608,13 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
         path.as_str(),
         "/api/hosted/device/code" | "/api/hosted/device/token"
     );
-    if write && !authz && !origin_checked && !machine {
+    // An app counting its install sends no `Origin`: such a request
+    // speaks for no session, whatever cookie it carries ([`anonymous_write`]).
+    let anonymous = !authz && !origin_checked && anonymous_write(&method, &path);
+    if write && !authz && !origin_checked && !machine && !anonymous {
         return forbidden_origin(&h);
     }
-    let session = if authz {
+    let session = if authz || anonymous {
         None
     } else {
         match lookup_session(&s, cookie.clone()).await {

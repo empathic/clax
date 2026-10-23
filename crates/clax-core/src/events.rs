@@ -213,6 +213,14 @@ pub enum Event {
         client: String,
         held: bool,
     },
+    /// The artifact's Comments switch changed (spec
+    /// 2026-10-21-app-push-pull D4a): `comments` is the switch after it, so
+    /// open views turn their Comment button and composer on or off. Only
+    /// the artifact's stream topic carries it; `/api/events` never does.
+    Comments {
+        artifact_id: String,
+        comments: bool,
+    },
     /// Tags changed (`crate::tags`): the tags artifact `artifact_id` carries
     /// (`Some`), or the list itself (`None`: a tag made, renamed,
     /// recoloured or deleted, which every artifact carrying it shows).
@@ -243,6 +251,7 @@ impl Event {
             | Event::Working { artifact_id, .. }
             | Event::Drafts { artifact_id, .. }
             | Event::Presence { artifact_id, .. }
+            | Event::Comments { artifact_id, .. }
             | Event::Doc { artifact_id, .. } => artifact_id,
             Event::Site { .. } => "",
             // Owner-only; it belongs to no artifact's routing.
@@ -283,6 +292,7 @@ impl Event {
             Event::Agents { .. } => "agents",
             Event::Job { .. } => "job",
             Event::JobsOwner { .. } => "jobs_owner",
+            Event::Comments { .. } => "comments",
             Event::Tags { .. } => "tags",
         }
     }
@@ -562,6 +572,10 @@ mod tests {
             Event::Tags {
                 artifact_id: None,
                 carriers: vec![],
+            },
+            Event::Comments {
+                artifact_id: "a".into(),
+                comments: false,
             },
         ] {
             assert_eq!(serde_json::to_value(&ev).unwrap()["type"], ev.name());

@@ -222,6 +222,12 @@ pub struct Comment {
     /// agent). For the visibility filter; never served.
     #[serde(skip)]
     pub agent_person: Option<String>,
+    /// For a comment mirrored from a public Clax by someone other than the
+    /// person this Clax is signed in there as: that author, as
+    /// [`crate::visibility::remote_author`] keys them. `None` for every
+    /// other comment.
+    #[serde(skip)]
+    pub remote_author: Option<String>,
     /// For an agent comment from a session with an agent name (spec §11
     /// "Display"), the agent: its name and person, from which each reader's
     /// author line is made. Absent otherwise (viewers' comments, and
