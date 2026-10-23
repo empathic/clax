@@ -39,7 +39,7 @@ const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** The content frame showing version `n` of `id`, from its app origin, once parsed. */
 async function appFrame(page: Page, id: string, n: number): Promise<Frame> {
-  const url = new RegExp(`^${escape(content(id))}/v/${n}/`);
+  const url = new RegExp(`^${escape(content(id))}/_clax/v/${n}/`);
   await expect.poll(() => page.frame({ url }) !== null, { timeout: 10_000 }).toBe(true);
   const frame = page.frame({ url })!;
   await frame.waitForLoadState("domcontentloaded");
@@ -48,13 +48,14 @@ async function appFrame(page: Page, id: string, n: number): Promise<Frame> {
 
 /** Publishes `html` and opens it in the app through the app's host: the
  * app's view (`?app=1`), or with `app: false` the shell document as a
- * browser shows it. */
-async function openInApp(page: Page, title: string, opts: { html?: string; app?: boolean; host?: AppHostOptions } = {}) {
+ * browser shows it; with `frame: false` it does not wait for the content
+ * frame (which loads only once the shell's site-code call is answered). */
+async function openInApp(page: Page, title: string, opts: { html?: string; app?: boolean; host?: AppHostOptions; frame?: boolean } = {}) {
   const { artifact } = await publish(d.base, d.token, title, { "index.html": opts.html ?? PAGE });
   const h = await hostChannel(page, { relay: d, ...opts.host });
   await page.goto(`${SHELL}/a/${artifact.id}${opts.app === false ? "" : "?app=1"}`);
-  const frame = await appFrame(page, artifact.id, 1);
-  return { id: artifact.id, host: h, frame };
+  const frame = opts.frame === false ? null : await appFrame(page, artifact.id, 1);
+  return { id: artifact.id, host: h, frame: frame! };
 }
 
 /** Waits until the view's stream carries its topics (`claxStreamLive`). */
@@ -387,7 +388,9 @@ test("a shell that posts nothing before its load is pinned by its clax-nonce met
 
 test("before the nonce an aborted call or stream rejects and posts nothing; after it, an abort posts callAbort or unsubscribe and its answer is dropped", async ({ page }) => {
   // A document without the nonce meta, as the app over loopback serves it.
-  const { id, host: h } = await openInApp(page, "Transport aborts", { host: { nonceMeta: false, autoInit: false } });
+  // Its content frame waits for the site code, a call that goes out only
+  // after the nonce.
+  const { id, host: h } = await openInApp(page, "Transport aborts", { host: { nonceMeta: false, autoInit: false }, frame: false });
   expect(await h.evalNow<boolean>(`document.querySelector('meta[name="clax-nonce"]') === null`)).toBe(true);
   const before = await h.evalNow<string[]>(`(async () => {
     const ac = new AbortController();
@@ -403,6 +406,7 @@ test("before the nonce an aborted call or stream rejects and posts nothing; afte
   expect(h.subscriptions).toEqual([]);
   await h.init();
   await live(h);
+  await appFrame(page, id, 1);
   expect(h.calls.filter(c => c.path.includes("probe=before"))).toEqual([]);
 
   // A call the core has not answered, aborted.
@@ -618,26 +622,26 @@ test("a page's conditional request is answered whole: the scheme forwards Accept
   expect(h.scheme.filter(s => s.status === 304)).toEqual([]);
 });
 
-test("the core's redirects never reach the WebView: one within the same base is followed in the core, /v/<n> is a meta refresh, any other is 404", async ({ page }) => {
+test("the core's redirects never reach the WebView: one within the same base is followed in the core, /_clax/v/<n> is a meta refresh, any other is 404", async ({ page }) => {
   // The bridge leaves a link marked external to the browser, which follows it.
   const html = PAGE.replace("</main>", `<a id="go" href="index.html" rel="external">Again</a></main>`);
   const { id, host: h, frame } = await openInApp(page, "Transport redirects", { html });
   const at = (path: string) => expect.poll(() => page.frames().some(f => f.url() === `${content(id)}${path}`), { timeout: 10_000 }).toBe(true);
   // index.html, which the core answers 308 to ./, is answered the page itself under its own URL.
   await frame.locator("#go").click();
-  await at("/v/1/index.html");
-  const followed = page.frames().find(f => f.url() === `${content(id)}/v/1/index.html`)!;
+  await at("/_clax/v/1/index.html");
+  const followed = page.frames().find(f => f.url() === `${content(id)}/_clax/v/1/index.html`)!;
   await expect(followed.locator("#t")).toHaveText("Quarterly goals");
-  // /v/1, which the core answers 308 to 1/, is a page that refreshes to it.
-  await followed.evaluate(() => { location.href = "/v/1"; });
-  await at("/v/1/");
-  const refreshed = page.frames().find(f => f.url() === `${content(id)}/v/1/`)!;
+  // /_clax/v/1, which the core answers 308 to 1/, is a page that refreshes to it.
+  await followed.evaluate(() => { location.href = "/_clax/v/1"; });
+  await at("/_clax/v/1/");
+  const refreshed = page.frames().find(f => f.url() === `${content(id)}/_clax/v/1/`)!;
   await expect(refreshed.locator("#t")).toHaveText("Quarterly goals");
-  // A request for /v/1 that is not a document's is answered 404.
-  expect(await refreshed.evaluate(() => fetch("/v/1").then(r => r.status))).toBe(404);
+  // A request for /_clax/v/1 that is not a document's is answered 404.
+  expect(await refreshed.evaluate(() => fetch("/_clax/v/1").then(r => r.status))).toBe(404);
   const answered = (path: string) => h.scheme.filter(s => s.url === `${content(id)}${path}`).map(s => s.status);
-  expect(answered("/v/1/index.html")).toEqual([200]);
-  expect(answered("/v/1")).toEqual([200, 404]);
+  expect(answered("/_clax/v/1/index.html")).toEqual([200]);
+  expect(answered("/_clax/v/1")).toEqual([200, 404]);
   expect(h.scheme.filter(s => s.status >= 300 && s.status < 400)).toEqual([]);
 });
 

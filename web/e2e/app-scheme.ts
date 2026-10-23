@@ -16,19 +16,24 @@
 //   document (`/a/…`; else 403 `text/plain` `refused`, as Android's host
 //   answers it without asking Dart), and a shell document or a gallery
 //   document (`/`, `/inbox`, `/people`) only to one (else the answerer's
-//   403 `refused`). Only `/a/`, `/_clax/`, `/c/` and `/_blob/` reach
-//   the core (else 404 `not_in_app`). `Host: localhost`; the shell document
-//   alone carries the owner cookie.
-// - `https://<id>.c.clax.invalid/…` (an artifact's content, `as: content`):
-//   `GET` and `HEAD` only, `Host: <id>.localhost`, no credential.
+//   403 `refused`). Only `/a/` and `/_clax/` reach the core (else 404
+//   `not_in_app`). `Host: localhost`; the shell document alone carries the
+//   owner cookie.
+// - `https://<id>.c.clax.invalid/…` (an artifact's site, `as: content`):
+//   `GET` and `HEAD` only, `Host: <id>.localhost`, no credential of the
+//   owner's: only the site's own cookies, which the core keeps for it
+//   (`clax_embed::site_jar`): what an answer of the site sets, sent with
+//   every later request of the site, and never given to the WebView.
 // - Every request carries only its `Range`, `Accept` and `Service-Worker`
 //   (never `If-None-Match` or `If-Modified-Since`: no WebView here takes the
 //   304 they would bring); every answer loses its `Access-Control-*` headers.
 // - No answer is a 3xx, which no WebView here takes from its host: a
 //   redirect within the request's origin and directory (`…/index.html` to
 //   `…/`) is followed in the core and its target answered under the
-//   request's URL; a document request for `/v/<n>` answered 308 is a page
-//   that refreshes to its `Location`; any other 3xx is a 404.
+//   request's URL; a document request for `/_clax/v/<n>` answered 308, or
+//   for a site's handshake (`/_clax/session`) answered 3xx to its own
+//   origin, is a page that refreshes to its `Location`; any other 3xx is a
+//   404.
 // - Each main-frame request takes a number, which replaces the kept one
 //   (with its URL); a shell document answered 200 to it gets a fresh
 //   nonce, written as `<meta name="clax-nonce">` right after its `<head>`
@@ -100,7 +105,7 @@ export const startEmbedDaemon = () => startDaemon({ args: ["--embed-origins", SH
 const SHELL_HOST = "app.clax.invalid";
 const CONTENT_HOST = /^([a-z0-9]+)\.c\.clax\.invalid$/;
 const PAGE_HEADERS = ["range", "accept", "service-worker"];
-const SHELL_PATHS = ["/a/", "/_clax/", "/c/", "/_blob/"];
+const SHELL_PATHS = ["/a/", "/_clax/"];
 /** The gallery's documents, which the app never loads. */
 const GALLERY = new Set(["/", "/inbox", "/people"]);
 const HELD_OPEN = [/^\/api\/events$/, /^\/api\/stream$/, /^\/api\/artifacts\/[^/]+\/room$/, /^\/api\/artifacts\/[^/]+\/live$/, /^\/mcp$/, /^\/api\/admin\/shutdown$/];
@@ -227,6 +232,8 @@ export class AppHost {
   private partStalls: { match: (c: CallRecord) => boolean; open: Promise<void> }[] = [];
   private callFaults: { match: (c: CallRecord) => boolean; answer: Answer }[] = [];
   private schemeFaults: { match: (u: URL) => boolean; answer: Answer }[] = [];
+  /** Each site's cookies (by artifact ID), as the core keeps them. */
+  private jar = new Map<string, Map<string, string>>();
   private streamFaults: { reason: string; status?: number }[] = [];
   private cdp: Promise<CDPSession>;
 
@@ -414,7 +421,7 @@ export class AppHost {
     const out: Record<string, string> = {};
     for (const [k, v] of headers) {
       const n = k.toLowerCase();
-      if (n === "content-length") continue;
+      if (n === "content-length" || n === "set-cookie") continue;
       out[n] = n in out ? `${out[n]}${n === "set-cookie" ? "\n" : ", "}${v}` : v;
     }
     await route.fulfill({ status: answer.status, headers: out, body: req.method() === "HEAD" ? Buffer.alloc(0) : body }).catch(() => {});
@@ -429,8 +436,13 @@ export class AppHost {
     const all = await req.allHeaders();
     const headers: [string, string][] = PAGE_HEADERS.filter(h => all[h] !== undefined).map(h => [h, all[h]]);
     headers.push(["host", id ? `${id}.localhost` : "localhost"]);
-    // The core adds the owner cookie for the shell document's path alone.
-    const asked = (target: URL): [string, string][] => target.pathname.startsWith("/a/") && shell ? [...headers, ["cookie", ownerCookie(this.d.token)]] : headers;
+    // The core adds the owner cookie for the shell document's path alone,
+    // and a site's own cookies to its requests.
+    const asked = (target: URL): [string, string][] => {
+      if (target.pathname.startsWith("/a/") && shell) return [...headers, ["cookie", ownerCookie(this.d.token)]];
+      const kept = id === null ? undefined : this.jar.get(id);
+      return kept?.size ? [...headers, ["cookie", [...kept].map(([k, v]) => `${k}=${v}`).join("; ")]] : headers;
+    };
     // No WebView here takes a 3xx from its host, so none leaves the answerer
     // (plan Task 15, `SchemeAnswerer`): one whose Location keeps the
     // request's origin and directory is followed in the core, at most
@@ -447,14 +459,36 @@ export class AppHost {
       } catch (e) {
         return textAnswer(502, `the core did not answer: ${String(e)}`);
       }
+      if (id !== null) this.keep(id, answer);
       if (answer.status < 300 || answer.status >= 400) return answer;
       const location = answer.headers.find(([k]) => k === "location")?.[1] ?? null;
       const next = location === null ? null : resolveLocation(target, location);
       if (next && hop < MAX_HOPS && sameBase(url, next)) { target = next; continue; }
-      if (answer.status === 308 && location !== null && hop === 0 && /^\/v\/[0-9]+$/.test(url.pathname) && (mainNav || /text\/html/i.test(all.accept ?? ""))) {
-        return { status: 200, headers: [["content-type", "text/html; charset=utf-8"]], body: Buffer.from(`<meta http-equiv="refresh" content="0;url=${escapeAttr(location)}">`) };
+      const asDocument = location !== null && hop === 0 && (mainNav || /text\/html/i.test(all.accept ?? ""));
+      const versionRoot = answer.status === 308 && /^\/_clax\/v\/[0-9]+$/.test(url.pathname);
+      const handshake = !shell && url.pathname === "/_clax/session" && next !== null && next.origin === url.origin;
+      if (asDocument && (versionRoot || handshake)) {
+        return { status: 200, headers: [["content-type", "text/html; charset=utf-8"]], body: Buffer.from(`<meta http-equiv="refresh" content="0;url=${escapeAttr(location!)}">`) };
       }
       return textAnswer(404, "not found");
+    }
+  }
+
+  /** Keeps the cookies an answer of site `id` sets, and drops those it
+   * ends (`Max-Age` 0 or less, or an empty value). */
+  private keep(id: string, answer: Answer): void {
+    for (const [k, v] of answer.headers) {
+      if (k.toLowerCase() !== "set-cookie") continue;
+      const [pair, ...attrs] = v.split(";");
+      const eq = pair.indexOf("=");
+      if (eq <= 0) continue;
+      const name = pair.slice(0, eq).trim();
+      const value = pair.slice(eq + 1).trim();
+      const ended = !value || attrs.some(a => /^\s*max-age\s*=\s*(-|0+\s*$)/i.test(a));
+      let kept = this.jar.get(id);
+      if (!kept) this.jar.set(id, kept = new Map());
+      if (ended) kept.delete(name);
+      else kept.set(name, value);
     }
   }
 

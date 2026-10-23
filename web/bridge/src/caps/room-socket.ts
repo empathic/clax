@@ -12,7 +12,12 @@
 // page seeing it leave. It learns of the change from a framing Clax shell
 // (`room/viewer`, after `room.watch`), and, top-level, from the site's
 // `whoami` read again as the page comes back into view.
-import { CapabilityError, type Rpc } from "../rpc";
+//
+// Framed, the socket waits for the shell's answer to `watch`: a shell whose
+// view has no rooms (the Clax app's, whose scheme handlers carry no
+// WebSocket) refuses it `capability_disabled`, and then no socket opens and
+// every room call is refused so.
+import { CapabilityError, isCapabilityError, type Rpc } from "../rpc";
 import type { OriginClient } from "./origin-client";
 
 /** Delays between reconnect attempts; the last repeats. */
@@ -160,13 +165,18 @@ export function originRoom(client: Pick<OriginClient, "socket" | "call">, shell:
     connect();
   }
 
-  if (shell) {
-    void shell.use("room").then(g => {
+  // The shell's refusal of rooms for this view, once it answered `watch`.
+  let disabled: CapabilityError | null = null;
+  // Whether that answer came (always, top-level): until it does, calls wait.
+  let settled = !shell;
+  const watched: Promise<unknown> = shell
+    ? shell.use("room").then(g => {
       if (!g) return;
       shell.on("room", "viewer", renamed);
       return shell.call("room", "watch", []);
-    }).catch(() => {});
-  }
+    }).catch(e => { if (isCapabilityError(e) && e.code === "capability_disabled") disabled = e; })
+      .finally(() => { settled = true; })
+    : Promise.resolve();
   document.addEventListener("visibilitychange", () => {
     if (shell || document.visibilityState !== "visible" || who === null) return;
     void whoami().then(k => {
@@ -184,6 +194,8 @@ export function originRoom(client: Pick<OriginClient, "socket" | "call">, shell:
 
   return {
     async call(_ns, method, args) {
+      if (!settled) await watched;
+      if (disabled && method !== "leave") throw disabled;
       switch (method) {
         case "connect":
           wanted = true;

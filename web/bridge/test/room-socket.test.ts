@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ACK_TIMEOUT_MS, RECONNECT_MS, originRoom } from "../src/caps/room-socket";
+import { CapabilityError } from "../src/rpc";
 
 /** A WebSocket stand-in: what was sent, and the daemon's side. */
 class FakeSocket {
@@ -17,12 +18,16 @@ class FakeSocket {
 }
 
 /** A framing shell serving room: `viewer()` reports a viewer change. */
-function framingShell() {
+function framingShell(refuse?: string) {
   const fns: ((d: unknown) => void)[] = [];
   const asked: string[] = [];
   return {
     use: async (n: string) => (n === "room" ? { config: {} } : null),
-    call: async (ns: string, m: string) => { asked.push(`${ns}.${m}`); return null; },
+    call: async (ns: string, m: string) => {
+      asked.push(`${ns}.${m}`);
+      if (refuse) throw new CapabilityError(refuse, "no rooms here");
+      return null;
+    },
     on: (_ns: string, topic: string, fn: (d: unknown) => void) => { if (topic === "viewer") fns.push(fn); return () => {}; },
     viewer: () => { for (const fn of fns) fn(null); },
     asked,
@@ -48,6 +53,22 @@ function show(state: "visible" | "hidden") {
 
 describe("the room's socket on the page's own origin", () => {
   afterEach(() => { vi.useRealTimers(); });
+
+  it("opens no socket and refuses every call capability_disabled when the framing shell refuses watch so (the Clax app's)", async () => {
+    const shell = framingShell("capability_disabled");
+    const { t, sockets } = room(shell);
+    await expect(t.call("room", "connect", [])).rejects.toMatchObject({ code: "capability_disabled" });
+    await expect(t.call("room", "join", ["table"])).rejects.toMatchObject({ code: "capability_disabled" });
+    await expect(t.call("room", "emit", [null, "hi"])).rejects.toMatchObject({ code: "capability_disabled" });
+    expect(sockets).toEqual([]);
+    expect(shell.asked).toEqual(["room.watch"]);
+  });
+
+  it("opens its socket when a framing shell's watch fails otherwise", async () => {
+    const { t, sockets } = room(framingShell("upstream_error"));
+    await t.call("room", "connect", []);
+    expect(sockets).toHaveLength(1);
+  });
 
   it("opens the site's room under one label, relays its frames, and answers emits from their acks", async () => {
     const { t, sockets, pushed } = room();
