@@ -8374,9 +8374,7 @@ async fn the_owners_people_names_no_page_of_another_person() {
     let handle = me["agents"][0]["handle"].as_str().unwrap().to_string();
     // Mia narrows her machine and raises her agent at her page, and
     // approves the owner's words there.
-    let at_hers = |actions: &[&str]| {
-        json!([{"type": "clax-artifacts", "actions": actions, "locations": ["own", mias]}])
-    };
+    let at_hers = |actions: &[&str]| json!([{"type": "clax-artifacts", "actions": actions, "locations": ["own", mias]}]);
     let (s, v) = site
         .put(
             &mia,
@@ -8446,4 +8444,138 @@ async fn the_owners_people_names_no_page_of_another_person() {
     // Mia's own People still names her page.
     let (_, me) = site.get(&mia, "/api/people/me").await;
     assert!(me.to_string().contains(&mias), "{me}");
+}
+
+#[tokio::test]
+async fn an_owner_row_grant_reaches_only_the_owners_reach() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let owner_pid = site.pid(&owner).await;
+    let plan = site.titled("Plan").await;
+    let mia = site.person(&owner, "Mia").await;
+    let private = site.made_by(&mia, "Mia's private").await;
+    let shared = site.made_by(&mia, "Mia's shared").await;
+    let linked = site.made_by(&mia, "Mia's linked").await;
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{shared}/shares"),
+            json!({"person": owner_pid, "access": "viewer"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{linked}/link"),
+            json!({"access": "viewer"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let mut agent = site.token_agent(&owner, "owner's laptop").await;
+    assert_eq!(agent.initialize("claude-code").await, 200);
+    let session = site.ts.store.get_session(&agent.sid()).unwrap().unwrap();
+    assert!(session.grant_id.is_some() && session.person.is_none());
+    let secret = agent.session.clone().unwrap();
+    let secret = secret.split_once('.').unwrap().1.to_string();
+    let call = async |m: reqwest::Method, p: &str, body: Value| {
+        let mut r = site
+            .ts
+            .client
+            .request(m, site.url(p))
+            .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+            .header("x-clax-session", agent.sid())
+            .header(clax_core::remote::SESSION_SECRET_HEADER, &secret)
+            .bearer_auth(&agent.token);
+        if !body.is_null() {
+            r = r.json(&body);
+        }
+        let (s, v) = json_of(r.send().await.unwrap()).await;
+        (s, code(&v).to_string(), v)
+    };
+    use reqwest::Method as M;
+    let at = |aid: &str| format!("/api/artifacts/{aid}");
+    let tags = |aid: &str| format!("/api/artifacts/{aid}/tags");
+    let pin = json!({"pinned": true});
+    let no_tags = json!({"tags": []});
+    // Mia's private page, and the one she shares by link alone (a grant
+    // reaches nothing by link), are not there for it, whatever the route.
+    for aid in [&private, &linked] {
+        for (m, p, b) in [
+            (M::GET, at(aid), json!(null)),
+            (M::GET, format!("{}/threads", at(aid)), json!(null)),
+            (M::PATCH, at(aid), pin.clone()),
+            (M::PATCH, at(aid), json!({"title": "x"})),
+            (M::PUT, tags(aid), no_tags.clone()),
+        ] {
+            let (s, c, v) = call(m.clone(), &p, b).await;
+            assert_eq!((s, c.as_str()), (404, "not_found"), "{m} {p}: {v}");
+        }
+    }
+    // Her page shared with the owner as a viewer: read, at the share's
+    // level alone.
+    for p in [at(&shared), format!("{}/threads", at(&shared))] {
+        let (s, _, v) = call(M::GET, &p, json!(null)).await;
+        assert_eq!(s, 200, "{p}: {v}");
+    }
+    for (m, p, b) in [
+        (M::PATCH, at(&shared), pin.clone()),
+        (M::PATCH, at(&shared), json!({"title": "x"})),
+        (M::PUT, tags(&shared), no_tags.clone()),
+    ] {
+        let (s, c, v) = call(m.clone(), &p, b).await;
+        assert_eq!((s, c.as_str()), (403, "not_permitted"), "{m} {p}: {v}");
+    }
+    // As an editor the owner's grant changes its contents, never its pin
+    // or tags, as the owner's browser does not.
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{shared}/shares"),
+            json!({"person": owner_pid, "access": "editor"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, _, v) = call(M::PATCH, &at(&shared), json!({"title": "x"})).await;
+    assert_eq!(s, 200, "{v}");
+    for (m, p, b) in [
+        (M::PATCH, at(&shared), pin.clone()),
+        (M::PUT, tags(&shared), no_tags.clone()),
+    ] {
+        let (s, c, v) = call(m.clone(), &p, b).await;
+        assert_eq!((s, c.as_str()), (403, "admin_only"), "{m} {p}: {v}");
+    }
+    // Sharing is a browser's, the same answer at any page.
+    for aid in [&private, &shared] {
+        for (m, p, b) in [
+            (
+                M::GET,
+                format!("/api/hosted/artifacts/{aid}/sharing"),
+                json!(null),
+            ),
+            (
+                M::PUT,
+                format!("/api/hosted/artifacts/{aid}/link"),
+                json!({"access": "viewer"}),
+            ),
+        ] {
+            let (s, c, v) = call(m.clone(), &p, b).await;
+            assert_eq!((s, c.as_str()), (403, "forbidden"), "{m} {p}: {v}");
+        }
+    }
+    // The owner's own page is the grant's to administer, and its listing
+    // holds the owner's and what is shared with them.
+    for (m, p, b) in [
+        (M::GET, at(&plan), json!(null)),
+        (M::PATCH, at(&plan), pin.clone()),
+        (M::PUT, tags(&plan), no_tags.clone()),
+    ] {
+        let (s, _, v) = call(m.clone(), &p, b).await;
+        assert_eq!(s, 200, "{m} {p}: {v}");
+    }
+    let (s, _, v) = call(M::GET, "/api/artifacts", json!(null)).await;
+    assert_eq!(s, 200, "{v}");
+    let mut want = vec![plan.clone(), shared.clone()];
+    want.sort();
+    assert_eq!(listed(&v), want);
 }
