@@ -23,6 +23,16 @@ pub enum Reach {
     Beyond,
 }
 
+/// The artifacts the history names that are gone from the store, each
+/// with its `artifact.create` step's actor and body (null when the history
+/// holds none).
+const PURGED_MAKERS: &str = "SELECT g.id, e.actor, e.body
+       FROM (SELECT artifact_id AS id FROM audit_events WHERE artifact_id IS NOT NULL
+             UNION SELECT artifact2_id FROM audit_events WHERE artifact2_id IS NOT NULL) g
+       LEFT JOIN audit_events e ON e.artifact_id = g.id AND e.kind = 'artifact.create'
+      WHERE NOT EXISTS (SELECT 1 FROM artifacts a WHERE a.id = g.id)
+      GROUP BY g.id";
+
 impl Store {
     /// Where artifact `aid` lies relative to `person` (a viewer's public
     /// ID; `None` is the owner).
@@ -45,14 +55,46 @@ impl Store {
         })
     }
 
-    /// Every artifact a person made, deleted ones included: all that may
-    /// lie beyond the owner's reach.
+    /// Every artifact that may lie beyond the owner's reach: each one a
+    /// person made, deleted ones included, and each one the history names
+    /// that is gone from the store (purged), unless its `artifact.create`
+    /// step was the owner's or an owner's agent's. A purged page whose
+    /// maker the history does not tell is counted too.
     pub fn artifacts_made_by_people(&self) -> Result<Vec<String>> {
+        use clax_core::audit::Actor;
         self.with_read(|c| {
             let mut st = c.prepare_cached("SELECT id FROM artifacts WHERE person IS NOT NULL")?;
-            Ok(st
+            let mut out = st
                 .query_map([], |r| r.get(0))?
-                .collect::<rusqlite::Result<Vec<String>>>()?)
+                .collect::<rusqlite::Result<Vec<String>>>()?;
+            let mut gone = c.prepare_cached(PURGED_MAKERS)?;
+            let rows = gone
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (id, actor, body) in rows {
+                let maker = match (actor, body) {
+                    (Some(a), Some(b)) => super::toolpath::project::effective_actor_of(&a, &b),
+                    _ => None,
+                };
+                let owners = matches!(
+                    maker,
+                    Some(Actor::Owner { .. })
+                        | Some(Actor::Agent(clax_core::audit::AgentActor {
+                            person: None,
+                            ..
+                        }))
+                );
+                if !owners {
+                    out.push(id);
+                }
+            }
+            Ok(out)
         })
     }
 
@@ -172,6 +214,82 @@ mod tests {
                 .iter()
                 .all(|(i, _)| *i != mias)
         );
+    }
+
+    #[test]
+    fn a_purged_persons_page_stays_out_of_the_owners_export() {
+        use crate::toolpath::project;
+        use clax_core::audit::{Actor, AuditCtx};
+        let (_d, st, mia, _sam, owners, mias) = world();
+        let owner = st.owner_public_id().unwrap().unwrap();
+        let by = |actor: Actor| AuditCtx {
+            actor,
+            ..AuditCtx::DAEMON
+        };
+        let src = clax_core::ArtifactId::parse(&owners).unwrap();
+        let (hers, _) = st
+            .fork_artifact(
+                &by(Actor::Viewer {
+                    public_id: mia.clone(),
+                    display_name: None,
+                    person: true,
+                }),
+                &src,
+                None,
+                Some(&mia),
+                None,
+            )
+            .unwrap();
+        let (ours, _) = st
+            .fork_artifact(
+                &by(Actor::Owner { public_id: owner }),
+                &src,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        // Both purged: their rows go, their history stays.
+        for id in [&hers.id, &ours.id] {
+            st.with_tx(|c| {
+                c.execute("DELETE FROM versions WHERE artifact_id = ?1", params![id])?;
+                Ok(c.execute("DELETE FROM artifacts WHERE id = ?1", params![id])?)
+            })
+            .unwrap();
+        }
+        let out: std::collections::BTreeSet<String> =
+            st.artifacts_made_by_people().unwrap().into_iter().collect();
+        assert!(out.contains(&mias) && out.contains(&hers.id), "{out:?}");
+        assert!(!out.contains(&ours.id) && !out.contains(&owners), "{out:?}");
+        let env = project::ExportEnv {
+            render: crate::toolpath::RenderEnv::export(st.install_id().unwrap(), "http://x"),
+            clax_version: "0".into(),
+            clax_commit: "0".into(),
+        };
+        let export = |artifacts: Vec<String>| {
+            let mut w = Vec::new();
+            let req = project::Export {
+                selection: project::Selection {
+                    artifacts,
+                    out_of_reach: out.clone(),
+                    ..Default::default()
+                },
+                shape: project::Shape::Journal,
+                ..Default::default()
+            };
+            st.export(&req, &env, &mut w)
+                .map(|()| String::from_utf8(w).unwrap())
+        };
+        let doc = export(Vec::new()).unwrap();
+        assert!(!doc.contains(&hers.id) && !doc.contains(&mias), "{doc}");
+        assert!(doc.contains(&ours.id), "{doc}");
+        assert!(matches!(
+            export(vec![hers.id.clone()]),
+            Err(CoreError::Invalid {
+                code: "unknown_artifact",
+                ..
+            })
+        ));
     }
 
     #[test]

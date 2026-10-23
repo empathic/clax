@@ -299,7 +299,10 @@ pub fn base_caller_at(
 /// Whether the token (`token`) keeps its level at artifact `aid`: always
 /// on a local daemon, within the owner's reach alone on a hosted one
 /// (`hosted`).
-fn token_at(st: &Store, hosted: bool, token: bool, aid: &str) -> clax_core::Result<bool> {
+///
+/// # Errors
+/// The store's.
+pub fn token_at(st: &Store, hosted: bool, token: bool, aid: &str) -> clax_core::Result<bool> {
     Ok(token && (!hosted || st.reach(aid, None)? == clax_store::reach::Reach::Within))
 }
 

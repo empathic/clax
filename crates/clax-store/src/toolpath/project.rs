@@ -228,10 +228,15 @@ fn show_time(t: &DateTime<Utc>) -> String {
 /// The actor that a step speaks for: its actor, or the person or agent a
 /// system actor names in `for_actor`.
 fn effective_actor(row: &AuditRow) -> Option<Actor> {
-    let actor: Actor = serde_json::from_str(&row.actor).ok()?;
+    effective_actor_of(&row.actor, &row.body)
+}
+
+/// [`effective_actor`] of a stored row's `actor` and `body` (JSON).
+pub(crate) fn effective_actor_of(actor: &str, body: &str) -> Option<Actor> {
+    let actor: Actor = serde_json::from_str(actor).ok()?;
     if let Actor::System { .. } = actor
-        && row.body.contains("\"for_actor\"")
-        && let Ok(Value::Object(mut body)) = serde_json::from_str::<Value>(&row.body)
+        && body.contains("\"for_actor\"")
+        && let Ok(Value::Object(mut body)) = serde_json::from_str::<Value>(body)
         && let Some(who) = body
             .remove("for_actor")
             .and_then(|v| serde_json::from_value::<Actor>(v).ok())

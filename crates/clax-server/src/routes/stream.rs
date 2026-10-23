@@ -457,6 +457,7 @@ pub async fn update(
         ));
     }
     let token = token_or_cookie(&who);
+    let hosted = s.hosted.is_some();
     let check = add.clone();
     let (caller, claims, add) = s
         .store_call(move |st| {
@@ -480,7 +481,10 @@ pub async fn update(
                         return Err(CoreError::NotFound);
                     }
                 }
-                if matches!(t, Topic::Docs(_)) && !token && !st.doc_declared(&aid)? {
+                if matches!(t, Topic::Docs(_))
+                    && !clax_http::db_caller::token_at(st, hosted, token, aid.as_str())?
+                    && !st.doc_declared(&aid)?
+                {
                     return Err(CoreError::NotDeclared { capability: "db" });
                 }
                 if t.is_live() {
@@ -504,17 +508,30 @@ pub async fn update(
             }
             // Each `artifact` topic is held quiet where its comments are not
             // the caller's to read.
+            let caller = clax_http::db_caller::caller_of(st, token, &who)?;
             let mut add = Vec::with_capacity(check.len());
             for t in check {
                 let quiet = matches!(&t, Topic::Artifact(a)
                     if !clax_http::hosted::reads_comments(st, member.as_ref(), a)?);
-                add.push(if quiet { t.without_comments() } else { t });
+                let t = if quiet { t.without_comments() } else { t };
+                // A `docs` topic carries what the caller reads there: on a
+                // hosted daemon the token's level holds only at artifacts
+                // the owner made.
+                let t = match &t {
+                    Topic::Docs(a) if hosted => {
+                        let at =
+                            clax_http::db_caller::base_caller_at(st, hosted, token, &who, a)?.level;
+                        if at < caller.level {
+                            t.docs_capped(at)
+                        } else {
+                            t
+                        }
+                    }
+                    _ => t,
+                };
+                add.push(t);
             }
-            Ok((
-                clax_http::db_caller::caller_of(st, token, &who)?,
-                claims,
-                add,
-            ))
+            Ok((caller, claims, add))
         })
         .await?;
     let credential = via.as_ref().map(|c| c.0.hash());

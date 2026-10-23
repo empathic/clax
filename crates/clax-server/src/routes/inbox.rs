@@ -511,13 +511,14 @@ pub async fn summary(
             };
             let (mut open, _) =
                 db.list_questions(me.as_deref(), ListStatus::Open, SUMMARY_QUESTIONS)?;
+            open.retain(|q| q.artifact_id.as_ref().is_none_or(|a| !hidden.contains(a)));
             if !tag_ids.is_empty() {
                 let mut carrying = std::collections::HashMap::new();
                 open.retain(|q| {
                     let Some(aid) = &q.artifact_id else {
                         return false;
                     };
-                    if withheld.contains(aid) || hidden.contains(aid) {
+                    if withheld.contains(aid) {
                         return false;
                     }
                     *carrying.entry(aid.clone()).or_insert_with(|| {

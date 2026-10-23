@@ -174,6 +174,39 @@ pub fn out_of_reach(
     Ok(all.into_iter().filter(|a| !scope.lists(st, a)).collect())
 }
 
+/// Whether `recipient` (`None`: the owner) reaches artifact `aid` as their
+/// listings do ([`crate::hosted::MemberRights::lists`]) on a hosted daemon
+/// (`hosted`): what a question or item about it needs to be theirs to see.
+/// Always on a local daemon; never for a recipient who is no person.
+///
+/// # Errors
+/// The store's.
+pub fn recipient_lists(
+    st: &Store,
+    recipient: Option<&str>,
+    hosted: bool,
+    aid: &str,
+) -> clax_core::Result<bool> {
+    if !hosted {
+        return Ok(true);
+    }
+    let scope = match recipient {
+        None => crate::hosted::MemberRights::owner(st),
+        Some(pid) => crate::hosted::MemberRights::of_person(st, pid),
+    };
+    match scope {
+        Ok(m) => Ok(m.lists(st, aid)),
+        Err(
+            clax_core::CoreError::NotFound
+            | clax_core::CoreError::Invalid {
+                code: "not_a_person",
+                ..
+            },
+        ) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 /// Whether `recipient`, a connected person, may read the comments on
 /// `artifact`: by their rights or the page's link, as the threads route
 /// decides. The owner and an item about no artifact are not limited, nor a

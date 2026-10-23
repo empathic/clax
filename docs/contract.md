@@ -8664,10 +8664,14 @@ it starts, the runs a previous process left. A build without the
   What reads across artifacts keeps to the same reach, the owner's
   included: `GET /api/threads`; the inbox (its items, groups, agent strip,
   unread counts, `GET /api/inbox/<id>` and its marks, and the `inbox`
-  events); `GET /api/agents` (see it); `GET /api/tags`' counts;
+  events); the questions the caller's agents asked about an artifact out
+  of reach (`GET /api/questions`, the summary's `questions`, `GET
+  /api/questions/<qid>` and its answers 404, and the `questions` events);
+  `GET /api/agents` (see it); `GET /api/tags`' counts;
   `GET /api/viewers/me/attention` without `?artifact=`; the
   Toolpath export, which leaves out every step that names an artifact out
-  of the owner's reach (steps that name none stay) and answers an
+  of the owner's reach, a purged one included unless the history shows
+  the owner made it (steps that name none stay), and answers an
   `artifact` selector naming one 400 `unknown_artifact`; `GET /api/drafts`;
   and a cross-app read's grants and consents (`/api/artifacts/<A>/db-grants`,
   `/api/agent-read-consents`), where a source or reader out of reach is 404
@@ -8675,7 +8679,8 @@ it starts, the runs a previous process left. A build without the
   `admin` from a browser) holds only at artifacts the owner made: at one
   shared with the owner or open by its link, the owner's browser is
   `interact` and the token from no browser `view`, as a person's would be,
-  and its rules apply. Git tokens follow the reach too: the owner's and the
+  and its rules apply, its room and a stream's `docs:<id>` topic
+  included. Git tokens follow the reach too: the owner's and the
   owner's agents' as the owner's, a person's and their agents' as that
   person's; a token at another person's artifact lasts only while its
   share (or, for a person, its link) does, and a fork's lineage is followed

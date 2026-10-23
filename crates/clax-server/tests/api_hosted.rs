@@ -2257,6 +2257,270 @@ async fn no_owner_path_reads_a_members_page() {
     assert!(v.to_string().contains(&mias), "{v}");
 }
 
+/// The daemon token's room socket at `aid`, after its `welcome`: the
+/// result of emitting `clear`, a topic the page declares no level for
+/// (admin alone).
+async fn room_clears(site: &Site, aid: &str) -> Value {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+    let url = format!(
+        "{}/api/artifacts/{aid}/room?peer=aaaaaaaaaaaaaaaa",
+        site.ts.base.replacen("http://", "ws://", 1)
+    );
+    let mut req = url.into_client_request().unwrap();
+    let h = req.headers_mut();
+    h.insert(
+        "host",
+        format!("localhost:{}", site.ts.addr.port())
+            .parse()
+            .unwrap(),
+    );
+    h.insert(
+        "authorization",
+        format!("Bearer {}", site.ts.token).parse().unwrap(),
+    );
+    let (ws, _) = tokio_tungstenite::connect_async(req)
+        .await
+        .expect("upgrade");
+    let (mut tx, mut rx) = ws.split();
+    let mut next = async || loop {
+        let m = tokio::time::timeout(std::time::Duration::from_secs(5), rx.next())
+            .await
+            .expect("a frame within 5 s")
+            .expect("open")
+            .expect("readable");
+        if let Message::Text(t) = m {
+            return serde_json::from_str::<Value>(t.as_str()).unwrap();
+        }
+    };
+    assert_eq!(next().await["t"], "welcome");
+    let emit = json!({"t": "emit", "id": 1, "room": null, "topic": "clear"});
+    tx.send(Message::Text(emit.to_string().into()))
+        .await
+        .unwrap();
+    loop {
+        let f = next().await;
+        if f["t"] == "ack" || f["t"] == "nack" {
+            return f;
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_page_shared_with_the_owner_gives_them_its_shares_level_alone() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let owner_pid = site.pid(&owner).await;
+    let (_, v) = site.get(&owner, "/api/token").await;
+    let shell = v["token"].as_str().unwrap().to_string();
+    let owner_sid = site.ts.register_session("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // Mia's page keeps admin-only documents under `secret`, and a room.
+    let mia = site.person(&owner, "Mia").await;
+    let mut agent = site.token_agent(&mia, "laptop").await;
+    assert_eq!(agent.initialize("claude-code").await, 200);
+    let caps = json!({"db": {"rules": [{"path": "secret", "read": "admin", "write": "admin"}]},
+        "room": {}});
+    let (_, r) = agent
+        .call(
+            "publish",
+            json!({"html": "<h1>Mia's</h1>", "title": "Mia's", "capabilities": caps}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    let mias = site
+        .ts
+        .store
+        .list_artifacts()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.title == "Mia's")
+        .unwrap()
+        .id;
+    let r = site
+        .ts
+        .client
+        .put(site.url(&format!("/api/artifacts/{mias}/docs/secret/a")))
+        .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+        .header("x-clax-session", agent.sid())
+        .header(
+            clax_core::remote::SESSION_SECRET_HEADER,
+            agent.session.as_deref().unwrap().split_once('.').unwrap().1,
+        )
+        .bearer_auth(&agent.token)
+        .json(&json!({"data": {"text": "Mia's alone"}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    // Shared with the owner as an editor: its routes are open to them.
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{mias}/shares"),
+            json!({"person": owner_pid, "access": "editor"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let share = v["share"]["id"].as_str().unwrap().to_string();
+    // The owner's stream hears the page's documents at the share's level:
+    // not one only admins read.
+    let res = site
+        .req(&owner, reqwest::Method::GET, "/api/stream")
+        .bearer_auth(&shell)
+        .send()
+        .await
+        .unwrap();
+    let mut events = clax_testkit::EventReader::from_response(res);
+    let sid = events.next_named("ready").await["stream"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = json_of(
+        site.req(&owner, reqwest::Method::POST, &format!("/api/stream/{sid}"))
+            .bearer_auth(&shell)
+            .json(&json!({"subscribe": [format!("docs:{mias}")]}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        (s, v["topics"].clone()),
+        (200, json!([format!("docs:{mias}")])),
+        "{v}"
+    );
+    for path in ["secret/c", "notes/a"] {
+        let r = site
+            .ts
+            .client
+            .put(site.url(&format!("/api/artifacts/{mias}/docs/{path}")))
+            .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+            .header("x-clax-session", agent.sid())
+            .header(
+                clax_core::remote::SESSION_SECRET_HEADER,
+                agent.session.as_deref().unwrap().split_once('.').unwrap().1,
+            )
+            .bearer_auth(&agent.token)
+            .json(&json!({"data": {"text": path}}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    }
+    loop {
+        let (name, data) = events.next().await;
+        assert_ne!(data["path"], json!("secret/c"), "{name}: {data}");
+        if name == "doc" && data["path"] == json!("notes/a") {
+            break;
+        }
+    }
+    // The owner's agent asks about it while it is shared.
+    let r = site
+        .ts
+        .authed(
+            site.ts
+                .client
+                .post(site.url(&format!("/api/sessions/{owner_sid}/questions")))
+                .header(HOST, format!("localhost:{}", site.ts.addr.port())),
+        )
+        .json(&json!({"source": "ask", "artifact_id": mias, "questions": ask_which("Which?")}))
+        .send()
+        .await
+        .unwrap();
+    let (s, q) = json_of(r).await;
+    assert!(s == 200 || s == 201, "{s} {q}");
+    let qid = q["question"]["id"].as_str().unwrap().to_string();
+    let callers: [(
+        &str,
+        Box<dyn Fn(reqwest::Method, &str) -> reqwest::RequestBuilder + '_>,
+    ); 2] = [
+        (
+            "browser",
+            Box::new(|m: reqwest::Method, p: &str| site.req(&owner, m, p).bearer_auth(&shell)),
+        ),
+        (
+            "daemon token",
+            Box::new(|m: reqwest::Method, p: &str| {
+                site.ts
+                    .client
+                    .request(m, site.url(p))
+                    .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+                    .bearer_auth(&site.ts.token)
+            }),
+        ),
+    ];
+    // The share's level, not the token's: an admin-only document is not
+    // there to read or write.
+    for (who, call) in &callers {
+        let r = call(
+            reqwest::Method::GET,
+            &format!("/api/artifacts/{mias}/docs/secret/a"),
+        )
+        .send()
+        .await
+        .unwrap();
+        let (s, v) = json_of(r).await;
+        assert_eq!(s, 404, "{who}: read: {v}");
+        let r = call(
+            reqwest::Method::PUT,
+            &format!("/api/artifacts/{mias}/docs/secret/b"),
+        )
+        .json(&json!({"data": {"text": "the owner's"}}))
+        .send()
+        .await
+        .unwrap();
+        let status = r.status().as_u16();
+        assert!(
+            status == 404 || status == 403,
+            "{who}: write: {status} {}",
+            r.text().await.unwrap()
+        );
+    }
+    assert!(
+        site.ts
+            .store
+            .doc_get_authored(
+                &clax_core::ArtifactId::parse(&mias).unwrap(),
+                "secret/b",
+                &clax_core::db::Caller::new(clax_core::db::Level::Owner, None),
+            )
+            .unwrap()
+            .is_none()
+    );
+    let f = room_clears(&site, &mias).await;
+    assert_eq!(
+        (f["t"].clone(), f["code"].clone()),
+        (json!("nack"), json!("not_permitted")),
+        "{f}"
+    );
+    // Once the share ends, its question names the page to no one but Mia.
+    let (s, v) = site
+        .send(
+            &mia,
+            reqwest::Method::DELETE,
+            &format!("/api/hosted/artifacts/{mias}/shares/{share}"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    for (who, call) in &callers {
+        for p in ["/api/questions", "/api/inbox/summary", "/api/inbox"] {
+            let r = call(reqwest::Method::GET, p).send().await.unwrap();
+            let (s, body) = (r.status().as_u16(), r.text().await.unwrap());
+            assert_eq!(s, 200, "{who}: {p}: {body}");
+            assert!(!body.contains(&mias), "{who}: {p}: {body}");
+        }
+        let r = call(reqwest::Method::GET, &format!("/api/questions/{qid}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 404, "{who}");
+    }
+}
+
 #[tokio::test]
 async fn a_person_granted_any_reads_the_owners_and_their_own_alone() {
     let site = Site::new().await;

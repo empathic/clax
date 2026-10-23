@@ -81,11 +81,15 @@ pub fn view(st: &Store, q: &QuestionRow) -> clax_core::Result<Value> {
 /// a pulled in-terminal question, also wakes its session's feedback polls,
 /// which carry late answers (spec §6.4) and pulls.
 pub fn announce(s: &AppState, st: &Store, q: &QuestionRow, view: Value) {
-    match st.question_recipient(q) {
-        Ok(recipient) => s.events.publish(Event::Question {
+    match st.question_recipient(q).and_then(|r| {
+        let theirs = in_reach(s, st, r.as_deref(), q)?;
+        Ok((r, theirs))
+    }) {
+        Ok((recipient, true)) => s.events.publish(Event::Question {
             question: view,
             recipient,
         }),
+        Ok((_, false)) => {}
         Err(e) => tracing::warn!(error = %e, "a question's change not announced"),
     }
     s.questions.wake(&q.id);
@@ -93,6 +97,24 @@ pub fn announce(s: &AppState, st: &Store, q: &QuestionRow, view: Value) {
         || q.pulled_at.is_some()
     {
         s.feedback_waiters.wake(std::iter::once(&q.session_id));
+    }
+}
+
+/// Whether question `q` is `recipient`'s to see on this daemon: on a hosted
+/// one, not about an artifact out of their reach
+/// ([`crate::views::inbox::recipient_lists`]).
+///
+/// # Errors
+/// The store's.
+pub fn in_reach(
+    s: &AppState,
+    st: &Store,
+    recipient: Option<&str>,
+    q: &QuestionRow,
+) -> clax_core::Result<bool> {
+    match &q.artifact_id {
+        Some(aid) => crate::views::inbox::recipient_lists(st, recipient, s.hosted.is_some(), aid),
+        None => Ok(true),
     }
 }
 
@@ -127,9 +149,12 @@ pub fn announce_thread(s: &AppState, st: &Store, tid: &str) {
         let r = st.question(&id).and_then(|q| {
             q.map(|q| {
                 let v = view(st, &q)?;
-                Ok((st.question_recipient(&q)?, v))
+                let recipient = st.question_recipient(&q)?;
+                let theirs = in_reach(s, st, recipient.as_deref(), &q)?;
+                Ok(theirs.then_some((recipient, v)))
             })
             .transpose()
+            .map(Option::flatten)
         });
         match r {
             Ok(Some((recipient, question))) => s.events.publish(Event::Question {

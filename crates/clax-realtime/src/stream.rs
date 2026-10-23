@@ -90,6 +90,12 @@ pub enum Topic {
     Presence(String),
     Working(String),
     Docs(String),
+    /// `docs:<id>` as a subscriber holds it whose level at that artifact is
+    /// below the stream's (on a hosted daemon, the token at an artifact
+    /// the owner did not make): its channels go up to that level alone.
+    /// Never parsed: the subscription route takes `docs:<id>` as this for
+    /// such a caller ([`Topic::docs_capped`]).
+    DocsCapped(String, Level),
     /// The `doc` events of `source` that `view` with no viewer may read,
     /// each delivered only while `reader` may read `source` (checked as
     /// it is dispatched, [`Hub::check_reads`]).
@@ -180,7 +186,7 @@ impl Topic {
             Topic::Artifact(a) | Topic::ArtifactQuiet(a) => format!("artifact:{a}"),
             Topic::Presence(a) => format!("presence:{a}"),
             Topic::Working(a) => format!("working:{a}"),
-            Topic::Docs(a) => format!("docs:{a}"),
+            Topic::Docs(a) | Topic::DocsCapped(a, _) => format!("docs:{a}"),
             Topic::DocsRead { source, reader } => format!("docs:{source}?reader={reader}"),
             Topic::Site(o) => format!("site:{o}"),
             Topic::Questions => "questions".into(),
@@ -209,18 +215,34 @@ impl Topic {
             | Topic::Presence(a)
             | Topic::Working(a)
             | Topic::Docs(a)
+            | Topic::DocsCapped(a, _)
             | Topic::DocsRead { source: a, .. } => Some(a),
         }
     }
 
-    /// The other variant of an `artifact:<id>` topic ([`Topic::Artifact`]
-    /// for [`Topic::ArtifactQuiet`] and back), which has the same name: a
-    /// stream holds at most one of the two.
-    fn twin(&self) -> Option<Topic> {
+    /// Whether `other` is a variant of this topic under the same name
+    /// (`artifact:<id>` loud or quiet, `docs:<id>` whole or capped): a
+    /// stream holds at most one of them.
+    fn same_slot(&self, other: &Topic) -> bool {
+        match (self, other) {
+            (
+                Topic::Artifact(a) | Topic::ArtifactQuiet(a),
+                Topic::Artifact(b) | Topic::ArtifactQuiet(b),
+            )
+            | (
+                Topic::Docs(a) | Topic::DocsCapped(a, _),
+                Topic::Docs(b) | Topic::DocsCapped(b, _),
+            ) => a == b,
+            _ => self == other,
+        }
+    }
+
+    /// This `docs:<id>` topic as a subscriber whose level at its artifact is
+    /// `level` holds it ([`Topic::DocsCapped`]); the others are unchanged.
+    pub fn docs_capped(self, level: Level) -> Topic {
         match self {
-            Topic::Artifact(a) => Some(Topic::ArtifactQuiet(a.clone())),
-            Topic::ArtifactQuiet(a) => Some(Topic::Artifact(a.clone())),
-            _ => None,
+            Topic::Docs(a) | Topic::DocsCapped(a, _) => Topic::DocsCapped(a, level),
+            t => t,
         }
     }
 
@@ -287,10 +309,14 @@ impl Topic {
             Topic::DocsRead { source, reader } => {
                 vec![Chan::DocsRead(source.clone(), reader.clone())]
             }
-            Topic::Docs(a) => {
+            Topic::Docs(a) | Topic::DocsCapped(a, _) => {
+                let cap = match self {
+                    Topic::DocsCapped(_, l) => caller.level.min(*l),
+                    _ => caller.level,
+                };
                 let mut v: Vec<Chan> = [Level::View, Level::Interact, Level::Admin, Level::Owner]
                     .into_iter()
-                    .filter(|l| *l <= caller.level)
+                    .filter(|l| *l <= cap)
                     .map(|l| Chan::DocsAt(a.clone(), l))
                     .collect();
                 if let Some(me) = &caller.viewer {
@@ -578,6 +604,7 @@ pub fn live_only_admits(live: &crate::live::LiveIds, t: &Topic) -> bool {
         Topic::Gallery
         | Topic::GalleryOf(_)
         | Topic::Docs(_)
+        | Topic::DocsCapped(..)
         | Topic::DocsRead { .. }
         | Topic::People
         | Topic::Agents
@@ -1566,11 +1593,19 @@ impl Hub {
             .map(str::to_string)
             .collect::<Vec<_>>();
         for t in remove {
-            if s.topics.remove(t).is_some() {
+            // Leaving a topic leaves whichever variant of it is held.
+            let held: Vec<Topic> = s
+                .topics
+                .keys()
+                .filter(|k| k.same_slot(t))
+                .cloned()
+                .collect();
+            for k in held {
+                s.topics.remove(&k);
                 leave(
                     chans,
                     s.key,
-                    &t.chans(&s.caller, s.person.as_deref(), s.drafts),
+                    &k.chans(&s.caller, s.person.as_deref(), s.drafts),
                 );
             }
         }
@@ -1584,11 +1619,16 @@ impl Hub {
             if s.topics.contains_key(t) {
                 continue;
             }
-            // The newer variant of an `artifact:<id>` topic is held alone:
-            // it reflects whether the comments are the caller's to read now.
-            if let Some(twin) = t.twin()
-                && s.topics.remove(&twin).is_some()
-            {
+            // The newer variant of an `artifact:<id>` or `docs:<id>` topic
+            // is held alone: it reflects what the caller reads there now.
+            let twins: Vec<Topic> = s
+                .topics
+                .keys()
+                .filter(|k| *k != t && k.same_slot(t))
+                .cloned()
+                .collect();
+            for twin in twins {
+                s.topics.remove(&twin);
                 leave(
                     chans,
                     s.key,
@@ -2733,6 +2773,51 @@ mod tests {
             1,
             "once, though both channels carry it"
         );
+    }
+
+    #[test]
+    fn a_capped_docs_topic_carries_documents_up_to_its_level_alone() {
+        let hub = Hub::new(Default::default());
+        let owner = viewer(Level::Admin, Some("u_owner"));
+        let mut o = hub.open(owner.clone(), true, None, None);
+        hub.update(
+            &o.id,
+            &owner,
+            &[Topic::Docs(A.into()).docs_capped(Level::Interact)],
+            &[],
+        )
+        .unwrap();
+        let doc = |read_level| Event::Doc {
+            artifact_id: A.into(),
+            path: "p".into(),
+            version: Some(1),
+            private_to: None,
+            read_level,
+            self_read: None,
+        };
+        hub.dispatch(&doc(Level::Admin));
+        assert_eq!(drain(&mut o).len(), 0, "above the topic's level");
+        hub.dispatch(&doc(Level::Interact));
+        assert_eq!(drain(&mut o).len(), 1);
+        // Taken whole again, it replaces the capped one under its name.
+        let t = hub
+            .update(&o.id, &owner, &[Topic::Docs(A.into())], &[])
+            .unwrap();
+        assert_eq!(t.1, vec![format!("docs:{A}")]);
+        hub.dispatch(&doc(Level::Admin));
+        assert_eq!(drain(&mut o).len(), 1);
+        // Leaving `docs:<id>` leaves whichever variant is held.
+        hub.update(
+            &o.id,
+            &owner,
+            &[Topic::Docs(A.into()).docs_capped(Level::View)],
+            &[],
+        )
+        .unwrap();
+        hub.update(&o.id, &owner, &[], &[Topic::Docs(A.into())])
+            .unwrap();
+        hub.dispatch(&doc(Level::View));
+        assert_eq!(drain(&mut o).len(), 0);
     }
 
     #[test]

@@ -688,9 +688,14 @@ pub async fn list(
         }
     };
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let hosted = s.hosted.is_some();
     let out = s
         .store_call(move |db| {
-            let (rows, open) = db.list_questions(me.as_deref(), which, limit)?;
+            let (mut rows, open) = db.list_questions(me.as_deref(), which, limit)?;
+            // On a hosted daemon, none about an artifact out of reach.
+            let hidden = clax_http::views::inbox::out_of_reach(db, me.as_deref(), hosted)?;
+            rows.retain(|q| q.artifact_id.as_ref().is_none_or(|a| !hidden.contains(a)));
+            let open = open - db.open_questions_about(me.as_deref(), &hidden)?;
             let views = rows
                 .iter()
                 .map(|r| question_view(db, r))
@@ -713,11 +718,15 @@ pub async fn get_one(
     d.refuse_agents()?;
     let me = recipient_of(&s, &who).await?;
     let qid = path(p)?;
+    let st = s.clone();
     let v = s
         .store_call(move |db| {
             // Person-scoped (spec §18): another person's agent's question
             // is not the caller's to see.
             let q = db.question_of(&qid, me.as_deref())?;
+            if !clax_http::views::question::in_reach(&st, db, me.as_deref(), &q)? {
+                return Err(clax_core::CoreError::NotFound);
+            }
             question_view(db, &q)
         })
         .await?;
@@ -737,7 +746,10 @@ async fn owner_close(
 ) -> Result<Json<Value>, QuestionError> {
     let st = s.clone();
     s.store_call(move |db| {
-        db.question_of(&qid, me.as_deref())?;
+        let q = db.question_of(&qid, me.as_deref())?;
+        if !clax_http::views::question::in_reach(&st, db, me.as_deref(), &q)? {
+            return Err(CoreError::NotFound.into());
+        }
         let ctx = audit.resolve(db)?;
         close(&st, db, &ctx, &qid, c)
     })

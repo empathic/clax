@@ -1114,6 +1114,24 @@ impl Store {
         })
     }
 
+    /// How many of `recipient`'s open questions are about the artifacts
+    /// `artifacts` (`None`: the owner's).
+    pub fn open_questions_about(
+        &self,
+        recipient: Option<&str>,
+        artifacts: &[String],
+    ) -> Result<u32> {
+        if artifacts.is_empty() {
+            return Ok(0);
+        }
+        let r = super::inbox::recipient_key(recipient);
+        let ids = super::feedback::id_array(artifacts);
+        self.with_read(|c| {
+            let sql = format!("{OPEN_COUNT} AND +artifact_id IN (SELECT value FROM json_each(?2))");
+            Ok(c.query_row(&sql, params![r, ids], |x| x.get(0))?)
+        })
+    }
+
     /// At most `limit` of `recipient`'s closed questions, most recently
     /// closed first, continuing after `cursor` when given.
     pub fn list_closed_questions(
