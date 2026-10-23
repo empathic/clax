@@ -2,6 +2,7 @@
 //! them is `crate::router`; `guards` checks every route against the rules
 //! a handler's signature must show.
 
+pub mod app_bundles;
 pub mod app_drafts;
 pub mod approvals;
 pub mod artifacts;
@@ -30,6 +31,7 @@ pub mod net;
 pub mod people;
 pub mod perf;
 pub mod questions;
+pub mod remote_apps;
 pub mod remotes;
 pub mod room;
 pub mod sample;

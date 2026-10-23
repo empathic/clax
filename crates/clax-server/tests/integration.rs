@@ -13,6 +13,8 @@
 mod api_agent_auth;
 #[cfg(any(not(clax_split), clax_split = "api_agents"))]
 mod api_agents;
+#[cfg(any(not(clax_split), clax_split = "api_app_bundles"))]
+mod api_app_bundles;
 #[cfg(any(not(clax_split), clax_split = "api_app_drafts"))]
 mod api_app_drafts;
 #[cfg(any(not(clax_split), clax_split = "api_app_session"))]
@@ -111,6 +113,8 @@ mod api_pushes;
 mod api_questions;
 #[cfg(any(not(clax_split), clax_split = "api_remotes"))]
 mod api_remotes;
+#[cfg(any(not(clax_split), clax_split = "api_remotes_app"))]
+mod api_remotes_app;
 #[cfg(any(not(clax_split), clax_split = "api_restore"))]
 mod api_restore;
 #[cfg(any(not(clax_split), clax_split = "api_room"))]
@@ -145,6 +149,8 @@ mod api_where_to_ask;
 mod api_working;
 #[cfg(any(not(clax_split), clax_split = "api_working_auto"))]
 mod api_working_auto;
+#[cfg(any(not(clax_split), clax_split = "app_push_pull_e2e"))]
+mod app_push_pull_e2e;
 #[cfg(any(not(clax_split), clax_split = "bridge_dev"))]
 mod bridge_dev;
 #[cfg(any(not(clax_split), clax_split = "core_start"))]
@@ -152,6 +158,8 @@ mod core_start;
 #[cfg(any(not(clax_split), clax_split = "daemon"))]
 mod daemon;
 mod deferred;
+#[cfg(any(not(clax_split), clax_split = "get_page"))]
+mod get_page;
 #[cfg(any(not(clax_split), clax_split = "golden_single_owner"))]
 mod golden_single_owner;
 #[cfg(any(not(clax_split), clax_split = "harness_ids"))]

@@ -1001,6 +1001,7 @@ fn every_route() -> Vec<(String, String, bool)> {
     let src = include_str!("../src/router.rs");
     let module = |m: &str| -> Option<&'static str> {
         Some(match m {
+            "app_bundles" => include_str!("../src/routes/app_bundles.rs"),
             "artifacts" => include_str!("../src/routes/artifacts.rs"),
             "assets" => include_str!("../src/routes/assets.rs"),
             "connect" => include_str!("../src/routes/connect.rs"),

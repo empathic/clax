@@ -35,6 +35,7 @@ tower-http.workspace = true
 tracing.workspace = true
 futures = "0.3"
 mime_guess.workspace = true
+qrcode.workspace = true
 clax-mcp = { path = "../clax-mcp" }
 reqwest = { workspace = true, features = ["stream"] }
 base64.workspace = true

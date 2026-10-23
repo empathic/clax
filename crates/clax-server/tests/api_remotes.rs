@@ -909,3 +909,78 @@ async fn an_agents_cli_push_is_refused_and_pointed_at_publish_public() {
             .contains("publish_public")
     );
 }
+
+#[tokio::test]
+async fn a_clax_app_sign_in_names_its_kind_to_the_remote() {
+    let public = Public::new().await;
+    let local = TestServer::spawn().await;
+    // The Clax app's kind alone.
+    let (s, v) = post(
+        &local,
+        "/api/remotes",
+        json!({"url": public.origin, "kind": "clax-cli"}),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (400, "invalid_args"), "{v}");
+    let (s, v) = post(
+        &local,
+        "/api/remotes",
+        json!({"url": public.origin, "kind": "clax-app", "machine": "Clax on Pixel"}),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let uc = v["user_code"].as_str().unwrap().to_string();
+    let id = v["remote"]["id"].as_str().unwrap().to_string();
+    // The approval page learns it is the Clax app's.
+    let (s, peek) = public
+        .browser(
+            reqwest::Method::GET,
+            &format!("/api/hosted/device/{uc}"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 200, "{peek}");
+    assert_eq!(
+        (&peek["client_name"], &peek["client_kind"]),
+        (&json!("Clax on Pixel"), &json!("clax-app")),
+        "{peek}"
+    );
+    let (s, v) = public
+        .browser(
+            reqwest::Method::POST,
+            &format!("/api/hosted/device/{uc}/approve"),
+            json!({}),
+        )
+        .await;
+    assert_eq!((s, &v["token"]["kind"]), (200, &json!("device")), "{v}");
+    public.clock.advance(5);
+    let (s, v) = post(&local, &format!("/api/remotes/{id}/poll"), json!({})).await;
+    assert_eq!((s, v["status"].as_str()), (200, Some("connected")), "{v}");
+    // Its token is the person's device's: it reaches their apps library.
+    let token = token_of(&local);
+    let gid = public.ts.store.bearer_grant(&token).unwrap().unwrap();
+    assert!(public.ts.store.is_person_device_grant(&gid).unwrap());
+    let (s, v) = json_of(
+        public
+            .ts
+            .client
+            .get(format!("{}/api/hosted/apps", public.ts.base))
+            .header(HOST, format!("localhost:{}", public.ts.addr.port()))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!((s, v), (200, json!([])));
+    // A daemon's sign-in names no kind, and its token is an agent's.
+    let other = TestServer::spawn().await;
+    connect(&other, &public).await;
+    let gid = public
+        .ts
+        .store
+        .bearer_grant(&token_of(&other))
+        .unwrap()
+        .unwrap();
+    assert!(!public.ts.store.is_person_device_grant(&gid).unwrap());
+}

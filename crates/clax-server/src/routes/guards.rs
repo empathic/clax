@@ -70,10 +70,26 @@ mod l10 {
     /// The handlers of the routes the path rule does not cover.
     const GUARDS: &[(&str, Guard)] = &[
         ("token::token", NoArtifact),
+        ("get_page::apple_app_site_association", NoArtifact),
+        ("get_page::assetlinks", NoArtifact),
         ("remotes::list", Owner),
         ("remotes::add", Owner),
         ("remotes::poll", Owner),
         ("remotes::remove", Owner),
+        ("remote_apps::link", Owner),
+        ("remote_apps::apps", Owner),
+        ("remote_apps::unpublish", Owner),
+        ("remote_apps::head", Owner),
+        ("remote_apps::bundle", Owner),
+        ("remote_apps::version_files", Owner),
+        ("remote_apps::version_file", Owner),
+        ("remote_apps::get_sharing", Owner),
+        ("remote_apps::put_link", Owner),
+        ("remote_apps::put_share", Owner),
+        ("remote_apps::delete_share", Owner),
+        ("remote_apps::put_comments", Owner),
+        ("remote_apps::comment", Owner),
+        ("remote_apps::record_install", Owner),
         ("artifacts::list", Filtered),
         ("tags::list", Filtered),
         ("tags::create", NoArtifact),
@@ -243,6 +259,7 @@ mod l10 {
 
     pub(super) fn module_source_opt(m: &str) -> Option<&'static str> {
         Some(match m {
+            "app_bundles" => include_str!("app_bundles.rs"),
             "app_drafts" => include_str!("app_drafts.rs"),
             "client_imports" => include_str!("client_imports.rs"),
             "approvals" => include_str!("approvals.rs"),
@@ -265,11 +282,13 @@ mod l10 {
             "perf" => include_str!("perf.rs"),
             "questions" => include_str!("questions.rs"),
             "remotes" => include_str!("remotes.rs"),
+            "remote_apps" => include_str!("remote_apps.rs"),
             "room" => include_str!("room.rs"),
             "live_layers" => include_str!("live_layers.rs"),
             "sample" => include_str!("sample.rs"),
             "sessions" => include_str!("sessions.rs"),
             "shell" => include_str!("../shell/mod.rs"),
+            "get_page" => include_str!("../shell/get_page.rs"),
             "sites" => include_str!("sites.rs"),
             "snapshot" => include_str!("snapshot.rs"),
             "stream" => include_str!("stream.rs"),
@@ -444,6 +463,10 @@ mod l10 {
     const UNAUDITED: &[(&str, &str)] = &[
         ("working::renew", "a heartbeat (§6.11)"),
         (
+            "app_bundles::record_install",
+            "an anonymous count of an app's installs, of no one's content",
+        ),
+        (
             "remotes::add",
             "a sign-in to a public Clax, which audits the token it mints",
         ),
@@ -466,6 +489,42 @@ mod l10 {
         (
             "remotes::retry",
             "wakes a link's sync; what it then writes is audited where it is written",
+        ),
+        (
+            "remote_apps::put_bundle",
+            "forwards a bundle to a public Clax, which audits what it stores",
+        ),
+        (
+            "remote_apps::link",
+            "a link's base for the next publish; the publishes it makes are audited where they land",
+        ),
+        (
+            "remote_apps::unpublish",
+            "deletes a public copy there, which audits it, and ends links here as unlink does",
+        ),
+        (
+            "remote_apps::put_link",
+            "forwards a sharing change to a public Clax, which audits it",
+        ),
+        (
+            "remote_apps::put_share",
+            "forwards a sharing change to a public Clax, which audits it",
+        ),
+        (
+            "remote_apps::delete_share",
+            "forwards a sharing change to a public Clax, which audits it",
+        ),
+        (
+            "remote_apps::put_comments",
+            "forwards a sharing change to a public Clax, which audits it",
+        ),
+        (
+            "remote_apps::comment",
+            "forwards a comment to a public Clax, which records it",
+        ),
+        (
+            "remote_apps::record_install",
+            "forwards an install count to a public Clax, which records it",
         ),
         (
             "remotes::drop_unsent",
@@ -1041,6 +1100,32 @@ mod agents {
                 "GET",
                 "/api/artifacts/{aid}/files",
                 Filtered,
+                Some((Artifacts, "read")),
+            ),
+            // An app's head, bundles and installs (spec
+            // 2026-10-21-app-push-pull §5.7, §5.9).
+            (
+                "GET",
+                "/api/artifacts/{aid}/head",
+                Filtered,
+                Some((Artifacts, "read")),
+            ),
+            (
+                "GET",
+                "/api/artifacts/{aid}/versions/{n}/bundle",
+                Filtered,
+                Some((Artifacts, "read")),
+            ),
+            (
+                "PUT",
+                "/api/artifacts/{aid}/versions/{n}/bundle",
+                Own,
+                Some((Artifacts, "update")),
+            ),
+            (
+                "POST",
+                "/api/artifacts/{aid}/installs",
+                Own,
                 Some((Artifacts, "read")),
             ),
             ("GET", "/api/tags", Own, Some((Artifacts, "read"))),

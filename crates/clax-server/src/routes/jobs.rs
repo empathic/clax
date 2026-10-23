@@ -615,6 +615,18 @@ fn parse_step(b: StepBody) -> Result<Step, ApiError> {
             if let Some(a) = &p.artifact_id {
                 ArtifactId::parse(a)?;
             }
+            if p.request.comments.is_some() {
+                return Err(ApiError::bad_request(
+                    "invalid_args",
+                    "comments is set when an artifact is made; PUT /api/hosted/artifacts/<id>/comments changes it",
+                ));
+            }
+            if p.request.forked_from.is_some() {
+                return Err(ApiError::bad_request(
+                    "invalid_args",
+                    "forked_from is set by POST /api/artifacts alone",
+                ));
+            }
             Ok(Step::Publish(Box::new(PublishStep {
                 artifact_id: p.artifact_id,
                 base: p.base,
@@ -654,7 +666,9 @@ fn parse_step(b: StepBody) -> Result<Step, ApiError> {
 /// its step as recorded with `replayed: true` and changes nothing. 409
 /// `version_moved` with `current`, `doc_moved` with `path`,
 /// `not_rendered_clean` for a publish naming a draft with no clean render
-/// of its files, `job_moved` with the job; nothing is recorded then.
+/// of its files, `job_moved` with the job; nothing is recorded then. 400
+/// `invalid_args` for a publish carrying `comments`, which only making an
+/// artifact sets.
 pub async fn commit(
     State(s): State<AppState>,
     d: DeniedToGrants,

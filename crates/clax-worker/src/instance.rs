@@ -403,6 +403,23 @@ fn hosted(env: &Env) -> Result<Option<Arc<clax_http::hosted::Hosted>>> {
     Ok(Some(Arc::new(h)))
 }
 
+/// What the instance says about the Clax app: its app links
+/// (`APPLE_TEAM_ID`; `ANDROID_PACKAGE` with `ANDROID_SHA256`) and store
+/// pages (`IOS_STORE_URL`, `ANDROID_STORE_URL`); none without them, and
+/// an error for a value [`clax_core::config::ClaxApp::from_settings`]
+/// refuses.
+fn clax_app(env: &Env) -> Result<clax_core::config::ClaxApp> {
+    let opt = |name: &str| Some(var(env, name)).filter(|v| !v.is_empty());
+    clax_core::config::ClaxApp::from_settings(
+        opt("APPLE_TEAM_ID").as_deref(),
+        opt("ANDROID_PACKAGE").as_deref(),
+        opt("ANDROID_SHA256").as_deref(),
+        opt("IOS_STORE_URL").as_deref(),
+        opt("ANDROID_STORE_URL").as_deref(),
+    )
+    .map_err(rust_err)
+}
+
 /// The seats and presence the object keeps across a wake.
 #[derive(Default, Serialize, Deserialize)]
 struct Kept {
@@ -436,7 +453,7 @@ impl Instance {
             public.trim_end_matches('/').to_string()
         };
         let (shutdown_tx, shutdown) = tokio::sync::watch::channel(false);
-        let app = AppState::assemble(clax_http::state::StateParts {
+        let mut app = AppState::assemble(clax_http::state::StateParts {
             started_at: store.now(),
             store,
             home,
@@ -462,6 +479,7 @@ impl Instance {
             embed: None,
         })
         .map_err(rust_err)?;
+        app.clax_app = Arc::new(clax_app(env)?);
         app.seats
             .set_limits(clax_core::seats::SeatLimits::from_env(|k| {
                 Some(var(env, k)).filter(|v| !v.is_empty())

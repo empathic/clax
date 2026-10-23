@@ -100,12 +100,24 @@ impl Core {
         if !gone.is_empty() {
             tracing::info!(count = gone.len(), "withdrew mirrored questions left open");
         }
-        let terminal_after_s = match clax_core::config::HomeConfig::load(cfg.home.root()) {
+        let config = clax_core::config::HomeConfig::load(cfg.home.root());
+        let terminal_after_s = match &config {
             Ok(c) => c.questions_terminal_after_s(),
             Err(e) => {
                 tracing::warn!(error = %e, "config.toml unreadable; questions use the defaults");
                 clax_core::config::TERMINAL_AFTER_S
             }
+        };
+        // A hosted daemon's app links and store pages: the `[hosted]` that
+        // made it hosted, which `clax serve` checked before starting it.
+        let clax_app = match (&cfg.hosted, &config) {
+            (Some(_), Ok(c)) => c
+                .hosted()
+                .ok()
+                .flatten()
+                .map(|h| h.clax_app)
+                .unwrap_or_default(),
+            _ => clax_core::config::ClaxApp::default(),
         };
         let token = crate::serve::generate_token();
         let started_at = store.now();
@@ -135,6 +147,7 @@ impl Core {
             web: cfg.web,
             embed: cfg.embed,
         })?;
+        state.clax_app = Arc::new(clax_app);
         // The core's `net` keeps a shared disk cache in the home.
         state.net = Arc::new(clax_http::net_cache::daemon_net(cfg.home.root()));
         state.audit_wake.install(&state.store);

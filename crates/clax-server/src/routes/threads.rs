@@ -161,6 +161,71 @@ async fn sees_threads<N: clax_http::agent::Need>(
         .await
 }
 
+/// Whether the caller's access to artifact `id` includes resolving its
+/// threads: the owner and the owner's agents; a person's agent or a hosted
+/// member whose rights allow it (the artifact's maker, Can edit); anyone on
+/// a local daemon, which lets every viewer resolve; never a hosted guest,
+/// whose link access does not resolve.
+///
+/// # Errors
+/// The store's.
+pub(crate) async fn resolves<N: clax_http::agent::Need>(
+    a: &Agent<N>,
+    s: &AppState,
+    id: &ArtifactId,
+) -> Result<bool, ApiError> {
+    match &a.caller {
+        Caller::Owner { .. } | Caller::OwnerAgent { .. } => return Ok(true),
+        Caller::PersonAgent { .. } => {}
+        _ if a.member().is_none() => return Ok(s.hosted.is_none()),
+        _ => {}
+    }
+    match a
+        .also_needs(s, (clax_core::rights::RightType::Comments, "resolve"), id)
+        .await
+    {
+        Ok(()) => Ok(true),
+        Err(e) if e.status == StatusCode::FORBIDDEN => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Whether a browser's `caller` (never a person's agent, which
+/// [`resolves`] reads through its grant) resolves artifact `aid`'s
+/// threads, as [`resolves`] decides: the owner; on a daemon with no hosted
+/// people, everyone; else a signed-in person whose rights (`member`) allow
+/// `comments:resolve` there.
+///
+/// # Errors
+/// The store's.
+pub(crate) fn browser_resolves(
+    st: &Store,
+    caller: &Caller,
+    member: Option<&clax_http::hosted::MemberRights>,
+    hosted: bool,
+    aid: &str,
+) -> clax_core::Result<bool> {
+    match (caller, member) {
+        (Caller::Owner { .. } | Caller::OwnerAgent { .. }, _) => Ok(true),
+        (_, None) => Ok(!hosted),
+        (_, Some(m)) => m.allows_at(st, (clax_core::rights::RightType::Comments, "resolve"), aid),
+    }
+}
+
+/// `comments_off` while artifact `id`'s Comments switch is off and the
+/// sender may not resolve its threads (`resolves`, [`resolves`]): with the
+/// switch off, Can comment acts as Can view (spec 2026-10-21-app-push-pull
+/// D4a), which sends nothing; the owner, the maker and editors still send.
+fn refuse_send_comments_off(st: &Store, id: &ArtifactId, resolves: bool) -> clax_core::Result<()> {
+    if !resolves && !st.comments_on(id)? {
+        return Err(CoreError::invalid(
+            "comments_off",
+            "comments are off on this artifact",
+        ));
+    }
+    Ok(())
+}
+
 /// The thread `tid` if it belongs to the live artifact `id`.
 fn thread_of(st: &Store, id: &ArtifactId, tid: &str) -> clax_core::Result<Thread> {
     match st.get_thread(tid)? {
@@ -244,8 +309,9 @@ pub struct ListQuery {
     include_resolved: bool,
     cursor: Option<String>,
     limit: Option<usize>,
-    /// An agent token's: only threads with activity (made, commented on or
-    /// resolved) at or after this time, as the daemon writes times.
+    /// An agent token's, or a person's own device's: only threads with
+    /// activity (made, commented on or resolved) at or after this time, as
+    /// the daemon writes times.
     since: Option<String>,
 }
 
@@ -268,12 +334,14 @@ pub fn activity_of(t: &Thread) -> &str {
 pub async fn list(
     State(s): State<AppState>,
     a: Agent<clax_http::agent::ThreadsList>,
+    device: Option<axum::Extension<clax_http::agent::PersonDevice>>,
     aid: Result<Path<String>, PathRejection>,
     q: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
-    if q.since.is_some() && !a.caller.is_agent() {
+    // A person's own device reads as its person but syncs as a token does.
+    if q.since.is_some() && !a.caller.is_agent() && device.is_none() {
         return Err(ApiError::bad_request(
             "invalid_query",
             "since is for an agent token's reads",
@@ -715,7 +783,9 @@ pub(crate) fn announce_new_thread(
 /// 409 `merged_away` for a live page a join merged into another (spec
 /// §7.2): its threads are the other page's now, so a new one goes there.
 /// The error names it: `merged_into` (its artifact ID) and `page_url`.
-/// 403 `draft` for a draft, which takes no threads.
+/// 403 `draft` for a draft, which takes no threads. 403 `comments_off`
+/// while the artifact's Comments switch is off, read in the thread's own
+/// transaction (a keyed resend still answers the thread it made).
 async fn refuse_merged_away(s: &AppState, aid: &str) -> Result<(), ApiError> {
     let a = aid.to_string();
     let into: Option<(String, Option<String>)> = s
@@ -974,6 +1044,9 @@ fn respond(o: Outcome, created: StatusCode) -> Response {
 /// next snapshot, and the answer carries `addressed: "pending"`; on a viewer
 /// comment or another artifact it is 400 `invalid_args`, before anything is
 /// written. A request with a foreign `Origin` is refused ([`SameOrigin`]).
+/// 403 `comments_off` while the artifact's Comments switch is off, read in
+/// the comment's own transaction (a keyed resend still answers the comment
+/// it made), as for a new thread.
 pub async fn comment(
     State(s): State<AppState>,
     a: Agent<clax_http::agent::ThreadComment>,
@@ -1259,7 +1332,8 @@ fn send_target(
 /// thread's comments makes or joins a request to that person; a page's
 /// send (`x-clax-via: page`, a page's `sendToClaude`) names the page and
 /// its viewer on the request. A request with a foreign `Origin` is refused
-/// ([`SameOrigin`]).
+/// ([`SameOrigin`]). 403 `comments_off` while the artifact's Comments switch
+/// is off, unless the sender may resolve its threads ([`resolves`]).
 pub async fn send(
     State(s): State<AppState>,
     a: Agent<clax_http::agent::ThreadSend>,
@@ -1281,6 +1355,7 @@ pub async fn send(
             .map_err(|e| ApiError::bad_request("invalid_json", e.to_string()))?
     };
     sees_threads(&a, &s, &id).await?;
+    let may_resolve = resolves(&a, &s, &id).await?;
     let ctx = s.feedback_ctx();
     let with_path = a.holds_token();
     let vf = VisFor::of(&a.caller, &s);
@@ -1288,6 +1363,7 @@ pub async fn send(
     let view = s
         .store_call(move |st| {
             let vis = vf.build(st)?;
+            refuse_send_comments_off(st, &id, may_resolve)?;
             if thread_of(st, &id, &tid)?.status == "resolved" {
                 return Err(CoreError::invalid(
                     "thread_resolved",
@@ -1452,7 +1528,7 @@ pub struct BatchBody {
 /// access as the single send (no token; a foreign `Origin` is refused); the
 /// sender is the viewer the request speaks for ([`Identity`]: the owner for
 /// an owner credential, else the viewer cookie's). One fan-out for the whole batch, so every
-/// tier hands its rows over together.
+/// tier hands its rows over together. 403 `comments_off` as the single send.
 pub async fn send_batch(
     State(s): State<AppState>,
     a: Agent<clax_http::agent::ThreadsSendBatch>,
@@ -1466,6 +1542,7 @@ pub async fn send_batch(
     clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let b = body(req)?;
     sees_threads(&a, &s, &id).await?;
+    let may_resolve = resolves(&a, &s, &id).await?;
     let ctx = s.feedback_ctx();
     let with_path = a.holds_token();
     let vf = VisFor::of(&a.caller, &s);
@@ -1478,6 +1555,7 @@ pub async fn send_batch(
         .store_call(move |st| {
             let vis = vf.build(st)?;
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+            refuse_send_comments_off(st, &id, may_resolve)?;
             let audit = audit.resolve(st)?;
             // A batch names only an agent that owns or watches the artifact.
             let to = send_target(st, &id, b.to.as_deref(), live_page, false)?.map(|(sid, _)| sid);

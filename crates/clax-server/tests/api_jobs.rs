@@ -204,6 +204,26 @@ async fn a_done_publish_step_ends_the_job_with_the_version() {
 }
 
 #[tokio::test]
+async fn a_publish_step_carrying_comments_is_refused_and_records_nothing() {
+    let ts = TestServer::spawn().await;
+    let (_o, token) = owner(&ts).await;
+    running(&ts, &token, "j1", "make", None).await;
+    for on in [false, true] {
+        let mut body = publish_body(None, 0, "<p>a", true);
+        body["publish"]["request"]["comments"] = json!(on);
+        let (s, v) = step(&ts, &token, "j1", "publish:0", body).await;
+        assert_eq!(
+            (s, v["error"]["code"].as_str()),
+            (400, Some("invalid_args")),
+            "{v}"
+        );
+    }
+    let (_, list) = send(authed(&ts, Method::GET, "/api/artifacts")).await;
+    assert_eq!(list["artifacts"], json!([]), "{list}");
+    assert_eq!(job(&ts, "j1").await["job"]["state"], "running");
+}
+
+#[tokio::test]
 async fn a_step_on_a_moved_base_records_nothing() {
     let ts = TestServer::spawn().await;
     let (_o, token) = owner(&ts).await;

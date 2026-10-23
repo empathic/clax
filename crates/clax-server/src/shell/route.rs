@@ -7,6 +7,12 @@ use clax_core::ArtifactId;
 #[derive(Debug, PartialEq)]
 pub enum ShellRoute {
     Gallery,
+    /// `/a/<id>/get` (a trailing `/` allowed): the Get in Clax page
+    /// (`super::get_page`), not a file; a file published as `get` is
+    /// reached through `/a/<id>/v/<n>/get`.
+    Get {
+        id: ArtifactId,
+    },
     /// `/a/<id>[/v/<n>][/<file>]`; `file` is `index.html` when the path names none.
     Artifact {
         id: ArtifactId,
@@ -15,9 +21,10 @@ pub enum ShellRoute {
     },
 }
 
-/// `path` (still percent-encoded) as the shell reads it: after `/a/<id>`, a
-/// `v` segment followed by an all-digit one is a version and the rest is the
-/// file, each segment decoded; anything malformed is the gallery.
+/// `path` (still percent-encoded) as the shell reads it: after `/a/<id>`,
+/// `get` alone is the Get in Clax page; else a `v` segment followed by an
+/// all-digit one is a version and the rest is the file, each segment
+/// decoded; anything malformed is the gallery.
 pub fn parse_shell_path(path: &str) -> ShellRoute {
     let segs: Vec<&str> = path.split('/').collect();
     if segs.len() < 3 || !segs[0].is_empty() || segs[1] != "a" {
@@ -27,6 +34,9 @@ pub fn parse_shell_path(path: &str) -> ShellRoute {
         return ShellRoute::Gallery;
     };
     let mut rest = &segs[3..];
+    if matches!(rest, ["get"] | ["get", ""]) {
+        return ShellRoute::Get { id };
+    }
     let mut version = None;
     if rest.len() >= 2
         && rest[0] == "v"
@@ -95,6 +105,7 @@ mod tests {
             let want = &case["route"];
             let got = match parse_shell_path(path) {
                 ShellRoute::Gallery => serde_json::json!({"kind": "gallery"}),
+                ShellRoute::Get { id } => serde_json::json!({"kind": "get", "id": id.as_str()}),
                 ShellRoute::Artifact { id, version, file } => serde_json::json!({
                     "kind": "artifact", "id": id.as_str(), "version": version, "file": file
                 }),

@@ -430,9 +430,14 @@ pub async fn list(
     Ok(Json(v))
 }
 
-/// Creates an artifact. The body must carry a non-blank `title`. A
-/// person's agent creates from a session, as its person (spec §6.7, §8.2);
-/// the answer is filtered for an agent channel's reader.
+/// Creates an artifact. The body must carry a non-blank `title`, and on a
+/// hosted daemon may carry `comments: false` to make it with its Comments
+/// switch off in the transaction that writes version 1 (on when absent);
+/// the answer's `artifact.comments` is the switch. A local daemon refuses
+/// `comments` 400 `invalid_args`: it has no route to turn the switch back
+/// on (`PUT /api/hosted/artifacts/<aid>/comments` is a hosted daemon's). A person's agent creates from a
+/// session, as its person (spec §6.7, §8.2); the answer is filtered for an
+/// agent channel's reader.
 pub async fn create(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<clax_http::agent::ArtifactsCreate>,
@@ -441,10 +446,33 @@ pub async fn create(
     req: Result<JsonBytes, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     person_agent_session(&a.caller)?;
-    let mut p = parse_body(req, "the publish limit", |r: PublishRequest| {
-        Ok(validate(r)?)
-    })
-    .await?;
+    let (mut p, comments, forked_from) =
+        parse_body(req, "the publish limit", |r: PublishRequest| {
+            let (comments, forked_from) = (r.comments, r.forked_from.clone());
+            Ok((validate(r)?, comments, forked_from))
+        })
+        .await?;
+    if comments.is_some() && s.hosted.is_none() {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            "comments is a hosted Clax's switch: a local Clax keeps comments on",
+        ));
+    }
+    if forked_from.is_some() && s.hosted.is_none() {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            "forked_from is a hosted Clax's lineage: a local Clax forks with POST /api/artifacts/<id>/fork",
+        ));
+    }
+    let forked_from = forked_from.as_deref().map(parse_id).transpose()?;
+    if let Some(from) = &forked_from {
+        // The source is one the caller may read: a lineage names nothing
+        // its maker could not open.
+        a.also_needs(&s, (RightType::Artifacts, "read"), from)
+            .await?;
+    }
+    let reader = SourceReader::new(a.caller.clone(), a.member().cloned(), s.hosted.is_some());
+    let comments = comments.unwrap_or(true);
     require_title(p.title.as_deref())?;
     p.person = publisher(&a.caller);
     let truncated = p.note_truncated;
@@ -467,7 +495,13 @@ pub async fn create(
             }
             p.publish_key = publish_key_of(&grant, &key);
             let (artifact, version) = st
-                .create_artifact_async(&audit, p, session.as_deref())
+                .create_artifact_forked_from_async(
+                    &audit,
+                    p,
+                    session.as_deref(),
+                    comments,
+                    forked_from.as_ref(),
+                )
                 .await?;
             if let Some(sid) = &session {
                 published_from(st, &audit, &ctx, &drafts, sid, &artifact, true)?;
@@ -480,9 +514,28 @@ pub async fn create(
                 at: Some(version.created_at.clone()),
             });
             let vis = vf.build(st)?;
-            vis.filter_published(st, &artifact, &version)
+            let lineage = match &forked_from {
+                Some(_) => match st.get_artifact(&ArtifactId::parse(&artifact.id)?)? {
+                    Some(made) => forked_from_view(st, &made, &reader, Some(&vis))?,
+                    None => None,
+                },
+                None => None,
+            };
+            let (mut a, v) = vis.filter_published(st, &artifact, &version)?;
+            if lineage.is_some() {
+                a["forked_from"] = json!(lineage);
+            }
+            Ok((a, v))
         })
         .await?;
+    let mut artifact = artifact;
+    if let Some(id) = artifact["id"]
+        .as_str()
+        .and_then(|i| ArtifactId::parse(i).ok())
+    {
+        // A replay answers the switch the artifact has.
+        artifact["comments"] = json!(s.store_call(move |st| st.comments_on(&id)).await?);
+    }
     let url = format!("/a/{}", artifact["id"].as_str().unwrap_or_default());
     let mut v =
         json!({"artifact": artifact, "version": version, "url": url, "note_truncated": truncated});
@@ -847,8 +900,9 @@ fn publisher(caller: &clax_http::auth::Caller) -> Option<String> {
 }
 
 /// The artifact (with the owner fields of [`with_owner`]) and its versions,
-/// filtered for an agent channel's reader. Without the token, no session ID
-/// is included. From a browser with a viewer
+/// filtered for an agent channel's reader, with `comments`, `forks` and
+/// `app` ([`super::app_bundles::stamp_app_fields`]). Without the token, no
+/// session ID is included. From a browser with a viewer
 /// (the owner for the owner cookie, else the viewer cookie's or a hosted
 /// session's; see [`clax_http::identity`]), also that viewer's `attention`,
 /// and the response is private to the cookie.
@@ -867,6 +921,7 @@ pub async fn get(
     let reader = SourceReader::new(a.caller.clone(), a.member().cloned(), s.hosted.is_some());
     let (caller, member) = (a.caller.clone(), a.member_rights());
     let wakes = super::sessions::Wakes::for_caller(&s, &a.caller);
+    let may_resolve = super::threads::resolves(&a, &s, &id).await?;
     let mut v = s
         .store_call(move |st| {
             let a = st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
@@ -899,6 +954,12 @@ pub async fn get(
             // Whether the caller may change its tags (the shell's tag
             // editor): those who administer it, as for its pin.
             artifact["may_tag"] = json!(clax_http::agent::administers(st, &caller, a.id.as_str())?);
+            // Whether the caller may resolve its threads, so also send them
+            // while its Comments switch is off (the shell's Send).
+            artifact["may_resolve"] = json!(may_resolve);
+            // Its Comments switch, forks and app (an artifact carrying a
+            // bundle).
+            super::app_bundles::stamp_app_fields(st, &a, &mut artifact)?;
             let mut v = json!({
                 "artifact": artifact,
                 "versions": vis.filter_versions(&versions),
@@ -1130,7 +1191,8 @@ pub async fn list_versions(
 /// Publishes the next version. A person's agent publishes from a session,
 /// as its person and never as a page (spec §6.7, §8.2); the answer is
 /// filtered for an agent channel's reader, so a file carried forward from
-/// someone it has not approved stays withheld.
+/// someone it has not approved stays withheld. A body naming `comments` is
+/// 400 `invalid_args`: the switch is set at creation and by its own route.
 pub async fn publish(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<clax_http::agent::Publish>,
@@ -1149,6 +1211,18 @@ pub async fn publish(
     person_agent_session(&a.caller)?;
     let by_page = page_marker(&a.caller, &headers)?;
     let mut p = parse_body(req, "the publish limit", |r: PublishRequest| {
+        if r.comments.is_some() {
+            return Err(ApiError::bad_request(
+                "invalid_args",
+                "comments is set when an artifact is made; PUT /api/hosted/artifacts/<id>/comments changes it",
+            ));
+        }
+        if r.forked_from.is_some() {
+            return Err(ApiError::bad_request(
+                "invalid_args",
+                "forked_from is set when an artifact is made",
+            ));
+        }
         Ok(validate(r)?)
     })
     .await?;

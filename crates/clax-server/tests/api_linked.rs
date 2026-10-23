@@ -5,7 +5,7 @@
 use clax_server::linked::{BACKOFF_CAP, BACKOFF_FIRST, BACKSTOP, Linked};
 use clax_testkit::ManualSleeper;
 use clax_testkit::TestServer;
-use clax_testkit::remotes::{Public, connect, json_of, local_req, post};
+use clax_testkit::remotes::{Public, connect, connect_app, json_of, local_req, post};
 use reqwest::header::{COOKIE, HOST, ORIGIN};
 use serde_json::{Value, json};
 use std::future::Future;
@@ -2213,4 +2213,568 @@ async fn a_stopped_sync_ends_its_tasks_and_its_supervisor_starts_none() {
         !linked.running(&p.remote),
         "a stopped sync started a task for the remote"
     );
+}
+
+/// A thread on the whole of version 1 of `raid` there, from the browser
+/// whose session cookie is `cookie`.
+async fn browser_thread(public: &Public, raid: &str, cookie: &str, body: &str) {
+    browser_thread_on(public, raid, cookie, whole(), body).await
+}
+
+/// A thread at `anchor` on version 1 of `raid` there, from the browser
+/// whose session cookie is `cookie`.
+async fn browser_thread_on(public: &Public, raid: &str, cookie: &str, anchor: Value, body: &str) {
+    let ts = &public.ts;
+    let res = ts
+        .client
+        .post(format!("{}/api/artifacts/{raid}/threads", ts.base))
+        .header(HOST, format!("localhost:{}", ts.addr.port()))
+        .header(COOKIE, format!("clax_session={cookie}"))
+        .header(ORIGIN, &public.origin)
+        .multipart(
+            reqwest::multipart::Form::new()
+                .text("anchor", anchor.to_string())
+                .text("body", body.to_string())
+                .text("version", "1"),
+        )
+        .send()
+        .await
+        .unwrap();
+    let (s, v) = json_of(res).await;
+    assert_eq!(s, 201, "{v}");
+}
+
+/// One full read of the sync's, ended.
+async fn sync_once(sleeper: &ManualSleeper) {
+    sleeper.wait_for(BACKSTOP, 1).await;
+    sleeper.fire(BACKSTOP);
+    sleeper.wait_for(BACKSTOP, 1).await;
+}
+
+/// `aid`'s threads here, as the owner reads them (`sid` `None`) or as
+/// session `sid`'s agent does, each with its first comment's body.
+async fn threads_here(local: &TestServer, aid: &str, sid: Option<&str>) -> Vec<Value> {
+    let (s, v) = local_req(
+        local,
+        reqwest::Method::GET,
+        &format!("/api/artifacts/{aid}/threads?include_resolved=true"),
+        json!(null),
+        sid,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    v["threads"].as_array().cloned().unwrap_or_default()
+}
+
+/// The thread among `ts` whose first comment's linked author is `name`.
+fn by<'a>(ts: &'a [Value], name: &str) -> &'a Value {
+    ts.iter()
+        .find(|t| t["comments"][0]["linked"]["author_name"] == name)
+        .unwrap_or_else(|| panic!("no thread by {name}: {}", json!(ts)))
+}
+
+#[tokio::test]
+async fn a_members_device_brings_down_a_strangers_comment_withheld_from_her_agents_until_approved()
+{
+    let mut public = Public::new().await;
+    // Mia and Bob are people there; neither is its owner.
+    let owner = public.cookie.clone();
+    public.become_person("Mia").await;
+    let mia = public.cookie.clone();
+    public.cookie = owner;
+    let bob_id = public.become_person("Bob").await;
+    let bob = public.cookie.clone();
+    public.cookie = mia.clone();
+    // Mia's phone publishes an app, turns Comments on, shares it with Bob.
+    let sleeper = Arc::new(ManualSleeper::default());
+    let sl = sleeper.clone();
+    let local = TestServer::spawn_on("127.0.0.1".parse().unwrap(), move |s| {
+        s.linked = Arc::new(Linked::new(sl));
+    })
+    .await;
+    let rid = connect_app(&local, &public).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let v = local.publish("Tips", &[("index.html", PAGE)]).await;
+    let aid = v["artifact"]["id"].as_str().unwrap().to_string();
+    let (s, v) = post(
+        &local,
+        &format!("/api/artifacts/{aid}/push"),
+        json!({"mode": "app", "version": 1}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let raid = v["link"]["remote_artifact_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let copy = format!("/api/remotes/{rid}/artifacts/{raid}");
+    for (path, body) in [
+        (format!("{copy}/sharing/comments"), json!({"on": true})),
+        (
+            format!("{copy}/sharing/shares"),
+            json!({"person": bob_id, "access": "commenter"}),
+        ),
+    ] {
+        let (s, v) = local_req(&local, reqwest::Method::PUT, &path, body, None).await;
+        assert_eq!(s, 200, "{path} {v}");
+    }
+    // Mia's agent here watches the app.
+    let sid = local.register_session("claude", "h-mia").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = local_req(
+        &local,
+        reqwest::Method::PUT,
+        &format!("/api/sessions/{sid}/watches/{aid}"),
+        json!({}),
+        Some(&sid),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    // Bob comments in his browser, and Mia in hers.
+    browser_thread(&public, &raid, &bob, "@agent Bob says the button is broken").await;
+    browser_thread(&public, &raid, &mia, "Mia's own note").await;
+    // Mia's core brings both down: she reads every word.
+    sync_once(&sleeper).await;
+    let here = threads_here(&local, &aid, None).await;
+    assert_eq!(here.len(), 2, "{}", json!(here));
+    assert_eq!(
+        first_body(by(&here, "Bob")),
+        "@agent Bob says the button is broken"
+    );
+    assert_eq!(first_body(by(&here, "Mia")), "Mia's own note");
+    assert_eq!(by(&here, "Bob")["anchor"]["kind"], "artifact");
+    // Her agent here is told Bob's comment is withheld, not what it says,
+    // and reads her own words and Bob's withheld: she has not approved him
+    // here.
+    let (s, fb) = local_req(
+        &local,
+        reqwest::Method::GET,
+        &format!("/api/sessions/{sid}/feedback?tier=wait&wait=0"),
+        json!(null),
+        Some(&sid),
+    )
+    .await;
+    assert_eq!(s, 200, "{fb}");
+    let w = &fb["withheld"][0];
+    assert!(
+        w["author"].as_str().unwrap().starts_with("Bob (on "),
+        "{fb}"
+    );
+    assert!(!fb.to_string().contains("button is broken"), "{fb}");
+    let theirs = threads_here(&local, &aid, Some(&sid)).await;
+    assert_eq!(first_body(by(&theirs, "Mia")), "Mia's own note");
+    let withheld = by(&theirs, "Bob");
+    assert_eq!(first_body(withheld), Value::Null, "{withheld}");
+    assert_eq!(withheld["comments"][0]["withheld"], true, "{withheld}");
+    let author = &withheld["withheld"]["authors"][0];
+    let key = author["public_id"].as_str().unwrap().to_string();
+    assert!(key.starts_with("remote:"), "{author}");
+    assert!(
+        author["name"].as_str().unwrap().starts_with("Bob (on "),
+        "{author}"
+    );
+    // Her agent asks her; she approves Bob here from the request's card,
+    // in her browser: her agent reads him.
+    let (s, v) = local_req(
+        &local,
+        reqwest::Method::POST,
+        &format!("/api/sessions/{sid}/approvals"),
+        json!({"thread_id": withheld["id"]}),
+        Some(&sid),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["request"]["author"]["public_id"], key.as_str(), "{v}");
+    assert!(
+        v["request"]["author"]["name"]
+            .as_str()
+            .unwrap()
+            .starts_with("Bob (on "),
+        "{v}"
+    );
+    let rq = v["approval_id"].as_str().unwrap().to_string();
+    let (s, v) = json_of(
+        local
+            .client
+            .post(format!("{}/api/approvals/requests/{rq}/decide", local.base))
+            .header(COOKIE, local.owner_cookie())
+            .json(&json!({"scope": "everywhere"}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["approval"]["author"]["public_id"], key.as_str(), "{v}");
+    let theirs = threads_here(&local, &aid, Some(&sid)).await;
+    assert_eq!(
+        first_body(by(&theirs, "Bob")),
+        "@agent Bob says the button is broken"
+    );
+}
+
+#[tokio::test]
+async fn a_strangers_mirrored_anchor_is_withheld_from_her_agents_until_approved() {
+    let mut public = Public::new().await;
+    // Mia and Bob are people there; neither is its owner.
+    let owner = public.cookie.clone();
+    public.become_person("Mia").await;
+    let mia = public.cookie.clone();
+    public.cookie = owner;
+    let bob_id = public.become_person("Bob").await;
+    let bob = public.cookie.clone();
+    public.cookie = mia.clone();
+    // Mia's phone publishes an app, turns Comments on, shares it with Bob.
+    let sleeper = Arc::new(ManualSleeper::default());
+    let sl = sleeper.clone();
+    let local = TestServer::spawn_on("127.0.0.1".parse().unwrap(), move |s| {
+        s.linked = Arc::new(Linked::new(sl));
+    })
+    .await;
+    let rid = connect_app(&local, &public).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let v = local.publish("Tips", &[("index.html", PAGE)]).await;
+    let aid = v["artifact"]["id"].as_str().unwrap().to_string();
+    let (s, v) = post(
+        &local,
+        &format!("/api/artifacts/{aid}/push"),
+        json!({"mode": "app", "version": 1}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let raid = v["link"]["remote_artifact_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let copy = format!("/api/remotes/{rid}/artifacts/{raid}");
+    for (path, body) in [
+        (format!("{copy}/sharing/comments"), json!({"on": true})),
+        (
+            format!("{copy}/sharing/shares"),
+            json!({"person": bob_id, "access": "commenter"}),
+        ),
+    ] {
+        let (s, v) = local_req(&local, reqwest::Method::PUT, &path, body, None).await;
+        assert_eq!(s, 200, "{path} {v}");
+    }
+    // Mia's agent here watches the app.
+    let sid = local.register_session("claude", "h-mia").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = local_req(
+        &local,
+        reqwest::Method::PUT,
+        &format!("/api/sessions/{sid}/watches/{aid}"),
+        json!({}),
+        Some(&sid),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    // Bob anchors a comment on words his browser quotes, and Mia on hers.
+    let anchor = |quote: &str| {
+        json!({"kind": "range", "selector": "#x", "quote": quote,
+               "prefix": format!("{quote} before"), "suffix": format!("{quote} after"),
+               "label": quote, "name": format!("{quote} by name"),
+               "file": "index.html"})
+    };
+    browser_thread_on(
+        &public,
+        &raid,
+        &bob,
+        anchor("Bob quoted this"),
+        "@agent see here",
+    )
+    .await;
+    browser_thread_on(
+        &public,
+        &raid,
+        &mia,
+        anchor("Mia quoted this"),
+        "Mia's note",
+    )
+    .await;
+    sync_once(&sleeper).await;
+    // Mia reads both anchors.
+    let here = threads_here(&local, &aid, None).await;
+    assert_eq!(here.len(), 2, "{}", json!(here));
+    assert_eq!(by(&here, "Bob")["anchor"]["quote"], "Bob quoted this");
+    assert_eq!(by(&here, "Mia")["anchor"]["quote"], "Mia quoted this");
+    // Her agent reads her own anchor, and none of Bob's: not in the list,
+    // not since a time, not in the thread, not in its feedback.
+    let theirs = threads_here(&local, &aid, Some(&sid)).await;
+    let hers = by(&theirs, "Mia");
+    assert_eq!(hers["anchor"]["quote"], "Mia quoted this", "{hers}");
+    assert_ne!(hers["anchor_withheld"], true, "{hers}");
+    let tid = by(&theirs, "Bob")["id"].as_str().unwrap().to_string();
+    let (s, since) = local_req(
+        &local,
+        reqwest::Method::GET,
+        &format!("/api/artifacts/{aid}/threads?include_resolved=true&since=1970-01-01T00:00:00Z"),
+        json!(null),
+        Some(&sid),
+    )
+    .await;
+    assert_eq!(s, 200, "{since}");
+    assert_eq!(
+        since["threads"].as_array().map(Vec::len),
+        Some(2),
+        "{since}"
+    );
+    let (s, single) = local_req(
+        &local,
+        reqwest::Method::GET,
+        &format!("/api/artifacts/{aid}/threads/{tid}"),
+        json!(null),
+        Some(&sid),
+    )
+    .await;
+    assert_eq!(s, 200, "{single}");
+    let (s, fb) = local_req(
+        &local,
+        reqwest::Method::GET,
+        &format!("/api/sessions/{sid}/feedback?tier=wait&wait=0"),
+        json!(null),
+        Some(&sid),
+    )
+    .await;
+    assert_eq!(s, 200, "{fb}");
+    let withheld = by(&theirs, "Bob");
+    assert_eq!(withheld["anchor_withheld"], true, "{withheld}");
+    assert_eq!(withheld["anchor"]["quote"], Value::Null, "{withheld}");
+    for read in [json!(theirs), since, single, fb] {
+        assert!(!read.to_string().contains("Bob quoted"), "{read}");
+    }
+    // She approves Bob here: her agent reads his anchor.
+    let (s, v) = local_req(
+        &local,
+        reqwest::Method::POST,
+        &format!("/api/sessions/{sid}/approvals"),
+        json!({"thread_id": tid}),
+        Some(&sid),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let key = v["request"]["author"]["public_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(key.starts_with("remote:"), "{v}");
+    let rq = v["approval_id"].as_str().unwrap().to_string();
+    let (s, v) = json_of(
+        local
+            .client
+            .post(format!("{}/api/approvals/requests/{rq}/decide", local.base))
+            .header(COOKIE, local.owner_cookie())
+            .json(&json!({"scope": "everywhere"}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let theirs = threads_here(&local, &aid, Some(&sid)).await;
+    let released = by(&theirs, "Bob");
+    assert_eq!(released["anchor"]["quote"], "Bob quoted this", "{released}");
+    assert_eq!(released["anchor"]["prefix"], "Bob quoted this before");
+    assert_eq!(released["anchor"]["suffix"], "Bob quoted this after");
+    assert_eq!(first_body(released), "@agent see here");
+}
+
+/// The body of local thread `t`'s first comment.
+fn first_body(t: &Value) -> Value {
+    t["comments"][0]["body"].clone()
+}
+
+#[tokio::test]
+async fn a_daemons_agent_reads_a_comment_its_person_approved_there_unwithheld() {
+    // A daemon signed in with no kind (an agent token) as Ada, the owner
+    // there, links its artifact; Bob is a person there whom Ada approved.
+    let mut p = Pair::new().await;
+    let ada = p.public.cookie.clone();
+    let bob_id = p.public.become_person("Bob").await;
+    let bob = p.public.cookie.clone();
+    p.public.cookie = ada;
+    for (method, path, body) in [
+        (
+            reqwest::Method::PUT,
+            format!("/api/hosted/artifacts/{}/shares", p.raid),
+            json!({"person": bob_id, "access": "commenter"}),
+        ),
+        (
+            reqwest::Method::POST,
+            "/api/approvals".to_string(),
+            json!({"author": bob_id, "scope": "everywhere"}),
+        ),
+    ] {
+        let (s, v) = p.public.browser(method, &path, body).await;
+        assert!((200..300).contains(&s), "{path} {v}");
+    }
+    let sid = p.local_agent("fixer").await;
+    browser_thread(&p.public, &p.raid, &bob, "@agent Bob says hi").await;
+    sync_once(&p.sleeper).await;
+    // The remote let Bob's comment through to Ada's token; here her agent
+    // reads it as the remote gave it, with no second approval.
+    let theirs = threads_here(&p.local, &p.aid, Some(&sid)).await;
+    assert_eq!(first_body(by(&theirs, "Bob")), "@agent Bob says hi");
+    let rid = p.remote.clone();
+    let r = p.local.store.find_remote(&rid).unwrap().unwrap();
+    assert_eq!(
+        r.client_kind.as_deref(),
+        Some(clax_store::remotes::CLIENT_KIND_AGENT)
+    );
+}
+
+#[tokio::test]
+async fn a_device_keys_an_agent_comment_naming_no_person_apart_from_the_owners_agents() {
+    let mut public = Public::new().await;
+    // Mia is a person there, not its owner; her phone publishes an app
+    // with Comments on.
+    let owner = public.cookie.clone();
+    public.become_person("Mia").await;
+    let mia = public.cookie.clone();
+    public.cookie = owner;
+    let sleeper = Arc::new(ManualSleeper::default());
+    let sl = sleeper.clone();
+    let local = TestServer::spawn_on("127.0.0.1".parse().unwrap(), move |s| {
+        s.linked = Arc::new(Linked::new(sl));
+    })
+    .await;
+    public.cookie = mia.clone();
+    let rid = connect_app(&local, &public).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let v = local.publish("Tips", &[("index.html", PAGE)]).await;
+    let aid = v["artifact"]["id"].as_str().unwrap().to_string();
+    let (s, v) = post(
+        &local,
+        &format!("/api/artifacts/{aid}/push"),
+        json!({"mode": "app", "version": 1}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let raid = v["link"]["remote_artifact_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = local_req(
+        &local,
+        reqwest::Method::PUT,
+        &format!("/api/remotes/{rid}/artifacts/{raid}/sharing/comments"),
+        json!({"on": true}),
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    browser_thread(&public, &raid, &mia, "Mia's note").await;
+    // An agent there whose session has no name replies: people's views of
+    // its comment carry no `agent`, so name no person.
+    let ts = &public.ts;
+    let req = |m: reqwest::Method, path: &str| {
+        ts.client
+            .request(m, format!("{}{path}", ts.base))
+            .header(HOST, format!("localhost:{}", ts.addr.port()))
+            .bearer_auth(&ts.token)
+    };
+    let (s, v) = json_of(
+        req(reqwest::Method::POST, "/api/sessions")
+            .json(&json!({"harness": "claude", "cwd": ""}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let sid = v["session"]["id"].as_str().unwrap().to_string();
+    let rtid = ts
+        .store
+        .list_threads(
+            &clax_core::ArtifactId::parse(&raid).unwrap(),
+            true,
+            None,
+            10,
+        )
+        .unwrap()
+        .0[0]
+        .id
+        .clone();
+    ts.store
+        .add_comment(
+            &clax_core::audit::AuditCtx::DAEMON,
+            &rtid,
+            clax_store::threads::NewComment {
+                author_kind: clax_store::threads::AUTHOR_AGENT,
+                author_name: "claude".into(),
+                author_public_id: None,
+                via_session_id: Some(sid.clone()),
+                body: "an unnamed agent's reply".into(),
+                via_page: false,
+            },
+        )
+        .unwrap();
+    rusqlite::Connection::open(ts.state.home.db_path())
+        .unwrap()
+        .execute("UPDATE sessions SET name = NULL WHERE id = ?1", [&sid])
+        .unwrap();
+    sync_once(&sleeper).await;
+    let here = threads_here(&local, &aid, None).await;
+    let t = by(&here, "Mia");
+    let tid = t["id"].as_str().unwrap();
+    let comments = local.store.get_thread(tid).unwrap().unwrap().comments;
+    assert_eq!(comments.len(), 2, "{t}");
+    assert_eq!(
+        comments[1].remote_author.as_deref(),
+        Some(format!("remote:{}#*agent", public.origin).as_str()),
+        "{t}"
+    );
+}
+
+#[tokio::test]
+async fn a_remote_signed_in_before_kinds_were_kept_is_asked_its_kind() {
+    // A daemon's remote and a device's, each with its kind forgotten, as
+    // a remote signed in before migration 49 has none.
+    let public = Public::new().await;
+    for (app, kind) in [
+        (false, clax_store::remotes::CLIENT_KIND_AGENT),
+        (true, clax_store::remotes::CLIENT_KIND_APP),
+    ] {
+        let sleeper = Arc::new(ManualSleeper::default());
+        let sl = sleeper.clone();
+        let local = TestServer::spawn_on("127.0.0.1".parse().unwrap(), move |s| {
+            s.linked = Arc::new(Linked::new(sl));
+        })
+        .await;
+        let r = if app {
+            connect_app(&local, &public).await
+        } else {
+            connect(&local, &public).await
+        };
+        let rid = r["id"].as_str().unwrap().to_string();
+        rusqlite::Connection::open(local.state.home.db_path())
+            .unwrap()
+            .execute(
+                "UPDATE remotes SET client_kind = NULL WHERE id = ?1",
+                [&rid],
+            )
+            .unwrap();
+        let v = local.publish("Linked", &[("index.html", PAGE)]).await;
+        let aid = v["artifact"]["id"].as_str().unwrap().to_string();
+        let body = if app {
+            json!({"mode": "app", "version": 1})
+        } else {
+            json!({})
+        };
+        let (s, v) = post(&local, &format!("/api/artifacts/{aid}/push"), body).await;
+        assert_eq!(s, 200, "{v}");
+        sync_once(&sleeper).await;
+        let r = local.store.find_remote(&rid).unwrap().unwrap();
+        assert_eq!(r.client_kind.as_deref(), Some(kind), "app {app}");
+    }
 }

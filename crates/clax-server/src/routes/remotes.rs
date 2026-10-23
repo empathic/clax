@@ -9,7 +9,7 @@
 //!   agent.
 //! - `GET /api/artifacts/<aid>/remotes` → the artifact's public twins and
 //!   the remotes it could go to.
-//! - `POST /api/artifacts/<aid>/push {remote?, mode?, auto?,
+//! - `POST /api/artifacts/<aid>/push {remote?, mode?, version?, auto?,
 //!   question_id?}` pushes it. The owner pushes at once. An agent of the
 //!   owner's pushes only with the owner's approval: its first call asks
 //!   the owner a question this daemon writes (answered in Clax's browser or
@@ -18,6 +18,9 @@
 //!   owner chose to publish, and 403 `not_approved` when they did not. A
 //!   link the owner let follow new versions ("Publish and push new
 //!   versions") takes an agent's push of a new version without asking.
+//!   Mode `app` with a `version` is the Clax app's publish of that one
+//!   version ([`Mode::App`]); its other routes to the public copy are
+//!   `crate::routes::remote_apps`'.
 //!
 //! A hosted daemon has no remotes: every route answers 404 there. Every
 //! route is refused to another machine's agents (`DeniedToGrants`).
@@ -50,7 +53,7 @@ pub const PUBLISH_FOLLOW: &str = "Publish and push new versions";
 pub const DONT_PUBLISH: &str = "Don't publish";
 
 /// 404 on a hosted daemon, which has no remotes.
-fn local_only(s: &AppState) -> Result<(), ApiError> {
+pub(super) fn local_only(s: &AppState) -> Result<(), ApiError> {
     if s.hosted.is_some() {
         Err(ApiError::not_found())
     } else {
@@ -60,12 +63,12 @@ fn local_only(s: &AppState) -> Result<(), ApiError> {
 
 /// Who asks: the owner by hand, or an agent of the owner's (with its
 /// session, when it names one). Anyone else is refused.
-enum Asker {
+pub(super) enum Asker {
     Owner,
     Agent(Option<String>),
 }
 
-async fn asker(s: &AppState, d: &DeniedToGrants) -> Result<Asker, ApiError> {
+pub(super) async fn asker(s: &AppState, d: &DeniedToGrants) -> Result<Asker, ApiError> {
     match d.caller(s).await? {
         Caller::Owner { .. } => Ok(Asker::Owner),
         Caller::OwnerAgent { session } => Ok(Asker::Agent(session)),
@@ -110,13 +113,19 @@ pub struct AddBody {
     /// when absent.
     #[serde(default)]
     machine: Option<String>,
+    /// What signs in: `clax-app` for the Clax app, whose token the remote
+    /// marks as the person's own device; absent for a daemon.
+    #[serde(default)]
+    kind: Option<String>,
 }
 
-/// `POST /api/remotes {url, name?, machine?}` (the owner) → 201 `{remote,
+/// `POST /api/remotes {url, name?, machine?, kind?}` (the owner) → 201 `{remote,
 /// user_code, verification_url, expires_at, interval}`: a device sign-in
 /// started at `url`. Open `verification_url` (signed in there), check the
-/// user code and approve; then poll. 400 `invalid_args` for a URL that is
-/// not a public origin; 400 `remote_exists` for one signed in to already;
+/// user code and approve; then poll. `kind` `clax-app` (the only kind)
+/// names the sign-in as the Clax app's, which the approval page says may
+/// manage the sharing of the person's artifacts. 400 `invalid_args` for a
+/// URL that is not a public origin, or another kind; 400 `remote_exists` for one signed in to already;
 /// 502 for a remote that refused or could not be reached.
 pub async fn add(
     State(s): State<AppState>,
@@ -130,6 +139,15 @@ pub async fn add(
     who.require_owner("publishes to a public Clax")?;
     asker(&s, &d).await?;
     let b = body(req)?;
+    if b.kind
+        .as_deref()
+        .is_some_and(|k| k != clax_store::device::CLAX_APP_KIND)
+    {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            "kind is clax-app or absent",
+        ));
+    }
     let origin = public::origin_of(&b.url)?;
     let name = b
         .name
@@ -151,9 +169,20 @@ pub async fn add(
             ),
         ));
     }
-    let sign_in = clax_rt::sendable(public::start_sign_in(&origin, &machine)).await?;
+    let sign_in =
+        clax_rt::sendable(public::start_sign_in(&origin, &machine, b.kind.as_deref())).await?;
+    // What the token will read threads as there: a device's unfiltered,
+    // an agent token's filtered by the person's approvals.
+    let kind = match b.kind.as_deref() {
+        Some(clax_store::remotes::CLIENT_KIND_APP) => clax_store::remotes::CLIENT_KIND_APP,
+        _ => clax_store::remotes::CLIENT_KIND_AGENT,
+    };
     let r = s
-        .store_call(move |st| st.add_pending_remote(&origin, &name, &sign_in))
+        .store_call(move |st| {
+            let r = st.add_pending_remote(&origin, &name, &sign_in)?;
+            st.set_remote_client_kind(&r.id, kind)?;
+            Ok(r)
+        })
         .await?;
     Ok((
         StatusCode::CREATED,
@@ -495,19 +524,30 @@ pub struct PushBody {
     /// The remote's ID, name or origin; the only connected one when absent.
     #[serde(default)]
     remote: Option<String>,
-    /// `update` (the default), `new` or `fork`.
+    /// `update` (the default), `new`, `fork` or `app`.
     #[serde(default)]
     mode: Option<String>,
+    /// The local version mode `app` publishes, and no other mode names.
+    #[serde(default)]
+    version: Option<u32>,
     /// The owner's: let agents push new versions of it without asking.
     #[serde(default)]
     auto: Option<bool>,
+    /// Mode `app`'s, when it makes a new public copy: the public artifact
+    /// there it comes from, recorded as its lineage.
+    #[serde(default)]
+    forked_from: Option<String>,
+    /// Mode `app`'s, when it makes a new public copy: that copy's name
+    /// there, in place of the local artifact's.
+    #[serde(default)]
+    title: Option<String>,
     /// An agent's: the approval question its first call was answered.
     #[serde(default)]
     question_id: Option<String>,
 }
 
 /// The remote a push names, or the only connected one.
-async fn push_target(s: &AppState, key: Option<String>) -> Result<Remote, ApiError> {
+pub(super) async fn push_target(s: &AppState, key: Option<String>) -> Result<Remote, ApiError> {
     let remotes = s.store_call(|st| st.remotes()).await?;
     let connected: Vec<&Remote> = remotes.iter().filter(|r| r.status == "connected").collect();
     let r = match key {
@@ -553,16 +593,24 @@ async fn push_target(s: &AppState, key: Option<String>) -> Result<Remote, ApiErr
     Ok(r.clone())
 }
 
-/// `POST /api/artifacts/<aid>/push {remote?, mode?, auto?, question_id?}`
-/// → `{status: "pushed", url, remote, link, pushed: [{n, remote_n}],
-/// assets_not_pushed}`, or for an agent waiting on the owner 202
+/// `POST /api/artifacts/<aid>/push {remote?, mode?, version?, auto?,
+/// forked_from?, title?, question_id?}` → `{status: "pushed", url, remote, link, pushed: [{n,
+/// remote_n}], assets_not_pushed}`, or for an agent waiting on the owner 202
 /// `{status: "approval_pending", question_id, inbox_url}` (see the module
 /// docs). Refusals: 404 `no_remote`; 400 `remote_required`,
 /// `not_connected`, `live_page`, `no_link`; 403 `not_approved` (the owner
 /// declined, or answered outside Clax's browser and extension); 409
 /// `approval_used` for an approval spent already; 409 `remote_moved` when
 /// the public copy has versions this Clax did not push (push with `mode`
-/// `new` or `fork`); 502 for the remote's own refusals.
+/// `new` or `fork`); 502 for the remote's own refusals. Mode `app` (the
+/// owner's alone, 403 `forbidden` for an agent) publishes local version
+/// `version` alone as the public copy's next version
+/// ([`Mode::App`]): 404 `not_found` for no such version, 400 `uses_assets`
+/// for files that name an asset's address here; with `forked_from` (a
+/// public artifact's ID there) the new public copy it makes records that
+/// lineage, and with `title` it takes that name (400 `invalid_args` for
+/// either with another mode or an app linked there, and for an empty
+/// title).
 pub async fn push(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -585,7 +633,30 @@ pub async fn push(
     }
     let id = parse_id(&path(aid)?)?;
     let b = body(req)?;
-    let mode = Mode::parse(b.mode.as_deref())?;
+    let mode = Mode::parse(b.mode.as_deref(), b.version)?;
+    if matches!(mode, Mode::App { .. }) && !matches!(by, Asker::Owner) {
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "an app's publish is the owner's, in the Clax app",
+        ));
+    }
+    let forked_from = b.forked_from.as_deref().map(parse_id).transpose()?;
+    if (forked_from.is_some() || b.title.is_some()) && !matches!(mode, Mode::App { .. }) {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            "forked_from and title name a new app's public copy: mode app alone takes them",
+        ));
+    }
+    if b.title.as_deref().is_some_and(|t| t.trim().is_empty()) {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            "a public copy's title is not empty",
+        ));
+    }
+    let new = public::NewCopy {
+        forked_from,
+        title: b.title.clone(),
+    };
     let remote = push_target(&s, b.remote.clone()).await?;
     let (auto, upto) = match by {
         Asker::Owner => (b.auto, None),
@@ -616,7 +687,8 @@ pub async fn push(
             }
         }
     };
-    let pushed = clax_rt::sendable(public::push(&s, &id, &remote, mode, auto, upto)).await?;
+    let pushed =
+        clax_rt::sendable(public::push_from(&s, &id, &remote, mode, auto, upto, new)).await?;
     Ok(Json(json!({
         "status": "pushed",
         "url": pushed.link.url,

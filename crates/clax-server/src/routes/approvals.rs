@@ -398,13 +398,13 @@ pub async fn ask(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let sid = path(p)?;
     let b = body(req)?;
-    if b.author
-        .as_deref()
-        .is_some_and(|x| x == UNCONNECTED || !clax_core::is_public_id(x))
-    {
+    if b.author.as_deref().is_some_and(|x| {
+        x == UNCONNECTED
+            || !(clax_core::is_public_id(x) || clax_core::visibility::is_remote_author(x))
+    }) {
         return Err(ApiError::bad_request(
             "invalid_args",
-            "author is a person's public ID",
+            "author is a person's public ID, or an author on a public Clax as a withheld field names them",
         ));
     }
     // The artifact through the agent's gate: named, or the thread's.

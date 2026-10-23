@@ -3645,6 +3645,510 @@ async fn a_local_daemon_has_no_device_sign_in() {
     assert_eq!(r.status(), 404);
 }
 
+impl Site {
+    /// The agent token a device sign-in naming `kind` receives once `b`
+    /// approves it, and its grant's ID.
+    async fn device_token(&self, b: &Browser, kind: Option<&str>) -> (String, String) {
+        let mut body = json!({"client_name": "Clax on phone"});
+        if let Some(k) = kind {
+            body["client_kind"] = json!(k);
+        }
+        let (s, v) = self.machine("/api/hosted/device/code", body).await;
+        assert_eq!(s, 200, "{v}");
+        let (dc, uc) = (
+            v["device_code"].as_str().unwrap().to_string(),
+            v["user_code"].as_str().unwrap().to_string(),
+        );
+        let (s, v) = self
+            .post(b, &format!("/api/hosted/device/{uc}/approve"), json!({}))
+            .await;
+        assert_eq!(s, 200, "{v}");
+        self.clock.advance(5);
+        let (s, v) = self.poll_device(&dc).await;
+        assert_eq!(s, 200, "{v}");
+        (
+            v["token"].as_str().unwrap().to_string(),
+            v["grant_id"].as_str().unwrap().to_string(),
+        )
+    }
+
+    /// A request of agent token `token`, as a machine makes it: no
+    /// `Origin`, no cookie.
+    async fn bearer(
+        &self,
+        token: &str,
+        method: reqwest::Method,
+        path: &str,
+        body: Value,
+    ) -> (u16, Value) {
+        let mut r = self
+            .ts
+            .client
+            .request(method, self.url(path))
+            .header(HOST, format!("localhost:{}", self.ts.addr.port()))
+            .bearer_auth(token);
+        if !body.is_null() {
+            r = r.json(&body);
+        }
+        json_of(r.send().await.unwrap()).await
+    }
+
+    /// An artifact `b` (a member) makes from a brief: theirs.
+    async fn made_by(&self, b: &Browser, title: &str) -> String {
+        let (s, v) = self
+            .post(
+                b,
+                "/api/artifacts:new",
+                json!({"title": title, "brief": "a page"}),
+            )
+            .await;
+        assert_eq!(s, 201, "{v}");
+        v["artifact"]["id"].as_str().unwrap().to_string()
+    }
+}
+
+/// The routes a person's device reaches on artifact `aid`, with a body
+/// each accepts: its sharing, a share, general access, the Comments
+/// switch, removing share `sid`.
+fn sharing_routes(aid: &str, sid: &str) -> Vec<(reqwest::Method, String, Value)> {
+    use reqwest::Method as M;
+    vec![
+        (
+            M::GET,
+            format!("/api/hosted/artifacts/{aid}/sharing"),
+            json!(null),
+        ),
+        (
+            M::PUT,
+            format!("/api/hosted/artifacts/{aid}/shares"),
+            json!({"github_login": "friend", "access": "viewer"}),
+        ),
+        (
+            M::PUT,
+            format!("/api/hosted/artifacts/{aid}/link"),
+            json!({"access": "viewer"}),
+        ),
+        (
+            M::PUT,
+            format!("/api/hosted/artifacts/{aid}/comments"),
+            json!({"on": false}),
+        ),
+        (
+            M::DELETE,
+            format!("/api/hosted/artifacts/{aid}/shares/{sid}"),
+            json!(null),
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn device_kind_token_manages_sharing_of_own_artifact() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sam = site.member(&owner, "Sam").await;
+    let mia = site.member(&owner, "Mia").await;
+    let mia_pid = site.pid(&mia).await;
+    let mine = site.made_by(&sam, "Sam's app").await;
+    let (token, gid) = site.device_token(&sam, Some("clax-app")).await;
+    use reqwest::Method as M;
+    let at = |p: &str| format!("/api/hosted/artifacts/{mine}/{p}");
+    let (s, v) = site
+        .bearer(&token, M::GET, &at("sharing"), json!(null))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        (&v["can_share"], &v["comments"], &v["general"]),
+        (&json!(true), &json!(true), &json!("restricted")),
+        "{v}"
+    );
+    // The browser's answer, for the same person.
+    assert_eq!(site.get(&sam, &at("sharing")).await.1, v);
+    let (s, v) = site
+        .bearer(
+            &token,
+            M::PUT,
+            &at("shares"),
+            json!({"person": mia_pid, "access": "commenter"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let sid = v["share"]["id"].as_str().unwrap().to_string();
+    let (_, v) = site.get(&mia, "/api/artifacts").await;
+    assert_eq!(listed(&v), vec![mine.clone()]);
+    let (s, v) = site
+        .bearer(&token, M::PUT, &at("link"), json!({"access": "viewer"}))
+        .await;
+    assert_eq!((s, &v["access"]), (200, &json!("viewer")), "{v}");
+    let (s, v) = site
+        .bearer(&token, M::PUT, &at("comments"), json!({"on": false}))
+        .await;
+    assert_eq!((s, &v["comments"]), (200, &json!(false)), "{v}");
+    let (_, v) = site.get(&sam, &at("sharing")).await;
+    assert_eq!(
+        (&v["comments"], &v["general"], &v["people"][0]["person"]),
+        (&json!(false), &json!("link"), &json!(mia_pid)),
+        "{v}"
+    );
+    let (s, v) = site
+        .bearer(
+            &token,
+            M::DELETE,
+            &at(&format!("shares/{sid}")),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (_, v) = site.get(&sam, &at("sharing")).await;
+    assert_eq!(v["people"], json!([]), "{v}");
+    // Beside a browser's marks the token is refused outright, as on every
+    // route: a page cannot spend it.
+    let (s, v) = json_of(
+        site.ts
+            .client
+            .get(site.url(&at("sharing")))
+            .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+            .header(ORIGIN, &site.origin)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "forbidden_origin"), "{v}");
+    // People lists it under Devices, apart from agents.
+    let (s, v) = site
+        .post(&sam, "/api/hosted/agent-tokens", json!({"label": "laptop"}))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let (_, v) = site.get(&sam, "/api/hosted/agent-tokens").await;
+    let kinds: Vec<(String, String)> = v["tokens"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            (
+                t["label"].as_str().unwrap().to_string(),
+                t["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("laptop".to_string(), "agent".to_string()),
+            ("Clax on phone".to_string(), "device".to_string())
+        ],
+        "{v}"
+    );
+    assert_eq!(v["tokens"][1]["id"], gid.as_str());
+}
+
+#[tokio::test]
+async fn device_kind_token_refused_on_others_artifact() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let plan = site.titled("Plan").await;
+    // Sam reads every artifact; Mia only her own.
+    let sam = site.person(&owner, "Sam").await;
+    let mia = site.member(&owner, "Mia").await;
+    let hers = site.made_by(&mia, "Mia's").await;
+    let (s, v) = site
+        .put(
+            &owner,
+            &format!("/api/hosted/artifacts/{plan}/shares"),
+            json!({"github_login": "keep", "access": "viewer"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let sid = v["share"]["id"].as_str().unwrap().to_string();
+    let (sam_t, _) = site.device_token(&sam, Some("clax-app")).await;
+    let (mia_t, _) = site.device_token(&mia, Some("clax-app")).await;
+    // Sam reads the owner's Plan and Mia's page but made neither: he is
+    // told he may not share them, as in his browser.
+    for aid in [&plan, &hers] {
+        let (s, v) = site
+            .bearer(
+                &sam_t,
+                reqwest::Method::GET,
+                &format!("/api/hosted/artifacts/{aid}/sharing"),
+                json!(null),
+            )
+            .await;
+        assert_eq!(
+            (s, v),
+            (200, json!({"artifact_id": aid, "can_share": false}))
+        );
+        for (m, path, body) in sharing_routes(aid, &sid).into_iter().skip(1) {
+            let (s, v) = site.bearer(&sam_t, m.clone(), &path, body).await;
+            assert_eq!((s, code(&v)), (403, "forbidden"), "{m} {path}: {v}");
+        }
+    }
+    // An artifact its person may not read is not there.
+    for (m, path, body) in sharing_routes(&plan, &sid) {
+        let (s, v) = site.bearer(&mia_t, m.clone(), &path, body).await;
+        assert_eq!((s, code(&v)), (404, "not_found"), "{m} {path}: {v}");
+    }
+    // Nothing changed.
+    assert!(site.ts.store.link_access(&plan).unwrap().is_none());
+    let (_, v) = site
+        .get(&owner, &format!("/api/hosted/artifacts/{plan}/sharing"))
+        .await;
+    assert_eq!(
+        (&v["comments"], v["people"].as_array().map(Vec::len)),
+        (&json!(true), Some(1)),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn plain_agent_token_still_refused_on_sharing() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sam = site.member(&owner, "Sam").await;
+    let mine = site.made_by(&sam, "Sam's").await;
+    let (s, v) = site
+        .post(&sam, "/api/hosted/agent-tokens", json!({"label": "laptop"}))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let minted = v["token"].as_str().unwrap().to_string();
+    // Another machine's Clax that names no kind: an agent's token.
+    let (plain, _) = site.device_token(&sam, None).await;
+    for token in [&minted, &plain] {
+        for (m, path, body) in sharing_routes(&mine, "s_x") {
+            let (s, v) = site.bearer(token, m.clone(), &path, body).await;
+            assert_eq!((s, code(&v)), (403, "forbidden"), "{m} {path}: {v}");
+        }
+        let (s, v) = site
+            .bearer(token, reqwest::Method::GET, "/api/hosted/apps", json!(null))
+            .await;
+        assert_eq!((s, code(&v)), (403, "forbidden"), "{v}");
+    }
+    assert!(site.ts.store.link_access(&mine).unwrap().is_none());
+    // The remote takes no other kind than the Clax app's.
+    let (s, v) = site
+        .machine(
+            "/api/hosted/device/code",
+            json!({"client_name": "box", "client_kind": "clax-cli"}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (400, "invalid_args"), "{v}");
+}
+
+#[tokio::test]
+async fn device_kind_token_refused_on_people_and_approvals() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let (sam, sam_id) = site
+        .person_with(
+            &owner,
+            "Sam",
+            json!([{"type": "clax-artifacts", "actions": ["read"], "locations": ["*"]}]),
+        )
+        .await;
+    let (token, gid) = site.device_token(&sam, Some("clax-app")).await;
+    // A sign-in waiting for approval, which the token must not approve.
+    let waiting = site.start_device("intruder").await;
+    let uc = waiting["user_code"].as_str().unwrap().to_string();
+    use reqwest::Method as M;
+    let refused = [
+        (M::GET, "/api/token".to_string(), json!(null)),
+        (M::GET, "/api/people".to_string(), json!(null)),
+        (M::GET, "/api/people/me".to_string(), json!(null)),
+        (
+            M::POST,
+            "/api/people/invites".to_string(),
+            json!({"name": "Eve", "rights": "clax:collaborator"}),
+        ),
+        (
+            M::PUT,
+            format!("/api/people/{sam_id}/rights"),
+            json!({"rights": "clax:collaborator"}),
+        ),
+        (
+            M::PUT,
+            format!("/api/people/me/grants/{gid}/narrow"),
+            json!({"rights": []}),
+        ),
+        (M::GET, "/api/grants".to_string(), json!(null)),
+        (M::POST, format!("/api/grants/{gid}/approve"), json!({})),
+        (
+            M::POST,
+            "/api/approvals".to_string(),
+            json!({"author": "*unconnected", "scope": "*"}),
+        ),
+        (
+            M::POST,
+            "/api/approvals/requests/r1/decide".to_string(),
+            json!({"allow": true}),
+        ),
+        (M::GET, "/api/inbox".to_string(), json!(null)),
+        (M::GET, "/api/hosted/me".to_string(), json!(null)),
+        (M::GET, "/api/hosted/agent-tokens".to_string(), json!(null)),
+        (
+            M::POST,
+            "/api/hosted/agent-tokens".to_string(),
+            json!({"label": "more"}),
+        ),
+        (
+            M::DELETE,
+            format!("/api/hosted/agent-tokens/{gid}"),
+            json!(null),
+        ),
+        (M::POST, "/api/hosted/signin-links".to_string(), json!({})),
+        (
+            M::POST,
+            "/api/hosted/owner-signin-link".to_string(),
+            json!({}),
+        ),
+        (M::GET, "/api/hosted/links".to_string(), json!(null)),
+        (M::GET, format!("/api/hosted/device/{uc}"), json!(null)),
+        (
+            M::POST,
+            format!("/api/hosted/device/{uc}/approve"),
+            json!({}),
+        ),
+        (M::POST, format!("/api/hosted/device/{uc}/deny"), json!({})),
+        (M::POST, "/api/hosted/signout".to_string(), json!({})),
+    ];
+    for (m, path, body) in refused {
+        let (s, v) = site.bearer(&token, m.clone(), &path, body).await;
+        assert_eq!(s, 403, "{m} {path}: {v}");
+        assert!(
+            ["forbidden", "browser_required", "not_owner"].contains(&code(&v)),
+            "{m} {path}: {v}"
+        );
+    }
+    // It minted nothing and approved nothing: one token, the sign-in still
+    // waits.
+    let (_, v) = site.get(&sam, "/api/hosted/agent-tokens").await;
+    assert_eq!(v["tokens"].as_array().map(Vec::len), Some(1), "{v}");
+    let (s, v) = site.get(&sam, &format!("/api/hosted/device/{uc}")).await;
+    assert_eq!(s, 200, "{v}");
+}
+
+#[tokio::test]
+async fn a_revoked_device_token_manages_nothing() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sam = site.member(&owner, "Sam").await;
+    let mine = site.made_by(&sam, "Sam's").await;
+    let (token, gid) = site.device_token(&sam, Some("clax-app")).await;
+    let sharing = format!("/api/hosted/artifacts/{mine}/sharing");
+    let (s, v) = site
+        .bearer(&token, reqwest::Method::GET, &sharing, json!(null))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    // Revoked on People.
+    let (s, v) = site
+        .send(
+            &sam,
+            reqwest::Method::DELETE,
+            &format!("/api/hosted/agent-tokens/{gid}"),
+            json!(null),
+        )
+        .await;
+    assert_eq!((s, &v["token"]["kind"]), (200, &json!("device")), "{v}");
+    for (m, path, body) in sharing_routes(&mine, "s_x") {
+        let (s, v) = site.bearer(&token, m.clone(), &path, body).await;
+        assert_eq!((s, code(&v)), (401, "invalid_token"), "{m} {path}: {v}");
+    }
+    let (s, v) = site
+        .bearer(
+            &token,
+            reqwest::Method::GET,
+            "/api/hosted/apps",
+            json!(null),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (401, "invalid_token"), "{v}");
+    // A token that revokes itself, as Disconnect does, is gone too.
+    let (token, _) = site.device_token(&sam, Some("clax-app")).await;
+    let (s, _) = site
+        .bearer(
+            &token,
+            reqwest::Method::DELETE,
+            "/api/hosted/agent-token",
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 204);
+    let (s, v) = site
+        .bearer(&token, reqwest::Method::GET, &sharing, json!(null))
+        .await;
+    assert_eq!((s, code(&v)), (401, "invalid_token"), "{v}");
+    // So is the token of a person removed from this Clax.
+    let (token, _) = site.device_token(&sam, Some("clax-app")).await;
+    let sam_pid = site.pid(&sam).await;
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::DELETE,
+            &format!("/api/people/{sam_pid}"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site
+        .bearer(&token, reqwest::Method::GET, &sharing, json!(null))
+        .await;
+    assert_eq!(s, 401, "{v}");
+}
+
+#[tokio::test]
+async fn device_kind_token_lists_apps() {
+    const MIME: &str = "application/vnd.empathic.clax+zip";
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sam = site.member(&owner, "Sam").await;
+    let sam_pid = site.pid(&sam).await;
+    let app = site.titled("Tally").await;
+    site.titled("Not an app").await;
+    let (_, v) = site
+        .get(&owner, &format!("/api/artifacts/{app}/versions/1"))
+        .await;
+    let content = v["version"]["content_sha256"].as_str().unwrap().to_string();
+    let (s, v) = json_of(
+        site.req(
+            &owner,
+            reqwest::Method::PUT,
+            &format!("/api/artifacts/{app}/versions/1/bundle"),
+        )
+        .header("content-type", MIME)
+        .header("clax-bundle-lineage", "l_abcdefghijklmnopqrstuvwxyz")
+        .header("clax-bundle-version", "1")
+        .header("clax-bundle-content-sha256", content)
+        .body(b"bundle".to_vec())
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let (s, v) = site
+        .put(
+            &owner,
+            &format!("/api/hosted/artifacts/{app}/shares"),
+            json!({"person": sam_pid, "access": "editor"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (ada_t, _) = site.device_token(&owner, Some("clax-app")).await;
+    let (sam_t, _) = site.device_token(&sam, Some("clax-app")).await;
+    for (b, token, access) in [(&owner, &ada_t, "owner"), (&sam, &sam_t, "editor")] {
+        let (s, v) = site
+            .bearer(token, reqwest::Method::GET, "/api/hosted/apps", json!(null))
+            .await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v.as_array().map(Vec::len), Some(1), "{v}");
+        assert_eq!(
+            (&v[0]["artifact_id"], &v[0]["access"]),
+            (&json!(app), &json!(access)),
+            "{v}"
+        );
+        assert_eq!(site.get(b, "/api/hosted/apps").await.1, v);
+    }
+}
+
 #[tokio::test]
 async fn a_token_client_initializing_again_keeps_the_narrowing_of_its_name() {
     let site = Site::new().await;

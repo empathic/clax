@@ -1,6 +1,6 @@
 //! Hosted mode's own routes: browser sign-in, setup, invites, sign-in
-//! links, agent tokens, links and sharing, the public gallery, device
-//! sign-in, and the router that mounts them ([`router`]). What the gate,
+//! links, agent tokens, links and sharing, an artifact's Comments switch,
+//! the apps library, the public gallery, device sign-in, and the router that mounts them ([`router`]). What the gate,
 //! the request identity and the rest of the daemon share of hosted mode is
 //! [`clax_http::hosted`].
 
@@ -12,7 +12,6 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Extension, Router};
 use clax_core::CoreError;
-use clax_core::rights::RightType;
 use clax_http::error::ApiError;
 use clax_http::hosted::*;
 use clax_http::state::AppState;
@@ -75,6 +74,24 @@ fn browser_only(headers: &HeaderMap) -> Result<(), ApiError> {
     } else {
         Ok(())
     }
+}
+
+/// The person a request on the sharing routes, the Comments switch and the
+/// apps library acts for: a person's own device
+/// ([`clax_http::agent::PersonDevice`], which reaches these routes alone)
+/// speaks for its person; any other request is a browser's
+/// ([`browser_only`]) member session ([`member_of`]).
+fn browser_or_device(
+    headers: &HeaderMap,
+    r: &HostedRequest,
+    device: Option<Extension<clax_http::agent::PersonDevice>>,
+    what: &str,
+) -> Result<SessionViewer, ApiError> {
+    if let Some(Extension(d)) = device {
+        return Ok(d.who);
+    }
+    browser_only(headers)?;
+    Ok(member_of(r, what)?.clone())
 }
 
 /// The version of the documents a sign-in now agrees to, when the
@@ -479,7 +496,9 @@ fn token_view(t: &clax_store::hosted::AgentToken) -> Value {
 }
 
 /// `GET /api/hosted/agent-tokens` (a member) → `{tokens}`, newest first,
-/// without their tokens.
+/// without their tokens, each with its `kind`: `device` for the person's
+/// own device (the Clax app's sign-in), which People lists apart, else
+/// `agent`.
 async fn list_tokens(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -665,7 +684,8 @@ struct LinkBody {
 }
 
 /// `PUT /api/hosted/artifacts/<aid>/link {access, listed?}` (the owner,
-/// or the person who made the artifact; [`may_share`]): shares it by link
+/// or the person who made the artifact, [`may_share`], in a browser or
+/// from their own device, [`browser_or_device`]): shares it by link
 /// as `viewer` or `commenter`, or stops (`null`, which also unlists it),
 /// and with `listed` lists it in the public gallery or not (absent keeps
 /// it). → `{artifact_id, access, listed, url}`. The
@@ -681,11 +701,11 @@ async fn set_link(
     Extension(r): Extension<HostedRequest>,
     audit: clax_http::audit::DeferredAudit,
     aid: Result<Path<String>, PathRejection>,
+    device: Option<Extension<clax_http::agent::PersonDevice>>,
     req: Result<Json<LinkBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    browser_only(&headers)?;
+    let who = browser_or_device(&headers, &r, device, "share pages")?;
     let h = hosted_of(&s);
-    let who = member_of(&r, "share pages")?.clone();
     let aid = clax_http::headers::parse_id(&crate::routes::artifacts::path(aid)?)?;
     let b = crate::routes::artifacts::body(req)?;
     let access = match b.access.as_deref() {
@@ -795,10 +815,11 @@ fn share_view(sh: &clax_store::shares::Share) -> Value {
     })
 }
 
-/// `GET /api/hosted/artifacts/<aid>/sharing` (a member's browser) → for
+/// `GET /api/hosted/artifacts/<aid>/sharing` (a member's browser, or
+/// their own device, [`browser_or_device`]) → for
 /// whoever may share it ([`may_share`]) `{artifact_id, can_share: true,
-/// general, link_access, url, people: [{id, access, github_login, person,
-/// name, pending}], suggestions}`, the suggestions (people here, with
+/// comments, general, link_access, url, people: [{id, access, github_login,
+/// person, name, pending}], suggestions}`, `comments` its Comments switch, the suggestions (people here, with
 /// their GitHub logins) for the owner alone; for another member who may
 /// read it, `{artifact_id, can_share: false}`. 404 for an artifact the
 /// caller may not read, 401 without a session, 403 for a guest.
@@ -806,13 +827,12 @@ async fn get_sharing(
     State(s): State<AppState>,
     headers: HeaderMap,
     Extension(r): Extension<HostedRequest>,
+    device: Option<Extension<clax_http::agent::PersonDevice>>,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
-    browser_only(&headers)?;
+    let who = browser_or_device(&headers, &r, device, "share pages")?;
     let h = hosted_of(&s);
     let gallery = h.public_gallery;
-    let who = member_of(&r, "share pages")?.clone();
-    let member = r.member.clone();
     let aid = clax_http::headers::parse_id(&crate::routes::artifacts::path(aid)?)?;
     let url = h.url(&format!("/a/{}", aid.as_str()));
     let v = s
@@ -822,11 +842,7 @@ async fn get_sharing(
             }
             let id = aid.as_str();
             if !may_share(st, &who, id)? {
-                let reads = match &member {
-                    Some(m) => m.allows_at(st, (RightType::Artifacts, "read"), id)?,
-                    None => who.owner,
-                };
-                if !reads {
+                if !session_reads(st, &who, id)? {
                     return Err(CoreError::NotFound);
                 }
                 return Ok(json!({"artifact_id": id, "can_share": false}));
@@ -842,6 +858,7 @@ async fn get_sharing(
             Ok(json!({
                 "artifact_id": id,
                 "can_share": true,
+                "comments": st.comments_on(&aid)?,
                 "general": general_of(access, listed),
                 "public_gallery": gallery,
                 "link_access": access,
@@ -868,7 +885,8 @@ struct ShareBody {
 }
 
 /// `PUT /api/hosted/artifacts/<aid>/shares {github_login | person,
-/// access}` (whoever may share it, [`may_share`]): shares the artifact
+/// access}` (whoever may share it, [`may_share`], in a browser or from
+/// their own device, [`browser_or_device`]): shares the artifact
 /// with that person, or changes the access of their share. → 200
 /// `{share}`. A login no one has signed in with yet waits for its first
 /// GitHub sign-in (`pending`). 400 `invalid_args` for no subject, both, or
@@ -880,12 +898,12 @@ async fn put_share(
     headers: HeaderMap,
     Extension(r): Extension<HostedRequest>,
     audit: clax_http::audit::DeferredAudit,
+    device: Option<Extension<clax_http::agent::PersonDevice>>,
     aid: Result<Path<String>, PathRejection>,
     req: Result<Json<ShareBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     use clax_store::shares::{ShareAccess, ShareTo};
-    browser_only(&headers)?;
-    let who = member_of(&r, "share pages")?.clone();
+    let who = browser_or_device(&headers, &r, device, "share pages")?;
     let aid = clax_http::headers::parse_id(&crate::routes::artifacts::path(aid)?)?;
     let b = crate::routes::artifacts::body(req)?;
     let access = ShareAccess::parse(&b.access).ok_or_else(|| {
@@ -928,7 +946,8 @@ async fn put_share(
 }
 
 /// `DELETE /api/hosted/artifacts/<aid>/shares/<share_id>` (whoever may
-/// share it, [`may_share`]): removes that share. → 200 `{share}`. Every
+/// share it, [`may_share`], in a browser or from their own device,
+/// [`browser_or_device`]): removes that share. → 200 `{share}`. Every
 /// held git token is rechecked (a fork's need read up its lineage). 404
 /// for no such artifact or share, or an artifact the caller may not read;
 /// 403 `forbidden` for anyone else who may not share it.
@@ -937,10 +956,10 @@ async fn delete_share(
     headers: HeaderMap,
     Extension(r): Extension<HostedRequest>,
     audit: clax_http::audit::DeferredAudit,
+    device: Option<Extension<clax_http::agent::PersonDevice>>,
     ids: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
-    browser_only(&headers)?;
-    let who = member_of(&r, "share pages")?.clone();
+    let who = browser_or_device(&headers, &r, device, "share pages")?;
     let (aid, sid) = crate::routes::artifacts::path(ids)?;
     let aid = clax_http::headers::parse_id(&aid)?;
     let share = s
@@ -956,6 +975,98 @@ async fn delete_share(
     Ok(no_store(
         Json(json!({"share": share_view(&share)})).into_response(),
     ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommentsBody {
+    /// Whether anyone may comment.
+    on: bool,
+}
+
+/// `PUT /api/hosted/artifacts/<aid>/comments {on}` (a member's browser or
+/// own device, [`browser_or_device`], who may share it, [`may_share`]: the
+/// owner or the artifact's maker): turns
+/// its Comments switch on or off. While it is off, no one comments there,
+/// the owner included (`crate::routes::threads`). Open views hear it as
+/// a `comments` event on the artifact's stream topic. → `{artifact_id,
+/// comments}`. 400 `invalid_json` for another body; 404 for no such
+/// artifact or one the caller may not read; 403 `forbidden` for anyone
+/// else who may not share it, for a guest, and for an agent token that is
+/// not a person's device's (refused before the handler, as on every route
+/// such a token may not reach).
+async fn put_comments(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Extension(r): Extension<HostedRequest>,
+    audit: clax_http::audit::DeferredAudit,
+    device: Option<Extension<clax_http::agent::PersonDevice>>,
+    aid: Result<Path<String>, PathRejection>,
+    req: Result<Json<CommentsBody>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let who = browser_or_device(&headers, &r, device, "share pages")?;
+    let aid = clax_http::headers::parse_id(&crate::routes::artifacts::path(aid)?)?;
+    let on = crate::routes::artifacts::body(req)?.on;
+    let id = aid.as_str().to_string();
+    let events = s.events.clone();
+    s.store_call(move |st| {
+        sharer(st, &who, &aid)?;
+        st.set_comments(&audit.resolve(st)?, &aid, on)?;
+        events.publish(clax_core::Event::Comments {
+            artifact_id: aid.as_str().to_string(),
+            comments: on,
+        });
+        Ok(())
+    })
+    .await
+    .map_err(forbidden_code)?;
+    Ok(no_store(
+        Json(json!({"artifact_id": id, "comments": on})).into_response(),
+    ))
+}
+
+/// `GET /api/hosted/apps` (a member's browser, or their own device,
+/// [`browser_or_device`]) → `[{artifact_id, title,
+/// url, version, bundle_version, access, general}]`: the signed-in
+/// person's apps library, the live artifacts carrying a bundle that they
+/// made (`access: "owner"`; for the owner, those of no other person's
+/// making) or that a share names them in (`access` the share's: `editor`,
+/// `commenter` or `viewer`), by title ([`clax_store::Store::apps_of`]).
+/// `version` is the current version, `bundle_version` the newest bundle's
+/// release counter, `general` its general access as the sharing dialog
+/// names it. 401 without a session, 403 for a guest, 403 `forbidden` for
+/// an agent token that is not a person's device's (refused before the
+/// handler).
+async fn list_apps(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Extension(r): Extension<HostedRequest>,
+    device: Option<Extension<clax_http::agent::PersonDevice>>,
+) -> Result<Response, ApiError> {
+    let who = browser_or_device(&headers, &r, device, "list apps")?;
+    let h = hosted_of(&s);
+    let gallery = h.public_gallery;
+    let person = (!who.owner).then(|| who.viewer.public_id.clone());
+    let apps = s
+        .store_call(move |st| {
+            let mut out = Vec::new();
+            for l in st.apps_of(person.as_deref())? {
+                let access = st.link_access(&l.artifact_id)?;
+                let listed = gallery && st.link_listed(&l.artifact_id)?;
+                out.push(json!({
+                    "artifact_id": l.artifact_id,
+                    "title": l.title,
+                    "url": h.url(&format!("/a/{}", l.artifact_id)),
+                    "version": l.version,
+                    "bundle_version": l.bundle_version,
+                    "access": l.share.map_or("owner", |a| a.as_str()),
+                    "general": general_of(access, listed),
+                }));
+            }
+            Ok(out)
+        })
+        .await?;
+    Ok(no_store(Json(Value::Array(apps)).into_response()))
 }
 
 /// `GET /api/hosted/public` (anyone, signed in or not) → `{artifacts:
@@ -1018,17 +1129,23 @@ struct DeviceCodeBody {
     /// What the machine calls itself: the approval page names it.
     #[serde(default)]
     client_name: String,
+    /// What kind of client it is: [`clax_store::device::CLAX_APP_KIND`]
+    /// alone, which marks the token it receives as its person's own device
+    /// (the approval page says so).
+    #[serde(default)]
+    client_kind: Option<String>,
 }
 
-/// `POST /api/hosted/device/code {client_name}` (another machine's Clax,
+/// `POST /api/hosted/device/code {client_name, client_kind?}` (another
+/// machine's Clax,
 /// no credential) → `{device_code, user_code, verification_uri,
 /// verification_uri_complete, expires_at, expires_in, interval}`: starts a
 /// device sign-in ([`clax_store::device`]). The machine shows the
 /// person the user code and opens `verification_uri_complete`, where a
 /// signed-in member approves it, then polls `POST
 /// /api/hosted/device/token` every `interval` seconds. Rate-limited per
-/// client; 400 `invalid_args` for a bad name, 400 `limit_reached` with too
-/// many waiting.
+/// client; 400 `invalid_args` for a bad name or a `client_kind` other
+/// than `clax-app`, 400 `limit_reached` with too many waiting.
 async fn device_code(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -1038,9 +1155,18 @@ async fn device_code(
     let h = hosted_of(&s);
     h.attempt(Attempt::Device, &headers, &extensions)?;
     let b = crate::routes::artifacts::body(req)?;
+    if b.client_kind
+        .as_deref()
+        .is_some_and(|k| k != clax_store::device::CLAX_APP_KIND)
+    {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            "client_kind is clax-app or absent",
+        ));
+    }
     let peer = h.client(&headers, &extensions).to_string();
     let start = s
-        .store_call(move |st| st.start_device(&b.client_name, &peer))
+        .store_call(move |st| st.start_device_kind(&b.client_name, &peer, b.client_kind.as_deref()))
         .await?;
     let user = start.user_code.expose().to_string();
     Ok(no_store(
@@ -1119,8 +1245,10 @@ async fn device_token(
 }
 
 /// `GET /api/hosted/device/<user code>` (a member's browser) →
-/// `{client_name, peer_ip, created_at, expires_at, same_address}`: the
-/// machine a waiting sign-in names, for its approval page, and whether it
+/// `{client_name, peer_ip, client_kind, created_at, expires_at,
+/// same_address}`: the machine a waiting sign-in names, and its kind
+/// (`clax-app` for the Clax app, whose token may manage the sharing of
+/// the person's artifacts; else `null`), for its approval page, and whether it
 /// asked from this browser's own address (a code someone else started
 /// does not, which the page says). 404 `not_found` for a code that is
 /// unknown, decided or expired. Rate-limited as sign-in codes are.
@@ -1229,6 +1357,8 @@ pub fn router() -> Router<AppState> {
         .route("/api/hosted/artifacts/{aid}/link", put(set_link))
         .route("/api/hosted/artifacts/{aid}/sharing", get(get_sharing))
         .route("/api/hosted/artifacts/{aid}/shares", put(put_share))
+        .route("/api/hosted/artifacts/{aid}/comments", put(put_comments))
+        .route("/api/hosted/apps", get(list_apps))
         .route(
             "/api/hosted/artifacts/{aid}/shares/{sid}",
             delete(delete_share),

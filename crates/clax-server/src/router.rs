@@ -4,14 +4,15 @@
 //! testkit's delay middleware are here too.
 
 use crate::routes::{
-    app_drafts, approvals, artifacts, assets, client_imports, connect, content, docs, drafts,
-    extension, feedback, git_token, grants, health, inbox, jobs, live, live_layers, mcp_http,
-    people, perf, questions, remotes, room, sample, sessions, sites, snapshot, stream, surface,
-    tags, threads, token, toolpath, viewers, watches, working,
+    app_bundles, app_drafts, approvals, artifacts, assets, client_imports, connect, content, docs,
+    drafts, extension, feedback, git_token, grants, health, inbox, jobs, live, live_layers,
+    mcp_http, people, perf, questions, remote_apps, remotes, room, sample, sessions, sites,
+    snapshot, stream, surface, tags, threads, token, toolpath, viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::routes::{events, mcp, net};
 use crate::shell;
+use crate::shell::get_page;
 #[cfg(not(target_arch = "wasm32"))]
 use axum::error_handling::HandleErrorLayer;
 use axum::{
@@ -125,6 +126,15 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             get(artifacts::get_version),
         )
         .route("/api/artifacts/{aid}/files", get(artifacts::files))
+        .route("/api/artifacts/{aid}/head", get(app_bundles::head))
+        .route(
+            "/api/artifacts/{aid}/versions/{n}/bundle",
+            get(app_bundles::get_bundle),
+        )
+        .route(
+            "/api/artifacts/{aid}/installs",
+            post(app_bundles::record_install),
+        )
         .route("/api/tags", get(tags::list).post(tags::create))
         .route(
             "/api/tags/{tag_id}",
@@ -471,6 +481,67 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             post(remotes::drop_unsent),
         )
         .route("/api/artifacts/{aid}/push", post(remotes::push))
+        // The Clax app's routes to its apps' public copies, through this
+        // core's token there (`remote_apps`); a bundle up to 32 MiB.
+        .route(
+            "/api/artifacts/{aid}/remotes/{rid}/bundle",
+            put(remote_apps::put_bundle.layer(DefaultBodyLimit::max(limits::BUNDLE_BODY_LIMIT))),
+        )
+        .route("/api/remotes/{id}/links", post(remote_apps::link))
+        .route("/api/remotes/{id}/apps", get(remote_apps::apps))
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}",
+            delete(remote_apps::unpublish),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/head",
+            get(remote_apps::head),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/comments",
+            post(remote_apps::comment),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/installs",
+            post(remote_apps::record_install),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/versions/{n}/bundle",
+            get(remote_apps::bundle),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/versions/{n}/files",
+            get(remote_apps::version_files),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/versions/{n}/files/{*path}",
+            get(remote_apps::version_file),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/sharing",
+            get(remote_apps::get_sharing),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/sharing/link",
+            put(remote_apps::put_link),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/sharing/shares",
+            put(remote_apps::put_share),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/sharing/shares/{sid}",
+            delete(remote_apps::delete_share),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/sharing/comments",
+            put(remote_apps::put_comments),
+        )
+        // A version's bundle, up to 32 MiB.
+        .route(
+            "/api/artifacts/{aid}/versions/{n}/bundle",
+            put(app_bundles::put_bundle.layer(DefaultBodyLimit::max(limits::BUNDLE_BODY_LIMIT))),
+        )
         .route("/api/drafts", post(app_drafts::create.layer(publish_limit)))
         // A publish step carries a publish.
         .route(
@@ -523,6 +594,16 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/a/{aid}", get(shell::artifact_page))
         .route("/a/{aid}/", get(shell::artifact_page))
         .route("/a/{aid}/v/{n}", get(shell::artifact_page))
+        // The Get in Clax page, before the file paths: `get` is reserved.
+        .route("/a/{aid}/get", get(get_page::page))
+        .route("/a/{aid}/get/", get(get_page::page))
+        // The Clax app's links, which need no session
+        // (`clax_http::hosted::OWN_PAGES`); each checks the host itself.
+        .route(
+            "/.well-known/apple-app-site-association",
+            get(get_page::apple_app_site_association),
+        )
+        .route("/.well-known/assetlinks.json", get(get_page::assetlinks))
         // `/a/<id>[/v/<n>]/<file>`: the shell reads the version and page from the path.
         .route("/a/{aid}/{*rest}", get(shell::artifact_page))
         .route("/_clax/{*path}", get(shell::static_file))
@@ -855,6 +936,11 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
         r.layer(axum::middleware::from_fn_with_state(
             state.clone(),
             clax_http::hosted::gate,
+        ))
+        // Outside the gate: its refusals of a Get in Clax page, as a page.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            get_page::refusals,
         ))
     } else {
         r.layer(axum::middleware::from_fn(auth::require_api_host))

@@ -181,6 +181,11 @@ async fn names_the_cookies_viewer_only() {
         "a guest changes no artifact's tags"
     );
     assert_eq!(
+        b["artifact"]["artifact"]["may_resolve"],
+        json!(true),
+        "on a local daemon everyone resolves"
+    );
+    assert_eq!(
         b["attention"]["open_in"],
         json!([]),
         "the cookie's viewer gets its attention"

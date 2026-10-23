@@ -676,6 +676,33 @@ impl Sync {
                 return Err(Stop::Gone);
             };
             let mut c = Client::new(&remote.origin, Some(token));
+            if remote.client_kind.is_none() {
+                // Signed in before kinds were kept: the remote says which
+                // its token is. A device reads the person's apps there; an
+                // agent token is refused them (403), and a remote from
+                // before apps has no such route (404). Until it says, its
+                // mirrored comments are keyed as a device's.
+                let probe = clax_rt::sendable(c.forward(
+                    reqwest::Method::GET,
+                    &["api", "hosted", "apps"],
+                    &[],
+                    Vec::new(),
+                    None,
+                    64 * 1024,
+                ))
+                .await;
+                let kind = match probe.map(|f| f.status) {
+                    Ok(200..=299) => Some(clax_store::remotes::CLIENT_KIND_APP),
+                    Ok(403 | 404) => Some(clax_store::remotes::CLIENT_KIND_AGENT),
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    let rid = self.rid.clone();
+                    self.s
+                        .store_call(move |st| st.set_remote_client_kind(&rid, kind))
+                        .await?;
+                }
+            }
             clax_rt::sendable(c.session_for(SYNC_HARNESS, SYNC_NAME))
                 .await
                 .map_err(|f| {
@@ -1682,7 +1709,20 @@ impl Sync {
                         remote_comment_id: id,
                         author: RemoteAuthor {
                             kind: kind.into(),
-                            public_id: c["author_public_id"].as_str().map(str::to_string),
+                            // A viewer by their public ID there; an
+                            // agent by its person's (none: that Clax's
+                            // owner's agent), as people's views give it.
+                            // An agent comment with no `agent` names no
+                            // person: never taken for the owner's agent.
+                            public_id: if kind == "agent" {
+                                if c["agent"].is_object() {
+                                    c["agent"]["person"].as_str().map(str::to_string)
+                                } else {
+                                    Some(clax_core::visibility::UNKNOWN_AGENT.to_string())
+                                }
+                            } else {
+                                c["author_public_id"].as_str().map(str::to_string)
+                            },
                             name: c["author_name"]
                                 .as_str()
                                 .filter(|n| !n.trim().is_empty())

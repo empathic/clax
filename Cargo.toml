@@ -45,6 +45,8 @@ futures = "0.3"
 http-body-util = "0.1"
 nix = { version = "0.31", default-features = false }
 mime_guess = "2"
+# The SVG renderer alone: the Get in Clax page draws its QR code inline.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rand = "0.9"
 ring = "0.17.14"
 # `blocking` does not build for wasm32: each crate that uses it adds it.

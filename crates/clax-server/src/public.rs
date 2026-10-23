@@ -67,23 +67,49 @@ pub enum Mode {
     New,
     /// Fork the public copy at the version last pushed and continue there.
     Fork,
+    /// Publish local version `version` alone, its files as they are, as the
+    /// linked public artifact's next version (or a new one's first, made
+    /// with comments off); refused `remote_moved` when it moved, and
+    /// `uses_assets` when a file names an asset's address here. The Clax
+    /// app's publish (spec 2026-10-21-app-push-pull §5.3).
+    App { version: u32 },
 }
 
 impl Mode {
-    /// `update`, `new` or `fork`.
+    /// `update`, `new`, `fork`, or `app` with the local `version` it
+    /// publishes.
     ///
     /// # Errors
-    /// 400 `invalid_args` for anything else.
-    pub fn parse(s: Option<&str>) -> Result<Mode, ApiError> {
-        match s.unwrap_or("update") {
-            "update" => Ok(Mode::Update),
-            "new" => Ok(Mode::New),
-            "fork" => Ok(Mode::Fork),
-            _ => Err(ApiError::bad_request(
+    /// 400 `invalid_args` for anything else, `app` without a version, and
+    /// a version with another mode.
+    pub fn parse(s: Option<&str>, version: Option<u32>) -> Result<Mode, ApiError> {
+        let mode = match s.unwrap_or("update") {
+            "update" => Mode::Update,
+            "new" => Mode::New,
+            "fork" => Mode::Fork,
+            "app" => match version {
+                Some(v) => return Ok(Mode::App { version: v }),
+                None => {
+                    return Err(ApiError::bad_request(
+                        "invalid_args",
+                        "mode app names the local version it publishes",
+                    ));
+                }
+            },
+            _ => {
+                return Err(ApiError::bad_request(
+                    "invalid_args",
+                    "mode is update, new, fork or app",
+                ));
+            }
+        };
+        if version.is_some() {
+            return Err(ApiError::bad_request(
                 "invalid_args",
-                "mode is update, new or fork",
-            )),
+                "version is mode app's",
+            ));
         }
+        Ok(mode)
     }
 }
 
@@ -189,6 +215,35 @@ impl From<RemoteFail> for ApiError {
         }
         e
     }
+}
+
+/// 502 `remote_too_old`: the public Clax at `origin` runs a release from
+/// before what this Clax asks of it (`to`, such as "sign in the Clax
+/// app"): it refused a field it does not know, or lacks a route.
+pub fn too_old(origin: &str, to: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::BAD_GATEWAY,
+        "remote_too_old",
+        format!("{origin} needs an update before it can {to}"),
+    )
+}
+
+/// The headers of a remote's answer [`Client::forward`] passes on: its
+/// type, and a bundle's name and own headers.
+const FORWARDED_HEADERS: [&str; 4] = [
+    "content-type",
+    "content-disposition",
+    "clax-bundle-version",
+    "clax-bundle-lineage",
+];
+
+/// A remote's answer as [`Client::forward`] read it.
+#[derive(Debug)]
+pub struct Forwarded {
+    pub status: u16,
+    /// Those of [`FORWARDED_HEADERS`] it named.
+    pub headers: Vec<(reqwest::header::HeaderName, String)>,
+    pub body: Vec<u8>,
 }
 
 /// Header [`crate::routes::artifacts::IDEMPOTENCY_HEADER`] names on the
@@ -422,6 +477,134 @@ impl Client {
         self.call(reqwest::Method::GET, path, None).await
     }
 
+    /// The address of `segs` at this remote, each segment percent-encoded
+    /// (a `/`, `?`, `#` or `%` in one stays inside it), with `query`.
+    fn url_of(&self, segs: &[&str], query: &[(&str, String)]) -> Result<url::Url, RemoteFail> {
+        let bad = || RemoteFail {
+            origin: self.origin.clone(),
+            status: None,
+            code: "unreachable".into(),
+            message: "not an address of this remote".into(),
+            body: Value::Null,
+        };
+        // The URL parser drops a `.` or `..` segment rather than encode it.
+        if segs.iter().any(|s| s.is_empty() || *s == "." || *s == "..") {
+            return Err(bad());
+        }
+        let mut u = url::Url::parse(&self.origin).map_err(|_| bad())?;
+        u.path_segments_mut()
+            .map_err(|_| bad())?
+            .clear()
+            .extend(segs);
+        if !query.is_empty() {
+            u.query_pairs_mut().extend_pairs(query);
+        }
+        Ok(u)
+    }
+
+    /// `method` `segs` (with `query`, `headers` and `body`) at this
+    /// remote, with this client's token, whatever it answers: its status,
+    /// its content type and a bundle's own headers, and its body, at most
+    /// `max` bytes. Fails only when the remote is not reached
+    /// (`unreachable`) or its successful answer passes `max` (`too_large`).
+    pub(crate) async fn forward(
+        &self,
+        method: reqwest::Method,
+        segs: &[&str],
+        query: &[(&str, String)],
+        headers: Vec<(&'static str, String)>,
+        body: Option<Vec<u8>>,
+        max: usize,
+    ) -> Result<Forwarded, RemoteFail> {
+        self.forward_with(method, segs, query, headers, max, |r| match body {
+            Some(b) => r.body(b),
+            None => r,
+        })
+        .await
+    }
+
+    /// POST multipart `form` to `segs` at this remote, answered as
+    /// [`Client::forward`] answers.
+    pub(crate) async fn forward_form(
+        &self,
+        segs: &[&str],
+        form: reqwest::multipart::Form,
+        max: usize,
+    ) -> Result<Forwarded, RemoteFail> {
+        self.forward_with(reqwest::Method::POST, segs, &[], Vec::new(), max, |r| {
+            r.multipart(form)
+        })
+        .await
+    }
+
+    async fn forward_with(
+        &self,
+        method: reqwest::Method,
+        segs: &[&str],
+        query: &[(&str, String)],
+        headers: Vec<(&'static str, String)>,
+        max: usize,
+        body: impl FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
+    ) -> Result<Forwarded, RemoteFail> {
+        let url = self.url_of(segs, query)?;
+        let mut r = self.http.request(method, url);
+        if let Some(t) = &self.token {
+            r = r.bearer_auth(t.expose());
+        }
+        if let Some((sid, secret)) = &self.session {
+            r = r
+                .header("x-clax-session", sid)
+                .header(clax_core::remote::SESSION_SECRET_HEADER, secret.expose());
+        }
+        for (k, v) in headers {
+            r = r.header(k, v);
+        }
+        let r = body(r);
+        let fail = |status, code: &str, message: String| RemoteFail {
+            origin: self.origin.clone(),
+            status,
+            code: code.to_string(),
+            message,
+            body: Value::Null,
+        };
+        let res = timeout(r)
+            .send()
+            .await
+            .map_err(|e| fail(None, "unreachable", e.to_string()))?;
+        let status = res.status().as_u16();
+        let ok = (200..300).contains(&status);
+        // A refusal is read up to an answer's cap, whatever `max` is.
+        let cap = if ok { max } else { max.min(MAX_ANSWER_BYTES) };
+        let too_large = || {
+            if ok {
+                fail(Some(status), "too_large", "the answer is too large".into())
+            } else {
+                fail(None, "unreachable", "the answer is too large".into())
+            }
+        };
+        if res.content_length().is_some_and(|n| n > cap as u64) {
+            return Err(too_large());
+        }
+        let kept: Vec<(reqwest::header::HeaderName, String)> = FORWARDED_HEADERS
+            .iter()
+            .filter_map(|k| {
+                res.headers()
+                    .get(*k)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| (reqwest::header::HeaderName::from_static(k), v.to_string()))
+            })
+            .collect();
+        match read_capped(res, cap).await {
+            Ok(Some(body)) => Ok(Forwarded {
+                status,
+                headers: kept,
+                body,
+            }),
+            Ok(None) => Err(too_large()),
+            Err(e) => Err(fail(None, "unreachable", e.to_string())),
+        }
+    }
+
     /// The session this client speaks for, if any: its ID and secret.
     pub(crate) fn session(&self) -> Option<&(String, Secret)> {
         self.session.as_ref()
@@ -524,6 +707,13 @@ impl Client {
         Ok(())
     }
 
+    /// Speaks for the owner by hand from now on: a remote session of the
+    /// by-hand harness, named for this machine ([`own_agent_name`]), as a
+    /// change the person makes themselves.
+    pub(crate) async fn by_hand(&mut self) -> Result<(), RemoteFail> {
+        self.session_for(BY_HAND, &own_agent_name()).await
+    }
+
     /// Ends the remote session this client speaks for, if any.
     pub(crate) async fn end_session(&mut self) {
         if let Some((sid, _)) = self.session.clone() {
@@ -539,16 +729,41 @@ impl Client {
     }
 }
 
-/// Starts a device sign-in at `origin` for this machine, named `name`.
+/// Starts a device sign-in at `origin` for this machine, named `name`, of
+/// client kind `kind` when given (`clax-app`, the Clax app: the remote
+/// marks the token it issues as the person's own device, which may manage
+/// the sharing of their artifacts there). Without a kind the body names
+/// none, as a remote that knows no kinds expects.
 ///
 /// # Errors
 /// The remote's ([`RemoteFail`]); 502 `remote_refused` with `not_found`
-/// when `origin` is a Clax that is not public (no device sign-in).
-pub async fn start_sign_in(origin: &str, name: &str) -> Result<PendingSignIn, ApiError> {
+/// when `origin` is a Clax that is not public (no device sign-in); 502
+/// `remote_too_old` ([`too_old`]) when a kind is given and the remote
+/// refuses `client_kind` as a field it does not know.
+pub async fn start_sign_in(
+    origin: &str,
+    name: &str,
+    kind: Option<&str>,
+) -> Result<PendingSignIn, ApiError> {
     let c = Client::new(origin, None);
-    let v = c
-        .post("/api/hosted/device/code", &json!({"client_name": name}))
-        .await?;
+    let mut body = json!({"client_name": name});
+    if let Some(k) = kind {
+        body["client_kind"] = json!(k);
+    }
+    let v = match c.post("/api/hosted/device/code", &body).await {
+        Ok(v) => v,
+        // A public Clax from before client kinds refuses the field as
+        // unknown.
+        Err(f)
+            if kind.is_some()
+                && f.status == Some(400)
+                && f.code == "invalid_json"
+                && f.message.contains("client_kind") =>
+        {
+            return Err(too_old(origin, "sign in the Clax app"));
+        }
+        Err(f) => return Err(f.into()),
+    };
     let field = |k: &str| v[k].as_str().unwrap_or_default().to_string();
     // The approval page this daemon opens must be the remote's own.
     let page = field("verification_uri_complete");
@@ -823,6 +1038,31 @@ pub fn version_key(aid: &str, n: u32, target: &str) -> String {
     format!("clax-push:{aid}:{n}:{target}")
 }
 
+/// The idempotency key of local version `n` of `aid` published in app mode
+/// ([`Mode::App`]) onto `target` (as [`version_key`] names it) as the next
+/// version after public version `on` (0 for a new public artifact): sent
+/// again before its answer is recorded it is the same key, and a version
+/// published again later, on a later public version, is a new one.
+pub fn app_version_key(aid: &str, n: u32, target: &str, on: u32) -> String {
+    format!("{}:on:{on}", version_key(aid, n, target))
+}
+
+/// Whether text file `bytes` (of `content_type`) names an address this
+/// daemon serves assets under: `/_blob/` and a letter or digit.
+fn names_blob(bytes: &[u8], content_type: &str) -> bool {
+    if !textual(content_type) {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    text.match_indices(BLOB).any(|(at, _)| {
+        text.as_bytes()
+            .get(at + BLOB.len())
+            .is_some_and(u8::is_ascii_alphanumeric)
+    })
+}
+
 type PushLocks = std::sync::Mutex<
     std::collections::HashMap<(String, String), std::sync::Arc<tokio::sync::Mutex<()>>>,
 >;
@@ -897,6 +1137,15 @@ struct Run<'a> {
     assets: HashMap<String, String>,
     /// The assets uploaded to `target`: each one's address there.
     uploaded: HashMap<String, String>,
+    /// An app-mode push ([`Mode::App`]): every publish names the key it is
+    /// given, and a new public artifact is made with comments off.
+    app: bool,
+    /// The public artifact a new public copy is made from, sent as its
+    /// `forked_from` when this run creates one.
+    forked_from: Option<String>,
+    /// The name a new public copy this run creates takes, in place of the
+    /// local artifact's.
+    title: Option<String>,
 }
 
 impl Run<'_> {
@@ -1032,8 +1281,9 @@ impl Run<'_> {
     }
 
     /// Publishes `v` (rewritten when `rewrite`): onto the public artifact,
-    /// or as a new one (`new_key`: its key) with `meta`. The public
-    /// artifact's ID and the version made.
+    /// or as a new one (`new_key`: its key) with `meta`. In app mode
+    /// `new_key` is the key of either. The public artifact's ID and the
+    /// version made.
     async fn send(
         &mut self,
         v: &Outgoing,
@@ -1054,11 +1304,24 @@ impl Run<'_> {
                         body[k] = meta[k].clone();
                     }
                 }
+                if self.app {
+                    body["comments"] = json!(false);
+                }
+                if let Some(f) = &self.forked_from {
+                    body["forked_from"] = json!(f);
+                }
+                if let Some(t) = &self.title {
+                    body["title"] = json!(t);
+                }
                 self.c.post_keyed("/api/artifacts", &body, new_key).await
             }
             Some(t) => {
                 body["if_version"] = json!(self.at);
-                let key = version_key(self.aid.as_str(), v.n, t);
+                let key = if self.app {
+                    new_key.to_string()
+                } else {
+                    version_key(self.aid.as_str(), v.n, t)
+                };
                 self.c
                     .post_keyed(&format!("/api/artifacts/{t}/versions"), &body, &key)
                     .await
@@ -1074,6 +1337,20 @@ impl Run<'_> {
             Err(f) => return Err(f.into()),
         };
         let tid = remote_id(&res, &self.remote.origin)?;
+        // A public Clax that knows the Comments switch answers it on every
+        // create; one from before it made the copy with comments on and no
+        // lineage, ignoring both: the copy is taken back.
+        if self.app && self.target.is_none() && !res["artifact"]["comments"].is_boolean() {
+            let _ = self
+                .c
+                .call(
+                    reqwest::Method::DELETE,
+                    &format!("/api/artifacts/{tid}"),
+                    None,
+                )
+                .await;
+            return Err(too_old(&self.remote.origin, "publish an app"));
+        }
         let n = res["version"]["n"].as_u64().unwrap_or(0) as u32;
         Ok((tid, n))
     }
@@ -1095,6 +1372,36 @@ pub async fn push(
     auto: Option<bool>,
     upto: Option<u32>,
 ) -> Result<Pushed, ApiError> {
+    push_from(s, aid, remote, mode, auto, upto, NewCopy::default()).await
+}
+
+/// What an app-mode push ([`Mode::App`]) that makes a new public copy
+/// gives it: the public artifact there it is made from, and its name.
+#[derive(Clone, Debug, Default)]
+pub struct NewCopy {
+    pub forked_from: Option<ArtifactId>,
+    pub title: Option<String>,
+}
+
+/// [`push`], whose app-mode push ([`Mode::App`]) that makes a new public
+/// copy records it as made from public artifact `new.forked_from` there
+/// and names it `new.title`. 400 `invalid_args` for either with another
+/// mode, or for an app already linked to a public copy there.
+pub async fn push_from(
+    s: &AppState,
+    aid: &ArtifactId,
+    remote: &Remote,
+    mode: Mode,
+    auto: Option<bool>,
+    upto: Option<u32>,
+    new: NewCopy,
+) -> Result<Pushed, ApiError> {
+    if (new.forked_from.is_some() || new.title.is_some()) && !matches!(mode, Mode::App { .. }) {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            "forked_from and title name a new app's public copy: mode app alone takes them",
+        ));
+    }
     let rid = remote.id.clone();
     // One push of an artifact to a remote at a time: two would each see
     // the other's version as the public copy moving.
@@ -1146,7 +1453,14 @@ pub async fn push(
         auto,
         assets,
         uploaded: HashMap::new(),
+        app: false,
+        forked_from: new.forked_from.map(|f| f.as_str().to_string()),
+        title: new.title,
     };
+    if let Mode::App { version } = mode {
+        run.app = true;
+        return push_app(run, &artifact, link, version).await;
+    }
     // Where the push starts: the public artifact (none: make one), its
     // version, and the first local version to send.
     let from = match (mode, &link) {
@@ -1154,6 +1468,7 @@ pub async fn push(
             run.last = None;
             1
         }
+        (Mode::App { .. }, _) => unreachable!("pushed above"),
         (Mode::Fork, None) => {
             return Err(ApiError::bad_request(
                 "no_link",
@@ -1269,6 +1584,96 @@ pub async fn push(
         link,
         versions: pushed,
         assets_not_pushed,
+    })
+}
+
+/// Pushes local version `version` of `run`'s artifact alone, as the
+/// linked public artifact's next version, built on the public version the
+/// link names (its paths that `version` lacks are removed there), or as a
+/// new public artifact with comments off. Its files go as they are; one
+/// that names an asset's address here refuses the push.
+///
+/// # Errors
+/// 404 for no such version; 400 `uses_assets`; 409 `remote_moved` when the
+/// public copy is past the link's version; the remote's; the store's.
+async fn push_app(
+    mut run: Run<'_>,
+    artifact: &clax_core::model::Artifact,
+    link: Option<RemoteLink>,
+    version: u32,
+) -> Result<Pushed, ApiError> {
+    let (s, aid) = (run.s, run.aid);
+    if version == 0 || version > artifact.current_version {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            format!("this app has no version {version}"),
+        ));
+    }
+    let id = aid.clone();
+    let mut v = s
+        .store_call(move |st| outgoing(st, &id, version, version))
+        .await?
+        .pop()
+        .ok_or_else(ApiError::not_found)?;
+    // Its own files alone: what it dropped from the version before it here
+    // is not what the public copy holds.
+    v.files.retain(|_, f| f.is_some());
+    if v.files.values().flatten().any(|(b, ct)| names_blob(b, ct)) {
+        return Err(ApiError::bad_request(
+            "uses_assets",
+            "This app uses files Clax can't share yet: a file names an address of this Clax's assets (/_blob/), which a public copy cannot carry",
+        ));
+    }
+    if link.is_some() && (run.forked_from.is_some() || run.title.is_some()) {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            "forked_from and title name a new public copy; this app has one there already",
+        ));
+    }
+    if let Some(l) = &link {
+        run.target = Some(l.remote_artifact_id.clone());
+        run.at = l.remote_n;
+        let there = run
+            .c
+            .get(&format!(
+                "/api/artifacts/{}/versions/{}",
+                l.remote_artifact_id, l.remote_n
+            ))
+            .await?;
+        if let Some(files) = there["version"]["files"].as_object() {
+            for path in files.keys() {
+                v.files.entry(path.clone()).or_insert(None);
+            }
+        }
+    }
+    // A new public copy's key counts the copies made before it: one
+    // made and then unlinked is not what the next new copy replays.
+    let target = match run.target.clone() {
+        Some(t) => t,
+        None => {
+            let (rid, a2) = (run.remote.id.clone(), aid.as_str().to_string());
+            let made = s.store_call(move |st| st.remote_copies(&rid, &a2)).await?;
+            format!("new:{made}")
+        }
+    };
+    let key = app_version_key(aid.as_str(), version, &target, run.at);
+    let meta = outgoing_meta(artifact);
+    let sent = async {
+        run.as_agent(&v.agent).await?;
+        run.send(&v, false, &meta, &key).await
+    }
+    .await;
+    run.c.end_session().await;
+    let (tid, n) = sent?;
+    run.record(&tid, version, n, true).await?;
+    let link = run.last.take().ok_or_else(ApiError::not_found)?;
+    s.linked.links_changed();
+    s.linked.kick(Some(&run.remote.id));
+    Ok(Pushed {
+        link,
+        versions: vec![(version, n)],
+        assets_not_pushed: 0,
     })
 }
 
@@ -1514,6 +1919,54 @@ mod tests {
         // A path segment before it is someone else's address.
         let other = format!("<img src=\"files/_blob/{A}\">");
         assert!(rewrite_assets(other.as_bytes(), "text/html", &urls()).is_none());
+    }
+
+    #[test]
+    fn an_app_version_key_names_the_public_version_it_follows() {
+        let k = app_version_key("a1", 3, "t1", 1);
+        assert_eq!(k, "clax-push:a1:3:t1:on:1");
+        assert_ne!(k, app_version_key("a1", 3, "t1", 3));
+        assert_ne!(k, version_key("a1", 3, "t1"));
+        assert_eq!(
+            app_version_key("a1", 2, "new:-", 0),
+            "clax-push:a1:2:new:-:on:0"
+        );
+    }
+
+    #[test]
+    fn an_asset_address_is_blob_and_an_id() {
+        let html = "text/html";
+        assert!(names_blob(
+            b"<img src=\"/_blob/01ARZ3NDEKTSV4RRFFQ69G5FAV\">",
+            html
+        ));
+        assert!(names_blob(
+            b"fetch('http://h:1/_blob/x')",
+            "text/javascript"
+        ));
+        assert!(!names_blob(b"<p>/_blob/ is where</p>", html));
+        assert!(!names_blob(
+            b"/_blob/01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "image/png"
+        ));
+    }
+
+    #[test]
+    fn a_forwarded_path_keeps_each_segment_inside_itself() {
+        let c = Client::new("https://clax.example", None);
+        let u = c
+            .url_of(&["api", "artifacts", "../x", "files", "a b?c#d%2F/e"], &[])
+            .unwrap();
+        assert_eq!(
+            u.as_str(),
+            "https://clax.example/api/artifacts/..%2Fx/files/a%20b%3Fc%23d%252F%2Fe"
+        );
+        assert_eq!(u.host_str(), Some("clax.example"));
+        for bad in [&["api", ".."][..], &["api", "."], &["api", ""]] {
+            assert!(c.url_of(bad, &[]).is_err(), "{bad:?}");
+        }
+        let u = c.url_of(&["api"], &[("remote_n", "2".into())]).unwrap();
+        assert_eq!(u.as_str(), "https://clax.example/api?remote_n=2");
     }
 
     #[test]

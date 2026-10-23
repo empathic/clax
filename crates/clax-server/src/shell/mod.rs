@@ -1,9 +1,11 @@
 //! Serves the web UI (the daemon's [`FileTree`], `AppState::web`): the
 //! shell's two entries (the gallery and the artifact view) and static
 //! assets. `boot` is the first-load data of `/a/…`, `route` how a shell
-//! path parses.
+//! path parses, and `get_page` the Get in Clax page of an app and its app
+//! links.
 
 pub mod boot;
+pub mod get_page;
 pub mod route;
 
 use crate::routes::artifacts::path;
@@ -170,7 +172,8 @@ pub async fn artifact_page(
     // (spec §7.5): agents read them through the routes the filter covers.
     d.refuse_agents()?;
     let route = route::parse_shell_path(uri.path());
-    if matches!(route, route::ShellRoute::Gallery) {
+    // The Get in Clax page has routes of its own (`get_page::page`).
+    if !matches!(route, route::ShellRoute::Artifact { .. }) {
         return entry(&s, &req, "index.html");
     }
     let Some(f) = s.web.get("artifact.html") else {

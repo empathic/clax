@@ -156,7 +156,24 @@ pub async fn post(ts: &TestServer, path: &str, body: Value) -> (u16, Value) {
 /// Signs `local` in to `public` by device code, the public owner
 /// approving; the remote's view.
 pub async fn connect(local: &TestServer, public: &Public) -> Value {
-    let (s, v) = post(local, "/api/remotes", json!({"url": public.origin})).await;
+    connect_with(local, public, json!({"url": public.origin})).await
+}
+
+/// [`connect`] as the Clax app signs in: its sign-in names the kind
+/// `clax-app`, so the remote's token is its person's device's, which may
+/// manage the sharing of their artifacts there.
+pub async fn connect_app(local: &TestServer, public: &Public) -> Value {
+    connect_with(
+        local,
+        public,
+        json!({"url": public.origin, "kind": "clax-app", "machine": "Clax on phone"}),
+    )
+    .await
+}
+
+/// [`connect`] with `body` as `POST /api/remotes`'s.
+pub async fn connect_with(local: &TestServer, public: &Public, body: Value) -> Value {
+    let (s, v) = post(local, "/api/remotes", body).await;
     assert_eq!(s, 201, "{v}");
     let uc = v["user_code"].as_str().unwrap().to_string();
     let id = v["remote"]["id"].as_str().unwrap().to_string();

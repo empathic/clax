@@ -332,7 +332,9 @@ CRATES = {
         "lib": "clax_store",
         "lib_root": "src/lib.rs",
         "name": "clax-store",
-        "tests": {},
+        "tests": {
+            "app_bundles": "tests/app_bundles.rs"
+        },
         "version": "0.6.0"
     },
     "crates/clax-testkit": {
