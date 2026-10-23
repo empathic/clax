@@ -11,8 +11,9 @@
 //!   ID.
 //! - Every response the access decides carries no
 //!   `Access-Control-Allow-Origin`, one that sets a cookie is `private,
-//!   no-store`, and a world visitor's revalidates within a minute
-//!   ([`site_response_headers`]).
+//!   no-store`, a world visitor's revalidates on every request, and anyone
+//!   else's is private to their browser; every site response carries
+//!   the site's isolation headers ([`site_response_headers`]).
 //! - Any other site needs the site cookie ([`SITE_COOKIE`], on `https`
 //!   [`SECURE_SITE_COOKIE`]), naming a site session
 //!   ([`clax_store::site_sessions`]) of this artifact whose holder may read
@@ -154,10 +155,9 @@ pub fn visitor_id(token: &str, aid: &ArtifactId, secret: &str) -> String {
 /// A site response's caching and CORS headers, by who it was answered to,
 /// in one place: it never carries `Access-Control-Allow-Origin`; one that
 /// sets a cookie is `private, no-store`; a visitor's on a site open to the
-/// world (`world_visitor`) revalidates within a minute at most (`no-cache`
-/// becomes `public, no-cache`, anything longer, a version's files or an
-/// asset's `immutable`, `public, max-age=60, must-revalidate`), so a site
-/// made private stops being served from a shared cache within a minute;
+/// world (`world_visitor`) is `public, no-cache`, a version's files and an
+/// asset's `immutable` included, so a shared cache revalidates every one
+/// and a site made private is refused on the next request;
 /// anyone else's is private to their browser (`public` becomes `private`,
 /// `no-cache` `private, no-cache`; `no-store` stays). A world visitor's
 /// public answer varies by `Cookie`; the access layer never makes the page
@@ -182,16 +182,11 @@ fn cache_headers(h: &mut HeaderMap, world_visitor: bool) {
     let short = if cc.contains("no-store") || cc.contains("private") {
         None
     } else if world_visitor {
-        // One cache entry for every visitor; a holder's cookie makes a
-        // request theirs, never served from it.
+        // Shared, but revalidated on every request: the site may be made
+        // private at any moment, and a CDN may ignore `Vary: Cookie` (a
+        // holder's cookie makes a request theirs).
         h.append(header::VARY, HeaderValue::from_static("Cookie"));
-        Some(
-            if lower.contains("immutable") || lower.contains("max-age") {
-                "public, max-age=60, must-revalidate".to_string()
-            } else {
-                "public, no-cache".to_string()
-            },
-        )
+        Some("public, no-cache".to_string())
     } else {
         Some("public, no-cache")
     };
@@ -874,7 +869,7 @@ mod tests {
     }
 
     #[test]
-    fn a_world_visitors_answer_revalidates_within_a_minute_and_a_cookie_is_private() {
+    fn a_world_visitors_answer_revalidates_every_time_and_a_cookie_is_private() {
         let after = |cc: &str, cookie: bool, world: bool| {
             let mut r = Response::new(Body::empty());
             let h = r.headers_mut();
@@ -908,10 +903,7 @@ mod tests {
             "Cookie",
             "a public answer varies by Cookie"
         );
-        assert_eq!(
-            after(year, false, true),
-            "public, max-age=60, must-revalidate"
-        );
+        assert_eq!(after(year, false, true), "public, no-cache");
         assert_eq!(after("no-store", false, true), "no-store");
         assert_eq!(after("no-cache", true, true), "private, no-store");
         assert_eq!(after(year, true, false), "private, no-store");

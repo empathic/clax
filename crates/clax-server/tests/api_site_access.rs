@@ -985,13 +985,10 @@ async fn a_world_site_is_read_by_anyone_until_it_is_private_again() {
     site.ts.store.set_site_open_to_world(&id, true).unwrap();
     let r = site.on_site(&aid, "/a.css", None).await;
     assert_eq!(r.status(), 200);
-    // An open site's files are public, revalidated within a minute.
+    // An open site's files are public, revalidated on every request.
     assert_eq!(r.headers()["cache-control"], "public, no-cache");
     let r = site.on_site(&aid, "/_clax/v/1/a.css", None).await;
-    assert_eq!(
-        r.headers()["cache-control"],
-        "public, max-age=60, must-revalidate"
-    );
+    assert_eq!(r.headers()["cache-control"], "public, no-cache");
     site.ts.store.set_site_open_to_world(&id, false).unwrap();
     assert_eq!(site.on_site(&aid, "/a.css", None).await.status(), 401);
 }
@@ -1230,13 +1227,10 @@ async fn a_world_sites_files_revalidate_within_a_minute_and_only_navigations_set
     };
     for (p, want) in [
         ("/", "public, no-cache"),
-        // A version's page revalidates; its other files and the assets
-        // keep a minute at most, never `immutable`.
+        // A version's files and the assets revalidate too, never
+        // `immutable`: closing the site holds on the next request.
         ("/_clax/v/1/", "public, no-cache"),
-        (
-            &format!("/_clax/blob/{asset}") as &str,
-            "public, max-age=60, must-revalidate",
-        ),
+        (&format!("/_clax/blob/{asset}") as &str, "public, no-cache"),
     ] {
         let r = site.on_site(&aid, p, None).await;
         assert_eq!(r.status(), 200, "{p}");

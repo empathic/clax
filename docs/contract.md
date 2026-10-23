@@ -8761,10 +8761,10 @@ it starts, the runs a previous process left. A build without the
   one, and the browser keeps the last. Both are keyed by the daemon token:
   rotating it re-identifies every world-site visitor, and their old
   `data/users/<id>` subtrees are orphaned. A visitor's answers carry no
-  `Access-Control-Allow-Origin` and are cached for a minute at most
-  (`public, no-cache`, or `public, max-age=60, must-revalidate` for a
-  version's files and assets), so closing the site holds at a shared cache
-  within a minute. A site cookie of a holder still makes
+  `Access-Control-Allow-Origin` and are `public, no-cache`, a version's
+  files and assets included: a shared cache revalidates each one, so
+  closing the site holds on the next request. A site cookie of a holder
+  still makes
   its request theirs, so the shell's "Open site" (through `/site-signin`)
   acts as the person there.
 - `/_clax/api/` on a site host is the page runtime's backend for that
