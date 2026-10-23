@@ -128,8 +128,7 @@ of its own, never the public host, a domain under it, one it is under, one
 sharing a parent domain with it, or an IP address; the shared parent is
 judged by the last two labels, so under a multi-label public suffix such as
 `co.uk` it misses `sites.example.co.uk` beside `app.example.co.uk` and
-refuses two unrelated `*.co.uk` domains), refuses a real deploy until
-this checkout's Worker reads `SITE_DOMAIN`, creates what is missing (the R2 bucket; with Artifacts the queue and the
+refuses two unrelated `*.co.uk` domains), creates what is missing (the R2 bucket; with Artifacts the queue and the
 namespace, which also proves the account has Artifacts), generates
 `SETUP_SECRET` and `CLAX_TOKEN` when the Worker has neither and uploads
 them with the first version (printed once, and kept with the origins in
@@ -139,8 +138,9 @@ repository), writes `target/deploy/wrangler.deploy.jsonc` (or `--out
 `SITE_DOMAIN`, the store, the public host as a custom domain and the route
 `*.<site domain>/*` on the site domain's zone, `workers_dev` and preview
 URLs off, Workers Logs on, the diagnostics off unless `--diag`), builds the
-web UI and the Worker, deploys, waits for `/healthz` on the public host
-(saying whether it waits on DNS, the certificate or the Worker), checks
+web UI and the Worker, deploys, waits for `/healthz` on the public host to
+report the build it uploaded (saying whether it waits on DNS, the
+certificate, the Worker or the build from before the deploy), checks
 `https://<random ID>.<site domain>/_clax/healthz` and, when that fails,
 prints the steps [below](#dns-for-the-public-host-and-the-site-domain) with
 what it found for each, and prints the setup URL and the next steps. Run again, it changes only what differs; secrets are kept
@@ -231,6 +231,7 @@ npx wrangler queues subscription create clax-artifacts-events --source artifacts
 | `HOSTED` | `1` | A hosted Clax: browser sign-in, people's rights, guests, agent tokens |
 | `PUBLIC_ORIGIN` | `https://clax.example.com` | Where people reach Clax; every link the server writes names it |
 | `SITE_DOMAIN` | `clax.run` (`deploy.mjs --site-domain`) | Each artifact's site is served at `<artifact ID>.<SITE_DOMAIN>`; empty serves sites at `<artifact ID>.localhost` |
+| `RETIRED_CONTENT_ORIGIN` | the deploy record's old `content_origin`, if any (`https://content.clax.example.com`) | The content origin of before sites: kept as a custom domain, where an asset's old address (`/_blob/<id>?k=…`) answers 301 to its artifact's site and anything else 404; empty when there was none |
 | `REPO_STORE` | `artifacts` (or `memory`) | Where versions are kept |
 | `GIT_SMART_HTTP` | `0` with `artifacts` | `1` serves the stand-in over git smart HTTP at `/git/*` |
 | `CLAX_INSTANCE` | empty | The instance object's name (`default`) |

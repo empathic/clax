@@ -2,8 +2,9 @@
 // build: `deploy.mjs --dry-run --config-only` against a temporary record
 // directory (CLAX_DEPLOY_HOME) and `--out` file. The routes (the public host
 // as a custom domain, the site domain as a wildcard route on its zone), the
-// vars (SITE_DOMAIN, no CONTENT_ORIGIN), each refused site domain, and the
-// record's site domain when none is given. Run by scripts/worker-checks.sh.
+// vars (SITE_DOMAIN, no CONTENT_ORIGIN; a record's content origin as
+// RETIRED_CONTENT_ORIGIN and a custom domain), each refused site domain,
+// and the record's site domain when none is given. Run by scripts/worker-checks.sh.
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -11,7 +12,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HERE } from "./harness.mjs";
-import { sanCovers, siteDomainOf, siteHealthy, workerReadsSiteDomain } from "./deploy.mjs";
+import { retiredContentOrigin, sanCovers, siteDomainOf, siteHealthy } from "./deploy.mjs";
 
 const home = mkdtempSync(join(tmpdir(), "clax-deploy-config-"));
 let n = 0;
@@ -95,32 +96,29 @@ try {
     assert.deepEqual(r.config.routes[1], { pattern: "*.kept.run/*", zone_name: "kept.run" });
   });
 
+  check("a record's content origin becomes the retired one, a custom domain of its own", () => {
+    writeFileSync(
+      join(home, "old.example.com.json"),
+      JSON.stringify({ public_origin: "https://old.example.com", site_domain: "old.run", content_origin: "https://content.old.example.com" }),
+    );
+    const r = deploy(["--public", "old.example.com"]);
+    assert.equal(r.status, 0, r.text);
+    assert.equal(r.config.vars.RETIRED_CONTENT_ORIGIN, "https://content.old.example.com");
+    assert.equal("CONTENT_ORIGIN" in r.config.vars, false);
+    assert.deepEqual(r.config.routes[2], { pattern: "content.old.example.com", custom_domain: true });
+    const fresh = deploy(["--public", "kept.example.com"]);
+    assert.equal("RETIRED_CONTENT_ORIGIN" in fresh.config.vars, false, "none without one");
+    assert.equal(fresh.config.routes.length, 2);
+    assert.equal(retiredContentOrigin({ retired_content_origin: "https://c.example.com" }), "https://c.example.com");
+    for (const bad of ["", "http://c.example.com", "https://c.example.com/x", "nope", 7]) {
+      assert.equal(retiredContentOrigin({ content_origin: bad }), null, String(bad));
+    }
+  });
+
   check("a given site domain replaces the record's", () => {
     const r = deploy(["--public", "kept.example.com", "--site-domain", "other.run"]);
     assert.equal(r.status, 0, r.text);
     assert.equal(r.config.vars.SITE_DOMAIN, "other.run");
-  });
-
-  // Before any wrangler call, so it runs without a login: only while this
-  // checkout's Worker does not read SITE_DOMAIN.
-  if (!workerReadsSiteDomain()) {
-    check("a real deploy is refused while the Worker does not read SITE_DOMAIN", () => {
-      const r = spawnSync(process.execPath, [join(HERE, "deploy.mjs"), "--public", "example.com", "--site-domain", "example.run"], {
-        cwd: HERE,
-        env: { ...process.env, CLAX_DEPLOY_HOME: home },
-        stdio: ["ignore", "pipe", "pipe"],
-        encoding: "utf8",
-      });
-      assert.notEqual(r.status, 0, r.stdout);
-      assert.match(r.stderr, /does not read SITE_DOMAIN/);
-    });
-  }
-
-  check("the guard matches the Worker's read of SITE_DOMAIN, not a mention", () => {
-    assert.equal(workerReadsSiteDomain('let site = var(env, "SITE_DOMAIN");'), true);
-    assert.equal(workerReadsSiteDomain('let site = var( env , "SITE_DOMAIN" );'), true);
-    assert.equal(workerReadsSiteDomain("//! SITE_DOMAIN replaces CONTENT_ORIGIN later"), false);
-    assert.equal(workerReadsSiteDomain('let content = var(env, "CONTENT_ORIGIN");'), false);
   });
 
   check("a site host is healthy only with the Worker's answer", () => {

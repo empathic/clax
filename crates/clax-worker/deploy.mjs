@@ -37,9 +37,14 @@
 //    again without it);
 // 6. builds the web UI and then the Worker (release), unless `--no-build`;
 // 7. runs `wrangler deploy` (with `--dry-run`, `wrangler deploy --dry-run`)
-//    and reports the upload size against the Workers Paid limit;
-// 8. waits for `/healthz` on the public host, naming what it is waiting
-//    on (DNS, the certificate, the Worker), then checks
+//    and reports the upload size against the Workers Paid limit; when it
+//    fails only because the triggers (custom domains) were left partially
+//    updated, it runs the same deploy once more, without rebuilding;
+// 8. waits for `/healthz` on the public host to report this upload's build
+//    (`CLAX_BUILD`, a build ID made per deploy from the commit, the time and
+//    a random part; the instance from before the deploy answers 200 too),
+//    naming what it is waiting on (DNS, the certificate, the Worker, the
+//    previous build), then checks
 //    `https://<random ID>.<site domain>/_clax/healthz`; when that fails it
 //    prints the manual steps a wildcard needs (the zone on the account, a
 //    proxied `*` DNS record, a certificate covering `*.<site domain>`), each
@@ -80,6 +85,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { dirname, join, resolve } from "node:path";
+import { buildId, healthOf, partialTriggerUpdate } from "./deploy-lib.mjs";
 import { HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
@@ -411,7 +417,20 @@ async function secretNames(account, configPath) {
   }
 }
 
-function deployConfig(o, pub, site, account, github, legal, out) {
+/** The retired content origin a deploy record names (`retired_content_origin`,
+ * or an older record's `content_origin`): its `https://` origin, or null. */
+export function retiredContentOrigin(record) {
+  const raw = record?.retired_content_origin ?? record?.content_origin;
+  if (typeof raw !== "string" || raw === "") return null;
+  try {
+    const u = new URL(raw);
+    return u.protocol === "https:" && u.pathname === "/" && !u.search ? u.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+function deployConfig(o, pub, site, account, github, legal, out, retired, build) {
   const c = baseConfig();
   delete c.$schema;
   // The config lives in target/deploy/, so its paths name the crate's files.
@@ -430,12 +449,16 @@ function deployConfig(o, pub, site, account, github, legal, out) {
     { pattern: pub, custom_domain: true },
     { pattern: `*.${site}/*`, zone_name: site },
   ];
+  // The retired content host stays a custom domain of the Worker, which
+  // answers its old asset addresses with a redirect to their sites.
+  if (retired) c.routes.push({ pattern: new URL(retired).host, custom_domain: true });
   c.observability = { enabled: true, head_sampling_rate: 1 };
   // The base config's CONTENT_ORIGIN, if it still has one, is the retired
-  // content host's.
-  const { CONTENT_ORIGIN: _retired, ...base } = c.vars ?? {};
+  // content host's: RETIRED_CONTENT_ORIGIN names it, from the record.
+  const { CONTENT_ORIGIN: _old, RETIRED_CONTENT_ORIGIN: _base, ...base } = c.vars ?? {};
   c.vars = {
     ...base,
+    ...(retired ? { RETIRED_CONTENT_ORIGIN: retired } : {}),
     HOSTED: "1",
     PUBLIC_ORIGIN: `https://${pub}`,
     SITE_DOMAIN: site,
@@ -499,8 +522,9 @@ function waitingOn(e) {
   return `${code} ${msg}`.trim();
 }
 
-/** Polls `url` until `reached(res, body)` (default: a 2xx) or `seconds`
- * pass. */
+/** Polls `url` until `reached(res, body)` is true (default: a 2xx) or
+ * `seconds` pass. `reached` may answer a string instead, saying what a
+ * 2xx it does not take is waiting on. */
 async function waitHealthy(url, seconds, reached = (res) => res.ok) {
   const end = Date.now() + seconds * 1000;
   const started = Date.now();
@@ -511,7 +535,9 @@ async function waitHealthy(url, seconds, reached = (res) => res.ok) {
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(10_000), redirect: "manual" });
       const body = await res.text();
-      if (reached(res, body)) done = `HTTP ${res.status}: ${body}`;
+      const r = reached(res, body);
+      if (r === true) done = `HTTP ${res.status}: ${body}`;
+      else if (res.ok && typeof r === "string") state = r;
       else if (res.status === 500 && body.includes("could not start")) throw new Error(`the instance did not start: ${body.slice(0, 400)}`);
       else state = `HTTP ${res.status}: ${body.slice(0, 160).replace(/\s+/g, " ")}${res.status === 404 || res.status === 522 || res.status === 530 ? " (the host is not routed to the Worker yet)" : ""}`;
     } catch (e) {
@@ -601,19 +627,6 @@ export function siteHealthy(res, body) {
   }
 }
 
-/** Whether the Worker built from this checkout reads SITE_DOMAIN (the read
- * `var(env, "SITE_DOMAIN")` in `source`, by default src/instance.rs; a
- * mention in a comment does not count): a config without CONTENT_ORIGIN
- * deployed to a Worker that does not would serve no artifact on any host. */
-export function workerReadsSiteDomain(source) {
-  try {
-    const text = source ?? readFileSync(join(HERE, "src/instance.rs"), "utf8");
-    return /\bvar\(\s*env\s*,\s*"SITE_DOMAIN"\s*\)/.test(text);
-  } catch {
-    return false;
-  }
-}
-
 /** Checks a random site host's health; failing, prints each manual step
  * with what it found. Answers whether the site host is healthy. */
 async function checkSiteHost(site, account, seconds) {
@@ -655,10 +668,14 @@ async function writeDeployConfig(o, account) {
   if (github.client_id) info(`GitHub sign-in: OAuth App ${github.client_id}, owner ${github.owner ? `@${github.owner}` : "(none named)"}`);
   const legal = legalSettings(o, early);
   info(`Terms and Privacy: ${legal.legal ? "the bundled documents" : legal.terms_url ? `${legal.terms_url}, ${legal.privacy_url} (version ${legal.legal_version})` : "none"}`);
+  const retired = retiredContentOrigin(early);
+  if (retired) info(`retired content origin ${retired}: its old asset addresses redirect to their sites`);
   const configPath = o.out ? resolve(o.out) : DEPLOY_CONFIG;
-  const config = deployConfig(o, pub, site, account, github, legal, configPath);
-  info(`wrote ${configPath} (worker ${config.name}, REPO_STORE=${o.store}, SITE_DOMAIN=${site}, diagnostics ${o.diag ? "on" : "off"})`);
-  return { pub, site, github, legal, config, configPath };
+  const commit = await sourceCommit();
+  const build = buildId(commit, new Date(), randomBytes(4).toString("hex"));
+  const config = deployConfig(o, pub, site, account, github, legal, configPath, retired, build);
+  info(`wrote ${configPath} (worker ${config.name}, REPO_STORE=${o.store}, SITE_DOMAIN=${site}, diagnostics ${o.diag ? "on" : "off"}, build ${build})`);
+  return { pub, site, github, legal, config, configPath, retired, commit, build };
 }
 
 async function main() {
@@ -671,13 +688,6 @@ async function main() {
     console.log(`hosted Clax deploy config (--config-only: no wrangler, no login, no build)`);
     await writeDeployConfig(o, o.account ?? process.env.CLOUDFLARE_ACCOUNT_ID);
     return;
-  }
-  if (!o.dryRun && !workerReadsSiteDomain()) {
-    throw new Error(
-      "this checkout's Worker does not read SITE_DOMAIN (crates/clax-worker/src/instance.rs still reads CONTENT_ORIGIN): " +
-        "the generated config would leave it serving artifacts on no host. Deploy once the Worker serves site hosts " +
-        "(SITE_DOMAIN in src/instance.rs and src/lib.rs, the site-origins plan's Task 11); --dry-run still runs",
-    );
   }
   moveOldRecords();
   if (!existsSync(WRANGLER)) throw new Error(`no wrangler at ${WRANGLER}: run npm install in ${HERE}`);
@@ -694,7 +704,7 @@ async function main() {
   }
   const account = who?.account.id;
 
-  const { pub, site, github, legal, config, configPath } = await writeDeployConfig(o, account);
+  const { pub, site, github, legal, config, configPath, retired, commit, build } = await writeDeployConfig(o, account);
   if (o.diag) diagReminder(pub);
 
   step("Resources");
@@ -819,10 +829,11 @@ async function main() {
     return;
   }
 
-  // The retired content host's origin is dropped from older records.
-  const { content_origin: _retired, ...kept } = record;
+  // An older record's content_origin is kept as the retired one.
+  const { content_origin: _old, retired_content_origin: _kept, ...kept } = record;
   const next = {
     ...kept,
+    ...(retired ? { retired_content_origin: retired } : {}),
     public_origin: `https://${pub}`,
     site_domain: site,
     worker: o.name,
@@ -840,8 +851,12 @@ async function main() {
   };
   writeRecord(pub, next);
 
-  step(`Waiting for https://${pub}/healthz (custom domains take a few minutes the first time)`);
-  const healthy = await waitHealthy(`https://${pub}/healthz`, o.wait);
+  step(`Waiting for https://${pub}/healthz to report build ${build} (custom domains take a few minutes the first time)`);
+  const healthy = await waitHealthy(`https://${pub}/healthz`, o.wait, (res, body) => {
+    if (!res.ok) return false;
+    const h = healthOf(body, build);
+    return h.done ? true : h.waiting;
+  });
   if (!healthy) {
     info(`not healthy within ${o.wait} s. Check: the zone of ${pub} is on account ${account}; ` +
       `Workers > ${o.name} > Settings > Domains & Routes lists ${pub} and *.${site}/*; \`npx wrangler tail ${o.name}\``);
@@ -884,7 +899,8 @@ ${bar}
 ${bar}`);
 }
 
-// Run as a program, not when a test imports the helpers.
+// Run as a program; imported (test-deploy-config.mjs checks the generated
+// config, test-bot.mjs checks kekPlan), it deploys nothing.
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((e) => {
     console.error(`\ndeploy failed: ${e instanceof Error ? e.message : e}`);
