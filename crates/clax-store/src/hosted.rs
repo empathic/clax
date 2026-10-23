@@ -894,12 +894,15 @@ impl Store {
     }
 
     /// What anyone with artifact `aid`'s link may do there; `None` when it
-    /// is not shared by link, or does not exist.
+    /// is not shared by link, does not exist, or was made by a revoked
+    /// person.
     pub fn link_access(&self, aid: &str) -> Result<Option<LinkAccess>> {
         self.with_read(|c| {
             let v: Option<Option<String>> = c
                 .query_row(
-                    "SELECT link_access FROM artifacts WHERE id = ?1 AND deleted_at IS NULL",
+                    "SELECT a.link_access FROM artifacts a
+                       LEFT JOIN viewers m ON m.public_id = a.person
+                      WHERE a.id = ?1 AND a.deleted_at IS NULL AND m.person_revoked_at IS NULL",
                     params![aid],
                     |r| r.get(0),
                 )

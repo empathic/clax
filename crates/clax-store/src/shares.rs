@@ -161,13 +161,14 @@ pub fn github_login(s: &str) -> Result<String> {
 }
 
 /// The rights every share of viewer row `viewer_id` holds, at live
-/// artifacts; `None` when it has none. The one place a person's
-/// per-artifact access is resolved.
+/// artifacts whose maker is not revoked; `None` when it has none. The one
+/// place a person's per-artifact access is resolved.
 pub(super) fn share_rights(c: &Connection, viewer_id: &str) -> Result<Option<Rights>> {
     let mut stmt = c.prepare_cached(
         "SELECT s.access, s.artifact_id FROM artifact_shares s
            JOIN artifacts a ON a.id = s.artifact_id AND a.deleted_at IS NULL
-          WHERE s.viewer_id = ?1",
+           LEFT JOIN viewers m ON m.public_id = a.person
+          WHERE s.viewer_id = ?1 AND m.person_revoked_at IS NULL",
     )?;
     let mut by: std::collections::BTreeMap<ShareAccess, Vec<String>> = Default::default();
     for row in stmt.query_map(params![viewer_id], |r| {
@@ -595,15 +596,17 @@ impl Store {
         })
     }
 
-    /// The public gallery: live artifacts shared by link and listed, as
-    /// `(ID, title)`, most recently updated first, at most
-    /// [`MAX_PUBLIC_LISTED`].
+    /// The public gallery: live artifacts shared by link and listed, except
+    /// a revoked person's, as `(ID, title)`, most recently updated first, at
+    /// most [`MAX_PUBLIC_LISTED`].
     pub fn public_artifacts(&self) -> Result<Vec<(String, String)>> {
         self.with_read(|c| {
             let mut stmt = c.prepare(
-                "SELECT id, title FROM artifacts
-                  WHERE link_listed = 1 AND link_access IS NOT NULL AND deleted_at IS NULL
-                  ORDER BY updated_at DESC, id LIMIT ?1",
+                "SELECT a.id, a.title FROM artifacts a
+                   LEFT JOIN viewers m ON m.public_id = a.person
+                  WHERE a.link_listed = 1 AND a.link_access IS NOT NULL
+                    AND a.deleted_at IS NULL AND m.person_revoked_at IS NULL
+                  ORDER BY a.updated_at DESC, a.id LIMIT ?1",
             )?;
             Ok(stmt
                 .query_map(params![MAX_PUBLIC_LISTED as i64], |r| {
