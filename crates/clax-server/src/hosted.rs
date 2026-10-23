@@ -12,6 +12,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Extension, Router};
 use clax_core::CoreError;
+use clax_core::rights::RightType;
 use clax_http::error::ApiError;
 use clax_http::hosted::*;
 use clax_http::state::AppState;
@@ -653,9 +654,8 @@ async fn revoke_own_token(
 }
 
 /// `GET /api/hosted/links` (a member) → `{links: [{artifact_id, title,
-/// access, url}]}`: the pages shared by link that the caller shares (the
-/// owner those within the owner's reach, [`owner_reaches`]; a person those
-/// they made, as [`set_link`] allows).
+/// access, url}]}`: the pages shared by link that the caller shares, those
+/// they made ([`may_share`], as [`set_link`] allows).
 /// A link is the capability to its page, so a member is handed none they
 /// could not have made.
 async fn list_links(
@@ -674,11 +674,7 @@ async fn list_links(
                 let Ok(id) = clax_core::ArtifactId::parse(&aid) else {
                     continue;
                 };
-                let shares = match who.owner {
-                    true => owner_reaches(st, &aid)?,
-                    false => st.artifact_created_by(&aid, Some(&who.viewer.public_id))?,
-                };
-                if !shares {
+                if !may_share(st, &who, &aid)? {
                     continue;
                 }
                 if let Some(a) = st.get_artifact(&id)? {
@@ -713,10 +709,11 @@ struct LinkBody {
     listed: Option<bool>,
 }
 
-/// `PUT /api/hosted/artifacts/<aid>/link {access, listed?}` (the owner,
-/// or the person who made the artifact, [`may_share`], in a browser or
-/// from their own device, [`browser_or_device`]): shares it by link
-/// as `viewer` or `commenter`, or stops (`null`, which also unlists it),
+/// `PUT /api/hosted/artifacts/<aid>/link {access, listed?}` (the person
+/// who made the artifact, the owner for the owner's; [`may_share`]; in a
+/// browser or from their own device, [`browser_or_device`]): shares it by
+/// link as `viewer` or `commenter`, or stops (`null`, which also unlists
+/// it),
 /// and with `listed` lists it in the public gallery or not (absent keeps
 /// it). → `{artifact_id, access, listed, url}`. The
 /// artifact's git tokens (on stopping, every held token: a fork's need
@@ -785,7 +782,8 @@ async fn set_link(
 }
 
 /// Whether session `who` may share artifact `aid` and set who else may
-/// open it: the owner, and the person who made it. An editor may not.
+/// open it: its maker alone, the owner for the artifacts the owner made.
+/// An editor may not, nor the owner at a page shared with them.
 ///
 /// # Errors
 /// The store's.
@@ -794,14 +792,20 @@ pub fn may_share(
     who: &SessionViewer,
     aid: &str,
 ) -> clax_core::Result<bool> {
-    Ok(who.member() && (who.owner || st.artifact_created_by(aid, Some(&who.viewer.public_id))?))
+    let maker = if who.owner {
+        None
+    } else {
+        Some(who.viewer.public_id.as_str())
+    };
+    Ok(who.member() && st.artifact_created_by(aid, maker)?)
 }
 
 /// Whether the owner reaches artifact `aid` other than by its link: the
 /// owner made it, or its maker shared it with the owner (the reach rule).
-/// What the owner's sharing routes need before [`may_share`], whose owner
-/// arm holds at any artifact: a page shared by link opens to anyone, so
-/// its link is no reach to share it or to read who it is shared with.
+/// What the owner's sharing routes need before [`may_share`]: a page
+/// shared by link opens to anyone, so its link is no reach to read who it
+/// is shared with, and one out of reach is not there (404) rather than
+/// not the owner's to share (403).
 ///
 /// # Errors
 /// The store's.
@@ -838,7 +842,7 @@ fn sharer(
     if !may_share(st, who, aid.as_str())? {
         return Err(CoreError::invalid(
             "forbidden",
-            "only the owner or the page's maker shares it",
+            "only the page's maker shares it",
         ));
     }
     Ok(())
@@ -910,8 +914,7 @@ async fn get_sharing(
                 return Err(CoreError::NotFound);
             }
             let id = aid.as_str();
-            // Out of the owner's reach, the owner's arm of `may_share`
-            // does not hold: not there for them.
+            // Out of the owner's reach: not there for them.
             if who.owner && !owner_reaches(st, id)? {
                 return Err(CoreError::NotFound);
             }

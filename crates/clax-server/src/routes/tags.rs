@@ -263,6 +263,7 @@ async fn edit_artifact(
         return Err(ApiError::unauthorized());
     }
     let c = caller.clone();
+    let hosted = s.hosted.is_some();
     let events = s.events.clone();
     let tags = s
         .store_call(move |st| {
@@ -270,7 +271,7 @@ async fn edit_artifact(
             if st.get_artifact(&aid)?.is_none() {
                 return Err(clax_core::CoreError::NotFound);
             }
-            if !clax_http::agent::administers(st, &c, aid.as_str())? {
+            if !clax_http::agent::administers(st, &c, aid.as_str(), hosted)? {
                 return Ok(None);
             }
             let (after, changed) = st.edit_artifact_tags(&audit, &aid, &edit)?;
@@ -286,7 +287,7 @@ async fn edit_artifact(
     let Some((aid, tags, changed)) = tags else {
         return Err(ApiError::forbidden(
             "admin_only",
-            "only the owner, the page's maker and their agents change its tags",
+            "only the page's maker (on a local Clax, the owner too) and their agents change its tags",
         ));
     };
     Ok(Json(

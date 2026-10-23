@@ -1,6 +1,7 @@
 //! Agents' elevations (spec 2026-10-08-multi-agent-multi-person §7.2, §7.4,
 //! §14, O11): one per (agent session, granter). The owner's may name any
-//! location; an artifact creator's names artifacts they created, and is
+//! location (on a hosted daemon, by ID only artifacts the owner made:
+//! [`Store::check_owner_raise`]); an artifact creator's names artifacts they created, and is
 //! read at every check as its access at the artifacts its granter created
 //! that still exist, within the granter's own rights there
 //! ([`clax_core::rights::creator_elevation`]). An elevation ends with its
@@ -188,6 +189,15 @@ fn not_creator() -> CoreError {
     )
 }
 
+/// 403 `not_creator` for the owner's elevation on a hosted daemon at an
+/// artifact the owner did not make.
+fn not_owners() -> CoreError {
+    CoreError::invalid(
+        "not_creator",
+        "on a hosted Clax the owner raises agents only on artifacts the owner made",
+    )
+}
+
 /// Checks a creator's elevation (spec §7.4): every location an artifact
 /// `granter` created that is not deleted (`not_creator`), and every action
 /// one they hold there (`beyond_your_rights`).
@@ -367,7 +377,8 @@ pub struct Raise {
 impl Store {
     /// Sets (or with `None` removes) `granter`'s elevation of live agent
     /// `sid` of a connected machine (spec §7.4, O11): `granter` `None` is
-    /// the owner, whose elevation may name any location; a person's names
+    /// the owner, whose elevation may name any location (a hosted daemon
+    /// checks it first, [`Store::check_owner_raise`]); a person's names
     /// artifacts they created only, with actions they hold there. Recorded
     /// as `agent.elevate {session, access, granter}` under `ctx`; a change
     /// bumps the visibility generation (M17).
@@ -388,6 +399,27 @@ impl Store {
         access: Option<Rights>,
     ) -> Result<super::people::AgentRights> {
         self.set_raise(ctx, sid, granter, access, None, None)
+    }
+
+    /// Checks the owner's elevation `access` on a hosted daemon, before
+    /// [`Store::elevate_agent`]: every artifact it names by ID one the owner
+    /// made that is not deleted (`not_creator`), not another person's,
+    /// even one shared with the owner. `*` and `own` pass: the reach rule
+    /// bounds them at each check.
+    ///
+    /// # Errors
+    /// `not_creator`; the store's.
+    pub fn check_owner_raise(&self, access: &Rights) -> Result<()> {
+        let named = access
+            .at_artifacts(&|_| true)
+            .artifact_ids()
+            .unwrap_or_default();
+        for id in &named {
+            if self.reach(id, None)? != super::reach::Reach::Within {
+                return Err(not_owners());
+            }
+        }
+        Ok(())
     }
 
     /// [`Store::elevate_agent`], only while `granter`'s elevation of `sid`

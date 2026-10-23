@@ -989,7 +989,8 @@ pub async fn get(
     let working = s.working.for_artifact(id.as_str());
     let has_viewer = who.owner_browser() || who.names_viewer();
     let vf = VisFor::of(&a.caller, &s);
-    let reader = SourceReader::new(a.caller.clone(), a.member().cloned(), s.hosted.is_some());
+    let hosted = s.hosted.is_some();
+    let reader = SourceReader::new(a.caller.clone(), a.member().cloned(), hosted);
     let (caller, member) = (a.caller.clone(), a.member_rights());
     let wakes = super::sessions::Wakes::for_caller(&s, &a.caller);
     let may_resolve = super::threads::resolves(&a, &s, &id).await?;
@@ -1024,7 +1025,8 @@ pub async fn get(
             );
             // Whether the caller may change its tags (the shell's tag
             // editor): those who administer it, as for its pin.
-            artifact["may_tag"] = json!(clax_http::agent::administers(st, &caller, a.id.as_str())?);
+            artifact["may_tag"] =
+                json!(clax_http::agent::administers(st, &caller, a.id.as_str(), hosted)?);
             // Whether the caller may resolve its threads, so also send them
             // while its Comments switch is off (the shell's Send).
             artifact["may_resolve"] = json!(may_resolve);
@@ -1081,6 +1083,7 @@ async fn admin_change(
         return Ok(());
     }
     let (caller, id) = (caller.clone(), id.clone());
+    let hosted = s.hosted.is_some();
     let allowed = s
         .store_call(move |st| {
             // No such artifact is the edit's own answer.
@@ -1089,7 +1092,7 @@ async fn admin_change(
             };
             let same = pinned.is_none_or(|p| p == cur.pinned)
                 && capabilities.as_ref().is_none_or(|c| *c == cur.capabilities);
-            Ok(same || clax_http::agent::administers(st, &caller, id.as_str())?)
+            Ok(same || clax_http::agent::administers(st, &caller, id.as_str(), hosted)?)
         })
         .await?;
     if allowed {

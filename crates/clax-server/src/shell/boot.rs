@@ -317,7 +317,7 @@ pub async fn assemble(
             // Whether the caller may change its tags, as `GET
             // /api/artifacts/<id>` says.
             let may_tag = match &caller {
-                Ok(c) => clax_http::agent::administers(st, c, a.id.as_str())?,
+                Ok(c) => clax_http::agent::administers(st, c, a.id.as_str(), hosted)?,
                 Err(_) => false,
             };
             artifact["may_tag"] = json!(may_tag);

@@ -8,9 +8,9 @@
 //!   (4403 `revoked`) when the site closes, and a holder's is checked again
 //!   (`super::room`).
 //! - Who may manage the artifact changes it
-//!   ([`clax_http::agent::administers`]: the owner, by hand or in their
-//!   browser, their agents, and the page's maker); anyone else 403
-//!   `admin_only`.
+//!   ([`clax_http::agent::administers`]: the page's maker and their
+//!   agents, and on a local daemon the owner, by hand or in their browser,
+//!   and their agents); anyone else 403 `admin_only`.
 //! - An agent (the owner's with a session, or a person's) opens a site to
 //!   the world only with its person's approval, as `publish_public`
 //!   publishes ([`super::remotes`]): its first call asks them a question
@@ -73,12 +73,12 @@ pub async fn change(
     world: bool,
     qid: Option<String>,
 ) -> Result<Change, ApiError> {
-    let (c2, i2) = (caller.clone(), id.clone());
+    let (c2, i2, hosted) = (caller.clone(), id.clone(), s.hosted.is_some());
     let (manages, already) = s
         .store_call(move |st| {
             st.get_artifact(&i2)?.ok_or(CoreError::NotFound)?;
             Ok((
-                clax_http::agent::administers(st, &c2, i2.as_str())?,
+                clax_http::agent::administers(st, &c2, i2.as_str(), hosted)?,
                 st.site_open_to_world(&i2)?,
             ))
         })
@@ -86,7 +86,7 @@ pub async fn change(
     if !manages {
         return Err(ApiError::forbidden(
             "admin_only",
-            "only the owner or the page's maker opens its site to the world or closes it",
+            "only the page's maker (on a local Clax, the owner too) opens its site to the world or closes it",
         ));
     }
     let agent = match caller {

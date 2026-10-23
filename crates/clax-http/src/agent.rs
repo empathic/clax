@@ -1030,17 +1030,31 @@ pub fn person_agent_session(c: &Caller) -> Result<(), ApiError> {
 }
 
 /// Whether `c` administers artifact `aid`: may change who may do what
-/// there, its pinned flag and its capabilities included. The owner and the
-/// owner's agents do, and a person and that person's agents at an artifact
-/// the person made. Another person's update right (an editor's) changes
-/// contents alone.
+/// there, its pinned flag and its capabilities included. A person and that
+/// person's agents do at an artifact the person made; the owner and the
+/// owner's agents at every artifact on a local daemon, and on a `hosted`
+/// one at the artifacts the owner made alone. Another person's update
+/// right (an editor's, the owner's by a share included) changes contents
+/// alone.
 ///
 /// # Errors
 /// The store's.
-pub fn administers(st: &clax_store::Store, c: &Caller, aid: &str) -> clax_core::Result<bool> {
+pub fn administers(
+    st: &clax_store::Store,
+    c: &Caller,
+    aid: &str,
+    hosted: bool,
+) -> clax_core::Result<bool> {
     match c {
-        Caller::Owner { .. } | Caller::OwnerAgent { .. } => Ok(true),
-        Caller::PersonAgent { person: None, .. } => Ok(true),
+        Caller::Owner { .. }
+        | Caller::OwnerAgent { .. }
+        | Caller::PersonAgent { person: None, .. } => {
+            if hosted {
+                st.artifact_created_by(aid, None)
+            } else {
+                Ok(true)
+            }
+        }
         Caller::PersonAgent {
             person: Some(p), ..
         } => st.artifact_created_by(aid, Some(p)),
@@ -1054,7 +1068,7 @@ pub fn administers(st: &clax_store::Store, c: &Caller, aid: &str) -> clax_core::
 pub fn admin_only() -> ApiError {
     ApiError::forbidden(
         "admin_only",
-        "only the owner or the page's maker changes its pin or capabilities",
+        "only the page's maker (on a local Clax, the owner too) changes its pin or capabilities",
     )
 }
 

@@ -839,8 +839,10 @@ pub async fn narrow_agent(
 /// M20, O11) → `{agent}` (the agent's whole view for the owner and for its
 /// own person; for another person, `{handle, name, person, elevation,
 /// version}`, their own raise alone): sets the caller's own elevation of
-/// that agent, from their browser: the owner's may name any location; a
-/// connected person's names only artifacts they created, with actions they
+/// that agent, from their browser: the owner's may name any location (on a
+/// hosted daemon, by ID only artifacts the owner made; 403 `not_creator`
+/// otherwise); a connected person's names only artifacts they created,
+/// with actions they
 /// hold there. That agent alone may also do what it gives, beyond its
 /// person's rights, from its next request on and until its session ends
 /// (§14 clears it). Recorded as `agent.elevate`. With `if_version` (the
@@ -870,6 +872,12 @@ pub async fn elevate_agent(
             "name the access to add; DELETE removes an elevation",
         ));
     };
+    // On a hosted daemon the owner raises agents only within the owner's
+    // reach.
+    if granter.is_none() && s.hosted.is_some() {
+        let a = access.clone();
+        s.store_call(move |st| st.check_owner_raise(&a)).await?;
+    }
     let Some(if_version) = b.if_version else {
         return set_elevation(s, audit, handle, granter, Some(access)).await;
     };

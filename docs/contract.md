@@ -1412,17 +1412,19 @@ visibility filter (see "What reaches an agent") leaves them alone.
   The owner's agents are this machine's (the token naming a session) and
   those of another machine connected as the owner (a grant of the owner's
   row, within that grant's rights: it needs `clax-artifacts` `update`
-  somewhere); such a grant also administers every artifact. Anyone else
-  is 403 `owner_only` (401 without a credential). On a hosted Clax, members
-  apply the owner's tags; they make none.
+  somewhere); such a grant also administers the artifacts the owner
+  does. Anyone else is 403 `owner_only` (401 without a credential). On a
+  hosted Clax, members apply the owner's tags; they make none.
 - **Applying is the artifact's administrators'.** Setting an artifact's
-  tags takes what changing its pin does: the owner and the owner's agents
-  on any artifact, a person and that person's agents on the artifacts the
-  person made (`clax_http::agent::administers`). An editor (another
-  person's `update` right, a hosted editor's share) changes the contents,
-  not the tags: 403 `admin_only`. A person's agent needs `clax-artifacts`
-  `update` at the artifact (403 `not_permitted`), and writes from a session
-  (400 `no_session`).
+  tags takes what changing its pin or capabilities does: a person and
+  that person's agents on the artifacts the person made, and the owner
+  and the owner's agents on any artifact, or on a hosted Clax only on the
+  artifacts the owner made (`clax_http::agent::administers`). An editor
+  (another person's `update` right, a hosted editor's share, the owner's
+  included) changes the contents, not the tags, pin or capabilities: 403
+  `admin_only`. A person's agent needs `clax-artifacts` `update` at the
+  artifact (403 `not_permitted`), and writes from a session (400
+  `no_session`).
 - **Agents apply only.** A tag that is not on the list is refused
   (`unknown_tag`), its message listing the tags there are; nothing makes a
   tag implicitly.
@@ -5052,7 +5054,9 @@ An agent's rights:
   removes it; 400 `not_narrower` for an access that would widen. It takes
   effect at the agent's next request or take, and an agent's narrowing
   ends with its session.
-- **Raises.** The owner raises any agent of a connected machine anywhere;
+- **Raises.** The owner raises any agent of a connected machine anywhere
+  (on a hosted Clax, an artifact the owner's raise names by ID is one the
+  owner made, else 403 `not_creator`, even one shared with the owner);
   an artifact's **creator** raises any such agent (their own, another
   person's or the owner's) on the artifacts they created, with only what
   they may do there themselves: `PUT /api/agents/<handle>/elevate {access,
@@ -8628,9 +8632,15 @@ it starts, the runs a previous process left. A build without the
   reached only through its share with the person (a grant's rights and
   that share must both allow the action) or its link, and not at all
   while its maker is revoked. A maker may share an artifact with the
-  owner as with anyone. An artifact out of reach answers 404 `not_found`
-  wherever a route names it, never 403, and listings leave it out; within
-  reach, an action the caller's rights lack is 403 `not_permitted`. No
+  owner as with anyone. Only an artifact's maker (the owner for the
+  artifacts the owner made) shares it, sets or lists its link, and
+  changes its pin, tags or capabilities: the owner does none of these at
+  an artifact another person made, shared with them or not (403
+  `forbidden` on the sharing routes, 403 `admin_only` for a pin, tags or
+  capabilities, once it is in reach). An artifact out of reach answers
+  404 `not_found` wherever a route names it, never 403, and listings
+  leave it out; within reach, an action the caller's rights lack is 403
+  `not_permitted`. No
   caller holds the `gallery` stream topic, and `GET /api/events` is 403
   `forbidden` to every caller: follow topics on `/api/stream`.
 - Live pages (see "Live pages") are visible only to a loopback peer or a

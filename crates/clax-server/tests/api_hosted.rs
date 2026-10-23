@@ -1725,6 +1725,141 @@ async fn a_persons_rights_limit_their_browser_and_the_owner_reads_only_their_rea
     assert_eq!(listed(&v), vec![budget.clone()]);
 }
 
+#[tokio::test]
+async fn only_the_maker_shares_pins_and_tags_a_page_on_hosted() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let plan = site.titled("Plan").await;
+    let (s, v) = site.post(&owner, "/api/tags", json!({"name": "draft"})).await;
+    assert_eq!(s, 201, "{v}");
+    let mia = site.person(&owner, "Mia").await;
+    let sam = site.person(&owner, "Sam").await;
+    let (owner_pid, sam_pid) = (site.pid(&owner).await, site.pid(&sam).await);
+    let mias = site.made_by(&mia, "Mia's").await;
+    let link = format!("/api/hosted/artifacts/{mias}/link");
+    let shares = format!("/api/hosted/artifacts/{mias}/shares");
+    let page = |aid: &str| format!("/api/artifacts/{aid}");
+    let tags = format!("/api/artifacts/{mias}/tags");
+    let draft = json!({"tags": ["draft"]});
+    use reqwest::Method as M;
+    // The owner pins through the API, with their browser's shell token or
+    // the daemon token.
+    let (_, v) = site.get(&owner, "/api/token").await;
+    let shell = v["token"].as_str().unwrap().to_string();
+    let pin = async |aid: &str, token: &str| {
+        json_of(
+            site.req(&owner, M::PATCH, &page(aid))
+                .bearer_auth(token)
+                .json(&json!({"pinned": true}))
+                .send()
+                .await
+                .unwrap(),
+        )
+        .await
+    };
+    // Out of the owner's reach, none of it is there for them.
+    let (s, v) = site.put(&owner, &link, json!({"access": "viewer"})).await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    let (s, v) = site
+        .put(&owner, &shares, json!({"person": owner_pid, "access": "editor"}))
+        .await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    for token in [&shell, &site.ts.token] {
+        let (s, v) = pin(&mias, token).await;
+        assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    }
+    let (s, v) = site.put(&owner, &tags, draft.clone()).await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    // Mia shares it with the owner as with anyone: the owner reads it, and
+    // neither widens the share nor shares it onward.
+    let (s, v) = site
+        .put(&mia, &shares, json!({"person": owner_pid, "access": "viewer"}))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site
+        .put(&owner, &shares, json!({"person": owner_pid, "access": "editor"}))
+        .await;
+    assert_eq!((s, code(&v)), (403, "forbidden"), "{v}");
+    let (s, v) = site
+        .put(&owner, &shares, json!({"person": sam_pid, "access": "viewer"}))
+        .await;
+    assert_eq!((s, code(&v)), (403, "forbidden"), "{v}");
+    let (s, v) = site.put(&owner, &link, json!({"access": "viewer"})).await;
+    assert_eq!((s, code(&v)), (403, "forbidden"), "{v}");
+    let (s, v) = site
+        .get(&owner, &format!("/api/hosted/artifacts/{mias}/sharing"))
+        .await;
+    assert_eq!((s, &v["can_share"]), (200, &json!(false)), "{v}");
+    let (s, v) = site.get(&sam, &page(&mias)).await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    // As an editor, the owner changes its contents, never its pin or tags.
+    let (s, v) = site
+        .put(&mia, &shares, json!({"person": owner_pid, "access": "editor"}))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    for token in [&shell, &site.ts.token] {
+        let (s, v) = pin(&mias, token).await;
+        assert_eq!((s, code(&v)), (403, "admin_only"), "{v}");
+    }
+    let (s, v) = site.put(&owner, &tags, draft.clone()).await;
+    assert_eq!((s, code(&v)), (403, "admin_only"), "{v}");
+    let (s, v) = site.get(&owner, &page(&mias)).await;
+    assert_eq!((s, &v["artifact"]["may_tag"]), (200, &json!(false)), "{v}");
+    // Its maker administers it, and the owner their own.
+    let (s, v) = site.put(&mia, &tags, draft.clone()).await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = pin(&plan, &shell).await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site.get(&owner, &page(&plan)).await;
+    assert_eq!((s, &v["artifact"]["may_tag"]), (200, &json!(true)), "{v}");
+}
+
+#[tokio::test]
+async fn an_owners_elevation_names_only_their_reach() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let plan = site.titled("Plan").await;
+    let mia = site.person(&owner, "Mia").await;
+    let mias = site.made_by(&mia, "Mia's").await;
+    let (s, v) = site
+        .post(&mia, "/api/hosted/agent-tokens", json!({"label": "laptop"}))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let mut agent = TokenAgent {
+        site: &site,
+        token: v["token"].as_str().unwrap().to_string(),
+        session: None,
+    };
+    assert_eq!(agent.initialize("summary-writer").await, 200);
+    let handle = site
+        .ts
+        .store
+        .get_session(&agent.sid())
+        .unwrap()
+        .unwrap()
+        .agent_handle;
+    let elevate = format!("/api/agents/{handle}/elevate");
+    let at = |aid: &str| {
+        json!({"access": [{"type": "clax-artifacts", "actions": ["read", "update"], "locations": [aid]}]})
+    };
+    let (s, v) = site.put(&owner, &elevate, at(&mias)).await;
+    assert_eq!((s, code(&v)), (403, "not_creator"), "{v}");
+    // Shared with the owner, it is still not the owner's to raise on.
+    let owner_pid = site.pid(&owner).await;
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{mias}/shares"),
+            json!({"person": owner_pid, "access": "editor"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site.put(&owner, &elevate, at(&mias)).await;
+    assert_eq!((s, code(&v)), (403, "not_creator"), "{v}");
+    let (s, v) = site.put(&owner, &elevate, at(&plan)).await;
+    assert_eq!(s, 200, "{v}");
+}
+
 /// A request as an agent of this machine makes it: the daemon token, at a
 /// local name.
 fn daemon_token_get(site: &Site, path: &str) -> reqwest::RequestBuilder {
