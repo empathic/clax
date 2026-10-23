@@ -31,6 +31,31 @@ use serde_json::json;
 
 use crate::common::{clock, committer};
 
+/// A step's documents in its artifact's own store, at its file in the home
+/// (`clax_store::app_data::shim`), as the owner.
+struct FileDocs<'a>(&'a Store);
+
+#[async_trait::async_trait]
+impl clax_store::jobs::StepDocs for FileDocs<'_> {
+    async fn write(
+        &self,
+        aid: &ArtifactId,
+        op: clax_store::app_data::OpId,
+        writes: Vec<BatchWrite>,
+    ) -> clax_core::Result<Vec<clax_store::docs::Written>> {
+        let rules = clax_core::db::Rules::from_capabilities(&self.0.doc_capabilities(aid)?)?;
+        clax_store::app_data::shim::Docs::of(self.0)
+            .data(aid)?
+            .doc_batch(
+                &clax_store::app_data::WriteCtx::of(DAEMON).with_op(op),
+                &rules,
+                writes,
+                false,
+                &Caller::new(Level::Owner, None),
+            )
+    }
+}
+
 const DAEMON: &AuditCtx = &AuditCtx::DAEMON;
 
 /// A content store whose next version write, once [`Dying::kill_next`] is
@@ -276,7 +301,7 @@ impl<C: ContentStore> Fixture<C> {
         html: &str,
     ) -> Result<clax_store::jobs::StepCommit<clax_store::jobs::Published>, StepError> {
         self.st
-            .commit_publish_step(DAEMON, "j1", key, self.step(html))
+            .commit_publish_step(DAEMON, "j1", key, self.step(html), &FileDocs(&self.st))
     }
 
     fn versions(&self) -> Vec<u32> {
@@ -295,7 +320,7 @@ impl<C: ContentStore> Fixture<C> {
     }
 
     fn doc(&self) -> Option<serde_json::Value> {
-        self.st
+        clax_store::app_data::shim::Docs::of(&self.st)
             .doc_get(&self.id, "notes/n1", &Caller::new(Level::Owner, None))
             .unwrap()
             .map(|d| d.data)
@@ -397,8 +422,14 @@ fn a_killed_new_apps_step_resumes_as_one_artifact<C: ContentStore + 'static>(
     };
     f.content.kill_next();
     assert!(
-        f.st.commit_publish_step(DAEMON, "j2", "publish:0", step("<p>first</p>"))
-            .is_err()
+        f.st.commit_publish_step(
+            DAEMON,
+            "j2",
+            "publish:0",
+            step("<p>first</p>"),
+            &FileDocs(&f.st)
+        )
+        .is_err()
     );
     // What the kill leaves: version 1's content under the step's new ID.
     let killed = f.content.last_written().unwrap();
@@ -410,8 +441,14 @@ fn a_killed_new_apps_step_resumes_as_one_artifact<C: ContentStore + 'static>(
     };
     assert_eq!(html(&aid).as_deref(), Some("<p>first</p>"));
     let c =
-        f.st.commit_publish_step(DAEMON, "j2", "publish:0", step("<p>again</p>"))
-            .unwrap();
+        f.st.commit_publish_step(
+            DAEMON,
+            "j2",
+            "publish:0",
+            step("<p>again</p>"),
+            &FileDocs(&f.st),
+        )
+        .unwrap();
     let made = c.made.unwrap().artifact;
     assert_eq!(made.id, killed, "the resume writes the killed attempt's ID");
     assert_eq!(c.job.artifact_id.as_deref(), Some(made.id.as_str()));
@@ -580,7 +617,7 @@ fn a_step_on_another_base_removes_its_stray<C: ContentStore + 'static>(
     let mut other = f.step("<p>two</p>");
     other.base = 0;
     let e =
-        f.st.commit_publish_step(DAEMON, "j1", "publish:1", other)
+        f.st.commit_publish_step(DAEMON, "j1", "publish:1", other, &FileDocs(&f.st))
             .unwrap_err();
     assert!(matches!(e, StepError::VersionMoved { current: 1 }), "{e:?}");
     assert_eq!(f.html(2), None);
@@ -672,7 +709,7 @@ fn a_push_built_on_a_killed_steps_version_records_it_as_a_push() {
     let mut again = f.step("<p>four</p>");
     again.base = 3;
     let c =
-        f.st.commit_publish_step(DAEMON, "j1", "publish:3", again)
+        f.st.commit_publish_step(DAEMON, "j1", "publish:3", again, &FileDocs(&f.st))
             .unwrap();
     assert_eq!(c.step.version_n, Some(4));
     let (_, v) =

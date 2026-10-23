@@ -2813,7 +2813,7 @@ mod tests {
         change(st, id, aid);
         let mut step = publish_step(Some(aid), 1, "<p>v2", false);
         step.session_id = Some(sid.into());
-        st.commit_publish_step(DAEMON, id, "publish:1", step)
+        st.commit_publish_step(DAEMON, id, "publish:1", step, &FileDocs::of(st))
             .unwrap()
             .job
     }

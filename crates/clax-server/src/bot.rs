@@ -24,6 +24,7 @@ use clax_core::rights::RightType;
 use clax_http::auth::Caller;
 use clax_http::state::AppState;
 use clax_store::Store;
+use clax_store::app_data::{AppDataOp, WireCaller};
 use clax_store::bot_runs::CallEntry;
 use clax_store::bot_runs::{RequestKind, Run};
 use clax_store::roles::OWNER;
@@ -91,6 +92,48 @@ pub fn person_caller(st: &Store, person: &str) -> clax_core::Result<Option<Calle
 /// person's, narrowed by the asking agent's grant) give that action at its
 /// artifact (`view` where none does), the owner's agent as the owner's
 /// row.
+/// The guard of a ClaxBot document write of `run`'s, run inside the
+/// instance's transactions around it: whether its person may still write
+/// documents on the run's artifact.
+fn bot_guard<'a>(
+    st: &'a Store,
+    run: &'a Run,
+) -> impl Fn(&clax_store::Tx<'_>) -> clax_core::Result<()> + Send + Sync + 'a {
+    move |tx: &clax_store::Tx<'_>| {
+        st.check_bot_write_in(
+            tx,
+            &run.person,
+            run.agent_grant.as_deref(),
+            Some(&run.artifact_id),
+            RightType::Db,
+            "write",
+        )
+    }
+}
+
+/// A read [`ServerHost::read_now`] answers, or the one its artifact's own
+/// store answers, and how to show that store's reply.
+enum ReadNow {
+    Done(Value),
+    Data(ArtifactId, Box<AppDataOp>, DataRead),
+}
+
+impl ReadNow {
+    fn data(id: ArtifactId, op: AppDataOp, kind: DataRead) -> ReadNow {
+        ReadNow::Data(id, Box::new(op), kind)
+    }
+}
+
+/// How a read of an artifact's own store shows its reply.
+enum DataRead {
+    /// `db.collections`: the collection names.
+    Collections,
+    /// `db.get`: the document, or `null`.
+    Get,
+    /// `db.list` (`{docs, next_cursor}`) or `db.query` (the documents).
+    Page { list: bool },
+}
+
 fn db_caller(st: &Store, run: &Run, action: &str) -> Result<clax_core::db::Caller, HostError> {
     use clax_core::visibility::Author;
     let rights = st
@@ -236,7 +279,7 @@ impl ServerHost {
         cx: &OpCtx<'_>,
         op: &str,
         args: &[Value],
-    ) -> Result<Value, HostError> {
+    ) -> Result<ReadNow, HostError> {
         let run = cx.run;
         let a = self.artifact(st, run)?;
         let id = ArtifactId::parse(&a.id).map_err(|e| host_error(&e))?;
@@ -247,21 +290,29 @@ impl ServerHost {
                 .to_string()
         };
         let dbc = db_caller(st, run, "read")?;
-        let doc =
-            |d: clax_store::docs::Doc| json!({"id": d.id, "version": d.version, "data": d.data});
+        let caps = st.doc_capabilities(&id).map_err(|e| host_error(&e))?;
         match op {
-            "artifact.get" => Ok(
+            "artifact.get" => Ok(ReadNow::Done(
                 json!({"id": a.id, "title": a.title, "description": a.description,
                                        "version": a.current_version}),
-            ),
-            "db.collections" => st
-                .readable_doc_collections(&id, &dbc)
-                .map(|c| json!(c))
-                .map_err(|e| host_error(&e)),
-            "db.get" => st
-                .doc_get(&id, &format!("{}/{}", s(0), s(1)), &dbc)
-                .map(|d| d.map_or(Value::Null, doc))
-                .map_err(|e| host_error(&e)),
+            )),
+            "db.collections" => Ok(ReadNow::data(
+                id,
+                AppDataOp::Collections {
+                    caps,
+                    caller: Some(WireCaller::from(&dbc)),
+                },
+                DataRead::Collections,
+            )),
+            "db.get" => Ok(ReadNow::data(
+                id,
+                AppDataOp::Get {
+                    caps,
+                    path: format!("{}/{}", s(0), s(1)),
+                    caller: WireCaller::from(&dbc),
+                },
+                DataRead::Get,
+            )),
             "db.list" | "db.query" => {
                 let opts = args.get(1).cloned().unwrap_or(Value::Null);
                 let filters = if op == "db.query" {
@@ -292,13 +343,18 @@ impl ServerHost {
                         None
                     },
                 };
-                let (docs, next) = st.doc_query(&id, &q, &dbc).map_err(|e| host_error(&e))?;
-                let docs: Vec<Value> = docs.into_iter().map(doc).collect();
-                Ok(if op == "db.list" {
-                    json!({"docs": docs, "next_cursor": next})
-                } else {
-                    Value::Array(docs)
-                })
+                Ok(ReadNow::data(
+                    id,
+                    AppDataOp::Query {
+                        caps,
+                        query: q,
+                        caller: WireCaller::from(&dbc),
+                        view: None,
+                    },
+                    DataRead::Page {
+                        list: op == "db.list",
+                    },
+                ))
             }
             "threads.list" => {
                 let all = args
@@ -313,15 +369,15 @@ impl ServerHost {
                                         "comments": t.comments.len()}));
                     }
                 }
-                Ok(Value::Array(out))
+                Ok(ReadNow::Done(Value::Array(out)))
             }
             "threads.read" => {
                 let t = Self::thread(st, run, &s(0))?;
                 let m = Self::thread_meta(st, run, &t);
-                Ok(
+                Ok(ReadNow::Done(
                     json!({"id": m.id, "resolved": m.resolved, "anchor": m.anchor,
                           "comments": m.comments}),
-                )
+                ))
             }
             other => Err(HostError::new(
                 "unknown_op",
@@ -538,7 +594,7 @@ impl BotHost for ServerHost {
         let reply = self
             .state
             .app_data
-            .call(&id, data_op)
+            .call(&id, *data_op)
             .await
             .map_err(|e| host_error(&e))?;
         let doc =
@@ -635,72 +691,81 @@ impl BotHost for ServerHost {
                 );
                 Ok(Box::new(move |entry: CallEntry| {
                     Box::pin(async move {
+                        // The artifact's own store takes the document, so the
+                        // write and its journal entry are two: the journal's
+                        // answer or the guard first, the write under the
+                        // entry's operation ID, then the guard again and the
+                        // entry (`Store::app_write_begin`).
+                        let id = ArtifactId::parse(&run.artifact_id)?;
+                        let s = |i: usize| {
+                            args.get(i)
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string()
+                        };
+                        let path = format!("{}/{}", s(0), s(1));
+                        let (r, e, i) = (run.clone(), entry.clone(), id.clone());
+                        let begun = state
+                            .store
+                            .call(move |st| {
+                                let caller = db_caller(st, &r, "write").map_err(|e| {
+                                    clax_core::CoreError::invalid("forbidden", e.message)
+                                })?;
+                                let guard = bot_guard(st, &r);
+                                let prev = st.app_write_begin(&e, &guard)?;
+                                Ok((prev, caller, st.doc_capabilities(&i)?))
+                            })
+                            .await?;
+                        let (caller, caps) = match begun {
+                            (Some(prev), _, _) => return Ok(prev),
+                            (None, caller, caps) => (caller, caps),
+                        };
+                        let w = clax_store::app_data::WriteCtx::of(&ctx).with_op(entry.op_id());
+                        let caller = clax_store::app_data::WireCaller::from(&caller);
+                        let data_op = match op.as_str() {
+                            "db.set" => clax_store::app_data::AppDataOp::Set {
+                                ctx: w,
+                                caps,
+                                path: path.clone(),
+                                data: args.get(2).cloned().unwrap_or(Value::Null),
+                                pin: pin_of(args.get(3)),
+                                caller,
+                            },
+                            "db.update" => clax_store::app_data::AppDataOp::Update {
+                                ctx: w,
+                                caps,
+                                path: path.clone(),
+                                patch: args.get(2).cloned().unwrap_or(Value::Null),
+                                pin: pin_of(args.get(3)),
+                                caller,
+                                view: None,
+                            },
+                            _ => clax_store::app_data::AppDataOp::Delete {
+                                ctx: w,
+                                caps,
+                                path: path.clone(),
+                                pin: pin_of(args.get(2)),
+                                caller,
+                            },
+                        };
+                        let written = state.app_data.call(&id, data_op).await?.into_written()?;
                         let events = state.events.clone();
+                        let r = run.clone();
                         state
                             .store
                             .call(move |st| {
-                                let id = ArtifactId::parse(&run.artifact_id)?;
-                                let caller = db_caller(st, &run, "write").map_err(|e| {
-                                    clax_core::CoreError::invalid("forbidden", e.message)
-                                })?;
-                                let s = |i: usize| {
-                                    args.get(i)
-                                        .and_then(Value::as_str)
-                                        .unwrap_or("")
-                                        .to_string()
-                                };
-                                let path = format!("{}/{}", s(0), s(1));
-                                let guard = |tx: &clax_store::Tx<'_>| {
-                                    st.check_bot_write_in(
-                                        tx,
-                                        &run.person,
-                                        run.agent_grant.as_deref(),
-                                        Some(&run.artifact_id),
-                                        RightType::Db,
-                                        "write",
-                                    )
-                                };
-                                let j = match op.as_str() {
-                                    "db.set" => st.doc_set_journaled(
-                                        &ctx,
-                                        &id,
-                                        &path,
-                                        args.get(2).cloned().unwrap_or(Value::Null),
-                                        pin_of(args.get(3)),
-                                        &caller,
-                                        &entry,
-                                        &guard,
-                                    )?,
-                                    "db.update" => st.doc_update_journaled(
-                                        &ctx,
-                                        &id,
-                                        &path,
-                                        args.get(2).cloned().unwrap_or(Value::Null),
-                                        pin_of(args.get(3)),
-                                        &caller,
-                                        &entry,
-                                        &guard,
-                                    )?,
-                                    _ => st.doc_delete_journaled(
-                                        &ctx,
-                                        &id,
-                                        &path,
-                                        pin_of(args.get(2)),
-                                        &caller,
-                                        &entry,
-                                        &guard,
-                                    )?,
-                                };
-                                // Announced to whoever reads at the owner's
-                                // level; other pages read it at their next fetch.
-                                events.publish(clax_core::Event::Doc {
-                                    artifact_id: id.as_str().to_string(),
-                                    path,
-                                    version: j.value()["version"].as_u64(),
-                                    private_to: None,
-                                    read_level: clax_core::db::Level::Owner,
-                                    self_read: None,
-                                });
+                                let guard = bot_guard(st, &r);
+                                let j = st.journal_app_write(&entry, &guard, written.doc_ref())?;
+                                if let Some(c) = written.change {
+                                    events.publish(clax_core::Event::Doc {
+                                        artifact_id: id.as_str().to_string(),
+                                        path: c.path,
+                                        version: c.version,
+                                        private_to: c.private_to,
+                                        read_level: c.read_level,
+                                        self_read: c.self_read,
+                                    });
+                                }
                                 Ok(j)
                             })
                             .await
