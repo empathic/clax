@@ -717,7 +717,9 @@ impl Event<'_> {
                 | K::GrantToken
                 | K::GrantNarrow,
             ) => self.str("grant_id").map(Obj::Grant),
-            Some(K::PersonRights | K::PersonRevoke | K::PersonReinstate) => self.str("person").map(Obj::Person),
+            Some(K::PersonRights | K::PersonRevoke | K::PersonReinstate) => {
+                self.str("person").map(Obj::Person)
+            }
             Some(K::AgentName | K::AgentNarrow | K::AgentElevate) => s.map(Obj::Session),
             Some(K::ApprovalGrant | K::ApprovalRevoke) => {
                 self.str("approval_id").map(Obj::Approval)

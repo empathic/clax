@@ -1761,8 +1761,8 @@ impl Store {
                 .optional()?
                 .ok_or(CoreError::NotFound)?;
             super::github::unblock_in(tx, &id)?;
-            let rec =
-                AuditRecord::new(AuditKind::PersonReinstate, now.as_str()).with("person", public_id);
+            let rec = AuditRecord::new(AuditKind::PersonReinstate, now.as_str())
+                .with("person", public_id);
             self.record_audit(tx, ctx, rec)?;
             self.visibility_changed();
             Ok(())
@@ -4638,10 +4638,7 @@ pub(crate) mod tests {
         );
         assert_eq!(ev[0].1["type"], "owner");
         assert_eq!(ev[0].2["person"], mia.as_str());
-        assert_eq!(
-            st.reach(mias.as_str(), Some(&mia)).unwrap(),
-            Reach::Within
-        );
+        assert_eq!(st.reach(mias.as_str(), Some(&mia)).unwrap(), Reach::Within);
         let v = st.viewer_by_public_id(&mia).unwrap().unwrap();
         assert!(v.person && v.person_revoked_at.is_none());
         assert!(

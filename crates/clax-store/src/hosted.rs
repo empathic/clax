@@ -1188,7 +1188,11 @@ mod tests {
             .viewer;
         st.revoke_person(&AuditCtx::DAEMON, &sam.public_id).unwrap();
         // A guest, made in the same instant as the invite naming them.
-        let gil = st.create_guest(&AuditCtx::DAEMON, "Gil").unwrap().who.viewer;
+        let gil = st
+            .create_guest(&AuditCtx::DAEMON, "Gil")
+            .unwrap()
+            .who
+            .viewer;
         for who in [&sam, &gil] {
             let (_, code) = st
                 .create_invite(

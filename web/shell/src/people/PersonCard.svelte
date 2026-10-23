@@ -13,9 +13,9 @@
   // what waits on the owner, and their approvals of the owner's content
   // ("Approvals of your content", O12, read-only), and how much they made
   // (pages and storage: counts, never which). A revoked person's card is
-  // history: their name, when they were revoked, what they made, and
-  // Reinstate, which serves their pages again (they sign in again
-  // themselves). For the viewer themself
+  // history: their name, when they were revoked, what they made, and on a
+  // hosted Clax Reinstate, which serves their pages again (they sign in
+  // again themselves). For the viewer themself
   // (`view` "self"): narrowing a machine's agents or one agent, renaming
   // and ending their agents, with who raised an agent with what shown
   // beside its narrowing. An agent of the
@@ -45,11 +45,13 @@
     artifacts?: { id: string; title: string }[] | null;
     /** Asks for `artifacts` (a raise panel opened). */
     needArtifacts?(): void;
+    /** The daemon is a hosted Clax: a revoked person can be reinstated. */
+    hosted?: boolean;
     onChanged(): void;
   };
   // No defaults: a default would load Svelte's prop helper, which the
   // artifact view's entry then shares with this chunk.
-  let { view, who, owner, approvals, waiting, ofYours, artifacts, needArtifacts, onChanged }: Props = $props();
+  let { view, who, owner, approvals, waiting, ofYours, artifacts, needArtifacts, hosted, onChanged }: Props = $props();
   const aps = $derived(approvals ?? []);
   const yours = $derived(ofYours ?? []);
   const wait = $derived(waiting ?? []);
@@ -63,8 +65,6 @@
   // Where the owner raises each agent (by handle): `*`, or an artifact ID.
   let raiseAt = $state<Record<string, string>>({});
   const name = $derived(who.display_name ?? (view === "self" ? "You" : "Unnamed"));
-  /** A revoked person's card, on the owner's People: history, and Reinstate. */
-  const gone = $derived(view === "owner" && !!who.revoked_at);
   const machines = $derived(who.grants.filter(g => g.status === "approved" && !g.ended_at));
   const grantOf = (a: PeopleAgent) => who.grants.find(g => g.id === a.grant_id) ?? null;
   const preset = $derived(presetOf(who.rights));
@@ -145,10 +145,10 @@
   <header>
     <h3 tabindex="-1">{name}{#if view === "self" && who.display_name}<span class="you">{" (you)"}</span>{/if}</h3>
     {#if who.github}<a class="ghlogin" href="https://github.com/{encodeURIComponent(who.github.login)}" rel="noopener noreferrer" target="_blank" data-testid="github-login">@{who.github.login}</a>{/if}
-    {#if gone}<span class="meta">revoked {who.revoked_at?.slice(0, 10)}</span>{/if}
+    {#if who.revoked_at}<span class="meta">revoked {who.revoked_at.slice(0, 10)}</span>{/if}
     <span class="sp"></span>
-    {#if gone}
-      <button type="button" aria-label="Reinstate {name}" onclick={() => act(() => api.reinstatePerson(who.public_id!))}>Reinstate</button>
+    {#if who.revoked_at}
+      {#if hosted}<button type="button" aria-label="Reinstate {name}" onclick={() => act(() => api.reinstatePerson(who.public_id!))}>Reinstate</button>{/if}
     {:else if view === "owner"}
       <label class="pick">Rights
         <select class="preset" onchange={e => { const el = e.currentTarget; if (el.value && who.public_id) void act(() => api.setRights(who.public_id!, el.value), { el }); }}>
@@ -160,8 +160,8 @@
     {/if}
   </header>
   {#if err}<p class="err" role="alert">{err}</p>{/if}
-  {#if view === "owner" && who.made}<p class="made">{madeText(who.made)}</p>{/if}
-  {#if !gone}
+  {#if who.made}<p class="meta">{madeText(who.made)}</p>{/if}
+  {#if !who.revoked_at}
   <section class="part">
     <h4 tabindex="-1">Machines</h4>
     {#each machines as g (g.id)}

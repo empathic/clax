@@ -742,13 +742,14 @@ pub async fn revoke_person(
     Ok(Json(v))
 }
 
-/// `POST /api/people/<public_id>/reinstate` (the owner, in a browser or
-/// by hand) → `{person}`: un-revokes a revoked person. What they made is
+/// `POST /api/people/<public_id>/reinstate` (a hosted daemon's owner, in a
+/// browser or by hand) → `{person}`: un-revokes a revoked person. What they made is
 /// served again, as it was, and their GitHub account may sign in again;
 /// they sign in themselves, as nothing is handed out, and their machines
 /// stay disconnected. Recorded as `person.reinstate`. 403 `forbidden` for
 /// anyone but the owner, `not_for_agents` for agents; 404 for an unknown
-/// public ID or a person who is not revoked.
+/// public ID or a person who is not revoked, and on a local daemon, where
+/// a revoked person comes back through a new invite.
 pub async fn reinstate_person(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -764,13 +765,19 @@ pub async fn reinstate_person(
             "only the owner reinstates a person",
         ));
     }
+    if s.hosted.is_none() {
+        return Err(ApiError::not_found());
+    }
     let pid = path(pid)?;
     let state = s.clone();
     let v = s
         .store_call(move |st| {
             st.reinstate_person(&audit.resolve(st)?, &pid)?;
             let person = person_of(st, &pid)?;
-            announce(&state, json!({"what": "person_reinstated", "person": person}));
+            announce(
+                &state,
+                json!({"what": "person_reinstated", "person": person}),
+            );
             Ok(json!({"person": person}))
         })
         .await?;

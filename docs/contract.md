@@ -4934,8 +4934,10 @@ they made is served to anyone while they are revoked: not by link, not
 by share, not in the public gallery, not at its content addresses
 (`/c/…`, `/_blob/…`, `/_clip/…`), not through git; every route answers
 it 404 `not_found` as one that does not exist. Nothing is deleted.
-`POST /api/people/<public_id>/reinstate` (the owner, in a browser or by
-hand; agents 403 `not_for_agents`, anyone else 403 `forbidden`) → 200
+On a hosted Clax only, `POST /api/people/<public_id>/reinstate` (the
+owner, in a browser or by hand; agents 403 `not_for_agents`, anyone else
+403 `forbidden`; 404 on a local daemon, where a revoked person comes back
+through a new invite) → 200
 `{person}` un-revokes them: it clears the revocation and the GitHub
 block, so what they made is served again as it was and they may sign in
 again themselves. It hands out nothing: their grants, invites and agent

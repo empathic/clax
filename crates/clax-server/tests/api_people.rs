@@ -561,6 +561,33 @@ async fn a_waiting_agent_takes_with_its_narrowed_rights() {
 }
 
 #[tokio::test]
+async fn a_local_daemon_reinstates_no_one() {
+    let p = people().await;
+    let (status, v) = p
+        .owner("DELETE", &format!("/api/people/{}", p.sam_public), None)
+        .await;
+    assert_eq!(status, 200, "{v}");
+    // Reinstating is a hosted Clax's: here a revoked person comes back
+    // through a new invite.
+    let (status, v) = p
+        .owner(
+            "POST",
+            &format!("/api/people/{}/reinstate", p.sam_public),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!((status, code(&v)), (404, "not_found"), "{v}");
+    let (_, v) = p.owner("GET", "/api/people", None).await;
+    let sam = v["people"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["public_id"] == json!(p.sam_public))
+        .unwrap();
+    assert!(sam["revoked_at"].is_string(), "{sam}");
+}
+
+#[tokio::test]
 async fn revoking_a_person_revokes_grants_and_invites_and_keeps_history() {
     let p = people().await;
     let a = p.ts.publish("Review", &[("index.html", "<p>v1</p>")]).await;

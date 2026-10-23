@@ -86,8 +86,12 @@ describe("PersonCard", () => {
     const onChanged = vi.fn();
     const old = person({ public_id: "p3", display_name: "Old", revoked_at: "2026-10-01T00:00:00Z", grants: [], agents: [],
       github: { id: 7, login: "old-gh", avatar_url: null, blocked_at: "2026-10-01T00:00:00Z" }, made: { artifacts: 3, asset_bytes: 2_500_000 } });
-    const m = mount(PersonCard, { view: "owner", who: old, onChanged });
-    expect(m.root.querySelector(".made")!.textContent).toBe("3 pages · 2.5 MB");
+    // A local daemon reinstates no one: a revoked person there takes a new invite.
+    const local = mount(PersonCard, { view: "owner", who: old, onChanged });
+    expect(local.root.querySelector('button[aria-label="Reinstate Old"]')).toBeNull();
+    local.unmount();
+    const m = mount(PersonCard, { view: "owner", who: old, hosted: true, onChanged });
+    expect(m.root.querySelector("p.meta")!.textContent).toBe("3 pages · 2.5 MB");
     expect(m.root.querySelector("header .meta")!.textContent).toBe("revoked 2026-10-01");
     expect(m.root.querySelector("[data-testid=github-login]")!.textContent).toBe("@old-gh");
     // Nothing of a live person's controls: no rights, machines or agents.
@@ -104,7 +108,7 @@ describe("PersonCard", () => {
 
   it("shows a live person's count of pages and storage", () => {
     const m = mount(PersonCard, { view: "owner", who: person({ made: { artifacts: 1, asset_bytes: 0 } }), onChanged: vi.fn() });
-    expect(m.root.querySelector(".made")!.textContent).toBe("1 page · 0 MB");
+    expect(m.root.querySelector("p.meta")!.textContent).toBe("1 page · 0 MB");
     expect(m.root.querySelector('button[aria-label="Reinstate Sam"]')).toBeNull();
   });
 

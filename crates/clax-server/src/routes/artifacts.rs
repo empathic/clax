@@ -1025,8 +1025,12 @@ pub async fn get(
             );
             // Whether the caller may change its tags (the shell's tag
             // editor): those who administer it, as for its pin.
-            artifact["may_tag"] =
-                json!(clax_http::agent::administers(st, &caller, a.id.as_str(), hosted)?);
+            artifact["may_tag"] = json!(clax_http::agent::administers(
+                st,
+                &caller,
+                a.id.as_str(),
+                hosted
+            )?);
             // Whether the caller may resolve its threads, so also send them
             // while its Comments switch is off (the shell's Send).
             artifact["may_resolve"] = json!(may_resolve);
