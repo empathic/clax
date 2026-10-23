@@ -162,8 +162,7 @@ pub fn visitor_id(token: &str, aid: &ArtifactId, secret: &str) -> String {
 /// `no-cache` `private, no-cache`; `no-store` stays). A world visitor's
 /// public answer varies by `Cookie`; the access layer never makes the page
 /// runtime's (`/_clax/api/`) public.
-pub fn site_response_headers(res: &mut Response, world_visitor: bool) {
-    let h = res.headers_mut();
+fn cache_headers(h: &mut HeaderMap, world_visitor: bool) {
     h.remove(header::ACCESS_CONTROL_ALLOW_ORIGIN);
     if h.contains_key(header::SET_COOKIE) {
         h.insert(
@@ -350,8 +349,19 @@ pub fn public_origin(s: &AppState) -> String {
 /// `Host`'s port (CSP names no IPv6 literal, so a shell at `[::1]` frames
 /// no site).
 pub fn shell_origins(s: &AppState, host: &str) -> Vec<String> {
-    if let Some(h) = &s.hosted {
-        return vec![h.origin.clone()];
+    shell_origins_of(hosted_origin(s), host)
+}
+
+/// The public origin of a hosted daemon, `None` on a local one.
+fn hosted_origin(s: &AppState) -> Option<&str> {
+    s.hosted.as_ref().map(|h| h.origin.as_str())
+}
+
+/// [`shell_origins`] from the hosted public origin (`None` on a local
+/// daemon).
+fn shell_origins_of(hosted: Option<&str>, host: &str) -> Vec<String> {
+    if let Some(origin) = hosted {
+        return vec![origin.to_string()];
     }
     let port = host
         .rsplit_once(':')
@@ -368,8 +378,13 @@ pub fn shell_origins(s: &AppState, host: &str) -> Vec<String> {
 /// `host` ([`shell_origins`]): only the artifact's own pages and the shell
 /// may frame a site page.
 pub fn frame_ancestors(s: &AppState, host: &str) -> String {
+    frame_ancestors_of(hosted_origin(s), host)
+}
+
+/// [`frame_ancestors`] from the hosted public origin.
+fn frame_ancestors_of(hosted: Option<&str>, host: &str) -> String {
     let mut p = String::from("frame-ancestors 'self'");
-    for o in shell_origins(s, host) {
+    for o in shell_origins_of(hosted, host) {
         p.push(' ');
         p.push_str(&o);
     }
@@ -392,7 +407,28 @@ pub const CORP: axum::http::HeaderName =
 /// `https`, and on an HTML response without a policy of its own
 /// `Content-Security-Policy:` [`frame_ancestors`].
 pub fn site_response_headers(s: &AppState, host: &str, res: &mut Response) {
-    let h = res.headers_mut();
+    let answer = res.extensions().get::<SiteAnswer>().copied();
+    site_headers(hosted_origin(s), secure(s), host, answer, res.headers_mut());
+}
+
+/// [`site_response_headers`] on response headers `h`, for a server that
+/// holds no [`AppState`] (a Worker serving the UI's files from its static
+/// assets): `hosted` is a hosted daemon's public origin (`None` on a local
+/// one), `secure` whether sites are served on `https`, `answer` what the
+/// access layer decided, if it decided the response.
+pub fn site_headers(
+    hosted: Option<&str>,
+    secure: bool,
+    host: &str,
+    answer: Option<SiteAnswer>,
+    h: &mut HeaderMap,
+) {
+    if let Some(a) = answer {
+        cache_headers(h, a.public);
+        if a.world {
+            h.insert(CORP, HeaderValue::from_static("cross-origin"));
+        }
+    }
     h.insert(
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
@@ -404,7 +440,7 @@ pub fn site_response_headers(s: &AppState, host: &str, res: &mut Response) {
     if !h.contains_key(CORP) {
         h.insert(CORP, HeaderValue::from_static("same-origin"));
     }
-    if secure(s) {
+    if secure {
         h.insert(
             header::STRICT_TRANSPORT_SECURITY,
             HeaderValue::from_static(HSTS),
@@ -416,7 +452,7 @@ pub fn site_response_headers(s: &AppState, host: &str, res: &mut Response) {
         .is_some_and(|t| t.trim_start().to_ascii_lowercase().starts_with("text/html"));
     if html
         && !h.contains_key(header::CONTENT_SECURITY_POLICY)
-        && let Ok(v) = HeaderValue::from_str(&frame_ancestors(s, host))
+        && let Ok(v) = HeaderValue::from_str(&frame_ancestors_of(hosted, host))
     {
         h.insert(header::CONTENT_SECURITY_POLICY, v);
     }
@@ -731,6 +767,80 @@ mod tests {
     }
 
     #[test]
+    fn the_state_cookie_is_sent_to_the_session_alone_for_ten_minutes() {
+        assert_eq!(
+            state_cookie(true, true, "s").to_str().unwrap(),
+            "__Host-clax_site_state=s; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=None; Partitioned"
+        );
+        assert_eq!(
+            state_cookie(false, false, "s").to_str().unwrap(),
+            "clax_site_state=s; Path=/; Max-Age=600; HttpOnly; SameSite=Lax"
+        );
+        assert!(
+            clear_state_cookie(false, true)
+                .to_str()
+                .unwrap()
+                .starts_with("clax_site_state=; Path=/; Max-Age=0;")
+        );
+        assert_ne!(new_state(), new_state());
+        // On https the state is `__Host-`: host-only, `Path=/`, never a
+        // `Domain`, so no sibling host's cookie can stand for it.
+        for partitioned in [false, true] {
+            let c = state_cookie(true, partitioned, "s")
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert!(c.starts_with("__Host-clax_site_state=s; Path=/;"), "{c}");
+            assert!(c.contains("Secure") && !c.contains("Domain"), "{c}");
+        }
+        let mut h = HeaderMap::new();
+        h.insert(
+            header::COOKIE,
+            HeaderValue::from_static("clax_site_state=planted; __Secure-clax_site_state=planted"),
+        );
+        assert_eq!(state_in(&h, true), None, "a cookie a sibling could set");
+        assert_eq!(state_in(&h, false).as_deref(), Some("planted"));
+        h.insert(
+            header::COOKIE,
+            HeaderValue::from_static("__Host-clax_site_state=mine"),
+        );
+        assert_eq!(state_in(&h, true).as_deref(), Some("mine"));
+    }
+
+    #[test]
+    fn a_private_sites_response_is_private_to_its_browser() {
+        let with = |cache: Option<&str>| {
+            let mut r = Response::new(Body::empty());
+            if let Some(c) = cache {
+                r.headers_mut()
+                    .insert(header::CACHE_CONTROL, HeaderValue::from_str(c).unwrap());
+            }
+            r.headers_mut().insert(
+                header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                HeaderValue::from_static("*"),
+            );
+            let mut r = r;
+            cache_headers(r.headers_mut(), false);
+            assert!(
+                r.headers()
+                    .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                    .is_none()
+            );
+            r.headers()[header::CACHE_CONTROL]
+                .to_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(
+            with(Some("public, max-age=31536000, immutable")),
+            "private, max-age=31536000, immutable"
+        );
+        assert_eq!(with(Some("no-cache")), "private, no-cache");
+        assert_eq!(with(Some("no-store")), "no-store");
+        assert_eq!(with(None), "private");
+    }
+
+    #[test]
     fn the_visitor_cookie_lasts_a_year_and_holds_a_secret_not_the_id() {
         let c = visitor_cookie(true, "s").to_str().unwrap().to_string();
         assert_eq!(
@@ -776,7 +886,7 @@ mod tests {
             if cookie {
                 h.insert(header::SET_COOKIE, HeaderValue::from_static("a=b"));
             }
-            site_response_headers(&mut r, world);
+            cache_headers(r.headers_mut(), world);
             assert!(
                 r.headers()
                     .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
@@ -792,7 +902,7 @@ mod tests {
         let mut r = Response::new(Body::empty());
         r.headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-        site_response_headers(&mut r, true);
+        cache_headers(r.headers_mut(), true);
         assert_eq!(
             r.headers()[header::VARY],
             "Cookie",

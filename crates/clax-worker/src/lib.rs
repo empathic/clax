@@ -16,8 +16,9 @@
 //!   without `SITE_DOMAIN` or `HOSTED`; `instance::site_hosts`), is that
 //!   artifact's site: the instance's site routes answer every path there
 //!   (`clax_server::routes::site`), the UI's files under `/_clax/` from the
-//!   static assets as the site routes serve them (with the site layer's
-//!   `Referrer-Policy: no-referrer`). No path-first route below is reached
+//!   static assets as the site routes serve them, with the headers the site
+//!   layer gives every site response (`site_access::site_headers`) and no
+//!   `Access-Control-Allow-Origin`. No path-first route below is reached
 //!   on a site host: `/git/`, `/_diag/`, `/_dev/repos/` and `/do/` are the
 //!   site's own paths, as `/mcp` and `/api/` are;
 //! - with `CLAX_TEST_ROUTES` = `1` (`0` in `wrangler.jsonc`), `/do/{name}/…`
@@ -169,11 +170,13 @@ async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response
         }
         Route::Site => {
             if let Some(mut res) = static_asset(&env, &path, false).await? {
-                // As the site layer marks every site response.
-                res.headers_mut().insert(
-                    header::REFERRER_POLICY,
-                    HeaderValue::from_static("no-referrer"),
-                );
+                let hosted = env.var("HOSTED").is_ok_and(|v| v.to_string() == "1");
+                let public = env
+                    .var("PUBLIC_ORIGIN")
+                    .ok()
+                    .and_then(|v| clax_core::config::hosted_origin(&v.to_string()))
+                    .filter(|_| hosted);
+                site_static_headers(res.headers_mut(), public.as_deref(), &host);
                 return Response::try_from(res);
             }
             return to_instance(&env, req).await;
@@ -412,6 +415,17 @@ async fn static_asset(env: &Env, path: &str, app_host: bool) -> Result<Option<Ht
         );
     }
     Ok(Some(res))
+}
+
+/// Marks a static file served on site host `host` as the site layer marks
+/// every site response (`clax_http::site_access::site_headers`), with no
+/// `Access-Control-Allow-Origin` (the bridge's parts carry one on the app
+/// host): `public` is a hosted instance's public origin, `None` on one that
+/// is not hosted.
+fn site_static_headers(h: &mut axum::http::HeaderMap, public: Option<&str>, host: &str) {
+    h.remove(header::ACCESS_CONTROL_ALLOW_ORIGIN);
+    let secure = public.is_some_and(|o| o.starts_with("https://"));
+    clax_http::site_access::site_headers(public, secure, host, None, h);
 }
 
 /// Durable Objects this isolate has constructed, to tell a warm object from
@@ -850,6 +864,46 @@ mod tests {
                 true
             ),
             Route::Site
+        );
+    }
+
+    #[test]
+    fn a_site_hosts_static_file_has_the_site_headers_and_no_cors() {
+        use axum::http::{HeaderMap, HeaderValue, header};
+        let file = |ct: &'static str| {
+            let mut h = HeaderMap::new();
+            h.insert(header::CONTENT_TYPE, HeaderValue::from_static(ct));
+            h.insert(
+                header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                HeaderValue::from_static("*"),
+            );
+            h
+        };
+        let host = "abcdefghjkmn.clax.run";
+        let mut h = file("text/javascript");
+        super::site_static_headers(&mut h, Some("https://clax.example"), host);
+        assert!(h.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+        assert_eq!(h[header::REFERRER_POLICY], "no-referrer");
+        assert_eq!(h[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(h["cross-origin-resource-policy"], "same-origin");
+        assert_eq!(
+            h[header::STRICT_TRANSPORT_SECURITY],
+            clax_http::site_access::HSTS
+        );
+        let mut page = file("text/html; charset=utf-8");
+        super::site_static_headers(&mut page, Some("https://clax.example"), host);
+        assert_eq!(
+            page[header::CONTENT_SECURITY_POLICY],
+            "frame-ancestors 'self' https://clax.example"
+        );
+        // Not hosted: no HSTS, and the local shell frames it.
+        let mut local = file("text/html");
+        super::site_static_headers(&mut local, None, "abcdefghjkmn.localhost:8787");
+        assert!(local.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+        assert!(local.get(header::STRICT_TRANSPORT_SECURITY).is_none());
+        assert_eq!(
+            local[header::CONTENT_SECURITY_POLICY],
+            "frame-ancestors 'self' http://localhost:8787 http://127.0.0.1:8787"
         );
     }
 }
