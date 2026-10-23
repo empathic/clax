@@ -25,12 +25,12 @@
 //   object and not in the instance's database (`GET /_worker/app-data`),
 //   and goes when the artifact is deleted;
 // - two artifacts' sites keep their localStorage apart in one browser;
-// - with the access check (`/site-signin` served; skipped, saying so,
-//   while it answers 404): a private site is refused signed out and served
-//   to the owner's browser through the handshake; a site opened to the
-//   world is served signed out until it is closed again (skipped while
-//   `PATCH site_access` is not served); an old keyed asset URL serves no
-//   bytes, at most a redirect to its artifact's site;
+// - `/site-signin` is served; a private site is refused signed out (302
+//   to `/site-signin` for a page, 401 for a subresource) and served to the
+//   owner's browser through the handshake; a site opened to the world with
+//   `PATCH site_access` is served signed out until it is closed again; an
+//   old keyed asset URL serves no bytes, at most a redirect to its
+//   artifact's site;
 // - a guest with the link of a page shared for comments names themselves
 //   and comments, and the owner sees it live;
 // - the owner's and the guest's pointers reach each other over the live
@@ -216,11 +216,10 @@ async function call(p, method, path, body) {
   }, [method, path, body]);
 }
 
-/** The frame of `id`'s version `n` in the artifact page: on the artifact's
- * site host, or the public origin's `/c/` address of the shell's sandboxed
- * mode. */
+/** The frame of `id`'s version `n` in the artifact page, on the artifact's
+ * site host. */
 async function contentFrame(page, id, n) {
-  const url = new RegExp(`^http://(${id}\\.localhost:\\d+/(_clax/v/${n}/)?|localhost:\\d+/c/${id}/v/${n}/)([?#].*)?$`);
+  const url = new RegExp(`^http://${id}\\.localhost:\\d+/(_clax/v/${n}/)?([?#].*)?$`);
   return until(`the frame of v${n}`, () => page.frame({ url }));
 }
 
@@ -241,11 +240,6 @@ function siteRefused(r) {
   } catch {
     return false;
   }
-}
-
-/** Says why a step is skipped. */
-function skip(what, why) {
-  console.log(`skip ${what}: ${why}`);
 }
 
 async function shot(page, name) {
@@ -468,9 +462,8 @@ async function main() {
     const af = await contentFrame(ada, id, 1);
     check((await af.locator("#h").textContent({ timeout: LIMIT })) === "Tide tables", "the page renders in the frame");
 
-    // Each artifact's site, on its own host. With the access check
-    // (`/site-signin` on the public host, Tasks 3 and 4) a private site
-    // needs a site session; before it, the site routes serve anyone.
+    // Each artifact's site, on its own host. A private site needs a site
+    // session, which `/site-signin` on the public host hands out.
     const site = siteOf(harbour.id);
     const siteHost = new URL(site).host;
     // Asked by the signed-in owner's browser, whom a signed-out caller's
@@ -478,32 +471,20 @@ async function main() {
     const signinProbe = await ada.request.get(`${origin}/site-signin?host=${encodeURIComponent(siteHost)}&next=%2F`, { maxRedirects: 0 });
     const signedOut = await raw(`${site}/`, { accept: "text/html" });
     check(signedOut.headers.get("referrer-policy") === "no-referrer", "a site response sends no referrer", Object.fromEntries(signedOut.headers));
-    // The steps of the access check skip only while the build has none at
-    // all: /site-signin is missing and a private site is served signed out.
-    // A site that refuses a signed-out caller with /site-signin missing is
-    // a failure.
-    const signinMissing = signinProbe.status() === 404;
-    const servedSignedOut = signedOut.status === 200 && signedOut.text.includes("Harbour log");
-    check(!signinMissing || servedSignedOut, "a site that refuses signed-out callers has /site-signin to sign them in", { signin: signinProbe.status(), site: signedOut.status });
-    const accessChecked = !signinMissing;
-    if (!accessChecked) {
-      skip("the site handshake, world-open and old keyed URL steps", "/site-signin answers 404 and the site is served signed out: this build has no access check");
-      check(servedSignedOut, "the site host serves the current version at its root", signedOut.status);
-    } else {
-      const to = signedOut.location ? new URL(signedOut.location, site) : null;
-      check(
-        signedOut.status === 302 && to?.origin === origin && to.pathname === "/site-signin" && to.searchParams.get("host") === siteHost,
-        "a private site signed out is sent to /site-signin on the public origin",
-        signedOut,
-      );
-      const sub = await raw(`${site}/`);
-      check(siteRefused(sub) && sub.status === 401, "a private site's subresource signed out is 401", sub.status);
-    }
+    check(signinProbe.status() !== 404, "/site-signin is served on the public origin", signinProbe.status());
+    const to = signedOut.location ? new URL(signedOut.location, site) : null;
+    check(
+      signedOut.status === 302 && to?.origin === origin && to.pathname === "/site-signin" && to.searchParams.get("host") === siteHost,
+      "a private site signed out is sent to /site-signin on the public origin",
+      signedOut,
+    );
+    const sub = await raw(`${site}/`);
+    check(siteRefused(sub) && sub.status === 401, "a private site's subresource signed out is 401", sub.status);
     const tab = await ada.context().newPage();
     pages.push(tab);
     await tab.goto(`${site}/`);
     await tab.locator("h2", { hasText: "Harbour log" }).waitFor({ timeout: LIMIT });
-    check(new URL(tab.url()).origin === site, accessChecked ? "the owner's browser opens the private site through the handshake" : "the owner's browser opens the site at its root", tab.url());
+    check(new URL(tab.url()).origin === site, "the owner's browser opens the private site through the handshake", tab.url());
 
     // No path-first route of the Worker is reached on a site host: each is
     // the site's own path there, which it does not have.
@@ -563,29 +544,22 @@ async function main() {
     const up = await fetch(`${origin}/api/artifacts/${notes.id}/assets`, { method: "POST", headers: { authorization: `Bearer ${TOKEN}` }, body: form });
     const asset = (await up.json()).asset;
     check(up.status === 201 && asset?.id, "an asset is uploaded", asset);
-    if (accessChecked) {
-      const old = await raw(`${origin}/_blob/${asset.id}?k=${"0".repeat(32)}`);
-      check(old.status !== 200 && old.text === "", "an old keyed asset URL serves no bytes", { status: old.status, text: old.text.slice(0, 100) });
-      if (old.status >= 300 && old.status < 400) {
-        const to = new URL(old.location, origin);
-        check(to.origin === siteOf(notes.id) && to.pathname.endsWith(`/${asset.id}`), "an old keyed asset URL redirects to its artifact's site", old.location);
-        check(siteRefused(await raw(to.href)), "the redirect's target refuses a caller without a site session");
-      }
+    const old = await raw(`${origin}/_blob/${asset.id}?k=${"0".repeat(32)}`);
+    check(old.status !== 200 && old.text === "", "an old keyed asset URL serves no bytes", { status: old.status, text: old.text.slice(0, 100) });
+    if (old.status >= 300 && old.status < 400) {
+      const target = new URL(old.location, origin);
+      check(target.origin === siteOf(notes.id) && target.pathname.endsWith(`/${asset.id}`), "an old keyed asset URL redirects to its artifact's site", old.location);
+      check(siteRefused(await raw(target.href)), "the redirect's target refuses a caller without a site session");
     }
 
-    // Opening a site to the world (Task 8): served signed out until closed.
-    if (accessChecked) {
-      const open = await fetch(`${origin}/api/artifacts/${harbour.id}`, { method: "PATCH", headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` }, body: JSON.stringify({ site_access: "world" }) });
-      const opened = await open.json().catch(() => null);
-      if (open.status !== 200 || opened?.artifact?.site_access !== "world") {
-        skip("the world-open site steps", `PATCH site_access answers ${open.status}: this build cannot open a site to the world`);
-      } else {
-        const world = await raw(`${site}/`, { accept: "text/html" });
-        check(world.status === 200 && world.text.includes("Harbour log"), "a site opened to the world is served signed out", world.status);
-        await api(origin, `/api/artifacts/${harbour.id}`, { method: "PATCH", body: JSON.stringify({ site_access: "private" }) });
-        check(!(await raw(`${site}/`, { accept: "text/html" })).text.includes("Harbour log"), "closed again, it refuses the next anonymous request");
-      }
-    }
+    // Opening a site to the world: served signed out until closed.
+    const open = await fetch(`${origin}/api/artifacts/${harbour.id}`, { method: "PATCH", headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` }, body: JSON.stringify({ site_access: "world" }) });
+    const opened = await open.json().catch(() => null);
+    check(open.status === 200 && opened?.artifact?.site_access === "world", "PATCH site_access opens a site to the world", { status: open.status, body: opened });
+    const world = await raw(`${site}/`, { accept: "text/html" });
+    check(world.status === 200 && world.text.includes("Harbour log"), "a site opened to the world is served signed out", world.status);
+    await api(origin, `/api/artifacts/${harbour.id}`, { method: "PATCH", body: JSON.stringify({ site_access: "private" }) });
+    check(!(await raw(`${site}/`, { accept: "text/html" })).text.includes("Harbour log"), "closed again, it refuses the next anonymous request");
 
     // Deleting the artifact erases its object.
     await api(origin, `/api/artifacts/${notes.id}`, { method: "DELETE" });
