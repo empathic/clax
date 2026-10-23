@@ -21,8 +21,11 @@
 //!   deletion of one, or of itself, leaves the fork's. Each copy is
 //!   recorded as an `asset.upload` with `forked_from {artifact_id,
 //!   asset_id}`. An asset named only at run time (built in script, or kept
-//!   in a document) is not copied, as documents are not. Threads,
-//!   documents, shares and link access are not copied.
+//!   in a document) is not copied, as documents are not. A version naming
+//!   more than [`MAX_FORK_ASSETS`] assets, or more than
+//!   [`MAX_FORK_ASSET_BYTES`] of them, is refused `too_many_assets` before
+//!   anything is copied. Threads, documents, shares and link access are not
+//!   copied.
 //! - `artifacts.forked_from_id` and `forked_from_version` record where it
 //!   came from ([`clax_core::model::ForkedFrom`]); version 1's note says it,
 //!   by ID (`Forked from <artifact ID>@v<n>`), as the git commit does, so
@@ -41,6 +44,7 @@ use super::artifacts::{
     SELECT, SELECT_VERSION, create_record, owners_alone, row_to_artifact, row_to_version, tokens,
     version_record,
 };
+use super::assets::{MAX_FORK_ASSET_BYTES, MAX_FORK_ASSETS};
 use super::changelog::fill_addresses;
 use clax_core::audit::{AuditCtx, content_manifest_sha256, sha256_hex};
 use clax_core::live::KIND_LIVE;
@@ -147,8 +151,10 @@ impl Store {
         let note = fork_note(from.as_str(), n);
         let meta = self.publisher_meta(person, session_id, None)?;
         let paths: Vec<&str> = files.keys().map(String::as_str).collect();
+        let named = self.fork_assets(from, n, &paths).await?;
         self.content.fork(from, n, &paths, &id, &meta).await?;
-        let copies = match self.fork_assets(from, n, &paths, &id).await {
+        let named: BTreeSet<&str> = named.iter().map(String::as_str).collect();
+        let copies = match self.copy_asset_bytes(from, &named, &id).await {
             Ok(c) => c,
             Err(e) => {
                 let _ = self.content.delete_artifact(&id).await;
@@ -272,19 +278,21 @@ impl Store {
 }
 
 impl Store {
-    /// Copies into `to`'s content the assets of `from` that version `n`'s
-    /// files `paths` name (see the [module docs](self)), for the fork's
-    /// transaction to record.
+    /// The IDs of the assets of `from` that version `n`'s files `paths`
+    /// name (see the [module docs](self)): what the fork copies.
+    ///
+    /// # Errors
+    /// `too_many_assets` when they are more than [`MAX_FORK_ASSETS`] or
+    /// their bytes more than [`MAX_FORK_ASSET_BYTES`]; content errors.
     async fn fork_assets(
         &self,
         from: &ArtifactId,
         n: u32,
         paths: &[&str],
-        to: &ArtifactId,
-    ) -> Result<Vec<super::assets::AssetCopy>> {
+    ) -> Result<BTreeSet<String>> {
         let assets = self.list_assets(from)?;
         if assets.is_empty() {
-            return Ok(Vec::new());
+            return Ok(BTreeSet::new());
         }
         let ids: BTreeSet<&str> = assets.iter().map(|a| a.id.as_str()).collect();
         let mut named = BTreeSet::new();
@@ -299,10 +307,23 @@ impl Store {
                 .ok_or_else(|| clax_core::content::missing(from, n, path))?;
             super::assets::named_ids(&bytes, &ids, &mut named);
         }
-        if named.is_empty() {
-            return Ok(Vec::new());
+        let bytes: u64 = assets
+            .iter()
+            .filter(|a| named.contains(a.id.as_str()))
+            .map(|a| a.size)
+            .sum();
+        if named.len() > MAX_FORK_ASSETS || bytes > MAX_FORK_ASSET_BYTES {
+            return Err(CoreError::invalid(
+                "too_many_assets",
+                format!(
+                    "a fork copies at most {MAX_FORK_ASSETS} assets of at most \
+                     {MAX_FORK_ASSET_BYTES} bytes in all; version {n}'s files name {} \
+                     assets of {bytes} bytes",
+                    named.len()
+                ),
+            ));
         }
-        self.copy_asset_bytes(from, &named, to).await
+        Ok(named.into_iter().map(str::to_string).collect())
     }
 }
 
@@ -820,6 +841,61 @@ mod tests {
         // And the fork's deletion of its copy is its own.
         st.delete_asset(DAEMON, &fork, &in_js.id).unwrap();
         assert!(st.find_asset(&in_js.id).unwrap().is_none());
+    }
+
+    /// A fork whose version names more than [`MAX_FORK_ASSETS`] assets, or
+    /// more than [`MAX_FORK_ASSET_BYTES`] of them, is refused
+    /// `too_many_assets` and makes nothing: no artifact, no asset.
+    #[test]
+    fn a_fork_naming_too_many_assets_or_bytes_is_refused_before_any_copy() {
+        use crate::assets::{MAX_FORK_ASSET_BYTES, MAX_FORK_ASSETS};
+        let (_d, st) = store();
+        let src = publish(&st, None, &[("index.html", "<p>")]);
+        let ids: Vec<String> = (0..=MAX_FORK_ASSETS)
+            .map(|_| st.add_asset(DAEMON, &src, "image/png", b"x").unwrap().id)
+            .collect();
+        let made = |st: &Store| {
+            st.with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT (SELECT COUNT(*) FROM artifacts), (SELECT COUNT(*) FROM assets)",
+                    [],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+                )?)
+            })
+            .unwrap()
+        };
+        let refused = |st: &Store, html: &str| {
+            publish(st, Some(&src), &[("index.html", html)]);
+            let before = made(st);
+            match st.fork_artifact(DAEMON, &src, None, None, None) {
+                Err(clax_core::CoreError::Invalid { code, message }) => {
+                    assert_eq!(code, "too_many_assets", "{message}");
+                }
+                other => panic!("{other:?}"),
+            }
+            assert_eq!(made(st), before, "nothing made");
+        };
+        refused(&st, &ids.join(" "));
+        // At the count, the fork copies them all.
+        publish(&st, Some(&src), &[("index.html", &ids[1..].join(" "))]);
+        let (a, _) = st.fork_artifact(DAEMON, &src, None, None, None).unwrap();
+        let fork = ArtifactId::parse(&a.id).unwrap();
+        assert_eq!(st.list_assets(&fork).unwrap().len(), MAX_FORK_ASSETS);
+        // Two assets whose bytes together pass the cap.
+        st.with_tx(|tx| {
+            tx.execute(
+                "UPDATE assets SET size = ?2 WHERE artifact_id = ?1 AND id IN (?3, ?4)",
+                params![
+                    src.as_str(),
+                    (MAX_FORK_ASSET_BYTES / 2 + 1) as i64,
+                    ids[0],
+                    ids[1]
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        refused(&st, &format!("{} {}", ids[0], ids[1]));
     }
 
     /// A fork of a version naming none of its source's assets copies none.

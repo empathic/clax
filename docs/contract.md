@@ -575,7 +575,9 @@ source's assets that the version's files name by ID are copied under the
 same IDs, so the fork's pages load them from the fork's own site at the
 addresses they already use, and the source's deletion of one (or of
 itself) leaves the fork's; an asset a page names only at run time is not
-copied. An asset ID names an asset within its artifact. The source's
+copied. A fork copies at most 256 assets, of at most 256 MiB in all: a
+version whose files name more is refused 400 `too_many_assets`, and
+nothing is made. An asset ID names an asset within its artifact. The source's
 comment threads, documents and sharing are not copied.
 Version 1's note is `Forked from <artifact ID>@v<n>`. A daemon that keeps
 versions in git gives the fork the source's history behind its version 1,

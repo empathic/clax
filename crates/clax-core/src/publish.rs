@@ -239,6 +239,12 @@ pub fn check_path_for(path: &str, legacy: bool) -> Result<()> {
 
 /// Largest accepted asset in bytes. The cap is inclusive: an asset of exactly this size is accepted.
 pub const MAX_ASSET_BYTES: u64 = 20 * 1024 * 1024;
+/// The most assets a fork copies: a version whose files name more is
+/// refused `too_many_assets` before any is copied.
+pub const MAX_FORK_ASSETS: usize = 256;
+/// The most bytes of assets a fork copies, all its assets together: past
+/// it the fork is refused `too_many_assets` before any is copied.
+pub const MAX_FORK_ASSET_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Whether `content_type` (parameters after `;` ignored) is an accepted asset type.
 pub fn is_asset_type(content_type: &str) -> bool {

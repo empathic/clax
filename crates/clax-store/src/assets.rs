@@ -16,7 +16,7 @@ use rusqlite::{OptionalExtension, Row, params};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-pub use clax_core::publish::MAX_ASSET_BYTES;
+pub use clax_core::publish::{MAX_ASSET_BYTES, MAX_FORK_ASSET_BYTES, MAX_FORK_ASSETS};
 
 fn row_to_asset(r: &Row<'_>) -> rusqlite::Result<Asset> {
     Ok(Asset {
