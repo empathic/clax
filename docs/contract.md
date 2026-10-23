@@ -8742,8 +8742,10 @@ it starts, the runs a previous process left. A build without the
   included. Git tokens follow the reach too: the owner's and the
   owner's agents' as the owner's, a person's and their agents' as that
   person's; a token at another person's artifact lasts only while its
-  share (or, for a person, its link) does, and a fork's lineage is followed
-  only through artifacts in reach. A session route that names an artifact
+  share does, or, for the owner, the owner's agents of this machine and a
+  person (never an agent of another machine, a person's or the owner's),
+  while its link does; and a fork's lineage is followed only through
+  artifacts in reach. A session route that names an artifact
   out of reach (`/api/sessions/<sid>/git-token/<aid>`,
   `…/drafts/<aid>`, `…/working/<aid>`) is 404. The token's own routes
   that act on an artifact keep to the same reach: `versions:restore`
