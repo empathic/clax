@@ -11,7 +11,7 @@
 //!
 //! - `/_internal/` on any host, and any request naming an internal host
 //!   ([`INSTANCE_INTERNAL`], `app_data::APP_DATA_INTERNAL`), is 404 (see
-//!   Pushes);
+//!   Pushes), as is any request whose `Host` names a port that is no number;
 //! - a site host, `<artifact ID>.<SITE_DOMAIN>` (`<artifact ID>.localhost`
 //!   without `SITE_DOMAIN` or `HOSTED`; `instance::site_hosts`), is that
 //!   artifact's site: the instance's site routes answer every path there
@@ -24,7 +24,8 @@
 //! - with `CLAX_TEST_ROUTES` = `1` (`0` in `wrangler.jsonc`), `/do/{name}/…`
 //!   goes to the spike object named `name` (below), whose routes check no
 //!   credential; otherwise `/do/` is a path like any other, the instance's;
-//! - on the app host, `/`, `/inbox`, `/people` and `/tags` are the shell's
+//! - on the app host, `/`, `/inbox`, `/people`, `/tags`, `/admin`,
+//!   `/settings`, `/me` and `/audit` are the shell's
 //!   `index.html`, from the static assets, with the headers the daemon's
 //!   `shell::gallery_page` sends (no framing, revalidated), except on a
 //!   hosted instance (`HOSTED` = `1`), whose gate decides who gets them;
@@ -42,6 +43,12 @@
 //! machine, so under `wrangler dev` the site hosts work with `SITE_DOMAIN`
 //! = `localhost`; a deploy routes `*.<SITE_DOMAIN>/*` to the Worker
 //! (`README.md` has the DNS).
+//!
+//! `RETIRED_CONTENT_ORIGIN`, when set, is the host that served every
+//! artifact's content at keyed addresses before sites: its requests go to
+//! the instance whatever their path ([`Route::Retired`]), which answers an
+//! asset's old address with a 301 to its artifact's site and nothing else
+//! (`clax_http::hosted::Hosted::with_retired_content_origin`).
 //!
 //! # The spike's routes
 //!
@@ -93,6 +100,7 @@
 //! and `npm run e2e` (`e2e.mjs`) the Clax instance in two browsers.
 
 mod app_data;
+pub mod bot;
 pub mod diag;
 mod instance;
 pub mod repos;
@@ -145,8 +153,17 @@ async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response
     let spike = env
         .var("CLAX_TEST_ROUTES")
         .is_ok_and(|v| v.to_string() == "1");
-    match route(&path, url_host.as_deref(), &host, &sites, spike) {
+    let retired = env
+        .var("RETIRED_CONTENT_ORIGIN")
+        .ok()
+        .and_then(|v| authority(&v.to_string()));
+    let hosts = Hosts {
+        sites: &sites,
+        retired: retired.as_deref(),
+    };
+    match route(&path, url_host.as_deref(), &host, &hosts, spike) {
         Route::Refused => return Response::error("Not found", 404),
+        Route::Retired => return to_instance(&env, req).await,
         #[cfg(target_arch = "wasm32")]
         Route::Diag => {
             if let Some(res) = diag::route(&env, &req).await {
@@ -169,6 +186,16 @@ async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response
             return stub.fetch_with_request(req).await;
         }
         Route::Site => {
+            // A service worker's script, of any path, is the instance's
+            // answer: Clax's own, which unregisters itself
+            // (`clax_http::host::site_layer`).
+            let worker_script = req
+                .headers()
+                .get("service-worker")?
+                .is_some_and(|v| v.eq_ignore_ascii_case("script"));
+            if worker_script {
+                return to_instance(&env, req).await;
+            }
             if let Some(mut res) = static_asset(&env, &path, false).await? {
                 let hosted = env.var("HOSTED").is_ok_and(|v| v.to_string() == "1");
                 let public = env
@@ -217,8 +244,30 @@ enum Route<'a> {
     /// A site host's request: the instance's site routes, and nothing
     /// else, answer it (the UI's static files under `/_clax/` among them).
     Site,
+    /// The retired content origin's (`RETIRED_CONTENT_ORIGIN`): the
+    /// instance alone, which redirects an asset's old address to its site
+    /// and answers anything else 404.
+    Retired,
     /// The app host's: its static entries and files, else the instance.
     App,
+}
+
+/// The hosts [`route`] tells apart: the site domain's, and the retired
+/// content origin's authority (`content.clax.dev`), when there is one.
+struct Hosts<'a> {
+    sites: &'a SiteHosts,
+    retired: Option<&'a str>,
+}
+
+/// `origin`'s authority as a `Host` header names it (`host[:port]`);
+/// `None` for an empty or malformed one.
+fn authority(origin: &str) -> Option<String> {
+    let u = worker::Url::parse(origin.trim()).ok()?;
+    match (u.host_str(), u.port()) {
+        (Some(h), Some(p)) => Some(format!("{h}:{p}")),
+        (Some(h), None) => Some(h.to_string()),
+        _ => None,
+    }
 }
 
 /// Whether `host` (a `Host` header) is the site domain or a name under it
@@ -238,29 +287,53 @@ fn under_site_domain(host: &str, sites: &SiteHosts) -> bool {
         .is_some_and(|rest| rest.ends_with('.'))
 }
 
+/// Whether `host` (a `Host` header) names no port or a numeric one, after
+/// its name or a bracketed IPv6 literal (`[::1]:8787`).
+fn port_well_formed(host: &str) -> bool {
+    let rest = if host.starts_with('[') {
+        match host.find(']') {
+            Some(i) => &host[i + 1..],
+            None => return false,
+        }
+    } else {
+        host.find(':').map_or("", |i| &host[i..])
+    };
+    match rest.strip_prefix(':') {
+        Some(port) => port.bytes().all(|b| b.is_ascii_digit()),
+        None => rest.is_empty(),
+    }
+}
+
 /// Classifies a request by its path, its URL's host (`url_host`) and its
 /// `Host` header (`host`), the host first: `/_internal/` and the internal
 /// hosts are refused on any host; a site host under `sites` is
 /// [`Route::Site`] whatever its path, so no path-first route (`/git/`,
 /// `/_diag/`, `/_dev/repos/`, `/do/`) is reached there; any other name
 /// under the site domain (its apex, a nested name, an uppercase or
-/// malformed ID, a trailing dot) is refused, never the app's.
+/// malformed ID, a trailing dot) is refused, never the app's, as is any
+/// `Host` whose port is no number; the retired content origin is
+/// [`Route::Retired`] whatever its path.
 fn route<'a>(
     path: &'a str,
     url_host: Option<&str>,
     host: &str,
-    sites: &SiteHosts,
+    hosts: &Hosts,
     spike: bool,
 ) -> Route<'a> {
+    let sites = hosts.sites;
     let internal = [INSTANCE_INTERNAL, app_data::APP_DATA_INTERNAL];
     if path.starts_with("/_internal/")
         || url_host.is_some_and(|h| internal.contains(&h))
         || internal.iter().any(|h| h.eq_ignore_ascii_case(host))
+        || !port_well_formed(host)
     {
         return Route::Refused;
     }
     if sites.target(host).is_some() {
         return Route::Site;
+    }
+    if hosts.retired.is_some_and(|r| r.eq_ignore_ascii_case(host)) {
+        return Route::Retired;
     }
     if under_site_domain(host, sites) {
         return Route::Refused;
@@ -369,7 +442,9 @@ async fn queue(batch: worker::MessageBatch<Value>, env: Env, _ctx: worker::Conte
 /// file the assets lack.
 async fn static_asset(env: &Env, path: &str, app_host: bool) -> Result<Option<HttpResponse>> {
     let (file, cache, entry) = match path {
-        "/" | "/inbox" | "/people" | "/tags" if app_host => {
+        "/" | "/inbox" | "/people" | "/tags" | "/admin" | "/settings" | "/me" | "/audit"
+            if app_host =>
+        {
             ("/index.html".to_string(), "no-cache", true)
         }
         _ => match path
@@ -416,7 +491,17 @@ async fn static_asset(env: &Env, path: &str, app_host: bool) -> Result<Option<Ht
 fn site_static_headers(h: &mut axum::http::HeaderMap, public: Option<&str>, host: &str) {
     h.remove(header::ACCESS_CONTROL_ALLOW_ORIGIN);
     let secure = public.is_some_and(|o| o.starts_with("https://"));
-    clax_http::site_access::site_headers(public, secure, host, None, h);
+    clax_http::site_access::site_headers(
+        clax_http::site_access::SitePolicy {
+            hosted: public,
+            embed: None,
+            secure,
+            policy_set: false,
+        },
+        host,
+        None,
+        h,
+    );
 }
 
 /// Durable Objects this isolate has constructed, to tell a warm object from
@@ -726,7 +811,56 @@ impl DurableObject for ClaxDb {
 
 #[cfg(test)]
 mod tests {
-    use super::{Route, SiteHosts, route};
+    use super::{Hosts, Route, SiteHosts};
+
+    /// [`super::route`] with no retired content origin.
+    fn route<'a>(
+        path: &'a str,
+        url_host: Option<&str>,
+        host: &str,
+        sites: &SiteHosts,
+        spike: bool,
+    ) -> Route<'a> {
+        let hosts = Hosts {
+            sites,
+            retired: None,
+        };
+        super::route(path, url_host, host, &hosts, spike)
+    }
+
+    #[test]
+    fn the_retired_content_origin_goes_to_the_instance_whatever_its_path() {
+        let sites = SiteHosts::new("clax.run").unwrap();
+        let retired_host = super::authority("https://content.clax.example.com");
+        let hosts = Hosts {
+            sites: &sites,
+            retired: retired_host.as_deref(),
+        };
+        let retired = "content.clax.example.com";
+        for path in [
+            "/_blob/x",
+            "/git/a.git/info/refs",
+            "/_diag/bindings",
+            "/",
+            "/do/n/x",
+        ] {
+            assert_eq!(
+                super::route(path, Some(retired), retired, &hosts, true),
+                Route::Retired,
+                "{path}"
+            );
+        }
+        assert_eq!(
+            super::route("/_internal/x", Some(retired), retired, &hosts, true),
+            Route::Refused
+        );
+        assert_eq!(super::route("/", Some(APP), APP, &hosts, true), Route::App);
+        assert_eq!(super::authority(""), None);
+        assert_eq!(
+            super::authority("http://127.0.0.1:8788").as_deref(),
+            Some("127.0.0.1:8788")
+        );
+    }
 
     const SITE: &str = "abcdefghjkmn.clax.run";
     const APP: &str = "clax.example.com";
@@ -802,6 +936,8 @@ mod tests {
             APP,
             "clax.run.evil.com",
             "xclax.run",
+            "[::1]:8787",
+            "[::1]",
         ] {
             assert_eq!(
                 route("/", Some(host), host, &sites, true),
@@ -820,6 +956,12 @@ mod tests {
             "abcdefghjkmn.clax.run.",
             "abcdefghjkm.clax.run",
             "abcdefghjkmn0.clax.run",
+            // A port that is no number, on a site host or any other.
+            "abcdefghjkmn.clax.run:x",
+            "abc.clax.run:x",
+            "abcdefghjkmn.clax.run:443:1",
+            "app.example.com:x",
+            "[::1]x",
         ] {
             for path in ["/", "/_diag/x", "/_dev/repos/x", "/mcp"] {
                 assert_eq!(
@@ -885,7 +1027,8 @@ mod tests {
         super::site_static_headers(&mut page, Some("https://clax.example"), host);
         assert_eq!(
             page[header::CONTENT_SECURITY_POLICY],
-            "frame-ancestors 'self' https://clax.example"
+            clax_http::content_policy::lockdown("frame-ancestors 'self' https://clax.example")
+                .as_str()
         );
         // Not hosted: no HSTS, and the local shell frames it.
         let mut local = file("text/html");
@@ -894,7 +1037,10 @@ mod tests {
         assert!(local.get(header::STRICT_TRANSPORT_SECURITY).is_none());
         assert_eq!(
             local[header::CONTENT_SECURITY_POLICY],
-            "frame-ancestors 'self' http://localhost:8787 http://127.0.0.1:8787"
+            clax_http::content_policy::lockdown(
+                "frame-ancestors 'self' http://localhost:8787 http://127.0.0.1:8787"
+            )
+            .as_str()
         );
     }
 }
