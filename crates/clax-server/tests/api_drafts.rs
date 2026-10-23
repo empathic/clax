@@ -202,7 +202,10 @@ async fn people_list_a_draft_and_its_url_serves_marked_pages_over_the_base() {
     assert_eq!(r.status(), 200);
     assert_eq!(
         r.headers()["content-security-policy"],
-        "frame-ancestors 'self' http://localhost:4321 http://127.0.0.1:4321"
+        clax_http::content_policy::lockdown(
+            "frame-ancestors 'self' http://localhost:4321 http://127.0.0.1:4321"
+        )
+        .as_str()
     );
 }
 

@@ -99,22 +99,25 @@ async fn reads_are_refused_without_a_credential_and_served_with_one() {
 }
 
 #[tokio::test]
-async fn health_static_files_and_content_by_id_stay_open() {
+async fn health_stays_open_and_a_sites_content_is_its_access_checks() {
     let ts = locked().await;
     let a = ts.publish("Notes", &[("index.html", "<p>hi</p>")]).await;
     let aid = a["artifact"]["id"].as_str().unwrap().to_string();
     assert_eq!(status(&ts, "/healthz", None).await, 200);
-    assert_eq!(status(&ts, &format!("/c/{aid}/v/1/"), None).await, 200);
-    // The artifact origin's content, rewritten to `/c/<id>/...`.
+    // A site host's requests pass the credential gate: its access decides.
     let port = ts.addr.port();
     let res = ts
         .client
-        .get(format!("{}/v/1/", ts.base))
+        .get(format!("{}/_clax/api/whoami", ts.base))
         .header("host", format!("{aid}.localhost:{port}"))
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 200);
+    assert_eq!(res.status(), 401);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "site_session_required", "{body}");
+    assert_eq!(ts.site_get(&aid, "/_clax/v/1/").await.status(), 200);
+    assert_eq!(ts.site_get(&aid, "/").await.status(), 200);
 }
 
 #[tokio::test]
@@ -162,24 +165,30 @@ async fn content_and_assets_send_no_referrer() {
         .unwrap()
         .to_string();
     let host = ts.base.trim_start_matches("http://").to_string();
+    let cookie = ts.site_cookie(&aid).await;
     let cases = [
-        (format!("/c/{aid}/v/1/"), host.clone()),
-        (format!("/c/{aid}/v/1/app.js"), host.clone()),
-        (format!("/c/{aid}/v/1/more.html"), host.clone()),
-        ("/v/1/".to_string(), origin.clone()),
-        ("/v/1/app.js".to_string(), origin.clone()),
-        (blob.clone(), host.clone()),
-        (blob, origin),
+        ("/".to_string(), origin.clone(), 200),
+        ("/app.js".to_string(), origin.clone(), 200),
+        ("/more.html".to_string(), origin.clone(), 200),
+        ("/_clax/v/1/".to_string(), origin.clone(), 200),
+        ("/_clax/v/1/app.js".to_string(), origin.clone(), 200),
+        (blob.clone(), origin, 200),
+        // The public host serves no asset: it redirects to the asset's site.
+        (blob, host, 301),
     ];
-    for (path, h) in &cases {
-        let res = ts
-            .client
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    for (path, h, want) in &cases {
+        let res = client
             .get(format!("{}{path}", ts.base))
             .header("host", h)
+            .header("cookie", &cookie)
             .send()
             .await
             .unwrap();
-        assert_eq!(res.status(), 200, "{path} on {h}");
+        assert_eq!(res.status(), *want, "{path} on {h}");
         assert_eq!(
             res.headers()
                 .get("referrer-policy")

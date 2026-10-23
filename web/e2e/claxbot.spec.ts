@@ -125,7 +125,7 @@ test("at its limit, the gallery says ClaxBot is paused and the Send menu lists i
   await expect(banner).toContainText("ClaxBot is paused until Monday, Oct 26.");
   await banner.getByRole("button", { name: "Ask an admin for a lift" }).click();
   await expect(banner).toContainText("Admin › People & flags");
-  await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  await openArtifact(page, d.base, artifact.id, 1);
   // The artifact view says so too, under its top bar.
   await expect(page.locator(".bot-banner-at").getByRole("alert")).toContainText("This week's credits are used up.");
   if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();

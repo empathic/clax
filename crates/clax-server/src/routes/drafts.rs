@@ -464,5 +464,7 @@ pub(crate) async fn serve(
         header::CONTENT_SECURITY_POLICY,
         super::content::content_policy(s, req),
     );
+    res.extensions_mut()
+        .insert(clax_http::content_policy::ContentPolicySet);
     Ok(res)
 }

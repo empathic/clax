@@ -144,10 +144,62 @@ fn count(db: &Connection, sql: &str) -> i64 {
     db.query_row(sql, [], |r| r.get(0)).unwrap()
 }
 
+/// Each row of the old home's `table` (`docs` or `doc_authors`) is in its
+/// artifact's own store in `home`.
+fn assert_moved(old: &Connection, home: &clax_core::Home, table: &str) {
+    let sql = match table {
+        "docs" => "SELECT artifact_id, path, json, version FROM docs",
+        _ => "SELECT artifact_id, path, author, 0 FROM doc_authors",
+    };
+    let mut q = old.prepare(sql).unwrap();
+    let rows: Vec<(String, String, String, i64)> = q
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    for (aid, path, x, version) in rows {
+        let id = clax_core::ArtifactId::parse(&aid).unwrap();
+        let store = Connection::open_with_flags(
+            home.app_data_path(&id),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap_or_else(|e| panic!("{aid} has a store of its own: {e}"));
+        let found: i64 = match table {
+            "docs" => store
+                .query_row(
+                    "SELECT count(*) FROM docs WHERE path = ?1 AND json = ?2 AND version = ?3",
+                    rusqlite::params![path, x, version],
+                    |r| r.get(0),
+                )
+                .unwrap(),
+            _ => store
+                .query_row(
+                    "SELECT count(*) FROM doc_authors WHERE path = ?1 AND author = ?2",
+                    rusqlite::params![path, x],
+                    |r| r.get(0),
+                )
+                .unwrap(),
+        };
+        assert_eq!(
+            found, 1,
+            "{table}: {aid} {path} is not in its artifact's store"
+        );
+    }
+}
+
 /// Every row of every table in `before` is in `after` unchanged, column by
 /// column (the migrations since add tables and columns, and change no
-/// row); returns each table's row count in `before`.
-fn assert_rows_kept(before: &Path, after: &Path) -> Vec<(String, i64)> {
+/// row); returns each table's row count in `before`. With `moved`, the
+/// home `after` is the database of, the app data each artifact keeps in a
+/// store of its own since (`docs`, `doc_authors`, `leases`) is checked
+/// there instead, each document with its data and version and each of its
+/// authors; and an asset's page authors, which the asset keys migration
+/// names `<artifact>/<asset>`, under that name.
+fn assert_rows_kept(
+    before: &Path,
+    after: &Path,
+    moved: Option<&clax_core::Home>,
+) -> Vec<(String, i64)> {
     let db =
         Connection::open_with_flags(after, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
     db.execute("ATTACH DATABASE ?1 AS before", [before.to_str().unwrap()])
@@ -155,6 +207,32 @@ fn assert_rows_kept(before: &Path, after: &Path) -> Vec<(String, i64)> {
     let old = Connection::open(before).unwrap();
     let mut counts = Vec::new();
     for (t, cols) in tables(&old) {
+        if let Some(home) = moved {
+            if ["docs", "doc_authors", "leases"].contains(&t.as_str()) {
+                if t != "leases" {
+                    assert_moved(&old, home, &t);
+                }
+                counts.push((
+                    t.clone(),
+                    count(&old, &format!("SELECT count(*) FROM \"{t}\"")),
+                ));
+                continue;
+            }
+            if t == "page_authors" {
+                let lost = count(
+                    &db,
+                    "SELECT count(*) FROM before.page_authors b WHERE NOT EXISTS (
+                         SELECT 1 FROM main.page_authors a WHERE a.kind = b.kind AND a.author = b.author
+                           AND (a.id = b.id OR (b.kind = 'asset' AND a.id LIKE '%/' || b.id)))",
+                );
+                assert_eq!(
+                    lost, 0,
+                    "page_authors: {lost} rows of the old home are gone"
+                );
+                counts.push((t.clone(), count(&old, "SELECT count(*) FROM page_authors")));
+                continue;
+            }
+        }
         let cols = cols
             .iter()
             .map(|c| format!("\"{c}\""))
@@ -250,16 +328,16 @@ async fn the_installed_flutter_app_home_backs_up_and_is_adopted() {
         ),
         43
     );
-    assert_rows_kept(&before, &copies[0]);
+    assert_rows_kept(&before, &copies[0], None);
 
-    // Adopted and migrated to this build's last migration, ClaxBot's.
+    // Adopted and migrated to this build's last migration, the asset keys'.
     let version = clax_store::schema_version(&home).unwrap();
-    assert_eq!(version, Some(clax_store::migrations::CLAXBOT_MIGRATION));
+    assert_eq!(version, Some(clax_store::migrations::ASSET_KEYS_MIGRATION));
     assert_eq!(
         version,
         Some(clax_store::migrations::MIGRATIONS.len() as u32)
     );
-    let counts = assert_rows_kept(&before, &home.db_path());
+    let counts = assert_rows_kept(&before, &home.db_path(), Some(&home));
     for t in [
         "artifacts",
         "versions",
@@ -414,7 +492,7 @@ async fn the_perf_home_opens_through_the_core() {
         clax_store::schema_version(&home).unwrap(),
         Some(clax_store::migrations::MIGRATIONS.len() as u32)
     );
-    let counts = assert_rows_kept(&before, &home.db_path());
+    let counts = assert_rows_kept(&before, &home.db_path(), Some(&home));
     let of = |t: &str| counts.iter().find(|(n, _)| n == t).unwrap().1;
     assert_eq!(
         (of("artifacts"), of("threads"), of("comments")),

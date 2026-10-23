@@ -111,20 +111,15 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     ctl.dispose();
   });
 
-  it("frames the page at the app's content origin, with no probe, in the Clax app", async () => {
-    // What `installTransport` leaves on a shell document in the app.
-    Object.defineProperty(window, "claxTransport", { configurable: true, value: Object.freeze({ embed: { transport: "host", shell: "https://app.clax.invalid", content: "https://{id}.c.clax.invalid" } }) });
-    try {
-      // A browser tab that had found `<id>.localhost` unresolvable would frame the page sandboxed.
-      const { ctl, frame } = await started();
-      expect(ctl.state.get().origin).toBe(`https://${ID}.c.clax.invalid`);
-      expect(frame.getAttribute("src")).toBe(`https://${ID}.c.clax.invalid/v/2/`);
-      const asked = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.map(([u]) => String(u));
-      expect(asked.filter(u => u.endsWith("/healthz"))).toEqual([]);
-      ctl.dispose();
-    } finally {
-      delete (window as { claxTransport?: unknown }).claxTransport;
-    }
+  it("frames the page on the site hosts the daemon names: the app's content origins in the Clax app", async () => {
+    // What the embedded core answers for the artifact (`site_of`).
+    const site = { domain: "c.clax.invalid", scheme: "https", port: null };
+    const { ctl, frame } = await started({ routes: url => (url.startsWith(`/api/artifacts/${ID}`) && !url.includes("/threads") ? { ...loaded, site } : undefined) });
+    expect(ctl.state.get().origin).toBe(`https://${ID}.c.clax.invalid`);
+    expect(frame.getAttribute("src")).toBe(`https://${ID}.c.clax.invalid/_clax/session/start?next=%2F_clax%2Fv%2F2%2F`);
+    const asked = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.map(([u]) => String(u));
+    expect(asked.filter(u => u.endsWith("/healthz"))).toEqual([]);
+    ctl.dispose();
   });
 
   it("opens the thread the address names once its page greets, and brings its card into view when it renders", async () => {
@@ -1324,5 +1319,66 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
       expect(frame.isConnected).toBe(true);
       ctl.dispose();
     });
+  });
+
+  it("app mode composer Send posts and sends; browser mode Post only posts", async () => {
+    const t9 = thread("t9");
+    const { ctl, frame } = await started({ routes: (url, init) => (init?.method === "POST" && url === `/api/artifacts/${ID}/threads` ? { thread: t9 } : undefined) });
+    const anchor = t9.anchor;
+    const posts = () => (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(([, i]) => (i as RequestInit | undefined)?.method === "POST").map(([u]) => String(u));
+    // A browser's view: Post posts, and nothing is sent.
+    await ctl.submitDraft("first", { pickId: "p1", anchor, version: 2, clip: null, capturing: false, clipToken: "p1" });
+    expect(posts()).toEqual([`/api/artifacts/${ID}/threads`]);
+    // App mode: each post is handed to the app's hook, which sends it.
+    const posted = vi.fn();
+    const welcome = vi.fn((_file: string) => ({ app: true as const, restoreScroll: 40 }));
+    ctl.app = { welcome, posted, dropped: () => {}, anchors: () => [] };
+    await ctl.submitDraft("second", { pickId: "p2", anchor, version: 2, clip: null, capturing: false, clipToken: "p2" });
+    expect(posted).toHaveBeenCalledWith(t9);
+    // The welcome carries what the hook adds, for the page that greeted.
+    const sent: { type: string }[] = [];
+    frame.contentWindow!.postMessage = ((m: { type: string }) => { sent.push(m); }) as Window["postMessage"];
+    hello(frame.contentWindow!);
+    expect(welcome).toHaveBeenCalledWith("index.html", false);
+    expect(sent.find(m => m.type === "clax:welcome")).toEqual({ type: "clax:welcome", mode: "view", app: true, restoreScroll: 40 });
+    ctl.dispose();
+  });
+
+  it("outlines the selected thread's area in a browser, but in app mode only a hovered thread's", async () => {
+    const t9 = thread("t9");
+    const { ctl, frame } = await started({ routes: (url, init) => (init?.method === "POST" && url === `/api/artifacts/${ID}/threads` ? { thread: t9 } : undefined) });
+    const sent: { type: string; id?: string | null }[] = [];
+    frame.contentWindow!.postMessage = ((m: { type: string }) => { sent.push(m); }) as Window["postMessage"];
+    hello(frame.contentWindow!);
+    const focuses = () => sent.filter(m => m.type === "clax:focus");
+    /** The focus the shell sends after `act`, once it has. */
+    const focusAfter = async (act: () => unknown) => {
+      const n = focuses().length;
+      await act();
+      await vi.waitFor(() => expect(focuses().length).toBeGreaterThan(n));
+      return focuses().at(-1)!.id ?? null;
+    };
+    const draft = (pickId: string) => ({ pickId, anchor: t9.anchor, version: 2, clip: null, capturing: false, clipToken: pickId });
+    // A browser's view: the posted thread is selected, and its area outlined.
+    expect(await focusAfter(() => ctl.submitDraft("first", draft("p1")))).not.toBeNull();
+    expect(ctl.state.get().selected).toBe("t9");
+    expect(await focusAfter(() => ctl.set({ selected: null }))).toBeNull();
+    // App mode: the posted thread is selected, but no panel shows it, so nothing stays outlined.
+    ctl.app = { welcome: () => ({ app: true as const }), posted: vi.fn(), dropped: () => {}, anchors: () => [] };
+    expect(await focusAfter(() => ctl.submitDraft("second", draft("p2")))).toBeNull();
+    expect(ctl.state.get().selected).toBe("t9");
+    expect(await focusAfter(() => ctl.hover(t9))).not.toBeNull();
+    expect(await focusAfter(() => ctl.hover(null))).toBeNull();
+    ctl.dispose();
+  });
+
+  it("carries app=1 in its URLs and no other query", async () => {
+    const { ctl } = await started();
+    history.replaceState(null, "", `/a/${ID}?thread=t1`);
+    expect(ctl.here(null)).toBe(`/a/${ID}`);
+    expect(ctl.here(1)).toBe(`/a/${ID}/v/1`);
+    history.replaceState(null, "", `/a/${ID}?thread=t1&app=1`);
+    expect(ctl.here(null)).toBe(`/a/${ID}?app=1`);
+    ctl.dispose();
   });
 });

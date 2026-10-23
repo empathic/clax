@@ -23,7 +23,7 @@ test("a Send to ClaxBot runs on the daemon and the run panel follows it to its e
   try {
     const { artifact } = await publish(d.base, d.token, "Send to ClaxBot", { "index.html": "<main><h2>Totals</h2></main>" });
     const t = await postThread(d.base, artifact.id, "The totals row should round to cents.");
-    await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+    await openArtifact(page, d.base, artifact.id, 1);
     if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();
     const card = page.locator(`.thread-card[data-thread="${t.id}"]`);
     await card.getByRole("button", { name: "Choose the agent" }).click();

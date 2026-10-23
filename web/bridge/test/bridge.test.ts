@@ -29,21 +29,21 @@ beforeAll(async () => {
 describe("bridge", () => {
   afterEach(() => { vi.restoreAllMocks(); });
 
-  it("exposes only use(); unframed, it resolves its origin's capabilities from the site and null for the shell's", async () => {
+  it("exposes use() and assetUrl(); unframed, it resolves its origin's capabilities from the site and null for the shell's", async () => {
     const urls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
       urls.push(`${init.credentials} ${url}`);
       return new Response(JSON.stringify(url.endsWith("/artifact") ? { artifact: { capabilities: { db: {}, artifact: {}, comments: {} } } } : { kind: "visitor", id: "v_00000000000000000000aa", level: "public", can_edit: false }));
     }));
     try {
-      expect(Object.keys(window.claude!)).toEqual(["use"]);
+      expect(Object.keys(window.claude!)).toEqual(["use", "assetUrl"]);
       // The shell's capabilities are null at once: no part loads for them.
       for (const name of ["artifact", "self", "permissions", "comments", "sample", "nonsense"]) {
         await expect(window.claude!.use(name), name).resolves.toBeNull();
       }
       expect(requests).toEqual([]);
       for (const name of ["room", "assets"]) await expect(window.claude!.use(name), name).resolves.toBeNull();
-      expect(Object.keys((await window.claude!.use("db")) as object).sort()).toEqual(["collection", "doc"]);
+      expect(Object.keys((await window.claude!.use("db")) as object).sort()).toEqual(["artifact", "collection", "doc"]);
       expect(requests).toEqual(["origin"]);
       const user = (await window.claude!.use("user")) as { isOwner(): Promise<boolean>; id(): Promise<string | null> };
       expect([await user.isOwner(), await user.id()]).toEqual([false, null]);
@@ -62,9 +62,9 @@ describe("bridge", () => {
   });
 
   it("builds the URL of the artifact's own asset from its ID", () => {
-    expect(window.claude!.assetUrl("01J9ZZZZZZZZZZZZZZZZZZZZZZ")).toBe("/_blob/7q3k9mzx2b4t/01J9ZZZZZZZZZZZZZZZZZZZZZZ");
-    // Whatever it is given stays one path segment under the artifact's prefix.
-    expect(window.claude!.assetUrl("../../api/artifacts")).toBe("/_blob/7q3k9mzx2b4t/..%2F..%2Fapi%2Fartifacts");
+    expect(window.claude!.assetUrl("01J9ZZZZZZZZZZZZZZZZZZZZZZ")).toBe(`${location.origin}/_clax/blob/01J9ZZZZZZZZZZZZZZZZZZZZZZ`);
+    // Whatever it is given stays one path segment under the site's assets.
+    expect(window.claude!.assetUrl("../../api/artifacts")).toBe(`${location.origin}/_clax/blob/..%2F..%2Fapi%2Fartifacts`);
   });
 
   it("reads its metadata from the script tag", () => {

@@ -21,5 +21,7 @@ export async function resolveUse(name: string, o: UseContext): Promise<unknown> 
   const grant = await o.rpc.use(name);
   if (!grant) return null;
   if (name === "sample") return (await o.sample()).sampleNamespace(o.rpc);
-  return buildNamespace(name as Exclude<typeof name, "room" | "sample">, o.rpc, localsFor(name as never, o.rpc, grant.config, o.env) as Local);
+  // `home`'s namespace is whole as caps/home.ts builds it.
+  if (name === "home") return localsFor("home", o.rpc, grant.config, o.env);
+  return buildNamespace(name as Exclude<typeof name, "room" | "sample" | "home">, o.rpc, localsFor(name as never, o.rpc, grant.config, o.env) as Local);
 }

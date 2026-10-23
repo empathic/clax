@@ -32,7 +32,7 @@ type At = (x: number, y: number) => Element | null;
 
 /** The backgrounds of the elements at the middle of the viewport's top and
  * bottom edges. */
-export function sampleChrome(win: Window, at: At = (x, y) => win.document.elementFromPoint?.(x, y) ?? null): { top: string; bottom: string } {
+export function sampleChrome(win: Window, at: At = (x, y) => win.document?.elementFromPoint?.(x, y) ?? null): { top: string; bottom: string } {
   const x = win.innerWidth / 2;
   return { top: backdrop(win, at(x, 0)), bottom: backdrop(win, at(x, Math.max(0, win.innerHeight - 1))) };
 }

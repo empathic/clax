@@ -5,7 +5,7 @@ use clax_testkit::TestServer;
 /// The bridge tag of version 1's page `file` of `id` as served: naming the
 /// shell's origin, the daemon's public origin (`data-origin`).
 fn shell_tag(ts: &TestServer, id: &str, file: &str) -> String {
-    bridge_tag_for(id, 1, "0.2.61", file, &bridge_version(&*ts.web)).replace(
+    bridge_tag_for(id, 1, "0.3.0", file, &bridge_version(&*ts.web)).replace(
         "></script>",
         &format!(
             " data-origin=\"http://localhost:{}\"></script>",
@@ -160,6 +160,12 @@ async fn artifact_host_routes_to_content_and_nothing_else() {
     assert_eq!(res.status(), 404);
 }
 
+/// The first directive of a content response's policy (its framing part).
+fn framing(res: &reqwest::Response) -> String {
+    let csp = res.headers()["content-security-policy"].to_str().unwrap();
+    csp.split("; ").next().unwrap().to_string()
+}
+
 fn no_redirect_client() -> reqwest::Client {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -252,7 +258,7 @@ async fn only_the_shell_and_the_artifact_frame_content_on_an_artifact_origin() {
         again.headers()["content-security-policy"]
             .to_str()
             .unwrap()
-            .contains("connect-src 'self' ")
+            .contains("connect-src 'self';")
     );
 }
 
@@ -267,7 +273,7 @@ fn directives(csp: &str) -> std::collections::HashMap<String, Vec<String>> {
 }
 
 #[tokio::test]
-async fn an_artifacts_content_loads_only_its_own_files_and_connects_nowhere() {
+async fn an_artifacts_content_loads_only_its_own_site_and_connects_nowhere_else() {
     let ts = TestServer::spawn().await;
     let created = ts
         .publish(
@@ -283,139 +289,85 @@ async fn an_artifacts_content_loads_only_its_own_files_and_connects_nowhere() {
         .await;
     let id = created["artifact"]["id"].as_str().unwrap();
     let port = ts.addr.port();
-    let paths = ["/", "/about.html", "/a.css", "/data.json", "/app.js"];
-    // Sandbox mode: the page's origin is opaque, so its own files are named
-    // by host and path; the API on the same host is not among them.
-    for host in [format!("localhost:{port}"), format!("127.0.0.1:{port}")] {
-        for p in paths {
-            let path = format!("/c/{id}/v/1{p}");
-            let res = get_on(&ts, Some(&host), &path, None).await;
-            assert_eq!(res.status(), 200, "{path}");
-            let csp = res.headers()["content-security-policy"].to_str().unwrap();
-            assert!(csp.starts_with(SANDBOXED), "{csp}");
-            let d = directives(csp);
-            let own = [
-                format!("http://{host}/c/{id}/"),
-                format!("http://{host}/_clax/bridge.js"),
-                format!("http://{host}/_clax/bridge/"),
-            ];
-            for name in ["default-src", "script-src", "style-src"] {
-                for o in &own {
-                    assert!(d[name].contains(o), "{name} lacks {o}: {csp}");
-                }
-                assert!(!d[name].contains(&"'self'".to_string()), "{csp}");
-                assert!(
-                    !d[name]
-                        .iter()
-                        .any(|s| s.contains('*') || s == "http:" || s == "https:"),
-                    "{csp}"
-                );
-            }
-            assert!(d["default-src"].contains(&format!("http://localhost:{port}/_blob/{id}/")));
-            assert!(d["default-src"].contains(&format!("http://127.0.0.1:{port}/_blob/{id}/")));
-            assert!(
-                !d["default-src"].iter().any(|s| s.ends_with("/_blob/")),
-                "{csp}"
-            );
-            assert!(d["default-src"].contains(&"data:".to_string()));
-            assert!(d["default-src"].contains(&"blob:".to_string()));
-            // It fetches its own files and assets, never the API.
-            assert_eq!(
-                d["connect-src"][0],
-                format!("http://{host}/c/{id}/"),
-                "{csp}"
-            );
-            assert!(
-                d["connect-src"][1..]
-                    .iter()
-                    .all(|s| s.ends_with(&format!("/_blob/{id}/"))),
-                "{csp}"
-            );
-            assert_eq!(d["object-src"], ["'none'"]);
-            assert_eq!(d["base-uri"], ["'none'"]);
-            assert_eq!(d["form-action"], ["'none'"]);
-            assert!(!csp.contains("frame-ancestors"), "{csp}");
-        }
-    }
-    // Subdomain mode: the artifact's origin is its own files.
+    let cookie = ts.site_cookie(id).await;
     for host in [format!("{id}.localhost:{port}"), format!("{id}.localhost")] {
-        for p in paths {
-            let path = format!("/v/1{p}");
-            let res = get_on(&ts, Some(&host), &path, None).await;
-            assert_eq!(res.status(), 200, "{host}{path}");
-            let csp = res.headers()["content-security-policy"].to_str().unwrap();
+        for p in [
+            "/",
+            "/about.html",
+            "/a.css",
+            "/data.json",
+            "/app.js",
+            "/_clax/v/1/",
+            "/_clax/v/1/app.js",
+        ] {
+            let res = ts
+                .client
+                .get(format!("{}{p}", ts.base))
+                .header("host", &host)
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(res.status(), 200, "{host}{p}");
+            let policies: Vec<&str> = res
+                .headers()
+                .get_all("content-security-policy")
+                .iter()
+                .map(|v| v.to_str().unwrap())
+                .collect();
+            assert_eq!(
+                policies.len(),
+                1,
+                "the content route's one policy: {policies:?}"
+            );
+            let csp = policies[0];
             assert!(csp.starts_with("frame-ancestors 'self' "), "{csp}");
             let d = directives(csp);
-            assert_eq!(d["default-src"][0], "'self'", "{csp}");
+            assert_eq!(d["default-src"], ["'self'", "data:", "blob:"], "{csp}");
             assert_eq!(
                 d["script-src"][..3],
                 ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
                 "{csp}"
             );
-            assert_eq!(d["connect-src"][0], "'self'", "{csp}");
-            assert!(
-                d["connect-src"][1..]
-                    .iter()
-                    .all(|s| s.ends_with(&format!("/_blob/{id}/"))),
-                "{csp}"
-            );
-            assert_eq!(d["form-action"], ["'none'"], "{csp}");
-            assert!(!csp.contains("sandbox"), "{csp}");
+            assert_eq!(d["connect-src"], ["'self'"], "{csp}");
+            assert_eq!(d["object-src"], ["'none'"]);
+            assert_eq!(d["base-uri"], ["'none'"]);
+            assert_eq!(d["form-action"], ["'none'"]);
+            assert!(!csp.contains("sandbox") && !csp.contains('*'), "{csp}");
         }
     }
 }
 
-/// Every response a page could frame or open on its artifact's host, or
-/// under its `/c/<id>/` path, holds it to the artifact's policy: errors,
-/// `/healthz`, `/_clax/...`, `/_blob/...` and redirects included.
+/// Every response a page could frame or open on its site host holds it to
+/// the artifact's policy: errors, `/_clax/healthz`, `/_clax/...`, assets
+/// and redirects included.
 #[tokio::test]
-async fn every_response_for_an_artifacts_content_carries_its_policy() {
+async fn every_response_on_a_site_host_carries_its_policy() {
     let ts = TestServer::spawn().await;
     let created = ts.publish("R", &[("index.html", "<p>hi</p>")]).await;
     let id = created["artifact"]["id"].as_str().unwrap();
-    let port = ts.addr.port();
-    let host = format!("{id}.localhost:{port}");
-    let main = format!("127.0.0.1:{port}");
+    let host = format!("{id}.localhost:{}", ts.addr.port());
+    let cookie = ts.site_cookie(id).await;
     let client = no_redirect_client();
-    for (h, path, own) in [
-        (&host, "/healthz".to_string(), "'self'".to_string()),
-        (&host, "/nope".to_string(), "'self'".to_string()),
-        (&host, "/v/1/missing.txt".to_string(), "'self'".to_string()),
-        (&host, "/v/9/".to_string(), "'self'".to_string()),
-        (&host, "/v/1".to_string(), "'self'".to_string()),
-        (&host, "/_clax/bridge.js".to_string(), "'self'".to_string()),
-        (
-            &host,
-            "/_clax/nothing-here".to_string(),
-            "'self'".to_string(),
-        ),
-        (
-            &host,
-            "/_blob/01K6AB7D2E3F4G5H6J7K8M9N0P".to_string(),
-            "'self'".to_string(),
-        ),
-        (
-            &main,
-            format!("/c/{id}/v/1/missing.txt"),
-            format!("http://{main}/c/{id}/"),
-        ),
-        (
-            &main,
-            format!("/c/{id}/v/1"),
-            format!("http://{main}/c/{id}/"),
-        ),
-        (
-            &main,
-            format!("/c/{id}/v/9/"),
-            format!("http://{main}/c/{id}/"),
-        ),
+    for (path, with_cookie) in [
+        ("/_clax/healthz", false),
+        ("/nope", true),
+        ("/nope", false),
+        ("/_clax/v/1/missing.txt", true),
+        ("/_clax/v/9/", true),
+        ("/_clax/v/1", true),
+        ("/_clax/bridge.js", false),
+        ("/_clax/nothing-here", true),
+        ("/_clax/blob/01K6AB7D2E3F4G5H6J7K8M9N0P", true),
+        ("/_clax/api/whoami", false),
     ] {
-        let res = client
+        let mut req = client
             .get(format!("{}{path}", ts.base))
-            .header("host", h)
-            .send()
-            .await
-            .unwrap();
+            .header("host", &host);
+        if with_cookie {
+            req = req.header("cookie", &cookie);
+        }
+        let res = req.send().await.unwrap();
         let policies: Vec<String> = res
             .headers()
             .get_all("content-security-policy")
@@ -423,28 +375,21 @@ async fn every_response_for_an_artifacts_content_carries_its_policy() {
             .map(|v| v.to_str().unwrap().to_string())
             .collect();
         assert!(
-            policies
-                .iter()
-                .any(|p| p.contains(&format!("connect-src {own} "))
-                    && p.contains("default-src ")
-                    && !p.contains('*')),
-            "{h}{path} ({}): {policies:?}",
+            policies.iter().any(|p| p.contains("connect-src 'self';")
+                && p.contains("default-src ")
+                && p.starts_with("frame-ancestors 'self' ")
+                && !p.contains('*')),
+            "{path} ({}): {policies:?}",
             res.status()
         );
-        assert_eq!(res.headers()["referrer-policy"], "no-referrer", "{h}{path}");
+        assert_eq!(res.headers()["referrer-policy"], "no-referrer", "{path}");
     }
-    // A /c/ path that names no artifact runs nothing.
-    let res = ts.get("/c/NOT-AN-ID/v/1/").await;
-    assert_eq!(
-        res.headers()["content-security-policy"],
-        "sandbox; default-src 'none'"
-    );
 }
 
-/// A service worker script asked for on an artifact's content is Clax's,
-/// which removes itself: a page's own worker never runs.
+/// A service worker script asked for on a site host is Clax's, which
+/// removes itself: a page's own worker never runs there.
 #[tokio::test]
-async fn a_service_worker_script_on_content_is_one_that_unregisters_itself() {
+async fn a_service_worker_script_on_a_site_host_is_one_that_unregisters_itself() {
     let ts = TestServer::spawn().await;
     let created = ts
         .publish(
@@ -457,55 +402,58 @@ async fn a_service_worker_script_on_content_is_one_that_unregisters_itself() {
         .await;
     let id = created["artifact"]["id"].as_str().unwrap();
     let host = format!("{id}.localhost:{}", ts.addr.port());
-    for (h, path) in [
-        (Some(host.as_str()), "/v/1/sw.js".to_string()),
-        (Some(host.as_str()), "/healthz".to_string()),
-        (None, format!("/c/{id}/v/1/sw.js")),
+    for path in [
+        "/sw.js",
+        "/_clax/v/1/sw.js",
+        "/_clax/healthz",
+        "/elsewhere.js",
     ] {
-        let mut req = ts
+        let res = ts
             .client
             .get(format!("{}{path}", ts.base))
-            .header("service-worker", "script");
-        if let Some(h) = h {
-            req = req.header("host", h);
-        }
-        let res = req.send().await.unwrap();
+            .header("host", &host)
+            .header("service-worker", "script")
+            .send()
+            .await
+            .unwrap();
         assert_eq!(res.status(), 200, "{path}");
         assert_eq!(res.headers()["content-type"], "text/javascript");
         assert!(
             res.headers()["content-security-policy"]
                 .to_str()
                 .unwrap()
-                .contains("connect-src ")
+                .contains("connect-src 'self'")
         );
         let body = res.text().await.unwrap();
-        assert_eq!(body, clax_http::host::SERVICE_WORKER_KILL_SWITCH, "{path}");
+        assert_eq!(
+            body,
+            clax_http::content_policy::SERVICE_WORKER_KILL_SWITCH,
+            "{path}"
+        );
     }
     // Without the header the file is served as stored.
-    let res = ts.get(&format!("/c/{id}/v/1/sw.js")).await;
+    let res = ts.site_get(id, "/sw.js").await;
     assert_eq!(res.text().await.unwrap(), "self.onfetch = () => {};");
 }
 
-/// What a page may fetch on its own files and its artifact's host takes
-/// only GET and HEAD: nothing there accepts a write.
+/// What a page may fetch on its site host outside `/_clax/api/` takes only
+/// GET and HEAD: nothing there accepts a write.
 #[tokio::test]
-async fn an_artifacts_own_files_and_host_refuse_every_write() {
+async fn a_site_hosts_files_refuse_every_write() {
     let ts = TestServer::spawn().await;
     let created = ts.publish("R", &[("index.html", "<p>hi</p>")]).await;
     let id = created["artifact"]["id"].as_str().unwrap();
     let host = format!("{id}.localhost:{}", ts.addr.port());
-    for (h, path) in [
-        (None, format!("/c/{id}/v/1/")),
-        (None, format!("/c/{id}/v/1/index.html")),
-        (Some(host.as_str()), "/v/1/".to_string()),
-        (Some(host.as_str()), "/_clax/bridge.js".to_string()),
-        (
-            Some(host.as_str()),
-            "/_blob/01K6AB7D2E3F4G5H6J7K8M9N0P".to_string(),
-        ),
-        (Some(host.as_str()), "/healthz".to_string()),
-        (Some(host.as_str()), "/api/artifacts".to_string()),
-        (Some(host.as_str()), format!("/api/artifacts/{id}/docs/a/b")),
+    let cookie = ts.site_cookie(id).await;
+    for path in [
+        "/".to_string(),
+        "/index.html".to_string(),
+        "/_clax/v/1/".to_string(),
+        "/_clax/bridge.js".to_string(),
+        "/_clax/blob/01K6AB7D2E3F4G5H6J7K8M9N0P".to_string(),
+        "/_clax/healthz".to_string(),
+        "/api/artifacts".to_string(),
+        format!("/api/artifacts/{id}/docs/a/b"),
     ] {
         for method in [
             reqwest::Method::POST,
@@ -513,18 +461,19 @@ async fn an_artifacts_own_files_and_host_refuse_every_write() {
             reqwest::Method::PATCH,
             reqwest::Method::DELETE,
         ] {
-            let mut req = ts
+            let status = ts
                 .client
                 .request(method.clone(), format!("{}{path}", ts.base))
-                .body("{}");
-            if let Some(h) = h {
-                req = req.header("host", h);
-            }
-            let status = req.send().await.unwrap().status().as_u16();
-            assert!(
-                status == 404 || status == 405,
-                "{method} {h:?}{path}: {status}"
-            );
+                .header("host", &host)
+                .header("cookie", &cookie)
+                .header("origin", format!("http://{host}"))
+                .body("{}")
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16();
+            assert!(status == 404 || status == 405, "{method} {path}: {status}");
         }
     }
 }

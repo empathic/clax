@@ -13,7 +13,7 @@ describe("the parts by URL", () => {
 
   it("gives every part a loader, and one the build left out rejects naming it", async () => {
     const parts = await loadParts({ comment: "comment-abc.js", clip: "clip-abc.js", caps: "caps-abc.js", room: "room-abc.js", sample: "sample-abc.js", live: "live-abc.js" });
-    expect(Object.keys(parts).sort()).toEqual(["caps", "clip", "comment", "live", "room", "sample", "test"]);
+    expect(Object.keys(parts).sort()).toEqual(["caps", "clip", "comment", "live", "origin", "room", "sample", "test"]);
     await expect(message(parts.test())).resolves.toBe("no URL for the test part");
   });
 

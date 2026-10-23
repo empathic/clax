@@ -92,6 +92,7 @@
 //! [`Store::stray_asset_temp_files`], [`assets::AssetRow::path`]); on a
 //! home with no files they find nothing.
 
+pub mod app_bundles;
 pub mod app_data;
 pub mod approvals;
 pub mod artifacts;

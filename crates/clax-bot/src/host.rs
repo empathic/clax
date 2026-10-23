@@ -22,12 +22,18 @@
 //! and a plan can only produce its answer, a [`Journaled`], through one of
 //! the store's journaled write paths, which record the entry in the
 //! write's transaction: [`Store::add_comment_journaled`],
-//! [`Store::resolve_thread_journaled`], [`Store::doc_set_journaled`],
-//! [`Store::doc_update_journaled`], [`Store::doc_delete_journaled`],
+//! [`Store::resolve_thread_journaled`],
 //! [`Store::publish_version_journaled`], [`Store::create_artifact_journaled`],
 //! and [`Store::with_bot_journal`]
 //! for a write over [`clax_store::Tx`]. A key the journal holds is answered
 //! from it without writing; one reused for another call is `key_reused`.
+//! A document write (`db.set`, `db.update`, `db.delete`) lands in the
+//! artifact's own store, which no instance transaction reaches: it goes
+//! through [`Store::app_write_begin`] (the journal's answer, or the guard),
+//! the write under the entry's operation ID ([`CallEntry::op_id`]), which
+//! that store keeps with it, and [`Store::journal_app_write`] (the guard
+//! again, and the entry), so a crash between the write and its entry
+//! leaves the write, and the call made again writes nothing more.
 //! The entry ([`CallEntry`]) is made only for the driver holding the run
 //! ([`Store::call_entry`]), so a plan cannot journal under a key of its
 //! own; and each journaled path runs the plan's guard inside the write's
@@ -38,6 +44,8 @@ use crate::api;
 use clax_bot_sandbox::{HostError, MaybeSendSync};
 use clax_core::audit::AuditCtx;
 use clax_core::{ArtifactId, CoreError};
+use clax_store::app_data::JournaledDoc;
+use clax_store::app_data::shim::Docs;
 use clax_store::bot_runs::{CallEntry, RequestKind, Run};
 use clax_store::{Journaled, Store};
 use serde::{Deserialize, Serialize};
@@ -559,8 +567,7 @@ impl BotHost for FakeBotHost {
                 }
                 Ok(Value::Array(out))
             }
-            "db.get" => Ok(self
-                .store
+            "db.get" => Ok(Docs::of(&self.store)
                 .doc_get(&aid, &doc_path(args), &caller())
                 .map_err(he)?
                 .map_or(Value::Null, |d| doc_json(&d))),
@@ -573,7 +580,9 @@ impl BotHost for FakeBotHost {
                     limit: None,
                     cursor: None,
                 };
-                let (docs, next) = self.store.doc_query(&aid, &q, &caller()).map_err(he)?;
+                let (docs, next) = Docs::of(&self.store)
+                    .doc_query(&aid, &q, &caller())
+                    .map_err(he)?;
                 let docs: Vec<Value> = docs.iter().map(doc_json).collect();
                 Ok(if op == "db.list" {
                     json!({"docs": docs, "next_cursor": next})
@@ -635,35 +644,22 @@ impl BotHost for FakeBotHost {
                         &entry,
                         &guard,
                     )?,
-                    "db.set" => self.store.doc_set_journaled(
-                        &ctx,
-                        &aid,
-                        &path,
-                        args[2].clone(),
-                        pin(3),
-                        &caller(),
-                        &entry,
-                        &guard,
-                    )?,
-                    "db.update" => self.store.doc_update_journaled(
-                        &ctx,
-                        &aid,
-                        &path,
-                        args[2].clone(),
-                        pin(3),
-                        &caller(),
-                        &entry,
-                        &guard,
-                    )?,
-                    "db.delete" => self.store.doc_delete_journaled(
-                        &ctx,
-                        &aid,
-                        &path,
-                        pin(2),
-                        &caller(),
-                        &entry,
-                        &guard,
-                    )?,
+                    "db.set" | "db.update" | "db.delete" => {
+                        let write = match op.as_str() {
+                            "db.set" => JournaledDoc::Set(args[2].clone(), pin(3)),
+                            "db.update" => JournaledDoc::Update(args[2].clone(), pin(3)),
+                            _ => JournaledDoc::Delete(pin(2)),
+                        };
+                        Docs::of(&self.store).doc_write_journaled(
+                            &ctx,
+                            &aid,
+                            &path,
+                            write,
+                            &caller(),
+                            &entry,
+                            &guard,
+                        )?
+                    }
                     "artifacts.create" => {
                         let spec = &args[0];
                         let req: clax_core::publish::PublishRequest =

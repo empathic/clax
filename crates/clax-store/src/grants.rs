@@ -497,17 +497,25 @@ mod tests {
             lww: true,
         };
         for p in ["runs/r1", "runs/r2", "notes/n1"] {
-            st.doc_set(DAEMON, &id, p, json!({}), lww, &owner).unwrap();
+            crate::app_data::shim::Docs::of(&st)
+                .doc_set(DAEMON, &id, p, json!({}), lww, &owner)
+                .unwrap();
         }
         for p in [format!("data/users/{me}/x"), format!("votes/{me}/v/1")] {
-            st.doc_set(DAEMON, &id, &p, json!({}), lww, &viewer)
+            crate::app_data::shim::Docs::of(&st)
+                .doc_set(DAEMON, &id, &p, json!({}), lww, &viewer)
                 .unwrap();
         }
         assert_eq!(
-            st.doc_collections(&id).unwrap(),
+            crate::app_data::shim::Docs::of(&st)
+                .doc_collections(&id)
+                .unwrap(),
             vec![("notes".to_string(), 1), ("runs".to_string(), 2)]
         );
         st.delete_artifact(DAEMON, &id).unwrap();
-        assert!(matches!(st.doc_collections(&id), Err(CoreError::NotFound)));
+        assert!(matches!(
+            crate::app_data::shim::Docs::of(&st).doc_collections(&id),
+            Err(CoreError::NotFound)
+        ));
     }
 }

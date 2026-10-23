@@ -753,8 +753,8 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   // label is posted again with it).
   const onMessage = (e: MessageEvent) => {
     const frameWin = ctl.frame?.el?.contentWindow ?? null;
-    if (acceptByeFromFrame(e, frameWin, s().origin ?? null)) return pageWaiting(false);
-    const m = acceptFromFrame(e, frameWin, s().origin ?? null);
+    if (acceptByeFromFrame(e, frameWin, s().origin ?? "")) return pageWaiting(false);
+    const m = acceptFromFrame(e, frameWin, s().origin ?? "");
     if (m?.type === "clax:wait") {
       if (typeof m.waiting === "boolean") pageWaiting(m.waiting);
       return;

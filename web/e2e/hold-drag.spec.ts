@@ -42,10 +42,10 @@ async function holdDrag(cdp: CDPSession, from: Pt, to: Pt, holdMs: number, steps
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 }
 
-async function openOnPhone(page: Page, title: string, mode: "subdomain" | "sandbox"): Promise<{ frame: Frame; cdp: CDPSession; aid: string }> {
+async function openOnPhone(page: Page, title: string, _mode: "subdomain"): Promise<{ frame: Frame; cdp: CDPSession; aid: string }> {
   const { artifact } = await publish(d.base, d.token, title, { "index.html": PAGE });
   await record(page);
-  const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+  const frame = await openArtifact(page, d.base, artifact.id, 1);
   const comment = page.getByRole("button", { name: "Comment", exact: true });
   const b = (await comment.boundingBox())!;
   await page.touchscreen.tap(b.x + b.width / 2, b.y + b.height / 2);
@@ -74,7 +74,7 @@ async function post(page: Page, text: string) {
   return (await card.getAttribute("data-thread"))!;
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) {
+for (const mode of ["subdomain"] as const) {
   test(`${mode}: holding on text, then dragging along it, offers the range, and the chip's tap comments on it`, async ({ browser }) => {
     const ctx = await browser.newContext(PHONE);
     const page = await ctx.newPage();

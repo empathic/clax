@@ -27,10 +27,10 @@ async function holdOn(cdp: CDPSession, target: Locator) {
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 }
 
-async function openOnPhone(page: Page, title: string, mode: "subdomain" | "sandbox") {
+async function openOnPhone(page: Page, title: string, _mode: "subdomain") {
   const { artifact } = await publish(d.base, d.token, title, { "index.html": PAGE });
   await record(page);
-  const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+  const frame = await openArtifact(page, d.base, artifact.id, 1);
   const comment = page.getByRole("button", { name: "Comment", exact: true });
   const b = (await comment.boundingBox())!;
   await page.touchscreen.tap(b.x + b.width / 2, b.y + b.height / 2);
@@ -39,7 +39,7 @@ async function openOnPhone(page: Page, title: string, mode: "subdomain" | "sandb
   return { frame, cdp: await page.context().newCDPSession(page) };
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) {
+for (const mode of ["subdomain"] as const) {
   test(`${mode}: a long-press on a heading opens the composer for it, selecting nothing`, async ({ browser }) => {
     const ctx = await browser.newContext({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 800 } });
     const page = await ctx.newPage();

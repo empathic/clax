@@ -14,7 +14,7 @@ import { Lifecycle, onPageCache, retrying } from "../lifecycle";
 import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
 import { type SiteHosts, artifactOrigin, pageSrc, startSrc } from "../origin";
-import { parseShellPath, shellPath } from "../route";
+import { appQuery, parseShellPath, shellPath } from "../route";
 import { type Thread, type Viewer, addComment, createThread, currentViewer, fetchThread, getViewer, listThreads, onViewer, reopenThread, resolveThread, seedViewer, sendBatch, sendToAgent, upsert } from "../threads";
 import { after } from "../clock";
 import { afterPaint, nextFrame } from "./after-paint";
@@ -23,7 +23,7 @@ import { AnchorHandles } from "./anchor-handles";
 import type { Decided } from "./changelog-model";
 import { rallyOnce } from "./rally";
 import type { Boot } from "./boot";
-import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, captureWait, nextDraft, withClip } from "./composer-model";
+import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, captureWait, nextDraft, respaced, withClip } from "./composer-model";
 import type { ArtifactStream } from "./artifact-stream";
 import { FrameGate } from "./frame-gate";
 import type { PresenceView } from "./presence-model";
@@ -160,6 +160,13 @@ export type ViewState = {
    * replacement starts a new capability host. */
   tags: { tags: TagRef[]; may: boolean } | null;
 };
+
+/** The artifact's Comments switch is off (spec 2026-10-21-app-push-pull
+ * §5.6): nobody comments on it, whatever their access, so the view opens no
+ * composer, as for a spectator. */
+export function commentsOff(s: ViewState): boolean {
+  return s.data?.artifact.comments === false;
+}
 
 /** The artifact and its site are known: the islands show. */
 export function viewReady(s: ViewState): s is ViewState & { data: Loaded } {
@@ -667,8 +674,9 @@ export class ArtifactController {
     return this.frame?.el?.contentWindow ?? null;
   }
 
-  /** Posts `m` to the frame, at the site origin only. */
-  private send(m: ShellToBridge): void {
+  /** Posts `m` to the frame, at the site origin only.
+   * @internal */
+  send(m: ShellToBridge): void {
     if (this.s.origin) sendToFrame(this.frameWin(), this.s.origin, m);
   }
 
@@ -764,7 +772,7 @@ export class ArtifactController {
       if (r.ok) src = ((await r.json()) as { src?: unknown }).src as string;
     } catch { /* refused below */ }
     if (this.disposed || this.hs !== hs || this.frame?.el !== hs.el) return;
-    if (typeof src !== "string" || !src.startsWith(`${this.s.origin}/`)) { this.refused(); return; }
+    if (typeof src !== "string" || !src.startsWith(`${this.s.origin}/`)) { this.offerInTab(); return; }
     hs.phase = "code";
     this.frame.go(src);
   }
@@ -789,13 +797,13 @@ export class ArtifactController {
     const hs = this.hs;
     if (!hs || hs.el !== this.frame?.el || !hs.storage) return;
     hs.storage = false;
-    if (++hs.tries >= 2) { this.refused(); return; }
+    if (++hs.tries >= 2) { this.offerInTab(); return; }
     hs.phase = "start";
     this.frame.again();
   }
 
   /** The frame's handshake did not land: the stage offers the page in a tab. */
-  private refused(): void {
+  private offerInTab(): void {
     this.hs = null;
     this.set({ openInTab: this.rawHref() });
     this.frame?.remove();

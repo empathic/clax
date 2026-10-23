@@ -346,3 +346,49 @@ async fn a_forks_page_loads_its_assets_from_its_own_site() {
     assert!(res.status().is_success(), "{}", res.status());
     assert_eq!(fetch(fid.clone()).await, (200, bytes));
 }
+
+/// `/_blob/<artifact ID>/<asset ID>`, the address pages were given for their
+/// own assets, redirects to the asset on that artifact's site, and answers
+/// 404 for another artifact's asset; a site serves its own artifact's
+/// assets only.
+#[tokio::test]
+async fn an_asset_is_served_only_under_its_own_artifact() {
+    let ts = TestServer::spawn().await;
+    let a = ts.publish("A", &[("index.html", "<p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let b = ts.publish("B", &[("index.html", "<p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let body = ts
+        .upload_asset(&a, "logo.png", "image/png", vec![137, 80, 78, 71])
+        .await;
+    let asset = body["asset"]["id"].as_str().unwrap().to_string();
+    let no_follow = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let res = no_follow
+        .get(format!("{}/_blob/{a}/{asset}", ts.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 301);
+    assert_eq!(
+        res.headers()["location"],
+        format!("http://{a}.localhost:{}/_clax/blob/{asset}", ts.addr.port())
+    );
+    assert_eq!(res.headers()["referrer-policy"], "no-referrer");
+    let res = no_follow
+        .get(format!("{}/_blob/{b}/{asset}", ts.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+    let blob = format!("/_clax/blob/{asset}");
+    assert_eq!(ts.site_get(&a, &blob).await.status(), 200);
+    // On B's site, A's asset is not there.
+    assert_eq!(ts.site_get(&b, &blob).await.status(), 404);
+}

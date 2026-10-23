@@ -1134,7 +1134,8 @@ async fn content_is_served_on_its_site_alone_and_keyed_addresses_are_gone() {
     assert_eq!(r.headers()["referrer-policy"], "no-referrer");
     assert_eq!(
         r.headers()["content-security-policy"],
-        format!("frame-ancestors 'self' {}", site.origin)
+        clax_http::content_policy::lockdown(&format!("frame-ancestors 'self' {}", site.origin))
+            .as_str()
     );
     let html = r.text().await.unwrap();
     assert!(html.contains("<h1>Plan</h1>"));
@@ -3120,7 +3121,8 @@ async fn a_site_domain_names_the_sites_and_the_retired_content_origin_only_redir
     assert_eq!(r.status(), 200);
     assert_eq!(
         r.headers()["content-security-policy"],
-        format!("frame-ancestors 'self' {}", site.origin)
+        clax_http::content_policy::lockdown(&format!("frame-ancestors 'self' {}", site.origin))
+            .as_str()
     );
     assert!(
         r.text()

@@ -525,11 +525,41 @@ impl BotHost for ServerHost {
         let (run, audit) = (cx.run.clone(), cx.audit.clone());
         let (step, attempt, seq) = (cx.step, cx.attempt, cx.seq);
         let (op, args) = (op.to_string(), args.to_vec());
-        self.on_store(move |st| {
-            let cx = OpCtx::new(&run, &audit, step, attempt, seq);
-            me.read_now(st, &cx, &op, &args)
-        })
-        .await
+        let now = self
+            .on_store(move |st| {
+                let cx = OpCtx::new(&run, &audit, step, attempt, seq);
+                me.read_now(st, &cx, &op, &args)
+            })
+            .await?;
+        let (id, data_op, kind) = match now {
+            ReadNow::Done(v) => return Ok(v),
+            ReadNow::Data(id, data_op, kind) => (id, data_op, kind),
+        };
+        let reply = self
+            .state
+            .app_data
+            .call(&id, data_op)
+            .await
+            .map_err(|e| host_error(&e))?;
+        let doc =
+            |d: clax_store::docs::Doc| json!({"id": d.id, "version": d.version, "data": d.data});
+        let got = match kind {
+            DataRead::Collections => reply
+                .into_collections()
+                .map(|cs| json!(cs.into_iter().map(|(c, _)| c).collect::<Vec<_>>())),
+            DataRead::Get => reply
+                .into_doc()
+                .map(|d| d.map_or(Value::Null, |(d, _)| doc(d))),
+            DataRead::Page { list } => reply.into_page().map(|p| {
+                let docs: Vec<Value> = p.docs.into_iter().map(doc).collect();
+                if list {
+                    json!({"docs": docs, "next_cursor": p.next_cursor})
+                } else {
+                    Value::Array(docs)
+                }
+            }),
+        };
+        got.map_err(|e| host_error(&e))
     }
 
     async fn plan_write<'s>(

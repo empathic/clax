@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { workerWith } from "../test/fake-worker";
 import { MOUNT_TIMEOUT_MS } from "../test/timeouts";
-import { FakeES, ID, artifact, artifactViewHooks, buttonNamed, fromFrame, gesture, gestureIn, mountView, page, pick, startOf, viewerPick, waitFor } from "../test/artifact-view";
+import { FakeES, ID, SITE, artifact, artifactViewHooks, buttonNamed, fromFrame, gesture, gestureIn, mountView, page, pick, startOf, viewerPick, waitFor } from "../test/artifact-view";
 import { view as questionView } from "../q/fixtures";
 import type { HostMessage } from "./host";
 
@@ -87,6 +87,9 @@ function framePosts(frame: HTMLIFrameElement): Posted[] {
   frame.contentWindow!.postMessage = ((m: Posted) => { posted.push(m); }) as Window["postMessage"];
   return posted;
 }
+/** The frame's first address for version `n`'s index (and fragment
+ * `hash`): its site's handshake. */
+const handshakeOf = (n: number, hash = "") => `${SITE}/_clax/session/start?next=${encodeURIComponent(`/_clax/v/${n}/${hash}`)}`;
 const hello = (frame: HTMLIFrameElement, version: number, file = "index.html") => fromFrame(frame.contentWindow!, { type: "clax:hello", artifact: ID, version, file });
 /** jsdom has no object URLs, which the composer's screenshot takes. */
 function blobUrls() {
@@ -327,7 +330,7 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(ofType("landed")).toEqual([]);
     host.reloadLatest();
     const next = await waitFor(() => { const f = view.root.querySelector<HTMLIFrameElement>("iframe.frame"); return f && f !== frame ? f : null; }, "the newer version's frame");
-    expect(next.getAttribute("src")).toBe(`/c/${ID}/v/2/`);
+    expect(next.getAttribute("src")).toBe(handshakeOf(2));
     expect(ctl.state.get().newer).toBeNull();
     const posted = framePosts(next);
     expect(ofType("landed")).toEqual([]);
@@ -377,9 +380,9 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => ctl.state.get().newer === 3, "newer 3");
     held = null;
     release();
-    await waitFor(() => view.root.querySelector("iframe.frame")?.getAttribute("src") === `/c/${ID}/v/2/`, "version 2's frame");
+    await waitFor(() => view.root.querySelector("iframe.frame")?.getAttribute("src") === handshakeOf(2), "version 2's frame");
     await settle();
-    expect(view.root.querySelector("iframe.frame")?.getAttribute("src")).toBe(`/c/${ID}/v/2/`);
+    expect(view.root.querySelector("iframe.frame")?.getAttribute("src")).toBe(handshakeOf(2));
     expect(ofType("newer").map(m => m.version)).toEqual([2, 3]);
   });
 
@@ -538,7 +541,8 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => ofType("newer").length, "the offer");
     host.reloadLatest();
     const next = await waitFor(() => { const f = view.root.querySelector<HTMLIFrameElement>("iframe.frame"); return f && f !== frame ? f : null; }, "the newer version's frame");
-    expect(next.getAttribute("src")).toBe(`/c/${ID}/v/2/#/b`);
+    // The fragment goes to the page once it greets, past its handshake.
+    expect(next.getAttribute("src")).toBe(handshakeOf(2));
     const posted = framePosts(next);
     hello(next, 2);
     fromFrame(next.contentWindow!, { type: "clax:hash", hash: "#/b" });
@@ -551,10 +555,10 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     latest = 2;
     const { ctl, view, frame, host } = await appView({ pinned: 1 });
     hello(frame, 1);
-    expect(frame.getAttribute("src")).toBe(`/c/${ID}/v/1/`);
+    expect(frame.getAttribute("src")).toBe(handshakeOf(1));
     host.reloadLatest();
     const next = await waitFor(() => { const f = view.root.querySelector<HTMLIFrameElement>("iframe.frame"); return f && f !== frame ? f : null; }, "the latest version's frame");
-    expect(next.getAttribute("src")).toBe(`/c/${ID}/v/2/`);
+    expect(next.getAttribute("src")).toBe(handshakeOf(2));
     expect(ctl.state.get().pinnedVersion).toBeNull();
     expect(location.pathname + location.search).toBe(`/a/${ID}?app=1`);
     hello(next, 2);

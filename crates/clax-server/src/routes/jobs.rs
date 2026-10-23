@@ -700,6 +700,7 @@ pub async fn commit(
         Step::Publish(p) => {
             let mut p = *p;
             let drafts = s.drafts.clone();
+            let step_docs = clax_http::app_data_host::HostStepDocs::of(&s, &audit);
             let out = s
                 .store_call_async(move |st| async move {
                     // Ends with the step's work, wherever it runs.
@@ -721,7 +722,10 @@ pub async fn commit(
                         }
                     }
                     let sid = p.session_id.clone();
-                    match st.commit_publish_step_async(&audit, &id, &key, p).await {
+                    match st
+                        .commit_publish_step_async(&audit, &id, &key, p, &step_docs)
+                        .await
+                    {
                         Ok(c) => {
                             if let Some(made) = &c.made {
                                 after_publish_step(
@@ -935,6 +939,31 @@ mod tests {
 
     const DAEMON: &AuditCtx = &AuditCtx::DAEMON;
 
+    /// A publish step's documents in their artifact's file in the home,
+    /// written directly (`clax_store::app_data::shim`).
+    struct FileDocs<'a>(&'a Store);
+
+    #[async_trait::async_trait]
+    impl clax_store::jobs::StepDocs for FileDocs<'_> {
+        async fn write(
+            &self,
+            aid: &ArtifactId,
+            op: clax_store::app_data::OpId,
+            writes: Vec<BatchWrite>,
+        ) -> clax_core::Result<Vec<clax_store::docs::Written>> {
+            let rules = clax_core::db::Rules::from_capabilities(&self.0.doc_capabilities(aid)?)?;
+            clax_store::app_data::shim::Docs::of(self.0)
+                .data(aid)?
+                .doc_batch(
+                    &clax_store::app_data::WriteCtx::of(DAEMON).with_op(op),
+                    &rules,
+                    writes,
+                    false,
+                    &clax_core::db::Caller::new(clax_core::db::Level::Owner, None),
+                )
+        }
+    }
+
     fn publish(html: &str) -> clax_core::publish::ValidatedPublish {
         let req: PublishRequest = serde_json::from_value(json!({
             "title": "Budget",
@@ -983,7 +1012,7 @@ mod tests {
             done: false,
         };
         let c = st
-            .commit_publish_step(DAEMON, "j1", "publish:1", step)
+            .commit_publish_step(DAEMON, "j1", "publish:1", step, &FileDocs(&st))
             .unwrap();
         (dir, c.made.unwrap())
     }

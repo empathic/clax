@@ -1,12 +1,16 @@
-//! The store's tests' way to an artifact's app data: [`Docs`] answers the
-//! document calls the instance once answered itself, with their arguments,
-//! by resolving what the instance decides (the artifact's capabilities, a
-//! page's authors, a view of the reader) and calling the artifact's own
-//! store at its home's path, after moving its rows and applying the folds
-//! there, as the daemon's host does before each call.
+//! A local home's way to an artifact's app data, for tests and test hosts
+//! (ClaxBot's `FakeBotHost`): [`Docs`] answers the document calls the
+//! instance once answered itself, with their arguments, by resolving what
+//! the instance decides (the artifact's capabilities, a page's authors, a
+//! view of the reader) and calling the artifact's own store at its home's
+//! path, after moving its rows and applying the folds there, as the
+//! daemon's host does before each call. It copies no audit record into the
+//! instance's history: the daemon reaches artifacts' stores through its
+//! host (`clax_http::app_data_host`), never through this.
 
-use super::{AppData, DocView, WriteCtx};
+use super::{AppData, DocView, JournaledDoc, WriteCtx};
 use crate::Store;
+use crate::bot_runs::{CallEntry, Guard, Journaled};
 use crate::docs::{
     Acquire, Acquired, BatchWrite, Doc, DocChange, DocPage, DocQuery, Pin, StrReplace, Written,
 };
@@ -18,7 +22,7 @@ use clax_core::{ArtifactId, Result};
 use serde_json::Value;
 
 /// A store and its artifacts' app data.
-pub(crate) struct Docs<'a> {
+pub struct Docs<'a> {
     pub st: &'a Store,
 }
 
@@ -65,6 +69,11 @@ impl<'a> Docs<'a> {
 
     pub fn doc_authors(&self, id: &ArtifactId, path: &str) -> Result<Vec<Author>> {
         self.data(id)?.doc_authors(path)
+    }
+
+    pub fn doc_collections(&self, id: &ArtifactId) -> Result<Vec<(String, u64)>> {
+        let rules = self.rules(id)?;
+        self.data(id)?.doc_collections(&rules, None)
     }
 
     pub fn doc_get(&self, id: &ArtifactId, path: &str, caller: &Caller) -> Result<Option<Doc>> {
@@ -284,7 +293,39 @@ impl<'a> Docs<'a> {
         f(&self.data(id)?.conn)
     }
 
+    /// ClaxBot's journaled document write `write` at `path` as `caller`,
+    /// journaled as `entry` with `guard` (`Store::app_write_begin`): the
+    /// journal's answer when it holds the entry; else the write under the
+    /// entry's operation ID, then its entry.
+    #[allow(clippy::too_many_arguments)]
+    pub fn doc_write_journaled(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        path: &str,
+        write: JournaledDoc,
+        caller: &Caller,
+        entry: &CallEntry,
+        guard: Guard<'_>,
+    ) -> Result<Journaled> {
+        if let Some(prev) = self.st.app_write_begin(entry, guard)? {
+            return Ok(prev);
+        }
+        let rules = self.rules(id)?;
+        let w = self.ctx(ctx, id, caller)?.with_op(entry.op_id());
+        let ad = self.data(id)?;
+        let written = match write {
+            JournaledDoc::Set(data, pin) => ad.doc_set(&w, &rules, path, data, pin, caller)?,
+            JournaledDoc::Update(patch, pin) => {
+                ad.doc_update(&w, &rules, path, patch, pin, caller)?
+            }
+            JournaledDoc::Delete(pin) => ad.doc_delete(&w, &rules, path, pin, caller)?,
+        };
+        self.st.journal_app_write(entry, guard, written.doc_ref())
+    }
+
     /// How many rows artifact `id`'s store's `table` holds.
+    #[cfg(test)]
     pub fn count(&self, id: &ArtifactId, table: &str) -> i64 {
         self.with_data(id, |c| {
             Ok(c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?)

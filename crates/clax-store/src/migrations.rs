@@ -2206,8 +2206,9 @@ fn install_id(tx: &rusqlite::Transaction<'_>) -> clax_core::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        APP_MIGRATION, AUDIT_MIGRATION, INBOX_MIGRATION, MAIN_MARKS_ABOVE_38, MIGRATIONS,
-        PEOPLE_MIGRATION, REPAIR_MIGRATION, VISIBILITY_MIGRATION, WHERE_TO_ASK_MIGRATION,
+        APP_MIGRATION, ASSET_KEYS_MIGRATION, AUDIT_MIGRATION, INBOX_MIGRATION, MAIN_MARKS_ABOVE_38,
+        MIGRATIONS, PEOPLE_MIGRATION, REPAIR_MIGRATION, VISIBILITY_MIGRATION,
+        WHERE_TO_ASK_MIGRATION,
     };
     use crate::Store;
     use crate::test_util::DAEMON;
@@ -5641,20 +5642,25 @@ mod tests {
 
         // The owner's home after this build's first open: 43 adopted to 46,
         // then the jobs migration to 47, the app push migration to 48, the
-        // remote kind migration to 49 and ClaxBot's to 50.
+        // remote kind migration to 49, ClaxBot's to 50, and the site
+        // migrations to 54.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), 50);
+            assert_eq!(user_version(&c), ASSET_KEYS_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
         let copy = open_under(&home, &later);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), 51, "ClaxBot's 50 is its 51 now");
+        assert_eq!(
+            user_version(&c),
+            ASSET_KEYS_MIGRATION + 1,
+            "ClaxBot's 50 and the site migrations' 51 to 54 are one later now"
+        );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
         assert_eq!(table_count(&c, "simulated_main_42"), 1);
@@ -5672,7 +5678,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), 50);
+        assert_eq!(user_version(&copied), ASSET_KEYS_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -5686,7 +5692,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (51, schema, rows)
+            (ASSET_KEYS_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -5960,7 +5966,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, 50);
+        assert_eq!(last, ASSET_KEYS_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));

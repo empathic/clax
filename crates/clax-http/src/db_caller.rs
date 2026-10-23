@@ -29,7 +29,128 @@ use clax_core::db::{Caller, Level};
 use clax_core::visibility::Author;
 use clax_core::{ArtifactId, CoreError};
 use clax_store::Store;
+use clax_store::grants::ReadAccess;
 use clax_store::site_sessions::Holder;
+
+/// The header naming the app a request reads another app's documents for.
+pub const READER_HEADER: &str = "x-clax-reader";
+
+/// The artifact `X-Clax-Reader` names; `Ok(None)` without the header.
+///
+/// # Errors
+/// 400 `invalid_args` when the header is repeated or its value is not an
+/// artifact ID.
+pub fn reader_of(headers: &axum::http::HeaderMap) -> Result<Option<ArtifactId>, ApiError> {
+    let mut values = headers.get_all(READER_HEADER).iter();
+    let Some(v) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            "X-Clax-Reader names one artifact",
+        ));
+    }
+    v.to_str()
+        .ok()
+        .and_then(|v| ArtifactId::parse(v).ok())
+        .map(Some)
+        .ok_or_else(|| ApiError::bad_request("invalid_args", "X-Clax-Reader is not an artifact ID"))
+}
+
+/// Whether `path` is a route that serves a reader: an artifact's document
+/// list (`/api/artifacts/<aid>/docs`), one document
+/// (`/api/artifacts/<aid>/docs/<path>`), or `docs:collections` (which
+/// refuses it itself). Matched on the raw path, so any other spelling is
+/// another route.
+pub fn reader_route(path: &str) -> bool {
+    let segs: Vec<&str> = path.split('/').collect();
+    match segs.as_slice() {
+        ["", "api", "artifacts", aid, "docs", rest @ ..] => {
+            !aid.is_empty() && rest.iter().all(|s| !s.is_empty())
+        }
+        ["", "api", "artifacts", aid, "docs:collections"] => !aid.is_empty(),
+        _ => false,
+    }
+}
+
+/// Refuses a request that carries `X-Clax-Reader` anywhere it is not
+/// honoured, before any handler runs: a reader only ever reads, and only
+/// another app's documents. With a method other than `GET` or `HEAD`: 403
+/// `read_only`. A `GET` or `HEAD` outside the document read routes
+/// ([`reader_route`]): 403 `not_granted`, since serving it with the
+/// caller's own credentials would ignore the reader. The event stream takes
+/// its reader as `?reader=`, and `/api/stream` in its topic, never the
+/// header.
+pub async fn refuse_reader_elsewhere(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::Method;
+    use axum::response::IntoResponse;
+    if !req.headers().contains_key(READER_HEADER) {
+        return next.run(req).await;
+    }
+    if !matches!(*req.method(), Method::GET | Method::HEAD) {
+        return ApiError::forbidden(
+            "read_only",
+            "a request with X-Clax-Reader only reads another app's documents",
+        )
+        .into_response();
+    }
+    if !reader_route(req.uri().path()) {
+        return ApiError::forbidden(
+            "not_granted",
+            "X-Clax-Reader is honoured only on an artifact's document reads",
+        )
+        .into_response();
+    }
+    next.run(req).await
+}
+
+/// The caller `reader` reading `source`'s documents with the credentials
+/// that give `level`: `min(level, view)` with no viewer, once
+/// [`Store::may_read`] says `Granted` and `source` declares `db`.
+///
+/// # Errors
+/// `NotFound` when either artifact is missing or `source` is a draft (its
+/// documents are the owner's alone); `not_granted` (403) without consent;
+/// [`CoreError::NotDeclared`] when `source` does not declare `db`.
+pub fn reader_caller(
+    st: &Store,
+    reader: &ArtifactId,
+    source: &ArtifactId,
+    level: Level,
+) -> clax_core::Result<Caller> {
+    if st.is_hidden(source.as_str()) {
+        return Err(CoreError::NotFound);
+    }
+    if st.may_read(reader, source)? != ReadAccess::Granted {
+        return Err(not_granted(reader, source));
+    }
+    if !st.doc_declared(source)? {
+        return Err(CoreError::NotDeclared { capability: "db" });
+    }
+    Ok(Caller::new(level.min(Level::View), None))
+}
+
+/// Whether app `reader` may read `source`'s documents now (both artifact
+/// IDs, as the stream hub holds them), as [`reader_caller`] decides; an
+/// error is no.
+pub fn reads_now(st: &Store, reader: &str, source: &str) -> bool {
+    match (ArtifactId::parse(reader), ArtifactId::parse(source)) {
+        (Ok(r), Ok(s)) => reader_caller(st, &r, &s, Level::View).is_ok(),
+        _ => false,
+    }
+}
+
+/// 403 `not_granted`: `reader` may not read `source`'s documents.
+pub fn not_granted(reader: &ArtifactId, source: &ArtifactId) -> CoreError {
+    CoreError::invalid(
+        "not_granted",
+        format!("{reader} may not read {source}'s documents"),
+    )
+}
 
 /// The value of the first `key=` parameter of `parts`' query string,
 /// percent-decoded (`+` is a space). `Some(None)` when the value's encoding
@@ -188,6 +309,7 @@ pub struct CallerParts {
     /// On a site host: who its access check found; the caller is theirs
     /// alone ([`site_caller`]).
     pub site: Option<SiteCaller>,
+    pub reader: Option<ArtifactId>,
 }
 
 impl FromRequestParts<AppState> for CallerParts {
@@ -243,14 +365,16 @@ impl FromRequestParts<AppState> for CallerParts {
             ),
             page,
             site: parts.extensions.get::<SiteCaller>().cloned(),
+            reader: reader_of(&parts.headers)?,
         })
     }
 }
 
 impl CallerParts {
     /// The caller, looking up the cookie's viewer (a cookie with no viewer row
-    /// is no viewer); on a site host, the site's caller ([`site_caller`]).
-    pub fn resolve(&self, st: &Store) -> clax_core::Result<Caller> {
+    /// is no viewer), before any reader clamp; on a site host, the site's
+    /// caller ([`site_caller`]).
+    fn resolve(&self, st: &Store) -> clax_core::Result<Caller> {
         let base = match &self.site {
             Some(site) => site_caller(st, site)?,
             None => base_caller(st, self.token, &self.who)?,
@@ -379,6 +503,11 @@ impl Subscriber {
                 .then(|| crate::identity::SocketCredentials::token_tag(token)),
             ..crate::identity::SocketCredentials::of_request(&self.who, token, extensions)
         }
+    }
+
+    /// Whether the subscriber holds the token.
+    pub fn holds_token(&self) -> bool {
+        self.token
     }
 
     /// The subscriber's level and viewer, as `base_caller` decides them; on

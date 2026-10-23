@@ -90,9 +90,27 @@ pub async fn create(
         Ok((of, p, inherit_net))
     })
     .await?;
-    let d = s
-        .store_call(move |st| st.create_draft_with(&audit, of.as_ref(), p, inherit_net))
-        .await?;
+    let ctx = audit.clone();
+    let mut d = {
+        let of = of.clone();
+        s.store_call(move |st| st.create_draft_with(&ctx, of.as_ref(), p, inherit_net))
+            .await?
+    };
+    // The app's documents go into the draft's own store once it exists; a
+    // copy that fails takes the draft with it.
+    if let Some(of) = &of {
+        let did = parse_id(&d.artifact.id)?;
+        match clax_http::app_data_host::copy_app_docs(&*s.app_data, &s.store, of, &did).await {
+            Ok((copied, truncated)) => (d.docs_copied, d.docs_truncated) = (copied, truncated),
+            Err(e) => {
+                let gone = s.store_call(move |st| st.delete_draft(&audit, &did)).await;
+                if let Err(g) = gone {
+                    tracing::warn!(error = %g.message, "a draft whose copy failed was not deleted");
+                }
+                return Err(e.into());
+            }
+        }
+    }
     Ok((
         StatusCode::CREATED,
         Json(json!({"draft": {
