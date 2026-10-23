@@ -509,9 +509,12 @@ pub async fn summary(
             } else {
                 clax_http::views::inbox::text_withheld_at(db, me.as_deref(), hosted)?
             };
-            let (mut open, _) =
-                db.list_questions(me.as_deref(), ListStatus::Open, SUMMARY_QUESTIONS)?;
-            open.retain(|q| q.artifact_id.as_ref().is_none_or(|a| !hidden.contains(a)));
+            let (mut open, _) = db.list_questions_leaving_out(
+                me.as_deref(),
+                ListStatus::Open,
+                SUMMARY_QUESTIONS,
+                &hidden,
+            )?;
             if !tag_ids.is_empty() {
                 let mut carrying = std::collections::HashMap::new();
                 open.retain(|q| {

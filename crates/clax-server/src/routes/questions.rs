@@ -691,10 +691,10 @@ pub async fn list(
     let hosted = s.hosted.is_some();
     let out = s
         .store_call(move |db| {
-            let (mut rows, open) = db.list_questions(me.as_deref(), which, limit)?;
             // On a hosted daemon, none about an artifact out of reach.
             let hidden = clax_http::views::inbox::out_of_reach(db, me.as_deref(), hosted)?;
-            rows.retain(|q| q.artifact_id.as_ref().is_none_or(|a| !hidden.contains(a)));
+            let (rows, open) =
+                db.list_questions_leaving_out(me.as_deref(), which, limit, &hidden)?;
             // Two reads: a question that changes between them never takes the
             // count below 0.
             let open = open.saturating_sub(db.open_questions_about(me.as_deref(), &hidden)?);

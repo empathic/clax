@@ -1095,17 +1095,43 @@ impl Store {
         which: ListStatus,
         limit: u32,
     ) -> Result<(Vec<QuestionRow>, u32)> {
+        self.list_questions_leaving_out(recipient, which, limit, &[])
+    }
+
+    /// [`Store::list_questions`] without the questions about the artifacts
+    /// `hidden` (left out before the limit, so a page holds `limit`
+    /// questions while there are that many others); the count of open
+    /// ones still counts every one.
+    pub fn list_questions_leaving_out(
+        &self,
+        recipient: Option<&str>,
+        which: ListStatus,
+        limit: u32,
+        hidden: &[String],
+    ) -> Result<(Vec<QuestionRow>, u32)> {
         let r = super::inbox::recipient_key(recipient);
+        let ids = super::feedback::id_array(hidden);
         self.with_read(|c| {
             let open: u32 = c.query_row(OPEN_COUNT, params![r], |x| x.get(0))?;
+            let page = |base: &str, n: u32| {
+                if hidden.is_empty() {
+                    return rows(c, base, params![r, n]);
+                }
+                // The base query with the filter before its ORDER BY.
+                let (head, tail) = base.split_at(base.rfind(" ORDER BY").unwrap_or(base.len()));
+                let sql = format!(
+                    "{head} AND (artifact_id IS NULL OR artifact_id NOT IN (SELECT value FROM json_each(?3))){tail}"
+                );
+                rows(c, &sql, params![r, n, ids])
+            };
             let out = match which {
-                ListStatus::Open => rows(c, OPEN_OLDEST, params![r, limit])?,
-                ListStatus::Closed => rows(c, CLOSED_NEWEST, params![r, limit])?,
+                ListStatus::Open => page(OPEN_OLDEST, limit)?,
+                ListStatus::Closed => page(CLOSED_NEWEST, limit)?,
                 ListStatus::All => {
-                    let mut out = rows(c, OPEN_NEWEST, params![r, limit])?;
+                    let mut out = page(OPEN_NEWEST, limit)?;
                     let left = limit.saturating_sub(out.len() as u32);
                     if left > 0 {
-                        out.extend(rows(c, CLOSED_NEWEST, params![r, left])?);
+                        out.extend(page(CLOSED_NEWEST, left)?);
                     }
                     out
                 }
@@ -1964,6 +1990,45 @@ mod tests {
         assert_eq!(two.len(), 2, "the open page fills the limit");
         let (one, n) = st.list_questions(None, ListStatus::Open, 1).unwrap();
         assert_eq!((one.len(), n), (1, 2));
+    }
+
+    #[test]
+    fn a_list_leaves_out_its_hidden_artifacts_before_the_limit() {
+        let (_d, st) = store();
+        let s = session(&st, "claude", "h1");
+        let (hidden, shown) = (
+            crate::test_util::artifact(&st, Some(&s)),
+            crate::test_util::artifact(&st, Some(&s)),
+        );
+        let ask = |aid: Option<&clax_core::ArtifactId>| {
+            let n = NewQuestion {
+                artifact_id: aid.map(|x| x.as_str().to_string()),
+                ..new(&s, Source::Ask, None)
+            };
+            st.create_question(DAEMON, n).unwrap().0.id
+        };
+        let (h1, h2) = (ask(Some(&hidden)), ask(Some(&hidden)));
+        let (on_shown, on_none) = (ask(Some(&shown)), ask(None));
+        let out = [hidden.as_str().to_string()];
+        let ids = |which, limit| {
+            let (rows, open) = st
+                .list_questions_leaving_out(None, which, limit, &out)
+                .unwrap();
+            (rows.into_iter().map(|q| q.id).collect::<Vec<_>>(), open)
+        };
+        // The oldest two are hidden: a page of two holds the next two.
+        assert_eq!(
+            ids(ListStatus::Open, 2),
+            (vec![on_shown.clone(), on_none.clone()], 4)
+        );
+        assert_eq!(ids(ListStatus::All, 1).0, vec![on_none.clone()]);
+        st.close_question(DAEMON, &h1, Close::Decline).unwrap();
+        st.close_question(DAEMON, &on_shown, Close::Decline)
+            .unwrap();
+        st.close_question(DAEMON, &h2, Close::Decline).unwrap();
+        assert_eq!(ids(ListStatus::Closed, 1).0, vec![on_shown]);
+        let (all, _) = st.list_questions(None, ListStatus::All, 10).unwrap();
+        assert_eq!(all.len(), 4, "nothing left out without hidden artifacts");
     }
 
     /// The question events recorded after `seq`: (kind, question ID,

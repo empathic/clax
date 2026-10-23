@@ -4319,7 +4319,10 @@ viewer routes' `Origin` and `Sec-Fetch-Site` rules (403
 - **`GET /api/questions?status=open|closed|all&limit=<n>`** →
   `{questions, open}`: open questions oldest first, closed ones most
   recently closed first (default `open`, 50; `limit` clamped to 1..200);
-  `open` counts every open question of the caller's. Another `status` is
+  `open` counts every open question of the caller's. On a hosted Clax the
+  questions about an artifact out of the caller's reach are left out, and
+  `open` does not count them; a page still holds `limit` questions while
+  there are that many others. Another `status` is
   400 `invalid_query`.
 - **`GET /api/questions/<qid>`** → `{question}`.
 - **`POST /api/questions/<qid>/answer`**, body `{answers}` → `{question}`;
