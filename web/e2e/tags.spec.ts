@@ -196,13 +196,15 @@ test("the tag editor shows a refusal past twenty tags and closes on a press outs
   await page.locator(".topbar h1").click();
   await expect(editor).toHaveCount(0);
 
-  // On a phone, the title reads "20 tags", which lists them.
+  // On a phone, the title reads "20 tags", which lists them. A local
+  // daemon's browser on loopback is the owner, who may tag, once the shell
+  // has its token; a viewer who may not is the hosted test below.
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const phone = await ctx.newPage();
   await openArtifact(phone, d.base, plan, 1);
   const count = phone.getByRole("button", { name: "All 20 tags" });
   await expect(count).toHaveText("20 tags");
-  await expect(phone.locator(".topbar .tedit")).toHaveCount(0);
+  await expect(phone.locator(".topbar .tedit")).toHaveCount(1);
   await count.click();
   await expect(phone.getByRole("dialog", { name: "Tags" }).locator(".tag")).toHaveCount(20);
   if (SHOTS) {
