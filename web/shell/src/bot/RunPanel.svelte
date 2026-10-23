@@ -15,7 +15,7 @@
   import { onDestroy } from "svelte";
   import { refusal } from "../people/refusal";
   import { type BotRun, type BotStep, type RunEvent, type RunSummary, cancelRun } from "./api";
-  import { credits, ended, meter, openByDefault, runCost, runStatus, stepLine } from "./model";
+  import { credits, ended, meter, openByDefault, runCost, runStatus, stepLine, tail, turnActivity } from "./model";
   import { RunFeed } from "./run-feed.svelte";
   import { botView } from "./send.svelte";
   import Meter from "./Meter.svelte";
@@ -63,6 +63,15 @@
   let lastStatus = "";
   $effect(() => { const st = run?.status; if (st && st !== lastStatus) { lastStatus = st; botView.changes++; } });
   const live = $derived(!!run && !ended(run));
+  // The clock a running turn's activity line counts from, ticking each
+  // second while the run is live, so a long turn still shows it is working.
+  let now = $state(Date.now());
+  $effect(() => {
+    if (!live) return;
+    now = Date.now();
+    const t = setInterval(() => { now = Date.now(); }, 1000);
+    return () => clearInterval(t);
+  });
   const week = $derived(botView.me?.enabled ? meter(botView.me.week) : null);
   const choices = $derived([...new Set([...(botView.run ? [botView.run] : []), ...botView.started, ...runs.map(r => r.id)])]);
   const label = (id: string) => { const r = runs.find(x => x.id === id); return r ? `${new Date(r.started_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} · ${runStatus(r)}` : "This run"; };
@@ -109,7 +118,9 @@
       {#each run?.steps ?? [] as s (s.n)}
         <li class={`step ${s.kind}`}>
           {#if s.kind === "turn"}
-            {#if s.text}<p class="who">ClaxBot</p><p class="say">{s.text}</p>{:else if s.status === "running"}<p class="say muted">Thinking…</p>{/if}
+            {#if s.status === "running" && s.thinking}<p class="think" aria-label="Its reasoning so far">{tail(s.thinking, 600)}</p>{/if}
+            {#if s.text}<p class="who">ClaxBot</p><p class="say">{s.text}</p>{/if}
+            {#if s.status === "running"}<p class="say muted activity"><span class="pulse" aria-hidden="true"></span>{turnActivity(s, now)}</p>{/if}
           {:else if s.kind === "script"}
             <details open={openByDefault(s) || !!s.error}>
               <summary><span class="t">{s.title ?? "Script"}</span><span class="meta">{callsLine(s)}</span>{#if s.error}<span class="bad">failed</span>{/if}</summary>
@@ -170,6 +181,11 @@
     .runp .who { margin: 0; font: 600 12px var(--font); color: var(--agent-ink); }
     .runp .say { margin: 2px 0 0; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
     .runp .muted { color: var(--muted); }
+    .runp .think { margin: 0 0 4px; padding-left: 8px; border-left: 2px solid var(--border); font-size: 12.5px; font-style: italic; line-height: 1.5; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .runp .activity { display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+    .runp .pulse { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--agent); animation: runp-pulse 1.2s ease-in-out infinite; }
+    @keyframes runp-pulse { 50% { opacity: .25; } }
+    @media (prefers-reduced-motion: reduce) { .runp .pulse { animation: none; } }
     .runp details { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); }
     .runp summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 8px 10px; cursor: pointer; }
     .runp summary .t { font-weight: 600; overflow-wrap: anywhere; min-width: 0; }

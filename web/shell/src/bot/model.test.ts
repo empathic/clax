@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { meBot, run, week } from "./fixtures";
-import { actorLabel, after, applyEvent, availability, banner, credits, fromText, margins, meter, money, parseEvent, perUnitMilli, percent, rangeFrom, resetDay, runCost, runStatus, sections, tokens, unavailableFix, unavailableText } from "./model";
+import { actorLabel, after, applyEvent, availability, banner, credits, fromText, margins, meter, money, parseEvent, perUnitMilli, percent, rangeFrom, resetDay, runCost, runStatus, sections, tail, tokens, turnActivity, unavailableFix, unavailableText } from "./model";
 
 describe("ClaxBot's numbers", () => {
   it("shows milli-credits as credits, micro-USD as dollars and basis points as percentages", () => {
@@ -79,6 +79,25 @@ describe("the Send menu's ClaxBot line", () => {
 });
 
 describe("a run's events", () => {
+  it("keeps a turn's words, reasoning and tool input apart, and says what a running turn is doing", () => {
+    const at = "2026-10-21T14:02:00Z";
+    let r = applyEvent(run(), { event: "step_started", data: { step: { n: 1, kind: "turn", status: "running", started_at: at, credits_milli: 0 } } });
+    r = applyEvent(r, { event: "turn_delta", data: { step: 1, type: "thinking", text: "Plan the map " } });
+    r = applyEvent(r, { event: "turn_delta", data: { step: 1, type: "thinking", text: "first." } });
+    const t0 = Date.parse(at);
+    expect(turnActivity(r.steps[0], t0 + 65_000)).toBe("Thinking · 1:05");
+    r = applyEvent(r, { event: "turn_delta", data: { step: 1, type: "text", text: "Drawing it." } });
+    r = applyEvent(r, { event: "turn_delta", data: { step: 1, type: "tool_input", text: '{"title":"Draw \\u201cthe\\u201d map","code":"const a = 1;\\nconst' } });
+    r = applyEvent(r, { event: "turn_delta", data: { step: 1, type: "tool_input", text: ' b = 2;' } });
+    expect([r.steps[0].thinking, r.steps[0].text]).toEqual(["Plan the map first.", "Drawing it."]);
+    expect(turnActivity(r.steps[0], t0 + 5_000)).toBe("Writing “Draw “the” map” · 2 lines · 0:05");
+    // Before the title is written, and a delta from before typed deltas.
+    expect(turnActivity({ input: '{"ti', started_at: at }, t0)).toBe("Writing a script · 0:00");
+    expect(applyEvent(r, { event: "turn_delta", data: { step: 1, text: " Done." } }).steps[0].text).toBe("Drawing it. Done.");
+    expect(tail("one two three four", 9)).toBe("…four");
+    expect(tail("short", 9)).toBe("short");
+  });
+
   it("builds the steps as their events arrive, and ends the run", () => {
     let r = run();
     const at = "2026-10-21T14:02:01Z";

@@ -84,6 +84,41 @@ describe("the run panel", () => {
     m.unmount();
   });
 
+  it("shows a running turn's reasoning and what it is writing, with a clock that ticks", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"], now: Date.parse("2026-10-21T14:02:00Z") });
+    try {
+      const stream = sse();
+      daemon({
+        "GET /api/bot/runs/r1": json(run()),
+        "GET /api/bot/runs/r1/events": () => new Response(stream.body, { headers: { "content-type": "text/event-stream" } }),
+      });
+      const m = mount(RunPanel, { aid: "7q3k9mzx2b4t", runs: [] });
+      botView.open("r1");
+      flush();
+      await settle();
+      const panel = document.querySelector<HTMLElement>("#bot-run-panel")!;
+      stream.send("step_started", { step: { n: 1, kind: "turn", status: "running", started_at: "2026-10-21T14:02:00Z", credits_milli: 0 } });
+      stream.send("turn_delta", { step: 1, type: "thinking", text: "The map needs the lines first." });
+      await settle();
+      expect(panel.querySelector(".think")!.textContent).toBe("The map needs the lines first.");
+      expect(panel.querySelector(".activity")!.textContent).toBe("Thinking · 0:00");
+      vi.advanceTimersByTime(3000);
+      flush();
+      expect(panel.querySelector(".activity")!.textContent).toBe("Thinking · 0:03");
+      stream.send("turn_delta", { step: 1, type: "tool_input", text: '{"title":"Draw the lines","code":"a;\\nb;' });
+      await settle();
+      expect(panel.querySelector(".activity")!.textContent).toBe("Writing “Draw the lines” · 2 lines · 0:03");
+      // The tool input never shows as words.
+      expect(panel.querySelector(".say:not(.activity)")).toBeNull();
+      stream.send("step_done", { step: { n: 1, kind: "turn", status: "done", started_at: "2026-10-21T14:02:00Z", credits_milli: 0 } });
+      await settle();
+      expect([panel.querySelector(".think"), panel.querySelector(".activity")]).toEqual([null, null]);
+      m.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("collapses a finished script, opens one that failed, and closes on Escape", async () => {
     daemon({ "GET /api/bot/runs/r2": json(run({ id: "r2", status: "finished", steps: [
       { n: 1, kind: "script", status: "done", started_at: "x", credits_milli: 0, title: "Look", calls: [], code: "return 1" },

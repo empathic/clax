@@ -86,6 +86,9 @@ export type BotStep = {
   text?: string; model?: string; input_tokens?: number; cached_tokens?: number; output_tokens?: number; key_source?: "instance" | "own";
   title?: string; code?: string; calls?: BotCall[]; logs?: string[]; value?: unknown; error?: string | null; cpu_ms?: number;
   summary?: string; reason?: string;
+  /** Live only, from a turn's `turn_delta`s: the reasoning summary as it
+   * streams, and the tool call's input (JSON, partial) as it is written. */
+  thinking?: string; input?: string;
 };
 /** `GET /api/bot/runs/<id>`: a run with its steps. `draft` is set while the
  * run holds an unpublished draft (§6.3), and `url` opens it.
@@ -123,7 +126,7 @@ export type RunSummary = Omit<BotRun, "steps">;
  * replaces the step's partial state. */
 export type RunEvent =
   | { event: "step_started"; data: { step: BotStep } }
-  | { event: "turn_delta"; data: { step: number; text: string } }
+  | { event: "turn_delta"; data: { step: number; type?: "text" | "thinking" | "tool_input"; text: string } }
   | { event: "script"; data: { step: number; title: string; code: string } }
   | { event: "call"; data: { step: number; call: BotCall } }
   | { event: "step_done"; data: { step: BotStep; run?: Partial<RunSummary> } }

@@ -627,14 +627,17 @@ fn stop_reason_str(r: Option<&StopReason>) -> String {
     }
 }
 
-/// The tools a turn offers.
+/// The tools a turn offers. Their input streams as the model writes it
+/// (eager), so a script shows in the run panel while it is written; input
+/// that does not parse comes back as [`ToolCall::Invalid`] and is answered
+/// with an error result.
 fn tools() -> Vec<Tool> {
     let tool = |name: &str, description: &str, schema: Value| Tool {
         name: name.into(),
         description: description.into(),
         input_schema: schema,
         cache_control: None,
-        eager_input_streaming: false,
+        eager_input_streaming: true,
     };
     vec![
         tool(
@@ -1629,7 +1632,11 @@ impl Tick<'_> {
             tool_choice: Some(ToolChoice::Auto {
                 disable_parallel_tool_use: true,
             }),
-            thinking: Some(Thinking { display: None }),
+            // Summarized: the run panel shows the reasoning as it streams;
+            // the model's default, omitted, streams nothing while it thinks.
+            thinking: Some(Thinking {
+                display: Some("summarized".into()),
+            }),
             effort: self.settings.effort.clone(),
             betas: Vec::new(),
             extra: serde_json::Map::new(),

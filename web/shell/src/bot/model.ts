@@ -187,13 +187,43 @@ export function applyEvent(run: BotRun, ev: RunEvent): BotRun {
   switch (ev.event) {
     // A step begun again (a new attempt after a restart) starts over: its partial state is replaced, not merged.
     case "step_started": { const s = (d as { step: BotStep }).step; return { ...run, status: run.status === "queued" ? "running" : run.status, steps: [...run.steps.filter(x => x.n !== s.n), s].sort((a, b) => a.n - b.n) }; }
-    case "turn_delta": { const x = d as { step: number; text: string }; return { ...run, steps: patchStep(known(x.step, "turn"), x.step, s => ({ text: (s.text ?? "") + x.text })) }; }
+    case "turn_delta": {
+      // `type` says which part of the turn the text extends: what it says,
+      // its reasoning summary, or the input of the tool it calls.
+      const x = d as Extract<RunEvent, { event: "turn_delta" }>["data"];
+      const add = (v?: string) => (v ?? "") + x.text;
+      return { ...run, steps: patchStep(known(x.step, "turn"), x.step, s => (x.type === "thinking" ? { thinking: add(s.thinking) } : x.type === "tool_input" ? { input: add(s.input) } : { text: add(s.text) })) };
+    }
     case "script": { const x = d as { step: number; title: string; code: string }; return { ...run, steps: patchStep(known(x.step, "script"), x.step, () => ({ kind: "script", title: x.title, code: x.code })) }; }
     case "call": { const x = d as { step: number; call: BotCall }; return { ...run, steps: patchStep(known(x.step, "script"), x.step, s => ({ calls: [...(s.calls ?? []), x.call] })) }; }
     case "step_done": { const x = d as { step: BotStep; run?: Partial<BotRun> }; return { ...run, ...x.run, steps: upsertStep(run.steps, { ...x.step, status: "done" }) }; }
     case "run_end": { const x = d as { run: Partial<BotRun> }; return { ...run, ...x.run, steps: run.steps.map(s => (s.status === "running" ? { ...s, status: "done" } : s)) }; }
   }
   return run;
+}
+
+/** What a running turn is doing, in a few words, with how long it has run
+ * ("Writing “Draw the map” · 42 lines · 1:05"): writing a tool call's
+ * input once one streams (a script's title and line count as far as
+ * written), else thinking. */
+export function turnActivity(s: Pick<BotStep, "input" | "started_at">, now: number): string {
+  const ms = now - Date.parse(s.started_at);
+  const secs = Number.isFinite(ms) ? Math.max(0, Math.floor(ms / 1000)) : 0;
+  const took = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+  if (!s.input) return `Thinking · ${took}`;
+  const t = /"title"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(s.input)?.[1];
+  let title = "";
+  try { title = t ? JSON.parse(`"${t}"`) : ""; } catch { title = ""; }
+  const code = /"code"\s*:\s*"/.exec(s.input);
+  const lines = code ? s.input.slice(code.index).split("\\n").length : 0;
+  return `Writing ${title ? `“${title}”` : "a script"}${lines ? ` · ${lines} line${lines === 1 ? "" : "s"}` : ""} · ${took}`;
+}
+
+/** The last `max` characters of `text`, from a word boundary, marked when cut. */
+export function tail(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(-max);
+  return `…${cut.slice(Math.max(0, cut.indexOf(" ") + 1))}`;
 }
 
 /** A finished step, or the run's end, in one line (the run panel's live line). */

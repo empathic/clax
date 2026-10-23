@@ -98,9 +98,19 @@ async fn a_thread_request_is_edited_checked_published_and_answered() {
         .map(|t| t["name"].as_str().unwrap())
         .collect();
     assert_eq!(tools, ["run_script", "finish", "give_up"]);
+    // Inputs stream as written, so the run panel shows a script being written.
+    assert!(
+        b["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["eager_input_streaming"] == true)
+    );
     assert_eq!(b["tool_choice"]["type"], "auto");
     assert_eq!(b["tool_choice"]["disable_parallel_tool_use"], true);
     assert_eq!(b["thinking"]["type"], "adaptive");
+    // Summarized, so the reasoning streams instead of a silent pause.
+    assert_eq!(b["thinking"]["display"], "summarized");
     assert_eq!(b["max_tokens"], 32000);
     let ask = b["messages"][0]["content"][0]["text"].as_str().unwrap();
     assert!(ask.contains("Make the heading blue."), "{ask}");
