@@ -5,14 +5,20 @@
 //   node smoke-remote.mjs --url https://clax.example.com --setup-secret … --token …
 //   node smoke-remote.mjs --url … --session <the clax session cookie's value> --token …
 //   node smoke-remote.mjs --local [--no-build]   # against a fresh `wrangler dev --local`, REPO_STORE=memory
+//   node smoke-remote.mjs --local --setup-done   # the same, its setup done beforehand, as after an earlier
+//                                                # deploy (--without-token: and no owner token: a FAIL)
 //   node smoke-remote.mjs --local --remote-artifacts   # the same Worker locally on the account's real
 //                                                      # Artifacts (binding `remote: true`; needs the login)
 //
 // Steps: health; the diagnostics' view of the bindings; with Artifacts, the
 // binding's raw calls on a scratch repository (src/diag.rs's probe: get of
 // a missing repository, create, tokens, reads of missing objects, the
-// remote's advertisements, a fork, deletes); setup with the secret when
-// setup is open (else the given owner session); an agent token; two
+// remote's advertisements, a fork, deletes); the owner: the given owner
+// session (--session), else setup with the secret when setup is open, else
+// the owner token (CLAX_TOKEN: --token, or deploy.mjs's record), as on
+// every deploy after the first, with which the steps that only a signed-in
+// browser can take (an agent token) skip and say so, and the rest act as
+// the owner token (no credential at all is a FAIL); an agent token; two
 // versions published over /mcp and read back; a fork, read back; a git
 // token, the remote's receive-pack advertisement, `git clone`, the
 // clone's tree against the binding's (Artifacts); with Artifacts and a
@@ -122,14 +128,23 @@ function run(cmd, argv, opts = {}) {
   });
 }
 
-/** The client: the public origin, the owner token, the owner's session cookie. */
+/** The client: the public origin, the owner token, the owner's session
+ * cookie, and which of the two the owner's calls carry (`as`: "session",
+ * or "token" when setup is closed and no session was given). */
 class Client {
   constructor(base) {
     this.base = base.replace(/\/$/, "");
     this.token = "";
     this.cookie = "";
+    this.as = "";
     this.mcpSession = "";
     this.agent = "";
+  }
+
+  /** What `/mcp` is called with: the agent token, else (as the owner
+   * token) the owner token. */
+  get mcpBearer() {
+    return this.agent || (this.as === "token" ? this.token : "");
   }
 
   async raw(path, init = {}) {
@@ -144,9 +159,16 @@ class Client {
     return { res, status: res.status, text, json };
   }
 
-  /** A call as the owner's browser: the session cookie, same origin. */
-  async browser(path, init = {}) {
-    const headers = { origin: this.base, ...(this.cookie ? { cookie: this.cookie } : {}), ...(init.headers ?? {}) };
+  /** The owner's credential as headers: the owner token, or the cookie. */
+  credential() {
+    if (this.as === "token") return { authorization: `Bearer ${this.token}` };
+    return this.cookie ? { cookie: this.cookie } : {};
+  }
+
+  /** A call as the owner, same origin: the browser's session cookie, or
+   * the owner token as a bearer token when the smoke acts as the token. */
+  async owner(path, init = {}) {
+    const headers = { origin: this.base, ...this.credential(), ...(init.headers ?? {}) };
     if (init.body !== undefined && typeof init.body === "string") headers["content-type"] ??= "application/json";
     const r = await this.raw(path, { ...init, headers });
     if (r.status >= 400) throw new Error(`${init.method ?? "GET"} ${path}: ${r.status} ${short(r.text)}`);
@@ -163,7 +185,7 @@ class Client {
   }
 
   async mcp(method, params, id = 1) {
-    const headers = { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${this.agent}` };
+    const headers = { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${this.mcpBearer}` };
     if (this.mcpSession && method !== "initialize") headers["mcp-session-id"] = this.mcpSession;
     const r = await this.raw("/mcp", { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id, method, params }) });
     if (r.status >= 400) throw new Error(`/mcp ${method}: ${r.status} ${short(r.text)}`);
@@ -258,6 +280,16 @@ function probeLine(s) {
 const PAGE = (marker) =>
   `<!doctype html><title>Smoke ${RUN}</title><style>:root{--bg:#fff;--fg:#111}@media (prefers-color-scheme: dark){:root{--bg:#111;--fg:#eee}}body{background:var(--bg);color:var(--fg);font:16px system-ui;margin:0 16px}</style><main><h1>Smoke ${RUN}</h1><p id=m>${marker}</p></main>`;
 
+/** The step that makes the smoke the owner: setup with the secret while
+ * setup is open, the given session, else the owner token. */
+const OWNER = "owner: setup, session or owner token";
+/** The steps only a signed-in browser can take: they skip, saying so,
+ * when the smoke acts with the owner token (POST and DELETE
+ * /api/hosted/agent-tokens refuse any request with Authorization; the
+ * MCP steps then use the owner token, as the daemon token's sessionless
+ * agent). */
+const SESSION_ONLY = ["agent token"];
+
 async function smoke(c, o) {
   const store = { value: o.store ?? null };
   const git = mkdtempSync(join(o.work, "git-"));
@@ -295,18 +327,30 @@ async function smoke(c, o) {
     return { detail: `${r.json.steps.length} calls as the types say` };
   }, ["diagnostics: env"]);
 
-  await step("owner: setup or session", async () => {
+  await step(OWNER, async () => {
     const me = await c.raw("/api/hosted/me");
     if (me.status !== 200) throw new Error(`/api/hosted/me: ${me.status} ${short(me.text)}`);
     if (me.json.origin !== c.base) throw new Error(`the instance names its origin ${me.json.origin}, not ${c.base}: PUBLIC_ORIGIN differs from the URL used`);
     if (o.session) {
       c.cookie = o.session.includes("=") ? o.session : `${c.base.startsWith("https:") ? "__Host-clax_session" : "clax_session"}=${o.session}`;
-      const who = await c.browser("/api/hosted/me");
+      c.as = "session";
+      const who = await c.owner("/api/hosted/me");
       if (!who.json.signed_in) throw new Error(`the given session is not signed in: ${short(who.json)}`);
       return { detail: `the given session, signed in as ${who.json.person?.name ?? "?"}` };
     }
-    if (!me.json.setup_open) throw new Error("setup is closed (done already): pass --session <the owner's session cookie>");
-    if (!o.secret) throw new Error("setup is open: pass --setup-secret (deploy.mjs's record has it)");
+    if (!me.json.setup_open || !o.secret) {
+      // Setup was done by an earlier deploy (or there is no secret to do
+      // it with): act as the owner with the owner token, which the routes
+      // take as on a local daemon. Without it nothing is tested: FAIL.
+      const why = me.json.setup_open ? "setup is open but no --setup-secret was given" : "setup is closed (done already)";
+      if (!c.token) throw new Error(`${why}, and there is no owner token: pass --deploy <deploy.mjs's record> or --token <CLAX_TOKEN>, or --session <the owner's session cookie>`);
+      c.as = "token";
+      const r = await c.owner("/api/artifacts?limit=1").catch((e) => {
+        throw new Error(`${why}; the owner token was refused: ${e.message}`);
+      });
+      if (!Array.isArray(r.json?.artifacts)) throw new Error(`${why}; GET /api/artifacts with the owner token answered ${short(r.json ?? r.text)}`);
+      return { detail: `${why}: acting with the owner token; the steps that need a browser session (${SESSION_ONLY.join(", ")}) skip` };
+    }
     const page = await c.raw("/setup", { headers: { accept: "text/html" } });
     if (page.status !== 200 || !/<!doctype html/i.test(page.text)) throw new Error(`the /setup page: ${page.status} ${short(page.text, 200)}`);
     const r = await c.raw("/api/hosted/setup", {
@@ -318,6 +362,7 @@ async function smoke(c, o) {
     c.cookie = sessionCookie(r.res);
     if (!c.cookie) throw new Error(`setup answered ${r.status} without a session cookie`);
     madeOwner = true;
+    c.as = "session";
     o.onSetup?.();
     return { detail: `set up as ${o.ownerName}; cookie ${c.cookie.split("=")[0]}` };
   }, ["health"]);
@@ -325,37 +370,40 @@ async function smoke(c, o) {
   await step("web UI: the shell's pages", async () => {
     const out = [];
     for (const path of ["/", "/people"]) {
-      const r = await c.browser(path, { headers: { accept: "text/html" } });
+      const r = await c.owner(path, { headers: { accept: "text/html" } });
       const type = r.res.headers.get("content-type") ?? "";
       if (!type.includes("text/html") || !/<!doctype html/i.test(r.text)) throw new Error(`${path}: ${r.status} ${type} ${short(r.text, 200)}`);
       out.push(`${path} ${r.status}`);
     }
-    const script = /src="(\/_clax\/[^"]+\.js)"/.exec((await c.browser("/")).text)?.[1];
+    const script = /src="(\/_clax\/[^"]+\.js)"/.exec((await c.owner("/")).text)?.[1];
     if (script) {
       const s = await c.raw(script);
       if (s.status !== 200) throw new Error(`${script}: ${s.status}`);
       out.push(`${script} ${s.status}`);
     }
     return { detail: out.join(", ") };
-  }, ["owner: setup or session"]);
+  }, [OWNER]);
 
   await step("agent token", async () => {
-    const r = await c.browser("/api/hosted/agent-tokens", { method: "POST", body: JSON.stringify({ label: `smoke-remote ${RUN}` }) });
+    if (c.as === "token") skip("only a signed-in browser mints agent tokens (--session <cookie> runs this step); the MCP steps use the owner token");
+    const r = await c.owner("/api/hosted/agent-tokens", { method: "POST", body: JSON.stringify({ label: `smoke-remote ${RUN}` }) });
     c.agent = r.json.token;
     agentTokenId = r.json.id;
     if (!c.agent?.startsWith("cxa_")) throw new Error(`no agent token: ${short(r.json)}`);
     if (r.json.mcp_url !== `${c.base}/mcp`) throw new Error(`mcp_url is ${r.json.mcp_url}`);
     return { detail: `minted; mcp_url ${r.json.mcp_url}` };
-  }, ["owner: setup or session"]);
+  }, [OWNER]);
 
   await step("mcp: initialize and tools/list", async () => {
     const init = await c.mcp("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "smoke-remote", version: "1" } });
-    if (!c.mcpSession) throw new Error("initialize answered no Mcp-Session-Id");
+    // An agent token's initialize opens a session; the owner token's
+    // tools are the sessionless agent and get none.
+    if (c.agent && !c.mcpSession) throw new Error("initialize answered no Mcp-Session-Id");
     const list = await c.mcp("tools/list", {}, 2);
     const names = (list.tools ?? []).map((t) => t.name);
     for (const n of ["publish", "read", "delete"]) if (!names.includes(n)) throw new Error(`no ${n} tool among ${names.join(", ")}`);
-    return { detail: `${init.serverInfo?.name} ${init.serverInfo?.version}; ${names.length} tools` };
-  }, ["agent token"]);
+    return { detail: `${init.serverInfo?.name} ${init.serverInfo?.version}; ${names.length} tools; as ${c.agent ? "the agent token" : "the owner token"}` };
+  }, c.as === "token" ? [OWNER] : ["agent token"]);
 
   await step("publish v1 (mcp)", async () => {
     const r = await c.tool("publish", { html: PAGE(`v1 ${RUN}`), title: `Smoke ${RUN}` });
@@ -380,7 +428,7 @@ async function smoke(c, o) {
   }, ["publish v2 (mcp)"]);
 
   await step("fork", async () => {
-    const r = await c.browser(`/api/artifacts/${aid}/fork`, { method: "POST", body: "{}" });
+    const r = await c.owner(`/api/artifacts/${aid}/fork`, { method: "POST", body: "{}" });
     fork = r.json?.artifact?.id;
     if (!fork) throw new Error(`no fork in ${short(r.json)}`);
     const read = await c.tool("read", { url_or_id: fork });
@@ -492,7 +540,7 @@ async function smoke(c, o) {
   await step("the push becomes a version", async () => {
     const queue = store.value === "artifacts";
     const limit = queue ? Number(opt("--queue-wait") ?? 120) * 1000 : 20_000;
-    const version = async () => (await c.browser(`/api/artifacts/${aid}`)).json.artifact.current_version;
+    const version = async () => (await c.owner(`/api/artifacts/${aid}`)).json.artifact.current_version;
     try {
       const v = await until(queue ? "the pushed event's version" : "the pushed version", async () => ((await version()) >= 3 ? await version() : false), limit);
       return { detail: `version ${v}${queue ? ", through the queue's pushed event" : ", recorded as the stand-in took the push"}` };
@@ -512,7 +560,7 @@ async function smoke(c, o) {
   }, ["the push becomes a version"]);
 
   await step("live: a comment on the WebSocket stream", async () => {
-    const ws = new WebSocket(`${c.base.replace(/^http/, "ws")}/api/stream`, { headers: { cookie: c.cookie, origin: c.base } });
+    const ws = new WebSocket(`${c.base.replace(/^http/, "ws")}/api/stream`, { headers: { ...c.credential(), origin: c.base } });
     const frames = [];
     let opened = false;
     let closed = null;
@@ -523,20 +571,20 @@ async function smoke(c, o) {
       await until("the socket opens", () => opened || (closed && Promise.reject(new Error(`closed ${closed}`))), 15_000);
       const ready = await until("the stream's ready", () => frames.find((f) => f.includes("event: ready")), 15_000);
       const data = JSON.parse(ready.split("\n").find((l) => l.startsWith("data:")).slice(5));
-      await c.browser(`/api/stream/${data.stream}`, { method: "POST", body: JSON.stringify({ subscribe: [`artifact:${aid}`] }) });
+      await c.owner(`/api/stream/${data.stream}`, { method: "POST", body: JSON.stringify({ subscribe: [`artifact:${aid}`] }) });
       const form = new FormData();
       form.set("anchor", JSON.stringify({ kind: "element", selector: "main", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
       form.set("body", `Live from smoke-remote ${RUN}`);
       form.set("version", "3");
       const t0 = performance.now();
-      const posted = await c.browser(`/api/artifacts/${aid}/threads`, { method: "POST", body: form });
+      const posted = await c.owner(`/api/artifacts/${aid}/threads`, { method: "POST", body: form });
       const tid = posted.json?.thread?.id ?? posted.json?.id;
       await until("the comment's frame", () => frames.some((f) => (tid && f.includes(tid)) || f.includes(`smoke-remote ${RUN}`)), 15_000);
       return { detail: `thread ${tid} arrived ${Math.round(performance.now() - t0)} ms after it was posted (stream ${data.stream})` };
     } finally {
       ws.close();
     }
-  }, ["publish v2 (mcp)", "owner: setup or session"]);
+  }, ["publish v2 (mcp)", OWNER]);
 
   // Cleanup: never fails the smoke, but says what it left.
   console.log("\n-- cleanup");
@@ -545,19 +593,19 @@ async function smoke(c, o) {
     const r = await run(wr, ["queues", "subscription", "delete", "clax-artifacts-events", "--id", subscription, "--force"], { cwd: HERE, env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
     console.log(`     subscription ${subscription}: ${r.code === 0 ? "deleted" : `left (${short(r.err || r.out, 200)})`}`);
   }
-  if (!flag("--keep") && c.agent) {
+  if (!flag("--keep") && c.mcpBearer) {
     for (const id of [fork, aid].filter(Boolean)) {
       const r = await c.tool("delete", { url_or_id: id }).then(() => "deleted", (e) => `left: ${short(e.message, 160)}`);
       console.log(`     artifact ${id}: ${r}`);
     }
   }
   if (agentTokenId) {
-    const r = await c.browser(`/api/hosted/agent-tokens/${agentTokenId}`, { method: "DELETE" }).then(() => "revoked", (e) => `left: ${e.message}`);
+    const r = await c.owner(`/api/hosted/agent-tokens/${agentTokenId}`, { method: "DELETE" }).then(() => "revoked", (e) => `left: ${e.message}`);
     console.log(`     agent token: ${r}`);
   }
   rmSync(git, { recursive: true, force: true });
   if (madeOwner && !o.local) {
-    const r = await c.browser("/api/hosted/signin-links", { method: "POST", body: "{}" }).catch(() => null);
+    const r = await c.owner("/api/hosted/signin-links", { method: "POST", body: "{}" }).catch(() => null);
     if (r?.json?.url) console.log(`\n   The smoke made the owner (${o.ownerName}). Sign your browser in as the owner, within ten minutes, once:\n     ${r.json.url}`);
   }
 }
@@ -581,6 +629,7 @@ async function local(o) {
     SETUP_SECRET: secret,
     CLAX_TOKEN: token,
     CLAX_DIAG_ROUTES: "1",
+    CLAX_BUILD: `smoke-local-${RUN}`,
   });
   if (remoteArtifacts) {
     // The real Artifacts service from a local Worker (needs the login).
@@ -590,7 +639,22 @@ async function local(o) {
   }
   const w = await start(dir, config, 1, port);
   console.log(`local: wrangler dev --local on ${w.base} (log ${w.log})`);
-  return { base: `http://localhost:${port}`, secret, token, stop: w.stop, work: dir };
+  const base = `http://localhost:${port}`;
+  if (flag("--setup-done")) {
+    // As after an earlier deploy: someone else did the setup, whose session
+    // the smoke never sees.
+    const r = await fetch(`${base}/api/hosted/setup`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({ secret, name: "Earlier owner" }),
+    }).catch((e) => ({ status: e.message }));
+    if (r.status !== 200 && r.status !== 201) {
+      await w.stop();
+      throw new Error(`--setup-done: the setup answered ${r.status}`);
+    }
+    console.log("local: setup done beforehand (--setup-done)");
+  }
+  return { base, secret, token: flag("--without-token") ? "" : token, stop: w.stop, work: dir };
 }
 
 async function main() {

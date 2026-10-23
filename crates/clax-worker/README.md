@@ -152,7 +152,11 @@ them; with Artifacts, the binding's raw calls on a scratch repository
 missing object answer, a token's format, the remote's advertisements under
 three ways of presenting the token, what a fork answers while it is
 copied), each checked against what `src/repos/js.rs` expects; setup with
-the secret (or `--session` for an existing owner); an agent token; two
+the secret while setup is open, `--session` for an existing owner's
+browser, else the owner token from the deploy record (every deploy after
+the first: the agent-token step, which only a signed-in browser can take,
+skips and says so, and the MCP and owner steps use the owner token; with
+no credential at all the smoke fails); an agent token; two
 versions published over `/mcp` and read back; a fork; a git token, `git
 clone`, the clone's trees against the binding's; `git push` and the push
 becoming a version (through the queue's `pushed` event, for which it

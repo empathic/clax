@@ -194,5 +194,5 @@ say "Done"
 if [ "$dry" = 1 ]; then
   echo "That was a dry run. To deploy: $0 --i-know-what-i-am-doing"
 else
-  echo "Open the setup page deploy.mjs printed, or the sign-in link the smoke printed, to make your browser the owner."
+  echo "If this instance has no owner yet, open the setup page deploy.mjs printed, or the sign-in link the smoke printed when it did the setup, to make your browser the owner."
 fi
