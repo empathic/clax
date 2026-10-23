@@ -251,6 +251,8 @@ describe("the New dialog with ClaxBot", () => {
     await settle();
     expect(calls.find(c => c.url === "/api/artifacts:new")!.body).toEqual({ title: "Grocery splitter", brief: "Split a grocery receipt", build: "claxbot" });
     expect(assign).toHaveBeenCalledWith("/a/abc#run=r1");
+    // The artifact's Sends go to ClaxBot from now on, the agent that built it.
+    expect(localStorage.getItem("clax.sendTo.abc")).toBe("claxbot");
   });
 
   it("switched off, makes the artifact as before and asks who builds it", async () => {

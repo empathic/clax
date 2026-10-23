@@ -151,7 +151,9 @@ describe("a thread's owner and delivery state", () => {
     const m = shell([thread({ feedback_state: ended }), thread({ id: "t2", feedback_state: withheld })], SAM);
     await settle();
     const card = m.root.querySelector<HTMLElement>(`.thread-card[data-thread="${TID}"]`)!;
-    expect(card.querySelector(".waiting")!.textContent).toBe("agent session ended; waiting for a new one");
+    expect(card.querySelector(".waiting")!.textContent).toBe("no agent is running to take it: send it to one");
+    // Nobody has it, so it can be sent on.
+    expect([...card.querySelectorAll(".actions button")].some(b => b.textContent?.trim().startsWith("Send to "))).toBe(true);
     // Handed off to another person's agent: it waits for theirs, not this viewer's.
     expect(m.root.querySelector('.thread-card[data-thread="t2"] .waiting')!.textContent).toBe("waiting for Sam's approval");
   });

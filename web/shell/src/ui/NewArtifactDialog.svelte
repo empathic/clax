@@ -22,6 +22,8 @@
   import { nav } from "../nav";
   import type { MeBot } from "../bot/api";
   import { isAdmin, myBot, myRole } from "../bot/me";
+  import { BOT } from "../bot/send.svelte";
+  import { rememberTarget } from "../view/send-target";
   import { credits, meter, unavailableFix, unavailableText } from "../bot/model";
   import { connectPrompt, formProblem, liveAgents, newKey, personNames, pickGroups, Refused, sendBrief, start, withRun, type Me, type PickGroup, type Started } from "../view/new-artifact";
   import { inertOutside, trapTab } from "./modal";
@@ -105,8 +107,9 @@
     try {
       const built = build && !!bot?.available;
       const made = await start(title, brief, key, built ? "claxbot" : undefined);
-      // ClaxBot builds it: land on it with the run panel open.
-      if (built) { nav.assign(withRun(made)); return; }
+      // ClaxBot builds it: land on it with the run panel open, ClaxBot
+      // chosen for the artifact's Sends, as the agent that built it.
+      if (built) { rememberTarget(made.artifact.id, BOT); nav.assign(withRun(made)); return; }
       // Closed while Create was in flight: land on what it made.
       if (destroyed) { nav.assign(made.url); return; }
       started = made;

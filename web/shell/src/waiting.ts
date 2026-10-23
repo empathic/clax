@@ -54,7 +54,7 @@ export function waitingLabel(s: FeedbackState | null, now: Date): string | null 
     case "acknowledged":
       return "seen by the agent";
     case "agent_ended":
-      return "agent session ended; waiting for a new one";
+      return "no agent is running to take it: send it to one";
   }
 }
 

@@ -22,7 +22,7 @@ describe("waitingLabel", () => {
   });
   it("reports acknowledgement and an ended agent", () => {
     expect(waitingLabel(s("acknowledged", "wait"), now)).toBe("seen by the agent");
-    expect(waitingLabel(s("agent_ended", null), now)).toBe("agent session ended; waiting for a new one");
+    expect(waitingLabel(s("agent_ended", null), now)).toBe("no agent is running to take it: send it to one");
   });
 });
 

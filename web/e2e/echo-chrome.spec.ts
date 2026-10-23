@@ -403,12 +403,14 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.locator(".thread-card").first().waitFor();
     // The pin is placed too: the viewer's Tabs walk it.
     await expect(page.locator("button.thread-pin")).toHaveCount(1);
-    await expect.poll(() => tabsFromPin(page.getByRole("textbox", { name: "Reply" }))).toBe(11);
+    await expect.poll(() => tabsFromPin(page.getByRole("textbox", { name: "Reply" }))).toBe(13);
     await frame.locator("#a").click();
     // The pin, the drawer's four layouts, Hide threads and its edge, New
-    // comment, the card's box, its head, Resolve, then the Reply field: the
-    // Escape a page can coax ("Esc to close") clears nothing.
-    await typeOn(page, [..."Smith", "Tab", ..."Jones", "Escape", "Tab", ..."Unit", "Tab", ..."City", "Tab", ..."Zone", "Tab", ..."Box", "Tab", ..."Code", "Tab", ..."Ref", "Tab", ..."Ward", "Tab", ..."Main", "Tab", ..."Apt", "Tab", ..."Town", "Tab", ..."pwd", "Space", ..."hunter2", "Enter"], 0);
+    // comment, the card's box, its head, Resolve, the Send button and its
+    // target menu (no agent is running to take the thread, so it may be
+    // sent on), then the Reply field: the Escape a page can coax ("Esc to
+    // close") clears nothing.
+    await typeOn(page, [..."Smith", "Tab", ..."Jones", "Escape", "Tab", ..."Unit", "Tab", ..."City", "Tab", ..."Zone", "Tab", ..."Box", "Tab", ..."Code", "Tab", ..."Ref", "Tab", ..."Ward", "Tab", ..."Main", "Tab", ..."Apt", "Tab", ..."Flat", "Tab", ..."Lane", "Tab", ..."Town", "Tab", ..."pwd", "Space", ..."hunter2", "Enter"], 0);
     await settle(page);
     const { threads: list } = await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`) as { threads: { id: string; status: string; comments: unknown[] }[] };
     expect(list.find(x => x.id === t.id)).toMatchObject({ status: "open", comments: [expect.anything()] });

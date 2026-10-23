@@ -117,6 +117,9 @@
   // A viewer who reads none of its delivery (a visitor, or a person it
   // holds nothing of theirs for) reads only that it was sent (spec
   // 2026-10-08 §10).
+  // Sent, but no agent is running to take it: it can be sent on (to ClaxBot,
+  // or an agent started since), so the card offers Send again.
+  const stranded = $derived(t.status === "open" && !!t.sent_to_agent && t.feedback_state?.state === "agent_ended");
   const label = $derived(t.status === "open" && t.sent_to_agent ? waitingLabel(t.feedback_state, now) ?? `sent to ${t.owner?.name ?? "an agent"}` : null);
   // The owner agent (spec 2026-10-08 §12, §26 (e)): its name, with its
   // person when it is not this viewer's (the owner's agents have none; a
@@ -219,7 +222,7 @@
   <div class="actions" onclick={e => e.stopPropagation()}>
     {#if readOnly}{:else if t.status === "open"}
       <button onclick={e => { hint = guardedAction(e, "resolve", () => onResolve(t)); }}>Resolve</button>
-      {#if !t.sent_to_agent && !noSend}{#if sendButton}{@render sendButton(guardSend)}{:else}<button class="primary" onclick={e => { guardSend(e, () => onSend(t)); }}>Send to {agent}</button>{/if}{/if}
+      {#if (!t.sent_to_agent || stranded) && !noSend}{#if sendButton}{@render sendButton(guardSend)}{:else}<button class="primary" onclick={e => { guardSend(e, () => onSend(t)); }}>Send to {agent}</button>{/if}{/if}
     {:else}
       <button onclick={e => { hint = guardedAction(e, "reopen", () => onResolve(t)); }}>Reopen</button>
     {/if}

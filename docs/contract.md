@@ -4036,7 +4036,7 @@ delivery state" below):
 | `sent` | "sent, waiting for the agent · <elapsed> · waiting on <the tier: its next clax tool call, the agent finishing its current work, Codex to pick up the queued message, Pi to take the message, its next feedback poll (the Clax app)>" |
 | `delivered` | "delivered via <tier> · <elapsed> ago · not yet acknowledged" (then "· resent once" or "· resent N times"); "delivered, not acknowledged" after three resends |
 | `acknowledged` | "seen by the agent" |
-| `agent_ended` | "agent session ended; waiting for a new one" |
+| `agent_ended` | "no agent is running to take it: send it to one" |
 | `withheld` | "waiting for <person>'s approval", or "waiting for your approval" for that person (no name to an agent); with `no_access: true` (the owner and the agent's person only) followed by " · the agent no longer has access" |
 | `declined` | "declined by <person>", or "you declined" for that person; with `no_access: true` followed as for `withheld` |
 | `no_access` | "held: the agent no longer has access" (the owner, and the person whose agent it is; everyone else reads the row as if access were never lost: withheld or declined as below, else "sent", never "seen by the agent") |
