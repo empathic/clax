@@ -1130,7 +1130,7 @@ pub async fn comment(
                 let seen = clax_store::visibility::Visibility::for_session(st, &sess.id)?;
                 let may = |x: &clax_core::model::Artifact| reads.allows(x);
                 let readable: Option<&(dyn Fn(&clax_core::model::Artifact) -> bool + Sync)> =
-                    reads.is_person_agent().then_some(&may);
+                    reads.filters().then_some(&may);
                 touched.merge(st.acknowledge(
                     &audit,
                     &sess.id,
@@ -1701,7 +1701,7 @@ pub async fn resolve(
                 let seen = clax_store::visibility::Visibility::for_session(st, &sess.id)?;
                 let may = |x: &clax_core::model::Artifact| reads.allows(x);
                 let readable: Option<&(dyn Fn(&clax_core::model::Artifact) -> bool + Sync)> =
-                    reads.is_person_agent().then_some(&may);
+                    reads.filters().then_some(&may);
                 touched.merge(st.acknowledge(
                     &audit,
                     &sess.id,

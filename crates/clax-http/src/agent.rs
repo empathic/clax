@@ -939,7 +939,8 @@ pub struct ReadRights {
     shared: Option<Arc<clax_core::rights::Rights>>,
     /// The rights are a person's agent's.
     agent: bool,
-    /// The visibility generation a person's agent's rights were read at.
+    /// The visibility generation the rights were read at (`0`: as the
+    /// request's caller carried them).
     generation: u64,
 }
 
@@ -975,10 +976,13 @@ impl ReadRights {
     }
 
     /// A person's agent's rights as of visibility generation `seen` (read
-    /// before calling), for grant `grant`'s session `session`: these when
-    /// they were read at `seen`, else read again from the store (rights
-    /// follow the visibility generation, M17); every other caller's as
-    /// they are. So a request reads them once unless the generation moves.
+    /// before calling), for grant `grant`'s session `session`, and a hosted
+    /// daemon's scoped caller's (the owner's agents included): these when
+    /// they were read at `seen`, else read again from the store (rights and
+    /// shares follow the visibility generation, M17); every other caller's
+    /// as they are. So a request reads them once unless the generation
+    /// moves, and a share that ends during a long poll applies at its next
+    /// take.
     ///
     /// # Errors
     /// `grant_revoked` once the grant has ended; the store's.
@@ -1003,6 +1007,18 @@ impl ReadRights {
                     rights: Some((Arc::new(gc.rights), gc.person)),
                     shared,
                     agent: true,
+                    generation: seen,
+                })
+            }
+            None if !self.agent && self.shared.is_some() && self.generation != seen => {
+                let m = match self.rights.as_ref().and_then(|(_, p)| p.as_deref()) {
+                    Some(p) => crate::hosted::MemberRights::of_person(st, p)?,
+                    None => crate::hosted::MemberRights::owner(st)?,
+                };
+                Ok(ReadRights {
+                    rights: Some((m.rights, m.person)),
+                    shared: Some(m.shared),
+                    agent: false,
                     generation: seen,
                 })
             }

@@ -5537,7 +5537,9 @@ withheld parts read `Anchored on: (withheld: page by <name>)`, `Clip:
 withheld` and `Note: (note withheld)`. The held comments are delivered by
 the usual tiers once approved. Comments on an artifact the agent may no
 longer read (its rights there changed since: its person's rights, a
-narrowing, or a raise removed) are held, whatever their authors, and the
+narrowing, or a raise removed; on a hosted Clax, for every agent, the
+owner's included, it also left its person's reach, as when the share that
+reached it ended) are held, whatever their authors, and the
 session is told once per thread, with the thread's and the artifact's IDs
 and the count only (the line names the thread; the result's `withheld`
 entry adds `artifact_id`):

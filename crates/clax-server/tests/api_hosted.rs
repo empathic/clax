@@ -2844,6 +2844,121 @@ async fn an_approval_request_at_a_page_that_left_the_owners_reach_is_no_longer_t
 }
 
 #[tokio::test]
+async fn the_owners_agents_get_no_comment_on_a_page_that_left_their_reach() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let owner_pid = site.pid(&owner).await;
+    let mia = site.person(&owner, "Mia").await;
+    let mia_pid = site.pid(&mia).await;
+    let mut agent = site.token_agent(&mia, "laptop").await;
+    assert_eq!(agent.initialize("claude-code").await, 200);
+    let (_, r) = agent
+        .call(
+            "publish",
+            json!({"html": "<h1>Mia's</h1>", "title": "Mia's page"}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    let mias = site
+        .ts
+        .store
+        .list_artifacts()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.title == "Mia's page")
+        .unwrap()
+        .id;
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{mias}/shares"),
+            json!({"person": owner_pid, "access": "editor"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let share = v["share"]["id"].as_str().unwrap().to_string();
+    // The owner's agents see Mia's words, wherever they are.
+    let (s, v) = site
+        .post(
+            &owner,
+            "/api/approvals",
+            json!({"author": mia_pid, "scope": "everywhere"}),
+        )
+        .await;
+    assert!(s < 300, "{s} {v}");
+    let token = |m: reqwest::Method, p: &str| {
+        site.ts
+            .client
+            .request(m, site.url(p))
+            .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+            .bearer_auth(&site.ts.token)
+    };
+    let owner_sid = site.ts.register_session("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = token(
+        reqwest::Method::PUT,
+        &format!("/api/sessions/{owner_sid}/watches/{mias}"),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    let sent = async |body: &str| {
+        let (s, t) = site.thread(&mia, &mias, body).await;
+        assert_eq!(s, 201, "{t}");
+        let tid = t["thread"]["id"].as_str().unwrap().to_string();
+        let (s, v) = site
+            .post(
+                &mia,
+                &format!("/api/artifacts/{mias}/threads/{tid}/send"),
+                json!({}),
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+    };
+    let poll = async |path: &str| {
+        json_of(
+            token(
+                reqwest::Method::GET,
+                &format!("/api/sessions/{owner_sid}/{path}"),
+            )
+            .send()
+            .await
+            .unwrap(),
+        )
+        .await
+    };
+    // Within the share, a sent thread reaches the owner's watching agent.
+    sent("words while shared").await;
+    let (s, v) = poll("feedback?tier=stop_hook").await;
+    assert_eq!(s, 200, "{v}");
+    assert!(v.to_string().contains("words while shared"), "{v}");
+    // Her share ends: what she sends next is announced to no owner's
+    // agent and handed over as no more than a no-access placeholder.
+    let (s, v) = site
+        .send(
+            &mia,
+            reqwest::Method::DELETE,
+            &format!("/api/hosted/artifacts/{mias}/shares/{share}"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    sent("words after the share").await;
+    let (s, v) = poll("notices?wait=0").await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["notices"], json!([]), "{v}");
+    let (s, v) = poll("feedback?tier=stop_hook").await;
+    assert_eq!(s, 200, "{v}");
+    let text = v.to_string();
+    assert!(!text.contains("words after the share"), "{v}");
+    assert!(!text.contains("Mia's page"), "{v}");
+    assert_eq!(v["feedback"], json!([]), "{v}");
+}
+
+#[tokio::test]
 async fn a_page_shared_with_the_owner_gives_them_its_shares_level_alone() {
     let site = Site::new().await;
     let owner = site.owner().await;

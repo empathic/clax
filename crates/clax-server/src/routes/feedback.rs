@@ -457,7 +457,7 @@ pub async fn poll(
                 let rights = readable_rights;
                 let readable = |a: &Artifact| rights.allows(a);
                 let readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)> =
-                    rights.is_person_agent().then_some(&readable);
+                    rights.filters().then_some(&readable);
                 let taken = st.take_feedback_readable(&audit, &t, &base, &view_now, readable)?;
                 if taken.stale {
                     return Ok((taken, Default::default()));
@@ -581,7 +581,8 @@ pub struct NoticesQuery {
 /// notice. Announcing delivers nothing. Only comments whose bodies the
 /// session's person's agents may see are announced, with the title
 /// filtered as the feedback text's is (spec 2026-10-08 §8.4), on artifacts
-/// a person's agent may read; the view follows the visibility generation
+/// a person's agent, or on a hosted daemon any agent, may read; the view
+/// follows the visibility generation
 /// as the feedback poll's does, so an approval during the wait announces
 /// what it lets through. While the session is inside
 /// `wait_for_feedback`, answers empty at once and announces nothing. The
@@ -656,7 +657,7 @@ pub async fn notices(
                 let rights = prior_rights.current(st, grant.as_deref(), &who, seen)?;
                 let readable = |a: &Artifact| rights.allows(a);
                 let readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)> =
-                    rights.is_person_agent().then_some(&readable);
+                    rights.filters().then_some(&readable);
                 let announced = if yields {
                     None
                 } else {
@@ -780,7 +781,7 @@ pub async fn ack(
             let vis = Visibility::for_session(st, &sid)?;
             let may = |x: &Artifact| reads.allows(x);
             let readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)> =
-                reads.is_person_agent().then_some(&may);
+                reads.filters().then_some(&may);
             let mut touched = st.acknowledge(
                 &audit,
                 &sid,
