@@ -14,7 +14,7 @@
 //! agent's next request and at a waiting agent's next take.
 
 use super::artifacts::{body, path};
-use super::grants::{announce, announce_ended};
+use super::grants::{announce, announce_ended, owners_view};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
@@ -499,7 +499,10 @@ fn agents_of(
 
 /// Person `pid`'s live approvals of the owner's content (spec §9.5, O12),
 /// oldest first: the owner reads these, and no other approval of theirs.
-/// Titles are not filtered: the owner's browser sees every artifact (§8.5).
+/// On a local daemon titles are not filtered: the owner's browser sees
+/// every artifact (§8.5); on a hosted one the routes that answer the owner
+/// leave out the ID and title of an artifact out of the owner's reach
+/// ([`owners_view`]).
 fn approvals_of_yours(st: &Store, pid: &str) -> clax_core::Result<Vec<Value>> {
     let Some(owner) = st.owner()? else {
         return Ok(Vec::new());
@@ -538,20 +541,23 @@ fn person_view(
     }))
 }
 
-/// Person `public_id`'s view, read from `st`.
-fn person_of(st: &Store, public_id: &str) -> clax_core::Result<Value> {
+/// Person `public_id`'s view as the owner's People shows it
+/// ([`owners_view`]), read from `st`.
+fn person_of(s: &AppState, st: &Store, public_id: &str) -> clax_core::Result<Value> {
     let p = st
         .people()?
         .into_iter()
         .find(|p| p.viewer.public_id == public_id)
         .ok_or(CoreError::NotFound)?;
-    person_view(
+    let mut v = person_view(
         st,
         &p,
         &st.list_grants()?,
         &st.live_agents()?,
         &st.github_links()?,
-    )
+    )?;
+    owners_view(s, st, &mut v)?;
+    Ok(v)
 }
 
 /// The owner's `*unconnected` switch (spec §9.6): on while the owner's
@@ -587,8 +593,9 @@ pub async fn list_people(
             "only the owner sees people",
         ));
     }
+    let state = s.clone();
     let v = s
-        .store_call(|st| {
+        .store_call(move |st| {
             let (grants, agents) = (st.list_grants()?, st.live_agents()?);
             let github = st.github_links()?;
             let people = st
@@ -596,7 +603,9 @@ pub async fn list_people(
                 .iter()
                 .map(|p| person_view(st, p, &grants, &agents, &github))
                 .collect::<clax_core::Result<Vec<Value>>>()?;
-            Ok(json!({"people": people, "unconnected": unconnected_switch(st)?}))
+            let mut v = json!({"people": people, "unconnected": unconnected_switch(st)?});
+            owners_view(&state, st, &mut v)?;
+            Ok(v)
         })
         .await?;
     Ok(Json(v))
@@ -624,6 +633,7 @@ pub async fn me(
             ));
         }
     };
+    let state = s.clone();
     let v = s
         .store_call(move |st| {
             let (viewer, rights) = match &me {
@@ -641,7 +651,7 @@ pub async fn me(
                 .map(grant_view)
                 .collect();
             let agents = agents_of(st, &st.live_agents()?, &me)?;
-            Ok(json!({
+            let mut v = json!({
                 "person": {
                     "public_id": owner_id,
                     "display_name": viewer.and_then(|v| v.display_name),
@@ -650,7 +660,11 @@ pub async fn me(
                 },
                 "grants": grants,
                 "agents": agents,
-            }))
+            });
+            if me.is_none() {
+                owners_view(&state, st, &mut v)?;
+            }
+            Ok(v)
         })
         .await?;
     Ok(Json(v))
@@ -690,7 +704,7 @@ pub async fn set_rights(
             let before = st.person_rights(&pid).ok();
             st.set_person_rights(&audit.resolve(st)?, &pid, rights)?;
             let after = st.person_rights(&pid).ok();
-            let person = person_of(st, &pid)?;
+            let person = person_of(&state, st, &pid)?;
             announce(&state, json!({"what": "person_rights", "person": person}));
             Ok((person, before, after))
         })
@@ -726,7 +740,7 @@ pub async fn revoke_person(
         .store_call(move |st| {
             let r = st.revoke_person(&audit.resolve(st)?, &pid)?;
             announce_ended(&state, &ctx, st, &r.grants, "owner");
-            let person = person_of(st, &pid)?;
+            let person = person_of(&state, st, &pid)?;
             announce(&state, json!({"what": "person_revoked", "person": person}));
             Ok(json!({
                 "person": person,
@@ -773,7 +787,7 @@ pub async fn reinstate_person(
     let v = s
         .store_call(move |st| {
             st.reinstate_person(&audit.resolve(st)?, &pid)?;
-            let person = person_of(st, &pid)?;
+            let person = person_of(&state, st, &pid)?;
             announce(
                 &state,
                 json!({"what": "person_reinstated", "person": person}),
@@ -886,8 +900,11 @@ pub async fn narrow_agent(
         .store_call(move |st| {
             let session = agent_of(st, &handle, &me, false)?;
             let a = st.narrow_agent(&audit.resolve(st)?, &session.id, narrow)?;
-            let view = agent_view(st, &a)?;
+            let mut view = agent_view(st, &a)?;
             announce(&state, json!({"what": "agent_narrowed", "agent": view}));
+            if me.is_none() {
+                owners_view(&state, st, &mut view)?;
+            }
             Ok(view)
         })
         .await?;
@@ -956,7 +973,13 @@ pub async fn elevate_agent(
                 Ok(a) => {
                     let view = agent_view(st, &a)?;
                     announce(&state, json!({"what": "agent_elevated", "agent": view}));
-                    Ok(Ok(granter_answer(granter.as_deref(), &a, view)))
+                    Ok(Ok(granter_answer(
+                        &state,
+                        st,
+                        granter.as_deref(),
+                        &a,
+                        view,
+                    )?))
                 }
                 Err(CoreError::Invalid {
                     code: "raise_changed",
@@ -1055,7 +1078,7 @@ pub async fn unelevate_agent(
             let a = st.remove_raise(&audit.resolve(st)?, &session.id, target.as_deref(), reason)?;
             let view = agent_view(st, &a)?;
             announce(&state, json!({"what": "agent_elevated", "agent": view}));
-            Ok(granter_answer(me.as_deref(), &a, view))
+            granter_answer(&state, st, me.as_deref(), &a, view)
         })
         .await?;
     Ok(Json(json!({"agent": agent})))
@@ -1077,7 +1100,7 @@ async fn set_elevation(
             // The owner's People topic gets the whole view (§18).
             let view = agent_view(st, &a)?;
             announce(&state, json!({"what": "agent_elevated", "agent": view}));
-            Ok(granter_answer(granter.as_deref(), &a, view))
+            granter_answer(&state, st, granter.as_deref(), &a, view)
         })
         .await?;
     Ok(Json(json!({"agent": agent})))
@@ -1087,9 +1110,16 @@ async fn set_elevation(
 /// person raising their own agent, its whole view; a person raising
 /// another's agent, only that agent's handle, name and person and their own
 /// raise of it (`elevation`), never its narrowing, other granters' raises,
-/// rights or machine.
-fn granter_answer(granter: Option<&str>, a: &AgentRights, view: Value) -> Value {
-    match granter {
+/// rights or machine. The owner's as their People shows it
+/// ([`owners_view`]).
+fn granter_answer(
+    s: &AppState,
+    st: &Store,
+    granter: Option<&str>,
+    a: &AgentRights,
+    mut view: Value,
+) -> clax_core::Result<Value> {
+    Ok(match granter {
         Some(g) if a.session.person.as_deref() != Some(g) => json!({
             "handle": a.session.agent_handle,
             "name": a.session.name,
@@ -1097,8 +1127,12 @@ fn granter_answer(granter: Option<&str>, a: &AgentRights, view: Value) -> Value 
             "elevation": a.elevation_by(Some(g)).map(Rights::to_json),
             "version": a.elevations.iter().find(|e| e.granter.as_deref() == Some(g)).map(|e| &e.version),
         }),
-        _ => view,
-    }
+        Some(_) => view,
+        None => {
+            owners_view(s, st, &mut view)?;
+            view
+        }
+    })
 }
 
 #[derive(Deserialize)]

@@ -886,6 +886,64 @@ impl MemberRights {
     }
 }
 
+/// What the owner's People shows of `v` on a hosted daemon (spec
+/// 2026-10-22 §4.3: counts, never the IDs or titles of artifacts out of
+/// the owner's reach), wherever in it they appear: in each access object
+/// of a rights value (`{type, actions, locations}`: a person's rights, a
+/// machine's or an agent's narrowing, an elevation, an agent's rights),
+/// every location naming an artifact the owner's listings do not name
+/// ([`MemberRights::lists`]) is left out and counted in the object's
+/// `hidden_locations`; `*` and `own` stay. In each approval of an
+/// `approvals_of_yours` list on such an artifact, `artifact_id`,
+/// `artifact_title` and `thread_id` are `null`.
+///
+/// # Errors
+/// The store's.
+pub fn owners_people_view(st: &clax_store::Store, v: &mut Value) -> clax_core::Result<()> {
+    let owner = MemberRights::owner(st)?;
+    let mut seen = std::collections::HashMap::new();
+    let mut lists = |aid: &str| {
+        *seen
+            .entry(aid.to_string())
+            .or_insert_with(|| owner.lists(st, aid))
+    };
+    hide_beyond(v, &mut lists);
+    Ok(())
+}
+
+fn hide_beyond(v: &mut Value, lists: &mut dyn FnMut(&str) -> bool) {
+    match v {
+        Value::Array(xs) => xs.iter_mut().for_each(|x| hide_beyond(x, lists)),
+        Value::Object(o) => {
+            if o.contains_key("type")
+                && o.contains_key("actions")
+                && let Some(Value::Array(ls)) = o.get_mut("locations")
+            {
+                let before = ls.len();
+                ls.retain(|l| match l.as_str() {
+                    None | Some("*" | "own") => true,
+                    Some(l) => lists(l.strip_prefix("own:").unwrap_or(l)),
+                });
+                let hidden = before - ls.len();
+                if hidden > 0 {
+                    o.insert("hidden_locations".into(), json!(hidden));
+                }
+            }
+            if let Some(Value::Array(aps)) = o.get_mut("approvals_of_yours") {
+                for ap in aps {
+                    if ap["artifact_id"].as_str().is_some_and(|a| !lists(a)) {
+                        for k in ["artifact_id", "artifact_title", "thread_id"] {
+                            ap[k] = Value::Null;
+                        }
+                    }
+                }
+            }
+            o.values_mut().for_each(|x| hide_beyond(x, lists));
+        }
+        _ => {}
+    }
+}
+
 /// 404 `not_found` unless the caller of a request the gate let through
 /// (`h`, its [`HostedRequest`]) reaches artifact `aid` as their listings
 /// name it ([`MemberRights::lists`]: never by its link): what a route that

@@ -8355,3 +8355,95 @@ async fn revoking_takes_a_persons_pages_down_and_reinstating_brings_them_back() 
     let (s, v) = site.post(&owner, &reinstate, json!({})).await;
     assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
 }
+
+#[tokio::test]
+async fn the_owners_people_names_no_page_of_another_person() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let owner_pid = site.pid(&owner).await;
+    let (mia, mia_id) = site
+        .person_with(&owner, "Mia", json!("clax:collaborator"))
+        .await;
+    let mias = site.made_by(&mia, "Mia's secret plan").await;
+    let mut people_events = site.stream(&owner, &["people"]).await;
+    let mut agent = site.token_agent(&mia, "laptop").await;
+    assert_eq!(agent.initialize("claude-code").await, 200);
+    let (s, me) = site.get(&mia, "/api/people/me").await;
+    assert_eq!(s, 200, "{me}");
+    let gid = me["grants"][0]["id"].as_str().unwrap().to_string();
+    let handle = me["agents"][0]["handle"].as_str().unwrap().to_string();
+    // Mia narrows her machine and raises her agent at her page, and
+    // approves the owner's words there.
+    let at_hers = |actions: &[&str]| {
+        json!([{"type": "clax-artifacts", "actions": actions, "locations": ["own", mias]}])
+    };
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/people/me/grants/{gid}/narrow"),
+            json!({"access": at_hers(&["read"])}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/agents/{handle}/elevate"),
+            json!({"access": [{"type": "clax-artifacts", "actions": ["read"], "locations": [mias]}]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site
+        .post(
+            &mia,
+            "/api/approvals",
+            json!({"author": owner_pid, "scope": "artifact", "artifact_id": mias}),
+        )
+        .await;
+    assert!(s < 300, "{s} {v}");
+    // People counts them and names none of it.
+    let unnamed = |v: &Value| {
+        let text = v.to_string();
+        assert!(!text.contains(&mias), "{text}");
+        assert!(!text.contains("secret plan"), "{text}");
+    };
+    let (s, people) = site.get(&owner, "/api/people").await;
+    assert_eq!(s, 200, "{people}");
+    unnamed(&people);
+    let p = people["people"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["public_id"] == json!(mia_id))
+        .unwrap();
+    let ofyours = &p["approvals_of_yours"][0];
+    assert_eq!(ofyours["scope"], json!("artifact"), "{p}");
+    assert!(ofyours["artifact_id"].is_null(), "{p}");
+    assert_eq!(p["grants"][0]["narrow"][0]["locations"], json!(["own"]));
+    assert_eq!(p["grants"][0]["narrow"][0]["hidden_locations"], json!(1));
+    let raise = &p["agents"][0]["elevations"][0]["access"][0];
+    assert_eq!(raise["hidden_locations"], json!(1), "{p}");
+    let (s, v) = site.get(&owner, "/api/grants").await;
+    assert_eq!(s, 200, "{v}");
+    unnamed(&v);
+    let (s, v) = site
+        .put(
+            &owner,
+            &format!("/api/people/{mia_id}/rights"),
+            json!({"rights": "clax:collaborator"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    unnamed(&v);
+    // So do the owner's People events, up to the last change.
+    loop {
+        let (name, data) = people_events.next().await;
+        unnamed(&data);
+        if name == "people" && data.to_string().contains("person_rights") {
+            break;
+        }
+    }
+    // Mia's own People still names her page.
+    let (_, me) = site.get(&mia, "/api/people/me").await;
+    assert!(me.to_string().contains(&mias), "{me}");
+}

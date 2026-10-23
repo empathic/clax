@@ -5144,7 +5144,16 @@ browser on a same-origin request. `GET /api/people` (the owner) and `GET
 each person in `GET /api/people`, revoked ones included, carries `made:
 {artifacts, asset_bytes}`, their live artifacts and the summed size of
 those artifacts' assets, which names none of them (on a hosted Clax the
-owner never sees the titles or IDs of what another person made);
+owner never sees the titles or IDs of what another person made). On a
+hosted Clax, what People shows the owner (`GET /api/people`, `GET
+/api/people/me`, `GET /api/grants`, the answers of the routes that change
+rights, narrowings and raises, and the `people` stream events) names no
+artifact out of the owner's reach: in each access object of a rights
+value (a person's `rights`, a `narrow`, an `elevate`, an elevation's
+`access`, an agent's `rights`) the locations naming such an artifact are
+left out and counted in `hidden_locations`, and an approval in
+`approvals_of_yours` on such an artifact has `artifact_id`,
+`artifact_title` and `thread_id` `null`;
 anyone else, whatever cookie it sends (none, a LAN viewer's, or one that
 names no one), gets the same 403 `forbidden`, so the answer tells a guess
 nothing (a person's cookie is 32 random bytes, so there is no rate limit);

@@ -62,8 +62,28 @@ fn invite_view(i: &Invite) -> Value {
     })
 }
 
-pub(crate) fn announce(s: &AppState, change: Value) {
+/// Publishes `change` on the `people` topic, which only the owner's streams
+/// hear: on a hosted daemon as the owner's People shows it
+/// ([`owners_view`]), and not at all when that view cannot be read.
+pub(crate) fn announce(s: &AppState, mut change: Value) {
+    if let Err(e) = owners_view(s, &s.store, &mut change) {
+        tracing::warn!(error = %e, "a people change not announced");
+        return;
+    }
     s.events.publish(Event::People { change });
+}
+
+/// What the owner's People shows of `v`: on a hosted daemon, nothing that
+/// names an artifact out of the owner's reach
+/// ([`clax_http::hosted::owners_people_view`]); on a local daemon, `v`.
+///
+/// # Errors
+/// The store's.
+pub(crate) fn owners_view(s: &AppState, st: &Store, v: &mut Value) -> clax_core::Result<()> {
+    if s.hosted.is_some() {
+        clax_http::hosted::owners_people_view(st, v)?;
+    }
+    Ok(())
 }
 
 /// Announces what ending grants ended, as a session's end is announced:
@@ -790,7 +810,8 @@ pub struct ListGrantsQuery {
 }
 
 /// `GET /api/grants?status=` (owner) → `{grants}`, newest first, of one
-/// status when given.
+/// status when given; on a hosted daemon, a narrowing names no artifact
+/// out of the owner's reach ([`owners_view`]).
 pub async fn list(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,
@@ -800,13 +821,21 @@ pub async fn list(
     d.refuse_agents()?;
     who.require_owner("sees grants")?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
-    let grants = s.store_call(|st| st.list_grants()).await?;
-    let grants: Vec<Value> = grants
-        .iter()
-        .filter(|g| q.status.as_deref().is_none_or(|w| g.status == w))
-        .map(grant_view)
-        .collect();
-    Ok(Json(json!({"grants": grants})))
+    let state = s.clone();
+    let v = s
+        .store_call(move |st| {
+            let grants: Vec<Value> = st
+                .list_grants()?
+                .iter()
+                .filter(|g| q.status.as_deref().is_none_or(|w| g.status == w))
+                .map(grant_view)
+                .collect();
+            let mut v = json!({"grants": grants});
+            owners_view(&state, st, &mut v)?;
+            Ok(v)
+        })
+        .await?;
+    Ok(Json(v))
 }
 
 #[derive(Deserialize)]
