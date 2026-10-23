@@ -1396,7 +1396,8 @@ impl Store {
         key: &str,
         s: PublishStep,
     ) -> StepResult<Published> {
-        self.publish_step_cut(ctx, id, key, s, |_| Ok(())).await
+        self.publish_step_cut(ctx, id, key, s, docs, |_| Ok(()))
+            .await
     }
 
     /// [`Store::commit_publish_step_async`] with `cut` run last in the
@@ -2216,6 +2217,140 @@ mod tests {
         .unwrap()
     }
 
+    /// [`request`] of a new artifact declaring `caps`.
+    fn request_with_caps(html: &str, caps: serde_json::Value) -> ValidatedPublish {
+        clax_core::publish::validate(
+            serde_json::from_value(json!({
+                "title": "Budget",
+                "capabilities": caps,
+                "files": {"index.html": {"content": html, "encoding": "utf8"}}
+            }))
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// A step's document write: `notes/n1` set to `{"t": t}`, unpinned.
+    fn note(t: u32) -> Vec<BatchWrite> {
+        vec![BatchWrite {
+            path: "notes/n1".into(),
+            op: BatchOp::Set(json!({ "t": t })),
+            if_version: None,
+        }]
+    }
+
+    /// `notes/n1` of `aid` as its own store holds it: its data and version.
+    fn note_of(st: &Store, aid: &ArtifactId) -> Option<(serde_json::Value, u64)> {
+        crate::app_data::shim::Docs::of(st)
+            .doc_get(aid, "notes/n1", &Caller::new(Level::Owner, None))
+            .unwrap()
+            .map(|d| (d.data, d.version))
+    }
+
+    #[test]
+    fn a_crash_between_a_steps_documents_and_its_commit_applies_them_once_on_retry() {
+        let (_d, st) = store();
+        let aid = crate::test_util::artifact_with_caps(&st, json!({"db": {}}));
+        let before = change(&st, "j1", &aid);
+        let step = || PublishStep {
+            docs: note(1),
+            ..publish_step(Some(&aid), 1, "<p>v2", false)
+        };
+        // The artifact's own store takes the documents; the instance's
+        // transaction (the version, the step) dies before it commits.
+        let cut = |_: &Transaction<'_>| Err(CoreError::invalid("cut", "the process died"));
+        let e = cut_step(&st, "j1", "publish:1", step(), cut).unwrap_err();
+        assert!(
+            matches!(e, StepError::Store(CoreError::Invalid { code: "cut", .. })),
+            "{e:?}"
+        );
+        assert_eq!(
+            note_of(&st, &aid),
+            Some((json!({"t": 1}), 1)),
+            "the documents stand"
+        );
+        assert_eq!(versions(&st, &aid), vec![1]);
+        assert!(st.job("j1").unwrap().unwrap().steps.is_empty());
+        // The retry: the documents' write, under the step's operation ID,
+        // changes nothing; the version and the step commit.
+        let c = st
+            .commit_publish_step(DAEMON, "j1", "publish:1", step(), &FileDocs::of(&st))
+            .unwrap();
+        assert!(!c.replayed);
+        assert_eq!(c.step.result["docs"], json!(1));
+        assert_eq!(c.made.unwrap().docs.len(), 1);
+        assert_eq!(
+            note_of(&st, &aid),
+            Some((json!({"t": 1}), 1)),
+            "applied once"
+        );
+        assert_eq!(versions(&st, &aid), vec![1, 2]);
+        assert_eq!(st.job("j1").unwrap().unwrap().job.rev, before.rev + 1);
+        // A replay writes nothing either.
+        let again = st
+            .commit_publish_step(DAEMON, "j1", "publish:1", step(), &FileDocs::of(&st))
+            .unwrap();
+        assert!(again.replayed);
+        assert_eq!(note_of(&st, &aid), Some((json!({"t": 1}), 1)));
+    }
+
+    #[test]
+    fn a_new_apps_documents_land_after_its_step_and_a_retry_after_a_crash_there_lands_them_once() {
+        let (_d, st) = store();
+        running(&st, "j1");
+        let step = |docs: Vec<BatchWrite>| PublishStep {
+            docs,
+            request: request_with_caps("<p>a", json!({"db": {}})),
+            ..publish_step(None, 0, "<p>a", false)
+        };
+        // A write that needs a document there refuses the step, first.
+        let pinned = vec![BatchWrite {
+            if_version: Some(3),
+            ..note(1).remove(0)
+        }];
+        assert!(matches!(
+            st.commit_publish_step(DAEMON, "j1", "publish:0", step(pinned), &FileDocs::of(&st)),
+            Err(StepError::DocMoved { .. })
+        ));
+        assert!(st.list_artifacts().unwrap().is_empty());
+        // A writer that dies before the documents land: the step is
+        // committed, its documents not.
+        struct Dies;
+        #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+        #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+        impl StepDocs for Dies {
+            async fn write(
+                &self,
+                _: &ArtifactId,
+                _: OpId,
+                _: Vec<BatchWrite>,
+            ) -> clax_core::Result<Vec<Written>> {
+                Err(CoreError::invalid("cut", "the process died"))
+            }
+        }
+        assert!(
+            st.commit_publish_step(DAEMON, "j1", "publish:0", step(note(1)), &Dies)
+                .is_err()
+        );
+        let job = st.job("j1").unwrap().unwrap();
+        let aid = ArtifactId::parse(job.job.artifact_id.as_deref().unwrap()).unwrap();
+        assert_eq!(job.steps.len(), 1);
+        assert_eq!(note_of(&st, &aid), None);
+        // The retry replays the step and lands its documents, once.
+        let c = st
+            .commit_publish_step(DAEMON, "j1", "publish:0", step(note(1)), &FileDocs::of(&st))
+            .unwrap();
+        assert!(c.replayed);
+        assert_eq!(note_of(&st, &aid), Some((json!({"t": 1}), 1)));
+        st.commit_publish_step(DAEMON, "j1", "publish:0", step(note(1)), &FileDocs::of(&st))
+            .unwrap();
+        assert_eq!(
+            note_of(&st, &aid),
+            Some((json!({"t": 1}), 1)),
+            "applied once"
+        );
+    }
+
     /// A publish step of `html` on `aid` at `base` (a new app for `None`).
     fn publish_step(aid: Option<&ArtifactId>, base: u32, html: &str, done: bool) -> PublishStep {
         PublishStep {
@@ -2261,6 +2396,7 @@ mod tests {
                 "j1",
                 "publish:0",
                 publish_step(None, 0, "<p>a", true),
+                &FileDocs::of(&st),
             )
             .unwrap();
         assert!(!c.replayed);
@@ -2289,6 +2425,7 @@ mod tests {
                 "j1",
                 "publish:0",
                 publish_step(None, 0, "<p>a", true),
+                &FileDocs::of(&st),
             )
             .unwrap();
         let again = st
@@ -2297,6 +2434,7 @@ mod tests {
                 "j1",
                 "publish:0",
                 publish_step(None, 0, "<p>b", true),
+                &FileDocs::of(&st),
             )
             .unwrap();
         assert!(again.replayed);
@@ -2320,6 +2458,7 @@ mod tests {
                 "j1",
                 "publish:1",
                 publish_step(Some(&aid), 1, "<p>x", false),
+                &FileDocs::of(&st),
             )
             .unwrap_err();
         assert!(matches!(e, StepError::VersionMoved { current: 2 }), "{e:?}");
@@ -2342,7 +2481,8 @@ mod tests {
             .doc_set(DAEMON, &aid, "notes/n1", json!({"t": 1}), pin, &owner)
             .unwrap();
         let planned = w.doc.unwrap().version;
-        st.doc_set(DAEMON, &aid, "notes/n1", json!({"t": 2}), pin, &owner)
+        crate::app_data::shim::Docs::of(&st)
+            .doc_set(DAEMON, &aid, "notes/n1", json!({"t": 2}), pin, &owner)
             .unwrap();
         let before = change(&st, "j1", &aid);
         let mut step = publish_step(Some(&aid), 1, "<p>v2", false);
@@ -2425,6 +2565,7 @@ mod tests {
                 "j1",
                 "publish:0",
                 publish_step(None, 0, "<p>a", true),
+                &FileDocs::of(&st),
             )
             .unwrap();
         assert!(!c.replayed);
@@ -2434,6 +2575,7 @@ mod tests {
                 "j1",
                 "publish:0",
                 publish_step(None, 0, "<p>a", true),
+                &FileDocs::of(&st),
             )
             .unwrap();
         assert!(again.replayed);
@@ -2459,6 +2601,7 @@ mod tests {
                 "j2",
                 "publish:1",
                 publish_step(Some(&aid), 1, "<p>v2", false),
+                &FileDocs::of(&st),
             )
             .unwrap();
         assert_eq!(c.step.version_n, Some(2));
@@ -2468,6 +2611,7 @@ mod tests {
                 "j2",
                 "publish:1",
                 publish_step(Some(&aid), 1, "<p>v2", false),
+                &FileDocs::of(&st),
             )
             .unwrap();
         assert!(again.replayed);
@@ -2511,6 +2655,7 @@ mod tests {
                 "j1",
                 "publish:0",
                 publish_step(None, 0, "<p>a", true),
+                &FileDocs::of(&st),
             )
             .unwrap();
         assert_eq!(c.made.unwrap().artifact.id, minted);
@@ -2625,6 +2770,7 @@ mod tests {
                 "j1",
                 "publish:0",
                 publish_step(None, 0, "<p>a", true),
+                &FileDocs::of(&st),
             )
             .unwrap();
         let e = st
@@ -2633,6 +2779,7 @@ mod tests {
                 "j1",
                 "publish:1",
                 publish_step(None, 0, "<p>b", true),
+                &FileDocs::of(&st),
             )
             .unwrap_err();
         assert!(matches!(e, StepError::Job(JobError::Moved(_))), "{e:?}");
@@ -2643,6 +2790,7 @@ mod tests {
                 "j1",
                 "publish:0",
                 publish_step(None, 0, "<p>a", true),
+                &FileDocs::of(&st),
             )
             .unwrap();
         assert_eq!(again.step, first.step);
@@ -2801,6 +2949,7 @@ mod tests {
             "j1",
             "publish:1",
             publish_step(Some(&aid), 1, "<p>v2", false),
+            &FileDocs::of(&st),
         )
         .unwrap();
         let e = st
@@ -3307,6 +3456,7 @@ mod tests {
                 "j2",
                 "publish:1",
                 publish_step(Some(&aid), 1, "<p>v2", false),
+                &FileDocs::of(&st),
             )
             .unwrap();
         assert_eq!(c.job.error, None);

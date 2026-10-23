@@ -2096,3 +2096,67 @@ fn the_document_sequence_moves_with_every_change_and_only_then() {
         .unwrap();
     assert_eq!(seq(&ad), after_write + 1);
 }
+
+/// A write under an operation ID made again (the instance's record of it
+/// lost to a crash, the call retried) answers as the first did and changes
+/// nothing; another write under the ID is `key_reused`; a write that failed
+/// records nothing, so its retry runs.
+#[test]
+fn a_write_made_again_under_its_operation_id_lands_once() {
+    let (_d, store) = store();
+    let st = Docs::of(&store);
+    let id = artifact_with_caps(&st, json!({"db": {}}));
+    let ad = st.data(&id).unwrap();
+    let rules = Rules::from_capabilities(&json!({"db": {}})).unwrap();
+    let op = |digest: &str| {
+        WriteCtx::of(DAEMON).with_op(OpId {
+            id: "job:j1:publish:1".into(),
+            digest: digest.into(),
+        })
+    };
+    let writes = || {
+        vec![BatchWrite {
+            path: "tasks/t1".into(),
+            op: BatchOp::Set(json!({"n": 1})),
+            if_version: None,
+        }]
+    };
+    let first = ad
+        .doc_batch(&op("d1"), &rules, writes(), false, &admin())
+        .unwrap();
+    let audit = ad.audit_seq().unwrap();
+    let again = ad
+        .doc_batch(&op("d1"), &rules, writes(), false, &admin())
+        .unwrap();
+    assert_eq!(again, first, "the first answer");
+    assert_eq!(ad.doc_seq().unwrap(), 1, "the sequence moved once");
+    assert_eq!(ad.audit_seq().unwrap(), audit, "nothing more is recorded");
+    assert!(matches!(
+        ad.doc_batch(&op("d2"), &rules, writes(), false, &admin()),
+        Err(CoreError::Invalid {
+            code: "key_reused",
+            ..
+        })
+    ));
+    // A set under another ID; a refused write under a third, then its retry.
+    let set = |o: &str, pin: Pin| {
+        ad.doc_set(
+            &WriteCtx::of(DAEMON).with_op(OpId {
+                id: o.into(),
+                digest: "x".into(),
+            }),
+            &rules,
+            "tasks/t2",
+            json!({"n": 2}),
+            pin,
+            &admin(),
+        )
+    };
+    assert!(matches!(
+        set("bot:r:1:2", pinned(9)),
+        Err(CoreError::DocConflict { .. })
+    ));
+    let w = set("bot:r:1:2", Pin::default()).unwrap();
+    assert_eq!(set("bot:r:1:2", Pin::default()).unwrap(), w);
+    assert_eq!(ad.doc_seq().unwrap(), 2);
+}

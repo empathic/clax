@@ -329,6 +329,127 @@ pub async fn move_pending(store: &Arc<Store>, host: &dyn AppDataHost) -> usize {
     moved
 }
 
+/// A job's publish step's documents ([`clax_store::jobs::StepDocs`])
+/// written through `host` to the step's artifact's own store, as the owner
+/// under the artifact's declared rules, recorded under `audit`. The step
+/// runs as a store job, off the runtime, so each write runs as a task of
+/// the runtime `rt` names, and the job waits for it.
+pub struct HostStepDocs {
+    pub host: Arc<dyn AppDataHost>,
+    pub store: Arc<Store>,
+    pub audit: clax_core::audit::AuditCtx,
+    pub rt: clax_rt::Handle,
+}
+
+impl HostStepDocs {
+    /// `s`'s host and store, recorded under `audit`, on the current runtime.
+    pub fn of(s: &crate::state::AppState, audit: &clax_core::audit::AuditCtx) -> HostStepDocs {
+        HostStepDocs {
+            host: s.app_data.clone(),
+            store: s.store.clone(),
+            audit: audit.clone(),
+            rt: clax_rt::Handle::current(),
+        }
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl clax_store::jobs::StepDocs for HostStepDocs {
+    async fn write(
+        &self,
+        aid: &ArtifactId,
+        op: clax_store::app_data::OpId,
+        writes: Vec<clax_store::docs::BatchWrite>,
+    ) -> Result<Vec<clax_store::docs::Written>> {
+        let (host, store, audit, aid) = (
+            self.host.clone(),
+            self.store.clone(),
+            self.audit.clone(),
+            aid.clone(),
+        );
+        self.rt
+            .spawn(async move {
+                let id = aid.clone();
+                let caps = store.call(move |st| st.doc_capabilities(&id)).await?;
+                let owner = clax_core::db::Caller::new(clax_core::db::Level::Owner, None);
+                host.call(
+                    &aid,
+                    AppDataOp::Batch {
+                        ctx: clax_store::app_data::WriteCtx::of(&audit).with_op(op),
+                        caps,
+                        writes,
+                        lww: false,
+                        caller: clax_store::app_data::WireCaller::from(&owner),
+                        view: None,
+                    },
+                )
+                .await?
+                .into_batch()
+            })
+            .await
+            .map_err(|_| CoreError::TaskFailed)?
+    }
+}
+
+/// Copies into draft `draft` the documents of its app `of` that the owner
+/// reads (private per-viewer subtrees left out), in path order, each at
+/// version 1, until [`clax_store::drafts::DRAFT_DOCS_MAX`] documents or
+/// [`clax_store::drafts::DRAFT_DOCS_MAX_BYTES`] of stored JSON, through
+/// `host`; returns how many it copied and whether any were left. When
+/// `of`'s rules do not parse it copies nothing, and says documents were
+/// left when the app has any.
+///
+/// # Errors
+/// `NotFound` for a missing app or draft; the stores'.
+pub async fn copy_app_docs(
+    host: &dyn AppDataHost,
+    store: &Arc<Store>,
+    of: &ArtifactId,
+    draft: &ArtifactId,
+) -> Result<(usize, bool)> {
+    use clax_store::app_data::WireCaller;
+    let id = of.clone();
+    let caps = store.call(move |st| st.doc_capabilities(&id)).await?;
+    let owner = WireCaller::from(&clax_core::db::Caller::new(
+        clax_core::db::Level::Owner,
+        None,
+    ));
+    if clax_core::db::Rules::from_capabilities(&caps).is_err() {
+        let any = !host
+            .call(
+                of,
+                AppDataOp::Collections {
+                    caps: serde_json::json!({}),
+                    caller: Some(owner),
+                },
+            )
+            .await?
+            .into_collections()?
+            .is_empty();
+        return Ok((0, any));
+    }
+    let (docs, truncated) = host
+        .call(
+            of,
+            AppDataOp::CopyOut {
+                caps,
+                caller: owner,
+                max_docs: clax_store::drafts::DRAFT_DOCS_MAX,
+                max_bytes: clax_store::drafts::DRAFT_DOCS_MAX_BYTES,
+            },
+        )
+        .await?
+        .into_copied()?;
+    let copied = docs.len();
+    if copied > 0 {
+        host.call(draft, AppDataOp::Seed { docs })
+            .await?
+            .into_seq()?;
+    }
+    Ok((copied, truncated))
+}
+
 /// The host a deployment starts with: natively each artifact's file in
 /// `home`, moved into from `store`; on the Worker none, until its own
 /// replaces it.
@@ -617,6 +738,147 @@ mod tests {
             )))
             .code,
             "schema_newer"
+        );
+    }
+
+    /// A draft of `app` on `st`, with no documents of its own yet.
+    fn draft_of(st: &Store, app: &ArtifactId) -> ArtifactId {
+        let req = serde_json::from_value(json!({
+            "title": "Draft",
+            "capabilities": {"db": {}},
+            "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}
+        }))
+        .unwrap();
+        let d = st
+            .create_draft(
+                &AuditCtx::DAEMON,
+                Some(app),
+                clax_core::publish::validate(req).unwrap(),
+            )
+            .unwrap();
+        ArtifactId::parse(&d.artifact.id).unwrap()
+    }
+
+    fn write(path: &str, data: serde_json::Value, caller: &Caller) -> AppDataOp {
+        AppDataOp::Set {
+            ctx: WriteCtx::of(&AuditCtx::DAEMON),
+            caps: json!({"db": {}}),
+            path: path.into(),
+            data,
+            pin: Pin {
+                if_version: None,
+                lww: true,
+            },
+            caller: WireCaller::from(caller),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_drafts_copy_takes_the_owners_documents_at_version_one() {
+        let (_d, st, app) = store();
+        let host = MovingAppData::new(local(&st), st.clone());
+        let owner = Caller::new(Level::Owner, None);
+        for (p, d) in [
+            ("notes/n1", json!({"t": 1})),
+            ("notes/n1", json!({"t": 2})),
+            ("runs/r1", json!({})),
+        ] {
+            host.call(&app, write(p, d, &owner)).await.unwrap();
+        }
+        let me = "u_00000000000000000000aa";
+        let viewer = Caller::new(Level::Interact, Some(me.into()));
+        host.call(
+            &app,
+            write(&format!("data/users/{me}/x"), json!({}), &viewer),
+        )
+        .await
+        .unwrap();
+        let draft = draft_of(&st, &app);
+        assert_eq!(
+            copy_app_docs(&host, &st, &app, &draft).await.unwrap(),
+            (2, false)
+        );
+        let get = |path: &str| AppDataOp::Get {
+            caps: json!({"db": {}}),
+            path: path.into(),
+            caller: WireCaller::from(&owner),
+        };
+        let (n1, _) = host
+            .call(&draft, get("notes/n1"))
+            .await
+            .unwrap()
+            .into_doc()
+            .unwrap()
+            .unwrap();
+        assert_eq!((n1.data, n1.version), (json!({"t": 2}), 1));
+        let (n1, _) = host
+            .call(&app, get("notes/n1"))
+            .await
+            .unwrap()
+            .into_doc()
+            .unwrap()
+            .unwrap();
+        assert_eq!(n1.version, 2, "the app's own are untouched");
+        let next = host
+            .call(&draft, write("notes/n2", json!({}), &owner))
+            .await
+            .unwrap()
+            .into_written()
+            .unwrap();
+        assert_eq!(
+            next.doc.unwrap().version,
+            2,
+            "the sequence starts past the copy"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_drafts_copy_stops_at_the_byte_cap() {
+        let (_d, st, app) = store();
+        let host = MovingAppData::new(local(&st), st.clone());
+        let owner = Caller::new(Level::Owner, None);
+        let big = "x".repeat(200 * 1024);
+        for i in 0..45 {
+            host.call(
+                &app,
+                write(&format!("blobs/b{i:02}"), json!({ "s": big }), &owner),
+            )
+            .await
+            .unwrap();
+        }
+        let draft = draft_of(&st, &app);
+        let per = json!({ "s": big }).to_string().len();
+        assert_eq!(
+            copy_app_docs(&host, &st, &app, &draft).await.unwrap(),
+            (clax_store::drafts::DRAFT_DOCS_MAX_BYTES / per, true)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_drafts_copy_takes_nothing_when_the_apps_rules_do_not_parse() {
+        let (_d, st, app) = store();
+        let host = MovingAppData::new(local(&st), st.clone());
+        host.call(
+            &app,
+            write("notes/n1", json!({}), &Caller::new(Level::Owner, None)),
+        )
+        .await
+        .unwrap();
+        // A declaration stored before validation knew it, straight to the column.
+        rusqlite::Connection::open(st.home().db_path())
+            .unwrap()
+            .execute(
+                "UPDATE artifacts SET capabilities_json = ?2 WHERE id = ?1",
+                rusqlite::params![
+                    app.as_str(),
+                    json!({"db": {"rules": "everyone"}}).to_string()
+                ],
+            )
+            .unwrap();
+        let draft = draft_of(&st, &app);
+        assert_eq!(
+            copy_app_docs(&host, &st, &app, &draft).await.unwrap(),
+            (0, true)
         );
     }
 }
