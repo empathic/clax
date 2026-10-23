@@ -1,0 +1,54 @@
+# rquickjs-sys 0.14.0 from crates.io, renamed, with
+# third_party/rquickjs-sys.patch applied: written by scripts/vendor-rquickjs.sh,
+# do not edit.
+[package]
+edition = "2021"
+name = "clax-rquickjs-sys"
+version = "0.14.0"
+authors = ["Mees Delzenne <mees.delzenne@gmail.com>"]
+build = "build.rs"
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "QuickJS bindings for rquickjs, with Clax's patch (interrupt every 100 steps, uncatchable out-of-memory, Function constructors that compile before they run)"
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/empathic/clax"
+publish = false
+
+[features]
+bindgen = []
+disable-assertions = []
+dump-atoms = []
+dump-bytecode = []
+dump-free = []
+dump-gc = []
+dump-gc-free = []
+dump-leaks = []
+dump-mem = []
+dump-module-resolve = []
+dump-objects = []
+dump-promise = []
+dump-read-object = []
+dump-shapes = []
+logging = []
+update-bindings = ["bindgen"]
+
+[lib]
+name = "rquickjs_sys"
+path = "src/lib.rs"
+# Its own tests need its dev-dependencies, which are not kept.
+test = false
+doctest = false
+
+[build-dependencies]
+cc = "1"
+
+# Third-party code: the workspace's lints and clippy do not apply.
+[lints.rust]
+warnings = "allow"
+
+[lints.clippy]
+all = "allow"

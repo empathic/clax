@@ -285,8 +285,10 @@ PY
 then pass "the Claude Code manifest declares the clax channel"; else fail "plugins/claude-code/.claude-plugin/plugin.json lacks channels: [{\"server\": \"clax\"}]"; fi
 
 relay='claude/channel'"/permission"
-if grep -rqF "$relay" crates plugins; then
-    fail "permission relay must never be declared: $(grep -rlF "$relay" crates plugins | tr '\n' ' ')"
+# The sources, tracked or new, not build outputs: an ignored target/ holds
+# binaries that embed docs/contract.md, which names the relay.
+if git grep -q --untracked -F "$relay" -- crates plugins; then
+    fail "permission relay must never be declared: $(git grep -l --untracked -F "$relay" -- crates plugins | tr '\n' ' ')"
 else
     pass "no permission relay"
 fi

@@ -1,0 +1,25 @@
+# clax-rquickjs-core (rquickjs-core 0.14.0, over clax-rquickjs-sys):
+# scripts/vendor-rquickjs.sh writes this file; do not edit.
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+rust_library(
+    name = "rquickjs",
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = ["std"],
+    crate_root = "src/lib.rs",
+    edition = "2021",
+    version = "0.14.0",
+    visibility = ["//visibility:public"],
+    deps = ["//third_party/clax-rquickjs-sys:rquickjs_sys"] + all_crate_deps(normal = True),
+)
+
+# The manifest, for the layering check (//scripts:crate_layers) and the
+# release script test.
+filegroup(
+    name = "manifest",
+    srcs = ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
+
+exports_files(["Cargo.toml"])

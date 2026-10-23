@@ -350,7 +350,8 @@ impl Store {
             return Ok(());
         }
         let made: i64 = c.query_row(
-            "SELECT COUNT(*) FROM artifacts WHERE person = ?1 AND deleted_at IS NULL",
+            "SELECT COUNT(*) FROM artifacts WHERE person = ?1 AND deleted_at IS NULL
+               AND current_version > 0",
             params![person],
             |r| r.get(0),
         )?;
@@ -422,7 +423,8 @@ mod tests {
     fn live_made_by(st: &Store, person: &str) -> i64 {
         st.with_read(|c| {
             Ok(c.query_row(
-                "SELECT COUNT(*) FROM artifacts WHERE person = ?1 AND deleted_at IS NULL",
+                "SELECT COUNT(*) FROM artifacts WHERE person = ?1 AND deleted_at IS NULL
+               AND current_version > 0",
                 params![person],
                 |r| r.get(0),
             )?)
@@ -435,6 +437,34 @@ mod tests {
             Err(CoreError::Invalid { code, .. }) => code.to_string(),
             other => format!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn a_row_a_crash_left_without_a_version_counts_toward_no_quota_and_is_swept_once_old() {
+        let (_d, st, sam) = capped();
+        // Rows a crash left between an artifact's row and its first version:
+        // one old, one made a moment ago (a create may still be under way).
+        let old = clax_core::time::stamp(st.now_utc() - chrono::Duration::seconds(600));
+        let young = st.now();
+        st.with_write(|c| {
+            for (id, at) in [("zzzzzzzzzzzz", &old), ("yyyyyyyyyyyy", &young)] {
+                c.execute(
+                    "INSERT INTO artifacts (id, title, created_at, updated_at, current_version,
+                        contract_version, person) VALUES (?1, 'x', ?2, ?2, 0, '1', ?3)",
+                    params![id, at, sam],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        // Neither takes Sam's one artifact.
+        st.create_artifact(DAEMON, by(&sam), None).unwrap();
+        assert_eq!(live_made_by(&st, &sam), 1);
+        let swept = st
+            .block_on(st.sweep_zero_version_artifacts(chrono::Duration::seconds(60)))
+            .unwrap();
+        assert_eq!(swept, 1);
+        assert_eq!(st.zero_version_artifacts().unwrap(), ["yyyyyyyyyyyy"]);
     }
 
     #[test]

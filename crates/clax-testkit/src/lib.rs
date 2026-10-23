@@ -12,6 +12,7 @@ mod client;
 pub mod clients;
 mod clock;
 mod events;
+pub mod fake_messages;
 mod fixture;
 pub mod mcp;
 pub mod people;

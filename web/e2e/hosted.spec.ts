@@ -570,8 +570,8 @@ test("a member starts an artifact from a brief in their browser, and a reader is
     await mia.waitForURL(`${origin}/`);
     await mia.getByRole("button", { name: "New artifact" }).click();
     const form = mia.getByRole("dialog", { name: "New artifact" });
-    await form.getByLabel("Title").fill("Mia's plan");
-    await form.getByLabel("Brief").fill("A one-page plan for the launch week");
+    await form.getByLabel("Name").fill("Mia's plan");
+    await form.getByLabel("Description").fill("A one-page plan for the launch week");
     await form.getByRole("button", { name: "Create" }).click();
     const who = mia.getByRole("dialog", { name: "Who builds it?" });
     await expect(who).toContainText("No agent is connected.");
@@ -615,8 +615,8 @@ test("a member tags the artifact they made with the owner's tags, and manages no
     await mia.waitForURL(`${origin}/`);
     await mia.getByRole("button", { name: "New artifact" }).click();
     const form = mia.getByRole("dialog", { name: "New artifact" });
-    await form.getByLabel("Title").fill("Mia's plan");
-    await form.getByLabel("Brief").fill("A one-page plan");
+    await form.getByLabel("Name").fill("Mia's plan");
+    await form.getByLabel("Description").fill("A one-page plan");
     await form.getByRole("button", { name: "Create" }).click();
     await mia.getByRole("dialog", { name: "Who builds it?" }).getByRole("button", { name: "Open the artifact" }).click();
     await expect(mia).toHaveURL(new RegExp(`${origin}/a/[a-z0-9]+$`));

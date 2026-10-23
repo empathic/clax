@@ -1,0 +1,6 @@
+load("//bazel:cargo.bzl", "cargo_package")
+
+cargo_package(
+    # The page contract the system prompt quotes (src/prompt.rs).
+    compile_data = ["//docs:contract"],
+)

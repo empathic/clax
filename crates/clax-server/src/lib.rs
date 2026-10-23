@@ -142,6 +142,7 @@
 /// that does not take it from the CLI (a Durable Object's `/healthz`).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub mod bot;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod core;
 pub mod github;

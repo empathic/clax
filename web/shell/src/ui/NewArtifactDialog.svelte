@@ -2,9 +2,13 @@
 
 <script lang="ts">
   // The gallery's New dialog (docs/contract.md "Starting an artifact from a
-  // brief"), loaded on the first press. First a title and a brief: Create
-  // makes the artifact, with a placeholder page and the brief as its first
-  // thread. Then who builds it: the live agents this browser may send to,
+  // brief"; spec 2026-10-21-claxbot D8, §6.4), loaded on the first press.
+  // First a name and a description (the brief): Create makes the artifact,
+  // with a placeholder page and the description as its first thread. Where
+  // ClaxBot is on for this person (`GET /api/me/bot`), the switch "ClaxBot
+  // builds it now" follows, on by default while ClaxBot is available (else
+  // off, disabled, saying why): on, Create has ClaxBot build it and lands on
+  // the artifact with the run panel open. Off, then who builds it: the live agents this browser may send to,
   // grouped as the Send menu groups them; picking one sends it the brief,
   // which gives it a watch on the artifact (another person's agent waits
   // for that person's approval). With no live agent, a prompt to paste into
@@ -14,8 +18,12 @@
   // Close closes it and focus goes back.
   import { onMount } from "svelte";
   import { nav } from "../nav";
-  import { connectPrompt, formProblem, liveAgents, newKey, personNames, pickGroups, Refused, sendBrief, start, type Me, type PickGroup, type Started } from "../view/new-artifact";
+  import type { MeBot } from "../bot/api";
+  import { myBot } from "../bot/me";
+  import { credits, meter, unavailableText } from "../bot/model";
+  import { connectPrompt, formProblem, liveAgents, newKey, personNames, pickGroups, Refused, sendBrief, start, withRun, type Me, type PickGroup, type Started } from "../view/new-artifact";
   import { inertOutside, trapTab } from "./modal";
+  import Switch from "../bot/Switch.svelte";
 
   let { me, onClose }: { me: Me; onClose(): void } = $props();
   const back = document.activeElement as HTMLElement | null;
@@ -39,6 +47,13 @@
   // Close is landed on.
   let destroyed = false;
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
+  // ClaxBot for this person: null until known, and where the daemon has none.
+  let bot = $state<MeBot | null>(null);
+  let build = $state(false);
+  // The typical cost of one run, when the daemon says (`estimate_milli`), then what is left this week.
+  const estimate = $derived(bot?.estimate_milli ? `Usually ${credits(bot.estimate_milli.low)}–${credits(bot.estimate_milli.high)} credits${bot.key.use_own && bot.key.own?.set ? " on your own key" : ""}. ` : "");
+  const botLine = $derived(!bot ? "" : bot.available ? `${estimate}You have ${credits(meter(bot.week).left)} credits left this week${bot.unenforced ? " (not enforced)" : ""}.` : `${unavailableText(bot.unavailable_reason, bot.week)}.`);
+  void myBot().then(b => { if (destroyed || !b?.enabled) return; bot = b; build = b.available; });
   const problem = $derived(formProblem(title, brief));
   const prompt = $derived(started ? connectPrompt(new URL(started.url, location.origin).href, started.artifact.title) : "");
   const focus = (el: HTMLElement) => { el.focus(); };
@@ -76,7 +91,10 @@
     busy = true;
     error = "";
     try {
-      const made = await start(title, brief, key);
+      const built = build && !!bot?.available;
+      const made = await start(title, brief, key, built ? "claxbot" : undefined);
+      // ClaxBot builds it: land on it with the run panel open.
+      if (built) { nav.assign(withRun(made)); return; }
       // Closed while Create was in flight: land on what it made.
       if (destroyed) { nav.assign(made.url); return; }
       started = made;
@@ -139,16 +157,22 @@
         <h2 id="na-title">New artifact</h2>
         <button type="button" class="ghost" onclick={onClose}>Close</button>
       </header>
-      <p class="lede">Say what you want built. The artifact starts as a placeholder page, and your brief becomes its first comment, for the agent you pick next.</p>
+      <p class="lede">Say what you want built. The artifact starts as a placeholder page, and your description becomes its first comment thread{bot ? "" : ", for the agent you pick next"}.</p>
       <form onsubmit={create} novalidate>
-        <label for="na-name">Title</label>
+        <label for="na-name">Name</label>
         <input id="na-name" type="text" autocomplete="off" maxlength="200" placeholder="Q3 revenue chart" bind:value={title} {@attach focus} />
-        <label for="na-brief">Brief</label>
+        <label for="na-brief">Description</label>
         <textarea id="na-brief" rows="6" placeholder="A bar chart of Q3 revenue by region, sorted high to low, with last quarter as a faint ghost bar." bind:value={brief}></textarea>
+        {#if bot}
+          <div class="bot">
+            <Switch checked={build} label="ClaxBot builds it now" describedby="na-bot-l" disabled={!bot.available} onchange={on => { build = on; }} />
+            <p id="na-bot-l">{bot.available ? "ClaxBot starts as soon as you create it. You can watch it work beside the page." : "Create it, then pick an agent to build it."} {botLine}</p>
+          </div>
+        {/if}
         {#if error}<p class="error" role="alert">{error}</p>{:else if tried && problem}<p class="error" role="alert">{problem}</p>{/if}
         <div class="acts">
           <button type="button" class="ghost" onclick={onClose}>Cancel</button>
-          <button type="submit" class="primary" aria-disabled={busy}>{busy ? "Creating…" : "Create"}</button>
+          <button type="submit" class="primary" aria-disabled={busy}>{busy ? "Creating…" : build && bot?.available ? "Create and build" : "Create"}</button>
         </div>
       </form>
     {:else}
@@ -226,6 +250,8 @@
   .small { min-height: 26px; padding: 3px 10px; font-size: 12.5px; }
   pre { display: block; margin: 0; font: 12.5px/1.55 var(--mono); background: var(--hover); border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 8px 10px; color: var(--fg); overflow-wrap: anywhere; white-space: pre-wrap; user-select: all; }
   .error { margin: 8px 0 0; font-size: 12.5px; color: var(--danger); }
+  .bot { display: grid; gap: 4px; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
+  .bot p { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   @media (max-width: 700px) {
     .na-panel { padding: 14px 14px 16px; }

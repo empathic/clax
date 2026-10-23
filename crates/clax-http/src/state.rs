@@ -216,6 +216,12 @@ pub struct AppState {
     /// slow) and serves `GET /api/_test/audit/ctx` (`clax_server::router`).
     /// `false` in every daemon `serve` starts; the testkit's daemon sets it.
     pub test_daemon: bool,
+    /// The settings routes' configuration in effect and audit hook
+    /// ([`crate::settings`]).
+    pub settings: Arc<crate::settings::Settings>,
+    /// ClaxBot's keys and run driver seam ([`crate::bot`]); the daemon
+    /// and the Worker install theirs after [`AppState::assemble`].
+    pub bot: Arc<crate::bot::Bot>,
 }
 
 impl AppState {
@@ -308,7 +314,19 @@ impl AppState {
         let ext_creds = Arc::new(crate::extension::Credentials::load(&p.store)?);
         let grant_auth = Arc::new(crate::grant_auth::GrantAuth::load(&p.store)?);
         let vis_gen = VisGen::install(&p.store);
+        let settings = Arc::new(crate::settings::Settings::at_start(
+            &p.home,
+            p.hosted.is_some(),
+        ));
+        // A hosted server, and the Worker always, send ClaxBot's instance
+        // key only to a public https host.
+        if p.hosted.is_some() || cfg!(target_arch = "wasm32") {
+            p.store
+                .set_base_url_policy(clax_store::bot_settings::BaseUrlPolicy::Hosted);
+        }
         Ok(AppState {
+            settings,
+            bot: Arc::default(),
             home: p.home,
             token: p.token,
             require_credential: p.require_credential,

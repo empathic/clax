@@ -24,7 +24,8 @@
   // agent tokens and pages shared by link (`HostedPanel`, a chunk of its
   // own fetched beside that request, so a local daemon's page carries none
   // of it and a hosted one waits on no extra round trip), invites are
-  // links, and the viewers who are not connected are guests.
+  // links, and the viewers who are not connected are guests. For the owner
+  // and admins, the heading row links to Admin (spec 2026-10-21-claxbot §11.5).
   import { onDestroy, onMount, tick, type Component } from "svelte";
   import { listArtifacts } from "../api";
   import type { PeopleApproval, PeopleGrant, PeopleInvite, PeopleList, PeopleMe, PeopleRequest } from "../api";
@@ -56,6 +57,8 @@
   let HostedPanel = $state<Component<{ me: hostedApi.HostedMe }> | null>(null);
   // The open dialog is the first invite's: the switch shows in it, not apart.
   let firstInvite = $state(false);
+  // Whether this browser's person administers ClaxBot (`bot/me`, its own chunk).
+  let admin = $state(false);
   let gone = false;
   let off: (() => void) | null = null;
   const msg = refusal;
@@ -134,6 +137,7 @@
   const authorOf = (a: { name: string; owner?: boolean }) => (a.owner && a.name !== "The owner" ? `${a.name} (the owner)` : a.name);
   onMount(() => {
     document.title = "People · Clax";
+    void import("../bot/me").then(async m => m.isAdmin(await m.myRole())).then(a => { if (!gone) admin = a; }, () => {});
     reload();
     const panel = import("../hosted/HostedPanel.svelte").then(m => m.default, () => null);
     void hostedApi.me().then(h => {
@@ -150,6 +154,7 @@
     <h2 tabindex="-1">People</h2>
     {#if owner}<span class="pcount">{people.length === 1 ? "1 person" : `${people.length} people`}</span>{/if}
     <span class="sp"></span>
+    {#if admin}<a class="padmin" href="/admin">Admin</a>{/if}
     {#if owner && !inviting}<button type="button" class="primary invite-open" onclick={() => { firstInvite = invites.length === 0; inviting = true; }}>Invite a person</button>{/if}
   </div>
   {#if denied}<p class="note">{denied}</p>{/if}
@@ -242,6 +247,8 @@
     .ppl h2 { margin: 0; font-size: 22px; line-height: 1.2; }
     .ppl .pcount, .ppl .meta, .ppl .ip { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
     .ppl .sp { flex: 1; }
+    .ppl .padmin { font-weight: 600; font-size: 13.5px; padding: 6px 8px; border-radius: var(--radius-sm); }
+    .ppl .padmin:hover { background: var(--hover); }
     .ppl .err { margin: 0; color: var(--danger); font-size: 13px; }
     .ppl .note, .ppl .none { margin: 4px 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
     .ppl .banner { margin: 0; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--danger-tint); font-size: 13.5px; }

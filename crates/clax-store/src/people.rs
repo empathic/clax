@@ -1909,6 +1909,69 @@ impl Store {
         self.with_read(|c| grant_caller_in(c, gid, session))
     }
 
+    /// The rights a ClaxBot run acting for `person` (a person key) holds:
+    /// with `agent_grant` (the agent that asked for the run), that grant's
+    /// as an agent of it holds them, its person's narrowed by it, so a run
+    /// never exceeds the agent that asked; else its person's own; `None`
+    /// for the owner's own run, which holds every right.
+    ///
+    /// # Errors
+    /// `grant_revoked` for a grant that ended; the store's.
+    pub fn bot_rights(
+        &self,
+        person: &str,
+        agent_grant: Option<&str>,
+    ) -> Result<Option<clax_core::rights::Rights>> {
+        self.with_read(|c| bot_rights_in(c, person, agent_grant))
+    }
+
+    /// That a ClaxBot run acting for `person` (a person key), asked for by
+    /// `agent_grant`'s agent when given, may still have write right
+    /// `action` of `kind` at artifact `aid`, read on `tx` (inside a
+    /// journaled write's transaction, so a revoke committed before it is
+    /// seen): a connected person while connected, not revoked and with
+    /// their `claxbot` flag on; the rights [`Store::bot_rights`] gives,
+    /// the owner's own run every right.
+    ///
+    /// # Errors
+    /// `forbidden` otherwise; the store's.
+    pub fn check_bot_write_in(
+        &self,
+        tx: &super::bot_runs::Tx<'_>,
+        person: &str,
+        agent_grant: Option<&str>,
+        aid: Option<&str>,
+        kind: clax_core::rights::RightType,
+        action: &str,
+    ) -> Result<()> {
+        let c = tx.0;
+        let refused = |why: &str| {
+            Err(CoreError::invalid(
+                "forbidden",
+                format!("the person this run acts for {why}"),
+            ))
+        };
+        if person != super::roles::OWNER {
+            if super::roles::check_live_person(c, person).is_err() {
+                return refused("is no longer connected");
+            }
+            if !super::flags::flags_in(c, person)?.claxbot {
+                return refused("no longer has ClaxBot");
+            }
+        }
+        let rights = match bot_rights_in(c, person, agent_grant) {
+            Ok(Some(r)) => r,
+            Ok(None) => return Ok(()),
+            Err(_) => return refused("asked through an agent whose grant has ended"),
+        };
+        let maker = (person != super::roles::OWNER).then_some(person);
+        let own = |x: &str| own_in(c, x, maker);
+        if !rights.allows(kind, action, aid, &own) {
+            return refused("may no longer do this here");
+        }
+        Ok(())
+    }
+
     /// Whether artifact `aid` was created by `person` (a public ID; `None`
     /// for the owner): the `own` location of rights (spec §7.1).
     pub fn artifact_created_by(&self, aid: &str, person: Option<&str>) -> Result<bool> {
@@ -2486,6 +2549,37 @@ impl Store {
         self.visibility_changed();
         Ok(())
     }
+}
+
+/// [`Store::bot_rights`] on `c`.
+fn bot_rights_in(
+    c: &rusqlite::Connection,
+    person: &str,
+    agent_grant: Option<&str>,
+) -> Result<Option<clax_core::rights::Rights>> {
+    if let Some(g) = agent_grant {
+        return Ok(Some(grant_caller_in(c, g, None)?.rights));
+    }
+    if person == super::roles::OWNER {
+        return Ok(None);
+    }
+    let id: String = c.query_row(
+        "SELECT id FROM viewers WHERE public_id = ?1",
+        params![person],
+        |r| r.get(0),
+    )?;
+    Ok(Some(rights_of_row(c, &id)?))
+}
+
+/// Whether artifact `aid` was made by `maker` (a public ID; `None` the
+/// owner), on `c`: the `own` location of rights.
+fn own_in(c: &rusqlite::Connection, aid: &str, maker: Option<&str>) -> bool {
+    c.query_row(
+        "SELECT EXISTS (SELECT 1 FROM artifacts WHERE id = ?1 AND person IS ?2)",
+        params![aid, maker],
+        |r| r.get::<_, bool>(0),
+    )
+    .unwrap_or(false)
 }
 
 /// [`Store::grant_caller`], read on `c`.

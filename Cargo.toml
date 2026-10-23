@@ -17,6 +17,13 @@ members = [
     "crates/clax-git",
     "crates/clax-rt",
     "crates/clax-content-git",
+    "crates/clax-bot-sandbox",
+    "crates/clax-bot-js",
+    "crates/clax-bot",
+    # Patched copies of third-party crates, under names of their own
+    # (docs/bazel.md, section Patched third-party crates).
+    "third_party/clax-rquickjs-sys",
+    "third_party/clax-rquickjs-core",
     "crates/clax-embed",
 ]
 # The Cloudflare Worker is a workspace of its own (wasm32 only, rusqlite 0.40).
@@ -40,6 +47,9 @@ axum = { version = "0.8", default-features = false, features = ["form", "json", 
 base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
+# Layered configuration (clax-core's `config`): no features, so no TOML
+# parser of its own; clax-core feeds it the file parsed with `toml`.
+figment = { version = "0.10", default-features = false }
 clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
 http-body-util = "0.1"

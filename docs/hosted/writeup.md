@@ -96,6 +96,14 @@ agents:
     expiry, a question's grace) run from the object's alarm, set for the
     earliest one due; with nothing due there is no alarm, and an idle
     object sleeps, open sockets or not.
+  - **ClaxBot.** Clax's own agent runs from the same alarm
+    (`src/bot.rs`): a run started or cancelled sets it for now, and each
+    alarm drives the runs for up to ten minutes of wall time (Cloudflare's
+    15-minute alarm limit less a margin), committing each step before the
+    next, then sets itself for the run's next step. Scripts run in Worker
+    Loader isolates with no network (`src/sandbox/`). An object evicted
+    mid-step resumes the step in its next incarnation; the model keys are
+    sealed under the `CLAX_KEK` secret.
   - A second class, `RepoDO`, keeps the local git stand-in's repositories
     and the repository token ledger.
 - **Artifacts** (`src/repos/artifacts.rs`, with `REPO_STORE=artifacts`):
@@ -203,6 +211,9 @@ Runs under `wrangler dev --local`, in hosted mode, on the Rust stack:
   revoked and refused, pushes with git and jj becoming versions, version
   tags protected, assets in R2, across a restart.
 - `crates/clax-worker/test-wasm.mjs`: the SQLite VFS across a restart.
+- `crates/clax-worker/test-bot.mjs`: a ClaxBot run on the alarm against a
+  scripted Messages API, through a restart mid-turn (resumed, charged
+  once), its event stream replayed, a cancel and a refusal.
 
 Has never run against the real platform (the README's "What has not run
 against the real platform"):
@@ -218,6 +229,10 @@ against the real platform"):
 - Custom domains, certificates and `CF-Connecting-IP` from Cloudflare's
   edge.
 - The Worker build on Linux: `build.sh` has run on macOS only.
+- ClaxBot on real Durable Objects: the alarm's 15-minute wall limit and
+  30-second CPU limit on a long run, an alarm invocation the platform ends,
+  the dynamic Workers' CPU and memory limits, and the Messages API itself
+  (the tests use a scripted one on 127.0.0.1).
 
 Git tokens are minted from the browser: the artifact's Clone dialog asks
 `POST /api/artifacts/<id>/git-token` for a token of the person's rights

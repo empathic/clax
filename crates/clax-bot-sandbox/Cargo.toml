@@ -1,0 +1,20 @@
+[package]
+name = "clax-bot-sandbox"
+version.workspace = true
+edition.workspace = true
+license = "GPL-2.0-only OR AGPL-3.0-only"
+description = "The contract between ClaxBot and a code-mode sandbox: scripts, limits, host calls, outcomes, and the conformance suite every sandbox passes"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = "0.1"
+# The engine-independent body check (`check_body`): oxc's parser, pure Rust
+# and built for wasm32 too, without its regular-expression parser.
+oxc_allocator = "0.139"
+oxc_ast = "0.139"
+oxc_parser = { version = "0.139", default-features = false }
+oxc_span = "0.139"
+serde.workspace = true
+serde_json.workspace = true

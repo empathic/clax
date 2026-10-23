@@ -36,6 +36,12 @@
     { "tag": "v3", "new_sqlite_classes": ["RepoDO"] }
   ],
 
+  // The Worker Loader: ClaxBot's code-mode sandbox runs each script in a
+  // dynamic Worker of its own, without network or bindings (src/sandbox/).
+  // `wrangler dev --local` runs them in workerd, which enforces no CPU or
+  // memory limit on them.
+  "worker_loaders": [{ "binding": "LOADER" }],
+
   // Artifact assets, in both REPO_STORE modes (src/repos/assets.rs).
   // `wrangler dev --local` simulates the bucket in its --persist-to state.
   "r2_buckets": [{ "binding": "ASSETS", "bucket_name": "clax-assets" }],
@@ -91,6 +97,10 @@
     "CLAX_LIVE_SEAT_IDLE_S": "",
     // "1" turns on the test routes (POST /_worker/hibernate, /do/*).
     "CLAX_TEST_ROUTES": "0",
+    // "1", with CLAX_TEST_ROUTES, lets ClaxBot's base_url be a loopback
+    // http provider (test-bot.mjs's scripted one); otherwise the Worker sends
+    // the model key to public https hosts only.
+    "CLAX_TEST_LOOPBACK_PROVIDER": "0",
     // "1" serves /_dev/repos/* (test-repos.mjs passes it with --var).
     "REPO_DEV_ROUTES": "0",
     // "1" serves /_diag/* to the owner's token (CLAX_TOKEN must be set):
@@ -103,4 +113,7 @@
   // keeps it in its storage.
   // SETUP_SECRET, which a hosted instance's /setup takes once, is a secret
   // the same way; unset, setup stays closed.
+  // CLAX_KEK, 64 hex digits, seals the model keys ClaxBot stores (src/bot.rs);
+  // a secret the same way, made once by deploy.mjs and never rotated. Unset
+  // or malformed, no key is stored and ClaxBot answers not_configured.
 }

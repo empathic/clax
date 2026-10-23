@@ -84,6 +84,9 @@ CLAX = [
 CLAX_ENV = {"CLAX_TEST_BIN": "$(rootpath //crates/clax-cli:clax)"}
 
 RUST_SOURCES = [
+    "//crates/clax-bot-js:rust_sources",
+    "//crates/clax-bot:rust_sources",
+    "//crates/clax-bot-sandbox:rust_sources",
     "//crates/clax-cli:rust_sources",
     "//crates/clax-commands:rust_sources",
     "//crates/clax-content-git:rust_sources",
@@ -105,6 +108,9 @@ RUST_SOURCES = [
 
 # Every crate's manifest, which the layering check reads.
 CRATE_MANIFESTS = [
+    "//crates/clax-bot-js:manifest",
+    "//crates/clax-bot:manifest",
+    "//crates/clax-bot-sandbox:manifest",
     "//crates/clax-cli:manifest",
     "//crates/clax-commands:manifest",
     "//crates/clax-content-git:manifest",
@@ -122,6 +128,8 @@ CRATE_MANIFESTS = [
     "//crates/clax-server:manifest",
     "//crates/clax-store:manifest",
     "//crates/clax-testkit:manifest",
+    "//third_party/clax-rquickjs-core:manifest",
+    "//third_party/clax-rquickjs-sys:manifest",
 ]
 
 # The script gates of scripts/quality_gates.sh, as Bazel tests. Each script

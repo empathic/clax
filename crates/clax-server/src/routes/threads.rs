@@ -1109,6 +1109,11 @@ pub async fn comment(
     let live_page = s.live_ids.contains(id.as_str());
     let vf = VisFor::of(&a.caller, &s);
     let app = s.clone();
+    // A person's comment (never an agent's) on a thread ClaxBot answered
+    // starts a follow-up run, or queues them for one once the active run ends.
+    let follow = !agent;
+    let follow_caller = a.caller.clone();
+    let bot = s.bot.clone();
     let o = s
         .store_call(move |st| {
             let vis = vf.build(st)?;
@@ -1259,6 +1264,19 @@ pub async fn comment(
             if !unresolved.is_empty() {
                 out["unresolved_mentions"] = json!(unresolved);
             }
+            if follow {
+                let ctx = clax_http::bot::caller_ctx(st, &follow_caller)?;
+                match super::bot::follow_up(st, &bot, &ctx, &follow_caller, &id, &tid)? {
+                    Some(super::bot::FollowUp::Started(rid)) => {
+                        out["run"] = json!({"id": rid});
+                        bot.runs.started(&rid);
+                    }
+                    Some(super::bot::FollowUp::Queued(rid)) => {
+                        out["run"] = json!({"id": rid, "queued": true});
+                    }
+                    None => {}
+                }
+            }
             Ok(Outcome::Done(out))
         })
         .await?;
@@ -1355,6 +1373,11 @@ pub async fn send(
             .map_err(|e| ApiError::bad_request("invalid_json", e.to_string()))?
     };
     sees_threads(&a, &s, &id).await?;
+    if b.to.as_deref() == Some(clax_http::bot::HANDLE) {
+        return send_to_bot(&s, &a.caller, audit, id, vec![tid], a.holds_token())
+            .await
+            .map(|(mut threads, run)| Json(json!({"thread": threads.pop(), "run": run})));
+    }
     let may_resolve = resolves(&a, &s, &id).await?;
     let ctx = s.feedback_ctx();
     let with_path = a.holds_token();
@@ -1394,6 +1417,59 @@ pub async fn send(
         })
         .await?;
     Ok(Json(json!({"thread": view})))
+}
+
+/// A send of threads `tids` of artifact `id` to ClaxBot (`to: "claxbot"`,
+/// spec 2026-10-21-claxbot-design §6.4): a run of them acting for the
+/// sender (the owner for the owner and the owner's agents, a connected
+/// person for them and their agents), refused before any model call with
+/// 403 `no_flag`, `credits_exhausted`, `not_configured` or
+/// `model_not_priced` (recorded as `bot.refused`). The threads are not
+/// routed to any agent. Answers the threads' views, filtered for the
+/// caller, and the run.
+async fn send_to_bot(
+    s: &AppState,
+    caller: &Caller,
+    audit: DeferredAudit,
+    id: ArtifactId,
+    tids: Vec<String>,
+    with_path: bool,
+) -> Result<(Vec<Value>, Value), ApiError> {
+    let sender = super::bot::sender_of(caller).ok_or_else(|| {
+        ApiError::forbidden(
+            "forbidden",
+            "only the owner, a connected person and their agents send to ClaxBot",
+        )
+    })?;
+    let ctx = s.feedback_ctx();
+    let vf = VisFor::of(caller, s);
+    let bot = s.bot.clone();
+    let (views, run) = s
+        .store_call(move |st| {
+            let vis = vf.build(st)?;
+            super::bot::check_threads(st, &id, &tids)?;
+            let audit = audit.resolve(st)?;
+            let run = super::bot::start_run(
+                st,
+                &bot,
+                &audit,
+                &sender,
+                &id,
+                clax_store::bot_runs::RequestKind::Thread,
+                tids.clone(),
+            )?;
+            let threads = tids
+                .iter()
+                .map(|t| thread_of(st, &id, t))
+                .collect::<clax_core::Result<Vec<_>>>()?;
+            let views = vis.filter_threads(st, &threads, ctx.codex_push(), with_path)?;
+            Ok((views, super::bot::run_view(st, &run)?))
+        })
+        .await?;
+    if let Some(rid) = run["id"].as_str() {
+        s.bot.runs.started(rid);
+    }
+    Ok((views, run))
 }
 
 #[derive(Deserialize, Default)]
@@ -1542,6 +1618,14 @@ pub async fn send_batch(
     clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let b = body(req)?;
     sees_threads(&a, &s, &id).await?;
+    if b.to.as_deref() == Some(clax_http::bot::HANDLE) {
+        let ids = b.thread_ids.clone();
+        let (views, run) =
+            send_to_bot(&s, &a.caller, audit, id, ids.clone(), a.holds_token()).await?;
+        return Ok(Json(
+            json!({"batch": null, "sent": ids, "unchanged": [], "threads": views, "run": run}),
+        ));
+    }
     let may_resolve = resolves(&a, &s, &id).await?;
     let ctx = s.feedback_ctx();
     let with_path = a.holds_token();

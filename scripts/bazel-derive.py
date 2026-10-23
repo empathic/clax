@@ -96,13 +96,19 @@ def workspace():
         lib = lib_of(p)
 
         # The features `default` turns on, without the optional dependencies
-        # they pull in (crate_universe supplies every one of those).
+        # they pull in (crate_universe supplies every one of those), and the
+        # optional workspace crates they turn on (`dep:<name>`), which build
+        # as plain path dependencies.
         enabled, todo = set(), ["default"] if "default" in p["features"] else []
+        optional_on = set()
         while todo:
             feature = todo.pop()
             if feature in enabled or feature not in p["features"]:
                 continue
             enabled.add(feature)
+            for f in p["features"][feature]:
+                if f.startswith("dep:"):
+                    optional_on.add(f[len("dep:"):])
             todo.extend(f for f in p["features"][feature] if ":" not in f and "/" not in f)
 
         deps = {"deps": set(), "dev_deps": set()}
@@ -111,7 +117,12 @@ def workspace():
                 continue
             if d["kind"] == "build":
                 sys.exit("error: scripts/bazel-derive.py: %s has a path build-dependency" % name)
-            if not d["uses_default_features"] or d["rename"] or d["optional"]:
+            if d["optional"] and d["kind"] != "dev" and d["name"] not in optional_on:
+                # Off by default: Bazel builds the default features alone.
+                continue
+            if not d["uses_default_features"] or d["rename"] or (
+                d["optional"] and d["name"] not in optional_on
+            ):
                 sys.exit("error: scripts/bazel-derive.py: %s -> %s: only a plain path dependency is supported" % (name, d["name"]))
             target = packages[d["name"]]
             if d["kind"] != "dev" and d["features"]:
@@ -303,7 +314,10 @@ def cargo_features(args):
             continue
         package, features = line.split("|")
         name, version = package.split()[:2]
-        if name.startswith("clax-"):
+        # A workspace member (a Clax crate, or a patched copy of a
+        # third-party one under third_party/) is built from its own BUILD
+        # file, not from crate_universe's repository.
+        if name.startswith("clax-") or "(" + ROOT + "/" in package:
             continue
         # A line cargo has printed before ends " (*)".
         features = features.replace(" (*)", "")

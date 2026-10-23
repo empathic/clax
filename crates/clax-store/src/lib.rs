@@ -98,11 +98,15 @@ pub mod artifacts;
 pub mod assets;
 pub mod attention;
 pub mod audit;
+pub mod audit_query;
 pub mod backfill;
 pub mod backup;
 pub mod batches;
+pub mod bot_runs;
+pub mod bot_settings;
 pub mod briefs;
 pub mod changelog;
+pub mod credits;
 pub mod device;
 pub mod docs;
 pub mod drafts;
@@ -111,6 +115,7 @@ pub mod engagement;
 pub mod exec;
 pub mod extension;
 pub mod feedback;
+pub mod flags;
 pub mod forks;
 pub mod github;
 pub mod grants;
@@ -130,7 +135,9 @@ mod plans;
 pub mod pushes;
 pub mod questions;
 pub mod remotes;
+pub mod roles;
 pub mod sample_grants;
+pub mod secrets;
 pub mod sessions;
 pub mod shares;
 pub mod site;
@@ -145,6 +152,7 @@ pub mod toolpath;
 pub use artifacts::{CorruptRow, MetaPatch};
 pub use attention::{AgentPerson, AgentView, Attention, AttentionSummary, Participants, Person};
 pub use audit::AuditRow;
+pub use bot_runs::{CallEntry, Guard, Journaled, Tx};
 pub use feedback::{Delivery, DeliveryViewer, SendTarget, TakeFeedback, Taken};
 pub use sessions::{
     EndReason, EndedSession, JoinSession, NameSource, Proved, Reaped, RegisterSession, Registered,
@@ -237,6 +245,14 @@ pub struct Store {
     resumed_at: Mutex<String>,
     /// Each GitHub member's caps ([`Store::set_member_caps`]).
     member_caps: RwLock<Option<github::MemberCaps>>,
+    /// ClaxBot's settings the daemon's configuration sets, laid over the
+    /// stored ones on every read ([`Store::set_bot_overrides`]).
+    bot_overrides: RwLock<Arc<bot_settings::Overrides>>,
+    /// Where ClaxBot's `base_url` may point ([`Store::set_base_url_policy`]).
+    base_url_policy: RwLock<bot_settings::BaseUrlPolicy>,
+    /// Fails a journaled write after the write and before its journal row
+    /// ([`Store::set_journal_fault`]), for crash tests.
+    journal_fault: RwLock<Option<bot_runs::JournalFault>>,
     /// The hidden artifacts (drafts), for event routing.
     hidden: drafts::HiddenIds,
     /// The jobs the write transaction under way changed, recorded by the
@@ -414,8 +430,11 @@ impl Store {
             pushed_listener: RwLock::new(None),
             resumed_at: Mutex::new(stamp(clock.now())),
             member_caps: RwLock::new(None),
+            bot_overrides: RwLock::default(),
+            base_url_policy: RwLock::default(),
             #[cfg(test)]
             test_points: Mutex::new(Vec::new()),
+            journal_fault: RwLock::new(None),
             clock,
             hidden,
             jobs,
@@ -892,7 +911,7 @@ fn migrate_steps(
             bytes: 0,
         });
         tx.execute_batch(numbering.migrations[version as usize])?;
-        migrations::rust_step(&tx, version + 1)?;
+        migrations::rust_step_of(&tx, numbering.migrations, version + 1)?;
         tx.pragma_update(None, "user_version", version + 1)?;
         tx.commit()?;
     }

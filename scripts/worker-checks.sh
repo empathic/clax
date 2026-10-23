@@ -5,7 +5,10 @@
 # worker-build and a clang that targets wasm32 (docs/bazel.md, "Run outside
 # Bazel"). In order: npm ci, its tests (the VFS's among them), clippy with
 # warnings denied, then test-wasm.mjs, which builds the wasm Worker and
-# checks it under `wrangler dev --local`.
+# checks it under `wrangler dev --local`, test-sandbox.mjs, ClaxBot's
+# sandbox conformance suite on that build, and test-bot.mjs, a ClaxBot run
+# driven by the instance's alarm against a scripted Messages API, across a
+# restart.
 #
 # Its format check is not here: under Bazel it is //crates/clax-worker:rustfmt,
 # natively `cargo fmt -- --check` in crates/clax-worker (scripts/run.sh
@@ -18,3 +21,5 @@ cd crates/clax-worker
 cargo test -q --workspace
 cargo clippy -q --workspace --all-targets -- -D warnings
 node test-wasm.mjs
+node test-sandbox.mjs --no-build
+node test-bot.mjs --no-build

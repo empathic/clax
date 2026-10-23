@@ -87,7 +87,11 @@ impl Roster {
         r.json::<Value>().await.unwrap()["agents"]
             .as_array()
             .unwrap()
-            .clone()
+            .iter()
+            // The sessions alone, without the built-in ClaxBot.
+            .filter(|a| a["builtin"] != true)
+            .cloned()
+            .collect()
     }
 
     fn handle(&self, sid: &str) -> String {
@@ -196,7 +200,15 @@ async fn roster_reports_blocked_since_and_is_person_scoped() {
     assert_eq!(status, 200, "{browser}");
     let cli: Value = r.sam.get(None, "/api/agents").await.json().await.unwrap();
     for view in [&browser, &cli] {
-        let agents = view["agents"].as_array().unwrap();
+        let all = view["agents"].as_array().unwrap();
+        // ClaxBot, built in, comes first; the sessions follow.
+        assert_eq!(all[0]["handle"], "claxbot", "{view}");
+        let agents: Vec<Value> = all
+            .iter()
+            .filter(|a| a["builtin"] != true)
+            .cloned()
+            .collect();
+        let agents = &agents;
         assert_eq!(agents.len(), 3, "{view}");
         let own = row(agents, &sam_name);
         assert_eq!(own["handle"], r.handle(&r.sam_session).as_str());

@@ -2,11 +2,14 @@
 //! them is `crate::router`; `guards` checks every route against the rules
 //! a handler's signature must show.
 
+pub mod admin;
 pub mod app_bundles;
 pub mod app_drafts;
 pub mod approvals;
 pub mod artifacts;
 pub mod assets;
+pub mod audit_trail;
+pub mod bot;
 pub mod client_imports;
 pub mod connect;
 pub mod content;
@@ -36,6 +39,7 @@ pub mod remotes;
 pub mod room;
 pub mod sample;
 pub mod sessions;
+pub mod settings;
 pub mod sites;
 pub mod snapshot;
 pub mod stream;

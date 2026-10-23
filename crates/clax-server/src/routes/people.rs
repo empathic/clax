@@ -192,6 +192,7 @@ pub async fn list_agents(
     let vf = clax_http::views::thread::VisFor::of(&a.caller, &s);
     let working = s.working.clone();
     let wakes = super::sessions::Wakes::for_caller(&s, &a.caller);
+    let (bot, bot_for) = (s.bot.clone(), super::bot::acting_for(&a.caller));
     let v = s
         .store_call(move |st| {
             let unread: std::collections::HashMap<String, u32> = if agent {
@@ -215,6 +216,13 @@ pub async fn list_agents(
                 None => None,
             };
             let mut out = Vec::new();
+            // ClaxBot first (spec 2026-10-21-claxbot-design §6.4), where
+            // the caller may send.
+            if let Some(p) = &bot_for
+                && attach.as_ref().is_none_or(|(_, _, may, _)| *may)
+            {
+                out.push(super::bot::roster_entry(st, &bot, p)?);
+            }
             for r in st.roster()? {
                 let x = &r.session;
                 if let Some((id, live, may, person)) = &attach {
@@ -331,7 +339,11 @@ pub struct AgentsQuery {
 /// `send`, `own` the artifacts their person made): the owner and the
 /// owner's agents always; a connected person and a person's agent by their
 /// rights; anyone else not. A connected person who may not read it may not.
-fn may_send_at(st: &Store, caller: &Caller, id: &clax_core::ArtifactId) -> clax_core::Result<bool> {
+pub(crate) fn may_send_at(
+    st: &Store,
+    caller: &Caller,
+    id: &clax_core::ArtifactId,
+) -> clax_core::Result<bool> {
     use clax_core::rights::RightType;
     let (rights, person) = match caller {
         Caller::Owner { .. } | Caller::OwnerAgent { .. } => return Ok(true),

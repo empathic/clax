@@ -19,6 +19,11 @@ crates/clax-store/Cargo.toml
 crates/clax-git/Cargo.toml
 crates/clax-rt/Cargo.toml
 crates/clax-content-git/Cargo.toml
+crates/clax-bot/Cargo.toml
+crates/clax-bot-sandbox/Cargo.toml
+crates/clax-bot-js/Cargo.toml
+third_party/clax-rquickjs-sys/Cargo.toml
+third_party/clax-rquickjs-core/Cargo.toml
 crates/clax-embed/Cargo.toml
 crates/clax-worker/Cargo.lock
 .claude-plugin/marketplace.json

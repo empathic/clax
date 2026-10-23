@@ -351,7 +351,7 @@ pub(super) fn segment(h: &History, closed: bool) -> String {
 }
 
 /// The `seq` of the golden history's last row (`tests/toolpath/history.json`).
-const LAST_SEQ: i64 = 86;
+const LAST_SEQ: i64 = 105;
 
 #[test]
 fn render_each_kind_matches_golden() {
@@ -926,6 +926,53 @@ fn question_text_redacted_under_no_text() {
         // A reason is a fixed phrase, kept.
         assert_eq!(structural(&out, 3)["reason"], "explicit");
     }
+}
+
+/// A ClaxBot run's give-up reason and a script call's target are text:
+/// the model's words and whatever the script named.
+#[test]
+fn no_text_hashes_claxbot_reasons_and_call_targets() {
+    let bot = json!({"type": "bot", "on_behalf_of": "u_77c0zz"});
+    let reason = "I could not find the SENTINEL-REASON section";
+    let target = "notes/SENTINEL-TARGET.md";
+    let rows = [
+        row(
+            1,
+            "bot.call",
+            bot.clone(),
+            on("a1", None),
+            json!({"run": "r1", "step": 2, "op": "files.read", "target": target, "ok": true}),
+        ),
+        row(
+            2,
+            "bot.run_end",
+            bot,
+            on("a1", None),
+            json!({"run": "r1", "outcome": "gave_up", "reason": reason, "credits_milli": 5}),
+        ),
+    ];
+    let plain = rendered(&rows, &Redaction::NONE);
+    assert!(!hits(&plain, "SENTINEL-REASON").is_empty());
+    assert!(!hits(&plain, "SENTINEL-TARGET").is_empty());
+    let no_text = rendered(
+        &rows,
+        &Redaction {
+            no_text: true,
+            ..Redaction::NONE
+        },
+    );
+    for needle in ["SENTINEL-REASON", "SENTINEL-TARGET"] {
+        assert!(
+            hits(&no_text, needle).is_empty(),
+            "{needle} survives --no-text"
+        );
+    }
+    let doc = no_text.to_string();
+    for t in [reason, target] {
+        assert!(doc.contains(&text_hash(t)), "{t} is hashed as text");
+    }
+    // The run, step, op and outcome stay.
+    assert!(doc.contains("files.read") && doc.contains("gave_up"));
 }
 
 #[test]

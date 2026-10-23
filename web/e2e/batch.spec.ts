@@ -34,8 +34,11 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.locator(".thread-card").first().evaluate(e => e.scrollIntoView({ block: "end" }));
     const barAboveCards = async () => (await bar.boundingBox())!.y - (await page.locator(".thread-card").first().boundingBox())!.y;
     await expect.poll(barAboveCards, { message: "the selection bar sits at the top of the sidebar" }).toBeLessThan(0);
+    // One live agent of the viewer's: the Send names it and goes at once.
+    // The caret is there for ClaxBot alone, which the daemon lists as a
+    // built-in agent, not configured here (spec 2026-10-21-claxbot §6.4).
     await expect(bar.getByRole("button", { name: "Send 3 to claude" })).toBeVisible();
-    await expect(bar.getByRole("button", { name: "Choose the agent" })).toHaveCount(0);
+    await expect(bar.getByRole("button", { name: "Choose the agent" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Send 4 unsent to claude" })).toBeVisible();
     await bar.getByLabel("Note for the agent (optional)").fill("Before the demo");
     await bar.getByLabel("Note for the agent (optional)").press("ControlOrMeta+Enter");
@@ -74,7 +77,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await openArtifact(page, d.base, aid, 1, mode);
     await panel(page);
     const card = page.locator(`.thread-card[data-thread="${ids[0]}"]`);
-    await expect(card.getByRole("button", { name: "Choose the agent" })).toHaveCount(0);
+    // The caret is ClaxBot's alone, listed and not configured here.
+    await expect(card.getByRole("button", { name: "Choose the agent" })).toBeVisible();
     const sent = page.waitForRequest(r => r.url().endsWith(`/threads/${ids[0]}/send`));
     await card.getByRole("button", { name: /^Send to / }).click();
     expect((await sent).postData() ?? "").not.toContain("\"to\"");

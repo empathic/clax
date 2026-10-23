@@ -27,6 +27,19 @@
   // The people panel's code loads on first open (no await block, as the version menu).
   let Panel: typeof PeoplePanelT | null = $state(null);
   $effect(() => { if (p.s.menu === "people" && !Panel) void import("./PeoplePanel.svelte").then(m => { Panel = m.default; }, () => {}); });
+  // ClaxBot's part loads where it is on for this browser, where the address
+  // names a run, or where the artifact's agents list ClaxBot (`builtin`:
+  // shown disabled with why, and anyone's runs read-only); each listing of
+  // ClaxBot updates what this tab remembers of it.
+  let Bot: typeof import("../bot/ArtifactBot.svelte").default | null = $state(null);
+  let wanted = $state(false);
+  const builtin = $derived(p.s.agents.find(a => a.builtin));
+  void (location.hash.startsWith("#run") ? Promise.resolve(true) : import("../bot/me").then(m => m.botOn())).then(on => { if (on) wanted = true; }, () => {});
+  $effect(() => {
+    const b = builtin;
+    if (b) void import("../bot/me").then(m => m.noteListed(b.live, b.unavailable ?? null), () => {});
+  });
+  $effect(() => { if ((wanted || builtin) && !Bot) void import("../bot/ArtifactBot.svelte").then(m => { Bot = m.default; }, () => {}); });
   // The elapsed clock ticks each second while anyone works.
   const tick = ticker(() => p.s.working.length > 0, () => undefined);
   // The agents as last refetched (they join and end as the stream says), the people as loaded.
@@ -48,6 +61,9 @@
 </button>
 {#if p.s.data.artifact.live?.merged_into && /^[0-9a-z]{12}$/.test(p.s.data.artifact.live.merged_into)}<a class="open-page merged" href={`/a/${p.s.data.artifact.live.merged_into}`}>Merged into {p.s.data.artifact.live.merged_into_url?.replace(/^\w+:\/\//, "") ?? "another page"}</a>{:else if p.s.data.artifact.live && /^https?:\/\//.test(p.s.data.artifact.live.page_url)}<a class="open-page hide-sm" href={p.s.data.artifact.live.page_url} target="_blank" rel="noopener noreferrer">Open page</a>{/if}
 {#if p.s.menu === "people" && Panel}<Panel ctl={p.ctl} s={p.s} onClose={() => p.ctl.closeMenu()} />{/if}
+<!-- ClaxBot's button and run panel, and its line in the Send menu (bot/ArtifactBot.svelte), a chunk of its own,
+     loaded where ClaxBot is on for this browser, the address names a run (`#run`), or the artifact's agents list it. -->
+{#if Bot}<Bot ctl={p.ctl} />{/if}
 
 <style>
   :global {

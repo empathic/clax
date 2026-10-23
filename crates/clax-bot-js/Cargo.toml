@@ -1,0 +1,32 @@
+[package]
+name = "clax-bot-js"
+version.workspace = true
+edition.workspace = true
+license = "GPL-2.0-only OR AGPL-3.0-only"
+description = "ClaxBot's native code-mode sandbox: scripts run in embedded QuickJS with CPU, memory and host-call budgets"
+# Every file in tests/ is a module of the one integration test binary.
+autotests = false
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = "0.1"
+clax-bot-sandbox = { path = "../clax-bot-sandbox" }
+cpu-time = "1"
+futures-channel = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# rquickjs-core over QuickJS with Clax's patch (third_party/, written by
+# scripts/vendor-rquickjs.sh); its library is `rquickjs`.
+clax-rquickjs-core = { path = "../../third_party/clax-rquickjs-core" }
+serde_json.workspace = true
+# The watchdog's timer and the select over the engine, the host and the
+# cancel token: a run needs a tokio runtime with its timer.
+tokio = { workspace = true, features = ["macros", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

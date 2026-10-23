@@ -2100,8 +2100,8 @@ artifact, by handle, as before.
 
 ### Starting an artifact from a brief
 
-The gallery's **New** starts an artifact from a brief in a person's
-browser, for an agent to build: `POST /api/artifacts:new {title, brief}`
+The gallery's **New artifact** tile, first in its grid, starts an
+artifact from a brief in a person's browser, for an agent to build: `POST /api/artifacts:new {title, brief}`
 answers 201 `{artifact, version, url, thread}`. Version 1 is a placeholder
 page that follows the page contract, titled `title` and saying an agent
 has not built it yet; the brief becomes the artifact's first thread, on
@@ -2124,7 +2124,7 @@ artifact was deleted makes a new one); the dialog makes one key per form
 and sends it again when it retries. The same request sent while the first
 is still running waits for it, then answers what it made (within one
 daemon process). A member's artifact cap applies as to a publish (403
-`quota_exceeded`). Every artifact started
+`quota_exceeded`; the cap counts artifacts with a version, so a row a crash left before its first version counts toward none, and a ClaxBot driver removes such rows older than a claim's lease when it starts). Every artifact started
 this way says so to people (not to agents): `brief: {by}` in `GET
 /api/artifacts`, `GET /api/artifacts/<id>`, the page's bootstrap and this
 route's answer, `by` the starter's display name now (`Viewer` without one, as their comments are signed).
@@ -2144,9 +2144,12 @@ artifact is its maker's own, so its live seat is reserved for them (see
 "Live seats and spectators"): a person who is a spectator on another
 artifact starts one, and writes and sends its brief, as anyone does.
 `GET /api/viewers/me` says whether this browser may, in `may_create`,
-and the gallery shows New only then.
+and the gallery shows the tile only then.
 
-New opens a dialog asking for a title and a brief. Once the artifact is
+The tile opens a dialog asking for a name (the title) and a description
+(the brief). Where ClaxBot is on for the person, the dialog's "ClaxBot
+builds it now" switch has ClaxBot build it instead
+(docs/superpowers/specs/2026-10-21-claxbot-design.md §6.4); off, once the artifact is
 made, it lists the live agents the daemon says the brief may be sent to
 (`GET /api/agents?artifact=<aid>`, above), read again every 3 seconds: the
 person's own first, then the owner's, then each other person's, by name.
@@ -5198,9 +5201,23 @@ router), and a test fails when it differs:
 | `GET /a/{aid}/get/` | Denied | yes: 403 `not_for_agents` |
 | `GET /a/{aid}/v/{n}` | Denied | yes: 403 `not_for_agents` |
 | `GET /a/{aid}/{*rest}` | Denied | yes: 403 `not_for_agents` |
+| `GET /admin` | Denied | no |
+| `GET /api/admin/people` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/admin/people/{person}/credits` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/admin/people/{person}/flags` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/admin/people/{person}/role` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/admin/perf/calibrate` | Denied | no |
 | `GET /api/admin/perf/verify` | Denied | no |
+| `GET /api/admin/pricing` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/admin/pricing` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/admin/provider` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/admin/provider` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/admin/provider/key` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/admin/provider/key` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/admin/provider/models` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/admin/provider/test` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/admin/shutdown` | Denied | no |
+| `GET /api/admin/usage` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/agent-read-consents` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/agent-read-consents/{reader}/{source}` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/agent-read-consents/{reader}/{source}` | Denied | yes: 403 `not_for_agents` |
@@ -5242,6 +5259,15 @@ router), and a test fails when it differs:
 | `POST /api/artifacts/{aid}/unsent:drop` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/artifacts/{aid}/versions:restore` | Denied | no |
 | `POST /api/artifacts:new` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/audit` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/audit/{seq}` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/bot/runs` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/bot/runs` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/bot/runs/{id}` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/bot/runs/{id}/cancel` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/bot/runs/{id}/draft/` | Denied | no |
+| `GET /api/bot/runs/{id}/draft/{*path}` | Denied | no |
+| `GET /api/bot/runs/{id}/events` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/client-imports/{key}` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/core/trim` | Denied | no |
 | `GET /api/drafts` | Denied | no |
@@ -5289,6 +5315,11 @@ router), and a test fails when it differs:
 | `POST /api/live/snapshots` | Denied | no |
 | `POST /api/live/threads` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/live/threads/{tid}/move` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/me/bot` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/me/bot` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/me/bot/key` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/me/bot/key` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/me/usage` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/people` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/people/invites` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/people/invites` | Denied | yes: 403 `not_for_agents` |
@@ -5327,6 +5358,8 @@ router), and a test fails when it differs:
 | `PUT /api/sample/key` | Denied | no |
 | `DELETE /api/sessions/{id}/live-watches` | Denied | no |
 | `PUT /api/sessions/{id}/live-watches` | Denied | no |
+| `GET /api/settings` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/settings` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/stream` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/stream/{id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/token` | Denied | no |
@@ -5341,6 +5374,7 @@ router), and a test fails when it differs:
 | `PUT /api/viewers/me/presence` | Denied | no |
 | `GET /api/viewers/me/seen` | Denied | no |
 | `PUT /api/viewers/me/seen` | Denied | no |
+| `GET /audit` | Denied | no |
 | `GET /c/{aid}/draft/{agent}/{token}` | Denied | yes: 403 `not_for_agents` |
 | `GET /c/{aid}/draft/{agent}/{token}/` | Denied | yes: 403 `not_for_agents` |
 | `GET /c/{aid}/draft/{agent}/{token}/{*path}` | Denied | yes: 403 `not_for_agents` |
@@ -5352,7 +5386,9 @@ router), and a test fails when it differs:
 | `GET /inbox` | Denied | no |
 | `ANY /mcp` | Denied | no |
 | `POST /mcp/json` | Denied | no |
+| `GET /me` | Denied | no |
 | `GET /people` | Denied | no |
+| `GET /settings` | Denied | no |
 | `GET /tags` | Denied | no |
 <!-- route-table:end -->
 
@@ -7362,6 +7398,25 @@ Either layer appends `standdown mode=<hook|mcp> agent=claude host=grok` to
 
 ### `config.toml`
 
+A home's configuration is layered (`clax_core::config`, read with
+figment): each value is the built-in default, overridden by the home's
+`config.toml`, overridden by an environment variable named
+`CLAX_<TABLE>__<KEY>`, a double underscore for each level of nesting
+(`CLAX_SERVE__PORT`, `CLAX_SAMPLE__MAX_TOKENS`,
+`CLAX_BOT__MODELS__DEFAULT`). Only names in capitals with at least one `__`
+are settings, so `CLAX_HOME`, `CLAX_PORT`, `CLAX_BIN`, `CLAX_TOKEN` and the
+other variables Clax reads keep their own meaning, and no variable sets
+the top-level `bin`. `[hosted]` is read from `config.toml` only: a
+`CLAX_HOSTED__*` variable is ignored, with a logged warning and a `clax
+doctor` `config_tables` warning, since hosted mode decides who can reach
+the daemon. A variable's value takes its setting's type: verbatim for a
+string setting (`CLAX_BOT__MODELS__DEFAULT=123` is the model ID `"123"`),
+else read as a TOML value (`7481`, `true`); an empty one counts as unset,
+and a variable whose name or value is not UTF-8 is never read. A value from a variable that its
+table refuses is an error naming the variable instead of the file. Each
+table is read on its own: one that does not check turns off, or leaves at
+its defaults, only what it configures.
+
 A home's `config.toml` may set the port a daemon started for that home
 listens on:
 
@@ -7370,8 +7425,9 @@ listens on:
 port = 7481
 ```
 
-Without it the port is 7480. The `CLAX_PORT` environment variable overrides
-the file, and `--port` overrides both; an empty `CLAX_PORT` counts as unset.
+Without it the port is 7480. `CLAX_SERVE__PORT` overrides the file,
+the `CLAX_PORT` environment variable overrides both, and `--port`
+overrides all three; an empty `CLAX_PORT` counts as unset.
 A `config.toml` that does not parse, or a port that is not an integer in
 1..=65535, is an error naming the file (`bad_config`), and a `CLAX_PORT`
 that is not such a port is an error naming the variable, never a silent
@@ -7435,6 +7491,92 @@ When the variable is unset, sample is off and `use("sample")` resolves `null`.
 
 The `[questions]` table sets how long a mirrored `AskUserQuestion` waits in
 Clax (see "Agent questions").
+
+The `[bot]` table configures ClaxBot, Clax's own agent (spec
+`docs/superpowers/specs/2026-10-21-claxbot-design.md` §8). Every key is
+optional; the defaults are:
+
+```toml
+[bot]
+enabled = true                  # the instance may run ClaxBot at all
+api_key_env = "ANTHROPIC_API_KEY"
+base_url = "https://api.anthropic.com"
+max_tokens = 32000              # 1 to 1,000,000
+max_steps = 40                  # per run; 1 to 10,000
+max_run_credits = 200           # per run; at least 1
+max_run_minutes = 30            # per run; 1 to 1,440
+concurrency = 4                 # runs at once; 1 to 64
+per_person_concurrency = 1      # one person's runs at once; 1 to 64
+free_weekly_credits = 2000
+credit_price_micro_usd = 10000  # at least 1
+
+[bot.models]
+default = "claude-sonnet-5-5"
+quick = "claude-haiku-5-5"
+complex = "claude-opus-5-5"
+
+[bot.script]
+cpu_ms = 2000                   # 1 to 600,000
+memory_mib = 64                 # 1 to 4,096
+max_calls = 200                 # 1 to 100,000
+```
+
+A `[bot]` table that is invalid (not a table, an unknown key, a mistyped
+value, an empty `api_key_env` or model ID, a `base_url` refused as
+`[sample]`'s is, or a value outside the range above) turns ClaxBot off and
+the daemon starts anyway. `clax doctor` prints a `config_tables` line that
+warns for an invalid `[toolpath]`, `[questions]` or `[bot]`.
+
+#### Settings
+
+The local daemon serves its configuration to the owner, for the settings
+screen:
+
+| Route | Caller | Body | Answer |
+|---|---|---|---|
+| `GET /api/settings` | the owner (token or owner browser) and admins | — | `{file, fields: [{key, value, source, pending?, note?, editable, restart_required, env}], problems: [{table, message}], started_with_invalid_config, start_error}` |
+| `PUT /api/settings` | the owner and admins; SameOrigin | `{set: {<key>: <value> \| null}}` | the same, plus `{written, restart_required}` |
+
+`fields` holds `bin` and every key that has a default (`serve.port`,
+`sample.*`, `toolpath.*`, `questions.terminal_after_s`, `bot.*`), keys
+dotted. `value` and `source` are what the running daemon read when it
+started, the values in effect; `pending`, present only when it differs,
+is what the file and environment give now, which the daemon takes at its
+next start. `serve.port`'s `value` is the port the daemon listens on, with
+a `note` when `--port`, `CLAX_PORT` or the next free port chose it over the
+configured one. When the file did not read at the start,
+`started_with_invalid_config` is true and `start_error` says why: the values
+in effect are then the defaults (and the environment). `source` is
+`default`, `file` or `env:<NAME>`; `env` is the variable that would set the
+key. A key the environment sets is not
+`editable`, nor is `bin` (`clax bin set` writes its one line). `problems`
+names each table that does not check, with the message its reader gives.
+`PUT` writes each value into `config.toml` with `toml_edit`, keeping the
+file's comments, order and `bin` line, and replaces the file in one
+rename of a file made beside it with the old file's mode (0600 for a new
+one) and synced first; when `config.toml` is a symbolic link, the file it
+points to is replaced and the link kept, and a link to nothing is 409
+`config_symlink_dangling` (nothing written). `clax bin set` writes the
+file the same way. Null removes the key, so its
+default applies; `written` lists the keys in key order. Nothing is written
+when one change is refused: 400 `unknown_setting`, `not_editable`,
+`set_by_env` (naming the variable) or `invalid_value` (a value that is not
+a string, boolean or number, or that leaves its table failing its check,
+with the check's message), or `bad_config` for a file that does not parse.
+`restart_required` is true when a written key is read only when the daemon
+starts, as every key is today: the running daemon keeps the values it
+started with. The owner's agents get 403 `not_for_agents`, a connected
+person 403 `forbidden`, another machine's agents 403; a hosted daemon
+answers 404, as it has no `config.toml` to show.
+
+An admin who is not the owner gets every field but may set only `bot.*`
+and `questions.*`; the rest (`bin`, every `*_env` field, `serve.*`,
+`sample.*`, `hosted.*`, `toolpath.*`) reads `editable: false` for them and
+a `PUT` naming one is 403 `owner_only`, nothing written; `bot.base_url`
+is among them, as the environment's instance key goes to a configured
+base URL. A `PUT` that
+changes `bot.base_url` clears the stored instance key, recorded as
+`admin.key {op: clear}`: the key is sent only to the URL it was set under.
 
 `clax doctor` prints a `sample` line: the daemon's provider (for `anthropic`,
 the variable its key came from) and its daily cap, or why sample is off.
@@ -7801,12 +7943,43 @@ the body below.
 | `tag.create` | `tag_id, name, colour, description` | a tag made |
 | `tag.update` | `tag_id, fields{name?, colour?, description?}` | a tag renamed, recoloured or redescribed |
 | `tag.delete` | `tag_id, name, artifacts` (how many carried it) | a tag deleted, and so removed from every artifact |
+| `bot.run_start` | `run, request (thread\|brief), thread_ids[], model, key_source (instance\|own)` | a ClaxBot run made, on its artifact |
+| `bot.turn` | `run, step, model, key_source (instance\|own), input_tokens, cached_tokens, output_tokens, stop_reason, credits_milli` | a model turn's step committed |
+| `bot.script` | `run, step, title, code_sha256, calls[op], cpu_ms, mem_peak, credits_milli, error` (the code itself is in the run's step, never the body) | a script's step committed |
+| `bot.call` | `run, step, op, target, ok` | every API op a script called, reads included, with its step |
+| `bot.run_end` | `run, outcome (finished\|gave_up\|stopped), reason, credits_milli` (the run's total) | a run's terminal step committed |
+| `bot.cancel` | `run, by` (the person key of who asked) | someone asked a queued or running run to stop |
+| `view.run` | `run` | someone opened a run's panel |
+| `view.admin` | `page, subject_person?` | an admin page opened |
+| `view.audit` | `filters` | the audit view opened or filtered |
+| `view.usage` | `subject_person, week?` | a usage page opened |
+| `admin.role` | `person, role (admin), op (grant\|remove)` | the owner granted or removed admin |
+| `admin.flag` | `person, flag (claxbot\|claxbot_unenforced), value` | a flag changed |
+| `admin.credits` | `person, lift_from, lift_to, reason` | a person's weekly lift changed |
+| `admin.provider` | `fields[]` (the setting keys that changed), `values{key: value}` (their new values; none is a secret) | ClaxBot's provider, models or caps changed |
+| `admin.key` | `scope (instance\|own), op (set\|clear\|use_own), last4, person?` (an own key's person), `value` (with `use_own`: whether the key is now in use) | a model key set or cleared, or an own key put in or out of use; never the key |
+| `admin.cost_line` | `line, op (create\|update\|delete), fields{label?, unit?, cost_micro_usd?, margin_bp?, fixed_credits_milli?, applies?, source?, model?}`; `line` `*instance` with `fields{credit_price_micro_usd?, free_weekly_milli?}` for the price and free tier | a cost line or the instance's pricing changed |
 
 A system actor's event about someone names them in `body.for_actor`.
-Presence, heartbeats, later delivery tiers, stream subscriptions, reads
-other than tool calls, extension credential grants, a joined site's
-last-used marks, inbox items and read marks, and daemon start and stop are
-not recorded.
+Besides changes, these reads and views are recorded: every API op a
+ClaxBot script calls (`bot.call`, reads included), a request to stop a run (`bot.cancel`),
+and opening a run, an admin page, the audit view or a usage page
+(`view.*`). Presence,
+heartbeats, later delivery tiers, stream subscriptions, other reads (a
+person's or an agent's own reads, except through tool calls),
+extension credential grants, a joined site's last-used marks, inbox items
+and read marks, and daemon start and stop are not recorded.
+
+The audit view reads these events through kind groups: `views`
+(`view.*`), `bot` (`bot.*`), `admin` (`admin.*`), `credits`
+(`admin.credits`, `admin.cost_line`) and `changes` (every other kind).
+An admin (the owner included) reads every event; anyone else reads the
+events they acted in (as themselves, through their agents, or through
+ClaxBot acting for them), the events on artifacts they made, the events
+on an artifact shared with them while the share held (from the
+`artifact.update` that set it to the one that removed it or to the
+person's revocation, or, for the share as it is now, from when it was
+made, unless revoked since), and the events of runs acting for them.
 
 **The backfill.** A home's first start under migration 23 records its
 existing history once, before the daemon serves (the `install` row
@@ -7832,6 +8005,7 @@ taken from the request's identity and session:
 | the owner | `human:clax-owner` | `name` "Clax owner"; identity `{system: "clax", id: "<install ID>/<public ID>"}` |
 | a LAN viewer | `human:clax-viewer/<public ID>` | `name` the display name (none under `--no-names`); identity `{system: "clax", id: "<install ID>/<public ID>"}` |
 | an anonymous viewer | `human:clax-anonymous` | `name` "Anonymous viewer" |
+| ClaxBot acting for a person | `agent:claxbot/<person>` (`agent:claxbot/owner` for the owner) | `name` "ClaxBot"; identity `{system: "clax-person", id: "<install ID>/<person key>"}`; the actor is `{"type": "bot", "on_behalf_of": "<public ID>\|*owner"}` |
 | Clax itself | `tool:clax/<recording version>` | `name` "Clax"; identity `{system: "clax-build", id: <commit>}`; the reason (`ttl`, `rule`, `backfill`, `daemon`) is `meta.clax.system_reason` |
 
 The provider is `claude-code` for the `claude` harness; every other harness
@@ -8125,6 +8299,210 @@ and every export is a Toolpath document that validates against Toolpath's
 golden documents under `crates/clax-core/tests/toolpath/expected/` against
 it with Ajv (draft 2020-12, formats asserted;
 `web/scripts/toolpath-schema.test.ts`).
+
+## ClaxBot credits and runs in the store
+
+Migration 50 holds what ClaxBot (spec
+`docs/superpowers/specs/2026-10-21-claxbot-design.md`) needs in `clax.db`.
+People are named in every one of its tables by a **person key**: a
+connected person's public ID, or `*owner` for the owner whatever the
+owner's public ID is.
+
+- **Roles** (`person_roles`): the owner is always an admin and has no
+  row; only the owner grants or removes `admin`, recorded as `admin.role`.
+  A revoked person is a member, whatever row is left.
+- **Flags** (`person_flags`): `claxbot` (on for the owner, off for anyone
+  else until set) and `claxbot_unenforced` (off); other names are refused
+  (`unknown_flag`). Each change is an `admin.flag`.
+- **Settings** (`bot_settings`): `base_url`, `models.default|quick|complex`,
+  `max_tokens`, `max_steps`, `max_run_credits`, `max_run_minutes`,
+  `concurrency`, `script.cpu_ms|memory_mib|max_calls`,
+  `credit_price_micro_usd` (default 10 000) and `free_weekly_milli`
+  (default 2 000 000), each checked; a key with no row has its default.
+- **Sealed secrets** (`sealed_secrets`): the instance key and each
+  person's own key, XChaCha20-Poly1305 under a 32-byte key-encryption key
+  (locally `<home>/secrets/kek`, 0600, made on first use and never
+  replaced; on the Worker its `CLAX_KEK` secret), a fresh 24-byte nonce per
+  sealing, the slot bound as associated data. The KEK file is written
+  complete in a temporary directory that is then renamed to `secrets`, so
+  no reader sees a partial key, and racing makers agree on one. Reads give `last4`,
+  `set_at`, `set_by`, `last_ok_at` and `use_own`, never the key.
+
+**Units.** No floats anywhere in credits: credits are integer
+milli-credits, money integer micro-USD, margins integer basis points. A
+cost line (`cost_lines`) prices one line unit, and a usage row's `qty` is
+in that unit's base:
+
+| Unit | Line unit | Base of `qty` |
+|---|---|---|
+| `mtok_input`, `mtok_cached_input`, `mtok_cache_write`, `mtok_output` | 10^6 tokens | tokens |
+| `cpu_gb_s` | 1 GiB × 1 s of script CPU | MiB·ms (1 024 000 to the unit) |
+| `mreq` | 10^6 requests | requests |
+| `gb_month` | 1 GiB for 30 days | bytes·s |
+| `run` | one run | runs |
+
+A row's credits are ⌈`qty` × cost × (1 + margin) ÷ (credit price × base)⌉
+milli-credits, computed exactly in integers and rounded up once per row,
+or ⌈`qty` × `fixed_credits_milli` ÷ base⌉ for a line with fixed credits
+(the per-run harness fee); its cost is ⌈`qty` × cost ÷ base⌉. The
+credits per line unit the admin pages show are rounded up for display and
+never charged from. The arithmetic is checked: a charge too large for its
+integers is refused (`charge_overflow`), and a cost line's cost is at most
+10^10 micro-USD per unit, its margin at most 1 000 000 bp and its fixed
+credits at most 10^9 milli-credits. Each usage row (`usage_rows`) snapshots those exact
+inputs (cost per unit, margin, fixed credits, credit price, base), so
+changing a line or the price never reprices history. Each model is seeded
+with input, cached input (cache read), cache-write (5-minute writes, 1.25
+times input) and output lines; a run is refused (`model_not_priced`) on a
+model missing any of them until an admin prices it, and a line a run that
+has not ended may charge cannot be deleted (`cost_line_in_use`). Usage is
+charged only with a run step's commit. A line that applies to the instance key only (the
+token lines) writes its rows with cost and credits 0 on a person's own key;
+lines that apply always (compute, requests, storage, the fee) charge on
+either key. A week runs from Monday 00:00 UTC to the next; a person's
+weekly credits are `free_weekly_milli` plus their lift (`credit_lifts`,
+set by admins, recorded as `admin.credits`); a row's `free_milli` is the
+part of it that fell within them, the rest being paid. A row marked
+`absorbed` keeps its cost and charges no credits: a model call a step made
+again (after a crash, a lost claim or a cut stream), whose cost the
+instance bears; the usage report sums them as `absorbed_micro_usd`. Such a
+call's rows are priced at the rates it was made at (snapshotted with its
+observed usage), and its output, which the provider reports only at a
+stream's end, is at least its streamed text, thinking and tool input
+counted at 3 bytes a token (the row is marked `estimated`).
+
+**Runs** (`bot_runs`, `bot_steps`, `bot_draft_files`, `bot_calls`): a run
+an agent sent keeps that agent's grant (`agent_grant`), and every write and
+read it makes takes the person's rights narrowed by the grant, refused once
+the grant ends. A run made by a send is made in the transaction that checks
+no other run that has not ended names one of its threads
+(`create_run_exclusive`); otherwise the route answers 409 `run_active`
+with that run's ID (`{error: {code, message, run: {id}}}`). A run
+is `queued`, then `running` once a driver claims it, and ends `finished`,
+`gave_up`, `stopped` or `failed` (a step whose commit kept failing); a
+cancel makes it `stopping` until its `stopped` step. Each step
+is begun and then committed, its payload, usage rows, draft changes and
+audit events in one transaction; a step begun and not committed is
+executed again on resume, its `attempt` one more (1 when first begun), so
+the run's live events (`<step>.<attempt>:<seq>`) never repeat an ID. Steps are fenced: a driver begins and commits a
+step only while it holds the run's claim (taken over by another driver
+once its lease lapses, renewed during a long turn) and names the step it
+expects; otherwise it is refused (`run_not_claimed`, `step_mismatch`).
+A driver ID (`drv_<ULID>`, `DriverId::mint`) is unique per process on a
+local daemon (minted when the daemon starts) and per Durable Object
+incarnation on the hosted Worker (minted when the instance object is
+constructed), and never reused. A person's revocation ends, in the audit
+view, the period of every share they held, even when they connect again
+under the same public ID; a share set again starts a new one. A run's draft is an overlay of the paths it
+wrote or deleted on the version it was based on. While a model call
+streams, its usage is recorded on the open step, attempt by attempt, so a
+call that never commits is still accounted for. A step's journal
+(`bot_calls`) holds every call its scripts made (its place, op, the
+SHA-256 of its arguments, its answer); a write is journaled in the
+transaction that makes it (the store's journaled write paths:
+`add_comment_journaled`, `resolve_thread_journaled`, `doc_*_journaled`,
+`publish_version_journaled`, `create_artifact_journaled`,
+`with_bot_journal`), each running a guard in that transaction that
+re-checks the acting person may still write, and a step run again is
+answered from its journal, never writing twice. A journal entry is made
+only for the driver holding the run (`call_entry`). A step keeps the time it was first begun
+through its later attempts. A run a driver let wait (a stalled sandbox's
+backoff, a model retry) records when it is due (`due_at`), and a driver
+that starts later waits it out; a cancel wakes it all the same.
+
+Changing `base_url` clears the stored instance key (recorded as
+`admin.key {op: clear}`, and `key_cleared: true` on the `admin.provider`
+event): a key is never sent to a host other than the one it was entered
+for. The provider test and model listing report a failure in the
+client's own words, its kind and HTTP status, never text from the
+provider's answer.
+
+**On the hosted Worker** (`crates/clax-worker`, `src/bot.rs`) runs are
+the same, with these differences:
+
+- The settings are the database's alone (the admin pages); there is no
+  `[bot]` table and no `api_key_env`, so the instance key is the stored
+  one.
+- `base_url`, on the Worker and on any hosted server, takes only
+  `https://` to a public DNS name: an IP address of any kind, `localhost`,
+  a single-label name and names under `.local`, `.internal`, `.lan`,
+  `.home.arpa`, `.localdomain`, `.intranet` or `.corp` are refused 400
+  `invalid_setting`. (A local daemon also takes `http://` on a loopback
+  host.)
+- The key-encryption key is the Worker secret `CLAX_KEK`, 64 hex digits,
+  which `deploy.mjs` makes once and never rotates. Without it (or with a
+  malformed one) no key is stored or opened: the key routes answer 503
+  `no_kek` and a send to ClaxBot is refused `not_configured`; the rest of
+  the instance serves as usual.
+- Every step also charges the `do.requests` line (one request, plus one
+  per script call) and the `toolpath.storage` line (the step's payload
+  bytes kept for 30 days), on either key.
+- Script compute is metered as the time the script's isolate was busy
+  (the platform reports no CPU time to the instance), where the daemon
+  meters the script thread's CPU time (wall time on a platform without a
+  thread clock); both charge it at the configured
+  memory limit. The isolate's own memory limit is the platform's 128 MiB
+  whatever is configured.
+- Runs are driven from the instance object's alarm, at most about ten
+  minutes of wall time an alarm; a turn starts only with at least
+  `min_turn_budget` (60 s) of an alarm left, and otherwise waits, uncharged,
+  for the next alarm, which is due at once.
+
+## ClaxBot routes
+
+The shapes are spec 2026-10-21-claxbot-design §10's, word for word; this
+section says who reaches each and what each records. Every error is
+`{error: {code, message}}`. People are named by person key (a connected
+person's public ID, or `*owner`), URL-encoded in a path
+(`/api/admin/people/%2Aowner/flags`); actors (`actor`, `on_behalf_of`, a
+key's `set_by`, a run's `acting_for`) are `{id, name}`: a person key with
+the person's name, `agent:claxbot` as ClaxBot, another agent by its
+handle, `*system` as "Clax".
+
+| Route | Who | Records |
+|---|---|---|
+| `GET /api/me/bot`, `PUT /api/me/bot {use_own}`, `PUT`/`DELETE /api/me/bot/key` | the owner and connected people, their own | `admin.key` (scope `own`) |
+| `GET /api/me/usage?week=` | the same | `view.usage` |
+| `GET /api/agents` | as before; ClaxBot is listed first (`handle: "claxbot"`, `builtin: true`, `live`, or `unavailable: no_flag\|no_credits\|not_configured\|model_not_priced`) where the caller may send | — |
+| `POST /api/bot/runs {thread_ids, artifact_id}`; a send or batch with `to: "claxbot"`; `POST /api/artifacts:new` with `build: "claxbot"`; a person's comment on a thread whose last run ended | the sender (a person, or their agent: the run acts for that person); SameOrigin | `bot.run_start`, or `bot.refused` and 403 `no_flag`, `credits_exhausted`, `not_configured` or `model_not_priced` before any model call |
+| `GET /api/bot/runs?artifact=`, `GET /api/bot/runs/<id>`, `GET /api/bot/runs/<id>/events` | the person a run acts for, admins, and anyone who may read its artifact (read-only); a live page's runs the owner's alone | `view.run` |
+| `POST /api/bot/runs/<id>/cancel`, `GET /api/bot/runs/<id>/draft/<path>` | the person it acts for and admins (403 `not_permitted`, a draft 404) | `bot.cancel` |
+| `GET /api/admin/people`, `PUT …/<person>/flags`, `…/credits` | admins | `view.admin {page: people}`, `admin.flag`, `admin.credits` |
+| `PUT /api/admin/people/<person>/role {role}` | the owner alone (403 `owner_only`); the owner's own role 400 `owner_role` | `admin.role` |
+| `GET`/`PUT /api/admin/provider`, `PUT`/`DELETE …/key`, `POST …/test`, `GET …/models` | admins | `view.admin {page: provider\|provider.test\|provider.models}`, `admin.provider`, `admin.key` (scope `instance`) |
+| `GET`/`PUT /api/admin/pricing`, `GET /api/admin/usage?week=` | admins | `view.admin {page: pricing\|usage}`, `admin.cost_line` |
+| `GET /api/audit?…`, `GET /api/audit/<seq>` | admins every event, anyone else their scope (Toolpath journal, "Kinds"); a live page's events the owner's alone | `view.audit {filters}` |
+| `GET /api/toolpath/export` | the owner, and admins (live pages refused) | — |
+
+Admins are the owner (on a hosted daemon, the `OWNER_GITHUB` account) and
+the people the owner made admins. Agents get 403 `not_for_agents` on every
+route above but the sends (an agent of another machine gets the grant
+gate's 403 `forbidden`), no credential 401, a LAN viewer or a member on an
+admin route 403 `forbidden`. A key is write-only: no answer, event or log
+carries it, only `{set, last4, set_at, set_by, last_ok_at}`; without a
+key-encryption key the key routes answer 503 `no_kek`. A view is recorded
+at most once in five minutes per viewer and subject.
+
+On the local daemon `[bot]` in `config.toml` (or a `CLAX_BOT__*` variable)
+is laid over the settings the admin pages store, on every read, the
+credit arithmetic included: `/api/admin/provider`'s `sources` say
+`default`, `db`, `file` or `env:<NAME>` per field, and a stored write to a
+field the configuration sets is 409 `setting_overridden`. The instance key
+in `[bot] api_key_env`'s variable takes precedence over a stored one
+(`sources.key` `env:<NAME>`) while the base URL in effect is the owner's
+(the default, `config.toml` or the environment): with a `base_url` the
+admin pages stored, the variable's key is never sent, and the instance
+key is the stored one alone. In `/api/settings`, `bot.base_url` is the
+owner's to write, like every `*_env` field. An invalid `[bot]` turns ClaxBot off.
+
+A run's events (`text/event-stream`) carry SSE IDs
+`<step>.<attempt>:<seq>`; with `Last-Event-ID` the stream replays every
+later event (committed steps rebuilt from the store, then the open
+attempt's live tail), then the live ones, and ends after `run_end`. The
+daemon drives runs itself (four at once by default) and takes over, when
+it starts, the runs a previous process left. A build without the
+`native-sandbox` feature (the crates.io package) answers every script
+`unavailable`.
 
 ## Security model
 

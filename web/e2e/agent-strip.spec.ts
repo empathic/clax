@@ -105,8 +105,9 @@ test("the inbox groups by agent, threads name their owners and wait for approval
     const card = o.locator(`.thread-card[data-thread="${tid}"]`);
     await card.getByRole("button", { name: "Choose the agent" }).click();
     const menu = card.getByRole("menu");
-    await expect(menu.getByRole("group")).toHaveCount(2);
-    await expect(menu.locator(".send-group-h")).toHaveText(["Your agents", "Sam's agents"]);
+    // ClaxBot, Clax's own agent, is listed first for the owner, under Clax.
+    await expect(menu.getByRole("group")).toHaveCount(3);
+    await expect(menu.locator(".send-group-h")).toHaveText(["Clax", "Your agents", "Sam's agents"]);
     expect((await menu.getByRole("group", { name: "Your agents" }).locator(".send-name").allTextContents()).sort()).toEqual(["claude", "codex"]);
     const samItem = menu.getByRole("group", { name: "Sam's agents" }).getByRole("menuitemradio");
     await expect(samItem.locator(".send-name")).toHaveText("sam-notes");

@@ -1178,7 +1178,18 @@ pub fn guest_need(method: &Method, path: &str, query: Option<&str>) -> GuestNeed
     };
     let segs: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     match segs.as_slice() {
-        [""] | ["inbox"] | ["people"] | ["tags"] if get => Gallery,
+        [""]
+        | ["inbox"]
+        | ["people"]
+        | ["tags"]
+        | ["admin"]
+        | ["settings"]
+        | ["me"]
+        | ["audit"]
+            if get =>
+        {
+            Gallery
+        }
         ["a", aid, ..] if get => at(aid, RightType::Artifacts, "read", false),
         ["api", "artifacts"] if get => match query_artifact() {
             Some(aid) => at(&aid, RightType::Artifacts, "read", false),
@@ -2132,6 +2143,10 @@ mod tests {
             (Method::GET, "/people", None, Gallery),
             (Method::GET, "/inbox", None, Gallery),
             (Method::GET, "/tags", None, Gallery),
+            (Method::GET, "/admin", None, Gallery),
+            (Method::GET, "/settings", None, Gallery),
+            (Method::GET, "/me", None, Gallery),
+            (Method::GET, "/audit", None, Gallery),
             (
                 Method::GET,
                 "/a/7q3k9mzx2b4t",

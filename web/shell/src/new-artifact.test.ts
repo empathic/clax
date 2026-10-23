@@ -1,14 +1,19 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { meBot, week } from "./bot/fixtures";
+import { forget } from "./bot/me";
+import NewTile from "./ui/NewTile.svelte";
 import { dispatchTrusted } from "../../bridge/test/trusted";
 import { settle, stubFetch } from "./people/fixtures";
 import { flush, mount } from "./test/svelte";
 import NewArtifactDialog from "./ui/NewArtifactDialog.svelte";
+import { forgetViewer } from "./ui/may-create";
 import { connectPrompt, formProblem, MAX_TITLE, pickGroups, type ListedAgent } from "./view/new-artifact";
 
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
 const type = (el: HTMLInputElement | HTMLTextAreaElement, text: string) => flush(() => { el.value = text; el.dispatchEvent(new Event("input", { bubbles: true })); });
 const submit = (root: Element) => flush(() => { root.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
 
+beforeEach(() => { forget(); });
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); document.body.replaceChildren(); });
 
 describe("formProblem", () => {
@@ -220,6 +225,81 @@ describe("NewArtifactDialog", () => {
     expect(keys[0]).toBeTruthy();
     expect(keys[1]).toBe(keys[0]);
     expect(keys[2]).not.toBe(keys[1]);
+  });
+});
+
+describe("the New dialog with ClaxBot", () => {
+  beforeEach(() => { forget(); });
+  const fill = (m: { root: HTMLElement }) => {
+    type(m.root.querySelector<HTMLInputElement>("#na-name")!, "Grocery splitter");
+    type(m.root.querySelector<HTMLTextAreaElement>("#na-brief")!, "Split a grocery receipt");
+  };
+
+  it("names its fields Name and Description, and with ClaxBot available builds at once and opens the run", async () => {
+    const calls = stubFetch({ "GET /api/me/bot": meBot({ week: week({ spent_milli: 310_000 }) }), "POST /api/artifacts:new": [201, { ...started, run: { id: "r1" } }] });
+    const assign = vi.fn();
+    (await import("./nav")).nav.assign = assign;
+    const m = mount(NewArtifactDialog, { me: { owner: true }, onClose: vi.fn() });
+    await settle();
+    expect([...m.root.querySelectorAll("label")].map(l => l.textContent)).toEqual(["Name", "Description"]);
+    const sw = m.root.querySelector<HTMLElement>('[role="switch"][aria-label="ClaxBot builds it now"]')!;
+    expect(sw.getAttribute("aria-checked")).toBe("true");
+    expect(m.root.querySelector("#na-bot-l")!.textContent).toContain("You have 1,690 credits left this week.");
+    expect(m.root.querySelector('button[type="submit"]')!.textContent).toBe("Create and build");
+    fill(m);
+    submit(m.root);
+    await settle();
+    expect(calls.find(c => c.url === "/api/artifacts:new")!.body).toEqual({ title: "Grocery splitter", brief: "Split a grocery receipt", build: "claxbot" });
+    expect(assign).toHaveBeenCalledWith("/a/abc#run=r1");
+  });
+
+  it("switched off, makes the artifact as before and asks who builds it", async () => {
+    const calls = stubFetch({ "GET /api/me/bot": meBot(), "POST /api/artifacts:new": [201, started], "GET /api/agents?artifact=abc": { agents: [{ handle: "claxbot", name: "ClaxBot", person: null, live: true, builtin: true }, { handle: "a_mine", name: "clax", person: null, live: true }] } });
+    const m = mount(NewArtifactDialog, { me: { owner: true }, onClose: vi.fn() });
+    await settle();
+    click(m.root.querySelector('[role="switch"]')!);
+    expect(m.root.querySelector('button[type="submit"]')!.textContent).toBe("Create");
+    fill(m);
+    submit(m.root);
+    await settle();
+    expect(calls.find(c => c.url === "/api/artifacts:new")!.body).toEqual({ title: "Grocery splitter", brief: "Split a grocery receipt" });
+    expect(m.root.querySelector("h2")!.textContent).toBe("Who builds it?");
+    // ClaxBot is the switch's, not one of the agents picked here.
+    expect([...m.root.querySelectorAll("button.agent .nm")].map(n => n.textContent)).toEqual(["clax"]);
+  });
+
+  it("unavailable, shows the switch off and disabled with why; without ClaxBot, no switch at all", async () => {
+    stubFetch({ "GET /api/me/bot": meBot({ available: false, unavailable_reason: "no_credits", week: week({ spent_milli: 2_000_000, exhausted: true }) }) });
+    let m = mount(NewArtifactDialog, { me: { owner: true }, onClose: vi.fn() });
+    await settle();
+    const sw = m.root.querySelector<HTMLElement>('[role="switch"]')!;
+    expect([sw.getAttribute("aria-checked"), sw.getAttribute("aria-disabled")]).toEqual(["false", "true"]);
+    expect(m.root.querySelector("#na-bot-l")!.textContent).toContain("Weekly credits used · resets Mon Oct 26.");
+    m.unmount();
+    forget();
+    stubFetch({});
+    m = mount(NewArtifactDialog, { me: { owner: true }, onClose: vi.fn() });
+    await settle();
+    expect(m.root.querySelector('[role="switch"]')).toBeNull();
+  });
+});
+
+describe("the New artifact tile", () => {
+  beforeEach(() => { forget(); forgetViewer(); });
+  it("shows for a browser that may create, says ClaxBot can build it, and opens the dialog", async () => {
+    stubFetch({ "GET /api/viewers/me": { viewer: { public_id: "p_owner", owner: true }, may_create: true }, "GET /api/me/bot": meBot() });
+    const m = mount(NewTile, {});
+    await settle();
+    const tile = m.root.querySelector<HTMLButtonElement>('button[aria-label="New artifact"]')!;
+    expect(tile.textContent).toContain("Name it; ClaxBot can build it");
+    click(tile);
+    await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).not.toBeNull());
+  });
+  it("is not offered to a browser that may not create", async () => {
+    stubFetch({ "GET /api/viewers/me": { viewer: null, may_create: false } });
+    const m = mount(NewTile, {});
+    await settle();
+    expect(m.root.querySelector("button")).toBeNull();
   });
 });
 

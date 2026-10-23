@@ -1,0 +1,145 @@
+--- a/quickjs/quickjs.c	2026-10-21 21:26:57
++++ b/quickjs/quickjs.c	2026-10-21 21:26:57
+@@ -372,6 +372,9 @@
+     JSValue current_exception;
+     /* true if inside an out of memory error, to avoid recursing */
+     bool in_out_of_memory;
++    /* clax: set once an allocation has failed; every later poll of the
++       interrupt handler then interrupts (see JS_ThrowOutOfMemory). */
++    bool clax_out_of_memory;
+     /* true if inside build_backtrace, to avoid recursing */
+     bool in_build_stack_trace;
+     /* true if inside JS_FreeRuntime */
+@@ -553,7 +556,10 @@
+ 
+ /* must be large enough to have a negligible runtime cost and small
+    enough to call the interrupt callback often. */
+-#define JS_INTERRUPT_COUNTER_INIT 10000
++/* clax: 100, not 10000, so that a script whose loop body is a few heavy
++   builtin calls still reaches the interrupt handler (its CPU budget) soon
++   after the budget runs out. */
++#define JS_INTERRUPT_COUNTER_INIT 100
+ 
+ struct JSContext {
+     JSGCObjectHeader header; /* must come first */
+@@ -8559,6 +8565,13 @@
+         JS_ThrowInternalError(ctx, "out of memory");
+         rt->in_out_of_memory = false;
+     }
++    /* clax: running out of memory ends the script. The error cannot be
++       caught, and the next poll (forced to come at once) and every one after
++       it interrupt, also when the error itself could not be allocated and
++       the exception is null. */
++    JS_SetUncatchableError(ctx, rt->current_exception);
++    rt->clax_out_of_memory = true;
++    ctx->interrupt_counter = 1;
+     return JS_EXCEPTION;
+ }
+ 
+@@ -8649,6 +8662,10 @@
+ {
+     JSRuntime *rt = ctx->rt;
+     ctx->interrupt_counter = JS_INTERRUPT_COUNTER_INIT;
++    if (rt->clax_out_of_memory) {
++        JS_ThrowInterrupted(ctx);
++        return -1;
++    }
+     if (rt->interrupt_handler) {
+         if (rt->interrupt_handler(rt, rt->interrupt_opaque)) {
+             JS_ThrowInterrupted(ctx);
+@@ -21479,7 +21496,11 @@
+     func_ret = async_func_resume(ctx, &s->func_state);
+     if (JS_IsException(func_ret)) {
+     fail:
+-        if (unlikely(JS_IsUncatchableError(ctx->rt->current_exception))) {
++        /* clax: out of memory counts as uncatchable, also when the
++           exception is the null thrown for an error that could not be
++           allocated (rejecting with it would fail and abort below). */
++        if (unlikely(JS_IsUncatchableError(ctx->rt->current_exception) ||
++                     ctx->rt->clax_out_of_memory)) {
+             is_success = false;
+         } else {
+             JSValue error = JS_GetException(ctx);
+@@ -21488,7 +21509,8 @@
+             JS_FreeValue(ctx, error);
+         resolved:
+             if (unlikely(JS_IsException(ret2))) {
+-                if (JS_IsUncatchableError(ctx->rt->current_exception)) {
++                if (JS_IsUncatchableError(ctx->rt->current_exception) ||
++                    ctx->rt->clax_out_of_memory) {
+                     is_success = false;
+                 } else {
+                     abort(); /* BUG */
+@@ -42333,6 +42355,29 @@
+ }
+ 
+ /* XXX: add a specific eval mode so that Function("}), ({") is rejected */
++/* clax: whether the source `len` bytes long that js_function_constructor
++   compiled to `fun` (a top-level function, not run) holds exactly one
++   function, spanning the whole source but its outer parentheses: what a
++   parse of the parameters and the body on their own would give. A body or
++   parameter list that closes the function and goes on fails it. */
++static bool clax_function_spans(JSValueConst fun, size_t len)
++{
++    JSFunctionBytecode *b, *inner = NULL;
++    int i;
++
++    if (JS_VALUE_GET_TAG(fun) != JS_TAG_FUNCTION_BYTECODE)
++        return false;
++    b = JS_VALUE_GET_PTR(fun);
++    for (i = 0; i < b->cpool_count; i++) {
++        if (JS_VALUE_GET_TAG(b->cpool[i]) == JS_TAG_FUNCTION_BYTECODE) {
++            if (inner)
++                return false;
++            inner = JS_VALUE_GET_PTR(b->cpool[i]);
++        }
++    }
++    return inner && len >= 2 && inner->source_len == (int)(len - 2);
++}
++
+ static JSValue js_function_constructor(JSContext *ctx, JSValueConst new_target,
+                                        int argc, JSValueConst *argv, int magic)
+ {
+@@ -42372,8 +42417,29 @@
+     if (JS_IsException(s))
+         goto fail1;
+ 
+-    obj = JS_EvalObject(ctx, ctx->global_obj, s, JS_EVAL_TYPE_INDIRECT, -1);
+-    JS_FreeValue(ctx, s);
++    /* clax: compile without running, refuse parameters or a body that close
++       the function (clax_function_spans), then run the one expression. */
++    {
++        const char *str;
++        size_t len;
++        JSValue fun;
++
++        str = JS_ToCStringLen(ctx, &len, s);
++        JS_FreeValue(ctx, s);
++        if (!str)
++            goto fail1;
++        fun = JS_EvalInternal(ctx, ctx->global_obj, str, len, "<input>", 1,
++                              JS_EVAL_TYPE_INDIRECT | JS_EVAL_FLAG_COMPILE_ONLY, -1);
++        JS_FreeCString(ctx, str);
++        if (JS_IsException(fun))
++            goto fail1;
++        if (!clax_function_spans(fun, len)) {
++            JS_FreeValue(ctx, fun);
++            JS_ThrowSyntaxError(ctx, "the function's parameters or body close the function");
++            goto fail1;
++        }
++        obj = JS_EvalFunction(ctx, fun);
++    }
+     if (JS_IsException(obj))
+         goto fail1;
+     if (!JS_IsUndefined(new_target)) {
+@@ -55581,7 +55647,9 @@
+     }
+     is_reject = JS_IsException(res);
+     if (is_reject) {
+-        if (unlikely(JS_IsUncatchableError(ctx->rt->current_exception)))
++        /* clax: out of memory ends the job too (see js_async_function_resume). */
++        if (unlikely(JS_IsUncatchableError(ctx->rt->current_exception) ||
++                     ctx->rt->clax_out_of_memory))
+             return JS_EXCEPTION;
+         res = JS_GetException(ctx);
+     }

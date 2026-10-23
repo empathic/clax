@@ -2,7 +2,7 @@
 // live refreshes, and the haiku in its footer are not needed for the first paint: the gallery loads
 // this module once its first list has painted, and until then shows one list
 // in the usual order.
-import { mount, unmount } from "svelte";
+import { type Component, mount, unmount } from "svelte";
 import type { Artifact, AttentionSummary } from "../api";
 import { type Cards, CardSync as Sync } from "./card-sync";
 import GallerySites from "./GallerySites.svelte";
@@ -52,21 +52,26 @@ export const q = () => import("../q");
 export const inboxPage = () => import("../q/InboxPage.svelte");
 /** The gallery's unread summary, its own chunk: `/` loads it beside `q`. */
 export const summary = () => import("../q/GallerySummary.svelte");
-/** `/people`: mounts the People page (its own chunk) at the end of
- * `target`, following the page's stream. The result removes it. */
-export function peoplePage(target: Element): () => void {
-  let view: Record<string, unknown> | null = null;
-  let gone = false;
-  void import("../people/People.svelte").then(p => { if (!gone) view = mount(p.default, { target, props: { stream: pageStream() } }); }, () => {});
-  return () => { gone = true; if (view) void unmount(view); };
-}
+export { default as NewTile } from "./NewTile.svelte";
 
-/** `/tags`: mounts the Tags page (its own chunk) at the end of `target`,
- * following the page's stream. The result removes it. */
-export function tagsPage(target: Element): () => void {
+/** The gallery shell's pages besides the gallery and the inbox, each its own chunk. */
+export type Page = "people" | "tags" | "admin" | "settings" | "me" | "audit";
+const PAGES: Record<Page, () => Promise<{ default: unknown }>> = {
+  people: () => import("../people/People.svelte"),
+  tags: () => import("./TagsPage.svelte"),
+  admin: () => import("../bot/AdminPage.svelte"),
+  settings: () => import("../bot/SettingsPage.svelte"),
+  me: () => import("../bot/MePage.svelte"),
+  audit: () => import("../bot/AuditPage.svelte"),
+};
+
+/** `/people`, `/tags`, `/admin`, `/settings`, `/me` and `/audit`: mounts
+ * that page (its own chunk) at the end of `target`, following the page's
+ * stream. The result removes it. */
+export function page(name: Page, target: Element): () => void {
   let view: Record<string, unknown> | null = null;
   let gone = false;
-  void import("./TagsPage.svelte").then(p => { if (!gone) view = mount(p.default, { target, props: { stream: pageStream() } }); }, () => {});
+  void PAGES[name]().then(p => { if (!gone) view = mount(p.default as Component<{ stream: ReturnType<typeof pageStream> }>, { target, props: { stream: pageStream() } }); }, () => {});
   return () => { gone = true; if (view) void unmount(view); };
 }
 

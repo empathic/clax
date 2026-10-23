@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Participants } from "./api";
 import { flush, mount } from "./test/svelte";
 import SendButton from "./ui/SendButton.svelte";
-import { sendGroups } from "./view/send-menu";
+import { ownTarget, sendGroups } from "./view/send-menu";
 
 type A = Participants["agents"][number];
 const ALEX = { public_id: "u_alex", name: "Alex", owner: true };
@@ -124,6 +124,29 @@ describe("the Send menu", () => {
     expect([...menu.querySelectorAll(".send-group-h")].map(h => h.textContent)).toEqual(["Sam's agents", "Mia's agents"]);
     // A browser the daemon refuses (403) learns nothing of who approves first.
     expect(menu.querySelector(".send-first")).toBeNull();
+  });
+
+  it("leads with ClaxBot in a Clax group of its own, saying whether it can run, and never picks it by default", async () => {
+    stubFirsts([]);
+    const bot = (live: boolean, line: string): A => ({ handle: "claxbot", harness: "claxbot", live, name: "ClaxBot", builtin: true, line });
+    const list = [bot(true, "Runs in Clax · your key · 1,690 credits left"), AGENTS[1]];
+    expect(sendGroups(list, "u_alex")[0]).toEqual({ label: "Clax", mine: false, agents: [{ handle: "claxbot", name: "ClaxBot", person: null, first: null, line: "Runs in Clax · your key · 1,690 credits left", off: false }] });
+    expect(ownTarget(list, "u_alex")).toBe("a_cl");
+    expect(ownTarget([list[0]], "u_alex")).toBeNull();
+    const onChoose = vi.fn();
+    // With one agent of the viewer's live, ClaxBot listed brings the caret.
+    const m = mount(SendButton, { label: "Send to clax-claude", agents: [bot(false, "Weekly credits used · resets Mon Oct 26"), AGENTS[1]], names, target: "a_cl", me: "u_alex", onSend: vi.fn(), onChoose });
+    flush(() => m.root.querySelector<HTMLButtonElement>('[aria-label="Choose the agent"]')!.click());
+    await settle();
+    const menu = m.root.querySelector('[role="menu"]')!;
+    expect([...menu.querySelectorAll(".send-group-h")].map(h => h.textContent)).toEqual(["Clax", "Your agents"]);
+    const claxbot = menu.querySelector<HTMLButtonElement>('[role="menuitemradio"]')!;
+    expect(claxbot.getAttribute("aria-disabled")).toBe("true");
+    expect(claxbot.querySelector(".send-line")!.textContent).toBe("Weekly credits used · resets Mon Oct 26");
+    // Not available: choosing it does nothing, and the menu stays.
+    flush(() => claxbot.click());
+    expect(onChoose).not.toHaveBeenCalled();
+    expect(m.root.querySelector('[role="menu"]')).not.toBeNull();
   });
 
   it("sends at once with no target when no agent is live", () => {

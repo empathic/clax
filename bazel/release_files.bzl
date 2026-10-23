@@ -8,6 +8,9 @@ RELEASE_FILES = [
     "//:Cargo.lock",
     "//:Cargo.toml",
     "//:README.md",
+    "//crates/clax-bot-js:Cargo.toml",
+    "//crates/clax-bot-sandbox:Cargo.toml",
+    "//crates/clax-bot:Cargo.toml",
     "//crates/clax-cli:Cargo.toml",
     "//crates/clax-commands:Cargo.toml",
     "//crates/clax-content-git:Cargo.toml",
@@ -50,5 +53,7 @@ RELEASE_FILES = [
     "//scripts:ensure-clax.sh",
     "//scripts:package-release.sh",
     "//scripts:pin-release.sh",
-    "//scripts:sync-skill-tools.py"
+    "//scripts:sync-skill-tools.py",
+    "//third_party/clax-rquickjs-core:Cargo.toml",
+    "//third_party/clax-rquickjs-sys:Cargo.toml"
 ]

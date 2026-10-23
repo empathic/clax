@@ -109,6 +109,13 @@ impl Home {
         self.root.join("remote-sessions")
     }
 
+    /// `secrets/kek` (0600, in a 0700 directory): the 32-byte key that
+    /// seals the secrets the store keeps (ClaxBot's model keys), made on
+    /// first use (`clax_store::secrets::Kek::load_or_create`).
+    pub fn kek_path(&self) -> PathBuf {
+        self.root.join("secrets").join("kek")
+    }
+
     /// Makes the root (mode 0700 on unix), `logs/` and `artifacts/`.
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         let mut root = std::fs::DirBuilder::new();

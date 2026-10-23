@@ -93,6 +93,15 @@ pub(crate) fn system_now() -> std::time::SystemTime {
 /// True when `s` is a ULID in canonical form: 26 uppercase Crockford base32
 /// characters that parse and render back to `s` (so the first character is at
 /// most `7`).
+/// The time `s`, a ULID, was minted at, in milliseconds since the Unix
+/// epoch; `None` for anything else.
+pub fn ulid_ms(s: &str) -> Option<u64> {
+    ulid::Ulid::from_string(s)
+        .ok()
+        .filter(|u| u.to_string() == s)
+        .map(|u| u.timestamp_ms())
+}
+
 pub fn is_ulid(s: &str) -> bool {
     ulid::Ulid::from_string(s).is_ok_and(|u| u.to_string() == s)
 }

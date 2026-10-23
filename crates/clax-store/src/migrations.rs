@@ -1443,7 +1443,185 @@ pub const MIGRATIONS: &[&str] = &[
     // `linked_comments.author_key` and its index where a database at 48
     // lacks them (builds that ran migration 48 before it made them).
     "ALTER TABLE remotes ADD COLUMN client_kind TEXT;",
+    // 50: ClaxBot (spec 2026-10-21-claxbot-design §4.2, §5, §7, §8.1).
+    // Every `person` column here holds a person key: a public ID, or
+    // `*owner` for the owner, so the owner's rows survive a claim that
+    // rewrites the owner's public ID.
+    //
+    // - `person_roles`: the admins the owner granted (`crate::roles`); the
+    //   owner is an admin without a row, and no row names `*owner`.
+    // - `person_flags`: per-person flags, generic, their names checked in
+    //   Rust (`crate::flags`); a missing row is the flag's default.
+    // - `bot_settings`: instance settings the admin pages edit, one JSON
+    //   value per known key (`crate::credits::Setting`), so the hosted
+    //   Worker, which has no config file, reads them as the daemon does.
+    // - `sealed_secrets`: the instance model key (`scope` `instance`,
+    //   `person` '') and people's own keys (`own`), XChaCha20-Poly1305
+    //   under a key-encryption key the store is handed (`crate::secrets`).
+    // - `cost_lines`, `usage_rows`, `credit_lifts`: what credits cost and
+    //   what was spent (`crate::credits`), integers only: milli-credits,
+    //   micro-USD and basis points; a usage row snapshots the exact inputs
+    //   of its charge (cost, margin, fixed credits, credit price, base),
+    //   and names its week (Monday 00:00 UTC) for the week's sums.
+    //   `cost_lines` is seeded by this migration's Rust step.
+    // - `bot_runs`, `bot_steps`, `bot_draft_files`: ClaxBot's runs, each
+    //   step committed before the next starts, and each run's draft as an
+    //   overlay on the version it was based on (`crate::bot_runs`).
+    // - `bot_follow_ups`: the people waiting, in arrival order and once
+    //   each, for a follow-up run of a thread a run works on.
+    //
+    // `audit_events_kind` serves the audit view's kind groups.
+    "CREATE TABLE person_roles (
+        person TEXT PRIMARY KEY,
+        role TEXT NOT NULL CHECK (role IN ('admin')),
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL
+    );
+    CREATE TABLE person_flags (
+        person TEXT NOT NULL,
+        flag TEXT NOT NULL,
+        value INTEGER NOT NULL CHECK (value IN (0, 1)),
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL,
+        PRIMARY KEY (person, flag)
+    );
+    CREATE TABLE bot_settings (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL
+    );
+    CREATE TABLE sealed_secrets (
+        scope TEXT NOT NULL CHECK (scope IN ('instance', 'own')),
+        person TEXT NOT NULL,
+        nonce BLOB NOT NULL,
+        sealed BLOB NOT NULL,
+        last4 TEXT NOT NULL,
+        use_own INTEGER NOT NULL DEFAULT 1,
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL,
+        last_ok_at TEXT,
+        host TEXT,
+        PRIMARY KEY (scope, person)
+    );
+    CREATE TABLE cost_lines (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        unit TEXT NOT NULL CHECK (unit IN
+            ('mtok_input', 'mtok_cached_input', 'mtok_cache_write', 'mtok_output', 'cpu_gb_s', 'mreq',
+             'gb_month', 'run')),
+        cost_micro_usd INTEGER NOT NULL CHECK (cost_micro_usd >= 0),
+        margin_bp INTEGER NOT NULL CHECK (margin_bp >= 0),
+        fixed_credits_milli INTEGER CHECK (fixed_credits_milli >= 0),
+        applies TEXT NOT NULL CHECK (applies IN ('instance_key', 'always')),
+        source TEXT NOT NULL,
+        model TEXT,
+        updated_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE TABLE usage_rows (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        person TEXT NOT NULL,
+        run_id TEXT,
+        step_n INTEGER,
+        line TEXT NOT NULL,
+        unit TEXT NOT NULL,
+        qty INTEGER NOT NULL CHECK (qty >= 0),
+        rate_cost_micro_usd INTEGER NOT NULL,
+        margin_bp INTEGER NOT NULL,
+        fixed_credits_milli INTEGER,
+        credit_price_micro_usd INTEGER NOT NULL,
+        base_qty INTEGER NOT NULL CHECK (base_qty > 0),
+        cost_micro_usd INTEGER NOT NULL CHECK (cost_micro_usd >= 0),
+        credits_milli INTEGER NOT NULL CHECK (credits_milli >= 0),
+        free_milli INTEGER NOT NULL CHECK (free_milli >= 0 AND free_milli <= credits_milli),
+        key_source TEXT NOT NULL CHECK (key_source IN ('instance', 'own')),
+        absorbed INTEGER NOT NULL DEFAULT 0 CHECK (absorbed IN (0, 1)),
+        estimated INTEGER NOT NULL DEFAULT 0 CHECK (estimated IN (0, 1)),
+        week TEXT NOT NULL,
+        at TEXT NOT NULL
+    );
+    CREATE INDEX usage_by_person ON usage_rows(person, week);
+    CREATE INDEX usage_by_week ON usage_rows(week, line);
+    CREATE INDEX usage_by_run ON usage_rows(run_id, step_n) WHERE run_id IS NOT NULL;
+    CREATE TABLE credit_lifts (
+        person TEXT PRIMARY KEY,
+        lift_milli INTEGER NOT NULL CHECK (lift_milli >= 0),
+        reason TEXT,
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL
+    );
+    CREATE TABLE bot_runs (
+        id TEXT PRIMARY KEY,
+        artifact_id TEXT NOT NULL,
+        person TEXT NOT NULL,
+        request TEXT NOT NULL CHECK (request IN ('thread', 'brief')),
+        thread_ids_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN
+            ('queued', 'running', 'stopping', 'finished', 'gave_up', 'stopped', 'failed')),
+        reason TEXT,
+        model TEXT NOT NULL,
+        key_source TEXT NOT NULL CHECK (key_source IN ('instance', 'own')),
+        base_version INTEGER NOT NULL,
+        credits_milli INTEGER NOT NULL DEFAULT 0 CHECK (credits_milli >= 0),
+        agent_grant TEXT,
+        claimed_by TEXT,
+        claimed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        ended_at TEXT,
+        due_at TEXT
+    );
+    CREATE INDEX bot_runs_by_artifact ON bot_runs(artifact_id, created_at, id);
+    CREATE INDEX bot_runs_by_person ON bot_runs(person, created_at, id);
+    CREATE INDEX bot_runs_live ON bot_runs(created_at, id)
+        WHERE status IN ('queued', 'running', 'stopping');
+    CREATE TABLE bot_follow_ups (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        thread_id TEXT NOT NULL,
+        person TEXT NOT NULL,
+        queued_at TEXT NOT NULL,
+        UNIQUE (thread_id, person)
+    );
+    CREATE TABLE bot_steps (
+        run_id TEXT NOT NULL,
+        n INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN
+            ('turn', 'script', 'finish', 'give_up', 'stopped', 'failed')),
+        started_at TEXT NOT NULL,
+        attempt INTEGER NOT NULL DEFAULT 1,
+        committed_at TEXT,
+        payload_json TEXT,
+        observed_json TEXT,
+        failures INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (run_id, n)
+    );
+    CREATE TABLE bot_calls (
+        run_id TEXT NOT NULL,
+        step_n INTEGER NOT NULL,
+        seq INTEGER NOT NULL,
+        attempt INTEGER NOT NULL,
+        op TEXT NOT NULL,
+        args_hash TEXT NOT NULL,
+        ok INTEGER NOT NULL CHECK (ok IN (0, 1)),
+        result_json TEXT NOT NULL,
+        at TEXT NOT NULL,
+        PRIMARY KEY (run_id, step_n, seq)
+    );
+    CREATE TABLE bot_draft_files (
+        run_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        content BLOB,
+        content_type TEXT,
+        PRIMARY KEY (run_id, path)
+    );
+    CREATE INDEX audit_events_kind ON audit_events(kind, seq);",
 ];
+
+/// The ClaxBot migration, as a schema version (spec
+/// 2026-10-21-claxbot-design §4.1), the one after
+/// [`REMOTE_KIND_MIGRATION`] and this build's last.
+pub const CLAXBOT_MIGRATION: u32 = REMOTE_KIND_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -1497,8 +1675,8 @@ pub const APP_PUSH_MIGRATION: u32 = JOBS_MIGRATION + 1;
 /// The migration that records each remote's client kind
 /// (`remotes.client_kind`) and adds `linked_comments.author_key` where
 /// [`APP_PUSH_MIGRATION`] as first built left it out, as a schema version:
-/// the eighth of the app's ([`APP_MIGRATION_MARKS`]) and this build's
-/// last.
+/// the eighth of the app's ([`APP_MIGRATION_MARKS`]) and the last of
+/// them; ClaxBot's ([`CLAXBOT_MIGRATION`]) follows it.
 pub const REMOTE_KIND_MIGRATION: u32 = APP_PUSH_MIGRATION + 1;
 
 /// The tables the jobs migration ([`JOBS_MIGRATION`]) makes, its mark
@@ -1604,6 +1782,13 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
     Mark::Column("remotes", "client_kind"),
 ];
 
+/// What each migration after the app's leaves in the schema, in order:
+/// ClaxBot's ([`CLAXBOT_MIGRATION`]). They follow the app's in every
+/// numbering, so a later numbering that takes a main migration below the
+/// app's moves them with the app's, and adoption tells how many of them a
+/// database holds by these marks, as it does the app's.
+const MARKS_AFTER_APP: [Mark<'static>; 1] = [Mark::Table("person_roles")];
+
 /// Brings a database written by an earlier `flutter-app` build, which
 /// numbered the app's migrations differently, into this numbering, in
 /// `tx`; `Ok(None)` for any other database, left untouched. Returns the
@@ -1704,14 +1889,15 @@ pub(super) fn adopt_earlier_flutter_app(
     } else {
         (PEOPLE_MIGRATION, PEOPLE_MIGRATION)
     };
-    let last = first + APP_MIGRATION_MARKS.len() as u32 - 1;
+    let marks = APP_MIGRATION_MARKS.iter().chain(&MARKS_AFTER_APP);
+    let last = first + (APP_MIGRATION_MARKS.len() + MARKS_AFTER_APP.len()) as u32 - 1;
     if !(first..=last).contains(&version) {
         return Err(refuse(format!(
             "holds the app's tables, but its version is not one of that build's ({first} to {last})"
         )));
     }
     let held = (version - first + 1) as usize;
-    for (i, mark) in APP_MIGRATION_MARKS.iter().enumerate() {
+    for (i, mark) in marks.enumerate() {
         if has_mark(tx, mark)? != (i < held) {
             return Err(refuse(format!(
                 "{} the {mark}",
@@ -1726,7 +1912,7 @@ pub(super) fn adopt_earlier_flutter_app(
     }
     for v in below..app_first {
         tx.execute_batch(numbering.migrations[v as usize - 1])?;
-        rust_step(tx, v)?;
+        rust_step_of(tx, numbering.migrations, v)?;
     }
     let now = app_first - 1 + held as u32;
     tx.pragma_update(None, "user_version", now)?;
@@ -1885,7 +2071,22 @@ pub(crate) fn has_mark(conn: &rusqlite::Connection, mark: &Mark<'_>) -> clax_cor
 
 /// Runs the Rust part of the migration that brings the schema to
 /// `version`, in that migration's transaction, after its SQL.
+#[cfg(test)]
 pub(super) fn rust_step(tx: &rusqlite::Transaction<'_>, version: u32) -> clax_core::Result<()> {
+    rust_step_of(tx, MIGRATIONS, version)
+}
+
+/// [`rust_step`] for migration `version` of `migrations`: this build's
+/// ([`MIGRATIONS`]), or in tests a later numbering's. The steps of the
+/// migrations below [`WHERE_TO_ASK_MIGRATION`] go by their numbers, which
+/// no numbering moves; ClaxBot's goes by its SQL, which follows the app's
+/// and moves with them when a numbering takes a main migration below
+/// them.
+pub(super) fn rust_step_of(
+    tx: &rusqlite::Transaction<'_>,
+    migrations: &[&str],
+    version: u32,
+) -> clax_core::Result<()> {
     if version == AUDIT_MIGRATION {
         install_id(tx)?;
     }
@@ -1897,6 +2098,9 @@ pub(super) fn rust_step(tx: &rusqlite::Transaction<'_>, version: u32) -> clax_co
     }
     if version == REPAIR_MIGRATION {
         repair(tx)?;
+    }
+    if migrations[version as usize - 1] == MIGRATIONS[CLAXBOT_MIGRATION as usize - 1] {
+        crate::credits::seed_cost_lines(tx)?;
     }
     if version == REMOTE_KIND_MIGRATION {
         mirrored_author_key(tx)?;
@@ -2449,6 +2653,8 @@ mod tests {
                 "audit_events_artifact2",
                 "audit_events_at",
                 "audit_events_call",
+                // Migration 50's (ClaxBot's), for the audit view's kind groups.
+                "audit_events_kind",
                 "audit_events_session",
                 "install",
             ]
@@ -4390,7 +4596,7 @@ mod tests {
             }
             tx.execute_batch(numbering.migrations[v as usize - 1])
                 .unwrap();
-            super::rust_step(&tx, v).unwrap();
+            super::rust_step_of(&tx, numbering.migrations, v).unwrap();
             if let Some(mark) = mark {
                 assert!(super::has_mark(&tx, &mark).unwrap(), "{mark} after {v}");
             }
@@ -4418,7 +4624,6 @@ mod tests {
                 assert!(!sql.contains(name), "{mark}");
             }
         }
-        assert_eq!(MIGRATIONS.len() as u32, APP_MIGRATION + 7);
         assert_eq!(super::JOBS_MIGRATION, APP_MIGRATION + 5);
         assert_eq!(super::APP_PUSH_MIGRATION, APP_MIGRATION + 6);
         let first = APP_MIGRATION as usize - 1;
@@ -4432,10 +4637,13 @@ mod tests {
         assert!(MIGRATIONS[first + 6].contains("CREATE TABLE app_bundles ("));
         assert_eq!(super::REMOTE_KIND_MIGRATION, APP_MIGRATION + 7);
         assert!(MIGRATIONS[first + 7].contains("ADD COLUMN client_kind"));
+        assert_eq!(super::CLAXBOT_MIGRATION, super::REMOTE_KIND_MIGRATION + 1);
+        assert_eq!(MIGRATIONS.len() as u32, super::CLAXBOT_MIGRATION);
+        assert!(MIGRATIONS[first + 8].contains("CREATE TABLE person_roles ("));
     }
 
     #[test]
-    fn a_fresh_database_reaches_49() {
+    fn a_fresh_database_reaches_50() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -4443,7 +4651,8 @@ mod tests {
         assert_eq!(super::JOBS_MIGRATION, 47);
         assert_eq!(super::APP_PUSH_MIGRATION, 48);
         assert_eq!(super::REMOTE_KIND_MIGRATION, 49);
-        assert_eq!(user_version(&c), super::REMOTE_KIND_MIGRATION);
+        assert_eq!(super::CLAXBOT_MIGRATION, 50);
+        assert_eq!(user_version(&c), super::CLAXBOT_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -4497,7 +4706,7 @@ mod tests {
             assert!(st.owner_sees_all().unwrap(), "with_key {with_key}");
             drop(st);
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::REMOTE_KIND_MIGRATION);
+            assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
             assert_eq!(schema_of(&c), fresh, "with_key {with_key}");
         }
     }
@@ -5185,7 +5394,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::REMOTE_KIND_MIGRATION);
+        assert_eq!(user_version(&c), super::CLAXBOT_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -5384,7 +5593,7 @@ mod tests {
             }
             drop(Store::open(&home).unwrap());
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::REMOTE_KIND_MIGRATION, "from {old}");
+            assert_eq!(user_version(&c), MIGRATIONS.len() as u32, "from {old}");
             assert_eq!(shape_of(&c), fresh, "from {old}");
             assert_eq!(kept_rows(&c, 6), before, "from {old}");
             let mut c = c;
@@ -5675,20 +5884,21 @@ mod tests {
         let fresh = fresh_shape_of(&later);
 
         // The owner's home after this build's first open: 43 adopted to 46,
-        // then the jobs migration to 47 and the app push migration to 48, the remote kind migration to 49.
+        // then the jobs migration to 47, the app push migration to 48, the
+        // remote kind migration to 49 and ClaxBot's to 50.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), 49);
+            assert_eq!(user_version(&c), 50);
             (columns_of(&c), every_row(&c))
         };
 
         let copy = open_under(&home, &later);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), 50, "the app's 49 is its 50 now");
+        assert_eq!(user_version(&c), 51, "ClaxBot's 50 is its 51 now");
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
         assert_eq!(table_count(&c, "simulated_main_42"), 1);
@@ -5706,7 +5916,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), 49);
+        assert_eq!(user_version(&copied), 50);
         assert_eq!(
             every_row(&copied),
             before,
@@ -5720,7 +5930,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (50, schema, rows)
+            (51, schema, rows)
         );
     }
 
@@ -5994,7 +6204,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, 49);
+        assert_eq!(last, 50);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));

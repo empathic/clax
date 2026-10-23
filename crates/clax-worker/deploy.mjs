@@ -16,6 +16,9 @@
 //    creating and deleting a probe repository, which also proves the
 //    account has Artifacts);
 // 4. generates `SETUP_SECRET` and `CLAX_TOKEN` when the Worker has neither,
+//    and `CLAX_KEK` (ClaxBot's key-encryption key) when it has none, taking
+//    the record's when it has one: never rotated, not even by
+//    --rotate-secrets, since a new one opens no key the old one sealed;
 //    uploads them with the deploy (`wrangler deploy --secrets-file`, so the
 //    first version already has them), prints them once and keeps them in
 //    `~/.config/clax/deploy/<public host>.json` (0600; $CLAX_DEPLOY_HOME or $XDG_CONFIG_HOME/clax/deploy when set) for
@@ -60,6 +63,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
@@ -269,6 +273,62 @@ async function artifactsNamespace(account, dryRun) {
   info(`Artifacts namespace ${NAMESPACE}: created${gone.code === 0 ? "" : ` (deleting the probe repository ${probe} failed: ${lastError(gone)})`}`);
 }
 
+const KEK_HEX = /^[0-9a-f]{64}$/i;
+
+/** What the deploy does about `CLAX_KEK`, given `have`, the secret names
+ * the Worker has (`null` without a login), `saved`, the backup this
+ * machine keeps, if any, and `savedIn`, where it was found: "file" (its own,
+ * `kekPath`) or "record" (a `kek` an earlier deploy kept in the record):
+ * `upload`, the key to upload (the backup when there is one, else 64 new
+ * hex digits) or none; `save`, a key to write to the backup file first (a
+ * new one, or one found only in the record, so the record, which may be
+ * deleted, is never its only copy); `warn`, when the Worker has a key this
+ * machine keeps no backup of; and `say`, the line it prints (never the
+ * key). */
+export function kekPlan({ have, saved, savedIn, dryRun }) {
+  const kept = typeof saved === "string" && KEK_HEX.test(saved);
+  const save = kept && savedIn === "record" && !dryRun ? saved : null;
+  const moved = save ? "; its backup moved from the record to its own file" : "";
+  if (have === null) return { upload: null, save, warn: null, say: `skipped (no login): a deploy uploads CLAX_KEK when the Worker has none${moved}` };
+  if (have.includes("CLAX_KEK")) {
+    const warn = kept
+      ? null
+      : "the Worker has CLAX_KEK but this machine keeps no backup of it: losing the Worker's secret loses every stored model key; " +
+        "if you have the key, write it to the backup file named below (0600)";
+    return { upload: null, save, warn, say: `the Worker has CLAX_KEK; kept (never rotated)${moved}` };
+  }
+  if (dryRun) return { upload: null, save: null, warn: null, say: `would upload CLAX_KEK ${kept ? "from its backup" : "(new)"} with the deploy` };
+  if (kept) return { upload: saved, save, warn: null, say: `CLAX_KEK from its backup; uploaded with the deploy${moved}` };
+  const fresh = randomBytes(32).toString("hex");
+  return { upload: fresh, save: fresh, warn: null, say: "generated CLAX_KEK; backed up, then uploaded with the deploy" };
+}
+
+/** Where the deploy keeps CLAX_KEK's backup: a file of its own beside the
+ * record (0600), which, unlike the record, is never to be deleted. */
+export function kekPath(pub) {
+  return join(RECORDS, `${pub}.kek`);
+}
+
+/** The backup of CLAX_KEK kept for `pub`, `{saved, savedIn}`: its own file
+ * ("file"), else a `kek` an earlier deploy kept in the record ("record"),
+ * else none. */
+function readKek(pub, record) {
+  try {
+    const k = readFileSync(kekPath(pub), "utf8").trim();
+    if (KEK_HEX.test(k)) return { saved: k, savedIn: "file" };
+  } catch {
+    // none yet
+  }
+  if (typeof record.kek === "string" && KEK_HEX.test(record.kek)) return { saved: record.kek, savedIn: "record" };
+  return { saved: null, savedIn: null };
+}
+
+function writeKek(pub, kek) {
+  mkdirSync(RECORDS, { recursive: true, mode: 0o700 });
+  writeFileSync(kekPath(pub), kek + "\n", { mode: 0o600 });
+  chmodSync(kekPath(pub), 0o600);
+}
+
 /** The secret names the Worker has; empty when it does not exist yet. */
 async function secretNames(account) {
   const r = await wrangler(["secret", "list", "--config", DEPLOY_CONFIG, "--format", "json"], { account });
@@ -305,6 +365,7 @@ function deployConfig(o, pub, content, account, github, legal) {
     REPO_STORE: o.store,
     GIT_SMART_HTTP: o.store === "memory" ? "1" : "0",
     CLAX_TEST_ROUTES: "0",
+    CLAX_TEST_LOOPBACK_PROVIDER: "0",
     REPO_DEV_ROUTES: "0",
     CLAX_DIAG_ROUTES: o.diag ? "1" : "0",
     ...(github.client_id ? { GITHUB_CLIENT_ID: github.client_id } : {}),
@@ -468,6 +529,15 @@ async function main() {
     if (needed.includes("CLAX_TOKEN")) secrets.CLAX_TOKEN = randomBytes(32).toString("hex");
     info(`generated ${needed.join(" and ")}; uploaded with the deploy`);
   }
+  // CLAX_KEK seals the model keys ClaxBot stores (README.md, "ClaxBot"):
+  // made once, backed up in a file of its own before anything is uploaded,
+  // and never rotated, since a new one opens nothing the old one sealed. A
+  // Worker without it gets the backup's, else a new one.
+  const kek = kekPlan({ have: who ? have : null, ...readKek(pub, record), dryRun: o.dryRun });
+  info(kek.say);
+  if (kek.warn) info(`WARNING: ${kek.warn}: ${kekPath(pub)}`);
+  if (kek.save) writeKek(pub, kek.save);
+  if (kek.upload) secrets = { ...(secrets ?? {}), CLAX_KEK: kek.upload };
   if (github.client_id) {
     let gh = process.env.GITHUB_CLIENT_SECRET?.trim();
     const missing = who && !have.includes("GITHUB_CLIENT_SECRET");
@@ -546,6 +616,7 @@ async function main() {
     ...legal,
     ...(secrets?.SETUP_SECRET ? { setup_secret: secrets.SETUP_SECRET, setup_done: false } : {}),
     ...(secrets?.CLAX_TOKEN ? { owner_token: secrets.CLAX_TOKEN } : {}),
+    ...(secrets?.CLAX_KEK ? { kek_backup: kekPath(pub) } : {}),
   };
   writeRecord(pub, next);
 
@@ -563,12 +634,14 @@ async function main() {
 
   step("Done");
   if (secrets) {
-    console.log("\n   Shown once (also in the record below, 0600; delete it once set up):");
+    console.log("\n   Shown once (also in the record below, 0600; delete the record once set up):");
     if (secrets.SETUP_SECRET) console.log(`     SETUP_SECRET  ${secrets.SETUP_SECRET}`);
     if (secrets.CLAX_TOKEN) console.log(`     CLAX_TOKEN    ${secrets.CLAX_TOKEN}`);
   }
   console.log(`
    Record:  ${recordPath(pub)}
+   CLAX_KEK backup: ${kekPath(pub)} (0600; keep it: without it and the Worker's
+            secret, every model key ClaxBot stored is lost)
    Setup:   https://${pub}/setup  (enter SETUP_SECRET and your name; this browser becomes the owner)
 
    Next:
@@ -593,7 +666,10 @@ ${bar}
 ${bar}`);
 }
 
-main().catch((e) => {
-  console.error(`\ndeploy failed: ${e instanceof Error ? e.message : e}`);
-  process.exit(1);
-});
+// Run as a program; imported (test-bot.mjs checks kekPlan), it deploys nothing.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((e) => {
+    console.error(`\ndeploy failed: ${e instanceof Error ? e.message : e}`);
+    process.exit(1);
+  });
+}

@@ -10,7 +10,8 @@
   // public ID (`undefined`: unknown, the owner's); `own`, whose agents a
   // Send takes as this viewer's (`sendsFor`: the owner's for a LAN
   // viewer), `me` unless given; the menu asks who
-  // approves first for `threads` of `aid`. `onSend` hears the activation,
+  // approves first for `threads` of `aid`. ClaxBot (`builtin`) listed brings the caret too, so it can be
+  // chosen or its reason read. `onSend` hears the activation,
   // so the caller can guard it (`guardedAction`).
   import type { AgentView } from "../view/working-model";
 
@@ -30,7 +31,7 @@
 
 <span class="send" bind:this={root}>
   <button type="button" class="primary" {disabled} aria-haspopup={pick ? "menu" : undefined} onclick={e => { if (pick) open = !open; else onSend(e); }}>{label}</button>
-  {#if live.length > 1 || others}
+  {#if live.length > 1 || others || agents.some(a => a.builtin)}
     <button type="button" class="primary caret" aria-label="Choose the agent" aria-haspopup="menu" aria-expanded={open} onclick={() => { open = !open; }}>▾</button>
     {#if open}
       {#await import("./SendMenu.svelte") then { default: SendMenu }}

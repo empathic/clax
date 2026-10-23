@@ -31,6 +31,7 @@ def cargo_package(
         staticlib = False,
         cdylib = False,
         disable_pipelining = False,
+        deps_not_on = {},
         visibility = ["//visibility:public"]):
     """Declares the library, binaries, build script and tests of the Cargo
     package here.
@@ -85,6 +86,10 @@ def cargo_package(
         sandbox): its two actions would give it two crate hashes, and a
         library compiled against the metadata could not be linked with the
         rlib ("can't find crate").
+      deps_not_on: {path dependency label: [constraint_value labels]}: a
+        dependency left out on those platforms, as a Cargo
+        `[target.'cfg(...)'.dependencies]` table leaves it out
+        (crates/clax-server's QuickJS sandbox on Android and iOS).
       visibility: the library's and binaries' visibility.
     """
     package = native.package_name()
@@ -163,7 +168,13 @@ def cargo_package(
         )
         build_deps = [":build_script"]
 
-    normal_deps = crate["deps"] + all_crate_deps(normal = True) + build_deps
+    normal_deps = [d for d in crate["deps"] if d not in deps_not_on] + all_crate_deps(normal = True) + build_deps
+    for dep, platforms in deps_not_on.items():
+        if dep not in crate["deps"]:
+            fail("deps_not_on names %s, which is no dependency of %s" % (dep, package))
+        normal_deps = normal_deps + select(
+            {p: [] for p in platforms} | {"//conditions:default": [dep]},
+        )
     dev_deps = crate["dev_deps"] + all_crate_deps(normal_dev = True)
 
     # The testkit serves integration tests only: it depends on the crates it

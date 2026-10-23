@@ -12,7 +12,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::unix::fs::OpenOptionsExt;
 use std::time::Duration;
 
-pub const DEFAULT_PORT: u16 = 7480;
+pub const DEFAULT_PORT: u16 = crate::config::DEFAULT_PORT;
 
 pub const PORT_ATTEMPTS: u16 = 21;
 

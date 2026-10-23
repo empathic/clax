@@ -75,6 +75,15 @@ pub struct Doc {
     pub updated_at: String,
 }
 
+/// A written document as a journaled `db.*` write answers: `{id, version}`,
+/// `null` without a document.
+fn doc_ref(w: &Written) -> Value {
+    w.doc.as_ref().map_or(
+        Value::Null,
+        |d| serde_json::json!({"id": d.id, "version": d.version}),
+    )
+}
+
 /// How a write is pinned: `if_version`, when given, must equal the document's
 /// current version (`None` current when it does not exist). Without it a
 /// write to an existing document is refused unless `lww` (last writer wins,
@@ -921,6 +930,37 @@ impl Store {
         })
     }
 
+    /// The collections of artifact `id`'s documents that hold at least one
+    /// document `caller` may read, in name order (top-level collections:
+    /// nested ones are their parents' paths).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn readable_doc_collections(
+        &self,
+        id: &ArtifactId,
+        caller: &Caller,
+    ) -> Result<Vec<String>> {
+        self.with_read(|c| {
+            let rules = rules_in(c, id)?;
+            let mut q = c.prepare_cached(
+                "SELECT collection, MIN(path) FROM docs WHERE artifact_id = ?1
+                  GROUP BY collection ORDER BY collection",
+            )?;
+            let rows = q.query_map(params![id.as_str()], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                let (col, path) = row?;
+                if rules.allows(&path, Op::Read, caller) {
+                    out.push(col);
+                }
+            }
+            Ok(out)
+        })
+    }
+
     /// Each collection holding documents, with its document count, sorted by
     /// path. Collections under a private per-viewer prefix (`data/users/<id>`
     /// and each `{self}` rule's prefix not opened by a rule at it) are left
@@ -983,6 +1023,116 @@ impl Store {
             write_in(&rc, id, &rules, caller, path, pin, &self.now(), |_| {
                 body.map(Some)
             })
+        })
+    }
+
+    /// [`Store::doc_set`] journaled as `entry` in the write's own
+    /// transaction (ClaxBot's `db.set`): the journal's answer when it holds
+    /// `entry`'s key, writing nothing; else the write and its entry,
+    /// `{id, version}`, together.
+    ///
+    /// # Errors
+    /// [`Store::doc_set`]'s; `key_reused`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn doc_set_journaled(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        path: &str,
+        data: Value,
+        pin: Pin,
+        caller: &Caller,
+        entry: &super::bot_runs::CallEntry,
+        guard: super::bot_runs::Guard<'_>,
+    ) -> Result<super::bot_runs::Journaled> {
+        if let Some(prev) = self.journaled(entry)? {
+            return Ok(prev);
+        }
+        let body = Body::new(data);
+        self.with_tx(|tx| {
+            let rules = rules_in(tx, id)?;
+            let rc = Recorder {
+                st: self,
+                tx,
+                ctx,
+                op: "set",
+            };
+            guard(&super::bot_runs::Tx(tx))?;
+            let w = write_in(&rc, id, &rules, caller, path, pin, &self.now(), |_| {
+                body.map(Some)
+            })?;
+            self.journal_in(tx, entry, doc_ref(&w))
+        })
+    }
+
+    /// [`Store::doc_update`] journaled as `entry`, as
+    /// [`Store::doc_set_journaled`] is.
+    ///
+    /// # Errors
+    /// [`Store::doc_update`]'s; `key_reused`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn doc_update_journaled(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        path: &str,
+        patch: Value,
+        pin: Pin,
+        caller: &Caller,
+        entry: &super::bot_runs::CallEntry,
+        guard: super::bot_runs::Guard<'_>,
+    ) -> Result<super::bot_runs::Journaled> {
+        if let Some(prev) = self.journaled(entry)? {
+            return Ok(prev);
+        }
+        check_body(&patch, true)?;
+        self.with_tx(|tx| {
+            let rules = rules_in(tx, id)?;
+            let rc = Recorder {
+                st: self,
+                tx,
+                ctx,
+                op: "update",
+            };
+            guard(&super::bot_runs::Tx(tx))?;
+            let w = write_in(&rc, id, &rules, caller, path, pin, &self.now(), |cur| {
+                Body::of(update_body(path, cur, patch))
+            })?;
+            self.journal_in(tx, entry, doc_ref(&w))
+        })
+    }
+
+    /// [`Store::doc_delete`] journaled as `entry`, as
+    /// [`Store::doc_set_journaled`] is; the value is `null`.
+    ///
+    /// # Errors
+    /// [`Store::doc_delete`]'s; `key_reused`.
+    pub fn doc_delete_journaled(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        path: &str,
+        pin: Pin,
+        caller: &Caller,
+        entry: &super::bot_runs::CallEntry,
+        guard: super::bot_runs::Guard<'_>,
+    ) -> Result<super::bot_runs::Journaled> {
+        if let Some(prev) = self.journaled(entry)? {
+            return Ok(prev);
+        }
+        self.with_tx(|tx| {
+            let rules = rules_in(tx, id)?;
+            let rc = Recorder {
+                st: self,
+                tx,
+                ctx,
+                op: "delete",
+            };
+            guard(&super::bot_runs::Tx(tx))?;
+            write_in(&rc, id, &rules, caller, path, pin, &self.now(), |_| {
+                Ok(None)
+            })?;
+            self.journal_in(tx, entry, Value::Null)
         })
     }
 

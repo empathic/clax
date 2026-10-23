@@ -44,9 +44,11 @@ if (cd "$T" && scripts/bump-version.sh 9.8.7 >/dev/null) && [ "$(cd "$T" && scri
     pass "bump-version writes every version, the launcher copies and skill blocks included"
 else fail "bump-version writes every version"; fi
 # The Worker's lock: every Clax crate it names by path at the new version,
-# its own two crates (0.0.0) and every registry package as they were.
+# its own two crates (0.0.0), and every registry package and the vendored
+# QuickJS crates (third_party/clax-rquickjs-*, at their upstream version)
+# as they were.
 lock_diff="$(diff "$HERE/crates/clax-worker/Cargo.lock" "$T/crates/clax-worker/Cargo.lock" | grep '^[<>]' | sort | uniq -c)"
-crates="$(awk '/^name = "clax-/ {n=$3} /^version = / && n {print n, $3; n=""}' "$T/crates/clax-worker/Cargo.lock")"
+crates="$(awk '/^name = "clax-/ && !/^name = "clax-rquickjs-/ {n=$3} /^version = / && n {print n, $3; n=""}' "$T/crates/clax-worker/Cargo.lock")"
 if echo "$crates" | grep -v '"0.0.0"' | grep -v '"9.8.7"' | grep . >/dev/null || ! echo "$crates" | grep '"9.8.7"' >/dev/null \
     || echo "$lock_diff" | grep -v 'version = "' | grep . >/dev/null; then
     fail "bump-version writes the Worker's Cargo.lock ($crates; $lock_diff)"

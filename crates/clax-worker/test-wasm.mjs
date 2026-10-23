@@ -7,7 +7,7 @@
 // count, and `PRAGMA integrity_check` says ok. The spike's routes are test
 // routes (`CLAX_TEST_ROUTES` = `1`); a last start with the checked-in
 // `wrangler.jsonc`'s variables checks that they are absent without it, as
-// is the instance's test route. Each wrangler is stopped by
+// are the instance's test routes. Each wrangler is stopped by
 // the process group it was started in. Prints one line per check and a JSON
 // summary; exits non-zero on the first failure.
 //
@@ -101,7 +101,7 @@ async function main() {
       const r = await call(w.base, method, path);
       check(r.status === 404 || r.status === 405, `without test routes ${method} /do/wasm-test${path} is not the spike's`, r);
     }
-    for (const [method, path] of [["GET", "/_worker/alarm"], ["POST", "/_worker/hibernate"]]) {
+    for (const [method, path] of [["GET", "/_worker/alarm"], ["POST", "/_worker/hibernate"], ["GET", "/_worker/sandbox"]]) {
       const r = await fetch(`${w.base}${path}`, { method, headers: { authorization: "Bearer any" } });
       check(r.status === 404 || r.status === 405, `without test routes ${method} ${path} is absent`, r.status);
     }

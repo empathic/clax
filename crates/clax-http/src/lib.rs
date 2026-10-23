@@ -13,6 +13,7 @@ pub mod agent;
 pub mod audit;
 pub mod auth;
 pub mod blocking;
+pub mod bot;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod conn;
 pub mod content_policy;
@@ -38,6 +39,7 @@ pub mod net_cache;
 pub mod perf;
 pub mod pushes;
 pub mod seats;
+pub mod settings;
 pub mod socket_caps;
 pub mod state;
 pub mod surface;

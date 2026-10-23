@@ -64,6 +64,13 @@ mod l10 {
         /// (clax-core's inbox), and a person's view names none
         /// (`clax_http::views::inbox`), so a LAN browser never learns of one.
         Person,
+        /// A ClaxBot route (spec 2026-10-21-claxbot-design §10): it takes
+        /// `DeniedToGrants` and admits its caller through one of the
+        /// bot routes' checks (the caller's own, an admin's, a run's
+        /// readers', the audit's readers), and checks a live page where it
+        /// names an artifact itself (`live_ids.contains`), so only the
+        /// owner reaches one.
+        Bot,
     }
     use Guard::*;
 
@@ -90,6 +97,35 @@ mod l10 {
         ("remote_apps::put_comments", Owner),
         ("remote_apps::comment", Owner),
         ("remote_apps::record_install", Owner),
+        ("settings::get", Bot),
+        ("settings::put", Bot),
+        ("bot::me_get", Bot),
+        ("bot::me_put", Bot),
+        ("bot::key_put", Bot),
+        ("bot::key_delete", Bot),
+        ("bot::usage", Bot),
+        ("bot::list", Bot),
+        ("bot::create", Bot),
+        ("bot::get", Bot),
+        ("bot::cancel", Bot),
+        ("bot::draft_index", Bot),
+        ("bot::draft_file", Bot),
+        ("bot::events", Bot),
+        ("admin::people", Bot),
+        ("admin::set_flags", Bot),
+        ("admin::set_role", Bot),
+        ("admin::set_credits", Bot),
+        ("admin::provider", Bot),
+        ("admin::set_provider", Bot),
+        ("admin::set_key", Bot),
+        ("admin::clear_key", Bot),
+        ("admin::test", Bot),
+        ("admin::models", Bot),
+        ("admin::pricing", Bot),
+        ("admin::set_pricing", Bot),
+        ("admin::usage", Bot),
+        ("audit_trail::list", Bot),
+        ("audit_trail::get", Bot),
         ("artifacts::list", Filtered),
         ("tags::list", Filtered),
         ("tags::create", NoArtifact),
@@ -203,7 +239,7 @@ mod l10 {
         ("assets::scoped_blob", SeesLive),
         ("perf::calibrate", Token),
         ("perf::verify_times", Token),
-        ("toolpath::export", Owner),
+        ("toolpath::export", Bot),
         ("toolpath::status", Owner),
         ("grants::list", Owner),
         ("grants::request", NoArtifact),
@@ -259,10 +295,13 @@ mod l10 {
 
     pub(super) fn module_source_opt(m: &str) -> Option<&'static str> {
         Some(match m {
+            "admin" => include_str!("admin.rs"),
             "app_bundles" => include_str!("app_bundles.rs"),
             "app_drafts" => include_str!("app_drafts.rs"),
             "client_imports" => include_str!("client_imports.rs"),
             "approvals" => include_str!("approvals.rs"),
+            "audit_trail" => include_str!("audit_trail.rs"),
+            "bot" => include_str!("bot.rs"),
             "artifacts" => include_str!("artifacts.rs"),
             "assets" => include_str!("assets.rs"),
             "connect" => include_str!("connect.rs"),
@@ -287,6 +326,7 @@ mod l10 {
             "live_layers" => include_str!("live_layers.rs"),
             "sample" => include_str!("sample.rs"),
             "sessions" => include_str!("sessions.rs"),
+            "settings" => include_str!("settings.rs"),
             "shell" => include_str!("../shell/mod.rs"),
             "get_page" => include_str!("../shell/get_page.rs"),
             "sites" => include_str!("sites.rs"),
@@ -465,6 +505,14 @@ mod l10 {
         (
             "app_bundles::record_install",
             "an anonymous count of an app's installs, of no one's content",
+        ),
+        (
+            "admin::test",
+            "a read of the provider's model list, recorded as the view view.admin {page: provider.test}",
+        ),
+        (
+            "settings::put",
+            "writes the home's config.toml, not the store; its changes are recorded as admin.settings by the SettingsAudit hook (clax_http::bot::SettingsRecorded)",
         ),
         (
             "remotes::add",
@@ -919,6 +967,37 @@ mod l10 {
                         src.contains("sees_live_pages"),
                         "{name} does not filter by sees_live_pages"
                     ),
+                    Bot => {
+                        assert!(
+                            sig.contains("DeniedToGrants")
+                                && [
+                                    "admin(&s, &d).await?",
+                                    "me(&s, &d).await?",
+                                    "run_caller(&s, &d).await?",
+                                    "reader(&s, &d).await?",
+                                    "admitted(&s, &caller).await?",
+                                    "may_use(&caller)?",
+                                    "admin_reads_history(&s, &d, &who).await?",
+                                    "serve_draft(s, d,",
+                                ]
+                                .iter()
+                                .any(|c| src.contains(c)),
+                            "{name} does not admit its caller through a ClaxBot check"
+                        );
+                        if [
+                            "ArtifactId::parse(&q.",
+                            "ArtifactId::parse(&b.",
+                            "selection.artifacts",
+                        ]
+                        .iter()
+                        .any(|n| src.contains(n))
+                        {
+                            assert!(
+                                src.contains("live_ids.contains"),
+                                "{name} names an artifact without checking for a live page"
+                            );
+                        }
+                    }
                     Owner => assert!(
                         sig.contains("who: Identity")
                             && (src.contains("who.require_owner(")

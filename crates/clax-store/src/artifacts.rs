@@ -657,6 +657,39 @@ impl Store {
         Ok(n)
     }
 
+    /// Deletes the artifacts with no version made more than `older_than`
+    /// ago (by the store's clock): the rows a crash left between an
+    /// artifact's row and its first version's transaction (a create, or
+    /// ClaxBot's `artifacts.create`). A younger one may be a create under
+    /// way, and is kept, as is a live page (`kind` `live`), which has no
+    /// version until its first snapshot. A driver runs it when it starts.
+    /// Returns how many it removed.
+    ///
+    /// # Errors
+    /// The store's.
+    pub async fn sweep_zero_version_artifacts(
+        &self,
+        older_than: chrono::Duration,
+    ) -> Result<usize> {
+        let before = clax_core::time::stamp(self.now_utc() - older_than);
+        let ids: Vec<String> = self.with_read(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id FROM artifacts WHERE current_version = 0 AND deleted_at IS NULL
+                   AND kind <> 'live' AND created_at < ?1 ORDER BY id",
+            )?;
+            Ok(stmt
+                .query_map(params![before], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })?;
+        let mut n = 0;
+        for id in ids {
+            if self.delete_zero_version_async(&id).await? {
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
     /// Deletes artifact `id`'s rows (and any files) under its content lock
     /// while it has no version and is not deleted; whether it did.
     async fn delete_zero_version_async(&self, id: &str) -> Result<bool> {
@@ -773,6 +806,7 @@ impl Store {
                                 (SELECT id FROM assets WHERE artifact_id = ?1)",
                             "DELETE FROM comments WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM thread_moves WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
+                            "DELETE FROM bot_follow_ups WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM threads WHERE artifact_id = ?1",
                             "DELETE FROM watches WHERE artifact_id = ?1",
                             "DELETE FROM docs WHERE artifact_id = ?1",
@@ -1278,6 +1312,36 @@ impl Store {
         written
     }
 
+    /// [`Store::create_artifact_async`] journaled as `entry` (ClaxBot's
+    /// `artifacts.create`): the journal's answer when it holds `entry`'s
+    /// key, creating nothing; else the artifact, its first version and the
+    /// entry, `{id}`, recorded with the version's transaction. When that
+    /// transaction fails (the guard, the journal) the artifact row made
+    /// before it is removed, as for any first version that fails.
+    ///
+    /// # Errors
+    /// [`Store::create_artifact_async`]'s; `key_reused`; the guard's.
+    pub async fn create_artifact_journaled(
+        &self,
+        ctx: &AuditCtx,
+        p: ValidatedPublish,
+        session_id: Option<&str>,
+        entry: &super::bot_runs::CallEntry,
+        guard: super::bot_runs::Guard<'_>,
+    ) -> Result<super::bot_runs::Journaled> {
+        if let Some(prev) = self.journaled(entry)? {
+            return Ok(prev);
+        }
+        let id = ArtifactId::generate();
+        let (_, _, journaled) = self
+            .create_artifact_then_async(ctx, &id, p, session_id, |tx, _| {
+                guard(&super::bot_runs::Tx(tx))?;
+                self.journal_in(tx, entry, serde_json::json!({"id": id.as_str()}))
+            })
+            .await?;
+        Ok(journaled)
+    }
+
     /// Records `p`'s idempotency key, when it names one, as having made
     /// version `n` of `id`, in `tx`: the version's transaction.
     fn record_key_in(
@@ -1506,6 +1570,58 @@ impl Store {
         )
         .await
         .map(|(a, v, ())| (a, v))
+    }
+
+    /// [`Store::publish_version_async`] journaled as `entry` in the
+    /// version's own transaction (ClaxBot's `draft.publish`): the journal's
+    /// answer when it holds `entry`'s key, publishing nothing; else the
+    /// version and its entry, `{version}`, together.
+    ///
+    /// # Errors
+    /// [`Store::publish_version_async`]'s; `key_reused`.
+    pub async fn publish_version_journaled(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        p: ValidatedPublish,
+        session_id: Option<&str>,
+        entry: &super::bot_runs::CallEntry,
+        guard: super::bot_runs::Guard<'_>,
+    ) -> Result<super::bot_runs::Journaled> {
+        if let Some(prev) = self.journaled(entry)? {
+            return Ok(prev);
+        }
+        let current = self.get_artifact(id)?.ok_or(CoreError::NotFound)?;
+        let Some(expected) = p.if_version else {
+            return Err(CoreError::invalid(
+                "if_version_required",
+                "if_version is required when updating an artifact",
+            ));
+        };
+        if expected != current.current_version {
+            return Err(CoreError::Conflict {
+                current: current.current_version,
+            });
+        }
+        let prev = self
+            .get_version(id, current.current_version)?
+            .map(|v| v.files)
+            .unwrap_or_default();
+        self.write_version_then_async(
+            ctx,
+            id,
+            current.current_version,
+            &p,
+            &prev,
+            session_id,
+            |tx, n| {
+                guard(&super::bot_runs::Tx(tx))?;
+                self.record_key_in(tx, &p, id, n)?;
+                self.journal_in(tx, entry, serde_json::json!({"version": n}))
+            },
+        )
+        .await
+        .map(|(_, _, j)| j)
     }
 
     /// Writes version `expected + 1`, carrying forward `prev` entries not

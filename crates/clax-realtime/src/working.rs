@@ -11,7 +11,7 @@ use std::time::Duration;
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Sends each changed artifact's whole list.
-fn announce(events: &EventBus, w: &Working, changed: &Changed) {
+pub fn announce(events: &EventBus, w: &Working, changed: &Changed) {
     for aid in &changed.artifacts {
         events.publish(Event::Working {
             artifact_id: aid.clone(),

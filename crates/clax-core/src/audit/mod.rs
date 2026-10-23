@@ -111,6 +111,24 @@ kinds! {
     TagCreate = "tag.create",
     TagUpdate = "tag.update",
     TagDelete = "tag.delete",
+    BotRunStart = "bot.run_start",
+    BotTurn = "bot.turn",
+    BotScript = "bot.script",
+    BotCall = "bot.call",
+    BotRunEnd = "bot.run_end",
+    BotCancel = "bot.cancel",
+    BotRefused = "bot.refused",
+    ViewRun = "view.run",
+    ViewAdmin = "view.admin",
+    ViewAudit = "view.audit",
+    ViewUsage = "view.usage",
+    AdminRole = "admin.role",
+    AdminFlag = "admin.flag",
+    AdminCredits = "admin.credits",
+    AdminProvider = "admin.provider",
+    AdminKey = "admin.key",
+    AdminCostLine = "admin.cost_line",
+    AdminSettings = "admin.settings",
 }
 
 impl std::fmt::Display for AuditKind {
@@ -205,6 +223,72 @@ pub enum Actor {
     System {
         reason: SystemReason,
     },
+    /// ClaxBot, Clax's own agent, acting for a person (spec
+    /// 2026-10-21-claxbot-design §9.1): `on_behalf_of` is that person's
+    /// key, their public ID or `*owner` ([`crate::visibility::OWNER`]).
+    /// Every ClaxBot step runs under the rights of that person.
+    Bot {
+        on_behalf_of: String,
+    },
+}
+
+/// The kind groups the audit view filters by (spec
+/// 2026-10-21-claxbot-design §9.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KindGroup {
+    /// `view.*`: what someone looked at.
+    Views,
+    /// Every kind outside `view.*`, `bot.*` and `admin.*`: changes to
+    /// artifacts, threads, people and their agents.
+    Changes,
+    /// `bot.*`: ClaxBot runs.
+    Bot,
+    /// `admin.credits` and `admin.cost_line`: credits and limits.
+    Credits,
+    /// `admin.*`.
+    Admin,
+}
+
+impl KindGroup {
+    /// Every group, in the order the audit view lists them.
+    pub const ALL: &'static [KindGroup] = &[
+        KindGroup::Views,
+        KindGroup::Changes,
+        KindGroup::Bot,
+        KindGroup::Credits,
+        KindGroup::Admin,
+    ];
+
+    /// The group's name in a query string (`views`, `changes`, `bot`,
+    /// `credits`, `admin`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KindGroup::Views => "views",
+            KindGroup::Changes => "changes",
+            KindGroup::Bot => "bot",
+            KindGroup::Credits => "credits",
+            KindGroup::Admin => "admin",
+        }
+    }
+
+    /// The group named `s`.
+    pub fn parse(s: &str) -> Option<KindGroup> {
+        KindGroup::ALL.iter().copied().find(|g| g.as_str() == s)
+    }
+
+    /// Whether `kind`, a dotted kind name (known to this build or not), is
+    /// in the group.
+    pub fn contains(self, kind: &str) -> bool {
+        let prefixed = |p: &str| kind.starts_with(p);
+        match self {
+            KindGroup::Views => prefixed("view."),
+            KindGroup::Bot => prefixed("bot."),
+            KindGroup::Admin => prefixed("admin."),
+            KindGroup::Credits => matches!(kind, "admin.credits" | "admin.cost_line"),
+            KindGroup::Changes => !(prefixed("view.") || prefixed("bot.") || prefixed("admin.")),
+        }
+    }
 }
 
 /// The channel a change came through (spec §6.9).
@@ -697,6 +781,24 @@ mod tests {
             "tag.create",
             "tag.update",
             "tag.delete",
+            "bot.run_start",
+            "bot.turn",
+            "bot.script",
+            "bot.call",
+            "bot.run_end",
+            "bot.cancel",
+            "bot.refused",
+            "view.run",
+            "view.admin",
+            "view.audit",
+            "view.usage",
+            "admin.role",
+            "admin.flag",
+            "admin.credits",
+            "admin.provider",
+            "admin.key",
+            "admin.cost_line",
+            "admin.settings",
         ];
         let names: Vec<&str> = AuditKind::ALL.iter().map(|k| k.as_str()).collect();
         assert_eq!(names, spec);
@@ -805,6 +907,12 @@ mod tests {
             ),
             (Actor::Anonymous, json!({"type":"anonymous"})),
             (
+                Actor::Bot {
+                    on_behalf_of: "u_77c0".into(),
+                },
+                json!({"type":"bot","on_behalf_of":"u_77c0"}),
+            ),
+            (
                 Actor::System {
                     reason: SystemReason::Ttl,
                 },
@@ -834,6 +942,46 @@ mod tests {
             let back: Actor = serde_json::from_value(want).unwrap();
             assert_eq!(back, actor);
         }
+    }
+
+    #[test]
+    fn kind_groups_partition_by_prefix() {
+        for g in KindGroup::ALL {
+            assert_eq!(KindGroup::parse(g.as_str()), Some(*g));
+        }
+        assert_eq!(KindGroup::parse("Views"), None);
+        let in_group = |g: KindGroup| -> Vec<&str> {
+            AuditKind::ALL
+                .iter()
+                .map(|k| k.as_str())
+                .filter(|k| g.contains(k))
+                .collect()
+        };
+        assert_eq!(
+            in_group(KindGroup::Views),
+            ["view.run", "view.admin", "view.audit", "view.usage"]
+        );
+        assert_eq!(in_group(KindGroup::Bot).len(), 7);
+        assert_eq!(in_group(KindGroup::Admin).len(), 7);
+        assert_eq!(
+            in_group(KindGroup::Credits),
+            ["admin.credits", "admin.cost_line"]
+        );
+        // Every kind is in exactly one of views, changes, bot and admin.
+        for k in AuditKind::ALL {
+            let n = [
+                KindGroup::Views,
+                KindGroup::Changes,
+                KindGroup::Bot,
+                KindGroup::Admin,
+            ]
+            .iter()
+            .filter(|g| g.contains(k.as_str()))
+            .count();
+            assert_eq!(n, 1, "{k}");
+        }
+        assert!(KindGroup::Changes.contains("version.publish"));
+        assert!(KindGroup::Changes.contains("some.future_kind"));
     }
 
     #[test]

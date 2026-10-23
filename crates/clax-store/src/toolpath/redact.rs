@@ -325,6 +325,48 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("tag.update", "fields") => Fields,
         ("tag.delete", "name") => Text,
         ("tag.delete", "tag_id" | "artifacts") => Safe,
+        // ClaxBot (spec 2026-10-21-claxbot-design §9.1): script code is kept
+        // by hash, never in the body; a script's title and error are the
+        // model's text.
+        ("bot.run_start", "run" | "request" | "thread_ids" | "model" | "key_source") => Safe,
+        (
+            "bot.turn",
+            "run" | "step" | "model" | "input_tokens" | "cached_tokens" | "output_tokens"
+            | "stop_reason" | "credits_milli" | "key_source",
+        ) => Safe,
+        ("bot.script", "title" | "error") => Text,
+        (
+            "bot.script",
+            "run" | "step" | "code_sha256" | "calls" | "cpu_ms" | "mem_peak" | "credits_milli",
+        ) => Safe,
+        // A call's target is whatever the script named (a path, a document
+        // ID, a query), and a run's end reason may be the model's own words
+        // (`give_up`): both are text.
+        ("bot.call", "run" | "step" | "op" | "ok") => Safe,
+        ("bot.call", "target") => Text,
+        ("bot.run_end", "run" | "outcome" | "credits_milli") => Safe,
+        ("bot.run_end", "reason") => Text,
+        ("bot.cancel", "run" | "by") => Safe,
+        // A refusal before any model call: who, why (a code) and where.
+        ("bot.refused", "person" | "reason" | "artifact") => Safe,
+        ("view.run", "run") => Safe,
+        ("view.admin", "page" | "subject_person") => Safe,
+        // A search's words are the reader's text.
+        ("view.audit", "filters") => Text,
+        ("view.usage", "subject_person" | "week") => Safe,
+        ("admin.role", "person" | "role" | "op") => Safe,
+        ("admin.flag", "person" | "flag" | "value") => Safe,
+        ("admin.credits", "person" | "lift_from" | "lift_to") => Safe,
+        ("admin.credits", "reason") => Text,
+        // The provider settings' new values: a URL without query or
+        // fragment, model IDs and numbers (never a key).
+        ("admin.provider", "fields" | "values") => Safe,
+        ("admin.key", "scope" | "op" | "last4" | "person" | "value") => Safe,
+        ("admin.cost_line", "line" | "op") => Safe,
+        ("admin.cost_line", "fields") => Fields,
+        // The keys of the local daemon's settings written to config.toml
+        // (`serve.port`), never their values.
+        ("admin.settings", "fields") => Safe,
         _ => Class::Unclassified,
     }
 }
@@ -332,7 +374,7 @@ fn body_class(kind: &str, field: &str) -> Class {
 fn actor_class(field: &str) -> Class {
     match field {
         "type" | "session_id" | "harness" | "harness_session_id" | "agent_handle" | "public_id"
-        | "reason" | "grant_id" | "person" | "channel" => Class::Safe,
+        | "reason" | "grant_id" | "person" | "channel" | "on_behalf_of" => Class::Safe,
         "display_name" | "client_name" => Class::Name,
         "transcript_path" => Class::Path,
         _ => Class::Unclassified,
@@ -353,6 +395,16 @@ fn fields_class(field: &str) -> Class {
         "icon" | "pinned" | "link_access" | "link_listed" | "db_read_grants" | "colour" => {
             Class::Safe
         }
+        // A cost line's figures (`admin.cost_line`).
+        "unit"
+        | "cost_micro_usd"
+        | "margin_bp"
+        | "applies"
+        | "model"
+        | "fixed_credits_milli"
+        | "credit_price_micro_usd"
+        | "free_weekly_milli" => Class::Safe,
+        "label" | "source" => Class::Text,
         // An artifact's tags and a tag's name are names the owner wrote.
         "title" | "description" | "capabilities" | "tags" | "name" => Class::Text,
         // A share names a person by public ID and a GitHub login.

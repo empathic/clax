@@ -13,7 +13,8 @@
   // first); the arrow keys, Home and End move through it; Escape, there or
   // on the button that opened it, closes it and gives focus back to that
   // button, as choosing an agent does; Tab out of it closes it. Names are
-  // text.
+  // text. ClaxBot leads, in its own "Clax" group, with its availability
+  // line; while it is not available it is listed, disabled, saying why.
   import type { AgentView } from "../view/working-model";
   import { type AskFirsts, firstsVia, sendGroups } from "../view/send-menu";
 
@@ -63,8 +64,8 @@
     <div role="group" aria-label={g.label}>
       {#if headed}<p class="send-group-h" aria-hidden="true">{g.label}</p>{/if}
       {#each g.agents as a (a.handle)}
-        <button type="button" role="menuitemradio" aria-checked={a.handle === target} class="ghost" tabindex="-1" onclick={() => { onChoose(a.handle); close(); }}
-          ><span class="send-name">{a.name}</span>{#if a.person && headed}{" "}<small class="send-person">{a.person}</small>{/if}{#if a.first}{" "}<small class="send-first">{a.first}</small>{/if}</button>
+        <button type="button" role="menuitemradio" aria-checked={a.handle === target} aria-disabled={a.off || undefined} class="ghost" tabindex="-1" onclick={() => { if (a.off) return; onChoose(a.handle); close(); }}
+          ><span class="send-name">{a.name}</span>{#if a.person && headed}{" "}<small class="send-person">{a.person}</small>{/if}{#if a.first}{" "}<small class="send-first">{a.first}</small>{/if}{#if a.line}<small class="send-line">{a.line}</small>{/if}</button>
       {/each}
     </div>
   {/each}
@@ -80,6 +81,9 @@
     .send-menu .send-name { min-width: 0; overflow-wrap: anywhere; }
     .send-menu .send-first, .send-menu .send-person { font: 400 11.5px var(--font); color: var(--muted); }
     .send-menu .send-person + .send-first::before { content: "· "; }
+    .send-menu .send-line { flex-basis: 100%; font: 400 11.5px/1.35 var(--font); color: var(--muted); padding-bottom: 4px; }
+    .send-menu button[aria-disabled="true"] { cursor: default; }
+    .send-menu button[aria-disabled="true"] .send-name { color: var(--muted); }
     @media (max-width: 700px) { .send-menu button { min-height: 40px; } }
   }
 </style>

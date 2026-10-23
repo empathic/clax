@@ -597,6 +597,13 @@ impl TestServer {
         let grant_auth = Arc::new(clax_http::grant_auth::GrantAuth::load(&store).unwrap());
         let vis_gen = clax_http::state::VisGen::install(&store);
         let mut state = AppState {
+            settings: Arc::new(clax_http::settings::Settings::at_start(&home, false)),
+            // A fixed key-encryption key, so key routes work; no driver:
+            // runs stay queued unless a test installs one.
+            bot: Arc::new(clax_http::bot::Bot {
+                kek: Some(clax_store::secrets::Kek::from_bytes([7; 32])),
+                ..Default::default()
+            }),
             store,
             home: home.clone(),
             token: token.clone(),

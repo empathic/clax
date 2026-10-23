@@ -138,7 +138,8 @@ jobs:
       # build.rs refuses a wasm32 build without it).
       - name: Build the web UI
         run: scripts/pnpm-install-stamped.sh web --silent && scripts/build-web.sh
-      # Its tests, clippy, and the wasm build under wrangler (test-wasm.mjs).
+      # Its tests, clippy, the wasm build under wrangler (test-wasm.mjs) and
+      # the sandbox conformance suite on it (test-sandbox.mjs).
       - name: Run the Worker's checks (scripts/worker-checks.sh)
         run: scripts/worker-checks.sh
       - name: Install Chromium

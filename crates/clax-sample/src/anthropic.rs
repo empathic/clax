@@ -3,15 +3,15 @@
 //! blocks (thinking blocks with their signatures included) are collected as
 //! they stream and handed back whole in `ProviderEvent::End`, so the next tool
 //! round can pass them back unchanged. Provider error messages have the key
-//! replaced by `[redacted]`.
+//! replaced by `[redacted]`. Requests go through `crate::transport`, which
+//! never follows a redirect: a 3xx answer is an `Upstream` error.
 
 use super::provider::*;
 use super::sse::SseParser;
+use super::transport::Transport;
 use futures::StreamExt;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -45,7 +45,7 @@ impl std::fmt::Debug for KeySource {
 }
 
 pub struct AnthropicProvider {
-    client: reqwest::Client,
+    http: Transport,
     base_url: String,
     key: KeySource,
 }
@@ -67,25 +67,11 @@ impl AnthropicProvider {
     /// while a slot is empty ends in one `sampling_disabled` error.
     pub fn with_source(base_url: impl Into<String>, key: KeySource) -> AnthropicProvider {
         AnthropicProvider {
-            client: client(),
+            http: Transport::new(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
             key,
         }
     }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .build()
-        .expect("a reqwest client with default TLS")
-}
-
-/// The Worker's `fetch`, which has no connect timeout to set.
-#[cfg(target_arch = "wasm32")]
-fn client() -> reqwest::Client {
-    reqwest::Client::new()
 }
 
 fn block_json(b: &Block) -> Value {
@@ -339,7 +325,7 @@ impl Accumulator {
 }
 
 async fn run(
-    client: reqwest::Client,
+    http: Transport,
     url: String,
     key: String,
     req: ProviderRequest,
@@ -349,12 +335,12 @@ async fn run(
         code: ProviderErrorCode::Upstream,
         message: m,
     };
-    let res = match client
-        .post(&url)
-        .header("x-api-key", &key)
-        .header("anthropic-version", API_VERSION)
-        .json(&request_body(&req))
-        .send()
+    let headers = [
+        ("x-api-key", key.clone()),
+        ("anthropic-version", API_VERSION.to_string()),
+    ];
+    let res = match http
+        .send("POST", &url, &headers, Some(&request_body(&req)))
         .await
     {
         Ok(r) => r,
@@ -368,15 +354,19 @@ async fn run(
             return;
         }
     };
-    let status = res.status().as_u16();
-    if !res.status().is_success() {
-        let body = res.text().await.unwrap_or_default();
-        let _ = tx.send(http_error(status, &body, &key)).await;
+    if !res.success() {
+        let mut body = Vec::new();
+        let mut chunks = res.body;
+        while let Some(Ok(c)) = chunks.next().await {
+            body.extend_from_slice(&c);
+        }
+        let body = String::from_utf8_lossy(&body);
+        let _ = tx.send(http_error(res.status, &body, &key)).await;
         return;
     }
     let mut parser = SseParser::default();
     let mut acc = Accumulator::default();
-    let mut bytes = res.bytes_stream();
+    let mut bytes = res.body;
     while let Some(chunk) = bytes.next().await {
         let chunk = match chunk {
             Ok(c) => c,
@@ -431,15 +421,12 @@ impl super::provider::SampleProvider for AnthropicProvider {
             });
             return Box::pin(ReceiverStream::new(rx));
         };
-        let (client, url) = (
-            self.client.clone(),
-            format!("{}/v1/messages", self.base_url),
-        );
+        let (http, url) = (self.http.clone(), format!("{}/v1/messages", self.base_url));
         clax_rt::spawn(async move {
             let closed = tx.clone();
             tokio::select! {
                 () = closed.closed() => {}
-                () = run(client, url, key, req, tx) => {}
+                () = run(http, url, key, req, tx) => {}
             }
         });
         Box::pin(ReceiverStream::new(rx))

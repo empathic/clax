@@ -213,11 +213,15 @@ test("thread cards are reachable and selectable from the keyboard", async ({ pag
   await contentFrame(page, artifact.id, 1);
   const first = page.locator(".thread-card").filter({ hasText: "first" });
   const second = page.locator(".thread-card").filter({ hasText: "second" });
+  // ClaxBot, listed as a built-in agent (not configured here), brings each
+  // card's Send a caret once the roster has loaded after the first paint.
+  await expect(first.getByRole("button", { name: "Choose the agent" })).toBeVisible();
   await first.locator("button.card-head").focus();
   await page.keyboard.press("Enter");
   await expect(first).toHaveClass(/selected/);
   await page.keyboard.press("Tab"); // Resolve
   await page.keyboard.press("Tab"); // Send to the agent
+  await page.keyboard.press("Tab"); // Choose the agent
   await page.keyboard.press("Tab"); // Reply input
   await page.keyboard.press("Tab"); // Reply button
   await page.keyboard.press("Tab"); // the second card's box, for a batch send

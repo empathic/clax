@@ -599,6 +599,10 @@ pub struct BriefBody {
     title: String,
     /// What the person wants built: the artifact's first thread.
     brief: String,
+    /// `claxbot`: ClaxBot builds it now (spec 2026-10-21-claxbot-design
+    /// §6.4), from a run of the brief acting for the person.
+    #[serde(default)]
+    build: Option<String>,
 }
 
 /// Why `caller` may not start an artifact from a brief, or `None` when it
@@ -703,6 +707,7 @@ pub async fn create_from_brief(
         },
     };
     let b = body(req)?;
+    let b_build = b.build.is_some();
     let title = clax_core::brief::check_title(&b.title)?;
     let brief = clax_core::brief::check_brief(&b.brief)?;
     if brief.chars().count() > clax_store::threads::MAX_BODY_CHARS {
@@ -718,6 +723,35 @@ pub async fn create_from_brief(
         Caller::Person { viewer } => Some(viewer.public_id.clone()),
         _ => None,
     };
+    let build = match b.build.as_deref() {
+        None => None,
+        Some(clax_http::bot::HANDLE) => {
+            Some(super::bot::acting_for(&caller).ok_or_else(|| {
+                ApiError::forbidden("forbidden", "ClaxBot builds only for a person")
+            })?)
+        }
+        Some(other) => {
+            return Err(ApiError::bad_request(
+                "invalid_build",
+                format!("build is claxbot, not '{other}'"),
+            ));
+        }
+    };
+    if let Some(bp) = build.clone() {
+        // Refused before anything is made (and recorded as bot.refused).
+        let bot = s.bot.clone();
+        let c = caller.clone();
+        s.store_call(move |st| {
+            if let Some(code) = super::bot::refusal(st, &bot, &bp)? {
+                let ctx = clax_http::bot::caller_ctx(st, &c)?;
+                st.record_refused(&ctx, &bp, code, None)?;
+                return Err(super::bot::refused_error(st, &bp, code)?);
+            }
+            Ok(())
+        })
+        .await?;
+    }
+    let bot = s.bot.clone();
     let starter = person
         .clone()
         .unwrap_or_else(|| clax_store::briefs::OWNER_STARTER.to_string());
@@ -740,7 +774,7 @@ pub async fn create_from_brief(
     let ctx = s.feedback_ctx();
     let with_path = d.holds_token();
     let vf = VisFor::of(&caller, &s);
-    let (artifact, version, thread, again) = s
+    let (artifact, version, thread, again, run) = s
         .store_call_async(move |st| async move {
             let st = &*st;
             // Held until the key is recorded: the same request sent again
@@ -766,8 +800,15 @@ pub async fn create_from_brief(
                     };
                     let vis = vf.build(st)?;
                     let (a, v) = vis.filter_published(st, &a, &v)?;
+                    let run = match &build {
+                        Some(_) => st
+                            .runs_for_thread(&t.id, 1)?
+                            .first()
+                            .map(|r| json!({"id": r.id})),
+                        None => None,
+                    };
                     let t = vis.filter_thread(st, t, ctx.codex_push(), with_path)?;
-                    return Ok((a, v, t, true));
+                    return Ok((a, v, t, true, run));
                 }
             }
             let audit = audit.resolve(st)?;
@@ -840,11 +881,42 @@ pub async fn create_from_brief(
             let vis = vf.build(st)?;
             let (a, v) = vis.filter_published(st, &artifact, &version)?;
             let t = vis.filter_thread(st, &thread, ctx.codex_push(), with_path)?;
-            Ok((a, v, t, false))
+            let run = match &build {
+                Some(bp) => {
+                    let sender = super::bot::Sender {
+                        person: bp.clone(),
+                        agent_grant: None,
+                    };
+                    let r = super::bot::start_run(
+                        st,
+                        &bot,
+                        &audit,
+                        &sender,
+                        &aid,
+                        clax_store::bot_runs::RequestKind::Brief,
+                        vec![thread.id.clone()],
+                    );
+                    match r {
+                        Ok(r) => {
+                            bot.runs.started(&r.id);
+                            Some(json!({"id": r.id}))
+                        }
+                        // Refused since the check above (and recorded): the
+                        // artifact and its brief stand, for an agent to build.
+                        Err(CoreError::Invalid { .. }) => None,
+                        Err(e) => return Err(e),
+                    }
+                }
+                None => None,
+            };
+            Ok((a, v, t, false, run))
         })
         .await?;
     let url = format!("/a/{}", artifact["id"].as_str().unwrap_or_default());
     let mut v = json!({"artifact": artifact, "version": version, "url": url, "thread": thread});
+    if b_build {
+        v["run"] = json!(run);
+    }
     if let Some(a) = v.get_mut("artifact") {
         mark_brief(&s, std::slice::from_mut(a)).await?;
     }

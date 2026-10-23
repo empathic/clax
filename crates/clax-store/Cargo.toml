@@ -11,6 +11,10 @@ workspace = true
 clax-core = { path = "../clax-core" }
 base64.workspace = true
 chrono.workspace = true
+# XChaCha20-Poly1305 for sealed secrets (`secrets`), without getrandom: the
+# nonces come from clax-core's random source.
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+zeroize = { version = "1", default-features = false }
 mime_guess.workspace = true
 rand.workspace = true
 rusqlite.workspace = true

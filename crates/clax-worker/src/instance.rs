@@ -94,6 +94,21 @@
 //! ahead, the daemon's own sweep period. A server built anew starts a grace
 //! for each open hook question no poll holds (its poll did not outlive the
 //! old one).
+//!
+//! # ClaxBot
+//!
+//! The server's ClaxBot driver (`crate::bot`) is made with it, its routes'
+//! wakes queued for the object. A run started or cancelled wants the alarm
+//! at once (not [`MIN_ALARM_MS`] ahead); the alarm then drives the runs for
+//! its budget (`crate::bot::alarm_budget`), working the timed work above as
+//! it falls due meanwhile (no other alarm runs before this one ends) and
+//! keeping the alarm `crate::bot::RESUME_AFTER` ahead, and is set
+//! afterwards for the earliest of the driver's next wake and that work. A
+//! run's events (`GET /api/bot/runs/<id>/events`) stream as the router's
+//! SSE response from the object: an open stream holds the object awake,
+//! and lasts no longer than its run; after an eviction the reader
+//! reconnects with its `Last-Event-ID` and the new server replays the
+//! committed steps.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -217,6 +232,8 @@ struct Instance {
     kept: RefCell<String>,
     /// Whether the open hook questions' graces were started.
     graced: Cell<bool>,
+    /// ClaxBot's driver (`crate::bot`).
+    bot: crate::bot::WorkerBot,
     /// Kept so the streams' `shutdown` never closes.
     _shutdown: tokio::sync::watch::Sender<bool>,
     /// Dropped last: keeps the database file in the VFS.
@@ -420,6 +437,77 @@ fn clax_app(env: &Env) -> Result<clax_core::config::ClaxApp> {
     .map_err(rust_err)
 }
 
+/// ClaxBot's state for the routes and its driver (`crate::bot`), as the
+/// daemon's `clax_server::bot::driver` makes them: the key-encryption key
+/// from the `CLAX_KEK` secret alone (never a plain var; unset or not a
+/// key: no key is stored or opened, the key routes answer 503 `no_kek`
+/// and a send to ClaxBot is refused `not_configured`), no configured
+/// overrides and no environment key; the Worker Loader sandbox, made
+/// first (when it cannot be, ClaxBot is off: `enabled` is false and a send
+/// is refused `not_configured`); the server's host; and a driver of its
+/// own ID, installed as the routes' run seam.
+fn worker_bot(env: &Env, app: &mut AppState) -> crate::bot::WorkerBot {
+    let kek_secret = env
+        .secret("CLAX_KEK")
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    let kek = match crate::bot::kek_of(&kek_secret) {
+        Ok(Some(k)) => Some(k),
+        Ok(None) => {
+            worker::console_warn!("CLAX_KEK is not set: ClaxBot stores and opens no model key");
+            None
+        }
+        Err(why) => {
+            worker::console_error!("{why}: ClaxBot stores and opens no model key");
+            None
+        }
+    };
+    let sandbox = crate::bot::sandbox(env).map_err(|e| {
+        worker::console_error!("ClaxBot is off: its sandbox could not be made: {e}");
+    });
+    let enabled = sandbox.is_ok();
+    let sandbox = sandbox.unwrap_or_else(|()| Arc::new(clax_server::bot::UnavailableSandbox));
+    let first = crate::bot::routes_bot(kek, enabled, Arc::new(clax_http::bot::NoRuns));
+    let (events, views, keys) = (first.events.clone(), first.views.clone(), first.keys());
+    app.bot = Arc::new(first);
+    // The server's own host, over the state the routes see.
+    let server_host = Arc::new(clax_server::bot::ServerHost::new(app.clone()));
+    let host: Arc<dyn clax_bot::BotHost> = server_host.clone();
+    let (bot, kicks) = crate::bot::WorkerBot::new(crate::bot::Parts {
+        store: app.store.clone(),
+        sandbox,
+        host,
+        enabled,
+        keys: keys.clone(),
+        events: events.clone(),
+        resume_after: resume_after(env),
+    });
+    // A run's end may start a follow-up: it goes to the driver as the
+    // routes' wakes do, and wants the alarm.
+    server_host.set_runs(kicks.clone());
+    app.bot = Arc::new(clax_http::bot::Bot {
+        kek: keys.kek,
+        env_key: None,
+        enabled,
+        views,
+        runs: kicks,
+        events,
+    });
+    bot
+}
+
+/// How far ahead the alarm is kept while ClaxBot drives:
+/// `crate::bot::RESUME_AFTER`, or with the test routes on,
+/// `CLAX_TEST_RESUME_AFTER_MS` (a test that waits for a resume from the
+/// alarm alone).
+fn resume_after(env: &Env) -> std::time::Duration {
+    let set = (var(env, "CLAX_TEST_ROUTES") == "1")
+        .then(|| var(env, "CLAX_TEST_RESUME_AFTER_MS").parse::<u64>().ok())
+        .flatten()
+        .filter(|ms| *ms >= 1_000);
+    set.map_or(crate::bot::RESUME_AFTER, std::time::Duration::from_millis)
+}
+
 /// The seats and presence the object keeps across a wake.
 #[derive(Default, Serialize, Deserialize)]
 struct Kept {
@@ -480,6 +568,15 @@ impl Instance {
         })
         .map_err(rust_err)?;
         app.clax_app = Arc::new(clax_app(env)?);
+        // A test's scripted provider listens on a loopback http port; only
+        // the test vars, never a setting an admin reaches, let the key go
+        // there (the Worker otherwise sends it to public https hosts alone).
+        if var(env, "CLAX_TEST_ROUTES") == "1" && var(env, "CLAX_TEST_LOOPBACK_PROVIDER") == "1" {
+            app.store.set_base_url_policy(
+                clax_store::bot_settings::BaseUrlPolicy::HostedLoopbackForTests,
+            );
+        }
+        let bot = worker_bot(env, &mut app);
         app.seats
             .set_limits(clax_core::seats::SeatLimits::from_env(|k| {
                 Some(var(env, k)).filter(|v| !v.is_empty())
@@ -499,6 +596,7 @@ impl Instance {
             sockets: RefCell::default(),
             kept: RefCell::new(kept_json),
             graced: Cell::new(false),
+            bot,
             _shutdown: shutdown_tx,
             _db: db,
         });
@@ -831,10 +929,13 @@ impl InstanceDo {
         again
     }
 
-    /// What every event starts with: the sockets the object holds but has
+    /// What every event starts with: ClaxBot's driver started (once), the
+    /// sockets the object holds but has
     /// nothing for (accepted before it hibernated or was evicted) reopened,
     /// and, once per server, a grace for each open hook question.
     async fn revive(&self, inst: &Rc<Instance>) {
+        // ClaxBot's driver starts at the incarnation's first event.
+        inst.bot.start(now_ms()).await;
         if !inst.graced.replace(true) {
             let _ = clax_http::views::question::arm_open_hooks(&inst.app).await;
         }
@@ -979,6 +1080,12 @@ impl InstanceDo {
             .next_due(inst)
             .await
             .map(|at| at.max(now + MIN_ALARM_MS));
+        // ClaxBot's work is wanted when it is due, now included.
+        let bot = inst.bot.due(now).map(|at| at.max(now));
+        let want = match (want, bot) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         match (set, want) {
             (None, None) => {}
             (Some(_), None) => {
@@ -1107,29 +1214,53 @@ impl InstanceDo {
     /// - `POST /_worker/hibernate` drops the server and builds it again on
     ///   the same storage, as a wake from hibernation does, keeping the
     ///   sockets;
-    /// - `GET /_worker/alarm`: `{alarm, now}`, the time the object's alarm
-    ///   is set for (ms, `null` with none) and the object's time.
+    /// - `GET /_worker/alarm`: `{alarm, now, bot}`, the time the object's
+    ///   alarm is set for (ms, `null` with none), the object's time, and
+    ///   when ClaxBot's driver wants the alarm (`null`: never);
+    /// - `GET` and `POST /_worker/sandbox`: the ClaxBot sandbox's
+    ///   conformance cases against the Worker Loader sandbox, run on this
+    ///   object (`crate::sandbox::checks`).
     async fn test_route(
         &self,
         inst: &Rc<Instance>,
         req: &axum::http::Request<axum::body::Body>,
     ) -> Option<Result<Response>> {
         let path = req.uri().path();
-        if !matches!(path, "/_worker/hibernate" | "/_worker/alarm")
-            || var(&self.env, "CLAX_TEST_ROUTES") != "1"
+        if !matches!(
+            path,
+            "/_worker/hibernate" | "/_worker/alarm" | "/_worker/sandbox"
+        ) || var(&self.env, "CLAX_TEST_ROUTES") != "1"
         {
             return None;
         }
         if !clax_http::auth::has_token(req.headers(), &inst.app.token) {
             return Some(Response::error("the token is required", 401));
         }
+        if path == "/_worker/sandbox" {
+            #[cfg(target_arch = "wasm32")]
+            {
+                let query = req.uri().query().unwrap_or_default().to_string();
+                return crate::sandbox::checks::route(
+                    &self.env,
+                    path,
+                    req.method().as_str(),
+                    &query,
+                )
+                .await;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            return None;
+        }
         if path == "/_worker/alarm" {
             let alarm = match self.state.storage().get_alarm().await {
                 Ok(at) => at,
                 Err(e) => return Some(Err(e)),
             };
+            let now = now_ms();
+            // When ClaxBot's driver wants the alarm (ms), `null` for never.
+            let bot = inst.bot.due(now).map(|t| t as i64);
             return Some(Response::from_json(
-                &serde_json::json!({ "alarm": alarm, "now": now_ms() as i64 }),
+                &serde_json::json!({ "alarm": alarm, "now": now as i64, "bot": bot }),
             ));
         }
         // What a wake finds: only what storage kept.
@@ -1205,6 +1336,7 @@ impl DurableObject for InstanceDo {
             self.wrote.set(true);
         }
         let mut res = inst.router.clone().call(req).await.map_err(rust_err)?;
+        inst.bot.take_wakes(now_ms());
         let out = match Self::opened(&mut res) {
             Some((carried, att)) => self.accept(&inst, carried, att),
             None => {
@@ -1262,6 +1394,48 @@ impl DurableObject for InstanceDo {
             return Response::ok("");
         };
         self.revive(&inst).await;
+        self.timed_work(&inst).await;
+        if inst.bot.is_due(now_ms()) {
+            let bot = &inst.bot;
+            let budget = bot.budget();
+            bot.begin();
+            // The alarm that follows an invocation ended early.
+            self.schedule(&inst).await;
+            let beat = bot.resume_after() / 2;
+            let drive = bot.drive(budget, now_ms);
+            // The instance's own timed work goes on while the runs tick
+            // (no other alarm runs before this one ends).
+            let timed = async {
+                loop {
+                    let now = now_ms();
+                    let at = self
+                        .next_due(&inst)
+                        .await
+                        .map(|at| at.max(now + MIN_ALARM_MS));
+                    let wait = at.map_or(beat, |at| {
+                        std::time::Duration::from_millis((at - now).max(0.0) as u64).min(beat)
+                    });
+                    clax_rt::time::sleep(wait).await;
+                    self.timed_work(&inst).await;
+                    inst.settle().await;
+                    // Keeps the seats, and the alarm RESUME_AFTER ahead.
+                    self.schedule(&inst).await;
+                }
+            };
+            futures_util::pin_mut!(drive);
+            futures_util::pin_mut!(timed);
+            let _ = futures_util::future::select(drive, timed).await;
+        }
+        inst.settle().await;
+        self.schedule(&inst).await;
+        Response::ok("")
+    }
+}
+
+impl InstanceDo {
+    /// The instance's timed work that is due (the module docs' Alarm):
+    /// the sweep, grants expired, sessions unseen, the planner refresh.
+    async fn timed_work(&self, inst: &Instance) {
         inst.app.sweep().await;
         let now = now_ms();
         let grants_due = inst
@@ -1292,9 +1466,6 @@ impl DurableObject for InstanceDo {
             self.wrote.set(false);
             let _ = inst.app.store.call(|st| st.optimize()).await;
         }
-        inst.settle().await;
-        self.schedule(&inst).await;
-        Response::ok("")
     }
 }
 

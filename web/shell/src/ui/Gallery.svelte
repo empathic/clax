@@ -26,7 +26,10 @@
   // A tag filter, like a search (which matches tag names too), shows one
   // list. The bar links to the tags at `/tags`, the Tags page (its own
   // chunk, through the lazy module, like People), where no artifacts are
-  // fetched.
+  // fetched; so are ClaxBot's pages, `/admin`, `/settings`, `/me` and
+  // `/audit` (`bot/`). Once the lazy module loads, the New artifact tile
+  // (`NewTile`) leads the first section's grid (searched or filtered
+  // too), and the empty gallery.
   import { onDestroy, onMount } from "svelte";
   import { ApiError, type Artifact, type AttentionSummary, type TagRef, deleteArtifact, getAttention, getToken, listArtifacts, patchArtifact } from "../api";
   import { REQUEST_STUCK, connTrouble } from "../conn-notice";
@@ -63,8 +66,9 @@
   let feed = $state<import("./working-feed.svelte").WorkingFeed | null>(null);
   let sync: import("./card-sync").CardSync | null = null;
   const inbox = location.pathname === "/inbox";
-  const people = location.pathname === "/people";
-  const tagsAt = location.pathname === "/tags";
+  // The pages beside the gallery and the inbox, each its own chunk (`gallery-working` `page`).
+  const sub = /^\/(people|tags|admin|settings|me|audit)$/.exec(location.pathname)?.[1] as import("./gallery-working").Page | undefined;
+  const people = sub === "people";
   // The tag filter: the artifacts shown carry every one. It holds tag IDs
   // once the tags are known (`canonical`), and the address (`?tag=`) names
   // each tag by its name, so a rename follows in place and a deleted tag
@@ -102,7 +106,7 @@
   // unread summary's.
   // The lazy module, once loaded (on every path): People in the header comes from it.
   let lm = $state<typeof import("./gallery-working") | null>(null);
-  const loadQ = (m: typeof import("./gallery-working")) => { if (!destroyed) lm = m; return m.inboxBrowser(mine, life.signal).then(o => (o && !destroyed ? Promise.all([m.q(), inbox ? m.inboxPage() : null, inbox || people ? null : m.summary()]) : null)).then(async r => {
+  const loadQ = (m: typeof import("./gallery-working")) => { if (!destroyed) lm = m; return m.inboxBrowser(mine, life.signal).then(o => (o && !destroyed ? Promise.all([m.q(), inbox ? m.inboxPage() : null, inbox || sub ? null : m.summary()]) : null)).then(async r => {
     if (destroyed) return;
     if (!r) { owner = false; return; }
     Q = r[0];
@@ -143,7 +147,7 @@
   const g = $derived(shown && gw && !flat ? gw.groups(shown, att) : null);
   // This browser's viewer, asked once (after the token: on this machine that makes it the owner's).
   let mine: Promise<import("../people/PeopleLink.svelte").Viewer>;
-  onMount(() => { mine = getToken().then(t => { token = t; if (t?.startsWith("cxo_")) site = location.host; if (!t || t.startsWith("cxo_")) void fetch("/api/hosted/me").then(r => r.ok && r.json()).then((h: import("../hosted/api").HostedMe | false) => { if (h && !destroyed) { site = location.host; legal = h.legal ?? null; if (legal) void import("../hosted/legal").then(m => m.ask(h.legal!)); } }, () => {}); return fetch("/api/viewers/me"); }).then(r => r.json()).then(b => (viewer = b?.viewer), () => null); if (inbox) void lazy().then(loadQ, () => {}); else if (people || tagsAt) void lazy().then(m => { void loadQ(m); if (!destroyed) unPeople = (people ? m.peoplePage : m.tagsPage)(document.querySelector("main.gal")!); }, () => {}); else void refresh(true); });
+  onMount(() => { mine = getToken().then(t => { token = t; if (t?.startsWith("cxo_")) site = location.host; if (!t || t.startsWith("cxo_")) void fetch("/api/hosted/me").then(r => r.ok && r.json()).then((h: import("../hosted/api").HostedMe | false) => { if (h && !destroyed) { site = location.host; legal = h.legal ?? null; if (legal) void import("../hosted/legal").then(m => m.ask(h.legal!)); } }, () => {}); return fetch("/api/viewers/me"); }).then(r => r.json()).then(b => (viewer = b?.viewer), () => null); if (inbox) void lazy().then(loadQ, () => {}); else if (sub) void lazy().then(m => { void loadQ(m); if (!destroyed) unPeople = m.page(sub, document.querySelector("main.gal")!); }, () => {}); else void refresh(true); });
   onDestroy(() => { destroyed = true; unPeople?.(); life.dispose(); cancelStart?.(); sync?.stop(); Q?.stop(); });
   // Back and forward walk the tag filters.
   const popped = () => { sel = tagsFromUrl(location.search); };
@@ -153,17 +157,17 @@
 
 <header class="gbar">
   <a href="/" class="home" aria-label="Gallery"><Mark /></a><h1>Clax</h1><span class="sub hide-sm">{site ?? "local artifacts"}{#if me}{` · seen as ${me}`}{/if}</span>
-  {#if !inbox && !people && !tagsAt}<input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" value={query} oninput={e => { query = e.currentTarget.value; }} />{/if}
+  {#if !inbox && !sub}<input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" value={query} oninput={e => { query = e.currentTarget.value; }} />{/if}
   {#if Q}<Q.InboxLink current={inbox} />{/if}
   {#if lm}<lm.Links current={people} owner={!!token} {viewer} />{/if}
   <ThemeSwitch />
 </header>
 <main class="gal">
-  {#if inbox}{#if owner && Page}<Page stream={lm?.pageStream()} />{:else if owner === false}<p class="empty">This browser has no inbox: open the owner's at http://localhost:{location.port}/inbox on the computer Clax runs on.</p>{/if}{:else if !people && !tagsAt}
+  {#if inbox}{#if owner && Page}<Page stream={lm?.pageStream()} />{:else if owner === false}<p class="empty">This browser has no inbox: open the owner's at http://localhost:{location.port}/inbox on the computer Clax runs on.</p>{/if}{:else if !sub}
   {#if Summary}<Summary />{/if}
   {#if error}<p class="empty">Could not load artifacts: {error}</p>{/if}
   {#if artifacts && artifacts.length === 0}
-    <div class="empty-gallery"><Mark size="hero" apart /><p>When an agent publishes a page, it lands here.</p><p class="muted">Or publish one yourself with <code>clax publish index.html</code>.</p></div>
+    <div class="empty-gallery"><Mark size="hero" apart /><p>When an agent publishes a page, it lands here.</p><p class="muted">Or publish one yourself with <code>clax publish index.html</code>.</p>{#if lm}<lm.NewTile empty />{/if}</div>
   {/if}
   {#if artifacts?.length && inUse.length}
     <div class="tagbar" role="group" aria-label="Filter by tags">Tags
@@ -191,7 +195,7 @@
   {#if shown && shown.length > 0}
     <section class="grp rest">
       {#if !flat}<h2><span class="sw" aria-hidden="true"></span>{g?.needs.length ? "Everything else" : "Artifacts"}<small>pinned first, then most recent</small></h2>{/if}
-      <div class="cards">{#each g?.rest ?? shown as a (a.id)}{@render card(a)}{/each}</div>
+      <div class="cards">{#if lm && !g?.needs.length}<lm.NewTile />{/if}{#each g?.rest ?? shown as a (a.id)}{@render card(a)}{/each}</div>
     </section>
   {/if}
   {#if artifacts && gw}<gw.HaikuLine footer />{/if}

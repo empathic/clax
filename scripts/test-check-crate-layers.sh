@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Checks scripts/check-crate-layers.py on copies of the workspace's
-# manifests (with an empty source file at each target path): the workspace
+# manifests, under crates/ and third_party/ (with an empty source file at
+# each target path and build script): the workspace
 # passes; an upward or sideways edge fails, naming it, however the manifest
 # writes it (a [dependencies] line, a [dependencies.<name>] table, a
 # [target.'<cfg>'.dependencies] table or one of its <name> tables, a renamed
@@ -19,11 +20,11 @@ _fail() { echo "FAIL: $1" >&2; fails=$((fails + 1)); }
 _copy() {
     rm -rf "$d/w" && mkdir -p "$d/w"
     cp Cargo.toml "$d/w/"
-    for m in crates/*/Cargo.toml; do
+    for m in crates/*/Cargo.toml third_party/*/Cargo.toml; do
         c="$d/w/$(dirname "$m")"
         mkdir -p "$c/src" && cp "$m" "$c/Cargo.toml" && : > "$c/src/lib.rs"
         # The target paths the manifest names (src/main.rs, tests/*.rs).
-        sed -n 's/^path = "\([^.][^"]*\.rs\)"$/\1/p' "$m" | while read -r p; do
+        sed -n -e 's/^path = "\([^.][^"]*\.rs\)"$/\1/p' -e 's/^build = "\([^"]*\.rs\)"$/\1/p' "$m" | while read -r p; do
             mkdir -p "$c/$(dirname "$p")" && : > "$c/$p"
         done
     done
@@ -87,5 +88,32 @@ printf '[package]\nname = "clax-extra"\nversion = "0.0.0"\nedition = "2024"\n' >
 : > "$d/w/crates/clax-extra/src/lib.rs"
 _after "$d/w/Cargo.toml" '    "crates/clax-store",' '    "crates/clax-extra",'
 _expect fail "a crate the layout does not know" "clax-extra has no place in the layout"
+
+# The --publishable mode (scripts/crate-package.py runs it): the workspace
+# passes; a [patch] section, or clax-cli reaching a third_party/ crate, fails.
+_publishable() {
+    local out st
+    out="$(python3 scripts/check-crate-layers.py --publishable "$d/w" 2>&1)"
+    st=$?
+    case "$1" in
+        pass) [ "$st" = 0 ] || _fail "$2: $out" ;;
+        fail) { [ "$st" != 0 ] && grep -qF "$3" <<<"$out"; } || _fail "$2: $out" ;;
+    esac
+}
+_copy
+_publishable pass "the workspace is publishable"
+
+_copy
+printf '\n[patch.crates-io]\nserde = { path = "x" }\n' >> "$d/w/Cargo.toml"
+_publishable fail "a [patch] section" "Cargo.toml has a [patch] section"
+
+_copy
+mkdir -p "$d/w/.cargo"
+printf '[patch.crates-io]\nserde = { path = "x" }\n' > "$d/w/.cargo/config.toml"
+_publishable fail "a [patch] in .cargo/config.toml" ".cargo/config.toml has a [patch] section"
+
+_copy
+_after "$d/w/crates/clax-cli/Cargo.toml" "[dependencies]" 'clax-bot-js = { path = "../clax-bot-js" }'
+_publishable fail "clax-cli reaching the patched QuickJS" "clax-cli reaches clax-rquickjs-core"
 
 if [ "$fails" = 0 ]; then echo "crate layers tests: all passed"; else echo "crate layers tests: $fails failed"; exit 1; fi

@@ -20,3 +20,10 @@ web/perf/test-results/
 rust-project.json
 .rules_rust_analyzer/
 .vscode/.rules_rust_analyzer/
+
+# Python's bytecode caches (scripts run by python3).
+__pycache__/
+*.pyc
+
+# Wrangler's local state (wrangler dev at the repository root).
+.wrangler/

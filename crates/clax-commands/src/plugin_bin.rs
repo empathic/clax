@@ -325,15 +325,11 @@ fn edited(path: &Path, text: &str, line: Option<(&str, &str)>) -> anyhow::Result
     Ok(out)
 }
 
-/// Writes `text` to `path` through a temporary file and a rename.
+/// Writes `text` to `path` as `PUT /api/settings` does
+/// ([`clax_core::config::settings::write_file`]): one rename, the old
+/// mode kept (0600 for a new file), through a symbolic link.
 fn write_atomically(path: &Path, text: &str) -> anyhow::Result<()> {
-    let tmp = path.with_extension(format!("toml.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, text)?;
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e.into());
-    }
-    Ok(())
+    clax_core::config::settings::write_file(path, text).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// Sets the `bin` setting to `path`, which must be absolute, writable as
@@ -440,6 +436,20 @@ mod tests {
             wrapper_setting("bin = \"/a\"\nbin = \"/b\"\n"),
             Some(Err("bin = \"/a\" (and 1 more)".into()))
         );
+    }
+
+    #[test]
+    fn set_makes_a_new_config_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let h = home(&t);
+        let me = fake_clax(&t.path().join("me"), "clax 9.9.9");
+        set(&h, &me).unwrap();
+        let mode = std::fs::metadata(h.root().join(FILE))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

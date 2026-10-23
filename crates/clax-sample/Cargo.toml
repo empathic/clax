@@ -12,7 +12,6 @@ clax-core = { path = "../clax-core" }
 base64.workspace = true
 chrono.workspace = true
 futures = "0.3"
-reqwest = { workspace = true, features = ["stream"] }
 clax-rt = { path = "../clax-rt" }
 serde.workspace = true
 serde_json.workspace = true
@@ -23,8 +22,18 @@ tracing.workspace = true
 # Native only: the Worker's wasm32 build has no tokio runtime, sockets or
 # processes (see clax-server's crate documentation).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-reqwest = { workspace = true, features = ["rustls-tls"] }
+reqwest = { workspace = true, features = ["rustls-tls", "stream"] }
 tokio = { workspace = true, features = ["full"] }
+
+# wasm32 only: the Worker's `fetch`, called with `redirect: "manual"`
+# (src/transport.rs).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+wasm-streams = "0.4"
+web-sys = { version = "0.3", features = ["AbortController", "AbortSignal", "Headers", "ReadableStream", "Request", "RequestInit", "RequestRedirect", "Response"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio = { workspace = true, features = ["full", "test-util"] }

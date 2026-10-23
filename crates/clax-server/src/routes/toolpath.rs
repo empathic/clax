@@ -38,6 +38,37 @@ fn owner_reads_history(who: &Identity) -> Result<(), clax_http::error::ApiError>
     }
 }
 
+/// Whether `who` reads the audit history as the owner does
+/// ([`owner_reads_history`]).
+pub fn reads_history(who: &Identity) -> bool {
+    owner_reads_history(who).is_ok()
+}
+
+/// That `who` may export the audit history: the owner
+/// ([`owner_reads_history`], answering `true`), or an admin's browser
+/// (`false`). Anyone else gets [`owner_reads_history`]'s refusal.
+///
+/// # Errors
+/// As above; the store's.
+pub async fn admin_reads_history(
+    s: &AppState,
+    d: &clax_http::agent::DeniedToGrants,
+    who: &Identity,
+) -> Result<bool, clax_http::error::ApiError> {
+    let Err(refused) = owner_reads_history(who) else {
+        return Ok(true);
+    };
+    let caller = d.caller(s).await?;
+    if !matches!(caller, clax_http::auth::Caller::Person { .. }) {
+        return Err(refused);
+    }
+    let admin = s
+        .store_call(move |st| clax_http::bot::role_of(st, &caller))
+        .await?
+        .is_admin();
+    if admin { Ok(false) } else { Err(refused) }
+}
+
 /// The export a `GET /api/toolpath/export` query asks for: the CLI's options
 /// as parameters (`artifact`, `live` and `by_session` repeat; `since`,
 /// `until`, `shape`, `format` and the flags `no_text`, `no_names`,
@@ -259,6 +290,10 @@ where
 /// after it aborts the transfer ([`stream_export`]). The history holds
 /// every person's content unfiltered, so the owner's agents get 403
 /// `not_for_agents` (spec 2026-10-08-multi-agent-multi-person §7.5).
+/// Admins export too (spec 2026-10-21-claxbot-design §9.2, who read every
+/// audit event): a connected person's browser whose person the owner made
+/// an admin, refused live pages (`live`, or an `artifact` that is one),
+/// which are the owner's alone.
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn export(
     axum::extract::State(s): axum::extract::State<AppState>,
@@ -266,9 +301,22 @@ pub async fn export(
     who: Identity,
     axum::extract::RawQuery(query): axum::extract::RawQuery,
 ) -> Result<axum::response::Response, clax_http::error::ApiError> {
-    owner_reads_history(&who)?;
+    let owner = admin_reads_history(&s, &d, &who).await?;
     d.refuse_agents()?;
     let req = export_query(query.as_deref().unwrap_or(""))?;
+    if !owner
+        && (!req.selection.live_pages.is_empty()
+            || req
+                .selection
+                .artifacts
+                .iter()
+                .any(|a| s.live_ids.contains(a)))
+    {
+        return Err(clax_http::error::ApiError::forbidden(
+            "forbidden",
+            "live pages' history is the owner's alone",
+        ));
+    }
     let content_type = match req.format {
         project::Format::Json => "application/json",
         project::Format::Jsonl => "application/x-ndjson",

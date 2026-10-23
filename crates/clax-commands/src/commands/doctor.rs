@@ -560,24 +560,80 @@ fn journal_check(daemon: bool, status: Option<&serde_json::Value>) -> serde_json
 /// `config`: the home's `config.toml` reads and parses, its `[serve] port`,
 /// when present, is a port, and so is `CLAX_PORT` (`env`), when set. The
 /// detail names the port daemons for this home start on and where it comes
-/// from, or the error.
+/// from (`CLAX_PORT`, `CLAX_SERVE__PORT`, the file, or the default), or the
+/// error.
 fn config_check(home: &Home, env: Option<std::ffi::OsString>) -> serde_json::Value {
-    let file = clax_core::config::HomeConfig::load(home.root()).and_then(|c| c.serve_port());
+    config_check_with(home, env, clax_core::config::process_env())
+}
+
+/// As [`config_check`], with `vars` as the environment the configuration
+/// is read under.
+fn config_check_with(
+    home: &Home,
+    env: Option<std::ffi::OsString>,
+    vars: impl IntoIterator<Item = (String, String)>,
+) -> serde_json::Value {
+    use clax_core::config::{HomeConfig, Source};
+    let cfg = HomeConfig::load_with_env(home.root(), vars);
+    let file = cfg
+        .as_ref()
+        .map_err(|e| e.to_string())
+        .and_then(|c| c.serve_port().map_err(|e| e.to_string()))
+        .map(|p| {
+            p.map(|p| match cfg.as_ref().map(|c| c.source("serve.port")) {
+                Ok(Source::Env(name)) => format!("{name}={p}"),
+                _ => format!("[serve] port = {p}"),
+            })
+        });
     match (crate::env_port(env), file) {
         (Some(Err(e)), _) => check("config", false, e.to_string()),
-        (_, Err(e)) => check("config", false, e.to_string()),
+        (_, Err(e)) => check("config", false, e),
         (Some(Ok(p)), Ok(Some(f))) => check(
             "config",
             true,
-            format!("{}={p} (overrides [serve] port = {f})", crate::PORT_ENV),
+            format!("{}={p} (overrides {f})", crate::PORT_ENV),
         ),
         (Some(Ok(p)), Ok(None)) => check("config", true, format!("{}={p}", crate::PORT_ENV)),
-        (None, Ok(Some(p))) => check("config", true, format!("[serve] port = {p}")),
+        (None, Ok(Some(f))) => check("config", true, f),
         (None, Ok(None)) => check(
             "config",
             true,
             format!("default port {}", clax_core::daemon::DEFAULT_PORT),
         ),
+    }
+}
+
+/// `config_tables`: the tables of the home's configuration that no other
+/// line reports (`[toolpath]`, `[questions]`, `[bot]`) check, and no
+/// `CLAX_HOSTED__*` variable is set (they are ignored). Otherwise a `warn`
+/// line naming each: the daemon starts with what a bad table configures
+/// off or at its defaults. A file that does not parse is the
+/// `config` line's.
+fn config_tables_check(
+    cfg: &clax_core::Result<clax_core::config::HomeConfig>,
+) -> serde_json::Value {
+    let Ok(cfg) = cfg else {
+        return check("config_tables", true, "see config");
+    };
+    let mut problems: Vec<String> = clax_core::config::settings::problems(cfg)
+        .into_iter()
+        .filter(|p| matches!(p.table, "toolpath" | "questions" | "bot"))
+        .map(|p| p.message)
+        .collect();
+    if !cfg.ignored_env().is_empty() {
+        problems.push(format!(
+            "{} ignored: [hosted] is read from config.toml only",
+            cfg.ignored_env().join(", ")
+        ));
+    }
+    if problems.is_empty() {
+        check(
+            "config_tables",
+            true,
+            "[toolpath], [questions] and [bot] check",
+        )
+    } else {
+        warn("config_tables", problems.join("; "))
     }
 }
 
@@ -716,6 +772,9 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
         return report(cli, checks, vec![]);
     }
     checks.push(config_check(home, std::env::var_os(crate::PORT_ENV)));
+    checks.push(config_tables_check(&clax_core::config::HomeConfig::load(
+        home.root(),
+    )));
     // Held until the process exits, so an auto-start cannot race the repairs.
     // Taken before discovery: a daemon that is still starting holds it.
     let _lock = if args.fix && writable {
@@ -855,7 +914,8 @@ fn report(
 #[cfg(test)]
 mod tests {
     use super::{
-        codex_approvals_check, codex_push_check, config_check, extension_check, journal_check,
+        codex_approvals_check, codex_push_check, config_check, config_check_with,
+        config_tables_check, extension_check, journal_check,
     };
     use serde_json::{Value, json};
 
@@ -883,6 +943,68 @@ mod tests {
             bad["detail"].as_str().unwrap().contains("CLAX_PORT"),
             "{bad}"
         );
+    }
+
+    #[test]
+    fn the_config_check_names_a_port_the_environment_sets() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = clax_core::Home::at(dir.path().to_path_buf());
+        std::fs::write(dir.path().join("config.toml"), "[serve]\nport = 7481\n").unwrap();
+        let vars = || [("CLAX_SERVE__PORT".to_string(), "7490".to_string())];
+        assert_eq!(
+            config_check_with(&home, None, vars())["detail"],
+            "CLAX_SERVE__PORT=7490"
+        );
+        assert_eq!(
+            config_check_with(&home, Some("7491".into()), vars())["detail"],
+            "CLAX_PORT=7491 (overrides CLAX_SERVE__PORT=7490)"
+        );
+        let bad = config_check_with(
+            &home,
+            None,
+            [("CLAX_SERVE__PORT".to_string(), "0".to_string())],
+        );
+        assert_eq!(bad["ok"], false, "{bad}");
+        assert!(
+            bad["detail"].as_str().unwrap().contains("CLAX_SERVE__PORT"),
+            "{bad}"
+        );
+    }
+
+    #[test]
+    fn the_config_tables_check_warns_on_a_table_that_does_not_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let load = || clax_core::config::HomeConfig::load_with_env(dir.path(), []);
+        let ok = config_tables_check(&load());
+        assert_eq!(
+            (ok["ok"].clone(), ok.get("warn").cloned()),
+            (json!(true), None),
+            "{ok}"
+        );
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[serve]\nport = 7481\n[bot]\nmax_steps = 0\n",
+        )
+        .unwrap();
+        let w = config_tables_check(&load());
+        assert_eq!(
+            (w["ok"].clone(), w["warn"].clone()),
+            (json!(true), json!(true)),
+            "{w}"
+        );
+        let d = w["detail"].as_str().unwrap();
+        assert!(d.contains("[bot]") && d.contains("max_steps"), "{d}");
+        std::fs::remove_file(dir.path().join("config.toml")).unwrap();
+        let w = config_tables_check(&clax_core::config::HomeConfig::load_with_env(
+            dir.path(),
+            [(
+                "CLAX_HOSTED__PUBLIC_ORIGIN".to_string(),
+                "https://x.example".to_string(),
+            )],
+        ));
+        assert_eq!(w["warn"], json!(true), "{w}");
+        let d = w["detail"].as_str().unwrap();
+        assert!(d.contains("CLAX_HOSTED__PUBLIC_ORIGIN ignored"), "{d}");
     }
 
     #[test]

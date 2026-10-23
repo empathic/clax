@@ -76,6 +76,8 @@ pub struct Core {
     shutdown: watch::Sender<bool>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     journal_stopped: Option<tokio::task::JoinHandle<()>>,
+    /// ClaxBot's driver, whose runs [`Core::stop`] releases.
+    bot_driver: Arc<clax_bot::Driver>,
 }
 
 impl Core {
@@ -150,6 +152,9 @@ impl Core {
         state.clax_app = Arc::new(clax_app);
         // The core's `net` keeps a shared disk cache in the home.
         state.net = Arc::new(clax_http::net_cache::daemon_net(cfg.home.root()));
+        state.bot = Arc::new(local_bot(&state));
+        // ClaxBot's driver: the runs a previous process left, then every new one.
+        let bot_driver = crate::bot::driver(&mut state);
         state.audit_wake.install(&state.store);
         // The appender recovers the journal and catches it up on its own
         // thread, so the core serves at once.
@@ -186,6 +191,7 @@ impl Core {
         tracing::info!(provider = ?state.sample.provider_name(), "sample provider");
         let mut tasks = background_tasks(&state, cfg.reap_interval);
         tasks.extend(listeners);
+        tasks.push(crate::bot::start_driver(&bot_driver));
         let router = crate::router::build_router_with_shutdown(state.clone(), shutdown.clone());
         Ok(Core {
             state,
@@ -193,6 +199,7 @@ impl Core {
             shutdown,
             tasks,
             journal_stopped,
+            bot_driver,
         })
     }
 
@@ -254,6 +261,7 @@ impl Core {
         {
             tracing::warn!("the core's tasks did not end in time");
         }
+        self.bot_driver.release_all();
         // The journal has closed its segment (it began to as shutdown
         // began) before the store stops.
         if let Some(stopped) = self.journal_stopped {
@@ -280,6 +288,45 @@ impl Core {
         }
         stopped
     }
+}
+
+/// ClaxBot's state for a core starting on `s` (spec
+/// 2026-10-21-claxbot-design §8): the `[bot]` settings the configuration
+/// in effect sets, laid over the stored ones (an invalid `[bot]` turns
+/// ClaxBot off), the home's key-encryption key (`<home>/secrets/kek`,
+/// made on first use; none when it cannot be read, so no key is stored),
+/// and the instance key in `[bot] api_key_env`'s variable, which takes
+/// precedence over a stored one. A hosted core reads no `[bot]` and no
+/// variable.
+fn local_bot(s: &AppState) -> clax_http::bot::Bot {
+    let mut bot = clax_http::bot::Bot::default();
+    clax_store::secrets::sweep_leftovers(&s.home, s.store.now_utc());
+    bot.kek = match clax_store::secrets::Kek::load_or_create(&s.home) {
+        Ok(k) => Some(k),
+        Err(e) => {
+            tracing::warn!(error = %e, "no key-encryption key: ClaxBot stores no model key");
+            None
+        }
+    };
+    if s.hosted.is_some() {
+        return bot;
+    }
+    let Some(cfg) = s.settings.running.as_ref() else {
+        return bot;
+    };
+    let (ov, enabled) = clax_http::bot::configured(cfg);
+    s.store.set_bot_overrides(ov);
+    bot.enabled = enabled;
+    if let Ok(b) = cfg.bot()
+        && let Ok(key) = std::env::var(&b.api_key_env)
+        && !key.trim().is_empty()
+    {
+        bot.env_key = Some(clax_http::bot::EnvKey {
+            var: b.api_key_env,
+            key: clax_core::secret::Secret::new(key.trim().to_string()),
+        });
+    }
+    bot
 }
 
 /// Stops `store` ([`Store::shutdown`]), waiting at most `within` for its

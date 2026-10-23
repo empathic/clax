@@ -17,6 +17,10 @@ refuses to run without it, `build.rs`, and recompiles when it changes), then
   `build.sh`);
 - `cargo test`: the VFS's tests and the crate's unit tests, natively;
 - `node test-wasm.mjs`: the SQLite-on-Durable-Object spike across a restart;
+- `node test-sandbox.mjs`: ClaxBot's sandbox conformance suite against the
+  Worker Loader sandbox (below), on the instance's object;
+- `node test-bot.mjs`: a ClaxBot run driven by the instance's alarm
+  against a scripted Messages API on 127.0.0.1 (below), across a restart;
 - `node test-repos.mjs`: the repository hosts (`CLAX_TEST_JJ` names a `jj`
   for the jj clone check);
 - `node e2e.mjs`: the instance in two browsers with the owner token;
@@ -27,6 +31,63 @@ refuses to run without it, `build.rs`, and recompiles when it changes), then
   against a fresh hosted `wrangler dev --local` with `REPO_STORE=memory`.
 
 Each takes `--no-build` to skip `build.sh`.
+
+### ClaxBot's sandbox
+
+ClaxBot's scripts run in the Worker Loader sandbox (`src/sandbox/`,
+`LoaderSandbox`): each script in a fresh dynamic Worker from the `LOADER`
+binding, with no network (`globalOutbound: null`), no bindings, and a
+function of the instance's as its only way out, behind the same contract,
+prelude and conformance suite as the daemon's QuickJS sandbox
+(`crates/clax-bot-sandbox`). The module docs of `src/sandbox/mod.rs` say
+how a run goes and what bounds it.
+
+`test-sandbox.mjs` runs the conformance suite under `wrangler dev
+--local`. Two cases end otherwise here, by how V8 differs from QuickJS
+(`PLATFORM_DIFFERENCES`), and are checked to end as documented; eight need
+the CPU or memory limit only Cloudflare puts on a dynamic Worker
+(`PLATFORM_ONLY`): workerd enforces neither, so there a script that never
+yields holds the whole runtime, and they are listed, not run.
+
+### ClaxBot's runs
+
+The instance drives ClaxBot's runs from its alarm (`src/bot.rs`, whose
+module docs have the details): a run started or cancelled sets the alarm
+for now; each alarm ticks as many steps of as many runs as fit in
+`alarm_budget` (10 minutes of wall time: the platform's 15-minute alarm
+limit less a 5-minute margin, never less than the 60 s a model turn is
+started with), keeps the alarm a minute ahead while it does (so an
+invocation the platform ends is followed by another), and then sets it
+for the driver's next wake: at once while runs are queued, after a wait
+(a model retry, a stalled sandbox's backoff) when one waits, never when
+none is left. A wait is recorded on its run, so a later incarnation does
+not tick it early. Each object incarnation has a driver of its own ID,
+which starts at its first event and takes back the runs an earlier one
+left; the step that was cut is executed again, its model call billed
+once. The provider's URL must be https to a public DNS name (no IP
+address, localhost or private network name), and changing it clears the
+stored instance key; when the sandbox cannot be made, ClaxBot is off and
+a send is refused `not_configured`.
+Settings come from the database alone (the admin pages; the Worker reads
+no `[bot]` table), and each step also charges the Durable Object request
+and Toolpath storage lines. Model keys are sealed under the `CLAX_KEK`
+secret: without it (or with one that is not 64 hex digits) no key is
+stored (503 `no_kek`) and a send to ClaxBot is refused `not_configured`;
+the instance serves on. A run's events stream as SSE from the object for
+as long as the run lasts, replayed from the committed steps after a
+reconnect with `Last-Event-ID`.
+
+`test-bot.mjs` runs it under `wrangler dev --local` (its header lists
+every check): refusals without `CLAX_KEK` and of private provider URLs;
+a thread sent to ClaxBot whose script reads, edits, publishes and
+replies; the alarm kept ahead while it drives; wrangler killed by its
+process group while the second turn streams and started again on the
+same state, the alarm alone resuming the run, which finishes with nothing
+published or replied twice and its tokens equal to what the scripted API
+served; the event stream replayed across the restart; a cancel aborting
+the model request; and a send refused `credits_exhausted`. Its scripted
+provider listens on 127.0.0.1, which the test vars
+`CLAX_TEST_ROUTES` and `CLAX_TEST_LOOPBACK_PROVIDER` together allow.
 
 ## Deploy to Cloudflare
 
@@ -114,6 +175,7 @@ account.
 | `ASSETS` | R2 bucket `clax-assets` | Artifact assets, in both `REPO_STORE` modes |
 | `ARTIFACTS` | Cloudflare Artifacts, namespace `clax` | Artifact versions as git repositories, when `REPO_STORE=artifacts` |
 | `WEB` | Workers Static Assets, `../../web/dist` | The web UI (`run_worker_first`) |
+| `LOADER` | Worker Loader (`worker_loaders`) | ClaxBot's code-mode sandbox: a dynamic Worker per script (`src/sandbox/`) |
 
 `deploy.mjs` creates the bucket (`npx wrangler r2 bucket create
 clax-assets`), the queue (`npx wrangler queues create
@@ -167,9 +229,20 @@ start: every request answers 500 naming the var.
 ```sh
 npx wrangler secret put SETUP_SECRET   # what /setup takes, once, to make the owner
 npx wrangler secret put CLAX_TOKEN     # the owner's bearer token for the CLI (optional)
+npx wrangler secret put CLAX_KEK       # ClaxBot's key-encryption key: 64 hex digits (openssl rand -hex 32)
 ```
 
-`deploy.mjs` generates and uploads both on the first deploy. Without
+`deploy.mjs` generates and uploads both on the first deploy, and
+`CLAX_KEK`, ClaxBot's key-encryption key (64 hex digits), when the Worker
+has none: its backup when this machine keeps one, else a new one, written
+to the backup first, `~/.config/clax/deploy/<public host>.kek` (0600).
+Keep that file: the record may be deleted once set up, but without the
+backup and the Worker's secret every stored model key is lost. A deploy
+warns when the Worker has `CLAX_KEK` and this machine keeps no backup.
+`CLAX_KEK` is read from the Worker's secrets alone (a plain var of the
+name is ignored). It is never rotated, `--rotate-secrets`
+included: a new one opens none of the model keys the old one sealed (to
+replace it, clear the stored keys first and set them again after). Without
 `SETUP_SECRET`, `/setup` stays closed. Without `CLAX_TOKEN` the
 instance makes a token and keeps it in its storage, where nothing hands it
 out: set one if you mean to use the CLI against the instance. Use a long
@@ -296,3 +369,13 @@ its steps. Not yet run against a deployed Worker:
 - The custom domains, certificates and `CF-Connecting-IP` from Cloudflare's
   edge (under `wrangler dev` every client is one address).
 - The build on Linux (CI): `build.sh` has run on macOS only.
+- ClaxBot's sandbox on real dynamic Workers: the `cpuMs` limit and the
+  isolate's memory limit (and the error messages `src/sandbox/mod.rs`
+  `platform_error` reads them by), `abortIsolate` after a script's last
+  message, and the eight conformance cases `test-sandbox.mjs` cannot run
+  locally.
+- ClaxBot's runs on a real Durable Object: an alarm driving for minutes
+  (the 15-minute wall limit, and the 30 s of CPU an invocation has by
+  default), an invocation the platform ends mid-step and the alarm kept a
+  minute ahead that follows it, and a run's SSE stream held open from the
+  object through Cloudflare's edge.

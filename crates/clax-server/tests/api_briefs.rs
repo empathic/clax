@@ -398,6 +398,8 @@ async fn attachable(ts: &TestServer, cookie: &str, aid: &str) -> Vec<String> {
         .as_array()
         .unwrap()
         .iter()
+        // The sessions alone: ClaxBot, built in, is listed where ClaxBot is set up.
+        .filter(|a| a["builtin"] != true)
         .map(|a| a["name"].as_str().unwrap_or_default().to_string())
         .collect();
     names.sort();

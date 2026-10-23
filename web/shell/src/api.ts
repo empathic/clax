@@ -63,7 +63,11 @@ export type ForkedFrom = { artifact_id: string; version: number; title: string |
  * through a Claude Code channel, which Claude Code does not confirm). */
 export type Participants = { people: { public_id: string; display_name: string | null; seen: number | null }[]; agents: { handle: string; harness: string; live: boolean; name?: string | null; person?: CardPerson;
   /** Another Clax's session (signed in by device code): whose Clax it relays from, "Alex's Clax". */
-  via?: string; wakes?: boolean | "unsure" }[] };
+  via?: string; wakes?: boolean | "unsure";
+  /** Clax's own agent, ClaxBot (spec 2026-10-21-claxbot §6.4), which the
+   * Send menu lists first, live or not, under `line`: its availability;
+   * `unavailable` says why it is not live. */
+  builtin?: boolean; line?: string; unavailable?: "no_flag" | "no_credits" | "not_configured" | "model_not_priced" | null }[] };
 export type AttentionSummary = { addressed: string[]; addressed_v: number | null; new_replies: string[]; open_in: string[]; seen: number | null };
 export type Attention = AttentionSummary & { looked: Record<string, string> };
 /** `sha256`: the file's lowercase hex SHA-256; absent on versions written before content hashes. */

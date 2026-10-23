@@ -5905,7 +5905,14 @@ async fn a_member_who_may_not_send_attaches_no_agent_and_agent_tokens_start_noth
         .get(&owner, &format!("/api/agents?artifact={aid}"))
         .await;
     assert_eq!(s, 200, "{v}");
-    assert_eq!(v["agents"].as_array().unwrap().len(), 1, "{v}");
+    // The session (and ClaxBot, built in, listed first).
+    let sessions = v["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["builtin"] != true);
+    assert_eq!(sessions.count(), 1, "{v}");
+    assert_eq!(v["agents"][0]["handle"], "claxbot", "{v}");
     // An agent token of a member who creates starts nothing from a brief.
     let mia = site.member(&owner, "Mia").await;
     let (s, t) = site

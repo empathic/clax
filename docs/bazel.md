@@ -119,6 +119,61 @@ from `cargo tree --workspace`'s beyond `NATIVE_EXTRA` in
 by running the sync on the merged manifests. `scripts/bazel-sync.test.sh`
 tests the check.
 
+### Patched third-party crates
+
+`clax-bot-js` builds on QuickJS with a patch, through two crates of the
+workspace with names of their own, so nothing is patched over crates.io's
+crates (no `[patch]`, which a published package would ignore):
+
+- `third_party/clax-rquickjs-sys` is `rquickjs-sys` with
+  `third_party/rquickjs-sys.patch` applied; its library is still
+  `rquickjs_sys`;
+- `third_party/clax-rquickjs-core` is `rquickjs-core`, unchanged but for
+  its manifest (it depends on `clax-rquickjs-sys` and keeps no optional
+  dependency); its library is still `rquickjs`, so `clax-bot-js` writes
+  `use rquickjs::…` as before.
+
+The patch:
+
+- polls the interrupt handler every 100 back-edges and calls instead of
+  every 10,000, so a script whose loop body is a few heavy builtin calls
+  still meets its CPU budget soon after it runs out;
+- makes running out of memory end the script: the error cannot be caught,
+  and every later poll interrupts, also when the error itself could not
+  be allocated (QuickJS then throws `null`, and rejecting an async
+  function with it would `abort()`);
+- makes the `Function` constructors compile their source without running
+  it, and refuse parameters or a body that close the function (as the
+  separate parses of the specification would).
+
+`QuickJs::self_test` checks all three at run time and refuses to run
+scripts (`Unavailable`) on an engine without them.
+
+`scripts/vendor-rquickjs.sh` writes both directories: it downloads the
+crates from crates.io, checks their SHA-256s, keeps what a native build of
+the four platforms reads (the C sources, the bindings for those four
+targets), writes their manifests and hand-written `BUILD.bazel` files, and
+applies the patch. `--check` (it needs the network) fails when either
+directory is not what it would write. To change the patch, edit the copy's
+C, regenerate the patch from a pristine copy with `diff -u`, and rerun the
+script; to move to a new version, change its `VERSION` and SHA-256s.
+
+The copies are workspace members, which is what lets Bazel build them: a
+path dependency outside the workspace would put this checkout's absolute
+path into `MODULE.bazel.lock`. As members they have their own
+`BUILD.bazel` rather than `cargo_package()` (the workspace's lints are not
+theirs), their manifests allow every lint and turn off their own tests
+(which need dev-dependencies that are not kept), and their versions are
+their own. `scripts/bazel-derive.py` skips them when it compares
+third-party features, as it skips the Clax crates. Bazel's `//crates/...`
+format, clippy and test passes do not reach them.
+
+They are not on crates.io (`publish = false`). `scripts/crate-package.py`
+runs `scripts/check-crate-layers.py --publishable`, which fails while the
+`clax` binary reaches a `third_party/` crate or the workspace has a
+`[patch]`: a crates.io `clax` with ClaxBot needs the owner to publish the
+two crates first.
+
 ## Targets
 
 Each crate's `BUILD.bazel` calls `cargo_package()` (`bazel/cargo.bzl`),

@@ -1091,7 +1091,7 @@ impl Store {
     /// `NotFound` when the thread or its artifact is gone; `invalid_author_kind`
     /// or `invalid_comment` for bad input.
     pub fn add_comment(&self, ctx: &AuditCtx, thread_id: &str, c: NewComment) -> Result<Comment> {
-        self.add_comment_then(ctx, thread_id, c, |_, _| Ok(()))
+        self.add_comment_then(ctx, thread_id, c, |_, _, _| Ok(()))
     }
 
     /// [`Store::add_comment`] for an agent token's write keyed `key` (none:
@@ -1109,7 +1109,7 @@ impl Store {
         c: NewComment,
         key: Option<CommentKey<'_>>,
     ) -> Result<Keyed<Comment>> {
-        self.add_comment_keyed_then(ctx, thread_id, c, key, |_, _| Ok(()))
+        self.add_comment_keyed_then(ctx, thread_id, c, key, |_, _, _| Ok(()))
     }
 
     /// An agent reply `c` on thread `tid` of the live page `id` that also
@@ -1127,13 +1127,68 @@ impl Store {
         c: NewComment,
         harness: &str,
     ) -> Result<Comment> {
-        self.add_comment_then(ctx, tid, c, |tx, t| {
+        self.add_comment_then(ctx, tid, c, |tx, t, _| {
             if t.artifact_id != id.as_str() {
                 return Err(CoreError::NotFound);
             }
             super::live::mark_pending_in(tx, id, tid, "explicit", harness, &self.now())?;
             Ok(())
         })
+    }
+
+    /// [`Store::add_comment`] journaled as `entry` in the comment's own
+    /// transaction (ClaxBot's replies, `crate::bot_runs`): the journal's
+    /// answer when it holds `entry`'s key, writing nothing; else the
+    /// comment and its entry, `{comment_id}`, together.
+    ///
+    /// # Errors
+    /// [`Store::add_comment`]'s; `key_reused`.
+    pub fn add_comment_journaled(
+        &self,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        c: NewComment,
+        entry: &super::bot_runs::CallEntry,
+        guard: super::bot_runs::Guard<'_>,
+    ) -> Result<super::bot_runs::Journaled> {
+        if let Some(prev) = self.journaled(entry)? {
+            return Ok(prev);
+        }
+        let mut out = None;
+        self.add_comment_then(ctx, thread_id, c, |tx, _, comment| {
+            guard(&super::bot_runs::Tx(tx))?;
+            out =
+                Some(self.journal_in(tx, entry, serde_json::json!({"comment_id": comment.id}))?);
+            Ok(())
+        })?;
+        Ok(out.expect("the comment was journaled"))
+    }
+
+    /// [`Store::resolve_thread`] by `by` (for `person`), journaled as
+    /// `entry` in the resolve's own transaction, as
+    /// [`Store::add_comment_journaled`] is; the value is `null`.
+    ///
+    /// # Errors
+    /// [`Store::resolve_thread`]'s; `key_reused`.
+    pub fn resolve_thread_journaled(
+        &self,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        by: &str,
+        person: Option<&str>,
+        entry: &super::bot_runs::CallEntry,
+        guard: super::bot_runs::Guard<'_>,
+    ) -> Result<super::bot_runs::Journaled> {
+        if let Some(prev) = self.journaled(entry)? {
+            return Ok(prev);
+        }
+        let mut out = None;
+        self.resolve_thread_then(ctx, thread_id, by, person, |tx, _| {
+            guard(&super::bot_runs::Tx(tx))?;
+            out = Some(self.journal_in(tx, entry, serde_json::Value::Null)?);
+            Ok(None)
+        })?;
+        Ok(out.expect("the resolve was journaled"))
     }
 
     /// Thread `tid`'s owner agent, live or ended, when it has one (spec
@@ -1240,7 +1295,7 @@ impl Store {
         };
         let seen = self.seen_comments(tid, &sid)?;
         let mut touched = clax_core::feedback::Touched::default();
-        let comment = self.add_comment_keyed_then(ctx, tid, c, key, |tx, t| {
+        let comment = self.add_comment_keyed_then(ctx, tid, c, key, |tx, t, _| {
             check_not_taken_in(tx, tid, &sid)?;
             if let Some((id, harness)) = addressed {
                 if t.artifact_id != id.as_str() {
@@ -1310,7 +1365,7 @@ impl Store {
         ctx: &AuditCtx,
         thread_id: &str,
         c: NewComment,
-        then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<()>,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread, &Comment) -> Result<()>,
     ) -> Result<Comment> {
         self.add_comment_keyed_then(ctx, thread_id, c, None, then)
             .map(Keyed::made)
@@ -1325,7 +1380,7 @@ impl Store {
         thread_id: &str,
         c: NewComment,
         key: Option<CommentKey<'_>>,
-        then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<()>,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread, &Comment) -> Result<()>,
     ) -> Result<Keyed<Comment>> {
         self.with_tx(|tx| {
             if let Some(k) = key
@@ -1337,7 +1392,7 @@ impl Store {
                 });
             }
             let (comment, t) = self.add_comment_keyed_in(tx, ctx, thread_id, c, key)?;
-            then(tx, &t)?;
+            then(tx, &t, &comment)?;
             Ok(Keyed::Made(comment))
         })
     }
@@ -2001,6 +2056,7 @@ impl Store {
                 params![thread_id],
             )?;
             tx.execute("DELETE FROM comments WHERE thread_id = ?1", params![thread_id])?;
+            tx.execute("DELETE FROM bot_follow_ups WHERE thread_id = ?1", params![thread_id])?;
             self.thread_going_tx(tx, thread_id)?;
             tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;
             let now = self.now();

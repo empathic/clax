@@ -16,7 +16,8 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
     /// Port to use when starting a daemon (0 = any free port). Default:
-    /// `CLAX_PORT`, else the home's `[serve] port` in config.toml, else 7480.
+    /// `CLAX_PORT`, else `CLAX_SERVE__PORT`, else the home's `[serve] port`
+    /// in config.toml, else 7480.
     #[arg(long, global = true)]
     pub port: Option<u16>,
     #[command(subcommand)]
@@ -197,7 +198,8 @@ pub enum Cmd {
 
 impl Cli {
     /// `--port` when given, else `CLAX_PORT`, else the home's `[serve]
-    /// port`, else 7480.
+    /// port` as its configuration has it (`CLAX_SERVE__PORT`, else
+    /// `config.toml`; `clax_core::config`), else 7480.
     ///
     /// # Errors
     /// When `--port` is absent and `CLAX_PORT` is set to something that is

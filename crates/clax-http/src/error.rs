@@ -104,6 +104,37 @@ impl From<CoreError> for ApiError {
                 err.extra.insert("path".into(), json!(path));
                 err
             }
+            // ClaxBot refused a run before any model call (spec §6.4, §7.4).
+            CoreError::Invalid {
+                code:
+                    code @ ("no_flag" | "credits_exhausted" | "not_configured" | "model_not_priced"),
+                message,
+            } => ApiError::new(StatusCode::FORBIDDEN, code, message),
+            // A ClaxBot run already works on one of the threads sent
+            // (`clax_server::routes::bot::run_active`): its ID is the
+            // message, answered as `run: {id}`.
+            CoreError::Invalid {
+                code: "run_active",
+                message,
+            } => {
+                let mut err = ApiError::new(
+                    StatusCode::CONFLICT,
+                    "run_active",
+                    "a ClaxBot run is already working on this thread: follow it, or stop it first",
+                );
+                err.extra.insert("run".into(), json!({"id": message}));
+                err
+            }
+            // A right the caller lacks, found inside a store job.
+            CoreError::Invalid {
+                code: "not_permitted",
+                message,
+            } => ApiError::new(StatusCode::FORBIDDEN, "not_permitted", message),
+            // A ClaxBot setting the daemon's configuration sets.
+            CoreError::Invalid {
+                code: "setting_overridden",
+                message,
+            } => ApiError::new(StatusCode::CONFLICT, "setting_overridden", message),
             CoreError::Invalid {
                 code: "nothing_to_send",
                 message,
@@ -132,6 +163,11 @@ impl From<CoreError> for ApiError {
                 code: "question_closed",
                 message,
             } => ApiError::new(StatusCode::CONFLICT, "question_closed", message),
+            // The home's config.toml links to a file that does not exist.
+            CoreError::Invalid {
+                code: "config_symlink_dangling",
+                message,
+            } => ApiError::new(StatusCode::CONFLICT, "config_symlink_dangling", message),
             CoreError::Invalid {
                 code: "limit_reached",
                 message,

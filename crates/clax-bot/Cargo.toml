@@ -1,0 +1,40 @@
+[package]
+name = "clax-bot"
+version.workspace = true
+edition.workspace = true
+license = "GPL-2.0-only OR AGPL-3.0-only"
+description = "ClaxBot's run loop: the clax script API and its TypeScript declaration, prompts, the step state machine, metering, and a runtime-agnostic driver with live run events"
+# Every file in tests/ is a module of the one integration test binary.
+autotests = false
+
+[lints]
+workspace = true
+
+[dependencies]
+clax-core = { path = "../clax-core" }
+clax-rt = { path = "../clax-rt" }
+clax-store = { path = "../clax-store" }
+clax-sample = { path = "../clax-sample" }
+clax-bot-sandbox = { path = "../clax-bot-sandbox" }
+async-trait = "0.1"
+chrono.workspace = true
+futures = "0.3"
+# The HTML tokenizer `draft.check` reads pages with: pure Rust, so it
+# builds for the Worker's wasm32 too.
+html5ever = "0.40"
+serde.workspace = true
+serde_json.workspace = true
+# `sync` alone (the run events' broadcast channel), which builds for wasm32.
+tokio = { workspace = true, features = ["sync", "macros"] }
+tracing.workspace = true
+
+[dev-dependencies]
+# Rows a crash leaves, written straight to a test home's database (tests/driver.rs).
+rusqlite.workspace = true
+clax-bot-js = { path = "../clax-bot-js" }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

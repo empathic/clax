@@ -3077,6 +3077,578 @@
     "artifacts": 2
    },
    "backfilled": false
+  },
+  {
+   "seq": 87,
+   "at": "2026-10-06T14:09:00.087Z",
+   "kind": "bot.run_start",
+   "actor": {
+    "type": "bot",
+    "on_behalf_of": "u_77c0zz"
+   },
+   "ids": {
+    "artifact": "k3m9q2w8x1ab",
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "daemon",
+    "run": "01JBCB0T000000000000000R01",
+    "request": "thread",
+    "thread_ids": [
+     "01JB9T000000000000000000T1"
+    ],
+    "model": "claude-sonnet-5-5",
+    "key_source": "instance"
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 88,
+   "at": "2026-10-06T14:09:01.088Z",
+   "kind": "bot.turn",
+   "actor": {
+    "type": "bot",
+    "on_behalf_of": "u_77c0zz"
+   },
+   "ids": {
+    "artifact": "k3m9q2w8x1ab",
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "daemon",
+    "run": "01JBCB0T000000000000000R01",
+    "step": 1,
+    "model": "claude-sonnet-5-5",
+    "input_tokens": 12000,
+    "cached_tokens": 9000,
+    "output_tokens": 800,
+    "stop_reason": "tool_use",
+    "credits_milli": 4521,
+    "key_source": "instance"
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 89,
+   "at": "2026-10-06T14:09:02.089Z",
+   "kind": "bot.call",
+   "actor": {
+    "type": "bot",
+    "on_behalf_of": "u_77c0zz"
+   },
+   "ids": {
+    "artifact": "k3m9q2w8x1ab",
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "daemon",
+    "run": "01JBCB0T000000000000000R01",
+    "step": 2,
+    "op": "files.write",
+    "target": "index.html",
+    "ok": true
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 90,
+   "at": "2026-10-06T14:09:03.090Z",
+   "kind": "bot.script",
+   "actor": {
+    "type": "bot",
+    "on_behalf_of": "u_77c0zz"
+   },
+   "ids": {
+    "artifact": "k3m9q2w8x1ab",
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "daemon",
+    "run": "01JBCB0T000000000000000R01",
+    "step": 2,
+    "title": "Shorten the heading",
+    "code_sha256": "sha256:5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+    "calls": [
+     "files.read",
+     "files.write"
+    ],
+    "cpu_ms": 14,
+    "mem_peak": 3145728,
+    "credits_milli": 1001,
+    "error": null
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 91,
+   "at": "2026-10-06T14:09:04.091Z",
+   "kind": "bot.run_end",
+   "actor": {
+    "type": "bot",
+    "on_behalf_of": "u_77c0zz"
+   },
+   "ids": {
+    "artifact": "k3m9q2w8x1ab",
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "daemon",
+    "run": "01JBCB0T000000000000000R01",
+    "outcome": "finished",
+    "reason": null,
+    "credits_milli": 6522
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 92,
+   "at": "2026-10-06T14:09:05.092Z",
+   "kind": "view.run",
+   "actor": {
+    "type": "viewer",
+    "public_id": "u_77c0zz",
+    "display_name": "Sam",
+    "person": true
+   },
+   "ids": {
+    "artifact": "k3m9q2w8x1ab",
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "shell",
+    "run": "01JBCB0T000000000000000R01"
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 93,
+   "at": "2026-10-06T14:09:06.093Z",
+   "kind": "view.admin",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "shell",
+    "page": "people",
+    "subject_person": "u_77c0zz"
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 94,
+   "at": "2026-10-06T14:09:07.094Z",
+   "kind": "view.audit",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "shell",
+    "filters": {
+     "group": "bot",
+     "q": "heading"
+    }
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 95,
+   "at": "2026-10-06T14:09:08.095Z",
+   "kind": "view.usage",
+   "actor": {
+    "type": "viewer",
+    "public_id": "u_77c0zz",
+    "display_name": "Sam",
+    "person": true
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "shell",
+    "subject_person": "u_77c0zz",
+    "week": "2026-10-05T00:00:00Z"
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 96,
+   "at": "2026-10-06T14:09:09.096Z",
+   "kind": "admin.role",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "shell",
+    "person": "u_77c0zz",
+    "role": "admin",
+    "op": "grant"
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 97,
+   "at": "2026-10-06T14:09:10.097Z",
+   "kind": "admin.flag",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "shell",
+    "person": "u_77c0zz",
+    "flag": "claxbot",
+    "value": true
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 98,
+   "at": "2026-10-06T14:09:11.098Z",
+   "kind": "admin.credits",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "shell",
+    "person": "u_77c0zz",
+    "lift_from": 0,
+    "lift_to": 500000,
+    "reason": "Launch week"
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 99,
+   "at": "2026-10-06T14:09:12.099Z",
+   "kind": "admin.provider",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "shell",
+    "fields": [
+     "base_url",
+     "models.default"
+    ],
+    "values": {
+     "base_url": "https://proxy.example",
+     "models.default": "claude-sonnet-5-5"
+    }
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 100,
+   "at": "2026-10-06T14:09:13.100Z",
+   "kind": "admin.key",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "shell",
+    "scope": "instance",
+    "op": "set",
+    "last4": "wxyz"
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 101,
+   "at": "2026-10-06T14:09:14.101Z",
+   "kind": "admin.cost_line",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "shell",
+    "line": "claude-sonnet-5-5.input",
+    "op": "update",
+    "fields": {
+     "margin_bp": 5000,
+     "source": "Anthropic list price (checked)"
+    }
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 102,
+   "at": "2026-10-06T14:09:15.102Z",
+   "kind": "bot.cancel",
+   "actor": {
+    "type": "viewer",
+    "public_id": "u_77c0zz",
+    "display_name": "Sam",
+    "person": true
+   },
+   "ids": {
+    "artifact": "k3m9q2w8x1ab",
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "shell",
+    "run": "01JBCB0T000000000000000R01",
+    "by": "u_77c0zz"
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 103,
+   "at": "2026-10-06T14:09:16.103Z",
+   "kind": "admin.key",
+   "actor": {
+    "type": "viewer",
+    "public_id": "u_77c0zz",
+    "display_name": "Sam",
+    "person": true
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "shell",
+    "scope": "own",
+    "op": "use_own",
+    "value": false,
+    "last4": "abcd",
+    "person": "u_77c0zz"
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 104,
+   "at": "2026-10-06T14:09:17.104Z",
+   "kind": "bot.refused",
+   "actor": {
+    "type": "viewer",
+    "public_id": "u_77c0zz",
+    "display_name": "Sam",
+    "person": true
+   },
+   "ids": {
+    "artifact": "k3m9q2w8x1ab",
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "shell",
+    "person": "u_77c0zz",
+    "reason": "credits_exhausted",
+    "artifact": "k3m9q2w8x1ab"
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 105,
+   "at": "2026-10-06T14:09:18.105Z",
+   "kind": "admin.settings",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "shell",
+    "fields": [
+     "bot.max_steps",
+     "serve.port"
+    ]
+   },
+   "backfilled": false
   }
  ]
 }

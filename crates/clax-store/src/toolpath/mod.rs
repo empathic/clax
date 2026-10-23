@@ -27,6 +27,8 @@
 //! clax://<install>/call/<call ID>                    tool call of the sessionless /mcp route
 //! clax://<install>/step/<step ID>                    a recorded step (a tool call's `produced`)
 //! clax://<install>/backfill/<table>/<row ID>         a history row the backfill skipped
+//! clax://<install>/run/<run ID>                      a ClaxBot run
+//! clax://<install>/cost_line/<line ID>               a credits cost line (`*instance`: the price and free tier)
 //! ```
 //!
 //! Every segment is percent-encoded down to RFC 3986's unreserved
@@ -217,6 +219,10 @@ pub fn actor_string(actor: &Actor, clax_version: &str) -> String {
         }
         Actor::Anonymous => "human:clax-anonymous".into(),
         Actor::System { .. } => format!("tool:clax/{}", actor_segment(clax_version)),
+        Actor::Bot { on_behalf_of } => format!(
+            "agent:claxbot/{}",
+            actor_segment(on_behalf_of.trim_start_matches('*'))
+        ),
     }
 }
 
@@ -327,6 +333,10 @@ pub fn actor_def(actor: &Actor, install: &str, clax_commit: &str, opts: &Redacti
         Actor::System { .. } => json!({
             "name": "Clax",
             "identities": [identity("clax-build", clax_commit)],
+        }),
+        Actor::Bot { on_behalf_of } => json!({
+            "name": "ClaxBot",
+            "identities": [identity("clax-person", &format!("{install}/{on_behalf_of}"))],
         }),
     }
 }
@@ -468,6 +478,10 @@ pub enum Obj<'a> {
     ApprovalRequest(&'a str),
     /// A history row the backfill skipped: table, row ID.
     BackfillRow(&'a str, &'a str),
+    /// A ClaxBot run, by its ID.
+    Run(&'a str),
+    /// A credits cost line, by its ID.
+    CostLine(&'a str),
 }
 
 /// The opaque, install-scoped URI of `obj` (spec §10.2).
@@ -497,6 +511,8 @@ pub fn clax_uri(install: &str, obj: Obj<'_>) -> String {
         Obj::Approval(i) => format!("{base}/approval/{}", seg(i)),
         Obj::ApprovalRequest(i) => format!("{base}/approval_request/{}", seg(i)),
         Obj::BackfillRow(t, r) => format!("{base}/backfill/{}/{}", seg(t), seg(r)),
+        Obj::Run(r) => format!("{base}/run/{}", seg(r)),
+        Obj::CostLine(l) => format!("{base}/cost_line/{}", seg(l)),
     }
 }
 
@@ -709,6 +725,25 @@ impl Event<'_> {
             Some(K::ApprovalRequest | K::ApprovalDecide | K::ApprovalWithdraw) => {
                 self.str("request_id").map(Obj::ApprovalRequest)
             }
+            Some(
+                K::BotRunStart
+                | K::BotTurn
+                | K::BotScript
+                | K::BotCall
+                | K::BotRunEnd
+                | K::BotCancel
+                | K::ViewRun,
+            ) => self.str("run").map(Obj::Run),
+            Some(K::ViewAdmin | K::ViewUsage) => self
+                .str("subject_person")
+                .map(Obj::Person)
+                .or(Some(Obj::Install)),
+            Some(K::ViewAudit | K::AdminProvider | K::AdminSettings) => Some(Obj::Install),
+            Some(K::AdminRole | K::AdminFlag | K::AdminCredits | K::BotRefused) => {
+                self.str("person").map(Obj::Person)
+            }
+            Some(K::AdminKey) => Some(self.str("person").map_or(Obj::Install, Obj::Person)),
+            Some(K::AdminCostLine) => self.str("line").map(Obj::CostLine),
             _ => None,
         };
         let generic = || match (a, t) {
@@ -1323,6 +1358,149 @@ impl Event<'_> {
                 self.show("tag_id"),
                 self.show("artifacts")
             ),
+            Some(K::BotRunStart) => format!(
+                "Started ClaxBot run {} on {} ({}, {} key)",
+                self.show("run"),
+                art(),
+                self.show("request"),
+                self.show("key_source")
+            ),
+            Some(K::BotTurn) => format!(
+                "ClaxBot run {} asked {} (step {}, {} credits)",
+                self.show("run"),
+                self.show("model"),
+                self.show("step"),
+                credits(self.body.get("credits_milli"))
+            ),
+            Some(K::BotScript) => format!(
+                "ClaxBot run {} ran a script (step {}, {} calls{}, {} credits)",
+                self.show("run"),
+                self.show("step"),
+                match self.body.get("calls") {
+                    Some(Value::Array(c)) => c.len(),
+                    _ => 0,
+                },
+                if self.body.get("error").is_some_and(|e| !e.is_null()) {
+                    ", failed"
+                } else {
+                    ""
+                },
+                credits(self.body.get("credits_milli"))
+            ),
+            Some(K::BotCall) => format!(
+                "ClaxBot run {} called {}{} (step {}, {})",
+                self.show("run"),
+                self.show("op"),
+                match self.str("target") {
+                    Some(t) => format!(" on {t}"),
+                    None => String::new(),
+                },
+                self.show("step"),
+                if self.body.get("ok") == Some(&Value::Bool(true)) {
+                    "ok"
+                } else {
+                    "refused"
+                }
+            ),
+            Some(K::BotRunEnd) => format!(
+                "Ended ClaxBot run {}: {}{} ({} credits)",
+                self.show("run"),
+                self.show("outcome"),
+                match self.str("reason") {
+                    Some(r) => format!(", {r}"),
+                    None => String::new(),
+                },
+                credits(self.body.get("credits_milli"))
+            ),
+            Some(K::BotCancel) => format!(
+                "Asked ClaxBot run {} to stop (by {})",
+                self.show("run"),
+                self.show("by")
+            ),
+            Some(K::BotRefused) => format!(
+                "ClaxBot refused a run for person {}: {}",
+                self.show("person"),
+                self.show("reason")
+            ),
+            Some(K::ViewRun) => format!("Viewed ClaxBot run {}", self.show("run")),
+            Some(K::ViewAdmin) => match self.str("subject_person") {
+                Some(p) => format!("Viewed admin page {} for person {p}", self.show("page")),
+                None => format!("Viewed admin page {}", self.show("page")),
+            },
+            Some(K::ViewAudit) => "Viewed the audit trail".to_string(),
+            Some(K::ViewUsage) => {
+                format!("Viewed the usage of person {}", self.show("subject_person"))
+            }
+            Some(K::AdminRole) => format!(
+                "{} role {} {} person {}",
+                if self.str("op") == Some("remove") {
+                    "Removed"
+                } else {
+                    "Granted"
+                },
+                self.show("role"),
+                if self.str("op") == Some("remove") {
+                    "from"
+                } else {
+                    "to"
+                },
+                self.show("person")
+            ),
+            Some(K::AdminFlag) => format!(
+                "Set flag {} of person {} to {}",
+                self.show("flag"),
+                self.show("person"),
+                self.show("value")
+            ),
+            Some(K::AdminCredits) => format!(
+                "Changed the weekly lift of person {} from {} to {} credits",
+                self.show("person"),
+                credits(self.body.get("lift_from")),
+                credits(self.body.get("lift_to"))
+            ),
+            Some(K::AdminSettings) => {
+                let fields: Vec<&str> = match self.body.get("fields") {
+                    Some(Value::Array(f)) => f.iter().filter_map(Value::as_str).collect(),
+                    _ => Vec::new(),
+                };
+                format!("Changed this Clax's settings {}", and_list(&fields))
+            }
+            Some(K::AdminProvider) => {
+                let fields: Vec<&str> = match self.body.get("fields") {
+                    Some(Value::Array(f)) => f.iter().filter_map(Value::as_str).collect(),
+                    _ => Vec::new(),
+                };
+                format!("Changed the ClaxBot settings {}", and_list(&fields))
+            }
+            Some(K::AdminKey) => format!(
+                "{} the {} model key{}",
+                match (self.str("op"), self.body.get("value")) {
+                    (Some("clear"), _) => "Cleared",
+                    (Some("use_own"), Some(Value::Bool(true))) => "Put in use",
+                    (Some("use_own"), _) => "Took out of use",
+                    _ => "Set",
+                },
+                if self.str("scope") == Some("own") {
+                    "own"
+                } else {
+                    "instance"
+                },
+                match self.str("person") {
+                    Some(p) => format!(" of person {p}"),
+                    None => String::new(),
+                }
+            ),
+            Some(K::AdminCostLine) => {
+                let fields: Vec<&str> = match self.body.get("fields") {
+                    Some(Value::Object(f)) => f.keys().map(String::as_str).collect(),
+                    _ => Vec::new(),
+                };
+                format!(
+                    "Changed the {} of cost line {}",
+                    and_list(&fields),
+                    self.show("line")
+                )
+            }
             Some(K::BackfillSkip) => {
                 return format!(
                     "Skipped {} row {} while recording earlier history",
@@ -1337,6 +1515,25 @@ impl Event<'_> {
         } else {
             s
         }
+    }
+}
+
+/// A milli-credit amount, as credits with up to three decimals (`1.5`,
+/// `12`); `unknown` when it is not an integer.
+fn credits(v: Option<&Value>) -> String {
+    match v.and_then(Value::as_i64) {
+        Some(m) => {
+            let sign = if m < 0 { "-" } else { "" };
+            let m = m.unsigned_abs();
+            let frac = m % 1000;
+            if frac == 0 {
+                format!("{sign}{}", m / 1000)
+            } else {
+                let f = format!("{frac:03}");
+                format!("{sign}{}.{}", m / 1000, f.trim_end_matches('0'))
+            }
+        }
+        None => "unknown".into(),
     }
 }
 
@@ -1490,6 +1687,16 @@ pub fn render(
         }),
         actors,
     })
+}
+
+/// The one-sentence description of `row` that its step carries
+/// (`meta.description`), as the audit view lists it; `Recorded <kind>` for
+/// a row that does not render.
+pub fn describe(row: &AuditRow, install: &str) -> String {
+    render_step(row, None, &RenderEnv::journal(install), &Redaction::NONE)
+        .ok()
+        .and_then(|s| s["meta"]["description"].as_str().map(str::to_string))
+        .unwrap_or_else(|| format!("Recorded {}", row.kind))
 }
 
 /// [`render`]'s step alone.

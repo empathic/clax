@@ -3,6 +3,11 @@ load("//bazel:cargo.bzl", "cargo_package")
 cargo_package(
     # The modules of tests/integration.rs in six test targets (bazel/cargo.bzl).
     split_tests = {"integration": {"groups": 6}},
+    # As crates/clax-server/Cargo.toml has it: no QuickJS on Android or iOS.
+    deps_not_on = {"//crates/clax-bot-js:clax_bot_js": [
+        "@platforms//os:android",
+        "@platforms//os:ios",
+    ]},
     # The runtime contract's type definitions src/shell/mod.rs serves.
     compile_data = ["//web:contract_files"],
     # clax-http's sources the route-table guards read (src/routes/guards.rs),

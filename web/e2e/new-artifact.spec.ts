@@ -19,8 +19,8 @@ const SIZES = { desktop: { width: 1440, height: 900 }, phone: { width: 390, heig
 async function create(page: Page, title: string) {
   await page.getByRole("button", { name: "New artifact" }).click();
   const form = page.getByRole("dialog", { name: "New artifact" });
-  await form.getByLabel("Title").fill(title);
-  await form.getByLabel("Brief").fill(BRIEF);
+  await form.getByLabel("Name").fill(title);
+  await form.getByLabel("Description").fill(BRIEF);
   await form.getByRole("button", { name: "Create" }).click();
   return page.getByRole("dialog", { name: "Who builds it?" });
 }
@@ -110,8 +110,8 @@ test("shots: the dialog with agents to pick, and the placeholder page", async ({
     await shot(page, `gallery-${look}`);
     await page.getByRole("button", { name: "New artifact" }).click();
     const form = page.getByRole("dialog", { name: "New artifact" });
-    await form.getByLabel("Title").fill("Q3 revenue");
-    await form.getByLabel("Brief").fill(BRIEF);
+    await form.getByLabel("Name").fill("Q3 revenue");
+    await form.getByLabel("Description").fill(BRIEF);
     await shot(page, `dialog-brief-${look}`);
     await form.getByRole("button", { name: "Create" }).click();
     const who = page.getByRole("dialog", { name: "Who builds it?" });

@@ -1,0 +1,52 @@
+# rquickjs-core 0.14.0 from crates.io, renamed, over clax-rquickjs-sys:
+# written by scripts/vendor-rquickjs.sh, do not edit.
+[package]
+edition = "2021"
+name = "clax-rquickjs-core"
+version = "0.14.0"
+authors = [
+    "Mees Delzenne <mees.delzenne@gmail.com>",
+    "K. <kayo@illumium.org>",
+]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "High level bindings to the QuickJS JavaScript engine (rquickjs-core), over Clax's patched QuickJS"
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/empathic/clax"
+publish = false
+
+[features]
+default = ["std"]
+std = []
+allocator = []
+array-buffer = []
+classes = []
+compile-tests = []
+doc-cfg = []
+multi-ctx = []
+properties = []
+rust-alloc = []
+disable-assertions = ["clax-rquickjs-sys/disable-assertions"]
+
+[lib]
+name = "rquickjs"
+path = "src/lib.rs"
+# Its own tests need its dev-dependencies, which are not kept.
+test = false
+doctest = false
+
+[dependencies]
+clax-rquickjs-sys = { path = "../clax-rquickjs-sys" }
+hashbrown = "0.17"
+
+# Third-party code: the workspace's lints and clippy do not apply.
+[lints.rust]
+warnings = "allow"
+
+[lints.clippy]
+all = "allow"

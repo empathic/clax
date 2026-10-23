@@ -39,6 +39,10 @@ mod api_caching;
 mod api_canary;
 #[cfg(any(not(clax_split), clax_split = "api_changelog"))]
 mod api_changelog;
+#[cfg(any(not(clax_split), clax_split = "api_claxbot"))]
+mod api_claxbot;
+#[cfg(any(not(clax_split), clax_split = "api_claxbot_run"))]
+mod api_claxbot_run;
 #[cfg(any(not(clax_split), clax_split = "api_client_imports"))]
 mod api_client_imports;
 #[cfg(any(not(clax_split), clax_split = "api_content"))]
@@ -125,6 +129,8 @@ mod api_sample;
 mod api_seats;
 #[cfg(any(not(clax_split), clax_split = "api_sessions"))]
 mod api_sessions;
+#[cfg(any(not(clax_split), clax_split = "api_settings"))]
+mod api_settings;
 #[cfg(any(not(clax_split), clax_split = "api_stream"))]
 mod api_stream;
 #[cfg(any(not(clax_split), clax_split = "api_tags"))]

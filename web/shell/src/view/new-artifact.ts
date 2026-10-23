@@ -11,13 +11,15 @@ export const MAX_TITLE = 200;
 /** The longest brief the daemon takes (a comment's limit), in characters. */
 export const MAX_BRIEF = 10_000;
 
-/** What `POST /api/artifacts:new` answers, as the dialog uses it. */
-export type Started = { artifact: { id: string; title: string }; url: string; thread: { id: string } };
+/** What `POST /api/artifacts:new` answers, as the dialog uses it; `run`,
+ * when ClaxBot was asked to build it (`build: "claxbot"`), is the run it
+ * started (spec 2026-10-21-claxbot §6.4). */
+export type Started = { artifact: { id: string; title: string }; url: string; thread: { id: string }; run?: { id: string } | null };
 
 /** One agent as `GET /api/agents` lists it: another person's agent has no
  * handle there, only its name. `person` is its person's public ID; null for
  * the owner's agents. */
-export type ListedAgent = { handle: string | null; name: string | null; person: string | null; live: boolean; harness?: string | null };
+export type ListedAgent = { handle: string | null; name: string | null; person: string | null; live: boolean; harness?: string | null; builtin?: boolean };
 
 /** An agent the dialog offers: `to` is what the send names (its handle, else
  * its name); `who` is "Sam's agent" for another person's, else null. */
@@ -45,11 +47,11 @@ export function formProblem(title: string, brief: string): string | null {
 /** The live agents, grouped as the Send menu groups them: yours first, then
  * the owner's, then each other person's, by `names` (public ID → display
  * name). An agent that has neither a handle nor a name cannot be named, and
- * is left out. */
+ * is left out, as is ClaxBot (`builtin`), which the dialog's switch asks for. */
 export function pickGroups(listed: ListedAgent[], me: Me, names: Map<string, string> = new Map()): PickGroup[] {
   const groups = new Map<string, PickGroup & { rank: number }>();
   for (const a of listed) {
-    if (!a.live) continue;
+    if (!a.live || a.builtin) continue;
     const to = a.handle ?? a.name;
     if (!to) continue;
     const owners = a.person === null;
@@ -98,12 +100,18 @@ export function newKey(): string {
 }
 
 /** Starts an artifact titled `title` from `brief`, under idempotency key
- * `key`. Throws a [`Refused`] when the daemon refuses. */
-export async function start(title: string, brief: string, key: string): Promise<Started> {
-  const res = await fetch("/api/artifacts:new", { method: "POST", headers: { ...await headers(), "idempotency-key": key }, body: JSON.stringify({ title: title.trim(), brief: brief.trim() }) });
+ * `key`; with `build`, ClaxBot builds it at once (spec 2026-10-21-claxbot
+ * §6.4). Throws a [`Refused`] when the daemon refuses. */
+export async function start(title: string, brief: string, key: string, build?: "claxbot"): Promise<Started> {
+  const res = await fetch("/api/artifacts:new", { method: "POST", headers: { ...await headers(), "idempotency-key": key }, body: JSON.stringify({ title: title.trim(), brief: brief.trim(), ...build && { build } }) });
   if (!res.ok) throw await refused(res);
   return res.json() as Promise<Started>;
 }
+
+/** Where the new artifact opens with its run panel on the run ClaxBot
+ * started (`#run=<ID>`; `#run`, the newest active one, when the daemon
+ * named none). */
+export const withRun = (made: Started): string => `${made.url}#run${made.run?.id ? `=${encodeURIComponent(made.run.id)}` : ""}`;
 
 /** The live agents a send of a thread of artifact `aid` from this browser
  * may name (`GET /api/agents?artifact=`: those the daemon says it would

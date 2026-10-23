@@ -45,7 +45,15 @@ Which license covers which part:
     crates/clax-rt
     crates/clax-git
     crates/clax-content-git
+    crates/clax-bot-sandbox
+    crates/clax-bot-js
     crates/clax-testkit
+
+  MIT                             Patched copies of third-party crates:
+    third_party/clax-rquickjs-sys   rquickjs-sys and rquickjs-core (MIT,
+    third_party/clax-rquickjs-core  as their manifests say) and QuickJS
+                                    (MIT, the text in
+                                    third_party/clax-rquickjs-sys/quickjs/LICENSE)
 
   AGPL-3.0-only                   The web application and the hosted service:
     crates/clax-worker            (including crates/clax-worker/vfs)

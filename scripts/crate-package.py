@@ -29,6 +29,11 @@ nothing internal under a name of its own:
   Cargo.lock is copied so `cargo install --locked` builds what CI tests.
 - scripts/crate-package/build.rs replaces the bundled crates' build
   scripts; the commit the package is assembled from goes in BUILD_COMMIT.
+- An optional dependency is left out, with the features that turn it on:
+  the package builds without them (clax-server's `native-sandbox`, whose
+  patched QuickJS crates are not on crates.io, so the published `clax`
+  answers ClaxBot's scripts `unavailable`). In the bundled sources a
+  `feature = "<name>"` of a feature left out reads as `any()`, never true.
 
 The package is "GPL-2.0-only AND AGPL-3.0-only": its Rust code is GPL-2.0
 (the dual-licensed shared crates under that license) and the web UI it
@@ -87,9 +92,32 @@ def bundled_crates(packages):
             continue
         order.append(name)
         for d in by_name[name]["dependencies"]:
-            if d["kind"] is None and d["name"] in by_name:
+            if d["kind"] is None and d["name"] in by_name and not d["optional"]:
                 todo.append(d["name"])
     return [by_name[n] for n in order]
+
+
+def dropped_features(crates):
+    """{crate: [feature]}: the features of the bundled crates that turn on
+    an optional dependency, which the package leaves out, with every
+    feature that turns one of them on."""
+    out = {}
+    for c in crates:
+        optional = {d["name"] for d in c["dependencies"] if d["optional"]}
+        features = c.get("features", {})
+        dropped = {f for f, on in features.items()
+                   if any(x.split(":", 1)[-1].split("/")[0] in optional for x in on
+                          if x.startswith("dep:") or "/" in x)}
+        changed = True
+        while changed:
+            changed = False
+            for f, on in features.items():
+                if f not in dropped and any(x in dropped for x in on):
+                    dropped.add(f)
+                    changed = True
+        if dropped:
+            out[c["name"]] = sorted(dropped)
+    return out
 
 
 def merged_dependencies(crates, workspace):
@@ -104,7 +132,8 @@ def merged_dependencies(crates, workspace):
             if d.get("source") != "registry+https://github.com/rust-lang/crates.io-index":
                 die(f"{c['name']} depends on {d['name']} from {d.get('source')}, not crates.io")
             if d["optional"]:
-                die(f"{c['name']}'s dependency {d['name']} is optional; crate features are not bundled")
+                # Left out with its feature (see the module documentation).
+                continue
             key = d["rename"] or d["name"]
             first = required.setdefault(key, d["req"])
             if first != d["req"]:
@@ -208,7 +237,7 @@ def copy_file(rel):
     shutil.copyfile(src, OUT / rel)
 
 
-def rewrite_sources(crates, renames):
+def rewrite_sources(crates, renames, dropped=None):
     modules = [c["name"].replace("-", "_") for c in crates if c["name"] != BIN_CRATE]
     external = re.compile(r"(?<![\w:$])(" + "|".join(modules) + r")::")
     for c in crates:
@@ -220,6 +249,8 @@ def rewrite_sources(crates, renames):
             text = external.sub(r"crate::\1::", text)
             for old, new in renames.get(c["name"], {}).items():
                 text = re.sub(r"(?<![\w:$])" + re.escape(old) + "::", new + "::", text)
+            for f in (dropped or {}).get(c["name"], []):
+                text = re.sub(r'feature\s*=\s*"' + re.escape(f) + '"', "any()", text)
             path.write_text(text)
     main = OUT / "crates" / BIN_CRATE / "src" / "main.rs"
     decls = ["", "// The workspace crates the binary bundles (scripts/crate-package.py)."]
@@ -268,6 +299,12 @@ def main():
     crates = bundled_crates(packages)
     bin_pkg = crates[0]
 
+    # crates.io ignores [patch], and third_party/ crates are not on it: a
+    # package that reached either would not build what was tested.
+    checked = subprocess.run([sys.executable, str(REPO / "scripts/check-crate-layers.py"), "--publishable", str(REPO)])
+    if checked.returncode != 0:
+        die("clax-cli cannot be published as it stands (above); see scripts/check-crate-layers.py --publishable")
+
     for d in ("web/dist", "web/dist-extension"):
         if not (REPO / d).is_dir() or not any((REPO / d).iterdir()):
             die(f"{d} is empty: build the web UI and the extension first (`just web`)")
@@ -281,7 +318,8 @@ def main():
     for c in crates:
         copy_tree(Path(c["manifest_path"]).parent / "src", OUT / "crates" / c["name"] / "src")
     tables, renames = merged_dependencies(crates, workspace)
-    rewrite_sources(crates, renames)
+    dropped = dropped_features(crates)
+    rewrite_sources(crates, renames, dropped)
     repository = tomllib.loads((REPO / "Cargo.toml").read_text())["workspace"]["package"]["repository"]
 
     dirs, files = embedded_paths()
@@ -313,6 +351,8 @@ def main():
         tables, workspace_lints(), files + ["Cargo.toml"]))
 
     names = ", ".join(c["name"] for c in crates[1:])
+    for name, features in sorted(dropped.items()):
+        print(f"crate-package: {name} without {', '.join(features)}")
     print(f"crate-package: wrote {OUT.relative_to(REPO)} (clax {bin_pkg['version']}, "
           f"commit {commit[:12]}), bundling {names}")
 

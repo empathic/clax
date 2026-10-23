@@ -4,10 +4,11 @@
 //! testkit's delay middleware are here too.
 
 use crate::routes::{
-    app_bundles, app_drafts, approvals, artifacts, assets, client_imports, connect, content, docs,
-    drafts, extension, feedback, git_token, grants, health, inbox, jobs, live, live_layers,
-    mcp_http, people, perf, questions, remote_apps, remotes, room, sample, sessions, sites,
-    snapshot, stream, surface, tags, threads, token, toolpath, viewers, watches, working,
+    admin, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot, client_imports,
+    connect, content, docs, drafts, extension, feedback, git_token, grants, health, inbox, jobs,
+    live, live_layers, mcp_http, people, perf, questions, remote_apps, remotes, room, sample,
+    sessions, settings, sites, snapshot, stream, surface, tags, threads, token, toolpath, viewers,
+    watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::routes::{events, mcp, net};
@@ -464,6 +465,40 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/artifacts/{aid}/fork", post(artifacts::fork))
         .route("/api/artifacts:new", post(artifacts::create_from_brief))
         // Remotes and pushes wait on a public Clax.
+        .route("/api/settings", get(settings::get).put(settings::put))
+        // ClaxBot (spec 2026-10-21-claxbot-design §10).
+        .route("/api/me/bot", get(bot::me_get).put(bot::me_put))
+        .route("/api/me/bot/key", put(bot::key_put).delete(bot::key_delete))
+        .route("/api/me/usage", get(bot::usage))
+        .route("/api/bot/runs", get(bot::list).post(bot::create))
+        .route("/api/bot/runs/{id}", get(bot::get))
+        .route("/api/bot/runs/{id}/cancel", post(bot::cancel))
+        .route("/api/bot/runs/{id}/draft/", get(bot::draft_index))
+        .route("/api/bot/runs/{id}/draft/{*path}", get(bot::draft_file))
+        .route("/api/admin/people", get(admin::people))
+        .route("/api/admin/people/{person}/flags", put(admin::set_flags))
+        .route("/api/admin/people/{person}/role", put(admin::set_role))
+        .route(
+            "/api/admin/people/{person}/credits",
+            put(admin::set_credits),
+        )
+        .route(
+            "/api/admin/provider",
+            get(admin::provider).put(admin::set_provider),
+        )
+        .route(
+            "/api/admin/provider/key",
+            put(admin::set_key).delete(admin::clear_key),
+        )
+        .route("/api/admin/provider/test", post(admin::test))
+        .route("/api/admin/provider/models", get(admin::models))
+        .route(
+            "/api/admin/pricing",
+            get(admin::pricing).put(admin::set_pricing),
+        )
+        .route("/api/admin/usage", get(admin::usage))
+        .route("/api/audit", get(audit_trail::list))
+        .route("/api/audit/{seq}", get(audit_trail::get))
         .route("/api/remotes", get(remotes::list).post(remotes::add))
         .route("/api/remotes/{id}", delete(remotes::remove))
         .route("/api/remotes/{id}/poll", post(remotes::poll))
@@ -591,6 +626,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/inbox", get(shell::gallery_page))
         .route("/people", get(shell::gallery_page))
         .route("/tags", get(shell::gallery_page))
+        .route("/admin", get(shell::gallery_page))
+        .route("/settings", get(shell::gallery_page))
+        .route("/me", get(shell::gallery_page))
+        .route("/audit", get(shell::gallery_page))
         .route("/a/{aid}", get(shell::artifact_page))
         .route("/a/{aid}/", get(shell::artifact_page))
         .route("/a/{aid}/v/{n}", get(shell::artifact_page))
@@ -683,6 +722,18 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     // The tool set's JSON-RPC adapter: `/mcp` on a Durable Object, beside
     // rmcp's `/mcp` in the daemon.
     let r = r.merge(mcp_http::router(&state));
+    // A ClaxBot run's events, for as long as the run and its reader last.
+    let r = r.route("/api/bot/runs/{id}/events", get(bot::events));
+    // A hosted server sends ClaxBot's instance key only to a public https
+    // host (a hosted mode set after the state was assembled, as the
+    // testkit's, is caught here; a test's own looser policy is kept).
+    if state.hosted.is_some()
+        && state.store.base_url_policy() == clax_store::bot_settings::BaseUrlPolicy::Local
+    {
+        state
+            .store
+            .set_base_url_policy(clax_store::bot_settings::BaseUrlPolicy::Hosted);
+    }
     // A hosted daemon's sign-in, sharing and agent-token routes, under the
     // layers below as every route is.
     let mut r = if state.hosted.is_some() {
