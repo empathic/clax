@@ -990,10 +990,12 @@ Cloudflare Worker in hosted mode) as a person signed in there. Nothing
 here changes a local daemon or the plugins until a remote is added.
 
 **Signing in, by device code.** `clax remote add <url>` (or `POST
-/api/remotes {url, name?, machine?}` with the daemon token, the owner's
-alone: 403 `not_for_agents` for an agent) asks the public Clax for a
-device sign-in naming this machine (`Clax on <host name>`, or
-`machine`), prints the user code and opens the approval page; the person,
+/api/remotes {url, name?, machine?, kind?}` with the daemon token, the
+owner's alone: 403 `not_for_agents` for an agent) asks the public Clax for
+a device sign-in naming this machine (`Clax on <host name>`, or
+`machine`), and its kind (`kind`: `clax-app` for the Clax app, which
+passes it on as `client_kind`; absent for a daemon; any other is 400
+`invalid_args`), prints the user code and opens the approval page; the person,
 signed in there, checks the code and approves; the CLI polls (`POST
 /api/remotes/<id or name>/poll` → `{remote, status}`, status `pending`,
 `connected`, `denied` or `expired`; a denied or expired sign-in forgets the
@@ -1012,19 +1014,24 @@ already. A hosted daemon answers these routes, and the push routes, 404.
 **The public side's device sign-in** (a hosted daemon; the Worker serves
 the same routes):
 
-- `POST /api/hosted/device/code {client_name}` (no credential, no
-  `Origin` needed) → `{device_code, user_code, verification_uri,
-  verification_uri_complete, expires_at, expires_in, interval}`. Codes last
-  600 s and are used once; at most 5 sign-ins per client address a minute
-  (429 `rate_limited`), and 1,000 waiting in all (400 `limit_reached`).
+- `POST /api/hosted/device/code {client_name, client_kind?}` (no
+  credential, no `Origin` needed) → `{device_code, user_code,
+  verification_uri, verification_uri_complete, expires_at, expires_in,
+  interval}`. Codes last 600 s and are used once; at most 5 sign-ins per
+  client address a minute (429 `rate_limited`), and 1,000 waiting in all
+  (400 `limit_reached`). `client_kind` is `clax-app` (the Clax app) or
+  absent; any other is 400 `invalid_args`.
 - `GET /device[?code=<user code>]`: the approval page, the shell's; it
   names the machine and its address, and the person it signs in as.
 - `GET /api/hosted/device/<user code>` (a member's browser) →
-  `{client_name, peer_ip, created_at, expires_at, same_address}`
-  (`same_address`: the sign-in asked from this browser's address; the page
-  warns when it did not); `POST
+  `{client_name, peer_ip, client_kind, created_at, expires_at,
+  same_address}` (`same_address`: the sign-in asked from this browser's
+  address; the page warns when it did not; `client_kind` `clax-app` or
+  null); `POST
   …/approve` → `{token}` (an agent token of the caller's, labelled with the
-  machine's name, listed on their People page and revocable there); `POST
+  machine's name, listed on their People page and revocable there; for a
+  `clax-app` sign-in, marked as the person's own device, **Apps from the
+  Clax app** below); `POST
   …/deny` → 204. 404 for a code unknown, decided or expired; 401
   `sign_in_required` without a session, 403 `forbidden` for a guest, 403
   `browser_required` with `Authorization`, 403 `forbidden_origin` without
@@ -1121,8 +1128,14 @@ the threads changed since the link's cursor (`since`, below), and every
   its number and the thread is placed on the version pushed last. Its
   comments come down as comments, their authors kept beside them (kind,
   public ID and name there) for display only: never a local person, agent
-  or right (under the visibility filter, of the unconnected class, which
-  the owner and the owner's agents see). A thread sent to an agent there is
+  or right. Under the visibility filter a comment by the token's person
+  carries no key (nor does any comment a core signed in there with an
+  agent token reads: that Clax filtered it by the person's approvals);
+  any other author's is keyed `remote:<origin>#<public ID>`, and an
+  author with no public ID there `remote:<origin>#*owner` (an agent of
+  that Clax's owner) or `remote:<origin>#*unconnected` (an anonymous
+  viewer). The owner sees each and the owner's agents read it only once
+  the owner approves that key here. A thread sent to an agent there is
   sent to the owner's agents here, and agents read a remote author as
   `<name> (on <remote>)`.
 - Threads made here on a linked artifact after its first push, and every
@@ -1163,8 +1176,211 @@ the threads changed since the link's cursor (`since`, below), and every
   `Idempotency-Key` (as a publish's): a request naming it again answers
   what the first made (a comment's key names its thread: 400
   `invalid_args` on another). `GET /api/artifacts/<id>/threads?since=<time>`
-  (agent tokens only, else 400 `invalid_query`) lists only the threads made,
+  (agent tokens and a person's own device only, else 400
+  `invalid_query`) lists only the threads made,
   commented on or resolved at or after `since`.
+
+**Apps from the Clax app** (spec 2026-10-21-app-push-pull; the app's side
+is "Sharing apps", **Linked apps**). The Clax app is a client of the
+public Clax like a daemon, through its embedded core, and publishes an
+app's versions with the bundle each carries.
+
+- **The device kind.** A sign-in of `client_kind` `clax-app`, once
+  approved, marks its agent token as its person's own device (the
+  approval page says so, and that it may change who can see or edit the
+  pages the person made and whether anyone may comment on them). `GET
+  /api/hosted/agent-tokens` gives each token's `kind`, `device` or
+  `agent`, and People lists devices apart. Outside the sharing and read
+  routes below, a device's token is an ordinary agent token of its
+  person's.
+- **Sharing from a device.** A device's token also reaches these routes,
+  which refuse every other agent token 403 `forbidden`, and acts there as
+  its person's browser session would, while the token is live and its
+  person a member (a body of at most 64 KiB):
+  `GET /api/hosted/artifacts/<id>/sharing`, `PUT …/link`, `PUT …/shares`,
+  `DELETE …/shares/<share ID>`, `PUT …/comments` and `GET
+  /api/hosted/apps`. Who may change an artifact's sharing is as in a
+  browser: its owner, or the person who made it; editors publish but do
+  not share.
+- **Reads from a device.** On `GET /api/artifacts/<id>/head`, `GET
+  …/versions/<n>`, `GET …/versions/<n>/bundle`, `GET
+  …/versions/<n>/files/<path>`, `GET …/threads` (`since` included), `GET
+  …/threads/<thread ID>` and `GET …/threads/<thread ID>/clip`, a device
+  reads as its person's browser does, not as an agent channel: nothing
+  is withheld from it for want of its person's approval of an author, so
+  a shared app's head, files and bundle, and every comment on the
+  person's apps, reach the person's own Clax app whole. Its person's
+  rights (or the page's link) limit what it reads, as they limit their
+  browser. Every other agent token reads those routes filtered, as
+  before.
+- **The Comments switch.** Each artifact has one, on for every artifact
+  made on the web or before it existed. `POST /api/artifacts` on a hosted
+  Clax may carry `comments: false`, which makes the artifact with it off
+  (an app's first publish does; a local daemon refuses `comments` 400
+  `invalid_args`, as do a publish of a later version and a job's publish
+  step). `PUT /api/hosted/artifacts/<id>/comments {on}` (whoever may share
+  it, in a browser or from their device) → `{artifact_id, comments}`;
+  `GET …/sharing` (to whoever may share it) and `GET /api/artifacts/<id>`
+  carry `comments`, and each change is a `comments` event on the
+  artifact's stream topic. `GET /api/artifacts/<id>` and the page's
+  bootstrap also carry `may_resolve`: whether the caller may resolve the
+  artifact's threads (below). While it
+  is off, a new thread or comment is refused 403 `comments_off` to
+  everyone, the owner included (read in the write's own transaction; a
+  keyed resend still answers what it made), so Can comment acts as Can
+  view. Sending a thread to an agent (`…/send`, the batch send) is refused
+  403 `comments_off` too, except to those who may resolve its threads: the
+  owner, the owner's agents, the artifact's maker and those with Can edit,
+  who also keep resolving and reopening. Existing threads stay readable.
+  The web shell turns Comment off and says why, offers no Send to a
+  viewer whose `may_resolve` is false, follows a `comments` event in
+  every open view, shows the switch in its Share dialog, and its `comments` capability refuses a page's new thread
+  or reply `unavailable`.
+- **Where a copy came from.** `POST /api/artifacts` on a hosted Clax may
+  also name `forked_from`, an artifact the caller may read: the new
+  artifact is recorded as made from that artifact's current version, and
+  the answer's `artifact.forked_from` names it, as a fork's does (404 when
+  it is not a live artifact, and nothing is made). A local daemon refuses
+  `forked_from` 400 `invalid_args` (it forks with `POST
+  /api/artifacts/<id>/fork`), as does a publish of a later version.
+- **Bundles.** `PUT /api/artifacts/<id>/versions/<n>/bundle` (the owner,
+  an agent of the owner's or of a person who may edit it, or a signed-in
+  member who may edit it): the raw body, `application/vnd.empathic.clax+zip`,
+  is the bundle version `n` carries, described by the headers
+  `clax-bundle-lineage` (`l_` and 26 lowercase base32 characters),
+  `clax-bundle-version` (its release counter) and
+  `clax-bundle-content-sha256` (the hash of its files) → 201
+  `{artifact_id, version, bundle_version, sha256, size}`, `sha256` that of
+  the bytes as `sha256:<hex>`; the same bytes again answer the same. The
+  bundle is stored unread: no zip or signature is checked, only that its
+  content hash is version `n`'s (400 `bundle_mismatch`, also for a version
+  that carries other bytes), that its lineage is the artifact's earlier
+  bundles' (400 `bundle_lineage`), that its release counter is above every
+  earlier one's (400 `bundle_version_order`), and its size: at most 32
+  MiB, and with the version's files at most the 64 MiB a version may hold
+  (413 `bundle_too_large`). 400 `invalid_args` for another content type or
+  a missing or malformed header; 404 for no such artifact or version. It
+  is never one of the version's served files. `GET` the same path (anyone
+  who may open the artifact, a guest and a visitor by its link too) → the
+  bytes, with `content-disposition: attachment; filename="<slug>.clax"`,
+  `clax-bundle-lineage` and `clax-bundle-version`; 404 when the version
+  carries none; 403 `withheld` for a person's agent that may not see every
+  file of the version, or the bundle's uploader.
+- **The head.** `GET /api/artifacts/<id>/head` (anyone who may open the
+  artifact, with or without a token) → `{artifact_id, url, title,
+  version, content_sha256, published_by: {name, login, public_id},
+  owner: {name, login, public_id}, note, comments, capabilities,
+  bundle}`: the current version,
+  the hash of its files, who published it and its change note (null when
+  it has none), who made the artifact, its Comments switch, its
+  capability declaration, and `bundle`: null when no version carries one, else of the newest version
+  that does, `{version, lineage, bundle_version, content_sha256, url,
+  published_by}`, `url` its `GET` route. For an agent channel's reader a
+  title it may not see is null, and so is the `content_sha256` of a
+  version or bundle it may not wholly see.
+- **Who published.** Each version names its publisher (the person whose
+  token or session published it: the owner, or an editor), and each
+  bundle its uploader. `published_by` names them by display name, else
+  GitHub login, else "Someone", with the GitHub login when linked and
+  their public ID (the owner's own for the owner; null for an owner with
+  none), which alone tells two people apart. `GET
+  /api/artifacts/<id>` adds `forks` (its live forks' count) and `app`:
+  null when no version carries a bundle, else `{version, bundle_version,
+  installs, published_by, owner}` of the newest bundle. The web shell's
+  byline, as the Get in Clax page's, numbers that bundle's release
+  (`bundle_version`, not the artifact version): "v<N> by @editor · by
+  @owner" when its publisher is not the owner (another name, login or
+  public ID), else "v<N> · by @owner"; the shell adds the installs and
+  forks.
+- **Installs.** `POST /api/artifacts/<id>/installs {install}` (anyone who
+  may open the artifact; on a hosted Clax a request without `Origin` is
+  taken as from no session, its cookie unread) counts one install by the
+  device whose opaque ID `install` is (64 lowercase hex); the same ID
+  counts once. → 204. At most 10 per client address at once, one back
+  every 60 s (429 `rate_limited`); 400 `invalid_args` for another
+  `install`; 404 for no such artifact.
+- **The apps library.** `GET /api/hosted/apps` (a member's browser, or
+  their device) → `[{artifact_id, title, url, version, bundle_version,
+  access, general}]`, by title: the live artifacts carrying a bundle that
+  they made (`access: "owner"`) or that a share names them in (`editor`,
+  `commenter` or `viewer`); `general` is the general access as the Share
+  dialog names it. Get my apps lists it.
+- **Get in Clax.** `GET /a/<id>/get` (and `/a/<id>/get/`; anyone who may
+  open the artifact) is a page without script: the
+  app's title and byline, a QR code of the page's own address, Open
+  in Clax (`clax:get?url=<artifact URL>`, which the app takes on every
+  platform), Download .clax (the newest bundle), the App Store and Google
+  Play pages when the instance names them (`[hosted] stores`), and a link
+  to the page. A daemon that is not hosted offers Download .clax alone. A
+  page no version of which carries a bundle is 404 "This page isn't an app
+  yet.", unless its current version has a file `get` or `get/index.html`,
+  which this address served before it was the Get in Clax page's: then it
+  is 307 (`cache-control: no-store`) to that file's page,
+  `/a/<id>/v/<n>/get` (`n` the current version) or
+  `/a/<id>/get/index.html`. The owner's agents (the daemon token with a
+  session, or the agent-channel marker) are refused 403 `not_for_agents`,
+  whatever the page; any other agent credential (`Bearer cxa_…`, or a
+  signed grant) is refused 403 `forbidden`. On a hosted Clax a page the
+  visitor may not open, or none, and every refusal but `not_for_agents`
+  are one 404 page with the sign-in link, whichever it was. The web shell
+  shows Get in Clax on an app's page (in the more menu on a phone).
+- **App links.** `GET /.well-known/apple-app-site-association` and `GET
+  /.well-known/assetlinks.json`, on the hosted public host alone and with
+  no session, declare the Clax app (`<team>.dev.empathic.clax`, and the
+  Android package and certificate fingerprint) for the path `/a/<id>/get`
+  alone, so that a phone opens that link in the app (the iOS app declares
+  `applinks:clax.dev`, the Android app `clax.dev` and that path); each is
+  404 while the instance names no such app (`[hosted] app_links`, or the
+  Worker's `APPLE_TEAM_ID`, `ANDROID_PACKAGE` and `ANDROID_SHA256`).
+- **The core's app mode** (the local side, the owner's alone by hand: an
+  agent is refused). `POST /api/artifacts/<id>/push {mode: "app",
+  version, remote?, forked_from?, title?}` publishes local version `version` alone
+  as the linked copy's next version, built on the link's public version
+  (a path `version` lacks is removed there), or as a new copy's first,
+  made with comments off; its files go byte for byte, so its content hash
+  is the bundle's. It is refused 409 `remote_moved` when the copy is past
+  the link's version, 400 `uses_assets` for a file naming `/_blob/`, and
+  404 for no such version. Its idempotency key adds the public version it
+  builds on (`…:on:<n>`), so a resend before its answer is the same
+  publish and a later publish of the same version a new one. A new copy
+  may name the public artifact it comes from (`forked_from`), recorded as
+  its lineage there, and its name there (`title`, in place of the local
+  app's); either with another mode, with an app already linked there, or
+  an empty `title`, is 400 `invalid_args`. `POST
+  /api/remotes/<remote>/links {artifact_id, remote_artifact_id, url,
+  remote_n}` → 201 `{link}` links a local app, at its current version, to
+  public version `remote_n` of a copy without a push (an app got from a
+  copy): a local write that asks nothing of the remote, though it needs
+  the core signed in there (400 `not_connected`). `url` is required and unread: the link's
+  address is always `<origin>/a/<remote_artifact_id>`, as a push makes
+  it; 400 `invalid_args` for a malformed ID or `remote_n` 0, 404 for no
+  such local app. Its other routes forward to the remote with the
+  core's token, which no answer carries: `PUT
+  /api/artifacts/<id>/remotes/<remote>/bundle?remote_n=<n>` (the bundle,
+  as the remote's `PUT …/bundle`), `GET /api/remotes/<remote>/apps`, and
+  under `/api/remotes/<remote>/artifacts/<public ID>`: `GET head`, `GET
+  versions/<n>/bundle`, `GET versions/<n>/files` and `…/files/<path>`,
+  `GET sharing`, `PUT sharing/link`, `PUT sharing/shares`, `DELETE
+  sharing/shares/<share ID>`, `PUT sharing/comments`, `POST comments` (a
+  new thread on the copy's current version, as Tell @owner posts), `POST
+  installs {install}` (an install counted with the core's token, so a
+  copy shared with named people counts it) and `DELETE` (Unpublish: deletes the copy there and unlinks every local app
+  linked to it). Every answer passed on carries `content-security-policy:
+  sandbox; default-src 'none'` and `x-content-type-options: nosniff`: a
+  copy's bytes are another author's. A remote that refuses the token is 502
+  `remote_signed_out`, one not reached 502 `remote_unreachable`.
+- **A public Clax too old for the app.** Whenever a public Clax runs a
+  release from before what the core asks of it, the core answers 502
+  `remote_too_old`, its message naming the remote's origin, rather than
+  the remote's own refusal: the Clax app's sign-in (`POST /api/remotes`
+  with `kind` `clax-app`) refused 400 `invalid_json` for `client_kind`, a
+  field that remote does not know; an app-mode publish whose new copy's
+  answer carries no Comments switch (`artifact.comments`), the copy just
+  made there being deleted and nothing linked; and a forwarded route
+  answered 404, or 403 `browser_required`, by a remote that also answers
+  `GET /api/hosted/apps` 404. A daemon's own sign-in names no kind and
+  still reaches such a remote. The hosted Clax is deployed before an app
+  release that needs it.
 
 ## Tags
 
@@ -2601,7 +2817,7 @@ drops them. Every message carries `nonce`:
 | `ready` | `artifact`, `version`, `latest`, `file` | Each document the frame loads greets. |
 | `state` | `commenting`, `draft: {key, kind, label, quote, text, clip: "pending" \| "ready" \| "none", byPage?: true, at?: {x, y, w, h}} \| null`, `busy` | Any change of those. `key` is the composer's identity (new for each pick); `kind` its anchor's kind; `label` says what the composer's anchor is in words (never a selector); `quote` is the text it quotes as a reader sees it (spaced, quote marks made `'`, at most 280 characters and "…"), or null; `byPage` marks a composer the page opened; `at` is where the viewer's pick is in the WebView, CSS pixels from its top left, where the shell last placed the pick's anchor in the page (as it places the threads', so it follows the page's scrolling; the app places its composer by it; none for a composer the page opened, one on the whole app, or a pick not placed). |
 | `draftClip` | `key`, `png` (base64) | The open composer `key`'s screenshot, once per screenshot taken, and again at `init`. |
-| `threads` | `threads: [{id, status, summary, label, sent, comments, version, clip}]` | Any change of the view's threads. `summary` is the first comment cut to 140 characters; `label` the anchor in words; `clip` whether it has a screenshot. |
+| `threads` | `threads: [{id, status, summary, label, sent, comments, version, clip, remote?}]` | Any change of the view's threads. `summary` is the first comment cut to 140 characters; `label` the anchor in words; `clip` whether it has a screenshot; `remote` the remote a linked app's thread came from (its `linked.remote`, `clax.dev`), absent for a thread started here. |
 | `sent` | `thread` | Send posted a thread and sent it to the agent. |
 | `sendFailed` | `thread`, `text` | The send failed; the thread stays posted and unsent until `resend`. |
 | `landed` | `version` | The page of a version auto-follow loaded has greeted. |
@@ -2945,12 +3161,16 @@ viewer's gesture" still hold, and outside app mode no attestation exists.
 
 The Clax app sends an app to another Clax install as one file, a
 **bundle** (`<slug>.clax`, MIME `application/vnd.empathic.clax+zip`), and
-installs and updates apps from such files. All of it is the app's own
-(`apps/clax_app/lib/bundle/`): the core adds no route for it, and a
-bundle's app is published, drafted, inspected and tested through the
-routes and views above. No server, directory or update check is involved:
-a bundle travels as a file, and an update is a later bundle the person
-opens.
+installs and updates apps from such files. Reading, writing, trust and
+updating are the app's own (`apps/clax_app/lib/bundle/`), and a bundle's
+app is published, drafted, inspected and tested through the routes and
+views above. A bundle sent as a file travels with no server, directory or
+update check: an update is a later bundle the person opens. An app
+**linked** to a public copy on a hosted Clax is the exception (**Linked
+apps**, below): it publishes its versions there with their bundles, and
+checks there for updates. The routes it goes through, on the core and on
+the hosted Clax, are in "Publishing to a public Clax" (**Apps from the
+Clax app**).
 
 **What a bundle holds.** A zip (PKWARE APPNOTE 6.3: no zip64, encryption,
 directory entries, extra fields or comments; each entry `stored` or
@@ -3040,6 +3260,7 @@ that applies:
 
 | Case | Answer |
 |---|---|
+| The bundle came from a public copy (got from it, or an update of it), and a local app of the bundle's lineage is linked to that copy | `linked`: that app weighs the bundle's version against its own, whatever key signed it: `update` when higher, `older` when lower, else `current` or `conflict`, as the rows below. |
 | An app this install authors has the lineage, under the bundle's key | `own`: "This is your app <title>.", Open. |
 | An installed app has the lineage and key, and the bundle's version is higher | `update` (below). |
 | The same lineage and key at the same version, with the same content hash, title and capabilities | `current`: "You already have v<N>.", Open. |
@@ -3048,6 +3269,11 @@ that applies:
 | A fork made here names the lineage and key as its original | `forked`: offered as a separate app. |
 | A local app has the lineage under another key | `foreign`: offered as a separate app. |
 | None of these | `install`. |
+
+The `linked` row skips first-use trust: who may publish a linked app's
+next version is the hosted Clax's decision, made when it took the push
+(the copy's owner, or someone it shares the copy with at Can edit). The
+bundle is still read, and its signature verified, as every bundle is.
 
 A separate install is a new app with its own record of the bundle's
 lineage and key, so that key's later bundles update it; two local apps
@@ -3167,6 +3393,136 @@ opened file's path. Both platforms deliver files on the channel
 `dev.empathic.clax/bundles` (`initial`, then `opened` events), and the
 launcher's Import app… opens a file the person picks. A file that is not
 a bundle is refused by the reader.
+
+**Linked apps.** The Clax app signs in to a hosted Clax (clax.dev, or any
+other) from Settings › Sharing, through its core's device sign-in (`POST
+/api/remotes` with `kind: "clax-app"`, "Publishing to a public Clax"); the
+core keeps the token, which the app never holds. An app is linked when the
+app keeps a link from it to a public copy there: this device published it,
+or got it from there (Get my apps, or a Get in Clax link). The link names
+the remote, the public artifact and its address, and its base: the public
+version this device last published or took. Its role here is author when
+the account signed in there owns the copy or may edit it (Can edit), who
+may publish; else recipient, who only takes updates. Without a sign-in to
+the copy's remote, the link holds the copy's address alone.
+
+- **Publishing.** Publish to clax.dev… (a tile's long press, the
+  inspector's Overview) publishes one local version, the latest or one
+  picked in Versions, as the copy's next public version; versions not
+  picked never leave the device. The app builds the version's bundle as
+  Export does, with the documents only when Include my data is on: the
+  publish sheet offers it on an app's first publish and on Publish fork…
+  alone, and every later version, published by hand or automatically,
+  goes up without documents. The core pushes that version alone
+  (`mode: "app"`); once the remote takes it, the app records the release
+  and uploads the bundle beside that public version. A first publish makes the copy Restricted,
+  with comments off. An app whose files name an address of the core's
+  assets (`/_blob/`) is refused (`uses_assets`: "This app uses files Clax
+  can't share yet"). A push or upload that gets no answer, or a 5xx, is
+  tried again, at growing intervals, while the app shows it waiting; an
+  upload the app's end cut short is finished at its next launch. One app's
+  publishes run one at a time. With Publish new versions set to
+  Automatically, each new local version of an app this device may publish
+  is published as it lands. Unpublish… deletes the public copy and unlinks
+  the app here; copies others installed keep working without updates.
+- **Getting.** A pull reads the copy's head (with the core's token when
+  signed in to its remote, else without), then the bundle of the newest
+  version that carries one, and refuses it, writing nothing, unless the
+  manifest's `content_sha256`, `lineage` and `version` are the head's: the
+  hosted Clax stores bundles unread, and checked their content hash against
+  the public version's files when they were put. The bundle is then opened
+  as from that copy (the `linked` row). A new app is installed after the
+  install sheet ("From @owner on <host>", the fingerprint under Details),
+  linked from the start with its base at the version taken, and its
+  install counted. A pull never brings documents: a bundle's seed is left
+  out.
+- **The two counters.** The hosted Clax's artifact versions decide
+  whether the copy moved: a publish must build on the copy's current
+  version, else it is refused `remote_moved`. The bundle's `version` is
+  the lineage's release counter: each bundle a copy takes is above the
+  last it holds (`bundle_version_order`) and of the same lineage
+  (`bundle_lineage`). A first publish keeps the lineage of an app exported
+  before (else mints one) and continues past its last export, so holders
+  of earlier files see the copy's bundles as later versions of the same
+  app; a device publishing an app it got from a copy uses the copy's
+  lineage. Each publish's bundle version is past both the app's last
+  release here and the copy's newest bundle; it may skip numbers, never go
+  back.
+- **Checking for updates.** The app reads a linked app's head when it
+  comes to the foreground (at most once per 15 minutes per remote), when
+  the app opens, and after a publish, a change landing or an update; with
+  a sign-in there it reads through the core, else the hosted Clax's head
+  route without a token. A head that cannot be read keeps the one read
+  before; a check never blocks launch or the app. A recipient is offered
+  only versions that carry a bundle. A newer one shows the ↓ badge and,
+  on the app's screen, "v<N> is ready · from @who" with Update; nothing is
+  applied until the person chooses Update, or, with Update automatically
+  on for that app (off by default) and the app unmodified, until the check
+  that finds it runs the update, which still waits for the person when it
+  adds a capability or a `net` host.
+  The update runs the steps of **Updating** on the downloaded bundle.
+- **Sync states.** A linked app is in one of these, shown on its
+  Overview card (its label there, and the action the card offers) and,
+  on its home tile, as the home capability's `sync` (`apps()`):
+
+  | State | When | Overview card, badge |
+  |---|---|---|
+  | Live | the live version is the head's, or nothing moved | ☁ Live, `live` |
+  | Ahead | an author's local versions moved past the base and the copy did not | ↑ Newer here, `ahead` |
+  | Update waiting | the copy moved past what this device holds and taking it replaces nothing of its own; for a recipient, a newer version carrying a bundle, its copy modified or not; for an unmoved author, a newer head made on the web too (taken as Take theirs) | ↓ Update waiting, `update` (the only warm badge) |
+  | Diverged | an author's app and the copy both moved past the base, a web-made head included | ⑂ Changed in both places, `diverged` (Resolve…) |
+  | Changed here | a recipient's copy with changes of its own past the release it last took: a fork of the public app until it is reset to a release or an update is brought into it (a version Bring v<N> into mine made is not) | ⑂ Changed here, `fork` (Publish fork…) |
+  | Kept mine | the person chose Keep mine | Kept mine, no badge (Check for updates; Publish fork… for a recipient, Publish as a new app for an author) |
+
+  The Clax pill on the app's screen shows three of them, and a tap acts:
+  Ahead reads "↑ v<N> here · v<M> public" (`v<N>` the app's local
+  version, `v<M>` the copy's public one; "↑ v<N> here" when that is not
+  known) and publishes v<N>, where this device may publish; Update
+  waiting reads "↓ v<N> ready" (the release it brings, or for an author
+  the version made on the web) and runs the update; Diverged reads "Diverged" and opens Resolve…. Live, Changed
+  here and Kept mine show no pill there. A head at or below what this
+  device holds, a stale one included, moves nothing.
+- **Bring v<N> into mine.** A modified copy offered an update gets, beside
+  **Update (replaces your changes)** and **Keep mine**, **Bring v<N> into
+  mine** while Claude can run here (an API key is set): Claude merges the
+  person's live version with the update's files over the release the copy
+  last took, on a draft, and the result runs the update's checks; it is
+  offered as "Your version with v<N>", and taken records release N as
+  taken, the app still modified. A merge may declare no capability or
+  `net` host neither version declares.
+- **Diverged.** Resolve… says who published the head, with its change
+  note, and offers: **Ask Claude to combine them** (while Claude can run):
+  a merge of the head's files and the live version over the base's,
+  checked as such a draft, taken as a local version noting both sources ("From v<H> by
+  @who on <host> and v<N> here: …"), the link re-based on the head, then
+  published as head + 1; **Take the public v<H> (drop mine)**: a head
+  carrying a bundle runs the update on it, a head made on the web has its
+  files read (through the core's `versions/<n>/files` routes) and taken
+  as a local version once a draft passes its checks (the page and its
+  tests, on a copy of the documents); the link's base moves to the head; and **Publish mine as a new app**: the live version goes up as a
+  new public copy (`forked_from` naming the old copy, a new lineage at
+  version 1 whose bundle's `forked_from` names the old one), Restricted
+  with comments off, and the app is relinked to it; the old copy stays.
+  Whichever is chosen, this device's versions stay in Versions.
+- **Publish fork.** For an app installed from someone else's bundle,
+  Publish to clax.dev… is **Publish fork…**: the publish sheet asks for
+  its name, prefilled "<title> (yours)", and the app goes up as the
+  person's own new public copy (`title`), Restricted with comments off,
+  its bundle a fork (a new lineage under this install's key,
+  `forked_from` naming the original's). A copy linked to the original
+  publishes on that copy's remote, naming the original as where the new
+  copy came from, and is relinked to the new copy.
+- **Tell @owner.** When an update fails its checks and the person may
+  comment on the copy (its Comments switch on, and the copy theirs or
+  shared with them at Can comment or Can edit), the failure offers Tell
+  @owner: a composer prefilled "v<N> didn't pass its checks on my data:
+  <reason>.", which sends none of their data and is shown before it is
+  posted, as a new thread on the whole of the copy's current version
+  (through the core, `POST /api/remotes/<rid>/artifacts/<raid>/comments`).
+- **Comments.** A linked app's threads come and go with the copy's, as
+  any linked artifact's (**Linked threads**), tagged with the remote in
+  the app's comments. While the copy's Comments switch is off, the app
+  shows no composer for it.
 
 ### Tools
 
@@ -4761,6 +5117,10 @@ router), and a test fails when it differs:
 | `GET /api/artifacts/{aid}/versions/{n}` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
 | `POST /api/artifacts/{aid}/versions` | Filtered | `clax-artifacts` `update` | 96 MiB | yes |
 | `GET /api/artifacts/{aid}/files` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
+| `GET /api/artifacts/{aid}/head` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
+| `GET /api/artifacts/{aid}/versions/{n}/bundle` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
+| `PUT /api/artifacts/{aid}/versions/{n}/bundle` | Own | `clax-artifacts` `update` | 32832 KiB | yes |
+| `POST /api/artifacts/{aid}/installs` | Own | `clax-artifacts` `read` | 2 MiB | yes |
 | `GET /api/tags` | Own | `clax-artifacts` `read` | 2 MiB | yes |
 | `POST /api/tags` | Own | `clax-artifacts` `update` | 2 MiB | yes |
 | `PATCH /api/tags/{tag_id}` | Own | `clax-artifacts` `update` | 2 MiB | yes |
@@ -4826,12 +5186,16 @@ router), and a test fails when it differs:
 | Route | Class | Refuses the owner's agents |
 |---|---|---|
 | `GET /` | Denied | no |
+| `GET /.well-known/apple-app-site-association` | Denied | no |
+| `GET /.well-known/assetlinks.json` | Denied | no |
 | `GET /_blob/{aid}/{asset_id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /_blob/{asset_id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /_clax/{*path}` | Denied | no |
 | `GET /_clip/{aid}/{tid}` | Denied | no |
 | `GET /a/{aid}` | Denied | yes: 403 `not_for_agents` |
 | `GET /a/{aid}/` | Denied | yes: 403 `not_for_agents` |
+| `GET /a/{aid}/get` | Denied | yes: 403 `not_for_agents` |
+| `GET /a/{aid}/get/` | Denied | yes: 403 `not_for_agents` |
 | `GET /a/{aid}/v/{n}` | Denied | yes: 403 `not_for_agents` |
 | `GET /a/{aid}/{*rest}` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/admin/perf/calibrate` | Denied | no |
@@ -4865,6 +5229,7 @@ router), and a test fails when it differs:
 | `GET /api/artifacts/{aid}/remotes` | Denied | no |
 | `DELETE /api/artifacts/{aid}/remotes/{rid}` | Denied | no |
 | `PATCH /api/artifacts/{aid}/remotes/{rid}` | Denied | no |
+| `PUT /api/artifacts/{aid}/remotes/{rid}/bundle` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/artifacts/{aid}/remotes/{rid}/retry` | Denied | no |
 | `GET /api/artifacts/{aid}/room` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/artifacts/{aid}/sample` | Denied | no |
@@ -4943,6 +5308,20 @@ router), and a test fails when it differs:
 | `GET /api/remotes` | Denied | no |
 | `POST /api/remotes` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/remotes/{id}` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/remotes/{id}/apps` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/remotes/{id}/artifacts/{raid}` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/remotes/{id}/artifacts/{raid}/comments` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/remotes/{id}/artifacts/{raid}/head` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/remotes/{id}/artifacts/{raid}/installs` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/remotes/{id}/artifacts/{raid}/sharing` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/remotes/{id}/artifacts/{raid}/sharing/comments` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/remotes/{id}/artifacts/{raid}/sharing/link` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/remotes/{id}/artifacts/{raid}/sharing/shares` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/remotes/{id}/artifacts/{raid}/sharing/shares/{sid}` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/remotes/{id}/artifacts/{raid}/versions/{n}/bundle` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/remotes/{id}/artifacts/{raid}/versions/{n}/files` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/remotes/{id}/artifacts/{raid}/versions/{n}/files/{*path}` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/remotes/{id}/links` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/remotes/{id}/poll` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/sample` | Denied | no |
 | `PUT /api/sample/key` | Denied | no |
@@ -5002,12 +5381,15 @@ viewer's comment its writer (anonymous and unattributed comments count as
 `*unconnected`); a comment, document or upload a page wrote, its writer
 and every author of the page's current version; an agent's comment its
 person; a thread's anchor and clip the authors of the anchored file (and
-the thread's first commenter, for the clip); a version's files the authors
-of each file (a file carried forward keeps its authors); a version's label
-and note its publisher; an artifact's title, description, icon and
-`capabilities` whoever last set each; a document every writer it ever had
-until it is deleted; a working message its session's person. Names of
-people, agents and machines are not filtered.
+the thread's first commenter, for the clip; for a thread mirrored from a
+public Clax whose first comment someone else wrote there, that author,
+`remote:<origin>#<public ID>` or its `#*owner` or `#*unconnected` form,
+for the anchor too); a version's files
+the authors of each file (a file carried forward keeps its authors); a
+version's label and note its publisher; an artifact's title, description,
+icon and `capabilities` whoever last set each; a document every writer it
+ever had until it is deleted; a working message its session's person.
+Names of people, agents and machines are not filtered.
 
 An agent sees a field when every author of it is its own person, Clax
 itself, or an author its person approved there. Anything else is replaced,
@@ -5016,8 +5398,9 @@ never dropped:
 - **A comment:** `"body": null, "withheld": true`; its ID, author name and
   time stay.
 - **A thread:** a withheld anchor has `quote`, `prefix`, `suffix`,
-  `selector`, `custom_name`, `file` and `html_hash` null, its `area`
-  without `tag`, `text` and `children`, and `"anchor_withheld": true`; a
+  `selector`, `label`, `name`, `custom_name`, `file` and `html_hash` null,
+  its `area` without `tag`, `text` and `children`, and
+  `"anchor_withheld": true`; a
   withheld clip has `clip_path` null and `"clip_withheld": true`, and its
   route answers 403 `withheld`; a withheld `resolved_by` or batch note is
   null. The thread carries `"withheld": {"count", "authors": [{"public_id",
@@ -5815,8 +6198,9 @@ capability first and light features up when it resolves.
   and `use("home")` resolves `null` for every other app, in a browser and
   in the draft preview. `apps()`, `makes()`, `unread()`, `needsKey()`, the
   actions `open`, `openMake`, `newApp`, `menu`, `openInbox`,
-  `openSettings` and `importApp` (from a click handler, as for the device
-  capabilities), `shown()` once the home screen is drawn, `tiles(list)`
+  `openSettings`, `importApp` and `getApps` (from a click handler, as for
+  the device capabilities; `getApps` only where `chrome().getApps` is
+  `true`), `shown()` once the home screen is drawn, `tiles(list)`
   after each render that moves its tiles, `chrome()` (the window's form
   and the pointer in use), and `on(name, fn)`. Types: `ClaxExtensions.Home` in
   `clax-extensions.d.ts`. See "The home screen's capability" below.
@@ -6024,7 +6408,7 @@ as `deviceEvent {cap: "home", name, data}`.
 
 | Call | Answer |
 |---|---|
-| `apps()` | `[{id, title, updatedAt, icon, build}]`, newest first, the home app left out. `icon` is `{url}` (the app's own icon as a `data:image/svg+xml` URL), `{emoji}`, `{word}` or `{monogram, hue}`; `build` is `null` or `{done, total}` while a build goes. |
+| `apps()` | `[{id, title, updatedAt, icon, build, sync}]`, newest first, the home app left out. `icon` is `{url}` (the app's own icon as a `data:image/svg+xml` URL), `{emoji}`, `{word}` or `{monogram, hue}`; `build` is `null` or `{done, total}` while a build goes; `sync` is how a published app stands against its public copy, for its tile's badge: `"live"` (☁), `"ahead"` (↑, newer here), `"update"` (↓, an update waiting; the only warm badge) `"diverged"` (⑂, changed in both places) or `"fork"` (⑂, a copy installed from someone else and changed here), else `null` (not published, or the person kept their changes); absent from a Clax app older than `sync`, which a page reads as `null`. |
 | `makes()` | `[{id, request, state, progress}]`: `state` one of `making`, `offline`, `waiting`, `interrupted`, `failed`; `progress` `null` or `{done, total}`. |
 | `unread()` | The inbox's unread count. |
 | `needsKey()` | Whether the Claude API key is missing. |
@@ -6033,8 +6417,9 @@ as `deviceEvent {cap: "home", name, data}`.
 | `newApp()` | Shows the New app sheet; the make then appears in `makes()`. |
 | `menu(id, {x, y, w, h}, {items})` | Shows app `id`'s menu anchored at that rectangle, in CSS pixels from the viewport's top left: the page's `items` (at most 4 `{id, label}`, labels plain text of at most 32 characters) first, above a divider, then Clax's own (Open, Inspect, Share app, Resume build). Resolves with the picked item's `id`, or `null` for one of Clax's own or a dismissal. `items` may be left out. |
 | `openInbox()`, `openSettings()`, `importApp()` | Opens the inbox, Settings, or the system picker for a `.clax` file. |
+| `getApps()` | Shows Get my apps: the apps of the account the Clax app is signed in to on a hosted Clax (clax.dev), to pick and bring down, after signing in there first when it is not. Offer it only where `chrome().getApps` is `true`. |
 | `shown()` | Says the page has drawn the home screen (its apps, the empty state or the load error). Clax keeps its own home screen over the page until then, and shows its own with Undo last change and Reset when no `shown()` comes within 10 s of the page loading. Call it once per load, from an effect after that render. Resolves `{opened: id}` when Clax opened app `id` from a tap on the image of the home screen it showed until then (an open from the home screen, as a tap on the tile), else `null`. |
-| `chrome()` | `{platform, form, toolbar, pointer, query?}`: `platform` `android`, `macos` or `ios`; `form` `phone` on a window narrower than 600 dp, else `wide`; `toolbar` whether the window's own toolbar carries the top bar, search and New app (the page then draws none of them); `pointer` `touch` or `mouse` (a mouse or a trackpad), the pointer in use, for "Tap" or "Click" in the page's words; with `toolbar`, `query` is the text in the toolbar's search field (`""` while it is empty), which the page searches its apps for as it would its own field's text (a `chrome` event comes with each change). A Clax without it rejects it (`unavailable`) or has no such member: read that as `{form: "phone", toolbar: false, pointer: "touch"}`; one whose `chrome()` has no `query` has no toolbar search. |
+| `chrome()` | `{platform, form, toolbar, pointer, query?}`: `platform` `android`, `macos` or `ios`; `form` `phone` on a window narrower than 600 dp, else `wide`; `toolbar` whether the window's own toolbar carries the top bar, search and New app (the page then draws none of them); `pointer` `touch` or `mouse` (a mouse or a trackpad), the pointer in use, for "Tap" or "Click" in the page's words; with `toolbar`, `query` is the text in the toolbar's search field (`""` while it is empty), which the page searches its apps for as it would its own field's text (a `chrome` event comes with each change). A Clax without it rejects it (`unavailable`) or has no such member: read that as `{form: "phone", toolbar: false, pointer: "touch"}`; one whose `chrome()` has no `query` has no toolbar search. `getApps` is `true` where `getApps()` shows Get my apps, and missing where the Clax offers none: the page offers Get my apps only then. |
 | `tiles(list)` | Says where each app's tile is now: `list` is `[{id, rect: {x, y, w, h}}]` in CSS pixels from the viewport's top left, at most 512. Call it after each render that moves tiles, and on scroll and resize. Clax keeps the last list with an image of the page, shows that image at once on its next cold start until `shown()`, and then opens the app whose tile a tap on the image fell on, when that app is still in `apps()`. |
 
 `on(name, fn)` hears `apps`, `makes`, `unread`, `key` (the value of
@@ -6472,7 +6857,7 @@ except as noted:
 | Topic | Carries |
 |---|---|
 | `gallery` | `version`, `thread` (summary), `thread_deleted`, `thread_moved`, `artifact_deleted`, `working` (summary) and `tags` for every artifact. |
-| `artifact:<aid>` | That artifact's `version`, `thread`, `thread_deleted`, `thread_moved`, `feedback_state`, `tags` and `artifact_deleted`, and `agents` (`{topic}`, naming nothing) when an agent that watched it started, ended or was renamed: refetch its agents. |
+| `artifact:<aid>` | That artifact's `version`, `thread`, `thread_deleted`, `thread_moved`, `feedback_state`, `tags`, `comments` and `artifact_deleted`, and `agents` (`{topic}`, naming nothing) when an agent that watched it started, ended or was renamed: refetch its agents. |
 | `presence:<aid>` | Its `presence` changes, and `artifact_deleted`. |
 | `working:<aid>` | Its `working` list, and `artifact_deleted`. |
 | `docs:<aid>` | Its `doc` events the caller may see, and `artifact_deleted`; needs `db` declared, or the token. |
@@ -6499,6 +6884,9 @@ event's data names its `topic`. Events carry what changed:
   stream holds no gallery hears it too. It names no tag: refetch `GET
   /api/tags`, and the artifact (`GET /api/artifacts?artifact=<aid>`) or the
   gallery. `/api/events` does not carry it.
+- `comments` on `artifact:<aid>`: `{type, topic, artifact_id, comments}`:
+  the artifact's Comments switch changed, `comments` what it is now (see
+  "The Comments switch"). `/api/events` does not carry it.
 - `thread` on `artifact:<aid>`: `{topic, artifact_id, thread}`, where
   `thread` is the thread view (as `GET /api/artifacts/<aid>/threads/<tid>`
   answers it without the token, and with no `feedback_state`: each reader

@@ -600,8 +600,9 @@ capability first and light features up when it resolves.
   and `use("home")` resolves `null` for every other app, in a browser and
   in the draft preview. `apps()`, `makes()`, `unread()`, `needsKey()`, the
   actions `open`, `openMake`, `newApp`, `menu`, `openInbox`,
-  `openSettings` and `importApp` (from a click handler, as for the device
-  capabilities), `shown()` once the home screen is drawn, `tiles(list)`
+  `openSettings`, `importApp` and `getApps` (from a click handler, as for
+  the device capabilities; `getApps` only where `chrome().getApps` is
+  `true`), `shown()` once the home screen is drawn, `tiles(list)`
   after each render that moves its tiles, `chrome()` (the window's form
   and the pointer in use), and `on(name, fn)`. Types: `ClaxExtensions.Home` in
   `clax-extensions.d.ts`. See "The home screen's capability" below.

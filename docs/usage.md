@@ -189,9 +189,14 @@ terms_url = "https://clax.example/legal/terms"
 privacy_url = "https://clax.example/legal/privacy"
 legal_version = "2026-10-19"             # what people agree to; change it to ask everyone again
 # ...or, on the service Empathic operates, the ones in docs/legal: legal = "bundled"
+# The Clax app, optional: the app links that open /a/<id>/get in it, and its store pages
+app_links = { apple_team_id = "ABCDE12345", android_package = "dev.empathic.clax", android_sha256 = "AB:CD:…" }
+stores = { ios = "https://apps.apple.com/app/…", android = "https://play.google.com/store/apps/details?id=dev.empathic.clax" }
 ```
 
 Start the daemon with the secret in that variable and open `https://clax.example/setup` to make the first person, the owner; without a secret, setup stays closed. From then on people sign in through the browser: the owner invites a person on People (a link, `/join/<code>`, good for a day), a signed-in person makes a one-use, ten-minute sign-in link for another device and agent tokens for their remote agents, and the owner shares a page by link, where anyone may read it and, once they give a name, comment as a guest. Nothing is served as "this machine" in hosted mode (the owner's browser holds a token of its session's, never the daemon token), a person's rights limit their browser as they limit their agents, a page's content is served only at its version's keyed address, setup, sign-in codes and guest names are rate-limited per client address, sign-ins and sign-outs are in the audit journal, and a bad `[hosted]` table stops the daemon from starting. Client addresses are the connection's peer unless `behind_cloudflare` is set: behind a proxy on the same machine every client is the proxy's loopback address, so they share one address's limits and its 128 streams and sockets, and the daemon logs a warning the first time it sees such a request. The Chrome extension works only with a local daemon, never a hosted one, and a hosted daemon shows live pages only to the owner (their browser and the daemon token). With Terms of Service and a Privacy Policy set, the sign-in, join and setup pages say that signing in agrees to them, each such sign-in records the person's agreement to `legal_version`, a signed-in person who has not agreed to it is asked once, and the gallery, People and the artifact view's more menu link both; without them, nothing is shown or asked. `legal = "bundled"` serves `docs/legal`'s documents at `/terms` and `/privacy`: they are Empathic's, for the service it operates.
+
+`app_links` and `stores` concern the Clax app, and every key is optional. `apple_team_id` (10 uppercase letters and digits, the team that signs the app) serves `/.well-known/apple-app-site-association` for `<team>.dev.empathic.clax`; `android_package` and `android_sha256` (the signing certificate's SHA-256 fingerprint, 32 hex bytes joined by `:`), given together, serve `/.well-known/assetlinks.json`. With them, a Get in Clax link (`/a/<id>/get`) opens in the Clax app on iPhone, iPad and Android; without them those files are 404 and the link opens the get page in the browser. `stores.ios` and `stores.android`, `https://` URLs, are offered on that page to someone without the app. App links work only for the domains the app's build declares, clax.dev alone; any other hosted Clax's get page offers Open in Clax (`clax:get?url=…`, on every platform) and Download .clax. The Cloudflare Worker reads the same settings from `APPLE_TEAM_ID`, `ANDROID_PACKAGE`, `ANDROID_SHA256`, `IOS_STORE_URL` and `ANDROID_STORE_URL` (`crates/clax-worker/README.md`).
 
 ### People
 
@@ -291,6 +296,74 @@ agent publishes with the `publish_public` tool, which asks you first: the
 question waits in your inbox beside the artifact, and only your answer in
 the browser or the extension counts. Choose Publish and push new versions
 to let that artifact's later versions go out without asking again.
+
+### Apps on clax.dev, from the Clax app
+
+The Clax app publishes your apps to a hosted Clax (clax.dev, or another),
+shares them there, and gets them onto your other devices and other
+people's. `docs/contract.md` ("Sharing apps", **Linked apps**; "Publishing
+to a public Clax", **Apps from the Clax app**) has the details.
+
+- **Connect.** Settings › Sharing › clax.dev › Connect (it also starts the
+  first time you choose Publish to clax.dev… or Get my apps). The app
+  shows a code and opens the approval page; signed in there, check the
+  code and approve. The app is then a device of yours there: People lists
+  it under Devices, where you can revoke it, and it may also change who can
+  see your pages and whether anyone may comment on them. Disconnect
+  forgets clax.dev here and asks it to revoke the device; when clax.dev
+  can't be reached, the app is disconnected all the same and the device
+  stays listed there, under People › Devices, until you revoke it there.
+  Your public copies stay up.
+- **Publish.** Publish to clax.dev… on an app's long-press menu, or on its
+  Overview. The first publish shows what goes up (the version, its files)
+  and what stays here (earlier versions, threads, your API key, and your
+  data unless you turn on Include my data; later versions go up without
+  your data). The app goes up Restricted,
+  only you until you share it, with comments off. Later versions go up
+  only when you publish them (tap the "↑ v<N> here" pill on the app's
+  screen, or pick a version in Versions), or each as it lands with
+  Publish new versions set to Automatically. Unpublish… on Overview deletes the public
+  copy; copies people installed keep working without updates.
+- **Share.** Share… (after publishing, on Overview and the long-press
+  menu) works as the Share dialog on clax.dev, and changes the same
+  setting: add people by GitHub login with Can view, Can comment or Can
+  edit, set General access (Restricted, Anyone with the link, Public), copy
+  the link, and turn Comments on or off. People with Can edit may publish
+  new versions too; only you, as its owner or maker, share it.
+- **Get.** Get my apps (in the home screen's More menu and its empty state;
+  on the Mac also File › Get My Apps… and the home toolbar)
+  lists the apps you published there and the ones shared with you, to
+  pick and bring down; they come without their data. A Get in Clax link
+  does the same for one app. Each app you get is linked to its public
+  copy: the app checks it when it comes to the front (at most every 15
+  minutes) and when you open the app, and an update shows ↓ and "v<N> is
+  ready" with Update. Nothing changes until you choose Update, or turn on
+  Update automatically for that app, which still asks when an update needs
+  a new permission. An update that fails its checks on your data leaves
+  your app as it was and, when you may comment there, offers Tell @owner.
+- **Someone else's app.** Before Claude first reads an app someone else
+  wrote, to change it or to combine versions, the app asks "Claude reads
+  what <author> wrote": an app's code and content can sway what Claude
+  does, so continue only if you trust its author. It asks once per app
+  and author, and again if someone else publishes it. When you change an
+  app you got, its Overview card reads ⑂ Changed here: it is your fork
+  until you take an update, and an update offers Update (replaces your changes),
+  Keep mine, or Bring v<N> into mine, where Claude adds the update to your
+  version. **Publish fork…** puts your version up as a new app of your own,
+  named "<title> (yours)" unless you rename it.
+- **Changed in both places.** When a version is published on the copy
+  (from another device or the web) after one you have not published here,
+  its Overview card reads ⑂ Changed in both places (the pill on its
+  screen, Diverged), and Resolve… offers: ask Claude to combine them, take the public version (yours stay in Versions), or
+  publish yours as a new app.
+
+On clax.dev, a published app's page shows its byline ("v8 by @editor ·
+by @owner"), installs and forks, and **Get in Clax**, which opens its get
+page, `/a/<id>/get`. On a phone with the app the link opens it in the
+app; on a computer the page shows a QR code to scan with the phone, Open
+in Clax (which the Mac app takes), Download .clax, and the store pages
+for someone without the app. A page made on the web, with no version
+published from the app, is not an app: its get page says so.
 
 ## Use from an agent
 
