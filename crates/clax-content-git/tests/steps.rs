@@ -320,10 +320,26 @@ impl<C: ContentStore> Fixture<C> {
     }
 
     fn doc(&self) -> Option<serde_json::Value> {
+        self.doc_at("notes/n1").map(|d| d.data)
+    }
+
+    fn doc_at(&self, path: &str) -> Option<clax_store::docs::Doc> {
         clax_store::app_data::shim::Docs::of(&self.st)
-            .doc_get(&self.id, "notes/n1", &Caller::new(Level::Owner, None))
+            .doc_get(&self.id, path, &Caller::new(Level::Owner, None))
             .unwrap()
-            .map(|d| d.data)
+    }
+
+    /// [`Fixture::commit`] with the step's document at `path`.
+    fn commit_at(
+        &self,
+        key: &str,
+        html: &str,
+        path: &str,
+    ) -> Result<clax_store::jobs::StepCommit<clax_store::jobs::Published>, StepError> {
+        let mut s = self.step(html);
+        s.docs[0].path = path.into();
+        self.st
+            .commit_publish_step(DAEMON, "j1", key, s, &FileDocs(&self.st))
     }
 
     fn steps(&self) -> usize {
@@ -360,12 +376,16 @@ fn a_killed_step_resumes_once<C: ContentStore + 'static>(content: impl FnOnce(&H
         ),
         "{e:?}"
     );
-    // What the kill leaves: version 2's content, no row, no step, no doc.
+    // What the kill leaves: version 2's content, no row, no step, and the
+    // step's document, written in the artifact's own store before the
+    // version under the step's operation ID.
     assert_eq!(f.versions(), [1]);
     assert_eq!(f.html(2).as_deref(), Some("<p>two</p>"));
     assert_eq!(f.steps(), 0);
-    assert_eq!(f.doc(), None);
-    // The resume: one version, with its document write and its step.
+    let landed = f.doc_at("notes/n1").unwrap();
+    assert_eq!(landed.data, json!({"t": 1}));
+    // The resume: one version and its step; the document write, under the
+    // same operation ID, applies no second time.
     let c = f.commit("publish:1", "<p>two</p>").unwrap();
     assert!(!c.replayed);
     assert_eq!(c.step.version_n, Some(2));
@@ -373,6 +393,7 @@ fn a_killed_step_resumes_once<C: ContentStore + 'static>(content: impl FnOnce(&H
     assert_eq!(f.versions(), [1, 2]);
     assert_eq!(f.html(2).as_deref(), Some("<p>two</p>"));
     assert_eq!(f.doc(), Some(json!({"t": 1})));
+    assert_eq!(f.doc_at("notes/n1").unwrap().version, landed.version);
     assert_eq!(f.steps(), 1);
     let again = f.commit("publish:1", "<p>two</p>").unwrap();
     assert!(again.replayed);
@@ -533,10 +554,13 @@ fn a_live_steps_stray_is_removed_by_another_write<C: ContentStore + 'static>(
     assert_eq!(f.versions(), [1, 2]);
     assert_eq!(f.html(2).as_deref(), Some("<p>two</p>"));
     assert!(f.st.marked_strays().unwrap().is_empty());
+    let landed = f.doc_at("notes/n1").unwrap();
     let e = f.commit("publish:1", "<p>again</p>").unwrap_err();
     assert!(matches!(e, StepError::VersionMoved { current: 2 }), "{e:?}");
     assert_eq!(f.steps(), 0);
-    assert_eq!(f.doc(), None);
+    // The killed attempt's document stands (it landed before the version);
+    // the refused resume writes it no second time.
+    assert_eq!(f.doc_at("notes/n1").unwrap().version, landed.version);
     assert_eq!(f.html(2).as_deref(), Some("<p>two</p>"));
 }
 
@@ -581,7 +605,8 @@ fn a_stray_no_step_marked_is_not_replaced<C: ContentStore + 'static>(
         assert_eq!(f.versions(), [1]);
     }
     assert_eq!(f.steps(), 0);
-    assert_eq!(f.doc(), None);
+    // The step's document landed before its version write was refused.
+    assert_eq!(f.doc(), Some(json!({"t": 1})));
     assert_eq!(f.html(2).as_deref(), Some("<p>stray</p>"));
 }
 
@@ -594,13 +619,18 @@ fn a_stray_another_step_marked_is_replaced<C: ContentStore + 'static>(
     let f = fixture(content);
     // Another live step of the job, killed after its content write.
     f.content.kill_next();
-    assert!(f.commit("publish:other", "<p>stray</p>").is_err());
+    assert!(
+        f.commit_at("publish:other", "<p>stray</p>", "notes/other")
+            .is_err()
+    );
     let c = f.commit("publish:1", "<p>two</p>").unwrap();
     assert_eq!(c.step.version_n, Some(2));
     assert_eq!(f.steps(), 1);
     assert_eq!(f.versions(), [1, 2]);
     assert_eq!(f.html(2).as_deref(), Some("<p>two</p>"));
-    let e = f.commit("publish:other", "<p>other</p>").unwrap_err();
+    let e =
+        f.commit_at("publish:other", "<p>other</p>", "notes/other")
+            .unwrap_err();
     assert!(matches!(e, StepError::VersionMoved { current: 2 }), "{e:?}");
     assert_eq!(f.html(2).as_deref(), Some("<p>two</p>"));
 }
@@ -708,6 +738,7 @@ fn a_push_built_on_a_killed_steps_version_records_it_as_a_push() {
     // The step plans again on version 3, and the artifact publishes on.
     let mut again = f.step("<p>four</p>");
     again.base = 3;
+    again.docs[0].if_version = Some(f.doc_at("notes/n1").unwrap().version);
     let c =
         f.st.commit_publish_step(DAEMON, "j1", "publish:3", again, &FileDocs(&f.st))
             .unwrap();

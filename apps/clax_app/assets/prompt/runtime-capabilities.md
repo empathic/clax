@@ -1,9 +1,10 @@
 ## Runtime capabilities
 
 A page reaches runtime capabilities with `await window.claude.use(name)`,
-exactly as on claude.ai. The type definitions of contract 0.2.61 are the
-contract: before writing a page, fetch the one you use from your daemon,
-`<daemon_url>/_clax/contract/0.2.61/<name>.d.ts`, where `daemon_url`
+exactly as on claude.ai. The type definitions of contract 0.3.0 (claude.ai's
+0.2.61, with what each artifact's own site changes) are the contract:
+before writing a page, fetch the one you use from your daemon,
+`<daemon_url>/_clax/contract/0.3.0/<name>.d.ts`, where `daemon_url`
 comes from the `status` tool (names: `claude`, `permissions`, `artifact`,
 `db`, `downloads`, `user`, `comments`, `assets`, `room`, `sample`).
 
@@ -11,7 +12,8 @@ Declare what the page uses in `capabilities` on `publish`, for example
 `{"db": {}, "user": {"scopes": ["profile"]}}`. The object is the full set:
 passing it replaces the stored one, omitting it keeps it, and `{}` clears it.
 `use()` never rejects: it resolves `null` for a name the page did not declare,
-for `files` and `mcp`, and outside the Clax viewer, so render without the
+for `files` and `mcp`, and outside the Clax viewer (on the artifact's own site
+opened directly, `db`, `assets`, `user` and `room` still resolve), so render without the
 capability first and light features up when it resolves.
 `permissions` and `user` need no declaration.
 
@@ -24,7 +26,11 @@ capability first and light features up when it resolves.
   private to the viewer whose `user.id()` is `<id>`. Levels: agents and
   scripts with the token are `owner`, the person's browser is `admin`, a
   viewer on another machine who entered a name is `interact`, one who did
-  not is `view`.
+  not is `view`. On a site open to the world (`publish_public` with
+  `site_access: "world"`, once the person approves), a visitor who is not
+  signed in is `public`, below `view`, with a `data/users/<id>/` of their
+  browser's: they read and write only where a rule names `public`, as
+  `{"path": "data/guestbook", "read": "public", "write": "public"}`.
 - `downloads`: `save({filename, data})` saves once the viewer accepts.
 - `user`: `isOwner()`, `canEdit()`, `can(name)`, and `me()` need no
   declaration; `id()` and `profiles(ids)` need `{"user": {}}`; names and
@@ -36,7 +42,8 @@ capability first and light features up when it resolves.
   `{}` (not `{"composer_only": true}`) the page may also `create`, `reply`,
   `resolve`, `delete`, and `sendToClaude` as the viewer after one consent;
   `{"customAnchors": true}` lets a canvas-like page place pins itself.
-- `assets`: `upload`, `list`, `delete`, in the person's browser only. Use
+- `assets`: `upload`, `list`, `delete`, in the person's browser only. An
+  asset is served at `/_clax/blob/<id>` on the artifact's own site. Use
   an asset's `url` as given; to show an asset whose ID a page stored,
   `claude.assetUrl(id)` (any viewer), never `"/_blob/" + id`: assets are
   served per app, and a page loads only its own.
@@ -92,15 +99,16 @@ field, composer, dialogs) in the last 5.5 seconds: inside that time they
 reject `shell_input_recent` with nothing written, so show a message and let
 the viewer click again. That code is Clax's own: it and Clax's other
 additions are declared in `<daemon_url>/_clax/contract/clax-extensions.d.ts`,
-beside the unchanged 0.2.61 files. Call these only from a click or key press in the page,
+beside the contract's files. Call these only from a click or key press in the page,
 never on load or a timer.
 
 ### Differences from claude.ai
 
 What a page written for claude.ai meets in Clax, beyond the gesture rules:
 
-- Everywhere: nobody is a guest, and there are no organizations or public
-  links.
+- Everywhere: nobody is a guest and there are no organizations; an
+  artifact's site opened to the world is its only public view, and its
+  comments stay with those it is shared with.
 - `permissions`: allowing is remembered in the viewer's browser for the
   artifact, across reloads and versions. "Don't allow" lasts until the Clax
   tab is reloaded or shows another version; there is no standing refusal.
@@ -119,7 +127,8 @@ What a page written for claude.ai meets in Clax, beyond the gesture rules:
   machine enters a name, it keeps its old answer until the page reloads,
   though their writes already succeed, so reload or try the write.
   `profiles()` caches names for the life of the page and never refreshes
-  them. `can()` never answers `null`, `email` is always `null`, and
+  them. `can()` answers `null` only when the site cannot say who the viewer
+  is, `email` is always `null`, and
   `search()` works only in the person's browser.
 - `downloads`: at most one prompt at a time and 3 per 30 seconds;
   `request` (export answers) always rejects `request_unknown`.

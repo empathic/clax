@@ -20,8 +20,9 @@ dark mode, and on a phone:
   render correctly without it.
 - `window.claude.use(name)` is the entry point for runtime capabilities (see
   "Runtime capabilities"). It resolves `null` for undeclared names (other than
-  `permissions` and `user`) and outside the viewer, so pages must handle
-  `null` and work without it.
+  `permissions` and `user`) and outside the viewer, except that `db`, `assets`,
+  `user` and `room` also work on the artifact's own site opened directly, so
+  pages must handle `null` and work without it.
 - Supporting files (stylesheets, scripts, images, data) are referenced with
   relative paths, for example `<link rel="stylesheet" href="style.css">`, and
   published under the same relative path in `files`. Do not use absolute
