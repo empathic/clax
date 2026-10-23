@@ -200,6 +200,7 @@ pub async fn callback(
         );
     }
     let old = clax_http::hosted::cookie_value(&headers, h.cookie_name());
+    let replaced = old.is_some();
     let legal = h.legal.as_ref().map(|l| l.version().to_string());
     let signed = s
         .store_call(move |st| {
@@ -230,6 +231,10 @@ pub async fn callback(
         }
         Err(e) => return e.into_response(),
     };
+    if replaced {
+        // The session it replaced ended, and its site sessions with it.
+        crate::hosted::access_changed(&s, None);
+    }
     if outcome == GitHubOutcome::New {
         crate::routes::grants::announce(
             &s,

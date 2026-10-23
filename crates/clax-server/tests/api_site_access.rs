@@ -1407,3 +1407,364 @@ async fn a_world_visitors_runtime_answers_are_never_public() {
     assert_eq!(page.headers()["cache-control"], "public, no-cache");
     assert_eq!(page.headers()["vary"], "Cookie");
 }
+
+type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+impl Site {
+    /// An artifact that declares `room`, published by the owner's token.
+    async fn room_artifact(&self, title: &str) -> String {
+        let r = self
+            .ts
+            .post_json(
+                "/api/artifacts",
+                json!({
+                    "title": title,
+                    "capabilities": {"room": {}},
+                    "files": {"index.html": {"content": "<main></main>", "encoding": "utf8"}}
+                }),
+            )
+            .await;
+        assert_eq!(r.status(), 201);
+        r.json::<Value>().await.unwrap()["artifact"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// A room socket under `peer` on `aid`'s site host from its own origin,
+    /// with site cookie `cookie` (the `Cookie` header [`Site::session`]
+    /// gives), its welcome read.
+    async fn holder_room(&self, aid: &str, cookie: &str, peer: &str) -> Ws {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut req = format!(
+            "{}/_clax/api/room?peer={peer}",
+            self.ts.base.replacen("http://", "ws://", 1)
+        )
+        .into_client_request()
+        .unwrap();
+        let h = req.headers_mut();
+        h.insert("host", self.site_host(aid).parse().unwrap());
+        h.insert(
+            "origin",
+            format!("http://{}", self.site_host(aid)).parse().unwrap(),
+        );
+        h.insert("cookie", cookie.parse().unwrap());
+        let mut ws = tokio_tungstenite::connect_async(req)
+            .await
+            .expect("upgrade")
+            .0;
+        let welcome = ws.next().await.unwrap().unwrap();
+        assert!(welcome.to_text().unwrap().contains("welcome"), "{welcome}");
+        ws
+    }
+
+    /// `b`'s share of `aid` with person `pid` as a viewer: its ID.
+    async fn share(&self, b: &Browser, aid: &str, pid: &str) -> String {
+        let (s, v) = self
+            .send(
+                b,
+                reqwest::Method::PUT,
+                &format!("/api/hosted/artifacts/{aid}/shares"),
+                json!({"person": pid, "access": "viewer"}),
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+        v["share"]["id"].as_str().unwrap().to_string()
+    }
+
+    /// A site session of `b` on `aid`: the `Cookie` header that carries it.
+    async fn site_cookie(&self, b: &Browser, aid: &str) -> String {
+        let (s, src) = self.code(b, aid, json!({})).await;
+        assert_eq!(s, 200);
+        self.session(aid, &src).await
+    }
+}
+
+/// The close `ws` ends with, skipping the frames before it.
+async fn closed(ws: &mut Ws) -> (u16, String) {
+    loop {
+        match ws.next().await.expect("a frame").expect("readable") {
+            tokio_tungstenite::tungstenite::Message::Close(c) => {
+                let c = c.expect("a close frame");
+                return (u16::from(c.code), c.reason.to_string());
+            }
+            _ => continue,
+        }
+    }
+}
+
+/// That `ws` is still open: a join it sends is acked. The daemon acts on
+/// every event published before a socket's message ahead of the message,
+/// so an ack here means the changes made before it left the socket open.
+async fn stays_open(ws: &mut Ws) {
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+    ws.send(Message::Text(
+        json!({"t": "join", "id": 7, "room": "probe"})
+            .to_string()
+            .into(),
+    ))
+    .await
+    .expect("sent");
+    loop {
+        match ws.next().await.expect("a frame").expect("readable") {
+            Message::Text(t) => {
+                let v: Value = serde_json::from_str(t.as_str()).unwrap();
+                if v["t"] == "ack" && v["id"] == 7 {
+                    return;
+                }
+            }
+            Message::Close(c) => panic!("closed: {c:?}"),
+            _ => continue,
+        }
+    }
+}
+
+const REVOKED: (u16, &str) = (4403, "revoked");
+
+#[tokio::test]
+async fn removing_a_share_closes_the_holders_room_socket_and_no_one_elses() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.room_artifact("Board").await;
+    let (sam, sam_pid) = site.member(&owner, "Sam").await;
+    let share = site.share(&owner, &aid, &sam_pid).await;
+    let sam_cookie = site.site_cookie(&sam, &aid).await;
+    let mut sams = site
+        .holder_room(&aid, &sam_cookie, "000000000000000s")
+        .await;
+    let owner_cookie = site.site_cookie(&owner, &aid).await;
+    let mut owners = site
+        .holder_room(&aid, &owner_cookie, "000000000000000o")
+        .await;
+    let (s, _) = site
+        .send(
+            &owner,
+            reqwest::Method::DELETE,
+            &format!("/api/hosted/artifacts/{aid}/shares/{share}"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(s, 200);
+    let (code, reason) = closed(&mut sams).await;
+    assert_eq!((code, reason.as_str()), REVOKED);
+    stays_open(&mut owners).await;
+}
+
+#[tokio::test]
+async fn turning_the_link_off_closes_a_link_viewers_room_socket() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.room_artifact("Board").await;
+    let link = format!("/api/hosted/artifacts/{aid}/link");
+    let set = |access: Value| {
+        site.send(
+            &owner,
+            reqwest::Method::PUT,
+            &link,
+            json!({"access": access}),
+        )
+    };
+    let (s, v) = set(json!("viewer")).await;
+    assert_eq!(s, 200, "{v}");
+    let viewer_cookie = site.site_cookie(&Browser::default(), &aid).await;
+    let mut viewers = site
+        .holder_room(&aid, &viewer_cookie, "000000000000000l")
+        .await;
+    let owner_cookie = site.site_cookie(&owner, &aid).await;
+    let mut owners = site
+        .holder_room(&aid, &owner_cookie, "000000000000000o")
+        .await;
+    // A change that keeps the link leaves the link viewer's socket open.
+    assert_eq!(set(json!("commenter")).await.0, 200);
+    stays_open(&mut viewers).await;
+    assert_eq!(set(Value::Null).await.0, 200);
+    let (code, reason) = closed(&mut viewers).await;
+    assert_eq!((code, reason.as_str()), REVOKED);
+    stays_open(&mut owners).await;
+}
+
+#[tokio::test]
+async fn signing_out_closes_the_room_sockets_of_the_browsers_site_sessions() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.room_artifact("Board").await;
+    let (sam, sam_pid) = site.member(&owner, "Sam").await;
+    site.share(&owner, &aid, &sam_pid).await;
+    let sam_cookie = site.site_cookie(&sam, &aid).await;
+    let mut sams = site
+        .holder_room(&aid, &sam_cookie, "000000000000000s")
+        .await;
+    let owner_cookie = site.site_cookie(&owner, &aid).await;
+    let mut owners = site
+        .holder_room(&aid, &owner_cookie, "000000000000000o")
+        .await;
+    let (s, _) = site
+        .send(
+            &owner,
+            reqwest::Method::POST,
+            "/api/hosted/signout",
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, 204);
+    let (code, reason) = closed(&mut owners).await;
+    assert_eq!((code, reason.as_str()), REVOKED);
+    stays_open(&mut sams).await;
+}
+
+#[tokio::test]
+async fn removing_a_person_closes_their_room_socket() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.room_artifact("Board").await;
+    let (sam, sam_pid) = site.member(&owner, "Sam").await;
+    site.share(&owner, &aid, &sam_pid).await;
+    let sam_cookie = site.site_cookie(&sam, &aid).await;
+    let mut sams = site
+        .holder_room(&aid, &sam_cookie, "000000000000000s")
+        .await;
+    let owner_cookie = site.site_cookie(&owner, &aid).await;
+    let mut owners = site
+        .holder_room(&aid, &owner_cookie, "000000000000000o")
+        .await;
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::DELETE,
+            &format!("/api/people/{sam_pid}"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (code, reason) = closed(&mut sams).await;
+    assert_eq!((code, reason.as_str()), REVOKED);
+    stays_open(&mut owners).await;
+}
+
+/// A site's room socket as a Durable Object holds it
+/// (`clax_server::routes::room::RoomSocket`, reopened after a wake by
+/// `room::reopen` from the site credentials its attachment keeps): it
+/// reopens as its holder while they read the artifact, and asks to be
+/// checked again when who may read changes, after which it neither stays
+/// nor reopens.
+#[tokio::test]
+async fn a_kept_site_room_socket_reopens_as_its_holder_while_they_read() {
+    use clax_http::identity::SocketCredentials;
+    use clax_http::site_access::SiteCredentials;
+    use clax_server::routes::room::{self, RoomStep};
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.room_artifact("Board").await;
+    let (sam, sam_pid) = site.member(&owner, "Sam").await;
+    let share = site.share(&owner, &aid, &sam_pid).await;
+    let kept = |cookie: &str| {
+        let value = cookie.split_once('=').unwrap().1;
+        SiteCredentials::Session(clax_core::secret::sha256_hex(value))
+    };
+    let sams = kept(&site.site_cookie(&sam, &aid).await);
+    let owners = kept(&site.site_cookie(&owner, &aid).await);
+    let s = &site.ts.state;
+    // What the site API's room route keeps beside them: no hosted session
+    // and no viewer cookie (the owner's would carry the token's tag).
+    let none = SocketCredentials::default();
+    let Some(Ok((mut sam_room, first))) =
+        room::reopen(s, &aid, "000000000000000s", &[], &none, Some(&sams)).await
+    else {
+        panic!("Sam's socket reopens");
+    };
+    assert!(first[0].contains("welcome"), "{first:?}");
+    assert_eq!(sam_room.site(), Some(&sams));
+    let Some(Ok((mut owner_room, _))) =
+        room::reopen(s, &aid, "000000000000000o", &[], &none, Some(&owners)).await
+    else {
+        panic!("the owner's socket reopens");
+    };
+    // A session that is not one, or another artifact's, reopens nothing.
+    let other = site.room_artifact("Other").await;
+    let forged = SiteCredentials::Session("0".repeat(64));
+    for (a, c) in [(&aid, &forged), (&other, &sams)] {
+        assert!(
+            room::reopen(s, a, "000000000000000f", &[], &none, Some(c))
+                .await
+                .is_none()
+        );
+    }
+    let (st, _) = site
+        .send(
+            &owner,
+            reqwest::Method::DELETE,
+            &format!("/api/hosted/artifacts/{aid}/shares/{share}"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(st, 200);
+    let recheck = |steps: Vec<RoomStep>| {
+        steps.into_iter().find_map(|s| match s {
+            RoomStep::Recheck(c) => Some(c),
+            _ => None,
+        })
+    };
+    let sam_check = recheck(sam_room.drain()).expect("Sam's socket asks to be checked");
+    assert!(!sam_check.stays(s).await, "Sam no longer reads it");
+    let owner_check = recheck(owner_room.drain()).expect("the owner's socket asks too");
+    assert!(owner_check.stays(s).await, "the owner still reads it");
+    assert!(
+        room::reopen(s, &aid, "000000000000000s", &[], &none, Some(&sams))
+            .await
+            .is_none(),
+        "after a wake Sam's socket stays closed"
+    );
+}
+
+#[tokio::test]
+async fn a_kept_visitor_room_socket_reopens_while_the_site_is_open_to_the_world() {
+    use clax_http::identity::SocketCredentials;
+    use clax_http::site_access::SiteCredentials;
+    use clax_server::routes::room::{self, RoomStep};
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let (aid, _) = site.guestbook().await;
+    site.site_access(&owner, &aid, "world").await;
+    let me: Value = site
+        .visitor_api(&aid, reqwest::Method::GET, "whoami", None)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(me["kind"], "visitor", "{me}");
+    let kept = SiteCredentials::Visitor(me["id"].as_str().unwrap().to_string());
+    let s = &site.ts.state;
+    let none = SocketCredentials::default();
+    let Some(Ok((mut socket, _))) =
+        room::reopen(s, &aid, "000000000000000v", &[], &none, Some(&kept)).await
+    else {
+        panic!("the visitor's socket reopens");
+    };
+    // Who may read changing elsewhere asks nothing of a visitor's socket.
+    let (sam, _) = site.member(&owner, "Sam").await;
+    let (st, _) = site
+        .send(
+            &sam,
+            reqwest::Method::POST,
+            "/api/hosted/signout",
+            json!({}),
+        )
+        .await;
+    assert_eq!(st, 204);
+    assert!(
+        !socket
+            .drain()
+            .iter()
+            .any(|s| matches!(s, RoomStep::Recheck(_) | RoomStep::Close(..)))
+    );
+    site.site_access(&owner, &aid, "private").await;
+    assert!(socket.drain().contains(&RoomStep::Close(4403, "revoked")));
+    assert!(
+        room::reopen(s, &aid, "000000000000000v", &[], &none, Some(&kept))
+            .await
+            .is_none(),
+        "closed to the world, it reopens no visitor's socket"
+    );
+}

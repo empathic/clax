@@ -18,7 +18,11 @@
 //!   [`SECURE_SITE_COOKIE`]), naming a site session
 //!   ([`clax_store::site_sessions`]) of this artifact whose holder may read
 //!   it now ([`holder_reads`]): a share removed, a link turned off or a
-//!   browser signed out refuses the very next request.
+//!   browser signed out refuses the very next request. A socket opened on
+//!   it keeps [`SiteCredentials`] (the session ID's SHA-256, never the
+//!   cookie) and is checked again by them ([`SiteCredentials::check`])
+//!   whenever who may read changes (`clax_core::Event::Access`,
+//!   `Event::SiteAccess`) and when its host reopens it.
 //! - Without one, a navigation (top-level, or of a frame) is sent to the
 //!   public host's `/site-signin?host=<host>&next=<path>`, which makes a
 //!   session when the browser may read the artifact (partitioned for a
@@ -82,6 +86,66 @@ pub enum SiteCaller {
     /// Anyone, on a site open to the world: their visitor ID
     /// ([`visitor_id`]), stable per browser and per site.
     Visitor(String),
+}
+
+/// The site session a request's [`SiteCaller::Holder`] was found by: its
+/// ID's SHA-256 (lowercase hex). [`site_access_layer`] inserts it beside
+/// the caller.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SiteSessionHash(pub String);
+
+/// What a socket opened on a site host keeps to check its caller again
+/// (after a change to who may read, or when its host reopens it): a
+/// holder's site session by its ID's SHA-256, never the cookie; a world
+/// visitor's visitor ID.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SiteCredentials {
+    Session(String),
+    Visitor(String),
+}
+
+impl SiteCredentials {
+    /// The credentials of a site request whose caller is `caller`, from
+    /// its `extensions` ([`SiteSessionHash`]); `None` for a holder found by
+    /// no site session.
+    pub fn of(caller: &SiteCaller, extensions: &axum::http::Extensions) -> Option<SiteCredentials> {
+        match caller {
+            SiteCaller::Holder(_) => extensions
+                .get::<SiteSessionHash>()
+                .map(|h| SiteCredentials::Session(h.0.clone())),
+            SiteCaller::Visitor(v) => Some(SiteCredentials::Visitor(v.clone())),
+        }
+    }
+
+    /// Whether these are a world visitor's.
+    pub fn visitor(&self) -> bool {
+        matches!(self, SiteCredentials::Visitor(_))
+    }
+
+    /// Who these let in on artifact `aid`'s site now, as
+    /// [`site_access_layer`] would decide a request: a site session that is
+    /// live (renewed by this check) and whose holder reads `aid`
+    /// ([`holder_reads`]); a visitor while the site is open to the world.
+    /// `None` when they no longer let anyone in.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn check(
+        &self,
+        st: &clax_store::Store,
+        aid: &ArtifactId,
+    ) -> clax_core::Result<Option<SiteCaller>> {
+        match self {
+            SiteCredentials::Session(hash) => Ok(match st.site_session_of_hash(hash, aid)? {
+                Some(h) if holder_reads(st, &h, aid)? => Some(SiteCaller::Holder(h)),
+                _ => None,
+            }),
+            SiteCredentials::Visitor(v) => Ok(st
+                .site_open_to_world(aid)?
+                .then(|| SiteCaller::Visitor(v.clone()))),
+        }
+    }
 }
 
 /// The visitor cookie's name: [`SECURE_VISITOR_COOKIE`] when `secure`, else
@@ -631,7 +695,7 @@ pub fn request_holder(
 }
 
 /// The holder the site cookie of `headers` names on artifact `aid`, when
-/// they may read it now.
+/// they may read it now, and the session's [`SiteSessionHash`].
 ///
 /// # Errors
 /// The store's.
@@ -639,14 +703,15 @@ pub async fn caller_holder(
     s: &AppState,
     headers: &HeaderMap,
     aid: &ArtifactId,
-) -> Result<Option<Holder>, ApiError> {
+) -> Result<Option<(Holder, SiteSessionHash)>, ApiError> {
     let Some(id) = cookie_value(headers, site_cookie_name(secure(s))) else {
         return Ok(None);
     };
+    let hash = clax_core::secret::sha256_hex(&id);
     let aid = aid.clone();
     s.store_call(move |st| {
-        Ok(match st.site_session(&id, &aid)? {
-            Some(h) if holder_reads(st, &h, &aid)? => Some(h),
+        Ok(match st.site_session_of_hash(&hash, &aid)? {
+            Some(h) if holder_reads(st, &h, &aid)? => Some((h, SiteSessionHash(hash))),
             _ => None,
         })
     })
@@ -679,7 +744,10 @@ pub async fn site_access_layer(
         Err(e) => return e.into_response(),
     };
     let caller = match holder {
-        Some(h) => SiteCaller::Holder(h),
+        Some((h, hash)) => {
+            req.extensions_mut().insert(hash);
+            SiteCaller::Holder(h)
+        }
         None if world => {
             let path = req.uri().path().to_string();
             let secure = secure(&s);

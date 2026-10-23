@@ -6774,7 +6774,8 @@ admits `admin` and above; presence admits everyone. A refused emit answers
 does not declare `room`) or `revoked` (the artifact was deleted, or a new
 version stopped declaring `room`, while the socket was open; or, on an
 artifact's site, the site was made private under a visitor's socket, or a
-holder no longer reads the artifact) or `peer_taken` (a socket of another
+holder no longer reads the artifact: their share removed, its link turned
+off, the person removed or their browser signed out) or `peer_taken` (a socket of another
 viewer holds this label: a new socket gets it at once); 4409 `replaced` (a
 newer socket of the same viewer took this label); 1001 on shutdown.
 

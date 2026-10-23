@@ -37,7 +37,10 @@
 //!   address and per artifact ([`clax_http::hosted::Hosted::site_write`],
 //!   429 `rate_limited`). Closing the site to the world refuses a visitor
 //!   on their next request (`site_access_layer`) and closes their room
-//!   socket (`super::room`, on `Event::SiteAccess`).
+//!   socket (`super::room`, on `Event::SiteAccess`); a holder's room socket
+//!   closes once they no longer read the artifact (a share removed, the
+//!   link turned off, the person removed, the browser signed out: on
+//!   `Event::Access`), and on the Worker it is checked again when it wakes.
 //! - **Docs reads are validated** ([`docs_tag`]): a `GET docs/<path>` or
 //!   `GET docs` answer (200, or 404 for a document that is not there)
 //!   carries a weak `ETag` of the artifact's document sequence, its
@@ -353,48 +356,58 @@ fn method_not_allowed() -> ApiError {
 /// visitor have none.
 async fn holder_request(s: &AppState, caller: &SiteCaller) -> Result<HostedRequest, ApiError> {
     let caller = caller.clone();
-    s.store_call(move |st| {
-        let (session, member) = match &caller {
-            SiteCaller::Holder(Holder::Owner) => (
+    s.store_call(move |st| site_hosted_request(st, &caller))
+        .await
+}
+
+/// [`holder_request`], read from the store: what a site socket's host
+/// rebuilds its caller's identity with when it reopens the socket.
+///
+/// # Errors
+/// The store's.
+pub(crate) fn site_hosted_request(
+    st: &clax_store::Store,
+    caller: &SiteCaller,
+) -> clax_core::Result<HostedRequest> {
+    let (session, member) = match caller {
+        SiteCaller::Holder(Holder::Owner) => (
+            Some(SessionViewer {
+                viewer: st.owner_viewer(true)?,
+                owner: true,
+                guest: false,
+            }),
+            None,
+        ),
+        SiteCaller::Holder(Holder::Person(pid)) => match st.viewer_by_public_id(pid)? {
+            Some(viewer) => (
                 Some(SessionViewer {
-                    viewer: st.owner_viewer(true)?,
-                    owner: true,
-                    guest: false,
-                }),
-                None,
-            ),
-            SiteCaller::Holder(Holder::Person(pid)) => match st.viewer_by_public_id(pid)? {
-                Some(viewer) => (
-                    Some(SessionViewer {
-                        viewer,
-                        owner: false,
-                        guest: false,
-                    }),
-                    Some(MemberRights {
-                        person: pid.clone(),
-                        rights: std::sync::Arc::new(st.person_rights(pid)?),
-                    }),
-                ),
-                None => (None, None),
-            },
-            SiteCaller::Holder(Holder::Guest(pid)) => (
-                st.viewer_by_public_id(pid)?.map(|viewer| SessionViewer {
                     viewer,
                     owner: false,
-                    guest: true,
+                    guest: false,
                 }),
-                None,
+                Some(MemberRights {
+                    person: pid.clone(),
+                    rights: std::sync::Arc::new(st.person_rights(pid)?),
+                }),
             ),
-            SiteCaller::Holder(Holder::Link) | SiteCaller::Visitor(_) => (None, None),
-        };
-        Ok(HostedRequest {
-            session,
-            origin_checked: true,
-            member,
-            cookie_sha256: None,
-        })
+            None => (None, None),
+        },
+        SiteCaller::Holder(Holder::Guest(pid)) => (
+            st.viewer_by_public_id(pid)?.map(|viewer| SessionViewer {
+                viewer,
+                owner: false,
+                guest: true,
+            }),
+            None,
+        ),
+        SiteCaller::Holder(Holder::Link) | SiteCaller::Visitor(_) => (None, None),
+    };
+    Ok(HostedRequest {
+        session,
+        origin_checked: true,
+        member,
+        cookie_sha256: None,
     })
-    .await
 }
 
 /// `whoami`: who the site's caller is, computed by the server.

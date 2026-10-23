@@ -32,6 +32,17 @@ fn end_replaced(
     Ok(())
 }
 
+/// Tells the room sockets of site holders that who may read changed
+/// (`Event::Access`): at artifact `aid`, or at any (`None`: a browser
+/// session ended, and the site sessions made from it with it; a person
+/// removed or their rights changed). Each checks again that its holder
+/// still reads its artifact.
+pub(crate) fn access_changed(s: &AppState, aid: Option<&str>) {
+    s.events.publish(clax_core::Event::Access {
+        artifact_id: aid.map(str::to_string),
+    });
+}
+
 fn hosted_of(s: &AppState) -> std::sync::Arc<Hosted> {
     s.hosted
         .clone()
@@ -251,6 +262,7 @@ async fn setup(
         return Err(ApiError::not_found());
     }
     let old = session_token(&headers, h.cookie_name());
+    let replaced = old.is_some();
     let legal = legal_version(&h);
     let signed = s
         .store_call(move |st| {
@@ -261,6 +273,9 @@ async fn setup(
             Ok(signed)
         })
         .await?;
+    if replaced {
+        access_changed(&s, None);
+    }
     Ok(signed_in_response(&h, signed, json!({}), "person"))
 }
 
@@ -344,6 +359,7 @@ async fn accept_invite(
         return Err(session_exists(current));
     }
     let old = session_token(&headers, h.cookie_name());
+    let replaced = old.is_some();
     let legal = legal_version(&h);
     let signed = s
         .store_call(move |st| {
@@ -358,6 +374,9 @@ async fn accept_invite(
             "invalid_invite" => ApiError::not_found(),
             _ => e,
         })?;
+    if replaced {
+        access_changed(&s, None);
+    }
     crate::routes::grants::announce(
         &s,
         json!({"what": "person_joined", "person": signed.who.viewer.public_id}),
@@ -459,6 +478,7 @@ async fn accept_signin_link(
         }
     }
     let old = session_token(&headers, h.cookie_name());
+    let replaced = old.is_some();
     let legal = legal_version(&h);
     let signed = s
         .store_call(move |st| {
@@ -469,6 +489,9 @@ async fn accept_signin_link(
             Ok(signed)
         })
         .await?;
+    if replaced {
+        access_changed(&s, None);
+    }
     Ok(signed_in_response(&h, signed, json!({}), "person"))
 }
 
@@ -484,6 +507,8 @@ async fn sign_out(
     if let Some(t) = session_token(&headers, h.cookie_name()) {
         s.store_call(move |st| st.end_browser_session(&audit.resolve(st)?, &t, "sign_out"))
             .await?;
+        // Its site sessions end with it, and the room sockets opened on them.
+        access_changed(&s, None);
     }
     let mut res = no_store(StatusCode::NO_CONTENT.into_response());
     res.headers_mut()
@@ -730,6 +755,9 @@ async fn set_link(
         })
         .await
         .map_err(forbidden_code)?;
+    // A link viewer's and a guest's site sessions read while it is shared
+    // by link.
+    access_changed(&s, Some(&id));
     // A person whose rights there came from the link, and the link's own
     // read tokens, lose their git tokens before this answers; when the
     // host fails, the next settle retries. Stopping sharing rechecks every
@@ -818,11 +846,12 @@ fn share_view(sh: &clax_store::shares::Share) -> Value {
 /// `GET /api/hosted/artifacts/<aid>/sharing` (a member's browser, or
 /// their own device, [`browser_or_device`]) → for
 /// whoever may share it ([`may_share`]) `{artifact_id, can_share: true,
-/// general, link_access, url, people: [{id, access, github_login, person,
-/// name, pending}], suggestions, site_access, site_url}`, the suggestions
-/// (people here, with their GitHub logins) for the owner alone, and
-/// whether its site (at `site_url`) is open to the world (`world` or
-/// `private`, `PATCH /api/artifacts/<aid>` changes it); for another member who may
+/// comments, general, link_access, url, people: [{id, access, github_login,
+/// person, name, pending}], suggestions, site_access, site_url}`, `comments`
+/// its Comments switch, the suggestions (people here, with their GitHub
+/// logins) for the owner alone, and whether its site (at `site_url`) is
+/// open to the world (`world` or `private`, `PATCH /api/artifacts/<aid>`
+/// changes it); for another member who may
 /// read it, `{artifact_id, can_share: false}`. 404 for an artifact the
 /// caller may not read, 401 without a session, 403 for a guest.
 async fn get_sharing(
@@ -971,6 +1000,7 @@ async fn delete_share(
     let who = browser_or_device(&headers, &r, device, "share pages")?;
     let (aid, sid) = crate::routes::artifacts::path(ids)?;
     let aid = clax_http::headers::parse_id(&aid)?;
+    let page = aid.as_str().to_string();
     let share = s
         .store_call(move |st| {
             sharer(st, &who, &aid)?;
@@ -978,6 +1008,7 @@ async fn delete_share(
         })
         .await
         .map_err(forbidden_code)?;
+    access_changed(&s, Some(&page));
     if clax_http::git_remotes::recheck(&s, None).await.is_err() {
         s.git_remotes.recheck_soon();
     }

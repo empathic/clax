@@ -17,9 +17,17 @@
 //! Rooms are keyed by artifact, not by version ([`clax_realtime::room`]): a socket
 //! stays open across new versions that keep declaring `room`.
 //!
+//! A socket opened on an artifact's site host (`/_clax/api/room`) keeps its
+//! caller's [`SiteCredentials`] and is checked again by them: a holder's
+//! whenever who may read changes (`Event::Access`, `Event::SiteAccess`),
+//! before the next message it sends after such a change, and when a host
+//! reopens it ([`reopen`]); a visitor's when the site is closed to the
+//! world.
+//!
 //! Close codes: 4403 `not_granted` (the artifact is missing or does not declare
 //! `room`), 4403 `revoked` (the artifact was deleted while the socket was
-//! open, or a new version stopped declaring `room`), 4409 `replaced` (a newer socket took this peer label), 1001 when the
+//! open, a new version stopped declaring `room`, or its site caller no
+//! longer reads it), 4409 `replaced` (a newer socket took this peer label), 1001 when the
 //! daemon shuts down.
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -34,7 +42,7 @@ use clax_core::{CoreError, Event};
 use clax_http::db_caller::Subscriber;
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
-use clax_http::site_access::SiteCaller;
+use clax_http::site_access::{SiteCaller, SiteCredentials};
 use clax_http::state::AppState;
 use clax_http::viewer::SameOrigin;
 use clax_realtime::room::{Frame, Membership, Rooms, Sender, Who};
@@ -198,7 +206,9 @@ pub async fn room(
     let topics = declared.map(|a| Topics::from_capabilities(&a.capabilities).unwrap_or_default());
     let declares_user = declared.is_some_and(|a| a.capabilities.get("user").is_some());
     let Caller { level, viewer, .. } = caller;
-    let site = extensions.get::<SiteCaller>().cloned();
+    let site = extensions
+        .get::<SiteCaller>()
+        .and_then(|c| SiteCredentials::of(c, &extensions));
     let who = Who {
         peer: q.peer,
         by: if declares_user { viewer.clone() } else { None },
@@ -406,10 +416,11 @@ async fn session(
     level: Level,
     topics: Option<Topics>,
     seat: Option<clax_core::seats::Claim>,
-    site: Option<SiteCaller>,
+    site: Option<SiteCredentials>,
     _slot: clax_http::socket_caps::SocketSlot,
     mut socket: WebSocket,
 ) {
+    use tokio::sync::broadcast::error::RecvError;
     let Some(topics) = topics else {
         let _ = socket.send(close(4403, "not_granted")).await;
         return;
@@ -436,6 +447,10 @@ async fn session(
         claim: seat,
     };
     let mut events = s.events.subscribe();
+    let check = RoomCheck {
+        aid: aid.clone(),
+        site,
+    };
     let mut shutdown = s.shutdown.clone();
     let mut tick = tokio::time::interval(Duration::from_millis(25));
     let hello = [
@@ -458,22 +473,12 @@ async fn session(
                 let _ = socket.send(close(4409, "replaced")).await;
                 return;
             }
-            Ok(stamped) = events.recv() => {
-                let gone = match &stamped.event {
-                    Event::ArtifactDeleted { artifact_id } => *artifact_id == aid,
-                    Event::SiteAccess { artifact_id, world } if *artifact_id == aid => {
-                        site_revoked(&s, &aid, site.as_ref(), *world).await
-                    }
-                    // A new version may drop `room` (a metadata edit emits no
-                    // event: it takes effect at the next connection).
-                    Event::Version { artifact_id, .. } if *artifact_id == aid => {
-                        let id = parse_id(&aid).expect("checked at the upgrade");
-                        !matches!(
-                            s.store_call(move |st| st.get_artifact(&id)).await,
-                            Ok(Some(a)) if a.capabilities.get("room").is_some()
-                        )
-                    }
-                    _ => false,
+            ev = events.recv() => {
+                let gone = match ev {
+                    Ok(stamped) => check.ended_by(&s, &stamped.event).await,
+                    // Whatever was missed may have ended it.
+                    Err(RecvError::Lagged(_)) => !check.stays(&s).await,
+                    Err(RecvError::Closed) => return,
                 };
                 if gone {
                     drop(conn);
@@ -495,11 +500,20 @@ async fn session(
                     conn.member(&room).map(|m| vec![peers_frame(&room, m, &who)]).unwrap_or_default()
                 }
             },
-            msg = socket.recv() => match msg {
-                Some(Ok(Message::Text(t))) => conn.handle(t.as_str(), &mut streams),
-                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return,
-                Some(Ok(_)) => continue,
-            },
+            msg = socket.recv() => {
+                // The events published before this message are acted on
+                // first: a right lost is lost for the very next message.
+                if check.ended_by_pending(&s, &mut events).await {
+                    drop(conn);
+                    let _ = socket.send(close(4403, "revoked")).await;
+                    return;
+                }
+                match msg {
+                    Some(Ok(Message::Text(t))) => conn.handle(t.as_str(), &mut streams),
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return,
+                    Some(Ok(_)) => continue,
+                }
+            }
             _ = tick.tick() => {
                 conn.flush();
                 continue;
@@ -517,27 +531,106 @@ async fn session(
     }
 }
 
-/// Whether a room socket on `aid`'s site host, opened as `site`, may no
-/// longer stay once the site is open to the world (`world`) or private: a
-/// visitor's when it closes; a holder's when they no longer read the
-/// artifact. A socket opened on the public host (`None`) is never.
-#[cfg(not(target_arch = "wasm32"))]
-async fn site_revoked(s: &AppState, aid: &str, site: Option<&SiteCaller>, world: bool) -> bool {
-    match site {
-        None => false,
-        Some(SiteCaller::Visitor(_)) => !world,
-        Some(SiteCaller::Holder(h)) => {
-            let (h, aid) = (h.clone(), aid.to_string());
-            !matches!(
-                s.store_call(move |st| {
-                    let id = clax_core::ArtifactId::parse(&aid).map_err(|_| CoreError::NotFound)?;
-                    clax_http::site_access::holder_reads(st, &h, &id)
-                })
-                .await,
-                Ok(true)
-            )
+/// What a room socket is checked again by ([`RoomStep::Recheck`]): its
+/// artifact, and on a site host the credentials its caller was let in by.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoomCheck {
+    pub aid: String,
+    pub site: Option<SiteCredentials>,
+}
+
+impl RoomCheck {
+    /// Whether the socket may stay: its artifact still declares `room`
+    /// ([`still_declared`]) and, on a site host, its credentials still let
+    /// its caller in ([`SiteCredentials::check`]).
+    pub async fn stays(&self, s: &AppState) -> bool {
+        still_declared(s, &self.aid).await && self.site_stays(s).await
+    }
+
+    /// Whether the socket's site credentials still let its caller in (a
+    /// socket opened on the public host has none and always does).
+    async fn site_stays(&self, s: &AppState) -> bool {
+        let Some(site) = self.site.clone() else {
+            return true;
+        };
+        let Ok(id) = parse_id(&self.aid) else {
+            return false;
+        };
+        matches!(
+            s.store_call(move |st| site.check(st, &id)).await,
+            Ok(Some(_))
+        )
+    }
+
+    /// What event `e` asks of the socket: [`Ask::Close`] when the artifact
+    /// was deleted, or its site closed to the world and the socket is a
+    /// visitor's; [`Ask::Recheck`] after a new version (it may drop `room`;
+    /// a metadata edit emits no event and takes effect at the next
+    /// connection), and, for a holder's socket on a site host, after its
+    /// site's access or who may read the artifact changed.
+    fn ask(&self, e: &Event) -> Ask {
+        let holder = self.site.as_ref().is_some_and(|c| !c.visitor());
+        match e {
+            Event::ArtifactDeleted { artifact_id } if *artifact_id == self.aid => Ask::Close,
+            Event::Version { artifact_id, .. } if *artifact_id == self.aid => Ask::Recheck,
+            Event::SiteAccess { artifact_id, world } if *artifact_id == self.aid => {
+                match &self.site {
+                    Some(c) if c.visitor() && !world => Ask::Close,
+                    Some(_) if holder => Ask::Recheck,
+                    _ => Ask::Nothing,
+                }
+            }
+            Event::Access { artifact_id }
+                if holder && artifact_id.as_deref().is_none_or(|a| a == self.aid) =>
+            {
+                Ask::Recheck
+            }
+            _ => Ask::Nothing,
         }
     }
+
+    /// Whether event `e` ends the socket ([`RoomCheck::ask`], a recheck
+    /// answered by [`RoomCheck::stays`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn ended_by(&self, s: &AppState, e: &Event) -> bool {
+        match self.ask(e) {
+            Ask::Close => true,
+            Ask::Recheck => !self.stays(s).await,
+            Ask::Nothing => false,
+        }
+    }
+
+    /// Whether an event already waiting in `events` ends the socket; each
+    /// one read is consumed.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn ended_by_pending(
+        &self,
+        s: &AppState,
+        events: &mut tokio::sync::broadcast::Receiver<clax_core::events::Stamped>,
+    ) -> bool {
+        use tokio::sync::broadcast::error::TryRecvError;
+        let mut recheck = false;
+        loop {
+            match events.try_recv() {
+                Ok(stamped) => match self.ask(&stamped.event) {
+                    Ask::Close => return true,
+                    Ask::Recheck => recheck = true,
+                    Ask::Nothing => {}
+                },
+                Err(TryRecvError::Lagged(_)) => recheck = true,
+                Err(_) => break,
+            }
+        }
+        recheck && !self.stays(s).await
+    }
+}
+
+/// What an event asks of a room socket ([`RoomCheck::ask`]).
+#[derive(Debug, PartialEq, Eq)]
+enum Ask {
+    Nothing,
+    Close,
+    Recheck,
 }
 
 /// What a host that holds a room socket itself (a Durable Object) does next.
@@ -548,9 +641,10 @@ pub enum RoomStep {
     /// Close the socket with this code and reason; the [`RoomSocket`] is
     /// done.
     Close(u16, &'static str),
-    /// A new version of the artifact: close `revoked` unless it still
-    /// declares `room` ([`still_declared`]).
-    Recheck,
+    /// A new version of the artifact, or (for a site holder's socket) a
+    /// change to who may read it: close `revoked` unless the socket still
+    /// [`RoomCheck::stays`].
+    Recheck(RoomCheck),
 }
 
 /// A room socket driven by its host, step by step, where [`session`]'s
@@ -564,8 +658,8 @@ pub struct RoomSocket {
     receivers: Receivers,
     claim: clax_realtime::room::Claim,
     events: tokio::sync::broadcast::Receiver<clax_core::events::Stamped>,
-    /// Who its site host's access found, for a socket opened there.
-    site: Option<SiteCaller>,
+    /// What it is checked again by.
+    check: RoomCheck,
     /// Its place in its client's cap ([`clax_http::socket_caps`]).
     _slot: Option<clax_http::socket_caps::SocketSlot>,
 }
@@ -579,8 +673,9 @@ pub struct RoomAdmission {
     pub level: Level,
     pub topics: Option<Topics>,
     pub seat: Option<clax_core::seats::Claim>,
-    /// Who its site host's access found, for a socket opened there.
-    pub site: Option<SiteCaller>,
+    /// What its site host's access let its caller in by, for a socket
+    /// opened there.
+    pub site: Option<SiteCredentials>,
 }
 
 impl RoomSocket {
@@ -605,6 +700,10 @@ impl RoomSocket {
         let (lobby, rx) = s.rooms.enter(&a.aid, None, a.who.clone());
         let mut receivers = Receivers::new();
         receivers.insert(None, rx);
+        let check = RoomCheck {
+            aid: a.aid.clone(),
+            site: a.site,
+        };
         let mut conn = Conn {
             rooms: s.rooms.clone(),
             aid: a.aid,
@@ -635,7 +734,7 @@ impl RoomSocket {
                 receivers,
                 claim,
                 events: s.events.subscribe(),
-                site: a.site,
+                check,
                 _slot: None,
             },
             first,
@@ -654,6 +753,12 @@ impl RoomSocket {
         &self.conn.aid
     }
 
+    /// What its site host's access let its caller in by, for a socket
+    /// opened there: what its host keeps to reopen it ([`reopen`]).
+    pub fn site(&self) -> Option<&SiteCredentials> {
+        self.check.site.as_ref()
+    }
+
     /// The named rooms the socket is in, for its host to keep.
     pub fn joined(&self) -> Vec<String> {
         self.conn.named.keys().cloned().collect()
@@ -669,8 +774,11 @@ impl RoomSocket {
     }
 
     /// The frames its rooms sent since the last drain, then the close when
-    /// a newer socket took its peer label or the artifact was deleted, or
-    /// [`RoomStep::Recheck`] after a new version.
+    /// a newer socket took its peer label, the artifact was deleted or (a
+    /// visitor's) its site closed to the world, or [`RoomStep::Recheck`]
+    /// after a new version and (a site holder's) after a change to who may
+    /// read the artifact ([`RoomCheck::ask`]); the host answers it with
+    /// [`RoomCheck::stays`].
     pub fn drain(&mut self) -> Vec<RoomStep> {
         use futures::FutureExt;
         let mut out = Vec::new();
@@ -681,27 +789,13 @@ impl RoomSocket {
         let mut recheck = false;
         loop {
             match self.events.try_recv() {
-                Ok(stamped) => match &stamped.event {
-                    Event::ArtifactDeleted { artifact_id } if *artifact_id == self.conn.aid => {
+                Ok(stamped) => match self.check.ask(&stamped.event) {
+                    Ask::Close => {
                         out.push(RoomStep::Close(4403, "revoked"));
                         return out;
                     }
-                    Event::Version { artifact_id, .. } if *artifact_id == self.conn.aid => {
-                        recheck = true;
-                    }
-                    // A visitor's socket closes with its site; a holder's
-                    // is checked again.
-                    Event::SiteAccess { artifact_id, world } if *artifact_id == self.conn.aid => {
-                        match &self.site {
-                            Some(SiteCaller::Visitor(_)) if !world => {
-                                out.push(RoomStep::Close(4403, "revoked"));
-                                return out;
-                            }
-                            Some(SiteCaller::Holder(_)) => recheck = true,
-                            _ => {}
-                        }
-                    }
-                    _ => {}
+                    Ask::Recheck => recheck = true,
+                    Ask::Nothing => {}
                 },
                 Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => recheck = true,
                 Err(_) => break,
@@ -727,14 +821,14 @@ impl RoomSocket {
             }
         }
         if recheck {
-            out.push(RoomStep::Recheck);
+            out.push(RoomStep::Recheck(self.check.clone()));
         }
         out
     }
 }
 
-/// Whether artifact `aid` still declares `room`: a room socket's
-/// [`RoomStep::Recheck`].
+/// Whether artifact `aid` still declares `room` (part of
+/// [`RoomCheck::stays`]).
 pub async fn still_declared(s: &AppState, aid: &str) -> bool {
     let Ok(id) = parse_id(aid) else {
         return false;
@@ -754,7 +848,7 @@ fn admission(
     peer: String,
     caller: Option<&clax_http::auth::Caller>,
     resolved: Caller,
-    site: Option<SiteCaller>,
+    site: Option<SiteCredentials>,
 ) -> clax_core::Result<RoomAdmission> {
     let id = clax_core::ArtifactId::parse(aid).map_err(|_| CoreError::NotFound)?;
     let artifact = st.get_artifact(&id)?;
@@ -841,7 +935,9 @@ pub async fn room_socket(
     let mut creds = subscriber.credentials(&s.token, &extensions);
     creds.address = client.address();
     let (a, peer) = (aid.clone(), q.peer.clone());
-    let site = extensions.get::<SiteCaller>().cloned();
+    let site = extensions
+        .get::<SiteCaller>()
+        .and_then(|c| SiteCredentials::of(c, &extensions));
     let admitted = s
         .store_call(move |st| {
             let resolved = subscriber.resolve(st)?;
@@ -858,30 +954,50 @@ pub async fn room_socket(
 }
 
 /// Reopens a room socket of `aid` under `peer`, in `rooms`, kept with
-/// `creds` by a host that lost its server (a Durable Object woken from
-/// hibernation): admitted again as [`room`] admits it, as whoever the
-/// credentials are now, a hosted session still reading the page. `None`
-/// when it may no longer open: the host closes it. On a hosted daemon that
-/// is also a socket opened with neither the token nor a session, or whose
-/// session has ended.
+/// `creds` (and `site`, for one opened on the artifact's site host) by a
+/// host that lost its server (a Durable Object woken from hibernation):
+/// admitted again as [`room`] admits it, as whoever the credentials are
+/// now, a hosted session still reading the page. On a site host its caller
+/// is found again from `site` ([`SiteCredentials::check`]: a holder's site
+/// session still live and still reading the artifact, a visitor's site
+/// still open to the world) and its identity rebuilt as the site API
+/// builds it. `None` when it may no longer open: the host closes it. On a
+/// hosted daemon that is also a socket opened on the public host with
+/// neither the token nor a session, or whose session has ended.
 pub async fn reopen(
     s: &AppState,
     aid: &str,
     peer: &str,
     rooms: &[String],
     creds: &clax_http::identity::SocketCredentials,
+    site: Option<&SiteCredentials>,
 ) -> Option<Result<(RoomSocket, Vec<String>), RoomStep>> {
     let client = clax_http::socket_caps::SocketClient::of_credentials(creds);
-    let (creds, a, token, peer) = (
+    let (creds, a, token, peer, site) = (
         creds.clone(),
         aid.to_string(),
         s.token.clone(),
         peer.to_string(),
+        site.cloned(),
     );
     let hosted = s.hosted.is_some();
     let admitted = s
         .store_call(move |st| {
             let (who, session) = creds.reopen(st, &token)?;
+            if let Some(sc) = site {
+                let id = clax_core::ArtifactId::parse(&a).map_err(|_| CoreError::NotFound)?;
+                let found = sc.check(st, &id)?.ok_or(CoreError::NotFound)?;
+                let who = super::site_api::site_hosted_request(st, &found)?.identity(who);
+                let caller = who.caller(st, None).ok();
+                if caller
+                    .as_ref()
+                    .is_some_and(clax_http::auth::Caller::is_agent)
+                {
+                    return Err(CoreError::NotFound);
+                }
+                let resolved = clax_http::db_caller::site_caller(st, &found)?;
+                return admission(st, &a, peer, caller.as_ref(), resolved, Some(sc));
+            }
             // On a hosted daemon only a session or the token opened it.
             if hosted && session.is_none() && !who.token {
                 return Err(CoreError::NotFound);

@@ -3224,12 +3224,16 @@ async fn a_kept_socket_reopens_only_while_its_session_is_live() {
     };
     let peer = "0123456789abcdef";
     assert!(matches!(
-        room::reopen(s, &aid, peer, &[], &held).await,
+        room::reopen(s, &aid, peer, &[], &held, None).await,
         Some(Ok(_))
     ));
     // Neither the token nor a session opened it: nothing reopens it.
     let nobody = SocketCredentials::default();
-    assert!(room::reopen(s, &aid, peer, &[], &nobody).await.is_none());
+    assert!(
+        room::reopen(s, &aid, peer, &[], &nobody, None)
+            .await
+            .is_none()
+    );
     assert!(live_layers::reopen(s, &aid, &nobody).await.is_none());
     // The session ends while the object sleeps: its socket stays closed.
     let res = site
@@ -3238,7 +3242,11 @@ async fn a_kept_socket_reopens_only_while_its_session_is_live() {
         .await
         .unwrap();
     assert_eq!(res.status(), 204);
-    assert!(room::reopen(s, &aid, peer, &[], &held).await.is_none());
+    assert!(
+        room::reopen(s, &aid, peer, &[], &held, None)
+            .await
+            .is_none()
+    );
     assert!(live_layers::reopen(s, &aid, &held).await.is_none());
 }
 

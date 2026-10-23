@@ -678,6 +678,8 @@ pub async fn set_rights(
             Ok((person, before, after))
         })
         .await?;
+    // Their site sockets follow the rights too.
+    crate::hosted::access_changed(&s, None);
     // Their repository tokens and their agents' follow the rights.
     clax_http::git_remotes::rights_changed(&s, &who, before.as_ref(), after.as_ref()).await?;
     Ok(Json(json!({"person": person})))
@@ -716,6 +718,8 @@ pub async fn revoke_person(
             }))
         })
         .await?;
+    // Their site sockets close.
+    crate::hosted::access_changed(&s, None);
     // Their repository tokens and their agents' go with them.
     clax_http::git_remotes::rights_changed(&s, &who, None, None).await?;
     Ok(Json(v))

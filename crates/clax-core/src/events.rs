@@ -37,6 +37,15 @@ pub enum Event {
         artifact_id: String,
         world: bool,
     },
+    /// Who may read changed: at artifact `artifact_id` (`Some`: a share
+    /// removed, its link changed), or at any artifact (`None`: a person
+    /// removed or their rights changed, a browser session ended, and with
+    /// it the site sessions made from it). The room sockets of site holders
+    /// check again that their holder still reads the artifact. No stream
+    /// carries it.
+    Access {
+        artifact_id: Option<String>,
+    },
     /// A thread was created or changed; `thread` is its full view (upsert).
     Thread {
         artifact_id: String,
@@ -273,6 +282,8 @@ impl Event {
             | Event::JobsOwner { .. } => "",
             // A change to the list itself belongs to no artifact.
             Event::Tags { artifact_id, .. } => artifact_id.as_deref().unwrap_or(""),
+            // A change at every artifact belongs to none.
+            Event::Access { artifact_id } => artifact_id.as_deref().unwrap_or(""),
         }
     }
 
@@ -282,6 +293,7 @@ impl Event {
             Event::Version { .. } => "version",
             Event::ArtifactDeleted { .. } => "artifact_deleted",
             Event::SiteAccess { .. } => "site_access",
+            Event::Access { .. } => "access",
             Event::Thread { .. } => "thread",
             Event::Comment { .. } => "comment",
             Event::ThreadResolved { .. } => "thread_resolved",

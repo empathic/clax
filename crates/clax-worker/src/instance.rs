@@ -51,10 +51,14 @@
 //! was opened with (`SocketCredentials`: the viewer cookie's ULID, a tag of
 //! the token when it was presented, a hosted session by its cookie's hash,
 //! never a token or a cookie) and what reopens it (the stream's ID; the
-//! artifact; a room socket's peer label and named rooms). An object rebuilt
+//! artifact; a room socket's peer label and named rooms, and for one opened
+//! on a site host its `SiteCredentials`: the site session's hash, or the
+//! visitor's ID). An object rebuilt
 //! after hibernation or eviction has empty hubs: at its first event it
 //! reopens each socket as the same caller, checked against the store again
-//! (a hosted session must still be live and still read the page): a
+//! (a hosted session must still be live and still read the page; a site
+//! holder's site session too, a site visitor's site still open to the
+//! world): a
 //! stream gets a new stream and its `ready`, and the shell subscribes its
 //! topics again; a live or room socket joins again and is sent its welcome
 //! (and its rooms' peers).
@@ -129,10 +133,11 @@ use clax_core::Home;
 use clax_core::content::ContentStore;
 use clax_http::host::SiteHosts;
 use clax_http::identity::SocketCredentials;
+use clax_http::site_access::SiteCredentials;
 use clax_http::state::AppState;
 use clax_realtime::stream::Conn;
 use clax_server::routes::live_layers::{LiveOpened, LiveSocket, LiveStep};
-use clax_server::routes::room::{RoomOpened, RoomSocket, RoomStep};
+use clax_server::routes::room::{RoomCheck, RoomOpened, RoomSocket, RoomStep};
 use clax_server::routes::stream::{SocketStream, open_stream};
 use clax_store::Store;
 use serde::{Deserialize, Serialize};
@@ -199,7 +204,9 @@ enum Kind {
 
 /// What a socket's attachment carries across hibernation (well under the
 /// platform's 2,048 bytes: two hex IDs, a ULID, a 16-digit tag, a 64-digit
-/// hash, an artifact ID, a peer label and at most a few room names).
+/// hash, an artifact ID, a peer label, at most a few room names and, for a
+/// room socket opened on a site host, a site session's 64-digit hash or a
+/// visitor ID).
 #[derive(Serialize, Deserialize)]
 struct Attachment {
     #[serde(default, skip_serializing_if = "is_stream")]
@@ -213,6 +220,10 @@ struct Attachment {
     peer: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     rooms: Vec<String>,
+    /// What a room socket opened on a site host was let in by
+    /// ([`RoomSocket::site`]), which its caller is found again by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    site: Option<SiteCredentials>,
     #[serde(flatten)]
     creds: SocketCredentials,
 }
@@ -583,19 +594,21 @@ impl Instance {
     }
 
     /// Sends every socket what it has; closes those that ended; checks
-    /// again the room sockets of artifacts with a new version.
+    /// again the room sockets that asked ([`RoomStep::Recheck`]: a new
+    /// version, or for a site holder's a change to who may read), closing
+    /// each that no longer [`RoomCheck::stays`].
     async fn settle(&self) {
         let recheck = self.drain_all();
-        for (key, aid) in recheck {
-            if !clax_server::routes::room::still_declared(&self.app, &aid).await {
+        for (key, check) in recheck {
+            if !check.stays(&self.app).await {
                 self.close(&key, 4403, "revoked");
             }
         }
     }
 
     /// [`Instance::drain`] for every socket with something pending: the
-    /// room sockets to check again, with their artifacts.
-    fn drain_all(&self) -> Vec<(String, String)> {
+    /// room sockets to check again, with what to check them by.
+    fn drain_all(&self) -> Vec<(String, RoomCheck)> {
         let keys: Vec<String> = self
             .sockets
             .borrow()
@@ -607,7 +620,7 @@ impl Instance {
             .map(|(k, _)| k.clone())
             .collect();
         keys.into_iter()
-            .filter_map(|k| self.drain(&k).map(|aid| (k, aid)))
+            .filter_map(|k| self.drain(&k).map(|check| (k, check)))
             .collect()
     }
 
@@ -618,9 +631,9 @@ impl Instance {
     }
 
     /// Sends socket `key` what it carries has; closes it once that has
-    /// ended. A room socket of an artifact with a new version answers its
-    /// artifact, to be checked again.
-    fn drain(&self, key: &str) -> Option<String> {
+    /// ended. A room socket that asks to be checked again answers what to
+    /// check it by.
+    fn drain(&self, key: &str) -> Option<RoomCheck> {
         let mut sockets = self.sockets.borrow_mut();
         let s = sockets.get_mut(key)?;
         let mut end: Option<(u16, &'static str)> = None;
@@ -647,14 +660,13 @@ impl Instance {
                 }
             }
             Carried::Room(room) => {
-                let aid = room_aid(&s.ws);
                 for step in room.drain() {
                     match step {
                         RoomStep::Send(t) => {
                             let _ = s.ws.send_with_str(t);
                         }
                         RoomStep::Close(c, r) => end = Some((c, r)),
-                        RoomStep::Recheck => recheck = aid.clone(),
+                        RoomStep::Recheck(c) => recheck = Some(c),
                     }
                 }
             }
@@ -715,14 +727,6 @@ fn erase_deleted(app: &AppState) {
             }
         }
     });
-}
-
-/// A room socket's artifact, from its attachment.
-fn room_aid(ws: &WebSocket) -> Option<String> {
-    ws.deserialize_attachment::<Attachment>()
-        .ok()
-        .flatten()
-        .map(|a| a.aid)
 }
 
 /// The most bytes of one request's body the object reads. The daemon's
@@ -998,7 +1002,12 @@ impl InstanceDo {
             }
             Kind::Room => {
                 match clax_server::routes::room::reopen(
-                    &inst.app, &att.aid, &att.peer, &att.rooms, &att.creds,
+                    &inst.app,
+                    &att.aid,
+                    &att.peer,
+                    &att.rooms,
+                    &att.creds,
+                    att.site.as_ref(),
                 )
                 .await
                 {
@@ -1154,6 +1163,7 @@ impl InstanceDo {
             aid,
             peer,
             rooms: Vec::new(),
+            site: None,
             creds,
         };
         let ext = res.extensions_mut();
@@ -1185,16 +1195,20 @@ impl InstanceDo {
             .remove::<RoomOpened>()
             .and_then(|s| s.0.lock().unwrap_or_else(|e| e.into_inner()).take())
         {
-            let aid = match &opened {
-                Ok((r, _)) => r.artifact().to_string(),
-                Err(_) => String::new(),
+            let (aid, site) = match &opened {
+                Ok((r, _)) => (r.artifact().to_string(), r.site().cloned()),
+                Err(_) => (String::new(), None),
             };
             let carried = match opened {
                 Ok((r, first)) => Ok((Carried::Room(Box::new(r)), first)),
                 Err(RoomStep::Close(c, r)) => Err((c, r)),
                 Err(_) => Err((1011, "no socket")),
             };
-            return Some((carried, att(Kind::Room, aid, peer, creds)));
+            let att = Attachment {
+                site,
+                ..att(Kind::Room, aid, peer, creds)
+            };
+            return Some((carried, att));
         }
         None
     }
@@ -1659,6 +1673,7 @@ mod tests {
             aid: "7q3k9mzx2b4t".into(),
             peer: "0123456789abcdef".into(),
             rooms: vec!["chat".into()],
+            site: None,
             creds: SocketCredentials {
                 session: Some("f".repeat(64)),
                 ..SocketCredentials::default()
@@ -1666,10 +1681,46 @@ mod tests {
         };
         let json = serde_json::to_string(&room).unwrap();
         assert!(json.len() < 2048, "{json}");
+        assert!(!json.contains("site"), "{json}");
         let back: Attachment = serde_json::from_str(&json).unwrap();
         assert_eq!(
-            (back.kind, back.rooms),
-            (Kind::Room, vec!["chat".to_string()])
+            (back.kind, back.rooms, back.site),
+            (Kind::Room, vec!["chat".to_string()], None)
         );
+    }
+
+    #[test]
+    fn a_site_room_socket_keeps_its_site_credentials_across_a_wake() {
+        let base = || Attachment {
+            kind: Kind::Room,
+            sock: "a".repeat(32),
+            stream: String::new(),
+            aid: "7q3k9mzx2b4t".into(),
+            peer: "0123456789abcdef".into(),
+            rooms: (0..8).map(|i| format!("room-{i:0>40}")).collect(),
+            site: None,
+            creds: SocketCredentials {
+                viewer: Some("01J00000000000000000000000".into()),
+                token: Some("0".repeat(16)),
+                address: Some("2001:db8::1".into()),
+                ..SocketCredentials::default()
+            },
+        };
+        for site in [
+            SiteCredentials::Session("e".repeat(64)),
+            SiteCredentials::Visitor(format!("v_{}", "0".repeat(22))),
+        ] {
+            let att = Attachment {
+                site: Some(site.clone()),
+                ..base()
+            };
+            let json = serde_json::to_string(&att).unwrap();
+            assert!(json.len() < 2048, "{} bytes: {json}", json.len());
+            let back: Attachment = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.site, Some(site));
+            // The site's credentials sit beside the socket's own, which
+            // keep their names.
+            assert_eq!(back.creds, base().creds);
+        }
     }
 }

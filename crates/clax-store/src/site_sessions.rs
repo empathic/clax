@@ -228,7 +228,17 @@ impl Store {
     /// # Errors
     /// The database's.
     pub fn site_session(&self, id: &str, aid: &ArtifactId) -> Result<Option<Holder>> {
-        let hash = sha256_hex(id);
+        self.site_session_of_hash(&sha256_hex(id), aid)
+    }
+
+    /// [`Store::site_session`] of the session whose ID's SHA-256 (lowercase
+    /// hex) is `hash`: what the host of a socket opened on a site session
+    /// checks it again by, holding no session ID. It renews the session
+    /// too: a socket open on it is a use.
+    ///
+    /// # Errors
+    /// The database's.
+    pub fn site_session_of_hash(&self, hash: &str, aid: &ArtifactId) -> Result<Option<Holder>> {
         let now = self.now();
         let row: Option<(String, Option<String>, Option<String>)> = self.with_read(|c| {
             Ok(c.query_row(
@@ -345,6 +355,15 @@ mod tests {
         assert_eq!((holder, partitioned), (Holder::Link, false));
         assert_eq!(st.site_session(&id, &a).unwrap(), Some(Holder::Link));
         assert_eq!(st.site_session(&id, &b).unwrap(), None);
+        // By the ID's SHA-256 alone, as a socket's host keeps it; never by
+        // the ID itself.
+        let hash = sha256_hex(&id);
+        assert_eq!(
+            st.site_session_of_hash(&hash, &a).unwrap(),
+            Some(Holder::Link)
+        );
+        assert_eq!(st.site_session_of_hash(&id, &a).unwrap(), None);
+        assert_eq!(st.site_session_of_hash(&hash, &b).unwrap(), None);
         assert!(
             st.site_code_redeem(&code, &a, Some("st"))
                 .unwrap()
