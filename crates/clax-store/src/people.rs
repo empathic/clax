@@ -64,6 +64,15 @@ pub enum InvitePerson {
     Owner,
 }
 
+/// How much a person made ([`Store::person_made`]): counts, never which.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Made {
+    /// Their live artifacts.
+    pub artifacts: u64,
+    /// The summed size of those artifacts' assets, in bytes.
+    pub asset_bytes: u64,
+}
+
 /// An invite, without its code.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Invite {
@@ -398,6 +407,33 @@ pub(super) fn check_person_name(
         return Err(taken());
     }
     Ok(name.to_string())
+}
+
+/// Whether invite `invite_id` made the viewer row it names: the row was
+/// made in the same instant as the invite, which is its only invite, and
+/// it has held no browser session, grant or GitHub account. An invite
+/// naming a viewer, guest or person who was there before is not one.
+pub(super) fn invite_made_its_person(c: &rusqlite::Connection, invite_id: &str) -> Result<bool> {
+    Ok(c.query_row(
+        "SELECT v.created_at = i.created_at
+            AND NOT EXISTS (SELECT 1 FROM invites o WHERE o.viewer_id = i.viewer_id AND o.id <> i.id)
+            AND NOT EXISTS (SELECT 1 FROM browser_sessions s WHERE s.viewer_id = i.viewer_id)
+            AND NOT EXISTS (SELECT 1 FROM grants g WHERE g.viewer_id = i.viewer_id)
+            AND NOT EXISTS (SELECT 1 FROM github_identities h WHERE h.viewer_id = i.viewer_id)
+           FROM invites i JOIN viewers v ON v.id = i.viewer_id WHERE i.id = ?1",
+        params![invite_id],
+        |r| r.get(0),
+    )?)
+}
+
+/// The refusal of an invite that names a viewer row that was there before
+/// it, on a hosted daemon: an invite makes a new person only, so no link
+/// the owner holds signs anyone in as someone who already exists.
+pub fn new_people_only() -> CoreError {
+    CoreError::invalid(
+        "new_people_only",
+        "an invite here makes a new person only: a revoked person is reinstated from People, and anyone else signs in themselves",
+    )
 }
 
 /// The rights of viewer row `viewer_id`: its stored rights
@@ -1698,6 +1734,69 @@ impl Store {
                 self.visibility_changed();
             }
             Ok(out)
+        })
+    }
+
+    /// Reinstates revoked person `public_id`: clears `person_revoked_at`
+    /// and the block on their GitHub account, so what they made is served
+    /// again and they may sign in again themselves. Their grants and
+    /// invites stay ended; nothing is handed out. Recorded under `ctx` as
+    /// `person.reinstate`.
+    ///
+    /// # Errors
+    /// `NotFound` for an unknown public ID, the owner, or a viewer who is
+    /// not a revoked person.
+    pub fn reinstate_person(&self, ctx: &AuditCtx, public_id: &str) -> Result<()> {
+        self.with_tx(|tx| {
+            let now = self.now();
+            let id: String = tx
+                .query_row(
+                    "UPDATE viewers SET person_revoked_at = NULL
+                     WHERE public_id = ?1 AND person = 1 AND owner = 0
+                       AND person_revoked_at IS NOT NULL
+                     RETURNING id",
+                    params![public_id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .ok_or(CoreError::NotFound)?;
+            super::github::unblock_in(tx, &id)?;
+            let rec =
+                AuditRecord::new(AuditKind::PersonReinstate, now.as_str()).with("person", public_id);
+            self.record_audit(tx, ctx, rec)?;
+            self.visibility_changed();
+            Ok(())
+        })
+    }
+
+    /// How much person `public_id` made: their live artifacts, and the
+    /// summed size of those artifacts' assets. Names none of them.
+    ///
+    /// # Errors
+    /// `NotFound` for an unknown public ID.
+    pub fn person_made(&self, public_id: &str) -> Result<Made> {
+        self.with_read(|c| {
+            let known: bool = c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM viewers WHERE public_id = ?1)",
+                params![public_id],
+                |r| r.get(0),
+            )?;
+            if !known {
+                return Err(CoreError::NotFound);
+            }
+            let (artifacts, asset_bytes): (i64, i64) = c.query_row(
+                "SELECT COUNT(*),
+                        COALESCE((SELECT SUM(s.size) FROM assets s
+                                   JOIN artifacts b ON b.id = s.artifact_id
+                                  WHERE b.person = ?1 AND b.deleted_at IS NULL), 0)
+                   FROM artifacts a WHERE a.person = ?1 AND a.deleted_at IS NULL",
+                params![public_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            Ok(Made {
+                artifacts: artifacts as u64,
+                asset_bytes: asset_bytes as u64,
+            })
         })
     }
 
@@ -4489,6 +4588,102 @@ pub(crate) mod tests {
             v.person && v.person_revoked_at.is_some(),
             "the revocation stays on record, not a plain viewer"
         );
+    }
+
+    /// A hosted store with Mia, a GitHub person, and an artifact of hers:
+    /// `(dir, store, mia, mias)`.
+    fn hosted_mia() -> (tempfile::TempDir, Store, String, clax_core::ArtifactId) {
+        let (d, _clock, st) = store();
+        st.hosted_setup(DAEMON, "Ada").unwrap();
+        let mia = st
+            .github_sign_in(DAEMON, &mia_github(), false)
+            .unwrap()
+            .0
+            .who
+            .viewer
+            .public_id;
+        let owners = crate::test_util::artifact(&st, None);
+        let (made, _) = st
+            .fork_artifact(DAEMON, &owners, None, Some(&mia), None)
+            .unwrap();
+        let mias = clax_core::ArtifactId::parse(&made.id).unwrap();
+        (d, st, mia, mias)
+    }
+
+    fn mia_github() -> crate::github::GitHubUser {
+        crate::github::GitHubUser {
+            id: 7,
+            login: "mia-k".into(),
+            name: None,
+            avatar_url: None,
+        }
+    }
+
+    #[test]
+    fn reinstating_restores_access_and_unblocks_github() {
+        use crate::reach::Reach;
+        let (_d, st, mia, mias) = hosted_mia();
+        st.revoke_person(DAEMON, &mia).unwrap();
+        assert_eq!(st.reach(mias.as_str(), Some(&mia)).unwrap(), Reach::Gone);
+        assert_eq!(
+            code(st.github_sign_in(DAEMON, &mia_github(), false)),
+            "github_blocked"
+        );
+        let seq = st.newest_seq().unwrap();
+        st.reinstate_person(&owner_ctx(&st), &mia).unwrap();
+        let ev = recorded(&st, seq);
+        assert_eq!(
+            ev.iter().map(|e| e.0.as_str()).collect::<Vec<_>>(),
+            ["person.reinstate"]
+        );
+        assert_eq!(ev[0].1["type"], "owner");
+        assert_eq!(ev[0].2["person"], mia.as_str());
+        assert_eq!(
+            st.reach(mias.as_str(), Some(&mia)).unwrap(),
+            Reach::Within
+        );
+        let v = st.viewer_by_public_id(&mia).unwrap().unwrap();
+        assert!(v.person && v.person_revoked_at.is_none());
+        assert!(
+            st.github_links().unwrap()[&mia].blocked_at.is_none(),
+            "the account is no longer blocked"
+        );
+        let (signed, _) = st.github_sign_in(DAEMON, &mia_github(), false).unwrap();
+        assert_eq!(signed.who.viewer.public_id, mia);
+        // Nothing to reinstate: a person not revoked, or no one.
+        assert!(matches!(
+            st.reinstate_person(DAEMON, &mia),
+            Err(CoreError::NotFound)
+        ));
+        assert!(matches!(
+            st.reinstate_person(DAEMON, "u_nobody"),
+            Err(CoreError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn what_a_person_made_is_counted_without_naming_it() {
+        let (_d, st, mia, mias) = hosted_mia();
+        st.add_asset_by(DAEMON, &mias, "image/png", &[1, 2, 3], Some(&mia), false)
+            .unwrap();
+        st.add_asset_by(DAEMON, &mias, "image/png", &[4, 5], Some(&mia), false)
+            .unwrap();
+        assert_eq!(
+            st.person_made(&mia).unwrap(),
+            Made {
+                artifacts: 1,
+                asset_bytes: 5
+            }
+        );
+        // A revoked person's are still counted; a deleted one is not.
+        st.revoke_person(DAEMON, &mia).unwrap();
+        assert_eq!(st.person_made(&mia).unwrap().artifacts, 1);
+        st.delete_artifact(DAEMON, &mias).unwrap();
+        assert_eq!(st.person_made(&mia).unwrap(), Made::default());
+        assert!(matches!(
+            st.person_made("u_nobody"),
+            Err(CoreError::NotFound)
+        ));
     }
 
     #[test]

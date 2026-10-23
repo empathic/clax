@@ -220,7 +220,7 @@
     {#if revoked.length}
       <section class="pcard revoked">
         <h3>Revoked</h3>
-        {#each revoked as p (p.public_id)}<div class="line"><span>{p.display_name ?? "Unnamed"}</span><span class="meta">{p.github ? `@${p.github.login}, blocked` : "revoked"} {p.revoked_at?.slice(0, 10)}</span></div>{/each}
+        {#each revoked as p (p.public_id)}<PersonCard view="owner" who={p} onChanged={reload} />{/each}
       </section>
     {/if}
   {:else if me}
@@ -245,7 +245,8 @@
     .ppl { max-width: 880px; margin: 0 auto; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
     .ppl .phead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
     .ppl h2 { margin: 0; font-size: 22px; line-height: 1.2; }
-    .ppl .pcount, .ppl .meta, .ppl .ip { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+    .ppl .pcount, .ppl .meta, .ppl .ip, .ppl .made { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+    .ppl .made { margin: 4px 0 0; }
     .ppl .sp { flex: 1; }
     .ppl .padmin { font-weight: 600; font-size: 13.5px; padding: 6px 8px; border-radius: var(--radius-sm); }
     .ppl .padmin:hover { background: var(--hover); }

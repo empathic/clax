@@ -298,7 +298,7 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("grant.token", "grant_id" | "op") => Safe,
         ("grant.narrow", "grant_id" | "narrow") => Safe,
         ("person.rights", "person" | "rights") => Safe,
-        ("person.revoke", "person") => Safe,
+        ("person.revoke" | "person.reinstate", "person") => Safe,
         ("agent.name", "name" | "previous") => Name,
         ("agent.name", "source") => Safe,
         ("agent.narrow" | "agent.elevate", "session" | "access" | "reason") => Safe,

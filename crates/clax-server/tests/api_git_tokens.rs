@@ -1570,3 +1570,66 @@ async fn a_share_is_all_that_reaches_another_persons_page_through_git() {
     }
     assert_eq!(h.mint(&mias, "read", Some(&sam)).await.0, 404);
 }
+
+#[tokio::test]
+async fn a_revoked_persons_page_clones_through_nothing_until_they_are_reinstated() {
+    let h = Hosted::new().await;
+    let owner = h.owner().await;
+    let all = json!("clax:collaborator");
+    let (mia, mia_id) = h.member(&owner, "Mia", all.clone()).await;
+    let (sam, sam_id) = h.member(&owner, "Sam", all).await;
+    let (s, v, _) = h
+        .send(
+            reqwest::Method::POST,
+            "/api/artifacts:new",
+            Some(&mia),
+            Some(json!({"title": "Mia's", "brief": "a page"})),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let mias = v["artifact"]["id"].as_str().unwrap().to_string();
+    let (s, v, _) = h
+        .send(
+            reqwest::Method::PUT,
+            &format!("/api/hosted/artifacts/{mias}/shares"),
+            Some(&mia),
+            Some(json!({"person": sam_id, "access": "viewer"})),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v, _) = h
+        .send(
+            reqwest::Method::PUT,
+            &format!("/api/hosted/artifacts/{mias}/link"),
+            Some(&mia),
+            Some(json!({"access": "viewer"})),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let clones = async |want: u16| {
+        assert_eq!(h.mint(&mias, "read", Some(&sam)).await.0, want, "shared");
+        assert_eq!(h.mint(&mias, "read", None).await.0, want, "by link");
+        assert_eq!(h.options(&mias, None).await.0, want, "options");
+    };
+    clones(200).await;
+    let (s, v, _) = h
+        .send(
+            reqwest::Method::DELETE,
+            &format!("/api/people/{mia_id}"),
+            Some(&owner),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    clones(404).await;
+    let (s, v, _) = h
+        .send(
+            reqwest::Method::POST,
+            &format!("/api/people/{mia_id}/reinstate"),
+            Some(&owner),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    clones(200).await;
+}

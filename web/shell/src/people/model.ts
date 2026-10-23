@@ -221,3 +221,8 @@ export function expiresIn(at: string, now: Date): string {
  * from Mia for sam-notes", "3 items from Mia" (outside threads). */
 export const waitText = (r: { count: number; thread_id: string | null; agent: { name: string } | null }, from: string): string =>
   `${r.count} ${r.thread_id ? (r.count === 1 ? "comment" : "comments") : r.count === 1 ? "item" : "items"} from ${midName(from)}${r.agent ? ` for ${r.agent.name}` : ""}`;
+
+/** How much a person made, on one line: "3 pages · 2.5 MB" (megabytes to
+ * one decimal). */
+export const madeText = (m: { artifacts: number; asset_bytes: number }) =>
+  `${m.artifacts} page${m.artifacts === 1 ? "" : "s"} · ${Math.round(m.asset_bytes / 1e5) / 10} MB`;

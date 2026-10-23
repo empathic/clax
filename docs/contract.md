@@ -4867,7 +4867,18 @@ A person's machine connects in one of two ways:
   within 24 hours, and at most 20 are live. 409 `not_on_lan` while the
   daemon listens on loopback only (restart it with `clax serve --bind
   0.0.0.0`). `GET /api/people/invites` lists them without codes; `DELETE
-  /api/people/invites/<id>` revokes one.
+  /api/people/invites/<id>` revokes one. On a hosted Clax an invite makes
+  a new person only, so no link the owner holds signs anyone in as a
+  person, revoked person or guest who already exists: `viewer` is 403
+  `new_people_only` (and `me` 400 `invalid_args`), and an invite naming
+  a viewer row that was there before it (one made before this rule) is
+  refused the same 403 `new_people_only` when a browser redeems it (`POST
+  /api/hosted/invites/<code>/accept`), spending nothing; a hosted Clax
+  takes no grant request (`POST /api/grants`) at all. A sign-in link is always the
+  caller's own (`POST /api/hosted/signin-links` for the browser's
+  person, `POST /api/hosted/owner-signin-link` for the owner), a device
+  sign-in the caller approves is theirs, and an agent token is its
+  minter's; none of them names another person.
 - **A request.** `clax connect http://<IP>:<port>` prints `Ask the owner of
   <url> to approve request WXYZ-4821` and waits up to 10 minutes (Ctrl-C
   cancels the request). The owner's inbox gets a `connection` item; the
@@ -4917,7 +4928,19 @@ sessions at once (each releases its threads and withdraws its questions).
 `DELETE /api/people/<public_id>` revokes a person: their grants and
 invites end, and their browser is a plain viewer's from then on; their
 viewer row, authorship and approvals stay as history, and their content
-stays theirs, withheld from agents whose person never approved them.
+stays theirs, withheld from agents whose person never approved them. On
+a hosted Clax a revoked person's GitHub account is blocked, and nothing
+they made is served to anyone while they are revoked: not by link, not
+by share, not in the public gallery, not at its content addresses
+(`/c/…`, `/_blob/…`, `/_clip/…`), not through git; every route answers
+it 404 `not_found` as one that does not exist. Nothing is deleted.
+`POST /api/people/<public_id>/reinstate` (the owner, in a browser or by
+hand; agents 403 `not_for_agents`, anyone else 403 `forbidden`) → 200
+`{person}` un-revokes them: it clears the revocation and the GitHub
+block, so what they made is served again as it was and they may sign in
+again themselves. It hands out nothing: their grants, invites and agent
+tokens stay ended. Recorded as `person.reinstate`; 404 for an unknown
+public ID or a person who is not revoked.
 
 ### Signed requests
 
@@ -5116,6 +5139,10 @@ those routes are Denied to agents and refuse the bare token (403
 `browser_required`); they take the owner's or a connected person's
 browser on a same-origin request. `GET /api/people` (the owner) and `GET
 /api/people/me` (the owner or a connected person) are People's reads;
+each person in `GET /api/people`, revoked ones included, carries `made:
+{artifacts, asset_bytes}`, their live artifacts and the summed size of
+those artifacts' assets, which names none of them (on a hosted Clax the
+owner never sees the titles or IDs of what another person made);
 anyone else, whatever cookie it sends (none, a LAN viewer's, or one that
 names no one), gets the same 403 `forbidden`, so the answer tells a guess
 nothing (a person's cookie is 32 random bytes, so there is no rate limit);
@@ -5366,6 +5393,7 @@ router), and a test fails when it differs:
 | `PUT /api/people/me/grants/{gid}/narrow` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/people/me/raises` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/people/{pid}` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/people/{pid}/reinstate` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/people/{pid}/rights` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/push` | Denied | no |
 | `GET /api/questions` | Denied | yes: 403 `not_for_agents` |
@@ -8660,7 +8688,9 @@ it starts, the runs a previous process left. A build without the
   "what the owner made, and mine". An artifact another person made is
   reached only through its share with the person (a grant's rights and
   that share must both allow the action) or its link, and not at all
-  while its maker is revoked. A maker may share an artifact with the
+  while its maker is revoked: then no one reaches it, not by link, share,
+  public gallery, content address or git, until the owner reinstates
+  them (see "Connecting a machine"). A maker may share an artifact with the
   owner as with anyone. Only an artifact's maker (the owner for the
   artifacts the owner made) shares it, sets or lists its link, and
   changes its pin, tags or capabilities: the owner does none of these at

@@ -14,7 +14,8 @@
 //!   rules), whose rights are [`member_rights`]; later sign-ins sign in as
 //!   that person and refresh the account's login, name and avatar.
 //! - **Blocked**: revoking the person ([`Store::revoke_person`]) blocks
-//!   the account: it may not sign in, and does not sign up again.
+//!   the account: it may not sign in, and does not sign up again, until
+//!   the person is reinstated ([`Store::reinstate_person`]).
 //!
 //! A member's account is capped ([`MemberCaps`], set on the store with
 //! [`Store::set_member_caps`]): the live artifacts they created. The owner
@@ -375,6 +376,16 @@ pub(super) fn block_in(tx: &Transaction<'_>, viewer_id: &str, now: &str) -> Resu
     tx.execute(
         "UPDATE github_identities SET blocked_at = ?2 WHERE viewer_id = ?1 AND blocked_at IS NULL",
         params![viewer_id, now],
+    )?;
+    Ok(())
+}
+
+/// Unblocks the GitHub account of viewer row `viewer_id`, in `tx` (its
+/// person is being reinstated).
+pub(super) fn unblock_in(tx: &Transaction<'_>, viewer_id: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE github_identities SET blocked_at = NULL WHERE viewer_id = ?1",
+        params![viewer_id],
     )?;
     Ok(())
 }

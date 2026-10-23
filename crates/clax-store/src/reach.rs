@@ -55,6 +55,31 @@ impl Store {
         })
     }
 
+    /// Whether artifact `aid` is taken down: its maker is revoked. A
+    /// missing one is not (its routes answer it as missing).
+    pub fn taken_down(&self, aid: &str) -> Result<bool> {
+        self.taken_down_where("a.id = ?1", aid)
+    }
+
+    /// Whether the artifact asset `asset_id` belongs to is taken down
+    /// ([`Store::taken_down`]).
+    pub fn asset_taken_down(&self, asset_id: &str) -> Result<bool> {
+        self.taken_down_where(
+            "a.id = (SELECT s.artifact_id FROM assets s WHERE s.id = ?1)",
+            asset_id,
+        )
+    }
+
+    fn taken_down_where(&self, which: &str, id: &str) -> Result<bool> {
+        self.with_read(|c| {
+            Ok(c.prepare_cached(&format!(
+                "SELECT EXISTS (SELECT 1 FROM artifacts a JOIN viewers m ON m.public_id = a.person
+                                 WHERE m.person_revoked_at IS NOT NULL AND {which})"
+            ))?
+            .query_row(params![id], |r| r.get(0))?)
+        })
+    }
+
     /// Every artifact that may lie beyond the owner's reach: each one a
     /// person made, deleted ones included, and each one the history names
     /// that is gone from the store (purged), unless its `artifact.create`
@@ -183,7 +208,7 @@ mod tests {
 
     #[test]
     fn a_revoked_makers_artifacts_are_gone_to_everyone_until_reinstated() {
-        let (_d, st, mia, sam, _owners, mias) = world();
+        let (_d, st, mia, sam, owners, mias) = world();
         st.set_general_access(DAEMON, &mias, Some(LinkAccess::Viewer), Some(true))
             .unwrap();
         st.share_artifact(
@@ -203,7 +228,10 @@ mod tests {
                 .any(|(i, _)| *i == mias)
         );
 
+        assert!(!st.taken_down(&mias).unwrap());
         st.revoke_person(DAEMON, &mia).unwrap();
+        assert!(st.taken_down(&mias).unwrap());
+        assert!(!st.taken_down(&owners).unwrap());
         assert_eq!(st.reach(&mias, Some(&mia)).unwrap(), Reach::Gone);
         assert_eq!(st.reach(&mias, None).unwrap(), Reach::Gone);
         assert_eq!(st.link_access(&mias).unwrap(), None);
@@ -213,6 +241,19 @@ mod tests {
                 .unwrap()
                 .iter()
                 .all(|(i, _)| *i != mias)
+        );
+
+        st.reinstate_person(DAEMON, &mia).unwrap();
+        assert!(!st.taken_down(&mias).unwrap());
+        assert_eq!(st.reach(&mias, Some(&mia)).unwrap(), Reach::Within);
+        assert_eq!(st.reach(&mias, None).unwrap(), Reach::Beyond);
+        assert!(st.link_access(&mias).unwrap().is_some());
+        assert!(reads(&st, &sam, &mias));
+        assert!(
+            st.public_artifacts()
+                .unwrap()
+                .iter()
+                .any(|(i, _)| *i == mias)
         );
     }
 

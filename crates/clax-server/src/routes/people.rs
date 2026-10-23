@@ -514,8 +514,9 @@ fn approvals_of_yours(st: &Store, pid: &str) -> clax_core::Result<Vec<Value>> {
 /// A person's view for the owner's People: their rights, machines, live
 /// agents and live approvals of the owner's content
 /// (`approvals_of_yours`); `revoked_at` once revoked (their row stays as
-/// history); and the GitHub account they sign in with (`{id, login,
-/// avatar_url, blocked_at}`), or `null`.
+/// history); the GitHub account they sign in with (`{id, login,
+/// avatar_url, blocked_at}`), or `null`; and how much they made (`made:
+/// {artifacts, asset_bytes}`), which names none of it.
 fn person_view(
     st: &Store,
     p: &PersonRow,
@@ -533,6 +534,7 @@ fn person_view(
         "grants": grants.iter().filter(|g| g.person == id).map(grant_view).collect::<Vec<_>>(),
         "agents": agents_of(st, agents, &id)?,
         "approvals_of_yours": approvals_of_yours(st, &p.viewer.public_id)?,
+        "made": st.person_made(&p.viewer.public_id)?,
     }))
 }
 
@@ -737,6 +739,41 @@ pub async fn revoke_person(
     crate::hosted::access_changed(&s, None);
     // Their repository tokens and their agents' go with them.
     clax_http::git_remotes::rights_changed(&s, &who, None, None).await?;
+    Ok(Json(v))
+}
+
+/// `POST /api/people/<public_id>/reinstate` (the owner, in a browser or
+/// by hand) → `{person}`: un-revokes a revoked person. What they made is
+/// served again, as it was, and their GitHub account may sign in again;
+/// they sign in themselves, as nothing is handed out, and their machines
+/// stay disconnected. Recorded as `person.reinstate`. 403 `forbidden` for
+/// anyone but the owner, `not_for_agents` for agents; 404 for an unknown
+/// public ID or a person who is not revoked.
+pub async fn reinstate_person(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    caller: Caller,
+    audit: DeferredAudit,
+    pid: Result<Path<String>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    if !caller.is_owner() {
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "only the owner reinstates a person",
+        ));
+    }
+    let pid = path(pid)?;
+    let state = s.clone();
+    let v = s
+        .store_call(move |st| {
+            st.reinstate_person(&audit.resolve(st)?, &pid)?;
+            let person = person_of(st, &pid)?;
+            announce(&state, json!({"what": "person_reinstated", "person": person}));
+            Ok(json!({"person": person}))
+        })
+        .await?;
     Ok(Json(v))
 }
 

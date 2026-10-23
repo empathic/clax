@@ -319,13 +319,13 @@ describe("Share dialog", () => {
   });
 
   it("says what the daemon refused", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { code: "forbidden", message: "only the owner or the page's maker shares it" } }), { status: 403 })));
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { code: "forbidden", message: "only the page's maker shares it" } }), { status: 403 })));
     const m = mount(ShareDialog, { id: ID, title: "Plan", initial: open(), onClose: vi.fn() });
     const who = m.root.querySelector<HTMLInputElement>("input[name=who]")!;
     flush(() => { who.value = "octo"; who.dispatchEvent(new Event("input", { bubbles: true })); });
     flush(() => m.root.querySelector<HTMLFormElement>("form.add")!.requestSubmit());
     const err = await until(() => m.root.querySelector("[role=alert]"));
-    expect(err.textContent).toBe("only the owner or the page's maker shares it");
+    expect(err.textContent).toBe("only the page's maker shares it");
     m.unmount();
   });
 

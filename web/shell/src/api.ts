@@ -361,7 +361,11 @@ export type PeoplePerson = {
   approvals_of_yours?: PeopleApproval[];
   /** The GitHub account they sign in with, on a hosted daemon. */
   github?: PeopleGitHub | null;
+  /** How much they made: counts, never which. */
+  made?: PeopleMade;
 };
+/** A person's live artifacts, and the bytes of those artifacts' assets. */
+export type PeopleMade = { artifacts: number; asset_bytes: number };
 /** `GET /api/people/me/raises`: the caller's own raises; with `?artifact=`,
  * whether they created it, what they may give there, and the handles of
  * its agents a raise reaches. */

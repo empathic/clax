@@ -374,6 +374,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         )
         .route("/api/people/{pid}", delete(people::revoke_person))
         .route(
+            "/api/people/{pid}/reinstate",
+            post(people::reinstate_person),
+        )
+        .route(
             "/api/people/{pid}/rights",
             axum::routing::put(people::set_rights),
         )

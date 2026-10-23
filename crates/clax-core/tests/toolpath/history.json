@@ -3649,6 +3649,32 @@
     ]
    },
    "backfilled": false
+  },
+  {
+   "seq": 106,
+   "at": "2026-10-06T14:09:19.106Z",
+   "kind": "person.reinstate",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "shell",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "person": "u_5am7q2"
+   },
+   "backfilled": false
   }
  ]
 }

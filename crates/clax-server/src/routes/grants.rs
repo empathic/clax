@@ -231,12 +231,13 @@ fn lan_address(s: &AppState) -> Result<IpAddr, ApiError> {
 
 /// `POST /api/people/invites` (owner, browser) `{name | viewer | me,
 /// rights?}` → 201 `{invite: {id, command, expires_at}}` (spec §6.2).
-/// Without `rights`, a hosted daemon gives a new person (or a viewer not
-/// yet a person) the GitHub members' own space
+/// Without `rights`, a hosted daemon gives the new person the GitHub
+/// members' own space
 /// ([`clax_store::github::member_rights`]); a local daemon the
 /// collaborator preset. The
 /// command carries the code, shown this once. 409 `not_on_lan` when the
-/// daemon listens on loopback only.
+/// daemon listens on loopback only; on a hosted daemon, 403
+/// `new_people_only` for `viewer`.
 pub async fn create_invite(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,
@@ -250,6 +251,11 @@ pub async fn create_invite(
     let b = body(req)?;
     let target = match (b.name, b.viewer, b.me) {
         (Some(n), None, false) => InvitePerson::New(n),
+        // On a hosted daemon an invite makes a new person only: no link the
+        // owner holds signs a browser in as someone who exists.
+        (None, Some(_), false) if s.hosted.is_some() => {
+            return Err(clax_store::people::new_people_only().into());
+        }
         (None, Some(v), false) => InvitePerson::Viewer(v),
         (None, None, true) if s.hosted.is_some() => {
             return Err(ApiError::bad_request(
@@ -268,7 +274,7 @@ pub async fn create_invite(
     let rights = b.rights.as_ref().map(Rights::parse).transpose()?;
     // A hosted daemon's new person gets their own space, as a GitHub
     // member does: their own artifacts, and those shared with them one at
-    // a time. A person who already has rights keeps them.
+    // a time.
     let own_space = rights.is_none() && s.hosted.is_some();
     // A hosted daemon's invite is redeemed in the browser, at its public
     // origin (`/join/<code>`); a local one's by `clax connect` on the LAN.
@@ -284,10 +290,6 @@ pub async fn create_invite(
         .store_call(move |st| {
             let rights = match &target {
                 InvitePerson::New(_) if own_space => Some(clax_store::github::member_rights()),
-                InvitePerson::Viewer(pid) if own_space => st
-                    .viewer_by_public_id(pid)?
-                    .filter(|v| !v.person)
-                    .map(|_| clax_store::github::member_rights()),
                 _ => rights,
             };
             let made = st.create_invite(&audit.resolve(st)?, target, rights)?;

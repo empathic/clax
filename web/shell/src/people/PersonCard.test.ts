@@ -81,6 +81,33 @@ describe("PersonCard", () => {
     expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("p1 is not a person.");
   });
 
+  it("reinstates a revoked person at once, and shows how much they made but never which", async () => {
+    const calls = stubFetch({ "POST /api/people/p3/reinstate": { person: {} } });
+    const onChanged = vi.fn();
+    const old = person({ public_id: "p3", display_name: "Old", revoked_at: "2026-10-01T00:00:00Z", grants: [], agents: [],
+      github: { id: 7, login: "old-gh", avatar_url: null, blocked_at: "2026-10-01T00:00:00Z" }, made: { artifacts: 3, asset_bytes: 2_500_000 } });
+    const m = mount(PersonCard, { view: "owner", who: old, onChanged });
+    expect(m.root.querySelector(".made")!.textContent).toBe("3 pages · 2.5 MB");
+    expect(m.root.querySelector("header .meta")!.textContent).toBe("revoked 2026-10-01");
+    expect(m.root.querySelector("[data-testid=github-login]")!.textContent).toBe("@old-gh");
+    // Nothing of a live person's controls: no rights, machines or agents.
+    expect(m.root.querySelector("select.preset")).toBeNull();
+    expect(m.root.querySelector(".machine, .agent")).toBeNull();
+    expect(m.root.querySelector('button[aria-label="Block Old"]')).toBeNull();
+    const reinstate = m.root.querySelector<HTMLButtonElement>('button[aria-label="Reinstate Old"]')!;
+    expect(reinstate.textContent).toBe("Reinstate");
+    click(reinstate);
+    await settle();
+    expect(calls.at(-1)).toEqual({ url: "/api/people/p3/reinstate", method: "POST", body: {} });
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a live person's count of pages and storage", () => {
+    const m = mount(PersonCard, { view: "owner", who: person({ made: { artifacts: 1, asset_bytes: 0 } }), onChanged: vi.fn() });
+    expect(m.root.querySelector(".made")!.textContent).toBe("1 page · 0 MB");
+    expect(m.root.querySelector('button[aria-label="Reinstate Sam"]')).toBeNull();
+  });
+
   it("puts a refused narrowing's checkbox back and says why", async () => {
     stubFetch({ "PUT /api/people/me/grants/g1/narrow": [400, { error: { code: "not_narrower", message: "That would widen this machine's rights." } }] });
     const m = mount(PersonCard, { view: "self", who: { public_id: "p1", display_name: "Sam", revoked_at: null, rights: COLLAB, grants: [grant()], agents: [] }, onChanged: vi.fn() });

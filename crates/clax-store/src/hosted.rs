@@ -668,13 +668,17 @@ impl Store {
         })
     }
 
-    /// Redeems invite `code` in a browser, once: its viewer becomes (or
-    /// stays) a connected person, under the name the invite gave, and gets
-    /// a session. No grant is made: the person mints agent tokens later.
+    /// Redeems invite `code` in a browser, once: the new person it made
+    /// becomes a connected person, under the name the invite gave, and
+    /// gets a session. No grant is made: the person mints agent tokens
+    /// later.
     ///
     /// # Errors
     /// `invalid_invite` for an expired, used, revoked or unknown code, or
-    /// the owner's own invite (one message for all).
+    /// the owner's own invite (one message for all);
+    /// [`new_people_only`](super::people::new_people_only), spending
+    /// nothing, for an invite naming a viewer row that was there before it
+    /// (one made before invites made new people only).
     pub fn redeem_invite_in_browser(&self, ctx: &AuditCtx, code: &str) -> Result<SignedIn> {
         self.with_tx(|tx| {
             let now = self.now();
@@ -685,6 +689,9 @@ impl Store {
                     "that invite is not valid: ask for a new one",
                 ));
             };
+            if !super::people::invite_made_its_person(tx, &invite_id)? {
+                return Err(super::people::new_people_only());
+            }
             tx.execute(
                 "UPDATE invites SET used_at = ?2 WHERE id = ?1",
                 params![invite_id, now],
@@ -1165,6 +1172,46 @@ mod tests {
             ),
             "invalid_invite"
         );
+    }
+
+    #[test]
+    fn an_invite_naming_an_existing_viewer_signs_no_browser_in() {
+        let (_d, st, _clock) = store();
+        st.hosted_setup(&AuditCtx::DAEMON, "Ada").unwrap();
+        let (_, code) = st
+            .create_invite(&AuditCtx::DAEMON, InvitePerson::New("Sam".into()), None)
+            .unwrap();
+        let sam = st
+            .redeem_invite_in_browser(&AuditCtx::DAEMON, code.expose())
+            .unwrap()
+            .who
+            .viewer;
+        st.revoke_person(&AuditCtx::DAEMON, &sam.public_id).unwrap();
+        // A guest, made in the same instant as the invite naming them.
+        let gil = st.create_guest(&AuditCtx::DAEMON, "Gil").unwrap().who.viewer;
+        for who in [&sam, &gil] {
+            let (_, code) = st
+                .create_invite(
+                    &AuditCtx::DAEMON,
+                    InvitePerson::Viewer(who.public_id.clone()),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(
+                code_of(
+                    st.redeem_invite_in_browser(&AuditCtx::DAEMON, code.expose())
+                        .unwrap_err()
+                ),
+                "new_people_only",
+                "{who:?}"
+            );
+            assert!(
+                st.peek_invite(code.expose()).unwrap().is_some(),
+                "nothing is spent"
+            );
+        }
+        let sam = st.viewer_by_public_id(&sam.public_id).unwrap().unwrap();
+        assert!(sam.person_revoked_at.is_some(), "Sam stays revoked");
     }
 
     #[test]

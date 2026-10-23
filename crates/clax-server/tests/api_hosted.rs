@@ -7980,3 +7980,263 @@ async fn a_members_page_hears_a_tag_it_carries_renamed_or_deleted() {
     let ev = events.next_named("tags").await;
     assert_eq!(ev["artifact_id"], json!(mine), "{ev}");
 }
+
+impl Site {
+    /// Whose account sign-in link `url` signs into: `(public_id, owner)`.
+    async fn link_signs_in(&self, url: &str) -> (String, bool) {
+        let code_ = url.rsplit('/').next().unwrap();
+        let (s, v) = self
+            .get(
+                &Browser::default(),
+                &format!("/api/hosted/signin-links/{code_}"),
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+        (
+            v["public_id"].as_str().unwrap().to_string(),
+            v["owner"].as_bool().unwrap(),
+        )
+    }
+}
+
+#[tokio::test]
+async fn an_invite_on_hosted_makes_a_new_person_only() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let owner_pid = site.pid(&owner).await;
+    let mia = site.person(&owner, "Mia").await;
+    let mia_id = site.pid(&mia).await;
+    // An invite naming Mia is refused, revoked or not.
+    let (s, v) = site
+        .post(&owner, "/api/people/invites", json!({"viewer": mia_id}))
+        .await;
+    assert_eq!((s, code(&v)), (403, "new_people_only"), "{v}");
+    // One made before this rule, by the store, signs no browser in as her.
+    let (_, old) = site
+        .ts
+        .store
+        .create_invite(
+            &clax_core::audit::AuditCtx::DAEMON,
+            clax_store::people::InvitePerson::Viewer(mia_id.clone()),
+            None,
+        )
+        .unwrap();
+    let (s, v) = site
+        .post(
+            &Browser::default(),
+            &format!("/api/hosted/invites/{}/accept", old.expose()),
+            json!({}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (403, "new_people_only"), "{v}");
+    // Nor connects a machine as her: a hosted Clax takes no grant request,
+    // bare, naming the public origin, or with a member's session too.
+    let machine = clax_testkit::TestClient::new(&site.ts);
+    let body = serde_json::to_vec(&machine.grant_body(json!({
+        "access_token": {"access": ["clax:collaborator"]},
+        "clax": {"invite": old.expose()},
+    })))
+    .unwrap();
+    let session = format!("clax_session={}", owner.cookie.clone().unwrap());
+    for (headers, want) in [
+        (vec![], (403, "forbidden_origin")),
+        (
+            vec![("origin", site.origin.clone())],
+            (401, "sign_in_required"),
+        ),
+        (
+            vec![("origin", site.origin.clone()), ("cookie", session)],
+            (403, "forbidden_origin"),
+        ),
+    ] {
+        let r = machine
+            .call(clax_testkit::Call {
+                method: "POST",
+                path: "/api/grants",
+                body: Some(body.clone()),
+                headers,
+                ..Default::default()
+            })
+            .await;
+        let status = r.status().as_u16();
+        let v: Value = r.json().await.unwrap();
+        assert_eq!((status, code(&v)), want, "{v}");
+    }
+    assert!(
+        site.ts.store.peek_invite(old.expose()).unwrap().is_some(),
+        "the invite is unspent"
+    );
+    // No other route of the owner's signs a browser or a machine in as Mia:
+    // a sign-in link is the caller's own, from their browser or the daemon
+    // token.
+    let (s, v) = site
+        .post(
+            &owner,
+            "/api/hosted/signin-links",
+            json!({"person": mia_id, "viewer": mia_id}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        site.link_signs_in(v["url"].as_str().unwrap()).await,
+        (owner_pid.clone(), true)
+    );
+    let (s, v) = json_of(
+        site.ts
+            .client
+            .post(site.url("/api/hosted/owner-signin-link"))
+            .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+            .bearer_auth(&site.ts.token)
+            .json(&json!({"person": mia_id}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        site.link_signs_in(v["url"].as_str().unwrap()).await,
+        (owner_pid.clone(), true)
+    );
+    // A device sign-in the owner approves is the owner's machine.
+    let d = site.start_device("box").await;
+    let (dc, uc) = (
+        d["device_code"].as_str().unwrap().to_string(),
+        d["user_code"].as_str().unwrap().to_string(),
+    );
+    let (s, v) = site
+        .post(
+            &owner,
+            &format!("/api/hosted/device/{uc}/approve"),
+            json!({"person": mia_id}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    site.clock.advance(5);
+    let (s, v) = site.poll_device(&dc).await;
+    assert_eq!(s, 200, "{v}");
+    assert_ne!(v["person"]["public_id"], json!(mia_id), "{v}");
+    assert_ne!(v["person"]["display_name"], json!("Mia"), "{v}");
+    // An agent token is the minter's; it names no one else.
+    let (s, v) = site
+        .post(
+            &owner,
+            "/api/hosted/agent-tokens",
+            json!({"label": "x", "person": mia_id}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (400, "invalid_json"), "{v}");
+    // A machine's request becomes a new person, never Mia.
+    let (s, v) = site
+        .post(
+            &owner,
+            "/api/grants/g_nope/approve",
+            json!({"user_code": "x", "viewer": mia_id}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (400, "invalid_args"), "{v}");
+    // A new person's invite still joins.
+    site.member(&owner, "Wes").await;
+}
+
+#[tokio::test]
+async fn revoking_takes_a_persons_pages_down_and_reinstating_brings_them_back() {
+    let site = Site::with_public_gallery().await;
+    let owner = site.owner().await;
+    let (mia, mia_id) = site
+        .person_with(&owner, "Mia", json!("clax:collaborator"))
+        .await;
+    let sam = site.member(&owner, "Sam").await;
+    let sam_id = site.pid(&sam).await;
+    let anon = Browser::default();
+    let mias = site.made_by(&mia, "Mia's moodboard").await;
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{mias}/link"),
+            json!({"access": "viewer", "listed": true}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{mias}/shares"),
+            json!({"person": sam_id, "access": "viewer"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (_, v) = site.get(&mia, &format!("/api/artifacts/{mias}")).await;
+    let key = v["versions"][0]["content_key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let keyed = format!("/c/{mias}/v/1/k/{key}/");
+    let page = format!("/a/{mias}");
+    let api = format!("/api/artifacts/{mias}");
+    let status = async |b: &Browser, p: &str| {
+        site.req(b, reqwest::Method::GET, p)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    };
+    let listed = async || {
+        let (_, v) = site.get(&anon, "/api/hosted/public").await;
+        v["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["artifact_id"] == json!(mias))
+    };
+    let served = async |want: u16| {
+        assert_eq!(status(&anon, &page).await, want, "{page} by link");
+        assert_eq!(status(&anon, &api).await, want, "{api} by link");
+        assert_eq!(status(&sam, &api).await, want, "{api} shared with Sam");
+        assert_eq!(status(&anon, &keyed).await, want, "{keyed}");
+    };
+    served(200).await;
+    assert!(listed().await);
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::DELETE,
+            &format!("/api/people/{mia_id}"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    served(404).await;
+    assert!(!listed().await);
+    // The owner sees how much Mia made, never which.
+    let (s, people) = site.get(&owner, "/api/people").await;
+    assert_eq!(s, 200, "{people}");
+    let p = people["people"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["public_id"] == json!(mia_id))
+        .unwrap();
+    assert!(p["revoked_at"].is_string(), "{p}");
+    assert_eq!(p["made"]["artifacts"], json!(1), "{p}");
+    assert!(p["made"]["asset_bytes"].is_u64(), "{p}");
+    let body = people.to_string();
+    assert!(!body.contains(&mias), "{body}");
+    assert!(!body.contains("moodboard"), "{body}");
+    // Only the owner reinstates.
+    let reinstate = format!("/api/people/{mia_id}/reinstate");
+    let (s, v) = site.post(&sam, &reinstate, json!({})).await;
+    assert_eq!((s, code(&v)), (403, "forbidden"), "{v}");
+    let (s, v) = site.post(&owner, &reinstate, json!({})).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["person"]["public_id"], json!(mia_id), "{v}");
+    assert!(v["person"]["revoked_at"].is_null(), "{v}");
+    assert_eq!(v["person"]["made"]["artifacts"], json!(1), "{v}");
+    assert!(!v.to_string().contains(&mias), "{v}");
+    served(200).await;
+    assert!(listed().await);
+    // Once reinstated, there is nothing to reinstate.
+    let (s, v) = site.post(&owner, &reinstate, json!({})).await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+}

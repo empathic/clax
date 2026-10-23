@@ -36,6 +36,8 @@ export const invite = (who: { name: string } | { viewer: string } | { me: true }
 export const revokeInvite = (id: string) => call<unknown>(`/api/people/invites/${e(id)}`, "DELETE");
 export const setRights = (pid: string, rights: string | Rights) => call<unknown>(`/api/people/${e(pid)}/rights`, "PUT", { rights });
 export const revokePerson = (pid: string) => call<unknown>(`/api/people/${e(pid)}`, "DELETE");
+/** Un-revokes a revoked person: what they made is served again, and they sign in again themselves. */
+export const reinstatePerson = (pid: string) => call<unknown>(`/api/people/${e(pid)}/reinstate`, "POST", {});
 export const narrowGrant = (gid: string, access: Rights | null) => call<unknown>(`/api/people/me/grants/${e(gid)}/narrow`, "PUT", { access });
 /** Disconnects a machine: ends its grant, its tokens and its agents. */
 export const revokeGrant = (gid: string) => call<unknown>(`/api/grants/${e(gid)}`, "DELETE");

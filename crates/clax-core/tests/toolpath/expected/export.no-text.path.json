@@ -5905,13 +5905,44 @@
             ],
             "timestamp": "2026-10-06T14:09:18.105Z"
           }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/u/u_5am7q2": {
+              "structural": {
+                "person": "u_5am7q2",
+                "type": "clax.person.reinstate"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "person.reinstate",
+              "seq": 106,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Reinstated person u_5am7q2"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000106",
+            "parents": [
+              "e000000000105"
+            ],
+            "timestamp": "2026-10-06T14:09:19.106Z"
+          }
         }
       ],
       "path": {
         "base": {
           "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697"
         },
-        "head": "e000000000105",
+        "head": "e000000000106",
         "id": "clax-install-6a1f0c3e"
       },
       "meta": {
@@ -6099,7 +6130,7 @@
       "clax_version": "0.3.1",
       "first_seq": 1,
       "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-      "last_seq": 105,
+      "last_seq": 106,
       "redaction": [
         "no-text"
       ],

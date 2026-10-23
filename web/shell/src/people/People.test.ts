@@ -147,7 +147,7 @@ describe("People", () => {
     expect((window as unknown as { pwned?: number }).pwned).toBeUndefined();
     expect(m.root.querySelector(".pcard .line span")!.textContent).toBe(`${H}Kim`);
     expect(m.root.querySelector(".requests .mname")!.textContent).toBe(`${H}box`);
-    expect(m.root.querySelector(".revoked .line span")!.textContent).toBe(`${H}Old`);
+    expect(m.root.querySelector(".revoked .person h3")!.textContent).toBe(`${H}Old`);
     expect(m.root.querySelector('[data-person="p1"] .approvals .line span')!.textContent).toBe(`Allowed on “${H}Review”`);
     const waiting = [...m.root.querySelectorAll('[data-person="p1"] .wait')];
     expect(waiting).toHaveLength(1);

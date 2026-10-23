@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PeopleAgent, PeopleGrant, Rights } from "../api";
-import { CAPS, agentCaps, creatorCaps, elevation, elevationsOf, expiresIn, liveInvites, machineCaps, narrowAgent, narrowGrant, narrowerOrEqual, presetOf, PRESETS, raiseCaps, raisersOf } from "./model";
+import { CAPS, agentCaps, creatorCaps, elevation, elevationsOf, expiresIn, liveInvites, machineCaps, madeText, narrowAgent, narrowGrant, narrowerOrEqual, presetOf, PRESETS, raiseCaps, raisersOf } from "./model";
 
 const COLLAB = PRESETS["clax:collaborator"];
 const key = (type: string, action: string) => `${type} ${action}`;
@@ -168,5 +168,11 @@ describe("creator raises (O11)", () => {
     expect(raisersOf(a, publish)).toEqual([{ who: { public_id: "p2", name: "Mia", owner: false }, at: ["n1", "n2"] }]);
     // An agent listed without `elevations` keeps the owner's alone.
     expect(elevationsOf({ ...a, elevations: undefined }).map(e => e.granter.owner)).toEqual([true]);
+  });
+
+  it("counts what a person made in pages and megabytes", () => {
+    expect(madeText({ artifacts: 0, asset_bytes: 0 })).toBe("0 pages · 0 MB");
+    expect(madeText({ artifacts: 1, asset_bytes: 3 })).toBe("1 page · 0 MB");
+    expect(madeText({ artifacts: 12, asset_bytes: 2_540_000 })).toBe("12 pages · 2.5 MB");
   });
 });
