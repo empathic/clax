@@ -10,7 +10,7 @@ const loaded = { artifact: { id: ID, title: "T", description: null, icon: null, 
 /** The view's stream, driven by event name. */
 const FakeES = artifactStreams(ID);
 
-type Seed = { lan?: boolean; threads?: Thread[]; artifact?: Record<string, unknown>; versions?: unknown[]; attention?: unknown; routes?: (url: string, init?: RequestInit) => unknown };
+type Seed = { tokenless?: boolean; threads?: Thread[]; artifact?: Record<string, unknown>; versions?: unknown[]; attention?: unknown; routes?: (url: string, init?: RequestInit) => unknown };
 const thread = (id: string, over: Partial<Thread> = {}): Thread => ({
   id, artifact_id: ID, version_n: 1, status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "2026-09-30T10:00:00.000Z",
   resolved_at: null, resolved_by: null, feedback_state: null, comments: [{ id: `${id}c`, thread_id: id, author_kind: "viewer", author_name: "alex", via_harness: null, body: "x", created_at: "2026-09-30T10:00:00.000Z" }],
@@ -25,7 +25,7 @@ async function started(seed: Seed = {}) {
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     const own = seed.routes?.(url, init);
     if (own !== undefined) return new Response(JSON.stringify(own));
-    if (seed.lan && url === "/api/token") return new Response(JSON.stringify({ error: { code: "not_loopback", message: "not a loopback connection" } }), { status: 403 });
+    if (seed.tokenless && url === "/api/token") return new Response(JSON.stringify({ error: { code: "not_owner", message: "only the owner's browser holds the token" } }), { status: 403 });
     return new Response(JSON.stringify(
       url.includes("/threads") ? { threads: seed.threads ?? [], next_cursor: null }
       : url.startsWith("/api/viewers") ? { viewer: { public_id: "u_1", display_name: null, created_at: "x" } }
@@ -422,8 +422,9 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
   });
 
   it("asks the hub for a stream opened as each announced viewer's caller", async () => {
-    // A LAN view: no token, so the caller is the viewer and whether it is named.
-    const { ctl, frame } = await started({ lan: true });
+    // A view without the token (anyone's but the owner's on a hosted
+    // daemon): the caller is the viewer and whether it is named.
+    const { ctl, frame } = await started({ tokenless: true });
     await streamOf(frame);
     const { renamedViewer } = await import("../threads");
     const w = FakeWorker.last!;
@@ -1122,7 +1123,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
   it("asks a viewer with no name and no token for its name before a reopen, and reopens once it has one", async () => {
     const done = thread("t9", { status: "resolved", resolved_by: "viewer:u_1", resolved_at: "2026-09-30T11:00:00.000Z" });
     const reopened: string[] = [];
-    const { ctl } = await started({ lan: true, threads: [done], routes: (url) => {
+    const { ctl } = await started({ tokenless: true, threads: [done], routes: (url) => {
       if (url.endsWith("/reopen")) { reopened.push(url); return { thread: { ...done, status: "open", resolved_by: null, resolved_at: null } }; }
       return undefined;
     } });
@@ -1145,7 +1146,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     try {
       const done = thread("t9", { status: "resolved", resolved_by: "viewer:u_1", resolved_at: "2026-09-30T11:00:00.000Z" });
       const reopened: string[] = [];
-      const { ctl } = await started({ lan: true, threads: [done], routes: url => {
+      const { ctl } = await started({ tokenless: true, threads: [done], routes: url => {
         if (url.endsWith("/reopen")) { reopened.push(url); return { thread: { ...done, status: "open", resolved_by: null, resolved_at: null } }; }
         return undefined;
       } });
@@ -1227,7 +1228,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     });
 
     it("asks without a token when the shell has none", async () => {
-      const { ctl, frame } = await started({ lan: true });
+      const { ctl, frame } = await started({ tokenless: true });
       const calls = codes(sent);
       const went = await goes();
       fromFrame(frame.contentWindow!, STATE);
