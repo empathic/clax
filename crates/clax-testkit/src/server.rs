@@ -670,6 +670,7 @@ impl TestServer {
             hosted: None,
             // No app links or store pages; tests of them set their own.
             clax_app: Arc::default(),
+            build: None,
             embed: None,
             git_remotes: Arc::default(),
             linked: Arc::new(clax_realtime::linked::Linked::new(Arc::new(

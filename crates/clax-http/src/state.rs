@@ -199,6 +199,11 @@ pub struct AppState {
     /// pages (`[hosted] app_links` and `stores`, or the Worker's vars),
     /// which the host sets after [`AppState::assemble`]; none by default.
     pub clax_app: Arc<clax_core::config::ClaxApp>,
+    /// The build identity the host was given, which `/healthz` reports as
+    /// `build`: on a Worker the `CLAX_BUILD` var a deploy sets, unique to
+    /// each upload, which the host sets after [`AppState::assemble`]; `None`
+    /// by default.
+    pub build: Option<String>,
     /// The origins of the app that embeds this core, which its shell
     /// documents and content policy name; `None` for a daemon.
     pub embed: Option<EmbedOrigins>,
@@ -391,6 +396,7 @@ impl AppState {
             web: p.web,
             embed: p.embed,
             clax_app: Arc::default(),
+            build: None,
             git_remotes: Arc::default(),
             linked: Arc::new(clax_realtime::linked::Linked::new(Arc::new(
                 clax_realtime::questions::TokioSleeper,

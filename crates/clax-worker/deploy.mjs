@@ -34,9 +34,11 @@
 //    and reports the upload size against the Workers Paid limit; when it
 //    fails only because the triggers (custom domains) were left partially
 //    updated, it runs the same deploy once more, without rebuilding;
-// 8. waits for `/healthz` on the public host, naming what it is waiting
-//    on (DNS, the certificate, the Worker), and prints the setup URL and
-//    the next steps.
+// 8. waits for `/healthz` on the public host to report this upload's build
+//    (`CLAX_BUILD`, a build ID made per deploy from the commit, the time and
+//    a random part; the instance from before the deploy answers 200 too),
+//    naming what it is waiting on (DNS, the certificate, the Worker, the
+//    previous build), and prints the setup URL and the next steps.
 //
 // Options: --public <host>, --content <host>, --zone <zone>, --store
 // artifacts|memory (default artifacts), --name <worker> (default clax),
@@ -66,7 +68,7 @@ import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { partialTriggerUpdate } from "./deploy-lib.mjs";
+import { buildId, healthOf, partialTriggerUpdate } from "./deploy-lib.mjs";
 import { HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
@@ -161,6 +163,21 @@ function wrangler(args, { account, show = false, input } = {}) {
     if (input !== undefined) child.stdin.end(input);
     child.on("error", reject);
     child.on("close", (code) => resolve({ code, out, err }));
+  });
+}
+
+/** The checked-out commit (full lowercase hex, as `CLAX_BUILD_COMMIT`
+ * takes it); empty when it cannot be read. */
+function sourceCommit() {
+  return new Promise((resolve) => {
+    const child = spawn("git", ["rev-parse", "HEAD"], { cwd: ROOT, stdio: ["ignore", "pipe", "ignore"] });
+    let out = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.on("error", () => resolve(""));
+    child.on("close", (code) => {
+      const c = out.trim();
+      resolve(code === 0 && /^[0-9a-f]{7,64}$/.test(c) ? c : "");
+    });
   });
 }
 
@@ -343,7 +360,7 @@ async function secretNames(account) {
   }
 }
 
-function deployConfig(o, pub, content, account, github, legal) {
+function deployConfig(o, pub, content, account, github, legal, build) {
   const c = baseConfig();
   delete c.$schema;
   // The config lives in target/deploy/, so its paths name the crate's files.
@@ -371,6 +388,7 @@ function deployConfig(o, pub, content, account, github, legal) {
     CLAX_TEST_LOOPBACK_PROVIDER: "0",
     REPO_DEV_ROUTES: "0",
     CLAX_DIAG_ROUTES: o.diag ? "1" : "0",
+    CLAX_BUILD: build,
     ...(github.client_id ? { GITHUB_CLIENT_ID: github.client_id } : {}),
     ...(github.owner ? { OWNER_GITHUB: github.owner } : {}),
     ...(legal.legal ? { LEGAL: legal.legal } : {}),
@@ -424,7 +442,9 @@ function waitingOn(e) {
   return `${code} ${msg}`.trim();
 }
 
-async function waitHealthy(pub, seconds) {
+/** Waits until `/healthz` on `pub` reports build `build`, the one just
+ * uploaded: an instance started before the deploy answers 200 too. */
+async function waitHealthy(pub, seconds, build) {
   const url = `https://${pub}/healthz`;
   const end = Date.now() + seconds * 1000;
   const started = Date.now();
@@ -435,8 +455,11 @@ async function waitHealthy(pub, seconds) {
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(10_000), redirect: "manual" });
       const body = await res.text();
-      if (res.ok) done = body;
-      else if (res.status === 500 && body.includes("could not start")) throw new Error(`the instance did not start: ${body.slice(0, 400)}`);
+      if (res.ok) {
+        const h = healthOf(body, build);
+        if (h.done) done = body;
+        else state = h.waiting;
+      } else if (res.status === 500 && body.includes("could not start")) throw new Error(`the instance did not start: ${body.slice(0, 400)}`);
       else state = `HTTP ${res.status}: ${body.slice(0, 160).replace(/\s+/g, " ")}${res.status === 404 || res.status === 522 || res.status === 530 ? " (the custom domain is not routed to the Worker yet)" : ""}`;
     } catch (e) {
       if (`${e.message}`.startsWith("the instance did not start")) throw e;
@@ -490,8 +513,10 @@ async function main() {
   if (github.client_id) info(`GitHub sign-in: OAuth App ${github.client_id}, owner ${github.owner ? `@${github.owner}` : "(none named)"}`);
   const legal = legalSettings(o, early);
   info(`Terms and Privacy: ${legal.legal ? "the bundled documents" : legal.terms_url ? `${legal.terms_url}, ${legal.privacy_url} (version ${legal.legal_version})` : "none"}`);
-  const config = deployConfig(o, pub, content, account, github, legal);
-  info(`wrote ${DEPLOY_CONFIG} (worker ${config.name}, REPO_STORE=${o.store}, diagnostics ${o.diag ? "on" : "off"})`);
+  const commit = await sourceCommit();
+  const build = buildId(commit, new Date(), randomBytes(4).toString("hex"));
+  const config = deployConfig(o, pub, content, account, github, legal, build);
+  info(`wrote ${DEPLOY_CONFIG} (worker ${config.name}, REPO_STORE=${o.store}, diagnostics ${o.diag ? "on" : "off"}, build ${build})`);
   if (o.diag) diagReminder(pub);
 
   step("Resources");
@@ -552,7 +577,10 @@ async function main() {
     else info(missing ? "no GITHUB_CLIENT_SECRET: GitHub sign-in stays off until one is set" : "the Worker has GITHUB_CLIENT_SECRET; kept");
   }
 
-  const buildWorker = () => run(join(HERE, "build.sh"), [], { CARGO_INCREMENTAL: process.env.CARGO_INCREMENTAL ?? "0" });
+  // CLAX_BUILD_COMMIT: the commit the Worker's /healthz reports
+  // (src/instance.rs BUILD_COMMIT).
+  const buildWorker = () =>
+    run(join(HERE, "build.sh"), [], { CARGO_INCREMENTAL: process.env.CARGO_INCREMENTAL ?? "0", ...(commit ? { CLAX_BUILD_COMMIT: commit } : {}) });
   if (o.build) {
     step("Build: web UI");
     await run(join(HERE, "../../scripts/build-web.sh"), []);
@@ -622,6 +650,7 @@ async function main() {
     store: o.store,
     diag: o.diag,
     deployed_at: new Date().toISOString(),
+    build,
     ...(github.client_id ? { github_client_id: github.client_id } : {}),
     ...(github.owner ? { owner_github: github.owner } : {}),
     ...legal,
@@ -631,8 +660,8 @@ async function main() {
   };
   writeRecord(pub, next);
 
-  step(`Waiting for https://${pub}/healthz (custom domains take a few minutes the first time)`);
-  const healthy = await waitHealthy(pub, o.wait);
+  step(`Waiting for https://${pub}/healthz to report build ${build} (custom domains take a few minutes the first time)`);
+  const healthy = await waitHealthy(pub, o.wait, build);
   if (!healthy) {
     info(`not healthy within ${o.wait} s. Check: the zone of ${pub} is on account ${account}; ` +
       `Workers > ${o.name} > Settings > Domains & Routes lists both hosts; \`npx wrangler tail ${o.name}\``);

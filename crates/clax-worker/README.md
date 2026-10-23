@@ -128,8 +128,9 @@ them with the first version (printed once, and kept with the origins in
 repository), writes `target/deploy/wrangler.deploy.jsonc` (this file's config with `HOSTED=1`, both origins,
 the store, both hosts as custom domains, `workers_dev` and preview URLs
 off, Workers Logs on, `CLAX_DIAG_ROUTES=1`), builds the web UI and the
-Worker, deploys, waits for `/healthz` on the public host (saying whether it
-waits on DNS, the certificate or the Worker), and prints the setup URL and
+Worker, deploys, waits for `/healthz` on the public host to report the
+build it uploaded (saying whether it waits on DNS, the certificate, the
+Worker or the build from before the deploy), and prints the setup URL and
 the next steps. Run again, it changes only what differs; secrets are kept
 unless `--rotate-secrets`.
 

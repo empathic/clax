@@ -7721,6 +7721,19 @@ ID>`. An artifact URL whose `#` fragment is neither is the artifact.
   status` names the running daemon's commit (`--json`: `commit`, absent for
   a daemon older than the field), and `clax doctor`'s `build` check names
   the commit of the `clax` it runs.
+- `GET /healthz`, open without a credential, answers `{"version",
+  "pid", "started_at", "commit", "build"}`: the server's Clax version, its
+  process ID (`null` on the Cloudflare Worker), when it started, the commit
+  it was built from (as `clax version --verbose` names it; `null` for a
+  build without one, such as a Bazel build), and the build identity its
+  host was given (`null` unless set). On the Worker, `commit` is
+  `CLAX_BUILD_COMMIT` in the Worker build's environment and `build` is the
+  `CLAX_BUILD` var, which `crates/clax-worker/deploy.mjs` sets to an ID
+  unique to each upload (the checked-out commit's first twelve hex digits,
+  the UTC time and four random bytes), so a redeploy without a rebuild
+  (`--no-build`) gets a new one too; deploy.mjs waits until `/healthz`
+  reports the build it uploaded, since the instance from before the deploy
+  answers with the same version. Neither field carries a secret.
 - `scripts/verify-harnesses.sh` checks `clax init` and `clax uninit`
   against the real `claude`, `codex` and `pi` CLIs inside a scratch root it
   deletes on exit, and prints a PASS/FAIL table (exit 0, 1 when a check

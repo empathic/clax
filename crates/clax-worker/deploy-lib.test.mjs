@@ -3,7 +3,7 @@
 //   node --test crates/clax-worker/deploy-lib.test.mjs
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { partialTriggerUpdate } from "./deploy-lib.mjs";
+import { buildId, healthOf, partialTriggerUpdate } from "./deploy-lib.mjs";
 
 // What `wrangler deploy` printed when the custom-domains call failed after
 // the upload (Cloudflare API code 10013); running it again succeeded.
@@ -46,4 +46,26 @@ test("other failures are not retried", () => {
   ]) {
     assert.equal(partialTriggerUpdate(text), false, String(text));
   }
+});
+
+test("a build ID names the commit, the time and the random part", () => {
+  const at = new Date("2026-10-23T10:15:00.123Z");
+  assert.equal(buildId("0a2f4805a1b2c3d4e5f6", at, "9f86d081"), "0a2f4805a1b2-20261023T101500Z-9f86d081");
+  assert.equal(buildId("", at, "9f86d081"), "20261023T101500Z-9f86d081");
+});
+
+test("the wait is done only when /healthz names the build just uploaded", () => {
+  const want = "0a2f4805a1b2-20261023T101500Z-9f86d081";
+  assert.deepEqual(healthOf(JSON.stringify({ version: "0.6.0", pid: null, started_at: "t", commit: "0a2f4805a1b2", build: want }), want), { done: true });
+});
+
+test("an instance from before the deploy, of the same version, is waited past", () => {
+  const want = "0a2f4805a1b2-20261023T101500Z-9f86d081";
+  // What answered after the real deploy: the version alone, no build.
+  const before = healthOf(JSON.stringify({ version: "0.6.0", pid: null, started_at: "2026-10-22T09:00:00Z" }), want);
+  assert.equal(before.done, undefined);
+  assert.match(before.waiting, /before this deploy.*reports none.*waiting for build 0a2f4805a1b2-20261023T101500Z-9f86d081/);
+  const older = healthOf(JSON.stringify({ version: "0.6.0", build: "0a2f4805a1b2-20261023T090000Z-00000000" }), want);
+  assert.match(older.waiting, /build 0a2f4805a1b2-20261023T090000Z-00000000/);
+  assert.match(healthOf("ok", want).waiting, /not its JSON/);
 });

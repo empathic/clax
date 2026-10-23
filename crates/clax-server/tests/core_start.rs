@@ -29,6 +29,14 @@ async fn a_core_answers_its_router_with_no_listener_and_writes_no_daemon_json() 
         .unwrap();
     let res = core.router().oneshot(req).await.unwrap();
     assert_eq!(res.status(), 200);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let health: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(health["version"], "test");
+    // A daemon is given no build identity: `build` is null, not absent.
+    assert_eq!(health.get("build"), Some(&serde_json::Value::Null));
+    assert!(health.get("commit").is_some(), "{health}");
     assert!(!dir.path().join("daemon.json").exists());
     core.stop().await;
 }

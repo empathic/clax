@@ -325,6 +325,14 @@ fn kv_put(state: &State, key: &str, value: &str) -> Result<()> {
     )
 }
 
+/// The commit the Worker was built from: `CLAX_BUILD_COMMIT` in the
+/// build's environment (deploy.mjs sets it), else `unknown`, which
+/// `/healthz` reports as `null`.
+const BUILD_COMMIT: &str = match option_env!("CLAX_BUILD_COMMIT") {
+    Some(c) if !c.is_empty() => c,
+    _ => "unknown",
+};
+
 /// The fewest characters a set `CLAX_TOKEN` may have: the owner's
 /// credential of a public Worker must not be guessable (the one the object
 /// makes is 64 hex digits).
@@ -576,6 +584,11 @@ impl Instance {
                 clax_store::bot_settings::BaseUrlPolicy::HostedLoopbackForTests,
             );
         }
+        // What `/healthz` reports: the commit the Worker was built from
+        // (`CLAX_BUILD_COMMIT` in the build's environment, which deploy.mjs
+        // sets) and the deploy's build identity (the `CLAX_BUILD` var).
+        clax_core::set_build_commit(BUILD_COMMIT);
+        app.build = Some(var(env, "CLAX_BUILD")).filter(|b| !b.is_empty());
         let bot = worker_bot(env, &mut app);
         app.seats
             .set_limits(clax_core::seats::SeatLimits::from_env(|k| {
