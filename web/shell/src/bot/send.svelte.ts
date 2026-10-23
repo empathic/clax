@@ -28,6 +28,9 @@ class BotView {
   started = $state<string[]>([]);
   /** Counts the changes of state of the run shown, so the runs listed are read again. */
   changes = $state(0);
+  /** The artifact's threads ClaxBot has taken (the threads of its runs):
+   * sent, though not to a local agent, so never counted as unsent. */
+  claimed = $state<string[]>([]);
 
   /** Lists ClaxBot (`live`, else unavailable for `reason`) and reads the choice remembered for `aid`. */
   list(aid: string, live: boolean, reason: MeBot["unavailable_reason"], me: MeBot | null): void {
@@ -67,6 +70,7 @@ export async function sendToBot(host: SendHost, ids: string[]): Promise<boolean>
     const { run, active } = await startRun(host.id, ids);
     host.setNotice(active ? "ClaxBot is already working on this thread: its run is open." : null);
     botView.started = [run.id, ...botView.started.filter(x => x !== run.id)];
+    botView.claimed = [...new Set([...botView.claimed, ...ids])];
     botView.open(run.id);
     return true;
   } catch (e) {

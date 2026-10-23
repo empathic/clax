@@ -78,6 +78,8 @@
     onNote?(v: string): void;
     onSendSelection?(): void;
     onSendUnsent?(): void;
+    /** The IDs of threads ClaxBot took, which are not unsent. */
+    claimed?: readonly string[];
     /** The agent picker chose `handle`. */
     onChoose?(handle: string): void;
     /** The pins' numbers, when `threads` is a filtered part of the threads they were counted over. */
@@ -164,7 +166,7 @@
   // The cards in the order shown, for a Shift range: the Addressed group, Open, then Detached.
   const order = $derived([...group, ...open, ...detached].filter(t => selectable(t, false)).map(t => t.id));
   const toggleCard = (t: Thread, shift: boolean) => p.onToggle?.(t, shift, order);
-  const unsentCount = $derived(unsent(p.threads).length);
+  const unsentCount = $derived(unsent(p.threads, p.claimed).length);
   let unsentHint: string | null = $state(null);
   $effect(() => keyboardTrail.onClear(() => { unsentHint = null; }));
   // A card resolved or reopened from inside it moves to another group, where

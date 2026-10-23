@@ -25,6 +25,8 @@ describe("batch-model", () => {
   });
   it("counts unsent threads and labels in Echo's words", () => {
     expect(unsent([T("a"), T("b", "open", true), T("c", "resolved")]).map(t => t.id)).toEqual(["a"]);
+    // A thread ClaxBot took is not unsent, though no local agent has it.
+    expect(unsent([T("a"), T("d")], ["d"]).map(t => t.id)).toEqual(["a"]);
     expect([countLabel(3), unsentLabel(4, "claude"), sendLabel(3, "claude"), sendLabel(1, "codex")]).toEqual(["3 selected", "Send 4 unsent to claude", "Send 3 to claude", "Send to codex"]);
   });
 });

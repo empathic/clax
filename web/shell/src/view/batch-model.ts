@@ -25,7 +25,9 @@ export function prune(sel: Selection, threads: Thread[], deleted: boolean): Sele
   return ids.length === sel.ids.length && anchor === sel.anchor ? sel : ids.length ? { ids, anchor } : EMPTY_SELECTION;
 }
 
-export const unsent = (threads: Thread[]) => threads.filter(t => t.status === "open" && !t.sent_to_agent);
+/** The open threads no agent has: neither sent to one nor `claimed` (the
+ * IDs of threads ClaxBot took, which stay unrouted to local agents). */
+export const unsent = (threads: Thread[], claimed: readonly string[] = []) => threads.filter(t => t.status === "open" && !t.sent_to_agent && !claimed.includes(t.id));
 export const countLabel = (n: number) => `${n} selected`;
 export const unsentLabel = (n: number, agent: string) => `Send ${n} unsent to ${agent}`;
 export const sendLabel = (n: number, agent: string) => (n > 1 ? `Send ${n} to ${agent}` : `Send to ${agent}`);

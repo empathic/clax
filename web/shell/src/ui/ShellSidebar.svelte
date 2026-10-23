@@ -69,5 +69,5 @@
   onToggle={(t, shift, order) => ctl.toggleSelect(t, shift, order)} onClear={() => ctl.clearSelection()} onNote={v => ctl.setBatchNote(v)}
   compose={s.spectator || commentsOff(s) ? undefined : { version: ctl.shown(s), host: ctl }} readOnly={!!s.spectator} noReply={commentsOff(s) ? `${COMMENTS_OFF}.` : undefined}
   noSend={commentsOff(s) && s.data.artifact.may_resolve === false} live={s.spectator ? undefined : live}
-  onSendSelection={() => go(() => s.selection.ids, () => ctl.sendSelection())} onSendUnsent={() => go(() => unsent(s.threads).map(t => t.id), () => ctl.sendUnsent())} onChoose={choose} {above} />
+  onSendSelection={() => go(() => s.selection.ids, () => ctl.sendSelection())} onSendUnsent={() => go(() => unsent(s.threads, botView.claimed).map(t => t.id), () => ctl.sendUnsent(botView.claimed))} claimed={botView.claimed} onChoose={choose} {above} />
 </DrawerChrome>

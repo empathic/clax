@@ -1759,8 +1759,8 @@ export class ArtifactController {
   setBatchNote(v: string): void { this.set({ batchNote: v }); }
   /** Sends the ticked threads as one batch. */
   sendSelection(): Promise<void> { return this.sendIds(this.s.selection.ids); }
-  /** Sends every open thread not yet sent as one batch. */
-  sendUnsent(): Promise<void> { return this.sendIds(unsent(this.s.threads).map(t => t.id)); }
+  /** Sends every open thread not yet sent (nor `claimed` by ClaxBot) as one batch. */
+  sendUnsent(claimed: readonly string[] = []): Promise<void> { return this.sendIds(unsent(this.s.threads, claimed).map(t => t.id)); }
   /** The agent picker: every Send goes to `handle` from now on, remembered for this artifact. */
   chooseTarget(handle: string): void { rememberTarget(this.id, handle); this.set({ sendTo: handle }); }
   /** Resolves an open thread; reopens a resolved one, as the daemon lets

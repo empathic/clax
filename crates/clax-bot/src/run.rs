@@ -50,8 +50,7 @@ use clax_sample::messages::{
 };
 use clax_store::Store;
 use clax_store::bot_runs::{
-    Committed, DriverId, RequestKind, Run, RunStatus, Step, StepCommit, StepKind, call_record,
-    turn_record,
+    Committed, DriverId, Run, RunStatus, Step, StepCommit, StepKind, call_record, turn_record,
 };
 use clax_store::bot_settings::Setting;
 use clax_store::credits::{
@@ -1287,12 +1286,10 @@ impl Tick<'_> {
         s
     }
 
-    /// Posts `markdown` on each of the run's threads, journaled at the
-    /// step's notice places; failures are logged, not fatal.
+    /// Posts `markdown` on each of the run's threads (a brief's run, on the
+    /// brief's thread), journaled at the step's notice places; failures are
+    /// logged, not fatal.
     async fn notify(&self, attempt: i64, markdown: &str) {
-        if self.run.request != RequestKind::Thread {
-            return;
-        }
         for (i, t) in self.run.thread_ids.iter().enumerate() {
             let cx = self.op_ctx(attempt, NOTICE_SEQ + i as i64);
             let seq = NOTICE_SEQ + i as i64;
@@ -1461,9 +1458,7 @@ impl Tick<'_> {
 
     async fn finish(&self, summary: &str) -> Result<TickOutcome> {
         let s = self.begin(StepKind::Finish)?;
-        let post = self.run.request == RequestKind::Thread
-            && self.hist.replied.is_empty()
-            && !summary.is_empty();
+        let post = self.hist.replied.is_empty() && !summary.is_empty();
         if post {
             self.notify(s.attempt, summary).await;
         }

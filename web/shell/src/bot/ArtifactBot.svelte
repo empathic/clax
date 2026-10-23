@@ -17,7 +17,8 @@
   import { fromStore } from "svelte/store";
   import { mount, onMount, unmount, untrack } from "svelte";
   import type { ArtifactController } from "../view/artifact-controller";
-  import { type BotRun, type RunSummary, getRun, listRuns } from "./api";
+  import { nav } from "../nav";
+  import { type BotRun, type RunEvent, type RunSummary, getRun, listRuns } from "./api";
   import { myBot, refresh } from "./me";
   import { credits, ended, meter } from "./model";
   import { botView } from "./send.svelte";
@@ -38,15 +39,31 @@
     return body ? [{ id, text: body.split("\n")[0].slice(0, 120) }] : [];
   });
   const onThread = (id: string) => { const t = view.current.threads.find(x => x.id === id); if (t) ctl.selectThread(t); };
-  const onStep = () => { void refresh().then(b => { if (b) botView.me = b; }); };
   // Whether a run acts for this viewer, who may stop it; anyone else's is read-only.
   const mine = (r: BotRun) => {
     const me = view.current.me;
     const who = r.acting_for?.id;
     return !who || botView.started.includes(r.id) || (!!me && (who === me.public_id || (me.owner === true && who === "*owner")));
   };
+  // A run this viewer follows that finished: once its version is out, the
+  // view loads it (with the panel open on the run), instead of leaving the
+  // placeholder or the version shown up with a Reload chip.
+  let landing = $state<string | null>(null);
+  const onStep = (ev: RunEvent, r: BotRun) => {
+    void refresh().then(b => { if (b) botView.me = b; });
+    if (ev.event === "run_end" && r.status === "finished" && mine(r)) landing = r.id;
+  };
+  $effect(() => {
+    const s = view.current;
+    if (landing && s.newer && !s.deleted) {
+      const id = landing;
+      landing = null;
+      nav.reload(`${ctl.here(null)}#run=${encodeURIComponent(id)}`);
+    }
+  });
   const panel = $state({ aid: "", runs: [] as RunSummary[], quotes, onThread, onStep, mine });
   $effect(() => { panel.runs = runs; });
+  $effect(() => { botView.claimed = [...new Set(runs.flatMap(r => r.thread_ids))]; });
   const sorted = (l: RunSummary[]) => [...l].sort((a, b) => b.started_at.localeCompare(a.started_at));
   const load = () => listRuns(ctl.id).then(r => { runs = sorted(Array.isArray(r?.runs) ? r.runs : []); return runs; }, () => runs);
   // The run shown changed state: read the list again.

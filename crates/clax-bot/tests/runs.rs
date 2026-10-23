@@ -301,6 +301,15 @@ async fn a_turn_without_a_tool_call_is_nudged_once_then_gives_up() {
 }
 
 #[tokio::test]
+async fn a_briefs_run_posts_its_summary_on_the_briefs_thread() {
+    let env = Env::new().await;
+    env.api.push(finish_turn("Built the map."));
+    let run = env.run_as(clax_store::bot_runs::RequestKind::Brief);
+    env.drive(&env.deps(), &run, &DriverId::mint()).await;
+    assert_eq!(env.replies(), [(env.t1.clone(), "Built the map.".into())]);
+}
+
+#[tokio::test]
 async fn a_refusal_gives_up() {
     let env = Env::new().await;
     env.api.push(stream(

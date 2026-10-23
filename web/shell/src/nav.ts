@@ -5,4 +5,10 @@ export const nav = {
   assign(url: string): void {
     location.assign(url);
   },
+  /** Loads `url` in the shell window, also when it differs from the
+   * current address only in its fragment (which `assign` would not load). */
+  reload(url: string): void {
+    history.replaceState(history.state, "", url);
+    location.reload();
+  },
 };

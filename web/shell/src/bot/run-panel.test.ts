@@ -10,6 +10,7 @@ import { BOT, botView, sendToBot, withBot } from "./send.svelte";
 import { writable } from "svelte/store";
 import type { ArtifactController } from "../view/artifact-controller";
 import ArtifactBot from "./ArtifactBot.svelte";
+import { nav } from "../nav";
 
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
 const button = (root: Element, text: string) => [...root.querySelectorAll("button")].find(b => b.textContent?.trim() === text)!;
@@ -215,6 +216,36 @@ describe("ClaxBot in the artifact view", () => {
     // The run alone, once by the list's reader and once by the panel's feed.
     expect(calls.filter(c => c.url === "/api/bot/runs/gone").length).toBeLessThanOrEqual(2);
     m.unmount();
+    history.replaceState(null, "", "/");
+  });
+
+  it("claims its runs' threads, and loads the version a run this viewer follows published once it finishes", async () => {
+    history.replaceState(null, "", "/a/7q3k9mzx2b4t");
+    const stream = sse();
+    daemon({
+      "GET /api/me/bot": json(meBot()),
+      "GET /api/bot/runs?artifact=7q3k9mzx2b4t": json({ runs: [run({ thread_ids: ["t_brief"] })] }),
+      "GET /api/bot/runs/r1": json(run({ thread_ids: ["t_brief"] })),
+      "GET /api/bot/runs/r1/events": () => new Response(stream.body, { headers: { "content-type": "text/event-stream" } }),
+    });
+    const reload = vi.spyOn(nav, "reload").mockImplementation(() => {});
+    const state = writable<Record<string, unknown>>({ threads: [], agents: [], me: { public_id: "p_sam", owner: false }, newer: null, deleted: false });
+    const ctl = { id: "7q3k9mzx2b4t", state, selectThread: vi.fn(), here: () => "/a/7q3k9mzx2b4t" } as unknown as ArtifactController;
+    const m = mount(ArtifactBot, { ctl });
+    await settle();
+    expect(botView.claimed).toEqual(["t_brief"]);
+    botView.open("r1");
+    flush();
+    await settle();
+    stream.send("run_end", { run: { status: "finished" } });
+    await settle();
+    // Finished, but its version is not out yet: nothing loads until it is.
+    expect(reload).not.toHaveBeenCalled();
+    state.update(s => ({ ...s, newer: 2 }));
+    flush();
+    expect(reload).toHaveBeenCalledWith("/a/7q3k9mzx2b4t#run=r1");
+    m.unmount();
+    reload.mockRestore();
     history.replaceState(null, "", "/");
   });
 
