@@ -1216,7 +1216,7 @@ async fn a_world_site_is_served_to_anyone_and_its_page_is_not() {
 }
 
 #[tokio::test]
-async fn a_world_sites_files_revalidate_within_a_minute_and_only_navigations_set_the_cookie() {
+async fn a_world_sites_files_revalidate_on_every_request_and_only_navigations_set_the_cookie() {
     let site = Site::new().await;
     let owner = site.owner().await;
     let (aid, asset) = site.guestbook().await;
@@ -1641,6 +1641,97 @@ async fn removing_a_person_closes_their_room_socket() {
     let (code, reason) = closed(&mut sams).await;
     assert_eq!((code, reason.as_str()), REVOKED);
     stays_open(&mut owners).await;
+}
+
+/// Inviting a person again with narrower rights takes away what their old
+/// rights let them read: their room socket on its site closes.
+#[tokio::test]
+async fn inviting_a_person_again_with_narrower_rights_closes_their_room_socket() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.room_artifact("Board").await;
+    let (sam, sam_pid) = site.member(&owner, "Sam").await;
+    let invite = |rights: Value| {
+        site.send(
+            &owner,
+            reqwest::Method::POST,
+            "/api/people/invites",
+            json!({"viewer": sam_pid, "rights": rights}),
+        )
+    };
+    let reads = json!({"type": "clax-artifacts", "actions": ["read"], "locations": ["*"]});
+    let (s, v) = invite(json!([reads])).await;
+    assert_eq!(s, 201, "{v}");
+    let sam_cookie = site.site_cookie(&sam, &aid).await;
+    let mut sams = site
+        .holder_room(&aid, &sam_cookie, "000000000000000s")
+        .await;
+    let owner_cookie = site.site_cookie(&owner, &aid).await;
+    let mut owners = site
+        .holder_room(&aid, &owner_cookie, "000000000000000o")
+        .await;
+    let (s, v) = invite(json!([])).await;
+    assert_eq!(s, 201, "{v}");
+    let (code, reason) = closed(&mut sams).await;
+    assert_eq!((code, reason.as_str()), REVOKED);
+    stays_open(&mut owners).await;
+}
+
+/// A site room socket in use renews its site session, so it outlives the
+/// session's hour counted from its opening: an unrelated access change
+/// past that hour leaves it open, while one opened as long ago and unused
+/// since closes; the holder losing the right still closes it.
+#[tokio::test]
+async fn a_site_room_socket_in_use_outlives_its_sessions_first_hour() {
+    use clax_store::site_sessions::{SITE_SESSION_RENEW_SECS, SITE_SESSION_TTL_SECS};
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.room_artifact("Board").await;
+    let (sam, sam_pid) = site.member(&owner, "Sam").await;
+    let (mia, _) = site.member(&owner, "Mia").await;
+    let share = site.share(&owner, &aid, &sam_pid).await;
+    let sam_cookie = site.site_cookie(&sam, &aid).await;
+    let mut sams = site
+        .holder_room(&aid, &sam_cookie, "000000000000000s")
+        .await;
+    let owner_cookie = site.site_cookie(&owner, &aid).await;
+    let mut owners = site
+        .holder_room(&aid, &owner_cookie, "000000000000000o")
+        .await;
+    // Sam's page sends messages through the hour; the owner's sends none.
+    for _ in 0..(SITE_SESSION_TTL_SECS / SITE_SESSION_RENEW_SECS) {
+        site.clock.advance(SITE_SESSION_RENEW_SECS);
+        stays_open(&mut sams).await;
+    }
+    site.clock.advance(SITE_SESSION_RENEW_SECS);
+    // Someone else signing out asks every holder's socket to be checked.
+    let (s, _) = site
+        .send(
+            &mia,
+            reqwest::Method::POST,
+            "/api/hosted/signout",
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, 204);
+    stays_open(&mut sams).await;
+    let (code, reason) = closed(&mut owners).await;
+    assert_eq!(
+        (code, reason.as_str()),
+        REVOKED,
+        "the unused session expired"
+    );
+    let (s, _) = site
+        .send(
+            &owner,
+            reqwest::Method::DELETE,
+            &format!("/api/hosted/artifacts/{aid}/shares/{share}"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(s, 200);
+    let (code, reason) = closed(&mut sams).await;
+    assert_eq!((code, reason.as_str()), REVOKED);
 }
 
 /// A site's room socket as a Durable Object holds it

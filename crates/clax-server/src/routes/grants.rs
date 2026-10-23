@@ -101,21 +101,31 @@ pub fn announce_ended(
 
 /// Expires what is due ([`Store::expire_grants`]) and announces it,
 /// rebuilds the token index when a change to it failed, and sweeps both
-/// nonce caches. The daemon runs it on start and every minute.
+/// nonce caches. The daemon runs it on start and every minute. When the
+/// expiry changed who may read (a person whose invites lapsed returned to
+/// a plain viewer, their rights dropped), `Event::Access` asks the site
+/// sockets to be checked again.
 pub async fn sweep(s: &AppState) -> Result<usize, ApiError> {
     s.grant_auth.sweep(s.store.now_utc().timestamp());
     let (state, ctx) = (s.clone(), s.feedback_ctx());
-    s.store_call(move |st| {
-        let ended = st.expire_grants()?;
-        announce_ended(&state, &ctx, st, &ended, "expiry");
-        // Requests purged since leave the index's record of ended grants.
-        clax_http::grant_auth::forget_purged(&state.grant_auth.index, st);
-        if state.grant_auth.index.rebuild_if_stale(st)? {
-            tracing::info!("grant index rebuilt");
-        }
-        Ok(ended.len())
-    })
-    .await
+    let (ended, changed) = s
+        .store_call(move |st| {
+            let before = st.visibility_generation();
+            let ended = st.expire_grants()?;
+            let changed = st.visibility_generation() != before;
+            announce_ended(&state, &ctx, st, &ended, "expiry");
+            // Requests purged since leave the index's record of ended grants.
+            clax_http::grant_auth::forget_purged(&state.grant_auth.index, st);
+            if state.grant_auth.index.rebuild_if_stale(st)? {
+                tracing::info!("grant index rebuilt");
+            }
+            Ok((ended.len(), changed))
+        })
+        .await?;
+    if changed {
+        crate::hosted::access_changed(s, None);
+    }
+    Ok(ended)
 }
 
 /// `GET /api/_test/grants/index` (debug builds): the token index's size
@@ -288,6 +298,9 @@ pub async fn create_invite(
             Ok(made)
         })
         .await?;
+    // Inviting a viewer who is already a person may set rights narrower
+    // than theirs: their site sockets are checked again.
+    crate::hosted::access_changed(&s, None);
     let mut view = json!({
         "id": invite.id,
         "expires_at": invite.expires_at,
@@ -348,6 +361,8 @@ pub async fn revoke_invite(
             Ok(i)
         })
         .await?;
+    // Its person may be returned to a plain viewer, their rights dropped.
+    crate::hosted::access_changed(&s, None);
     Ok(Json(json!({"invite": invite_view(&invite)})))
 }
 

@@ -888,7 +888,6 @@ impl TestServer {
         send(fresh).await
     }
 
-    /// [`TestServer::site_get`] with no site session.
     /// Uploads `bytes` as an asset of `aid` named `file_name` of type
     /// `content_type`, as the owner; the 201 answer's `{asset, url}`.
     pub async fn upload_asset(
@@ -915,6 +914,7 @@ impl TestServer {
         res.json().await.unwrap()
     }
 
+    /// [`TestServer::site_get`] with no site session.
     pub async fn site_get_anon(&self, id: &str, path: &str) -> reqwest::Response {
         self.client
             .get(format!("{}{}", self.base, path))

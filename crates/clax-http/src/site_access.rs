@@ -22,7 +22,9 @@
 //!   it keeps [`SiteCredentials`] (the session ID's SHA-256, never the
 //!   cookie) and is checked again by them ([`SiteCredentials::check`])
 //!   whenever who may read changes (`clax_core::Event::Access`,
-//!   `Event::SiteAccess`) and when its host reopens it.
+//!   `Event::SiteAccess`) and when its host reopens it; its messages renew
+//!   the session as requests do (at most once every
+//!   `clax_store::site_sessions::SITE_SESSION_RENEW_SECS`).
 //! - Without one, a navigation (top-level, or of a frame) is sent to the
 //!   public host's `/site-signin?host=<host>&next=<path>`, which makes a
 //!   session when the browser may read the artifact (partitioned for a

@@ -20,8 +20,10 @@
 //! person's browser and agents act within their rights, and agent tokens
 //! reach `/mcp`. Its public origin is `PUBLIC_ORIGIN` (required), each
 //! artifact's site is served at `<artifact ID>.<SITE_DOMAIN>` (at
-//! `<artifact ID>.localhost` without one; [`site_hosts`]), and clients are
-//! named by `CF-Connecting-IP`. The owner's token
+//! `<artifact ID>.localhost` without one; [`site_hosts`]),
+//! `RETIRED_CONTENT_ORIGIN` (when set) is the retired content origin, where
+//! an asset's old address only redirects to its artifact's site, and
+//! clients are named by `CF-Connecting-IP`. The owner's token
 //! (`CLAX_TOKEN`, else one the object made and keeps) still works for the
 //! CLI. Without `HOSTED`, no request reaches the object over a connection
 //! of the owner's machine (`clax_http::auth::conn_of` is `None` on
@@ -407,6 +409,16 @@ fn hosted(env: &Env) -> Result<Option<Arc<clax_http::hosted::Hosted>>> {
         })?
         .behind_cloudflare(true);
     let h = h.with_sites(site_hosts(env).map_err(rust_err)?);
+    let retired = var(env, "RETIRED_CONTENT_ORIGIN");
+    let h = if retired.is_empty() {
+        h
+    } else {
+        h.with_retired_content_origin(&retired).ok_or_else(|| {
+            rust_err(format!(
+                "RETIRED_CONTENT_ORIGIN must be an origin of its own host, not {retired:?}"
+            ))
+        })?
+    };
     // GitHub sign-in: on with `GITHUB_CLIENT_ID` and the secret
     // `GITHUB_CLIENT_SECRET`; `OWNER_GITHUB` names the owner's login;
     // `GITHUB_OAUTH_BASE` and `GITHUB_API_BASE` point a test at a fake.
@@ -482,6 +494,94 @@ fn sites_of(
         .ok_or_else(|| format!("SITE_DOMAIN {domain:?} is not a site domain"))
 }
 
+/// What the instance says about the Clax app: its app links
+/// (`APPLE_TEAM_ID`; `ANDROID_PACKAGE` with `ANDROID_SHA256`) and store
+/// pages (`IOS_STORE_URL`, `ANDROID_STORE_URL`); none without them, and
+/// an error for a value [`clax_core::config::ClaxApp::from_settings`]
+/// refuses.
+fn clax_app(env: &Env) -> Result<clax_core::config::ClaxApp> {
+    let opt = |name: &str| Some(var(env, name)).filter(|v| !v.is_empty());
+    clax_core::config::ClaxApp::from_settings(
+        opt("APPLE_TEAM_ID").as_deref(),
+        opt("ANDROID_PACKAGE").as_deref(),
+        opt("ANDROID_SHA256").as_deref(),
+        opt("IOS_STORE_URL").as_deref(),
+        opt("ANDROID_STORE_URL").as_deref(),
+    )
+    .map_err(rust_err)
+}
+
+/// ClaxBot's state for the routes and its driver (`crate::bot`), as the
+/// daemon's `clax_server::bot::driver` makes them: the key-encryption key
+/// from the `CLAX_KEK` secret alone (never a plain var; unset or not a
+/// key: no key is stored or opened, the key routes answer 503 `no_kek`
+/// and a send to ClaxBot is refused `not_configured`), no configured
+/// overrides and no environment key; the Worker Loader sandbox, made
+/// first (when it cannot be, ClaxBot is off: `enabled` is false and a send
+/// is refused `not_configured`); the server's host; and a driver of its
+/// own ID, installed as the routes' run seam.
+fn worker_bot(env: &Env, app: &mut AppState) -> crate::bot::WorkerBot {
+    let kek_secret = env
+        .secret("CLAX_KEK")
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    let kek = match crate::bot::kek_of(&kek_secret) {
+        Ok(Some(k)) => Some(k),
+        Ok(None) => {
+            worker::console_warn!("CLAX_KEK is not set: ClaxBot stores and opens no model key");
+            None
+        }
+        Err(why) => {
+            worker::console_error!("{why}: ClaxBot stores and opens no model key");
+            None
+        }
+    };
+    let sandbox = crate::bot::sandbox(env).map_err(|e| {
+        worker::console_error!("ClaxBot is off: its sandbox could not be made: {e}");
+    });
+    let enabled = sandbox.is_ok();
+    let sandbox = sandbox.unwrap_or_else(|()| Arc::new(clax_server::bot::UnavailableSandbox));
+    let first = crate::bot::routes_bot(kek, enabled, Arc::new(clax_http::bot::NoRuns));
+    let (events, views, keys) = (first.events.clone(), first.views.clone(), first.keys());
+    app.bot = Arc::new(first);
+    // The server's own host, over the state the routes see.
+    let server_host = Arc::new(clax_server::bot::ServerHost::new(app.clone()));
+    let host: Arc<dyn clax_bot::BotHost> = server_host.clone();
+    let (bot, kicks) = crate::bot::WorkerBot::new(crate::bot::Parts {
+        store: app.store.clone(),
+        sandbox,
+        host,
+        enabled,
+        keys: keys.clone(),
+        events: events.clone(),
+        resume_after: resume_after(env),
+    });
+    // A run's end may start a follow-up: it goes to the driver as the
+    // routes' wakes do, and wants the alarm.
+    server_host.set_runs(kicks.clone());
+    app.bot = Arc::new(clax_http::bot::Bot {
+        kek: keys.kek,
+        env_key: None,
+        enabled,
+        views,
+        runs: kicks,
+        events,
+    });
+    bot
+}
+
+/// How far ahead the alarm is kept while ClaxBot drives:
+/// `crate::bot::RESUME_AFTER`, or with the test routes on,
+/// `CLAX_TEST_RESUME_AFTER_MS` (a test that waits for a resume from the
+/// alarm alone).
+fn resume_after(env: &Env) -> std::time::Duration {
+    let set = (var(env, "CLAX_TEST_ROUTES") == "1")
+        .then(|| var(env, "CLAX_TEST_RESUME_AFTER_MS").parse::<u64>().ok())
+        .flatten()
+        .filter(|ms| *ms >= 1_000);
+    set.map_or(crate::bot::RESUME_AFTER, std::time::Duration::from_millis)
+}
+
 /// The seats and presence the object keeps across a wake.
 #[derive(Default, Serialize, Deserialize)]
 struct Kept {
@@ -548,6 +648,21 @@ impl Instance {
         // Each artifact's object, not the default (no stores on wasm32).
         app.app_data = app_data;
         erase_deleted(&app);
+        app.clax_app = Arc::new(clax_app(env)?);
+        // A test's scripted provider listens on a loopback http port; only
+        // the test vars, never a setting an admin reaches, let the key go
+        // there (the Worker otherwise sends it to public https hosts alone).
+        if var(env, "CLAX_TEST_ROUTES") == "1" && var(env, "CLAX_TEST_LOOPBACK_PROVIDER") == "1" {
+            app.store.set_base_url_policy(
+                clax_store::bot_settings::BaseUrlPolicy::HostedLoopbackForTests,
+            );
+        }
+        // What `/healthz` reports: the commit the Worker was built from
+        // (`CLAX_BUILD_COMMIT` in the build's environment, which deploy.mjs
+        // sets) and the deploy's build identity (the `CLAX_BUILD` var).
+        clax_core::set_build_commit(BUILD_COMMIT);
+        app.build = Some(var(env, "CLAX_BUILD")).filter(|b| !b.is_empty());
+        let bot = worker_bot(env, &mut app);
         app.seats
             .set_limits(clax_core::seats::SeatLimits::from_env(|k| {
                 Some(var(env, k)).filter(|v| !v.is_empty())
@@ -1219,8 +1334,12 @@ impl InstanceDo {
     /// - `POST /_worker/hibernate` drops the server and builds it again on
     ///   the same storage, as a wake from hibernation does, keeping the
     ///   sockets;
-    /// - `GET /_worker/alarm`: `{alarm, now}`, the time the object's alarm
-    ///   is set for (ms, `null` with none) and the object's time;
+    /// - `GET /_worker/alarm`: `{alarm, now, bot}`, the time the object's
+    ///   alarm is set for (ms, `null` with none), the object's time, and
+    ///   when ClaxBot's driver wants the alarm (`null`: never);
+    /// - `GET` and `POST /_worker/sandbox`: the ClaxBot sandbox's
+    ///   conformance cases against the Worker Loader sandbox, run on this
+    ///   object (`crate::sandbox::checks`);
     /// - `GET /_worker/app-data?artifact=<ID>&path=<doc path>`: where the
     ///   artifact's documents are: `{instance_docs, object_store,
     ///   object_doc}`, the documents the instance's database still holds
@@ -1236,7 +1355,7 @@ impl InstanceDo {
         let path = req.uri().path();
         if !matches!(
             path,
-            "/_worker/hibernate" | "/_worker/alarm" | "/_worker/app-data"
+            "/_worker/hibernate" | "/_worker/alarm" | "/_worker/app-data" | "/_worker/sandbox"
         ) || var(&self.env, "CLAX_TEST_ROUTES") != "1"
         {
             return None;
@@ -1257,6 +1376,21 @@ impl InstanceDo {
                 self.app_data_probe(inst, req.uri().query().unwrap_or(""))
                     .await,
             );
+        }
+        if path == "/_worker/sandbox" {
+            #[cfg(target_arch = "wasm32")]
+            {
+                let query = req.uri().query().unwrap_or_default().to_string();
+                return crate::sandbox::checks::route(
+                    &self.env,
+                    path,
+                    req.method().as_str(),
+                    &query,
+                )
+                .await;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            return None;
         }
         if path == "/_worker/alarm" {
             let alarm = match self.state.storage().get_alarm().await {
@@ -1407,8 +1541,15 @@ impl DurableObject for InstanceDo {
             WebSocketIncomingMessage::Binary(_) => None,
         };
         let att = ws.deserialize_attachment::<Attachment>().ok().flatten();
-        if let (Some(t), Some(mut att)) = (text, att) {
-            self.on_text(&inst, &ws, &mut att, t);
+        // What was published before this message is acted on first, as the
+        // daemon's socket does: a right lost while the message was queued
+        // (the input gate opens while a request awaits a fetch) closes the
+        // socket, and on_text then drops the message.
+        inst.settle().await;
+        if let (Some(t), Some(mut att)) = (text, att)
+            && let Some(check) = self.on_text(&inst, &ws, &mut att, t)
+        {
+            check.renew(&inst.app).await;
         }
         inst.settle().await;
         self.schedule(&inst).await;
@@ -1543,13 +1684,21 @@ impl InstanceDo {
     /// A text message on socket `ws`: a stream's `ping` (the runtime
     /// answers it unless it arrives with other text) is answered `pong`;
     /// a live or room socket's goes to what it carries, and a room
-    /// socket's named rooms are kept in its attachment.
-    fn on_text(&self, inst: &Instance, ws: &WebSocket, att: &mut Attachment, t: &str) {
+    /// socket's named rooms are kept in its attachment. A message on a
+    /// socket the object no longer holds (closed) is dropped. What it
+    /// answers is the site session to renew, when the message is a room
+    /// socket's that is due ([`RoomSocket::renewal`]).
+    fn on_text(
+        &self,
+        inst: &Instance,
+        ws: &WebSocket,
+        att: &mut Attachment,
+        t: &str,
+    ) -> Option<RoomCheck> {
         let mut sockets = inst.sockets.borrow_mut();
-        let Some(s) = sockets.get_mut(&att.sock) else {
-            return;
-        };
+        let s = sockets.get_mut(&att.sock)?;
         let mut close: Option<(u16, &'static str)> = None;
+        let mut renew = None;
         match &mut s.carried {
             Carried::Stream(_) => {
                 if t == "ping" {
@@ -1567,6 +1716,7 @@ impl InstanceDo {
                 if t.len() > MAX_ROOM_MESSAGE {
                     close = Some((1009, "message too big"));
                 } else {
+                    renew = room.renewal(inst.app.store.now_utc());
                     for f in room.message(t) {
                         let _ = ws.send_with_str(f);
                     }
@@ -1582,6 +1732,7 @@ impl InstanceDo {
             let _ = ws.close(Some(c), Some(r));
             sockets.remove(&att.sock);
         }
+        renew
     }
 
     /// Drops what a closed socket carried: a stream detaches and is dropped

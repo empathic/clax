@@ -34,6 +34,7 @@
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
+use chrono::{DateTime, Utc};
 use clax_core::db::{Caller, Level};
 use clax_core::room::{
     MAX_JOINED, Topics, check_json, check_presence, peer_label_ok, room_name_ok, topic_ok,
@@ -47,6 +48,7 @@ use clax_http::state::AppState;
 use clax_http::viewer::SameOrigin;
 use clax_realtime::room::{Frame, Membership, Rooms, Sender, Who};
 use clax_rt::time::Instant;
+use clax_store::site_sessions::SITE_SESSION_RENEW_SECS;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
@@ -451,6 +453,7 @@ async fn session(
         aid: aid.clone(),
         site,
     };
+    let mut renewed = s.store.now_utc();
     let mut shutdown = s.shutdown.clone();
     let mut tick = tokio::time::interval(Duration::from_millis(25));
     let hello = [
@@ -509,7 +512,12 @@ async fn session(
                     return;
                 }
                 match msg {
-                    Some(Ok(Message::Text(t))) => conn.handle(t.as_str(), &mut streams),
+                    Some(Ok(Message::Text(t))) => {
+                        if check.renewal_due(&mut renewed, s.store.now_utc()) {
+                            check.renew(&s).await;
+                        }
+                        conn.handle(t.as_str(), &mut streams)
+                    }
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return,
                     Some(Ok(_)) => continue,
                 }
@@ -560,6 +568,37 @@ impl RoomCheck {
             s.store_call(move |st| site.check(st, &id)).await,
             Ok(Some(_))
         )
+    }
+
+    /// Whether a message at `now` renews the socket's site session (a
+    /// holder's: a visitor's has none): its last renewal, `last` (the
+    /// socket's opening, before any), is [`SITE_SESSION_RENEW_SECS`] old or
+    /// older. When it is, `last` moves to `now`.
+    pub fn renewal_due(&self, last: &mut DateTime<Utc>, now: DateTime<Utc>) -> bool {
+        if !matches!(self.site, Some(SiteCredentials::Session(_))) {
+            return false;
+        }
+        if now - *last < chrono::Duration::seconds(SITE_SESSION_RENEW_SECS) {
+            return false;
+        }
+        *last = now;
+        true
+    }
+
+    /// Renews the socket's site session ([`clax_store::Store::site_session_renew`]):
+    /// a message on a holder's socket is a use of it, as a request on the
+    /// site is, so a socket in use outlives the session's TTL counted from
+    /// its opening. One that has expired is not renewed.
+    pub async fn renew(&self, s: &AppState) {
+        let Some(SiteCredentials::Session(hash)) = self.site.clone() else {
+            return;
+        };
+        let Ok(id) = parse_id(&self.aid) else {
+            return;
+        };
+        let _ = s
+            .store_call(move |st| st.site_session_renew(&hash, &id))
+            .await;
     }
 
     /// What event `e` asks of the socket: [`Ask::Close`] when the artifact
@@ -660,6 +699,8 @@ pub struct RoomSocket {
     events: tokio::sync::broadcast::Receiver<clax_core::events::Stamped>,
     /// What it is checked again by.
     check: RoomCheck,
+    /// When its site session was last renewed ([`RoomCheck::renewal_due`]).
+    renewed: DateTime<Utc>,
     /// Its place in its client's cap ([`clax_http::socket_caps`]).
     _slot: Option<clax_http::socket_caps::SocketSlot>,
 }
@@ -735,6 +776,7 @@ impl RoomSocket {
                 claim,
                 events: s.events.subscribe(),
                 check,
+                renewed: s.store.now_utc(),
                 _slot: None,
             },
             first,
@@ -762,6 +804,15 @@ impl RoomSocket {
     /// The named rooms the socket is in, for its host to keep.
     pub fn joined(&self) -> Vec<String> {
         self.conn.named.keys().cloned().collect()
+    }
+
+    /// What the socket's message at `now` asks its host to renew, when its
+    /// site session is due ([`RoomCheck::renewal_due`]): the host answers
+    /// it with [`RoomCheck::renew`].
+    pub fn renewal(&mut self, now: DateTime<Utc>) -> Option<RoomCheck> {
+        self.check
+            .renewal_due(&mut self.renewed, now)
+            .then(|| self.check.clone())
     }
 
     /// The socket's text message `t`: the frames that answer it.

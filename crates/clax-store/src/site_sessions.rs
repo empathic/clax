@@ -11,7 +11,8 @@
 //!   browser signs no other in (login CSRF).
 //! - **A site session** names its [`Holder`] for one artifact. It lasts
 //!   [`SITE_SESSION_TTL_SECS`] from its last use, each use renewing it
-//!   ([`Store::site_session`]), and ends with the browser session it was
+//!   ([`Store::site_session`]; a socket open on it, as it is used:
+//!   [`Store::site_session_renew`]), and ends with the browser session it was
 //!   made from (`browser_sessions`), when it was made from one. Whether the
 //!   holder may still read the artifact is not the store's to say: the
 //!   caller checks it on every request.
@@ -27,6 +28,9 @@ use rusqlite::{OptionalExtension, params};
 pub const SITE_CODE_TTL_SECS: i64 = 60;
 /// How long a site session lasts unused.
 pub const SITE_SESSION_TTL_SECS: i64 = 3600;
+/// How often a socket in use on a site session renews it at most
+/// ([`Store::site_session_renew`]): well inside [`SITE_SESSION_TTL_SECS`].
+pub const SITE_SESSION_RENEW_SECS: i64 = 300;
 
 /// The `remote_id` of a `push_approvals` row that approves opening its
 /// artifact's site to the world rather than a push: an agent's request to
@@ -268,6 +272,30 @@ impl Store {
         Ok(Holder::from_parts(&kind, who))
     }
 
+    /// Renews the site session whose ID's SHA-256 is `hash` on artifact
+    /// `aid`'s host for [`SITE_SESSION_TTL_SECS`] from now, unless it has
+    /// expired: what a socket open on it does as it is used (its host
+    /// throttles it to once per [`SITE_SESSION_RENEW_SECS`]). Whether its
+    /// holder may still read is checked as ever, by
+    /// [`Store::site_session_of_hash`] and the caller.
+    ///
+    /// # Errors
+    /// The database's.
+    pub fn site_session_renew(&self, hash: &str, aid: &ArtifactId) -> Result<()> {
+        let now = self.now();
+        let expires = clax_core::time::stamp(
+            self.now_utc() + chrono::Duration::seconds(SITE_SESSION_TTL_SECS),
+        );
+        self.with_tx(|tx| {
+            tx.execute(
+                "UPDATE site_sessions SET expires_at = ?3
+                 WHERE id_hash = ?1 AND artifact_id = ?2 AND expires_at > ?4",
+                params![hash, aid.as_str(), expires, now],
+            )?;
+            Ok(())
+        })
+    }
+
     /// Whether artifact `aid`'s site is open to the world
     /// (`artifacts.site_access` is `world`); false for one that does not
     /// exist.
@@ -429,6 +457,43 @@ mod tests {
         assert!(st.site_session(&id, &a).unwrap().is_some(), "renewed");
         clock.advance(SITE_SESSION_TTL_SECS);
         assert!(st.site_session(&id, &a).unwrap().is_none(), "unused");
+    }
+
+    #[test]
+    fn a_socket_renews_a_live_session_and_never_an_expired_one() {
+        let clock = Arc::new(ManualClock::at("2026-10-22T10:00:00Z"));
+        let (_d, st) = store_with_clock(clock.clone());
+        let (a, b) = (artifact(&st), artifact(&st));
+        let hash_of = |st: &Store| {
+            let code = st
+                .site_code_mint(&a, &Holder::Owner, None, false, "st")
+                .unwrap();
+            let (id, _, _) = st.site_code_redeem(&code, &a, Some("st")).unwrap().unwrap();
+            sha256_hex(&id)
+        };
+        let (renewed, by_b) = (hash_of(&st), hash_of(&st));
+        clock.advance(SITE_SESSION_TTL_SECS - 1);
+        st.site_session_renew(&renewed, &a).unwrap();
+        // Another artifact's host renews nothing.
+        st.site_session_renew(&by_b, &b).unwrap();
+        clock.advance(SITE_SESSION_TTL_SECS - 1);
+        assert_eq!(
+            st.site_session_of_hash(&renewed, &a).unwrap(),
+            Some(Holder::Owner),
+            "renewed"
+        );
+        assert_eq!(
+            st.site_session_of_hash(&by_b, &a).unwrap(),
+            None,
+            "not by B"
+        );
+        clock.advance(SITE_SESSION_TTL_SECS);
+        st.site_session_renew(&renewed, &a).unwrap();
+        assert_eq!(
+            st.site_session_of_hash(&renewed, &a).unwrap(),
+            None,
+            "expired"
+        );
     }
 
     #[test]
