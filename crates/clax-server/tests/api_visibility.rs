@@ -1485,7 +1485,7 @@ async fn a_persons_agent_writes_artifacts_from_a_session_and_never_as_a_page() {
             .unwrap()
             .unwrap();
     assert_eq!((a.current_version, a.title.as_str()), (2, TITLE));
-    assert!(w.ts.store.get_asset(&w.scratch.asset).unwrap().is_some());
+    assert!(w.ts.store.find_asset(&w.scratch.asset).unwrap().is_some());
 }
 
 /// An artifact Mia's agent makes from its session (its `owner_session_id`

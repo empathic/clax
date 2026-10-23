@@ -569,11 +569,14 @@ agent writes from a session).
 | `version` | integer | no | The version to fork; defaults to the URL's version, else the current version. |
 
 Makes a new artifact whose version 1 holds the chosen version's files,
-title, description, icon and capabilities. The files are copied as they
-are, without a publish's checks (an `icon.svg` the icon rules now refuse
-included). It is the agent's person's (the
-owner's for the owner's agents) and the session's, which watches it; the
-source's comment threads, assets, documents and sharing are not copied.
+title, description, icon and capabilities. It is the agent's person's (the
+owner's for the owner's agents) and the session's, which watches it. The
+source's assets that the version's files name by ID are copied under the
+same IDs, so the fork's pages load them from the fork's own site at the
+addresses they already use, and the source's deletion of one (or of
+itself) leaves the fork's; an asset a page names only at run time is not
+copied. An asset ID names an asset within its artifact. The source's
+comment threads, documents and sharing are not copied.
 Version 1's note is `Forked from <artifact ID>@v<n>`. A daemon that keeps
 versions in git gives the fork the source's history behind its version 1,
 which carries `Clax-Forked-From: <artifact ID>@v<n>`. Over HTTP it is
@@ -7947,7 +7950,7 @@ the body below.
 | `version.push_refused` | `commit, person, session, reason (unknown_person\|person_revoked\|not_a_person\|no_right\|session_ended\|foreign_session\|grant_ended)` (`system:daemon`) | a commit pushed to an artifact's repository left unrecorded because its pusher may not publish the artifact, once per commit |
 | `artifact.update` | `fields{title?, description?, icon?, pinned?, capabilities?, db_read_grants?, tags?, share?{op (set\|remove), id, person, github_login, access?, reason? (owner)}}`; `db_read_grants` is `{"grant": <source ID>}` or `{"revoke": <source ID>}`, with the source as `artifact2_id` | pin, unpin, metadata edits, the owner's cross-app read grants (see "Reading another app's documents"); a change to its tags (`tags`: the names it carries after); a share set or removed (`reason: owner` when a share is dropped because it reached the owner, at the owner's GitHub sign-in or a viewer folded into the owner) |
 | `artifact.delete` | `title, current_version` | delete |
-| `asset.upload` | `asset_id, path, sha256, size, content_type` | asset store writes |
+| `asset.upload` | `asset_id, path, sha256, size, content_type`; `forked_from{artifact_id, asset_id}` on a fork's copy | asset store writes, and each asset a fork copies |
 | `asset.delete` | `asset_id, path, size, content_type` | asset deletes |
 | `doc.write` | `collection, doc_id, version, op (set\|update\|delete\|str_replace\|acquire), sha256` (`null` for a delete; never content) | `db_*` writes |
 | `doc.move` | `from, to, collection, doc_id, version, sha256` | a private document following a viewer claimed for the owner |

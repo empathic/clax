@@ -1064,7 +1064,7 @@ pub fn app_version_key(aid: &str, n: u32, target: &str, on: u32) -> String {
 }
 
 /// Whether text file `bytes` (of `content_type`) names an address this
-/// daemon serves assets under: `/_blob/` and a letter or digit.
+/// daemon serves assets under ([`BLOBS`]) and a letter or digit.
 fn names_blob(bytes: &[u8], content_type: &str) -> bool {
     if !textual(content_type) {
         return false;
@@ -1072,10 +1072,12 @@ fn names_blob(bytes: &[u8], content_type: &str) -> bool {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return false;
     };
-    text.match_indices(BLOB).any(|(at, _)| {
-        text.as_bytes()
-            .get(at + BLOB.len())
-            .is_some_and(u8::is_ascii_alphanumeric)
+    BLOBS.iter().any(|blob| {
+        text.match_indices(blob).any(|(at, _)| {
+            text.as_bytes()
+                .get(at + blob.len())
+                .is_some_and(u8::is_ascii_alphanumeric)
+        })
     })
 }
 
@@ -1247,8 +1249,8 @@ impl Run<'_> {
             .cloned()
             .collect();
         for id in &missing {
-            let i2 = id.clone();
-            let Some((asset, bytes)) = self.s.store_call(move |st| st.read_asset(&i2)).await?
+            let (a2, i2) = (self.aid.clone(), id.clone());
+            let Some((asset, bytes)) = self.s.store_call(move |st| st.read_asset(&a2, &i2)).await?
             else {
                 continue;
             };

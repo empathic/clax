@@ -370,7 +370,7 @@ async fn blob(
 ) -> Result<Response, ApiError> {
     d.refuse_agents()?;
     let asset_id = param(p)?;
-    assets::serve_blob(&s, sees, asset_id, Some(site.artifact.clone())).await
+    assets::serve_blob(&s, sees, asset_id, site.artifact.clone()).await
 }
 
 /// `/_blob/<asset ID>`: on a legacy artifact's site, its asset's bytes, as
@@ -390,7 +390,7 @@ async fn legacy_blob(
         .store_call(move |st| Ok(st.get_artifact(&id)?.is_some_and(|a| a.legacy_paths)))
         .await?;
     if legacy {
-        return assets::serve_blob(&s, sees, asset_id, Some(site.artifact.clone())).await;
+        return assets::serve_blob(&s, sees, asset_id, site.artifact.clone()).await;
     }
     serve_current(&s, &site, format!("_blob/{asset_id}"), &req).await
 }

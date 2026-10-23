@@ -889,6 +889,32 @@ impl TestServer {
     }
 
     /// [`TestServer::site_get`] with no site session.
+    /// Uploads `bytes` as an asset of `aid` named `file_name` of type
+    /// `content_type`, as the owner; the 201 answer's `{asset, url}`.
+    pub async fn upload_asset(
+        &self,
+        aid: &str,
+        file_name: &str,
+        content_type: &str,
+        bytes: Vec<u8>,
+    ) -> serde_json::Value {
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(file_name.to_string())
+            .mime_str(content_type)
+            .unwrap();
+        let res = self
+            .authed(
+                self.client
+                    .post(format!("{}/api/artifacts/{aid}/assets", self.base))
+                    .multipart(reqwest::multipart::Form::new().part("file", part)),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 201, "the upload of {file_name}");
+        res.json().await.unwrap()
+    }
+
     pub async fn site_get_anon(&self, id: &str, path: &str) -> reqwest::Response {
         self.client
             .get(format!("{}{}", self.base, path))

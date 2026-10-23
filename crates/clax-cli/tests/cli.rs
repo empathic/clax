@@ -695,8 +695,20 @@ fn doctor_fix_clears_asset_problems() {
     assert_eq!(rows.len(), 3);
 
     // Once the live problems are repaired by hand the check passes.
-    store.delete_asset(&AuditCtx::DAEMON, &missing.id).unwrap();
-    store.delete_asset(&AuditCtx::DAEMON, &wrong.id).unwrap();
+    store
+        .delete_asset(
+            &AuditCtx::DAEMON,
+            &clax_core::ArtifactId::parse(&missing.artifact_id).unwrap(),
+            &missing.id,
+        )
+        .unwrap();
+    store
+        .delete_asset(
+            &AuditCtx::DAEMON,
+            &clax_core::ArtifactId::parse(&wrong.artifact_id).unwrap(),
+            &wrong.id,
+        )
+        .unwrap();
     drop(store);
     assert_eq!(doctor_check(&e, &[], "assets")["ok"], true);
 }

@@ -1,4 +1,11 @@
-//! Per-artifact asset store: uploaded images, media, fonts, and data files served at /_blob/<id>.
+//! Per-artifact asset store: uploaded images, media, fonts, and data files
+//! served on their artifact's site at `/_clax/blob/<id>` (`/_blob/<id>` on a
+//! legacy artifact's).
+//!
+//! An asset's ID names it within its artifact: a fork copies the assets its
+//! version names under the same IDs ([`Store::copy_assets_in`]), so one ID
+//! may name an asset of several artifacts, each with its own bytes. Its page
+//! authors are kept under [`page_key`].
 
 use super::Store;
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord, sha256_hex};
@@ -6,6 +13,7 @@ use clax_core::content::AssetKey;
 use clax_core::model::Asset;
 use clax_core::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{OptionalExtension, Row, params};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 pub use clax_core::publish::MAX_ASSET_BYTES;
@@ -66,8 +74,15 @@ fn ext_for(content_type: &str) -> String {
 
 const SELECT: &str = "SELECT id, artifact_id, content_type, size, ext, created_at, person,
     (SELECT json_group_array(pa.author) FROM page_authors pa
-     WHERE pa.kind = 'asset' AND pa.id = assets.id) AS page_authors
+     WHERE pa.kind = 'asset' AND pa.id = assets.artifact_id || '/' || assets.id) AS page_authors
     FROM assets";
+
+/// The `page_authors` key of asset `asset_id` of artifact `artifact`
+/// (`kind = 'asset'`): `<artifact ID>/<asset ID>`, as one asset ID may
+/// name an asset of several artifacts.
+pub(super) fn page_key(artifact: &str, asset_id: &str) -> String {
+    format!("{artifact}/{asset_id}")
+}
 
 /// An asset row with where its bytes belong on disk, as listed by
 /// [`Store::list_all_asset_rows`].
@@ -94,6 +109,34 @@ pub(super) fn upload_record(asset: &Asset, sha256: Option<&str>) -> AuditRecord 
         .with("content_type", asset.content_type.as_str());
     rec.ids.artifact = Some(asset.artifact_id.clone());
     rec
+}
+
+/// Adds to `out` the IDs of `ids` that `bytes` names: each maximal run of
+/// ASCII letters and digits that is one of them, so an ID inside a longer
+/// word (base64, say) is no reference.
+pub(super) fn named_ids<'a>(bytes: &[u8], ids: &BTreeSet<&'a str>, out: &mut BTreeSet<&'a str>) {
+    let mut start = None;
+    for (i, b) in bytes.iter().chain(std::iter::once(&b' ')).enumerate() {
+        match (b.is_ascii_alphanumeric(), start) {
+            (true, None) => start = Some(i),
+            (false, Some(s)) => {
+                if let Ok(word) = std::str::from_utf8(&bytes[s..i])
+                    && let Some(id) = ids.get(word)
+                {
+                    out.insert(id);
+                }
+                start = None;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// An asset a fork copies ([`Store::copy_asset_bytes`]): the source's row
+/// and its bytes' SHA-256.
+pub(super) struct AssetCopy {
+    asset: Asset,
+    sha256: String,
 }
 
 impl Store {
@@ -190,7 +233,12 @@ impl Store {
                 params![asset.id, asset.artifact_id, asset.content_type, asset.size as i64, asset.ext, asset.created_at, person])?;
             let page = if via_page {
                 let a = super::artifacts::page_authors_in(c, &asset.artifact_id)?;
-                super::threads::add_page_authors(c, "asset", &asset.id, &a)?;
+                super::threads::add_page_authors(
+                    c,
+                    "asset",
+                    &page_key(&asset.artifact_id, &asset.id),
+                    &a,
+                )?;
                 a
             } else {
                 Vec::new()
@@ -210,18 +258,139 @@ impl Store {
         }
     }
 
-    /// Looks up an asset by ID. Returns `Ok(None)` when no such asset exists
-    /// or its artifact is deleted (its row and bytes wait for
+    /// Copies the bytes of the assets of `from` named `ids` into `to`'s
+    /// content under the same IDs, for [`Store::copy_assets_in`] to record.
+    /// An asset whose bytes are missing is left out (its own artifact
+    /// serves it as missing too). The caller holds both artifacts' content
+    /// locks.
+    ///
+    /// # Errors
+    /// `asset_too_large` for bytes past [`MAX_ASSET_BYTES`] (which no
+    /// upload stores), and content errors.
+    pub(super) async fn copy_asset_bytes(
+        &self,
+        from: &ArtifactId,
+        ids: &BTreeSet<&str>,
+        to: &ArtifactId,
+    ) -> Result<Vec<AssetCopy>> {
+        let mut out = Vec::new();
+        for asset in self.list_assets(from)? {
+            if !ids.contains(asset.id.as_str()) {
+                continue;
+            }
+            let Some(bytes) = self.asset_bytes_async(&asset).await? else {
+                tracing::warn!(
+                    artifact = from.as_str(),
+                    asset = asset.id,
+                    "a fork leaves out an asset whose bytes are missing"
+                );
+                continue;
+            };
+            if bytes.len() as u64 > MAX_ASSET_BYTES {
+                return Err(CoreError::invalid(
+                    "asset_too_large",
+                    format!("asset {} exceeds {MAX_ASSET_BYTES} bytes", asset.id),
+                ));
+            }
+            let key = AssetKey {
+                artifact: to.clone(),
+                id: asset.id.clone(),
+                ext: asset.ext.clone(),
+            };
+            self.content.put_asset(&key, &bytes).await?;
+            out.push(AssetCopy {
+                sha256: sha256_hex(&bytes),
+                asset,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Records `copies` (from [`Store::copy_asset_bytes`]) as assets of
+    /// `to`, made `now`, each with its uploader and page authors in the
+    /// source, and each one's `asset.upload` under `ctx` with `forked_from
+    /// {artifact_id, asset_id}`. Runs in the fork's transaction.
+    ///
+    /// # Errors
+    /// The database's.
+    pub(super) fn copy_assets_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        ctx: &AuditCtx,
+        copies: &[AssetCopy],
+        to: &ArtifactId,
+        now: &str,
+    ) -> Result<()> {
+        for AssetCopy { asset, sha256 } in copies {
+            let copy = Asset {
+                artifact_id: to.as_str().to_string(),
+                created_at: now.to_string(),
+                ..asset.clone()
+            };
+            tx.execute(
+                "INSERT INTO assets (id, artifact_id, content_type, size, ext, created_at, person)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    copy.id,
+                    copy.artifact_id,
+                    copy.content_type,
+                    copy.size as i64,
+                    copy.ext,
+                    copy.created_at,
+                    copy.person
+                ],
+            )?;
+            super::threads::add_page_authors(
+                tx,
+                "asset",
+                &page_key(&copy.artifact_id, &copy.id),
+                &asset.page_authors,
+            )?;
+            let source =
+                serde_json::json!({"artifact_id": asset.artifact_id, "asset_id": asset.id});
+            let mut rec = upload_record(&copy, Some(sha256)).with("forked_from", source);
+            rec.ids.artifact2 = Some(asset.artifact_id.clone());
+            self.record_audit(tx, ctx, rec)?;
+        }
+        Ok(())
+    }
+
+    /// Looks up asset `asset_id` of artifact `id`. Returns `Ok(None)` when
+    /// it has no such asset or is deleted (its rows and bytes wait for
     /// [`Store::delete_assets_of_deleted_artifacts`]; they are never served).
     ///
     /// # Errors
     /// Database errors only.
-    pub fn get_asset(&self, asset_id: &str) -> Result<Option<Asset>> {
+    pub fn get_asset(&self, id: &ArtifactId, asset_id: &str) -> Result<Option<Asset>> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                &format!(
+                    "{SELECT} WHERE artifact_id = ?1 AND id = ?2
+                        AND artifact_id IN (SELECT id FROM artifacts WHERE deleted_at IS NULL)"
+                ),
+                params![id.as_str(), asset_id],
+                row_to_asset,
+            )
+            .optional()?)
+        })
+    }
+
+    /// The asset an address naming only its ID means (an address of before
+    /// each artifact had a site): of the live artifacts with an asset
+    /// `asset_id`, the one made first, which is the upload's and not a
+    /// fork's copy while the uploader's artifact lives. `Ok(None)` when no
+    /// live artifact has one.
+    ///
+    /// # Errors
+    /// Database errors only.
+    pub fn find_asset(&self, asset_id: &str) -> Result<Option<Asset>> {
         self.with_read(|c| {
             Ok(c.query_row(
                 &format!(
                     "{SELECT} WHERE id = ?1
-                        AND artifact_id IN (SELECT id FROM artifacts WHERE deleted_at IS NULL)"
+                        AND artifact_id IN (SELECT id FROM artifacts WHERE deleted_at IS NULL)
+                     ORDER BY (SELECT r.created_at FROM artifacts r WHERE r.id = assets.artifact_id),
+                        rowid LIMIT 1"
                 ),
                 params![asset_id],
                 row_to_asset,
@@ -230,19 +399,24 @@ impl Store {
         })
     }
 
-    /// The asset `asset_id` with its bytes, read from the content store;
-    /// `None` when there is no such asset or its bytes are missing.
+    /// Asset `asset_id` of artifact `id` with its bytes, read from the
+    /// content store; `None` when there is no such asset or its bytes are
+    /// missing.
     ///
     /// # Errors
     /// `Corrupt` for a row whose artifact ID is not valid, and database or
     /// content errors.
-    pub fn read_asset(&self, asset_id: &str) -> Result<Option<(Asset, Vec<u8>)>> {
-        self.block_on(self.read_asset_async(asset_id))
+    pub fn read_asset(&self, id: &ArtifactId, asset_id: &str) -> Result<Option<(Asset, Vec<u8>)>> {
+        self.block_on(self.read_asset_async(id, asset_id))
     }
 
     /// [`Store::read_asset`], awaiting its content store.
-    pub async fn read_asset_async(&self, asset_id: &str) -> Result<Option<(Asset, Vec<u8>)>> {
-        let Some(asset) = self.get_asset(asset_id)? else {
+    pub async fn read_asset_async(
+        &self,
+        id: &ArtifactId,
+        asset_id: &str,
+    ) -> Result<Option<(Asset, Vec<u8>)>> {
+        let Some(asset) = self.get_asset(id, asset_id)? else {
             return Ok(None);
         };
         Ok(self
@@ -284,30 +458,40 @@ impl Store {
         })
     }
 
-    /// Deletes an asset's bytes from the content store, then its row.
-    /// Removing the row records `asset.delete` under `ctx` in its transaction.
+    /// Deletes asset `asset_id` of artifact `id`: its bytes from the content
+    /// store, then its row. Removing the row records `asset.delete` under
+    /// `ctx` in its transaction. Another artifact's asset of the same ID (a
+    /// fork's copy, or the asset a fork copied) is untouched.
     ///
     /// Bytes that are already missing are tolerated, so a retry after a content error
     /// still removes the row.
     ///
     /// # Errors
     /// `NotFound` when no such asset exists, and I/O or database errors otherwise.
-    pub fn delete_asset(&self, ctx: &AuditCtx, asset_id: &str) -> Result<()> {
-        self.block_on(self.delete_asset_async(ctx, asset_id))
+    pub fn delete_asset(&self, ctx: &AuditCtx, id: &ArtifactId, asset_id: &str) -> Result<()> {
+        self.block_on(self.delete_asset_async(ctx, id, asset_id))
     }
 
     /// [`Store::delete_asset`], awaiting its content store.
-    pub async fn delete_asset_async(&self, ctx: &AuditCtx, asset_id: &str) -> Result<()> {
-        let Some(asset) = self.get_asset(asset_id)? else {
+    pub async fn delete_asset_async(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        asset_id: &str,
+    ) -> Result<()> {
+        let Some(asset) = self.get_asset(id, asset_id)? else {
             return Err(CoreError::NotFound);
         };
         self.content.delete_asset(&AssetKey::of(&asset)?).await?;
         self.with_tx(|c| {
             c.execute(
                 "DELETE FROM page_authors WHERE kind = 'asset' AND id = ?1",
-                params![asset_id],
+                params![page_key(id.as_str(), asset_id)],
             )?;
-            let n = c.execute("DELETE FROM assets WHERE id = ?1", params![asset_id])?;
+            let n = c.execute(
+                "DELETE FROM assets WHERE artifact_id = ?1 AND id = ?2",
+                params![id.as_str(), asset_id],
+            )?;
             if n > 0 {
                 let mut rec = AuditRecord::new(AuditKind::AssetDelete, self.now())
                     .with("asset_id", asset.id.as_str())
@@ -321,7 +505,8 @@ impl Store {
         })
     }
 
-    /// Every asset row of every artifact, deleted ones included, ordered by ID.
+    /// Every asset row of every artifact, deleted ones included, ordered by
+    /// ID, then artifact.
     /// Rows whose artifact ID is not a valid ID are logged and left out.
     ///
     /// # Errors
@@ -331,7 +516,7 @@ impl Store {
             let mut stmt = c.prepare(
                 "SELECT a.id, a.artifact_id, a.content_type, a.size, a.ext, a.created_at, a.person,
                         NULL AS page_authors, r.deleted_at IS NOT NULL AS artifact_deleted
-                 FROM assets a JOIN artifacts r ON r.id = a.artifact_id ORDER BY a.id",
+                 FROM assets a JOIN artifacts r ON r.id = a.artifact_id ORDER BY a.id, a.artifact_id",
             )?;
             Ok(stmt
                 .query_map([], |r| {
@@ -408,9 +593,12 @@ impl Store {
             self.with_tx(|c| {
                 c.execute(
                     "DELETE FROM page_authors WHERE kind = 'asset' AND id = ?1",
-                    params![row.asset.id],
+                    params![page_key(&row.asset.artifact_id, &row.asset.id)],
                 )?;
-                c.execute("DELETE FROM assets WHERE id = ?1", params![row.asset.id])?;
+                c.execute(
+                    "DELETE FROM assets WHERE artifact_id = ?1 AND id = ?2",
+                    params![row.asset.artifact_id, row.asset.id],
+                )?;
                 Ok(())
             })?;
             n += 1;
@@ -452,19 +640,19 @@ mod tests {
             .unwrap();
         assert_eq!(a.ext, "png");
         assert_eq!(a.size, 3);
-        let got = store.get_asset(&a.id).unwrap().unwrap();
+        let got = store.get_asset(&id, &a.id).unwrap().unwrap();
         assert_eq!(got, a);
         assert_eq!(bytes_of(&store, &a).unwrap(), vec![1, 2, 3]);
         assert_eq!(
-            store.read_asset(&a.id).unwrap().unwrap(),
+            store.read_asset(&id, &a.id).unwrap().unwrap(),
             (a.clone(), vec![1, 2, 3])
         );
         assert_eq!(store.list_assets(&id).unwrap().len(), 1);
-        store.delete_asset(DAEMON, &a.id).unwrap();
-        assert!(store.get_asset(&a.id).unwrap().is_none());
+        store.delete_asset(DAEMON, &id, &a.id).unwrap();
+        assert!(store.get_asset(&id, &a.id).unwrap().is_none());
         assert_eq!(bytes_of(&store, &a), None);
         assert!(matches!(
-            store.delete_asset(DAEMON, &a.id),
+            store.delete_asset(DAEMON, &id, &a.id),
             Err(CoreError::NotFound)
         ));
     }
@@ -504,8 +692,8 @@ mod tests {
             .add_asset(DAEMON, &id, "image/png", &[1, 2, 3])
             .unwrap();
         store.delete_artifact(DAEMON, &id).unwrap();
-        assert!(store.get_asset(&a.id).unwrap().is_none());
-        assert!(store.read_asset(&a.id).unwrap().is_none());
+        assert!(store.get_asset(&id, &a.id).unwrap().is_none());
+        assert!(store.read_asset(&id, &a.id).unwrap().is_none());
     }
 
     #[test]
@@ -601,9 +789,9 @@ mod tests {
         let a = store.add_asset(DAEMON, &id, "image/png", &[1]).unwrap();
         let key = clax_core::content::AssetKey::of(&a).unwrap();
         clax_core::content::wait(store.content().delete_asset(&key)).unwrap();
-        assert!(store.read_asset(&a.id).unwrap().is_none());
-        store.delete_asset(DAEMON, &a.id).unwrap();
-        assert!(store.get_asset(&a.id).unwrap().is_none());
+        assert!(store.read_asset(&id, &a.id).unwrap().is_none());
+        store.delete_asset(DAEMON, &id, &a.id).unwrap();
+        assert!(store.get_asset(&id, &a.id).unwrap().is_none());
     }
 
     #[test]
@@ -650,8 +838,8 @@ mod tests {
         clax_core::content::wait(store.content().put_asset(&key, b"x")).unwrap();
         assert_eq!(store.delete_assets_of_deleted_artifacts().unwrap(), 1);
         assert_eq!(bytes_of(&store, &drop_row), None);
-        assert!(store.get_asset(&drop_row.id).unwrap().is_none());
-        assert!(store.get_asset(&keep.id).unwrap().is_some());
+        assert!(store.get_asset(&gone, &drop_row.id).unwrap().is_none());
+        assert!(store.get_asset(&live, &keep.id).unwrap().is_some());
         assert_eq!(store.delete_assets_of_deleted_artifacts().unwrap(), 0);
     }
 }

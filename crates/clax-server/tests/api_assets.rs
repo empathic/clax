@@ -256,7 +256,7 @@ async fn a_pages_upload_carries_every_author_of_the_page() {
     };
     let authors = |res: serde_json::Value| {
         let aid = res["asset"]["id"].as_str().unwrap().to_string();
-        let asset = ts.store.get_asset(&aid).unwrap().unwrap();
+        let asset = ts.store.find_asset(&aid).unwrap().unwrap();
         authors_of_asset(&asset)
     };
     let res = upload(true).await.unwrap();
@@ -275,79 +275,74 @@ async fn a_pages_upload_carries_every_author_of_the_page() {
     );
 }
 
-/// An asset is served under its own artifact only: another artifact's
-/// prefix, or another artifact's origin, answers 404 as a missing asset does.
+/// A fork's page keeps loading the assets it names from the fork's own
+/// site, under the same addresses: the fork copies them, so neither the
+/// source's deletion of one nor of itself breaks the fork's.
 #[tokio::test]
-async fn an_asset_is_served_only_under_its_own_artifact() {
+async fn a_forks_page_loads_its_assets_from_its_own_site() {
     let ts = TestServer::spawn().await;
-    let upload = |id: String| {
-        let ts = &ts;
+    let created = ts.publish("R", &[("index.html", "<p>")]).await;
+    let id = created["artifact"]["id"].as_str().unwrap().to_string();
+    let bytes = vec![137, 80, 78, 71, 1, 2, 3];
+    let body = ts
+        .upload_asset(&id, "logo.png", "image/png", bytes.clone())
+        .await;
+    let url = body["url"].as_str().unwrap().to_string();
+    let asset_id = body["asset"]["id"].as_str().unwrap().to_string();
+    let html = format!("<img src=\"{url}\">");
+    let res = ts
+        .post_json(
+            &format!("/api/artifacts/{id}/versions"),
+            serde_json::json!({"if_version": 1,
+                   "files": {"index.html": {"content": html, "encoding": "utf8"}}}),
+        )
+        .await;
+    assert_eq!(res.status(), 201);
+    let res = ts
+        .post_json(&format!("/api/artifacts/{id}/fork"), serde_json::json!({}))
+        .await;
+    assert_eq!(res.status(), 201);
+    let fid = res.json::<serde_json::Value>().await.unwrap()["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let page = ts.site_get(&fid, "/").await.text().await.unwrap();
+    assert!(
+        page.contains(&html),
+        "the fork's page is unrewritten: {page}"
+    );
+    let fetch = |art: String| {
+        let (ts, url) = (&ts, url.clone());
         async move {
-            let part = reqwest::multipart::Part::bytes(vec![137, 80, 78, 71])
-                .file_name("logo.png")
-                .mime_str("image/png")
-                .unwrap();
-            let res = ts
-                .authed(
-                    ts.client
-                        .post(format!("{}/api/artifacts/{id}/assets", ts.base))
-                        .multipart(reqwest::multipart::Form::new().part("file", part)),
-                )
-                .send()
-                .await
-                .unwrap();
-            let body: serde_json::Value = res.json().await.unwrap();
-            body["asset"]["id"].as_str().unwrap().to_string()
+            let res = ts.site_get(&art, &url).await;
+            (res.status().as_u16(), res.bytes().await.unwrap().to_vec())
         }
     };
-    let a = ts.publish("A", &[("index.html", "<p>")]).await["artifact"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let b = ts.publish("B", &[("index.html", "<p>")]).await["artifact"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let asset = upload(a.clone()).await;
-    assert_eq!(ts.get(&format!("/_blob/{a}/{asset}")).await.status(), 200);
-    assert_eq!(ts.get(&format!("/_blob/{b}/{asset}")).await.status(), 404);
-    let on = |host: String, path: String| {
-        let ts = &ts;
-        async move {
+    assert_eq!(fetch(fid.clone()).await, (200, bytes.clone()));
+    let list: serde_json::Value = ts
+        .get(&format!("/api/artifacts/{fid}/assets"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list["assets"][0]["id"], asset_id.as_str());
+    // The source's deletion of the asset, then of itself, leaves the fork's.
+    let res = ts
+        .authed(
             ts.client
-                .get(format!("{}{path}", ts.base))
-                .header("host", host)
-                .send()
-                .await
-                .unwrap()
-                .status()
-        }
-    };
-    let port = ts.addr.port();
-    // On A's origin: by asset ID, or under A's prefix.
-    assert_eq!(
-        on(format!("{a}.localhost:{port}"), format!("/_blob/{asset}")).await,
-        200
-    );
-    assert_eq!(
-        on(
-            format!("{a}.localhost:{port}"),
-            format!("/_blob/{a}/{asset}")
+                .delete(format!("{}/api/artifacts/{id}/assets/{asset_id}", ts.base)),
         )
-        .await,
-        200
-    );
-    // On B's origin, A's asset is not there, whatever the path names.
-    assert_eq!(
-        on(format!("{b}.localhost:{port}"), format!("/_blob/{asset}")).await,
-        404
-    );
-    assert_eq!(
-        on(
-            format!("{b}.localhost:{port}"),
-            format!("/_blob/{a}/{asset}")
-        )
-        .await,
-        404
-    );
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    assert_eq!(fetch(id.clone()).await.0, 404);
+    assert_eq!(fetch(fid.clone()).await, (200, bytes.clone()));
+    let res = ts
+        .authed(ts.client.delete(format!("{}/api/artifacts/{id}", ts.base)))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success(), "{}", res.status());
+    assert_eq!(fetch(fid.clone()).await, (200, bytes));
 }

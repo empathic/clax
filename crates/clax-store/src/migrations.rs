@@ -1279,6 +1279,30 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX site_sessions_by_browser ON site_sessions(browser_session);
     ALTER TABLE artifacts ADD COLUMN site_access TEXT NOT NULL DEFAULT 'private'
         CHECK (site_access IN ('private','world'));",
+    // 45: an asset's ID names it within its artifact (`crate::assets`): a
+    // site host serves only its own artifact's assets, so a fork copies
+    // the assets its version names under the same IDs and its pages'
+    // addresses keep working. `assets` is keyed by (artifact_id, id); an
+    // asset's page authors are kept under `<artifact ID>/<asset ID>`.
+    "CREATE TABLE assets_45 (
+        id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+        content_type TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        ext TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        person TEXT,
+        PRIMARY KEY (artifact_id, id)
+    );
+    INSERT INTO assets_45 (id, artifact_id, content_type, size, ext, created_at, person)
+        SELECT id, artifact_id, content_type, size, ext, created_at, person FROM assets ORDER BY rowid;
+    DROP TABLE assets;
+    ALTER TABLE assets_45 RENAME TO assets;
+    CREATE INDEX assets_by_id ON assets(id);
+    DELETE FROM page_authors WHERE kind = 'asset'
+        AND NOT EXISTS (SELECT 1 FROM assets a WHERE a.id = page_authors.id);
+    UPDATE page_authors SET id = (SELECT a.artifact_id FROM assets a WHERE a.id = page_authors.id) || '/' || id
+        WHERE kind = 'asset';",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -2779,6 +2803,74 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    /// Migration 45 keys assets by artifact and asset ID, keeping every
+    /// row, and moves each asset's page authors to `<artifact>/<asset>`,
+    /// dropping those of no asset.
+    #[test]
+    fn migration_45_names_each_asset_within_its_artifact() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            let before = 44;
+            assert!(MIGRATIONS[before].contains("assets_45"));
+            for sql in &MIGRATIONS[..before] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.pragma_update(None, "user_version", before as u32)
+                .unwrap();
+            c.execute_batch(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                    VALUES ('7q3k9mzx2b4t', 't', 'x', 'x', 1, '0'), ('9z1x4c7v2b5n', 'u', 'y', 'y', 1, '0');
+                 INSERT INTO assets (id, artifact_id, content_type, size, ext, created_at, person)
+                    VALUES ('as1', '7q3k9mzx2b4t', 'image/png', 3, 'png', 'x', 'p_mia0000000000'),
+                           ('as2', '7q3k9mzx2b4t', 'text/csv', 1, 'csv', 'x', NULL);
+                 INSERT INTO page_authors (kind, id, author)
+                    VALUES ('asset', 'as1', 'p_mia0000000000'), ('asset', 'gone', '*owner'),
+                           ('comment', 'c1', '*owner');",
+            )
+            .unwrap();
+        }
+        let st = Store::open(&home).unwrap();
+        let src = clax_core::ArtifactId::parse("7q3k9mzx2b4t").unwrap();
+        let a = st.get_asset(&src, "as1").unwrap().unwrap();
+        assert_eq!(a.person.as_deref(), Some("p_mia0000000000"));
+        assert_eq!(a.page_authors, ["p_mia0000000000"]);
+        assert_eq!(st.list_assets(&src).unwrap().len(), 2);
+        let keys: Vec<(String, String)> = st
+            .with_read(|c| {
+                let mut stmt = c.prepare("SELECT kind, id FROM page_authors ORDER BY kind, id")?;
+                Ok(stmt
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<rusqlite::Result<_>>()?)
+            })
+            .unwrap();
+        assert_eq!(
+            keys,
+            [
+                ("asset".to_string(), "7q3k9mzx2b4t/as1".to_string()),
+                ("comment".to_string(), "c1".to_string())
+            ]
+        );
+        // One ID may now name an asset of another artifact too.
+        st.with_write(|c| {
+            c.execute(
+                "INSERT INTO assets (id, artifact_id, content_type, size, ext, created_at)
+                 VALUES ('as1', '9z1x4c7v2b5n', 'image/png', 3, 'png', 'z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let other = clax_core::ArtifactId::parse("9z1x4c7v2b5n").unwrap();
+        assert!(st.get_asset(&other, "as1").unwrap().is_some());
+        assert_eq!(
+            st.find_asset("as1").unwrap().unwrap().artifact_id,
+            src.as_str()
+        );
     }
 
     #[test]

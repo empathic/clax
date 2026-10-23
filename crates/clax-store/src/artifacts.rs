@@ -716,7 +716,7 @@ impl Store {
                 // scope watches before its first version.
                 for sql in [
                     "DELETE FROM page_authors WHERE kind = 'asset' AND id IN
-                        (SELECT id FROM assets WHERE artifact_id = ?1)",
+                        (SELECT artifact_id || '/' || id FROM assets WHERE artifact_id = ?1)",
                     "DELETE FROM assets WHERE artifact_id = ?1",
                     "DELETE FROM versions WHERE artifact_id = ?1",
                     "DELETE FROM docs WHERE artifact_id = ?1",
@@ -804,7 +804,7 @@ impl Store {
                             "DELETE FROM page_authors WHERE kind = 'comment' AND id IN
                                 (SELECT c.id FROM comments c JOIN threads t ON t.id = c.thread_id WHERE t.artifact_id = ?1)",
                             "DELETE FROM page_authors WHERE kind = 'asset' AND id IN
-                                (SELECT id FROM assets WHERE artifact_id = ?1)",
+                                (SELECT artifact_id || '/' || id FROM assets WHERE artifact_id = ?1)",
                             "DELETE FROM comments WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM thread_moves WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM bot_follow_ups WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
@@ -3281,11 +3281,11 @@ mod tests {
             b"v1"
         );
         let asset = store.add_asset(DAEMON, &id, "image/png", b"png").unwrap();
-        assert_eq!(store.read_asset(&asset.id).unwrap().unwrap().1, b"png");
+        assert_eq!(store.read_asset(&id, &asset.id).unwrap().unwrap().1, b"png");
         assert_eq!(content.versions(), [(a.id.clone(), 1), (a.id.clone(), 2)]);
         assert_eq!(content.asset_count(), 1);
         assert!(!home.artifact_dir(&id).exists(), "nothing under the home");
-        store.delete_asset(DAEMON, &asset.id).unwrap();
+        store.delete_asset(DAEMON, &id, &asset.id).unwrap();
         assert_eq!(content.asset_count(), 0);
         store.delete_artifact(DAEMON, &id).unwrap();
         assert!(content.versions().is_empty());
@@ -3553,7 +3553,7 @@ mod tests {
                          VALUES ('{sid}', 'zzzzzzzzzzzz', 1, 'x', 'scope');
                      INSERT INTO assets (id, artifact_id, content_type, size, ext, created_at)
                          VALUES ('as1', 'zzzzzzzzzzzz', 'image/png', 1, 'png', 'x');
-                     INSERT INTO page_authors (kind, id, author) VALUES ('asset', 'as1', '*owner');"
+                     INSERT INTO page_authors (kind, id, author) VALUES ('asset', 'zzzzzzzzzzzz/as1', '*owner');"
                 ))?;
                 Ok(())
             })

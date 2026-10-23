@@ -127,6 +127,10 @@ All under one reserved prefix, so the rest of the namespace is the site's:
 - An asset is served only on the host of the artifact that holds it, at
   `/_clax/blob/<id>`; the next page contract version says so (the current
   one, `web/contract/0.2.61/assets.d.ts`, promises `"/_blob/" + id`).
+  An asset ID names an asset within its artifact (`assets` is keyed by
+  artifact and ID): a fork copies the source's assets its version's files
+  name, bytes and row, under the same IDs, so the fork's pages load them
+  from the fork's host unchanged.
 - **Legacy artifacts.** Artifacts that exist when this lands are marked
   legacy (a flag the migration sets; new artifacts never have it). On a
   legacy artifact's host, `/_blob/<id>` is also reserved and serves that

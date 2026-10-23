@@ -146,14 +146,9 @@ pub async fn delete(
     clax_http::agent::person_agent_session(&a.0.caller)?;
     let (aid, asset_id) = path(params)?;
     let id = parse_id(&aid)?;
-    s.store_call_async(move |st| async move {
-        match st.get_asset(&asset_id)? {
-            Some(a) if a.artifact_id == id.as_str() => {
-                st.delete_asset_async(&audit, &asset_id).await
-            }
-            _ => Err(CoreError::NotFound),
-        }
-    })
+    s.store_call_async(
+        move |st| async move { st.delete_asset_async(&audit, &id, &asset_id).await },
+    )
     .await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -163,8 +158,10 @@ pub async fn delete(
 /// before each artifact had a site: 301 to the asset's address on its
 /// artifact's site (`/_blob/<id>` for a legacy artifact, else
 /// `/_clax/blob/<id>`), whose access check decides; no bytes are served
-/// here. An unknown asset, or a live page's to a caller that may not see
-/// live pages, is 404.
+/// here. The address names no artifact: it means the asset
+/// [`clax_store::Store::find_asset`] finds (the upload, not a fork's copy).
+/// An unknown asset, or a live page's to a caller that may not see live
+/// pages, is 404.
 pub async fn blob(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -178,7 +175,7 @@ pub async fn blob(
     let live_ids = s.live_ids.clone();
     let (aid, asset_id, legacy) = s
         .store_call(move |st| {
-            let asset = st.get_asset(&asset_id)?.ok_or(CoreError::NotFound)?;
+            let asset = st.find_asset(&asset_id)?.ok_or(CoreError::NotFound)?;
             if sees.check(&live_ids, &asset.artifact_id).is_err() {
                 return Err(CoreError::NotFound);
             }
@@ -206,24 +203,69 @@ pub async fn blob(
         .into_response())
 }
 
-/// The asset's bytes; with `owner` (a site host's artifact), only when the
-/// asset is that artifact's. An asset of a live page answers 404 to a
-/// caller that may not see live pages ([`SeesLive`]), as a missing one,
-/// or another artifact's, does, checked on the asset's row before any of
-/// its bytes are read.
+/// `/_blob/<artifact ID>/<asset ID>` on the public host, the address a page
+/// was given for its own asset before each artifact had a site: 301 to
+/// `/_clax/blob/<asset ID>` on that artifact's site, whose access check
+/// decides; no bytes are served here. An asset the artifact does not hold
+/// (another artifact's, a missing one), or a live page's to a caller that
+/// may not see live pages, is 404.
+pub async fn scoped_blob(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    sees: SeesLive,
+    headers: axum::http::HeaderMap,
+    params: Result<Path<(String, String)>, PathRejection>,
+) -> Result<Response, ApiError> {
+    // As `blob`: an asset's bytes serve browsers (spec §7.5).
+    d.refuse_agents()?;
+    let (aid, asset_id) = path(params)?;
+    let id = parse_id(&aid)?;
+    let live_ids = s.live_ids.clone();
+    let (aid, asset_id) = s
+        .store_call(move |st| {
+            let asset = st.get_asset(&id, &asset_id)?.ok_or(CoreError::NotFound)?;
+            if sees.check(&live_ids, &asset.artifact_id).is_err() {
+                return Err(CoreError::NotFound);
+            }
+            Ok((id, asset.id))
+        })
+        .await?;
+    let host = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    let to = format!(
+        "{}{}",
+        clax_http::site_access::site_origin(&s, &aid, host),
+        clax_http::hosted::asset_url(&asset_id, false)
+    );
+    Ok((
+        StatusCode::MOVED_PERMANENTLY,
+        [
+            (header::LOCATION, to.as_str()),
+            (header::REFERRER_POLICY, "no-referrer"),
+        ],
+    )
+        .into_response())
+}
+
+/// The bytes of asset `asset_id` of `owner` (a site host's artifact): an
+/// asset ID names an asset within its artifact, so another artifact's
+/// answers 404, as a missing one does. An asset of a live page answers 404
+/// to a caller that may not see live pages ([`SeesLive`]), checked on the
+/// asset's row before any of its bytes are read.
 pub(crate) async fn serve_blob(
     s: &AppState,
     sees: SeesLive,
     asset_id: String,
-    owner: Option<ArtifactId>,
+    owner: ArtifactId,
 ) -> Result<Response, ApiError> {
     let live_ids = s.live_ids.clone();
     let (asset, bytes) = s
         .store_call_async(move |st| async move {
-            let asset = st.get_asset(&asset_id)?.ok_or(CoreError::NotFound)?;
-            if owner.is_some_and(|o| o.as_str() != asset.artifact_id) {
-                return Err(CoreError::NotFound);
-            }
+            let asset = st
+                .get_asset(&owner, &asset_id)?
+                .ok_or(CoreError::NotFound)?;
             if sees.check(&live_ids, &asset.artifact_id).is_err() {
                 return Err(CoreError::NotFound);
             }
@@ -235,7 +277,7 @@ pub(crate) async fn serve_blob(
         })
         .await?;
     let len = bytes.len().to_string();
-    (
+    Ok((
         [
             (header::CONTENT_TYPE, asset.content_type.as_str()),
             (header::CONTENT_LENGTH, len.as_str()),
@@ -246,5 +288,5 @@ pub(crate) async fn serve_blob(
         ],
         Body::from(bytes),
     )
-        .into_response()
+        .into_response())
 }

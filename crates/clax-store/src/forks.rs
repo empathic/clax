@@ -12,7 +12,16 @@
 //!   history gives the fork the source's history behind version 1 (git:
 //!   `Clax-Forked-From`), the others copy the files. It keeps the source's
 //!   `legacy_paths`, and refuses a file its site would serve itself
-//!   ([`clax_core::publish::check_path_for`]). Assets, threads,
+//!   ([`clax_core::publish::check_path_for`]).
+//! - The source's assets that the version's files name by ID (a run of
+//!   letters and digits that is the ID, [`super::assets::named_ids`]) are
+//!   copied, bytes and row, under the same IDs, each with its uploader and
+//!   page authors: a site serves only its own artifact's assets, so the
+//!   fork's pages keep loading them from the fork's host, and the source's
+//!   deletion of one, or of itself, leaves the fork's. Each copy is
+//!   recorded as an `asset.upload` with `forked_from {artifact_id,
+//!   asset_id}`. An asset named only at run time (built in script, or kept
+//!   in a document) is not copied, as documents are not. Threads,
 //!   documents, shares and link access are not copied.
 //! - `artifacts.forked_from_id` and `forked_from_version` record where it
 //!   came from ([`clax_core::model::ForkedFrom`]); version 1's note says it,
@@ -41,7 +50,7 @@ use clax_core::visibility::OWNER;
 use clax_core::visibility::{Author, file_authors};
 use clax_core::{ArtifactId, CoreError, Result};
 use rusqlite::{OptionalExtension, params};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Version 1's note of a fork of version `n` of `from`.
 pub fn fork_note(from: &str, n: u32) -> String {
@@ -139,6 +148,13 @@ impl Store {
         let meta = self.publisher_meta(person, session_id, None)?;
         let paths: Vec<&str> = files.keys().map(String::as_str).collect();
         self.content.fork(from, n, &paths, &id, &meta).await?;
+        let copies = match self.fork_assets(from, n, &paths, &id).await {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = self.content.delete_artifact(&id).await;
+                return Err(e);
+            }
+        };
         let now = self.now();
         let files_json = serde_json::to_string(&files).expect("serialisable map");
         let content_sha256 = content_manifest_sha256(&files);
@@ -238,6 +254,7 @@ impl Store {
                 version_record(&a, &fv, &[], Some(false), None).with("source", source);
             publish.ids.artifact2 = Some(from.as_str().to_string());
             self.record_audit(tx, ctx, publish)?;
+            self.copy_assets_in(tx, ctx, &copies, &id, &now)?;
             Ok((a, fv))
         });
         if result.is_err()
@@ -251,6 +268,41 @@ impl Store {
             );
         }
         result
+    }
+}
+
+impl Store {
+    /// Copies into `to`'s content the assets of `from` that version `n`'s
+    /// files `paths` name (see the [module docs](self)), for the fork's
+    /// transaction to record.
+    async fn fork_assets(
+        &self,
+        from: &ArtifactId,
+        n: u32,
+        paths: &[&str],
+        to: &ArtifactId,
+    ) -> Result<Vec<super::assets::AssetCopy>> {
+        let assets = self.list_assets(from)?;
+        if assets.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: BTreeSet<&str> = assets.iter().map(|a| a.id.as_str()).collect();
+        let mut named = BTreeSet::new();
+        for path in paths {
+            if named.len() == ids.len() {
+                break;
+            }
+            let bytes = self
+                .content
+                .read_file(from, n, path)
+                .await?
+                .ok_or_else(|| clax_core::content::missing(from, n, path))?;
+            super::assets::named_ids(&bytes, &ids, &mut named);
+        }
+        if named.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.copy_asset_bytes(from, &named, to).await
     }
 }
 
@@ -698,6 +750,87 @@ mod tests {
             st.fork_artifact(DAEMON, &src, None, None, None),
             Err(clax_core::CoreError::NotFound)
         ));
+    }
+
+    /// A fork copies the source's assets its version names, under the same
+    /// IDs, bytes and authors; the source's deletion of one, or of itself,
+    /// leaves the fork's. An asset no file names stays the source's alone.
+    #[test]
+    fn a_fork_copies_the_assets_its_version_names_under_the_same_ids() {
+        let (_d, st) = store();
+        let src = publish(&st, None, &[("index.html", "<p>")]);
+        let named = st
+            .add_asset_by(DAEMON, &src, "image/png", b"png!", Some(MIA), false)
+            .unwrap();
+        let in_js = st.add_asset(DAEMON, &src, "text/csv", b"a,b").unwrap();
+        let unnamed = st.add_asset(DAEMON, &src, "image/png", b"no").unwrap();
+        // A longer word holding an ID is not a reference to it.
+        let html = format!(
+            "<img src=\"_clax/blob/{}\"><p>x{}y</p>",
+            named.id, unnamed.id
+        );
+        let js = format!("fetch('/_clax/blob/' + '{}')", in_js.id);
+        publish(&st, Some(&src), &[("index.html", &html), ("app.js", &js)]);
+        let (a, v) = st.fork_artifact(DAEMON, &src, None, None, None).unwrap();
+        let fork = ArtifactId::parse(&a.id).unwrap();
+        let src_v = st.get_version(&src, 2).unwrap().unwrap();
+        assert_eq!(v.content_sha256, src_v.content_sha256, "files unrewritten");
+        let ids: Vec<String> = st
+            .list_assets(&fork)
+            .unwrap()
+            .into_iter()
+            .map(|x| x.id)
+            .collect();
+        let mut want = vec![named.id.clone(), in_js.id.clone()];
+        want.sort();
+        assert_eq!(ids, want);
+        let (copy, bytes) = st.read_asset(&fork, &named.id).unwrap().unwrap();
+        assert_eq!(bytes, b"png!");
+        assert_eq!(
+            (copy.content_type.as_str(), copy.person.as_deref()),
+            ("image/png", Some(MIA))
+        );
+        assert!(st.get_asset(&fork, &unnamed.id).unwrap().is_none());
+        // The address naming only the ID means the upload.
+        assert_eq!(
+            st.find_asset(&named.id).unwrap().unwrap().artifact_id,
+            src.as_str()
+        );
+        let uploads: Vec<serde_json::Value> = audit_of(&st, &a.id)
+            .into_iter()
+            .filter(|(k, _)| k == "asset.upload")
+            .map(|(_, b)| b["forked_from"].clone())
+            .collect();
+        assert_eq!(uploads.len(), 2);
+        assert!(
+            uploads
+                .contains(&serde_json::json!({"artifact_id": src.as_str(), "asset_id": named.id}))
+        );
+        // The source's deletions leave the fork's copies.
+        st.delete_asset(DAEMON, &src, &named.id).unwrap();
+        assert_eq!(st.read_asset(&fork, &named.id).unwrap().unwrap().1, b"png!");
+        st.delete_artifact(DAEMON, &src).unwrap();
+        st.delete_assets_of_deleted_artifacts().unwrap();
+        assert_eq!(st.read_asset(&fork, &in_js.id).unwrap().unwrap().1, b"a,b");
+        assert_eq!(
+            st.find_asset(&in_js.id).unwrap().unwrap().artifact_id,
+            a.id,
+            "with the upload's artifact gone, the copy is what the ID means"
+        );
+        // And the fork's deletion of its copy is its own.
+        st.delete_asset(DAEMON, &fork, &in_js.id).unwrap();
+        assert!(st.find_asset(&in_js.id).unwrap().is_none());
+    }
+
+    /// A fork of a version naming none of its source's assets copies none.
+    #[test]
+    fn a_fork_naming_no_asset_copies_none() {
+        let (_d, st) = store();
+        let src = publish(&st, None, &[("index.html", "<p>")]);
+        st.add_asset(DAEMON, &src, "image/png", b"x").unwrap();
+        let (a, _) = st.fork_artifact(DAEMON, &src, None, None, None).unwrap();
+        let fork = ArtifactId::parse(&a.id).unwrap();
+        assert!(st.list_assets(&fork).unwrap().is_empty());
     }
 
     #[test]
