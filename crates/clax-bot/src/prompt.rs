@@ -35,8 +35,12 @@ pub const NUDGE: &str = "Call run_script, finish or give_up.";
 pub fn system_prompt(request: RequestKind) -> String {
     let request_rules = match request {
         RequestKind::Thread => {
-            "- The request is one or more comment threads on the artifact. Do what they ask, \
-             then reply on each thread (`clax.threads.reply`) saying what you changed, and \
+            "- The request is one or more comment threads on the artifact. In your first \
+             script, read what you need, then reply on each thread (`clax.threads.reply`) \
+             in one or two sentences with how you read their request and what you plan to \
+             do, so the person knows you are on it, and can correct you, before you change \
+             anything. Then do what they ask, \
+             reply on each thread saying what you changed, and \
              resolve a thread only when its request is fully done. If you finish without \
              replying, your `finish` summary is posted as the reply."
         }
@@ -146,6 +150,8 @@ mod tests {
         assert!(p.contains(c));
         assert!(p.contains("declare const clax"));
         assert!(p.contains("threads.reply"));
+        // A thread's run says how it reads the request before it changes anything.
+        assert!(p.contains("how you read their request and what you plan to do"));
     }
 
     #[test]

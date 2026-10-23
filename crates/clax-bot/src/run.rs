@@ -512,6 +512,9 @@ pub(crate) struct History {
     pub next: Value,
     /// The last turn's next step was the nudge.
     pub nudged: bool,
+    /// The threads replied on since a script last changed the draft or
+    /// published (in that script or after it): a reply before the work,
+    /// such as the plan, leaves the `finish` summary to be posted.
     pub replied: BTreeSet<String>,
     /// The version the draft is based on, when a script moved it (a
     /// publish, a rebase).
@@ -588,6 +591,14 @@ impl History {
                         Role::User,
                         vec![Block::from_json(p["result"].clone())],
                     );
+                    // A script that changed the draft or published starts
+                    // the replies over: one before it (the plan) does not
+                    // say what was done.
+                    let wrote = p["changed"].as_array().is_some_and(|c| !c.is_empty())
+                        || !p["published"].is_null();
+                    if wrote {
+                        h.replied.clear();
+                    }
                     for t in p["replied"].as_array().into_iter().flatten() {
                         if let Some(t) = t.as_str() {
                             h.replied.insert(t.to_string());

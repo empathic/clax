@@ -301,6 +301,37 @@ async fn a_turn_without_a_tool_call_is_nudged_once_then_gives_up() {
 }
 
 #[tokio::test]
+async fn a_plan_replied_before_the_work_still_gets_the_closing_summary() {
+    let env = Env::new().await;
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Read and say the plan",
+        r#"await clax.files.read("index.html");
+await clax.threads.reply("T1", "I read this as: make the heading blue. I'll change --accent.");
+return 1;"#,
+    ));
+    env.api.push(env.script_turn(
+        "tu_2",
+        "Make the heading blue",
+        r#"await clax.files.replace("index.html", "--accent: #c00;", "--accent: #00c;");
+return (await clax.draft.publish({note: "Blue heading", addresses: ["T1"]})).version;"#,
+    ));
+    env.api.push(finish_turn(
+        "Made the heading blue and published version 2.",
+    ));
+    let run = env.run();
+    env.drive(&env.deps(), &run, &DriverId::mint()).await;
+    let said: Vec<String> = env.replies().into_iter().map(|(_, m)| m).collect();
+    assert_eq!(
+        said,
+        [
+            "I read this as: make the heading blue. I'll change --accent.",
+            "Made the heading blue and published version 2."
+        ]
+    );
+}
+
+#[tokio::test]
 async fn a_briefs_run_posts_its_summary_on_the_briefs_thread() {
     let env = Env::new().await;
     env.api.push(finish_turn("Built the map."));
