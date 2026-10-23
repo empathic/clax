@@ -39,10 +39,10 @@
 // - after a simulated wake (POST /_worker/hibernate) the guest is still
 //   seated and Sam still a spectator before any browser subscribes again,
 //   and comments still arrive live;
-// - with the access check, room sockets a page opens on its site host
-//   through its site session (Sam's, on a board shared with him, and the
-//   owner's) reopen across the wake as their holders, and removing Sam's
-//   share closes his (4403 `revoked`) and leaves the owner's open.
+// - room sockets a page opens on its site host through its site session
+//   (Sam's, on a board shared with him, and the owner's) reopen across the
+//   wake as their holders, and removing Sam's share closes his (4403
+//   `revoked`) and leaves the owner's open.
 //
 // Prints one line per check and a JSON summary; exits non-zero on the first
 // failure. `node e2e-hosted.mjs --no-build` skips the build;
@@ -657,55 +657,50 @@ async function main() {
     // Room sockets on a site host, opened by the page itself through its
     // site session: Sam's (shared the board) and the owner's. They survive
     // the wake below, and Sam's closes once the share is removed.
-    let siteRooms = null;
-    if (accessChecked) {
-      const { artifact: board } = await api(origin, "/api/artifacts", {
-        method: "POST",
-        body: JSON.stringify({ title: "Tide board", capabilities: { room: {} }, files: { "index.html": { content: "<title>Tide board</title><main><h2>Tide board</h2></main>", encoding: "utf8" } } }),
-      });
-      const samMe = await call(laptop, "GET", "/api/hosted/me");
-      const shared = await call(ada, "PUT", `/api/hosted/artifacts/${board.id}/shares`, { person: samMe.body?.person?.public_id, access: "viewer" });
-      check(shared.status === 200 && shared.body?.share?.id, "the owner shares a room board with Sam", shared);
-      const openRoom = async (ctx, peer) => {
-        const p = await ctx.newPage();
-        pages.push(p);
-        await p.goto(`${siteOf(board.id)}/`);
-        await p.locator("h2", { hasText: "Tide board" }).waitFor({ timeout: LIMIT });
-        await p.evaluate((label) => {
-          const room = { frames: [], closed: null, acks: 0 };
-          const ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/_clax/api/room?peer=${label}`);
-          ws.onmessage = (e) => {
-            room.frames.push(String(e.data));
-            if (JSON.parse(e.data).t === "ack") room.acks += 1;
-          };
-          ws.onclose = (e) => (room.closed = { code: e.code, reason: e.reason });
-          window.__room = room;
-          window.__ws = ws;
-        }, peer);
-        return p;
-      };
-      const welcomes = (p) => p.evaluate(() => window.__room.frames.filter((f) => JSON.parse(f).t === "welcome").length);
-      const roomState = (p) => p.evaluate(() => ({ closed: window.__room.closed, frames: window.__room.frames.slice(-3) }));
-      const samRoom = await openRoom(laptop.context(), "0000000000000sam");
-      const adaRoom = await openRoom(ada.context(), "0000000000000ada");
-      for (const [who, p] of [["Sam's", samRoom], ["the owner's", adaRoom]]) {
-        await until(`${who} site room socket's welcome`, async () => (await welcomes(p)) === 1);
-      }
-      check(true, "Sam's and the owner's pages open room sockets on the board's site");
-      // A join the socket sends is acked: it is open.
-      const joined = async (p, what) => {
-        const before = await p.evaluate(() => window.__room.acks);
-        await p.evaluate((n) => window.__ws.send(JSON.stringify({ t: "join", id: n, room: "probe" })), before + 1);
-        await until(what, async () => {
-          const s = await roomState(p);
-          if (s.closed) throw new Error(`closed: ${JSON.stringify(s)}`);
-          return (await p.evaluate(() => window.__room.acks)) > before;
-        });
-      };
-      siteRooms = { board, share: shared.body.share.id, samRoom, adaRoom, welcomes, roomState, joined };
-    } else {
-      skip("the site room socket steps", "this build has no access check");
+    const { artifact: board } = await api(origin, "/api/artifacts", {
+      method: "POST",
+      body: JSON.stringify({ title: "Tide board", capabilities: { room: {} }, files: { "index.html": { content: "<title>Tide board</title><main><h2>Tide board</h2></main>", encoding: "utf8" } } }),
+    });
+    const samMe = await call(laptop, "GET", "/api/hosted/me");
+    const shared = await call(ada, "PUT", `/api/hosted/artifacts/${board.id}/shares`, { person: samMe.body?.person?.public_id, access: "viewer" });
+    check(shared.status === 200 && shared.body?.share?.id, "the owner shares a room board with Sam", shared);
+    const openRoom = async (ctx, peer) => {
+      const p = await ctx.newPage();
+      pages.push(p);
+      await p.goto(`${siteOf(board.id)}/`);
+      await p.locator("h2", { hasText: "Tide board" }).waitFor({ timeout: LIMIT });
+      await p.evaluate((label) => {
+        const room = { frames: [], closed: null, acks: 0 };
+        const ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/_clax/api/room?peer=${label}`);
+        ws.onmessage = (e) => {
+          room.frames.push(String(e.data));
+          if (JSON.parse(e.data).t === "ack") room.acks += 1;
+        };
+        ws.onclose = (e) => (room.closed = { code: e.code, reason: e.reason });
+        window.__room = room;
+        window.__ws = ws;
+      }, peer);
+      return p;
+    };
+    const welcomes = (p) => p.evaluate(() => window.__room.frames.filter((f) => JSON.parse(f).t === "welcome").length);
+    const roomState = (p) => p.evaluate(() => ({ closed: window.__room.closed, frames: window.__room.frames.slice(-3) }));
+    const samRoom = await openRoom(laptop.context(), "0000000000000sam");
+    const adaRoom = await openRoom(ada.context(), "0000000000000ada");
+    for (const [who, p] of [["Sam's", samRoom], ["the owner's", adaRoom]]) {
+      await until(`${who} site room socket's welcome`, async () => (await welcomes(p)) === 1);
     }
+    check(true, "Sam's and the owner's pages open room sockets on the board's site");
+    // A join the socket sends is acked: it is open.
+    const joined = async (p, what) => {
+      const before = await p.evaluate(() => window.__room.acks);
+      await p.evaluate((n) => window.__ws.send(JSON.stringify({ t: "join", id: n, room: "probe" })), before + 1);
+      await until(what, async () => {
+        const s = await roomState(p);
+        if (s.closed) throw new Error(`closed: ${JSON.stringify(s)}`);
+        return (await p.evaluate(() => window.__room.acks)) > before;
+      });
+    };
+    const siteRooms = { board, share: shared.body.share.id, samRoom, adaRoom, welcomes, roomState, joined };
 
     // A simulated wake: the server built anew on the same storage.
     const hib = await fetch(`${origin}/_worker/hibernate`, { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } });
@@ -733,7 +728,7 @@ async function main() {
     });
     check(true, "after the wake the guest's pointer still reaches the owner");
 
-    if (siteRooms) {
+    {
       const { board, share, samRoom, adaRoom, welcomes, roomState, joined } = siteRooms;
       // Reopened as who their site sessions name, each is welcomed again.
       for (const [who, p] of [["Sam's", samRoom], ["the owner's", adaRoom]]) {
