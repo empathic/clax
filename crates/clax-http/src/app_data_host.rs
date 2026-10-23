@@ -392,8 +392,9 @@ impl clax_store::jobs::StepDocs for HostStepDocs {
     }
 }
 
-/// Copies into draft `draft` the documents of its app `of` that the owner
-/// reads (private per-viewer subtrees left out), in path order, each at
+/// Copies into draft `draft` the documents of its app `of` that `docs`
+/// reads (the owner, a caller, or none: then it copies nothing; private
+/// per-viewer subtrees left out), in path order, each at
 /// version 1, until [`clax_store::drafts::DRAFT_DOCS_MAX`] documents or
 /// [`clax_store::drafts::DRAFT_DOCS_MAX_BYTES`] of stored JSON, through
 /// `host`; returns how many it copied and whether any were left. When
@@ -407,8 +408,15 @@ pub async fn copy_app_docs(
     store: &Arc<Store>,
     of: &ArtifactId,
     draft: &ArtifactId,
+    docs: &clax_store::drafts::DraftDocs,
 ) -> Result<(usize, bool)> {
     use clax_store::app_data::WireCaller;
+    use clax_store::drafts::DraftDocs;
+    let reader = match docs {
+        DraftDocs::Owner => clax_core::db::Caller::new(clax_core::db::Level::Owner, None),
+        DraftDocs::As(c) => c.clone(),
+        DraftDocs::None => return Ok((0, false)),
+    };
     let id = of.clone();
     let caps = store.call(move |st| st.doc_capabilities(&id)).await?;
     let owner = WireCaller::from(&clax_core::db::Caller::new(
@@ -434,7 +442,7 @@ pub async fn copy_app_docs(
             of,
             AppDataOp::CopyOut {
                 caps,
-                caller: owner,
+                caller: WireCaller::from(&reader),
                 max_docs: clax_store::drafts::DRAFT_DOCS_MAX,
                 max_bytes: clax_store::drafts::DRAFT_DOCS_MAX_BYTES,
             },
@@ -795,7 +803,7 @@ mod tests {
         .unwrap();
         let draft = draft_of(&st, &app);
         assert_eq!(
-            copy_app_docs(&host, &st, &app, &draft).await.unwrap(),
+            copy_app_docs(&host, &st, &app, &draft, &clax_store::drafts::DraftDocs::Owner).await.unwrap(),
             (2, false)
         );
         let get = |path: &str| AppDataOp::Get {
@@ -849,7 +857,7 @@ mod tests {
         let draft = draft_of(&st, &app);
         let per = json!({ "s": big }).to_string().len();
         assert_eq!(
-            copy_app_docs(&host, &st, &app, &draft).await.unwrap(),
+            copy_app_docs(&host, &st, &app, &draft, &clax_store::drafts::DraftDocs::Owner).await.unwrap(),
             (clax_store::drafts::DRAFT_DOCS_MAX_BYTES / per, true)
         );
     }
@@ -877,7 +885,7 @@ mod tests {
             .unwrap();
         let draft = draft_of(&st, &app);
         assert_eq!(
-            copy_app_docs(&host, &st, &app, &draft).await.unwrap(),
+            copy_app_docs(&host, &st, &app, &draft, &clax_store::drafts::DraftDocs::Owner).await.unwrap(),
             (0, true)
         );
     }

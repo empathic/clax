@@ -3,7 +3,9 @@
 //! hidden from every listing (`hidden = 1`, migration 43).
 //!
 //! A draft of an app (`draft_of`) starts with a copy of the app's documents
-//! that the owner reads, private per-viewer subtrees left out, so a page
+//! that its maker reads ([`DraftDocs`]: the owner's level, or on a hosted
+//! daemon at an app another person made the caller's level there, or
+//! none), private per-viewer subtrees left out, so a page
 //! that writes while it renders writes into the copy only: documents live
 //! in each artifact's own store, so whoever makes the draft copies them
 //! there once it is made (`clax_http::app_data_host::copy_app_docs`, up to
@@ -99,6 +101,19 @@ pub(crate) fn is_hidden_in(c: &Connection, id: &str) -> Result<bool> {
             .optional()?
             .is_some_and(|h| h != 0),
     )
+}
+
+/// Whose reading of an app's documents a draft's copy of them is
+/// (`clax_http::app_data_host::copy_app_docs`).
+#[derive(Clone, Debug)]
+pub enum DraftDocs {
+    /// What the owner reads: every document but private per-viewer ones.
+    Owner,
+    /// What this caller reads by the app's rules (on a hosted daemon, the
+    /// owner at an app shared with them or open by its link).
+    As(clax_core::db::Caller),
+    /// None: the caller reads no document of the app.
+    None,
 }
 
 impl Store {

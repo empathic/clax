@@ -2439,6 +2439,13 @@ async fn no_owner_path_reads_a_members_page() {
         let (s, v) = site.post(&owner, "/api/approvals", b).await;
         assert_eq!((s, code(&v)), (400, code_), "{v}");
     }
+    // Whatever else the body gets wrong, her thread answers as a missing
+    // one does.
+    for tid in [mia_tid.as_str(), "01ZZZZZZZZZZZZZZZZZZZZZZZZ"] {
+        let b = json!({"author": "u_nobody", "scope": "thread", "thread_id": tid});
+        let (s, v) = site.post(&owner, "/api/approvals", b).await;
+        assert_eq!((s, code(&v)), (400, "unknown_thread"), "{tid}: {v}");
+    }
     drop(jobs_stream);
     // Mia's own listings still name it.
     let (_, v) = site.get(&mia, "/api/inbox").await;
@@ -2502,10 +2509,12 @@ async fn the_daemon_tokens_own_routes_at_a_page_shared_with_the_owner_hold_to_th
     let mia = site.person(&owner, "Mia").await;
     let mut agent = site.token_agent(&mia, "laptop").await;
     assert_eq!(agent.initialize("claude-code").await, 200);
+    // Her page keeps admin-only documents under `secret`.
+    let caps = json!({"db": {"rules": [{"path": "secret", "read": "admin", "write": "admin"}]}});
     let (_, r) = agent
         .call(
             "publish",
-            json!({"html": "<h1>Mia's</h1>", "title": "Mia's", "capabilities": {"db": {}}}),
+            json!({"html": "<h1>Mia's</h1>", "title": "Mia's", "capabilities": caps.clone()}),
         )
         .await;
     assert_eq!(tool_code(&r), "", "{r}");
@@ -2518,6 +2527,24 @@ async fn the_daemon_tokens_own_routes_at_a_page_shared_with_the_owner_hold_to_th
         .find(|a| a.title == "Mia's")
         .unwrap()
         .id;
+    for path in ["secret/a", "notes/a"] {
+        let r = site
+            .ts
+            .client
+            .put(site.url(&format!("/api/artifacts/{mias}/docs/{path}")))
+            .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+            .header("x-clax-session", agent.sid())
+            .header(
+                clax_core::remote::SESSION_SECRET_HEADER,
+                agent.session.as_deref().unwrap().split_once('.').unwrap().1,
+            )
+            .bearer_auth(&agent.token)
+            .json(&json!({"data": {"text": path}}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    }
     let (s, v) = site
         .put(
             &mia,
@@ -2569,18 +2596,22 @@ async fn the_daemon_tokens_own_routes_at_a_page_shared_with_the_owner_hold_to_th
     )
     .await;
     assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
-    // Nor does a draft of it copy its documents, which it makes at the
-    // owner's level.
-    let (s, v) = json_of(
-        token(reqwest::Method::POST, "/api/drafts")
-            .json(&json!({"of": mias, "title": "Draft",
-                "files": {"index.html": "<h1>draft</h1>"}}))
-            .send()
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
+    // A draft of it copies only the documents the share reads: a viewer's,
+    // none.
+    let draft = async || {
+        json_of(
+            token(reqwest::Method::POST, "/api/drafts")
+                .json(&json!({"of": mias, "title": "Draft",
+                    "files": {"index.html": "<h1>draft</h1>"}}))
+                .send()
+                .await
+                .unwrap(),
+        )
+        .await
+    };
+    let (s, v) = draft().await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["draft"]["docs_copied"], 0, "{v}");
     // The app's jobs at it hold to the share: a viewer replies to none of
     // its threads.
     let (s, t) = site.thread(&mia, &mias, "Mia's thread").await;
@@ -2672,7 +2703,26 @@ async fn the_daemon_tokens_own_routes_at_a_page_shared_with_the_owner_hold_to_th
     assert_eq!((s, code(&v)), (403, "admin_only"), "{v}");
     let (s, v) = restore(json!({"version": 1, "if_version": 1})).await;
     assert_eq!(s, 201, "{v}");
-    assert_eq!(v["artifact"]["capabilities"], json!({"db": {}}), "{v}");
+    assert_eq!(v["artifact"]["capabilities"], caps, "{v}");
+    // An editor's draft copies what the share's level reads: not the
+    // admin-only documents.
+    let (s, v) = draft().await;
+    assert_eq!(
+        (s, v["draft"]["docs_copied"].clone()),
+        (201, json!(1)),
+        "{v}"
+    );
+    let copy = v["draft"]["id"].as_str().unwrap().to_string();
+    for (path, want) in [("notes/a", 200), ("secret/a", 404)] {
+        let r = token(
+            reqwest::Method::GET,
+            &format!("/api/artifacts/{copy}/docs/{path}"),
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(r.status().as_u16(), want, "{path}");
+    }
     // A job's publish there changes no capability either, and writes no
     // document at the owner's level.
     let publish = |capabilities: Option<Value>, docs: Value| {
@@ -2708,6 +2758,89 @@ async fn the_daemon_tokens_own_routes_at_a_page_shared_with_the_owner_hold_to_th
         .await;
     assert!(!v.to_string().contains("a job's reply"), "{v}");
     drop(jobs_stream);
+}
+
+#[tokio::test]
+async fn an_approval_request_at_a_page_that_left_the_owners_reach_is_no_longer_theirs_to_decide() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let owner_pid = site.pid(&owner).await;
+    let mia = site.person(&owner, "Mia").await;
+    let mia_pid = site.pid(&mia).await;
+    let mut agent = site.token_agent(&mia, "laptop").await;
+    assert_eq!(agent.initialize("claude-code").await, 200);
+    let (_, r) = agent
+        .call(
+            "publish",
+            json!({"html": "<h1>Mia's</h1>", "title": "Mia's"}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    let mias = site
+        .ts
+        .store
+        .list_artifacts()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.title == "Mia's")
+        .unwrap()
+        .id;
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{mias}/shares"),
+            json!({"person": owner_pid, "access": "commenter"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let share = v["share"]["id"].as_str().unwrap().to_string();
+    let (s, t) = site.thread(&mia, &mias, "Mia's words").await;
+    assert_eq!(s, 201, "{t}");
+    let tid = t["thread"]["id"].as_str().unwrap().to_string();
+    // The owner's agent asks to read her words there.
+    let owner_sid = site.ts.register_session("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = json_of(
+        site.ts
+            .client
+            .post(site.url(&format!("/api/sessions/{owner_sid}/approvals")))
+            .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+            .bearer_auth(&site.ts.token)
+            .json(&json!({"artifact_id": mias, "thread_id": tid, "author": mia_pid}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let rid = v["approval_id"].as_str().unwrap().to_string();
+    let (_, v) = site.get(&owner, "/api/approvals/requests").await;
+    assert!(v.to_string().contains(&rid), "{v}");
+    // Her share with the owner ends: the request is not the owner's to see
+    // or decide, and lets nothing of hers through.
+    let (s, v) = site
+        .send(
+            &mia,
+            reqwest::Method::DELETE,
+            &format!("/api/hosted/artifacts/{mias}/shares/{share}"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (_, v) = site.get(&owner, "/api/approvals/requests").await;
+    assert!(!v.to_string().contains(&rid), "{v}");
+    let (s, v) = site
+        .post(
+            &owner,
+            &format!("/api/approvals/requests/{rid}/decide"),
+            json!({"scope": "artifact"}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    let (_, v) = site.get(&owner, "/api/approvals").await;
+    assert_eq!(v["approvals"], json!([]), "{v}");
 }
 
 #[tokio::test]

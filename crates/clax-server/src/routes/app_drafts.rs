@@ -12,13 +12,14 @@ use axum::http::StatusCode;
 use clax_core::CoreError;
 use clax_core::audit::AuditCtx;
 use clax_core::publish::{FileInput, PublishRequest, validate};
+use clax_core::rights::RightType;
 use clax_http::auth::RequireToken;
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
 use clax_http::hosted::HostedRequest;
 use clax_http::state::AppState;
 use clax_store::Store;
-use clax_store::drafts::DRAFT_MAX_AGE;
+use clax_store::drafts::{DRAFT_MAX_AGE, DraftDocs};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -53,17 +54,19 @@ struct CreateBody {
 /// `POST /api/drafts` `{of, title, capabilities, files, inherit_net?}`: a
 /// draft of the app `of` (or of a new app) whose version 1 holds `files`
 /// (each a string, or a publish's `{content, encoding, content_type}`),
-/// with a copy of `of`'s documents. Its fetches use `of`'s network grants
+/// with a copy of `of`'s documents (on a hosted daemon, at an app another
+/// person made, those the caller's level there reads, and none without
+/// `clax-db` `read` there). Its fetches use `of`'s network grants
 /// unless `inherit_net` is false. 201 `{draft: {id, of, version, docs_copied,
 /// docs_truncated}}`; 404 when `of` is missing (or, on a hosted daemon, out
-/// of the caller's reach; 403 `not_permitted` there for one the owner did
-/// not make), 400 `invalid_args` when it is a draft, and a
+/// of the caller's reach), 400 `invalid_args` when it is a draft, and a
 /// publish's validation errors.
 pub async fn create(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
     hosted: Option<Extension<HostedRequest>>,
+    who: clax_http::identity::Identity,
     audit: AuditCtx,
     req: Result<JsonBytes, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
@@ -96,19 +99,41 @@ pub async fn create(
     .await?;
     if let Some(of) = &of {
         clax_http::hosted::require_reach(&s, hosted.as_deref(), of.as_str()).await?;
-        // Its documents are copied at the owner's level: on hosted, only
-        // where the token keeps it, at an app the owner made.
-        let (on, at) = (s.hosted.is_some(), of.clone());
-        if !s
-            .store_call(move |st| clax_http::db_caller::token_at(st, on, true, at.as_str()))
-            .await?
-        {
-            return Err(ApiError::forbidden(
-                "not_permitted",
-                "a draft copies its app's documents at the owner's level: only of an app the owner made",
-            ));
-        }
     }
+    // On hosted, the copy of `of`'s documents is what the caller reads
+    // there: every one the owner reads at an app the owner made; at one
+    // shared with the owner or open by its link, those the caller's level
+    // there reads, and none without `clax-db` `read`.
+    let member = hosted.and_then(|h| h.0.member);
+    let on = s.hosted.is_some();
+    let docs = {
+        let of = of.clone();
+        s.store_call(move |st| {
+            Ok(match (&of, on) {
+                (Some(of), true)
+                    if !clax_http::db_caller::token_at(st, true, true, of.as_str())? =>
+                {
+                    let reads = member.as_ref().is_some_and(|m| {
+                        m.allows_at(st, (RightType::Db, "read"), of.as_str())
+                            .unwrap_or(false)
+                    });
+                    if reads {
+                        DraftDocs::As(clax_http::db_caller::base_caller_at(
+                            st,
+                            true,
+                            true,
+                            &who,
+                            of.as_str(),
+                        )?)
+                    } else {
+                        DraftDocs::None
+                    }
+                }
+                _ => DraftDocs::Owner,
+            })
+        })
+        .await?
+    };
     let ctx = audit.clone();
     let mut d = {
         let of = of.clone();
@@ -124,7 +149,7 @@ pub async fn create(
         let (host, store, from, to) =
             (s.app_data.clone(), s.store.clone(), of.clone(), did.clone());
         let copied = clax_rt::spawn(async move {
-            clax_http::app_data_host::copy_app_docs(&*host, &store, &from, &to).await
+            clax_http::app_data_host::copy_app_docs(&*host, &store, &from, &to, &docs).await
         })
         .await
         .map_err(|_| clax_core::CoreError::TaskFailed)

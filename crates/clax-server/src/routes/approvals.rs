@@ -201,12 +201,14 @@ fn via(who: &Identity) -> Via {
 /// §9.3) → `{request, approval}`. A thread approval covers the author's
 /// later replies in that thread (R1). Approving lets the held rows through
 /// to every delivery path of the approver's agents at once; declining
-/// keeps them held. 404 for another's request; 409 `request_closed` when
-/// it is not open; 400 `invalid_scope`.
+/// keeps them held. 404 for another's request, and on a hosted daemon for
+/// one about a page now out of the approver's reach; 409 `request_closed`
+/// when it is not open; 400 `invalid_scope`.
 pub async fn decide(
     State(s): State<AppState>,
     _d: DeniedToGrants,
     _o: SameOrigin,
+    hosted: Option<axum::Extension<clax_http::hosted::HostedRequest>>,
     caller: Caller,
     who: Identity,
     audit: DeferredAudit,
@@ -224,10 +226,27 @@ pub async fn decide(
     };
     let via = via(&who);
     let ctx = s.feedback_ctx();
+    // On hosted, a request about a page out of the approver's reach now
+    // (its share ended, say) is answered as one that does not exist: it
+    // lets nothing through and names nothing of the page.
+    let member = match s.hosted {
+        Some(_) => Some(hosted.and_then(|h| h.0.member)),
+        None => None,
+    };
     let v = s
         .store_call(move |st| {
             // The request first, so a request of no one's makes no audit row.
-            st.approval_request(&rid, me.as_deref())?;
+            let r = st.approval_request(&rid, me.as_deref())?;
+            if let Some(m) = &member {
+                let read = (RightType::Artifacts, "read");
+                let reads = match m {
+                    Some(m) => m.allows_at(st, read, &r.artifact_id)?,
+                    None => false,
+                };
+                if !reads {
+                    return Err(CoreError::NotFound);
+                }
+            }
             let audit = audit.resolve(st)?;
             let d = st.decide_request(&audit, &rid, me.as_deref(), decision, via)?;
             apply_decision(
@@ -308,11 +327,11 @@ pub async fn create(
                     Scope::Artifact(a) => {
                         (!reads(a)?).then_some(("unknown_artifact", "the scope names no artifact"))
                     }
+                    // A missing thread too, before the store checks the
+                    // author: one out of reach answers as it does.
                     Scope::Thread(t) => match st.get_thread(t)? {
-                        Some(th) if !reads(&th.artifact_id)? => {
-                            Some(("unknown_thread", "the scope names no thread"))
-                        }
-                        _ => None,
+                        Some(th) if reads(&th.artifact_id)? => None,
+                        _ => Some(("unknown_thread", "the scope names no thread")),
                     },
                 })
             })

@@ -2991,9 +2991,10 @@ need the token:
   did not parse and nothing was copied). Writes its page makes land in the
   copy only. 404 when `of` is missing, 400 `invalid_args` when `of` is a
   draft, and a publish's validation errors otherwise. On a hosted Clax an
-  `of` out of the caller's reach is 404 too, and one the owner did not
-  make 403 `not_permitted` (its documents are copied at the owner's
-  level).
+  `of` out of the caller's reach is 404 too, and at one another person
+  made (shared with the owner, or open by its link) the copy holds only
+  the documents the caller's level there reads, and none without
+  `clax-db` `read` there.
 - Later versions are published as to any artifact (`POST
   /api/artifacts/<draft>/versions`), without a session: one naming a
   session is 403 `draft`.
@@ -5560,7 +5561,8 @@ Approvals are per person, not per agent.
   card (this thread, including later replies; this page; everywhere;
   decline), `POST /api/approvals/requests/<rid>/decide {scope: "thread" |
   "artifact" | "everywhere" | "decline"}` (409 `request_closed`, 400
-  `invalid_scope`), or People's "Always allow", `POST /api/approvals
+  `invalid_scope`; on a hosted Clax 404, as for another's request, while
+  its page is out of the approver's reach), or People's "Always allow", `POST /api/approvals
   {author, scope, artifact_id?, thread_id?}` (on a hosted Clax an
   artifact out of the approver's reach, or a thread of one, is 400
   `unknown_artifact` or `unknown_thread`, as one that does not exist).
@@ -8699,11 +8701,13 @@ it starts, the runs a previous process left. A build without the
   out of reach (`/api/sessions/<sid>/git-token/<aid>`,
   `…/drafts/<aid>`, `…/working/<aid>`) is 404. The token's own routes
   that act on an artifact keep to the same reach: `versions:restore`
-  needs `update` there, `docs:collections` and a draft's copy of an
-  app's documents only an artifact the owner made, the app's jobs, its
+  needs `update` there, `docs:collections` answers only at an artifact
+  the owner made, a draft's copy of an app's documents holds what the
+  caller reads there, the app's jobs, its
   state import and their questions name, publish to and reply at only
   what the owner reaches (see "Jobs"), and an approval's scope names only
-  an artifact in the approver's reach.
+  an artifact in the approver's reach, and a request is decided only
+  while its page is in the approver's reach.
 - Live pages (see "Live pages") are visible only to a loopback peer or a
   request with the token; to anyone else they do not exist (404, left out
   of lists and of the stream), and their snapshots are served with a policy
