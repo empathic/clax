@@ -8,10 +8,19 @@
 // with the link and copies the link; a signed-out browser sees no "Public on
 // Clax" on the sign-in page but opens the link; made Restricted, the link
 // is closed.
-// With CLAX_E2E_SHOTS set it writes screenshots to target/share-shots/.
+// Second: the Comments switch. An app's page (a version carries an app
+// bundle) shows its byline and Get in Clax; the owner turns Comments off
+// in the Share dialog and shares it by link for comments, and a named
+// guest finds Comment off, no New comment box, and a comment refused
+// `comments_off` until the owner turns Comments on again.
+// With CLAX_E2E_SHOTS set it writes screenshots to target/share-shots/, or
+// to CLAX_E2E_SHOTS itself when that is an absolute directory (as under
+// Bazel, which runs the tests in a copy of the project).
+import { mkdirSync } from "node:fs";
 import { createServer } from "node:net";
+import { isAbsolute } from "node:path";
 import { type Browser, type Page } from "@playwright/test";
-import { NO_KEY_CONFIG, expect, publish, startDaemon, test } from "./fixtures";
+import { NO_KEY_CONFIG, expect, publish, setName, startDaemon, test } from "./fixtures";
 
 const SECRET = "e2e setup secret";
 
@@ -34,13 +43,16 @@ async function page(browser: Browser, origin?: string): Promise<Page> {
 
 /** `p` at desktop and phone width, light and dark, to `target/share-shots/<name>-<width>-<scheme>.png`. */
 async function shots(p: Page, name: string) {
-  if (!process.env.CLAX_E2E_SHOTS) return;
+  const env = process.env.CLAX_E2E_SHOTS;
+  if (!env) return;
+  const dir = isAbsolute(env) ? env : "../target/share-shots";
+  mkdirSync(dir, { recursive: true });
   for (const width of [1280, 390]) {
     for (const scheme of ["light", "dark"] as const) {
       await p.setViewportSize({ width, height: width > 600 ? 820 : 844 });
       await p.emulateMedia({ colorScheme: scheme });
       await p.evaluate(() => Promise.all(document.getAnimations().filter(a => a instanceof CSSTransition).map(a => a.finished.catch(() => {}))));
-      await p.screenshot({ path: `../target/share-shots/${name}-${width}-${scheme}.png` });
+      await p.screenshot({ path: `${dir}/${name}-${width}-${scheme}.png` });
     }
   }
   await p.setViewportSize({ width: 1280, height: 820 });
@@ -155,6 +167,113 @@ test("the owner shares one artifact with one person and a login, shares it by li
     await expect(later.getByRole("region", { name: "Public on Clax" })).toHaveCount(0);
     const closed = await later.request.get(`${origin}/api/artifacts/${artifact.id}`);
     expect(closed.status()).toBeGreaterThanOrEqual(400);
+  } finally {
+    await d.stop();
+  }
+});
+
+/** A thread `p` posts on version 1 of `aid`: its status and error code. */
+async function postThread(p: Page, aid: string, body: string) {
+  return p.evaluate(async ([id, text]) => {
+    const form = new FormData();
+    form.set("anchor", JSON.stringify({ kind: "artifact", selector: null, quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "" }));
+    form.set("body", text);
+    form.set("version", "1");
+    const r = await fetch(`/api/artifacts/${id}/threads`, { method: "POST", body: form });
+    const j = await r.json().catch(() => ({}));
+    return { status: r.status, code: (j?.error?.code ?? null) as string | null };
+  }, [aid, body]);
+}
+
+test("comments switch refuses a guest comment", async ({ browser }) => {
+  const port = await freePort();
+  const origin = `http://localhost:${port}`;
+  const config = `${NO_KEY_CONFIG}[hosted]\npublic_origin = "${origin}"\nsetup_secret_env = "CLAX_E2E_SETUP_SECRET"\n`;
+  const d = await startDaemon({ config, port, env: { CLAX_E2E_SETUP_SECRET: SECRET } });
+  test.skip(d.port !== port, `the daemon took port ${d.port}, not ${port}`);
+  try {
+    const owner = await page(browser, origin);
+    await owner.goto(`${origin}/setup?secret=${encodeURIComponent(SECRET)}`);
+    await owner.getByLabel("Your name").fill("Ada");
+    await owner.getByRole("button", { name: "Create the first person" }).click();
+    await owner.waitForURL(`${origin}/`);
+    const made = await publish(d.base, d.token, "Habit tracker", { "index.html": "<title>Habit tracker</title><h1>Habit tracker</h1><p>Water the plants</p>" }) as unknown as { artifact: { id: string }; version: { content_sha256: string } };
+    const aid = made.artifact.id;
+    // Version 1 carries an app bundle: the page is an app's.
+    const put = await fetch(`${d.base}/api/artifacts/${aid}/versions/1/bundle`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${d.token}`, "content-type": "application/vnd.empathic.clax+zip", "clax-bundle-lineage": "l_abcdefghijklmnopqrstuvwxyz", "clax-bundle-version": "1", "clax-bundle-content-sha256": made.version.content_sha256 },
+      body: "PK\u0003\u0004 a bundle the remote never reads",
+    });
+    expect(put.status, await put.text()).toBe(201);
+
+    await owner.goto(`${origin}/a/${aid}`);
+    await expect(owner.frameLocator("iframe.frame").locator("h1")).toHaveText("Habit tracker");
+    await expect(owner.locator(".topbar .by")).toHaveText("v1 · by Ada");
+    // A phone keeps an app's byline: whose app it is, its version and installs.
+    await owner.setViewportSize({ width: 390, height: 844 });
+    await expect(owner.locator(".topbar .by")).toBeVisible();
+    await expect(owner.locator(".topbar .by")).toHaveText("v1 · by Ada");
+    await owner.setViewportSize({ width: 1280, height: 820 });
+    await expect(owner.getByRole("link", { name: "Get in Clax" })).toHaveAttribute("href", `/a/${aid}/get`);
+    const comment = owner.locator("button.comment");
+    await expect(comment).toBeEnabled();
+
+    // Comments off, and the page shared by link for comments.
+    await owner.getByRole("button", { name: "Share", exact: true }).click();
+    const dialog = owner.getByRole("dialog", { name: "Share Habit tracker" });
+    const sw = dialog.getByRole("switch", { name: "Comments" });
+    await expect(sw).toBeChecked();
+    await expect(dialog.getByTestId("comments-note")).toHaveText("People who can comment may comment.");
+    await dialog.locator("label.sw").click();
+    await expect(sw).not.toBeChecked();
+    await expect(dialog.getByTestId("comments-note")).toHaveText("Off: nobody can comment, whatever their access.");
+    await dialog.getByRole("combobox", { name: "General access" }).selectOption("link");
+    await dialog.getByRole("combobox", { name: "What anyone with the link may do" }).selectOption("commenter");
+    await expect(dialog.getByTestId("general-note")).toHaveText("Anyone with the link can open it, without signing in.");
+    await shots(owner, "dialog-comments-off");
+    await dialog.getByRole("button", { name: "Done" }).click();
+    // The owner's own view follows at once.
+    await expect(comment).toBeDisabled();
+    await expect(comment).toHaveAttribute("title", "Comments are off for this page");
+    // The owner, who may share it, sees Get in Clax as the bar's other actions.
+    await expect(owner.getByRole("link", { name: "Get in Clax" })).toHaveClass(/ghost/);
+    await shots(owner, "owner-app");
+
+    // A named guest with the link: Comment is off, no New comment box, and a comment is refused.
+    const guest = await page(browser);
+    await guest.goto(`${origin}/a/${aid}`);
+    await expect(guest.frameLocator("iframe.frame").locator("h1")).toHaveText("Habit tracker");
+    await setName(guest, "Mia");
+    const theirs = guest.locator("button.comment");
+    await expect(theirs).toBeDisabled();
+    await expect(theirs).toHaveAttribute("title", "Comments are off for this page");
+    const threads = guest.locator("button.threads");
+    await expect(threads).toHaveAttribute("aria-pressed", /^(true|false)$/);
+    if ((await threads.getAttribute("aria-pressed")) === "false") await threads.click();
+    await expect(guest.locator("aside.sidebar")).toBeVisible();
+    await expect(guest.locator("aside.sidebar .empty-open")).toHaveText("Comments are off for this page.");
+    await expect(guest.locator(".new-comment-open")).toHaveCount(0);
+    // Polled: the guest's name may still be on its way (401 guest_name_required until it lands).
+    await expect.poll(() => postThread(guest, aid, "while comments are off")).toEqual({ status: 403, code: "comments_off" });
+    await shots(guest, "guest-comments-off");
+
+    // On again: the guest's comment lands.
+    await owner.getByRole("button", { name: "Share", exact: true }).click();
+    await owner.getByRole("dialog").locator("label.sw").click();
+    await expect(owner.getByRole("dialog").getByRole("switch", { name: "Comments" })).toBeChecked();
+    await expect(comment).toBeEnabled();
+    await expect.poll(() => postThread(guest, aid, "comments are on")).toEqual({ status: 201, code: null });
+
+    // Off again with that thread open: the sidebar says why its card has no reply box.
+    await owner.getByRole("dialog").locator("label.sw").click();
+    await expect(owner.getByRole("dialog").getByRole("switch", { name: "Comments" })).not.toBeChecked();
+    await guest.reload();
+    await expect(guest.locator("button.threads")).toHaveAttribute("aria-pressed", /^(true|false)$/);
+    if ((await guest.locator("button.threads").getAttribute("aria-pressed")) === "false") await guest.locator("button.threads").click();
+    await expect(guest.locator("aside.sidebar .section-open [data-thread]").first()).toBeVisible();
+    await expect(guest.locator("aside.sidebar .section-open .no-reply")).toHaveText("Comments are off for this page.");
+    await shots(guest, "guest-comments-off-thread");
   } finally {
     await d.stop();
   }

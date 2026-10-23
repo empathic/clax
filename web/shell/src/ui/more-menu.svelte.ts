@@ -10,9 +10,9 @@ import { getToken } from "../api";
 export type PublishOpener = { label: string; open(): void };
 /** A hosted Clax's Terms of Service and Privacy Policy, which the more menu links. */
 export type LegalLinks = { terms_url: string; privacy_url: string };
-type More = Component<{ rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; onFork?(): void; onClone?: (() => void) | null; onShare?: (() => void) | null; onPublish?: PublishOpener | null; legal?: LegalLinks | null }>;
+type More = Component<{ rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; getHref?: string | null; onFork?(): void; onClone?: (() => void) | null; onShare?: (() => void) | null; onPublish?: PublishOpener | null; legal?: LegalLinks | null }>;
 type CloneT = Component<{ id: string }>;
-type ShareT = Component<{ id: string; title: string }>;
+type ShareT = Component<{ id: string; title: string; onComments?(on: boolean): void }>;
 type PublishT = Component<{ id: string; title: string; latest: number }>;
 
 let loaded: More | null = $state(null);

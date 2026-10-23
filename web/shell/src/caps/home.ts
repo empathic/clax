@@ -19,7 +19,7 @@ import { CapError } from "./errors";
 import { frameGesture } from "./gesture";
 import type { HandlerFactory } from "./host";
 
-export const HOME_METHODS = ["apps", "makes", "unread", "needsKey", "open", "openMake", "newApp", "menu", "openInbox", "openSettings", "importApp", "shown", "tiles", "chrome"] as const;
+export const HOME_METHODS = ["apps", "makes", "unread", "needsKey", "open", "openMake", "newApp", "menu", "openInbox", "openSettings", "importApp", "getApps", "shown", "tiles", "chrome"] as const;
 
 const READS = new Set<string>(["apps", "makes", "unread", "needsKey", "shown", "tiles", "chrome"]);
 

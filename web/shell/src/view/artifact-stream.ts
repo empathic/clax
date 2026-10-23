@@ -194,6 +194,8 @@ export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
     const tt = c.tagTicket();
     getArtifact(c.id).then(d => { if (!c.disposed) c.setTags(tt, { tags: d.artifact.tags ?? [], may: !!d.artifact.may_tag }); }, () => {});
   }
+  // A sharer turned the Comments switch: off, comment mode ends here too.
+  if (e.type === "comments") c.noteComments(e.comments);
   if (e.type === "working") { c.workingAt = ++c.clock; c.set({ working: e.working }); }
   if (e.type === "drafts") { c.draftsAt = ++c.clock; c.draftsChanged(e.drafts); }
   // A name set in another view of this viewer (the owner's other browser,

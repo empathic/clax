@@ -11,7 +11,7 @@ const retried: string[][] = [];
 vi.mock("../stream", () => ({
   pageStream: () => ({ watch: (_t: string[], f: (e: StreamEvent) => void) => { on = f; return () => { on = null; }; }, reconnect: (c?: string) => { reopens.push(c); }, retry: (t: string[]) => { retried.push([...t]); } }),
 }));
-const { ArtifactStream, keepState, stateOf } = await import("./artifact-stream");
+const { ArtifactStream, keepState, onArtifactEvent, stateOf } = await import("./artifact-stream");
 const { getToken } = await import("../api");
 
 const A = "7q3k9mzx2b4t";
@@ -165,5 +165,15 @@ describe("delivery states", () => {
     expect(stateOf(s({ state: "sent", tier: "piggyback" }))).toEqual(s({ state: "sent", tier: "piggyback" }));
     // No delivery left (a resolve withdrew every row): no state.
     expect(stateOf(s({ state: null }) as never)).toBeNull();
+  });
+});
+
+describe("the Comments switch", () => {
+  it("a comments event turns the view's commenting off and on", () => {
+    const heard: boolean[] = [];
+    const view = { disposed: false, host: null, noteComments: (open: boolean) => heard.push(open) };
+    onArtifactEvent(view as never, { type: "comments", artifact_id: A, comments: false });
+    onArtifactEvent(view as never, { type: "comments", artifact_id: A, comments: true });
+    expect(heard).toEqual([false, true]);
   });
 });

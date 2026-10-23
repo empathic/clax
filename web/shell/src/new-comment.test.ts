@@ -54,6 +54,17 @@ describe("whole-artifact anchors", () => {
   });
 });
 
+describe("a comment refused while comments are off", () => {
+  it("says comments are off, and tells the view before rethrowing", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { code: "comments_off", message: "comments are off on this artifact" } }), { status: 403 })));
+    const { h, host } = fakeHost();
+    const seen: unknown[] = [];
+    await expect(postWhole({ ...host, refused: e => { seen.push(e); throw e; } }, 1, "x")).rejects.toThrow();
+    expect(h.notice).toBe("Could not post: comments are off for this page");
+    expect(seen).toHaveLength(1);
+  });
+});
+
 describe("NewComment", () => {
   it("opens the usual composer in place, posts the text on the version shown, and closes; Cancel closes without posting", async () => {
     const fetch = created();

@@ -572,6 +572,17 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(ctl.state.get().selected).toBe("t1");
   });
 
+  it("a linked app's thread from the remote names the remote; one started here does not", async () => {
+    const link = (origin: string) => ({ linked: { remote_id: "r1", remote: "clax.dev", remote_origin: "https://clax.dev", url: "https://clax.dev/a/p1", origin,
+      remote_version: 1, twin: true, unlinked: false, state: null, error: null } });
+    const { ctl, frame } = await appView({ threads: [thread("t1", "make it blue", link("remote")), thread("t2", "and bigger", link("local"))] });
+    hello(frame, 1);
+    await waitFor(() => ctl.state.get().threads.length === 2, "threads");
+    const rows = ofType("threads").at(-1)!.threads;
+    expect(rows.find(t => t.id === "t1")!.remote).toBe("clax.dev");
+    expect(rows.find(t => t.id === "t2")).not.toHaveProperty("remote");
+  });
+
   it("focusThread outlines the thread while the app's thread view is open, until it closes or comment mode ends", async () => {
     const { ctl, frame, host } = await appView({ threads: [thread("t1")] });
     const posted = framePosts(frame);

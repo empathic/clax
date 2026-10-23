@@ -26,6 +26,8 @@ export type ArtifactEvent =
   /** The artifact's tags changed (`artifact_id`), or the list renamed,
    * recoloured or deleted one it carries (`artifact_id` null): refetch it. */
   | { type: "tags"; artifact_id: string | null }
+  /** The artifact's Comments switch is now `comments` (a sharer turned it). */
+  | { type: "comments"; artifact_id: string; comments: boolean }
   /** Who has the artifact open, here or away, or was here lately: its whole list. */
   | { type: "presence"; artifact_id: string; people: PresenceView[] }
   /** The watcher's topics went live: on first subscribing, after the page

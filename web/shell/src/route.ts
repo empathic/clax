@@ -3,7 +3,9 @@
 // page the frame shows (segments percent-encoded; none for `index.html`).
 // After `/a/<id>`, a `v` segment followed by an all-digit segment is a
 // version; anything else starts the file path. So a file published under
-// `v/<digits>/` is reachable only through the versioned form.
+// `v/<digits>/` is reachable only through the versioned form. `/a/<id>/get`
+// (a trailing `/` allowed) is the daemon's Get in Clax page, not a file: a
+// file published as `get` too is reachable only through the versioned form.
 
 export const INDEX = "index.html";
 
@@ -28,6 +30,7 @@ const ID = /^[0-9a-hj-km-np-tv-z]{12}$/;
 
 export type ShellRoute =
   | { kind: "gallery" }
+  | { kind: "get"; id: string }
   | { kind: "artifact"; id: string; version: number | null; file: string };
 
 /** The route a shell path names; anything that is not an artifact path is the gallery. */
@@ -35,6 +38,7 @@ export function parseShellPath(pathname: string): ShellRoute {
   const segs = pathname.split("/");
   if (segs[0] !== "" || segs[1] !== "a" || !ID.test(segs[2] ?? "")) return { kind: "gallery" };
   let rest = segs.slice(3);
+  if (rest[0] === "get" && (rest.length === 1 || (rest.length === 2 && rest[1] === ""))) return { kind: "get", id: segs[2] };
   let version: number | null = null;
   if (rest[0] === "v" && /^\d+$/.test(rest[1] ?? "")) {
     version = Number(rest[1]);
@@ -47,10 +51,10 @@ export function parseShellPath(pathname: string): ShellRoute {
 }
 
 /** The shell path for `file` of version `version` (null: the latest). A file
- * the unversioned form would read as a version (`v/<digits>/…`) is given
- * `shown`, the version on screen. */
+ * the unversioned form would read otherwise (`v/<digits>/…` as a version,
+ * `get` as the Get in Clax page) is given `shown`, the version on screen. */
 export function shellPath(id: string, version: number | null, file: string, shown?: number): string {
-  if (version === null && /^v\/\d+(\/|$)/.test(file) && shown !== undefined) version = shown;
+  if (version === null && (file === "get" || /^v\/\d+(\/|$)/.test(file)) && shown !== undefined) version = shown;
   const v = version === null ? "" : `/v/${version}`;
   const f = file === INDEX ? "" : `/${file.split("/").map(encodeURIComponent).join("/")}`;
   return `/a/${id}${v}${f}`;

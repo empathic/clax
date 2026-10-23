@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "./api";
-import { LOAD_FAILED, NAME_FAILED, NAME_LOAD_FAILED, SEND_FAILED, failureText, report, scopedNotice } from "./failure";
+import { COMMENTS_OFF, LOAD_FAILED, NAME_FAILED, NAME_LOAD_FAILED, SEND_FAILED, failureText, report, scopedNotice } from "./failure";
 
 describe("report", () => {
   it("shows the prefixed message on failure and clears it on success", async () => {
@@ -10,6 +10,10 @@ describe("report", () => {
     expect(await report(Promise.reject(new TypeError("Failed to fetch")), SEND_FAILED, set)).toBeUndefined();
     expect(await report(Promise.resolve(7), SEND_FAILED, set)).toBe(7);
     expect(notices).toEqual(["Could not send to the agent: 500 boom", "Could not send to the agent: Failed to fetch", null]);
+  });
+  it("says a comments_off refusal as the one comments-off sentence, after its prefix", () => {
+    expect(COMMENTS_OFF).toBe("Comments are off for this page");
+    expect(failureText("Could not post", new ApiError(403, "comments are off on this artifact", "comments_off"))).toBe("Could not post: comments are off for this page");
   });
   it("formats non-Error values", () => {
     expect(failureText("Could not post", "offline")).toBe("Could not post: offline");

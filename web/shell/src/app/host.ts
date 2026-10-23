@@ -194,8 +194,10 @@ export type HostMessage =
    * one's again. */
   | { type: "draftClip"; key: string; png: string }
   /** `label`: what each thread's anchor is, in words (`label.ts`); `clip`:
-   * the thread has a screenshot (the daemon's `/clip`). */
-  | { type: "threads"; threads: { id: string; status: string; summary: string; label: string; sent: boolean; comments: number; version: number; clip: boolean }[] }
+   * the thread has a screenshot (the daemon's `/clip`); `remote`: the remote
+   * a linked app's thread came from (its `linked`), absent for one started
+   * here. */
+  | { type: "threads"; threads: { id: string; status: string; summary: string; label: string; sent: boolean; comments: number; version: number; clip: boolean; remote?: string }[] }
   | { type: "sent"; thread: string }
   | { type: "landed"; version: number }
   /** A newer version than the one shown is published (see Swap with a tap
@@ -731,7 +733,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     postState(v);
     if (v.threads !== lastThreads) {
       lastThreads = v.threads;
-      post({ type: "threads", threads: v.threads.map(t => ({ id: t.id, status: t.status, summary: summary(t), label: anchorLabel(t.anchor, shownFor(t.anchor)), sent: t.sent_to_agent, comments: t.comments.length, version: t.version_n, clip: t.has_clip })) });
+      post({ type: "threads", threads: v.threads.map(t => ({ id: t.id, status: t.status, summary: summary(t), label: anchorLabel(t.anchor, shownFor(t.anchor)), sent: t.sent_to_agent, comments: t.comments.length, version: t.version_n, clip: t.has_clip, ...(t.linked?.origin === "remote" ? { remote: t.linked.remote } : {}) })) });
     }
     if (v.notice !== lastNotice) {
       lastNotice = v.notice;

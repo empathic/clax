@@ -85,6 +85,10 @@ export interface CapEnv {
    * 2026-10-11-clax-dev-hosted-design §16.1): the page's writes as the
    * viewer (db, comments, room) reject `unavailable` without a request. */
   spectating?(): boolean;
+  /** Whether the artifact's Comments switch is off (spec
+   * 2026-10-21-app-push-pull §5.6): the page's comment writes and composer
+   * reject `unavailable` without a request, as a spectator's do. */
+  commentsOff?(): boolean;
   /** The write journal of an app bundle's live migration (app/host.ts),
    * while one runs: `db` sends each document's value before the first write
    * to it, and writes only once the journal has it. */

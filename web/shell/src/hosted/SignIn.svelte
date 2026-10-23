@@ -12,7 +12,8 @@
   // browser is signed in as, or how to get in; `/device[?code=]` approves
   // another machine's Clax signing in as this browser's person (a device
   // code it showed), naming the machine and the address it asked from, or
-  // denies it. A code is redeemed only by
+  // denies it; when the sign-in names itself the Clax app (`client_kind`
+  // `clax-app`), it says the app may also manage the sharing of their apps. A code is redeemed only by
   // the button, never by loading the page, so a link preview spends
   // nothing. Where the instance shows Terms of Service and a Privacy
   // Policy (`me.legal`), each button that signs this browser in says that
@@ -57,6 +58,7 @@
   let deviceCode = $state("");
   let device = $state<api.DeviceRequest | null | false>(null);
   let decided = $state<"approved" | "denied" | null>(null);
+  const isApp = $derived(device ? device.client_kind === "clax-app" : false);
   async function lookUp(e?: Event) {
     e?.preventDefault();
     if (busy || !deviceCode.trim()) return;
@@ -167,14 +169,14 @@
       {:else if !me.person || me.person.guest}
         <p>Another Clax asks to publish here as you. Sign in first: open a sign-in link from a device that is signed in, then come back to this page.</p>
       {:else if decided === "approved"}
-        <p><strong>{device ? device.client_name : "That Clax"}</strong> is signed in as you. It shows on People among your agent tokens, where you can revoke it. You can close this tab.</p>
+        <p><strong>{device ? device.client_name : "That Clax"}</strong> is signed in as you. It shows on People among your {isApp ? "devices" : "agent tokens"}, where you can revoke it. You can close this tab.</p>
         <div class="acts"><a class="go" href="/people">Open People</a></div>
       {:else if decided === "denied"}
         <p>Denied: that Clax is not signed in. You can close this tab.</p>
       {:else if device}
-        <p><strong>{device.client_name}</strong>, from {device.peer_ip || "an unknown address"}, asks to publish here as you, <strong>{me.person.display_name ?? "you"}</strong>. Check that it shows the code <code>{deviceCode.trim().toUpperCase()}</code>.</p>
+        <p><strong>{device.client_name}</strong>{isApp ? ", the Clax app," : ","} from {device.peer_ip || "an unknown address"}, asks to publish here as you, <strong>{me.person.display_name ?? "you"}</strong>. Check that it shows the code <code>{deviceCode.trim().toUpperCase()}</code>.</p>
         {#if !device.same_address}<p class="now" data-testid="other-address">It asked from another address than this browser's. Approve only if you started this sign-in yourself, just now, on that machine: anyone who sent you this link would publish as you.</p>{/if}
-        <p class="hint">It gets an agent token of yours: what it publishes is public as yours, within your rights. It shows on People, where you can revoke it.{#if legal}{" "}<span class="legal">What it does here is yours under the <a href={legal.terms_url} target="_blank" rel="noopener">Terms of Service</a>.</span>{/if}</p>
+        <p class="hint" data-testid={isApp ? "device-app" : undefined}>It gets an agent token of yours: {isApp ? "what it publishes is yours, within your rights, and an app it publishes stays private until you share it." : "what it publishes is public as yours, within your rights."}{#if isApp}{" "}As the Clax app, it may also change who can see or edit the pages you made{me.person.owner ? " and, as the owner, any page on this site" : ""}, and whether anyone may comment on them.{/if} It shows on People{isApp ? " among your devices" : ""}, where you can revoke it.{#if legal}{" "}<span class="legal">What it does here is yours under the <a href={legal.terms_url} target="_blank" rel="noopener">Terms of Service</a>.</span>{/if}</p>
         <div class="acts"><button class="primary" type="button" disabled={busy} onclick={() => decide(true)}>Approve</button><button type="button" disabled={busy} onclick={() => decide(false)}>Deny</button></div>
       {:else}
         <form onsubmit={lookUp}>
@@ -227,7 +229,7 @@
     .signin .field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); }
     .signin .field input { width: 100%; box-sizing: border-box; }
     .signin .hint, .signin .muted { color: var(--muted); font-size: 13px; }
-    .signin code { font: 12.5px var(--mono); }
+    .signin code { font: 12.5px var(--mono); white-space: nowrap; }
     .signin button.primary { align-self: flex-start; white-space: normal; text-align: start; }
     .signin .acts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
     .signin a { color: var(--fg); }

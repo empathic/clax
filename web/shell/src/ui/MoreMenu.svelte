@@ -9,7 +9,8 @@
   // the viewer may clone the artifact (`onClone`), phone width lists Clone
   // with git, which opens the Clone dialog; where the viewer may share the
   // artifact on a hosted Clax (`onShare`), it lists Share; where the owner may publish the
-  // artifact to a public Clax (`onPublish`), it lists Publish. On a hosted
+  // artifact to a public Clax (`onPublish`), it lists Publish; on an app's
+  // page (`getHref`, its get page), it lists Get in Clax first. On a hosted
   // Clax that shows Terms of Service and a Privacy Policy (`legal`), it ends
   // with links to both and to Clax's source on GitHub. A menu button: opening
   // focuses the first item; Up, Down, Home and End move between the items;
@@ -24,7 +25,7 @@
   import { tick } from "svelte";
   import { onHost } from "../transport";
 
-  let { rawHref, canCopy, onCopy, onVersions, pageHref = null, onFork, onClone = null, onShare = null, onPublish = null, legal = null }: { rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; onFork?(): void; onClone?: (() => void) | null; onShare?: (() => void) | null; onPublish?: { label: string; open(): void } | null; legal?: { terms_url: string; privacy_url: string } | null } = $props();
+  let { rawHref, canCopy, onCopy, onVersions, pageHref = null, getHref = null, onFork, onClone = null, onShare = null, onPublish = null, legal = null }: { rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; getHref?: string | null; onFork?(): void; onClone?: (() => void) | null; onShare?: (() => void) | null; onPublish?: { label: string; open(): void } | null; legal?: { terms_url: string; privacy_url: string } | null } = $props();
   let open = $state(false);
   const app = onHost();
   // Phone width, as the bar's `hide-sm` rule draws it; read on each open.
@@ -72,6 +73,7 @@
   </button>
   {#if open}
     <div class="more-menu" role="menu" bind:this={menu}>
+      {#if phone && getHref}<a role="menuitem" tabindex="-1" href={getHref} onclick={close}>Get in Clax</a>{/if}
       {#if phone && onVersions}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onVersions(); }}>{pageHref ? "Snapshots" : "Versions"}</button>{/if}
       {#if phone && onFork}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onFork(); }}>Fork</button>{/if}
       {#if phone && pageHref && /^https?:\/\//.test(pageHref)}<a role="menuitem" tabindex="-1" href={pageHref} target="_blank" rel="noopener noreferrer" onclick={close}>Open page</a>{/if}

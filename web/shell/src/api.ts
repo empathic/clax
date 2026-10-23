@@ -33,7 +33,22 @@ export type Artifact = {
   tags?: TagRef[];
   /** From `GET /api/artifacts/<id>` and the bootstrap: the viewer may set its tags. */
   may_tag?: boolean;
+  /** From the same: the viewer may resolve its threads, and so send them while its Comments switch is off. */
+  may_resolve?: boolean;
+  /** From `GET /api/artifacts/<id>` and the bootstrap: its Comments switch; false, nobody may comment on it. */
+  comments?: boolean;
+  /** From the same: how many live forks it has. */
+  forks?: number;
+  /** From the same: null when no version carries an app bundle, else its newest bundle's
+   * artifact version and release, how many installs it has, who published that bundle and who
+   * owns the artifact. */
+  app?: AppInfo | null;
 };
+/** A person as an app's header names them: their name, their GitHub login
+ * when they have one, and their public ID (null when they have none), which
+ * alone tells two people apart. */
+export type PersonCard = { name: string; login: string | null; public_id?: string | null };
+export type AppInfo = { version: number; bundle_version: number; installs: number; published_by: PersonCard; owner: PersonCard };
 /** A tag as an artifact carries it; `colour` is a palette key (`view/tags-model.ts`). */
 export type TagRef = { id: string; name: string; colour: string };
 export type ForkedFrom = { artifact_id: string; version: number; title: string | null };

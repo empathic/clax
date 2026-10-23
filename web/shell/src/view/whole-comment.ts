@@ -33,6 +33,8 @@ export type WholeHost = {
   changeThreads(f: ThreadChange): void;
   set(patch: { selected: string }): void;
   setNotice(u: string | null | ((prev: string | null) => string | null)): void;
+  /** Hears a refused post before it is rethrown (a `comments_off` refusal turns the view's Comments off). */
+  refused?(e: unknown): never;
 };
 
 /** Posts `body` as a new thread about the whole artifact on `version`, adds
@@ -49,6 +51,7 @@ export async function postWhole(host: WholeHost, version: number, body: string):
     return thread;
   } catch (e) {
     notice(failureText(POST_FAILED, e));
+    if (host.refused) host.refused(e);
     throw e;
   }
 }

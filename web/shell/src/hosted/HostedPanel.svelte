@@ -3,8 +3,9 @@
 <script lang="ts">
   // People's part on a hosted daemon (crates/clax-server/src/hosted.rs), for
   // a member (the owner or a person): this browser (who it is signed in
-  // as, a one-use sign-in link for another device, sign out), agent tokens
-  // for remote agents (made with the `claude mcp add` command and Codex's
+  // as, a one-use sign-in link for another device, sign out), the person's
+  // devices (the Clax app signed in as them, which may manage the sharing
+  // of their apps; listed and revoked), agent tokens for remote agents (made with the `claude mcp add` command and Codex's
   // config, shown this once; listed and revoked), and pages shared by link
   // (anyone with the link may view, or comment once they give a name), each
   // marked Public when the public gallery lists it. Only the owner and a
@@ -18,7 +19,7 @@
   let { me }: { me: api.HostedMe } = $props();
   const person = $derived(me.person);
   // A refusal shows in the part whose action it answers; a failed load at the end.
-  type Part = "me" | "tokens" | "links" | "load";
+  type Part = "me" | "devices" | "tokens" | "links" | "load";
   let err = $state<{ at: Part; text: string } | null>(null);
   let link = $state<{ url: string; expires_at: string } | null>(null);
   let label = $state("");
@@ -53,6 +54,8 @@
   const share = (e: Event) => { e.preventDefault(); if (pick) void act("links", () => api.setLink(pick, pickAccess)); };
   const minutes = (iso: string) => Math.max(0, Math.round((Date.parse(iso) - Date.now()) / 60000));
   const day = (iso: string | null) => (iso ? iso.slice(0, 10) : "never");
+  const devices = $derived(tokens.filter(t => t.kind === "device"));
+  const agentTokens = $derived(tokens.filter(t => t.kind !== "device"));
   const unshared = $derived(pages.filter(p => !shared.some(s => s.artifact_id === p.id)));
   onMount(() => { void load(); });
 </script>
@@ -70,6 +73,20 @@
   {#if err?.at === "me"}<p class="err" role="alert">{err.text}</p>{/if}
 </section>
 
+{#snippet tokenLine(t: api.AgentToken, at: Part)}
+  <div class="line tok"><span class="mname">{t.label}</span><span class="meta">made {day(t.created_at)} · last used {day(t.last_used_at)}{t.status !== "approved" ? ` · ${t.status}` : ""}</span><span class="sp"></span>
+    {#if t.status === "approved"}<button type="button" class="ghost danger" aria-label="Revoke the token for {t.label}" onclick={() => act(at, () => api.revokeToken(t.id))}>Revoke</button>{/if}</div>
+{/snippet}
+
+{#if devices.length}
+  <section class="pcard hosted-devices" aria-labelledby="hd-h">
+    <h3 id="hd-h">Devices</h3>
+    <p class="note">The Clax app on your devices, signed in as you. Each holds an agent token of yours, with your rights, and may also change who can see or edit the pages you made{person?.owner ? " and, as the owner, any page on this site" : ""}, and whether anyone may comment on them.</p>
+    {#each devices as t (t.id)}{@render tokenLine(t, "devices")}{/each}
+    {#if err?.at === "devices"}<p class="err" role="alert">{err.text}</p>{/if}
+  </section>
+{/if}
+
 <section class="pcard hosted-tokens" aria-labelledby="ht-h">
   <h3 id="ht-h">Agent tokens</h3>
   <p class="note">An agent on any machine connects to this Clax as you, with your rights, by its token. Make one per machine.</p>
@@ -86,10 +103,7 @@
       <p class="meta">The token is shown this once.</p>
     </div>
   {/if}
-  {#each tokens as t (t.id)}
-    <div class="line tok"><span class="mname">{t.label}</span><span class="meta">made {day(t.created_at)} · last used {day(t.last_used_at)}{t.status !== "approved" ? ` · ${t.status}` : ""}</span><span class="sp"></span>
-      {#if t.status === "approved"}<button type="button" class="ghost danger" aria-label="Revoke the token for {t.label}" onclick={() => act("tokens", () => api.revokeToken(t.id))}>Revoke</button>{/if}</div>
-  {/each}
+  {#each agentTokens as t (t.id)}{@render tokenLine(t, "tokens")}{/each}
   {#if err?.at === "tokens"}<p class="err" role="alert">{err.text}</p>{/if}
 </section>
 
@@ -124,7 +138,7 @@
 <style>
   :global {
     .ppl .hosted-me .lead, .ppl .hosted-tokens .lead { margin: 10px 0 6px; font-size: 13.5px; }
-    .ppl .hosted-tokens .note, .ppl .hosted-links .note { margin: 0 0 10px; }
+    .ppl .hosted-devices .note, .ppl .hosted-tokens .note, .ppl .hosted-links .note { margin: 0 0 10px; }
     .ppl .cmd { display: flex; gap: 8px; align-items: stretch; min-width: 0; }
     .ppl .cmd code, .ppl .cmd pre { flex: 1; min-width: 0; margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); font: 13px/1.4 var(--mono); overflow-wrap: anywhere; white-space: pre-wrap; user-select: all; }
     .ppl .hosted-me .meta, .ppl .minted .meta { display: block; margin: 8px 0 0; }

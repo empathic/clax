@@ -5,7 +5,7 @@
 // returns the function that stops it.
 import type { Rpc } from "../rpc";
 
-export const HOME_METHODS = ["apps", "makes", "unread", "needsKey", "open", "openMake", "newApp", "menu", "openInbox", "openSettings", "importApp", "shown", "tiles", "chrome"] as const;
+export const HOME_METHODS = ["apps", "makes", "unread", "needsKey", "open", "openMake", "newApp", "menu", "openInbox", "openSettings", "importApp", "getApps", "shown", "tiles", "chrome"] as const;
 
 export const homeNamespace = (rpc: Pick<Rpc, "call" | "on">): Readonly<Record<string, unknown>> => Object.freeze({
   ...Object.fromEntries(HOME_METHODS.map(m => [m, (...args: unknown[]) => rpc.call("home", m, args)])),

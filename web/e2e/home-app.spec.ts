@@ -53,7 +53,7 @@ test.describe("its tests in the inspect view", () => {
     const tests = (await ofType(page, "tests"))[0] as HostMessage & { passed: number; failed: unknown[]; skipped: number };
     expect(tests.failed).toEqual([]);
     expect(tests.skipped).toBe(0);
-    expect(tests.passed).toBe(86);
+    expect(tests.passed).toBe(89);
   });
 });
 
@@ -473,7 +473,10 @@ test.describe("renders", () => {
                 { id: "m2", request: "A tide table", state: "offline", progress: null },
                 { id: "m3", request: "A chore chart", state: "failed", progress: null },
               ],
-              apps: SAMPLE.apps.map((a: { id: string }) => (a.id === "app-notes" ? { ...a, build: { done: 2, total: 5 } } : a)),
+              // Each sync badge on a tile, the warm ↓ among them.
+              apps: SAMPLE.apps.map((a: { id: string }) => (a.id === "app-notes"
+                ? { ...a, build: { done: 2, total: 5 } }
+                : { ...a, sync: ({ "app-run": "live", "app-groceries": "update", "app-habits": "ahead", "app-recipes": "diverged" } as Record<string, string>)[a.id] ?? null })),
             });
             home.open = () => Promise.reject({ code: "no_gesture", message: "tap" });
             mount(document.getElementById("app"), home);

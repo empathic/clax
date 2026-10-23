@@ -38,4 +38,31 @@ describe("HostedPanel", () => {
     await settle();
     expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("That name is taken, or reads too like a name already here: choose another.");
   });
+
+  it("lists the person's devices apart from their agent tokens", async () => {
+    const tok = (id: string, label: string, kind: "device" | "agent") => ({ id, label, status: "approved", created_at: "2026-10-20T10:00:00Z", last_used_at: null, ended_at: null, kind });
+    stubFetch({
+      "GET /api/hosted/agent-tokens": { tokens: [tok("g2", "Clax on Pixel", "device"), tok("g1", "laptop", "agent")] },
+      "GET /api/hosted/links": { links: [] },
+      "GET /api/artifacts": { artifacts: [] },
+    });
+    const m = mount(HostedPanel, { me });
+    await settle();
+    const names = (sel: string) => [...m.root.querySelectorAll(`${sel} .mname`)].map(e => e.textContent);
+    expect(m.root.querySelector(".hosted-devices h3")!.textContent).toBe("Devices");
+    expect(names(".hosted-devices")).toEqual(["Clax on Pixel"]);
+    expect(m.root.querySelector(".hosted-devices .note")!.textContent).toContain("Each holds an agent token of yours, with your rights, and may also change who can see or edit the pages you made, and whether anyone may comment on them.");
+    expect(names(".hosted-tokens")).toEqual(["laptop"]);
+  });
+
+  it("shows no Devices part without a device", async () => {
+    stubFetch({
+      "GET /api/hosted/agent-tokens": { tokens: [] },
+      "GET /api/hosted/links": { links: [] },
+      "GET /api/artifacts": { artifacts: [] },
+    });
+    const m = mount(HostedPanel, { me });
+    await settle();
+    expect(m.root.querySelector(".hosted-devices")).toBeNull();
+  });
 });

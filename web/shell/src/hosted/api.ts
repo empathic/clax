@@ -19,7 +19,8 @@ export type HostedLegal = { terms_url: string; privacy_url: string; version: str
 /** `GET /api/hosted/me`; `legal` is null on an instance that shows no documents. */
 export type HostedMe = { origin: string; setup_open: boolean; signed_in: boolean; person: HostedPerson | null; github?: boolean; legal?: HostedLegal | null };
 /** An agent token, without its token. */
-export type AgentToken = { id: string; label: string; status: string; created_at: string; last_used_at: string | null; ended_at: string | null };
+/** An agent token; `kind` is `device` for the person's own device (the Clax app's sign-in, which may manage the sharing of their artifacts), else `agent`. */
+export type AgentToken = { id: string; label: string; status: string; created_at: string; last_used_at: string | null; ended_at: string | null; kind?: "device" | "agent" };
 /** A new agent token: `token` and the commands that carry it are shown this once. */
 export type NewAgentToken = { id: string; label: string; created_at: string; token: string; mcp_url: string; claude_command: string; codex_config: string };
 export type LinkAccess = "viewer" | "commenter";
@@ -33,10 +34,11 @@ export type GeneralAccess = "restricted" | "link" | "public";
 export type Share = { id: string; access: ShareAccess; github_login: string | null; person: string | null; name: string | null; pending: boolean };
 /** A person the owner's sharing dialog suggests. */
 export type ShareCandidate = { person: string; name: string | null; github_login: string | null };
-/** `GET /api/hosted/artifacts/<id>/sharing`: everything for whoever may share it, else `can_share: false` alone. */
+/** `GET /api/hosted/artifacts/<id>/sharing`: everything for whoever may share it, else `can_share: false` alone.
+ * `comments` is its Comments switch: off, nobody comments there, whatever their access. */
 export type Sharing =
   | { artifact_id: string; can_share: false }
-  | { artifact_id: string; can_share: true; general: GeneralAccess; public_gallery?: boolean; link_access: LinkAccess | null; url: string; people: Share[]; suggestions: ShareCandidate[] };
+  | { artifact_id: string; can_share: true; comments: boolean; general: GeneralAccess; public_gallery?: boolean; link_access: LinkAccess | null; url: string; people: Share[]; suggestions: ShareCandidate[] };
 /** An artifact in the public gallery. */
 export type PublicArtifact = { artifact_id: string; title: string; url: string };
 
@@ -68,8 +70,8 @@ export const signOut = () => call<unknown>("/api/hosted/signout", "POST");
 export const tokens = () => call<{ tokens: AgentToken[] }>("/api/hosted/agent-tokens");
 export const mintToken = (label: string) => call<NewAgentToken>("/api/hosted/agent-tokens", "POST", { label });
 export const revokeToken = (id: string) => call<{ token: AgentToken | null }>(`/api/hosted/agent-tokens/${e(id)}`, "DELETE");
-/** A waiting device sign-in: the machine it names. */
-export type DeviceRequest = { client_name: string; peer_ip: string; created_at: string; expires_at: string; same_address?: boolean };
+/** A waiting device sign-in: the machine it names, and its kind (`clax-app` for the Clax app). */
+export type DeviceRequest = { client_name: string; peer_ip: string; client_kind?: string | null; created_at: string; expires_at: string; same_address?: boolean };
 export const peekDevice = (code: string) => call<DeviceRequest>(`/api/hosted/device/${e(code)}`);
 export const approveDevice = (code: string) => call<{ token: AgentToken }>(`/api/hosted/device/${e(code)}/approve`, "POST");
 export const denyDevice = (code: string) => call<unknown>(`/api/hosted/device/${e(code)}/deny`, "POST");
@@ -81,6 +83,10 @@ export const sharing = (aid: string) => call<Sharing>(`/api/hosted/artifacts/${e
 /** Shares `aid` with a GitHub login or a person (by public ID), or changes their access. */
 export const share = (aid: string, to: { github_login: string } | { person: string }, access: ShareAccess) =>
   call<{ share: Share }>(`/api/hosted/artifacts/${e(aid)}/shares`, "PUT", { ...to, access });
+/** Turns `aid`'s Comments switch on or off. */
+/** Sets the artifact's Comments switch; the answer is what the daemon now holds. */
+export const setComments = async (aid: string, on: boolean): Promise<boolean> =>
+  (await call<{ artifact_id: string; comments: boolean }>(`/api/hosted/artifacts/${e(aid)}/comments`, "PUT", { on })).comments;
 export const unshare = (aid: string, id: string) => call<{ share: Share }>(`/api/hosted/artifacts/${e(aid)}/shares/${e(id)}`, "DELETE");
 /** The public gallery, answered to anyone. */
 export const publicArtifacts = () => call<{ artifacts: PublicArtifact[] }>("/api/hosted/public");

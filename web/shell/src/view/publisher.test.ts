@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Artifact } from "../api";
-import { publisherText, setBy } from "./publisher";
+import type { Artifact, PersonCard } from "../api";
+import { appByline, forksText, publisherText, setBy } from "./publisher";
 
 const a = (title: string, description: string | null, extra: Partial<Artifact> = {}) => ({ id: title, title, description, icon: null, updated_at: "x", current_version: 1, pinned: false, ...extra }) as Artifact;
 
@@ -50,5 +50,45 @@ describe("setBy", () => {
     expect(el.innerHTML).toBe("published by codex");
     setBy(el, null);
     expect(el.textContent).toBe("");
+  });
+});
+
+describe("the app header", () => {
+  // Artifact v8 carries release 3 of the app's bundle.
+  const app = (by: PersonCard, owner: PersonCard = { name: "Alex", login: "akesling" }, bundle_version = 3) => ({ version: 8, bundle_version, installs: 12, published_by: by, owner });
+
+  it("appByline numbers the bundle's release and names editor and owner", () => {
+    expect(appByline(app({ name: "Jun", login: "junp" }))).toBe("v3 by @junp · by @akesling");
+    expect(appByline(app({ name: "Alex", login: "akesling" }))).toBe("v3 · by @akesling");
+    // A person with no login goes by their name.
+    expect(appByline(app({ name: "Sam", login: null }, { name: "Ada", login: null }, 2))).toBe("v2 by Sam · by Ada");
+    expect(appByline(app({ name: "Ada", login: null }, { name: "Ada", login: null }, 2))).toBe("v2 · by Ada");
+  });
+
+  it("tells apart two people of one name by their public IDs, as the Get in Clax page does", () => {
+    const sam = (public_id: string) => ({ name: "Sam", login: null, public_id });
+    expect(appByline(app(sam("p_editor"), sam("p_owner")))).toBe("v3 by Sam · by Sam");
+    expect(appByline(app(sam("p_owner"), sam("p_owner")))).toBe("v3 · by Sam");
+  });
+
+  it("counts forks", () => {
+    expect(forksText(1)).toBe("1 fork");
+    expect(forksText(4)).toBe("4 forks");
+  });
+
+  it("puts the app's byline, its installs and its forks on the line under the title", () => {
+    const el = document.createElement("span");
+    setBy(el, a("Habits", null, { current_version: 8, owner_harness: "claude", forks: 2, app: app({ name: "Jun", login: "junp" }) }));
+    expect(el.textContent).toBe("v3 by @junp · by @akesling · 12 installs · 2 forks");
+    setBy(el, a("Habits", null, { current_version: 8, forks: 0, app: { ...app({ name: "Alex", login: "akesling" }), installs: 1 } }));
+    expect(el.textContent).toBe("v3 · by @akesling · 1 install");
+    // No installs yet: no count, as for forks.
+    setBy(el, a("Habits", null, { current_version: 1, app: { ...app({ name: "Alex", login: "akesling" }, undefined, 1), installs: 0 } }));
+    expect(el.textContent).toBe("v1 · by @akesling");
+    expect(el.classList.contains("app")).toBe(true);
+    // An artifact that is no app keeps its publisher, with its forks.
+    setBy(el, a("Plan", null, { owner_harness: "claude", forks: 1, app: null }));
+    expect(el.textContent).toBe("published by claude · 1 fork");
+    expect(el.classList.contains("app")).toBe(false);
   });
 });

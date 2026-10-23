@@ -3,7 +3,8 @@
 <script lang="ts">
   // The Share dialog (crates/clax-server/src/hosted.rs, the sharing routes),
   // loaded on first use, for whoever may share the artifact (the owner and
-  // its maker). Add people: a GitHub login (`@login`), or one of the people
+  // its maker). First the Comments switch: off, nobody comments on the
+  // artifact, whatever their access (`onComments` hears each change). Add people: a GitHub login (`@login`), or one of the people
   // here the daemon suggests (the owner's dialog only), at Can view, Can
   // comment or Can edit; a login no one has signed in with yet gets access
   // at its first GitHub sign-in. The people with access, each with their
@@ -17,12 +18,12 @@
   import * as api from "../hosted/api";
   import { inertOutside, trapTab } from "./modal";
   import {
-    ACCESS_LABEL, ACCESSES, GENERAL_LABEL, GENERAL_NOTE, GENERALS, LINK_ACCESSES,
+    ACCESS_LABEL, ACCESSES, COMMENTS_LABEL, COMMENTS_NOTE, GENERAL_LABEL, GENERAL_NOTE, GENERALS, LINK_ACCESSES,
     linkRequest, shareDetail, shareName, subject, suggest,
   } from "./share-model";
 
   type Open = Extract<api.Sharing, { can_share: true }>;
-  let { id, title, initial, onClose }: { id: string; title: string; initial: Open; onClose(): void } = $props();
+  let { id, title, initial, onClose, onComments }: { id: string; title: string; initial: Open; onClose(): void; onComments?(on: boolean): void } = $props();
   const back = document.activeElement as HTMLElement | null;
   // svelte-ignore state_referenced_locally
   let data = $state<Open>(initial);
@@ -72,6 +73,18 @@
   const typed = (v: string) => { query = v; chosen = null; err = ""; };
   const change = (s: api.Share, access: api.ShareAccess) =>
     act(() => api.share(id, s.person ? { person: s.person } : { github_login: s.github_login ?? "" }, access));
+  async function toggleComments(box: HTMLInputElement) {
+    const on = box.checked;
+    // The change is heard once the daemon holds it, even if the dialog's
+    // reload after it fails.
+    await act(async () => {
+      const held = await api.setComments(id, on);
+      data = { ...data, comments: held };
+      onComments?.(held);
+    });
+    // The switch shows what the daemon holds, whether or not the change took.
+    box.checked = data.comments;
+  }
   const remove = (s: api.Share) => act(() => api.unshare(id, s.id));
   const setGeneral = (g: api.GeneralAccess, a: api.LinkAccess) => {
     const r = linkRequest(g, a);
@@ -101,6 +114,11 @@
     <header>
       <h2 id="share-title">Share <span class="t">{title}</span></h2>
     </header>
+
+    <div class="comments-sw">
+      <label class="sw"><input type="checkbox" role="switch" aria-describedby="share-comments-note" checked={data.comments} disabled={busy} onchange={e => { void toggleComments(e.currentTarget); }} /><span class="track" aria-hidden="true"></span><span class="lbl">{COMMENTS_LABEL}</span></label>
+      <p class="meta" id="share-comments-note" data-testid="comments-note">{data.comments ? COMMENTS_NOTE.on : COMMENTS_NOTE.off}</p>
+    </div>
 
     <form class="add" onsubmit={add} aria-label="Add people">
       <div class="add-who">
@@ -183,6 +201,15 @@
   .shared li + li { border-top: 1px dashed var(--border); }
   .av { flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--hover); border: 1px solid var(--border); font: 600 12.5px/1 var(--font); color: var(--muted); }
   .who-l { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .comments-sw { margin: 0 0 16px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+  .comments-sw .meta { margin-top: 4px; padding-left: 44px; }
+  .sw { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 600; font-size: 14px; position: relative; }
+  .sw input { position: absolute; opacity: 0; width: 34px; height: 20px; margin: 0; cursor: pointer; }
+  .sw .track { flex: none; width: 34px; height: 20px; border-radius: 999px; background: var(--border-strong); position: relative; transition: background-color var(--t); }
+  .sw .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--raised); box-shadow: 0 1px 2px rgb(0 0 0 / .25); transition: transform var(--t); }
+  .sw input:checked + .track { background: var(--fg); }
+  .sw input:checked + .track::after { transform: translateX(14px); }
+  .sw input:focus-visible + .track { outline: 2px solid var(--focus); outline-offset: 2px; }
   .general { display: flex; flex-wrap: wrap; gap: 8px; }
   .meta, .none { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
   .none { margin: 0; }

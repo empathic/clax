@@ -155,6 +155,13 @@ export type ViewState = {
   tags: { tags: TagRef[]; may: boolean } | null;
 };
 
+/** The artifact's Comments switch is off (spec 2026-10-21-app-push-pull
+ * §5.6): nobody comments on it, whatever their access, so the view opens no
+ * composer, as for a spectator. */
+export function commentsOff(s: ViewState): boolean {
+  return s.data?.artifact.comments === false;
+}
+
 /** The artifact is loaded and the frame mode decided: the islands show. */
 export function viewReady(s: ViewState): s is ViewState & { data: Loaded } {
   return !s.error && !!s.data && s.origin !== undefined;
@@ -703,6 +710,7 @@ export class ArtifactController {
           sampleStatus: token === null ? undefined : () => status ??= getSampleStatus(this.id, token),
           onSampleCalls: (n: number, cap: number | null) => this.set({ sampleCalls: { n, cap } }),
           spectating: () => this.s.spectator !== null,
+          commentsOff: () => commentsOff(this.s),
           journal: () => this.dbJournal,
         };
       }));
@@ -1566,7 +1574,7 @@ export class ArtifactController {
     if (!ids.length || this.s.batchBusy) return;
     const to = this.s.sendTo;
     this.set({ batchBusy: true });
-    const r = await report(this.whileBusy(this.sendTracked(sendBatch(this.id, ids, this.s.batchNote.trim() || null, to), to)), SEND_FAILED, this.noticeFor(SEND_FAILED));
+    const r = await report(this.whileBusy(this.sendTracked(sendBatch(this.id, ids, this.s.batchNote.trim() || null, to), to).catch(e => this.refused(e))), SEND_FAILED, this.noticeFor(SEND_FAILED));
     if (r) {
       this.changeThreads(ts => r.threads.reduce((all, t) => upsert(all, t), ts));
       this.set({ selection: EMPTY_SELECTION, batchNote: "" });
@@ -1574,8 +1582,20 @@ export class ArtifactController {
     this.set({ batchBusy: false });
   }
 
+  /** The artifact's Comments switch is now `on` (the Share dialog changed
+   * it, or the daemon refused a comment `comments_off`): off, comment mode
+   * ends and the open composer closes. */
+  noteComments(on: boolean): void {
+    this.set(s => s.data ? { data: { ...s.data, artifact: { ...s.data.artifact, comments: on } }, ...!on && { commenting: false, draft: null } } : {});
+  }
+  /** Takes a `comments_off` refusal as the switch turned off, and rethrows `e`. */
+  refused(e: unknown): never {
+    if (e instanceof ApiError && e.code === "comments_off") this.noteComments(false);
+    throw e;
+  }
+
   private saveThread(p: Promise<Thread>, prefix: string): void {
-    void report(this.whileBusy(p), prefix, this.noticeFor(prefix)).then(t => {
+    void report(this.whileBusy(p.catch(e => this.refused(e))), prefix, this.noticeFor(prefix)).then(t => {
       if (!t) return;
       this.changeThreads(ts => upsert(ts, t));
       // A linked thread's write is queued to go up beside this answer; the
@@ -1587,7 +1607,7 @@ export class ArtifactController {
   // ---- intents ----
 
   /** The Comment button and C; nothing on a live page, whose comments come from Chrome with the Clax extension. */
-  toggleComment(): void { if (!this.s.data?.artifact.live && !this.s.spectator && this.s.showDraft === null) { this.resumeAfter = null; this.set(s => ({ commenting: !s.commenting })); } }
+  toggleComment(): void { if (!this.s.data?.artifact.live && !this.s.spectator && !commentsOff(this.s) && this.s.showDraft === null) { this.resumeAfter = null; this.set(s => ({ commenting: !s.commenting })); } }
 
   // ---- agents' drafts (hosted spec §16.4) ----
 
@@ -1778,7 +1798,7 @@ export class ArtifactController {
       // A hosted daemon's visitor comments once named (a guest): the people
       // menu holds the name field.
       if (e instanceof ApiError && e.code === "guest_name_required") this.set({ menu: "people" });
-      throw e;
+      this.refused(e);
     }
   }
 }

@@ -12,12 +12,18 @@
   // In the Clax app, whose scheme answers nothing under `/api/`, a thread's
   // clip is fetched over the transport and shown by object URL
   // (`api-image.ts`, loaded only there); a browser loads `clip_url` itself.
+  // While the artifact's Comments switch is off, the sidebar has no New
+  // comment box and its cards no reply box (`noReply`, which its empty Open
+  // list explains); Resolve and Reopen stay, and Send for a viewer who may
+  // resolve its threads (`may_resolve`), as the daemon allows them.
+  // A spectator's sidebar is read-only.
   // The drawer's controls (DrawerChrome) go around it; the extension's side
   // panel mounts Sidebar alone, without them.
+  import { COMMENTS_OFF } from "../failure";
   import type { Thread } from "../threads";
   import { onHost } from "../transport";
   import { ownTarget, sendsFor } from "../view/send-menu";
-  import type { ArtifactController, Loaded, ViewState } from "../view/artifact-controller";
+  import { type ArtifactController, type Loaded, type ViewState, commentsOff } from "../view/artifact-controller";
   import { emptyLayer, writersIn } from "../view/live-layers";
   import DrawerChrome from "./DrawerChrome.svelte";
   import LiveWriters from "./LiveWriters.svelte";
@@ -50,6 +56,7 @@
   onResolve={t => ctl.resolveThread(t)} onReply={(t, body) => ctl.reply(t, body)}
   selection={s.selection} batchNote={s.batchNote} batchBusy={s.batchBusy} sendTo={target}
   onToggle={(t, shift, order) => ctl.toggleSelect(t, shift, order)} onClear={() => ctl.clearSelection()} onNote={v => ctl.setBatchNote(v)}
-  compose={s.spectator ? undefined : { version: ctl.shown(s), host: ctl }} readOnly={!!s.spectator} live={s.spectator ? undefined : live}
+  compose={s.spectator || commentsOff(s) ? undefined : { version: ctl.shown(s), host: ctl }} readOnly={!!s.spectator} noReply={commentsOff(s) ? `${COMMENTS_OFF}.` : undefined}
+  noSend={commentsOff(s) && s.data.artifact.may_resolve === false} live={s.spectator ? undefined : live}
   onSendSelection={() => go(() => ctl.sendSelection())} onSendUnsent={() => go(() => ctl.sendUnsent())} onChoose={h => ctl.chooseTarget(h)} {above} />
 </DrawerChrome>

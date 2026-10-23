@@ -19,8 +19,16 @@ export const PART_FAILED: Record<"comment" | "clip" | "caps" | "room" | "sample"
   test: "This page's tests could not load",
 };
 
-/** `<prefix>: <message>` for an API error, a network failure, or anything thrown. */
+/** What the shell says while the artifact's Comments switch is off (spec
+ * 2026-10-21-app-push-pull §5.6): the Comment button's title, the comments
+ * sidebar's note, a page's refused `comments` call, and after its prefix a
+ * refused write (`comments_off`, [`failureText`]). */
+export const COMMENTS_OFF = "Comments are off for this page";
+
+/** `<prefix>: <message>` for an API error, a network failure, or anything
+ * thrown; a `comments_off` refusal says comments are off ([`COMMENTS_OFF`]). */
 export function failureText(prefix: string, e: unknown): string {
+  if (e instanceof ApiError && e.code === "comments_off") return `${prefix}: ${COMMENTS_OFF[0].toLowerCase()}${COMMENTS_OFF.slice(1)}`;
   const message = e instanceof ApiError || e instanceof Error ? e.message : String(e);
   return `${prefix}: ${message}`;
 }

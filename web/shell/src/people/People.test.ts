@@ -106,6 +106,30 @@ describe("People", () => {
     expect(m.root.querySelector(".person")).toBeNull();
     expect(m.root.textContent).toContain("People is for the owner of this Clax and the people they connect.");
   });
+  it("shows the owner the people on other Clax they approved, by name, with Revoke, and what waits on them", async () => {
+    const key = "remote:https://clax.dev#p_7k2m";
+    const ap = { id: "a9", approver: null, author: { public_id: key, name: "Jun (on clax.dev)", owner: false }, scope: "everywhere", artifact_id: null, thread_id: null, created_at: "", created_via: "inbox", request_id: null };
+    const req = { id: "r9", author: { public_id: "remote:https://clax.dev#p_9q", name: "Kim (on clax.dev)" }, artifact_id: "01QR", thread_id: null, agent: { handle: "h1", name: "claude", harness: "claude", live: true }, cause: "comment", count: 1, status: "open", created_at: "" };
+    const calls = stubFetch(ownerRoutes({
+      "GET /api/approvals": { approvals: [{ id: "a1", approver: null, author: { public_id: "p1", name: "Sam" }, scope: "everywhere", artifact_id: null, thread_id: null, created_at: "", created_via: "people", request_id: null }, ap] },
+      "GET /api/approvals/requests": { requests: [req], open: 1, banner: null },
+      "DELETE /api/approvals/a9": {},
+    }));
+    vi.stubGlobal("confirm", () => true);
+    const m = mount(People, {});
+    await settle();
+    const card = m.root.querySelector(".remote-authors")!;
+    expect(card.querySelector("h3")!.textContent).toBe("People on other Clax");
+    expect([...card.querySelectorAll(".line:not(.wait) span")].slice(0, 2).map(s => s.textContent)).toEqual(["Jun (on clax.dev)", "everywhere"]);
+    expect(card.textContent).not.toContain(key);
+    expect([...card.querySelectorAll(".wait")].map(w => [w.textContent, w.getAttribute("href")])).toEqual([["1 item from Kim (on clax.dev) for claude", "/inbox?approval=r9"]]);
+    // A connected person's approval stays on their own card, not here.
+    expect(card.textContent).not.toContain("Sam");
+    card.querySelector<HTMLButtonElement>('button[aria-label^="Revoke the approval of Jun (on clax.dev)"]')!.click();
+    await settle();
+    expect(calls.some(c => c.method === "DELETE" && c.url === "/api/approvals/a9")).toBe(true);
+  });
+
   it("keeps hostile names as text in invites, requests, approvals, the waiting and the revoked", async () => {
     const H = `<img src=x onerror="window.pwned=1">`;
     const req = (id: string, status: string, author: { public_id: string; name: string; owner?: boolean }) => ({ id, author, artifact_id: "01QR", thread_id: null, agent: { handle: "h1", name: `${H}agent`, harness: "codex", live: true }, cause: "comment", count: 2, status, created_at: "" });

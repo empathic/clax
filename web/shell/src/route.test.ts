@@ -24,6 +24,13 @@ describe("parseShellPath", () => {
     expect(parseShellPath(`/a/${ID}/v/3/v/12/x.html`)).toEqual({ kind: "artifact", id: ID, version: 3, file: "v/12/x.html" });
   });
 
+  it("reads /a/<id>/get as the Get in Clax page, and a file named get only through a version", () => {
+    expect(parseShellPath(`/a/${ID}/get`)).toEqual({ kind: "get", id: ID });
+    expect(parseShellPath(`/a/${ID}/get/`)).toEqual({ kind: "get", id: ID });
+    expect(parseShellPath(`/a/${ID}/v/3/get`)).toEqual({ kind: "artifact", id: ID, version: 3, file: "get" });
+    expect(parseShellPath(`/a/${ID}/get/x.html`)).toEqual({ kind: "artifact", id: ID, version: null, file: "get/x.html" });
+  });
+
   it("is the gallery for anything else", () => {
     for (const p of ["/", "/a/", "/a/NOTANID00000", "/a/short", "/x/7q3k9mzx2b4t", `/a/${ID}/%E0%A4%A.html`]) {
       expect(parseShellPath(p), p).toEqual({ kind: "gallery" });
@@ -48,6 +55,11 @@ describe("shellPath", () => {
   it("gives a v/<digits>/ file the shown version, since the unversioned form would read as a version", () => {
     expect(shellPath(ID, null, "v/12/x.html", 5)).toBe(`/a/${ID}/v/5/v/12/x.html`);
     expect(shellPath(ID, null, "v/x.html", 5)).toBe(`/a/${ID}/v/x.html`);
+  });
+
+  it("gives a file named get the shown version, since the unversioned form is the Get in Clax page", () => {
+    expect(shellPath(ID, null, "get", 5)).toBe(`/a/${ID}/v/5/get`);
+    expect(shellPath(ID, null, "get/x.html", 5)).toBe(`/a/${ID}/get/x.html`);
   });
 });
 

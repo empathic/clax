@@ -52,6 +52,10 @@
     clip?(t: Thread): Promise<string | null>;
     /** Read-only: no reply box, and no Resolve, Send or Reopen (the card's `tools` stay). */
     readOnly?: boolean;
+    /** No reply box (the artifact's comments are off); Resolve, Send and Reopen stay. */
+    noReply?: boolean;
+    /** No Send (the viewer may not send here now); Resolve and Reopen stay. */
+    noSend?: boolean;
     /** Other people writing a reply here now (the live layers), given the thread's ID. */
     writers?: Snippet<[string]>;
     /** Hears the reply box's text as it is typed, and "" once it is sent. */
@@ -59,7 +63,7 @@
     /** `onResolve` resolves an open thread and reopens a resolved one. */
     onSelect(t: Thread): void; onSend(t: Thread): void; onResolve(t: Thread): void; onReply(t: Thread, body: string): void; onHover?(t: Thread | null): void;
   };
-  let { t, n, now, me, selected, file, history, outdated, agent, when, marker = null, versions = [], onSeen, checked = false, onToggle, send: sendButton, fold, badge, meta, tools, clip, readOnly: ro = false, writers, onReplyText, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
+  let { t, n, now, me, selected, file, history, outdated, agent, when, marker = null, versions = [], onSeen, checked = false, onToggle, send: sendButton, fold, badge, meta, tools, clip, readOnly: ro = false, noReply = false, noSend = false, writers, onReplyText, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
   // A thread whose link ended is history here: read-only.
   const readOnly = $derived(ro || !!t.linked?.unlinked);
   const tag = $derived(linkTag(t));
@@ -187,7 +191,7 @@
       </ul>
     {/if}
     {#if !fold}{@render actions()}{/if}
-    {#if !readOnly}
+    {#if !readOnly && !noReply}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
     <form class="reply" onclick={e => e.stopPropagation()} onsubmit={e => e.preventDefault()}>
       <input aria-label="Reply" placeholder="Reply, or @name someone" bind:value={reply} onkeydown={replyKey} oninput={() => onReplyText?.(t, reply)} />
@@ -215,7 +219,7 @@
   <div class="actions" onclick={e => e.stopPropagation()}>
     {#if readOnly}{:else if t.status === "open"}
       <button onclick={e => { hint = guardedAction(e, "resolve", () => onResolve(t)); }}>Resolve</button>
-      {#if !t.sent_to_agent}{#if sendButton}{@render sendButton(guardSend)}{:else}<button class="primary" onclick={e => { guardSend(e, () => onSend(t)); }}>Send to {agent}</button>{/if}{/if}
+      {#if !t.sent_to_agent && !noSend}{#if sendButton}{@render sendButton(guardSend)}{:else}<button class="primary" onclick={e => { guardSend(e, () => onSend(t)); }}>Send to {agent}</button>{/if}{/if}
     {:else}
       <button onclick={e => { hint = guardedAction(e, "reopen", () => onResolve(t)); }}>Reopen</button>
     {/if}

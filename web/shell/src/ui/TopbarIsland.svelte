@@ -15,7 +15,11 @@
   // item opens the version menu as a sheet. On a live page, whose versions
   // are snapshots, Comment is off (comments on it come from Chrome with the
   // Clax extension) and Open page, the page itself, comes with the roster (on a
-  // phone, in the more menu). For a spectator (no live seat free), Comment is off.
+  // phone, in the more menu). For a spectator (no live seat free), Comment is off,
+  // and so it is while the artifact's Comments switch is off. On an app
+  // (an artifact a version of which carries an app bundle), Get in Clax, its
+  // own lazy chunk, links to the app's get page (on a phone, a more menu item),
+  // drawn as a ghost for the owner's shell and whoever may share the app.
   // Fork (the shown version, into an artifact of the viewer's) comes with the
   // more menu, for the owner's shell and a viewer who may fork (`may_fork`); on a phone it is a more
   // menu item. Neither shows on a live page or a deleted one; a spectator,
@@ -24,7 +28,8 @@
   // only; on a phone it is a more menu item.
   import { fromStore } from "svelte/store";
   import { getToken } from "../api";
-  import { type ArtifactController, viewReady } from "../view/artifact-controller";
+  import { COMMENTS_OFF } from "../failure";
+  import { type ArtifactController, commentsOff, viewReady } from "../view/artifact-controller";
   import { clone, cloneOpen, legal, moreMenu, publish, publishOpen, share, shareOpen, who } from "./more-menu.svelte";
   import SampleCount from "./SampleCount.svelte";
   import ThemeSwitch from "./ThemeSwitch.svelte";
@@ -56,11 +61,12 @@
   {@const shown = ctl.shown(s)}
   {@const latest = ctl.latest(s)}
   {@const live = s.data.artifact.live}
+  {@const off = commentsOff(s)}
   <SampleCount {ctl} />
   {#if Who}<Who {ctl} {s} open={ctl.openCount(s)} />{/if}
   {#if s.newer && !s.deleted}<button class="primary reload" onclick={() => ctl.reloadLatest()}>Reload</button>{/if}
-  <button class="comment" aria-pressed={s.commenting} disabled={s.deleted || !!live || !!s.spectator || s.showDraft !== null}
-    title={live ? "Comment on the live page with the Clax extension" : s.spectator ? "Commenting is paused while you're viewing" : s.showDraft !== null ? "Comments go on published versions" : undefined}
+  <button class="comment" aria-pressed={s.commenting} disabled={s.deleted || !!live || !!s.spectator || off || s.showDraft !== null}
+    title={live ? "Comment on the live page with the Clax extension" : s.spectator ? "Commenting is paused while you're viewing" : off ? COMMENTS_OFF : s.showDraft !== null ? "Comments go on published versions" : undefined}
     onclick={() => ctl.toggleComment()}>Comment <span class="kc" aria-hidden="true">C</span></button>
   <button class="threads hide-sm" aria-pressed={s.panel} onclick={() => ctl.togglePanel()}>Threads <span class="cnt">{ctl.openCount(s)}</span></button>
   <VersionMenu {shown} {latest} live={!!live} dot={s.decided?.dot ?? false} open={s.menu === "versions"} onToggle={() => ctl.openMenu("versions")}
@@ -69,11 +75,14 @@
   {#if shown < latest && !s.newer && !s.deleted}<a class="latest hide-sm" href={ctl.here(null, s)}>Latest</a>{/if}
   {@const forkable = !!MoreMenu && (ownerShell || !!s.data.artifact.may_fork) && !live && !s.deleted}
   {#if forkable}<button class="fork hide-sm" disabled={forking} title={`Fork v${shown} into an artifact of your own`} onclick={() => fork(shown)}>Fork</button>{/if}
-  {#if Share && !s.deleted}<Share id={ctl.id} title={s.data.artifact.title} />{/if}
+  {#if s.data.artifact.app && !s.deleted}
+    {#await import("./GetInClax.svelte") then { default: GetInClax }}<GetInClax id={ctl.id} ghost={ownerShell || !!shareOpen.current} />{/await}
+  {/if}
+  {#if Share && !s.deleted}<Share id={ctl.id} title={s.data.artifact.title} onComments={on => ctl.noteComments(on)} />{/if}
   {#if Clone && !live && !s.deleted}<Clone id={ctl.id} />{/if}
   {#if Publish && ownerShell && !live && !s.deleted}<Publish id={ctl.id} title={s.data.artifact.title} {latest} />{/if}
   {#if MoreMenu}
-    <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} onVersions={() => ctl.openMenu("versions")} pageHref={live?.page_url} onFork={forkable && !forking ? () => fork(shown) : undefined} onClone={live || s.deleted ? null : cloneOpen.current} onShare={s.deleted ? null : shareOpen.current} onPublish={live || s.deleted ? null : publishOpen.current} legal={legal.current} />
+    <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} getHref={s.data.artifact.app && !s.deleted ? `/a/${encodeURIComponent(ctl.id)}/get` : null} onVersions={() => ctl.openMenu("versions")} pageHref={live?.page_url} onFork={forkable && !forking ? () => fork(shown) : undefined} onClone={live || s.deleted ? null : cloneOpen.current} onShare={s.deleted ? null : shareOpen.current} onPublish={live || s.deleted ? null : publishOpen.current} legal={legal.current} />
   {:else}
     <span class="more-slot"></span>
   {/if}

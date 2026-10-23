@@ -13,7 +13,7 @@ const sam: ShareRow = { id: "s1", access: "viewer", github_login: "sam-lee", per
 const octo: ShareRow = { id: "s2", access: "commenter", github_login: "octo", person: null, name: null, pending: true };
 const open = (over: Partial<Open> = {}): Open => ({
   artifact_id: ID, can_share: true, general: "restricted", link_access: null, url: `https://clax.test/a/${ID}`,
-  public_gallery: true, people: [sam], suggestions: [{ person: "u_sam", name: "Sam Lee", github_login: "sam-lee" }, { person: "u_mia", name: "Mia Chen", github_login: null }],
+  public_gallery: true, comments: true, people: [sam], suggestions: [{ person: "u_sam", name: "Sam Lee", github_login: "sam-lee" }, { person: "u_mia", name: "Mia Chen", github_login: null }],
   ...over,
 });
 
@@ -23,7 +23,9 @@ function serve(state: { sharing: Sharing }, sent: { method: string; url: string;
     const method = init?.method ?? "GET";
     if (url === `${BASE}/sharing` && method === "GET") return new Response(JSON.stringify(state.sharing));
     if (url.startsWith(BASE)) {
-      sent.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : null });
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : null;
+      sent.push({ method, url, body });
+      if (url === `${BASE}/comments` && method === "PUT") return new Response(JSON.stringify({ artifact_id: ID, comments: body?.on }));
       return new Response(JSON.stringify({ share: sam }));
     }
     return new Response("{}", { status: 404 });
@@ -214,6 +216,69 @@ describe("Share dialog", () => {
     expect(writes).toEqual([`https://clax.test/a/${ID}`]);
     root.querySelector<HTMLElement>("[role=dialog]")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(onClose).toHaveBeenCalledTimes(1);
+    m.unmount();
+  });
+
+  it("share dialog toggles comments", async () => {
+    const state = { sharing: open() as Sharing };
+    const sent = serve(state);
+    const onComments = vi.fn();
+    const m = mount(ShareDialog, { id: ID, title: "Plan", initial: open(), onClose: vi.fn(), onComments });
+    const root = m.root;
+    const sw = root.querySelector<HTMLInputElement>("input[role=switch]")!;
+    expect(sw.labels?.[0]?.textContent?.trim()).toBe("Comments");
+    expect(sw.checked).toBe(true);
+    expect(root.querySelector("[data-testid=comments-note]")!.textContent).toBe("People who can comment may comment.");
+    // The note describes the switch to assistive tech.
+    expect(document.getElementById(sw.getAttribute("aria-describedby")!)).toBe(root.querySelector("[data-testid=comments-note]"));
+    // Above the people with access.
+    const people = Array.from(root.querySelectorAll("h3")).find(h => h.textContent === "People with access")!;
+    expect(sw.compareDocumentPosition(people) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    state.sharing = open({ comments: false });
+    flush(() => sw.click());
+    await until(() => sent.length === 1);
+    expect(sent[0]).toEqual({ method: "PUT", url: `${BASE}/comments`, body: { on: false } });
+    await until(() => root.querySelector("[data-testid=comments-note]")!.textContent === "Off: nobody can comment, whatever their access.");
+    expect(sw.checked).toBe(false);
+    expect(onComments).toHaveBeenLastCalledWith(false);
+    state.sharing = open({ comments: true });
+    flush(() => sw.click());
+    await until(() => sent.length === 2);
+    expect(sent[1].body).toEqual({ on: true });
+    await until(() => root.querySelector("[data-testid=comments-note]")!.textContent === "People who can comment may comment.");
+    expect(sw.checked).toBe(true);
+    expect(onComments).toHaveBeenLastCalledWith(true);
+    m.unmount();
+  });
+
+  it("share dialog shows and tells a Comments change that took though its reload failed, and takes no tap while busy", async () => {
+    const sent: { method: string; url: string; body: unknown }[] = [];
+    let reload: ((r: Response) => void) | null = null;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (url === `${BASE}/comments` && method === "PUT") {
+        const body = JSON.parse(String(init!.body)) as { on: boolean };
+        sent.push({ method, url, body });
+        return new Response(JSON.stringify({ artifact_id: ID, comments: body.on }));
+      }
+      // The dialog's reload hangs until the test answers it.
+      if (url === `${BASE}/sharing`) return new Promise<Response>(r => { reload = r; });
+      return new Response("{}", { status: 404 });
+    }));
+    const onComments = vi.fn();
+    const m = mount(ShareDialog, { id: ID, title: "Plan", initial: open(), onClose: vi.fn(), onComments });
+    const root = m.root;
+    const sw = root.querySelector<HTMLInputElement>("input[role=switch]")!;
+    flush(() => sw.click());
+    await until(() => sent.length === 1);
+    // While the change is in flight the switch takes no tap.
+    await until(() => reload);
+    expect(sw.disabled).toBe(true);
+    reload!(new Response(JSON.stringify({ error: { code: "internal", message: "db locked" } }), { status: 500 }));
+    await until(() => !sw.disabled);
+    expect(sw.checked).toBe(false);
+    expect(root.querySelector("[data-testid=comments-note]")!.textContent).toBe("Off: nobody can comment, whatever their access.");
+    expect(onComments).toHaveBeenLastCalledWith(false);
     m.unmount();
   });
 

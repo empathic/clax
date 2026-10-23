@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { artifact, artifactViewHooks, mountView, waitFor } from "./test/artifact-view";
+import { ID, artifact, artifactViewHooks, mountView, stubMedia, viewer, waitFor } from "./test/artifact-view";
+import GetInClax from "./ui/GetInClax.svelte";
 import { flush, mount } from "./test/svelte";
 import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
 import MoreMenu from "./ui/MoreMenu.svelte";
@@ -137,6 +138,18 @@ describe("Echo top bar parts", () => {
     vi.unstubAllGlobals();
   });
 
+  it("at phone width on an app's page the more menu lists Get in Clax first", async () => {
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: q === "(max-width: 700px)" }));
+    const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions: vi.fn(), getHref: "/a/x/get" });
+    flush(() => m.root.querySelector<HTMLButtonElement>("button.icon")!.click());
+    await new Promise(r => setTimeout(r));
+    const items = Array.from(m.root.querySelectorAll<HTMLElement>("[role=menuitem]"));
+    expect(items.map(i => i.textContent)).toEqual(["Get in Clax", "Versions", "Open raw", "Copy link"]);
+    expect(items[0].getAttribute("href")).toBe("/a/x/get");
+    m.unmount();
+    vi.unstubAllGlobals();
+  });
+
   it("C and ? typed in the open more menu do not reach the shell's keys", async () => {
     const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn() });
     const outsideKeys = vi.fn();
@@ -257,5 +270,139 @@ describe("the top bar on a live page", { timeout: MOUNT_TIMEOUT_MS }, () => {
     (await import("./ui/more-menu.svelte")).loadMoreMenu();
     await waitFor(() => view.root.querySelector("button.who"), "the roster");
     expect(Array.from(view.root.querySelectorAll("a")).some(a => a.textContent === "Open page")).toBe(false);
+  });
+});
+
+describe("the top bar and the sidebar with the Comments switch, and an app's header", { timeout: MOUNT_TIMEOUT_MS }, () => {
+  artifactViewHooks();
+  const APP = { version: 8, bundle_version: 3, installs: 12, published_by: { name: "Jun", login: "junp" }, owner: { name: "Alex", login: "akesling" } };
+  const withFields = (extra: Record<string, unknown>) => { const a = artifact(8); return { ...a, artifact: { ...a.artifact, ...extra } }; };
+  const answer = (extra: Record<string, unknown>) => async () => new Response(JSON.stringify(withFields(extra)));
+
+  it("comment button disabled when comments off", async () => {
+    const view = await mountView(answer({ comments: false }));
+    const comment = await waitFor(() => view.root.querySelector<HTMLButtonElement>("button.comment"), "the Comment button");
+    expect(comment.disabled).toBe(true);
+    expect(comment.title).toBe("Comments are off for this page");
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true }));
+    expect(comment.getAttribute("aria-pressed")).toBe("false");
+    expect(view.root.querySelector(".topbar.commenting")).toBeNull();
+  });
+
+  it("sidebar has no composer when comments off", async () => {
+    stubMedia({ "(min-width: 900px)": true });
+    const on = await mountView(answer({ comments: true }));
+    await waitFor(() => on.root.querySelector(".new-comment-open"), "the New comment box while comments are on");
+    on.unmount();
+    const off = await mountView(answer({ comments: false }));
+    await waitFor(() => off.root.querySelector("aside.sidebar:not([aria-busy])"), "the thread list");
+    // Every chunk the sidebar asked for has loaded: a New comment box would be drawn by now.
+    await vi.dynamicImportSettled();
+    flush();
+    expect(off.root.querySelector(".new-comment-open")).toBeNull();
+    expect(off.root.querySelector("aside.sidebar .empty-open")!.textContent).toBe("Comments are off for this page.");
+  });
+
+  const thread = { id: "tA", artifact_id: ID, version_n: 8, anchor: { kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" },
+    status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null,
+    comments: [{ id: "c1", thread_id: "tA", author_kind: "viewer", author_name: "Mia", via_harness: null, body: "Bigger buttons", created_at: "x" }] };
+  /** The comment routes with one open thread, recording each write; a reply and a send are refused `comments_off`. */
+  const threadRoutes = (writes: string[]) => async (url: string, init?: RequestInit) => {
+    if (init?.method === "POST") {
+      writes.push(url);
+      if (url.endsWith("/comments") || url.endsWith("/send") || url.endsWith("threads:send")) return new Response(JSON.stringify({ error: { code: "comments_off", message: "comments are off on this artifact" } }), { status: 403 });
+      return new Response(JSON.stringify({ thread: { ...thread, status: "resolved" } }));
+    }
+    return new Response(JSON.stringify(url.includes("/threads") ? { threads: [thread], next_cursor: null } : viewer));
+  };
+
+  it("with comments off, a thread keeps Resolve and Send but has no reply box", async () => {
+    stubMedia({ "(min-width: 900px)": true });
+    const writes: string[] = [];
+    const view = await mountView(answer({ comments: false }), threadRoutes(writes));
+    const card = await waitFor(() => view.root.querySelector<HTMLElement>('[data-thread="tA"]'), "the thread's card");
+    flush(() => card.click());
+    const resolve = await waitFor(() => Array.from(card.querySelectorAll("button")).find(b => b.textContent === "Resolve"), "Resolve");
+    expect(Array.from(card.querySelectorAll("button")).some(b => b.textContent?.startsWith("Send to"))).toBe(true);
+    expect(card.querySelector("form.reply")).toBeNull();
+    expect(view.root.querySelector(".new-comment-open")).toBeNull();
+    // The sidebar says why, above the open threads.
+    expect(view.root.querySelector("aside.sidebar .section-open .no-reply")!.textContent).toBe("Comments are off for this page.");
+    // A pointer's click: every load starts with the keyboard trail tainted (`keyboardTrail`).
+    (await import("./view/trail")).keyboardTrail.clear();
+    resolve.click();
+    await waitFor(() => writes.some(u => u.endsWith("/threads/tA/resolve")), "the resolve request");
+  });
+
+  it("with comments off, a viewer who may not resolve gets no Send, no ticking and no Send unsent bar", async () => {
+    stubMedia({ "(min-width: 900px)": true });
+    const view = await mountView(answer({ comments: false, may_resolve: false }), threadRoutes([]));
+    const card = await waitFor(() => view.root.querySelector<HTMLElement>('[data-thread="tA"]'), "the thread's card");
+    flush(() => card.click());
+    await waitFor(() => Array.from(card.querySelectorAll("button")).find(b => b.textContent === "Resolve"), "Resolve");
+    expect(Array.from(card.querySelectorAll("button")).some(b => b.textContent?.startsWith("Send to"))).toBe(false);
+    expect(card.querySelector('input[type="checkbox"]')).toBeNull();
+    expect(view.root.querySelector(".send-unsent")).toBeNull();
+    // Comments on again: Send is back.
+    flush(() => view.controller().noteComments(true));
+    await waitFor(() => Array.from(card.querySelectorAll("button")).find(b => b.textContent?.startsWith("Send to")), "Send");
+    expect(view.root.querySelector(".send-unsent")).not.toBeNull();
+  });
+
+  it("a reply refused comments_off says so and turns comments off in the view", async () => {
+    stubMedia({ "(min-width: 900px)": true });
+    const writes: string[] = [];
+    const view = await mountView(answer({ comments: true }), threadRoutes(writes));
+    const comment = await waitFor(() => view.root.querySelector<HTMLButtonElement>("button.comment"), "the Comment button");
+    await waitFor(() => view.root.querySelector('[data-thread="tA"]'), "the thread's card");
+    expect(comment.disabled).toBe(false);
+    view.controller().reply(thread as never, "one more");
+    await waitFor(() => comment.disabled, "Comment turned off");
+    expect(comment.title).toBe("Comments are off for this page");
+    expect(writes.some(u => u.endsWith("/threads/tA/comments"))).toBe(true);
+    const notice = await waitFor(() => view.root.querySelector(".banner.notice"), "the notice");
+    expect(notice.textContent).toContain("Could not post: comments are off for this page");
+  });
+
+  it("a send refused comments_off (a commenter, while comments are off) says so", async () => {
+    stubMedia({ "(min-width: 900px)": true });
+    const writes: string[] = [];
+    const view = await mountView(answer({ comments: false }), threadRoutes(writes));
+    await waitFor(() => view.root.querySelector('[data-thread="tA"]'), "the thread's card");
+    view.controller().sendThread(thread as never);
+    const notice = await waitFor(() => view.root.querySelector(".banner.notice"), "the notice");
+    expect(notice.textContent).toContain("Could not send to the agent: comments are off for this page");
+    expect(writes.some(u => u.endsWith("/threads/tA/send"))).toBe(true);
+    // The batch send of every unsent thread says the same.
+    view.controller().dismissNotice();
+    await view.controller().sendUnsent();
+    await waitFor(() => writes.some(u => u.endsWith("threads:send")), "the batch send");
+    await waitFor(() => view.root.querySelector(".banner.notice")?.textContent?.includes("Could not send to the agent: comments are off for this page"), "the batch's notice");
+  });
+
+  it("Get in Clax shows only for apps", async () => {
+    const app = await mountView(answer({ app: APP, forks: 2 }));
+    const get = await waitFor(() => app.root.querySelector<HTMLAnchorElement>("a.get-in-clax"), "Get in Clax");
+    expect(get.textContent?.trim()).toBe("Get in Clax");
+    expect(get.getAttribute("href")).toBe(`/a/${ID}/get`);
+    // At phone width the bar hides it, and the more menu lists it.
+    expect(get.classList.contains("hide-sm")).toBe(true);
+    expect(app.root.querySelector(".by")?.textContent).toBe("v3 by @junp · by @akesling · 12 installs · 2 forks");
+    app.unmount();
+    const plain = await mountView(answer({ app: null }));
+    await waitFor(() => plain.root.querySelector("button.comment"), "the Comment button");
+    // The bar is drawn and every chunk it asked for has loaded.
+    await vi.dynamicImportSettled();
+    flush();
+    expect(plain.root.querySelector("a.get-in-clax")).toBeNull();
+  });
+
+  it("Get in Clax is solid ink for a visitor and a ghost for whoever may share", () => {
+    const visitor = mount(GetInClax, { id: ID });
+    expect(visitor.root.querySelector("a.get-in-clax")!.classList.contains("ghost")).toBe(false);
+    visitor.unmount();
+    const sharer = mount(GetInClax, { id: ID, ghost: true });
+    expect(sharer.root.querySelector("a.get-in-clax")!.classList.contains("ghost")).toBe(true);
+    sharer.unmount();
   });
 });

@@ -446,6 +446,35 @@ test("another machine's Clax signs in by device code: the page names it, warns w
   }
 });
 
+test("the Clax app signs in by device code: the page says it may manage the sharing of their apps, and People lists it under Devices", async ({ browser }) => {
+  const { d, origin } = await hostedDaemon();
+  try {
+    const owner = await page(browser);
+    await owner.goto(`${origin}/setup?secret=${encodeURIComponent(SECRET)}`);
+    await owner.getByLabel("Your name").fill("Ada");
+    await owner.getByRole("button", { name: "Create the first person" }).click();
+    await owner.waitForURL(`${origin}/`);
+    const start = await fetch(`${origin}/api/hosted/device/code`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ client_name: "Clax on Pixel", client_kind: "clax-app" }) });
+    expect(start.status).toBe(200);
+    const { verification_uri_complete } = await start.json();
+    await owner.goto(verification_uri_complete);
+    await expect(owner.locator(".signin")).toContainText("Clax on Pixel, the Clax app, from ");
+    await expect(owner.getByTestId("device-app")).toContainText("It gets an agent token of yours: what it publishes is yours, within your rights, and an app it publishes stays private until you share it.");
+    await expect(owner.getByTestId("device-app")).toContainText("may also change who can see or edit the pages you made and, as the owner, any page on this site");
+    await shots(owner, "device-app");
+    await owner.getByRole("button", { name: "Approve" }).click();
+    await expect(owner.locator(".signin")).toContainText("Clax on Pixel is signed in as you. It shows on People among your devices");
+    // People lists it under Devices, apart from agent tokens.
+    await owner.goto(`${origin}/people`);
+    await expect(owner.locator(".hosted-devices h3")).toHaveText("Devices");
+    await expect(owner.locator(".hosted-devices .mname")).toHaveText(["Clax on Pixel"]);
+    await expect(owner.locator(".hosted-tokens .mname")).toHaveCount(0);
+    await shots(owner, "people-devices");
+  } finally {
+    await d.stop();
+  }
+});
+
 test("People's hosted part shows a refusal as a sentence", async ({ browser }) => {
   const { d, origin } = await hostedDaemon();
   try {

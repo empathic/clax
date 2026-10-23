@@ -31,6 +31,7 @@ import type { ArtifactEvent } from "../events";
 import { type Thread, addComment, createThread, deleteThread, reopenThread, resolveThread, respaced, sendToAgent } from "../threads";
 import { declaredConfig } from "./availability";
 import { seconds, takeSlot } from "./budget";
+import { COMMENTS_OFF } from "../failure";
 import { CapError, SPECTATING } from "./errors";
 import { SHELL_QUIET_MS, frameGesture, frameGestureStrict } from "./gesture";
 import type { HandlerFactory } from "./host";
@@ -167,6 +168,8 @@ function mapped(e: unknown): CapError {
     if (e.status === 400 || e.status === 413) return invalid(e.message);
     // A spectator's write: transient, as the viewer may join live.
     if (e.status === 403 && e.code === "spectator") return new CapError("unavailable", e.message);
+    // The Comments switch went off: transient too, as the owner may turn it on.
+    if (e.status === 403 && e.code === "comments_off") return new CapError("unavailable", COMMENTS_OFF);
     if (e.status === 403) return new CapError("forbidden", e.message);
     if (e.status === 429) return new CapError("rate_limited", e.message);
     return new CapError("upstream_error", e.message);
@@ -230,8 +233,15 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
   const seated = () => {
     if (env.spectating?.()) throw new CapError("unavailable", SPECTATING);
   };
+  /** While the artifact's Comments switch is off, the page opens no
+   * composer and posts no thread or reply (spec 2026-10-21-app-push-pull
+   * §5.6); resolving and the rest stay. */
+  const commentable = () => {
+    if (env.commentsOff?.()) throw new CapError("unavailable", COMMENTS_OFF);
+  };
   const opening = () => {
     seated();
+    commentable();
     const wait = budget("opens");
     if (wait > 0) throw new CapError("rate_limited", `the page opens the composer too often; wait ${seconds(wait)} s`);
   };
@@ -377,6 +387,7 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
   /** Posts page-written text as a new thread or a reply; returns the thread
    * handle the page may use again, an opaque comment ID, and the thread. */
   async function post(target: { anchor?: Anchor; threadId?: string; text: string }): Promise<{ handle: string; commentId: string; thread: Thread }> {
+    commentable();
     if (target.threadId !== undefined) {
       const tid = target.threadId;
       const thread = await request(() => addComment(env.aid, tid, target.text, true));

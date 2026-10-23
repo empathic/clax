@@ -153,6 +153,36 @@ describe("comments in the shell", () => {
     await expect(h.call("reply", [threadId, "more"])).rejects.toMatchObject({ code: "unavailable", message: expect.stringContaining("Lots of people are here") });
   });
 
+  it("while comments are off the page opens no composer and posts nothing, and still resolves", async () => {
+    // The artifact's Comments switch (spec 2026-10-21-app-push-pull §5.6).
+    daemon();
+    let off = false;
+    const { h, ui } = setup({ comments: {} }, "allow", { commentsOff: () => off });
+    const { threadId } = (await h.call("create", [{ anchor: T("x").anchor, text: "hi" }])) as { threadId: string };
+    const f = daemon();
+    off = true;
+    gesture(true);
+    const d = { anchor: T("x").anchor, version: 1 };
+    await expect(h.call("openComposer", [d])).rejects.toMatchObject({ code: "unavailable", message: "Comments are off for this page" });
+    await expect(h.call("create", [{ anchor: T("x").anchor, text: "hi" }])).rejects.toMatchObject({ code: "unavailable", message: "Comments are off for this page" });
+    await expect(h.call("reply", [threadId, "more"])).rejects.toMatchObject({ code: "unavailable", message: "Comments are off for this page" });
+    expect(ui.openComposer).not.toHaveBeenCalled();
+    expect(f).not.toHaveBeenCalled();
+    await h.call("resolve", [threadId, true]);
+    expect(f).toHaveBeenCalled();
+  });
+
+  it("a comment the daemon refuses comments_off is unavailable, not forbidden", async () => {
+    daemon();
+    const { h } = setup({ comments: {} });
+    const { threadId } = (await h.call("create", [{ anchor: T("x").anchor, text: "hi" }])) as { threadId: string };
+    // The owner turns comments off between the create and the next writes.
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { code: "comments_off", message: "comments are off on this artifact" } }), { status: 403 })));
+    gesture(true);
+    await expect(h.call("create", [{ anchor: T("x").anchor, text: "hi" }])).rejects.toMatchObject({ code: "unavailable", message: "Comments are off for this page" });
+    await expect(h.call("reply", [threadId, "more"])).rejects.toMatchObject({ code: "unavailable", message: "Comments are off for this page" });
+  });
+
   it("activation the viewer gave the shell is no gesture, and polling without one is cut off", async () => {
     const { h, ui, prompt } = setup({ comments: {} });
     const d = { anchor: T("x").anchor, version: 1 };

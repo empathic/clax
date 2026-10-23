@@ -8,7 +8,10 @@
   // connection requests waiting (approved in the inbox), the switch, the
   // owner's own other machines and agents, every connected person (rights,
   // machines, agents, the approvals of theirs the owner made and what waits
-  // on the owner), and revoked people as history. For a connected person:
+  // on the owner), the people on other Clax the owner approved or is asked
+  // about (authors of comments mirrored from a public copy, keyed
+  // `remote:<origin>#<ID>`, named "<name> (on <remote>)" by the daemon),
+  // and revoked people as history. For a connected person:
   // themselves alone, their machines and agents, the approvals they made
   // and what waits on them. Anyone else is told People is not theirs.
   // Every change is the browser's (M20) and refetches the page; the page
@@ -104,6 +107,10 @@
   const people = $derived(list?.people.filter(p => !p.revoked_at) ?? []);
   const revoked = $derived(list?.people.filter(p => p.revoked_at) ?? []);
   const live = $derived(liveInvites(invites, clock()));
+  /** Whether an author is someone on another Clax: a key no person here has. */
+  const remote = (a: { public_id: string | null }) => !!a.public_id?.startsWith("remote:");
+  const remoteApprovals = $derived(approvals.filter(a => remote(a.author)));
+  const remoteWaiting = $derived(requests.filter(r => remote(r.author)));
   const SCOPE = { everywhere: "everywhere", artifact: "on one page", thread: "in one thread" } as const;
   /** An approval's scope, naming its page when the daemon names it. */
   const scopeOf = (ap: PeopleApproval) => !ap.artifact_title || ap.scope === "everywhere" ? SCOPE[ap.scope]
@@ -191,6 +198,20 @@
     {:else}
       {#if list}<p class="note">No one is connected yet. Invite a person to let their agents work with yours.</p>{/if}
     {/each}
+    {#if remoteApprovals.length || remoteWaiting.length}
+      <section class="pcard approvals remote-authors">
+        <h3 tabindex="-1">People on other Clax</h3>
+        <p class="note">They commented on the public copies of your apps. Your agents read their comments once you approve them.</p>
+        {#each remoteApprovals as ap (ap.id)}
+          <div class="line"><span>{ap.author.name}</span><span class="meta">{scopeOf(ap)}</span><span class="sp"></span>
+            <button type="button" class="ghost" aria-label="Revoke the approval of {ap.author.name}, {scopeOf(ap)}" onclick={e => act(e, () => api.revokeApproval(ap.id))}>Revoke</button></div>
+        {/each}
+        {#if remoteWaiting.length}
+          <h4>Waiting</h4>
+          {#each remoteWaiting as r (r.id)}<a class="line wait" href="/inbox?approval={encodeURIComponent(r.id)}"><span>{waitText(r, r.author.name)}</span></a>{/each}
+        {/if}
+      </section>
+    {/if}
     {#if revoked.length}
       <section class="pcard revoked">
         <h3>Revoked</h3>

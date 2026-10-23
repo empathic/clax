@@ -16,6 +16,10 @@ export const GENERAL_NOTE: Record<GeneralAccess, string> = {
   public: "Anyone with the link can open it, and it is listed on this Clax's public page.",
 };
 
+/** The Comments switch (spec 2026-10-21-app-push-pull §5.6), and the line under it, on and off. */
+export const COMMENTS_LABEL = "Comments";
+export const COMMENTS_NOTE = { on: "People who can comment may comment.", off: "Off: nobody can comment, whatever their access." } as const;
+
 /** `s` as a GitHub login (an `@` first is dropped), lowercased; null when it is not one. */
 export function parseLogin(s: string): string | null {
   const l = s.trim().replace(/^@/, "");

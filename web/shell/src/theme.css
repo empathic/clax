@@ -237,6 +237,9 @@ code { font: 12.5px var(--mono); background: var(--hover); border: 1px solid var
   /* A fork's line keeps its source alone. */
   .ttl .by:has(.lineage) { display: block; font-size: 0; }
   .ttl .by .lineage { display: block; font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+  /* An app's line keeps it all, its byline and installs first, on one line. */
+  .ttl .by.app, .ttl .by.app:has(.lineage) { display: block; font-size: 12px; }
+  .ttl .by.app .lineage { display: inline; font-size: inherit; }
   .topbar .version-menu { display: contents; }
   .ttl h1 { font-size: 15px; }
   /* Above the home indicator on a phone with no bottom bezel. */
