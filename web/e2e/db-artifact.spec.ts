@@ -1,5 +1,6 @@
 // One app reads another's documents with db.artifact(id): refused until the
-// owner allows it, served after, live while granted, and stopped by a revoke.
+// owner allows it, served after, followed while granted, and stopped by a
+// revoke.
 import type { Frame, Page } from "@playwright/test";
 import { test, expect, type Daemon, api, openArtifact, publishWith } from "./fixtures";
 
@@ -71,15 +72,21 @@ test("Allow grants the read; the view follows the other app's changes until the 
 
   await f.evaluate(() => (window as unknown as { follow(): void }).follow());
   await expect(f.locator("#runs")).toHaveText("5");
-  // B's changes reach A by polling A's site: no shell reports them.
+  // B's changes reach A when A's site is read again: no shell reports
+  // them, so the bridge refetches on its polls and whenever the page comes
+  // back into view, which the test brings about rather than waiting out a
+  // poll (origin.ts UNWATCHED_POLL_MS).
+  const backInView = () => f.evaluate(() => { document.dispatchEvent(new Event("visibilitychange")); });
   await setDoc(b, "runs/r2", { km: 7 });
-  await expect(f.locator("#runs")).toHaveText("5,7", { timeout: 30_000 });
+  await backInView();
+  await expect(f.locator("#runs")).toHaveText("5,7");
 
   // Revoked: the next refetch is refused, and the subscription ends with
   // `not_granted`; a change to B no longer reaches A.
   await api(d.base, d.token, `/api/artifacts/${a}/db-grants/${b}`, { method: "DELETE" });
   await setDoc(b, "runs/r3", { km: 9 });
-  await expect(f.locator("#err")).toHaveText("not_granted", { timeout: 60_000 });
+  await backInView();
+  await expect(f.locator("#err")).toHaveText("not_granted");
   await expect(f.locator("#runs")).toHaveText("5,7");
   // The view asked once already: a read now is refused without a dialog.
   expect(await readOnce(f)).toBe("not_granted");
