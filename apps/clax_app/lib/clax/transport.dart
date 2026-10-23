@@ -27,6 +27,11 @@ abstract interface class ClaxTransport {
   /// [ClaxApiError.timeout] when none came within [timeout], or
   /// [ClaxApiError.unreachable] when none can come, the transport's reason
   /// in its body and message.
+  ///
+  /// With [person] the call speaks as the person at the app, as their own
+  /// browser does (the core's owner-browser caller), for the routes only
+  /// a person may call: deciding an approval. Every other call speaks as
+  /// the app.
   Future<TransportAnswer> send(
     String method,
     String path, {
@@ -34,6 +39,7 @@ abstract interface class ClaxTransport {
     Map<String, String> headers = const {},
     Uint8List? body,
     required Duration timeout,
+    bool person = false,
   });
 
   /// The SSE messages of `GET /api/stream`, the API's one event stream,

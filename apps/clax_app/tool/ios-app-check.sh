@@ -9,8 +9,9 @@
 # form of :version_sync), the minimum iOS $IOS_MINIMUM_OS, iPhone and iPad,
 # no App Transport Security exceptions (the WebViews load from the app's
 # scheme, not over HTTP), no full-screen requirement and no background
-# modes, and the .clax
-# document type (dev.empathic.clax.bundle, exported, copied in), and the
+# modes, the .clax
+# document type (dev.empathic.clax.bundle, exported, copied in), the clax:
+# URL scheme with Flutter's deep linking off, and the
 # words of each permission prompt the plugins can raise (camera, photos,
 # microphone, speech recognition, location and precise location). The
 # bundle must hold Flutter's two frameworks, objective_c's (path_provider's
@@ -74,6 +75,10 @@ for t in '"public.filename-extension":["clax"]' '"public.mime-type":["applicatio
     if grep -qF "$t" <<<"$tags"; then ok "dev.empathic.clax.bundle's tag $t"; else bad "dev.empathic.clax.bundle's tag $t: UTTypeTagSpecification is '$tags'"; fi
 done
 want LSSupportsOpeningDocumentsInPlace false "a .clax is copied in, not opened in place"
+# Get in Clax: clax: links open in Clax, and reach Dart on the bundles
+# channel rather than as a route Flutter pushes.
+want CFBundleURLTypes.0.CFBundleURLSchemes.0 clax "Clax opens clax: links"
+want FlutterDeepLinkingEnabled false "links are not pushed as Flutter routes"
 # The permission prompts: iOS shows each string under its question, and
 # ends the app on a request whose key is missing.
 want NSCameraUsageDescription "An app you made in Clax can take a photo when you let it." "the camera prompt's words"

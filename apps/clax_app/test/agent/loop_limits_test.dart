@@ -50,7 +50,7 @@ void main() {
   }
 
   List<String> bodies(String tid) => [
-    for (final c in api.threadOf(aid, tid).comments) c.body,
+    for (final c in api.threadOf(aid, tid).comments) c.body!,
   ];
 
   /// An edit to the page that is never rendered, then turns spent until

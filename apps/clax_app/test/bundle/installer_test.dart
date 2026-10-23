@@ -11,6 +11,7 @@ import 'package:clax_app/bundle/lineage_store.dart';
 import 'package:clax_app/bundle/manifest.dart';
 import 'package:clax_app/bundle/trust.dart';
 import 'package:clax_app/clax/api.dart';
+import 'package:clax_app/remote/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'services_support.dart';
@@ -36,6 +37,94 @@ void main() {
         isA<BundleFailure>().having((f) => f.code, 'code', 'not_a_bundle'),
       ),
     );
+  });
+
+  test('a bundle got from a remote installs linked, and its next version '
+      'under another key opens as a linked update', () async {
+    const remote = 'https://clax.example';
+    const by = PublishedBy(name: 'Sam');
+    BundleOrigin from(int n) => BundleOrigin(
+      remoteOrigin: remote,
+      remoteArtifactId: 'ra1',
+      remoteVersion: n,
+      head: RemoteHead(
+        artifactId: 'ra1',
+        url: '$remote/a/ra1',
+        title: 'Plant log',
+        version: n,
+        contentSha256: 'sha256:${'0' * 64}',
+        publishedBy: by,
+        owner: by,
+        comments: false,
+      ),
+    );
+    final v1 = await makeBundle(lineage: lineageA);
+    final opened = await me.installer.open(v1.bytes, origin: from(1));
+    expect(opened.origin?.remoteArtifactId, 'ra1');
+    expect(opened.decision.answer, TrustAnswer.install);
+    const link = AppLink(
+      remoteOrigin: remote,
+      remoteId: 'r1',
+      remoteArtifactId: 'ra1',
+      url: '$remote/a/ra1',
+      baseRemoteVersion: 1,
+      takenBundleVersion: 1,
+      role: AppLink.recipient,
+    );
+    final aid = (await me.installer.install(opened, link: link)).aid;
+    final e = (await me.store.entry(aid))!;
+    expect(e.link?.toJson(), link.toJson());
+
+    final v2 = await makeBundle(lineage: lineageA, version: 2, seedByte: 5);
+    final unlinked = await me.installer.open(v2.bytes);
+    expect(unlinked.decision.answer, TrustAnswer.foreign);
+    final linked = await me.installer.open(v2.bytes, origin: from(2));
+    expect(linked.decision.answer, TrustAnswer.update);
+    expect(linked.decision.linked, isTrue);
+    expect(linked.decision.aid, aid);
+  });
+
+  test('a link the bundle was not got from is refused, with nothing '
+      'made', () async {
+    const remote = 'https://clax.example';
+    const link = AppLink(
+      remoteOrigin: remote,
+      remoteArtifactId: 'ra1',
+      url: '$remote/a/ra1',
+      baseRemoteVersion: 1,
+      role: AppLink.recipient,
+    );
+    final w = await makeBundle(lineage: lineageA);
+    final fromFile = await me.installer.open(w.bytes);
+    await expectLater(
+      me.installer.install(fromFile, link: link),
+      throwsA(isA<BundleFailure>()),
+    );
+    const by = PublishedBy(name: 'Sam');
+    final elsewhere = await me.installer.open(
+      w.bytes,
+      origin: const BundleOrigin(
+        remoteOrigin: remote,
+        remoteArtifactId: 'ra2',
+        remoteVersion: 1,
+        head: RemoteHead(
+          artifactId: 'ra2',
+          url: '$remote/a/ra2',
+          title: 'Plant log',
+          version: 1,
+          contentSha256: 'sha256:0',
+          publishedBy: by,
+          owner: by,
+          comments: false,
+        ),
+      ),
+    );
+    await expectLater(
+      me.installer.install(elsewhere, link: link),
+      throwsA(isA<BundleFailure>()),
+    );
+    expect(await me.api.listArtifacts(), isEmpty);
+    expect(await me.store.all(), isEmpty);
   });
 
   test('installs a new lineage: files, content hash, seed, lineage, '

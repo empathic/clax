@@ -456,7 +456,7 @@ class _VersionPageState extends State<VersionPage> {
   String _threadLine(String tid) {
     final t = _threads[tid];
     if (t == null || t.comments.isEmpty) return 'Thread $tid';
-    return t.comments.first.body.trim();
+    return (t.comments.first.body ?? '').trim();
   }
 
   List<Widget> _body(ThemeData theme, int? latest) {

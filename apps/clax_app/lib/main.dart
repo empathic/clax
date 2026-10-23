@@ -40,6 +40,7 @@ import 'platform/pending_make.dart';
 import 'platform/secure_key.dart';
 import 'platform/settings_store.dart';
 import 'platform/timings.dart';
+import 'remote/remote_api.dart';
 import 'platform/voice.dart';
 import 'platform/voice_cues.dart';
 import 'queue/host.dart';
@@ -238,6 +239,8 @@ Future<AppServices> platformServices({DateTime? launched}) async {
       schemes: schemes,
       origins: origins,
     ),
+    remote: () => HttpRemoteApi(schemes.transport()),
+    openUrl: links.open,
     installId: installId,
     supportDir: support.path,
     prompts: prompts,

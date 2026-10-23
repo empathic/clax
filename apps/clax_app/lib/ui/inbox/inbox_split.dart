@@ -1,9 +1,11 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 
 import '../../clax/api.dart';
 import '../../platform/voice.dart';
+import '../../remote/checker.dart' show LinkedStatus;
 import '../app_icon.dart';
 import '../inbox_screen.dart';
 import '../kit/kit.dart';
@@ -12,6 +14,7 @@ import '../mac/mac_toolbar.dart';
 import '../mac/window_channel.dart';
 import '../split/split_shell.dart';
 import '../theme.dart';
+import '../remote/linked_app.dart';
 import '../thread_detail.dart';
 import '../tokens.g.dart';
 
@@ -50,6 +53,8 @@ class InboxSplit extends StatefulWidget {
     this.now,
     this.toolbar = false,
     this.onClosed,
+    this.linked,
+    this.linkedApps,
   });
 
   final ClaxApi api;
@@ -70,6 +75,15 @@ class InboxSplit extends StatefulWidget {
   /// Whether the window's toolbar holds the search and the chips.
   final bool toolbar;
   final VoidCallback? onClosed;
+
+  /// Linked apps' statuses ([LinkedChecker.status]): a thread page of an
+  /// app whose public copy takes no comments has no reply bar.
+  final ValueListenable<Map<String, LinkedStatus>>? linked;
+
+  /// Linked apps' held-reply hooks, as the app screen has them: a thread
+  /// page whose reply waits for its version shows the held card, why that
+  /// version is not public yet, and Publish vN and reply.
+  final LinkedAppHooks? linkedApps;
 
   /// The chips the Mac's segmented control offers.
   static const macFilters = [
@@ -235,8 +249,10 @@ class _InboxSplitState extends State<InboxSplit> {
     final aid = item.artifactId;
     final thread = item.thread;
     if (item.kind == 'reply' && aid != null && thread != null) {
-      return ThreadDetail(
+      final linked = widget.linked;
+      Widget page(bool replies) => ThreadDetail(
         key: ValueKey('inbox-thread-${thread.id}'),
+        replies: replies,
         api: widget.api,
         aid: aid,
         tid: thread.id,
@@ -250,6 +266,23 @@ class _InboxSplitState extends State<InboxSplit> {
         onRetry: null,
         onOpenApp: () => _openApp(item),
         leading: leading,
+        heldReply: switch (widget.linkedApps?.heldReply) {
+          final held? => () => held(aid, thread.id),
+          null => null,
+        },
+        heldNote: switch (widget.linkedApps?.heldNote) {
+          final note? => (n) => note(aid, n),
+          null => null,
+        },
+        publishAndReply: switch (widget.linkedApps?.publishAndReply) {
+          final go? => (n) => go(aid, thread.id, n),
+          null => null,
+        },
+      );
+      if (linked == null) return page(true);
+      return ValueListenableBuilder(
+        valueListenable: linked,
+        builder: (_, all, _) => page(all[aid]?.head?.comments ?? true),
       );
     }
     return _ItemDetail(

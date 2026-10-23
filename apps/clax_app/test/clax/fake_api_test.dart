@@ -471,6 +471,81 @@ void main() {
     });
   });
 
+  group('withheld authors, as the core withholds them', () {
+    const bob = 'remote:clax.dev#u_bob';
+    const anchor = {
+      'kind': 'text',
+      'selector': 'p',
+      'quote': 'Bob quoted this',
+      'label': 'Bob quoted this',
+      'name': 'Bob named this',
+    };
+
+    test('an agent reads a thread a stranger opened without its anchor, '
+        'in its view and in the feedback of the person\'s reply', () async {
+      final sid = (await api.registerAppSession(installId: 'i', pid: 1)).id;
+      final aid = api.seedArtifact('Runs', {'index.html': '<p>x</p>'});
+      final item = api.sendComment(
+        aid,
+        'Hi',
+        author: 'Bob (on clax.dev)',
+        anchor: anchor,
+        remote: 'clax.dev',
+        remoteAuthor: bob,
+      );
+      final agent = (await api.threads(aid, agent: true)).single;
+      expect(agent.anchorWithheld, isTrue);
+      expect(agent.anchor, ThreadView.withheldAnchor);
+      expect((await api.threads(aid)).single.anchor, anchor);
+
+      await api.pollFeedback(sid);
+      await api.postOwnerComment(aid, item.threadId, 'Make it blue');
+      final got = (await api.pollFeedback(sid)).items.single;
+      expect(got.body, 'Make it blue');
+      expect(got.anchor, ThreadView.withheldAnchor);
+    });
+
+    test('askApproval refuses as the core does: recently_declined for ten '
+        'minutes after a decline, limit_reached past the open-request cap', () async {
+      var now = DateTime.utc(2026, 10, 12);
+      api = FakeClaxApi(clock: () => now.toIso8601String());
+      final sid = (await api.registerAppSession(installId: 'i', pid: 1)).id;
+      final aid = api.seedArtifact('Runs', {'index.html': '<p>x</p>'});
+      String held(String who) => api
+          .sendComment(
+            aid,
+            'Hi',
+            author: who,
+            remote: 'clax.dev',
+            remoteAuthor: 'remote:clax.dev#$who',
+          )
+          .threadId;
+      final t1 = held('u_bob');
+      await api.askApproval(sid, threadId: t1);
+      await api.askApproval(sid, threadId: t1);
+      final rid = (await api.inbox()).items.single.approval!.id;
+      await api.decideApproval(rid, 'decline');
+      await expectLater(
+        api.askApproval(sid, threadId: t1),
+        apiError('recently_declined'),
+      );
+      now = now.add(const Duration(minutes: 10));
+      await api.askApproval(sid, threadId: t1);
+
+      api.maxOpenApprovals = 1;
+      final t2 = held('u_carol');
+      await expectLater(
+        api.askApproval(sid, threadId: t2),
+        throwsA(
+          isA<ClaxApiError>()
+              .having((e) => e.status, 'status', 429)
+              .having((e) => e.code, 'code', 'limit_reached'),
+        ),
+      );
+      await api.askApproval(sid, threadId: t1);
+    });
+  });
+
   group('the owner thread calls', () {
     test('a comment on a sent thread is sent to the agent', () async {
       final aid = api.seedArtifact('Runs', {'index.html': 'x'});

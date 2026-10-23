@@ -20,7 +20,8 @@ typedef CommentTabChange = ({String label, VoidCallback onOpen});
 /// so no back swipe starts on it at any gesture sensitivity; its centre is
 /// at [at] of the parent's height, kept inside the parent's safe area.
 ///
-/// It is tap-only: a tap opens a [ClaxMenu] of Comment ([onComment]),
+/// It is tap-only: a tap opens a [ClaxMenu] of Comment ([onComment], left
+/// out when null: an app whose comments are off),
 /// "Threads (n)" with [threads] open ([onThreads]) and, while one runs,
 /// [change]. A long-press and then a vertical drag move it; as the press
 /// ends [onMoved] gets the new fraction of the height. A drag without the
@@ -29,7 +30,7 @@ class CommentTab extends StatefulWidget {
   const CommentTab({
     super.key,
     required this.threads,
-    required this.onComment,
+    this.onComment,
     required this.onThreads,
     this.change,
     required this.at,
@@ -38,7 +39,8 @@ class CommentTab extends StatefulWidget {
 
   /// How many threads are open, as the menu's Threads says.
   final int threads;
-  final VoidCallback onComment, onThreads;
+  final VoidCallback? onComment;
+  final VoidCallback onThreads;
 
   /// The change in progress; null while none runs.
   final CommentTabChange? change;
@@ -81,12 +83,13 @@ class _CommentTabState extends State<CommentTab> {
       context,
       anchor: anchor,
       items: [
-        const ClaxMenuItem(
-          'comment',
-          'Comment',
-          icon: Icons.add_comment_outlined,
-          symbol: 'text.bubble',
-        ),
+        if (widget.onComment != null)
+          const ClaxMenuItem(
+            'comment',
+            'Comment',
+            icon: Icons.add_comment_outlined,
+            symbol: 'text.bubble',
+          ),
         ClaxMenuItem(
           'threads',
           'Threads (${widget.threads})',
@@ -104,7 +107,7 @@ class _CommentTabState extends State<CommentTab> {
     );
     switch (id) {
       case 'comment':
-        widget.onComment();
+        widget.onComment?.call();
       case 'threads':
         widget.onThreads();
       case 'change':

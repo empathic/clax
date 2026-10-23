@@ -160,7 +160,12 @@ TEST_DATA = glob(
         "assets/haiku.json",
         ":home_bundle",
     ],
+    # The real suite's tests also run a hosted Clax daemon (the `clax`
+    # binary, run once before them: bazel/warm.bzl) on a scratch home
+    # (test/support/hosted_daemon.dart).
     data = TEST_DATA + ([
+        "//crates/clax-cli:clax",
+        "//crates/clax-cli:clax_warm",
         "//crates/clax-embed:clax_embed_host",
     ] if suite["real"] else []),
     # APP_NAME, as `flutter test` sets it beside UNIT_TEST_ASSETS
@@ -168,9 +173,16 @@ TEST_DATA = glob(
     # once, where through the engine the read would not finish within a
     # test's fake time.
     env = {"APP_NAME": "clax_app"} | (select({
-        # The core as this host builds it, relative to the runfiles root.
-        "@platforms//os:macos": {"CLAX_EMBED_LIB": "crates/clax-embed/libclax_embed.dylib"},
-        "//conditions:default": {"CLAX_EMBED_LIB": "crates/clax-embed/libclax_embed.so"},
+        # The core as this host builds it, and the `clax` binary, relative
+        # to the runfiles root.
+        "@platforms//os:macos": {
+            "CLAX_EMBED_LIB": "crates/clax-embed/libclax_embed.dylib",
+            "CLAX_TEST_BIN": "crates/clax-cli/clax",
+        },
+        "//conditions:default": {
+            "CLAX_EMBED_LIB": "crates/clax-embed/libclax_embed.so",
+            "CLAX_TEST_BIN": "crates/clax-cli/clax",
+        },
     }) if suite["real"] else {}),
     # NOTICES, for the suites whose files show the licences.
     license_files = [":notices"] if suite["notices"] else [],
@@ -450,7 +462,8 @@ pub_licenses_test(
 )
 
 # The files whose user-facing copy scripts/check-copy.py checks
-# (//scripts:check_copy): the app's screens, the home app and the kit.
+# (//scripts:check_copy): the app's screens, the home app, the kit and
+# the lines for a hosted Clax's failures.
 # The kit's vendored bundles (preact.js, dates.js) are left out.
 filegroup(
     name = "copy_sources",
@@ -461,6 +474,7 @@ filegroup(
             "lib/agent/failure.dart",
             "lib/app.dart",
             "lib/home/**/*.dart",
+            "lib/remote/remote_errors.dart",
             "lib/ui/**/*.dart",
         ],
         exclude = [

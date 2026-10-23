@@ -178,7 +178,14 @@ class FakeClaxApi implements ClaxApi {
 
   /// Adds an open thread with one viewer comment on [aid]'s current
   /// version, sent to the agent, and queues its feedback as one batch.
-  /// Returns the queued item.
+  /// With [remote], the thread and comment came from that remote, as the
+  /// core mirrors them from a linked app's public copy. With
+  /// [remoteAuthor] (opaque, as the core keys an author on a public Clax:
+  /// `remote:<origin>#<ID>`), its author is that stranger: until the
+  /// person approves them ([decideApproval]) the comment is withheld from
+  /// agent reads and its poll carries a [WithheldNotice] instead of the
+  /// item, as the core withholds it. Returns the item (queued only when
+  /// not withheld).
   FeedbackItem sendComment(
     String aid,
     String body, {
@@ -186,13 +193,15 @@ class FakeClaxApi implements ClaxApi {
     Map<String, Object?> anchor = const {'kind': 'artifact', 'file': ''},
     Uint8List? clip,
     bool queue = true,
+    String? remote,
+    String? remoteAuthor,
   }) {
     final a = _artifact(aid);
     if (a.hidden) throw _draftThread();
     final tid = 'thread-${++_ids}';
     final cid = 'comment-${++_ids}';
     final (name, publicId) = _author(author);
-    if (publicId == ownerId) ownerExists = true;
+    if (publicId == ownerId && remote == null) ownerExists = true;
     a.threads[tid] = _FakeThread(
       id: tid,
       versionN: a.current,
@@ -203,13 +212,14 @@ class FakeClaxApi implements ClaxApi {
           id: cid,
           authorKind: 'viewer',
           authorName: name,
-          authorPublicId: publicId,
+          authorPublicId: remote == null ? publicId : null,
           body: body,
           createdAt: _now(),
+          remoteOrigin: remote,
         ),
       ],
       clip: clip,
-    );
+    )..linkedRemote = remote;
     final item = FeedbackItem(
       feedbackId: 'feedback-${++_ids}',
       threadId: tid,
@@ -221,8 +231,216 @@ class FakeClaxApi implements ClaxApi {
       version: a.current,
       anchor: anchor,
     );
+    if (remoteAuthor != null) {
+      _heldAuthor[cid] = remoteAuthor;
+      if (!_approved(aid, tid, remoteAuthor)) {
+        if (queue) {
+          pushWithheld(
+            WithheldNotice(
+              threadId: tid,
+              artifactId: aid,
+              count: 1,
+              authors: name,
+              authorIds: [remoteAuthor],
+              title: a.title,
+            ),
+          );
+        }
+        return item;
+      }
+    }
     if (queue) pushFeedback([item]);
     return item;
+  }
+
+  /// Adds a viewer comment by [author] mirrored from [remote] to thread
+  /// [tid] of [aid], leaving its feedback state as it is. With
+  /// [remoteAuthor] it is withheld from agents as [sendComment]'s is, and
+  /// with [queue] the next poll tells of it; without, with [queue] the
+  /// next poll delivers it. Returns its ID.
+  String mirrorComment(
+    String aid,
+    String tid,
+    String body, {
+    required String author,
+    String remote = 'clax.dev',
+    String? remoteAuthor,
+    bool queue = false,
+  }) {
+    final a = _artifact(aid);
+    final t = a.threads[tid]!;
+    final cid = 'comment-${++_ids}';
+    t.comments.add(
+      ThreadComment(
+        id: cid,
+        authorKind: 'viewer',
+        authorName: author,
+        body: body,
+        createdAt: _now(),
+        remoteOrigin: remote,
+      ),
+    );
+    if (remoteAuthor != null) _heldAuthor[cid] = remoteAuthor;
+    if (!queue) return cid;
+    if (_withheld(aid, tid, cid)) {
+      pushWithheld(
+        WithheldNotice(
+          threadId: tid,
+          artifactId: aid,
+          count: 1,
+          authors: author,
+          authorIds: [?remoteAuthor],
+          title: a.title,
+        ),
+      );
+    } else {
+      pushFeedback([
+        FeedbackItem(
+          feedbackId: 'feedback-${++_ids}',
+          threadId: tid,
+          commentId: cid,
+          artifactId: aid,
+          artifactTitle: a.title,
+          body: body,
+          author: author,
+          version: a.current,
+          anchor: _agentAnchor(aid, t),
+        ),
+      ]);
+    }
+    return cid;
+  }
+
+  /// The withheld comments an approval has delivered.
+  final Set<String> _deliveredHeld = {};
+
+  /// Each withheld-author comment's author, by comment ID.
+  final Map<String, String> _heldAuthor = {};
+
+  /// The person's approvals: `thread:<tid>`, `artifact:<aid>` or
+  /// `everywhere`, each with the author it lets through.
+  final Set<(String, String)> _approvals = {};
+
+  /// Approval requests by ID, as the daemon's request view shows them.
+  final Map<String, Map<String, Object?>> _requests = {};
+
+  /// Notices queued for the next poll.
+  final List<WithheldNotice> _notices = [];
+
+  bool _approved(String aid, String tid, String author) =>
+      _approvals.contains(('thread:$tid', author)) ||
+      _approvals.contains(('artifact:$aid', author)) ||
+      _approvals.contains(('everywhere', author));
+
+  /// Whether comment [cid] of [aid]'s thread [tid] is withheld from agents.
+  bool _withheld(String aid, String tid, String cid) => switch (_heldAuthor[cid]) {
+    final author? => !_approved(aid, tid, author),
+    null => false,
+  };
+
+  /// [t]'s anchor as an agent of the person reads it: withheld
+  /// ([ThreadView.withheldAnchor]) while the thread's first comment, whose
+  /// author placed the anchor, is, as the core credits a mirrored anchor to
+  /// that comment's author.
+  Map<String, Object?> _agentAnchor(String aid, _FakeThread t) =>
+      t.comments.isNotEmpty && _withheld(aid, t.id, t.comments.first.id)
+      ? ThreadView.withheldAnchor
+      : t.anchor;
+
+  /// Queues [n] for the next poll's `withheld`, answering a waiting poll
+  /// at once.
+  void pushWithheld(WithheldNotice n) {
+    if (_polls.isNotEmpty) {
+      _polls.removeAt(0).complete(FeedbackBatch(items: [], withheld: [n]));
+    } else {
+      _notices.add(n);
+    }
+  }
+
+  /// [t] as an agent of the person reads it: each comment by an author the
+  /// person has not approved without its words, and the thread's
+  /// `withheld` naming them.
+  ThreadView _agentView(String aid, _FakeThread t) {
+    final v = t.view(aid);
+    final held = <String, String>{};
+    final comments = [
+      for (final c in v.comments)
+        if (_withheld(aid, t.id, c.id))
+          (() {
+            held[_heldAuthor[c.id]!] = c.authorName;
+            return ThreadComment(
+              id: c.id,
+              authorKind: c.authorKind,
+              authorName: c.authorName,
+              body: null,
+              withheld: true,
+              createdAt: c.createdAt,
+              remoteOrigin: c.remoteOrigin,
+            );
+          })()
+        else
+          c,
+    ];
+    if (held.isEmpty) return v;
+    final asked = _requests.values.where(
+      (r) => r['thread_id'] == t.id && held.containsKey((r['author'] as Map)['public_id']),
+    );
+    return ThreadView(
+      id: v.id,
+      artifactId: v.artifactId,
+      versionN: v.versionN,
+      anchor: _agentAnchor(aid, t),
+      status: v.status,
+      sentToAgent: v.sentToAgent,
+      hasClip: v.hasClip,
+      resolvedBy: v.resolvedBy,
+      comments: comments,
+      feedbackState: v.feedbackState,
+      addressedIn: v.addressedIn,
+      linkedRemote: v.linkedRemote,
+      withheld: ThreadWithheld(
+        count: comments.where((c) => c.withheld).length,
+        authors: [
+          for (final MapEntry(:key, :value) in held.entries)
+            CardPerson(publicId: key, name: value),
+        ],
+        approval: asked.any((r) => r['status'] == 'open')
+            ? 'requested'
+            : asked.any((r) => r['status'] == 'declined')
+            ? 'declined'
+            : 'none',
+      ),
+    );
+  }
+
+  /// The approval request [rid] as the daemon's inbox card shows it, with
+  /// the withheld comments; null when there is none.
+  ApprovalRequest? approvalRequest(String rid) => switch (_requests[rid]) {
+    final r? => ApprovalRequest.fromJson(_card(r)),
+    null => null,
+  };
+
+  Map<String, Object?> _card(Map<String, Object?> r) {
+    final author = (r['author'] as Map)['public_id'];
+    final t = _artifacts[r['artifact_id']]?.threads[r['thread_id']];
+    return {
+      ...r,
+      'content': {
+        'thread': t == null ? null : {'id': t.id, 'status': t.status},
+        'comments': [
+          for (final c in t?.comments ?? const <ThreadComment>[])
+            if (_heldAuthor[c.id] == author)
+              {
+                'id': c.id,
+                'body': c.body,
+                'created_at': c.createdAt,
+                'author_name': c.authorName,
+                'by_agent': false,
+              },
+        ],
+      },
+      'via_page': null,
+    };
   }
 
   /// Queues [items] as one poll's batch, answering a waiting poll first.
@@ -300,18 +518,20 @@ class FakeClaxApi implements ClaxApi {
       _artifact(aid).threads[tid]!.clip = png;
 
   /// Adds an open thread with one viewer comment on [aid]'s current
-  /// version, not sent to the agent; returns its ID.
+  /// version, not sent to the agent (from [remote], as [sendComment]);
+  /// returns its ID.
   String addThread(
     String aid,
     String body, {
     String? author,
     Map<String, Object?> anchor = const {'kind': 'artifact', 'file': ''},
+    String? remote,
   }) {
     final a = _artifact(aid);
     if (a.draftOf != null || a.hidden) throw _draftThread();
     final tid = 'thread-${++_ids}';
     final (name, publicId) = _author(author);
-    if (publicId == ownerId) ownerExists = true;
+    if (publicId == ownerId && remote == null) ownerExists = true;
     a.threads[tid] = _FakeThread(
       id: tid,
       versionN: a.current,
@@ -322,12 +542,15 @@ class FakeClaxApi implements ClaxApi {
           id: 'comment-${++_ids}',
           authorKind: 'viewer',
           authorName: name,
-          authorPublicId: publicId,
+          authorPublicId: remote == null ? publicId : null,
           body: body,
           createdAt: _now(),
+          remoteOrigin: remote,
         ),
       ],
-    )..feedbackState = null;
+    )
+      ..feedbackState = null
+      ..linkedRemote = remote;
     return tid;
   }
 
@@ -633,6 +856,13 @@ class FakeClaxApi implements ClaxApi {
     _call('pollFeedback', {'sid': sid, 'wait': wait});
     _liveSession(sid);
     final answers = _takeLateAnswers(sid);
+    if (_notices.isNotEmpty) {
+      final n = List.of(_notices);
+      _notices.clear();
+      final items = _feedback.isEmpty ? const <FeedbackItem>[] : _feedback.removeFirst();
+      final b = _handOver(items, answers);
+      return FeedbackBatch(items: b.items, answers: b.answers, withheld: n);
+    }
     if (_feedback.isNotEmpty) {
       return _handOver(_feedback.removeFirst(), answers);
     }
@@ -697,11 +927,28 @@ class FakeClaxApi implements ClaxApi {
   }
 
   @override
-  Future<Uint8List?> clip(String aid, String tid) async {
+  Future<Uint8List?> clip(String aid, String tid, {bool agent = false}) async {
     _call('clip', {'aid': aid, 'tid': tid});
+    final t = _artifacts[aid]?.threads[tid];
+    // A clip is its thread's first commenter's: withheld from an agent
+    // whose person has not approved them.
+    if (agent && t != null && t.clip != null) {
+      _needSession();
+      if (t.comments.isNotEmpty && _withheld(aid, tid, t.comments.first.id)) {
+        throw const ClaxApiError(status: 403, code: 'withheld', message: 'withheld');
+      }
+    }
     // The daemon answers 404 alike for an unknown artifact or thread and
     // for no clip, and the client reads each as null.
-    return _artifacts[aid]?.threads[tid]?.clip;
+    return t?.clip;
+  }
+
+  /// The artifact holding thread [tid], with it; 404 when none does.
+  (_FakeArtifact, _FakeThread) _threadAnywhere(String tid) {
+    for (final a in _artifacts.values) {
+      if (a.threads[tid] case final t?) return (a, t);
+    }
+    throw const ClaxApiError(status: 404, code: 'not_found', message: 'no such thread');
   }
 
   @override
@@ -794,16 +1041,22 @@ class FakeClaxApi implements ClaxApi {
   }
 
   @override
-  Future<List<ThreadView>> threads(String aid) async {
-    _call('threads', {'aid': aid});
-    return [for (final t in _artifact(aid).threads.values) t.view(aid)];
+  Future<List<ThreadView>> threads(String aid, {bool agent = false}) async {
+    _call('threads', {'aid': aid, 'agent': agent});
+    if (agent) _needSession();
+    return [
+      for (final t in _artifact(aid).threads.values)
+        agent ? _agentView(aid, t) : t.view(aid),
+    ];
   }
 
   @override
   Future<List<ArtifactThreads>> allThreads({
     bool includeResolved = false,
+    bool agent = false,
   }) async {
-    _call('allThreads', {'includeResolved': includeResolved});
+    _call('allThreads', {'includeResolved': includeResolved, 'agent': agent});
+    if (agent) _needSession();
     return [
       for (final a in _artifacts.values)
         if (!a.hidden &&
@@ -815,10 +1068,186 @@ class FakeClaxApi implements ClaxApi {
             files: a.versions.last.blobs.keys.toList(),
             threads: [
               for (final t in a.threads.values)
-                if (includeResolved || t.status == 'open') t.view(a.id),
+                if (includeResolved || t.status == 'open')
+                  agent ? _agentView(a.id, t) : t.view(a.id),
             ],
           ),
     ];
+  }
+
+  /// The open approval requests a person may hold before an ask is
+  /// refused with 429 `limit_reached` (100 in the core).
+  int maxOpenApprovals = 100;
+
+  @override
+  Future<void> askApproval(String sid, {required String threadId}) async {
+    _call('askApproval', {'sid': sid, 'threadId': threadId});
+    _liveSession(sid);
+    final (a, t) = _threadAnywhere(threadId);
+    final authors = <String, String>{
+      for (final c in t.comments)
+        if (_withheld(a.id, t.id, c.id)) _heldAuthor[c.id]!: c.authorName,
+    };
+    if (authors.isEmpty) {
+      throw const ClaxApiError(
+        status: 400,
+        code: 'nothing_withheld',
+        message: 'nothing in this thread is withheld from the agent',
+      );
+    }
+    // As the core: an author with an open request there joins it; one
+    // declined there within ten minutes, or past the open-request cap, is
+    // skipped; and when no author was asked or joined, the ask is refused.
+    final now = DateTime.parse(_now());
+    var (asked, declined, full) = (false, false, false);
+    for (final MapEntry(key: author, value: name) in authors.entries) {
+      final there = [
+        for (final r in _requests.values)
+          if (r['thread_id'] == t.id &&
+              (r['author'] as Map)['public_id'] == author)
+            r,
+      ];
+      if (there.any((r) => r['status'] == 'open')) {
+        asked = true;
+        continue;
+      }
+      if (there.any(
+        (r) =>
+            r['status'] == 'declined' &&
+            now.difference(DateTime.parse(r['decided_at']! as String)) <
+                const Duration(minutes: 10),
+      )) {
+        declined = true;
+        continue;
+      }
+      if (_requests.values.where((r) => r['status'] == 'open').length >=
+          maxOpenApprovals) {
+        full = true;
+        continue;
+      }
+      asked = true;
+      final rid = 'request-${++_ids}';
+      final r = <String, Object?>{
+        'id': rid,
+        'approver': null,
+        'author': {'public_id': author, 'name': name, 'owner': false},
+        'artifact_id': a.id,
+        'thread_id': t.id,
+        'agent': {'handle': 'a_app', 'name': 'Clax', 'harness': 'app', 'live': true},
+        'cause': 'ask',
+        'count': t.comments.where((c) => _heldAuthor[c.id] == author).length,
+        'status': 'open',
+        'scope': null,
+        'created_at': _now(),
+        'decided_at': null,
+      };
+      _requests[rid] = r;
+      final item = <String, Object?>{
+        'id': 'item-${++_ids}',
+        'seq': ++_inboxSeq,
+        'kind': 'approval',
+        'read': false,
+        'created_at': _now(),
+        'agent': {'handle': 'a_app', 'harness': 'app', 'project': ''},
+        'artifact': {
+          'id': a.id,
+          'title': a.title,
+          'kind': 'html',
+          'page_url': null,
+        },
+        'thread': {'id': t.id, 'summary': null, 'status': t.status},
+        'approval': _card(r),
+        'gone': false,
+        'url': '/a/${a.id}?thread=${t.id}',
+      };
+      _inbox.add(item);
+      _announceItem(item);
+    }
+    if (asked) return;
+    if (full) {
+      throw const ClaxApiError(
+        status: 429,
+        code: 'limit_reached',
+        message: 'the person holds as many open requests as they may',
+      );
+    }
+    assert(declined);
+    throw const ClaxApiError(
+      status: 400,
+      code: 'recently_declined',
+      message: 'the person declined this less than ten minutes ago',
+    );
+  }
+
+  @override
+  Future<ApprovalRequest> decideApproval(String rid, String scope) async {
+    _call('decideApproval', {'rid': rid, 'scope': scope});
+    final r = _requests[rid];
+    if (r == null) {
+      throw const ClaxApiError(status: 404, code: 'not_found', message: 'no such request');
+    }
+    if (!const {'thread', 'artifact', 'everywhere', 'decline'}.contains(scope)) {
+      throw const ClaxApiError(status: 400, code: 'invalid_scope', message: 'invalid scope');
+    }
+    if (r['status'] != 'open') {
+      throw const ClaxApiError(
+        status: 409,
+        code: 'request_closed',
+        message: 'the request no longer waits',
+      );
+    }
+    final author = (r['author'] as Map)['public_id'] as String;
+    final aid = r['artifact_id'] as String;
+    final tid = r['thread_id'] as String;
+    r['decided_at'] = _now();
+    if (scope == 'decline') {
+      r['status'] = 'declined';
+    } else {
+      r['status'] = 'approved';
+      r['scope'] = scope;
+      _approvals.add((
+        switch (scope) {
+          'thread' => 'thread:$tid',
+          'artifact' => 'artifact:$aid',
+          _ => 'everywhere',
+        },
+        author,
+      ));
+      // What it lets through reaches the agent by the usual tiers.
+      final a = _artifact(aid);
+      final now = [
+        for (final t in a.threads.values)
+          for (final c in t.comments)
+            if (_heldAuthor[c.id] == author && !_withheld(aid, t.id, c.id) && t.sent && t.status == 'open')
+              FeedbackItem(
+                feedbackId: 'feedback-${++_ids}',
+                threadId: t.id,
+                commentId: c.id,
+                artifactId: aid,
+                artifactTitle: a.title,
+                body: c.body!,
+                author: c.authorName,
+                version: t.versionN,
+                anchor: _agentAnchor(aid, t),
+              ),
+      ];
+      final delivered = _deliveredHeld;
+      final fresh = [for (final i in now) if (delivered.add(i.commentId)) i];
+      if (fresh.isNotEmpty) pushFeedback(fresh);
+    }
+    for (final i in _inbox) {
+      if ((i['approval'] as Map?)?['id'] == rid) i['approval'] = _card(r);
+    }
+    // As the core's request listener: the request's view, never its
+    // withheld content, on the approver's inbox topic.
+    emitStream(
+      StreamEvent(
+        topic: 'inbox',
+        type: 'approval_request',
+        data: {'topic': 'inbox', 'request': Map.of(r)},
+      ),
+    );
+    return ApprovalRequest.fromJson(r);
   }
 
   // --- drafts ---
@@ -1178,6 +1607,7 @@ class FakeClaxApi implements ClaxApi {
 
   void _sendToAgent(_FakeArtifact a, _FakeThread t, ThreadComment c) {
     t.feedbackState = 'sent';
+    if (_withheld(a.id, t.id, c.id)) return;
     pushFeedback([
       FeedbackItem(
         feedbackId: 'feedback-${++_ids}',
@@ -1185,10 +1615,10 @@ class FakeClaxApi implements ClaxApi {
         commentId: c.id,
         artifactId: a.id,
         artifactTitle: a.title,
-        body: c.body,
+        body: c.body ?? '',
         author: c.authorName,
         version: a.current,
-        anchor: t.anchor,
+        anchor: _agentAnchor(a.id, t),
       ),
     ]);
   }
@@ -2150,6 +2580,9 @@ class _FakeThread {
   String? resolvedBy;
   String? feedbackState = 'sent';
 
+  /// The remote the thread has a twin on, as the core's `linked` names it.
+  String? linkedRemote;
+
   ThreadView view(String aid) => ThreadView(
     id: id,
     artifactId: aid,
@@ -2164,6 +2597,7 @@ class _FakeThread {
         ? null
         : FeedbackState(state: feedbackState!),
     addressedIn: List.of(addressedIn),
+    linkedRemote: linkedRemote,
   );
 }
 

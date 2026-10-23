@@ -371,7 +371,9 @@ class FeedbackItem {
     body: j['body'] as String,
     author: j['author'] as String,
     version: _int(j['version']),
-    anchor: _map(j['anchor']),
+    anchor: _map(j['withheld'])['anchor'] != null
+        ? ThreadView.withheldAnchor
+        : _map(j['anchor']),
     clipPath: j['clip_path'] as String?,
     viaPage: j['via_page'] as bool? ?? false,
     resent: j['resent'] as bool? ?? false,
@@ -395,7 +397,8 @@ class FeedbackItem {
   final int version;
 
   /// The thread's anchor as the daemon stores it (`kind`, `selector`,
-  /// `quote`, `file`, …).
+  /// `quote`, `file`, …); [ThreadView.withheldAnchor] when the item's
+  /// `withheld` names its anchor.
   final Json anchor;
   final String? clipPath;
   final bool viaPage;
@@ -412,6 +415,7 @@ class FeedbackBatch {
     required this.items,
     this.text,
     this.answers = const [],
+    this.withheld = const [],
   });
 
   factory FeedbackBatch.fromJson(Json j) => FeedbackBatch(
@@ -421,6 +425,9 @@ class FeedbackBatch {
     text: j['text'] as String?,
     answers: [
       for (final q in _list(j['answers'])) QuestionView.fromJson(_map(q)),
+    ],
+    withheld: [
+      for (final w in _list(j['withheld'])) WithheldNotice.fromJson(_map(w)),
     ],
   );
 
@@ -432,6 +439,11 @@ class FeedbackBatch {
   /// Late answers: the session's `ask` questions answered or declined
   /// since no wait took them, handed over (and marked taken) by this poll.
   final List<QuestionView> answers;
+
+  /// The comments sent to the agent that are withheld from it until its
+  /// person approves their author, one entry per author and thread, told
+  /// once; never their words.
+  final List<WithheldNotice> withheld;
 
   /// Whether the poll carried neither comments nor late answers.
   bool get isEmpty => items.isEmpty && answers.isEmpty;
@@ -543,30 +555,56 @@ class ThreadComment {
     this.viaHarness,
     this.viaPage = false,
     this.authorPublicId,
+    this.remoteOrigin,
+    this.withheld = false,
   });
 
+  /// A comment as the thread routes show it; one read through an agent's
+  /// session whose author that agent's person has not approved has a null
+  /// `body` and `withheld: true` (either makes it [withheld]).
   factory ThreadComment.fromJson(Json j) => ThreadComment(
     id: j['id'] as String,
     authorKind: j['author_kind'] as String,
     authorName: j['author_name'] as String? ?? '',
-    body: j['body'] as String,
+    body: j['body'] as String?,
+    withheld: j['withheld'] == true || j['body'] == null,
     createdAt: j['created_at'] as String,
     viaHarness: j['via_harness'] as String?,
     viaPage: j['via_page'] as bool? ?? false,
     authorPublicId: j['author_public_id'] as String?,
+    remoteOrigin: _remoteOrigin(j['linked']),
   );
+
+  /// The remote a comment's `linked` names when the comment came from
+  /// there (`origin: remote`), else null.
+  static String? _remoteOrigin(Object? linked) =>
+      linked is Map && linked['origin'] == 'remote' && linked['remote'] is String
+      ? linked['remote'] as String
+      : null;
 
   final String id;
   final String authorKind;
   final String authorName;
-  final String body;
+
+  /// The comment's words; null when it is [withheld].
+  final String? body;
   final String createdAt;
   final String? viaHarness;
   final bool viaPage;
 
+  /// Whether the comment's words are withheld from the reader, an agent
+  /// whose person has not approved its author: its ID, author name and
+  /// time stay, its [body] is null, and nothing of it reaches a prompt.
+  final bool withheld;
+
   /// The viewer who wrote it (stable across renames); null for an agent's
   /// comment. [authorName] is the name it was posted with.
   final String? authorPublicId;
+
+  /// For a comment mirrored from a remote this app is linked to, the
+  /// remote it came from, as the core names it in the comment's `linked`
+  /// (`clax.dev`); null for a comment written here.
+  final String? remoteOrigin;
 
   bool get byAgent => authorKind == 'agent';
 }
@@ -587,13 +625,15 @@ class ThreadView {
     this.resolvedBy,
     this.feedbackState,
     this.addressedIn = const [],
+    this.linkedRemote,
+    this.withheld,
   });
 
   factory ThreadView.fromJson(Json j) => ThreadView(
     id: j['id'] as String,
     artifactId: j['artifact_id'] as String,
     versionN: _int(j['version_n']),
-    anchor: _map(j['anchor']),
+    anchor: j['anchor_withheld'] == true ? withheldAnchor : _map(j['anchor']),
     status: j['status'] as String,
     sentToAgent: j['sent_to_agent'] as bool,
     hasClip: j['has_clip'] as bool? ?? false,
@@ -607,11 +647,28 @@ class ThreadView {
         ? null
         : FeedbackState.fromJson(_map(j['feedback_state'])),
     addressedIn: [for (final n in _list(j['addressed_in'])) _int(n)],
+    linkedRemote: _linkedRemote(j['linked']),
+    withheld: j['withheld'] is Map
+        ? ThreadWithheld.fromJson(_map(j['withheld']))
+        : null,
   );
+
+  /// The remote a thread's `linked` names while the link holds.
+  static String? _linkedRemote(Object? l) =>
+      l is Map && l['unlinked'] != true && l['remote'] is String
+      ? l['remote'] as String
+      : null;
+
+  /// The anchor that stands for one withheld from the agent reading it
+  /// (`anchor_withheld: true`): none of its fields, so none the core leaves
+  /// in a withheld anchor, or adds to anchors later, reaches a prompt.
+  static const Json withheldAnchor = {'kind': 'withheld'};
 
   final String id;
   final String artifactId;
   final int versionN;
+
+  /// The anchor as the daemon stores it, or [withheldAnchor].
   final Json anchor;
 
   /// `open` or `resolved`.
@@ -631,7 +688,19 @@ class ThreadView {
   /// The versions that addressed this thread, oldest first.
   final List<int> addressedIn;
 
+  /// The remote this thread has a twin on while the app is linked to it
+  /// (its `linked.remote`, `clax.dev`): what is written on it goes there
+  /// too. Null when it has none, or the link ended.
+  final String? linkedRemote;
+
+  /// What of the thread is withheld from the agent reading it, and from
+  /// whom; null when nothing is (and always for the person's own reads).
+  final ThreadWithheld? withheld;
+
   bool get isOpen => status == 'open';
+
+  /// Whether the anchor is withheld from the agent reading the thread.
+  bool get anchorWithheld => anchor['kind'] == 'withheld';
 
   /// Whether no agent comment follows the thread's last viewer comment.
   bool get awaitsAgentReply {
@@ -654,6 +723,181 @@ class ThreadView {
       sentToAgent &&
       feedbackState?.state == 'acknowledged' &&
       awaitsAgentReply;
+}
+
+/// What of a thread is withheld from the agent reading it: how many
+/// fields, whose, and whether its person was asked (`none`, `requested` or
+/// `declined`).
+class ThreadWithheld {
+  const ThreadWithheld({
+    required this.count,
+    required this.authors,
+    required this.approval,
+  });
+
+  factory ThreadWithheld.fromJson(Json j) => ThreadWithheld(
+    count: _intOr(j['count']) ?? 0,
+    authors: [
+      for (final a in _list(j['authors'])) CardPerson.fromJson(_map(a)),
+    ],
+    approval: j['approval'] as String? ?? 'none',
+  );
+
+  final int count;
+  final List<CardPerson> authors;
+  final String approval;
+}
+
+/// A person as approvals name them: their public ID (opaque: an author on
+/// a public Clax reads `remote:<origin>#<ID>`; null for viewers who are not
+/// connected), their name as comments show it (`Bob (on clax.dev)`), and
+/// whether they are the owner.
+class CardPerson {
+  const CardPerson({required this.name, this.publicId, this.owner = false});
+
+  factory CardPerson.fromJson(Json j) => CardPerson(
+    publicId: j['public_id'] as String?,
+    name: j['name'] as String? ?? '',
+    owner: j['owner'] as bool? ?? false,
+  );
+
+  final String? publicId;
+  final String name;
+  final bool owner;
+}
+
+/// One entry of a feedback poll's `withheld`: comments sent to the agent
+/// that wait on its person's approval of their author, or are held
+/// because the agent may no longer read the app ([noAccess]). [authors]
+/// is their names, [authorIds] their public IDs; [asked] whether the
+/// person has been asked.
+class WithheldNotice {
+  const WithheldNotice({
+    required this.threadId,
+    required this.artifactId,
+    required this.count,
+    this.authors,
+    this.authorIds = const [],
+    this.title,
+    this.asked = false,
+    this.noAccess = false,
+  });
+
+  factory WithheldNotice.fromJson(Json j) => WithheldNotice(
+    threadId: j['thread_id'] as String,
+    artifactId: j['artifact_id'] as String? ?? '',
+    count: _intOr(j['count']) ?? 0,
+    authors: j['author'] as String?,
+    authorIds: [for (final a in _list(j['author_ids'])) a as String],
+    title: j['title'] as String?,
+    asked: j['asked'] as bool? ?? false,
+    noAccess: j['no_access'] as bool? ?? false,
+  );
+
+  final String threadId;
+  final String artifactId;
+  final int count;
+  final String? authors;
+  final List<String> authorIds;
+  final String? title;
+  final bool asked;
+  final bool noAccess;
+}
+
+/// An approval request as its approver's inbox shows it: who wants to
+/// reach which agent, on which app and thread, how much waits, its state
+/// (`open`, `approved`, `declined` or `withdrawn`), the scope it was
+/// approved at, and the withheld comments themselves.
+class ApprovalRequest {
+  const ApprovalRequest({
+    required this.id,
+    required this.author,
+    required this.artifactId,
+    required this.count,
+    required this.status,
+    required this.createdAt,
+    this.threadId,
+    this.agentName,
+    this.scope,
+    this.comments = const [],
+  });
+
+  factory ApprovalRequest.fromJson(Json j) {
+    final agent = j['agent'] is Map ? _map(j['agent']) : null;
+    final content = _map(j['content']);
+    return ApprovalRequest(
+      id: j['id'] as String,
+      author: CardPerson.fromJson(_map(j['author'])),
+      artifactId: j['artifact_id'] as String,
+      threadId: j['thread_id'] as String?,
+      agentName: agent?['name'] as String?,
+      count: _intOr(j['count']) ?? 0,
+      status: j['status'] as String,
+      scope: j['scope'] as String?,
+      createdAt: j['created_at'] as String? ?? '',
+      comments: [
+        for (final c in _list(content['comments']))
+          HeldComment.fromJson(_map(c)),
+      ],
+    );
+  }
+
+  final String id;
+  final CardPerson author;
+  final String artifactId;
+  final String? threadId;
+  final String? agentName;
+  final int count;
+  final String status;
+  final String? scope;
+  final String createdAt;
+
+  /// The comments an approval would let through; empty in a decision's
+  /// answer, which never carries them.
+  final List<HeldComment> comments;
+
+  bool get isOpen => status == 'open';
+
+  /// This request with [d]'s state and scope (a decision's answer, which
+  /// carries no comments), keeping its comments.
+  ApprovalRequest decidedAs(ApprovalRequest d) => ApprovalRequest(
+    id: id,
+    author: author,
+    artifactId: artifactId,
+    threadId: threadId,
+    agentName: agentName,
+    count: d.count,
+    status: d.status,
+    scope: d.scope,
+    createdAt: createdAt,
+    comments: comments,
+  );
+}
+
+/// A comment an approval would let through: [byAgent] when an agent of
+/// its author wrote it.
+class HeldComment {
+  const HeldComment({
+    required this.id,
+    required this.body,
+    required this.createdAt,
+    this.authorName,
+    this.byAgent = false,
+  });
+
+  factory HeldComment.fromJson(Json j) => HeldComment(
+    id: j['id'] as String,
+    body: j['body'] as String? ?? '',
+    createdAt: j['created_at'] as String? ?? '',
+    authorName: j['author_name'] as String?,
+    byAgent: j['by_agent'] as bool? ?? false,
+  );
+
+  final String id;
+  final String body;
+  final String createdAt;
+  final String? authorName;
+  final bool byAgent;
 }
 
 /// One artifact's threads from `GET /api/threads`, with its current version
@@ -905,7 +1149,8 @@ class InboxThreadRef {
 }
 
 /// One item of the owner's inbox. [kind] is `reply`, `version`,
-/// `published`, `question` or `finished`, and fills its own fields; a
+/// `published`, `question`, `finished` or `approval` (among others the app
+/// shows by kind alone), and fills its own fields; a
 /// [gone] item's source no longer exists and its text fields are null.
 class InboxItem {
   const InboxItem({
@@ -932,6 +1177,7 @@ class InboxItem {
     this.question,
     this.workMessage,
     this.workThreads = const [],
+    this.approval,
   });
 
   factory InboxItem.fromJson(Json j) {
@@ -975,6 +1221,11 @@ class InboxItem {
         for (final t in _list(work?['threads']))
           InboxThreadRef.fromJson(_map(t)),
       ],
+      approval: switch (j['approval']) {
+        final Map<Object?, Object?> a when a['status'] is String =>
+          ApprovalRequest.fromJson(a.cast()),
+        _ => null,
+      },
     );
   }
 
@@ -1017,6 +1268,10 @@ class InboxItem {
   /// A `finished` working record's message and threads.
   final String? workMessage;
   final List<InboxThreadRef> workThreads;
+
+  /// An `approval`'s request, with the withheld comments; null once the
+  /// request is gone.
+  final ApprovalRequest? approval;
 }
 
 /// One page of `GET /api/inbox`, newest first.

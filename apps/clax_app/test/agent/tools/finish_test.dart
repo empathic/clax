@@ -75,8 +75,8 @@ class TestApi extends FakeClaxApi {
   }
 
   @override
-  Future<List<ThreadView>> threads(String aid) async {
-    final all = await super.threads(aid);
+  Future<List<ThreadView>> threads(String aid, {bool agent = false}) async {
+    final all = await super.threads(aid, agent: agent);
     return [
       for (final t in all)
         if (t.id == newerOn)

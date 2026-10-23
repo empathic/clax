@@ -1,3 +1,4 @@
+import AuthenticationServices
 import Flutter
 import UIKit
 
@@ -12,7 +13,15 @@ import UIKit
 ///   excluded from backup (the core's per-run files); one that does not
 ///   exist yet is skipped.
 /// - "openExternal" {url} opens an http, https or mailto URL with the app
-///   the person chose for it, and answers whether one took it.
+///   the person chose for it, and answers whether one took it. With
+///   `mode: "auth"` it opens an https sign-in page in an
+///   `ASWebAuthenticationSession` over the app instead ([AuthSession]),
+///   and answers whether the session started.
+/// - "closeAuth" closes that session, if one is open, and answers whether
+///   one was.
+/// - "deviceName" answers the device's name as iOS gives it to apps
+///   (`UIDevice.name`: its model, "iPhone" or "iPad", without the
+///   user-assigned-name entitlement).
 /// - "openAppSettings" opens this app's page in Settings (its permissions
 ///   among it) and answers whether it opened.
 enum NativeChannel {
@@ -54,6 +63,19 @@ enum NativeChannel {
           try? url.setResourceValues(values)
         }
         result(nil)
+      case "openExternal" where args?["mode"] as? String == "auth":
+        guard let text = args?["url"] as? String,
+          let url = URL(string: text),
+          url.scheme?.lowercased() == "https"
+        else {
+          result(false)
+          return
+        }
+        result(AuthSession.shared.open(url))
+      case "closeAuth":
+        result(AuthSession.shared.close())
+      case "deviceName":
+        result(UIDevice.current.name)
       case "openExternal":
         guard let text = args?["url"] as? String,
           let url = URL(string: text),
@@ -74,5 +96,54 @@ enum NativeChannel {
         result(FlutterMethodNotImplemented)
       }
     }
+  }
+}
+
+/// The one sign-in page open over the app: an `ASWebAuthenticationSession`
+/// on the key window, which shares the person's Safari sign-ins. It waits
+/// for no callback: the app learns of the sign-in by polling, and closes
+/// the session ([close]) once it has; the person may close it with Cancel
+/// at any time.
+final class AuthSession: NSObject, ASWebAuthenticationPresentationContextProviding {
+  static let shared = AuthSession()
+
+  private var session: ASWebAuthenticationSession?
+
+  /// Opens [url], closing any session open before; whether it started.
+  func open(_ url: URL) -> Bool {
+    session?.cancel()
+    // A cancelled session's handler may run after the next one is stored:
+    // it clears `session` only while it is still this session.
+    var mine: ObjectIdentifier?
+    let s = ASWebAuthenticationSession(url: url, callbackURLScheme: nil) { [weak self] _, _ in
+      guard let self, let current = self.session, ObjectIdentifier(current) == mine else {
+        return
+      }
+      self.session = nil
+    }
+    mine = ObjectIdentifier(s)
+    s.presentationContextProvider = self
+    s.prefersEphemeralWebBrowserSession = false
+    session = s
+    if !s.start() {
+      session = nil
+      return false
+    }
+    return true
+  }
+
+  /// Closes the open session; whether there was one.
+  func close() -> Bool {
+    guard let s = session else { return false }
+    session = nil
+    s.cancel()
+    return true
+  }
+
+  func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+    let windows = UIApplication.shared.connectedScenes
+      .compactMap { $0 as? UIWindowScene }
+      .flatMap { $0.windows }
+    return windows.first { $0.isKeyWindow } ?? windows.first ?? ASPresentationAnchor()
   }
 }

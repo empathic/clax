@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # macos-app-check.sh ZIP HOME DEBUG_ENTITLEMENTS: checks the Bazel-built macOS app (a zip of
 # Clax.app) against what `flutter build macos` makes: its bundle ID, name,
-# copyright, version and executable, the camera's and location's usage
+# copyright, version and executable, the clax: URL scheme, the camera's and location's usage
 # strings, the app menu's About, Hide and Quit
 # items named Clax, the whole menu bar (MainMenu.xib's items, keys,
 # actions and tags), Flutter's frameworks, the sandbox, camera and location
@@ -50,6 +50,8 @@ for k in "NSCameraUsageDescription=An app you made in Clax can take a photo when
     "NSLocationWhenInUseUsageDescription=An app you made in Clax can use your location when you let it."; do
     if [ "$(plist "${k%%=*}")" = "${k#*=}" ]; then ok "usage string ${k%%=*}"; else bad "usage string ${k%%=*}: $(plist "${k%%=*}")"; fi
 done
+# Get in Clax's clax: links open in Clax (AppDelegate's application(_:open:)).
+if [ "$(plist CFBundleURLTypes:0:CFBundleURLSchemes:0)" = clax ]; then ok "Clax opens clax: links"; else bad "Clax opens clax: links: CFBundleURLTypes:0:CFBundleURLSchemes:0 is '$(plist CFBundleURLTypes:0:CFBundleURLSchemes:0)'"; fi
 nib="$app/Contents/Resources/Base.lproj/MainMenu.nib"
 [ -d "$nib" ] && nib="$nib/keyedobjects.nib"
 for t in "About Clax" "Hide Clax" "Quit Clax" "showAbout:"; do
@@ -187,6 +189,7 @@ Clax › Quit Clax | ⌘Q | terminate:
 File
 File › New App… | ⌘N | claxMenuAction: 1
 File › Import App… | ⌘O | claxMenuAction: 2
+File › Get My Apps… | - | claxMenuAction: 31
 File › Share App… | - | claxMenuAction: 3
 File › ---
 File › Close Window | ⌘W | performClose:

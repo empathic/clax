@@ -10,7 +10,7 @@
 // It answers what the real one does: `apps()` (newest first), `makes()`,
 // `unread()`, `needsKey()`, the actions `open(id)`, `openMake(id)`,
 // `newApp()`, `menu(id, {x, y, w, h})`, `openInbox()`, `openSettings()`,
-// `importApp()`, `shown()`, `chrome()` (a phone by touch unless `state.chrome`
+// `importApp()`, `getApps()`, `shown()`, `chrome()` (a phone by touch unless `state.chrome`
 // says otherwise; `chrome: null` rejects it `unavailable`, as an older Clax
 // does), and `on(name, fn)` for `apps`, `makes`, `unread`, `key` and
 // `chrome`, which returns a function that stops the calls. Each action is
@@ -48,14 +48,14 @@ export const SAMPLE = Object.freeze({
     { id: 'make-water', request: 'A water reminder every two hours', state: 'interrupted', progress: null },
   ],
   apps: [
-    { id: 'app-run', title: 'Run tracker', updatedAt: hours(1), build: null, icon: svgIcon('#ff8a3d', '#e8451e', '<path d="M14 40 L25 29 L32 35 L46 19"/><circle cx="46" cy="19" r="2.5" fill="#fff"/><path d="M14 46 H46" stroke-width="2"/>') },
-    { id: 'app-groceries', title: 'Groceries', updatedAt: hours(2), build: null, icon: svgIcon('#3cc46b', '#16893f', '<path d="M15 26 H45 L41 44 H19 Z"/><path d="M22 26 L28 15 M38 26 L32 15"/><path d="M25 32 V39 M30 32 V39 M35 32 V39"/>') },
-    { id: 'app-habits', title: 'Habit streaks', updatedAt: hours(3), build: null, icon: svgIcon('#8b6cff', '#4c2fd1', '<circle cx="30" cy="30" r="15"/><path d="M23 30 L28 35 L37 25"/>') },
-    { id: 'app-recipes', title: 'Recipes', updatedAt: hours(4), build: null, icon: { emoji: '🍲' } },
-    { id: 'app-budget', title: 'Weekly budget', updatedAt: hours(5), build: null, icon: { word: 'money' } },
-    { id: 'app-plants', title: 'Plant care', updatedAt: hours(6), build: null, icon: svgIcon('#2a6df4', '#0b2f8a', '<path d="M30 14 C38 25 42 31 42 37 A12 12 0 0 1 18 37 C18 31 22 25 30 14 Z"/>') },
-    { id: 'app-mood', title: 'Mood journal', updatedAt: hours(7), build: null, icon: { monogram: 'MJ', hue: 270 } },
-    { id: 'app-notes', title: 'Notes', updatedAt: hours(8), build: null, icon: { monogram: 'N', hue: 320 } },
+    { id: 'app-run', title: 'Run tracker', updatedAt: hours(1), build: null, sync: null, icon: svgIcon('#ff8a3d', '#e8451e', '<path d="M14 40 L25 29 L32 35 L46 19"/><circle cx="46" cy="19" r="2.5" fill="#fff"/><path d="M14 46 H46" stroke-width="2"/>') },
+    { id: 'app-groceries', title: 'Groceries', updatedAt: hours(2), build: null, sync: null, icon: svgIcon('#3cc46b', '#16893f', '<path d="M15 26 H45 L41 44 H19 Z"/><path d="M22 26 L28 15 M38 26 L32 15"/><path d="M25 32 V39 M30 32 V39 M35 32 V39"/>') },
+    { id: 'app-habits', title: 'Habit streaks', updatedAt: hours(3), build: null, sync: null, icon: svgIcon('#8b6cff', '#4c2fd1', '<circle cx="30" cy="30" r="15"/><path d="M23 30 L28 35 L37 25"/>') },
+    { id: 'app-recipes', title: 'Recipes', updatedAt: hours(4), build: null, sync: null, icon: { emoji: '🍲' } },
+    { id: 'app-budget', title: 'Weekly budget', updatedAt: hours(5), build: null, sync: null, icon: { word: 'money' } },
+    { id: 'app-plants', title: 'Plant care', updatedAt: hours(6), build: null, sync: null, icon: svgIcon('#2a6df4', '#0b2f8a', '<path d="M30 14 C38 25 42 31 42 37 A12 12 0 0 1 18 37 C18 31 22 25 30 14 Z"/>') },
+    { id: 'app-mood', title: 'Mood journal', updatedAt: hours(7), build: null, sync: null, icon: { monogram: 'MJ', hue: 270 } },
+    { id: 'app-notes', title: 'Notes', updatedAt: hours(8), build: null, sync: null, icon: { monogram: 'N', hue: 320 } },
   ],
   unread: 0,
   needsKey: false,
@@ -113,6 +113,7 @@ export function fakeHome(state = {}) {
     openInbox: act('openInbox'),
     openSettings: act('openSettings'),
     importApp: act('importApp'),
+    getApps: act('getApps'),
     shown: async () => { shown++; return null; },
     get shownCount() { return shown; },
     chrome: async () => {

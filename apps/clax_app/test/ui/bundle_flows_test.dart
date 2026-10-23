@@ -4,15 +4,18 @@ import 'dart:typed_data';
 import 'package:clax_app/bundle/bundle_reader.dart';
 import 'package:clax_app/bundle/lineage_store.dart';
 import 'package:clax_app/bundle/updater.dart';
+import 'package:clax_app/remote/merge.dart' show Merged;
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/platform/share_anchor.dart';
+import 'package:clax_app/remote/models.dart' show BundleOrigin;
 import 'package:clax_app/ui/bundle_sheets.dart';
 import 'package:clax_app/ui/developer.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../bundle/services_support.dart';
+import '../support/settle.dart';
 
 /// [BundleFiles] that keeps what it is sent and hands over [picked].
 class FakeBundleFiles implements BundleFiles {
@@ -57,10 +60,11 @@ void main() {
   tearDown(() => tmp.deleteSync(recursive: true));
 
   /// Pumps a screen whose button runs [flow]; returns once the first
-  /// sheet is up.
+  /// sheet [shows].
   Future<void> run(
     WidgetTester tester,
     Future<void> Function(BuildContext context) flow, {
+    required Finder shows,
     bool developer = false,
   }) async {
     await tester.pumpWidget(
@@ -83,7 +87,7 @@ void main() {
       ),
     );
     await tester.tap(find.text('go'));
-    await settle(tester);
+    await settle(tester, shows);
   }
 
   testWidgets('Share app: the sheet, then the bundle to the share sheet, '
@@ -95,11 +99,21 @@ void main() {
         PublishRequest(title: 'Plant log', files: {'index.html': '<p>hi</p>'}),
       )).artifact.id;
     });
-    await run(tester, (c) => flows.share(c, aid));
+    await run(
+      tester,
+      (c) => flows.share(c, aid),
+      shows: find.text('v1 · 1 file, 9 bytes'),
+    );
     expect(find.text('v1 · 1 file, 9 bytes'), findsOneWidget);
     await tester.enterText(find.byKey(const ValueKey('export-name')), 'Alex');
     await tester.tap(find.text('Share'));
-    await settle(tester);
+    await settleUntil(
+      tester,
+      () async =>
+          files.sent.isNotEmpty &&
+          find.byType(BundleProgressSheet).evaluate().isEmpty &&
+          (await settings.load()).authorName == 'Alex',
+    );
     expect(files.sent, hasLength(1));
     final (name, bytes) = files.sent.single;
     expect(name, 'plant-log.clax');
@@ -143,15 +157,16 @@ void main() {
     );
     final rect = tester.getRect(find.byKey(button));
     await tester.tap(find.byKey(button));
-    await settle(tester);
+    await settle(tester, _exportName);
     await tester.enterText(find.byKey(const ValueKey('export-name')), 'Alex');
     await tester.tap(find.text('Share'));
-    await settle(tester);
+    await settleUntil(tester, () => files.origins.isNotEmpty);
     expect(files.origins, [rect]);
 
-    await run(tester, (c) => flows.share(c, aid));
+    // The name is kept now, so the sheet asks for none.
+    await run(tester, (c) => flows.share(c, aid), shows: find.text('Share'));
     await tester.tap(find.text('Share'));
-    await settle(tester);
+    await settleUntil(tester, () => files.origins.length == 2);
     expect(files.origins.last, Rect.fromCenter(
       center: const Offset(400, 300),
       width: 2,
@@ -180,10 +195,10 @@ void main() {
       toFile: true,
     );
     final toolbar = FakeBundleFiles();
-    await run(tester, (c) => mac.share(c, aid, via: toolbar));
+    await run(tester, (c) => mac.share(c, aid, via: toolbar), shows: _exportName);
     await tester.enterText(find.byKey(const ValueKey('export-name')), 'Alex');
     await tester.tap(find.text('Share'));
-    await settle(tester);
+    await settleUntil(tester, () => toolbar.sent.isNotEmpty);
     expect(toolbar.sent.single.$1, 'plant-log.clax');
     expect(files.sent, isEmpty);
   });
@@ -196,11 +211,14 @@ void main() {
       await me.ready();
       bytes = (await makeBundle(lineage: lineageA)).bytes;
     });
-    await run(tester, (c) => flows.openBytes(c, bytes));
+    await run(tester, (c) => flows.openBytes(c, bytes), shows: _install);
     expect(find.byType(InstallSheet), findsOneWidget);
     expect(find.textContaining('From Sam · '), findsOneWidget);
     await tester.tap(find.text('Install'));
-    await settle(tester);
+    await settleUntil(
+      tester,
+      () => opened.isNotEmpty && find.byType(BundleProgressSheet).evaluate().isEmpty,
+    );
     expect(opened, hasLength(1));
     expect(find.byType(BundleProgressSheet), findsNothing);
     await tester.runAsync(() async {
@@ -223,7 +241,7 @@ void main() {
         },
       )).bytes;
     });
-    await run(tester, (c) => flows.openBytes(c, bytes));
+    await run(tester, (c) => flows.openBytes(c, bytes), shows: _install);
     expect(find.byType(InstallSheet), findsOneWidget);
     expect(
       find.text('Its icon broke Clax’s icon rules, so Clax redrew it.'),
@@ -248,7 +266,7 @@ void main() {
         },
       )).bytes;
     });
-    await run(tester, (c) => flows.openBytes(c, v2));
+    await run(tester, (c) => flows.openBytes(c, v2), shows: _update);
     expect(find.text('Update Plant log to v2?'), findsOneWidget);
     expect(
       find.text('Its icon broke Clax’s icon rules, so Clax left it out.'),
@@ -270,14 +288,14 @@ void main() {
         files: {'index.html': '<p>v2</p>'},
       )).bytes;
     });
-    await run(tester, (c) => flows.openBytes(c, v2));
+    await run(tester, (c) => flows.openBytes(c, v2), shows: _update);
     expect(find.text('Update Plant log to v2?'), findsOneWidget);
     expect(find.text('•  send you notifications and reminders'), findsOne);
     await tester.tap(find.text('Update'));
-    await settle(tester);
+    await settle(tester, find.text('Updated to v2'));
     expect(find.text('Updated to v2'), findsOneWidget);
     await tester.tap(find.text('Open'));
-    await settle(tester);
+    await settleUntil(tester, () => opened.isNotEmpty);
     expect(opened, [aid]);
   });
 
@@ -304,15 +322,20 @@ void main() {
         settings: settings,
         open: opened.add,
       );
-      await run(tester, (c) => flows.openBytes(c, v2), developer: developer);
+      await run(
+        tester,
+        (c) => flows.openBytes(c, v2),
+        shows: _update,
+        developer: developer,
+      );
       await tester.tap(find.text('Update'));
-      await settle(tester);
+      await settle(tester, find.text('The update could not finish.'));
       expect(find.text('The update could not finish.'), findsOneWidget);
       expect(find.textContaining('Bad state'), findsNothing);
       expect(find.text('Details'), developer ? findsOneWidget : findsNothing);
       if (developer) {
         await tester.tap(find.text('Details'));
-        await settle(tester);
+        await settle(tester, find.text('Bad state: broken'));
         expect(find.text('Bad state: broken'), findsOneWidget);
       }
     });
@@ -336,16 +359,15 @@ void main() {
       settings: settings,
       open: opened.add,
     );
-    await run(tester, (c) => flows.openBytes(c, v2));
+    await run(tester, (c) => flows.openBytes(c, v2), shows: _update);
     await tester.tap(find.text('Update'));
-    // The check's spinner never settles: pump through the sheet's entrance.
-    for (var i = 0; i < 10; i++) {
-      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
-      await tester.pump(const Duration(milliseconds: 50));
-    }
+    await settle(tester, find.text('Running its checks'));
     expect(find.text('Running its checks'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('cancel')));
-    await settle(tester);
+    await settleUntil(
+      tester,
+      () => hanging.cancels > 0 && find.byType(BundleProgressSheet).evaluate().isEmpty,
+    );
     expect(hanging.cancels, 1);
     expect(find.byType(BundleProgressSheet), findsNothing);
     expect(opened, isEmpty);
@@ -364,10 +386,17 @@ void main() {
       );
       v2 = (await makeBundle(lineage: lineageA, version: 2)).bytes;
     });
-    await run(tester, (c) => flows.openBytes(c, v2));
+    await run(
+      tester,
+      (c) => flows.openBytes(c, v2),
+      shows: find.text('You changed Plant log since v1'),
+    );
     expect(find.text('You changed Plant log since v1'), findsOneWidget);
     await tester.tap(find.text('Keep mine'));
-    await settle(tester);
+    await settleUntil(
+      tester,
+      () async => (await me.store.entry(aid))?.updatesStopped ?? false,
+    );
     await tester.runAsync(() async {
       expect((await me.store.entry(aid))?.updatesStopped, isTrue);
     });
@@ -375,15 +404,26 @@ void main() {
   });
 
   testWidgets('a damaged file: one sentence and Close', (tester) async {
-    await run(tester, (c) => flows.openBytes(c, Uint8List.fromList([1, 2, 3])));
+    await run(
+      tester,
+      (c) => flows.openBytes(c, Uint8List.fromList([1, 2, 3])),
+      shows: find.text('Couldn’t open this file'),
+    );
     expect(find.text('Couldn’t open this file'), findsOneWidget);
     await tester.tap(find.text('Close'));
-    await settle(tester);
+    await settleUntil(
+      tester,
+      () => find.byType(BundleNoticeSheet).evaluate().isEmpty,
+    );
     expect(find.byType(BundleNoticeSheet), findsNothing);
   });
 
   testWidgets('a platform refusal shows its sentence', (tester) async {
-    await run(tester, (c) => flows.openFile(c, refused: 'too_large'));
+    await run(
+      tester,
+      (c) => flows.openFile(c, refused: 'too_large'),
+      shows: find.text(refusalMessage('too_large')),
+    );
     expect(find.text(refusalMessage('too_large')), findsOneWidget);
   });
 
@@ -395,20 +435,19 @@ void main() {
       f = File('${tmp.path}/in.clax')
         ..writeAsBytesSync((await makeBundle(lineage: lineageA)).bytes);
     });
-    await run(tester, (c) => flows.openFile(c, path: f.path, delete: true));
+    await run(
+      tester,
+      (c) => flows.openFile(c, path: f.path, delete: true),
+      shows: _install,
+    );
     expect(find.byType(InstallSheet), findsOneWidget);
     expect(f.existsSync(), isFalse);
   });
 }
 
-/// Lets the services' real IO and crypto run, pumping between turns.
-Future<void> settle(WidgetTester tester) async {
-  for (var i = 0; i < 20; i++) {
-    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
-    await tester.pump(const Duration(milliseconds: 50));
-  }
-  await tester.pumpAndSettle();
-}
+final _exportName = find.byKey(const ValueKey('export-name'));
+final _install = find.byType(InstallSheet);
+final _update = find.text('Update Plant log to v2?');
 
 /// An [Updater] whose update throws.
 class _ThrowingUpdater extends Updater {
@@ -427,6 +466,9 @@ class _ThrowingUpdater extends Updater {
     Bundle bundle, {
     void Function(UpdateStep step)? onStep,
     Future<void>? cancelled,
+    BundleOrigin? origin,
+    Merged? merged,
+    Future<bool> Function()? confirm,
   }) async => throw StateError('broken');
 }
 
@@ -449,6 +491,9 @@ class _HangingUpdater extends Updater {
     Bundle bundle, {
     void Function(UpdateStep step)? onStep,
     Future<void>? cancelled,
+    BundleOrigin? origin,
+    Merged? merged,
+    Future<bool> Function()? confirm,
   }) async {
     onStep?.call(UpdateStep.tests);
     await cancelled;

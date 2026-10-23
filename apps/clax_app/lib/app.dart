@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'agent/ai_consent.dart';
+import 'agent/author_trust.dart';
 import 'agent/asked.dart';
 import 'agent/stops.dart';
 import 'agent/backend.dart';
@@ -21,6 +22,7 @@ import 'agent/plan.dart';
 import 'agent/progress.dart';
 import 'agent/prompt.dart';
 import 'agent/read_consent.dart';
+import 'agent/reply_hold.dart';
 import 'agent/request.dart';
 import 'agent/runner.dart';
 import 'agent/runner/messages_runner.dart';
@@ -42,6 +44,12 @@ import 'home/home_settings.dart';
 import 'home/home_update.dart';
 import 'bundle/lineage_store.dart';
 import 'bundle/updater.dart';
+import 'remote/checker.dart';
+import 'remote/merge.dart';
+import 'remote/models.dart' show Remote, VersionSource;
+import 'remote/publisher.dart';
+import 'remote/puller.dart';
+import 'remote/remote_api.dart';
 import 'clax/api.dart';
 import 'platform/clock.dart';
 import 'core/core_client.dart';
@@ -50,6 +58,7 @@ import 'core/core_transport.dart';
 import 'platform/app_notice.dart';
 import 'platform/background_work.dart';
 import 'platform/bundle_intake.dart';
+import 'platform/external_links.dart';
 import 'platform/bundle_key.dart';
 import 'platform/connection.dart';
 import 'platform/device/device_consent_dialog.dart';
@@ -77,6 +86,9 @@ import 'ui/build_notices.dart';
 import 'ui/build_plan.dart';
 import 'ui/developer.dart';
 import 'ui/bundle_sheets.dart';
+import 'ui/remote/connect_sheet.dart';
+import 'ui/remote/linked_app.dart';
+import 'ui/remote/remote_flows.dart';
 import 'ui/app_surface.dart';
 import 'ui/error_screen.dart';
 import 'ui/updating_cover.dart';
@@ -143,6 +155,9 @@ class AppServices {
     this.bundleIntake,
     this.intents,
     this.bundleFiles,
+    this.remote,
+    this.heldReplies,
+    this.openUrl,
     this.shippedHome,
     this.homeSettings,
     this.queue,
@@ -274,6 +289,17 @@ class AppServices {
   /// Where a shared bundle goes and an imported one comes from; the share
   /// sheet (the save panel on the Mac) and the file picker when null.
   final BundleFiles? bundleFiles;
+
+  /// The client for hosted Clax remotes (Publish to clax.dev…, Get my
+  /// apps, Get in Clax links); null shows none of them.
+  final RemoteApi Function()? remote;
+
+  /// Where the agent's held replies are kept (spec 2026-10-21-app-push-pull
+  /// §5.11); `<support>/held-replies.json` when null.
+  final HeldReplies? heldReplies;
+
+  /// Opens a web address in the browser.
+  final Future<bool> Function(Uri url)? openUrl;
 
   /// The home app the app ships, installed on the first run and shown as
   /// the home screen; without it the built-in home screen is home.
@@ -730,7 +756,13 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// The worker isolate's queue, over whichever host runs now, when
   /// [AppServices.startQueue] gives one.
   late final QueueRelay? _relay = _s.queue == null && _s.startQueue != null
-      ? QueueRelay()
+      ? QueueRelay(
+          // A change reads the app: asked here, as [_gateRun] asks for
+          // the UI's own runs, before the worker isolate gets it.
+          admit: (c) async =>
+              await _mayRun() &&
+              await _authorTrust.ensure(_nav.currentContext, c.artifactId),
+        )
       : null;
 
   /// The queue's host while the core is up, its start in flight, its
@@ -837,6 +869,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     build: _build,
     bundles: _bundles,
     lineage: _lineages.entry,
+    remote: _remoteFlows,
     showMakeInPane: _showMakeInPane,
   );
 
@@ -908,11 +941,36 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     return _s.aiConsent.ensure(context);
   }
 
-  /// [RunGate] for the worker's runs: [_mayRun], and a refused one stops
-  /// its change or build as Stop does, so no recovery runs it again
-  /// before the person asks.
+  /// Whether the person trusts the author of app [aid]'s code, when
+  /// someone else wrote it ([AuthorTrust.ensure]), asked over the app's
+  /// navigator.
+  late final _authorTrust = AuthorTrust(
+    lineages: _lineages,
+    settings: _s.settings,
+    ownKey: switch (_s.bundleKey) {
+      final k? => () async => (await k.existing())?.key,
+      null => null,
+    },
+    ownAccount: switch (_remoteApi) {
+      final api? => (origin, by) async {
+        try {
+          return isOwnAccount(await api.remotes(), origin, by);
+        } on ClaxApiError {
+          return false;
+        }
+      },
+      null => null,
+    },
+  );
+
+  /// [RunGate] for the worker's runs and merges: [_mayRun], then
+  /// [_authorTrust]; a refused one stops its change or build as Stop does,
+  /// so no recovery runs it again before the person asks.
   Future<bool> _gateRun(String aid, {required bool build}) async {
-    if (await _mayRun()) return true;
+    if (await _mayRun() &&
+        await _authorTrust.ensure(_nav.currentContext, aid)) {
+      return true;
+    }
     if (build) {
       unawaited(_runtime.worker.stopBuild(aid));
     } else {
@@ -1053,6 +1111,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         icons: host.icons,
         autoDictate: _settings.dictateComments,
         toolbar: true,
+        linked: _checker?.status,
+        linkedApps: _linkedHooks,
         onOpenApp: _openFromWindow,
         onOpenQuestion: (qid) {
           unawaited(MacWindows.open('main'));
@@ -1091,6 +1151,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     unawaited(_deletions?.cancel());
     unawaited(_questionEvents?.cancel());
     unawaited(_lineageDeletions?.cancel());
+    unawaited(_replyDeletions?.cancel());
+    unawaited(_publishes?.cancel());
+    unawaited(_publishEnds?.cancel());
     unawaited(_intake?.cancel());
     unawaited(_questionChanges.close());
     for (final o in _openApps) {
@@ -1221,6 +1284,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         pid: _s.pid,
         cwd: _s.supportDir,
       ),
+      relink: _remoteApi?.link,
       log: (l) => debugPrint('clax bundles: $l'),
     ),
     null => null,
@@ -1244,11 +1308,338 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       settings: _s.settings,
       open: _open,
       toFile: defaultTargetPlatform == TargetPlatform.macOS,
+      merger: () => _remoteFlows?.merger ?? _localMerger,
+      tellOwner: (aid, version, reason) async =>
+          _remoteFlows?.tellOwner(aid, version, reason),
+      publishTo: () async {
+        final api = _remoteApi;
+        if (api == null) return null;
+        try {
+          return (await api.remotes()).where((r) => r.connected).firstOrNull?.name;
+        } on ClaxApiError {
+          return null;
+        }
+      },
+      publishFork: (context, aid, svg) async =>
+          _remoteFlows?.publish(context, aid, svg: svg),
     ),
     null => null,
   };
+
+  /// Combines versions with Claude (spec 2026-10-21-app-push-pull §5.7,
+  /// §5.10) for [publisher]'s linked apps, or, without one, for apps
+  /// installed from `.clax` files only; null where nothing checks an
+  /// update.
+  Merger? _merging(Publisher? publisher) => switch (_updater) {
+    final u? => Merger(
+      api: _api,
+      store: _lineages,
+      updater: u,
+      publisher: publisher,
+      run: _merge,
+      available: () =>
+          !_needsKey &&
+          usesToolLoop(
+            _s.backend(_settings, _s.key),
+            inspector: _s.inspector,
+            runner: _s.runner,
+          ),
+      log: (l) => debugPrint('clax merge: $l'),
+    ),
+    null => null,
+  };
+
+  late final Merger? _localMerger = _merging(null);
+
+  /// The agent's merge, as the app's session, its pauses unannounced,
+  /// once the person trusts [source]'s author ([AuthorTrust.ensureSource]);
+  /// refused, it ends cancelled with nothing sent.
+  Future<MergeResult> _merge(
+    String aid, {
+    required Map<String, Uint8List> mine,
+    required Map<String, Uint8List> theirs,
+    required Map<String, Uint8List> base,
+    required String from,
+    required Map<String, Object?>? theirsCapabilities,
+    required VersionSource source,
+    Future<void>? cancelled,
+  }) async {
+    final String title;
+    try {
+      title = (await _api.getArtifact(aid)).artifact.title;
+    } on ClaxApiError catch (e) {
+      debugPrint('clax merge: $aid could not be read: ${e.message}');
+      return const MergeFailed('the app couldn’t be read here.');
+    }
+    if (!await _authorTrust.ensureSource(
+      _nav.currentContext,
+      aid,
+      source,
+      title: title,
+    )) {
+      return const MergeFailed('Claude didn’t run.', cancelled: true);
+    }
+    return _loop(onPause: () {}, onOffline: () {}, onResume: () {}).merge(
+      aid,
+      mine: mine,
+      theirs: theirs,
+      base: base,
+      from: from,
+      theirsCapabilities: theirsCapabilities,
+      session: _runtime.worker.sessionId,
+      cancelled: cancelled,
+    );
+  }
+  /// Publishing apps to hosted Clax and getting them from it; null
+  /// without a key or a remote client.
+  late final RemoteFlows? _remoteFlows = switch ((_bundles, _remoteApi)) {
+    (final b?, final api?) => () {
+      final publisher = Publisher(
+        remote: api,
+        exporter: b.exporter,
+        store: _lineages,
+        clock: _s.clock,
+        authorName: () async => (await _s.settings.load()).authorName,
+        log: (l) => debugPrint('clax remote: $l'),
+      );
+      return RemoteFlows(
+        remote: api,
+        publisher: publisher,
+        merger: _merging(publisher),
+        puller: Puller(
+          remote: api,
+          installer: b.installer,
+          store: _lineages,
+          installId: () => ensureInstallId(_s.settings),
+          log: (l) => debugPrint('clax remote: $l'),
+        ),
+        exporter: b.exporter,
+        store: _lineages,
+        open: _open,
+        bundles: b,
+        openUrl: _s.openUrl,
+        connect: _connect,
+        unlinked: (aid) {
+          unawaited(_runtime.worker.dropReplies(aid));
+          unawaited(_checker?.checkNow(aid));
+        },
+      );
+    }(),
+    _ => null,
+  };
+
+  /// Checks linked apps against their public copies; null without remote
+  /// flows.
+  late final LinkedChecker? _checker = switch ((_remoteFlows, _remoteApi)) {
+    (final flows?, final api?) => LinkedChecker(
+      api: api,
+      store: _lineages,
+      clock: _s.clock,
+      links: flows.publisher.links,
+      live: liveFrom(_api),
+      fetchUpdate: (link) => flows.puller.pull(
+        Uri.parse(link.url),
+        // An automatic update never installs a new app.
+        confirm: (_) async => false,
+      ),
+      runUpdate: switch (_updater) {
+        final u? => (aid, opened) =>
+            u.update(aid, opened.bundle, origin: opened.origin),
+        null => null,
+      },
+      log: (l) => debugPrint('clax remote: $l'),
+    ),
+    _ => null,
+  };
+
+  /// The agent's replies on linked apps' threads, held until the version
+  /// they tell of is public (spec 2026-10-21-app-push-pull §5.11), kept in
+  /// `<support>/held-replies.json`. Without remote flows nothing is held.
+  late final ReplyHold _replies = ReplyHold(
+    _api,
+    publicVersion: _remoteFlows == null ? null : _publicVersion,
+    publishVersion: _remoteFlows == null ? null : _publishVersion,
+    store:
+        _s.heldReplies ??
+        FileHeldReplies(File('${_s.supportDir}/held-replies.json')),
+    log: (l) => debugPrint('clax replies: $l'),
+  );
+
+  /// Counts every version as public: an app this device does not publish.
+  static const _everyVersion = 1 << 31;
+
+  /// The local version app [aid]'s public copy is at: the last this device
+  /// published there. An app this device does not publish (not linked, or
+  /// linked as a recipient) holds no reply, as if every version were
+  /// public; an author's app it never published holds every reply.
+  Future<int?> _publicVersion(String aid) async {
+    final link = (await _lineages.entry(aid))?.link;
+    if (link == null || !link.isAuthor) return _everyVersion;
+    return link.published.lastOrNull;
+  }
+
+  /// Publishes local [version] of [aid] for Publish vN and reply: null
+  /// once it is public, else why not. It answers as soon as the publish
+  /// waits for a connection ([Publisher.publishOrWait]); that publish goes
+  /// on, and the release that follows it runs from [Publisher.published].
+  /// It waits only on the publisher, never on the hold.
+  Future<String?> _publishVersion(
+    String aid,
+    int version,
+    List<String> addresses,
+  ) async {
+    final flows = _remoteFlows;
+    if (flows == null) return 'Clax can’t publish this app here.';
+    // The push names no threads: the version's own addresses list them.
+    if (addresses.isNotEmpty) {
+      debugPrint('clax replies: v$version of $aid answers $addresses');
+    }
+    final out = await flows.publisher.publishOrWait(aid, version: version);
+    if (out is! Published) debugPrint('clax replies: v$version: $out');
+    return _whyNotPublic(aid, version, out);
+  }
+
+  /// Why local [version] of [aid] is not public after a publish that came
+  /// to [out] (null: it waits for a connection), in a sentence; null once
+  /// it is.
+  Future<String?> _whyNotPublic(
+    String aid,
+    int version,
+    PublishOutcome? out,
+  ) async {
+    if (out is Published) return null;
+    final origin = (await _lineages.entry(aid))?.link?.remoteOrigin;
+    final host = origin == null ? 'clax.dev' : Uri.parse(origin).host;
+    return switch (out) {
+      Published() => null,
+      null =>
+        'Couldn’t reach $host. Clax publishes v$version when it can, and '
+            'Claude’s reply goes out then.',
+      Moved(:final remoteVersion) =>
+        'v$version wasn’t published: the public copy changed on $host '
+            'since this device published it (it is at v$remoteVersion).',
+      Refused(:final message) => message,
+    };
+  }
+
+  /// The last publish of each app that ended refused or moved: its
+  /// version and why, until a later publish of the app lands.
+  final _notPublished = <String, (int, String)>{};
+
+  /// Each publish as it ends, for [_notPublished].
+  StreamSubscription<PublishEnded>? _publishEnds;
+
+  /// After every publish that lands: the replies held for it go out, and
+  /// the app's status is read again.
+  StreamSubscription<PublishedVersion>? _publishes;
+
+  /// After a change of [aid] lands as [version]: published by itself when
+  /// its link says Automatically, then checked against its copy.
+  Future<void> _afterLanding(String aid, int version) async {
+    final flows = _remoteFlows;
+    if (flows == null) return;
+    final out = await flows.publisher.autoPublish(aid, version);
+    switch (out) {
+      case Refused(:final message):
+        debugPrint('clax remote: v$version of $aid was not published: $message');
+      case Moved(:final remoteVersion):
+        debugPrint(
+          'clax remote: v$version of $aid was not published: the copy is at '
+          'v$remoteVersion',
+        );
+      case Published() || null:
+        break;
+    }
+    await _checker?.checkNow(aid);
+  }
+
+  /// The linked app's hooks for its screen; null without remote flows.
+  late final LinkedAppHooks? _linkedHooks = switch ((_remoteFlows, _checker)) {
+    (final flows?, final checker?) => LinkedAppHooks(
+      status: checker.status,
+      lineage: _lineages.entry,
+      opened: checker.onOpen,
+      publish: (context, aid, version) async {
+        await flows.publish(context, aid, version: version);
+        await checker.checkNow(aid);
+      },
+      update: _offerLinkedUpdate,
+      diverged: (context, aid) async {
+        await flows.diverged(context, aid);
+        await checker.checkNow(aid);
+      },
+      heldReply: (aid, tid) async => (await _runtime.worker.heldReplies(
+        aid,
+      )).where((h) => h.threadId == tid).firstOrNull?.version,
+      heldNote: (aid, version) async => switch (_notPublished[aid]) {
+        (final v, final why) when v == version => why,
+        _ => null,
+      },
+      publishAndReply: (aid, tid, version) async {
+        final r = await _runtime.worker.publishAndReply(
+          aid,
+          tid,
+          'Made this change in version $version.',
+          version: version,
+        );
+        if (r.notPublic case final why?) return why;
+        if (r.failed.isNotEmpty) {
+          return 'v$version is public, but Claude’s reply wasn’t posted yet. '
+              'Clax tries again after the next publish.';
+        }
+        return null;
+      },
+    ),
+    _ => null,
+  };
+
+  /// The update waiting for linked app [aid] ([RemoteFlows.update]), then
+  /// its status read again.
+  Future<void> _offerLinkedUpdate(BuildContext context, String aid) async {
+    await _remoteFlows?.update(context, aid);
+    await _checker?.checkNow(aid);
+  }
+
+  /// The client for hosted Clax remotes, made once.
+  late final RemoteApi? _remoteApi = _s.remote?.call();
+
+  /// Signs this device in to clax.dev: the connect sheet, its page in a
+  /// browser session over the app where the platform has one. Answers the
+  /// connected remote, or null.
+  Future<Remote?> _connect(BuildContext context) async {
+    final api = _remoteApi;
+    if (api == null) return null;
+    const links = ExternalLinks();
+    final device = await links.deviceName() ?? _deviceWord;
+    if (!context.mounted) return null;
+    final r = await showConnectSheet(
+      context,
+      api,
+      clock: _s.clock,
+      device: device,
+      openAuth: links.openAuth,
+      closeAuth: links.closeAuth,
+    );
+    // Apps linked there before a disconnect are linked again, and their
+    // bundles still waiting go up.
+    final flows = _remoteFlows;
+    if (r != null && flows != null) {
+      await flows.publisher.links.relinkAll(r);
+      unawaited(flows.publisher.resume());
+    }
+    return r;
+  }
+
+  /// What the connect sheet calls this device when the platform does not
+  /// name it.
+  static String get _deviceWord => switch (defaultTargetPlatform) {
+    TargetPlatform.iOS => 'iPhone',
+    TargetPlatform.macOS => 'Mac',
+    _ => 'Android',
+  };
   StreamSubscription<StreamEvent>? _lineageDeletions;
-  StreamSubscription<OpenedBundle>? _intake;
+  StreamSubscription<StreamEvent>? _replyDeletions;
+  StreamSubscription<BundleIntakeEvent>? _intake;
 
   /// The opened bundles' sheets, one after another.
   Future<void> _bundleQueue = Future.value();
@@ -1276,7 +1667,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// Once the core is open: forgets deleted apps' lineages (as
   /// [_stream]'s `gallery` says), puts back updates an exit interrupted
   /// (telling the person once each), says when the lineage file was
-  /// unreadable, and takes the files opened in Clax.
+  /// unreadable, and takes the files and Get in Clax links opened in Clax.
   void _startBundles() {
     if (_bundlesStarted) return;
     _bundlesStarted = true;
@@ -1286,6 +1677,30 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       snapshots: _snapshots,
     );
     _lineageDeletions!.onError((Object _) {});
+    _replyDeletions = _stream!.events
+        .where((e) => e.topic == 'gallery' && e.type == 'artifact_deleted')
+        .listen((e) {
+          if (e.data['artifact_id'] case final String aid) {
+            unawaited(_runtime.worker.dropReplies(aid));
+          }
+        }, onError: (Object _) {});
+    if (_remoteFlows case final flows?) {
+      _publishes = flows.publisher.published.listen((p) {
+        unawaited(
+          _runtime.worker.releaseReplies(p.aid, publicVersion: p.version),
+        );
+        unawaited(_checker?.checkNow(p.aid));
+      });
+      _publishEnds = flows.publisher.ended.listen((e) async {
+        if (e.outcome is Published) {
+          _notPublished.remove(e.aid);
+          return;
+        }
+        final why = await _whyNotPublic(e.aid, e.version, e.outcome);
+        if (why != null) _notPublished[e.aid] = (e.version, why);
+      });
+    }
+    unawaited(_checker?.onForeground());
     unawaited(_recoverBundles().then((_) => _keepHome()));
     final bundles = _bundles;
     final intake = _s.bundleIntake;
@@ -1294,16 +1709,25 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           defaultTargetPlatform == TargetPlatform.android ||
           defaultTargetPlatform == TargetPlatform.iOS;
       _intake = intake.opened.listen(
-        (o) => _bundleSheet(
-          (context) => bundles.openFile(
+        (o) => _bundleSheet((context) async {
+          if (o.url case final url?) {
+            final remote = _remoteFlows;
+            if (remote == null) {
+              debugPrint('clax bundles: no remote client for $url');
+              return;
+            }
+            await remote.getLink(context, url);
+            return;
+          }
+          await bundles.openFile(
             context,
             path: o.path,
             refused: o.refused,
             // Android and iOS hand over Clax's own copy; a Mac file is
             // the person's.
             delete: ownCopy,
-          ),
-        ),
+          );
+        }),
       );
     }
   }
@@ -1405,6 +1829,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     } on Object catch (e) {
       debugPrint('clax bundles: $e');
     }
+    // Bundles a publish left on their way go up in the background.
+    if (_remoteFlows case final r?) unawaited(r.publisher.resume());
     final List<RecoveredUpdate> back;
     try {
       back = await _updater?.recoverInterrupted() ?? const [];
@@ -1470,6 +1896,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       readConsent: _consent,
       clock: _s.clock,
       fromBundle: fromBundleOf(_lineages),
+      replies: _replies,
       gate: _gateRun,
       singleCall: () {
         final b = backend();
@@ -1542,7 +1969,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
                 HomeSettings.loadSync(Directory(_s.supportDir)),
             actions: _homeFlows,
             icons: _icons,
+            offersGetApps: _remoteFlows != null,
             needsKey: _needsKey,
+            linked: _checker?.status,
           );
           _homeFlows.host = _homeHost!..setChrome(_chrome);
           _sidebar = SidebarModel(
@@ -1610,6 +2039,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         // also a turn that stopped resending until now.
         _s.connection.nudge();
         _runs.onForeground();
+        if (_bundlesStarted) unawaited(_checker?.onForeground());
         _renderable.value = true;
         _host?.tell(const q.Woke(foreground: true));
         if (_pausedNotice) {
@@ -1875,6 +2305,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
               _notice?.allowed ??
               (widget.windows != null ? _macNotificationsAllowed : null),
           timings: _s.timings.recent(10),
+          remote: _remoteFlows == null ? null : _remoteApi,
+          connect: _connect,
           fingerprint: _s.bundleKey == null
               ? null
               : () async => (await _s.bundleKey!.existing())?.fingerprint,
@@ -2126,6 +2558,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// latest step.
   void _onWorker(WorkerEvent e) {
     final aid = e.artifactId;
+    if (e is WorkerLanded) unawaited(_afterLanding(aid, e.version));
     if (e is WorkerProgress) {
       final run = _changes[aid];
       if (run != null) {
@@ -2822,6 +3255,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       },
       leave: leave,
       onInspect: () => unawaited(_homeFlows.inspect(aid)),
+      linked: _linkedHooks,
     ),
   );
 
@@ -2954,6 +3388,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     voice: _s.voice,
     icons: host.icons,
     autoDictate: _settings.dictateComments,
+    linked: _checker?.status,
+    linkedApps: _linkedHooks,
     onOpenApp: _openTarget,
     onOpenQuestion: _openQuestion,
     onClosed: () => unawaited(host.loadUnread()),
@@ -3092,6 +3528,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         build: _build,
         bundles: _bundles,
         lineage: _lineages.entry,
+        remote: _remoteFlows,
         host: host,
         banner: banner,
       ),
@@ -3154,6 +3591,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         comments: _comments,
         navigator: () => _nav.currentState,
         home: _homeHost?.actions,
+        getApps: (_homeHost?.offersGetApps ?? false)
+            ? _homeHost?.actions.getApps
+            : null,
         settings: () => unawaited(_openSettings()),
         toggleSidebar: _sidebarShown.value == null
             ? null

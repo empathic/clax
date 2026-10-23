@@ -37,7 +37,10 @@ enum ClaxCommand {
   starred6,
   starred7,
   starred8,
-  starred9;
+  starred9,
+
+  /// File › Get My Apps…, where the home screen offers Get my apps.
+  getApps;
 
   /// The `tag` of this command's item in `MainMenu.xib`, from 1.
   int get tag => index + 1;

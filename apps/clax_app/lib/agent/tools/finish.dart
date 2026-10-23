@@ -10,6 +10,7 @@ import '../edit_result.dart' show DbOp, maxDbOps;
 import '../failure.dart';
 import '../icon_svg.dart' show appIconPath;
 import '../ledger.dart';
+import '../reply_hold.dart';
 import '../request.dart';
 import '../unfinished.dart' show changedFiles, keptEdits;
 import 'draft.dart';
@@ -153,10 +154,16 @@ class FinishTool implements Tool {
     this.ledger, {
     required this.render,
     void Function(String line)? log,
+    this.replies,
   }) : _log = log ?? ((_) {});
 
   final ClaxApi api;
   final ChangeLedger ledger;
+
+  /// Posts the reply on each thread, with the version the finish landed,
+  /// so a linked app's reply waits for that version to be public
+  /// ([ReplyHold.reply]); null posts every reply at once.
+  final ReplyHold? replies;
   final RenderTool render;
   final void Function(String) _log;
 
@@ -691,6 +698,8 @@ class FinishTool implements Tool {
         reply,
         resolve: resolve,
         newer: newerAtPublish,
+        version: landed,
+        replies: replies,
       );
       await _end(s);
       return _Ended(
@@ -998,7 +1007,10 @@ Future<_Ended> _failWith(
 
 /// Replies [body] on each of the run's threads but those with a newer
 /// viewer comment ([newer], and any found now), resolves them when
-/// [resolve], then acknowledges the run's comments to its session.
+/// [resolve], then acknowledges the run's comments to its session. With
+/// [replies] each reply goes through [ReplyHold.reply] with [version], the
+/// version the run landed: a held reply counts as answered, and its
+/// thread is resolved when the reply is posted, not now.
 Future<({bool answered, List<String> threads})> _replyAll(
   ClaxApi api,
   void Function(String) log,
@@ -1006,6 +1018,8 @@ Future<({bool answered, List<String> threads})> _replyAll(
   String body, {
   required bool resolve,
   required Set<String> newer,
+  int? version,
+  ReplyHold? replies,
 }) async {
   final ctx = s.ctx;
   final aid = ctx.artifactId!;
@@ -1022,15 +1036,27 @@ Future<({bool answered, List<String> threads})> _replyAll(
       log('$aid/$t has a newer comment; its own run answers it');
       continue;
     }
+    bool posted;
     try {
-      await api.replyAsAgent(aid, t, body);
+      if (replies == null) {
+        await api.replyAsAgent(aid, t, body);
+        posted = true;
+      } else {
+        posted = await replies.reply(
+          aid,
+          t,
+          body,
+          version: version,
+          resolve: resolve,
+        );
+      }
     } on Object catch (e) {
       log('reply on $aid/$t failed: $e');
       answered = false;
       continue;
     }
     threads.add(t);
-    if (resolve) {
+    if (resolve && posted) {
       await _quiet(log, 'resolve $t', () => api.resolveAsAgent(aid, t));
     }
   }

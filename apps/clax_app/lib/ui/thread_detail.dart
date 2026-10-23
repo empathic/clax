@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../agent/failure.dart';
 import '../clax/api.dart';
 import '../platform/voice.dart';
+import 'approval_sheet.dart';
 import 'developer.dart';
 import 'kit/kit.dart';
 import 'layout.dart';
@@ -212,9 +213,16 @@ String relativeTime(String iso, DateTime now) {
 ///   it was posted with: the owner is known by public ID
 ///   ([ClaxApi.ownerPublicId], read once, and again after the first reply
 ///   while the owner did not exist). Other viewers keep their name, the
-///   agent reads "Clax". Each comment is one screen-reader node, and a
-///   failure reply says "failed".
+///   agent reads "Clax". A comment from the remote a linked app's public
+///   copy is on ([ThreadComment.remoteOrigin]) carries that remote as a
+///   source tag beside its author's name there ("Ada  clax.dev"). Each
+///   comment is one screen-reader node, and a failure reply says
+///   "failed".
 /// - **Resolve** / **Reopen** as the owner.
+/// - **Publish and reply.** While Claude's reply on a linked app's thread
+///   waits for the version it tells of to be public ([heldReply]), the
+///   page says so above the reply bar, with Publish vN and reply
+///   ([publishAndReply]); a refusal is shown there.
 /// - **Versions.** "Changed in vN" for each version that addressed the
 ///   thread calls [onPreview].
 /// - **Landing.** Once the thread is first read, the page scrolls to
@@ -256,7 +264,30 @@ class ThreadDetail extends StatefulWidget {
     this.appTitle,
     this.onOpenApp,
     this.leading,
+    this.replies = true,
+    this.heldReply,
+    this.heldNote,
+    this.publishAndReply,
   });
+
+  /// The version Claude's reply on this thread waits for (the reply is
+  /// held until that version of a linked app is public), read with the
+  /// thread; null, or an answer of null, when none waits.
+  final Future<int?> Function()? heldReply;
+
+  /// Publish vN and reply: publishes version `n` and posts the held reply,
+  /// answering null once done, else why not in a sentence. With
+  /// [heldReply], the page offers it while a reply waits.
+  final Future<String?> Function(int n)? publishAndReply;
+
+  /// Why the publish of v`n`, which the held reply waits for, did not
+  /// land (a publish left to go on that ended refused or moved), or null;
+  /// shown on the held card.
+  final Future<String?> Function(int n)? heldNote;
+
+  /// Whether the page has its reply bar: false for a linked app whose
+  /// public copy takes no comments, where a reply would be refused.
+  final bool replies;
 
   /// The bar's leading control in place of the route's own Back: Back to
   /// a list the page is shown in the place of.
@@ -366,6 +397,15 @@ class _ThreadDetailState extends State<ThreadDetail> {
 
   /// The app's name, once read, when [ThreadDetail.appTitle] is null.
   String? _appTitle;
+
+  /// The open approval request about this thread, while one waits: its
+  /// author's comments are kept from Claude until the person decides.
+  ApprovalRequest? _approval;
+
+  /// The version Claude's held reply waits for, while one waits.
+  int? _held;
+  var _publishing = false;
+  String? _publishError;
 
   // Landing.
   final _scroll = ScrollController();
@@ -489,6 +529,170 @@ class _ThreadDetailState extends State<ThreadDetail> {
       _loading = false;
     }
     _fetchClip();
+    await _readHeld();
+    await _readApproval();
+  }
+
+  /// Reads the open approval request about this thread from the inbox.
+  Future<void> _readApproval() async {
+    try {
+      final page = await widget.api.inbox(kinds: const ['approval']);
+      final r = page.items
+          .map((i) => i.approval)
+          .where((r) => r != null && r.isOpen && r.threadId == widget.tid)
+          .firstOrNull;
+      if (mounted && r?.id != _approval?.id) setState(() => _approval = r);
+    } on Object catch (e) {
+      logError('approval', e);
+    }
+  }
+
+  Future<void> _review(ApprovalRequest r) async {
+    await showApprovalSheet(
+      context,
+      api: widget.api,
+      r: r,
+      app: widget.appTitle ?? _appTitle,
+    );
+    if (mounted) await _readApproval();
+  }
+
+  /// "Clax keeps Bob’s comments from Claude until you allow them", with
+  /// Review…, which opens the approval card.
+  Widget _approvalLine(BuildContext context, ApprovalRequest r) {
+    final theme = Theme.of(context);
+    final p = claxPalette(context);
+    return _column(
+      Padding(
+        key: const ValueKey('thread-approval'),
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+        child: SizedBox(
+          width: double.infinity,
+          child: Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 4,
+            children: [
+              Text(
+                'Clax keeps ${r.author.name}’s comments from Claude until '
+                'you allow them.',
+                style: theme.textTheme.bodyMedium?.copyWith(color: p.muted),
+              ),
+              ClaxButton(
+                key: const ValueKey('thread-approval-review'),
+                label: 'Review…',
+                onPressed: () => unawaited(_review(r)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// In the reply bar's place while the public copy takes no comments.
+  Widget _commentsOff(BuildContext context) {
+    final theme = Theme.of(context);
+    final host = _thread?.linkedRemote ?? 'the public copy';
+    return SafeArea(
+      top: false,
+      child: _column(
+        Padding(
+          key: const ValueKey('thread-comments-off'),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+          child: SizedBox(
+            width: double.infinity,
+            child: Text(
+              'Comments are off on $host. Turn them on in Share….',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: claxPalette(context).muted,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _readHeld() async {
+    final read = widget.heldReply;
+    if (read == null) return;
+    try {
+      final n = await read();
+      if (mounted && n != _held) setState(() => _held = n);
+      final note = widget.heldNote;
+      if (n == null || note == null || _publishing) return;
+      final why = await note(n);
+      if (mounted && why != null && !_publishing) {
+        setState(() => _publishError = why);
+      }
+    } on Object catch (e) {
+      logError('held reply', e);
+    }
+  }
+
+  Future<void> _publishAndReply(int n) async {
+    final go = widget.publishAndReply;
+    if (go == null || _publishing) return;
+    setState(() {
+      _publishing = true;
+      _publishError = null;
+    });
+    String? why;
+    try {
+      why = await go(n);
+    } on Object catch (e) {
+      why = userMessage(e);
+    }
+    if (!mounted) return;
+    setState(() {
+      _publishing = false;
+      _publishError = why;
+    });
+    await _readHeld();
+  }
+
+  /// "Claude’s reply waits for vN to be public", with Publish vN and
+  /// reply.
+  Widget _heldCard(BuildContext context, int n) {
+    final theme = Theme.of(context);
+    final p = claxPalette(context);
+    return Padding(
+      key: const ValueKey('held-reply'),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'Claude’s reply waits for v$n to be public.',
+            style: theme.textTheme.bodyMedium?.copyWith(color: p.muted),
+          ),
+          if (_publishError case final why?)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                why,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.error,
+                ),
+              ),
+            ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: ClaxButton(
+              key: const ValueKey('publish-and-reply'),
+              kind: ClaxButtonKind.primary,
+              label: 'Publish v$n and reply',
+              onPressed: _publishing
+                  ? null
+                  : () => unawaited(_publishAndReply(n)),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   /// Shows [t]; inside setState.
@@ -869,7 +1073,10 @@ class _ThreadDetailState extends State<ThreadDetail> {
             ),
           ),
         ),
-        _composer(context),
+        if (_held case final n? when widget.publishAndReply != null)
+          _heldCard(context, n),
+        if (_approval case final r?) _approvalLine(context, r),
+        if (widget.replies) _composer(context) else _commentsOff(context),
       ],
     );
   }
@@ -1138,14 +1345,16 @@ class _ThreadDetailState extends State<ThreadDetail> {
         failed ||
             (agent &&
                 c.viaHarness == appHarness &&
-                parseLimitProgress(c.body) != null)
-        ? parseFailureReply(c.body)
+                parseLimitProgress(c.body ?? '') != null)
+        ? parseFailureReply(c.body ?? '')
         : null;
     final raw = reply != null && DeveloperScope.of(context) ? reply.raw : null;
     final hasDetails = reply != null && (reply.hasDetails || raw != null);
     final open = hasDetails && _openDetails.contains(c.id);
     final verbs = ClaxVerbs.of(context);
-    final text = agent ? keepGoingIn(reply?.line ?? c.body, verbs) : c.body;
+    // The person's own reads carry every comment's words.
+    final words = c.body ?? '';
+    final text = agent ? keepGoingIn(reply?.line ?? words, verbs) : words;
     final bubble = failed
         ? p.card
         : agent
@@ -1281,6 +1490,7 @@ class _ThreadDetailState extends State<ThreadDetail> {
       container: true,
       label: [
         name,
+        if (c.remoteOrigin case final source?) 'on $source',
         if (time.isNotEmpty) time,
         if (failed) 'failed',
         text,
@@ -1333,6 +1543,11 @@ class _ThreadDetailState extends State<ThreadDetail> {
                             color: agent ? scheme.primary : null,
                           ),
                         ),
+                        if (c.remoteOrigin case final source?)
+                          _SourceTag(
+                            source,
+                            key: ValueKey('comment-source-${c.id}'),
+                          ),
                         if (time.isNotEmpty)
                           Text(
                             time,
@@ -1601,4 +1816,33 @@ TextSpan _inline(String s, TextStyle? style, TextStyle mono) {
   }
   if (at < s.length) spans.add(TextSpan(text: s.substring(at)));
   return TextSpan(style: style, children: spans);
+}
+
+/// Where a comment came from, beside its author: the remote a linked
+/// app's public copy is on (`clax.dev`).
+class _SourceTag extends StatelessWidget {
+  const _SourceTag(this.source, {super.key});
+
+  final String source;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border.all(color: scheme.outlineVariant),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+        child: Text(
+          source,
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+      ),
+    );
+  }
 }

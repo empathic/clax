@@ -72,6 +72,9 @@ class _Actions implements HomeActions {
   void openSettings() {}
   @override
   void importApp() {}
+
+  @override
+  void getApps() {}
 }
 
 /// Counts its states, so a test sees whether the home app's page was made

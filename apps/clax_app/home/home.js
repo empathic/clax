@@ -45,6 +45,7 @@ import { pack, geometry, cellBox, slotAt, centreUnder, iconCentre, tileLabel } f
 import { createPress } from './drag.js';
 import { createMotion } from './motion.js';
 import { search } from './search.js';
+import { syncBadgeOf, syncSvgOf } from './sync.js';
 import { WORDS } from './words.js';
 
 /** Material Symbol `name` (symbols.js) in a span, `size` px square. */
@@ -126,6 +127,12 @@ function MakeRing({ done, total }) {
 
 /** A tile's count, as the app's ClaxBadge draws it, at its icon's corner. */
 const TileBadge = ({ done, total }) => html`<span class="h-badge h-tile-badge" aria-hidden="true">${done}/${total}</span>`;
+
+/** A tile's sync badge, at its icon's bottom end corner. */
+function SyncBadge({ sync }) {
+  const s = syncBadgeOf(sync);
+  return s && html`<span class="h-sync" data-sync=${sync} data-glyph=${s.glyph} data-warm=${s.warm ? '' : undefined} aria-hidden="true" dangerouslySetInnerHTML=${{ __html: syncSvgOf(sync) }} />`;
+}
 
 /** A 2D context to measure labels with; null where the page has none. */
 let measurer;
@@ -220,7 +227,9 @@ const cellStyle = (c) => (c ? { gridColumn: `${c.col + 1} / span ${c.span}`, gri
 function AppTile({ app, fresh, cell, dragging, group, ctl, onOpen, onMenu, tkey = tileKeyOf(app.id) }) {
   const b = app.build;
   const press = ctl.pressOf(app.id);
-  const built = b ? `${app.title}, building, ${b.done} of ${b.total} done` : app.title;
+  const building = b ? `${app.title}, building, ${b.done} of ${b.total} done` : app.title;
+  const synced = syncBadgeOf(app.sync);
+  const built = synced ? `${building}, ${synced.words}` : building;
   const said = group ? `${built}, in ${group}` : built;
   const label = fresh ? `${said}, new` : said;
   return html`<button type="button" class="h-tile" data-id=${app.id} data-key=${tkey} data-new=${fresh ? '' : undefined} data-building=${b ? '' : undefined}
@@ -233,6 +242,7 @@ function AppTile({ app, fresh, cell, dragging, group, ctl, onOpen, onMenu, tkey 
       <span class="h-folder-back" aria-hidden="true" />
       <${AppFace} app=${app} />
       ${b && html`<span class="h-build-ring" aria-hidden="true" /><${TileBadge} done=${b.done} total=${b.total} />`}
+      <${SyncBadge} sync=${app.sync} />
       ${fresh && html`<span class="h-new" aria-hidden="true">New</span>`}
     </span>
     <${Label} text=${app.title} lines=${group ? 1 : 2} />
@@ -325,8 +335,9 @@ function Banner({ class: cls, glyph, danger, title, body, actions }) {
   </div>`;
 }
 
-/** The ⋮ menu: Import app… and Refresh. */
-function More({ act, refresh }) {
+/** The ⋮ menu: Import app…, Get my apps from clax.dev (where `getApps`
+ * says the app offers it) and Refresh. */
+function More({ act, refresh, getApps }) {
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (!open) return undefined;
@@ -341,6 +352,7 @@ function More({ act, refresh }) {
     ${open && html`<button type="button" class="h-scrim" aria-label="Close menu" onClick=${() => setOpen(false)} />
       <div class="h-menu" role="menu">
         <button type="button" role="menuitem" class="h-menu-item" onClick=${() => { setOpen(false); act('importApp', [], 'import an app'); }}>Import app…</button>
+        ${getApps && html`<button type="button" role="menuitem" class="h-menu-item" onClick=${() => { setOpen(false); act('getApps', [], 'get your apps'); }}>Get my apps from clax.dev</button>`}
         <button type="button" role="menuitem" class="h-menu-item" onClick=${() => { setOpen(false); refresh(); }}>Refresh</button>
       </div>`}
   </span>`;
@@ -352,7 +364,7 @@ export const badgeText = (n) => (n > 99 ? '99+' : String(n));
 
 /** The top bar: the mark and "Clax", then Search, Inbox (with the unread
  * count), Settings and the ⋮ menu. */
-function Bar({ act, refresh, unread, onSearch }) {
+function Bar({ act, refresh, unread, onSearch, getApps }) {
   return html`<header class="h-bar">
     <h1 class="h-title"><${Mark} size=${24} /><span>Clax</span></h1>
     <div class="h-actions">
@@ -364,7 +376,7 @@ function Bar({ act, refresh, unread, onSearch }) {
         </span>
       </button>
       <button type="button" class="h-action" aria-label="Settings" onClick=${() => act('openSettings', [], 'open Settings')}><${Glyph} name="settings" /></button>
-      <${More} act=${act} refresh=${refresh} />
+      <${More} act=${act} refresh=${refresh} getApps=${getApps} />
     </div>
   </header>`;
 }
@@ -1757,6 +1769,8 @@ function Home({ home, db, clock }) {
   // With the window's toolbar (a split window's sidebar, menus and toolbar)
   // the page draws no bar, search or New app of its own.
   const ownBar = chrome?.toolbar !== true;
+  // Get my apps shows only where the app says it offers it.
+  const offersGet = chrome?.getApps === true;
   // There the window's toolbar search is the page's search: its text comes
   // as chrome's query.
   const toolbarQuery = !ownBar && typeof chrome?.query === 'string' ? chrome.query : '';
@@ -1979,7 +1993,8 @@ function Home({ home, db, clock }) {
     body = html`<${Message} glyph="mark" title="Say what you need, and Clax makes it." hint="Like “a tracker for my runs, with a weekly total.”"
       action=${html`<button type="button" class="h-filled-button h-message-new" onClick=${() => act('newApp', [], 'make a new app')}>
         <${Glyph} name="mic_fill" size=${18} /><span>New app</span>
-      </button>`} />`;
+      </button>
+      ${offersGet && html`<button type="button" class="h-text-button h-message-get" onClick=${() => act('getApps', [], 'get your apps')}>Get my apps from clax.dev</button>`}`} />`;
   } else {
     // A name just kept shows at once, before its write lands.
     const view = named && layout.groups[named.gid] ? renameGroup(layout, named.gid, named.name) : layout;
@@ -1991,7 +2006,7 @@ function Home({ home, db, clock }) {
   const nameFor = naming && entryOf(naming.gid);
   const menuFor = groupMenu && entryOf(groupMenu.gid);
   return html`<main class="h-page" data-dragging=${dragging ? '' : undefined} data-toolbar=${ownBar ? undefined : ''}>
-    ${ownBar && html`<${Bar} act=${act} refresh=${refresh} unread=${typeof unread === 'number' ? unread : 0} onSearch=${openSearch} />`}
+    ${ownBar && html`<${Bar} act=${act} refresh=${refresh} unread=${typeof unread === 'number' ? unread : 0} onSearch=${openSearch} getApps=${offersGet} />`}
     ${ownBar && searching && html`<${SearchField} query=${query} setQuery=${setQuery} onGo=${() => goFirst.current()} onClose=${closeSearch} />`}
     ${needsKey === true && html`<${Banner} class="h-key" glyph="key_fill" title="Add your Claude API key to start making apps"
       actions=${html`<button type="button" class="h-text-button" onClick=${() => act('openSettings', [], 'open Settings')}>Add key</button>`} />`}

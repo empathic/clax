@@ -84,6 +84,12 @@
                                     <action selector="claxMenuAction:" target="-1" id="cxF-il-e06"/>
                                 </connections>
                             </menuItem>
+                            <menuItem title="Get My Apps…" tag="31" id="cxF-il-g01">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="claxMenuAction:" target="-1" id="cxF-il-g02"/>
+                                </connections>
+                            </menuItem>
                             <menuItem title="Share App…" tag="3" id="cxF-il-e07">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>

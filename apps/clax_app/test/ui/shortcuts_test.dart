@@ -161,10 +161,11 @@ void main() {
       'starred7': 28,
       'starred8': 29,
       'starred9': 30,
+      'getApps': 31,
     });
     expect(ClaxCommand.ofTag(19), ClaxCommand.settings);
     expect(ClaxCommand.ofTag(0), isNull);
-    expect(ClaxCommand.ofTag(31), isNull);
+    expect(ClaxCommand.ofTag(32), isNull);
   });
 
   group('MacMenu', () {

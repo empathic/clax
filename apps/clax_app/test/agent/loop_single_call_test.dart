@@ -1292,6 +1292,42 @@ void main() {
   });
 
   group('anchorLine', () {
+    test('an anchor withheld from the agent shows none of its fields, from '
+        'a thread read or a feedback item', () {
+      final withheld = {
+        'kind': 'text',
+        'selector': null,
+        'quote': null,
+        'label': 'Bob quoted this',
+        'name': 'Bob named this',
+        'route': '?tab=bob',
+      };
+      final t = ThreadView.fromJson({
+        'id': 't1',
+        'artifact_id': 'a1',
+        'version_n': 2,
+        'anchor': withheld,
+        'anchor_withheld': true,
+        'status': 'open',
+        'sent_to_agent': true,
+        'comments': const [],
+      });
+      expect(t.anchorWithheld, isTrue);
+      expect(anchorLine(t.anchor, 2), '$withheldAnchorSummary  (v2)');
+      final i = FeedbackItem.fromJson({
+        'feedback_id': 'f1',
+        'thread_id': 't1',
+        'comment_id': 'c1',
+        'artifact_id': 'a1',
+        'body': 'Make it blue',
+        'author': 'Alex',
+        'version': 2,
+        'anchor': withheld,
+        'withheld': {'anchor': 'Bob'},
+      });
+      expect(anchorLine(i.anchor, 2), '$withheldAnchorSummary  (v2)');
+    });
+
     test('renders as the daemon payload does', () {
       expect(
         anchorLine(const {'kind': 'artifact', 'file': ''}, 3),
@@ -1344,8 +1380,8 @@ class NewerCommentApi extends FakeClaxApi {
   String? newerOn;
 
   @override
-  Future<List<ThreadView>> threads(String aid) async {
-    final all = await super.threads(aid);
+  Future<List<ThreadView>> threads(String aid, {bool agent = false}) async {
+    final all = await super.threads(aid, agent: agent);
     return [
       for (final t in all)
         if (t.id == newerOn)

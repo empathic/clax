@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:clax_app/agent/author_trust.dart';
 import 'package:clax_app/agent/icon_svg.dart';
 import 'package:clax_app/agent/inspector.dart';
 import 'package:clax_app/bundle/bundle_reader.dart';
@@ -9,6 +10,9 @@ import 'package:clax_app/bundle/doc_snapshot.dart';
 import 'package:clax_app/bundle/installer.dart' show PublishedFiles;
 import 'package:clax_app/bundle/updater.dart';
 import 'package:clax_app/clax/api.dart';
+import 'package:clax_app/platform/settings_store.dart';
+import 'package:clax_app/remote/merge.dart' show Merged;
+import 'package:clax_app/remote/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'services_support.dart';
@@ -295,6 +299,245 @@ void main() {
     final out = await me.updater.update(aid, await v2());
     expect(out, isA<UpdateRefused>());
     expect(me.api.callNames, isNot(contains('createDraft')));
+  });
+
+  group('linked', () {
+    const remote = 'https://clax.example';
+    const by = PublishedBy(name: 'Sam');
+    BundleOrigin from(String raid) => BundleOrigin(
+      remoteOrigin: remote,
+      remoteArtifactId: raid,
+      remoteVersion: 2,
+      head: RemoteHead(
+        artifactId: raid,
+        url: '$remote/a/$raid',
+        title: 'Plant log',
+        version: 2,
+        contentSha256: 'sha256:${'0' * 64}',
+        publishedBy: by,
+        owner: by,
+        comments: false,
+      ),
+    );
+
+    // v2 of the lineage, signed by another key than v1's (an editor's).
+    Future<Bundle> v2ByEditor() async => BundleReader.read(
+      (await makeBundle(
+        lineage: lineageA,
+        version: 2,
+        files: {'index.html': '<p>v2 by an editor</p>'},
+        seedByte: 5,
+        name: 'Ed',
+      )).bytes,
+    );
+
+    Future<void> linkTo(String raid) => me.store.update(
+      aid,
+      (e) async => e!.copyWith(
+        link: () => AppLink(
+          remoteOrigin: remote,
+          remoteId: 'r1',
+          remoteArtifactId: raid,
+          url: '$remote/a/$raid',
+          baseRemoteVersion: 1,
+          role: AppLink.recipient,
+        ),
+      ),
+    );
+
+    test('linked_update_with_new_key_lands', () async {
+      await linkTo('ra1');
+      final b = await v2ByEditor();
+      final key = (await me.store.entry(aid))!.key;
+      expect(b.manifest.author.key, isNot(key));
+      final out = await me.updater.update(aid, b, origin: from('ra1'));
+      expect(out, isA<UpdateLanded>());
+      final e = (await me.store.entry(aid))!;
+      expect(e.version, 2);
+      expect(e.released.last, b.manifest.contentSha256);
+      expect(e.link?.remoteArtifactId, 'ra1', reason: 'the link stays');
+      final live = await me.api.getArtifact(aid);
+      expect(live.current!.contentSha256, b.manifest.contentSha256);
+    });
+
+    test('an update from the linked copy moves the core’s link first; '
+        'refused, neither base moves and the outcome says why', () async {
+      await linkTo('ra1');
+      final moves = <(String, String, int)>[];
+      me.updater.relink = (rid, aid, app, n) async {
+        moves.add((rid, app.artifactId, n));
+        throw const ClaxApiError(
+          status: 403,
+          code: 'not_permitted',
+          message: 'this account may not link it',
+        );
+      };
+      final out = await me.updater.update(
+        aid,
+        await v2ByEditor(),
+        origin: from('ra1'),
+      );
+      expect(moves, [('r1', 'ra1', 2)]);
+      expect(out, isA<UpdateLanded>());
+      expect((out as UpdateLanded).notLinked, 'this account may not link it');
+      final e = (await me.store.entry(aid))!;
+      expect(e.version, 2, reason: 'the update itself is live');
+      expect(e.link!.baseRemoteVersion, 1, reason: 'the base stays');
+    });
+
+    test('an editor’s update is who published the live version, and the '
+        'next change asks about them once', () async {
+      await linkTo('ra1');
+      final mine = (await me.store.entry(aid))!.key;
+      final b = await v2ByEditor();
+      final out = await me.updater.update(aid, b, origin: from('ra1'));
+      expect(out, isA<UpdateLanded>());
+      final from_ = (await me.store.entry(aid))!.liveFrom!;
+      expect(from_.key, b.manifest.author.key);
+      expect(from_.who, 'Ed');
+      expect(from_.origin, remote);
+
+      // The app's own author is the person here; Ed's code still asks.
+      final settings = SettingsStore(File('${tmp.path}/settings.json'));
+      final trust = AuthorTrust(
+        lineages: me.store,
+        settings: settings,
+        ownKey: () async => mine,
+      );
+      expect(await trust.authorOf(aid), isNull);
+      expect(await trust.ensure(null, aid), isFalse, reason: 'asks');
+      // Once trusted, the next change goes without asking.
+      await settings.save(
+        AppSettings(
+          trustedAuthors: {
+            aid: [b.manifest.author.key],
+          },
+        ),
+      );
+      expect(await trust.ensure(null, aid), isTrue);
+    });
+
+    test('a release brought into the person’s version records what it '
+        'published as merged; a plain release after it clears that', () async {
+      await linkTo('ra1');
+      final out = await me.updater.update(
+        aid,
+        await v2ByEditor(),
+        origin: from('ra1'),
+        merged: Merged(
+          files: {'index.html': utf('<p>v2 by an editor</p><p>mine</p>')},
+          title: 'Plant log',
+          capabilities: const {'db': {}},
+          note: 'Both.',
+        ),
+      );
+      expect(out, isA<UpdateLanded>());
+      final live = (await me.api.getArtifact(aid)).current!.contentSha256;
+      var link = (await me.store.entry(aid))!.link!;
+      expect(link.takenBundleVersion, 2);
+      expect(link.mergedSha256, live);
+
+      final v3 = await BundleReader.read(
+        (await makeBundle(
+          lineage: lineageA,
+          version: 3,
+          files: {'index.html': '<p>v3</p>'},
+          seedByte: 5,
+          name: 'Ed',
+        )).bytes,
+      );
+      expect(
+        await me.updater.update(aid, v3, origin: from('ra1')),
+        isA<UpdateLanded>(),
+      );
+      link = (await me.store.entry(aid))!.link!;
+      expect(link.takenBundleVersion, 3);
+      expect(link.mergedSha256, isNull);
+    });
+
+    test('another key is refused without the linked origin', () async {
+      await linkTo('ra1');
+      final b = await v2ByEditor();
+      for (final origin in [null, from('ra2')]) {
+        final out = await me.updater.update(aid, b, origin: origin);
+        expect(out, isA<UpdateRefused>(), reason: '$origin');
+        expect(
+          (out as UpdateRefused).message,
+          'This file is not an update of this app.',
+        );
+      }
+      expect((await me.store.entry(aid))!.version, 1);
+      expect(me.api.callNames, isNot(contains('createDraft')));
+    });
+
+    // What a refused update must leave as it was: the live files, the
+    // lineage entry (version, key, lineage, releases) and its link.
+    Future<Object> held() async {
+      final e = (await me.store.entry(aid))!;
+      final live = await me.api.getArtifact(aid);
+      return jsonEncode({
+        'live': live.current!.contentSha256,
+        'liveVersion': live.artifact.currentVersion,
+        'version': e.version,
+        'key': e.key,
+        'lineage': e.lineage,
+        'released': e.released,
+        'link': e.link?.toJson(),
+      });
+    }
+
+    void expectNotUpdate(UpdateOutcome out, Object reason) {
+      expect(out, isA<UpdateRefused>(), reason: '$reason');
+      expect(
+        (out as UpdateRefused).message,
+        'This file is not an update of this app.',
+        reason: '$reason',
+      );
+    }
+
+    test('a linked app refuses a bundle of another lineage from its own '
+        'public copy, whatever key signed it', () async {
+      await linkTo('ra1');
+      final before = await held();
+      for (final seedByte in [9, 5]) {
+        final b = await BundleReader.read(
+          (await makeBundle(
+            lineage: 'l_bbbbbbbbbbbbbbbbbbbbbbbbbb',
+            version: 2,
+            files: {'index.html': '<p>another app</p>'},
+            seedByte: seedByte,
+          )).bytes,
+        );
+        final out = await me.updater.update(aid, b, origin: from('ra1'));
+        expectNotUpdate(out, 'key seed $seedByte');
+      }
+      expect(await held(), before);
+      expect(me.api.callNames, isNot(contains('createDraft')));
+      expect(me.api.callNames, isNot(contains('publish')));
+    });
+
+    test('a linked app refuses a bundle claiming another public copy: '
+        'another artifact or another host', () async {
+      await linkTo('ra1');
+      final before = await held();
+      final b = await v2ByEditor();
+      final elsewhere = {
+        'another artifact': from('ra2'),
+        'another host': BundleOrigin(
+          remoteOrigin: 'https://other.example',
+          remoteArtifactId: 'ra1',
+          remoteVersion: 2,
+          head: from('ra1').head,
+        ),
+      };
+      for (final MapEntry(key: what, value: origin) in elsewhere.entries) {
+        final out = await me.updater.update(aid, b, origin: origin);
+        expectNotUpdate(out, what);
+      }
+      expect(await held(), before);
+      expect(me.api.callNames, isNot(contains('createDraft')));
+      expect(me.api.callNames, isNot(contains('publish')));
+    });
   });
 
   test(

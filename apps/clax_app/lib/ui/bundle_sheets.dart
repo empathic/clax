@@ -22,6 +22,9 @@ import '../bundle/installer.dart' as svc show OpenedBundle;
 import '../bundle/trust.dart';
 import '../bundle/updater.dart';
 import '../clax/models.dart';
+import '../remote/merge.dart' show Merger;
+import '../remote/models.dart' show PublishedBy;
+import '../platform/bundle_intake.dart' show BundleIntakeEvent;
 import '../platform/bundle_key.dart' show keyFingerprint;
 import '../platform/device/device_grants.dart';
 import '../platform/settings_store.dart';
@@ -142,8 +145,9 @@ class BundleFace extends StatelessWidget {
 /// it, a body, and the actions at the end, side by side when they fit and
 /// otherwise stacked full width, the default on top. Return presses the
 /// focused button, or else the last enabled default among [actions].
-class _Frame extends StatelessWidget {
-  const _Frame({
+class BundleSheetFrame extends StatelessWidget {
+  const BundleSheetFrame({
+    super.key,
     required this.face,
     required this.title,
     this.subtitle,
@@ -265,7 +269,12 @@ class ExportChoice {
     required this.mode,
     required this.includeData,
     this.name,
+    this.publish = false,
   });
+
+  /// Publish fork: the person's version goes to the hosted Clax as a new
+  /// app ([mode] is [ExportMode.fork]) rather than as a file.
+  final bool publish;
 
   /// Own, re-share the kept original, or fork.
   final ExportMode mode;
@@ -291,7 +300,14 @@ class ExportSheet extends StatefulWidget {
     this.svg,
     this.askName = false,
     this.toFile = false,
+    this.publishTo,
   });
+
+  /// The hosted Clax this device is signed in to (`clax.dev`), when it is:
+  /// a changed copy's "Share mine" becomes **Publish fork** there (spec
+  /// 2026-10-21-app-push-pull §5.12), which pops an [ExportChoice] with
+  /// `publish`.
+  final String? publishTo;
 
   final ExportPlan plan;
 
@@ -352,7 +368,7 @@ class _ExportSheetState extends State<ExportSheet> {
     final original = p.entry?.version ?? p.version;
     if (!p.modes.contains(ExportMode.own) &&
         !p.modes.contains(ExportMode.fork)) {
-      return _Frame(
+      return BundleSheetFrame(
         face: face,
         title: p.title,
         subtitle: 'v$original',
@@ -372,14 +388,19 @@ class _ExportSheetState extends State<ExportSheet> {
       );
     }
     final fork = p.modes.contains(ExportMode.fork);
-    final data = p.dataAllowed && p.docCount > 0;
-    final mine = fork ? '$_verb mine' : _verb;
+    final host = fork ? widget.publishTo : null;
+    final data = host == null && p.dataAllowed && p.docCount > 0;
+    final mine = host != null
+        ? 'Publish fork'
+        : fork
+        ? '$_verb mine'
+        : _verb;
     // A changed copy's labels name whose app goes; the body names the
     // author and version.
     final mineData = fork ? 'With my data' : '$_verb a copy with my data';
     final theirs = '$_verb theirs';
     final mode = fork ? ExportMode.fork : ExportMode.own;
-    return _Frame(
+    return BundleSheetFrame(
       face: face,
       title: p.title,
       subtitle: fork
@@ -390,7 +411,8 @@ class _ExportSheetState extends State<ExportSheet> {
           _Para(
             'You changed ${p.title} since $author’s version $original. '
             '“$theirs” sends $author’s version $original as you received '
-            'it; “$mine” sends yours as a new app.',
+            'it; “$mine” ${host == null ? 'sends' : 'publishes'} yours as a '
+            'new app${host == null ? '' : ' on $host'}.',
           ),
         if (data)
           _Para(
@@ -427,11 +449,25 @@ class _ExportSheetState extends State<ExportSheet> {
             onPressed: () => _done(mode, data: true),
           ),
         ClaxButton(
-          key: ValueKey(fork ? 'export-fork' : 'export-own'),
+          key: ValueKey(
+            host != null
+                ? 'export-publish-fork'
+                : fork
+                ? 'export-fork'
+                : 'export-own',
+          ),
           kind: ClaxButtonKind.primary,
           isDefault: true,
           label: mine,
-          onPressed: () => _done(mode),
+          onPressed: host != null
+              ? () => Navigator.of(context).pop(
+                  const ExportChoice(
+                    mode: ExportMode.fork,
+                    includeData: false,
+                    publish: true,
+                  ),
+                )
+              : () => _done(mode),
         ),
       ],
     );
@@ -467,6 +503,8 @@ class BundleSummary {
     this.own = false,
     this.seedDocs,
     this.iconChange,
+    this.provenance,
+    this.byline,
   });
 
   final String lineage;
@@ -494,11 +532,26 @@ class BundleSummary {
   /// ([PublishedFiles.iconChange]); null when it goes as it is.
   final String? iconChange;
 
+  /// For a bundle got from a public copy: `"From @owner on <host>"`, which
+  /// the install sheet shows in place of the fingerprint line (the
+  /// fingerprint moves under Details); null for a file.
+  final String? provenance;
+
+  /// For a bundle got from a public copy whose version an editor
+  /// published: `"v<N> by @editor · <title> by @owner"`; null otherwise.
+  final String? byline;
+
   /// What [opened] shows: its icon as it will be published, none when
-  /// the icon is left out.
+  /// the icon is left out. A bundle got from a public copy names its owner
+  /// and host, and its documents are not counted: a pull brings none.
   factory BundleSummary.of(svc.OpenedBundle opened) {
     final m = opened.manifest;
     final published = PublishedFiles.of(opened.bundle);
+    final origin = opened.origin;
+    String handle(PublishedBy p) => p.login == null ? p.name : '@${p.login}';
+    final owner = origin == null ? null : handle(origin.head.owner);
+    final by = origin?.head.bundle?.publishedBy;
+    final host = origin == null ? null : Uri.parse(origin.remoteOrigin).host;
     return BundleSummary(
       lineage: m.lineage,
       title: m.title,
@@ -511,8 +564,12 @@ class BundleSummary {
           ? opened.bundle.iconSvg
           : null,
       own: opened.fromSelf,
-      seedDocs: m.seed?.docs,
+      seedDocs: origin == null ? m.seed?.docs : null,
       iconChange: published.iconChange,
+      provenance: origin == null ? null : 'From $owner on $host',
+      byline: by == null || handle(by) == owner
+          ? null
+          : 'v${m.version} by ${handle(by)} · ${m.title} by $owner',
     );
   }
 
@@ -521,18 +578,28 @@ class BundleSummary {
 }
 
 /// The install sheet: who it is from, what it can ask for, its seed.
-/// Pops true for Install (or Install separately), else null.
-class InstallSheet extends StatelessWidget {
+/// A bundle got from a public copy says whose and where
+/// ([BundleSummary.provenance]), its fingerprint under Details. Pops true
+/// for Install (or Install separately), else null.
+class InstallSheet extends StatefulWidget {
   const InstallSheet({super.key, required this.bundle, required this.kind});
 
   final BundleSummary bundle;
   final InstallKind kind;
 
   @override
+  State<InstallSheet> createState() => _InstallSheetState();
+}
+
+class _InstallSheetState extends State<InstallSheet> {
+  var _details = false;
+
+  @override
   Widget build(BuildContext context) {
-    final b = bundle;
+    final b = widget.bundle;
+    final kind = widget.kind;
     final words = capabilityWords(b.capabilities);
-    return _Frame(
+    return BundleSheetFrame(
       face: BundleFace(
         seed: b.lineage,
         title: b.title,
@@ -540,7 +607,7 @@ class InstallSheet extends StatelessWidget {
         svg: b.svg,
       ),
       title: b.title,
-      subtitle: 'v${b.version}',
+      subtitle: b.byline ?? 'v${b.version}',
       body: [
         if (kind == InstallKind.foreign)
           _Para(
@@ -553,10 +620,22 @@ class InstallSheet extends StatelessWidget {
             'v${b.version} as a separate app?',
           ),
         Text(
-          fromLine(name: b.name, fingerprint: b.fingerprint, own: b.own),
+          b.provenance ??
+              fromLine(name: b.name, fingerprint: b.fingerprint, own: b.own),
+          key: const ValueKey('install-from'),
           style: Theme.of(context).textTheme.titleSmall,
         ),
-        if (b.name != null && !b.own)
+        if (b.provenance != null) ...[
+          _Disclosure(
+            open: _details,
+            onToggle: () => setState(() => _details = !_details),
+          ),
+          if (_details)
+            _Para(
+              fromLine(name: b.name, fingerprint: b.fingerprint, own: b.own),
+              small: true,
+            ),
+        ] else if (b.name != null && !b.own)
           _Para('“${b.name}” is the sender’s own description', small: true)
         else
           const SizedBox(height: 8),
@@ -595,12 +674,23 @@ enum UpdateChoice {
   /// Keep mine: stop updates for this app, or skip only this update
   /// ([UpdateSheet.keepStopsUpdates]).
   keepMine,
+
+  /// Bring vN into mine: Claude adds the update to the person's version
+  /// (spec 2026-10-21-app-push-pull §5.7, D5).
+  bringIntoMine,
 }
 
 /// The update sheet (§3.3): an unmodified copy asks Update / Not now; a
 /// modified one (or one whose updates were stopped) asks Keep mine /
-/// Update, its body saying what each does. Pops an [UpdateChoice], or null
-/// for Not now.
+/// Update, its body saying what each does, and, with [canBringIntoMine]
+/// (Claude can run here), Bring vN into mine between them. Pops an
+/// [UpdateChoice], or null for Not now.
+///
+/// A bundle got from a public copy names who published it
+/// ([BundleSummary.byline], "v6 by @editor · Plant log by @owner", else
+/// [BundleSummary.provenance]). With [autoUpdate] the sheet has the switch
+/// "Update <title> automatically" ("Asks first if it needs a new
+/// permission"), each change going to [onAutoUpdate] at once.
 class UpdateSheet extends StatelessWidget {
   const UpdateSheet({
     super.key,
@@ -610,7 +700,19 @@ class UpdateSheet extends StatelessWidget {
     this.modified = false,
     this.stoppedAt,
     this.keepStopsUpdates = true,
+    this.autoUpdate,
+    this.onAutoUpdate,
+    this.canBringIntoMine = false,
   });
+
+  /// Whether a modified copy is offered Bring vN into mine: only when
+  /// Claude can run here (an API key is set).
+  final bool canBringIntoMine;
+
+  /// Whether the app updates by itself from its public copy; null shows no
+  /// switch (an app not linked).
+  final bool? autoUpdate;
+  final ValueChanged<bool>? onAutoUpdate;
 
   final BundleSummary bundle;
 
@@ -642,7 +744,8 @@ class UpdateSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     final b = bundle;
     final mine = modified || stoppedAt != null;
-    return _Frame(
+    final bring = mine && canBringIntoMine;
+    return BundleSheetFrame(
       face: BundleFace(
         seed: b.lineage,
         title: b.title,
@@ -653,8 +756,8 @@ class UpdateSheet extends StatelessWidget {
           ? 'You changed ${b.title} since v$have'
           : 'Update ${b.title} to v${b.version}?',
       subtitle: mine
-          ? 'v${b.version} is here'
-          : 'You have v$have. ${fromLine(name: b.name, fingerprint: b.fingerprint, own: b.own)}',
+          ? b.byline ?? 'v${b.version} is here'
+          : 'You have v$have. ${b.byline ?? b.provenance ?? fromLine(name: b.name, fingerprint: b.fingerprint, own: b.own)}',
       body: [
         if (stoppedAt case final t?)
           _Para('You kept your changes on ${_date(t)}.'),
@@ -663,7 +766,8 @@ class UpdateSheet extends StatelessWidget {
           _Para(
             'Update replaces your changes with v${b.version}. Keep mine '
             'keeps your version and '
-            '${keepStopsUpdates ? 'stops updates for this app.' : 'skips this update; the next one asks again.'}',
+            '${keepStopsUpdates ? 'stops updates for this app.' : 'skips this update; the next one asks again.'}'
+            '${bring ? ' Bring v${b.version} into mine asks Claude to add v${b.version}’s changes to yours, checked against a copy of your data before you take it.' : ''}',
           )
         else
           const _Para(
@@ -672,6 +776,12 @@ class UpdateSheet extends StatelessWidget {
             small: true,
           ),
         if (b.iconChange case final c?) _Para(c, small: true),
+        if (autoUpdate case final on?)
+          _AutoUpdateSwitch(
+            title: b.title,
+            value: on,
+            onChanged: onAutoUpdate,
+          ),
       ],
       actions: [
         ClaxButton(
@@ -680,6 +790,13 @@ class UpdateSheet extends StatelessWidget {
           onPressed: () =>
               Navigator.of(context).pop(mine ? UpdateChoice.keepMine : null),
         ),
+        if (bring)
+          ClaxButton(
+            key: const ValueKey('bring-into-mine'),
+            label: 'Bring v${b.version} into mine',
+            onPressed: () =>
+                Navigator.of(context).pop(UpdateChoice.bringIntoMine),
+          ),
         ClaxButton(
           key: const ValueKey('update'),
           kind: ClaxButtonKind.primary,
@@ -690,6 +807,197 @@ class UpdateSheet extends StatelessWidget {
       ],
     );
   }
+}
+
+/// "Update <title> automatically", with what it still asks.
+class _AutoUpdateSwitch extends StatefulWidget {
+  const _AutoUpdateSwitch({
+    required this.title,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final String title;
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+
+  @override
+  State<_AutoUpdateSwitch> createState() => _AutoUpdateSwitchState();
+}
+
+class _AutoUpdateSwitchState extends State<_AutoUpdateSwitch> {
+  late var _on = widget.value;
+
+  @override
+  Widget build(BuildContext context) {
+    final change = widget.onChanged;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ClaxSwitch(
+          key: const ValueKey('auto-update'),
+          label: 'Update ${widget.title} automatically',
+          value: _on,
+          onChanged: change == null
+              ? null
+              : (v) {
+                  setState(() => _on = v);
+                  change(v);
+                },
+        ),
+        const _Para('Asks first if it needs a new permission', small: true),
+      ],
+    );
+  }
+}
+
+/// The offer of a combined version (spec 2026-10-21-app-push-pull §5.7,
+/// §5.10): "Your version with vN", what Claude took from each ([note]),
+/// and [publishLabel] ("Publish to this app") / Discard. Pops true to
+/// publish it.
+class MergedOfferSheet extends StatelessWidget {
+  const MergedOfferSheet({
+    super.key,
+    required this.version,
+    required this.note,
+    this.added = const [],
+    this.publishLabel = 'Publish to this app',
+    this.truncated = false,
+  });
+
+  /// The version brought in.
+  final int version;
+  final String note;
+
+  /// What the combined version asks to do beyond the person's version, in
+  /// words ([addedCapabilityWords] of [Merged.added]).
+  final List<String> added;
+  final String publishLabel;
+
+  /// Whether it was checked against part of the person's data only.
+  final bool truncated;
+
+  @override
+  Widget build(BuildContext context) => BundleSheetFrame(
+    face: Icon(
+      Icons.call_merge_rounded,
+      size: 32,
+      color: claxPalette(context).agent,
+    ),
+    title: 'Your version with v$version',
+    subtitle: truncated
+        ? 'Checked against part of your data'
+        : 'Checked against a copy of your data',
+    body: [
+      _Para(note),
+      if (added.isNotEmpty) _Bullets('This version also asks to:', added),
+    ],
+    actions: [
+      ClaxButton(
+        key: const ValueKey('discard'),
+        label: 'Discard',
+        onPressed: () => Navigator.of(context).pop(false),
+      ),
+      ClaxButton(
+        key: const ValueKey('publish-merged'),
+        kind: ClaxButtonKind.primary,
+        isDefault: true,
+        label: publishLabel,
+        onPressed: () => Navigator.of(context).pop(true),
+      ),
+    ],
+  );
+}
+
+/// Telling a linked app's owner that an update failed here (spec
+/// 2026-10-21-app-push-pull §5.7 "Failure"): who ([owner], `@sam`), the
+/// comment's first text ([draft]: the version and the reason, no data),
+/// and [post], which posts the text as a comment on the public copy and
+/// answers why it could not, or null once posted.
+class TellOwner {
+  const TellOwner({
+    required this.owner,
+    required this.draft,
+    required this.post,
+  });
+
+  final String owner;
+  final String draft;
+  final Future<String?> Function(String body) post;
+}
+
+/// The composer of Tell @owner: [tell]'s draft in a field the person can
+/// change, shown before anything is sent; Post sends it. Pops true once
+/// posted.
+class TellOwnerSheet extends StatefulWidget {
+  const TellOwnerSheet({super.key, required this.tell});
+
+  final TellOwner tell;
+
+  @override
+  State<TellOwnerSheet> createState() => _TellOwnerSheetState();
+}
+
+class _TellOwnerSheetState extends State<TellOwnerSheet> {
+  late final _text = TextEditingController(text: widget.tell.draft);
+  var _posting = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  Future<void> _post() async {
+    final body = _text.text.trim();
+    if (body.isEmpty || _posting) return;
+    setState(() {
+      _posting = true;
+      _error = null;
+    });
+    final why = await widget.tell.post(body);
+    if (!mounted) return;
+    if (why == null) {
+      Navigator.of(context).pop(true);
+      return;
+    }
+    setState(() {
+      _posting = false;
+      _error = why;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => BundleSheetFrame(
+    face: null,
+    title: 'Tell ${widget.tell.owner}',
+    subtitle: 'Posts a comment on the public app. It sends none of your data.',
+    body: [
+      ClaxTextField(
+        key: const ValueKey('tell-owner-text'),
+        controller: _text,
+        label: 'Comment',
+        maxLines: 5,
+        error: _error,
+        enabled: !_posting,
+      ),
+    ],
+    actions: [
+      ClaxButton(
+        key: const ValueKey('cancel'),
+        label: 'Cancel',
+        onPressed: () => Navigator.of(context).pop(false),
+      ),
+      ClaxButton(
+        key: const ValueKey('post'),
+        kind: ClaxButtonKind.primary,
+        isDefault: true,
+        label: _posting ? 'Posting…' : 'Post',
+        onPressed: _posting ? null : _post,
+      ),
+    ],
+  );
 }
 
 // -------------------------------------------------------------- Progress
@@ -724,26 +1032,39 @@ class BundleFailed extends BundleProgress {
     this.message, {
     this.details = const [],
     this.closeLabel = 'Close',
+    this.tell,
   });
   final String message;
   final List<String> details;
 
   /// "Keep current" for a failed update check.
   final String closeLabel;
+
+  /// Tell @owner, when the person may comment on the public copy the
+  /// update came from.
+  final TellOwner? tell;
 }
 
 /// The update check's failure (§3.4), naming [version] and the failing
-/// step's [reason]; "Your app is unchanged".
+/// step's [reason]; "Your app is unchanged". With [tell] it offers Tell
+/// @owner (spec 2026-10-21-app-push-pull §5.7).
 BundleFailed updateCheckFailed(
   int version,
   String reason, {
   List<String> details = const [],
+  TellOwner? tell,
 }) => BundleFailed(
   'v$version didn’t pass its checks on your data: $reason. '
   'Your app is unchanged.',
   details: details,
   closeLabel: 'Keep current',
+  tell: tell,
 );
+
+/// The first text of Tell @owner for update [version] that failed for
+/// [reason]: the version and the reason only.
+String tellOwnerDraft(int version, String reason) =>
+    'v$version didn’t pass its checks on my data: $reason.';
 
 /// The sheet over a build, install or update check, following
 /// [progress]. It cannot be dismissed while working; with [onCancel] it
@@ -751,12 +1072,21 @@ BundleFailed updateCheckFailed(
 /// true for Open, else null. A failure's details are behind a Details
 /// disclosure.
 class BundleProgressSheet extends StatefulWidget {
-  const BundleProgressSheet({super.key, required this.progress, this.onCancel});
+  const BundleProgressSheet({
+    super.key,
+    required this.progress,
+    this.onCancel,
+    this.closable = false,
+  });
 
   final ValueListenable<BundleProgress> progress;
 
   /// Asks the work to stop; null offers no Cancel.
   final VoidCallback? onCancel;
+
+  /// Whether the work goes on without the sheet: Close then shows while it
+  /// is going, and closes only the sheet.
+  final bool closable;
 
   @override
   State<BundleProgressSheet> createState() => _BundleProgressSheetState();
@@ -765,6 +1095,7 @@ class BundleProgressSheet extends StatefulWidget {
 class _BundleProgressSheetState extends State<BundleProgressSheet> {
   var _details = false;
   var _cancelling = false;
+  var _told = false;
 
   @override
   Widget build(BuildContext context) => ValueListenableBuilder(
@@ -774,7 +1105,7 @@ class _BundleProgressSheetState extends State<BundleProgressSheet> {
       final palette = claxPalette(context);
       return switch (p) {
         BundleWorking(:final headline, :final step, :final cancellable) =>
-          _Frame(
+          BundleSheetFrame(
             face: const SizedBox.square(
               dimension: 32,
               child: CircularProgressIndicator(strokeWidth: 3),
@@ -782,6 +1113,12 @@ class _BundleProgressSheetState extends State<BundleProgressSheet> {
             title: headline,
             subtitle: _cancelling ? 'Cancelling…' : step,
             actions: [
+              if (widget.closable)
+                ClaxButton(
+                  key: const ValueKey('close'),
+                  label: 'Close',
+                  onPressed: () => Navigator.of(context).pop(),
+                ),
               if (widget.onCancel case final cancel?)
                 ClaxButton(
                   key: const ValueKey('cancel'),
@@ -795,7 +1132,7 @@ class _BundleProgressSheetState extends State<BundleProgressSheet> {
                 ),
             ],
           ),
-        BundlePassed(:final headline, :final note, :final canOpen) => _Frame(
+        BundlePassed(:final headline, :final note, :final canOpen) => BundleSheetFrame(
           face: Icon(
             Icons.check_circle_rounded,
             size: 32,
@@ -825,8 +1162,13 @@ class _BundleProgressSheetState extends State<BundleProgressSheet> {
               ),
           ],
         ),
-        BundleFailed(:final message, :final details, :final closeLabel) =>
-          _Frame(
+        BundleFailed(
+          :final message,
+          :final details,
+          :final closeLabel,
+          :final tell,
+        ) =>
+          BundleSheetFrame(
             face: Icon(
               Icons.error_outline_rounded,
               size: 32,
@@ -856,6 +1198,22 @@ class _BundleProgressSheetState extends State<BundleProgressSheet> {
                 ),
             ],
             actions: [
+              if (tell != null)
+                ClaxButton(
+                  key: const ValueKey('tell-owner'),
+                  label: _told ? 'Told ${tell.owner}' : 'Tell ${tell.owner}',
+                  onPressed: _told
+                      ? null
+                      : () async {
+                          final sent = await showBundleSheet<bool>(
+                            context,
+                            TellOwnerSheet(tell: tell),
+                          );
+                          if (sent == true && mounted) {
+                            setState(() => _told = true);
+                          }
+                        },
+                ),
               ClaxButton(
                 key: const ValueKey('close'),
                 kind: ClaxButtonKind.primary,
@@ -961,9 +1319,12 @@ class BundleNoticeSheet extends StatelessWidget {
             'installed: use Versions to go back.',
       );
 
-  /// A refused file, by error code ([refusalMessage]).
+  /// A refused file or link, by error code ([refusalMessage]): titled
+  /// for a link when [code] is `not_a_link`.
   factory BundleNoticeSheet.refused(String code) => BundleNoticeSheet(
-    title: 'Couldn’t open this file',
+    title: code == BundleIntakeEvent.notALink
+        ? 'Couldn’t open this link'
+        : 'Couldn’t open this file',
     message: refusalMessage(code),
   );
 
@@ -972,7 +1333,7 @@ class BundleNoticeSheet extends StatelessWidget {
   final bool canOpen;
 
   @override
-  Widget build(BuildContext context) => _Frame(
+  Widget build(BuildContext context) => BundleSheetFrame(
     face: null,
     title: title,
     body: [_Para(message)],
@@ -1011,7 +1372,7 @@ class KeptUpdateSheet extends StatelessWidget {
   final String title;
 
   @override
-  Widget build(BuildContext context) => _Frame(
+  Widget build(BuildContext context) => BundleSheetFrame(
     face: null,
     title: title,
     body: [
@@ -1110,10 +1471,31 @@ class BundleFlows {
     required this.settings,
     required this.open,
     this.toFile = false,
+    this.merger,
+    this.tellOwner,
+    this.publishTo,
+    this.publishFork,
   });
 
   final Exporter exporter;
   final Installer installer;
+
+  /// The hosted Clax this device is signed in to now, or null: while there
+  /// is one, a changed copy's Share mine is Publish fork ([publishFork]).
+  final Future<String?> Function()? publishTo;
+
+  /// Publish fork for app `aid` (the publish sheet, then the publish).
+  final Future<void> Function(BuildContext context, String aid, String? svg)?
+  publishFork;
+
+  /// Bring vN into mine's merge; null (or one that cannot merge now)
+  /// offers no Bring vN into mine.
+  final Merger? Function()? merger;
+
+  /// Tell @owner for linked app `aid` whose update [version] failed for
+  /// `reason`; null when the person may not comment on its public copy.
+  final Future<TellOwner?> Function(String aid, int version, String reason)?
+  tellOwner;
 
   /// Null where nothing can check an update (no inspector): updates are
   /// then refused with a sentence.
@@ -1162,6 +1544,10 @@ class BundleFlows {
     }
     if (!context.mounted) return;
     final saved = await settings.load();
+    final fork = publishFork;
+    final host = fork != null && plan.modes.contains(ExportMode.fork)
+        ? await publishTo?.call()
+        : null;
     if (!context.mounted) return;
     final choice = await showBundleSheet<ExportChoice>(
       context,
@@ -1170,9 +1556,14 @@ class BundleFlows {
         svg: svg,
         askName: saved.authorName == null,
         toFile: toFile,
+        publishTo: host,
       ),
     );
     if (choice == null || !context.mounted) return;
+    if (choice.publish && fork != null) {
+      await fork(context, aid, svg);
+      return;
+    }
     var name = saved.authorName;
     if (choice.name case final typed?) {
       final s = await settings.load();
@@ -1329,6 +1720,11 @@ class BundleFlows {
     }
   }
 
+  /// The update sheet for [opened], an update of a local app (a later
+  /// version got from its public copy, say), then the update.
+  Future<void> offerUpdate(BuildContext context, svc.OpenedBundle opened) =>
+      _update(context, opened, opened.decision.entry?.version ?? 0);
+
   Future<void> _update(
     BuildContext context,
     svc.OpenedBundle opened,
@@ -1337,9 +1733,18 @@ class BundleFlows {
     final m = opened.manifest;
     final d = opened.decision;
     final aid = d.aid!;
+    final origin = opened.origin;
+    final link = d.entry?.link;
+    final linked = origin != null && origin.names(link);
+    final merge = merger?.call();
     final choice = await showBundleSheet<UpdateChoice>(
       context,
       UpdateSheet(
+        canBringIntoMine: merge?.canMerge ?? false,
+        autoUpdate: linked ? link!.autoUpdate : null,
+        onAutoUpdate: linked
+            ? (on) => unawaited(_setAutoUpdate(aid, on))
+            : null,
         bundle: BundleSummary.of(opened),
         have: have,
         added: addedCapabilityWords(
@@ -1364,8 +1769,13 @@ class BundleFlows {
       await _fail(context, 'Updates cannot be checked here.', const []);
       return;
     }
-    final checking = 'Checking v${m.version} against your data…';
-    final progress = ValueNotifier<BundleProgress>(BundleWorking(checking));
+    final bring = choice == UpdateChoice.bringIntoMine && merge != null;
+    final checking = bring
+        ? 'Bringing v${m.version} into yours…'
+        : 'Checking v${m.version} against your data…';
+    final progress = ValueNotifier<BundleProgress>(
+      BundleWorking(checking, bring ? 'Claude is combining them' : null),
+    );
     final cancel = Completer<void>();
     final nav = Navigator.of(context);
     var up = true;
@@ -1380,18 +1790,39 @@ class BundleFlows {
       dismissible: false,
     ).whenComplete(() => up = false);
     final developer = DeveloperScope.of(context);
+    void onStep(UpdateStep s) => progress.value = BundleWorking(
+      checking,
+      updateStepLabel(s),
+      s != UpdateStep.publish && s != UpdateStep.liveMigrate,
+    );
     UpdateOutcome outcome;
     try {
-      outcome = await u.update(
-        aid,
-        opened.bundle,
-        cancelled: cancel.future,
-        onStep: (s) => progress.value = BundleWorking(
-          checking,
-          updateStepLabel(s),
-          s != UpdateStep.publish && s != UpdateStep.liveMigrate,
-        ),
-      );
+      outcome = bring
+          ? await merge.bringIntoMine(
+              aid,
+              opened.bundle,
+              origin: origin,
+              cancelled: cancel.future,
+              onStep: onStep,
+              confirm: (merged) async =>
+                  context.mounted &&
+                  await showBundleSheet<bool>(
+                        context,
+                        MergedOfferSheet(
+                          version: m.version,
+                          note: merged.note,
+                          added: addedCapabilityWords(merged.added),
+                        ),
+                      ) ==
+                      true,
+            )
+          : await u.update(
+              aid,
+              opened.bundle,
+              origin: origin,
+              cancelled: cancel.future,
+              onStep: onStep,
+            );
     } on Object catch (e) {
       outcome = UpdateRefused(
         'The update could not finish.',
@@ -1405,13 +1836,34 @@ class BundleFlows {
         if (up) nav.pop();
         await shown;
         return;
-      case UpdateLanded(:final version, :final truncated):
+      case UpdateLanded(:final version, :final truncated, :final notLinked):
+        final notes = [
+          if (truncated) 'Checked against part of your data',
+          if (notLinked != null)
+            'Clax couldn’t record it as your base for publishing, so your '
+                'next publish may say it changed there: $notLinked',
+        ];
         end = BundlePassed(
-          'Updated to v$version',
-          note: truncated ? 'Checked against part of your data' : null,
+          bring ? 'Brought v${m.version} into yours' : 'Updated to v$version',
+          note: notes.isEmpty ? null : notes.join('. '),
         );
+      case FilesTaken(:final version):
+        end = BundlePassed('Updated to v$version');
       case UpdateCheckFailed(:final reason, :final details):
-        end = updateCheckFailed(m.version, reason, details: details);
+        TellOwner? tell;
+        if (linked) {
+          try {
+            tell = await tellOwner?.call(aid, m.version, reason);
+          } on Object catch (e) {
+            debugPrint('clax bundles: tell owner: $e');
+          }
+        }
+        end = updateCheckFailed(
+          m.version,
+          reason,
+          details: details,
+          tell: tell,
+        );
       case UpdateRefused(:final message, :final details):
         end = BundleFailed(message, details: details);
       case UpdateRolledBack(:final backOn, :final details, :final restored):
@@ -1428,6 +1880,16 @@ class BundleFlows {
     progress.value = end;
     if (await shown == true) open(aid);
   }
+
+  /// Sets whether linked app [aid] takes new versions of its public copy
+  /// by itself ([AppLink.autoUpdate]).
+  Future<void> _setAutoUpdate(String aid, bool on) => exporter.store.update(
+    aid,
+    (e) async => switch (e?.link) {
+      final l? => e!.copyWith(link: () => l.copyWith(autoUpdate: on)),
+      null => null,
+    },
+  );
 
   /// Runs [work] under a progress sheet that starts at [first]; on success
   /// takes the sheet down and returns the result, on a failure shows it

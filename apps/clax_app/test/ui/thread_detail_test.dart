@@ -1192,8 +1192,8 @@ class _StaleApi extends FakeClaxApi {
   var staleServed = false;
 
   @override
-  Future<List<ThreadView>> threads(String aid) async {
-    final all = await super.threads(aid);
+  Future<List<ThreadView>> threads(String aid, {bool agent = false}) async {
+    final all = await super.threads(aid, agent: agent);
     if (!stale) return all;
     stale = false;
     staleServed = true;

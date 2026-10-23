@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 
 import '../agent/timings.dart';
@@ -9,6 +10,7 @@ import '../home/home_host.dart';
 import '../home/home_route.dart' show HomeBanner;
 import '../home/home_settings.dart';
 import '../platform/voice.dart';
+import '../remote/checker.dart' show LinkedStatus;
 import '../agent/plan.dart';
 import '../agent/worker.dart';
 import 'app_icon.dart';
@@ -21,6 +23,7 @@ import 'layout.dart';
 import 'make_service.dart';
 import 'making_screen.dart';
 import 'new_sheet.dart';
+import 'remote/remote_flows.dart';
 import 'theme.dart';
 import 'tile_label.dart';
 import 'tokens.g.dart';
@@ -89,9 +92,11 @@ class Launcher extends StatefulWidget {
     this.makes,
     this.icons,
     this.bundles,
+    this.remote,
     this.lineage,
     this.host,
     this.banner,
+    this.linked,
   });
 
   final ClaxApi api;
@@ -155,6 +160,10 @@ class Launcher extends StatefulWidget {
   /// Shares apps as `.clax` files and opens them; null offers neither.
   final BundleFlows? bundles;
 
+  /// Publishes apps to a hosted Clax and gets them from it; null offers
+  /// neither.
+  final RemoteFlows? remote;
+
   /// An app's lineage entry, for the inspector's sharing line; null shows
   /// none.
   final Future<LineageEntry?> Function(String aid)? lineage;
@@ -167,6 +176,10 @@ class Launcher extends StatefulWidget {
   /// The home app's recovery, shown as a banner above the apps; null
   /// shows none.
   final HomeBanner? banner;
+
+  /// Each linked app's status, for the tiles' sync badges, when the
+  /// launcher keeps a host of its own; null shows none.
+  final ValueListenable<Map<String, LinkedStatus>>? linked;
 
   @override
   State<Launcher> createState() => _LauncherState();
@@ -201,11 +214,13 @@ class _LauncherState extends State<Launcher> {
           inspectorPermissions: widget.inspectorPermissions,
           build: widget.build,
           bundles: widget.bundles,
+          remote: widget.remote,
           lineage: widget.lineage,
         ),
         icons: _icons,
         retryDelay: widget.retryDelay,
         needsKey: widget.needsKey,
+        linked: widget.linked,
       );
 
   /// What the launcher's buttons, tiles and menu open: its host's.
@@ -446,6 +461,7 @@ class _LauncherState extends State<Launcher> {
                           app: app,
                           icons: _icons,
                           building: _host.buildOf(app.id),
+                          sync: _host.syncOf(app.id),
                           onTap: () => widget.open(app.id),
                           onMenu: (at) => unawaited(
                             _actions.menu(app.id, at, const []),
@@ -562,6 +578,7 @@ class _AppTile extends StatelessWidget {
     required this.onMenu,
     required this.icons,
     this.building,
+    this.sync,
   });
 
   /// The side of a cell's icon: 60 on a phone, 64 from `ClaxWidth.medium`.
@@ -595,6 +612,9 @@ class _AppTile extends StatelessWidget {
   /// How far the app's build is, while it goes.
   final ({int done, int total})? building;
 
+  /// Its public copy's sync badge (`syncBadge`), or null for none.
+  final String? sync;
+
   @override
   Widget build(BuildContext context) {
     final b = building;
@@ -604,21 +624,104 @@ class _AppTile extends StatelessWidget {
       size: iconSize(context),
       radius: iconRadius(context),
     );
+    final face = b == null
+        ? badge
+        : _Building(
+            key: const ValueKey('tile-building'),
+            radius: iconRadius(context),
+            count: '${b.done}/${b.total}',
+            child: badge,
+          );
+    final built = b == null
+        ? app.title
+        : '${app.title}, building, ${b.done} of ${b.total} done';
+    final synced = SyncTileBadge.words(sync);
     return _HomeCell(
-      semantics: b == null
-          ? app.title
-          : '${app.title}, building, ${b.done} of ${b.total} done',
+      semantics: synced == null ? built : '$built, $synced',
       onTap: onTap,
       onMenu: onMenu,
-      icon: b == null
-          ? badge
-          : _Building(
-              key: const ValueKey('tile-building'),
-              radius: iconRadius(context),
-              count: '${b.done}/${b.total}',
-              child: badge,
+      icon: sync == null
+          ? face
+          : Stack(
+              fit: StackFit.expand,
+              clipBehavior: Clip.none,
+              children: [
+                face,
+                PositionedDirectional(
+                  bottom: -6,
+                  end: -6,
+                  child: SyncTileBadge(sync!),
+                ),
+              ],
             ),
       label: TileLabel(app.title),
+    );
+  }
+}
+
+/// A tile's sync badge (spec 2026-10-21-app-push-pull §5.4) at its icon's
+/// bottom end corner: ☁ live, ↑ ahead, ↓ update (the only one in the warm
+/// `you`, as counts are), ⑂ diverged and ⑂ fork (a recipient's changed
+/// copy), each drawn as its Material icon,
+/// the rest on the surface with a hairline, in `muted`.
+class SyncTileBadge extends StatelessWidget {
+  const SyncTileBadge(this.sync, {super.key});
+
+  /// `live`, `ahead`, `update`, `diverged` or `fork`.
+  final String sync;
+
+  /// The badge's glyph for [sync], or null for none.
+  static String? glyph(String? sync) => switch (sync) {
+    'live' => '☁',
+    'ahead' => '↑',
+    'update' => '↓',
+    'diverged' || 'fork' => '⑂',
+    _ => null,
+  };
+
+  /// The icon drawn for [sync]'s glyph (the glyphs are not in every
+  /// system font), or null for none.
+  static IconData? icon(String? sync) => switch (sync) {
+    'live' => Icons.cloud_rounded,
+    'ahead' => Icons.arrow_upward_rounded,
+    'update' => Icons.arrow_downward_rounded,
+    'diverged' || 'fork' => Icons.call_split_rounded,
+    _ => null,
+  };
+
+  /// What a screen reader says for [sync], or null for none.
+  static String? words(String? sync) => switch (sync) {
+    'live' => 'live',
+    'ahead' => 'newer here',
+    'update' => 'update waiting',
+    'diverged' => 'changed in both places',
+    'fork' => 'changed here',
+    _ => null,
+  };
+
+  static const side = 20.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final g = icon(sync);
+    if (g == null) return const SizedBox.shrink();
+    final p = claxPalette(context);
+    final warm = sync == 'update';
+    return ExcludeSemantics(
+      child: SizedBox.square(
+        dimension: side,
+        child: DecoratedBox(
+          key: ValueKey('tile-sync-$sync'),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: warm ? p.you : p.surfaceContainers[0],
+            border: warm ? null : Border.all(color: p.border),
+          ),
+          child: Center(
+            child: Icon(g, size: 14, color: warm ? p.onYou : p.muted),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -1091,7 +1194,9 @@ IconData? iconFor(String? word) => switch (word?.trim().toLowerCase()) {
 /// The menu of an app: the home app's items, above a divider, then Open;
 /// Inspect, which pushes the [AppInspector] with
 /// [inspectorPermissions] (a version opened from its history going to
-/// [onOpenTarget]); with [bundles], Share app; Resume build for a build
+/// [onOpenTarget]); with [remote], Publish to clax.dev… (not on a copy
+/// this device may only install) and, on a published app this device
+/// may publish, Share… (who can open it); with [bundles], Share app; Resume build for a build
 /// that stopped with features to build. The inbox pushes [InboxScreen] on
 /// the host's stream; an item opened there goes to [onOpenQuestion] (a
 /// question, when given), else to [onOpenTarget], else to [open]; coming
@@ -1111,6 +1216,7 @@ class HomeFlows implements HomeActions {
     this.inspectorPermissions = const [],
     this.build,
     this.bundles,
+    this.remote,
     this.lineage,
     this.showMakeInPane,
   });
@@ -1148,6 +1254,9 @@ class HomeFlows implements HomeActions {
   final List<PermissionSource> inspectorPermissions;
   final BuildLink? build;
   final BundleFlows? bundles;
+
+  /// Publish to clax.dev… and Get my apps; null offers neither.
+  final RemoteFlows? remote;
   final Future<LineageEntry?> Function(String aid)? lineage;
 
   /// The host whose makes, apps and stream these flows act on; set once,
@@ -1309,6 +1418,23 @@ class HomeFlows implements HomeActions {
     List<HomeMenuItem> items,
   ) async {
     final resume = await _resumable(app.id);
+    final r = remote;
+    var publish = r != null;
+    var share = false;
+    var publishLabel = r?.publishLabel;
+    if (r != null && lineage != null) {
+      try {
+        final entry = await lineage!(app.id);
+        final link = entry?.link;
+        // An app installed from someone else's publishes as a fork.
+        final fork = entry?.publishesAsFork ?? false;
+        publish = fork || link == null || link.isAuthor;
+        share = link != null && link.isAuthor;
+        publishLabel = r.publishLabelOf(entry);
+      } on Object {
+        publish = true;
+      }
+    }
     final at = contextOf();
     if (at == null || !at.mounted) return null;
     const own = 'home-item-';
@@ -1330,6 +1456,20 @@ class HomeFlows implements HomeActions {
           icon: Icons.manage_search_rounded,
           symbol: 'magnifyingglass',
         ),
+        if (r != null && publish)
+          ClaxMenuItem(
+            'publish-remote',
+            publishLabel ?? r.publishLabel,
+            icon: Icons.cloud_upload_rounded,
+            symbol: 'icloud.and.arrow.up',
+          ),
+        if (r != null && share)
+          const ClaxMenuItem(
+            'share-remote',
+            'Share…',
+            icon: Icons.person_add_alt_rounded,
+            symbol: 'person.crop.circle.badge.plus',
+          ),
         if (bundles case final b?)
           ClaxMenuItem(
             'share-app',
@@ -1362,6 +1502,10 @@ class HomeFlows implements HomeActions {
         openApp(app.id);
       case 'resume-build':
         await build?.control.resumeBuild(app.id);
+      case 'publish-remote':
+        await remote?.publish(c, app.id, svg: host.icons?.svgOf(app.id));
+      case 'share-remote':
+        await remote?.share(c, app.id);
       case 'share-app':
         // The share sheet points at the tile, where the menu opened; a menu
         // with no anchor leaves it the screen's centre.
@@ -1389,6 +1533,7 @@ class HomeFlows implements HomeActions {
           permissions: inspectorPermissions,
           bundles: bundles,
           lineage: lineage,
+          remote: remote,
           plan: switch (build) {
             final b? => (context, aid) => BuildWatch(
               link: b,
@@ -1457,5 +1602,10 @@ class HomeFlows implements HomeActions {
   @override
   void importApp() {
     if (bundles case final b? when mounted) unawaited(b.importPicked(context));
+  }
+
+  @override
+  void getApps() {
+    if (remote case final r? when mounted) unawaited(r.getMyApps(context));
   }
 }

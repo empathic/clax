@@ -12,11 +12,16 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../bundle/services_support.dart';
 import '../support/fake_voice.dart';
-import 'bundle_flows_test.dart' show FakeBundleFiles, settle;
+import '../support/settle.dart';
+import 'bundle_flows_test.dart' show FakeBundleFiles;
 
 /// The launcher tile titled [title], found by its label.
 Finder _tile(String title) =>
     find.byWidgetPredicate((w) => w is TileLabel && w.text == title);
+
+/// The export sheet once it has read the app: its version, files and
+/// size.
+final _exportReady = find.text('v1 · 1 file, 9 bytes');
 
 void main() {
   late Directory tmp;
@@ -42,7 +47,12 @@ void main() {
     toFile: toFile,
   );
 
-  Future<void> pumpLauncher(WidgetTester tester, BundleFlows? bundles) async {
+  /// Pumps the launcher with [bundles]; returns once it [shows].
+  Future<void> pumpLauncher(
+    WidgetTester tester,
+    BundleFlows? bundles, {
+    required Finder shows,
+  }) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Launcher(
@@ -55,27 +65,31 @@ void main() {
         ),
       ),
     );
-    await settle(tester);
+    await settle(tester, shows);
   }
 
   testWidgets('long press, Share app: the export sheet, then the share '
       'sheet gets the file', (tester) async {
     await tester.runAsync(me.ready);
     me.api.seedArtifact('Plant log', {'index.html': '<p>hi</p>'});
-    await pumpLauncher(tester, flows());
+    await pumpLauncher(tester, flows(), shows: _tile('Plant log'));
     await tester.longPress(_tile('Plant log'));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('share-app')));
-    await settle(tester);
+    await settle(tester, _exportReady);
     expect(find.byType(ExportSheet), findsOneWidget);
     await tester.tap(find.text('Share'));
-    await settle(tester);
+    await settleUntil(tester, () => files.sent.isNotEmpty);
     expect(files.sent.single.$1, 'plant-log.clax');
   });
 
   testWidgets('on the Mac the menu says Export…', (tester) async {
     me.api.seedArtifact('Plant log', {'index.html': '<p>hi</p>'});
-    await pumpLauncher(tester, flows(toFile: true));
+    await pumpLauncher(
+      tester,
+      flows(toFile: true),
+      shows: _tile('Plant log'),
+    );
     await tester.longPress(_tile('Plant log'));
     await tester.pumpAndSettle();
     expect(find.text('Export…'), findsOneWidget);
@@ -86,7 +100,7 @@ void main() {
     tester,
   ) async {
     me.api.seedArtifact('Plant log', {'index.html': '<p>hi</p>'});
-    await pumpLauncher(tester, null);
+    await pumpLauncher(tester, null, shows: _tile('Plant log'));
     expect(find.byKey(const ValueKey('launcher-more')), findsNothing);
     await tester.longPress(_tile('Plant log'));
     await tester.pumpAndSettle();
@@ -102,19 +116,28 @@ void main() {
       bytes = (await makeBundle(lineage: lineageA)).bytes;
     });
     files.picked = bytes;
-    await pumpLauncher(tester, flows());
+    await pumpLauncher(
+      tester,
+      flows(),
+      shows: find.byKey(const ValueKey('launcher-empty')),
+    );
     await tester.tap(find.byKey(const ValueKey('launcher-more')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Import app…'));
-    await settle(tester);
+    await settle(tester, find.byType(InstallSheet));
     expect(find.byType(InstallSheet), findsOneWidget);
     await tester.tap(find.text('Install'));
-    await settle(tester);
+    await settleUntil(tester, () => opened.isNotEmpty);
     expect(opened, hasLength(1));
   });
 
   group('inspector', () {
-    Future<void> pumpInspector(WidgetTester tester, String aid) async {
+    /// Pumps [aid]'s inspector; returns once it [shows].
+    Future<void> pumpInspector(
+      WidgetTester tester,
+      String aid, {
+      required Finder shows,
+    }) async {
       await tester.pumpWidget(
         MaterialApp(
           home: AppInspector(
@@ -125,18 +148,27 @@ void main() {
           ),
         ),
       );
-      await settle(tester);
+      await settle(tester, shows);
     }
 
     testWidgets('Share app, and "Shared as v1" once shared', (tester) async {
       await tester.runAsync(me.ready);
       final aid = me.api.seedArtifact('Plant log', {'index.html': '<p>hi</p>'});
-      await pumpInspector(tester, aid);
+      await pumpInspector(
+        tester,
+        aid,
+        shows: find.byKey(const ValueKey('inspector-share')),
+      );
       expect(find.textContaining('Shared as'), findsNothing);
       await tester.tap(find.byKey(const ValueKey('inspector-share')));
-      await settle(tester);
+      await settle(tester, _exportReady);
       await tester.tap(find.text('Share'));
-      await settle(tester);
+      await settleUntil(
+        tester,
+        () =>
+            files.sent.isNotEmpty &&
+            find.text('Shared as v1').evaluate().isNotEmpty,
+      );
       expect(files.sent, hasLength(1));
       expect(find.text('Shared as v1'), findsOneWidget);
     });
@@ -150,7 +182,11 @@ void main() {
         final b = await makeBundle(lineage: lineageA);
         aid = (await me.installer.install(await me.installer.open(b.bytes))).aid;
       });
-      await pumpInspector(tester, aid);
+      await pumpInspector(
+        tester,
+        aid,
+        shows: find.textContaining('From Sam, v1 · '),
+      );
       final e = (await tester.runAsync(() => me.store.entry(aid)))!;
       expect(sharingLine(e), startsWith('From Sam, v1 · '));
       expect(find.text(sharingLine(e)!), findsOneWidget);

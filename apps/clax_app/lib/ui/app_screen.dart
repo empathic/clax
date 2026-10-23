@@ -16,6 +16,9 @@ import '../platform/device/device_host.dart';
 import '../platform/settings_store.dart';
 import '../platform/voice.dart';
 import '../queue/client.dart' hide Intent;
+import '../remote/checker.dart' show LinkedStatus;
+import '../remote/models.dart' show AppLink, PublishedBy, RemoteHead;
+import '../remote/sync_state.dart';
 import 'app_cover.dart';
 import 'app_icon.dart';
 import 'app_menu.dart';
@@ -37,6 +40,7 @@ import 'mac/window_channel.dart';
 import 'overlay_gate.dart';
 import 'pill_strip.dart';
 import 'questions/questions_sheet.dart';
+import 'remote/linked_app.dart';
 import 'swipe.dart';
 import 'system_bands.dart';
 import 'theme.dart';
@@ -302,7 +306,36 @@ class AppScreen extends StatefulWidget {
     this.share,
     this.leave,
     this.onInspect,
+    this.linkedHead,
+    this.linked,
   });
+
+  /// A linked app's status and actions (spec 2026-10-21-app-push-pull
+  /// §5.3, §5.7, §5.11); null for an app that has none. With it:
+  ///
+  /// - the screen tells [LinkedAppHooks.opened] it opened;
+  /// - a status whose head has comments off takes the composers away as
+  ///   [linkedHead]'s does, and one with comments on gives them back;
+  /// - while the app is ahead the pill says "↑ v5 here · v4 public" and a
+  ///   tap publishes v5; after a change of this app lands and the app is
+  ///   ahead at its version, a toast says "Claude made v5: (its note)" with
+  ///   Publish;
+  /// - while an update waits the pill says "↓ v6 ready" and a toast says
+  ///   "v6 is ready · from @who" with Update, each once per version;
+  /// - Versions marks each version "here", "public" or "was public",
+  ///   with Publish on its rows for an author's link;
+  /// - a thread page whose reply waits for a version to be public offers
+  ///   Publish vN and reply.
+  final LinkedAppHooks? linked;
+
+  /// The head of the public copy app `aid` is linked to, read once as the
+  /// screen opens; null (or a null answer, or a failed read) for an app
+  /// not linked, which takes comments as ever. A head with comments off
+  /// ([RemoteHead.comments] false) takes the app's composers away, since
+  /// the remote refuses what they would post: no Comment (the pane's, the
+  /// toolbar's, the Comment tab's, the notice's), comment mode stays off
+  /// so no pick opens a composer, and a thread page has no reply bar.
+  final Future<RemoteHead?> Function(String aid)? linkedHead;
 
   /// Opens the app's inspector, from the More menu of the app in a pane;
   /// null offers no Inspect.
@@ -486,6 +519,21 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   AppIcons get _icons => widget.icons ?? (_ownIcons ??= AppIcons(widget.api));
   Ready? _ready;
 
+  /// Whether the app's public copy takes no comments
+  /// ([AppScreen.linkedHead], [AppScreen.linked]).
+  var _commentsOff = false;
+
+  /// The linked app's status ([AppScreen.linked]) and link, as last read.
+  LinkedStatus? _linked;
+  AppLink? _link;
+
+  /// The version the worker last landed for this app, offered for
+  /// publishing once the app reads ahead at it.
+  int? _landedLinked;
+
+  /// The versions already offered by toast: for publishing, for updating.
+  int? _offeredPublish, _offeredUpdate;
+
   // The shell's state.
   var _commenting = false;
   Draft? _draft;
@@ -601,6 +649,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     if (_newer != null && !_reloading && _draft == null && !_sending) {
       return ClaxPillState.newVersion;
     }
+    if (_aheadAt != null) return ClaxPillState.ahead;
+    if (_updateTo != null) return ClaxPillState.update;
+    if (_diverged) return ClaxPillState.diverged;
     if (watches > 0) return ClaxPillState.location;
     return null;
   }
@@ -609,9 +660,21 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   Widget _pill(int watches) {
     final state = _pillState(watches);
     final count = _plan == null ? null : planCount(_plan!);
+    final ahead = _aheadAt, update = _updateTo;
     return ClaxPill(
       state: state,
       progress: count == null ? null : (done: count.done, total: count.total),
+      sync: switch (state) {
+        ClaxPillState.ahead when ahead != null => (
+          version: ahead,
+          public: _linked?.publicVersion,
+        ),
+        ClaxPillState.update when update != null => (
+          version: update,
+          public: null,
+        ),
+        _ => null,
+      },
       clock: widget.clock,
       onTap: switch (state) {
         ClaxPillState.working ||
@@ -619,7 +682,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         ClaxPillState.building => () =>
             unawaited(showBuildSheet(context, widget.build!, widget.aid)),
         ClaxPillState.location => _locationDetails,
-        ClaxPillState.newVersion || null => null,
+        ClaxPillState.ahead when ahead != null => () => _publish(ahead),
+        ClaxPillState.update => _update,
+        ClaxPillState.diverged => _resolveDiverged,
+        ClaxPillState.ahead || ClaxPillState.newVersion || null => null,
       },
       onShow: () => _call(const ReloadLatest()),
     );
@@ -683,6 +749,14 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     widget.queue?.state.addListener(_onQueue);
     _onQueue();
     unawaited(_readApp());
+    unawaited(_readHead());
+    if (widget.linked case final l?) {
+      l.status.addListener(_onLinked);
+      _linked = l.status.value[widget.aid];
+      unawaited(_readLink());
+      unawaited(l.opened?.call(widget.aid));
+      WidgetsBinding.instance.addPostFrameCallback((_) => _onLinkedHead());
+    }
     _comments = widget.comments ?? (_ownComments = CommentsCommand());
     if (!widget.covered) {
       _comments.register(_toggleOpen, comment: _toggleComment);
@@ -850,6 +924,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _showHeldNotice();
         _offerNewer();
+        _offerLinked();
       });
     } else {
       if (widget.covered) _comments.unregister(_toggleOpen);
@@ -906,6 +981,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// View › Comment (⇧⌘K): ends comment mode when the panel or the bar is
   /// up, else turns it on with the bar.
   void _toggleComment() {
+    if (_commentsOff) return;
     if (_wantComment) {
       _setBar(false);
       _setOpen(false);
@@ -920,6 +996,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     if (!mounted) return;
     switch (a) {
       case AppAction.comment:
+        if (_commentsOff) break;
         _setBar(true);
         if (_draft == null) _setOpen(false);
       case AppAction.threads:
@@ -1053,13 +1130,14 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           label: 'Location',
           on: true,
         ),
-      ToolbarItemSpec(
-        'comment',
-        symbol: 'text.bubble',
-        label: 'Comment',
-        on: _wantComment,
-        tint: claxPalette(context).you,
-      ),
+      if (!_commentsOff)
+        ToolbarItemSpec(
+          'comment',
+          symbol: 'text.bubble',
+          label: 'Comment',
+          on: _wantComment,
+          tint: claxPalette(context).you,
+        ),
       ToolbarItemSpec(
         'threads',
         symbol: 'list.bullet.rectangle',
@@ -1087,6 +1165,14 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           search: true,
         ),
       ],
+      if (widget.mode == AppMode.home &&
+          (widget.home?.chrome.toolbar ?? false) &&
+          (widget.home?.offersGetApps ?? false))
+        const ToolbarItemSpec(
+          'get-apps',
+          symbol: 'icloud.and.arrow.down',
+          label: 'Get My Apps',
+        ),
     ];
   }
 
@@ -1110,6 +1196,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         }
       case 'refresh':
         unawaited(widget.home?.refresh());
+      case 'get-apps':
+        widget.home?.actions.getApps();
       case 'share':
         if (_toolbarView case final view?) {
           unawaited(widget.share?.call(context, ToolbarShareFiles(view: view)));
@@ -1138,6 +1226,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    widget.linked?.status.removeListener(_onLinked);
     _deviceView.watching.removeListener(_watchesChanged);
     _putAwayToasts();
     widget.device?.stopWatches(_deviceView, asking: true);
@@ -1176,7 +1265,165 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  void _call(HostCall c) => unawaited(widget.surface.call(c));
+  void _call(HostCall c) {
+    // With comments off comment mode stays off: no pick, no composer.
+    if (_commentsOff && c is EnterCommentMode) return;
+    unawaited(widget.surface.call(c));
+  }
+
+  /// Reads [AppScreen.linkedHead]; a head with comments off ends comment
+  /// mode, the bar and any open composer.
+  Future<void> _readHead() async {
+    final read = widget.linkedHead;
+    if (read == null) return;
+    RemoteHead? head;
+    try {
+      head = await read(widget.aid);
+    } on Object {
+      return;
+    }
+    if (!mounted || head == null || head.comments) return;
+    _takeComments(false);
+  }
+
+  /// Takes the composers away (comment mode, the bar and an open composer
+  /// end) when the public copy takes no comments, or gives them back.
+  void _takeComments(bool on) {
+    if (!mounted || _commentsOff == !on) return;
+    setState(() {
+      _commentsOff = !on;
+      if (!on) _bar = false;
+    });
+    if (on) return;
+    if (_draft != null) _call(const CancelDraft());
+    _call(const ExitCommentMode());
+  }
+
+  // --- the linked app ---
+
+  void _onLinked() {
+    final s = widget.linked?.status.value[widget.aid];
+    if (!mounted || identical(s, _linked)) return;
+    setState(() => _linked = s);
+    unawaited(_readLink());
+    _onLinkedHead();
+    _offerLinked();
+  }
+
+  void _onLinkedHead() {
+    if (_linked?.head case final h?) _takeComments(h.comments);
+  }
+
+  Future<void> _readLink() async {
+    final read = widget.linked?.lineage;
+    if (read == null) return;
+    try {
+      final e = await read(widget.aid);
+      if (mounted) setState(() => _link = e?.link);
+    } on Object catch (e) {
+      debugPrint('clax app: the lineage of ${widget.aid}: $e');
+    }
+  }
+
+  /// The local version a tap on the pill publishes, while the app is ahead
+  /// and may be published from here.
+  int? get _aheadAt => switch (_linked) {
+    LinkedStatus(state: SyncState.ahead, :final localVersion?)
+        when widget.linked?.publish != null =>
+      localVersion,
+    _ => null,
+  };
+
+  /// The version a waiting update brings, while one can be taken: the
+  /// bundle's, or, for an author, the public version made on the web
+  /// (taken as Take theirs, spec 2026-10-21-app-push-pull §5.10).
+  int? get _updateTo => switch (_linked) {
+    LinkedStatus(state: SyncState.updateWaiting, :final head?)
+        when widget.linked?.update != null =>
+      _webUpdate(head) ? head.version : head.bundle?.bundleVersion,
+    _ => null,
+  };
+
+  /// Whether the app is diverged and its choices can be offered here.
+  bool get _diverged => switch (_linked) {
+    LinkedStatus(state: SyncState.diverged) =>
+      widget.linked?.diverged != null,
+    _ => false,
+  };
+
+  /// Whether [head]'s update is a version made on the web, which only an
+  /// author takes.
+  bool _webUpdate(RemoteHead head) =>
+      head.webMade && (_link?.isAuthor ?? false);
+
+  /// Offers, by toast, publishing a version Claude just made (once the app
+  /// reads ahead at it) and taking a waiting update, each once.
+  void _offerLinked() {
+    if (!mounted || _toldVisible != true) return;
+    if (_aheadAt case final n? when n == _landedLinked && n != _offeredPublish) {
+      _offeredPublish = n;
+      unawaited(_offerPublish(n));
+    }
+    final by = switch (_linked?.head) {
+      final h? when _webUpdate(h) => h.publishedBy,
+      final h? => h.bundle?.publishedBy,
+      null => null,
+    };
+    if (_updateTo case final n? when by != null && n != _offeredUpdate) {
+      _offeredUpdate = n;
+      _showToast(
+        'v$n is ready · from ${_handle(by)}',
+        key: const ValueKey('update-toast'),
+        action: 'Update',
+        onAction: _update,
+        duration: newerFor,
+      );
+    }
+  }
+
+  static String _handle(PublishedBy p) =>
+      p.login == null ? p.name : '@${p.login}';
+
+  /// "Claude made vN: (its note)" with Publish.
+  Future<void> _offerPublish(int n) async {
+    String? note;
+    try {
+      final d = await widget.api.getArtifact(widget.aid);
+      final v = d.versions.where((v) => v.n == n).firstOrNull;
+      note = v?.note ?? v?.label;
+    } on Object catch (e) {
+      debugPrint('clax app: version $n of ${widget.aid}: $e');
+    }
+    if (!mounted || _aheadAt != n) return;
+    final said = note == null || note.trim().isEmpty
+        ? 'Claude made v$n'
+        : 'Claude made v$n: ${note.trim()}';
+    _showToast(
+      said,
+      key: const ValueKey('publish-toast'),
+      action: 'Publish',
+      onAction: () => _publish(n),
+      duration: newerFor,
+    );
+  }
+
+  void _publish(int n) {
+    final publish = widget.linked?.publish;
+    if (publish == null || !mounted) return;
+    unawaited(publish(context, widget.aid, n).then((_) => _readLink()));
+  }
+
+  void _update() {
+    final update = widget.linked?.update;
+    if (update == null || !mounted) return;
+    unawaited(update(context, widget.aid));
+  }
+
+  void _resolveDiverged() {
+    final diverged = widget.linked?.diverged;
+    if (diverged == null || !mounted) return;
+    unawaited(diverged(context, widget.aid).then((_) => _readLink()));
+  }
 
   // --- the shell ---
 
@@ -1211,6 +1458,11 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           _openThread(tid, focus: widget.initialComment);
         }
       case StateMsg():
+        if (_commentsOff && m.draft != null) {
+          // A pick made before the head was read: closed unsent.
+          _call(const CancelDraft());
+          break;
+        }
         final picked = _draft == null && m.draft != null;
         final closed = _draft != null && m.draft == null;
         // A new composer (a pick, or another in an empty one's place)
@@ -1663,7 +1915,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         setState(_changes.workerInterrupted);
       case WorkerLanded(:final version):
         final pinned = _changes.workerLanded(version);
-        setState(() {});
+        setState(() => _landedLinked = version);
+        // Offered once the checker reads the app ahead at it.
+        _offerLinked();
         // The worker's own word that a version landed: offered whether or
         // not the shell's stream tells it (Reload reads the latest itself).
         if (!pinned &&
@@ -1899,6 +2153,19 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         waitingForConnection: _waitingThreads,
         isStopped: widget.isStopped,
         onTryNow: widget.onTryNow,
+        replies: !_commentsOff,
+        heldReply: switch (widget.linked?.heldReply) {
+          final held? => () => held(widget.aid, id),
+          null => null,
+        },
+        publishAndReply: switch (widget.linked?.publishAndReply) {
+          final go? => (n) => go(widget.aid, id, n),
+          null => null,
+        },
+        heldNote: switch (widget.linked?.heldNote) {
+          final note? => (n) => note(widget.aid, n),
+          null => null,
+        },
         onCancel: switch (widget.onCancelThread) {
           final cancel? => () {
             unawaited(cancel(widget.aid, id));
@@ -2203,7 +2470,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   // --- the comment bar ---
 
   void _setBar(bool on) {
-    if (!mounted || on == _bar) return;
+    if (!mounted || on == _bar || (on && _commentsOff)) return;
     setState(() => _bar = on);
     if (_draft == null && !_open) {
       _call(on ? const EnterCommentMode() : const ExitCommentMode());
@@ -2852,7 +3119,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         Positioned.fill(
           child: CommentTab(
             threads: _openThreads,
-            onComment: () => _act(AppAction.comment),
+            onComment: _commentsOff ? null : () => _act(AppAction.comment),
             onThreads: () => _act(AppAction.threads),
             change: _changes.working
                 ? (
@@ -3025,14 +3292,15 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
                   onPressed: _locationDetails,
                 ),
         ),
-        IconButton(
-          key: const ValueKey('pane-comment'),
-          tooltip: 'Comment',
-          isSelected: _bar,
-          icon: const Icon(Icons.add_comment_outlined),
-          selectedIcon: Icon(Icons.add_comment, color: p.you),
-          onPressed: _toggleComment,
-        ),
+        if (!_commentsOff)
+          IconButton(
+            key: const ValueKey('pane-comment'),
+            tooltip: 'Comment',
+            isSelected: _bar,
+            icon: const Icon(Icons.add_comment_outlined),
+            selectedIcon: Icon(Icons.add_comment, color: p.you),
+            onPressed: _toggleComment,
+          ),
         IconButton(
           key: const ValueKey('pane-threads'),
           tooltip: 'Threads',
@@ -3168,6 +3436,13 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         onPreview: (n) => _call(LoadVersion(n)),
         onRestore: (n) => unawaited(_restore(n)),
         onRetry: _loadVersions,
+        marks: switch (_detail) {
+          final d? => versionMarks(d, _link),
+          null => const {},
+        },
+        onPublish: _link?.isAuthor == true && widget.linked?.publish != null
+            ? _publish
+            : null,
       ),
     ),
   );

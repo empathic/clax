@@ -124,6 +124,7 @@ class ClaxMenuBar extends StatefulWidget {
     this.navigator,
     this.home,
     this.settings,
+    this.getApps,
     this.toggleSidebar,
     this.reload,
     this.titles = const {},
@@ -142,6 +143,10 @@ class ClaxMenuBar extends StatefulWidget {
   /// Shows Settings; null disables Settings….
   final VoidCallback? settings;
 
+  /// File › Get My Apps…: Get my apps, where the home screen offers it;
+  /// null disables the item.
+  final VoidCallback? getApps;
+
   /// Hides or shows the split window's sidebar; null disables the item.
   final VoidCallback? toggleSidebar;
 
@@ -156,6 +161,7 @@ class ClaxMenuBar extends StatefulWidget {
     ClaxCommand.settings,
     ClaxCommand.newApp,
     ClaxCommand.importApp,
+    ClaxCommand.getApps,
     ClaxCommand.shareApp,
     ClaxCommand.toggleSidebar,
     ClaxCommand.comment,
@@ -229,6 +235,7 @@ class _ClaxMenuBarState extends State<ClaxMenuBar> {
     ClaxCommand.settings => widget.settings,
     ClaxCommand.newApp => widget.home?.newApp,
     ClaxCommand.importApp => widget.home?.importApp,
+    ClaxCommand.getApps => widget.getApps,
     ClaxCommand.inbox => widget.home?.openInbox,
     ClaxCommand.toggleSidebar => widget.toggleSidebar,
     ClaxCommand.reload => widget.reload,

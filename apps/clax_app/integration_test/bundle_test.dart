@@ -554,6 +554,7 @@ String _describe(UpdateOutcome o) => switch (o) {
     'rolled back to v$backOn, ${restored ? 'restored' : 'not restored'} '
         '$details',
   UpdateCancelled() => 'cancelled',
+  FilesTaken(:final version) => 'took files as v$version',
 };
 
 /// Waits for [f], pumping frames meanwhile (the inspector's WebView is in

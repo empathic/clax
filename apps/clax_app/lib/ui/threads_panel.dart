@@ -210,7 +210,8 @@ Size? pngSize(Uint8List png) {
 
 /// One thread in the panel: titled by what it is on ([ThreadSummary.label],
 /// else its first comment), the first comment, and a meta line ("3 comments
-/// · not sent"); a resolved thread in `muted`. Its screenshot, once read,
+/// · not sent", led by the remote a linked app's thread came from:
+/// "clax.dev · 1 comment · sent to Clax"); a resolved thread in `muted`. Its screenshot, once read,
 /// sits beside the words, or on its own line when it is wide ([wideClip]).
 /// An open thread that never reached the agent offers Send to Clax as an
 /// icon button.
@@ -277,6 +278,7 @@ class _ThreadRowState extends State<_ThreadRow> {
     final summary = t.summary.isEmpty ? '(no text)' : t.summary;
     final title = t.label.isNotEmpty ? t.label : summary;
     final meta = [
+      ?t.remote,
       t.comments == 1 ? '1 comment' : '${t.comments} comments',
       if (!resolved) t.sent ? 'sent to Clax' : 'not sent',
     ].join(' · ');

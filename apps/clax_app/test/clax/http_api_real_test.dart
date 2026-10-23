@@ -460,6 +460,26 @@ void main() {
     skip: RealCore.skip,
     timeout: const Timeout(Duration(minutes: 3)),
   );
+  test(
+    'an approval decision reaches the core as the person, past its browser '
+    'check',
+    () async {
+      final core = await RealCore.open();
+      final api = core.api();
+      // No such request: the core answers 404 once it lets the caller
+      // decide at all, and 403 browser_required for the app's token alone.
+      await expectLater(
+        api.decideApproval('no-such-request', 'thread'),
+        throwsA(
+          isA<ClaxApiError>()
+              .having((e) => e.status, 'status', 404)
+              .having((e) => e.code, 'code', isNot('browser_required')),
+        ),
+      );
+    },
+    skip: RealCore.skip,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
 }
 
 void _entriesTest() => test(

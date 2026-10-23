@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../clax/api.dart';
 import 'app_icon.dart';
+import 'approval_sheet.dart';
 import 'haiku.dart';
 import 'kit/kit.dart';
 import 'layout.dart';
@@ -335,6 +336,24 @@ class _InboxScreenState extends State<InboxScreen> implements InboxMarking {
         unawaited(_refresh());
       case 'inbox_read':
         unawaited(_refresh());
+      case 'approval_request':
+        // A request decided elsewhere (the web, another device): its row
+        // reads the outcome without waiting for a tap or a reload.
+        final ApprovalRequest r;
+        try {
+          r = ApprovalRequest.fromJson(
+            e.data['request']! as Map<String, Object?>,
+          );
+        } catch (_) {
+          return;
+        }
+        final shown = _items?.where((i) => i.approval?.id == r.id).toList();
+        if (shown == null || shown.isEmpty) return;
+        setState(() {
+          for (final i in shown) {
+            _upsert(_copy(i, approval: i.approval!.decidedAs(r)));
+          }
+        });
       case 'inbox_item':
         final InboxItem item;
         try {
@@ -449,6 +468,10 @@ class _InboxScreenState extends State<InboxScreen> implements InboxMarking {
 
   void _tap(InboxItem item) {
     _markRead(item);
+    if (item.kind == 'approval' && !item.gone) {
+      unawaited(_approve(item));
+      return;
+    }
     if (item.gone) {
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
@@ -458,6 +481,29 @@ class _InboxScreenState extends State<InboxScreen> implements InboxMarking {
       return;
     }
     widget.onOpen(item);
+  }
+
+  /// Shows [item]'s approval request, whatever the platform: the person
+  /// decides it here, and the row keeps the decision.
+  Future<void> _approve(InboxItem item) async {
+    final r = item.approval;
+    if (r == null) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(content: Text('This request no longer waits for you')),
+        );
+      return;
+    }
+    final decided = await showApprovalSheet(
+      context,
+      api: widget.api,
+      r: r,
+      app: item.artifactTitle,
+    );
+    if (decided == null || !mounted) return;
+    final now = _items?.where((i) => i.id == item.id).firstOrNull ?? item;
+    setState(() => _upsert(_copy(now, approval: r.decidedAs(decided))));
   }
 
   @override
@@ -744,11 +790,15 @@ class _InboxScreenState extends State<InboxScreen> implements InboxMarking {
 }
 
 /// [item] marked read.
-InboxItem _asRead(InboxItem item) => InboxItem(
+InboxItem _asRead(InboxItem item) => _copy(item, read: true);
+
+/// [item] with [read] and [approval] when given.
+InboxItem _copy(InboxItem item, {bool? read, ApprovalRequest? approval}) =>
+    InboxItem(
   id: item.id,
   seq: item.seq,
   kind: item.kind,
-  read: true,
+  read: read ?? item.read,
   createdAt: item.createdAt,
   url: item.url,
   gone: item.gone,
@@ -768,12 +818,14 @@ InboxItem _asRead(InboxItem item) => InboxItem(
   question: item.question,
   workMessage: item.workMessage,
   workThreads: item.workThreads,
+  approval: approval ?? item.approval,
 );
 
 /// The line under an item's title, naming its kind in words: "Clax
 /// replied: …" with the reply, "Version 5 is ready: …" with its note, "New
-/// app: …" with its description, "Clax asked: …" with the question, or
-/// "Clax finished: …" with its message.
+/// app: …" with its description, "Clax asked: …" with the question,
+/// "Clax finished: …" with its message, or "Bob (on clax.dev) wants to
+/// reach Clax" for an approval request.
 String inboxLine(InboxItem item) {
   if (item.gone) return 'No longer available';
   String said(String lead, String text) =>
@@ -795,6 +847,11 @@ String inboxLine(InboxItem item) {
       return said('Clax asked', text.isEmpty ? _oneLine(q?.header ?? '') : text);
     case 'finished':
       return said('Clax finished', _oneLine(item.workMessage ?? ''));
+    case 'approval':
+      return switch (item.approval) {
+        final a? => approvalTitle(_oneLine(a.author.name)),
+        null => 'An approval request',
+      };
     default:
       return item.kind;
   }

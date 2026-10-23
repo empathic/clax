@@ -5,6 +5,7 @@ library;
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' show max;
 
 import 'package:flutter/foundation.dart' show ValueNotifier;
 
@@ -12,7 +13,11 @@ import '../agent/inspector.dart';
 import '../agent/tools/render_tool.dart' show perTestLimit, testLimit;
 import '../clax/api.dart';
 import '../platform/bundle_key.dart' show keyFingerprint;
+import '../remote/merge.dart' show Merged;
+import '../remote/models.dart'
+    show AppLink, BundleOrigin, RemoteApp, VersionSource;
 import 'bundle_reader.dart';
+import 'content_hash.dart';
 import 'doc_snapshot.dart';
 import 'installer.dart' show PublishedFiles;
 import 'lineage_store.dart';
@@ -85,10 +90,15 @@ sealed class UpdateOutcome {
 /// The update is live as lineage version [version]; [truncated] when its
 /// check ran on part of the person's data.
 class UpdateLanded extends UpdateOutcome {
-  const UpdateLanded(this.version, {this.truncated = false});
+  const UpdateLanded(this.version, {this.truncated = false, this.notLinked});
 
   final int version;
   final bool truncated;
+
+  /// The core's refusal to move the app's link to the public version
+  /// taken, when it refused: the update is live, but the link's base
+  /// stays where it was, here and in the core.
+  final String? notLinked;
 }
 
 /// The check failed at [step], for [reason], the end of §3.4's sentence;
@@ -105,6 +115,17 @@ class UpdateCheckFailed extends UpdateOutcome {
   final String reason;
   final List<String> details;
   final bool truncated;
+}
+
+/// Why a draft did not pass its check ([Updater.checkDraft]): the failing
+/// [step], its [reason] (the end of §3.4's sentence) and the step's
+/// [details].
+class DraftCheckFailure {
+  const DraftCheckFailure(this.step, this.reason, [this.details = const []]);
+
+  final UpdateStep step;
+  final String reason;
+  final List<String> details;
 }
 
 /// The update did not run, or did not land, for [message] (a sentence for
@@ -132,10 +153,19 @@ class UpdateRolledBack extends UpdateOutcome {
   final bool restored;
 }
 
-/// The person cancelled the update during its check: the draft is gone
-/// and nothing was published.
+/// The person cancelled the update during its check, or did not take
+/// it when asked: the draft is gone and nothing was published.
 class UpdateCancelled extends UpdateOutcome {
   const UpdateCancelled();
+}
+
+/// Files taken without a release ([Updater.takeFiles]) are live as the
+/// app's version [version], whose files hash to [contentSha256].
+class FilesTaken extends UpdateOutcome {
+  const FilesTaken(this.version, this.contentSha256);
+
+  final int version;
+  final String contentSha256;
 }
 
 /// An update put back, or waiting for the person, at start (§8.4).
@@ -184,6 +214,7 @@ class Updater {
     AppHold? hold,
     this._ensureSession,
     this.migrationLimit = const Duration(seconds: 30),
+    this.relink,
     void Function(String line)? log,
   }) : _busy = busy ?? ((_) => false),
        _hold = hold ?? _noHold,
@@ -192,6 +223,13 @@ class Updater {
   final ClaxApi api;
   final LineageStore store;
   final Inspector inspector;
+
+  /// Moves an app's link in the core to a public version taken
+  /// (`POST /api/remotes/<rid>/links`, `RemoteApi.link`), throwing its refusal;
+  /// null where nothing links apps. An update taken from the linked copy
+  /// moves the link's base here only once the core's moved too, so the
+  /// next publish's `if_version` is the version taken.
+  Future<void> Function(String rid, String aid, RemoteApp app, int n)? relink;
 
   /// The shell's origin, as the render tool takes it.
   final Uri Function() baseUrl;
@@ -220,11 +258,27 @@ class Updater {
   /// When [cancelled] completes before the publish step, the check stops
   /// (each inspector run is told), its draft is deleted and the outcome is
   /// [UpdateCancelled]; from [UpdateStep.publish] on, the update finishes.
+  ///
+  /// [origin] names the public copy the bundle was fetched from: when the
+  /// app's lineage entry links to it, a bundle of its lineage at a higher
+  /// version is taken whatever key signed it (the `linked` row of
+  /// `decide` in `trust.dart`).
+  ///
+  /// With [merged] (Bring vN into mine, spec 2026-10-21-app-push-pull
+  /// §5.7) the update publishes the combined files, title and
+  /// capabilities in place of the bundle's, checked and migrated the same
+  /// way, and records the bundle's release as taken without counting the
+  /// combined files as a release: the copy stays modified, now on vN.
+  /// [confirm], when given, is asked once the check passed and before
+  /// anything is published; false ends the update [UpdateCancelled].
   Future<UpdateOutcome> update(
     String aid,
     Bundle bundle, {
     void Function(UpdateStep step)? onStep,
     Future<void>? cancelled,
+    BundleOrigin? origin,
+    Merged? merged,
+    Future<bool> Function()? confirm,
   }) async {
     try {
       if (_busy(aid)) {
@@ -239,7 +293,15 @@ class Updater {
       return await _hold(aid, () async {
         updating.value = {...updating.value, aid};
         try {
-          return await _update(aid, bundle, onStep, cancelled);
+          return await _update(
+            aid,
+            bundle,
+            onStep,
+            cancelled,
+            origin,
+            merged,
+            confirm,
+          );
         } finally {
           updating.value = {...updating.value}..remove(aid);
         }
@@ -251,12 +313,18 @@ class Updater {
   }
 
   /// Why [entry] cannot take [m] as an update, or null when it can: the
-  /// same lineage and key, installed, at a lower version.
-  static String? _mismatch(LineageEntry? entry, Manifest m) {
-    if (entry == null || entry.role != LineageRole.installed) {
+  /// same lineage, at a lower version, and either installed under the same
+  /// key or linked to [origin]'s public copy (whatever its role and key).
+  static String? _mismatch(
+    LineageEntry? entry,
+    Manifest m,
+    BundleOrigin? origin,
+  ) {
+    final linked = entry != null && (origin?.names(entry.link) ?? false);
+    if (entry == null || (!linked && entry.role != LineageRole.installed)) {
       return 'This app was not installed from a bundle.';
     }
-    if (entry.lineage != m.lineage || entry.key != m.author.key) {
+    if (entry.lineage != m.lineage || (!linked && entry.key != m.author.key)) {
       return 'This file is not an update of this app.';
     }
     if (m.version <= entry.version) {
@@ -270,12 +338,15 @@ class Updater {
     Bundle bundle,
     void Function(UpdateStep step)? onStep,
     Future<void>? cancelled,
+    BundleOrigin? origin,
+    Merged? merged,
+    Future<bool> Function()? confirm,
   ) async {
     var stop = false;
     cancelled?.then((_) => stop = true, onError: (Object _) => stop = true);
     final m = bundle.manifest;
     final entry = await store.entry(aid);
-    if (_mismatch(entry, m) case final why?) return UpdateRefused(why);
+    if (_mismatch(entry, m, origin) case final why?) return UpdateRefused(why);
     final from = entry!.version;
     final ArtifactDetail live;
     try {
@@ -285,12 +356,22 @@ class Updater {
     }
     final base = live.artifact.currentVersion;
     final files = PublishedFiles.of(bundle);
-    final entries = files.entries;
-    final hasMigration = m.files.containsKey('migrate.js');
-    final tests = [
-      for (final p in m.files.keys)
-        if (RegExp(r'^tests/[^/].*\.test\.js$').hasMatch(p)) p,
-    ]..sort();
+    final entries = merged == null
+        ? files.entries
+        : {
+            for (final MapEntry(:key, :value) in merged.files.entries)
+              key: FileEntry.bytes(value, type: m.files[key]?.type),
+          };
+    final title = merged?.title ?? m.title;
+    final capabilities = merged?.capabilities ?? m.capabilities;
+    final publishedSha256 = merged == null
+        ? files.contentSha256
+        : contentHash({
+            for (final MapEntry(:key, :value) in merged.files.entries)
+              key: (sha256: sha256Hex(value), size: value.length),
+          });
+    final hasMigration = entries.containsKey('migrate.js');
+    final tests = testPaths(entries.keys);
 
     // 1–5: the check, on a draft with a copy of the documents.
     if (stop) return const UpdateCancelled();
@@ -299,8 +380,8 @@ class Updater {
     try {
       draft = await api.createDraft(
         of: aid,
-        title: m.title,
-        capabilities: m.capabilities,
+        title: title,
+        capabilities: capabilities,
         entries: entries,
         // The update's code is not published yet: it fetches nothing.
         inheritNet: false,
@@ -341,11 +422,12 @@ class Updater {
         truncated: truncated,
       );
     }
+    if (confirm != null && !await confirm()) return const UpdateCancelled();
 
     // 6–7: publish, then migrate the live documents under a snapshot.
     final meta = SnapshotMeta(
       base: base,
-      contentSha256: files.contentSha256,
+      contentSha256: publishedSha256,
       title: live.artifact.title,
       icon: live.artifact.icon,
       capabilities: live.artifact.capabilities,
@@ -362,7 +444,13 @@ class Updater {
         );
       }
     }
-    _writePending(aid, bundle, files.contentSha256);
+    _writePending(
+      aid,
+      bundle,
+      publishedSha256,
+      origin: (origin?.names(entry.link) ?? false) ? origin : null,
+      keepsChanges: merged != null,
+    );
     onStep?.call(UpdateStep.publish);
     PublishResult? published;
     Object? refused;
@@ -370,7 +458,7 @@ class Updater {
       // Under the store's lock: no other update of this lineage lands
       // between the re-check and the publish.
       await store.update(aid, (now) async {
-        if (_mismatch(now, m) case final why?) {
+        if (_mismatch(now, m, origin) case final why?) {
           refused = UpdateRefused(why);
           return null;
         }
@@ -378,14 +466,18 @@ class Updater {
           aid,
           PublishRequest(
             ifVersion: base,
-            title: m.title,
+            title: title,
             icon: m.icon.word,
-            capabilities: m.capabilities,
-            label: 'Update v${m.version}',
-            note: files.noted(
-              'Updated to v${m.version} from '
-              '${m.author.name ?? keyFingerprint(m.author.key) ?? 'its author'}',
-            ),
+            capabilities: capabilities,
+            label: merged == null
+                ? 'Update v${m.version}'
+                : 'Your version with v${m.version}',
+            note: merged == null
+                ? files.noted(
+                    'Updated to v${m.version} from '
+                    '${m.author.name ?? keyFingerprint(m.author.key) ?? 'its author'}',
+                  )
+                : 'Brought v${m.version} into your version: ${merged.note}',
             entries: {
               ...entries,
               for (final p in live.current?.files.keys ?? const <String>[])
@@ -434,13 +526,26 @@ class Updater {
     }
 
     // 8: the lineage.
-    await _applyPending(aid);
-    return UpdateLanded(m.version, truncated: truncated);
+    final notLinked = await _applyPending(aid);
+    return UpdateLanded(
+      m.version,
+      truncated: truncated,
+      notLinked: notLinked,
+    );
   }
 
   /// Keeps [bundle] and its release while it lands: the bundle's content
-  /// hash and [published], the hash of the files published for it.
-  void _writePending(String aid, Bundle bundle, String published) {
+  /// hash and [published], the hash of the files published for it, and
+  /// the public version of [origin], the linked copy it came from. With
+  /// [keepsChanges] (the person's changes combined in) the published
+  /// files are not recorded as a release.
+  void _writePending(
+    String aid,
+    Bundle bundle,
+    String published, {
+    BundleOrigin? origin,
+    bool keepsChanges = false,
+  }) {
     final m = bundle.manifest;
     _pendingDir.createSync(recursive: true);
     _syncWrite(_pendingBundle(aid), bundle.bytes);
@@ -454,6 +559,21 @@ class Updater {
           'title': m.title,
           'capabilities': m.capabilities,
           'name': m.author.name,
+          'live_from': VersionSource(
+            key: m.author.key,
+            who:
+                origin?.head.bundle?.publishedBy.handle ??
+                m.author.name ??
+                keyFingerprint(m.author.key) ??
+                m.author.key,
+            origin: origin?.remoteOrigin,
+            account: origin?.head.bundle?.publishedBy,
+          ).toJson(),
+          if (keepsChanges) 'keeps_changes': true,
+          if (origin != null) ...{
+            'remote_artifact_id': origin.remoteArtifactId,
+            'remote_version': origin.remoteVersion,
+          },
         }),
       ),
     );
@@ -466,10 +586,65 @@ class Updater {
   }
 
   /// Writes the pending release of [aid] into its lineage entry and keeps
-  /// its bundle, then drops it.
-  Future<void> _applyPending(String aid) async {
+  /// its bundle, then drops it. A release taken from the linked public
+  /// copy moves the link to it: its base to the public version taken (never
+  /// back), its taken bundle version to the release's, and its merged hash
+  /// to the files published when they keep the person's changes (Bring vN
+  /// into mine), else none.
+  ///
+  /// The link's base moves here only once the core's link moved to the
+  /// same public version ([relink]); a refusal leaves both where they
+  /// were and is answered, for the person.
+  Future<String?> _applyPending(String aid) async {
     final p = jsonDecode(_pending(aid).readAsStringSync()) as Map;
     final caps = p['capabilities'];
+    final version = p['version'] as int;
+    final raid = p['remote_artifact_id'];
+    final remoteVersion = p['remote_version'];
+    String? notLinked;
+    final was = (await store.entry(aid))?.link;
+    if (was != null &&
+        raid is String &&
+        remoteVersion is int &&
+        was.remoteArtifactId == raid &&
+        remoteVersion > was.baseRemoteVersion) {
+      if ((was.remoteId, relink) case (final rid?, final link?)) {
+        try {
+          await link(
+            rid,
+            aid,
+            RemoteApp(
+              artifactId: raid,
+              title: p['title'] as String,
+              url: was.url,
+              version: remoteVersion,
+              bundleVersion: version,
+              access: was.isAuthor ? 'editor' : 'viewer',
+              general: 'restricted',
+            ),
+            remoteVersion,
+          );
+        } on ClaxApiError catch (e) {
+          _log('the core could not move $aid to public v$remoteVersion: '
+              '${e.message}');
+          notLinked = e.message;
+        }
+      }
+    }
+    final base = notLinked == null;
+    AppLink? moved(AppLink? l) =>
+        l == null || raid is! String || remoteVersion is! int ||
+            l.remoteArtifactId != raid
+        ? l
+        : l.copyWith(
+            baseRemoteVersion: base
+                ? max(l.baseRemoteVersion, remoteVersion)
+                : l.baseRemoteVersion,
+            takenBundleVersion: () => version,
+            mergedSha256: () => p['keeps_changes'] == true
+                ? p['published_sha256'] as String?
+                : null,
+          );
     await store.update(
       aid,
       (now) async => now
@@ -479,17 +654,23 @@ class Updater {
               title: p['title'] as String,
               capabilities: caps is Map<String, Object?> ? caps : const {},
             ),
-            version: p['version'] as int,
-            published: p['published_sha256'] as String?,
+            version: version,
+            published: p['keeps_changes'] == true
+                ? null
+                : p['published_sha256'] as String?,
           )
           .copyWith(
             name: () => p['name'] as String?,
             updatesStopped: false,
             stoppedAt: () => null,
+            link: () => moved(now.link),
+            liveFrom: () =>
+                VersionSource.fromJson(p['live_from']) ?? now.liveFrom,
           ),
     );
     await store.keepBundle(aid, _pendingBundle(aid).readAsBytesSync());
     _dropPending(aid);
+    return notLinked;
   }
 
   static void _syncWrite(File target, List<int> bytes) {
@@ -685,6 +866,193 @@ class Updater {
       note: 'The update did not finish; back on v${meta.backOn}',
     );
   }
+
+  /// Takes [entries] (a path's null removes it), [title] and
+  /// [capabilities] as app [aid]'s next version, with no release behind
+  /// them (spec 2026-10-21-app-push-pull §5.10: a public version made on
+  /// the web, or two versions combined): checked first on a draft with a
+  /// copy of the documents ([checkDraft]: the page and its tests; no
+  /// `migrate.js` runs, as no release changes), then, once [confirm] (when
+  /// given) agrees, published pinned to the version checked, as [label]
+  /// with [note]. The lineage is left as it is. Never throws.
+  Future<UpdateOutcome> takeFiles(
+    String aid, {
+    required Map<String, FileEntry?> entries,
+    required String title,
+    required Map<String, Object?> capabilities,
+    required String label,
+    required String note,
+    void Function(UpdateStep step)? onStep,
+    Future<void>? cancelled,
+    Future<bool> Function()? confirm,
+  }) async {
+    try {
+      if (_busy(aid)) {
+        return const UpdateRefused('Wait for the change in progress to land.');
+      }
+      return await _hold(aid, () async {
+        updating.value = {...updating.value, aid};
+        try {
+          return await _takeFiles(
+            aid,
+            entries,
+            title,
+            capabilities,
+            label,
+            note,
+            onStep,
+            cancelled,
+            confirm,
+          );
+        } finally {
+          updating.value = {...updating.value}..remove(aid);
+        }
+      });
+    } on Object catch (e) {
+      _log('taking files into $aid failed: $e');
+      return UpdateRefused('The version could not be taken.', details: ['$e']);
+    }
+  }
+
+  Future<UpdateOutcome> _takeFiles(
+    String aid,
+    Map<String, FileEntry?> entries,
+    String title,
+    Map<String, Object?> capabilities,
+    String label,
+    String note,
+    void Function(UpdateStep step)? onStep,
+    Future<void>? cancelled,
+    Future<bool> Function()? confirm,
+  ) async {
+    var stop = false;
+    cancelled?.then((_) => stop = true, onError: (Object _) => stop = true);
+    final ArtifactDetail live;
+    try {
+      live = await api.getArtifact(aid);
+    } on ClaxApiError catch (e) {
+      return UpdateRefused('The app could not be read.', details: [e.message]);
+    }
+    final base = live.artifact.currentVersion;
+    final version = (await store.entry(aid))?.version ?? 0;
+    final kept = {
+      for (final MapEntry(:key, :value) in entries.entries) key: ?value,
+    };
+    if (stop) return const UpdateCancelled();
+    onStep?.call(UpdateStep.data);
+    final DraftInfo draft;
+    try {
+      draft = await api.createDraft(
+        of: aid,
+        title: title,
+        capabilities: capabilities,
+        entries: kept,
+        // Its code is not published yet: it fetches nothing.
+        inheritNet: false,
+      );
+    } on ClaxApiError catch (e) {
+      return UpdateCheckFailed(
+        UpdateStep.data,
+        'its files could not be served',
+        details: [e.message],
+      );
+    }
+    final DraftCheckFailure? failed;
+    try {
+      failed = await checkDraft(
+        draft.id,
+        // No release changes, so no data step runs.
+        paths: kept.keys.where((p) => p != 'migrate.js'),
+        from: version,
+        to: version,
+        onStep: onStep,
+        cancelled: cancelled,
+      );
+    } finally {
+      try {
+        await api.deleteDraft(draft.id);
+      } on Object catch (e) {
+        _log('deleting draft ${draft.id} failed: $e');
+      }
+    }
+    if (stop) return const UpdateCancelled();
+    if (failed != null) {
+      return UpdateCheckFailed(
+        failed.step,
+        failed.reason,
+        details: failed.details,
+        truncated: draft.docsTruncated,
+      );
+    }
+    if (confirm != null && !await confirm()) return const UpdateCancelled();
+    onStep?.call(UpdateStep.publish);
+    try {
+      final r = await api.publish(
+        aid,
+        PublishRequest(
+          ifVersion: base,
+          title: title,
+          icon: live.artifact.icon,
+          capabilities: capabilities,
+          label: label,
+          note: note,
+          entries: {
+            ...entries,
+            for (final p in live.current?.files.keys ?? const <String>[])
+              if (!entries.containsKey(p)) p: null,
+          },
+        ),
+      );
+      return FilesTaken(
+        r.version.n,
+        r.version.contentSha256 ??
+            contentHash({
+              for (final MapEntry(:key, :value) in kept.entries)
+                key: (sha256: sha256Hex(value.bytes), size: value.bytes.length),
+            }),
+      );
+    } on ClaxApiError catch (e) {
+      return UpdateRefused(
+        e.isConflict
+            ? '${live.artifact.title} changed while it was checked. Try again.'
+            : 'The version could not be published.',
+        details: [e.message],
+      );
+    }
+  }
+
+  /// Checks draft [draftId] as an update's draft is checked (§8.2 steps
+  /// 2–5), the draft holding a copy of the app's documents: `migrate.js`
+  /// from version [from] to [to] when [paths] has one, the page, then its
+  /// `tests/*.test.js`, telling [onStep] each step. The failure, or null on
+  /// a pass. The draft is left as it is; the caller deletes it.
+  Future<DraftCheckFailure?> checkDraft(
+    String draftId, {
+    required Iterable<String> paths,
+    required int from,
+    required int to,
+    void Function(UpdateStep step)? onStep,
+    Future<void>? cancelled,
+  }) async {
+    final failed = await _check(
+      draftId,
+      hasMigration: paths.contains('migrate.js'),
+      tests: testPaths(paths),
+      from: from,
+      to: to,
+      onStep: onStep,
+      cancelled: cancelled,
+    );
+    if (failed == null) return null;
+    final (step, reason, details) = failed;
+    return DraftCheckFailure(step, reason, details);
+  }
+
+  /// The test files among [paths] (`tests/*.test.js`), sorted.
+  static List<String> testPaths(Iterable<String> paths) => [
+    for (final p in paths)
+      if (RegExp(r'^tests/[^/].*\.test\.js$').hasMatch(p)) p,
+  ]..sort();
 
   /// The check's failing step, reason and details, or null on a pass.
   Future<(UpdateStep, String, List<String>)?> _check(

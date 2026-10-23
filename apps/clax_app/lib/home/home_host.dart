@@ -13,6 +13,8 @@ import '../agent/plan.dart';
 import '../agent/worker.dart';
 import '../clax/api.dart';
 import '../queue/client.dart';
+import '../remote/checker.dart' show LinkedStatus;
+import '../remote/sync_state.dart' show syncBadge;
 import '../ui/app_icon.dart';
 import '../ui/build_plan.dart';
 import '../ui/inbox_screen.dart' show resubscribe;
@@ -35,6 +37,7 @@ class HomeApp {
     required this.updatedAt,
     required this.icon,
     this.build,
+    this.sync,
   });
 
   final String id, title;
@@ -42,12 +45,17 @@ class HomeApp {
   final Map<String, Object?> icon;
   final ({int done, int total})? build;
 
+  /// Its public copy's sync badge ([syncBadge]): `live`, `ahead`,
+  /// `update` or `diverged`; null for none.
+  final String? sync;
+
   Map<String, Object?> toJson() => {
     'id': id,
     'title': title,
     'updatedAt': updatedAt.toUtc().toIso8601String(),
     'icon': icon,
     'build': _count(build),
+    'sync': sync,
   };
 }
 
@@ -123,6 +131,10 @@ abstract class HomeActions {
   void openInbox();
   void openSettings();
   void importApp();
+
+  /// Get my apps: the apps of the account this device is signed in to on
+  /// a hosted Clax, to bring down.
+  void getApps();
 }
 
 /// A `home` call from a caller that is not the home app.
@@ -185,9 +197,12 @@ class HomeHost extends ChangeNotifier {
     this.icons,
     this.retryDelay,
     this.closeStream = false,
+    this.offersGetApps = false,
     this._needsKey = false,
+    this.linked,
   }) {
     makes.addListener(_onMakes);
+    linked?.addListener(_changed);
     makes.queue.state.addListener(_onQueue);
     _queueBuilds = _queueBuildsOf(makes.queue.state.value);
     icons?.addListener(_onIcons);
@@ -201,6 +216,22 @@ class HomeHost extends ChangeNotifier {
   }
 
   final ClaxApi api;
+
+  /// Each linked app's status against its public copy
+  /// (`LinkedChecker.status`), for the tiles' sync badges; null shows
+  /// none.
+  final ValueListenable<Map<String, LinkedStatus>>? linked;
+
+  /// App [aid]'s sync badge ([syncBadge]), or null for none.
+  String? syncOf(String aid) => switch (linked?.value[aid]) {
+    final s? => syncBadge(s.state),
+    null => null,
+  };
+
+  /// Whether Get my apps is on offer ([HomeActions.getApps] does
+  /// something): `chrome()` says so as `getApps`, so the home app and the
+  /// list pane show it only then.
+  final bool offersGetApps;
   final ClaxStream stream;
   final MakeService makes;
 
@@ -516,6 +547,8 @@ class HomeHost extends ChangeNotifier {
         actions.openSettings();
       case 'importApp':
         actions.importApp();
+      case 'getApps':
+        actions.getApps();
       case 'shown':
         _shown.add(callerAid);
       case 'tiles':
@@ -605,6 +638,7 @@ class HomeHost extends ChangeNotifier {
       'toolbar': chrome.toolbar,
       'pointer': chrome.pointer,
       if (chrome.toolbar) 'query': _query,
+      if (offersGetApps) 'getApps': true,
     },
     _ => state.needsKey,
   };
@@ -617,6 +651,7 @@ class HomeHost extends ChangeNotifier {
         DateTime.fromMillisecondsSinceEpoch(0),
     icon: _icon(a),
     build: buildOf(a.id),
+    sync: syncOf(a.id),
   );
 
   Map<String, Object?> _icon(ArtifactSummary a) {
@@ -946,6 +981,7 @@ class HomeHost extends ChangeNotifier {
   void dispose() {
     _dead = true;
     _layout?.dispose();
+    linked?.removeListener(_changed);
     makes.removeListener(_onMakes);
     makes.queue.state.removeListener(_onQueue);
     icons?.removeListener(_onIcons);

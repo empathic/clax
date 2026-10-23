@@ -362,6 +362,19 @@ void main() {
       );
     });
 
+    test('a call as the person reaches the core as the owner\'s browser; '
+        'every other as the app', () async {
+      final t = apiWorker.transport();
+      Future<Object?> asOf({required bool person}) async => (await t.send(
+        'GET',
+        '/api/as',
+        timeout: const Duration(seconds: 10),
+        person: person,
+      )).json?['as'];
+      expect(await asOf(person: true), 'owner-browser');
+      expect(await asOf(person: false), 'owner');
+    });
+
     test('streams the core\'s events through the worker', () async {
       final stream = apiWorker.transport().sse();
       final first = await stream.first.timeout(const Duration(seconds: 10));
@@ -399,7 +412,9 @@ CoreCalls _apiCore(int handle, {bool guarded = true}) {
   final api = FakeClaxApi()..seedArtifact('Runs', {'index.html': '<p>r</p>'});
   final core = FakeCore.fromApi(api, unrouted: (_) {});
   final held = FakeCore(unrouted: (_) {})
-    ..on('GET', '/api/held', (r, p) => Completer<CoreResponse>().future);
+    ..on('GET', '/api/held', (r, p) => Completer<CoreResponse>().future)
+    // Who the call speaks as, as the core reads it.
+    ..on('GET', '/api/as', (r, p) async => FakeCore.json({'as': r.as.wire}));
   return _Guarded(core, held, guarded);
 }
 
@@ -412,7 +427,9 @@ class _Guarded implements CoreCalls {
   @override
   CoreCall call(CoreRequest r) {
     if (guarded) _onlyInWorker();
-    return r.path == '/api/held' ? held.call(r) : core.call(r);
+    return r.path == '/api/held' || r.path == '/api/as'
+        ? held.call(r)
+        : core.call(r);
   }
 
   @override

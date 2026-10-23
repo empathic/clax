@@ -271,10 +271,12 @@ class HttpClaxApi implements ClaxApi {
   }
 
   @override
-  Future<Uint8List?> clip(String aid, String tid) async {
+  Future<Uint8List?> clip(String aid, String tid, {bool agent = false}) async {
+    if (agent) _needSession();
     final r = await _send(
       'GET',
       '/api/artifacts/${_seg(aid)}/threads/${_seg(tid)}/clip',
+      agent: agent,
     );
     // The daemon answers 404 alike for no clip, an unknown thread and an
     // unknown artifact, so each is null.
@@ -350,7 +352,8 @@ class HttpClaxApi implements ClaxApi {
   }
 
   @override
-  Future<List<ThreadView>> threads(String aid) async {
+  Future<List<ThreadView>> threads(String aid, {bool agent = false}) async {
+    if (agent) _needSession();
     final out = <ThreadView>[];
     String? cursor;
     do {
@@ -358,6 +361,7 @@ class HttpClaxApi implements ClaxApi {
         'GET',
         '/api/artifacts/${_seg(aid)}/threads',
         query: {'include_resolved': 'true', 'limit': '200', 'cursor': ?cursor},
+        agent: agent,
       );
       out.addAll(
         _parse(
@@ -375,11 +379,14 @@ class HttpClaxApi implements ClaxApi {
   @override
   Future<List<ArtifactThreads>> allThreads({
     bool includeResolved = false,
+    bool agent = false,
   }) async {
+    if (agent) _needSession();
     final j = await _json(
       'GET',
       '/api/threads',
       query: {if (includeResolved) 'include_resolved': 'true'},
+      agent: agent,
     );
     return _parse(
       () => [
@@ -387,6 +394,28 @@ class HttpClaxApi implements ClaxApi {
           ArtifactThreads.fromJson((a as Map).cast()),
       ],
     );
+  }
+
+  @override
+  Future<void> askApproval(String sid, {required String threadId}) async {
+    await _json(
+      'POST',
+      '/api/sessions/${_seg(sid)}/approvals',
+      body: {'thread_id': threadId},
+    );
+  }
+
+  @override
+  Future<ApprovalRequest> decideApproval(String rid, String scope) async {
+    // A decision is the person's, as in their browser: the core refuses
+    // the app's own token 403 browser_required.
+    final j = await _json(
+      'POST',
+      '/api/approvals/requests/${_seg(rid)}/decide',
+      body: {'scope': scope},
+      person: true,
+    );
+    return _parse(() => ApprovalRequest.fromJson((j['request'] as Map).cast()));
   }
 
   @override
@@ -819,6 +848,7 @@ class HttpClaxApi implements ClaxApi {
     bool agent = false,
     Duration? timeout,
     Map<String, String>? headers,
+    bool person = false,
   }) async {
     final r = await _send(
       method,
@@ -828,6 +858,7 @@ class HttpClaxApi implements ClaxApi {
       agent: agent,
       timeout: timeout,
       headers: headers,
+      person: person,
     );
     return _ok(r);
   }
@@ -879,6 +910,7 @@ class HttpClaxApi implements ClaxApi {
     bool agent = false,
     Duration? timeout,
     Map<String, String>? headers,
+    bool person = false,
   }) {
     final sid = sessionId;
     return transport.send(
@@ -892,6 +924,7 @@ class HttpClaxApi implements ClaxApi {
       },
       body: body == null ? null : utf8.encode(jsonEncode(body)),
       timeout: timeout ?? requestTimeout,
+      person: person,
     );
   }
 }

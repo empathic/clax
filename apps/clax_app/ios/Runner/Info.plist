@@ -35,8 +35,27 @@
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
     <string>1.0</string>
+    <!-- clax:get?url=<artifact URL>, Get in Clax from any hosted Clax
+         (ios/Runner/BundleIntake.swift hands it to Dart). -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>dev.empathic.clax.get</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>clax</string>
+            </array>
+        </dict>
+    </array>
     <key>CFBundleVersion</key>
     <string>1</string>
+    <!-- Links reach Dart on the bundles channel, never as a route Flutter
+         would push. -->
+    <key>FlutterDeepLinkingEnabled</key>
+    <false/>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <!-- iOS copies an opened .clax into Clax's Documents/Inbox; Clax reads

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 /// A model the person can choose: its [id], the [word] Settings names it
 /// by (Fast, Balanced or Best) and the model's [name].
@@ -48,9 +49,12 @@ class AppSettings {
     this.commentTabAt = 0.62,
     this.sidebarWidth = 220,
     this.threadsWidth = 320,
+    this.installId,
+    Map<String, List<String>>? trustedAuthors,
   }) : model = model ?? defaultModel,
        authorName = cleanAuthorName(authorName),
-       rallied = rallied ?? [];
+       rallied = rallied ?? [],
+       trustedAuthors = trustedAuthors ?? {};
 
   /// [backendMessagesApi] or [backendClaudeCli]. The CLI is used only where
   /// `ClaudeCliBackend.supported` holds; elsewhere this setting is ignored.
@@ -107,6 +111,18 @@ class AppSettings {
   /// `threadsPaneMax`); the person drags its edge.
   double threadsWidth;
 
+  /// The ID a hosted Clax counts this install's installs of an app by
+  /// (`POST /api/artifacts/<id>/installs`): 64 lower-case hex characters,
+  /// random, made the first time an app is got from one
+  /// ([ensureInstallId]); null before.
+  String? installId;
+
+  /// The authors whose work Claude may read in each app without asking
+  /// (`AuthorTrust`): app ID to the keys the person said Continue for,
+  /// an author key (base64url) or a hosted account's
+  /// (`account:<origin>/<login or name>`).
+  Map<String, List<String>> trustedAuthors;
+
   AppSettings copy() => AppSettings(
     backend: backend,
     model: model,
@@ -121,6 +137,11 @@ class AppSettings {
     commentTabAt: commentTabAt,
     sidebarWidth: sidebarWidth,
     threadsWidth: threadsWidth,
+    installId: installId,
+    trustedAuthors: {
+      for (final MapEntry(:key, :value) in trustedAuthors.entries)
+        key: List.of(value),
+    },
   );
 
   Map<String, Object?> toJson() => {
@@ -137,6 +158,8 @@ class AppSettings {
     'comment_tab_at': commentTabAt,
     'sidebar_width': sidebarWidth,
     'threads_width': threadsWidth,
+    'install_id': installId,
+    'trusted_authors': trustedAuthors,
   };
 
   /// Reads [j], keeping the default for any value that is missing, of the
@@ -177,8 +200,32 @@ class AppSettings {
     if (threads is num && threads >= 280 && threads <= 420) {
       s.threadsWidth = threads.toDouble();
     }
+    final install = j['install_id'];
+    if (install is String && isInstallId(install)) s.installId = install;
+    if (j['trusted_authors'] case final Map<String, Object?> trusted) {
+      s.trustedAuthors = {
+        for (final MapEntry(:key, :value) in trusted.entries)
+          if (value is List) key: value.whereType<String>().toList(),
+      };
+    }
     return s;
   }
+}
+
+/// Whether [s] is an [AppSettings.installId]: 64 lower-case hex.
+bool isInstallId(String s) => RegExp(r'^[0-9a-f]{64}$').hasMatch(s);
+
+/// [store]'s [AppSettings.installId], made from [random] (a secure one by
+/// default) and saved the first time.
+Future<String> ensureInstallId(SettingsStore store, {Random? random}) async {
+  final s = await store.load();
+  if (s.installId case final id?) return id;
+  final r = random ?? Random.secure();
+  s.installId = [
+    for (var i = 0; i < 32; i++) r.nextInt(256).toRadixString(16).padLeft(2, '0'),
+  ].join();
+  await store.save(s);
+  return s.installId!;
 }
 
 /// At most this many characters in [AppSettings.authorName], as a

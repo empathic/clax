@@ -32,6 +32,10 @@ Directory scratchRoot() {
 /// CLAX_EMBED_LIB as an absolute path, or null when it is not set.
 String? claxEmbedLib() => _runfile('CLAX_EMBED_LIB');
 
+/// The `clax` binary named by CLAX_TEST_BIN as an absolute path, or null
+/// when it is not set.
+String? claxBin() => _runfile('CLAX_TEST_BIN');
+
 /// The file environment variable [name] names, relative to the runfiles
 /// root under Bazel, as an absolute path; null when it is not set.
 String? _runfile(String name) {

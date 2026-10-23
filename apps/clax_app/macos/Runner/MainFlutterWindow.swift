@@ -1,5 +1,6 @@
 import Cocoa
 import FlutterMacOS
+import SystemConfiguration
 import UserNotifications
 import WebKit
 import webview_flutter_wkwebview
@@ -124,7 +125,10 @@ class MainFlutterWindow: NSWindow {
       sidebar: container.sidebar)
 
     // "openExternal" opens an http, https or mailto URL with the app the
-    // person chose for it, and answers whether it was handed over. "share"
+    // person chose for it, and answers whether it was handed over; a
+    // sign-in page (`mode: "auth"`) opens in the browser too, and
+    // "closeAuth" answers false, as the browser is the person's to close.
+    // "deviceName" answers the Mac's Computer Name (General › Sharing). "share"
     // {text} or {name, data} shows the share picker at the centre of the
     // main window and answers whether the person chose a target (`MacShare`
     // in `lib/platform/device/mac_share.dart`). "notificationsAllowed"
@@ -147,6 +151,10 @@ class MainFlutterWindow: NSWindow {
           return
         }
         result(NSWorkspace.shared.open(url))
+      case "closeAuth":
+        result(false)
+      case "deviceName":
+        result(SCDynamicStoreCopyComputerName(nil, nil) as String?)
       case "notificationsAllowed":
         UNUserNotificationCenter.current().getNotificationSettings { settings in
           let on = [.authorized, .provisional].contains(settings.authorizationStatus)

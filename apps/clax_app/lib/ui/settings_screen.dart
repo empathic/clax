@@ -9,6 +9,8 @@ import '../home/home_recovery.dart';
 import '../home/home_settings.dart';
 import '../platform/secure_key.dart';
 import '../platform/settings_store.dart';
+import '../remote/models.dart';
+import '../remote/remote_api.dart';
 import '../version.dart';
 import 'ai_consent_sheet.dart';
 import 'developer.dart';
@@ -27,7 +29,10 @@ import 'tokens.g.dart';
 ///   where runs ask first ([asksAiConsent]), whether requests may go to
 ///   Anthropic, with Turn off once they may;
 /// - Dictation: whether it starts on its own, and its sounds and vibration;
-/// - Sharing: the name bundles carry and the sharing key's fingerprint;
+/// - Sharing: with a [remote], clax.dev (Connect, which runs [connect];
+///   once connected, "Connected as `<name>`" with Disconnect, and
+///   "Publishing as", the account published apps show); the name bundles
+///   carry and the sharing key's fingerprint;
 /// - Notifications, where there are notices ([notificationsAllowed],
 ///   Android): whether they are on, read again each time Clax comes back
 ///   to the front; Open settings, the app's page in the system settings
@@ -69,7 +74,19 @@ class SettingsScreen extends StatefulWidget {
     this.notificationsAllowed,
     this.tab,
     this.onSaved,
+    this.remote,
+    this.connect,
   });
+
+  /// The hosted Clax remotes, for Sharing's clax.dev rows; none without.
+  final RemoteApi? remote;
+
+  /// Signs this device in to clax.dev (the connect sheet), answering the
+  /// remote once connected.
+  final Future<Remote?> Function(BuildContext context)? connect;
+
+  /// The remote Sharing offers to connect to.
+  static const remoteHost = 'clax.dev';
 
   /// The one section to show, as a Settings window's tab; null shows them
   /// all in one column.
@@ -145,6 +162,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   /// Whether notifications are on; null before the first read.
   bool? _notifications;
+
+  /// The remotes this device is signed in to; null before the first read.
+  List<Remote>? _remotes;
+
+  /// Whether a connect or a disconnect is going on.
+  var _remoteBusy = false;
   AppLifecycleListener? _lifecycle;
 
   @override
@@ -152,6 +175,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.initState();
     _init();
     _loadHaikus();
+    if (widget.remote != null) unawaited(_loadRemotes());
     if (widget.notificationsAllowed != null) {
       unawaited(_readNotifications());
       // Back from the system settings, they may have changed.
@@ -169,6 +193,165 @@ class _SettingsScreenState extends State<SettingsScreen> {
       on = false;
     }
     if (mounted) setState(() => _notifications = on);
+  }
+
+  Future<void> _loadRemotes() async {
+    List<Remote> all;
+    try {
+      all = await widget.remote!.remotes();
+    } on Object {
+      all = const [];
+    }
+    if (mounted) setState(() => _remotes = all);
+  }
+
+  /// The remote this device publishes to: the connected one at
+  /// [SettingsScreen.remoteHost], else the first connected; null with
+  /// none.
+  Remote? get _connected {
+    final on = [
+      for (final r in _remotes ?? const <Remote>[])
+        if (r.connected) r,
+    ];
+    return on.where((r) => r.name == SettingsScreen.remoteHost).firstOrNull ??
+        on.firstOrNull;
+  }
+
+  Future<void> _connectRemote(BuildContext context) async {
+    final connect = widget.connect;
+    if (connect == null || _remoteBusy) return;
+    setState(() => _remoteBusy = true);
+    try {
+      await connect(context);
+    } finally {
+      if (mounted) setState(() => _remoteBusy = false);
+    }
+    await _loadRemotes();
+  }
+
+  Future<void> _disconnect(BuildContext context, Remote r) async {
+    final yes = await ClaxDialog.show(
+      context,
+      title: 'Disconnect from ${r.name}?',
+      body:
+          'Apps you published stay on ${r.name}, and their links keep '
+          'working. Apps here stop publishing and updating until you '
+          'connect again.',
+      actions: const [
+        ClaxDialogAction('Cancel'),
+        ClaxDialogAction('Disconnect', kind: ClaxButtonKind.destructive),
+      ],
+      cancelIndex: 0,
+    );
+    if (yes != 1 || !mounted || !context.mounted) return;
+    setState(() => _remoteBusy = true);
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    var revoked = true;
+    try {
+      revoked = await widget.remote!.removeRemote(r.id);
+    } on Object {
+      messenger?.showSnackBar(
+        SnackBar(content: Text('Couldn’t disconnect from ${r.name}')),
+      );
+    } finally {
+      if (mounted) setState(() => _remoteBusy = false);
+    }
+    await _loadRemotes();
+    if (!revoked && mounted && context.mounted) {
+      // Forgotten here, but its token still works there.
+      await ClaxDialog.show(
+        context,
+        title: 'Disconnected here only',
+        body:
+            '${r.name} still lists this device, and it can still act as '
+            'you there. Remove it on ${r.name}’s People page.',
+        actions: const [ClaxDialogAction('OK', kind: ClaxButtonKind.primary)],
+        cancelIndex: 0,
+      );
+    }
+  }
+
+  /// "Connected as `<name>`", or what connecting does.
+  String _remoteLine(Remote? r) => switch (r) {
+    Remote(:final personName?) => 'Connected as $personName',
+    Remote() => 'Connected',
+    null => 'Publish your apps there and get them on your other devices',
+  };
+
+  Widget _remoteButton(BuildContext context, Remote? r) => r == null
+      ? ClaxButton(
+          key: const ValueKey('remote-connect'),
+          label: 'Connect',
+          kind: ClaxButtonKind.tonal,
+          onPressed: _remoteBusy || widget.connect == null
+              ? null
+              : () => unawaited(_connectRemote(context)),
+        )
+      : ClaxButton(
+          key: const ValueKey('remote-disconnect'),
+          label: 'Disconnect',
+          onPressed: _remoteBusy
+              ? null
+              : () => unawaited(_disconnect(context, r)),
+        );
+
+  static const _publishingAsLine =
+      'The account your published apps show, not Your name';
+
+  /// Sharing's clax.dev rows; none without a [SettingsScreen.remote] or
+  /// before its first read.
+  List<Widget> _remoteRows(BuildContext context) {
+    if (widget.remote == null || _remotes == null) return const [];
+    final r = _connected;
+    return [
+      ListTile(
+        key: const ValueKey('remote-row'),
+        title: Text(r?.name ?? SettingsScreen.remoteHost),
+        subtitle: Text(_remoteLine(r)),
+        trailing: _remoteButton(context, r),
+      ),
+      if (r?.personName case final name?)
+        ListTile(
+          key: const ValueKey('publishing-as'),
+          title: const Text('Publishing as'),
+          subtitle: const Text(_publishingAsLine),
+          trailing: _Value(name),
+        ),
+    ];
+  }
+
+  /// Sharing's clax.dev rows in the Apple family's form.
+  List<Widget> _remoteForm(BuildContext context) {
+    if (widget.remote == null || _remotes == null) return const [];
+    final r = _connected;
+    final muted = _muted(context);
+    return [
+      _FormRow(
+        label: r?.name ?? SettingsScreen.remoteHost,
+        child: Column(
+          key: const ValueKey('remote-row'),
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _FormText(_remoteLine(r)),
+            const SizedBox(height: ClaxSpace.s8),
+            _remoteButton(context, r),
+          ],
+        ),
+      ),
+      if (r?.personName case final name?)
+        _FormRow(
+          label: 'Publishing as',
+          child: Column(
+            key: const ValueKey('publishing-as'),
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _FormText(name),
+              const SizedBox(height: ClaxSpace.s4),
+              Text(_publishingAsLine, style: muted),
+            ],
+          ),
+        ),
+    ];
   }
 
   Future<void> _openAppSettings() async {
@@ -434,6 +617,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ];
       case SettingsTab.sharing:
         return [
+          ..._remoteRows(context),
           _Inset(child: _nameField(showLabel: true)),
           if (_fingerprint case final f?)
             ListTile(
@@ -611,6 +795,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ];
       case SettingsTab.sharing:
         return [
+          ..._remoteForm(context),
           _FormRow(label: 'Your name', child: _nameField(showLabel: false)),
           _FormRow(
             label: 'Sharing key',

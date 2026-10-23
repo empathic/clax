@@ -258,6 +258,36 @@ void main() {
       expect((answers.single! as ExportChoice).includeData, isFalse);
     });
 
+    testWidgets('while connected, a modified copy’s Share mine is Publish '
+        'fork', (tester) async {
+      final answers = await _show(
+        tester,
+        ExportSheet(
+          plan: _plan(
+            modes: const [ExportMode.reshare, ExportMode.fork],
+            version: 1,
+            had: 2,
+          ),
+          publishTo: 'clax.dev',
+        ),
+      );
+      expect(
+        find.text(
+          'You changed Plant log since Alex’s version 2. “Share theirs” sends '
+          'Alex’s version 2 as you received it; “Publish fork” publishes '
+          'yours as a new app on clax.dev.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Share mine'), findsNothing);
+      expect(find.text('With my data'), findsNothing);
+      await tester.tap(find.text('Publish fork'));
+      await tester.pumpAndSettle();
+      final c = answers.single! as ExportChoice;
+      expect(c.publish, isTrue);
+      expect(c.mode, ExportMode.fork);
+    });
+
     testWidgets('a modified copy: the original, or mine as a new app, with '
         'or without my data, in labels of three words at most', (tester) async {
       final sheet = ExportSheet(
@@ -521,6 +551,152 @@ void main() {
       expect(answers, [UpdateChoice.update]);
     });
 
+    testWidgets('bring_into_mine_hidden_without_key', (tester) async {
+      // Without Claude (no API key), a modified copy has two choices.
+      await _show(
+        tester,
+        const UpdateSheet(bundle: _bundle, have: 2, added: [], modified: true),
+      );
+      expect(find.byKey(const ValueKey('bring-into-mine')), findsNothing);
+      expect(find.textContaining('Bring v3 into mine'), findsNothing);
+
+      // An unmodified copy never has it, Claude or not.
+      await _show(
+        tester,
+        const UpdateSheet(
+          bundle: _bundle,
+          have: 2,
+          added: [],
+          canBringIntoMine: true,
+        ),
+      );
+      expect(find.byKey(const ValueKey('bring-into-mine')), findsNothing);
+
+      // With Claude, a modified copy has the third choice, and the body
+      // says what it does.
+      final answers = await _show(
+        tester,
+        const UpdateSheet(
+          bundle: _bundle,
+          have: 2,
+          added: [],
+          modified: true,
+          canBringIntoMine: true,
+        ),
+      );
+      expect(
+        find.text(
+          'Update replaces your changes with v3. Keep mine keeps your '
+          'version and stops updates for this app. Bring v3 into mine asks '
+          'Claude to add v3’s changes to yours, checked against a copy of '
+          'your data before you take it.',
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('Bring v3 into mine'));
+      await tester.pumpAndSettle();
+      expect(answers, [UpdateChoice.bringIntoMine]);
+    });
+
+    testWidgets('the offer of a combined version: Publish to this app or '
+        'Discard', (tester) async {
+      var answers = await _show(
+        tester,
+        const MergedOfferSheet(
+          version: 3,
+          note: 'Kept your list and took the new heading.',
+        ),
+      );
+      expect(find.text('Your version with v3'), findsOneWidget);
+      expect(find.text('Checked against a copy of your data'), findsOneWidget);
+      expect(
+        find.text('Kept your list and took the new heading.'),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('Publish to this app'));
+      await tester.pumpAndSettle();
+      expect(answers, [true]);
+      expect(find.text('This version also asks to:'), findsNothing);
+      answers = await _show(
+        tester,
+        const MergedOfferSheet(version: 3, note: 'x'),
+      );
+      await tester.tap(find.text('Discard'));
+      await tester.pumpAndSettle();
+      expect(answers, [false]);
+    });
+
+    testWidgets('the offer lists what the combined version adds to yours', (
+      tester,
+    ) async {
+      await _show(
+        tester,
+        MergedOfferSheet(
+          version: 3,
+          note: 'x',
+          added: addedCapabilityWords(
+            const CapabilityDelta(capabilities: ['sample'], hosts: []),
+          ),
+        ),
+      );
+      expect(find.text('This version also asks to:'), findsOneWidget);
+      expect(find.textContaining('use Claude (on your API key)'), findsOneWidget);
+    });
+
+    testWidgets('an update from a public copy names its publisher and has '
+        'the automatic switch', (tester) async {
+      const linked = BundleSummary(
+        lineage: 'l_aaaaaaaaaaaaaaaaaaaaaaaaaa',
+        title: 'Plant log',
+        version: 6,
+        fingerprint: '7KQ2-M9XD-4FTA-QW3B',
+        capabilities: {},
+        provenance: 'From @owner on clax.dev',
+        byline: 'v6 by @editor · Plant log by @owner',
+      );
+      final auto = <bool>[];
+      await _show(
+        tester,
+        UpdateSheet(
+          bundle: linked,
+          have: 5,
+          added: const [],
+          autoUpdate: false,
+          onAutoUpdate: auto.add,
+        ),
+      );
+      expect(
+        find.text('You have v5. v6 by @editor · Plant log by @owner'),
+        findsOneWidget,
+      );
+      expect(find.text('Update Plant log automatically'), findsOneWidget);
+      expect(find.text('Asks first if it needs a new permission'), findsOneWidget);
+      await tester.tap(find.text('Update Plant log automatically'));
+      await tester.pumpAndSettle();
+      expect(auto, [true]);
+      await tester.tap(find.text('Not now'));
+      await tester.pumpAndSettle();
+
+      // Published by its owner: the provenance; no switch for a file.
+      await _show(
+        tester,
+        const UpdateSheet(
+          bundle: BundleSummary(
+            lineage: 'l_aaaaaaaaaaaaaaaaaaaaaaaaaa',
+            title: 'Plant log',
+            version: 6,
+            fingerprint: '7KQ2-M9XD-4FTA-QW3B',
+            capabilities: {},
+            provenance: 'From @owner on clax.dev',
+          ),
+          have: 5,
+          added: [],
+        ),
+      );
+      expect(find.text('You have v5. From @owner on clax.dev'), findsOneWidget);
+      expect(find.text('Update Plant log automatically'), findsNothing);
+    });
+
     testWidgets('Keep mine and Update sit side by side on a phone, and '
         'stack full width when they do not fit', (tester) async {
       const sheet = UpdateSheet(
@@ -636,6 +812,102 @@ void main() {
       await tester.tap(find.text('Keep current'));
       await tester.pumpAndSettle();
       expect(answers, [null]);
+    });
+  });
+
+  group('Tell @owner', () {
+    testWidgets('tell_owner_prefills_and_needs_comments_on', (tester) async {
+      // Without a way to tell (comments off, or the person may only
+      // view), a failed check offers only Keep current.
+      await _showWorking(
+        tester,
+        ValueNotifier(updateCheckFailed(3, 'the page threw: boom')),
+      );
+      expect(find.byKey(const ValueKey('tell-owner')), findsNothing);
+
+      final posted = <String>[];
+      await _showWorking(
+        tester,
+        ValueNotifier(
+          updateCheckFailed(
+            3,
+            'the page threw: boom',
+            tell: TellOwner(
+              owner: '@sam',
+              draft: tellOwnerDraft(3, 'the page threw: boom'),
+              post: (body) async {
+                posted.add(body);
+                return null;
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          'v3 didn’t pass its checks on your data: the page threw: boom. '
+          'Your app is unchanged.',
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('Tell @sam'));
+      await tester.pumpAndSettle();
+      // The composer shows the version and the reason before anything is
+      // sent.
+      expect(
+        find.text(
+          'Posts a comment on the public app. It sends none of your data.',
+        ),
+        findsOneWidget,
+      );
+      final field = tester.widget<EditableText>(find.byType(EditableText));
+      expect(
+        field.controller.text,
+        'v3 didn’t pass its checks on my data: the page threw: boom.',
+      );
+      expect(posted, isEmpty);
+      await tester.enterText(
+        find.byType(EditableText),
+        '${field.controller.text} On my phone.',
+      );
+      await tester.tap(find.text('Post'));
+      await tester.pumpAndSettle();
+      expect(posted, [
+        'v3 didn’t pass its checks on my data: the page threw: boom. On my '
+            'phone.',
+      ]);
+      // Told once: the button says so and is off.
+      expect(find.text('Told @sam'), findsOneWidget);
+    });
+
+    testWidgets('a post that is refused says why and keeps the text', (
+      tester,
+    ) async {
+      await _showWorking(
+        tester,
+        ValueNotifier(
+          updateCheckFailed(
+            3,
+            'its tests failed',
+            tell: TellOwner(
+              owner: '@sam',
+              draft: tellOwnerDraft(3, 'its tests failed'),
+              post: (_) async => 'Comments are off on this app now.',
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Tell @sam'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Post'));
+      await tester.pumpAndSettle();
+      expect(find.text('Comments are off on this app now.'), findsOneWidget);
+      expect(
+        tester.widget<EditableText>(find.byType(EditableText)).controller.text,
+        'v3 didn’t pass its checks on my data: its tests failed.',
+      );
     });
   });
 

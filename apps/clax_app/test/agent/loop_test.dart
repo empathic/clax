@@ -112,7 +112,7 @@ void main() {
   }
 
   List<String> bodies(String aid, String tid) => [
-    for (final c in api.threadOf(aid, tid).comments) c.body,
+    for (final c in api.threadOf(aid, tid).comments) c.body!,
   ];
 
   setUp(() async {
@@ -702,6 +702,26 @@ void main() {
       expect(runner.seen.single.first.first['type'], 'image');
     });
 
+    test('the clip of a thread a stranger opened stays out of the prompt '
+        'while its author is not approved', () async {
+      final png = Uint8List.fromList([1, 2, 3]);
+      final t = api.sendComment(
+        aid,
+        'Look here',
+        author: 'Bob (on clax.dev)',
+        queue: false,
+        clip: png,
+        remote: 'clax.dev',
+        remoteAuthor: 'remote:clax.dev#u_bob',
+      );
+      await api.postOwnerComment(aid, t.threadId, 'Make it blue');
+      final item = (await api.pollFeedback(sid)).items.single;
+      final loop = loopWith([changeCalls()]);
+      await loop.change(aid, [item], session: sid);
+      expect(api.callNames, contains('clip'));
+      expect([for (final b in runner.seen.single.first) b['type']], ['text']);
+    });
+
     test('no clip is read for a runner that sends no images', () async {
       final png = Uint8List.fromList([1, 2, 3]);
       final item = api.sendComment(aid, 'x', queue: false, clip: png);
@@ -1168,8 +1188,8 @@ class _NewerApi extends FakeClaxApi {
   String? newerOn;
 
   @override
-  Future<List<ThreadView>> threads(String aid) async => [
-    for (final t in await super.threads(aid))
+  Future<List<ThreadView>> threads(String aid, {bool agent = false}) async => [
+    for (final t in await super.threads(aid, agent: agent))
       if (t.id == newerOn)
         ThreadView(
           id: t.id,

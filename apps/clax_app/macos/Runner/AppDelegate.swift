@@ -4,8 +4,9 @@ import FlutterMacOS
 @main
 class AppDelegate: FlutterAppDelegate {
   private var bundles: FlutterMethodChannel?
-  /// Files opened before Dart asked for them with `initial`.
-  private var pendingBundles: [String] = []
+  /// Files and links opened before Dart asked for them with `initial`, as
+  /// {path} or {url}.
+  private var pendingBundles: [[String: String]] = []
   private var bundlesReady = false
 
   override func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -126,19 +127,24 @@ class AppDelegate: FlutterAppDelegate {
   }
 
   /// `.clax` files the person opens in Clax (Finder, a double click, Open
-  /// With) go to Dart; any other URL goes to the plugins as before.
+  /// With) and `clax:` links (Get in Clax, "Open in Clax") go to
+  /// Dart; any other URL goes to the plugins as before.
   override func application(_ application: NSApplication, open urls: [URL]) {
     let clax = urls.filter { $0.isFileURL && $0.pathExtension.lowercased() == "clax" }
-    let rest = urls.filter { !clax.contains($0) }
-    for url in clax { openedBundle(url.path) }
+    let links = urls.filter { $0.scheme?.lowercased() == "clax" }
+    let rest = urls.filter { !clax.contains($0) && !links.contains($0) }
+    for url in clax { openedBundle(["path": url.path]) }
+    for url in links { openedBundle(["url": url.absoluteString]) }
     if !rest.isEmpty { super.application(application, open: rest) }
   }
 
   /// The `dev.empathic.clax/bundles` channel for `ChannelBundleIntake` in
   /// `lib/platform/bundle_intake.dart`. Dart's `initial` answers the files
-  /// opened so far as a list of {path}; from then on each is sent as
-  /// `opened` {path}. The paths are the person's own files, which the
-  /// sandbox lets Clax read because the person opened them.
+  /// and links opened so far as a list of {path} or {url}; from then on
+  /// each is sent as `opened` {path} or {url}. The paths are the person's
+  /// own files, which the sandbox lets Clax read because the person opened
+  /// them; a {url} is the link as macOS gave it, which Dart parses and
+  /// drops when it does not accept it.
   private func installBundles() {
     guard bundles == nil else { return }
     let channel = FlutterMethodChannel(
@@ -150,18 +156,18 @@ class AppDelegate: FlutterAppDelegate {
         return
       }
       self.bundlesReady = true
-      result(self.pendingBundles.map { ["path": $0] })
+      result(self.pendingBundles)
       self.pendingBundles.removeAll()
     }
     bundles = channel
   }
 
-  private func openedBundle(_ path: String) {
+  private func openedBundle(_ event: [String: String]) {
     installBundles()
     if bundlesReady, let channel = bundles {
-      channel.invokeMethod("opened", arguments: ["path": path])
+      channel.invokeMethod("opened", arguments: event)
     } else {
-      pendingBundles.append(path)
+      pendingBundles.append(event)
     }
   }
 }

@@ -8,6 +8,7 @@ import 'failure.dart';
 import 'loop.dart';
 import 'plan.dart';
 import 'progress.dart';
+import 'reply_hold.dart';
 import 'stops.dart';
 import 'unfinished.dart';
 
@@ -236,6 +237,10 @@ class _Job {
 /// recovery queues the builds of every app whose plan has features to
 /// build, is not stopped and is under the cap. [builds] tells each step.
 /// Builds make no [WorkerEvent]s: those are the comments' changes.
+///
+/// Replies on a linked app's threads (spec 2026-10-21 §5.11) go through
+/// the loop's [AgentLoop.replies]: [replyOnThread], [heldReplies] and
+/// [publishAndReply] are its.
 class FeedbackWorker {
   FeedbackWorker({
     required this._api,
@@ -708,6 +713,36 @@ class FeedbackWorker {
   /// The app session the worker registered last, or null before it has.
   String? get sessionId => _sid;
 
+  /// App [aid]'s replies held until their version is public, oldest
+  /// first ([ReplyHold.held]).
+  Future<List<HeldReply>> heldReplies(String aid) => _loop.replies.held(aid);
+
+  /// [ReplyHold.reply] of the loop's [AgentLoop.replies].
+  Future<bool> replyOnThread(
+    String aid,
+    String tid,
+    String text, {
+    int? version,
+  }) => _loop.replies.reply(aid, tid, text, version: version);
+
+  /// Publish v[version] and reply ([ReplyHold.publishAndReply]).
+  Future<ReplyRelease> publishAndReply(
+    String aid,
+    String tid,
+    String text, {
+    required int version,
+  }) => _loop.replies.publishAndReply(aid, tid, text, version: version);
+
+  /// [ReplyHold.release]: after any publish of app [aid].
+  Future<ReplyRelease> releaseReplies(
+    String aid, {
+    required int publicVersion,
+  }) => _loop.replies.release(aid, publicVersion: publicVersion);
+
+  /// [ReplyHold.drop].
+  Future<void> dropReplies(String aid, {String? threadId}) =>
+      _loop.replies.drop(aid, threadId: threadId);
+
   /// Whether no job is queued, running or being recovered.
   bool get isIdle =>
       _queue.isEmpty && _running.isEmpty && _active.isEmpty && _recovering == 0;
@@ -765,6 +800,10 @@ class FeedbackWorker {
             : await _keepAnswers(batch);
         if (stop.isCompleted) return;
         failures = 0;
+        if (batch.withheld.isNotEmpty) {
+          await _askApprovals(_sid!, batch.withheld);
+          if (stop.isCompleted) return;
+        }
         _enqueue(batch.items);
         _queueAnswers(kept);
       } on Object catch (e) {
@@ -779,6 +818,22 @@ class FeedbackWorker {
           maxBackoff.inMilliseconds,
         );
         await _delay(Duration(milliseconds: ms));
+      }
+    }
+  }
+
+  /// Asks the person to approve the authors of each of [withheld] that
+  /// has not been asked about (and is not held for want of access): their
+  /// comments reach the agent by a later poll once approved, never before.
+  /// A refusal (`recently_declined`, `nothing_withheld`, `limit_reached`)
+  /// or a failed call is logged and left: the poll's comments still run.
+  Future<void> _askApprovals(String sid, List<WithheldNotice> withheld) async {
+    for (final n in withheld) {
+      if (n.asked || n.noAccess) continue;
+      try {
+        await _api.askApproval(sid, threadId: n.threadId);
+      } on Object catch (e) {
+        _log('approval for thread ${n.threadId} not asked: $e');
       }
     }
   }
@@ -1110,7 +1165,7 @@ class FeedbackWorker {
     final aid = job.artifactId;
     try {
       final stranded = [
-        for (final t in await _api.threads(aid))
+        for (final t in await _api.threads(aid, agent: true))
           if (job.recheck.contains(t.id) && t.stranded) t,
       ];
       if (stranded.isEmpty) return items;
@@ -1131,17 +1186,22 @@ class FeedbackWorker {
             pending.last.createdAt,
           );
           if (landed != null) {
-            await _api.replyAsAgent(
+            // A reply held for the thread keeps its own text and resolve.
+            if ((await heldReplies(aid)).any((h) => h.threadId == t.id)) {
+              continue;
+            }
+            await replyOnThread(
               aid,
               t.id,
               'Made this change in version $landed.',
+              version: landed,
             );
             continue;
           }
         }
         for (final c in pending) {
           if (settled.answered.contains(c.id) || !seen.add(c.id)) continue;
-          items.add(_item(aid, t, c));
+          if (_item(aid, t, c) case final i?) items.add(i);
         }
       }
     } on ClaxApiError catch (e) {
@@ -1179,7 +1239,7 @@ class FeedbackWorker {
           threads = null;
           continue;
         }
-        threads ??= await _api.threads(aid);
+        threads ??= await _api.threads(aid, agent: true);
         final found = _askedItems(aid, e, threads);
         if (found == null) {
           _log('question $qid: its comments moved on; dropped');
@@ -1219,7 +1279,8 @@ class FeedbackWorker {
         return null;
       }
       for (final c in viewer) {
-        if (e.commentIds.contains(c.id)) out.add(_item(aid, t, c));
+        if (!e.commentIds.contains(c.id)) continue;
+        if (_item(aid, t, c) case final i?) out.add(i);
       }
     }
     return out.isEmpty ? null : out;
@@ -1245,8 +1306,9 @@ class FeedbackWorker {
     if (!_started || _running.contains(tid)) return false;
     final List<ThreadView> all;
     try {
-      all = await _api.threads(aid);
-    } on ClaxApiError catch (e) {
+      all = await _api.threads(aid, agent: true);
+    } on Object catch (e) {
+      // A daemon error, or no session yet.
       _log('retry of $aid/$tid: threads unavailable: $e');
       return false;
     }
@@ -1280,7 +1342,7 @@ class FeedbackWorker {
           for (final v in all)
             if (u.threadIds.contains(v.id) && v.isOpen)
               for (final c in v.comments)
-                if (ids.contains(c.id)) _item(aid, v, c),
+                if (ids.contains(c.id)) ?_item(aid, v, c),
         ];
         if (items.isEmpty || !_started || _known(aid, tid)) return false;
         for (final i in items) {
@@ -1296,7 +1358,7 @@ class FeedbackWorker {
         (unfinished == null || unfinished.artifactId != aid)) {
       // Nothing is kept of the stopped change: it still runs as a Keep
       // going, which is told it starts over from the app and says so.
-      final items = [for (final c in keptGoingComments(t)) _item(aid, t, c)];
+      final items = [for (final c in keptGoingComments(t)) ?_item(aid, t, c)];
       if (items.isEmpty) return false;
       _failed.remove(tid);
       _queue.add(_Job(aid, items: items, keepGoing: true));
@@ -1305,7 +1367,7 @@ class FeedbackWorker {
     }
     if (_stopped.containsKey(tid)) {
       // A stopped change runs again with the comments it had.
-      final items = [for (final c in pendingComments(t)) _item(aid, t, c)];
+      final items = [for (final c in pendingComments(t)) ?_item(aid, t, c)];
       if (items.isEmpty) return false;
       _unstop(tid);
       _queue.add(_Job(aid, items: items));
@@ -1321,7 +1383,7 @@ class FeedbackWorker {
     if (!isAppFailureReply(t.comments.last)) return false;
     final items = [
       for (final c in t.comments)
-        if (ids.contains(c.id)) _item(aid, t, c),
+        if (ids.contains(c.id)) ?_item(aid, t, c),
     ];
     if (items.isEmpty) return false;
     _failed.remove(tid);
@@ -1340,7 +1402,7 @@ class FeedbackWorker {
   Future<void> _recover() async {
     _recovering++;
     try {
-      final all = await _api.allThreads();
+      final all = await _api.allThreads(agent: true);
       final jobs = <_Job>[];
       for (final at in all) {
         for (final t in at.threads) {
@@ -1446,21 +1508,27 @@ class FeedbackWorker {
     return found;
   }
 
-  /// Comment [c] of [t] as the item a poll would have handed over.
-  static FeedbackItem _item(String aid, ThreadView t, ThreadComment c) =>
-      FeedbackItem(
+  /// Comment [c] of [t] as the item a poll would have handed over; null
+  /// when its words are withheld from the agent ([ThreadComment.withheld]):
+  /// they reach it only once the person approves their author, by the
+  /// feedback poll.
+  static FeedbackItem? _item(String aid, ThreadView t, ThreadComment c) =>
+      switch (c.body) {
+        final body? when !c.withheld => FeedbackItem(
         feedbackId: '',
         threadId: t.id,
         commentId: c.id,
         artifactId: aid,
-        body: c.body,
+        body: body,
         author: c.authorName,
         version: t.versionN,
         anchor: t.anchor,
         viaPage: c.viaPage,
         resent: true,
         createdAt: c.createdAt,
-      );
+      ),
+        _ => null,
+      };
 }
 
 /// The viewer comments of [t] that its trailing limit replies answered:

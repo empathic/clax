@@ -1,6 +1,7 @@
 import 'package:clax_app/bundle/lineage_store.dart';
 import 'package:clax_app/bundle/manifest.dart';
 import 'package:clax_app/bundle/trust.dart';
+import 'package:clax_app/remote/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _own = 'OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO';
@@ -45,6 +46,7 @@ LineageEntry _entry({
   List<String>? released,
   bool stopped = false,
   LineageUpstream? upstream,
+  AppLink? link,
 }) => LineageEntry(
   lineage: lineage,
   role: role,
@@ -56,6 +58,36 @@ LineageEntry _entry({
   title: 'Plant log',
   updatesStopped: stopped,
   upstream: upstream,
+  link: link,
+);
+
+const _remote = 'https://clax.example';
+const _by = PublishedBy(name: 'Sam');
+
+AppLink _link({String raid = 'ra1', String origin = _remote}) => AppLink(
+  remoteOrigin: origin,
+  remoteId: 'r1',
+  remoteArtifactId: raid,
+  url: '$origin/a/$raid',
+  baseRemoteVersion: 1,
+  role: AppLink.recipient,
+);
+
+/// [raid] on [_remote], fetched at public version 2.
+BundleOrigin _from({String raid = 'ra1'}) => BundleOrigin(
+  remoteOrigin: _remote,
+  remoteArtifactId: raid,
+  remoteVersion: 2,
+  head: RemoteHead(
+    artifactId: raid,
+    url: '$_remote/a/$raid',
+    title: 'Plant log',
+    version: 2,
+    contentSha256: _h2,
+    publishedBy: _by,
+    owner: _by,
+    comments: false,
+  ),
 );
 
 void main() {
@@ -251,5 +283,104 @@ void main() {
     final d = decide(_bundle(version: 2), store, _own);
     expect(d.answer, TrustAnswer.update);
     expect(d.aid, 'a2');
+  });
+
+  group('linked', () {
+    test('linked_update_from_other_key_is_update', () {
+      final d = decide(
+        _bundle(key: _other, version: 2),
+        {'a1': _entry(link: _link())},
+        _own,
+        live: {
+          'a1': ReleaseState(
+            contentSha256: _h1,
+            title: 'Plant log',
+            capabilities: _caps,
+          ),
+        },
+        origin: _from(),
+      );
+      expect(d.answer, TrustAnswer.update);
+      expect(d.aid, 'a1');
+      expect(d.linked, isTrue);
+      expect(d.modified, isFalse);
+    });
+
+    test('linked_same_bundle_version_is_current', () {
+      final d = decide(
+        _bundle(key: _other, version: 1, hash: _h1),
+        {'a1': _entry(link: _link())},
+        _own,
+        origin: _from(),
+      );
+      expect(d.answer, TrustAnswer.current);
+      expect(d.linked, isTrue);
+    });
+
+    test('a linked lower version is older, whatever the key', () {
+      final d = decide(
+        _bundle(key: _other, version: 1),
+        {'a1': _entry(version: 3, link: _link())},
+        _own,
+        origin: _from(),
+      );
+      expect(d.answer, TrustAnswer.older);
+      expect(d.linked, isTrue);
+    });
+
+    test('the linked row comes before own', () {
+      final d = decide(
+        _bundle(key: _own, version: 4),
+        {
+          'a1': _entry(
+            role: LineageRole.author,
+            key: _own,
+            version: 3,
+            link: _link(),
+          ),
+        },
+        _own,
+        origin: _from(),
+      );
+      expect(d.answer, TrustAnswer.update);
+      expect(d.linked, isTrue);
+      expect(d.mine, isTrue);
+    });
+
+    test('unlinked_other_key_still_foreign', () {
+      // The same lineage under another key, linked to another public copy
+      // or to none, is the existing table's.
+      for (final store in [
+        {'a1': _entry()},
+        {'a1': _entry(link: _link(raid: 'ra2'))},
+        {'a1': _entry(link: _link(origin: 'https://other.example'))},
+      ]) {
+        final d = decide(
+          _bundle(key: _other),
+          store,
+          _own,
+          origin: _from(),
+        );
+        expect(d.answer, TrustAnswer.foreign);
+        expect(d.linked, isFalse);
+      }
+      // Without an origin, a linked entry is no different.
+      final d = decide(
+        _bundle(key: _other),
+        {'a1': _entry(link: _link())},
+        _own,
+      );
+      expect(d.answer, TrustAnswer.foreign);
+    });
+
+    test('a linked entry of another lineage is not matched', () {
+      final d = decide(
+        _bundle(key: _other),
+        {'a1': _entry(lineage: _fork, link: _link())},
+        _own,
+        origin: _from(),
+      );
+      expect(d.answer, TrustAnswer.install);
+    });
   });
 }

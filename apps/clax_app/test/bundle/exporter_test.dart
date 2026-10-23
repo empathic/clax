@@ -7,6 +7,7 @@ import 'package:clax_app/bundle/installer.dart';
 import 'package:clax_app/bundle/lineage_store.dart';
 import 'package:clax_app/bundle/trust.dart';
 import 'package:clax_app/clax/api.dart';
+import 'package:clax_app/remote/models.dart' show AppLink;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'services_support.dart';
@@ -142,6 +143,38 @@ void main() {
       (await me.installer.open(v4.bytes)).decision.answer,
       TrustAnswer.forked,
     );
+  });
+
+  test('an export that makes an installed app the person’s own keeps its '
+      'signer as who published its code', () async {
+    final w = await makeBundle(lineage: lineageA);
+    final aid = (await me.installer.install(await me.installer.open(w.bytes))).aid;
+    // Got from a public copy the person may publish to.
+    await me.store.update(
+      aid,
+      (e) async => e!.copyWith(
+        link: () => const AppLink(
+          remoteOrigin: 'https://clax.example',
+          remoteArtifactId: 'ra1',
+          url: 'https://clax.example/a/ra1',
+          baseRemoteVersion: 1,
+          role: AppLink.author,
+        ),
+      ),
+    );
+    expect((await me.store.entry(aid))!.liveFrom, isNull);
+    await me.exporter.export(aid);
+    var e = (await me.store.entry(aid))!;
+    expect(e.role, LineageRole.author);
+    expect(e.key, (await me.key.existing())!.key);
+    expect(e.liveFrom?.key, w.manifest.author.key);
+    expect(e.liveFrom?.who, 'Sam');
+
+    // A new app of it keeps that too.
+    await me.exporter.export(aid, newLineage: true);
+    e = (await me.store.entry(aid))!;
+    expect(e.lineage, isNot(lineageA));
+    expect(e.liveFrom?.key, w.manifest.author.key);
   });
 
   test('an own export of an installed app is refused', () async {

@@ -216,6 +216,17 @@ body {
   border: 3px solid var(--agent); border-radius: calc(var(--face, 60px) / 4 + 5px);
 }
 .h-badge.h-tile-badge { top: -7px; left: auto; right: -9px; z-index: 1; font-variant-numeric: tabular-nums; }
+/* A published app's sync badge (the app's SyncTileBadge): a 20 px disc at
+ * the icon's bottom end corner, ☁ ↑ ⑂ in `muted` on the surface with a
+ * hairline, ↓ alone in the warm `you`. */
+.h-sync {
+  position: absolute; bottom: -6px; right: -6px; z-index: 1; pointer-events: none;
+  box-sizing: border-box; width: 20px; height: 20px; border-radius: var(--radius-full);
+  display: grid; place-items: center;
+  background: var(--bg); border: 1px solid var(--border); color: var(--muted);
+  font: 600 12px/1 var(--font);
+}
+.h-sync[data-warm] { background: var(--you); border-color: var(--you); color: var(--on-you); }
 
 /* A make's ring, `agent` on `border`, round the breathing mark. */
 .h-ring { position: relative; width: 36px; height: 36px; display: grid; place-items: center; }
@@ -237,6 +248,7 @@ body {
 .h-message-title { margin: 16px 0 0; font: var(--type-title-2); color: var(--fg); text-wrap: balance; }
 .h-message-hint { margin: 8px 0 0; color: var(--muted); font: var(--type-body); text-wrap: balance; }
 .h-message .h-text-button, .h-message .h-filled-button { margin-top: 20px; }
+.h-message .h-message-get { margin-top: 8px; }
 .h-filled-button {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   min-height: 40px; padding: 0 20px; border: 0; border-radius: 20px;

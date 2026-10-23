@@ -161,6 +161,7 @@ class SchemeWorker {
         _,
         _,
         _,
+        _,
         final SendPort reply,
       ]:
         reply.send(WorkerTransport._closedError(method, path));
@@ -353,6 +354,7 @@ class WorkerTransport implements ClaxTransport {
     Map<String, String> headers = const {},
     Uint8List? body,
     required Duration timeout,
+    bool person = false,
   }) {
     if (_closed) return Future.error(_closedError(method, path));
     final reply = RawReceivePort(null, 'clax transport answer');
@@ -384,6 +386,7 @@ class WorkerTransport implements ClaxTransport {
       headers,
       body,
       timeout.inMicroseconds,
+      person,
       reply.sendPort,
     ]);
     return out.future;
@@ -594,6 +597,7 @@ Future<void> _workerMain(_Start s) async {
         final Map<String, String> headers,
         final Uint8List? body,
         final int timeoutUs,
+        final bool person,
         final SendPort reply,
       ]:
         final t = transports[key] ??= CoreTransport(core);
@@ -606,6 +610,7 @@ Future<void> _workerMain(_Start s) async {
                 headers: headers,
                 body: body,
                 timeout: Duration(microseconds: timeoutUs),
+                person: person,
               )
               .then(
                 (a) => reply.send(_decoded(a)),

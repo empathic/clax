@@ -574,7 +574,7 @@ class _ChangeSheetState extends State<ChangeSheet> {
                                   color: scheme.primary,
                                 ),
                               ),
-                              TextSpan(text: c.body),
+                              TextSpan(text: c.body ?? ''),
                             ],
                           ),
                           maxLines: 4,

@@ -66,7 +66,8 @@ Future<HomeUpdateResult> updateHomeApp(
   }
   if (d.modified) {
     switch (await ask(opened)) {
-      case null:
+      // The home app's sheet does not offer Bring vN into mine.
+      case null || UpdateChoice.bringIntoMine:
         return HomeUpdateResult.none;
       case UpdateChoice.keepMine:
         settings.keptRelease = release.release;

@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../agent/icon_svg.dart';
+import '../bundle/content_hash.dart';
 import '../bundle/lineage_store.dart';
 import '../clax/api.dart';
 import '../platform/bundle_key.dart' show keyFingerprint;
@@ -22,6 +23,8 @@ import 'developer.dart';
 import 'kit/button.dart';
 import 'kit/empty.dart';
 import 'kit/mark.dart';
+import 'remote/remote_card.dart';
+import 'remote/remote_flows.dart';
 import 'user_message.dart';
 import 'version_page.dart' show formatBytes, monoFamily, versionTime;
 import 'versions_tab.dart';
@@ -72,6 +75,7 @@ class AppInspector extends StatefulWidget {
     this.initialTab = 0,
     this.bundles,
     this.lineage,
+    this.remote,
     this.cleanIcons = cleanIconsAway,
   });
 
@@ -95,6 +99,10 @@ class AppInspector extends StatefulWidget {
 
   /// The app's lineage entry; null shows no sharing line.
   final Future<LineageEntry?> Function(String aid)? lineage;
+
+  /// The public-copy flows: the Overview's "On clax.dev" card and the
+  /// Versions tab's marks and Publish; null shows neither.
+  final RemoteFlows? remote;
 
   /// Cleans the app's icon.svg; by default on a background isolate.
   final IconCleaner cleanIcons;
@@ -263,6 +271,18 @@ class _AppInspectorState extends State<AppInspector> {
               ? null
               : (origin) => unawaited(_share(_icon, origin)),
           sharing: sharingLine(_lineage),
+          remote: switch (widget.remote) {
+            final r? => RemoteCard(
+              flows: r,
+              aid: widget.aid,
+              entry: _lineage,
+              liveContentSha256: _hash(d.versions.last),
+              modified: _modified(d),
+              svg: _icon,
+              onChanged: () => unawaited(_loadLineage()),
+            ),
+            null => null,
+          },
         ),
       ),
       column(_versions(d)),
@@ -312,6 +332,29 @@ class _AppInspectorState extends State<AppInspector> {
     ];
   }
 
+  /// Whether the live version is past what this device last published
+  /// (an author's last published version) or took (the released hashes).
+  bool _modified(ArtifactDetail d) {
+    final e = _lineage;
+    final link = e?.link;
+    if (e == null || link == null) return false;
+    final live = _hash(d.versions.last);
+    if (link.isAuthor && link.published.isNotEmpty) {
+      final n = link.published.last;
+      final v = d.versions.where((v) => v.n == n).firstOrNull;
+      return v == null || _hash(v) != live;
+    }
+    return !e.released.contains(live);
+  }
+
+  static String _hash(VersionInfo v) {
+    return v.contentSha256 ??
+        contentHash({
+          for (final MapEntry(:key, :value) in v.files.entries)
+            key: (sha256: value.sha256 ?? '', size: value.size),
+        });
+  }
+
   Widget _versions(ArtifactDetail d) {
     final open = widget.onOpenVersion;
     void show(int? n) {
@@ -327,6 +370,15 @@ class _AppInspectorState extends State<AppInspector> {
       shown: d.artifact.currentVersion,
       // Restoring belongs to the open app; here it opens the version.
       busy: true,
+      marks: versionMarks(d, _lineage?.link),
+      onPublish: switch ((widget.remote, _lineage?.link)) {
+        (final r?, final l?) when l.isAuthor => (n) => unawaited(
+          r
+              .publish(context, widget.aid, version: n, svg: _icon)
+              .then((_) => _loadLineage()),
+        ),
+        _ => null,
+      },
       onPreview: show,
       onRestore: show,
       onRetry: () {},
@@ -489,7 +541,11 @@ class _Overview extends StatelessWidget {
     this.shareLabel,
     this.onShare,
     this.sharing,
+    this.remote,
   });
+
+  /// The "On clax.dev" card, under the sharing line.
+  final Widget? remote;
 
   /// The share button's label and action; no button when null.
   final String? shareLabel;
@@ -576,6 +632,10 @@ class _Overview extends StatelessWidget {
                 ),
             ],
           ),
+        ],
+        if (remote case final card?) ...[
+          const SizedBox(height: 12),
+          card,
         ],
         const SizedBox(height: 20),
         Row(

@@ -98,7 +98,14 @@ class ExportedBundle {
     required this.bytes,
     required this.fileName,
     required this.manifest,
+    this.entry,
   });
+
+  /// The lineage entry this export makes the app's (its release recorded):
+  /// written already unless the export was asked not to record it
+  /// (`record: false`), when it is the caller's to write once the bundle
+  /// has gone where it was going. Null for a reshare.
+  final LineageEntry? entry;
 
   final Uint8List bytes;
 
@@ -163,18 +170,52 @@ class Exporter {
 
   /// Builds [aid]'s bundle as [mode]: with the app's documents as seed
   /// when [includeData] (not for [ExportMode.reshare]), naming
-  /// [authorName] as the author's. [ExportMode.own] and [ExportMode.fork]
-  /// make the install's key on first use and record the release in the
-  /// lineage store. Throws [BundleFailure].
+  /// [authorName] as the author's, of local [version]'s files (the current
+  /// version's when null). [ExportMode.own] and [ExportMode.fork] make the
+  /// install's key on first use and record the release in the lineage
+  /// store. Throws [BundleFailure].
+  ///
+  /// An app linked to a public copy this device may publish
+  /// ([AppLink.isAuthor]) goes as [ExportMode.own] whoever signed its
+  /// earlier releases: the public copy's lineage, signed by this install's
+  /// key, at the lineage entry's version plus one (§5.8: each bundle a
+  /// public copy takes must be past the last one; the number may skip),
+  /// and its entry becomes this install's author entry. [atLeast] raises
+  /// that floor: the bundle version is then past both the entry's version
+  /// and [atLeast] (the public copy's latest bundle version).
+  ///
+  /// With [newLineage] an [ExportMode.own] export of an app that has a
+  /// lineage goes as a new app (spec 2026-10-21-app-push-pull §5.10,
+  /// Publish as a new app): a new lineage at version 1 under this
+  /// install's key, `forked_from` naming the lineage it had, as a fork
+  /// does, whoever made it.
+  ///
+  /// With [title] the bundle carries that name in place of the app's (a
+  /// fork published under its own name).
+  ///
+  /// With [record] false nothing is written to the lineage store: the
+  /// entry the export would write is [ExportedBundle.entry], for the
+  /// caller to write once the bundle is accepted (a publish whose push
+  /// fails leaves the lineage as it was).
   Future<ExportedBundle> export(
     String aid, {
     ExportMode mode = ExportMode.own,
     bool includeData = false,
     String? authorName,
+    int? version,
+    int? atLeast,
+    bool record = true,
+    bool newLineage = false,
+    String? title,
   }) async {
     final entry = await store.entry(aid);
     if (mode == ExportMode.reshare) return _reshare(aid, entry);
-    final installed = entry?.role == LineageRole.installed;
+    final fresh = newLineage && mode == ExportMode.own && entry != null;
+    final forks = mode == ExportMode.fork || fresh;
+    final linked =
+        !fresh && mode == ExportMode.own && (entry?.link?.isAuthor ?? false);
+    final installed =
+        entry?.role == LineageRole.installed && !linked && !fresh;
     if (installed != (mode == ExportMode.fork)) {
       throw BundleFailure(
         'export',
@@ -184,7 +225,7 @@ class Exporter {
       );
     }
     final d = await api.getArtifact(aid);
-    final v = _current(d);
+    final v = version == null ? _current(d) : _version(d, version);
     final files = <String, BundleFile>{};
     for (final MapEntry(key: path, value: meta) in v.files.entries) {
       final bytes = await api.readFileBytes(aid, v.n, path);
@@ -202,7 +243,7 @@ class Exporter {
         for (final MapEntry(:key, :value) in files.entries)
           key: (sha256: sha256Hex(value.bytes), size: value.bytes.length),
       }),
-      title: d.artifact.title,
+      title: title ?? d.artifact.title,
       capabilities: caps,
     );
     final seed = includeData ? await _seed(aid) : const <SeedDoc>[];
@@ -211,22 +252,34 @@ class Exporter {
         ? null
         : authorName.trim();
 
-    final mine = mode == ExportMode.own ? _ownEntry(entry, identity.key) : null;
+    final mine = fresh
+        ? null
+        : linked
+        ? entry!.copyWith(
+            role: LineageRole.author,
+            key: identity.key,
+            liveFrom: () => entry.codeFrom,
+          )
+        : mode == ExportMode.own
+        ? _ownEntry(entry, identity.key)
+        : null;
     final lineage = mine?.lineage ?? newLineageId(_random);
-    final version = exportVersion(mine, state);
+    final release = linked
+        ? max(mine!.version, atLeast ?? 0) + 1
+        : exportVersion(mine, state);
     final WrittenBundle written;
     try {
       written = await BundleWriter.write(
         lineage: lineage,
-        version: version,
-        title: d.artifact.title,
+        version: release,
+        title: state.title,
         iconWord: _word(d.artifact.icon),
         capabilities: caps,
         files: files,
         seed: seed,
         keySeed: identity.seed,
         authorName: name,
-        forkedFrom: mode == ExportMode.fork
+        forkedFrom: forks
             ? ForkedFrom(
                 lineage: entry!.lineage,
                 version: entry.version,
@@ -249,24 +302,25 @@ class Exporter {
           role: LineageRole.author,
           key: identity.key,
           name: name,
-          version: version,
+          version: release,
           released: const [],
           capabilities: caps,
           title: state.title,
-          upstream: mode == ExportMode.fork
+          upstream: forks
               ? LineageUpstream(lineage: entry!.lineage, key: entry.key)
               : null,
           fromBundle: entry?.fromBundle ?? false,
+          liveFrom: entry?.codeFrom,
         );
-    await store.update(
-      aid,
-      (_) async =>
-          base.withRelease(state, version: version).copyWith(name: () => name),
-    );
+    final next = base
+        .withRelease(state, version: release)
+        .copyWith(name: () => name);
+    if (record) await store.update(aid, (_) async => next);
     return ExportedBundle(
       bytes: written.bytes,
       fileName: '${bundleSlug(state.title)}.clax',
       manifest: written.manifest,
+      entry: next,
     );
   }
 
@@ -336,6 +390,13 @@ class Exporter {
       throw const BundleFailure('export', 'The app has no version to share.');
     }
     return v;
+  }
+
+  static VersionInfo _version(ArtifactDetail d, int n) {
+    for (final v in d.versions) {
+      if (v.n == n) return v;
+    }
+    throw BundleFailure('export', 'The app has no version $n to share.');
   }
 
   static String _contentHash(VersionInfo v) =>

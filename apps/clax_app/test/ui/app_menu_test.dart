@@ -10,6 +10,9 @@ class _Actions implements HomeActions {
   final ran = <String>[];
   @override
   void importApp() => ran.add('importApp');
+
+  @override
+  void getApps() => ran.add('getApps');
   @override
   void newApp() => ran.add('newApp');
   @override
@@ -304,6 +307,24 @@ void main() {
     await choose(tester, ClaxCommand.newApp);
     await choose(tester, ClaxCommand.inbox);
     expect(s.actions.ran, ['importApp', 'newApp', 'openInbox']);
+  }, variant: _mac);
+
+  testWidgets('File › Get My Apps… runs Get my apps where it is offered, and '
+      'is disabled where it is not', (tester) async {
+    var got = 0;
+    Widget bar({VoidCallback? getApps}) => ClaxMenuBar(
+      comments: CommentsCommand(),
+      getApps: getApps,
+      child: const MaterialApp(home: Text('apps')),
+    );
+    await tester.pumpWidget(bar());
+    await tester.pumpAndSettle();
+    expect(enabled(ClaxCommand.getApps), isFalse);
+    await tester.pumpWidget(bar(getApps: () => got++));
+    await tester.pumpAndSettle();
+    expect(enabled(ClaxCommand.getApps), isTrue);
+    await choose(tester, ClaxCommand.getApps);
+    expect(got, 1);
   }, variant: _mac);
 
   testWidgets('View › Show Sidebar runs the split window\'s toggle, with the '

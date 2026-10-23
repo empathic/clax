@@ -27,6 +27,9 @@ class _Actions implements HomeActions {
   void openSettings() {}
   @override
   void importApp() {}
+
+  @override
+  void getApps() {}
 }
 
 /// Each row as a line: section heads in capitals, a group's apps

@@ -269,6 +269,7 @@ final class ThreadSummary {
     required this.version,
     this.label = '',
     this.clip = false,
+    this.remote,
   });
 
   factory ThreadSummary.fromJson(Map<String, Object?> j) => ThreadSummary(
@@ -280,6 +281,7 @@ final class ThreadSummary {
     version: _int(j['version']),
     label: j['label'] as String? ?? '',
     clip: j['clip'] as bool? ?? false,
+    remote: j['remote'] as String?,
   );
 
   final String id;
@@ -303,6 +305,10 @@ final class ThreadSummary {
 
   /// Whether the thread has a screenshot (`ClaxApi.clip`).
   final bool clip;
+
+  /// The remote the thread came from (`clax.dev`), for a thread mirrored
+  /// from a linked app's public copy; null for one started here.
+  final String? remote;
 }
 
 /// The view's threads changed.

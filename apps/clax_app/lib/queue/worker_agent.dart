@@ -130,6 +130,7 @@ WorkerAgent _agentOf(
     assets: assets,
     model: settings.model,
     clock: start.clock,
+    session: session,
   );
   return (
     agent: AgentTurns(
@@ -170,9 +171,15 @@ final class WorkerJobs {
     required this.assets,
     required this.model,
     required this.clock,
+    required this.session,
   });
 
   final ClaxApi api;
+
+  /// The app's session, registered on first use: a change reads its
+  /// threads through it, as the agent, so comments its person has not
+  /// approved reach the prompt without their words.
+  final Future<String> Function() session;
   final CoreTransport transport;
   final WorkerAgentAssets assets;
   final String model;
@@ -263,7 +270,8 @@ final class WorkerJobs {
     final base = row.input.base > 0 ? row.input.base : app.currentVersion;
     final files = await api.readFiles(aid, base);
     final carried = await _carried(aid, base, files);
-    final threads = await api.threads(aid);
+    await session();
+    final threads = await api.threads(aid, agent: true);
     final documents = await _documents(aid);
     final others = await _others(exclude: aid);
     final comments = <CommentContext>[
@@ -365,14 +373,17 @@ final class WorkerJobs {
         out.clear();
         continue;
       }
-      out.add(
-        CommentContext(
-          threadId: t.id,
-          author: c.authorName,
-          body: c.body,
-          anchorLine: anchorLine(t.anchor, t.versionN),
-        ),
-      );
+      // A comment withheld from the agent adds nothing of it.
+      if (c.body case final body? when !c.withheld) {
+        out.add(
+          CommentContext(
+            threadId: t.id,
+            author: c.authorName,
+            body: body,
+            anchorLine: anchorLine(t.anchor, t.versionN),
+          ),
+        );
+      }
       if (c.id == newest) break;
     }
     return out;

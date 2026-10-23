@@ -17,10 +17,12 @@ import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The `dev.empathic.clax/bundles` channel for `ChannelBundleIntake` in
- * `lib/platform/bundle_intake.dart`: the `.clax` files the person opens in
- * Clax. [BundleReceiverActivity] takes them from other apps and forwards
- * each to `MainActivity` as an [ACTION_OPEN_BUNDLE] intent whose data is
- * the file's `content:` URI.
+ * `lib/platform/bundle_intake.dart`: the `.clax` files and Get in Clax
+ * links the person opens in Clax. [BundleReceiverActivity] takes them from
+ * other apps and forwards each to `MainActivity`: a file as an
+ * [ACTION_OPEN_BUNDLE] intent whose data is the file's `content:` URI, a
+ * link as an [ACTION_OPEN_LINK] intent whose data is the link. A link is
+ * sent to Dart as {url}, which Dart parses and may drop.
  *
  * Each URI is copied on its own thread to `<cache>/incoming/<random>.clax`,
  * stopping past [MAX_BYTES] and giving up after [COPY_TIMEOUT_MS]. Dart's
@@ -71,8 +73,13 @@ class BundleIntake(private val context: Context, messenger: BinaryMessenger) {
         }
     }
 
-    /** Takes [intent]'s file when it carries one; true when it did. */
+    /** Takes [intent]'s file or link when it carries one; true when it did. */
     fun onNewIntent(intent: Intent?): Boolean {
+        if (intent?.action == ACTION_OPEN_LINK) {
+            val link = asLink(intent.data) ?: return false
+            deliver(mapOf("url" to link.toString()))
+            return true
+        }
         if (intent?.action != ACTION_OPEN_BUNDLE) return false
         val uri = acceptable(context, intent.data) ?: return false
         copying++
@@ -139,6 +146,21 @@ class BundleIntake(private val context: Context, messenger: BinaryMessenger) {
 
         /** The intent [BundleReceiverActivity] sends `MainActivity`. */
         const val ACTION_OPEN_BUNDLE = "dev.empathic.clax.OPEN_BUNDLE"
+
+        /** The intent [BundleReceiverActivity] sends `MainActivity` for a link. */
+        const val ACTION_OPEN_LINK = "dev.empathic.clax.OPEN_LINK"
+
+        /** The schemes of the links the manifest's filters take. */
+        private val LINK_SCHEMES = setOf("https", "clax")
+
+        /**
+         * The link a `VIEW` intent carries: an `https:` or `clax:` URI; null
+         * for any other intent, such as a file's `content:` URI.
+         */
+        fun linkOf(intent: Intent?): Uri? =
+            if (intent?.action == Intent.ACTION_VIEW) asLink(intent.data) else null
+
+        private fun asLink(uri: Uri?): Uri? = uri?.takeIf { it.scheme?.lowercase() in LINK_SCHEMES }
 
         /** §6.1's cap on a `.clax` file: 32 MiB. */
         const val MAX_BYTES = 32L * 1024 * 1024

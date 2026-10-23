@@ -1,9 +1,50 @@
 import 'package:flutter/material.dart';
 
 import '../clax/api.dart';
+import '../remote/models.dart';
 import 'version_page.dart';
 
-/// The panel's Versions tab: every version, newest first. With [api],
+/// Where a version of a linked app stands against its public copy.
+enum VersionMark {
+  /// Only on this device.
+  here,
+
+  /// The version this device last published: the public one.
+  public,
+
+  /// Published from this device before, and since replaced.
+  wasPublic,
+}
+
+/// The label a [VersionMark] shows.
+String versionMarkLabel(VersionMark m) => switch (m) {
+  VersionMark.here => 'here',
+  VersionMark.public => 'public',
+  VersionMark.wasPublic => 'was public',
+};
+
+/// Each of [d]'s versions' mark, from the local versions [link] says this
+/// device published (the last of them public); none for an app with no
+/// link.
+Map<int, VersionMark> versionMarks(ArtifactDetail d, AppLink? link) {
+  if (link == null) return const {};
+  final last = link.published.isEmpty ? null : link.published.last;
+  final was = link.published.toSet();
+  return {
+    for (final v in d.versions)
+      v.n: v.n == last
+          ? VersionMark.public
+          : was.contains(v.n)
+          ? VersionMark.wasPublic
+          : VersionMark.here,
+  };
+}
+
+/// The panel's Versions tab: every version, newest first, each with its
+/// [marks] entry (a linked app's: "here", "public" or "was public", the last two after a cloud)
+/// and, with [onPublish], a Publish button on each that is not the public
+/// one, which publishes that version's files as the next public version.
+/// With [api],
 /// tapping one opens its [VersionPage]; without, it shows it. Showing a
 /// version is [onPreview] with its number, or null for the latest, which
 /// follows new versions again. Restore makes an older one the latest
@@ -20,7 +61,15 @@ class VersionsTab extends StatelessWidget {
     required this.onPreview,
     required this.onRestore,
     required this.onRetry,
+    this.marks = const {},
+    this.onPublish,
   });
+
+  /// Each version's mark; a version without one shows none.
+  final Map<int, VersionMark> marks;
+
+  /// Publishes version `n`; null offers no Publish.
+  final void Function(int n)? onPublish;
 
   /// The client the version pages read through; without it, rows preview.
   final ClaxApi? api;
@@ -34,7 +83,9 @@ class VersionsTab extends StatelessWidget {
   /// The version the page shows, when known.
   final int? shown;
 
-  /// Whether a restore is running; restores are off meanwhile.
+  /// Whether a restore is running; restores are off meanwhile (Publish
+  /// is not: it sends a version's files, which a restore leaves as they
+  /// are).
   final bool busy;
   final void Function(int? n) onPreview;
   final void Function(int n) onRestore;
@@ -105,19 +156,70 @@ class VersionsTab extends StatelessWidget {
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
             ),
-            subtitle: Text(versionTime(v.createdAt)),
-            trailing: v.n == latest
-                ? Text(
+            subtitle: Wrap(
+              spacing: 8,
+              children: [
+                Text(versionTime(v.createdAt)),
+                if (marks[v.n] case final m?)
+                  Text.rich(
+                    TextSpan(
+                      children: [
+                        // The cloud as an icon: ☁ is not in every system
+                        // font, and a screen reader reads only the words.
+                        if (m != VersionMark.here) ...[
+                          WidgetSpan(
+                            alignment: PlaceholderAlignment.middle,
+                            child: ExcludeSemantics(
+                              child: Icon(
+                                Icons.cloud_rounded,
+                                size: 14,
+                                color: theme.colorScheme.primary,
+                              ),
+                            ),
+                          ),
+                          const TextSpan(text: ' '),
+                        ],
+                        TextSpan(text: versionMarkLabel(m)),
+                      ],
+                    ),
+                    key: ValueKey('mark-${v.n}'),
+                    semanticsLabel: versionMarkLabel(m),
+                    style: TextStyle(
+                      color: m == VersionMark.here
+                          ? theme.colorScheme.onSurfaceVariant
+                          : theme.colorScheme.primary,
+                    ),
+                  ),
+              ],
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (onPublish case final publish?
+                    when marks[v.n] != VersionMark.public)
+                  TextButton(
+                    key: ValueKey('publish-${v.n}'),
+                    onPressed: () => publish(v.n),
+                    child: Text(
+                      'Publish',
+                      semanticsLabel: 'Publish version ${v.n}',
+                    ),
+                  ),
+                if (v.n == latest)
+                  Text(
                     'Latest',
                     style: theme.textTheme.labelMedium?.copyWith(
                       color: theme.colorScheme.primary,
                     ),
                   )
-                : TextButton(
+                else
+                  TextButton(
                     key: ValueKey('restore-${v.n}'),
                     onPressed: busy ? null : () => onRestore(v.n),
                     child: const Text('Restore'),
                   ),
+              ],
+            ),
             onTap: () => api == null
                 ? onPreview(v.n == latest ? null : v.n)
                 : _open(context, api!, d.artifact.id, latest, v.n),

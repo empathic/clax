@@ -552,6 +552,127 @@ void main() {
       findsOneWidget,
     );
   });
+
+  group('an approval request', () {
+    const bob = 'Bob (on clax.dev)';
+
+    /// Bob's mirrored comment, withheld from Clax, which asks the person.
+    Future<String> asked() async {
+      final s = await api.registerAppSession(installId: 'i', pid: 1);
+      final item = api.sendComment(
+        aid,
+        'Make the header green',
+        author: bob,
+        remote: 'clax.dev',
+        remoteAuthor: 'remote:clax.dev#u_bob',
+        queue: false,
+      );
+      await api.askApproval(s.id, threadId: item.threadId);
+      return (await api.inbox()).items.single.approval!.id;
+    }
+
+    testWidgets('shows who, how much waits and every withheld word, and '
+        'Allow decides it for the thread', (tester) async {
+      final rid = await asked();
+      await pumpInbox(tester);
+      expect(find.text('$bob wants to reach Clax'), findsOneWidget);
+      await tester.tap(find.text('Run log'));
+      await tester.pumpAndSettle();
+      expect(opened, isEmpty, reason: 'the request is decided here');
+      expect(
+        find.text('1 comment on Run log waits for your approval.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Make the header green'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('approval-thread')));
+      await tester.pumpAndSettle();
+      expect(
+        api.calls.lastWhere((c) => c.name == 'decideApproval').args,
+        {'rid': rid, 'scope': 'thread'},
+      );
+      expect(find.byKey(const ValueKey('approval-thread')), findsNothing);
+      // Opened again, it reads its outcome, with no choices.
+      await tester.tap(find.text('Run log'));
+      await tester.pumpAndSettle();
+      expect(find.text('Allowed in this thread'), findsOneWidget);
+      expect(find.byKey(const ValueKey('approval-decline')), findsNothing);
+    });
+
+    testWidgets('names the author by a short form of their ID too, so two '
+        'people named alike read apart, the widest grant included', (
+      tester,
+    ) async {
+      await asked();
+      final s = await api.registerAppSession(installId: 'j', pid: 2);
+      final other = api.sendComment(
+        aid,
+        'Delete the log',
+        author: bob,
+        remote: 'clax.dev',
+        remoteAuthor: 'remote:clax.dev#u_bobby_impostor',
+        queue: false,
+      );
+      await api.askApproval(s.id, threadId: other.threadId);
+      await pumpInbox(tester);
+      await tester.tap(find.text('Run log').first);
+      await tester.pumpAndSettle();
+      final first = tester.widget<Text>(
+        find.byKey(const ValueKey('approval-handle')),
+      );
+      final everywhere = find.descendant(
+        of: find.byKey(const ValueKey('approval-everywhere')),
+        matching: find.byType(Text),
+      );
+      final firstEverywhere = tester.widget<Text>(everywhere).data;
+      Navigator.of(tester.element(everywhere)).pop();
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Run log').last);
+      await tester.pumpAndSettle();
+      final second = tester.widget<Text>(
+        find.byKey(const ValueKey('approval-handle')),
+      );
+      expect({first.data, second.data}, {
+        '$bob’s ID: u_bob',
+        '$bob’s ID: u_bobby_',
+      });
+      expect(
+        {firstEverywhere, tester.widget<Text>(everywhere).data},
+        {
+          'Always allow $bob (ID u_bob) everywhere',
+          'Always allow $bob (ID u_bobby_) everywhere',
+        },
+      );
+    });
+
+    testWidgets('one decided elsewhere reads its outcome, with no choices, '
+        'from the request\'s event', (tester) async {
+      final rid = await asked();
+      await pumpInbox(tester);
+      await api.decideApproval(rid, 'decline');
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Run log'));
+      await tester.pumpAndSettle();
+      expect(find.text('Declined'), findsOneWidget);
+      expect(find.byKey(const ValueKey('approval-everywhere')), findsNothing);
+    });
+
+    testWidgets('one decided elsewhere while its sheet is open says it no '
+        'longer waits', (tester) async {
+      final rid = await asked();
+      await pumpInbox(tester);
+      await tester.tap(find.text('Run log'));
+      await tester.pumpAndSettle();
+      await api.decideApproval(rid, 'decline');
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('approval-everywhere')));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('This request no longer waits for you'),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('approval-everywhere')), findsNothing);
+    });
+  });
 }
 
 /// A fake whose first-page fetch waits for [pending] after reading the

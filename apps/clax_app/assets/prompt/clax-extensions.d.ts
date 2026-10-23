@@ -293,9 +293,9 @@ declare namespace ClaxExtensions {
    * first. The home app itself is never in `apps()`.
    *
    * Calls that open something (`open`, `openMake`, `newApp`, `menu`,
-   * `openInbox`, `openSettings`, `importApp`) must come from the person's
-   * tap or key press in the page, or they reject `no_gesture`; the reads,
-   * `chrome`, `shown` and `tiles` need none.
+   * `openInbox`, `openSettings`, `importApp`, `getApps`) must come from
+   * the person's tap or key press in the page, or they reject
+   * `no_gesture`; the reads, `chrome`, `shown` and `tiles` need none.
    *
    * Clax keeps its own home screen over the page until the page calls
    * `shown()`, and shows its own, with Undo last change and Reset, when
@@ -323,6 +323,16 @@ declare namespace ClaxExtensions {
       icon: Icon;
       /** How far its build is, while one goes. */
       build: Progress | null;
+      /**
+       * How a published app stands against its public copy, for its tile's
+       * badge: live (☁), ahead (↑, newer here), update (↓, an update
+       * waiting; the only warm badge), diverged (⑂, changed in both
+       * places) or fork (⑂, a copy installed from someone else and changed
+       * here); null when it is not published or the person kept their
+       * changes. Absent from a Clax app older than this field: read it as
+       * null.
+       */
+      sync?: "live" | "ahead" | "update" | "diverged" | "fork" | null;
     }
 
     interface Make {
@@ -360,6 +370,9 @@ declare namespace ClaxExtensions {
        * field; each change comes as a `chrome` event. Missing where the
        * window has no toolbar search. */
       query?: string;
+      /** `true` where `getApps()` shows Get my apps; offer it only then.
+       * Missing where this Clax offers no Get my apps. */
+      getApps?: boolean;
     }
 
     /** What `on(name)` hears: each topic's whole latest value. */
@@ -404,6 +417,11 @@ declare namespace ClaxExtensions {
       openSettings(): Promise<void>;
       /** Opens the system picker to import a `.clax` app. */
       importApp(): Promise<void>;
+      /** Shows Get my apps: the apps of the account the Clax app is signed
+       * in to on a hosted Clax, to bring down, signing in there first
+       * when it is not. Offer it only where
+       * `chrome().getApps` is `true`. */
+      getApps(): Promise<void>;
       /** Says the page has drawn the home screen: the grid with its apps,
        * the empty state or the load error. Call it once per load, after
        * the first such render (from an effect, not a tap). Resolves

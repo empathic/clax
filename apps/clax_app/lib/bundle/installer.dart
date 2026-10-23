@@ -10,6 +10,7 @@ import 'dart:typed_data';
 import '../agent/icon_svg.dart';
 import '../clax/api.dart';
 import '../platform/bundle_key.dart';
+import '../remote/models.dart' show AppLink, BundleOrigin;
 import 'bundle_reader.dart';
 import 'content_hash.dart';
 import 'doc_snapshot.dart';
@@ -33,6 +34,7 @@ class BundleFailure implements Exception {
       'too_new' => 'Made by a newer Clax: update Clax to open it.',
       'too_large' => 'This file is too large to be a Clax app.',
       'not_a_bundle' => 'This file is not a Clax app.',
+      'not_a_link' => 'That link isn’t a Clax app.',
       'not_shareable' => 'This app reads other apps, which shared apps cannot.',
       _ => 'This file is damaged or was changed after it was signed.',
     },
@@ -52,6 +54,7 @@ class OpenedBundle {
     required this.fingerprint,
     required this.fromSelf,
     this.live,
+    this.origin,
   });
 
   final Bundle bundle;
@@ -66,6 +69,9 @@ class OpenedBundle {
   /// For [TrustAnswer.update]: the local app's live release state, to
   /// list what the update adds ([addedCapabilities]).
   final ReleaseState? live;
+
+  /// The public copy the bundle was fetched from, when it was.
+  final BundleOrigin? origin;
 
   Manifest get manifest => bundle.manifest;
 
@@ -156,15 +162,22 @@ class Installer {
 
   /// Reads and verifies [bytes] (§6.2) and decides what opening it does
   /// (§6.4), with the live release state of each local app on its lineage.
-  /// A local app the daemon no longer has is forgotten first. Throws
-  /// [BundleFailure] for a refused file.
-  Future<OpenedBundle> open(Uint8List bytes) async {
+  /// A local app the daemon no longer has is forgotten first. [origin]
+  /// names the public copy the bytes were fetched from, for the `linked`
+  /// row ([decide]). Throws [BundleFailure] for a refused file.
+  Future<OpenedBundle> open(Uint8List bytes, {BundleOrigin? origin}) async {
     final Bundle bundle;
     try {
       bundle = await BundleReader.read(bytes);
     } on BundleError catch (e) {
       throw BundleFailure.fromError(e);
     }
+    return openRead(bundle, origin: origin);
+  }
+
+  /// [open] for a [bundle] already read and verified by [BundleReader],
+  /// for a caller that checks it against something else first.
+  Future<OpenedBundle> openRead(Bundle bundle, {BundleOrigin? origin}) async {
     final m = bundle.manifest;
     var entries = await store.all();
     final live = <String, ReleaseState>{};
@@ -186,13 +199,14 @@ class Installer {
     } on Object {
       own = null;
     }
-    final decision = decide(m, entries, own, live: live);
+    final decision = decide(m, entries, own, live: live, origin: origin);
     return OpenedBundle(
       bundle: bundle,
       decision: decision,
       fingerprint: keyFingerprint(m.author.key) ?? m.author.key,
       fromSelf: own != null && own == m.author.key,
       live: decision.aid == null ? null : live[decision.aid],
+      origin: origin,
     );
   }
 
@@ -213,10 +227,15 @@ class Installer {
   /// made.
   ///
   /// [made] hears the new app's ID as soon as the daemon made it, before
-  /// it is filled.
+  /// it is filled. [link], for a bundle got from a remote, is written into
+  /// the new app's lineage entry, so it is a linked app from the start; a
+  /// link that [OpenedBundle.origin] does not name (or a link for a bundle
+  /// with no origin) is refused before anything is made, since the link is
+  /// what later takes that public copy's bundles under any key.
   Future<Installed> install(
     OpenedBundle opened, {
     void Function(String aid)? made,
+    AppLink? link,
   }) async {
     const separate = {
       TrustAnswer.install,
@@ -228,6 +247,12 @@ class Installer {
         'install',
         'This file is not installed as a new app.',
         details: ['The trust decision is ${opened.decision.answer.name}.'],
+      );
+    }
+    if (link != null && !(opened.origin?.names(link) ?? false)) {
+      throw const BundleFailure(
+        'install',
+        'This app was not got from the public copy it would be linked to.',
       );
     }
     final m = opened.manifest;
@@ -287,6 +312,7 @@ class Installer {
           capabilities: m.capabilities,
           title: m.title,
           fromBundle: !mine,
+          link: link,
         ),
       );
       final got = created.version.contentSha256;

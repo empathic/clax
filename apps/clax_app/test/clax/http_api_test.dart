@@ -206,6 +206,7 @@ class _ClosingTransport implements ClaxTransport {
     Map<String, String> headers = const {},
     Uint8List? body,
     required Duration timeout,
+    bool person = false,
   }) => throw UnimplementedError();
 
   @override
@@ -453,6 +454,159 @@ void main() {
         expect(server.requests.last.query, {'include_resolved': 'true'});
       },
     );
+
+    test('an agent read of threads goes through the session, and reads a '
+        'withheld comment without its words', () async {
+      api.sessionId = sid;
+      final withheld = {
+        ...threadJson(id: 't1'),
+        'withheld': {
+          'count': 1,
+          'authors': [
+            {'public_id': 'remote:clax.dev#u_bob', 'name': 'Bob (on clax.dev)'},
+          ],
+          'approval': 'none',
+        },
+        'comments': [
+          {
+            'id': 'c1',
+            'author_kind': 'viewer',
+            'author_name': 'Bob (on clax.dev)',
+            'body': null,
+            'withheld': true,
+            'created_at': '2026-10-12T09:00:00Z',
+          },
+        ],
+      };
+      server.json('GET', '/api/artifacts/$aid/threads', 200, {
+        'threads': [withheld],
+        'next_cursor': null,
+      });
+      final ts = await api.threads(aid, agent: true);
+      expectAgentCall(only('GET', '/api/artifacts/$aid/threads'));
+      final c = ts.single.comments.single;
+      expect(c.withheld, isTrue);
+      expect(c.body, isNull);
+      expect(ts.single.withheld!.authors.single.publicId, 'remote:clax.dev#u_bob');
+      expect(ts.single.withheld!.authors.single.name, 'Bob (on clax.dev)');
+      server.json('GET', '/api/threads', 200, {'artifacts': <Object?>[]});
+      await api.allThreads(agent: true);
+      expectAgentCall(only('GET', '/api/threads'));
+      server.bytes('GET', '/api/artifacts/$aid/threads/t1/clip', 200, [1]);
+      await api.clip(aid, 't1', agent: true);
+      expectAgentCall(only('GET', '/api/artifacts/$aid/threads/t1/clip'));
+      // The person's own reads stay the owner's.
+      server.json('GET', '/api/artifacts/$aid/threads', 200, {
+        'threads': [threadJson(id: 't2')],
+        'next_cursor': null,
+      });
+      await api.threads(aid);
+      expectOwnerCall(server.requests.last);
+    });
+
+    test('an agent read without a session is refused before it is sent',
+        () async {
+      api.sessionId = null;
+      await expectLater(api.threads(aid, agent: true), throwsStateError);
+      await expectLater(api.allThreads(agent: true), throwsStateError);
+      expect(server.requests, isEmpty);
+    });
+  });
+
+  group('approvals', () {
+    test('a poll\'s withheld entries are parsed', () {
+      final b = FeedbackBatch.fromJson({
+        'feedback': <Object?>[],
+        'withheld': [
+          {
+            'thread_id': 't1',
+            'artifact_id': aid,
+            'count': 2,
+            'author': 'Bob (on clax.dev)',
+            'author_ids': ['remote:clax.dev#u_bob'],
+            'title': 'Runs',
+            'asked': false,
+          },
+          {'thread_id': 't2', 'artifact_id': aid, 'count': 1, 'asked': false, 'no_access': true},
+        ],
+      });
+      expect(b.withheld.map((w) => w.threadId), ['t1', 't2']);
+      expect(b.withheld[0].authorIds, ['remote:clax.dev#u_bob']);
+      expect(b.withheld[0].count, 2);
+      expect(b.withheld[0].asked, isFalse);
+      expect(b.withheld[1].noAccess, isTrue);
+    });
+
+    test('askApproval posts the thread for the session', () async {
+      server.json('POST', '/api/sessions/$sid/approvals', 201, {
+        'approval_id': 'r1',
+        'status': 'open',
+      });
+      await api.askApproval(sid, threadId: 't1');
+      final r = only('POST', '/api/sessions/$sid/approvals');
+      expect(r.json, {'thread_id': 't1'});
+    });
+
+    test('decideApproval posts the scope as the person and reads the '
+        'request back', () async {
+      api.sessionId = sid;
+      server.json('POST', '/api/approvals/requests/r1/decide', 200, {
+        'request': {
+          'id': 'r1',
+          'author': {'public_id': 'remote:clax.dev#u_bob', 'name': 'Bob (on clax.dev)', 'owner': false},
+          'artifact_id': aid,
+          'thread_id': 't1',
+          'count': 1,
+          'status': 'approved',
+          'scope': 'thread',
+          'created_at': '2026-10-12T09:00:00Z',
+        },
+        'approval': {'id': 'a1'},
+      });
+      final d = await api.decideApproval('r1', 'thread');
+      final r = only('POST', '/api/approvals/requests/r1/decide');
+      // As the person, in their browser: the core refuses a decision
+      // made with the app's token alone (403 browser_required).
+      expect(r.as, CallAs.ownerBrowser);
+      expect(r.headers.containsKey('authorization'), isFalse);
+      expect(r.headers.containsKey('x-clax-session'), isFalse);
+      expect(r.json, {'scope': 'thread'});
+      expect(d.status, 'approved');
+      expect(d.scope, 'thread');
+      expect(d.author.publicId, 'remote:clax.dev#u_bob');
+    });
+
+    test('an approval inbox item carries its request and the withheld '
+        'comments', () {
+      final i = InboxItem.fromJson({
+        ...inboxItemJson(kind: 'approval'),
+        'approval': {
+          'id': 'r1',
+          'author': {'public_id': 'remote:clax.dev#u_bob', 'name': 'Bob (on clax.dev)'},
+          'artifact_id': aid,
+          'thread_id': 't1',
+          'count': 1,
+          'status': 'open',
+          'scope': null,
+          'created_at': '2026-10-12T09:00:00Z',
+          'content': {
+            'thread': {'id': 't1', 'status': 'open'},
+            'comments': [
+              {'id': 'c1', 'body': 'make it blue', 'created_at': '2026-10-12T09:00:00Z', 'author_name': 'Bob (on clax.dev)', 'by_agent': false},
+            ],
+          },
+        },
+      });
+      expect(i.approval!.author.name, 'Bob (on clax.dev)');
+      expect(i.approval!.comments.single.body, 'make it blue');
+      expect(i.approval!.isOpen, isTrue);
+      // A gone request is its ID alone.
+      final gone = InboxItem.fromJson({
+        ...inboxItemJson(kind: 'approval'),
+        'approval': {'id': 'r1'},
+      });
+      expect(gone.approval, isNull);
+    });
   });
 
   group('publishing', () {

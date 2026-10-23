@@ -54,16 +54,23 @@
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
               />
+            <!-- Links reach Dart on the bundles channel (BundleIntake.kt),
+                 never as a route Flutter would push from the intent's data. -->
+            <meta-data
+              android:name="flutter_deeplinking_enabled"
+              android:value="false"
+              />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
-        <!-- App bundles (.clax) opened or shared to Clax. This invisible,
-             history-less activity forwards each file to the one MainActivity
-             in Clax's own task (BundleReceiverActivity.kt), so the sender's
-             task never starts a second engine; BundleIntake.kt copies it and
-             hands it to Dart. Messaging apps label an unknown file
+        <!-- App bundles (.clax) opened or shared to Clax, and Get in Clax
+             links. This invisible, history-less activity forwards each file
+             or link to the one MainActivity in Clax's own task
+             (BundleReceiverActivity.kt), so the sender's task never starts a
+             second engine; BundleIntake.kt copies a file and hands it, or
+             the link, to Dart. Messaging apps label an unknown file
              application/octet-stream, and a .clax is a zip; the reader
              refuses a file that is not a bundle. A SEND carries its file in
              EXTRA_STREAM, not in the intent's data, so its filter names no
@@ -89,6 +96,37 @@
                 <data android:mimeType="application/vnd.empathic.clax+zip"/>
                 <data android:mimeType="application/zip"/>
                 <data android:mimeType="application/octet-stream"/>
+            </intent-filter>
+            <!-- Get in Clax on clax.dev, https://clax.dev/a/<id>/get: an app
+                 link Android verifies against clax.dev's
+                 /.well-known/assetlinks.json, which must name this app's
+                 signing certificate; unverified, Android 12 and later open
+                 it in the browser (earlier versions ask which app opens
+                 it). Kept apart from the clax: filter, as Android
+                 verifies only a filter whose schemes are all http(s).
+                 The path has one "." (any one character) for each of an
+                 artifact ID's twelve: ".*" would also cross "/" and take
+                 /a/<id>/v/<n>/get, a page file named get, which the app
+                 does not open. pathPattern has no class that excludes
+                 "/" (pathAdvancedPattern needs API 31), and at this
+                 length no other path fits. The site association's path
+                 (crates/clax-server/src/shell/get_page.rs) is the same. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="https"/>
+                <data android:host="clax.dev"/>
+                <data android:pathPattern="/a/............/get"/>
+            </intent-filter>
+            <!-- clax:get?url=<artifact URL>: Get in Clax from any hosted
+                 Clax. Dart's BundleIntakeEvent.artifactOf decides what such
+                 a link may name. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="clax"/>
             </intent-filter>
         </activity>
         <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver" />

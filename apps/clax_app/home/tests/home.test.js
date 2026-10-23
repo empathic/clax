@@ -80,6 +80,20 @@ test('an app whose build goes shows the 3/7 ring', async () => {
   expect(document.querySelector('[data-id="app-notes"]').getAttribute('aria-label')).toBe('Notes, building, 3 of 7 done');
 });
 
+test('a published app’s tile has its sync badge; only the update’s is warm', async () => {
+  const sync = { 'app-run': 'live', 'app-groceries': 'update', 'app-habits': 'ahead', 'app-recipes': 'diverged' };
+  const apps = SAMPLE.apps.map((a) => ({ ...a, sync: sync[a.id] ?? null }));
+  await show({ makes: [], apps });
+  expect(document.querySelector('[data-id="app-run"] .h-sync').dataset.glyph).toBe('☁');
+  expect(document.querySelector('[data-id="app-groceries"] .h-sync').dataset.glyph).toBe('↓');
+  expect(document.querySelector('[data-id="app-habits"] .h-sync').dataset.glyph).toBe('↑');
+  expect(document.querySelector('[data-id="app-recipes"] .h-sync').dataset.glyph).toBe('⑂');
+  expect(ui.exists('[data-id="app-notes"] .h-sync')).toBe(false);
+  expect(ui.exists('[data-id="app-groceries"] .h-sync[data-warm]')).toBeTruthy();
+  expect(document.querySelectorAll('.h-sync[data-warm]').length).toBe(1);
+  expect(document.querySelector('[data-id="app-groceries"]').getAttribute('aria-label')).toBe('Groceries, update waiting');
+});
+
 test('labels break only between words, two lines at most, and a word wider than the cell is one cut line', async () => {
   const long = 'Donaudampfschifffahrtsgesellschaftskapitän';
   const titles = ['Kindergarten pickup rota and swaps', 'A tide table for the harbour mouth', long, 'Notes'];
@@ -275,6 +289,25 @@ test('New app, Inbox, Settings and Import app… ask the app', async () => {
   expect(ui.exists('.h-menu')).toBe(false);
 });
 
+const OFFERS_GET = { platform: 'android', form: 'phone', toolbar: false, pointer: 'touch', getApps: true };
+
+test('Get my apps from clax.dev in More asks the app, where chrome() offers it', async () => {
+  const home = await show({ chrome: OFFERS_GET });
+  await ui.click('[aria-label="More"]');
+  await ui.waitFor(() => [...document.querySelectorAll('.h-menu-item')].some((b) => b.textContent === 'Get my apps from clax.dev'));
+  await ui.click('Get my apps from clax.dev');
+  expect(home.calls).toEqual([{ method: 'getApps', args: [] }]);
+  expect(ui.exists('.h-menu')).toBe(false);
+});
+
+test('without getApps in chrome() neither More nor the empty state offers Get my apps', async () => {
+  await show({ apps: [], makes: [] });
+  expect(ui.exists('.h-message-get')).toBe(false);
+  await ui.click('[aria-label="More"]');
+  expect(ui.text()).toContain('Import app…');
+  expect(ui.text().includes('Get my apps from clax.dev')).toBe(false);
+});
+
 test('the inbox has no badge when nothing is unread', async () => {
   await show({ unread: 0 });
   expect(ui.exists('.h-badge')).toBe(false);
@@ -291,13 +324,15 @@ test('a missing key shows the banner, and Add key opens Settings', async () => {
 });
 
 test('with no apps and no makes it says what to do over the mark, with one New app', async () => {
-  const home = await show({ apps: [], makes: [] });
+  const home = await show({ apps: [], makes: [], chrome: OFFERS_GET });
+  await ui.waitFor(() => document.querySelector('.h-message-get'));
   expect(ui.text()).toContain('Say what you need, and Clax makes it.');
   expect(ui.exists('.h-message .clax-mark')).toBe(true);
   expect(ui.exists('.h-grid')).toBe(false);
   expect(ui.exists('.h-fab')).toBe(false);
   await ui.click('New app');
-  expect(home.calls).toEqual([{ method: 'newApp', args: [] }]);
+  await ui.click('Get my apps from clax.dev');
+  expect(home.calls).toEqual([{ method: 'newApp', args: [] }, { method: 'getApps', args: [] }]);
 });
 
 test('follows the app list, the makes and the unread count as they change', async () => {

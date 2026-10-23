@@ -1,8 +1,12 @@
 import 'package:clax_app/clax/fake_api.dart';
+import 'package:clax_app/remote/checker.dart';
+import 'package:clax_app/remote/models.dart';
+import 'package:clax_app/remote/sync_state.dart';
 import 'package:clax_app/ui/developer.dart';
 import 'package:clax_app/ui/inbox/inbox_split.dart';
 import 'package:clax_app/ui/inbox_screen.dart';
 import 'package:clax_app/ui/mac/mac_toolbar.dart';
+import 'package:clax_app/ui/remote/linked_app.dart';
 import 'package:clax_app/ui/split/sidebar_model.dart';
 import 'package:clax_app/ui/split/split_shell.dart';
 import 'package:clax_app/ui/theme.dart';
@@ -55,6 +59,8 @@ void main() {
     WidgetTester tester,
     double width, {
     bool windowToolbar = false,
+    ValueListenable<Map<String, LinkedStatus>>? linked,
+    LinkedAppHooks? linkedApps,
   }) async {
     tester.view.physicalSize = Size(width, 700);
     tester.view.devicePixelRatio = 1;
@@ -72,6 +78,8 @@ void main() {
             voice: FakeVoice(),
             now: () => DateTime.utc(2026, 10, 12, 9, 30),
             toolbar: windowToolbar,
+            linked: linked,
+            linkedApps: linkedApps,
             onOpenApp: (aid, {thread, version, comment}) =>
                 opened.add((aid: aid, thread: thread, version: version)),
             onOpenQuestion: questions.add,
@@ -231,6 +239,62 @@ void main() {
     await tester.tap(find.text('Open app'));
     await tester.pumpAndSettle();
     expect(opened, [(aid: aid, thread: tid, version: null)]);
+  });
+
+  testWidgets('a thread of an app whose public copy takes no comments has '
+      'no reply bar, until it takes them again', (tester) async {
+    RemoteHead head(bool comments) => RemoteHead(
+      artifactId: 'r1',
+      url: 'https://clax.dev/a/r1',
+      title: 'Run log',
+      version: 1,
+      contentSha256: 'sha256:x',
+      publishedBy: const PublishedBy(name: 'Ada'),
+      owner: const PublishedBy(name: 'Ada'),
+      comments: comments,
+    );
+    final linked = ValueNotifier<Map<String, LinkedStatus>>({
+      aid: LinkedStatus(state: SyncState.live, head: head(false)),
+    });
+    addTearDown(linked.dispose);
+    await pump(tester, 900, linked: linked);
+    await tester.tap(find.text('Clax replied: Fixed it'));
+    await tester.pumpAndSettle();
+    expect(find.byType(ThreadDetail), findsOneWidget);
+    expect(find.byKey(const ValueKey('thread-reply-bar')), findsNothing);
+
+    linked.value = {aid: LinkedStatus(state: SyncState.live, head: head(true))};
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('thread-reply-bar')), findsOneWidget);
+  });
+
+  testWidgets('a thread whose reply waits shows the held card, why its '
+      'version is not public, and Publish vN and reply', (tester) async {
+    final calls = <String>[];
+    int? held = 2;
+    final hooks = LinkedAppHooks(
+      status: ValueNotifier(const {}),
+      lineage: (_) async => null,
+      heldReply: (a, t) async {
+        calls.add('held $a');
+        return held;
+      },
+      heldNote: (a, n) async => 'clax.dev can’t be reached right now.',
+      publishAndReply: (a, t, n) async {
+        calls.add('publish $a v$n');
+        held = null;
+        return null;
+      },
+    );
+    await pump(tester, 900, linkedApps: hooks);
+    await tester.tap(find.text('Clax replied: Fixed it'));
+    await tester.pumpAndSettle();
+    expect(find.text('Claude’s reply waits for v2 to be public.'), findsOneWidget);
+    expect(find.text('clax.dev can’t be reached right now.'), findsOneWidget);
+    await tester.tap(find.text('Publish v2 and reply'));
+    await tester.pumpAndSettle();
+    expect(calls, containsAllInOrder(['held $aid', 'publish $aid v2']));
+    expect(find.byKey(const ValueKey('held-reply')), findsNothing);
   });
 
   testWidgets('at 900 a version shows what it is, and Open app opens the app '

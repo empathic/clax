@@ -33,7 +33,7 @@ bool isFailureText(String body) =>
 /// [failureReply] does. A reply from another harness, or a person's
 /// comment with the same words, is not one.
 bool isAppFailureReply(ThreadComment c) =>
-    c.byAgent && c.viaHarness == appHarness && isFailureText(c.body);
+    c.byAgent && c.viaHarness == appHarness && isFailureText(c.body ?? '');
 
 /// What a change and its Keep going runs may cost together, in US dollars.
 const changeCapUsd = 6.0;
@@ -299,7 +299,7 @@ bool offersKeepGoing(String text) => _keepGoingAny.hasMatch(text);
 /// the Keep going line ([offersKeepGoing]). The change it ended may have published part of
 /// itself (then it is not a failure reply) or nothing.
 bool isKeepGoingReply(ThreadComment c) =>
-    c.byAgent && c.viaHarness == appHarness && offersKeepGoing(c.body);
+    c.byAgent && c.viaHarness == appHarness && offersKeepGoing(c.body ?? '');
 
 /// An app agent's reply read back for the thread page: one [line] to
 /// show, and what goes under Details.

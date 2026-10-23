@@ -7,15 +7,19 @@ import os
 /// `ChannelBundleIntake` in `lib/platform/bundle_intake.dart` (Android's is
 /// `BundleIntake.kt`, the Mac's `macos/Runner/AppDelegate.swift`): the
 /// `.clax` files the person opens in Clax from Files, Mail, Messages or the
-/// share sheet.
+/// share sheet, and the Get in Clax links.
 ///
-/// The files arrive as the scene's URLs, through the registrar's scene
-/// delegates (`FlutterSceneDelegate` forwards its own calls to them): a
-/// cold launch's in `scene(_:willConnectTo:options:)`, a running app's in
-/// `scene(_:openURLContexts:)`. Any other URL is left to the plugins.
+/// The files and `clax:` links arrive as the scene's URLs, and clax.dev's
+/// universal links as browsing-web user activities, through the
+/// registrar's scene delegates (`FlutterSceneDelegate` forwards its own
+/// calls to them): a cold launch's in `scene(_:willConnectTo:options:)`, a
+/// running app's in `scene(_:openURLContexts:)` and
+/// `scene(_:continue:)`. Any other URL or activity is left to the plugins.
 ///
-/// Dart's "initial" answers the files opened so far as a list of {path} or
-/// {refused}; from then on each is sent as "opened" {path} or {refused}.
+/// Dart's "initial" answers what was opened so far as a list of {path},
+/// {refused} or {url}; from then on each is sent as "opened" {path},
+/// {refused} or {url}. A {url} is the link as iOS gave it; Dart parses it
+/// and drops one it does not accept.
 ///
 /// Each file is copied first into `<tmp>/bundles/<UUID>.clax`, Clax's own
 /// copy that Dart deletes once read: the file iOS hands over (in
@@ -61,21 +65,40 @@ final class BundleIntake: NSObject, FlutterSceneLifeCycleDelegate {
     _ scene: UIScene, willConnectTo session: UISceneSession,
     options connectionOptions: UIScene.ConnectionOptions?
   ) -> Bool {
-    guard let contexts = connectionOptions?.urlContexts else { return false }
-    return took(contexts)
+    guard let options = connectionOptions else { return false }
+    let files = took(options.urlContexts)
+    let links = options.userActivities.map { took($0) }.contains(true)
+    return files || links
   }
 
   func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) -> Bool {
     took(URLContexts)
   }
 
-  /// Takes the `.clax` files of [contexts]: whether there was one.
+  func scene(_ scene: UIScene, continue userActivity: NSUserActivity) -> Bool {
+    took(userActivity)
+  }
+
+  /// Takes the `.clax` files and `clax:` links of [contexts]: whether there
+  /// was one.
   private func took(_ contexts: Set<UIOpenURLContext>) -> Bool {
-    let clax = contexts.map(\.url).filter {
-      $0.isFileURL && $0.pathExtension.lowercased() == "clax"
-    }
+    let urls = contexts.map(\.url)
+    let clax = urls.filter { $0.isFileURL && $0.pathExtension.lowercased() == "clax" }
+    let links = urls.filter { $0.scheme?.lowercased() == "clax" }
     for url in clax { send(take(url)) }
-    return !clax.isEmpty
+    for url in links { send(["url": url.absoluteString]) }
+    return !clax.isEmpty || !links.isEmpty
+  }
+
+  /// Takes [activity] when it is a universal link to clax.dev: whether it
+  /// was.
+  private func took(_ activity: NSUserActivity) -> Bool {
+    guard activity.activityType == NSUserActivityTypeBrowsingWeb,
+      let url = activity.webpageURL, url.scheme?.lowercased() == "https",
+      url.host?.lowercased() == "clax.dev"
+    else { return false }
+    send(["url": url.absoluteString])
+    return true
   }
 
   private func send(_ file: [String: String]) {

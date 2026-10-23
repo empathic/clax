@@ -13,10 +13,13 @@ import 'package:clax_app/home/home_host.dart';
 import 'package:clax_app/home/home_install.dart';
 import 'package:clax_app/home/home_settings.dart';
 import 'package:clax_app/queue/client.dart';
+import 'package:clax_app/remote/checker.dart' show LinkedStatus;
+import 'package:clax_app/remote/sync_state.dart';
 import 'package:clax_app/ui/app_icon.dart';
 import 'package:clax_app/ui/build_plan.dart';
 import 'package:clax_app/ui/make_service.dart';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show ValueNotifier;
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_queue.dart';
@@ -110,6 +113,9 @@ class _Actions implements HomeActions {
   void openSettings() => calls.add(('openSettings', []));
   @override
   void importApp() => calls.add(('importApp', []));
+
+  @override
+  void getApps() => calls.add(('getApps', []));
 }
 
 class _Control implements BuildControl {
@@ -622,6 +628,71 @@ void main() {
     );
   });
 
+  test('tile_badges_per_state: apps() gives each app its sync badge from '
+      'the linked status, and the home app hears of a change', () async {
+    final ids = {
+      for (final st in SyncState.values) st: api.seedArtifact(st.name, _page),
+    };
+    final linked = ValueNotifier<Map<String, LinkedStatus>>({});
+    host.dispose();
+    host = HomeHost(
+      api: api,
+      stream: api.stream(),
+      closeStream: true,
+      makes: makes,
+      builds: BuildLink(plans: plans, control: control),
+      settings: settings,
+      actions: actions,
+      linked: linked,
+    );
+    await pumpEventQueue();
+    await host.load();
+    Future<Map<String, Object?>> syncs() async => {
+      for (final a in await host.call(home, 'apps', {}) as List)
+        (a as Map)['id'] as String: a['sync'],
+    };
+    // Nothing linked: no badges.
+    expect((await syncs()).values.toSet(), {null});
+
+    final told = <HomeEvent>[];
+    host.events.listen(told.add);
+    await pumpEventQueue();
+    told.clear();
+    linked.value = {
+      for (final MapEntry(key: st, value: aid) in ids.entries)
+        aid: LinkedStatus(state: st),
+    };
+    await pumpEventQueue();
+    final now = await syncs();
+    expect({for (final MapEntry(key: st, value: aid) in ids.entries) st: now[aid]}, {
+      SyncState.onlyHere: null,
+      SyncState.live: 'live',
+      SyncState.ahead: 'ahead',
+      SyncState.updateWaiting: 'update',
+      SyncState.keptMine: null,
+      SyncState.diverged: 'diverged',
+      SyncState.forked: 'fork',
+    });
+    expect(told.map((e) => e.name), contains('apps'));
+    expect(host.syncOf(ids[SyncState.updateWaiting]!), 'update');
+  });
+
+  test('chrome() says getApps only where Get my apps is on offer', () async {
+    expect(await host.call(home, 'chrome', {}), isNot(contains('getApps')));
+    host.dispose();
+    host = HomeHost(
+      api: api,
+      stream: api.stream(),
+      closeStream: true,
+      makes: makes,
+      builds: BuildLink(plans: plans, control: control),
+      settings: settings,
+      actions: actions,
+      offersGetApps: true,
+    );
+    expect(await host.call(home, 'chrome', {}), containsPair('getApps', true));
+  });
+
   test('while the toolbar is held its search text is chrome()\'s query, one '
       'event per change; the last release clears it', () async {
     final told = <HomeEvent>[];
@@ -664,7 +735,7 @@ void main() {
     expect(api.callNames, containsAll(['listArtifacts', 'inboxSummary']));
   });
 
-  test('open, newApp and menu call the matching action', () async {
+  test('open, newApp, menu and getApps call the matching action', () async {
     final aid = api.seedArtifact('Runs', _page);
     await host.load();
     await host.call(home, 'open', {'id': aid});
@@ -674,11 +745,13 @@ void main() {
       'rect': {'x': 1, 'y': 2, 'w': 3, 'h': 4},
     });
     await host.call(home, 'openInbox', {});
+    await host.call(home, 'getApps', {});
     expect(actions.calls.map((c) => [c.$1, ...c.$2]), [
       ['open', aid],
       ['newApp'],
       ['menu', aid, const Rect.fromLTWH(1, 2, 3, 4), const <HomeMenuItem>[]],
       ['openInbox'],
+      ['getApps'],
     ]);
   });
 

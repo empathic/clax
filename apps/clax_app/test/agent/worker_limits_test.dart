@@ -59,7 +59,7 @@ void main() {
   );
 
   List<String> bodies(String tid) => [
-    for (final c in api.threadOf(aid, tid).comments) c.body,
+    for (final c in api.threadOf(aid, tid).comments) c.body!,
   ];
 
   setUp(() {

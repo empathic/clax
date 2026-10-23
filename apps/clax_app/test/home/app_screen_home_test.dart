@@ -39,6 +39,10 @@ class _Actions implements HomeActions {
   void openSettings() {}
   @override
   void importApp() {}
+
+  var gotApps = 0;
+  @override
+  void getApps() => gotApps++;
 }
 
 void main() {
@@ -282,6 +286,59 @@ void main() {
       await tester.pump();
       expect(items.last, ['back', 'forward', 'comment', 'threads']);
       expect(host.query, '');
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+  );
+
+  testWidgets(
+    'on the Mac, where Get my apps is offered, the home app\'s toolbar has '
+    'Get My Apps, which runs it',
+    (tester) async {
+      host.dispose();
+      host = HomeHost(
+        api: api,
+        stream: api.stream(),
+        closeStream: true,
+        makes: MakeService.local((r, c, s) => Completer<String>().future),
+        builds: null,
+        settings: HomeSettings(homeAppId: home),
+        actions: actions,
+        offersGetApps: true,
+      );
+      MacToolbar.reset();
+      final items = <List<Object?>>[];
+      final m = tester.binding.defaultBinaryMessenger;
+      m.setMockMethodCallHandler(MacToolbar.channel, (call) async {
+        if (call.method == 'setItems') {
+          items.add([
+            for (final i in (call.arguments as Map)['items'] as List)
+              (i as Map)['id'],
+          ]);
+        }
+        return null;
+      });
+      m.setMockMethodCallHandler(MacWindow.channel, (_) async => null);
+      addTearDown(() {
+        m.setMockMethodCallHandler(MacToolbar.channel, null);
+        m.setMockMethodCallHandler(MacWindow.channel, null);
+      });
+      final page = await pump(tester, home, mode: AppMode.home);
+      page.push(Ready(artifact: home, version: 1, latest: 1, file: 'index.html'));
+      await tester.pumpAndSettle();
+      // Its own bar offers it: the toolbar does not.
+      expect(items.last, isNot(contains('get-apps')));
+      host.holdToolbar(Object(), true);
+      await tester.pumpAndSettle();
+      expect(items.last, contains('get-apps'));
+      await m.handlePlatformMessage(
+        MacToolbar.channel.name,
+        MacToolbar.channel.codec.encodeMethodCall(
+          MethodCall('clicked', {'view': tester.view.viewId, 'id': 'get-apps'}),
+        ),
+        (_) {},
+      );
+      await tester.pump();
+      expect(actions.gotApps, 1);
     },
     variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );

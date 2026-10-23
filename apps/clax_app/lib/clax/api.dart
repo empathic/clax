@@ -105,8 +105,9 @@ abstract interface class ClaxApi {
 
   /// The PNG clip of thread [tid], or null when it has none. The daemon
   /// answers an unknown thread or artifact the same way, so those are null
-  /// too.
-  Future<Uint8List?> clip(String aid, String tid);
+  /// too. With [agent], read through the app's session as its agent: a
+  /// clip withheld from it is [ClaxApiError] `withheld`.
+  Future<Uint8List?> clip(String aid, String tid, {bool agent});
 
   /// The first [limit] documents of [collection].
   Future<List<Doc>> listDocs(String aid, String collection, {int limit});
@@ -123,11 +124,31 @@ abstract interface class ClaxApi {
   Future<Doc?> getDoc(String aid, String path, {String? reader});
 
   /// Every thread of the artifact, resolved ones included, oldest first.
-  Future<List<ThreadView>> threads(String aid);
+  /// The person's own reads show every comment whole. With [agent], read
+  /// through the app's session (`x-clax-session`) as its agent: a comment
+  /// whose author the person has not approved is [ThreadComment.withheld],
+  /// with no words. Every read whose threads reach a prompt passes it;
+  /// without a session it is a [StateError].
+  Future<List<ThreadView>> threads(String aid, {bool agent});
 
   /// Every artifact's threads (open ones only unless [includeResolved]);
-  /// an artifact without any is left out.
-  Future<List<ArtifactThreads>> allThreads({bool includeResolved});
+  /// an artifact without any is left out. [agent] as for [threads].
+  Future<List<ArtifactThreads>> allThreads({bool includeResolved, bool agent});
+
+  // --- approvals ---
+
+  /// Asks the person, as session [sid]'s agent, to let it see what is
+  /// withheld from it in thread [threadId]
+  /// (`POST /api/sessions/<sid>/approvals`): one request per withheld
+  /// author, made or joined. 400 `nothing_withheld` or `recently_declined`; 429
+  /// `limit_reached`.
+  Future<void> askApproval(String sid, {required String threadId});
+
+  /// Decides approval request [rid] as the person: [scope] is `thread`
+  /// (this thread, including later replies), `artifact`, `everywhere` or
+  /// `decline`. Answers the request as it now stands, without its
+  /// comments. 409 `request_closed` when it no longer waits.
+  Future<ApprovalRequest> decideApproval(String rid, String scope);
 
   // --- drafts (all token only: no session, so no watch and no feedback) ---
 

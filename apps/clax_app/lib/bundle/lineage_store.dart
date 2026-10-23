@@ -3,7 +3,8 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
-import '../platform/bundle_key.dart' show base32Upper;
+import '../platform/bundle_key.dart' show base32Upper, keyFingerprint;
+import '../remote/models.dart' show AppLink, VersionSource;
 
 /// Who signs a lineage on this install.
 enum LineageRole {
@@ -66,6 +67,8 @@ class LineageEntry {
     this.stoppedAt,
     this.upstream,
     this.fromBundle = false,
+    this.link,
+    this.liveFrom,
   });
 
   /// `l_` and 26 lower-case base32 characters.
@@ -102,6 +105,33 @@ class LineageEntry {
 
   /// True when this app's code came from a bundle; kept through a fork.
   final bool fromBundle;
+
+  /// The app's public copy on a remote, when it is linked to one.
+  final AppLink? link;
+
+  /// Who published the version last taken into the app from elsewhere (an
+  /// update's signer, or the account whose public version was taken or
+  /// combined), kept through the person's own later changes; null when
+  /// nothing was ever taken in. Its code is in the app, so Claude reads
+  /// it on every change (`AuthorTrust.ensure`).
+  final VersionSource? liveFrom;
+
+  /// True when publishing this app makes a new app of the person's own
+  /// (Publish fork, §5.12): installed from someone else's and not linked
+  /// to a public copy the person may publish to. An app got from the
+  /// person's own or a Can-edit public copy publishes that copy's next
+  /// version instead.
+  bool get publishesAsFork =>
+      role == LineageRole.installed && !(link?.isAuthor ?? false);
+
+  /// Who published the code this entry's release carries, kept through an
+  /// export that rewrites it as the person's own: [liveFrom], else an
+  /// installed release's signer ([key], named [name]).
+  VersionSource? get codeFrom =>
+      liveFrom ??
+      (role == LineageRole.installed
+          ? VersionSource(key: key, who: name ?? keyFingerprint(key) ?? key)
+          : null);
 
   /// §5.4: false when [contentSha256] is one of [released] and
   /// [capabilities] equal the stored ones, so a restore of an earlier
@@ -154,6 +184,8 @@ class LineageEntry {
     DateTime? Function()? stoppedAt,
     LineageUpstream? upstream,
     bool? fromBundle,
+    AppLink? Function()? link,
+    VersionSource? Function()? liveFrom,
   }) => LineageEntry(
     lineage: lineage ?? this.lineage,
     role: role ?? this.role,
@@ -167,6 +199,8 @@ class LineageEntry {
     stoppedAt: stoppedAt != null ? stoppedAt() : this.stoppedAt,
     upstream: upstream ?? this.upstream,
     fromBundle: fromBundle ?? this.fromBundle,
+    link: link != null ? link() : this.link,
+    liveFrom: liveFrom != null ? liveFrom() : this.liveFrom,
   );
 
   Map<String, Object?> toJson() => {
@@ -182,6 +216,8 @@ class LineageEntry {
     'stopped_at': stoppedAt?.toUtc().toIso8601String(),
     'upstream': upstream?.toJson(),
     'from_bundle': fromBundle,
+    'link': ?link?.toJson(),
+    'live_from': ?liveFrom?.toJson(),
   };
 
   /// The entry [j] holds, or null when it is not one.
@@ -217,6 +253,8 @@ class LineageEntry {
       stoppedAt: stoppedAt is String ? DateTime.tryParse(stoppedAt) : null,
       upstream: LineageUpstream.fromJson(j['upstream']),
       fromBundle: j['from_bundle'] == true,
+      link: AppLink.fromJson(j['link']),
+      liveFrom: VersionSource.fromJson(j['live_from']),
     );
   }
 }
@@ -286,6 +324,28 @@ class LineageStore {
   /// [aid]'s entry, or null.
   Future<LineageEntry?> entry(String aid) async =>
       LineageEntry.fromJson(_readRaw()[aid]);
+
+  /// Whether the file holds an entry for [aid] that does not parse (left
+  /// out of [all] and [entry]).
+  Future<bool> unreadable(String aid) async {
+    final raw = _readRaw()[aid];
+    return raw != null && LineageEntry.fromJson(raw) == null;
+  }
+
+  /// Whether entries may have been lost: the file reads [damaged] now, or
+  /// a damaged one was set aside (`lineages.json.corrupt-*` beside it, by
+  /// this process or an earlier one).
+  bool get lost {
+    _readRaw();
+    if (_damaged || _setAside != null) return true;
+    try {
+      return support.listSync().any(
+        (f) => f.uri.pathSegments.last.startsWith('lineages.json.corrupt-'),
+      );
+    } on FileSystemException {
+      return false;
+    }
+  }
 
   /// Saves [entry] as [aid]'s (dropped when [aid] was forgotten).
   Future<void> put(String aid, LineageEntry entry) =>

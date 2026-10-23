@@ -34,11 +34,14 @@ class RecordedActions implements HomeActions {
   void openSettings() {}
   @override
   void importApp() => calls.add(('importApp', []));
+
+  @override
+  void getApps() => calls.add(('getApps', []));
 }
 
 /// The fixture: [ids] by title, and the host once [start]ed.
 class SplitFixture {
-  SplitFixture() {
+  SplitFixture({this.offersGetApps = false}) {
     var t = 0;
     api = FakeClaxApi(
       clock: () => '2026-10-12T00:00:${(t++).toString().padLeft(2, '0')}Z',
@@ -103,9 +106,13 @@ class SplitFixture {
       builds: null,
       settings: HomeSettings(homeAppId: home),
       actions: actions,
+      offersGetApps: offersGetApps,
     );
     if (making) makes.start('A tide table');
   }
+
+  /// Whether the host offers Get my apps ([HomeHost.offersGetApps]).
+  final bool offersGetApps;
 
   void dispose() => host.dispose();
 }

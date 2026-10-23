@@ -41,6 +41,55 @@ FakeClaxApi _api() {
 }
 
 void main() {
+  testWidgets('tile_badges_per_state: ☁ ↑ ↓ ⑂, only the update warm, none '
+      'for only here and kept mine', (tester) async {
+    for (final brightness in Brightness.values) {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: claxTheme(brightness, defaultTargetPlatform),
+          home: const Scaffold(
+            body: Row(
+              children: [
+                SyncTileBadge('live'),
+                SyncTileBadge('ahead'),
+                SyncTileBadge('update'),
+                SyncTileBadge('diverged'),
+                SyncTileBadge('fork'),
+                SyncTileBadge('onlyHere'),
+              ],
+            ),
+          ),
+        ),
+      );
+      final p = claxPalette(tester.element(find.byType(Scaffold)));
+      Color fill(String s) =>
+          ((tester.widget<DecoratedBox>(
+                    find.byKey(ValueKey('tile-sync-$s')),
+                  ).decoration
+                  as BoxDecoration)
+              .color)!;
+      for (final (s, g) in [
+        ('live', Icons.cloud_rounded),
+        ('ahead', Icons.arrow_upward_rounded),
+        ('update', Icons.arrow_downward_rounded),
+        ('diverged', Icons.call_split_rounded),
+        ('fork', Icons.call_split_rounded),
+      ]) {
+        expect(
+          find.descendant(
+            of: find.byKey(ValueKey('tile-sync-$s')),
+            matching: find.byIcon(g),
+          ),
+          findsOneWidget,
+        );
+        expect(fill(s) == p.you, s == 'update', reason: s);
+      }
+      expect(find.byKey(const ValueKey('tile-sync-onlyHere')), findsNothing);
+    }
+    expect(SyncTileBadge.glyph(null), isNull);
+    expect(SyncTileBadge.words('update'), 'update waiting');
+  });
+
   late List<String> opened;
 
   setUp(() => opened = []);

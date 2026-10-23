@@ -4,6 +4,9 @@ import 'dart:typed_data';
 
 import '../clax/api.dart';
 import '../platform/clock.dart';
+import '../remote/merge.dart';
+import '../remote/models.dart' show VersionSource;
+import '../ui/user_message.dart' show userMessage;
 import 'apply.dart';
 import 'asked.dart';
 import 'backend.dart';
@@ -17,6 +20,7 @@ import 'plan.dart';
 import 'progress.dart';
 import 'prompt.dart';
 import 'read_consent.dart';
+import 'reply_hold.dart';
 import 'request.dart';
 import 'runner.dart';
 import 'timings.dart';
@@ -40,6 +44,9 @@ const agentChangeTiming = 'agent-change';
 
 /// The timing name of a build's continue run.
 const agentContinueTiming = 'agent-continue';
+
+/// The timing name of a merge run ([AgentLoop.merge]).
+const agentMergeTiming = 'agent-merge';
 
 /// The prefix of the key a first run keeps its plan under until its app
 /// has an ID.
@@ -276,6 +283,7 @@ class AgentLoop {
     this._fromBundle,
     this._gate,
     void Function(String line)? log,
+    ReplyHold? replies,
   }) : assert(
          runner != null || singleCall != null,
          'an AgentLoop needs a runner or a single call',
@@ -285,12 +293,20 @@ class AgentLoop {
        plans = plans ?? PlanStore(),
        unfinished = unfinished ?? MemoryUnfinishedChanges(),
        _runner = runner,
+       _givenReplies = replies,
        _singleCall = singleCall,
        _sendsImage = sendsImage ?? ((b) => imageBackends.contains(b.name)),
        _log = log ?? ((_) {});
 
   /// What each change published, for [settle]; in memory unless given.
   final ChangeLedger ledger;
+
+  /// How the agent's replies are posted: each reply on a thread a change
+  /// answered with a new version goes through [ReplyHold.reply] with that
+  /// version, so a linked app's reply waits for its fix to be public.
+  /// Unless given, every reply posts at once.
+  late final ReplyHold replies = _givenReplies ?? ReplyHold(_api);
+  final ReplyHold? _givenReplies;
 
   /// What each change's still-open question was asked for, so a late
   /// answer runs that change again; in memory unless given.
@@ -870,7 +886,7 @@ class AgentLoop {
         if (!threadIds.contains(t.id)) continue;
         for (final c in t.comments.reversed) {
           if (!c.byAgent || c.viaHarness != appHarness) continue;
-          if (parseLimitProgress(c.body) case final p?) {
+          if (parseLimitProgress(c.body ?? '') case final p?) {
             if (best == null || p.stops > best.stops) best = p;
             break;
           }
@@ -1493,6 +1509,183 @@ class AgentLoop {
     }
   }
 
+  /// Combines app [aid]'s version [mine] with [theirs], made elsewhere from
+  /// the common [base] (spec 2026-10-21-app-push-pull §5.7, §5.10): a tool
+  /// loop run ([RunCaps.change]) on a draft that starts as [mine]'s text
+  /// files, told by [PromptBuilder.mergePrompt] to keep the person's
+  /// changes and take [from]'s. Its `finish` publishes nothing: it takes
+  /// the draft once its latest revision rendered clean, with a note; its
+  /// `give_up`, a cap, a cancel or a runner failure ends it
+  /// [MergeFailed]. Asks [gate] first, as a change does.
+  ///
+  /// Only text files are merged. A binary file (not UTF-8) is [mine]'s,
+  /// or [theirs]' when [theirs] added it ([base] does not have it and
+  /// [mine] does not either).
+  ///
+  /// [source] names who made [theirs]; the person's trust in that author
+  /// is the caller's to ask (`AuthorTrust.ensureSource`).
+  ///
+  /// The agent sees the app's capability declaration and
+  /// [theirsCapabilities], [theirs]' (null when it is not known here), and
+  /// may declare only what one of them does; `Merger` refuses anything
+  /// beyond.
+  ///
+  /// The merged version ([Merged]) is not published: the caller checks it
+  /// like an update, on a draft with a copy of the app's documents
+  /// (`Updater`), before the person takes it.
+  Future<MergeResult> merge(
+    String aid, {
+    required Map<String, Uint8List> mine,
+    required Map<String, Uint8List> theirs,
+    required Map<String, Uint8List> base,
+    required String from,
+    required Map<String, Object?>? theirsCapabilities,
+    VersionSource? source,
+    String? session,
+    Future<void>? cancelled,
+  }) async {
+    final AgentRunner runner;
+    final ArtifactDetail d;
+    final String system;
+    try {
+      if (!await _mayRun(aid, build: false)) {
+        return const MergeFailed('Claude didn’t run.', cancelled: true);
+      }
+      runner = _requireRunner();
+      d = await _api.getArtifact(aid);
+      system = await _prompts.toolSystem();
+    } on AgentError catch (e) {
+      _log('the merge of $aid could not start: ${e.message}');
+      return MergeFailed(userMessage(e));
+    } on ClaxApiError catch (e) {
+      _log('the merge of $aid could not read the app: ${e.message}');
+      return const MergeFailed('the app couldn’t be read here.');
+    }
+    final (mineText, mineBinary) = _textOf(mine);
+    final (theirsText, theirsBinary) = _textOf(theirs);
+    final (baseText, baseBinary) = _textOf(base);
+    final binaries = {
+      ...mineBinary,
+      for (final MapEntry(:key, :value) in theirsBinary.entries)
+        if (!baseBinary.containsKey(key) && !mine.containsKey(key)) key: value,
+    };
+    final a = d.artifact;
+    final scope = _RunCancel(cancelled);
+    final ctx = RunContext(
+      kind: RequestKind.change,
+      artifactId: aid,
+      baseVersion: a.currentVersion,
+      title: a.title,
+      icon: a.icon,
+      capabilities: a.capabilities,
+      files: mineText,
+      sessionId: session,
+      cancelled: scope.future,
+      clock: _clock,
+    );
+    final model = _model();
+    final state = RunState(
+      ctx: ctx,
+      draft: Draft(
+        files: mineText,
+        title: a.title,
+        capabilities: a.capabilities,
+        baseVersion: a.currentVersion,
+      ),
+      budget: RunBudget(RunCaps.change, model, _clock),
+    );
+    final render = RenderTool(_api, _inspector!, baseUrl: _baseUrl!());
+    final finish = _MergeFinish(mineText, a.title, a.capabilities);
+    final toolbox = Toolbox(state, [
+      ...fileTools(),
+      render,
+      finish,
+      _MergeGiveUp(),
+    ]);
+    toolbox.capHandler = (cap, _) async =>
+        RunGaveUp('it stopped at its limit ($cap)', answered: false);
+    _timings.start(agentMergeTiming);
+    RunOutcome outcome;
+    try {
+      outcome = await runner.run(
+        RunInput(
+          system: system,
+          first: _prompts.mergePrompt(
+            title: a.title,
+            mine: mineText,
+            theirs: theirsText,
+            base: baseText,
+            from: from,
+            capabilities: a.capabilities,
+            theirsCapabilities: theirsCapabilities,
+          ),
+        ),
+        toolbox,
+      );
+    } on AgentError catch (e) {
+      outcome =
+          state.outcome ??
+          (e.kind == AgentErrorKind.cancelled
+              ? const RunCancelled()
+              : RunGaveUp(e.message, answered: false));
+    } on Object catch (e) {
+      _log('the merge of $aid failed: $e');
+      outcome = state.outcome ?? RunGaveUp('$e', answered: false);
+    } finally {
+      scope.end();
+      final b = state.budget;
+      _timings.stop(
+        agentMergeTiming,
+        extra: {
+          'artifact': aid,
+          'model': model,
+          'backend': runner.name,
+          'turns': b.turns,
+          'renders': b.renders,
+          'cost_usd': b.costUsd,
+        },
+      );
+    }
+    outcome = state.outcome ?? outcome;
+    await render.cleanup();
+    final took = finish.took;
+    switch (outcome) {
+      case RunFinished() when took != null:
+        return Merged(
+          files: {
+            ...binaries,
+            for (final MapEntry(:key, :value) in took.files.entries)
+              key: utf8.encode(value),
+          },
+          title: took.title,
+          capabilities: took.capabilities,
+          note: took.note,
+        );
+      case RunCancelled():
+        return const MergeFailed('Stopped before it finished', cancelled: true);
+      case RunGaveUp(:final reason):
+        return MergeFailed(reason);
+      case RunFinished() || RunInterrupted() || RunDropped():
+        return const MergeFailed('Claude didn’t finish combining them.');
+    }
+  }
+
+  /// [files] split into UTF-8 text and the rest.
+  static (Map<String, String>, Map<String, Uint8List>) _textOf(
+    Map<String, Uint8List> files,
+  ) {
+    final text = <String, String>{};
+    final binary = <String, Uint8List>{};
+    for (final MapEntry(:key, :value) in files.entries) {
+      try {
+        text[key] = utf8.decode(value);
+      } on FormatException {
+        binary[key] = value;
+      }
+    }
+    return (text, binary);
+  }
+
   /// Replies [failureReply] of [reason] on each of [threadIds] but those
   /// with a newer viewer comment, then acknowledges [items] to [session].
   /// Returns whether every reply was taken.
@@ -1573,7 +1766,13 @@ class AgentLoop {
     }
 
     final render = RenderTool(_api, inspector, baseUrl: base);
-    final finish = FinishTool(_api, ledger, render: render, log: _log);
+    final finish = FinishTool(
+      _api,
+      ledger,
+      render: render,
+      log: _log,
+      replies: replies,
+    );
     final giveUp = GiveUpTool(
       _api,
       render: render,
@@ -1727,6 +1926,7 @@ class AgentLoop {
       String reply,
       ChangeOutcome Function(bool answered) of, {
       bool resolve = false,
+      int? version,
     }) async {
       final newer = {
         ...newerAtPublish,
@@ -1738,14 +1938,21 @@ class AgentLoop {
           _log('$aid/$t has a newer comment; its own run answers it');
           continue;
         }
+        bool posted;
         try {
-          await _api.replyAsAgent(aid, t, reply);
+          posted = await replies.reply(
+            aid,
+            t,
+            reply,
+            version: version,
+            resolve: resolve,
+          );
         } on Object catch (e) {
           _log('reply on $aid/$t failed: $e');
           answered = false;
           continue;
         }
-        if (resolve) {
+        if (resolve && posted) {
           await _quiet('resolve $t', () => _api.resolveAsAgent(aid, t));
         }
       }
@@ -1956,6 +2163,7 @@ class AgentLoop {
               ? ChangeAnswered(answered: answered)
               : ChangeLanded(landed, answered: answered),
           resolve: r.resolve,
+          version: landed,
         );
       }
     } on AgentError catch (e) {
@@ -2041,9 +2249,15 @@ class AgentLoop {
         if (!r.addresses.contains(t.id) || replied.contains(t.id)) continue;
         final done = r.answered[t.id] ?? const [];
         if (!pendingComments(t).every((c) => done.contains(c.id))) continue;
-        await _api.replyAsAgent(aid, t.id, r.reply);
+        final posted = await replies.reply(
+          aid,
+          t.id,
+          r.reply,
+          version: v.n,
+          resolve: r.resolve,
+        );
         replied.add(t.id);
-        if (r.resolve) {
+        if (r.resolve && posted) {
           await _quiet('resolve ${t.id}', () => _api.resolveAsAgent(aid, t.id));
         }
       }
@@ -2167,8 +2381,14 @@ class AgentLoop {
           await _api.replyAsAgent(aid, t.id, _ambiguousReply);
           continue;
         }
-        await _api.replyAsAgent(aid, t.id, r.reply);
-        if (r.resolve) {
+        final posted = await replies.reply(
+          aid,
+          t.id,
+          r.reply,
+          version: v.n,
+          resolve: r.resolve,
+        );
+        if (r.resolve && posted) {
           await _quiet('resolve ${t.id}', () => _api.resolveAsAgent(aid, t.id));
         }
       }
@@ -2360,8 +2580,10 @@ class AgentLoop {
 
   Future<Uint8List?> _clip(String aid, String tid) async {
     try {
-      return await _api.clip(aid, tid);
-    } on ClaxApiError catch (e) {
+      // Through the session: a clip whose author the person has not
+      // approved is withheld (403), and none is attached.
+      return await _api.clip(aid, tid, agent: true);
+    } on Object catch (e) {
       _log('clip of $aid/$tid unavailable: $e');
       return null;
     }
@@ -2453,6 +2675,86 @@ class _RunCancel {
   void end() => _over = true;
 }
 
+/// What a merge run's `finish` took: the draft's text files, title and
+/// capabilities, and the note.
+typedef _Took = ({
+  Map<String, String> files,
+  String title,
+  Map<String, Object?> capabilities,
+  String note,
+});
+
+/// A merge run's `finish` ([AgentLoop.merge]): publishes nothing, and
+/// takes the draft once it renders clean (a draft unchanged from the
+/// person's version needs no render), ending the run.
+class _MergeFinish implements Tool {
+  _MergeFinish(this._mine, this._title, this._caps);
+
+  final Map<String, String> _mine;
+  final String _title;
+  final Map<String, Object?> _caps;
+
+  _Took? took;
+
+  @override
+  final spec = ToolSpec(
+    'finish',
+    'Ends the run with the draft as the combined version, to be checked '
+        'against the person\'s data before they take it. Render the latest '
+        'draft first, without uncaught errors or failing tests. note: one '
+        'sentence naming what the combined version took from each.',
+    objectSchema({
+      'note': {'type': 'string'},
+    }),
+  );
+
+  @override
+  Future<ToolOutput> call(Map<String, Object?> input, RunState s) async {
+    final note = switch (input['note']) {
+      final String n when n.trim().isNotEmpty => n.trim(),
+      _ => throw const ToolInputError('note must be a non-empty string.'),
+    };
+    final d = s.draft;
+    if (d.changedFrom(_mine, title: _title, caps: _caps) && !d.renderedClean) {
+      throw const ToolInputError(
+        'Render the latest draft, without uncaught errors or failing tests, '
+        'before finish.',
+      );
+    }
+    took = (
+      files: Map.of(d.files),
+      title: d.title ?? _title,
+      capabilities: d.capabilities ?? _caps,
+      note: note,
+    );
+    s.outcome = const RunFinished(answered: true);
+    return const ToolOk({'finished': true});
+  }
+}
+
+/// A merge run's `give_up`: ends it without a version.
+class _MergeGiveUp implements Tool {
+  @override
+  final spec = ToolSpec(
+    'give_up',
+    'Ends the run without a combined version. reason: one short sentence '
+        'saying why the versions cannot be combined.',
+    objectSchema({
+      'reason': {'type': 'string'},
+    }),
+  );
+
+  @override
+  Future<ToolOutput> call(Map<String, Object?> input, RunState s) async {
+    final reason = switch (input['reason']) {
+      final String r when r.trim().isNotEmpty => r.trim(),
+      _ => throw const ToolInputError('reason must be a non-empty string.'),
+    };
+    s.outcome = RunGaveUp(reason, answered: false);
+    return const ToolOk({'ended': true});
+  }
+}
+
 /// A tool that ends a run (`finish`, `give_up`), telling [ended] after
 /// each call, so the loop knows the run's end came from a tool, which
 /// replied itself.
@@ -2491,7 +2793,9 @@ List<ThreadComment> pendingComments(ThreadView t) {
 String anchorLine(Map<String, Object?> anchor, int version) =>
     '${anchorSummary(anchor)}  (v$version)';
 
-/// `the whole artifact` for an `artifact` anchor; otherwise the route and
+/// `the whole artifact` for an `artifact` anchor; [withheldAnchorSummary]
+/// for one withheld from the agent ([ThreadView.withheldAnchor]); otherwise
+/// the route and
 /// ` › ` when there is one, the file and ` › ` when it is not `index.html`,
 /// the selector (`custom:<name>`, or `area in <selector> (W × H)`), then
 /// the quote (its `label` when it has one) in `«»`, whitespace collapsed and
@@ -2499,6 +2803,7 @@ String anchorLine(Map<String, Object?> anchor, int version) =>
 String anchorSummary(Map<String, Object?> anchor) {
   final kind = anchor['kind'] as String? ?? 'artifact';
   if (kind == 'artifact') return 'the whole artifact';
+  if (kind == 'withheld') return withheldAnchorSummary;
   final selector = anchor['selector'] as String? ?? '';
   var target = switch (kind) {
     'custom' => 'custom:${anchor['custom_name'] as String? ?? ''}',
@@ -2518,6 +2823,10 @@ String anchorSummary(Map<String, Object?> anchor) {
   if (quote.isEmpty) return target;
   return '$target  «${_cap(quote.replaceAll(RegExp('[«»]'), '"'), 120)}»';
 }
+
+/// [anchorSummary] for an anchor withheld from the agent.
+const withheldAnchorSummary =
+    'a part of the page (withheld until the person approves its author)';
 
 String _collapse(String s) =>
     s.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).join(' ');

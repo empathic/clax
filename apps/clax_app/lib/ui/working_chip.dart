@@ -379,6 +379,19 @@ enum ClaxPillState {
 
   /// The page is using the device's location: its symbol and "Location".
   location,
+
+  /// A linked app has a local version newer than its public one, which this
+  /// device may publish: "↑ v5 here · v4 public" ([ClaxPill.sync]).
+  ahead,
+
+  /// A linked app's public copy has a later version to take: "↓ v6 ready"
+  /// ([ClaxPill.sync]).
+  update,
+
+  /// A linked app changed both here and on its public copy since they last
+  /// matched: "Diverged" (spec 2026-10-21-app-push-pull §5.4), in words
+  /// alone: ⑂ is not in the pill's font.
+  diverged,
 }
 
 /// The one Clax control over an app's page on a phone: a floating pill
@@ -399,6 +412,7 @@ class ClaxPill extends StatefulWidget {
     super.key,
     required this.state,
     this.progress,
+    this.sync,
     this.onTap,
     this.onShow,
     this.clock = const SystemClock(),
@@ -408,6 +422,11 @@ class ClaxPill extends StatefulWidget {
 
   /// The build's features done of all, for [ClaxPillState.building].
   final ({int done, int total})? progress;
+
+  /// For [ClaxPillState.ahead], the local version here and the one that is
+  /// public; for [ClaxPillState.update], the version ready ([version]
+  /// only).
+  final ({int version, int? public})? sync;
   final VoidCallback? onTap;
 
   /// Loads the new version; the tap in [ClaxPillState.newVersion].
@@ -439,8 +458,11 @@ class ClaxPill extends StatefulWidget {
   }
 
   /// The pill's words in [state].
-  static String label(ClaxPillState state, ({int done, int total})? progress) =>
-      switch (state) {
+  static String label(
+    ClaxPillState state,
+    ({int done, int total})? progress, {
+    ({int version, int? public})? sync,
+  }) => switch (state) {
         ClaxPillState.working => 'Working',
         ClaxPillState.waiting => 'Waiting for Claude',
         ClaxPillState.building =>
@@ -449,18 +471,40 @@ class ClaxPill extends StatefulWidget {
               : 'Building ${progress.done}/${progress.total}',
         ClaxPillState.newVersion => 'New version',
         ClaxPillState.location => 'Location',
+        ClaxPillState.ahead => switch (sync) {
+          (:final version, public: final p?) => '↑ v$version here · v$p public',
+          (:final version, public: null) => '↑ v$version here',
+          null => '↑ Not public yet',
+        },
+        ClaxPillState.update => switch (sync) {
+          (:final version, public: _) => '↓ v$version ready',
+          null => '↓ Update ready',
+        },
+        ClaxPillState.diverged => 'Diverged',
       };
 
   /// What a screen reader hears in [state].
   static String spoken(
     ClaxPillState state,
-    ({int done, int total})? progress,
-  ) => switch (state) {
+    ({int done, int total})? progress, {
+    ({int version, int? public})? sync,
+  }) => switch (state) {
     ClaxPillState.working => 'Clax is working',
     ClaxPillState.waiting => 'Clax is waiting for Claude',
     ClaxPillState.building => label(state, progress),
     ClaxPillState.newVersion => 'New version ready',
     ClaxPillState.location => 'Location in use',
+    ClaxPillState.ahead => switch (sync) {
+      (:final version, public: final p?) =>
+        'Version $version is here, version $p is public',
+      _ => 'A newer version is here than is public',
+    },
+    ClaxPillState.update => switch (sync) {
+      (:final version, public: _) => 'Version $version is ready to update to',
+      null => 'An update is ready',
+    },
+    ClaxPillState.diverged =>
+      'Changed both here and on its public copy',
   };
 
   @override
@@ -492,7 +536,9 @@ class _ClaxPillState extends State<ClaxPill> {
   /// Opens the pill when what it says changed, and starts its fold.
   void _follow(ClaxPillState? was) {
     final state = widget.state;
-    final said = state == null ? null : ClaxPill.label(state, widget.progress);
+    final said = state == null
+        ? null
+        : ClaxPill.label(state, widget.progress, sync: widget.sync);
     if (said == _said) return;
     _said = said;
     if (state == null) return;
@@ -537,7 +583,10 @@ class _ClaxPillState extends State<ClaxPill> {
               ClaxPillState.building => ClaxMarkState.working,
               ClaxPillState.newVersion => ClaxMarkState.landed,
               ClaxPillState.waiting ||
-              ClaxPillState.location => ClaxMarkState.resting,
+              ClaxPillState.location ||
+              ClaxPillState.ahead ||
+              ClaxPillState.update ||
+              ClaxPillState.diverged => ClaxMarkState.resting,
             },
           );
     final open = !_folded;
@@ -577,7 +626,11 @@ class _ClaxPillState extends State<ClaxPill> {
                     const SizedBox(width: ClaxSpace.s8),
                     Flexible(
                       child: Text(
-                        ClaxPill.label(state, widget.progress),
+                        ClaxPill.label(
+                          state,
+                          widget.progress,
+                          sync: widget.sync,
+                        ),
                         maxLines: 1,
                         softWrap: false,
                         overflow: TextOverflow.ellipsis,
@@ -608,7 +661,7 @@ class _ClaxPillState extends State<ClaxPill> {
       container: true,
       liveRegion: true,
       button: tap != null,
-      label: ClaxPill.spoken(state, widget.progress),
+      label: ClaxPill.spoken(state, widget.progress, sync: widget.sync),
       onTap: tap,
       excludeSemantics: true,
       child: GestureDetector(

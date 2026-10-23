@@ -18,9 +18,10 @@
 # one //apps/clax_app:home_bundle built), the third-party notices, and a
 # debug-key signature, MainActivity's configChanges keeping the
 # activity through a resize (a Chromebook's window, a foldable unfolding),
-# and backup rules (android:dataExtractionRules, android:fullBackupContent)
+# backup rules (android:dataExtractionRules, android:fullBackupContent)
 # that leave out the core's run files and flutter_secure_storage's
-# preferences.
+# preferences, and Get in Clax's intent filters (clax: links and verified
+# app links to clax.dev) with Flutter's deep linking off.
 #
 # apk-check.sh --manifest DUMP checks only the configChanges, in DUMP, an
 # `aapt2 dump xmltree --file AndroidManifest.xml` output.
@@ -130,6 +131,17 @@ done
 # Predictive back: Android 13+ shows the back-to-home and in-app back
 # animations only for an application that opts in.
 if grep -q 'enableOnBackInvokedCallback.*=true' <<<"$manifest"; then ok "predictive back is on"; else bad "predictive back is on (no android:enableOnBackInvokedCallback=\"true\")"; fi
+# Get in Clax: BundleReceiverActivity takes clax: links and verified app
+# links to https://clax.dev/a/<id>/get, and MainActivity pushes no route
+# Flutter would take from an intent's data. $receiver is
+# BundleReceiverActivity's element and its children, up to the next
+# component.
+receiver="$(awk '/E: (activity|receiver|service|provider)( |$)/ { if (keep) printf "%s", buf; buf = ""; keep = 0 } { buf = buf $0 "\n" } /"dev.empathic.clax_app.BundleReceiverActivity"/ { keep = 1 } END { if (keep) printf "%s", buf }' <<<"$manifest")"
+for t in 'scheme="clax"' 'scheme="https"' 'host="clax.dev"' 'pathPattern="/a/............/get"' 'autoVerify=true'; do
+    # aapt2 prints each attribute with its resource ID: android:host(0x…)=…
+    if grep -qF "android:${t%%=*}(" <<<"$(grep -F "=${t#*=}" <<<"$receiver")"; then ok "BundleReceiverActivity's filters have $t"; else bad "BundleReceiverActivity's filters have $t"; fi
+done
+if awk '/flutter_deeplinking_enabled/ { f = 1; next } f && /android:value/ { print; exit }' <<<"$manifest" | grep '=false' >/dev/null; then ok "Flutter's deep linking is off"; else bad "Flutter's deep linking is off"; fi
 files="$(unzip -l "$apk" | awk '{print $4}')"
 for abi in arm64-v8a x86_64; do
     for lib in libapp.so libflutter.so libclax_embed.so; do

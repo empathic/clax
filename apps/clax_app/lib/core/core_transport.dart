@@ -73,6 +73,7 @@ class CoreTransport implements ClaxTransport {
     Map<String, String> headers = const {},
     Uint8List? body,
     required Duration timeout,
+    bool person = false,
   }) {
     if (_closed) return Future.error(_closedError(method, path));
     final q = query == null || query.isEmpty
@@ -84,6 +85,7 @@ class CoreTransport implements ClaxTransport {
         '$path$q',
         headers: [for (final e in headers.entries) (e.key, e.value)],
         body: body,
+        as: person ? CallAs.ownerBrowser : CallAs.owner,
       ),
     );
     final out = Completer<TransportAnswer>();

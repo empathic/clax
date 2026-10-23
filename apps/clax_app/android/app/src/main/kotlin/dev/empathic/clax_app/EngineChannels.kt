@@ -5,6 +5,8 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.os.Bundle
 import android.provider.Settings
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -24,7 +26,13 @@ import io.flutter.plugins.webviewflutter.WebViewFlutterAndroidExternalApi
  * - `openAppSettings` opens this app's page in system settings (its
  *   permissions among it) and answers true.
  * - `openExternal` {url} opens an http, https or mailto URL with the app the
- *   person chose for it, and answers whether one took it.
+ *   person chose for it, and answers whether one took it. With `mode:
+ *   "auth"` it opens an https sign-in page in a Custom Tab over the
+ *   activity on screen (the default browser's, when it has them; the
+ *   browser itself otherwise).
+ * - `closeAuth` answers false: a Custom Tab is closed by the person.
+ * - `deviceName` answers the device's name (Settings' device name where
+ *   the system keeps one, else its model).
  */
 class EngineChannels(private val app: Context, engine: FlutterEngine) {
     private val messenger = engine.dartExecutor.binaryMessenger
@@ -56,7 +64,9 @@ class EngineChannels(private val app: Context, engine: FlutterEngine) {
                 "openExternal" -> {
                     val url = call.argument<String>("url")
                     val uri = url?.let { Uri.parse(it) }
-                    if (uri == null || uri.scheme?.lowercase() !in setOf("http", "https", "mailto")) {
+                    if (call.argument<String>("mode") == "auth") {
+                        result.success(uri != null && uri.scheme?.lowercase() == "https" && openAuth(uri))
+                    } else if (uri == null || uri.scheme?.lowercase() !in setOf("http", "https", "mailto")) {
                         result.success(false)
                     } else {
                         try {
@@ -71,9 +81,39 @@ class EngineChannels(private val app: Context, engine: FlutterEngine) {
                         }
                     }
                 }
+                "closeAuth" -> result.success(false)
+                "deviceName" -> result.success(deviceName())
                 else -> result.notImplemented()
             }
         }
+    }
+
+    /**
+     * Opens [uri] in a Custom Tab: an `ACTION_VIEW` intent carrying the
+     * Custom Tabs session extra (a null session), which a browser that
+     * has Custom Tabs shows over the app and any other opens as usual.
+     * Started from the activity on screen, so the tab sits in Clax's
+     * task; from the application in a task of its own when none is.
+     */
+    private fun openAuth(uri: Uri): Boolean {
+        val intent = Intent(Intent.ACTION_VIEW, uri)
+            .addCategory(Intent.CATEGORY_BROWSABLE)
+            .putExtras(Bundle().apply { putBinder(CUSTOM_TABS_SESSION, null) })
+        val from: Context = activity ?: app.also {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return try {
+            from.startActivity(intent)
+            true
+        } catch (e: ActivityNotFoundException) {
+            false
+        }
+    }
+
+    /** The device's name as Settings shows it, else its model. */
+    private fun deviceName(): String {
+        val named = Settings.Global.getString(app.contentResolver, Settings.Global.DEVICE_NAME)
+        return named?.takeIf { it.isNotBlank() } ?: Build.MODEL
     }
 
     /**
@@ -99,5 +139,8 @@ class EngineChannels(private val app: Context, engine: FlutterEngine) {
 
     companion object {
         const val NATIVE = "dev.empathic.clax/native"
+
+        /** The Custom Tabs protocol's session extra (androidx.browser's `CustomTabsIntent.EXTRA_SESSION`). */
+        private const val CUSTOM_TABS_SESSION = "android.support.customtabs.extra.SESSION"
     }
 }

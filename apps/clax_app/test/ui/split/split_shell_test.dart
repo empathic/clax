@@ -37,7 +37,11 @@ void main() {
 
   /// The shell in a window of [size], on the platform the test's variant
   /// sets.
-  Future<void> pumpShell(WidgetTester tester, {required Size size}) async {
+  Future<void> pumpShell(
+    WidgetTester tester, {
+    required Size size,
+    bool getApps = false,
+  }) async {
     final platform = defaultTargetPlatform;
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
@@ -61,7 +65,7 @@ void main() {
       m.setMockMethodCallHandler(MacWindow.channel, null);
       m.setMockMethodCallHandler(MacToolbar.channel, null);
     });
-    f = SplitFixture();
+    f = SplitFixture(offersGetApps: getApps);
     await tester.runAsync(f.start);
     model = SidebarModel(host: f.host);
     addTearDown(() {
@@ -781,9 +785,24 @@ void main() {
       find.descendant(of: pane, matching: find.byTooltip('More')),
     );
     await tester.pumpAndSettle();
+    expect(find.text('Get my apps from clax.dev'), findsNothing);
     await tester.tap(find.text('Import app…'));
     await tester.pumpAndSettle();
     expect(f.actions.calls.single.$1, 'importApp');
+  }, variant: _android);
+
+  testWidgets('where Get my apps is on offer, the list pane\'s More offers '
+      'it beside Import app…', (tester) async {
+    await pumpShell(tester, size: const Size(1280, 800), getApps: true);
+    final pane = find.byType(ClaxListPane);
+    await tester.tap(
+      find.descendant(of: pane, matching: find.byTooltip('More')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Import app…'), findsOneWidget);
+    await tester.tap(find.text('Get my apps from clax.dev'));
+    await tester.pumpAndSettle();
+    expect(f.actions.calls.single.$1, 'getApps');
   }, variant: _android);
 
   testWidgets('wide Android holds the toolbar for the home app while the list '
