@@ -914,6 +914,38 @@ pub async fn require_reach(
     }
 }
 
+/// What an owner-only route (the daemon token's) that acts on artifact
+/// `aid` asks before it acts, on a hosted daemon: that the caller of a
+/// request the gate let through (`h`, its [`HostedRequest`]) may do
+/// `right` there by their scope ([`MemberRights::allows_at`]), as a route
+/// taking [`crate::agent::Agent`] asks of its need. Nothing on a local
+/// daemon.
+///
+/// # Errors
+/// 404 `not_found` for an artifact the caller does not read (always for a
+/// hosted request with no scope), 403 `not_permitted` naming `right` for
+/// one they read; the store's.
+pub async fn require_right(
+    s: &AppState,
+    h: Option<&HostedRequest>,
+    right: (RightType, &'static str),
+    aid: &str,
+) -> Result<(), ApiError> {
+    if s.hosted.is_none() {
+        return Ok(());
+    }
+    let Some(m) = h.and_then(|h| h.member.clone()) else {
+        return Err(ApiError::not_found());
+    };
+    if m.allows(s, right, aid).await? {
+        return Ok(());
+    }
+    if m.allows(s, (RightType::Artifacts, "read"), aid).await? {
+        return Err(crate::agent::member_not_permitted(right));
+    }
+    Err(ApiError::not_found())
+}
+
 /// [`MemberRights::gallery_key`] of the owner: no public ID starts with `*`.
 pub const OWNER_GALLERY: &str = "*owner";
 

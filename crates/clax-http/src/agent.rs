@@ -1249,7 +1249,7 @@ impl<N: Need> FromRequestParts<AppState> for TokenOrAgent<N> {
 
 /// 403 `not_permitted`: a hosted daemon's signed-in person's rights lack
 /// `right`.
-fn member_not_permitted((kind, action): (RightType, &'static str)) -> ApiError {
+pub(crate) fn member_not_permitted((kind, action): (RightType, &'static str)) -> ApiError {
     let mut e = ApiError::forbidden(
         "not_permitted",
         format!(

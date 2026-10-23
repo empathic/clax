@@ -26,7 +26,8 @@
 //!   within the owner's reach alone (404 otherwise);
 //! - `POST /_diag/reconcile?artifact=<ID>`: asks the instance to record
 //!   the artifact's pushed commits now, as an Artifacts `pushed` event
-//!   does, and answers its status.
+//!   does, and answers its status, for an artifact within the owner's
+//!   reach alone (404 otherwise).
 
 use serde_json::{Value, json};
 
@@ -240,6 +241,9 @@ mod wasm {
                 let Some(id) = param(&url, "artifact") else {
                     return Response::error("artifact is required\n", 400);
                 };
+                if !crate::owner_reaches(env, &id).await? {
+                    return Response::error("Not found\n", 404);
+                }
                 let started = now();
                 let status = crate::reconcile_pushes(env, &id, &Holder::default()).await;
                 Response::from_json(&json!({

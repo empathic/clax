@@ -2054,6 +2054,7 @@ async fn no_owner_path_reads_a_members_page() {
         .id;
     let (s, t) = site.thread(&mia, &mias, "Mia's thread").await;
     assert_eq!(s, 201, "{t}");
+    let mia_tid = t["thread"]["id"].as_str().unwrap().to_string();
     let (_, r) = agent
         .call("working", json!({"url_or_id": mias, "message": "on it"}))
         .await;
@@ -2252,6 +2253,127 @@ async fn no_owner_path_reads_a_members_page() {
             assert_eq!((s, code(&v)), (404, "not_found"), "{who}: {m} {p}: {v}");
         }
     }
+    // The app's jobs, whose queue owner holds the daemon token, reach
+    // nothing of hers: a job naming her page, a thread of it, a publish or
+    // a reply there answers as for a page or thread that does not exist.
+    let token = |m: reqwest::Method, p: &str| {
+        site.ts
+            .client
+            .request(m, site.url(p))
+            .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+            .bearer_auth(&site.ts.token)
+    };
+    let res = token(reqwest::Method::GET, "/api/stream")
+        .send()
+        .await
+        .unwrap();
+    let mut jobs_stream = clax_testkit::EventReader::from_response(res);
+    let stream = jobs_stream.next_named("ready").await["stream"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = json_of(
+        token(reqwest::Method::POST, "/api/jobs/owner")
+            .json(&json!({"client": "app", "stream": stream}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let queue = v["owner"].as_str().unwrap().to_string();
+    let job = |m: reqwest::Method, p: &str| token(m, p).header("x-clax-jobs-owner", &queue);
+    let new_job = |id: &str, artifact: Option<&str>| {
+        json!({"id": id, "client": "app", "kind": "edit", "artifact_id": artifact,
+            "title": "Mia's", "input": {}})
+    };
+    let (s, v) = json_of(
+        job(reqwest::Method::POST, "/api/jobs")
+            .json(&new_job("j-mias", Some(&mias)))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    // One made while her page was in reach (by the store), and one of none.
+    site.ts
+        .store
+        .create_job(clax_store::jobs::NewJob {
+            id: "j-then".into(),
+            client: "app".into(),
+            kind: "edit".into(),
+            artifact_id: Some(mias.clone()),
+            title: None,
+            input: json!({}),
+            plan: None,
+        })
+        .unwrap();
+    let (s, v) = json_of(
+        job(reqwest::Method::POST, "/api/jobs")
+            .json(&new_job("j-none", None))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    for id in ["j-then", "j-none"] {
+        let (s, v) = json_of(
+            job(reqwest::Method::PATCH, &format!("/api/jobs/{id}"))
+                .json(&json!({"if_rev": 1, "state": "running"}))
+                .send()
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, 200, "{id}: {v}");
+    }
+    let (s, v) = json_of(
+        job(
+            reqwest::Method::PUT,
+            &format!("/api/jobs/j-none/threads/{mia_tid}"),
+        )
+        .json(&json!({"comment_id": "c"}))
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (400, "invalid_thread"), "{v}");
+    let id = clax_core::ArtifactId::parse(&mias).unwrap();
+    let versions = site.ts.store.list_versions(&id).unwrap().len();
+    let (s, v) = json_of(
+        job(reqwest::Method::POST, "/api/jobs/j-none/steps/publish")
+            .json(&json!({"publish": {
+                "artifact_id": mias, "base": 1,
+                "request": {"title": "Mine now", "files":
+                    {"index.html": {"content": "<h1>the owner's</h1>", "encoding": "utf8"}}},
+            }}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    let (s, v) = json_of(
+        job(reqwest::Method::POST, "/api/jobs/j-then/steps/reply")
+            .json(
+                &json!({"reply": {"threads": [mia_tid], "body": "a job's reply",
+                "session_id": owner_sid}}),
+            )
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    assert_eq!(site.ts.store.list_versions(&id).unwrap().len(), versions);
+    let (_, v) = site
+        .get(&mia, &format!("/api/artifacts/{mias}/threads"))
+        .await;
+    assert!(!v.to_string().contains("a job's reply"), "{v}");
+    drop(jobs_stream);
     // Mia's own listings still name it.
     let (_, v) = site.get(&mia, "/api/inbox").await;
     assert!(v.to_string().contains(&mias), "{v}");
@@ -2304,6 +2426,111 @@ async fn room_clears(site: &Site, aid: &str) -> Value {
             return f;
         }
     }
+}
+
+#[tokio::test]
+async fn the_daemon_tokens_own_routes_at_a_page_shared_with_the_owner_hold_to_the_share() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let owner_pid = site.pid(&owner).await;
+    let mia = site.person(&owner, "Mia").await;
+    let mut agent = site.token_agent(&mia, "laptop").await;
+    assert_eq!(agent.initialize("claude-code").await, 200);
+    let (_, r) = agent
+        .call(
+            "publish",
+            json!({"html": "<h1>Mia's</h1>", "title": "Mia's", "capabilities": {"db": {}}}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    let mias = site
+        .ts
+        .store
+        .list_artifacts()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.title == "Mia's")
+        .unwrap()
+        .id;
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{mias}/shares"),
+            json!({"person": owner_pid, "access": "viewer"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let token = |m: reqwest::Method, p: &str| {
+        site.ts
+            .client
+            .request(m, site.url(p))
+            .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+            .bearer_auth(&site.ts.token)
+    };
+    // The owner reads it, as its share says.
+    let (s, v) = json_of(
+        token(reqwest::Method::GET, &format!("/api/artifacts/{mias}"))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    // A viewer restores no version, and the listing of every collection,
+    // which ignores the page's read rules, is its maker's.
+    let (s, v) = json_of(
+        token(
+            reqwest::Method::POST,
+            &format!("/api/artifacts/{mias}/versions:restore"),
+        )
+        .json(&json!({"version": 1, "if_version": 1}))
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
+    let id = clax_core::ArtifactId::parse(&mias).unwrap();
+    assert_eq!(site.ts.store.list_versions(&id).unwrap().len(), 1);
+    let (s, v) = json_of(
+        token(
+            reqwest::Method::GET,
+            &format!("/api/artifacts/{mias}/docs:collections"),
+        )
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
+    // As an editor the owner restores a version, but changes no
+    // capability with it: that is the maker's.
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{mias}/shares"),
+            json!({"person": owner_pid, "access": "editor"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let restore = async |body: Value| {
+        json_of(
+            token(
+                reqwest::Method::POST,
+                &format!("/api/artifacts/{mias}/versions:restore"),
+            )
+            .json(&body)
+            .send()
+            .await
+            .unwrap(),
+        )
+        .await
+    };
+    let (s, v) = restore(json!({"version": 1, "if_version": 1, "capabilities": {}})).await;
+    assert_eq!((s, code(&v)), (403, "admin_only"), "{v}");
+    let (s, v) = restore(json!({"version": 1, "if_version": 1})).await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["artifact"]["capabilities"], json!({"db": {}}), "{v}");
 }
 
 #[tokio::test]
@@ -2479,11 +2706,19 @@ async fn a_page_shared_with_the_owner_gives_them_its_shares_level_alone() {
             r.text().await.unwrap()
         );
     }
+    let rules = clax_core::db::Rules::from_capabilities(
+        &site
+            .ts
+            .store
+            .doc_capabilities(&clax_core::ArtifactId::parse(&mias).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
     assert!(
         site.ts
-            .store
-            .doc_get_authored(
-                &clax_core::ArtifactId::parse(&mias).unwrap(),
+            .app_data(&mias)
+            .doc_get(
+                &rules,
                 "secret/b",
                 &clax_core::db::Caller::new(clax_core::db::Level::Owner, None),
             )

@@ -629,7 +629,10 @@ pub async fn acquire(
 /// the artifact's documents with its document count, sorted by path,
 /// without private `data/users/<id>/` ones: `{collections: [{path, count}]}`.
 /// A request reading for another app (`X-Clax-Reader`) is refused 403
-/// `not_granted`: the listing ignores the read rules, so it is the owner's.
+/// `not_granted`: the listing ignores the read rules, so it is the owner's,
+/// and on a hosted daemon only at an artifact the owner made, where the
+/// token keeps its level ([`clax_http::db_caller::token_at`]): 403
+/// `not_permitted` at one shared with the owner or open by its link.
 pub async fn collections(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
@@ -640,6 +643,16 @@ pub async fn collections(
     let id = parse_id(&path(aid)?)?;
     if let Some(reader) = reader_of(&headers)? {
         return Err(not_granted(&reader, &id).into());
+    }
+    let (hosted, at) = (s.hosted.is_some(), id.clone());
+    if !s
+        .store_call(move |st| clax_http::db_caller::token_at(st, hosted, true, at.as_str()))
+        .await?
+    {
+        return Err(ApiError::forbidden(
+            "not_permitted",
+            "the collections listing ignores the page's read rules: it answers at a page the owner made",
+        ));
     }
     let caps = {
         let id = id.clone();

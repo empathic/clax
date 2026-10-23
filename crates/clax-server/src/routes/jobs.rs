@@ -28,6 +28,7 @@ use clax_core::{ArtifactId, CoreError, Event};
 use clax_http::agent::DeniedToGrants;
 use clax_http::auth::RequireToken;
 use clax_http::error::ApiError;
+use clax_http::hosted::HostedRequest;
 use clax_http::jobs_owner::{Claimed, OWNER_HEADER, WriteGuard};
 use clax_http::state::AppState;
 use clax_store::Store;
@@ -309,17 +310,23 @@ pub struct CreateBody {
 
 /// `POST /api/jobs` `{id, client, kind, artifact_id?, title?, input,
 /// plan?}`: creates a job in `queued` (201 `{job}`); an existing `id`
-/// with the same body answers it (200), another body 409 `job_exists`.
+/// with the same body answers it (200), another body 409 `job_exists`. On
+/// a hosted daemon an `artifact_id` out of the owner's reach is 404
+/// ([`clax_http::hosted::require_reach`]).
 pub async fn create(
     State(s): State<AppState>,
     d: DeniedToGrants,
     _t: RequireToken,
+    hosted: Option<axum::Extension<HostedRequest>>,
     headers: HeaderMap,
     req: Result<Json<CreateBody>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     d.refuse_agents()?;
     let b = body(req)?;
     let guard = require_owner(&s, &headers, &b.client)?;
+    if let Some(a) = &b.artifact_id {
+        clax_http::hosted::require_reach(&s, hosted.as_deref(), a).await?;
+    }
     let id = b.id.clone();
     let existed = s.store_call(move |st| Ok(st.job(&id)?.is_some())).await?;
     let out = write(&s, guard, move |st| {
@@ -454,11 +461,14 @@ pub struct ThreadBody {
 }
 
 /// `PUT /api/jobs/{id}/threads/{tid}` `{comment_id, stopped?}`: the job
-/// answers thread `tid` up to comment `comment_id`, or stopped at it.
+/// answers thread `tid` up to comment `comment_id`, or stopped at it. On a
+/// hosted daemon a thread of an artifact out of the owner's reach is 400
+/// `invalid_thread`, as one that does not exist.
 pub async fn put_thread(
     State(s): State<AppState>,
     d: DeniedToGrants,
     _t: RequireToken,
+    hosted: Option<axum::Extension<HostedRequest>>,
     headers: HeaderMap,
     p: Result<Path<(String, String)>, PathRejection>,
     req: Result<Json<ThreadBody>, JsonRejection>,
@@ -467,6 +477,23 @@ pub async fn put_thread(
     let (id, tid) = path(p)?;
     let b = body(req)?;
     let guard = require_owner(&s, &headers, &client_of(&s, &id).await?)?;
+    if s.hosted.is_some() {
+        let t = tid.clone();
+        let of = s
+            .store_call(move |st| Ok(st.get_thread(&t)?.map(|t| t.artifact_id)))
+            .await?;
+        if let Some(aid) = of {
+            match clax_http::hosted::require_reach(&s, hosted.as_deref(), &aid).await {
+                Err(e) if e.code == "not_found" => {
+                    return Err(ApiError::bad_request(
+                        "invalid_thread",
+                        format!("no thread {tid}"),
+                    ));
+                }
+                other => other?,
+            }
+        }
+    }
     write(&s, guard, move |st| {
         st.set_job_thread(&id, &tid, &b.comment_id, b.stopped)
     })
@@ -668,11 +695,17 @@ fn parse_step(b: StepBody) -> Result<Step, ApiError> {
 /// `not_rendered_clean` for a publish naming a draft with no clean render
 /// of its files, `job_moved` with the job; nothing is recorded then. 400
 /// `invalid_args` for a publish carrying `comments`, which only making an
-/// artifact sets.
+/// artifact sets. On a hosted daemon the step holds to the owner's reach
+/// ([`clax_http::hosted::require_right`]: 404 out of it, 403
+/// `not_permitted` within it): a publish to an artifact needs
+/// `clax-artifacts` `update` there, and its document writes, made at the
+/// owner's level, an artifact the owner made; a reply needs
+/// `clax-comments` `reply` at the job's artifact.
 pub async fn commit(
     State(s): State<AppState>,
     d: DeniedToGrants,
     _t: RequireToken,
+    hosted: Option<axum::Extension<HostedRequest>>,
     audit: AuditCtx,
     headers: HeaderMap,
     p: Result<Path<(String, String)>, PathRejection>,
@@ -682,6 +715,9 @@ pub async fn commit(
     let (id, key) = path(p)?;
     let step = parse_body(req, "the publish limit", parse_step).await?;
     let guard = require_owner(&s, &headers, &client_of(&s, &id).await?)?;
+    if s.hosted.is_some() {
+        step_in_reach(&s, hosted.as_deref(), &id, &step).await?;
+    }
     let events = s.events.clone();
     let ctx = s.feedback_ctx();
     let out = match step {
@@ -830,6 +866,52 @@ pub async fn commit(
         }
     };
     Ok(Json(out))
+}
+
+/// On a hosted daemon, that step `step` of job `id` stays within the
+/// reach of the request's caller (`h`), as [`commit`] describes.
+async fn step_in_reach(
+    s: &AppState,
+    h: Option<&HostedRequest>,
+    id: &str,
+    step: &Step,
+) -> Result<(), ApiError> {
+    use clax_core::rights::RightType;
+    match step {
+        Step::Plain(..) => Ok(()),
+        Step::Publish(p) => {
+            let Some(aid) = p.artifact_id.clone() else {
+                return Ok(());
+            };
+            let right = (RightType::Artifacts, "update");
+            clax_http::hosted::require_right(s, h, right, &aid).await?;
+            let hosted = s.hosted.is_some();
+            let owners = s
+                .store_call(move |st| clax_http::db_caller::token_at(st, hosted, true, &aid))
+                .await?;
+            if !p.docs.is_empty() && !owners {
+                return Err(ApiError::forbidden(
+                    "not_permitted",
+                    "a step's document writes are made at the owner's level: only at a page the owner made",
+                ));
+            }
+            Ok(())
+        }
+        Step::Reply(_) => {
+            let job = id.to_string();
+            let of = s
+                .store_call(move |st| Ok(st.job(&job)?.and_then(|j| j.job.artifact_id)))
+                .await?;
+            match of {
+                Some(aid) => {
+                    let right = (RightType::Comments, "reply");
+                    clax_http::hosted::require_right(s, h, right, &aid).await
+                }
+                // The store refuses a reply on a job of no artifact.
+                None => Ok(()),
+            }
+        }
+    }
 }
 
 /// What follows a publish step's commit, none of which turns the

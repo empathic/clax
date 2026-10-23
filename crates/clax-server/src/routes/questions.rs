@@ -695,7 +695,9 @@ pub async fn list(
             // On a hosted daemon, none about an artifact out of reach.
             let hidden = clax_http::views::inbox::out_of_reach(db, me.as_deref(), hosted)?;
             rows.retain(|q| q.artifact_id.as_ref().is_none_or(|a| !hidden.contains(a)));
-            let open = open - db.open_questions_about(me.as_deref(), &hidden)?;
+            // Two reads: a question that changes between them never takes the
+            // count below 0.
+            let open = open.saturating_sub(db.open_questions_about(me.as_deref(), &hidden)?);
             let views = rows
                 .iter()
                 .map(|r| question_view(db, r))

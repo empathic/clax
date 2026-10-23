@@ -1471,16 +1471,26 @@ pub struct RestoreBody {
 /// when a field is missing or one it does not take is sent (naming it),
 /// 400 `live_page` for a live page. An
 /// `X-Clax-Session` must name a live session, which the version records.
+/// On a hosted daemon the token restores only where the owner's scope
+/// updates the artifact ([`clax_http::hosted::require_right`]: 403
+/// `not_permitted` at one shared with the owner as a viewer or open by its
+/// link), and changes its capabilities only where the owner administers it
+/// (403 `admin_only`, [`admin_change`]).
 pub async fn restore(
     State(s): State<AppState>,
-    _d: clax_http::agent::DeniedToGrants,
+    d: clax_http::agent::DeniedToGrants,
     _t: clax_http::auth::RequireToken,
+    hosted: Option<axum::Extension<clax_http::hosted::HostedRequest>>,
     audit: AuditCtx,
     headers: HeaderMap,
     aid: Result<Path<String>, PathRejection>,
     req: Result<Json<RestoreBody>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let id = parse_id(&path(aid)?)?;
+    // On hosted the token writes a version only where the owner's scope
+    // updates, as a publish does.
+    let right = (RightType::Artifacts, "update");
+    clax_http::hosted::require_right(&s, hosted.as_deref(), right, id.as_str()).await?;
     if s.live_ids.contains(id.as_str()) {
         return Err(ApiError::bad_request(
             "live_page",
@@ -1501,6 +1511,10 @@ pub async fn restore(
         ));
     };
     let (declaration, truncated) = b.declaration.validated()?;
+    if declaration.capabilities.is_some() {
+        let caller = d.caller(&s).await?;
+        admin_change(&s, &caller, &id, None, declaration.capabilities.clone()).await?;
+    }
     let session = session_header(&headers)?;
     let events = s.events.clone();
     let (artifact, version) = s

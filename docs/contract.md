@@ -268,7 +268,11 @@ answers as a publish does (201 `{artifact, version, url, note_truncated}`),
 and a `version` event follows. Errors: 409 `conflict` with `current` when
 `if_version` is not the current version; 404 `not_found` for an unknown
 artifact or version; 400 `invalid_args` when `version` or `if_version` is
-missing; 400 `live_page` for a live page. Each restore stores `n`'s files
+missing; 400 `live_page` for a live page. On a hosted Clax it needs
+`clax-artifacts` `update` in the owner's reach (403 `not_permitted` at a
+page shared with the owner as a viewer, or open by its link), and
+`capabilities` that change the page's need the owner to administer it
+(403 `admin_only`, as a publish). Each restore stores `n`'s files
 again under the new version, so it adds their size on disk. The Clax app's
 Versions tab uses it for undo.
 
@@ -3075,14 +3079,14 @@ transaction with the step: either both exist, or neither does.
 |---|---|---|---|
 | `POST /api/jobs/owner` | token | `{client, stream}` | `{owner}` (32 hex characters); 409 `owner_held`; 409 `owner_draining` while the old owner's writes run; 400 `no_such_stream` when the hub holds no connection of `stream` |
 | `DELETE /api/jobs/owner` | token, `x-clax-jobs-owner` | — | 204, the claim that token holds released |
-| `POST /api/jobs` | token, owner token | `{id, client, kind, artifact_id?, title?, input, plan?}` | 201 `{job}` in `queued`; the same `id` and body again 200; another body 409 `job_exists`; 400 `invalid_artifact` |
+| `POST /api/jobs` | token, owner token | `{id, client, kind, artifact_id?, title?, input, plan?}` | 201 `{job}` in `queued`; the same `id` and body again 200; another body 409 `job_exists`; 400 `invalid_artifact`; on a hosted Clax 404 for an `artifact_id` out of the caller's reach |
 | `GET /api/jobs?open=1&client=<c>` | token | — | `{jobs: [{job, steps, threads, questions}]}`, the client's jobs neither `cancelled` nor `done`, oldest first, each question `{question_id, tool_use_id, answer}`; 400 `invalid_query` without `open=1` and `client` |
 | `GET /api/jobs/<id>` | token | — | `{job}`; 404 |
 | `PATCH /api/jobs/<id>` | token, owner token | `{if_rev, state?, step?, title?, plan?, carry?, error?}` (`null` clears a field) | `{job}`; 409 `job_moved` with the job when it is not at `if_rev`; 400 `invalid_move` for `queued`, `waiting` or `done`; a move to `running` lands in `waiting` while a question it asked is open |
-| `PUT /api/jobs/<id>/threads/<tid>` | token, owner token | `{comment_id, stopped?}` | `{job}`; 400 `invalid_thread` |
+| `PUT /api/jobs/<id>/threads/<tid>` | token, owner token | `{comment_id, stopped?}` | `{job}`; 400 `invalid_thread` (on a hosted Clax also for a thread of an artifact out of the caller's reach) |
 | `DELETE /api/jobs/<id>/threads/<tid>` | token, owner token | — | `{job}` |
 | `PUT /api/jobs/<id>/questions/<qid>` | token, owner token | — | `{job}`, a `running` job `waiting` while the question is open (its answer, decline or withdrawal, `job_end` when the job ends first, is stored in the job and moves it back); 400 `invalid_question` for a question not of the `ask` tool or another job's |
-| `POST /api/jobs/<id>/steps/<key>` | token, owner token | `{result?, publish?, reply?, state?}`, one of `result`, `publish` and `reply`; `state` only `"done"` | `{job, step: {key, result, version_n, created_at}, replayed, version?}`; 409 `version_moved` `{current}`, `doc_moved` `{path}`, `not_rendered_clean`, `job_moved`, `version_present`; 400 `invalid_step` |
+| `POST /api/jobs/<id>/steps/<key>` | token, owner token | `{result?, publish?, reply?, state?}`, one of `result`, `publish` and `reply`; `state` only `"done"` | `{job, step: {key, result, version_n, created_at}, replayed, version?}`; 409 `version_moved` `{current}`, `doc_moved` `{path}`, `not_rendered_clean`, `job_moved`, `version_present`; 400 `invalid_step`; on a hosted Clax a publish needs `clax-artifacts` `update` at its artifact and a reply `clax-comments` `reply` at the job's (404 out of the caller's reach, 403 `not_permitted` within it), and a publish's `docs` an artifact the owner made (403 `not_permitted`) |
 | `GET /api/agent-read-consents` | token | — | `{consents: [{reader, source}]}`; on a hosted Clax those whose two artifacts are in the caller's reach |
 | `PUT /api/agent-read-consents/<reader>/<source>` | token | — | 204; 404 when either artifact is missing, or on a hosted Clax out of the caller's reach |
 | `DELETE /api/agent-read-consents/<reader>/<source>` | token | — | `{deleted}`; on a hosted Clax 404 when either artifact is out of the caller's reach |
@@ -6605,7 +6609,9 @@ the reader's topic.
 answers `{collections: [{path, count}]}`: every collection of the
 artifact's documents with its document count, sorted by path, without
 private `data/users/<id>/` ones. It ignores the read rules, so it is the
-owner's: with `X-Clax-Reader` it is 403 `not_granted`.
+owner's: with `X-Clax-Reader` it is 403 `not_granted`, and on a hosted Clax
+it answers only at an artifact the owner made (403 `not_permitted` at one
+shared with the owner or open by its link).
 
 **In the page.** `(await window.claude.use("db")).artifact(id)` returns
 read-only refs over app `id`'s documents: `doc(path)` with `get`,
@@ -8686,7 +8692,11 @@ it starts, the runs a previous process left. A build without the
   share (or, for a person, its link) does, and a fork's lineage is followed
   only through artifacts in reach. A session route that names an artifact
   out of reach (`/api/sessions/<sid>/git-token/<aid>`,
-  `…/drafts/<aid>`, `…/working/<aid>`) is 404.
+  `…/drafts/<aid>`, `…/working/<aid>`) is 404. The token's own routes
+  that act on an artifact keep to the same reach: `versions:restore`
+  needs `update` there, `docs:collections` answers only at an artifact
+  the owner made, and the app's jobs name, publish to and reply at only
+  what the owner reaches (see "Jobs").
 - Live pages (see "Live pages") are visible only to a loopback peer or a
   request with the token; to anyone else they do not exist (404, left out
   of lists and of the stream), and their snapshots are served with a policy
