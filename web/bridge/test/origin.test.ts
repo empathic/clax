@@ -231,6 +231,72 @@ describe("db on the page's own origin", () => {
   });
 });
 
+describe("db.artifact(id) on the page's own origin", () => {
+  afterEach(() => { vi.useRealTimers(); });
+  const B = "8r4m0nay3c5v";
+
+  it("reads another app's documents through this site, never its origin", async () => {
+    const { client, calls } = site(m => (m === "read_get" ? doc("runs/r1", 1) : m === "read_query" ? [doc("runs/r1", 1)] : null));
+    const t = dbTransport(client, false);
+    expect(await t.call("db", "read", [{ op: "get", artifact: B, path: "runs/r1" }])).toEqual(doc("runs/r1", 1));
+    expect(await t.call("db", "read", [{ op: "query", artifact: B, spec: { ...tasks, collection: "runs" } }])).toEqual([doc("runs/r1", 1)]);
+    expect(calls.map(c => [c[1], c[2][0]])).toEqual([["read_get", B], ["read_query", B]]);
+    await expect(t.call("db", "read", [{ op: "set", artifact: B }])).rejects.toMatchObject({ code: "invalid_argument" });
+  });
+
+  it("asks the shell once on not_granted, and reads again when it grants", async () => {
+    let granted = false;
+    const { client } = site(() => (granted ? doc("runs/r1", 1) : new CapabilityError("not_granted", "no")));
+    const sh = shell(["db"], { "db.grant": () => { granted = true; return true; } });
+    const t = dbTransport(client, sh);
+    expect(await t.call("db", "read", [{ op: "get", artifact: B, path: "runs/r1" }])).toEqual(doc("runs/r1", 1));
+    expect(sh.asked.filter(a => a === "db.grant")).toHaveLength(1);
+    // Refused without a shell: the refusal is the page's.
+    granted = false;
+    await expect(dbTransport(client, false).call("db", "read", [{ op: "get", artifact: B, path: "runs/r1" }])).rejects.toMatchObject({ code: "not_granted" });
+  });
+
+  it("polls a subscription to another app's documents even while the shell watches, and ends it when refused", async () => {
+    vi.useFakeTimers();
+    let v = 1;
+    let refused = false;
+    const { client } = site(m => (refused ? new CapabilityError("not_granted", "revoked") : m === "read_get" ? doc("runs/r1", v) : null));
+    const sh = shell();
+    const t = dbTransport(client, sh);
+    const got = pushes(t);
+    await vi.advanceTimersByTimeAsync(0);
+    await t.call("db", "read", [{ op: "subscribe", artifact: B, sub: "s1", spec: sub("runs/r1") }]);
+    v = 2;
+    await vi.advanceTimersByTimeAsync(UNWATCHED_POLL_MS[0]);
+    expect(got.map(g => g.topic === "snapshot" ? (g.data.docs as WireDoc[])[0].version : g.topic)).toEqual([1, 2]);
+    refused = true;
+    await vi.advanceTimersByTimeAsync(UNWATCHED_POLL_MS[0]);
+    expect(got.at(-1)).toMatchObject({ topic: "snapshot-error", data: { sub: "s1", code: "not_granted" } });
+  });
+});
+
+describe("db in the Clax app's migration view", () => {
+  it("hands the shell each document's value before its first write, and writes once the journal has it", async () => {
+    const order: string[] = [];
+    const { client } = site((m, args) => { order.push(`${m} ${String(args[0])}`); return m === "get" ? (args[0] === "tasks/a" ? doc("tasks/a", 3) : null) : null; });
+    const sh = shell(["db"], { "db.journal": args => { order.push(`journal ${JSON.stringify(args[0])}`); return null; } });
+    const t = dbTransport(client, sh, true);
+    await t.call("db", "set", ["tasks/a", { v: 9 }]);
+    await t.call("db", "update", ["tasks/a", { v: 10 }]);
+    await t.call("db", "delete", ["tasks/b"]);
+    expect(order.filter(o => !o.startsWith("query"))).toEqual([
+      "get tasks/a", `journal ${JSON.stringify({ path: "tasks/a", before: { v: 3 } })}`, "set tasks/a",
+      "update tasks/a",
+      "get tasks/b", `journal ${JSON.stringify({ path: "tasks/b", before: null })}`, "delete tasks/b",
+    ]);
+    // Outside the migration view nothing is journaled.
+    const plain = site(() => null);
+    const sh2 = shell(["db"]);
+    await dbTransport(plain.client, sh2).call("db", "set", ["tasks/a", { v: 1 }]);
+    expect(sh2.asked.filter(a => a === "db.journal")).toEqual([]);
+  });
+});
+
 describe("user on the page's own origin", () => {
   const who = (w: Partial<Whoami> | null) => {
     const { client } = site(() => null);
@@ -311,7 +377,7 @@ describe("originUse", () => {
 
   it("resolves db and room when declared, assets for the owner alone, user always, and undefined for the shell's", async () => {
     const declared = { db: {}, room: {}, assets: {} };
-    expect(Object.keys((await originUse("db", false, room, at(declared))) as object).sort()).toEqual(["collection", "doc"]);
+    expect(Object.keys((await originUse("db", false, room, at(declared))) as object).sort()).toEqual(["artifact", "collection", "doc"]);
     // The room's namespace over the origin's socket.
     expect(await originUse("room", false, room, at(declared))).toEqual({ room: true });
     expect(await originUse("assets", false, room, at(declared))).toBeNull();

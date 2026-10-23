@@ -1029,3 +1029,71 @@ async fn a_docs_read_answers_304_until_its_artifacts_documents_change() {
         .unwrap();
     assert!(res.headers().get("etag").is_none());
 }
+
+/// `db.artifact(<source>)` on a site: another app's documents, read through
+/// the site's `read/<source>/docs…` for its artifact alone, once the owner
+/// granted it, by whoever may read the source; never by a visitor, and only
+/// reads.
+#[tokio::test]
+async fn a_site_reads_another_apps_documents_once_granted_and_never_for_a_visitor() {
+    let ts = TestServer::spawn().await;
+    let b = artifact(&ts, json!({"db": {}})).await;
+    let res = ts
+        .authed(
+            ts.client
+                .put(format!("{}/api/artifacts/{b}/docs/runs/r1", ts.base))
+                .json(&json!({"data": {"km": 5}, "lww": true})),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let a = artifact(&ts, json!({"db": {"read": [b]}})).await;
+    let cookie = ts.site_cookie(&a).await;
+    let api = on(&ts, &a, Some(&cookie));
+    let doc = format!("read/{b}/docs/runs/r1");
+    let (s, v) = api.send(Method::GET, &doc, None).await;
+    assert_eq!((s, code(&v)), (403, "not_granted"), "{v}");
+    let res = ts
+        .authed(
+            ts.client
+                .put(format!("{}/api/artifacts/{a}/db-grants/{b}", ts.base)),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let (s, v) = api.send(Method::GET, &doc, None).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["doc"]["data"], json!({"km": 5}));
+    let (s, v) = api
+        .send(Method::GET, &format!("read/{b}/docs?collection=runs"), None)
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["docs"].as_array().unwrap().len(), 1, "{v}");
+    // Reads alone, and only of a source A declares.
+    let (s, _) = api
+        .send(Method::PUT, &doc, Some(json!({"data": {"km": 6}})))
+        .await;
+    assert_eq!(s, 405);
+    let c = artifact(&ts, json!({"db": {}})).await;
+    let (s, v) = api
+        .send(Method::GET, &format!("read/{c}/docs/runs/r1"), None)
+        .await;
+    assert_eq!(s, 403, "{v}");
+    assert!(["not_declared", "not_granted"].contains(&code(&v)), "{v}");
+    // A's site open to the world: its visitors read none of B's.
+    let res = ts
+        .authed(
+            ts.client
+                .patch(format!("{}/api/artifacts/{a}", ts.base))
+                .json(&json!({"site_access": "world"})),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success(), "{}", res.status());
+    let anon = visitor(&ts, &a).await;
+    let (s, v) = on(&ts, &a, Some(&anon)).send(Method::GET, &doc, None).await;
+    assert_eq!((s, code(&v)), (403, "not_granted"), "{v}");
+}

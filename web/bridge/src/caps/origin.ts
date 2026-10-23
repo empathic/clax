@@ -105,11 +105,29 @@ const pathOf = (args: unknown[]) => String(args[0]);
  * not answer is retried after [`RETRY_MS`]. A snapshot is pushed as
  * `db/snapshot` when it differs from the subscription's last, a
  * subscription's end as `db/snapshot-error`. The site's validators (an
- * unchanged read is its 304, origin-client.ts) keep a poll cheap. */
-export function dbTransport(client: OriginClient, shell: Shell | false): Transport {
+ * unchanged read is its 304, origin-client.ts) keep a poll cheap. With
+ * `journal` (the Clax app's migration view), each document's first write
+ * waits until the shell's write journal has the document's value before it
+ * (`db.journal`, the value or null; app/inspect.ts in the shell), so the app
+ * can put the migration's writes back.
+ *
+ * `read` serves `db.artifact(id)` (db.ts): another app's documents, read
+ * through the site (`read/<id>/docs…`, origin-client.ts) for this app, as
+ * the viewer, never anyone's credential sent to that app's origin. Its
+ * subscriptions poll as an unwatched page's do (no shell reports another
+ * app's changes), and one the site refuses later (the grant revoked) ends
+ * with `not_granted`. A read the site refuses `not_granted`, made by the page (not a
+ * refetch), asks a framing shell once per source (`db.grant`: the owner's
+ * shell asks the owner, and on Allow saves the grant), and is made again
+ * when it was granted. */
+export function dbTransport(client: OriginClient, shell: Shell | false, journal = false): Transport {
   const listeners = new Map<string, Set<(d: unknown) => void>>();
   const emit = (topic: string, data: unknown) => { for (const fn of [...(listeners.get(topic) ?? [])]) fn(data); };
   const subs = new Map<string, Spec>();
+  // The app each `read` subscription reads (none for this app's own).
+  const sources = new Map<string, string>();
+  // Per source: whether the shell's owner allowed the read, asked once.
+  const asked = new Map<string, Promise<boolean>>();
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   // The latest fetch started per subscription: only it may deliver, so a slow
   // earlier fetch never overwrites a newer snapshot.
@@ -129,7 +147,32 @@ export function dbTransport(client: OriginClient, shell: Shell | false): Transpo
   let step = 0;
   const hidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
 
-  const current = async (spec: Spec): Promise<WireDoc[]> => {
+  /** One read of app `src`'s documents (`get` or `query`); a refusal
+   * `not_granted` of a page's own read (`mayAsk`) asks the shell. */
+  async function readOf(src: string, op: "get" | "query", arg: unknown, mayAsk: boolean): Promise<unknown> {
+    const once = () => client.call("db", `read_${op}`, [src, arg]);
+    try {
+      return await once();
+    } catch (e) {
+      if (!mayAsk || !shell || !isCapabilityError(e) || e.code !== "not_granted") throw e;
+      let p = asked.get(src);
+      if (!p) {
+        p = shell.call("db", "grant", [src]).then(g => g === true, () => false);
+        asked.set(src, p);
+        // A refusal is not kept: the next read asks again.
+        void p.then(g => { if (!g) asked.delete(src); });
+      }
+      if (!(await p)) throw e;
+      return once();
+    }
+  }
+
+  const current = async (spec: Spec, src?: string): Promise<WireDoc[]> => {
+    if (src) {
+      if (spec.kind === "query") return (await readOf(src, "query", spec, false)) as WireDoc[];
+      const d = (await readOf(src, "get", spec.path, false)) as WireDoc | null;
+      return d ? [d] : [];
+    }
     if (spec.kind === "query") return (await client.call("db", "query", [spec])) as WireDoc[];
     const d = (await client.call("db", "get", [spec.path])) as WireDoc | null;
     return d ? [d] : [];
@@ -143,7 +186,7 @@ export function dbTransport(client: OriginClient, shell: Shell | false): Transpo
     fetches.set(sub, n);
     const live = () => subs.get(sub) === spec && fetches.get(sub) === n;
     try {
-      const docs = await current(spec);
+      const docs = await current(spec, sources.get(sub));
       if (!live()) return false;
       failures.delete(sub);
       clearTimeout(retries.get(sub));
@@ -185,7 +228,9 @@ export function dbTransport(client: OriginClient, shell: Shell | false): Transpo
   function repoll(): void {
     if (poll !== null) clearTimeout(poll);
     poll = null;
-    const ms = !watched ? UNWATCHED_POLL_MS[step] : streamDown ? POLL_MS : 0;
+    // Another app's documents (`read`) are polled whatever the shell
+    // watches: its reports are this app's alone.
+    const ms = !watched || sources.size ? UNWATCHED_POLL_MS[step] : streamDown ? POLL_MS : 0;
     if (ms && subs.size && !hidden()) poll = setTimeout(() => void tick(), ms);
   }
 
@@ -215,6 +260,7 @@ export function dbTransport(client: OriginClient, shell: Shell | false): Transpo
 
   function drop(sub: string): void {
     subs.delete(sub);
+    sources.delete(sub);
     fetches.delete(sub);
     failures.delete(sub);
     delivered.delete(sub);
@@ -270,6 +316,31 @@ export function dbTransport(client: OriginClient, shell: Shell | false): Transpo
         case "unsubscribe":
           drop(String(args[0]));
           return null;
+        case "read": {
+          const r = (args[0] ?? {}) as { op?: unknown; artifact?: unknown; path?: unknown; spec?: unknown; sub?: unknown };
+          const src = String(r.artifact ?? "");
+          switch (r.op) {
+            case "get": return readOf(src, "get", r.path, true);
+            case "query": return readOf(src, "query", r.spec, true);
+            case "subscribe": {
+              const sub = String(r.sub);
+              if (!subs.has(sub) && subs.size >= MAX_SUBSCRIPTIONS) throw new CapabilityError("resource_exhausted", `at most ${MAX_SUBSCRIPTIONS} subscriptions per view`);
+              // The first read is the page's: it may ask the shell.
+              await readOf(src, (r.spec as Spec).kind === "query" ? "query" : "get", (r.spec as Spec).kind === "query" ? r.spec : (r.spec as { path: string }).path, true);
+              drop(sub);
+              subs.set(sub, r.spec as Spec);
+              sources.set(sub, src);
+              repoll();
+              await push(sub);
+              return null;
+            }
+            case "unsubscribe":
+              drop(String(r.sub));
+              return null;
+            default:
+              throw new CapabilityError("invalid_argument", "a read is a get, a query, a subscribe or an unsubscribe");
+          }
+        }
         case "set": case "update": case "delete": {
           const r = await client.call("db", method, args);
           echo(pathOf(args));

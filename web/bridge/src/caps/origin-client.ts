@@ -7,7 +7,9 @@
 // write as the page's. Daemon errors become the contract's codes
 // (web/contract/0.3.0 db.d.ts, assets.d.ts). A docs read sends the `ETag`
 // of its last answer back as `If-None-Match`, and the site's 304 (nothing
-// changed since) stands for that answer.
+// changed since) stands for that answer. Another app's documents (`db.artifact(id)`)
+// are read through `read/<id>/docs…`, which the site serves for this app
+// alone, as the viewer the cookie names (docs/contract.md, "Cross-app reads").
 import { CapabilityError } from "../rpc";
 import { checkUpload } from "./asset-checks";
 
@@ -79,6 +81,23 @@ function docPath(path: unknown): string {
 
 const wire = (d: ApiDoc): WireDoc => ({ path: d.path, id: d.id, data: d.data, version: d.version });
 
+const ARTIFACT_ID = /^[0-9a-hjkmnp-tv-z]{12}$/;
+
+/** `v` when it is an artifact ID, else `invalid_argument` before any request. */
+function sourceOf(v: unknown): string {
+  if (typeof v !== "string" || !ARTIFACT_ID.test(v)) throw invalid(`'${String(v)}' is not an artifact ID`);
+  return v;
+}
+
+/** A cross-app read's refusal: `not_granted` (the source does not share
+ * with this app and the owner granted nothing) and `not_declared` (this app
+ * does not list the source in `db.read`, or the source keeps no documents)
+ * keep their codes; anything else is as a read's. */
+function readError(status: number, err: ApiError): CapabilityError {
+  if (err.code === "not_granted" || err.code === "not_declared") return new CapabilityError(err.code, err.message ?? err.code);
+  return dbError(status, err, false);
+}
+
 /** The client of the site at `base` (its origin; the path is ignored). */
 export function originClient(base: URL): OriginClient {
   const at = (path: string) => new URL(API + path, base).href;
@@ -129,7 +148,7 @@ export function originClient(base: URL): OriginClient {
   const db = (method: string, path: string, body?: unknown, missing?: unknown) =>
     send(path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }, (s, e) => dbError(s, e, method !== "GET"), missing);
 
-  async function query(spec: QuerySpec): Promise<WireDoc[]> {
+  async function query(spec: QuerySpec, under = "docs", get: (path: string) => Promise<unknown> = path => db("GET", path)): Promise<WireDoc[]> {
     const q = new URLSearchParams({ collection: spec.collection });
     if (spec.where.length) q.set("where", JSON.stringify(spec.where));
     if (spec.orderBy) {
@@ -139,14 +158,14 @@ export function originClient(base: URL): OriginClient {
     if (spec.orderBy || spec.limit !== null) {
       // Without a limit the daemon answers an ordered query with every match.
       if (spec.limit !== null) q.set("limit", String(spec.limit));
-      return ((await db("GET", `docs?${q}`)) as { docs: ApiDoc[] }).docs.map(wire);
+      return ((await get(`${under}?${q}`)) as { docs: ApiDoc[] }).docs.map(wire);
     }
     const out: WireDoc[] = [];
     let cursor: string | null = null;
     q.set("limit", "1000");
     do {
       if (cursor) q.set("cursor", cursor);
-      const page = (await db("GET", `docs?${q}`)) as { docs: ApiDoc[]; next_cursor: string | null };
+      const page = (await get(`${under}?${q}`)) as { docs: ApiDoc[]; next_cursor: string | null };
       out.push(...page.docs.map(wire));
       cursor = page.next_cursor;
     } while (cursor);
@@ -193,6 +212,13 @@ export function originClient(base: URL): OriginClient {
         return null;
       case "db.query":
         return query(args[0] as QuerySpec);
+      case "db.read_get": {
+        const r = await send(`read/${sourceOf(args[0])}/${docPath(args[1])}`, {}, readError, null);
+        return r ? wire(r.doc) : null;
+      }
+      case "db.read_query": {
+        return query(args[1] as QuerySpec, `read/${sourceOf(args[0])}/docs`, path => send(path, {}, readError));
+      }
       case "db.acquire": {
         docPath(args[0]);
         const r = (await db("POST", "docs:acquire", acquireBody(args[0] as string, (args[1] ?? {}) as object))) as { acquired: boolean; version?: number | null; expires_at?: string | null; holder?: string | null };

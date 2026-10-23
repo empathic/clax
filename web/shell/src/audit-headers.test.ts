@@ -7,8 +7,9 @@ import { describe, expect, it } from "vitest";
 // those headers may carry a value a page supplies: the only ones they send are
 // the shell's literal `x-clax-via: page` on a page's own writes, which makes
 // the daemon count every author of the page in them (multi-person spec
-// §8.2, M11), and `x-clax-reader` naming the artifact the view serves on
-// `db.artifact(id)`'s reads (caps/cross-read.ts), never an ID the page sends.
+// §8.2, M11). `db.artifact(id)`'s reads go through the page's own site,
+// which names the reader itself (`X-Clax-Reader`, server side): neither the
+// shell nor the bridge sends it.
 function sources(dir: string): string[] {
   return readdirSync(dir).flatMap(name => {
     const p = join(dir, name);
@@ -27,6 +28,7 @@ const PAGE_WRITERS = ["caps/artifact.ts", "threads.ts"];
 const NOT_PAGE_CONTENT: Record<string, string> = {
   "caps/sample.ts": "a model request: it writes no content of the page's into the store",
   "caps/cross-read.ts": "the owner's read grant, saved after the owner allows it in the shell's prompt: no content of the page's",
+  "caps/db.ts": "the app's migration journal put back (replayJournal), as the app's restore asks: the documents' values from before the migration, no new content of the page's",
   "caps/net.ts": "the owner's network grant, saved after the owner allows it, and a fetch the daemon makes for the page: no content of the page's into the store",
 };
 
@@ -40,8 +42,7 @@ describe("x-clax request headers", () => {
       }
     }
     expect(found.length).toBeGreaterThan(0);
-    expect(new Set(found)).toEqual(new Set([MARKER, `"x-clax-reader": reader`]));
-    expect(readFileSync(join(__dirname, "caps/cross-read.ts"), "utf8")).toMatch(/\n  const reader = env\.aid;\n/);
+    expect(new Set(found)).toEqual(new Set([MARKER]));
   });
 
   it("mark every write a capability handler makes for a page", () => {

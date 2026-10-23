@@ -15,6 +15,7 @@
 //! | `room` | `GET` (a WebSocket) | `/api/artifacts/<id>/room` |
 //! | `artifact` | `GET` | `/api/artifacts/<id>` |
 //! | `whoami` | `GET` | `{kind, id?, name?, level, can_edit}` ([`whoami`]) |
+//! | `read/<source>/docs`, `read/<source>/docs/<path>` | `GET` | `/api/artifacts/<source>/docs…` read for this artifact (`X-Clax-Reader`, [`read_source`]) |
 //!
 //! Anything else under `/_clax/api/` is 404: comments and threads are the
 //! review UI's, served on the public host alone.
@@ -161,6 +162,41 @@ fn inner_path(aid: &ArtifactId, rest: &str) -> Option<String> {
     }
 }
 
+/// A cross-app read's source and the docs path of it, when site API path
+/// `rest` is one (`read/<source>/docs`, `read/<source>/docs/<path>`).
+fn read_target(rest: &str) -> Option<(ArtifactId, &str)> {
+    let (source, tail) = rest.strip_prefix("read/")?.split_once('/')?;
+    let source = ArtifactId::parse(source).ok()?;
+    (tail == "docs" || tail.starts_with("docs/")).then_some((source, tail))
+}
+
+/// Whether `caller`, on artifact `reader`'s site, may read `source`'s
+/// documents for it (`db.artifact(<source>)` in a page): a person or the
+/// owner who may read `source` now ([`clax_http::site_access::holder_reads`]);
+/// never a visitor, a link viewer or a guest, whose session names no one
+/// with a right to another artifact. What `reader` may read of `source`
+/// then is the read route's, as for any `X-Clax-Reader` request
+/// ([`clax_http::db_caller::reader_caller`]: `reader` declares `source` in
+/// `db.read`, and `source` shares to it or the owner granted it; at
+/// `view`, with no viewer).
+async fn read_source(
+    s: &AppState,
+    caller: &SiteCaller,
+    reader: &ArtifactId,
+    source: &ArtifactId,
+) -> Result<bool, ApiError> {
+    let holder = match caller {
+        SiteCaller::Holder(h @ (Holder::Owner | Holder::Person(_))) => h.clone(),
+        _ => return Ok(false),
+    };
+    if reader == source {
+        return Ok(false);
+    }
+    let source = source.clone();
+    s.store_call(move |st| clax_http::site_access::holder_reads(st, &holder, &source))
+        .await
+}
+
 /// 403 `forbidden_origin`: a site API request from another origin.
 fn forbidden_origin(site: &SiteRequest) -> ApiError {
     ApiError::forbidden(
@@ -216,8 +252,28 @@ async fn answer(s: AppState, api: axum::Router, mut req: Request) -> Result<Resp
         }
         return whoami(&s, &site.artifact, &caller).await.map_err(refuse);
     }
-    let Some(path) = inner_path(&site.artifact, &rest) else {
-        return Err(refuse(ApiError::not_found()));
+    // A cross-app read: another artifact's documents, read for this one.
+    let reading = read_target(&rest);
+    let path = match &reading {
+        Some((source, tail)) => {
+            if !get {
+                return Err(refuse(method_not_allowed()));
+            }
+            if !read_source(&s, &caller, &site.artifact, source)
+                .await
+                .map_err(refuse)?
+            {
+                return Err(refuse(ApiError::from(clax_http::db_caller::not_granted(
+                    &site.artifact,
+                    source,
+                ))));
+            }
+            format!("/api/artifacts/{}/{tail}", source.as_str())
+        }
+        None => match inner_path(&site.artifact, &rest) {
+            Some(p) => p,
+            None => return Err(refuse(ApiError::not_found())),
+        },
     };
     let visitor = matches!(caller, SiteCaller::Visitor(_));
     if visitor && rest == "artifact" {
@@ -241,7 +297,7 @@ async fn answer(s: AppState, api: axum::Router, mut req: Request) -> Result<Resp
     }
     // A docs read's validator, read before the read itself, so it is never
     // newer than what it is sent with.
-    let tag = if get && (rest == "docs" || rest.starts_with("docs/")) {
+    let tag = if get && reading.is_none() && (rest == "docs" || rest.starts_with("docs/")) {
         docs_tag(&s, &site.artifact, &caller).await
     } else {
         None
@@ -271,6 +327,11 @@ async fn answer(s: AppState, api: axum::Router, mut req: Request) -> Result<Resp
         clax_http::headers::VIA_HEADER,
         HeaderValue::from_static("page"),
     );
+    if reading.is_some()
+        && let Ok(v) = HeaderValue::from_str(site.artifact.as_str())
+    {
+        headers.insert(clax_http::db_caller::READER_HEADER, v);
+    }
     // The owner's site acts as the owner's shell does: with the token.
     if matches!(caller, SiteCaller::Holder(Holder::Owner)) {
         let bearer = HeaderValue::from_str(&format!("Bearer {}", s.token))

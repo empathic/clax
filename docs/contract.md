@@ -8683,11 +8683,25 @@ it starts, the runs a previous process left. A build without the
   an error's included, carries `Referrer-Policy: no-referrer`,
   `X-Content-Type-Options: nosniff`, `Cross-Origin-Resource-Policy:
   same-origin` (`cross-origin` on a site open to the world), on `https`
-  `Strict-Transport-Security: max-age=31536000; includeSubDomains`, and on
-  every page `Content-Security-Policy: frame-ancestors 'self' <shell>`,
-  the shell being a hosted Clax's public origin, or a local daemon's
+  `Strict-Transport-Security: max-age=31536000; includeSubDomains`, and
+  `Content-Security-Policy: frame-ancestors 'self' <shell>; default-src
+  'self' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' data:
+  blob:; style-src 'self' 'unsafe-inline' data: blob:; connect-src 'self';
+  object-src 'none'; base-uri 'none'; form-action 'none'` (beside any
+  policy of the response's own; a live page's snapshot keeps only the
+  `frame-ancestors` part, with its snapshot policy beside it), the shell
+  being a hosted Clax's public origin, or a local daemon's
   `http://localhost:<port>` and `http://127.0.0.1:<port>` (a policy names
-  no IPv6 literal, so a shell at `[::1]` frames no site). The host must be exactly a valid 12-character
+  no IPv6 literal, so a shell at `[::1]` frames no site), and in the Clax
+  app its shell origin too. So a page loads and fetches its own site alone
+  (its files, the bridge, its assets, its `/_clax/api/`), and `data:` and
+  `blob:` URLs; it loads no script, style, font, image, media, frame or
+  worker from another site, posts no form, and reaches the network only
+  through the `net` capability. A request there for a service worker's
+  script (`Service-Worker: script`), of any path, is answered with Clax's
+  own script, which installs, unregisters itself and handles no fetch: a
+  page's own worker never runs, and one registered before is removed at its
+  next update check. The host must be exactly a valid 12-character
   lowercase artifact ID followed by `.localhost` (a hosted Clax's
   `[hosted] site_domain`) and an optional numeric port. The main origin
   serves no content under any `Host`: there is no `/c/…`.
@@ -8785,9 +8799,11 @@ it starts, the runs a previous process left. A build without the
   query), `docs:batch`, `docs:acquire`, `docs:str_replace`, `assets`
   (`POST` an upload, `GET` the list), `assets/<asset ID>` (`DELETE`, an
   asset of this artifact's alone), `room` (the WebSocket), `artifact`
-  (`GET`) and `whoami` (`GET`); any other path is 404, comments and
-  threads among them. No field of a path, query or body names another
-  artifact. The caller is who the site's access found, and no one else: a
+  (`GET`), `whoami` (`GET`), and `read/<source>/docs` and
+  `read/<source>/docs/<path>` (`GET`, `db.artifact(<source>)`'s reads,
+  below); any other path is 404, comments and threads among them. No
+  field of a path, query or body names another artifact but a read's
+  source. The caller is who the site's access found, and no one else: a
   request carrying `Authorization` is 401, its cookies and `x-clax-*`
   headers are dropped, and every write is a page's. The owner is `admin`
   (as the owner's shell, the token's routes included), a person by their
@@ -8806,6 +8822,18 @@ it starts, the runs a previous process left. A build without the
   Clax the writes of a visitor, a link viewer and a guest are limited per client address (60, one back a
   second) and per artifact (600, ten back a second): 429 `rate_limited`
   with `retry_after_s`.
+- **Cross-app reads.** `read/<source>/docs…` on artifact A's site reads
+  app B's (`<source>`'s) documents for A, with the bodies of B's document
+  reads: only for a site session of the owner or a person who may read B
+  now (a visitor, a link viewer or a guest: 403 `not_granted`), and then as
+  any read for A (`X-Clax-Reader: A`, which the site sets): A lists B in
+  `db.read`, B shares to A (`db.share.read`) or the owner granted it, at
+  `view` with no viewer identity; else 403 `not_granted` (or
+  `not_declared`). Nothing is sent to B's site, and B's own site never sees
+  A's page. The bridge polls such a subscription (no stream reports B's
+  changes on A's site); a refusal of the page's own read asks a framing
+  shell (`db.grant`), whose owner answers the prompt "Let A read B's data?"
+  once per view (Allow saves the grant; a dismissal asks again).
 - The viewer's content iframe has no `sandbox` attribute (the distinct
   origin is the isolation) and `allow="clipboard-write; fullscreen;
   storage-access"`. It opens on the site's `/_clax/session/start?next=<the
@@ -8829,9 +8857,12 @@ it starts, the runs a previous process left. A build without the
   bridge takes orders only from the origin its tag's `data-origin` names
   (the daemon's public origin, always written; for a local daemon's
   loopback names, each of them at its port).
-- On the main origin `/_blob/<asset ID>` (with or without the old `?k=`)
-  and `/_clax/blob/<asset ID>` serve no bytes: they answer 301 to the
-  asset's address on its artifact's site, whose access decides. The old
+- On the main origin `/_blob/<asset ID>` (with or without the old `?k=`),
+  `/_clax/blob/<asset ID>` and `/_blob/<artifact ID>/<asset ID>` serve no
+  bytes: they answer 301 to the asset's address on its artifact's site
+  (`/_clax/blob/<asset ID>` there; the artifact's own assets alone for the
+  last, 404 for another's), whose access decides. `claude.assetUrl(id)` is
+  the asset's address on the page's own site. The old
   keyed addresses `/c/<id>/v/<n>/k/<key>/…` and `/_clip/…` are 404.
 - Asset responses and the raw file route
   (`/api/artifacts/<id>/versions/<n>/files/...`) carry

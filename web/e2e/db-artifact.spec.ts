@@ -38,7 +38,7 @@ async function apps(tag: string, bCaps: (a: string) => Record<string, unknown> =
 }
 
 async function open(page: Page, a: string): Promise<Frame> {
-  const f = await openArtifact(page, d.base, a, 1, "subdomain");
+  const f = await openArtifact(page, d.base, a, 1);
   await expect.poll(() => f.evaluate(() => (window as unknown as { ready?: boolean }).ready === true)).toBe(true);
   return f;
 }
@@ -71,17 +71,16 @@ test("Allow grants the read; the view follows the other app's changes until the 
 
   await f.evaluate(() => (window as unknown as { follow(): void }).follow());
   await expect(f.locator("#runs")).toHaveText("5");
+  // B's changes reach A by polling A's site: no shell reports them.
   await setDoc(b, "runs/r2", { km: 7 });
-  await expect(f.locator("#runs")).toHaveText("5,7");
+  await expect(f.locator("#runs")).toHaveText("5,7", { timeout: 30_000 });
 
-  // Revoked: a change to B no longer reaches A. A's own change, made after
-  // it, is the marker that the stream has delivered what it was going to.
+  // Revoked: the next refetch is refused, and the subscription ends with
+  // `not_granted`; a change to B no longer reaches A.
   await api(d.base, d.token, `/api/artifacts/${a}/db-grants/${b}`, { method: "DELETE" });
   await setDoc(b, "runs/r3", { km: 9 });
-  await setDoc(a, "marks/m1", { at: 1 });
-  await expect(f.locator("#marks")).toHaveText("1");
+  await expect(f.locator("#err")).toHaveText("not_granted", { timeout: 60_000 });
   await expect(f.locator("#runs")).toHaveText("5,7");
-  await expect(f.locator("#err")).toHaveText("");
   // The view asked once already: a read now is refused without a dialog.
   expect(await readOnce(f)).toBe("not_granted");
   await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -96,13 +95,5 @@ test("a grant made in an earlier view, or a share, is read without asking", asyn
   const shared = await apps("share", a => ({ db: { share: { read: [a] } } }));
   const g = await open(page, shared.a);
   expect(await readOnce(g)).toBe("km:5");
-  await expect(page.getByRole("dialog")).toHaveCount(0);
-});
-
-test("a viewer who is not the owner is never asked", async ({ page }) => {
-  const { a } = await apps("lan");
-  const f = await openArtifact(page, d.base, a, 1, "sandbox", { lan: true });
-  await expect.poll(() => f.evaluate(() => (window as unknown as { ready?: boolean }).ready === true)).toBe(true);
-  expect(await readOnce(f)).toBe("not_granted");
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
