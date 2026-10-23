@@ -628,9 +628,9 @@ fn a_stray_another_step_marked_is_replaced<C: ContentStore + 'static>(
     assert_eq!(f.steps(), 1);
     assert_eq!(f.versions(), [1, 2]);
     assert_eq!(f.html(2).as_deref(), Some("<p>two</p>"));
-    let e =
-        f.commit_at("publish:other", "<p>other</p>", "notes/other")
-            .unwrap_err();
+    let e = f
+        .commit_at("publish:other", "<p>other</p>", "notes/other")
+        .unwrap_err();
     assert!(matches!(e, StepError::VersionMoved { current: 2 }), "{e:?}");
     assert_eq!(f.html(2).as_deref(), Some("<p>two</p>"));
 }

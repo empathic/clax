@@ -102,7 +102,8 @@ pub async fn create(
         let did = parse_id(&d.artifact.id)?;
         // On its own task, as every call of the stores' host is
         // (`AppState::app_data_call`): the Worker's host is not `Send`.
-        let (host, store, from, to) = (s.app_data.clone(), s.store.clone(), of.clone(), did.clone());
+        let (host, store, from, to) =
+            (s.app_data.clone(), s.store.clone(), of.clone(), did.clone());
         let copied = clax_rt::spawn(async move {
             clax_http::app_data_host::copy_app_docs(&*host, &store, &from, &to).await
         })
