@@ -408,7 +408,7 @@ async fn hosted_cookie(ts: &TestServer, session: &str, aid: &str) -> Option<Stri
         .header(HOST, format!("localhost:{}", ts.addr.port()))
         .header(ORIGIN, origin)
         .header(COOKIE, format!("clax_session={session}"))
-        .json(&json!({}))
+        .json(&json!({"state": clax_testkit::SITE_STATE}))
         .send()
         .await
         .unwrap();
@@ -416,7 +416,10 @@ async fn hosted_cookie(ts: &TestServer, session: &str, aid: &str) -> Option<Stri
         return None;
     }
     let v: Value = res.json().await.unwrap();
-    Some(ts.redeem_site_code(v["src"].as_str().unwrap()).await)
+    Some(
+        ts.redeem_site_code(v["src"].as_str().unwrap(), clax_testkit::SITE_STATE)
+            .await,
+    )
 }
 
 async fn signed_in(ts: &TestServer, path: &str, body: Value, cookie: Option<&str>) -> String {
@@ -711,13 +714,15 @@ async fn a_link_viewers_writes_are_counted_as_a_visitors() {
         .post(format!("{}/api/artifacts/{aid}/site-code", ts.base))
         .header(HOST, &public)
         .header(ORIGIN, format!("http://{public}"))
-        .json(&json!({}))
+        .json(&json!({"state": clax_testkit::SITE_STATE}))
         .send()
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
     let v: Value = res.json().await.unwrap();
-    let cookie = ts.redeem_site_code(v["src"].as_str().unwrap()).await;
+    let cookie = ts
+        .redeem_site_code(v["src"].as_str().unwrap(), clax_testkit::SITE_STATE)
+        .await;
     let api = on(&ts, &aid, Some(&cookie));
     let (s, v) = api.send(Method::GET, "whoami", None).await;
     assert_eq!((s, v["kind"].as_str()), (200, Some("link")), "{v}");
@@ -1096,4 +1101,258 @@ async fn a_site_reads_another_apps_documents_once_granted_and_never_for_a_visito
     let anon = visitor(&ts, &a).await;
     let (s, v) = on(&ts, &a, Some(&anon)).send(Method::GET, &doc, None).await;
     assert_eq!((s, code(&v)), (403, "not_granted"), "{v}");
+}
+
+/// A person invited by the hosted owner (session `owner`): their browser
+/// session and public ID.
+async fn invited(ts: &TestServer, owner: &str, name: &str) -> (String, String) {
+    let invite: Value = serde_json::from_str(
+        &signed_in(
+            ts,
+            "/api/people/invites",
+            json!({"name": name}),
+            Some(owner),
+        )
+        .await,
+    )
+    .unwrap();
+    let code = invite["invite"]["url"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let session = signed_in(
+        ts,
+        &format!("/api/hosted/invites/{code}/accept"),
+        json!({}),
+        None,
+    )
+    .await;
+    let me: Value = ts
+        .client
+        .get(format!("{}/api/hosted/me", ts.base))
+        .header(HOST, format!("localhost:{}", ts.addr.port()))
+        .header(COOKIE, format!("clax_session={session}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pid = me["person"]["public_id"].as_str().unwrap().to_string();
+    (session, pid)
+}
+
+/// The hosted owner's (session `owner`) `method` of `path` on the public
+/// host: the status and the answer.
+async fn as_owner(
+    ts: &TestServer,
+    owner: &str,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+) -> (u16, Value) {
+    let public = format!("localhost:{}", ts.addr.port());
+    let mut r = ts
+        .client
+        .request(method, format!("{}{path}", ts.base))
+        .header(HOST, &public)
+        .header(ORIGIN, format!("http://{public}"))
+        .header(COOKIE, format!("clax_session={owner}"));
+    if let Some(b) = body {
+        r = r.json(&b);
+    }
+    let res = r.send().await.unwrap();
+    (
+        res.status().as_u16(),
+        res.json().await.unwrap_or(Value::Null),
+    )
+}
+
+/// A hosted owner's apps: B (with `runs/r1`) and A, which declares B in
+/// `db.read` and which the owner granted B's documents: the owner's
+/// session, A and B.
+async fn reader_and_source(ts: &TestServer) -> (String, String, String) {
+    let owner = signed_in(
+        ts,
+        "/api/hosted/setup",
+        json!({"secret": SECRET, "name": "Ada"}),
+        None,
+    )
+    .await;
+    let b = artifact(ts, json!({"db": {}})).await;
+    let res = ts
+        .authed(
+            ts.client
+                .put(format!("{}/api/artifacts/{b}/docs/runs/r1", ts.base))
+                .json(&json!({"data": {"km": 5}, "lww": true})),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let a = artifact(ts, json!({"db": {"read": [b]}})).await;
+    let res = ts
+        .authed(
+            ts.client
+                .put(format!("{}/api/artifacts/{a}/db-grants/{b}", ts.base)),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    (owner, a, b)
+}
+
+/// On a hosted Clax, a person reads another app's documents through the
+/// reading app's site only while they may read both: a right on the
+/// reader alone is refused, and so is a right to view the source without
+/// its documents; rights on both (with the reader's declaration and the
+/// owner's grant) read, and losing the right on the source refuses them
+/// again.
+#[tokio::test]
+async fn a_person_reads_another_apps_documents_only_with_a_right_on_both() {
+    let clock = Arc::new(ManualClock::at("2026-10-22T10:00:00Z"));
+    let ts = TestServer::spawn_hosted(clock, Some(SECRET)).await;
+    let (owner, a, b) = reader_and_source(&ts).await;
+    let doc = format!("read/{b}/docs/runs/r1");
+    let list = format!("read/{b}/docs?collection=runs");
+    let (sam, pid) = invited(&ts, &owner, "Sam").await;
+    let (s, v) = as_owner(
+        &ts,
+        &owner,
+        Method::PUT,
+        &format!("/api/hosted/artifacts/{a}/shares"),
+        Some(json!({"person": pid, "access": "viewer"})),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let cookie = hosted_cookie(&ts, &sam, &a).await.unwrap();
+    let api = on(&ts, &a, Some(&cookie));
+    let (s, v) = api.send(Method::GET, "whoami", None).await;
+    assert_eq!((s, v["kind"].as_str()), (200, Some("person")), "{v}");
+    // A right on A alone: B's documents are not Sam's to read.
+    for path in [&doc, &list] {
+        let (s, v) = api.send(Method::GET, path, None).await;
+        assert_eq!((s, code(&v)), (403, "not_granted"), "{path}: {v}");
+    }
+    let share_b = |access: &'static str| {
+        let (ts, owner, path, pid) = (
+            &ts,
+            &owner,
+            format!("/api/hosted/artifacts/{b}/shares"),
+            &pid,
+        );
+        async move {
+            let (s, v) = as_owner(
+                ts,
+                owner,
+                Method::PUT,
+                &path,
+                Some(json!({"person": pid, "access": access})),
+            )
+            .await;
+            assert_eq!(s, 200, "{v}");
+            v["share"]["id"].as_str().unwrap().to_string()
+        }
+    };
+    // B shared to view: its documents are not in a viewer's rights.
+    share_b("viewer").await;
+    let (s, v) = api.send(Method::GET, &doc, None).await;
+    assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
+    // A right to B's documents too (an editor's): Sam reads them, through A.
+    let sid = share_b("editor").await;
+    let (s, v) = api.send(Method::GET, &doc, None).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["doc"]["data"], json!({"km": 5}));
+    let (s, v) = api.send(Method::GET, &list, None).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["docs"].as_array().map(Vec::len), Some(1), "{v}");
+    // Unshared from B: refused again, on the same site session.
+    let (s, v) = as_owner(
+        &ts,
+        &owner,
+        Method::DELETE,
+        &format!("/api/hosted/artifacts/{b}/shares/{sid}"),
+        None,
+    )
+    .await;
+    assert!(s / 100 == 2, "{s}: {v}");
+    let (s, v) = api.send(Method::GET, &doc, None).await;
+    assert_eq!((s, code(&v)), (403, "not_granted"), "{v}");
+    // The owner, who may read both, reads them.
+    let mine = hosted_cookie(&ts, &owner, &a).await.unwrap();
+    let (s, v) = on(&ts, &a, Some(&mine)).send(Method::GET, &doc, None).await;
+    assert_eq!(s, 200, "{v}");
+}
+
+/// A link viewer and a guest on the reading app's site read none of
+/// another app's documents, though both apps are shared by link and the
+/// owner granted the read: their sessions name no one with a right to it.
+#[tokio::test]
+async fn link_viewers_and_guests_read_no_other_apps_documents() {
+    let clock = Arc::new(ManualClock::at("2026-10-22T10:00:00Z"));
+    let ts = TestServer::spawn_hosted(clock, Some(SECRET)).await;
+    let (owner, a, b) = reader_and_source(&ts).await;
+    for aid in [&a, &b] {
+        let (s, v) = as_owner(
+            &ts,
+            &owner,
+            Method::PUT,
+            &format!("/api/hosted/artifacts/{aid}/link"),
+            Some(json!({"access": "commenter"})),
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+    }
+    let public = format!("localhost:{}", ts.addr.port());
+    // A link viewer: a site code minted with no session.
+    let res = ts
+        .client
+        .post(format!("{}/api/artifacts/{a}/site-code", ts.base))
+        .header(HOST, &public)
+        .header(ORIGIN, format!("http://{public}"))
+        .json(&json!({"state": clax_testkit::SITE_STATE}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    let link = ts
+        .redeem_site_code(v["src"].as_str().unwrap(), clax_testkit::SITE_STATE)
+        .await;
+    // A guest: a browser that named itself on a page shared by link.
+    let res = ts
+        .client
+        .put(format!("{}/api/viewers/me", ts.base))
+        .header(HOST, &public)
+        .header(ORIGIN, format!("http://{public}"))
+        .json(&json!({"display_name": "Mia"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let mia = res.headers()[SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .trim_start_matches("clax_session=")
+        .to_string();
+    let guest = hosted_cookie(&ts, &mia, &a).await.unwrap();
+    for (who, cookie) in [("link", &link), ("guest", &guest)] {
+        let api = on(&ts, &a, Some(cookie));
+        let (s, v) = api.send(Method::GET, "whoami", None).await;
+        assert_eq!((s, v["kind"].as_str()), (200, Some(who)), "{v}");
+        for path in [
+            format!("read/{b}/docs/runs/r1"),
+            format!("read/{b}/docs?collection=runs"),
+        ] {
+            let (s, v) = api.send(Method::GET, &path, None).await;
+            assert_eq!((s, code(&v)), (403, "not_granted"), "{who} {path}: {v}");
+        }
+    }
 }
