@@ -569,7 +569,9 @@ agent writes from a session).
 | `version` | integer | no | The version to fork; defaults to the URL's version, else the current version. |
 
 Makes a new artifact whose version 1 holds the chosen version's files,
-title, description, icon and capabilities. It is the agent's person's (the
+title, description, icon and capabilities. The files are copied as they
+are, without a publish's checks (an `icon.svg` the icon rules now refuse
+included). It is the agent's person's (the
 owner's for the owner's agents) and the session's, which watches it. The
 source's assets that the version's files name by ID are copied under the
 same IDs, so the fork's pages load them from the fork's own site at the
@@ -5391,6 +5393,7 @@ router), and a test fails when it differs:
 | `PUT /api/viewers/me/presence` | Denied | no |
 | `GET /api/viewers/me/seen` | Denied | no |
 | `PUT /api/viewers/me/seen` | Denied | no |
+| `GET /audit` | Denied | no |
 | `GET /connect/b/{code}` | Denied | no |
 | `GET /healthz` | Denied | no |
 | `GET /inbox` | Denied | no |
@@ -5398,6 +5401,7 @@ router), and a test fails when it differs:
 | `POST /mcp/json` | Denied | no |
 | `GET /me` | Denied | no |
 | `GET /people` | Denied | no |
+| `GET /settings` | Denied | no |
 | `GET /site-signin` | Denied | yes: 403 `not_for_agents` |
 | `GET /tags` | Denied | no |
 <!-- route-table:end -->
@@ -5800,8 +5804,10 @@ versions is a snapshot of the page, taken when a comment is posted.
   the page or the page does not exist (it never creates a page). A viewer
   route, as `POST /api/live/threads` is.
 - **Serving a snapshot.** Every content response of a live page
-  (on `<id>.localhost`) carries, besides its usual
-  policy, a second `Content-Security-Policy`: `script-src
+  (on `<id>.localhost`) carries, besides its framing policy
+  (`frame-ancestors` alone: unlike an artifact's own content, a snapshot
+  is not kept to its own files), a second
+  `Content-Security-Policy`: `script-src
   http://<Host>/_clax/; object-src 'none'; base-uri 'none'; form-action
   'none'; frame-src 'none'; connect-src 'none'; worker-src 'none'`, where
   `<Host>` is the request's `Host` (the daemon's own host when that is not
@@ -6117,8 +6123,10 @@ dark mode, and on a phone:
 - `window.claude.use(name)` is the entry point for runtime capabilities (see
   "Runtime capabilities"). It resolves `null` for undeclared names (other than
   `permissions` and `user`) and outside the viewer, except that `db`, `assets`,
-  `user` and `room` also work on the artifact's own site opened directly, so
-  pages must handle `null` and work without it.
+  `user` and `room` also work on the artifact's own site opened directly in a
+  browser (in the Clax app a room's `join` rejects `capability_disabled`: the
+  app opens no WebSocket), so pages must handle `null` and errors and work
+  without them.
 - Supporting files (stylesheets, scripts, images, data) are referenced with
   relative paths, for example `<link rel="stylesheet" href="style.css">`, and
   published under the same relative path in `files`. Do not use absolute
@@ -6214,7 +6222,10 @@ capability first and light features up when it resolves.
   `resolve`, `delete`, and `sendToClaude` as the viewer after one consent;
   `{"customAnchors": true}` lets a canvas-like page place pins itself.
 - `assets`: `upload`, `list`, `delete`, in the person's browser only. An
-  asset is served at `/_clax/blob/<id>` on the artifact's own site.
+  asset is served at `/_clax/blob/<id>` on the artifact's own site. Use
+  an asset's `url` as given; to show an asset whose ID a page stored,
+  `claude.assetUrl(id)` (any viewer), never `"/_blob/" + id`: assets are
+  served per app, and a page loads only its own.
 - `room`: `emit`, `on`, `presence`, `peers`, `onPeers`, `join`, `connected`,
   and `onConnection` reach every view of the artifact that is open now;
   nothing is stored. Presence works for every viewer. A topic declared
@@ -8730,8 +8741,9 @@ it starts, the runs a previous process left. A build without the
   (`/_clax/v/<n>/…` and assets), and never `Access-Control-Allow-Origin`.
 - A site session is made from a one-use code good for 60 s, bound to a
   **state** the browser holds in the site host's state cookie
-  (`clax_site_state`, on `https` `__Secure-clax_site_state`;
-  `Path=/_clax/session`, `HttpOnly`, ten minutes): `/_clax/session?code=<code>&next=<path>` redeems the code
+  (`clax_site_state`, on `https` `__Host-clax_site_state`, so no sibling
+  site can set it; host-only, `Path=/`, `HttpOnly`, ten minutes):
+  `/_clax/session?code=<code>&next=<path>` redeems the code
   only beside that cookie, so a code minted for one browser signs no other
   in; a top-level redemption clears the state, a frame's keeps it, and a
   handshake reuses the state the browser holds (a fresh one when it holds
