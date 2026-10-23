@@ -8729,7 +8729,13 @@ it starts, the runs a previous process left. A build without the
   credential on a local daemon, the browser's session on a hosted Clax; 400
   without a state, 404 for who may not read it) for `{"src": "<site
   origin>/_clax/session?code=<code>&next=<path>"}`. `/site-signin` (400
-  without a state) signs the browser in when it must, sends one without
+  without a state) signs the browser in when it must (a hosted Clax sends a
+  signed-out one to `/signin?next=<this /site-signin address>`; the
+  sign-in pages, and `/auth/github?next=`, which keeps it through GitHub's
+  flow, return to a `next` that is a path on the public origin, ASCII,
+  starting with one `/` and holding no backslash or control character,
+  and else to the gallery, and `/signin?next=` in a browser already signed
+  in goes on there), sends one without
   the right to the artifact's page, and else to the same address; a frame
   sent there gets a partitioned session, a hosted Clax's fallback only (a
   local daemon's owner cookie is not sent there). The cookie is

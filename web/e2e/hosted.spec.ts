@@ -120,19 +120,52 @@ test("setup, an invite joined in a second browser, a sign-in link for a third, a
     const unconfirmed = await owner.request.post(`${origin}/api/hosted/signin-links/${link.split("/").pop()}/accept`, { headers: { origin }, data: {} });
     expect(unconfirmed.status()).toBe(409);
     expect((await unconfirmed.json()).error.code).toBe("session_exists");
+    // A sign-in page returns to its `?next=` when it is a path here.
     const phone = await page(browser);
-    await phone.goto(link);
+    await phone.goto(`${link}?next=${encodeURIComponent("/people")}`);
     await expect(phone.getByTestId("signed-in-now")).toHaveCount(0);
     await phone.getByRole("button", { name: "Sign in as Sam" }).click();
-    await phone.waitForURL(`${origin}/`);
-    await phone.goto(`${origin}/people`);
+    await phone.waitForURL(`${origin}/people`);
     await expect(phone.locator(".hosted-me")).toContainText("Signed in as Sam");
+    // Signed in, `/signin?next=` goes on there; a next that could leave
+    // the origin is ignored, and the page stays.
+    await phone.goto(`${origin}/signin?next=${encodeURIComponent("/people")}`);
+    await phone.waitForURL(`${origin}/people`);
+    for (const hostile of ["//evil.example/", "https://evil.example/", "/\\evil.example", "javascript:alert(1)"]) {
+      await phone.goto(`${origin}/signin?next=${encodeURIComponent(hostile)}`);
+      await expect(phone.getByText("You are signed in as Sam", { exact: false })).toBeVisible();
+      expect(new URL(phone.url()).pathname, hostile).toBe("/signin");
+    }
+
+    // A signed-out visitor of the owner's private site, top-level, is sent
+    // to sign in with the site as `next`; once signed in (by a link the
+    // owner made, in another tab), that sign-in page returns to the site.
+    const site = `http://${artifact.id}.localhost:${new URL(origin).port}/`;
+    const visitor = await browser.newContext();
+    const tab = await visitor.newPage();
+    await tab.goto(site);
+    await tab.waitForURL(u => u.origin === origin && u.pathname === "/signin");
+    const back = new URL(tab.url()).searchParams.get("next")!;
+    expect(new URL(back, origin).pathname).toBe("/site-signin");
+    await expect(tab.getByText("You are not signed in.")).toBeVisible();
+    await owner.goto(`${origin}/people`);
+    await owner.getByRole("button", { name: "Sign in another device" }).click();
+    const own = (await owner.locator(".hosted-me code").textContent())!;
+    const other = await visitor.newPage();
+    await other.goto(own);
+    await other.getByRole("button", { name: "Sign in as Ada" }).click();
+    await other.waitForURL(`${origin}/`);
+    await tab.reload();
+    await tab.waitForURL(site);
+    await expect(tab.locator("h1")).toHaveText("Launch plan");
+    await visitor.close();
     const spent = await page(browser);
     await spent.goto(link);
     await expect(spent.getByText("This sign-in link is not valid.", { exact: false })).toBeVisible();
     await expect(spent.getByRole("button", { name: "Sign in as Sam" })).toHaveCount(0);
 
     // An agent token, with the command Claude Code takes.
+    await phone.goto(`${origin}/people`);
     await phone.getByLabel("Machine").fill("sam-laptop");
     await phone.getByRole("button", { name: "Create token" }).click();
     await expect(phone.locator(".minted code").first()).toContainText(`claude mcp add --transport http clax ${origin}/mcp/json --header "Authorization: Bearer cxa_`);

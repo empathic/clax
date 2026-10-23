@@ -1,6 +1,9 @@
-//! GitHub sign-in on a hosted daemon: `/auth/github` ([`start`]) and
-//! [`CALLBACK_PATH`] ([`callback`]), a GitHub OAuth App's web flow with PKCE.
-//! The client the daemon holds is [`clax_http::github::GitHub`].
+//! GitHub sign-in on a hosted daemon: `/auth/github[?next=<path>]`
+//! ([`start`]) and [`CALLBACK_PATH`] ([`callback`]), a GitHub OAuth App's
+//! web flow with PKCE. The flow cookie keeps `next`, a path on the public
+//! origin ([`clax_http::site_access::safe_next`]: anything else is `/`),
+//! under its MAC, and a sign-in redirects there. The client the daemon
+//! holds is [`clax_http::github::GitHub`].
 
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -46,16 +49,39 @@ fn github_of(s: &AppState) -> Option<(std::sync::Arc<Hosted>, GitHub)> {
     Some((h, g))
 }
 
-/// `GET /auth/github`: redirects to GitHub's authorize page (see the
-/// module docs); 404 when GitHub sign-in is off.
-pub async fn start(State(s): State<AppState>) -> Response {
+/// Where a sign-in returns to: `next` when it is a path on the public
+/// origin ([`clax_http::site_access::safe_next`]) a `Location` holds as
+/// it is (ASCII), else `/`.
+fn return_path(next: &str) -> String {
+    let next = clax_http::site_access::safe_next(next);
+    if next.is_ascii() { next } else { "/".into() }
+}
+
+#[derive(Deserialize)]
+pub struct StartQuery {
+    next: Option<String>,
+}
+
+/// `GET /auth/github[?next=<path>]`: redirects to GitHub's authorize page
+/// (see the module docs); 404 when GitHub sign-in is off.
+pub async fn start(
+    State(s): State<AppState>,
+    q: Result<Query<StartQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response {
     let Some((h, g)) = github_of(&s) else {
         return clax_http::error::ApiError::not_found().into_response();
     };
+    let next = q.ok().and_then(|Query(q)| q.next);
+    let next = return_path(next.as_deref().unwrap_or("/"));
     let state = clax_core::secret::browser_code();
     let verifier = clax_core::secret::browser_code();
     let expires = (s.store.now_utc() + chrono::Duration::seconds(FLOW_TTL_SECS)).timestamp();
-    let body = format!("{}.{}.{expires}", state.expose(), verifier.expose());
+    let body = format!(
+        "{}.{}.{expires}.{}",
+        state.expose(),
+        verifier.expose(),
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(next.as_bytes())
+    );
     let value = format!("{body}.{}", flow_mac(&s.token, &body));
     let mut url = url::Url::parse(&format!("{}/login/oauth/authorize", g.oauth_base))
         .expect("the OAuth base is a URL");
@@ -86,9 +112,14 @@ pub struct CallbackQuery {
     error: Option<String>,
 }
 
-/// The flow cookie's verifier, when the cookie is this daemon's, live, and
-/// made for `state`.
-fn verified_flow(s: &AppState, h: &Hosted, headers: &HeaderMap, state: &str) -> Option<String> {
+/// The flow cookie's verifier and where the sign-in returns to, when the
+/// cookie is this daemon's, live, and made for `state`.
+fn verified_flow(
+    s: &AppState,
+    h: &Hosted,
+    headers: &HeaderMap,
+    state: &str,
+) -> Option<(String, String)> {
     let value = clax_http::hosted::cookie_value(headers, flow_cookie_name(h))?;
     let (body, mac) = value.rsplit_once('.')?;
     let want = flow_mac(&s.token, body);
@@ -98,9 +129,19 @@ fn verified_flow(s: &AppState, h: &Hosted, headers: &HeaderMap, state: &str) -> 
     let mut parts = body.split('.');
     let (st, verifier, expires) = (parts.next()?, parts.next()?, parts.next()?);
     let expires: i64 = expires.parse().ok()?;
+    // A cookie of before `next` (three parts) returns to the gallery.
+    let next = parts
+        .next()
+        .and_then(|n| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(n)
+                .ok()
+        })
+        .and_then(|n| String::from_utf8(n).ok())
+        .map_or_else(|| "/".to_string(), |n| return_path(&n));
     let fresh = s.store.now_utc().timestamp() < expires;
     (fresh && clax_core::secret::constant_time_eq(st.as_bytes(), state.as_bytes()))
-        .then(|| verifier.to_string())
+        .then(|| (verifier.to_string(), next))
 }
 
 /// `GET /auth/github/callback`: signs the browser in (see the module docs).
@@ -127,7 +168,7 @@ pub async fn callback(
     let (Some(code), Some(state)) = (q.code, q.state) else {
         return failed(&h, StatusCode::BAD_REQUEST, "GitHub sent no sign-in code.");
     };
-    let Some(verifier) = verified_flow(&s, &h, &headers, &state) else {
+    let Some((verifier, next)) = verified_flow(&s, &h, &headers, &state) else {
         return failed(
             &h,
             StatusCode::BAD_REQUEST,
@@ -195,7 +236,7 @@ pub async fn callback(
             serde_json::json!({"what": "person_joined", "person": signed.who.viewer.public_id}),
         );
     }
-    let mut res = (StatusCode::SEE_OTHER, [(header::LOCATION, "/")]).into_response();
+    let mut res = (StatusCode::SEE_OTHER, [(header::LOCATION, next)]).into_response();
     let hs = res.headers_mut();
     hs.append(header::SET_COOKIE, h.session_cookie(&signed.session));
     hs.append(header::SET_COOKIE, flow_cookie(&h, "", 0));

@@ -19,7 +19,13 @@
   // Policy (`me.legal`), each button that signs this browser in says that
   // doing so agrees to them, the server records it, and the page ends
   // with links to both. Every one ends with a link to Clax's source on
-  // GitHub, and the header's mark links to the gallery. Signed in, the browser goes to the gallery. Signed out, `/signin`
+  // GitHub, and the header's mark links to the gallery. Signed in, the
+  // browser goes to the gallery, or to `?next=` when it is a path on this
+  // origin (`./next`): `/site-signin` sends a signed-out visitor of a
+  // private site to `/signin?next=<its address>`, so a sign-in returns to
+  // the site. The GitHub button carries it through the OAuth flow, and
+  // `/signin?next=` in a browser already signed in (by a link opened in
+  // another tab, say) goes on there at once. Signed out, `/signin`
   // also lists the public gallery ("Public on Clax"), each artifact opening
   // through its link. The gallery's entry
   // loads this as a chunk of its own on these paths; the header's mark is
@@ -29,6 +35,7 @@
   import ThemeSwitch from "../ui/ThemeSwitch.svelte";
   import * as api from "./api";
   import { refusal } from "../people/refusal";
+  import { nextOfPage } from "./next";
 
   type Page = { kind: "setup" } | { kind: "join"; code: string } | { kind: "signin"; code: string } | { kind: "device" } | { kind: "status" };
   const page: Page = (() => {
@@ -50,6 +57,8 @@
   let busy = $state(false);
   let err = $state<string | null>(null);
   const msg = refusal;
+  const next = nextOfPage();
+  const github = next === null ? "/auth/github" : `/auth/github?next=${encodeURIComponent(next)}`;
 
   const TITLE = { setup: "Set up Clax", join: "Join Clax", signin: "Sign in", device: "Connect a Clax", status: "Sign in" } as const;
 
@@ -77,7 +86,7 @@
   async function run(fn: () => Promise<unknown>) {
     if (busy) return;
     busy = true; err = null;
-    try { await fn(); location.assign("/"); } catch (x) { err = msg(x); busy = false; }
+    try { await fn(); location.assign(next ?? "/"); } catch (x) { err = msg(x); busy = false; }
   }
   const submitSetup = (e: Event) => { e.preventDefault(); void run(() => api.setup(secret, name.trim())); };
   const current = $derived(me?.person ?? null);
@@ -103,6 +112,7 @@
       if (q !== null) { deviceCode = q; history.replaceState(null, "", "/device"); }
     }
     try { me = await api.me(); } catch (x) { err = msg(x); }
+    if (page.kind === "status" && me?.person && next !== null) { location.replace(next); return; }
     if (page.kind === "status" && !me?.person) {
       try { publicList = (await api.publicArtifacts()).artifacts; } catch { publicList = []; }
     }
@@ -194,7 +204,7 @@
     {:else}
       {#if me?.github}
         <p>Sign in with your GitHub account. New here? Signing in makes your own space: publish your pages, connect your agents, and see what others share with you.</p>
-        <a class="gh primary" href="/auth/github" data-testid="github-signin"><svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>Sign in with GitHub</a>
+        <a class="gh primary" href={github} data-testid="github-signin"><svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>Sign in with GitHub</a>
         {@render agree("signing in")}
         <p class="hint">Or ask someone here for an invite, or, on a device that is signed in, make a sign-in link on People.</p>
       {:else}

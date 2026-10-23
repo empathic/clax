@@ -136,7 +136,12 @@ impl Site {
 
     /// `/auth/github`'s redirect: the `state` it sends and the flow cookie.
     async fn start(&self) -> (String, String) {
-        let res = self.get("/auth/github", None).send().await.unwrap();
+        self.start_at("/auth/github").await
+    }
+
+    /// [`Site::start`] from `path` (`/auth/github` with its query).
+    async fn start_at(&self, path: &str) -> (String, String) {
+        let res = self.get(path, None).send().await.unwrap();
         assert_eq!(res.status(), 303);
         let to = url::Url::parse(res.headers()[LOCATION].to_str().unwrap()).unwrap();
         assert!(to.path().ends_with("/login/oauth/authorize"));
@@ -465,4 +470,47 @@ async fn a_forged_or_missing_state_signs_no_one_in_and_sign_ups_are_rate_limited
     assert_eq!(site.sign_in(15).await, Err(429));
     // A known account still signs in.
     site.sign_in(10).await.unwrap();
+}
+
+/// A sign-in started with `next` returns there when it is a path on the
+/// public origin; an absolute, scheme-relative, backslashed or otherwise
+/// foreign one returns to the gallery.
+#[tokio::test]
+async fn a_github_sign_in_returns_to_a_safe_next_and_nowhere_else() {
+    let site = Site::new(200).await;
+    let back = "/site-signin?host=abc.localhost&next=%2Fp%3Fq%3D1&state=s1";
+    let cases = [
+        (back, back),
+        ("/a/7q3k9mzx2b4t", "/a/7q3k9mzx2b4t"),
+        ("https://evil.example/", "/"),
+        ("//evil.example/x", "/"),
+        ("/\\evil.example", "/"),
+        ("\\evil.example", "/"),
+        ("/\tevil", "/"),
+        ("javascript:alert(1)", "/"),
+        ("evil.example", "/"),
+        ("/caf\u{e9}", "/"),
+        ("", "/"),
+    ];
+    // One account, new at the first sign-in and known after.
+    let id = 100;
+    site.account(id, "ada", None);
+    for (next, want) in cases {
+        site.clock.advance(60);
+        let q = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("next", next)
+            .finish();
+        let (state, flow) = site.start_at(&format!("/auth/github?{q}")).await;
+        let res = site
+            .get(
+                &format!("/auth/github/callback?code=code-{id}&state={state}"),
+                Some(&flow),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 303, "{next:?}");
+        assert_eq!(res.headers()[LOCATION], want, "{next:?}");
+        assert!(cookie_of(&res, "clax_session").is_some(), "{next:?}");
+    }
 }
