@@ -3011,7 +3011,8 @@ A draft is left out of `GET /api/artifacts`, the `gallery` topic, the
 `list` tool, inbox items, sessions' watches and feedback; `/api/events`
 carries its events only to a request with the token that names it in
 `artifact=`, and its `/api/stream` topics need the token or the events
-cookie (404 otherwise). A thread on it is 403 `draft`. Its documents are a
+cookie, and on a hosted Clax the draft in the caller's reach (404
+otherwise). A thread on it is 403 `draft`. Its documents are a
 copy of the app's at the owner's level, so whatever rules the draft
 declares, reading, listing or writing them without the token is 404, and
 no app reads a draft through `X-Clax-Reader`. A draft reads no other app's
@@ -6946,7 +6947,7 @@ except as noted:
 
 | Topic | Carries |
 |---|---|
-| `gallery` | `version`, `thread` (summary), `thread_deleted`, `thread_moved`, `artifact_deleted`, `working` (summary) and `tags` for every artifact. |
+| `gallery` | `version`, `thread` (summary), `thread_deleted`, `thread_moved`, `artifact_deleted`, `working` (summary) and `tags` for every artifact. On a hosted Clax, only for the artifacts the subscriber reads (`clax-artifacts` `read` within their reach, by a share or by its link, checked as each event is dispatched), and `artifact_deleted` for one deleted within their reach that their rights read; `tags` naming no artifact reaches every gallery. A caller with no person's scope (a guest) may not hold it (403 `forbidden`). |
 | `artifact:<aid>` | That artifact's `version`, `thread`, `thread_deleted`, `thread_moved`, `feedback_state`, `tags`, `comments` and `artifact_deleted`, and `agents` (`{topic}`, naming nothing) when an agent that watched it started, ended or was renamed: refetch its agents. |
 | `presence:<aid>` | Its `presence` changes, and `artifact_deleted`. |
 | `working:<aid>` | Its `working` list, and `artifact_deleted`. |
@@ -8640,9 +8641,11 @@ it starts, the runs a previous process left. A build without the
   capabilities, once it is in reach). An artifact out of reach answers
   404 `not_found` wherever a route names it, never 403, and listings
   leave it out; within reach, an action the caller's rights lack is 403
-  `not_permitted`. No
-  caller holds the `gallery` stream topic, and `GET /api/events` is 403
-  `forbidden` to every caller: follow topics on `/api/stream`.
+  `not_permitted`. A
+  stream's `gallery` topic carries only the artifacts its caller reads
+  (see "Event stream protocol"), its topics of a draft need the draft in
+  reach, and `GET /api/events` is 403 `forbidden` to every caller: follow
+  topics on `/api/stream`.
 - Live pages (see "Live pages") are visible only to a loopback peer or a
   request with the token; to anyone else they do not exist (404, left out
   of lists and of the stream), and their snapshots are served with a policy

@@ -723,6 +723,10 @@ impl TestServer {
             });
             let store = state.store.clone();
             state.stream.hide(move |aid| store.is_hidden(aid));
+            let store = state.store.clone();
+            state.stream.check_gallery(move |key, aid| {
+                clax_http::hosted::MemberRights::gallery_reads(&store, key, aid)
+            });
         }
         clax_http::views::inbox::listen(&state);
         clax_http::views::approval::listen(&state);

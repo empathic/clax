@@ -538,6 +538,13 @@ impl AppState {
             });
             let store = self.store.clone();
             self.stream.hide(move |aid| store.is_hidden(aid));
+            // A hosted stream's gallery carries what its person reads; only
+            // a hosted daemon's streams hold a scoped gallery, so a local
+            // daemon never asks.
+            let store = self.store.clone();
+            self.stream.check_gallery(move |key, aid| {
+                crate::hosted::MemberRights::gallery_reads(&store, key, aid)
+            });
         }
         crate::seats::install(self);
         let mut tasks = crate::views::inbox::listen(self);

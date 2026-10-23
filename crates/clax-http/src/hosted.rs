@@ -59,8 +59,9 @@
 //!   person made is reached only through its share with them, or its link.
 //!   An artifact out of reach answers 404 wherever a route names it,
 //!   listings leave it out, a route's action needs its right
-//!   (`crate::agent::Agent`), and no one holds the gallery's stream topic
-//!   or the daemon-wide event stream (`/api/events`, 403);
+//!   (`crate::agent::Agent`), the gallery's stream topic carries only the
+//!   artifacts the caller reads ([`MemberRights::gallery_reads`]), and no
+//!   one holds the daemon-wide event stream (`/api/events`, 403);
 //! - anyone else (a guest, or no session) reaches only the routes of pages
 //!   shared by link ([`guest_need`]), within the page's
 //!   [`LinkAccess::rights`] (a guest's) or its viewer rights (no session);
@@ -834,7 +835,50 @@ impl MemberRights {
         let (m, aid) = (self.clone(), aid.to_string());
         s.store_call(move |st| m.allows_at(st, right, &aid)).await
     }
+
+    /// The key this scope's stream `gallery` topic is held by
+    /// ([`clax_realtime::stream::Topic::GalleryOf`]): [`OWNER_GALLERY`]
+    /// for the owner, the person's public ID otherwise.
+    pub fn gallery_key(&self) -> String {
+        self.person
+            .clone()
+            .unwrap_or_else(|| OWNER_GALLERY.to_string())
+    }
+
+    /// Whether the gallery of key `key` ([`MemberRights::gallery_key`])
+    /// carries the events of artifact `aid`: when its scope reads it
+    /// ([`MemberRights::allows_at`]), or when it is deleted and was in the
+    /// person's reach with their granted rights reading it, so its
+    /// `artifact_deleted` reaches the galleries that showed it. No for an
+    /// unknown key or any error.
+    pub fn gallery_reads(st: &clax_store::Store, key: &str, aid: &str) -> bool {
+        let read = (RightType::Artifacts, "read");
+        let scope = if key == OWNER_GALLERY {
+            MemberRights::owner(st)
+        } else {
+            MemberRights::of_person(st, key)
+        };
+        let Ok(m) = scope else { return false };
+        if m.allows_at(st, read, aid).unwrap_or(false) {
+            return true;
+        }
+        let made = |by: Option<&str>| st.artifact_created_by(aid, by).unwrap_or(false);
+        let within = made(None) || (m.person.is_some() && made(m.person.as_deref()));
+        let deleted = matches!(
+            st.reach(aid, m.person.as_deref()),
+            Ok(clax_store::reach::Reach::Gone)
+        );
+        within
+            && deleted
+            && m.rights.allows(read.0, read.1, Some(aid), &|x: &str| {
+                st.artifact_created_by(x, m.person.as_deref())
+                    .unwrap_or(false)
+            })
+    }
 }
+
+/// [`MemberRights::gallery_key`] of the owner: no public ID starts with `*`.
+pub const OWNER_GALLERY: &str = "*owner";
 
 impl MemberRights {
     /// The scope of session `who` (as the gate gives a request of theirs):
@@ -945,9 +989,9 @@ fn member_need(method: &Method, path: &str, query: Option<&str>) -> MemberNeed {
 /// A scoped request through the gate (a person's, the owner's, the daemon
 /// token's): what [`member_need`] says, an artifact out of their scope
 /// answering 404 as one that does not exist. A stream subscription's
-/// artifact topics need reading their artifact (`docs:` its db), and the
-/// gallery's topic, which carries every artifact's titles, is left out:
-/// no one's scope reads every artifact.
+/// artifact topics need reading their artifact (`docs:` its db); the
+/// route holds its `gallery` topic scoped to the caller
+/// ([`MemberRights::gallery_key`]).
 async fn member_gate(s: &AppState, m: &MemberRights, req: Request, next: Next) -> Response {
     let query = req.uri().query().map(str::to_string);
     let need = member_need(req.method(), req.uri().path(), query.as_deref());
@@ -986,11 +1030,11 @@ async fn member_gate(s: &AppState, m: &MemberRights, req: Request, next: Next) -
             }
         }
         MemberNeed::StreamBody => {
-            let (mut req, body) = match peek(req).await {
+            let (req, body) = match peek(req).await {
                 Ok(p) => p,
                 Err(r) => return r,
             };
-            let Ok(mut v) = serde_json::from_slice::<Value>(&body) else {
+            let Ok(v) = serde_json::from_slice::<Value>(&body) else {
                 return next.run(req).await;
             };
             let topics: Vec<String> = v
@@ -1002,10 +1046,8 @@ async fn member_gate(s: &AppState, m: &MemberRights, req: Request, next: Next) -
                         .collect()
                 })
                 .unwrap_or_default();
-            let mut kept = Vec::new();
             for t in topics {
                 match clax_realtime::stream::Topic::parse(&t) {
-                    Ok(clax_realtime::stream::Topic::Gallery) => continue,
                     Ok(clax_realtime::stream::Topic::Docs(aid)) => {
                         if let Err(r) = check(&aid, (RightType::Db, "read")).await {
                             return r;
@@ -1021,13 +1063,6 @@ async fn member_gate(s: &AppState, m: &MemberRights, req: Request, next: Next) -
                     // The route answers a malformed one.
                     Err(_) => {}
                 }
-                kept.push(Value::String(t));
-            }
-            if v.get("subscribe").is_some() {
-                v["subscribe"] = Value::Array(kept);
-                let bytes = serde_json::to_vec(&v).unwrap_or_default();
-                req.headers_mut().remove(header::CONTENT_LENGTH);
-                *req.body_mut() = Body::from(bytes);
             }
             next.run(req).await
         }

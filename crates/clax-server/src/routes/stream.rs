@@ -332,7 +332,12 @@ fn topics(names: &[String]) -> Result<Vec<Topic>, ApiError> {
 /// and a `docs` topic needs the artifact to declare `db` unless the caller holds
 /// the token, in `Authorization` or as the events cookie (403 `not_declared`).
 /// Every topic of a draft needs the token or the events cookie (404
-/// otherwise): its events are the owner's alone.
+/// otherwise): its events are the owner's alone; on a hosted daemon it
+/// needs the draft in the caller's reach too (404 otherwise). On a hosted
+/// daemon, `gallery` is held scoped to the caller
+/// ([`Topic::GalleryOf`], by [`clax_http::hosted::MemberRights::gallery_key`]):
+/// it carries only the artifacts the caller reads; a caller with no scope
+/// may not hold it (403 `forbidden`).
 /// A `docs:<B>?reader=<A>` topic needs A to exist and to be allowed to read
 /// B now, whatever the caller ([`clax_http::db_caller::reader_caller`]: 403
 /// `not_granted` or `not_declared`); each of its events is checked again as
@@ -381,6 +386,24 @@ pub async fn update(
         .collect();
     remove.extend(quiet);
     let member = hosted.and_then(|h| h.0.member);
+    // On hosted, `gallery` carries only what the caller reads; a caller
+    // with no scope holds none.
+    let (add, remove) = match (&member, s.hosted.is_some()) {
+        (Some(m), _) => {
+            let key = m.gallery_key();
+            let scoped = |ts: Vec<Topic>| -> Vec<Topic> {
+                ts.into_iter().map(|t| t.scoped_to(&key)).collect()
+            };
+            (scoped(add), scoped(remove))
+        }
+        (None, true) if add.contains(&Topic::Gallery) => {
+            return Err(ApiError::forbidden(
+                "forbidden",
+                "only the owner and connected people follow the gallery",
+            ));
+        }
+        (None, _) => (add, remove),
+    };
     if sees.live_only
         && !add
             .iter()
@@ -442,9 +465,20 @@ pub async fn update(
                 let Some(aid) = t.artifact() else { continue };
                 let aid = parse_id(aid).map_err(|_| CoreError::NotFound)?;
                 st.get_artifact(&aid)?.ok_or(CoreError::NotFound)?;
-                // A draft's topics are the owner's alone.
-                if !token && st.is_hidden(aid.as_str()) {
-                    return Err(CoreError::NotFound);
+                // A draft's topics are the owner's alone, and on hosted
+                // only while it is in the caller's reach.
+                if st.is_hidden(aid.as_str()) {
+                    let in_reach = match &member {
+                        Some(m) => m.allows_at(
+                            st,
+                            (clax_core::rights::RightType::Artifacts, "read"),
+                            aid.as_str(),
+                        )?,
+                        None => true,
+                    };
+                    if !token || !in_reach {
+                        return Err(CoreError::NotFound);
+                    }
                 }
                 if matches!(t, Topic::Docs(_)) && !token && !st.doc_declared(&aid)? {
                     return Err(CoreError::NotDeclared { capability: "db" });

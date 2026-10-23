@@ -1679,8 +1679,8 @@ async fn a_persons_rights_limit_their_browser_and_the_owner_reads_only_their_rea
         )
         .await;
     assert_eq!(s, 200);
-    // The stream: no topic of Plan's, and the gallery's (every artifact's
-    // titles) left out; the daemon-wide event stream is the owner's.
+    // The stream: no topic of Plan's; the gallery's carries only what Sam
+    // reads; the daemon-wide event stream is no one's.
     let res = site
         .req(&sam, reqwest::Method::GET, "/api/stream")
         .send()
@@ -1705,7 +1705,10 @@ async fn a_persons_rights_limit_their_browser_and_the_owner_reads_only_their_rea
         )
         .await;
     assert_eq!(s, 200, "{v}");
-    assert_eq!(v["topics"], json!([format!("artifact:{budget}")]));
+    assert_eq!(
+        v["topics"],
+        json!(["gallery", format!("artifact:{budget}")])
+    );
     let (s, _) = site.get(&sam, "/api/events").await;
     assert_eq!(s, 403);
     // A page shared by link opens to Sam as to anyone with its link, at
@@ -1726,11 +1729,88 @@ async fn a_persons_rights_limit_their_browser_and_the_owner_reads_only_their_rea
 }
 
 #[tokio::test]
+async fn the_gallery_topic_carries_only_what_its_subscriber_reads() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let plan = site.titled("Plan").await;
+    let mia = site.person(&owner, "Mia").await;
+    let res = site
+        .req(&owner, reqwest::Method::GET, "/api/stream")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let mut events = clax_testkit::EventReader::from_response(res);
+    let sid = events.next_named("ready").await["stream"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = site
+        .post(
+            &owner,
+            &format!("/api/stream/{sid}"),
+            json!({"subscribe": ["gallery"]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["topics"], json!(["gallery"]));
+    let mut mias_events = site.stream(&mia, &["gallery"]).await;
+    // Mia's page changes first, then the owner's.
+    let mias = site.made_by(&mia, "Mia's").await;
+    let (s, v) = site.thread(&mia, &mias, "Mia's thread").await;
+    assert_eq!(s, 201, "{v}");
+    let (s, v) = site.thread(&owner, &plan, "the owner's thread").await;
+    assert_eq!(s, 201, "{v}");
+    // The owner's gallery hears Plan's thread, and nothing of Mia's page
+    // before it.
+    loop {
+        let (name, data) = events.next().await;
+        assert_ne!(data["artifact_id"], json!(mias), "{name}: {data}");
+        if name == "thread" && data["artifact_id"] == json!(plan) {
+            assert_eq!(data["topic"], json!("gallery"));
+            break;
+        }
+    }
+    // Mia's gallery hears her own page and the owner's, which she reads.
+    let mut heard = std::collections::BTreeSet::new();
+    while heard.len() < 2 {
+        let (name, data) = mias_events.next().await;
+        if name == "thread" {
+            heard.insert(data["artifact_id"].as_str().unwrap().to_string());
+        }
+    }
+    assert_eq!(heard, [mias, plan.clone()].into_iter().collect());
+    // A deleted page is out of everyone's reach, yet the galleries that
+    // showed it hear it go.
+    let res = site
+        .ts
+        .client
+        .delete(site.url(&format!("/api/artifacts/{plan}")))
+        .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+        .bearer_auth(&site.ts.token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    for stream in [&mut events, &mut mias_events] {
+        loop {
+            let (name, data) = stream.next().await;
+            if name == "artifact_deleted" {
+                assert_eq!(data["artifact_id"], json!(plan), "{data}");
+                break;
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn only_the_maker_shares_pins_and_tags_a_page_on_hosted() {
     let site = Site::new().await;
     let owner = site.owner().await;
     let plan = site.titled("Plan").await;
-    let (s, v) = site.post(&owner, "/api/tags", json!({"name": "draft"})).await;
+    let (s, v) = site
+        .post(&owner, "/api/tags", json!({"name": "draft"}))
+        .await;
     assert_eq!(s, 201, "{v}");
     let mia = site.person(&owner, "Mia").await;
     let sam = site.person(&owner, "Sam").await;
@@ -1761,7 +1841,11 @@ async fn only_the_maker_shares_pins_and_tags_a_page_on_hosted() {
     let (s, v) = site.put(&owner, &link, json!({"access": "viewer"})).await;
     assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
     let (s, v) = site
-        .put(&owner, &shares, json!({"person": owner_pid, "access": "editor"}))
+        .put(
+            &owner,
+            &shares,
+            json!({"person": owner_pid, "access": "editor"}),
+        )
         .await;
     assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
     for token in [&shell, &site.ts.token] {
@@ -1773,15 +1857,27 @@ async fn only_the_maker_shares_pins_and_tags_a_page_on_hosted() {
     // Mia shares it with the owner as with anyone: the owner reads it, and
     // neither widens the share nor shares it onward.
     let (s, v) = site
-        .put(&mia, &shares, json!({"person": owner_pid, "access": "viewer"}))
+        .put(
+            &mia,
+            &shares,
+            json!({"person": owner_pid, "access": "viewer"}),
+        )
         .await;
     assert_eq!(s, 200, "{v}");
     let (s, v) = site
-        .put(&owner, &shares, json!({"person": owner_pid, "access": "editor"}))
+        .put(
+            &owner,
+            &shares,
+            json!({"person": owner_pid, "access": "editor"}),
+        )
         .await;
     assert_eq!((s, code(&v)), (403, "forbidden"), "{v}");
     let (s, v) = site
-        .put(&owner, &shares, json!({"person": sam_pid, "access": "viewer"}))
+        .put(
+            &owner,
+            &shares,
+            json!({"person": sam_pid, "access": "viewer"}),
+        )
         .await;
     assert_eq!((s, code(&v)), (403, "forbidden"), "{v}");
     let (s, v) = site.put(&owner, &link, json!({"access": "viewer"})).await;
@@ -1794,7 +1890,11 @@ async fn only_the_maker_shares_pins_and_tags_a_page_on_hosted() {
     assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
     // As an editor, the owner changes its contents, never its pin or tags.
     let (s, v) = site
-        .put(&mia, &shares, json!({"person": owner_pid, "access": "editor"}))
+        .put(
+            &mia,
+            &shares,
+            json!({"person": owner_pid, "access": "editor"}),
+        )
         .await;
     assert_eq!(s, 200, "{v}");
     for token in [&shell, &site.ts.token] {
@@ -1839,9 +1939,7 @@ async fn an_owners_elevation_names_only_their_reach() {
         .unwrap()
         .agent_handle;
     let elevate = format!("/api/agents/{handle}/elevate");
-    let at = |aid: &str| {
-        json!({"access": [{"type": "clax-artifacts", "actions": ["read", "update"], "locations": [aid]}]})
-    };
+    let at = |aid: &str| json!({"access": [{"type": "clax-artifacts", "actions": ["read", "update"], "locations": [aid]}]});
     let (s, v) = site.put(&owner, &elevate, at(&mias)).await;
     assert_eq!((s, code(&v)), (403, "not_creator"), "{v}");
     // Shared with the owner, it is still not the owner's to raise on.
@@ -6754,7 +6852,7 @@ async fn a_members_page_hears_a_tag_it_carries_renamed_or_deleted() {
         .await;
     assert_eq!(s, 201, "{v}");
     let tag = v["tag"]["id"].as_str().unwrap().to_string();
-    // Sam reads his own artifacts alone: his stream holds no gallery.
+    // Sam reads his own artifacts alone; his page's stream holds no gallery.
     let sam = site.member(&owner, "Sam").await;
     let (s, v) = site
         .post(
@@ -6786,15 +6884,11 @@ async fn a_members_page_hears_a_tag_it_carries_renamed_or_deleted() {
         .post(
             &sam,
             &format!("/api/stream/{stream}"),
-            json!({"subscribe": ["gallery", format!("artifact:{mine}")]}),
+            json!({"subscribe": [format!("artifact:{mine}")]}),
         )
         .await;
     assert_eq!(s, 200, "{v}");
-    assert_eq!(
-        v["topics"],
-        json!([format!("artifact:{mine}")]),
-        "the gate keeps the gallery from him: {v}"
-    );
+    assert_eq!(v["topics"], json!([format!("artifact:{mine}")]), "{v}");
     let (s, v) = site
         .send(
             &owner,

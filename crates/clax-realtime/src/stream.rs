@@ -74,6 +74,12 @@ pub const MAX_DETACHED: usize = 4096;
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Topic {
     Gallery,
+    /// `gallery` as one person holds it (by a key the host chooses): only
+    /// the events of artifacts [`Hub::check_gallery`] says that person
+    /// reads, and those naming no artifact. Never parsed: the subscription
+    /// route takes `gallery` as this for a scoped caller
+    /// ([`Topic::scoped_to`]).
+    GalleryOf(String),
     Artifact(String),
     /// `artifact:<id>` as a subscriber who may not read the artifact's
     /// comments holds it: its thread events (which carry the newest
@@ -170,7 +176,7 @@ impl Topic {
 
     pub fn name(&self) -> String {
         match self {
-            Topic::Gallery => "gallery".into(),
+            Topic::Gallery | Topic::GalleryOf(_) => "gallery".into(),
             Topic::Artifact(a) | Topic::ArtifactQuiet(a) => format!("artifact:{a}"),
             Topic::Presence(a) => format!("presence:{a}"),
             Topic::Working(a) => format!("working:{a}"),
@@ -191,6 +197,7 @@ impl Topic {
     pub fn artifact(&self) -> Option<&str> {
         match self {
             Topic::Gallery
+            | Topic::GalleryOf(_)
             | Topic::Site(_)
             | Topic::Questions
             | Topic::Inbox
@@ -227,6 +234,15 @@ impl Topic {
         }
     }
 
+    /// This topic as the person keyed `key` holds it on a scoped stream:
+    /// `gallery` becomes [`Topic::GalleryOf`]; the others are unchanged.
+    pub fn scoped_to(self, key: &str) -> Topic {
+        match self {
+            Topic::Gallery => Topic::GalleryOf(key.to_string()),
+            t => t,
+        }
+    }
+
     /// The app a `docs:<B>?reader=<A>` topic reads for.
     pub fn reader(&self) -> Option<&str> {
         match self {
@@ -245,6 +261,7 @@ impl Topic {
     fn chans(&self, caller: &Caller, person: Option<&str>, drafts: bool) -> Vec<Chan> {
         match self {
             Topic::Gallery => vec![Chan::Gallery],
+            Topic::GalleryOf(k) => vec![Chan::GalleryOf(k.clone())],
             Topic::Artifact(a) => vec![Chan::Artifact(a.clone())],
             Topic::ArtifactQuiet(a) => vec![Chan::ArtifactQuiet(a.clone())],
             Topic::Presence(a) => vec![Chan::Presence(a.clone())],
@@ -291,6 +308,9 @@ impl Topic {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Chan {
     Gallery,
+    /// The gallery of one person key ([`Topic::GalleryOf`]): the
+    /// [`Chan::Gallery`] events [`Hub::check_gallery`] admits for it.
+    GalleryOf(String),
     Artifact(String),
     /// [`Chan::Artifact`]'s events but threads' ([`Topic::ArtifactQuiet`]).
     ArtifactQuiet(String),
@@ -324,7 +344,7 @@ enum Chan {
 impl Chan {
     fn topic(&self) -> String {
         match self {
-            Chan::Gallery => "gallery".into(),
+            Chan::Gallery | Chan::GalleryOf(_) => "gallery".into(),
             Chan::Site(o) => format!("site:{o}"),
             Chan::Questions(_) => "questions".into(),
             Chan::Inbox(_) => "inbox".into(),
@@ -556,6 +576,7 @@ pub enum SubError {
 pub fn live_only_admits(live: &crate::live::LiveIds, t: &Topic) -> bool {
     match t {
         Topic::Gallery
+        | Topic::GalleryOf(_)
         | Topic::Docs(_)
         | Topic::DocsRead { .. }
         | Topic::People
@@ -587,6 +608,10 @@ pub struct Hub {
     /// channel; until set,
     /// no artifact is.
     hidden: std::sync::OnceLock<HiddenCheck>,
+    /// Asked before each gallery event of an artifact goes to a
+    /// [`Chan::GalleryOf`] channel; until set, those channels receive
+    /// nothing of an artifact's.
+    gallery: std::sync::OnceLock<ReadCheck>,
 }
 
 /// What [`Hub::on_queue`] calls.
@@ -892,7 +917,7 @@ fn project(
                 artifact_id,
                 thread,
             },
-            Chan::Gallery,
+            Chan::Gallery | Chan::GalleryOf(_),
         ) => with_topic(topic, thread_summary(artifact_id, thread)),
         (
             Event::Thread {
@@ -908,7 +933,7 @@ fn project(
                 artifact_id,
                 working,
             },
-            Chan::Gallery,
+            Chan::Gallery | Chan::GalleryOf(_),
         ) => {
             let summary: Vec<Value> = working
                 .iter()
@@ -983,6 +1008,7 @@ impl Hub {
             queued: Mutex::default(),
             reads: std::sync::OnceLock::new(),
             hidden: std::sync::OnceLock::new(),
+            gallery: std::sync::OnceLock::new(),
         })
     }
 
@@ -1053,6 +1079,47 @@ impl Hub {
             .into_iter()
             .filter(|c| matches!(c, Chan::DocsRead(a, r) if may_read(r, a)))
             .map(|c| (c, Gate::Any))
+            .collect()
+    }
+
+    /// Makes `reads(key, artifact)` decide, for each event of `artifact`
+    /// the `gallery` channel carries, whether it reaches the gallery of
+    /// person key `key` ([`Topic::GalleryOf`]); an event naming no
+    /// artifact reaches every such gallery. It is asked without the hub's
+    /// lock held, on the thread that publishes the event, once per such
+    /// gallery subscribed. Set once; a later call changes nothing.
+    pub fn check_gallery(&self, reads: impl Fn(&str, &str) -> bool + Send + Sync + 'static) {
+        if self.gallery.set(Box::new(reads)).is_err() {
+            tracing::warn!("the stream hub's gallery check is already set");
+        }
+    }
+
+    /// The scoped galleries `ev` goes to, given the channels `all` it goes
+    /// to otherwise: when `all` holds the `gallery` channel, each
+    /// [`Chan::GalleryOf`] channel the [`Hub::check_gallery`] check admits
+    /// it to, at the same gate.
+    fn gallery_routes(&self, ev: &Event, all: &[(Chan, Gate)]) -> Vec<(Chan, Gate)> {
+        let Some(gate) = all
+            .iter()
+            .find(|(c, _)| *c == Chan::Gallery)
+            .map(|(_, g)| g.clone())
+        else {
+            return vec![];
+        };
+        let keys: Vec<String> = self
+            .lock()
+            .chans
+            .keys()
+            .filter_map(|c| match c {
+                Chan::GalleryOf(k) => Some(k.clone()),
+                _ => None,
+            })
+            .collect();
+        let aid = ev.artifact_id();
+        let admits = |key: &str| aid.is_empty() || self.gallery.get().is_some_and(|f| f(key, aid));
+        keys.into_iter()
+            .filter(|k| admits(k))
+            .map(|k| (Chan::GalleryOf(k), gate.clone()))
             .collect()
     }
 
@@ -1153,17 +1220,19 @@ impl Hub {
     pub fn dispatch(&self, ev: &Event) {
         let readers = self.reader_routes(ev);
         let hidden = self.hidden.get().is_some_and(|h| h(ev.artifact_id()));
+        let mut all = routes(ev);
+        if hidden {
+            all.retain(|(c, _)| *c != Chan::Gallery);
+        }
+        let galleries = self.gallery_routes(ev, &all);
         let mut g = self.lock();
         if g.chans.is_empty() {
             return;
         }
         let site = self.live.origin_of(ev.artifact_id());
         let live = site.is_some();
-        let mut all = routes(ev);
         all.extend(readers);
-        if hidden {
-            all.retain(|(c, _)| *c != Chan::Gallery);
-        }
+        all.extend(galleries);
         // A live page's `artifact` events also go to its site's channels:
         // one per origin of its site (spec §7.2: a joined site's origins
         // hear each other's pages, origins joined later included). (Not the
@@ -1181,7 +1250,7 @@ impl Hub {
             .into_iter()
             .filter(|(c, _)| g.chans.contains_key(c))
             .map(|(c, gate)| match c {
-                Chan::Gallery if live => (c, Gate::Local),
+                Chan::Gallery | Chan::GalleryOf(_) if live => (c, Gate::Local),
                 _ => (c, gate),
             })
             .collect();
@@ -2664,6 +2733,89 @@ mod tests {
             1,
             "once, though both channels carry it"
         );
+    }
+
+    #[test]
+    fn a_scoped_gallery_gets_only_events_its_check_admits() {
+        const B: &str = "8q3k9mzx2b4t";
+        let at = |aid: &str| Event::Version {
+            artifact_id: aid.into(),
+            n: 2,
+            by_page: false,
+            title: Some("T".into()),
+            at: None,
+        };
+        let c = viewer(Level::View, None);
+        let subscribe = |hub: &Hub, t: Topic| {
+            let o = hub.open(c.clone(), false, None, None);
+            hub.update(&o.id, &c, &[t], &[]).unwrap();
+            o
+        };
+        let aids = |got: Vec<(u64, String)>| -> Vec<String> {
+            got.iter()
+                .map(|(_, f)| {
+                    assert!(f.contains("\"topic\":\"gallery\""), "{f}");
+                    let data = f.lines().find_map(|l| l.strip_prefix("data: ")).unwrap();
+                    let v: Value = serde_json::from_str(data).unwrap();
+                    v["artifact_id"].as_str().unwrap_or("").to_string()
+                })
+                .collect()
+        };
+
+        // No check set: nothing reaches a scoped gallery.
+        let hub = Hub::new(Default::default());
+        let mut o = subscribe(&hub, Topic::GalleryOf("*owner".into()));
+        hub.dispatch(&at(A));
+        assert!(drain(&mut o).is_empty(), "fails closed");
+
+        let hub = Hub::new(Default::default());
+        let asked = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        {
+            let asked = asked.clone();
+            hub.check_gallery(move |who, aid| {
+                asked
+                    .lock()
+                    .unwrap()
+                    .push((who.to_string(), aid.to_string()));
+                aid != A || who == "*owner"
+            });
+        }
+        let mut owner = subscribe(&hub, Topic::GalleryOf("*owner".into()));
+        let mut mia = subscribe(&hub, Topic::GalleryOf("p_mia".into()));
+        let mut all = subscribe(&hub, Topic::Gallery);
+        assert_eq!(
+            hub.update(&owner.id, &c, &[], &[]).unwrap().1,
+            vec!["gallery"]
+        );
+        hub.dispatch(&at(A));
+        hub.dispatch(&at(B));
+        assert_eq!(aids(drain(&mut owner)), vec![A, B]);
+        assert_eq!(aids(drain(&mut mia)), vec![B], "A is not Mia's to read");
+        assert_eq!(aids(drain(&mut all)), vec![A, B], "the unscoped gallery");
+        let mut asked = std::mem::take(&mut *asked.lock().unwrap());
+        asked.sort();
+        assert_eq!(
+            asked,
+            [("*owner", A), ("*owner", B), ("p_mia", A), ("p_mia", B)]
+                .map(|(w, a)| (w.to_string(), a.to_string()))
+        );
+        // A thread reaches it as the gallery carries one: a summary.
+        hub.dispatch(&Event::Thread {
+            artifact_id: B.into(),
+            thread: json!({"id": "t1", "comments": [{"body": "secret", "created_at": "x"}]}),
+        });
+        let got = drain(&mut mia);
+        assert_eq!(got.len(), 1);
+        assert!(got[0].1.contains("\"comments\":1"), "{got:?}");
+        assert!(!got[0].1.contains("secret"), "{got:?}");
+        drain(&mut owner);
+        // A change to the tag list names no artifact: every gallery hears it.
+        hub.dispatch(&Event::Tags {
+            artifact_id: None,
+            carriers: vec![A.into()],
+        });
+        assert_eq!(aids(drain(&mut owner)), vec![""]);
+        assert_eq!(aids(drain(&mut mia)), vec![""]);
     }
 
     #[test]
