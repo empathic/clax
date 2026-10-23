@@ -1203,11 +1203,12 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
       const went = await goes();
       const win = frame.contentWindow!;
       // Another origin's or another window's state is not the frame's site's.
-      fromFrame(win, STATE, `http://9zzzzzzzzzzz.localhost${location.port ? `:${location.port}` : ""}`);
-      fromFrame(win, STATE, "null");
-      fromFrame(window, STATE);
-      await new Promise(r => setTimeout(r, 30));
-      expect(calls).toEqual([]);
+      // Had one been taken, the handshake would have left its start with its
+      // state, and the one call below would carry it rather than s1.
+      const stray = { ...STATE, state: "stray" };
+      fromFrame(win, stray, `http://9zzzzzzzzzzz.localhost${location.port ? `:${location.port}` : ""}`);
+      fromFrame(win, stray, "null");
+      fromFrame(window, stray);
       fromFrame(win, STATE);
       await vi.waitFor(() => expect(went.at(-1)).toBe(CODE));
       expect(calls).toHaveLength(1);
@@ -1215,9 +1216,11 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
       expect(calls[0][1]?.method).toBe("POST");
       expect((calls[0][1]!.headers as Record<string, string>).authorization).toBe("Bearer tk");
       expect(JSON.parse(String(calls[0][1]?.body))).toEqual({ next: "/_clax/v/2/", partitioned: true, state: "s1" });
-      // Past its start, the frame's states ask nothing more.
+      // Past its start, the frame's states ask nothing more. A request would
+      // follow the token's answer, which has resolved: awaiting it here
+      // resumes after any such request is made.
       fromFrame(win, { ...STATE, state: "s2" });
-      await new Promise(r => setTimeout(r, 30));
+      await (await import("../api")).getToken();
       expect(calls).toHaveLength(1);
       expect(ctl.state.get().openInTab).toBeNull();
       ctl.dispose();
