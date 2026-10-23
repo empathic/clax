@@ -60,7 +60,8 @@
 //!   An artifact out of reach answers 404 wherever a route names it,
 //!   listings leave it out, a route's action needs its right
 //!   (`crate::agent::Agent`), the gallery's stream topic carries only the
-//!   artifacts the caller reads ([`MemberRights::gallery_reads`]), and no
+//!   artifacts the caller's listing holds, never by a link
+//!   ([`MemberRights::gallery_reads`]), and no
 //!   one holds the daemon-wide event stream (`/api/events`, 403);
 //! - anyone else (a guest, or no session) reaches only the routes of pages
 //!   shared by link ([`guest_need`]), within the page's
@@ -846,34 +847,32 @@ impl MemberRights {
     }
 
     /// Whether the gallery of key `key` ([`MemberRights::gallery_key`])
-    /// carries the events of artifact `aid`: when its scope reads it
-    /// ([`MemberRights::allows_at`]), or when it is deleted and was in the
-    /// person's reach with their granted rights reading it, so its
-    /// `artifact_deleted` reaches the galleries that showed it. No for an
-    /// unknown key or any error.
+    /// carries the events of artifact `aid`, as the person's listing holds
+    /// it: within their reach by their granted rights, beyond it by their
+    /// share rights, never by its link (which the gallery would hand out).
+    /// A deleted artifact (out of everyone's reach) counts as within the
+    /// reach of the owner's and its maker's, so its `artifact_deleted`
+    /// reaches the galleries that showed it. No for an unknown key or any
+    /// error.
     pub fn gallery_reads(st: &clax_store::Store, key: &str, aid: &str) -> bool {
-        let read = (RightType::Artifacts, "read");
+        use clax_store::reach::Reach;
+        let (kind, action) = (RightType::Artifacts, "read");
         let scope = if key == OWNER_GALLERY {
             MemberRights::owner(st)
         } else {
             MemberRights::of_person(st, key)
         };
         let Ok(m) = scope else { return false };
-        if m.allows_at(st, read, aid).unwrap_or(false) {
-            return true;
+        let person = m.person.as_deref();
+        let made = |x: &str, by: Option<&str>| st.artifact_created_by(x, by).unwrap_or(false);
+        let own = |x: &str| made(x, person);
+        let within = || m.rights.allows(kind, action, Some(aid), &own);
+        match st.reach(aid, person) {
+            Ok(Reach::Within) => within(),
+            Ok(Reach::Beyond) => m.shared.allows(kind, action, Some(aid), &|_| false),
+            Ok(Reach::Gone) => (made(aid, None) || (person.is_some() && own(aid))) && within(),
+            Err(_) => false,
         }
-        let made = |by: Option<&str>| st.artifact_created_by(aid, by).unwrap_or(false);
-        let within = made(None) || (m.person.is_some() && made(m.person.as_deref()));
-        let deleted = matches!(
-            st.reach(aid, m.person.as_deref()),
-            Ok(clax_store::reach::Reach::Gone)
-        );
-        within
-            && deleted
-            && m.rights.allows(read.0, read.1, Some(aid), &|x: &str| {
-                st.artifact_created_by(x, m.person.as_deref())
-                    .unwrap_or(false)
-            })
     }
 }
 

@@ -1757,6 +1757,16 @@ async fn the_gallery_topic_carries_only_what_its_subscriber_reads() {
     let mut mias_events = site.stream(&mia, &["gallery"]).await;
     // Mia's page changes first, then the owner's.
     let mias = site.made_by(&mia, "Mia's").await;
+    // Shared by link, it is still not the owner's: the link is not theirs.
+    let (s, v) = site
+        .send(
+            &mia,
+            reqwest::Method::PUT,
+            &format!("/api/hosted/artifacts/{mias}/link"),
+            json!({"access": "viewer"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
     let (s, v) = site.thread(&mia, &mias, "Mia's thread").await;
     assert_eq!(s, 201, "{v}");
     let (s, v) = site.thread(&owner, &plan, "the owner's thread").await;

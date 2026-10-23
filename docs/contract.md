@@ -6947,7 +6947,7 @@ except as noted:
 
 | Topic | Carries |
 |---|---|
-| `gallery` | `version`, `thread` (summary), `thread_deleted`, `thread_moved`, `artifact_deleted`, `working` (summary) and `tags` for every artifact. On a hosted Clax, only for the artifacts the subscriber reads (`clax-artifacts` `read` within their reach, by a share or by its link, checked as each event is dispatched), and `artifact_deleted` for one deleted within their reach that their rights read; `tags` naming no artifact reaches every gallery. A caller with no person's scope (a guest) may not hold it (403 `forbidden`). |
+| `gallery` | `version`, `thread` (summary), `thread_deleted`, `thread_moved`, `artifact_deleted`, `working` (summary) and `tags` for every artifact. On a hosted Clax, only for the artifacts the subscriber's `GET /api/artifacts` lists (`clax-artifacts` `read` by their rights within their reach, or by a share with them; never by a link, checked as each event is dispatched), and `artifact_deleted` for one deleted within their reach that their rights read; `tags` naming no artifact reaches every gallery. A caller with no person's scope (a guest) may not hold it (403 `forbidden`). |
 | `artifact:<aid>` | That artifact's `version`, `thread`, `thread_deleted`, `thread_moved`, `feedback_state`, `tags`, `comments` and `artifact_deleted`, and `agents` (`{topic}`, naming nothing) when an agent that watched it started, ended or was renamed: refetch its agents. |
 | `presence:<aid>` | Its `presence` changes, and `artifact_deleted`. |
 | `working:<aid>` | Its `working` list, and `artifact_deleted`. |
