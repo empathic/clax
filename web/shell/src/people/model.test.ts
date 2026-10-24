@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PeopleAgent, PeopleGrant, Rights } from "../api";
-import { CAPS, agentCaps, creatorCaps, elevation, elevationsOf, expiresIn, liveInvites, machineCaps, madeText, narrowAgent, narrowGrant, narrowerOrEqual, presetOf, PRESETS, raiseCaps, raisersOf } from "./model";
+import { CAPS, agentCaps, creatorCaps, elevation, elevationsOf, expiresIn, liveInvites, machineCaps, narrowAgent, narrowGrant, narrowerOrEqual, presetOf, PRESETS, raiseCaps, raisersOf } from "./model";
+import { madeText } from "../format";
 
 const COLLAB = PRESETS["clax:collaborator"];
 const key = (type: string, action: string) => `${type} ${action}`;

@@ -26,7 +26,8 @@
   import { tick } from "svelte";
   import type { PeopleAgent, PeopleApproval, PeopleElevation, PeopleGrant, PeopleMade, PeopleRequest, Rights, PeopleGitHub } from "../api";
   import * as api from "./api";
-  import { agentCaps, CAPS, elevation, elevationsOf, MACHINE_BOUNDARY, machineCaps, madeText, narrowAgent, narrowGrant, othersRaises, ownerRaisedAt, PRESET_NAMES, presetOf, raiseCaps, waitText } from "./model";
+  import { madeText } from "../format";
+  import { agentCaps, CAPS, elevation, elevationsOf, MACHINE_BOUNDARY, machineCaps, narrowAgent, narrowGrant, othersRaises, ownerRaisedAt, PRESET_NAMES, presetOf, raiseCaps, waitText } from "./model";
 
   type Who = { public_id: string | null; display_name: string | null; revoked_at: string | null; rights: Rights; grants: PeopleGrant[]; agents: PeopleAgent[]; github?: PeopleGitHub | null; made?: PeopleMade };
   type Props = {

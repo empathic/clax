@@ -145,11 +145,18 @@ test("the owner invites a person who connects, narrows their machine from their 
     await expect.poll(() => owner.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
     await owner.setViewportSize({ width: 1280, height: 800 });
 
-    // The owner revokes Sam: Sam is history, and Sam's open page says People is not his.
+    // The owner revokes Sam: Sam is history, a card under Revoked saying
+    // when, with no controls (a local daemon reinstates no one: a revoked
+    // person takes a new invite), and Sam's open page says People is not his.
     owner.once("dialog", dialog => void dialog.accept());
     await card.getByRole("button", { name: "Revoke Sam" }).click();
     await expect(owner.locator(".revoked")).toContainText("Sam");
-    await expect(owner.locator("article.person[data-person]").filter({ has: owner.locator("h3", { hasText: /^Sam$/ }) })).toHaveCount(0);
+    const sams = owner.locator("article.person[data-person]").filter({ has: owner.locator("h3", { hasText: /^Sam$/ }) });
+    await expect(sams).toHaveCount(1);
+    const history = owner.locator(".revoked article.person[data-person]").filter({ has: owner.locator("h3", { hasText: /^Sam$/ }) });
+    await expect(history.locator("header .meta")).toHaveText(/^revoked \d{4}-\d{2}-\d{2}$/);
+    await expect(history.getByRole("button")).toHaveCount(0);
+    await expect(history.locator("select.preset, .machine, .agent")).toHaveCount(0);
     await expect(owner.getByRole("heading", { name: "People", level: 2 })).toBeFocused();
     await expect(person.locator(".ppl")).toContainText("You are no longer connected: the owner disconnected you.");
     await expect(person.locator("article.person")).toHaveCount(0);
