@@ -61,7 +61,7 @@ pub struct AuditQuery {
     pub within: Option<Vec<String>>,
     /// Artifacts whose events are left out, as [`AuditQuery::within`]
     /// leaves out the rest (a non-owner's on a hosted daemon: the live
-    /// pages, the owner's alone); only `artifact_id` is compared.
+    /// pages, the owner's alone), by either artifact an event names.
     pub hidden: Vec<String>,
     /// When set, a `view.audit` recorded by anyone but this person (a
     /// person key) matches `q` by its kind and actor alone, never by its
@@ -296,7 +296,8 @@ impl Store {
             let ids = serde_json::to_string(&query.hidden).unwrap_or_else(|_| "[]".into());
             let n = bind(&mut args, Box::new(ids));
             conds.push(format!(
-                "(artifact_id IS NULL OR artifact_id NOT IN (SELECT value FROM json_each(?{n})))"
+                "(artifact_id IS NULL OR artifact_id NOT IN (SELECT value FROM json_each(?{n})))
+                 AND (artifact2_id IS NULL OR artifact2_id NOT IN (SELECT value FROM json_each(?{n})))"
             ));
         }
         if let Some(q) = query.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {

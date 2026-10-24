@@ -192,8 +192,9 @@ fn event_view(names: &mut Names<'_>, e: &AuditEvent, body: bool) -> clax_core::R
     Ok(v)
 }
 
-/// Whether `reader` may see events of live pages: only the owner reads
-/// those, so another reader's page leaves them out.
+/// Whether `reader` may see events naming a live page (either of their
+/// two artifacts): only the owner reads those, so another reader's page
+/// leaves them out.
 fn hide_live(
     st: &Store,
     caller: &Caller,
@@ -201,7 +202,11 @@ fn hide_live(
     e: &AuditEvent,
 ) -> bool {
     let _ = st;
-    !caller.is_owner() && e.artifact_id.as_deref().is_some_and(|a| live.contains(a))
+    !caller.is_owner()
+        && [e.ids.artifact.as_deref(), e.ids.artifact2.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|a| live.contains(a))
 }
 
 /// `GET /api/audit` (see the module documentation).

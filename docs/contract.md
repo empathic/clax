@@ -8657,8 +8657,9 @@ included, sees the artifacts of people who did not share them.
   `not_found`; events naming none stay. They are left out before `q`,
   the other filters, `limit` and the cursor apply, so neither a page's
   length nor its `next_cursor` tells they exist, and `artifact=<id>` of
-  one answers as of an unknown ID. A live page's events, the owner's
-  alone, are left out the same way for everyone else. A `view.audit`
+  one answers as of an unknown ID. A live page's events (an event naming
+  one as either of its artifacts), the owner's alone, are left out the
+  same way for everyone else. A `view.audit`
   filtered by `artifact=` names that artifact when it is an artifact ID
   in its viewer's reach (otherwise it names none), and a `view.run` its
   run's artifact, so a view of a page counts, for an admin, as an event
@@ -8671,7 +8672,8 @@ included, sees the artifacts of people who did not share them.
 - An admin's Toolpath export (`GET /api/toolpath/export`) leaves out
   every step naming an artifact out of their own reach (the owner's
   export, out of the owner's), and an `artifact` selector naming one is 400
-  `unknown_artifact`; steps naming none stay. Every export on a hosted
+  `unknown_artifact`; steps naming none stay. An admin person's export
+  also leaves out every step naming a live page, the owner's alone. Every export on a hosted
   Clax (the owner's too) gives a `view.audit` that someone other than the
   exporter recorded without its search words (`q` in its `filters`, the
   other filters kept), whatever `no_text`.

@@ -9285,6 +9285,122 @@ async fn an_audit_views_search_terms_are_its_viewers_alone() {
     );
 }
 
+/// An admin person whose rights read every artifact (so every one the
+/// owner made): Gus, with his public ID.
+async fn admin_reading_everything(w: &BotWorld) -> (Browser, String) {
+    let (gus, gus_pid) = w
+        .site
+        .person_with(
+            &w.owner,
+            "Gus",
+            json!([{"type": "clax-artifacts", "actions": ["read"], "locations": ["*"]}]),
+        )
+        .await;
+    w.site
+        .ts
+        .store
+        .set_admin(&clax_core::audit::AuditCtx::DAEMON, &gus_pid, true)
+        .unwrap();
+    (gus, gus_pid)
+}
+
+#[tokio::test]
+async fn an_admins_export_and_listings_leave_out_the_owners_live_pages() {
+    let w = BotWorld::new().await;
+    let site = &w.site;
+    let (gus, _) = admin_reading_everything(&w).await;
+    let (s, v) = site.thread(&w.owner, &w.plan.0, "wombat words").await;
+    assert_eq!(s, 201, "{v}");
+    let export = || async {
+        let r = site
+            .req(
+                &gus,
+                reqwest::Method::GET,
+                "/api/toolpath/export?shape=journal",
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        r.text().await.unwrap()
+    };
+    // Plan is in Gus's export until it is a live page.
+    assert!(export().await.contains("wombat words"));
+    site.ts
+        .state
+        .live_ids
+        .insert(&w.plan.0, "http://localhost:5173");
+    let body = export().await;
+    assert!(!body.contains(&w.plan.0), "{body}");
+    assert!(!body.contains("wombat"), "{body}");
+    // A live page as the owner's token makes one, with a comment: in
+    // neither Gus's export nor his listing.
+    let form = reqwest::multipart::Form::new()
+        .text("url", "http://localhost:5173/")
+        .text("title", "Settings")
+        .text(
+            "anchor",
+            json!({"kind": "element", "selector": "main", "quote": "Save", "file": "index.html"})
+                .to_string(),
+        )
+        .text("body", "numbat words")
+        .text("pending", "[]")
+        .text("snapshot", "<p>a live page</p>");
+    let r = site
+        .ts
+        .client
+        .post(site.url("/api/live/threads"))
+        .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+        .bearer_auth(&site.ts.token)
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 201);
+    let page = r.json::<Value>().await.unwrap()["page"]["artifact_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let body = export().await;
+    assert!(!body.contains(&page), "{body}");
+    assert!(!body.contains("numbat"), "{body}");
+    let (s, v) = site.get(&gus, "/api/artifacts").await;
+    assert_eq!(s, 200, "{v}");
+    assert!(!v.to_string().contains(&page), "{v}");
+    let (s, v) = site.get(&gus, &format!("/api/artifacts/{page}")).await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+}
+
+#[tokio::test]
+async fn an_event_naming_a_live_page_second_is_the_owners_alone() {
+    use clax_core::audit::{AuditKind, AuditRecord};
+    let w = BotWorld::new().await;
+    let site = &w.site;
+    let (gus, _) = admin_reading_everything(&w).await;
+    let notes = site.made_by(&w.owner, "Notes").await;
+    site.ts
+        .state
+        .live_ids
+        .insert(&w.plan.0, "http://localhost:5173");
+    // An event on Notes that names the live Plan second, as a fork of it
+    // would.
+    let mut rec =
+        AuditRecord::new(AuditKind::BotCancel, site.ts.store.now()).with("run", "capybara");
+    rec.ids.artifact = Some(notes.to_string());
+    rec.ids.artifact2 = Some(w.plan.0.clone());
+    let seq = site
+        .ts
+        .store
+        .record_event(&clax_core::audit::AuditCtx::DAEMON, rec)
+        .unwrap();
+    let (_, v) = site.get(&gus, "/api/audit?q=capybara").await;
+    assert_eq!(v, json!({"events": [], "next_cursor": null}));
+    let (s, v) = site.get(&gus, &format!("/api/audit/{seq}")).await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    let (_, v) = site.get(&w.owner, "/api/audit?q=capybara").await;
+    assert_eq!(v["events"][0]["seq"], json!(seq), "{v}");
+}
+
 #[tokio::test]
 async fn an_admins_export_holds_their_own_search_words_alone() {
     let w = BotWorld::new().await;

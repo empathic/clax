@@ -343,7 +343,7 @@ pub async fn export(
     })?;
     let (view_base, version) = (s.browser_base.clone(), s.version);
     let store = s.store.clone();
-    let hosted = s.hosted.is_some();
+    let (hosted, live) = (s.hosted.is_some(), s.live_ids.clone());
     stream_export(content_type, &s.exports, move |mut w| {
         clax_rt::spawn(async move {
             store
@@ -353,7 +353,7 @@ pub async fn export(
                     if hosted {
                         req.selection.out_of_reach = match &admin {
                             None => out_of_owners_reach(st)?,
-                            Some(person) => out_of_persons_reach(st, person)?,
+                            Some(person) => out_of_persons_reach(st, person, &live)?,
                         };
                         // Others' search words are their own.
                         req.selection.words_of = Some(
@@ -394,17 +394,19 @@ fn out_of_owners_reach(
 /// public ID), as their listings decide it
 /// ([`clax_http::hosted::MemberRights::lists`]): of every artifact the
 /// store or the history names, each their scope does not list, a purged
-/// one included. What an admin's export leaves out.
+/// one included, and every live page (`live`), the owner's alone. What
+/// an admin's export leaves out.
 #[cfg(not(target_arch = "wasm32"))]
 fn out_of_persons_reach(
     st: &clax_store::Store,
     person: &str,
+    live: &clax_realtime::live::LiveIds,
 ) -> clax_core::Result<std::collections::BTreeSet<String>> {
     let scope = clax_http::hosted::MemberRights::of_person(st, person)?;
     Ok(st
         .artifact_ids_known()?
         .into_iter()
-        .filter(|a| !scope.lists(st, a))
+        .filter(|a| live.contains(a) || !scope.lists(st, a))
         .collect())
 }
 
