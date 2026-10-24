@@ -192,8 +192,8 @@ async fn read_source(
     if reader == source {
         return Ok(false);
     }
-    let source = source.clone();
-    s.store_call(move |st| clax_http::site_access::holder_reads(st, &holder, &source))
+    let (source, hosted) = (source.clone(), s.hosted.is_some());
+    s.store_call(move |st| clax_http::site_access::holder_reads(st, hosted, &holder, &source))
         .await
 }
 

@@ -568,8 +568,9 @@ impl RoomCheck {
         let Ok(id) = parse_id(&self.aid) else {
             return false;
         };
+        let hosted = s.hosted.is_some();
         matches!(
-            s.store_call(move |st| site.check(st, &id)).await,
+            s.store_call(move |st| site.check(st, hosted, &id)).await,
             Ok(Some(_))
         )
     }
@@ -1042,7 +1043,7 @@ pub async fn reopen(
             let (who, session) = creds.reopen(st, &token)?;
             if let Some(sc) = site {
                 let id = clax_core::ArtifactId::parse(&a).map_err(|_| CoreError::NotFound)?;
-                let found = sc.check(st, &id)?.ok_or(CoreError::NotFound)?;
+                let found = sc.check(st, hosted, &id)?.ok_or(CoreError::NotFound)?;
                 let who = super::site_api::site_hosted_request(st, hosted, &found)?.identity(who);
                 let caller = who.caller(st, None).ok();
                 if caller

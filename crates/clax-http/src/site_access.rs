@@ -146,11 +146,12 @@ impl SiteCredentials {
     pub fn check(
         &self,
         st: &clax_store::Store,
+        hosted: bool,
         aid: &ArtifactId,
     ) -> clax_core::Result<Option<SiteCaller>> {
         match self {
             SiteCredentials::Session(hash) => Ok(match st.site_session_of_hash(hash, aid)? {
-                Some(h) if holder_reads(st, &h, aid)? => Some(SiteCaller::Holder(h)),
+                Some(h) if holder_reads(st, hosted, &h, aid)? => Some(SiteCaller::Holder(h)),
                 _ => None,
             }),
             SiteCredentials::Visitor(v) => Ok(st
@@ -384,18 +385,20 @@ pub fn clear_state_cookie(secure: bool, partitioned: bool) -> HeaderValue {
 }
 
 /// Whether `holder` may read artifact `aid` now, as `GET
-/// /api/artifacts/<id>` decides for them: the owner and a person by their
-/// scope ([`MemberRights::allows_at`]: within their reach their rights,
-/// beyond it the shares they hold, then the artifact's link), so on a
-/// hosted daemon the owner reads another person's artifact only as one
-/// shared with them or open by its link; a guest and a link viewer while
-/// it is shared by link. No one reads one that is deleted, that does not
+/// /api/artifacts/<id>` decides for them: the owner always on a local
+/// daemon; on a hosted one (`hosted`) the owner, and anywhere a person, by
+/// their scope ([`MemberRights::allows_at`]: within their reach their
+/// rights, beyond it the shares they hold, then the artifact's link), so
+/// on a hosted daemon the owner reads another person's artifact only as
+/// one shared with them or open by its link; a guest and a link viewer
+/// while it is shared by link. No one reads one that is deleted, that does not
 /// exist, or whose maker is revoked.
 ///
 /// # Errors
 /// The store's.
 pub fn holder_reads(
     st: &clax_store::Store,
+    hosted: bool,
     holder: &Holder,
     aid: &ArtifactId,
 ) -> clax_core::Result<bool> {
@@ -403,7 +406,7 @@ pub fn holder_reads(
         return Ok(false);
     }
     match holder {
-        // Every artifact on a local daemon, where every one is the owner's.
+        Holder::Owner if !hosted => Ok(true),
         Holder::Owner => {
             MemberRights::owner(st)?.allows_at(st, (RightType::Artifacts, "read"), aid.as_str())
         }
@@ -793,10 +796,10 @@ pub async fn caller_holder(
         return Ok(None);
     };
     let hash = clax_core::secret::sha256_hex(&id);
-    let aid = aid.clone();
+    let (aid, hosted) = (aid.clone(), s.hosted.is_some());
     s.store_call(move |st| {
         Ok(match st.site_session_of_hash(&hash, &aid)? {
-            Some(h) if holder_reads(st, &h, &aid)? => Some((h, SiteSessionHash(hash))),
+            Some(h) if holder_reads(st, hosted, &h, &aid)? => Some((h, SiteSessionHash(hash))),
             _ => None,
         })
     })

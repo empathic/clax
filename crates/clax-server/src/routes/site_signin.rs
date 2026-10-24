@@ -108,11 +108,11 @@ async fn mint(
     if sees.check(&s.live_ids, aid.as_str()).is_err() {
         return Ok(None);
     }
-    let lookup = aid.clone();
+    let (lookup, hosted) = (aid.clone(), s.hosted.is_some());
     let code = s
         .store_call(move |st| {
             st.get_artifact(&lookup)?.ok_or(CoreError::NotFound)?;
-            if !holder_reads(st, &holder, &lookup)? {
+            if !holder_reads(st, hosted, &holder, &lookup)? {
                 return Ok(None);
             }
             st.site_code_mint(&lookup, &holder, browser.as_deref(), partitioned, &state)
