@@ -803,7 +803,15 @@ mod tests {
         .unwrap();
         let draft = draft_of(&st, &app);
         assert_eq!(
-            copy_app_docs(&host, &st, &app, &draft, &clax_store::drafts::DraftDocs::Owner).await.unwrap(),
+            copy_app_docs(
+                &host,
+                &st,
+                &app,
+                &draft,
+                &clax_store::drafts::DraftDocs::Owner
+            )
+            .await
+            .unwrap(),
             (2, false)
         );
         let get = |path: &str| AppDataOp::Get {
@@ -857,7 +865,15 @@ mod tests {
         let draft = draft_of(&st, &app);
         let per = json!({ "s": big }).to_string().len();
         assert_eq!(
-            copy_app_docs(&host, &st, &app, &draft, &clax_store::drafts::DraftDocs::Owner).await.unwrap(),
+            copy_app_docs(
+                &host,
+                &st,
+                &app,
+                &draft,
+                &clax_store::drafts::DraftDocs::Owner
+            )
+            .await
+            .unwrap(),
             (clax_store::drafts::DRAFT_DOCS_MAX_BYTES / per, true)
         );
     }
@@ -885,7 +901,15 @@ mod tests {
             .unwrap();
         let draft = draft_of(&st, &app);
         assert_eq!(
-            copy_app_docs(&host, &st, &app, &draft, &clax_store::drafts::DraftDocs::Owner).await.unwrap(),
+            copy_app_docs(
+                &host,
+                &st,
+                &app,
+                &draft,
+                &clax_store::drafts::DraftDocs::Owner
+            )
+            .await
+            .unwrap(),
             (0, true)
         );
     }
