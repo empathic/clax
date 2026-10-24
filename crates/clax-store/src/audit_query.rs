@@ -52,6 +52,11 @@ pub struct AuditQuery {
     pub cursor: Option<i64>,
     /// At most this many (1 to [`MAX_PAGE`]; 0 is [`DEFAULT_PAGE`]).
     pub limit: u32,
+    /// Artifacts whose events are left out whatever else is asked (an
+    /// admin's on a hosted daemon: those out of their reach), before the
+    /// words, the page's limit and its cursor apply, so neither a page's
+    /// length nor its cursor tells they are there.
+    pub exclude: Vec<String>,
 }
 
 pub const DEFAULT_PAGE: u32 = 50;
@@ -253,6 +258,14 @@ impl Store {
         if let AuditReader::Person(p) = reader {
             let n = bind(&mut args, Box::new(p.clone()));
             conds.push(scope_sql(n));
+        }
+        if !query.exclude.is_empty() {
+            let ids = serde_json::to_string(&query.exclude).unwrap_or_else(|_| "[]".into());
+            let n = bind(&mut args, Box::new(ids));
+            conds.push(format!(
+                "(artifact_id IS NULL OR artifact_id NOT IN (SELECT value FROM json_each(?{n})))
+                 AND (artifact2_id IS NULL OR artifact2_id NOT IN (SELECT value FROM json_each(?{n})))"
+            ));
         }
         if let Some(q) = query.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
             let n = bind(&mut args, Box::new(like_escape(q)));

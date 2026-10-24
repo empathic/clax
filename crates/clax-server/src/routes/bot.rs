@@ -473,9 +473,13 @@ fn api_to_core(e: ApiError) -> CoreError {
 pub enum RunAccess {
     /// The person it acts for: may stop it and read its draft.
     Acting,
-    /// An admin who may read its artifact (any admin on a local daemon):
-    /// the same.
+    /// An admin on a local daemon, or on a hosted one the maker of its
+    /// artifact: the same.
     Admin,
+    /// An admin on a hosted daemon who reads its artifact but did not make
+    /// it (through a share, a link, or granted rights at the owner's): sees
+    /// it as a [`RunAccess::Reader`] does, and may stop it.
+    AdminReader,
     /// An admin on a hosted daemon whose own reach does not hold its
     /// artifact: may stop it and see what it cost, who it acts for and
     /// when, never its artifact, steps, events or draft ([`for_overseer`]).
@@ -489,8 +493,14 @@ impl RunAccess {
     pub fn controls(self) -> bool {
         matches!(
             self,
-            RunAccess::Acting | RunAccess::Admin | RunAccess::Overseer
+            RunAccess::Acting | RunAccess::Admin | RunAccess::AdminReader | RunAccess::Overseer
         )
+    }
+
+    /// Whether this access sees the run as a reader of its artifact does
+    /// ([`for_reader`]).
+    pub fn reads_as_reader(self) -> bool {
+        matches!(self, RunAccess::Reader | RunAccess::AdminReader)
     }
 
     /// Whether this access may read the run's draft.
@@ -535,8 +545,9 @@ pub fn reads_artifact(
 
 /// What `caller` may do with `run`, or 404 when they may not see it (a
 /// run is not known to exist to someone who may not). On a hosted daemon
-/// an admin is [`RunAccess::Admin`] only where they read the run's
-/// artifact ([`reads_artifact`]), else [`RunAccess::Overseer`].
+/// an admin is [`RunAccess::Admin`] only at an artifact they made, else
+/// [`RunAccess::AdminReader`] where they read it ([`reads_artifact`]),
+/// else [`RunAccess::Overseer`].
 ///
 /// # Errors
 /// As above; the store's.
@@ -551,10 +562,20 @@ pub fn run_access(
         return Ok(RunAccess::Acting);
     }
     if role_of(st, caller)?.is_admin() {
-        if s_hosted && !reads_artifact(st, s_hosted, caller, &run.artifact_id, live)? {
-            return Ok(RunAccess::Overseer);
+        if !s_hosted {
+            return Ok(RunAccess::Admin);
         }
-        return Ok(RunAccess::Admin);
+        let maker = match caller {
+            Caller::Person { viewer } => Some(viewer.public_id.as_str()),
+            _ => None,
+        };
+        if st.artifact_created_by(&run.artifact_id, maker)? {
+            return Ok(RunAccess::Admin);
+        }
+        if reads_artifact(st, s_hosted, caller, &run.artifact_id, live)? {
+            return Ok(RunAccess::AdminReader);
+        }
+        return Ok(RunAccess::Overseer);
     }
     if reads_artifact(st, s_hosted, caller, &run.artifact_id, live)? {
         return Ok(RunAccess::Reader);
@@ -693,12 +714,13 @@ pub async fn get(
                 for_overseer(&mut v);
             } else {
                 let mut steps = steps_view(st, &run.id, &steps)?;
-                if access == RunAccess::Reader {
+                if access.reads_as_reader() {
                     steps.iter_mut().for_each(for_reader);
                 }
                 v["steps"] = json!(steps);
             }
-            let rec = clax_http::bot::view(st, AuditKind::ViewRun).with("run", run.id.as_str());
+            let mut rec = clax_http::bot::view(st, AuditKind::ViewRun).with("run", run.id.as_str());
+            rec.ids.artifact = Some(run.artifact_id.clone());
             record_view(st, &bot, &who, &caller, &run.id, rec)?;
             Ok(v)
         })
@@ -1510,7 +1532,8 @@ pub async fn events(
             if access == RunAccess::Overseer {
                 return Err(CoreError::NotFound);
             }
-            let rec = clax_http::bot::view(st, AuditKind::ViewRun).with("run", run.id.as_str());
+            let mut rec = clax_http::bot::view(st, AuditKind::ViewRun).with("run", run.id.as_str());
+            rec.ids.artifact = Some(run.artifact_id.clone());
             record_view(st, &bot, &who, &c, &run.id, rec)?;
             Ok((access, bot.events.subscribe(st, &run.id, after)?))
         })
@@ -1547,7 +1570,7 @@ pub async fn events(
         sub,
         rid,
         caller,
-        reader: access == RunAccess::Reader,
+        reader: access.reads_as_reader(),
         checked: clax_rt::time::Instant::now(),
         done: false,
     };

@@ -8860,28 +8860,53 @@ async fn claxbot_admins_oversee_runs_out_of_their_reach_without_seeing_the_page(
             .get(b, &format!("/api/bot/runs?artifact={}", w.private.0))
             .await;
         assert_eq!((s, code(&v)), (404, "not_found"), "{who}: {v}");
-        // The page shared with them: the run whole, its draft too.
+        // The page shared with them: the run as its share shows it to
+        // anyone who reads the page (no narration), and no draft.
         let (s, v) = site.get(b, &format!("/api/bot/runs/{shared}")).await;
         assert_eq!(s, 200, "{who}: {v}");
         assert_eq!(v["artifact_id"], json!(w.shared.0), "{who}: {v}");
         assert_eq!(v["steps"].as_array().unwrap().len(), 1, "{who}: {v}");
-        let r = site
-            .req(
-                b,
-                reqwest::Method::GET,
-                &format!("/api/bot/runs/{shared}/draft/index.html"),
-            )
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(r.status(), 200, "{who}");
-        assert_eq!(r.text().await.unwrap(), "<p>the draft</p>", "{who}");
+        assert!(v["steps"][0].get("text").is_none(), "{who}: {v}");
+        assert!(!v.to_string().contains("secret"), "{who}: {v}");
+        for p in ["draft/", "draft/index.html"] {
+            let (s, v) = site.get(b, &format!("/api/bot/runs/{shared}/{p}")).await;
+            assert_eq!((s, code(&v)), (404, "not_found"), "{who}: {p}: {v}");
+        }
         let (s, v) = site
             .get(b, &format!("/api/bot/runs?artifact={}", w.shared.0))
             .await;
         assert_eq!(s, 200, "{who}: {v}");
         assert_eq!(v["runs"][0]["id"], json!(shared), "{who}: {v}");
     }
+    // Mia's run on the owner's own page: the owner, its maker, sees it
+    // whole, its draft too; Ana, an admin who does not read it, oversees it.
+    let on_plan = w.run(&w.mia_pid, &w.plan);
+    let (s, v) = site
+        .get(&w.owner, &format!("/api/bot/runs/{on_plan}"))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert!(v.to_string().contains("secret"), "{v}");
+    let r = site
+        .req(
+            &w.owner,
+            reqwest::Method::GET,
+            &format!("/api/bot/runs/{on_plan}/draft/index.html"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.text().await.unwrap(), "<p>the draft</p>");
+    let (_, v) = site.get(&w.ana, &format!("/api/bot/runs/{on_plan}")).await;
+    assert!(
+        v["artifact_id"].is_null() && v.get("steps").is_none(),
+        "{v}"
+    );
+    // An admin stops a run they read through a share.
+    let (s, v) = site
+        .post(&w.ana, &format!("/api/bot/runs/{shared}/cancel"), json!({}))
+        .await;
+    assert_eq!(s, 200, "{v}");
     // An admin stops a run they may not see into, and learns no more.
     let (s, v) = site
         .post(
@@ -8998,4 +9023,155 @@ async fn claxbot_admins_audit_trail_and_export_hold_their_own_reach() {
         .await
         .unwrap();
     assert_eq!(r.status(), 400);
+}
+
+#[tokio::test]
+async fn claxbot_admins_audit_search_and_paging_say_nothing_of_pages_out_of_reach() {
+    let w = BotWorld::new().await;
+    let site = &w.site;
+    // Two of Mia's comments on her private page hold "zebra"; one of
+    // Ana's on the page shared with her holds "okapi", as one of Mia's
+    // private ones does after it.
+    for body in ["zebra one", "zebra two"] {
+        let (s, v) = site.thread(&w.mia, &w.private.0, body).await;
+        assert_eq!(s, 201, "{v}");
+    }
+    let (s, v) = site.thread(&w.ana, &w.shared.0, "okapi seen").await;
+    assert_eq!(s, 201, "{v}");
+    let (s, v) = site.thread(&w.mia, &w.private.0, "okapi hidden").await;
+    assert_eq!(s, 201, "{v}");
+    let none = json!({"events": [], "next_cursor": null});
+    for (who, b) in [("owner", &w.owner), ("Ana", &w.ana)] {
+        // A guess that matches only hidden comments: no rows and no
+        // cursor, as for a guess that matches nothing.
+        let (s, v) = site
+            .get(b, "/api/audit?q=zebra&group=changes&limit=1")
+            .await;
+        assert_eq!(s, 200, "{who}: {v}");
+        assert_eq!(v, none, "{who}");
+        // One that also matches a hidden comment newer than the visible
+        // one: the visible one, on the first page, and no further page.
+        let (_, v) = site
+            .get(b, "/api/audit?q=okapi&group=changes&limit=1")
+            .await;
+        let events = v["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1, "{who}: {v}");
+        assert_eq!(events[0]["artifact_id"], json!(w.shared.0), "{who}: {v}");
+        assert!(v["next_cursor"].is_null(), "{who}: {v}");
+        // A hidden page's ID filters as an unknown one does.
+        let (_, hidden) = site
+            .get(
+                b,
+                &format!("/api/audit?artifact={}&group=changes&limit=1", w.private.0),
+            )
+            .await;
+        let (_, unknown) = site
+            .get(b, "/api/audit?artifact=zzzzzzzzzzzz&group=changes&limit=1")
+            .await;
+        assert_eq!(hidden, none, "{who}");
+        assert_eq!(unknown, none, "{who}");
+    }
+}
+
+#[tokio::test]
+async fn claxbot_views_of_a_page_out_of_reach_are_not_in_an_admins_audit() {
+    let w = BotWorld::new().await;
+    let site = &w.site;
+    let rid = w.run(&w.mia_pid, &w.private);
+    // Mia filters her audit trail by her private page, and opens its run.
+    let (s, v) = site
+        .get(
+            &w.mia,
+            &format!("/api/audit?artifact={}&q=diaryterms", w.private.0),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site.get(&w.mia, &format!("/api/bot/runs/{rid}")).await;
+    assert_eq!(s, 200, "{v}");
+    let all = site.ts.store.events_after(0, 10_000).unwrap();
+    let views: Vec<i64> = all
+        .iter()
+        .filter(|e| {
+            (e.kind == "view.audit" && e.body.contains("diaryterms"))
+                || (e.kind == "view.run" && e.body.contains(&rid))
+        })
+        .map(|e| e.seq)
+        .collect();
+    assert_eq!(views.len(), 2, "{all:?}");
+    for (who, b) in [("owner", &w.owner), ("Ana", &w.ana)] {
+        let (_, v) = site.get(b, "/api/audit?limit=200").await;
+        assert!(!v.to_string().contains("diaryterms"), "{who}: {v}");
+        assert!(!v.to_string().contains(&rid), "{who}: {v}");
+        for seq in &views {
+            let (s, v) = site.get(b, &format!("/api/audit/{seq}")).await;
+            assert_eq!((s, code(&v)), (404, "not_found"), "{who}: {seq}: {v}");
+        }
+    }
+    // Mia still reads her own.
+    for seq in &views {
+        let (s, v) = site.get(&w.mia, &format!("/api/audit/{seq}")).await;
+        assert_eq!(s, 200, "{seq}: {v}");
+    }
+}
+
+#[tokio::test]
+async fn claxbot_document_writes_are_announced_at_the_paths_read_level() {
+    use clax_bot::BotHost;
+    let w = BotWorld::new().await;
+    let st = &w.site.ts.store;
+    let res = w
+        .site
+        .ts
+        .post_json(
+            "/api/artifacts",
+            json!({"title": "Tracker",
+                   "capabilities": {"db": {"rules": [{"path": "team", "read": "interact"}]}},
+                   "files": {"index.html": {"content": "<main></main>", "encoding": "utf8"}}}),
+        )
+        .await;
+    assert_eq!(res.status(), 201);
+    let aid = res.json::<Value>().await.unwrap()["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = w.site.thread(&w.owner, &aid, "Track it").await;
+    assert_eq!(s, 201, "{v}");
+    let tid = v["thread"]["id"].as_str().unwrap().to_string();
+    let rid = w.run(clax_store::roles::OWNER, &(aid.clone(), tid));
+    let driver = clax_store::bot_runs::DriverId::mint();
+    st.claim_run(&rid, &driver, 60).unwrap().unwrap();
+    st.begin_step(&rid, &driver, 2, clax_store::bot_runs::StepKind::Script)
+        .unwrap();
+    let run = st.run(&rid).unwrap().unwrap();
+    let audit = clax_bot::run::bot_ctx(clax_store::roles::OWNER);
+    let cx = clax_bot::OpCtx::new(&run, &audit, 2, 1, 0);
+    let host = clax_server::bot::ServerHost::new(w.site.ts.state.clone());
+    let mut rx = w.site.ts.events.subscribe();
+    let plan = host
+        .plan_write(
+            &cx,
+            "db.set",
+            &[json!("team"), json!("a"), json!({"x": 1}), json!({})],
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    let entry = st
+        .call_entry(&rid, &driver, 2, 1, 0, "db.set", "h")
+        .unwrap();
+    plan(entry).await.unwrap();
+    let level = loop {
+        match rx.try_recv().expect("the write was announced").event {
+            clax_core::Event::Doc {
+                artifact_id,
+                path,
+                read_level,
+                ..
+            } if artifact_id == aid => {
+                assert_eq!(path, "team/a");
+                break read_level;
+            }
+            _ => {}
+        }
+    };
+    assert_eq!(level, clax_core::db::Level::Interact);
 }

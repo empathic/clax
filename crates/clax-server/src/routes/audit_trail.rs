@@ -197,20 +197,30 @@ pub async fn list(
     d.refuse_agents()?;
     let (caller, reader, scope) = reader(&s, &d).await?;
     let raw = raw.unwrap_or_default();
-    let q = audit_query(&raw)?;
+    let mut q = audit_query(&raw)?;
     let (bot, live) = (s.bot.clone(), s.live_ids.clone());
     let v = s
         .store_call(move |st| {
+            if let Some(m) = &scope {
+                q.exclude = st
+                    .artifact_ids_known()?
+                    .into_iter()
+                    .filter(|a| !m.lists(st, a))
+                    .collect();
+            }
             let page = st.query_audit(&reader, &q)?;
             let mut names = Names::new(st);
             let events = page
                 .events
                 .iter()
                 .filter(|e| !hide_live(st, &caller, &live, e))
-                .filter(|e| !out_of_reach(st, scope.as_ref(), e))
                 .map(|e| event_view(&mut names, e, false))
                 .collect::<clax_core::Result<Vec<_>>>()?;
-            let rec = clax_http::bot::view(st, AuditKind::ViewAudit).with("filters", raw.as_str());
+            // A view filtered by an artifact is an event on it, which only
+            // those who reach it read.
+            let mut rec =
+                clax_http::bot::view(st, AuditKind::ViewAudit).with("filters", raw.as_str());
+            rec.ids.artifact = q.artifact.clone();
             record_view(st, &bot, &who, &caller, &raw, rec)?;
             Ok(json!({"events": events, "next_cursor": page.next_cursor}))
         })

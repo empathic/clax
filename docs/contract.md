@@ -8608,7 +8608,7 @@ handle, `*system` as "Clax".
 | `GET /api/agents` | as before; ClaxBot is listed first (`handle: "claxbot"`, `builtin: true`, `live`, or `unavailable: no_flag\|no_credits\|not_configured\|model_not_priced`) where the caller may send | — |
 | `POST /api/bot/runs {thread_ids, artifact_id}`; a send or batch with `to: "claxbot"`; `POST /api/artifacts:new` with `build: "claxbot"`; a person's comment on a thread whose last run ended | the sender (a person, or their agent: the run acts for that person); SameOrigin | `bot.run_start`, or `bot.refused` and 403 `no_flag`, `credits_exhausted`, `not_configured` or `model_not_priced` before any model call |
 | `GET /api/bot/runs?artifact=`, `GET /api/bot/runs/<id>`, `GET /api/bot/runs/<id>/events` | the person a run acts for, admins, and anyone who may read its artifact (read-only); a live page's runs the owner's alone; on a hosted Clax an admin as below | `view.run` |
-| `POST /api/bot/runs/<id>/cancel`, `GET /api/bot/runs/<id>/draft/<path>` | the person it acts for and admins (403 `not_permitted`, a draft 404); on a hosted Clax a draft for an admin only within their reach | `bot.cancel` |
+| `POST /api/bot/runs/<id>/cancel`, `GET /api/bot/runs/<id>/draft/<path>` | the person it acts for and admins (403 `not_permitted`, a draft 404); on a hosted Clax a draft for an admin only at an artifact they made | `bot.cancel` |
 | `GET /api/admin/people`, `PUT …/<person>/flags`, `…/credits` | admins | `view.admin {page: people}`, `admin.flag`, `admin.credits` |
 | `PUT /api/admin/people/<person>/role {role}` | the owner alone (403 `owner_only`); the owner's own role 400 `owner_role` | `admin.role` |
 | `GET`/`PUT /api/admin/provider`, `PUT`/`DELETE …/key`, `POST …/test`, `GET …/models` | admins | `view.admin {page: provider\|provider.test\|provider.models}`, `admin.provider`, `admin.key` (scope `instance`) |
@@ -8635,10 +8635,16 @@ included, sees the artifacts of people who did not share them.
   that does not exist; a run of the owner's reads and writes its artifact
   only by the owner's scope (at another person's page, its share with the
   owner's rights, and its documents at the share's level), and a script's
-  document write is announced at the level it wrote at. A connected
-  person's runs hold to their scope the same way.
+  document write is announced as a `db` route's write is, to whoever the
+  page's rules let read its path. A connected person's runs hold to their
+  scope the same way.
 - An admin (the owner, or a person made admin) sees every run by its ID
-  (`GET /api/bot/runs/<id>`) and stops any (`…/cancel`). Of a run whose
+  (`GET /api/bot/runs/<id>`) and stops any (`…/cancel`). Only on an
+  artifact they made (the owner: one the owner made), or a run acting
+  for them, do they see it whole with its draft; on one they read
+  otherwise (a share, a link, granted rights at the owner's) they see it
+  as anyone reading the page does (steps without narration, code, values,
+  logs or call targets; its draft 404). Of a run whose
   artifact is out of their own reach (and that does not act for them)
   they see its status, request, model, key, credits, tokens, who it acts
   for and its times: `artifact_id`, `thread_ids`, `reason`, `draft` and
@@ -8648,8 +8654,12 @@ included, sees the artifacts of people who did not share them.
 - An admin's audit trail leaves out every event naming an artifact
   (`artifact_id`, or the second artifact a fork or a cross-read names)
   out of their own reach, and `GET /api/audit/<seq>` of one is 404
-  `not_found`; events naming none stay. A page can come back with fewer
-  events than its `limit`, still with a `next_cursor`.
+  `not_found`; events naming none stay. They are left out before `q`,
+  the other filters, `limit` and the cursor apply, so neither a page's
+  length nor its `next_cursor` tells they exist, and `artifact=<id>` of
+  one answers as of an unknown ID. A `view.audit` filtered by
+  `artifact=` names that artifact, and a `view.run` its run's artifact,
+  so a view of a page counts as an event on it.
 - An admin's Toolpath export (`GET /api/toolpath/export`) leaves out
   every step naming an artifact out of their own reach (the owner's
   export, out of the owner's), and an `artifact` selector naming one is 400
