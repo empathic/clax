@@ -9162,6 +9162,130 @@ async fn claxbot_views_of_a_page_stay_their_viewers_in_its_readers_audit() {
 }
 
 #[tokio::test]
+async fn an_admins_audit_search_and_paging_say_nothing_of_the_owners_live_pages() {
+    let w = BotWorld::new().await;
+    let site = &w.site;
+    // Two of the owner's comments on Plan hold "lemur"; Plan becomes a
+    // live page, whose events are the owner's alone.
+    for body in ["lemur one", "lemur two"] {
+        let (s, v) = site.thread(&w.owner, &w.plan.0, body).await;
+        assert_eq!(s, 201, "{v}");
+    }
+    // Gus, an admin whose rights read every artifact, reads Plan's events
+    // until then.
+    let (gus, gus_pid) = site
+        .person_with(
+            &w.owner,
+            "Gus",
+            json!([{"type": "clax-artifacts", "actions": ["read"], "locations": ["*"]}]),
+        )
+        .await;
+    site.ts
+        .store
+        .set_admin(&clax_core::audit::AuditCtx::DAEMON, &gus_pid, true)
+        .unwrap();
+    let (_, v) = site
+        .get(&gus, "/api/audit?q=lemur&group=changes&limit=1")
+        .await;
+    assert_eq!(v["events"].as_array().unwrap().len(), 1, "{v}");
+    site.ts
+        .state
+        .live_ids
+        .insert(&w.plan.0, "http://localhost:5173");
+    for (who, b) in [("Gus", &gus), ("Ana", &w.ana)] {
+        let (_, v) = site
+            .get(b, "/api/audit?q=lemur&group=changes&limit=1")
+            .await;
+        assert_eq!(v, json!({"events": [], "next_cursor": null}), "{who}");
+    }
+    let (_, v) = site
+        .get(&w.owner, "/api/audit?q=lemur&group=changes&limit=1")
+        .await;
+    assert_eq!(v["events"].as_array().unwrap().len(), 1, "{v}");
+}
+
+#[tokio::test]
+async fn an_audit_views_artifact_is_one_its_viewer_reaches() {
+    let w = BotWorld::new().await;
+    let site = &w.site;
+    // Ana filters by a string that is no artifact ID, and by Mia's
+    // private page, out of her reach: both answer as any unknown ID does.
+    let (s, v) = site
+        .get(&w.ana, "/api/audit?artifact=no%20such%20page")
+        .await;
+    assert_eq!((s, &v["events"]), (200, &json!([])), "{v}");
+    let (s, v) = site
+        .get(&w.ana, &format!("/api/audit?artifact={}", w.private.0))
+        .await;
+    assert_eq!((s, &v["events"]), (200, &json!([])), "{v}");
+    // Ana filters by the page shared with her.
+    let (s, v) = site
+        .get(&w.ana, &format!("/api/audit?artifact={}", w.shared.0))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let st = &site.ts.store;
+    let views: Vec<Option<String>> = st
+        .events_after(0, 10_000)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "view.audit")
+        .map(|e| e.ids.artifact)
+        .collect();
+    assert_eq!(views, [None, None, Some(w.shared.0.clone())]);
+    assert!(
+        !st.artifact_ids_known()
+            .unwrap()
+            .iter()
+            .any(|a| a == "no such page")
+    );
+}
+
+#[tokio::test]
+async fn an_audit_views_search_terms_are_its_viewers_alone() {
+    let w = BotWorld::new().await;
+    let site = &w.site;
+    let (s, v) = site
+        .get(&w.mia, "/api/audit?q=quokkaterms&group=changes")
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let seq = site
+        .ts
+        .store
+        .events_after(0, 10_000)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.kind == "view.audit" && e.body.contains("quokkaterms"))
+        .unwrap()
+        .seq;
+    for (who, b) in [("owner", &w.owner), ("Ana", &w.ana)] {
+        // The view is listed, its filters without the words.
+        let (s, v) = site.get(b, &format!("/api/audit/{seq}")).await;
+        assert_eq!(s, 200, "{who}: {v}");
+        assert_eq!(v["body"]["filters"], json!("group=changes"), "{who}: {v}");
+        assert!(!v.to_string().contains("quokka"), "{who}: {v}");
+        // A search for the words does not find it, nor the other's own.
+        let (_, v) = site.get(b, "/api/audit?q=quokkaterms").await;
+        assert_eq!(v["events"], json!([]), "{who}: {v}");
+    }
+    // Mia reads her own with them, and finds it by them.
+    let (_, v) = site.get(&w.mia, &format!("/api/audit/{seq}")).await;
+    assert_eq!(
+        v["body"]["filters"],
+        json!("q=quokkaterms&group=changes"),
+        "{v}"
+    );
+    let (_, v) = site.get(&w.mia, "/api/audit?q=quokkaterms").await;
+    assert!(
+        v["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["seq"] == json!(seq)),
+        "{v}"
+    );
+}
+
+#[tokio::test]
 async fn claxbot_document_writes_are_announced_at_the_paths_read_level() {
     use clax_bot::BotHost;
     let w = BotWorld::new().await;

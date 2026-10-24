@@ -8657,11 +8657,17 @@ included, sees the artifacts of people who did not share them.
   `not_found`; events naming none stay. They are left out before `q`,
   the other filters, `limit` and the cursor apply, so neither a page's
   length nor its `next_cursor` tells they exist, and `artifact=<id>` of
-  one answers as of an unknown ID. A `view.audit` filtered by
-  `artifact=` names that artifact, and a `view.run` its run's artifact,
-  so a view of a page counts, for an admin, as an event on it; in anyone
-  else's scope a view stays their own (and a run's view the run's
-  person's), not an event of the page's other readers.
+  one answers as of an unknown ID. A live page's events, the owner's
+  alone, are left out the same way for everyone else. A `view.audit`
+  filtered by `artifact=` names that artifact when it is an artifact ID
+  in its viewer's reach (otherwise it names none), and a `view.run` its
+  run's artifact, so a view of a page counts, for an admin, as an event
+  on it; in anyone else's scope a view stays their own (and a run's view
+  the run's person's), not an event of the page's other readers.
+- A `view.audit`'s search words (`q` in its `filters`) are its viewer's
+  alone: to every other reader, admins included, `GET /api/audit/<seq>`
+  shows its `filters` without `q`, the others kept, and a `q` search
+  does not match another's `view.audit` by its body.
 - An admin's Toolpath export (`GET /api/toolpath/export`) leaves out
   every step naming an artifact out of their own reach (the owner's
   export, out of the owner's), and an `artifact` selector naming one is 400

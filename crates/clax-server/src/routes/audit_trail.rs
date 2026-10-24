@@ -15,23 +15,24 @@
 //! events their scope holds ([`clax_store::audit_query`]); agents get 403
 //! `not_for_agents`, anyone else 403 `forbidden`, no credential 401.
 //! Opening or filtering the view is recorded as `view.audit {filters}`, at
-//! most once in five minutes per viewer and filter.
+//! most once in five minutes per viewer and filter; on a hosted daemon its
+//! search words (`q`) are shown to, and searched for, its viewer alone.
 
 use super::artifacts::path;
 use axum::Json;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, RawQuery, State};
-use clax_core::CoreError;
 use clax_core::audit::{AuditKind, KindGroup};
+use clax_core::{ArtifactId, CoreError};
 use clax_http::agent::DeniedToGrants;
 use clax_http::auth::Caller;
-use clax_http::bot::{ACTOR_ID, HANDLE, Names, may_use, record_view, role_of};
+use clax_http::bot::{ACTOR_ID, HANDLE, Names, may_use, person_of, record_view, role_of};
 use clax_http::error::ApiError;
 use clax_http::hosted::MemberRights;
 use clax_http::identity::Identity;
 use clax_http::state::AppState;
 use clax_store::Store;
-use clax_store::audit_query::{ActorFilter, AuditEvent, AuditQuery, AuditReader};
+use clax_store::audit_query::{ActorFilter, AuditEvent, AuditQuery, AuditReader, acted_as};
 use serde_json::{Value, json};
 
 /// Who reads, and as whom: the caller, their reader and, for an admin on
@@ -78,6 +79,22 @@ fn out_of_reach(st: &Store, scope: Option<&MemberRights>, e: &AuditEvent) -> boo
         .into_iter()
         .flatten()
         .any(|a| !m.lists(st, a))
+}
+
+/// Event `e` without its search words (`q` of a `view.audit`'s
+/// `filters`) unless `reader` (a person key) recorded it: they can quote
+/// a page's text, and are their viewer's alone. The other filters stay.
+fn without_others_words(e: &mut AuditEvent, reader: Option<&str>) {
+    if e.kind != AuditKind::ViewAudit.as_str() || reader.is_some_and(|p| acted_as(&e.actor, p)) {
+        return;
+    }
+    let Some(filters) = e.body.get("filters").and_then(Value::as_str) else {
+        return;
+    };
+    let kept = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(url::form_urlencoded::parse(filters.as_bytes()).filter(|(k, _)| k != "q"))
+        .finish();
+    e.body["filters"] = Value::String(kept);
 }
 
 /// A time of a filter.
@@ -201,13 +218,19 @@ pub async fn list(
     let (bot, live, hosted) = (s.bot.clone(), s.live_ids.clone(), s.hosted.is_some());
     let v = s
         .store_call(move |st| {
-            if let Some(m) = &scope {
-                q.within = Some(
-                    st.artifact_ids_known()?
-                        .into_iter()
-                        .filter(|a| m.lists(st, a))
-                        .collect(),
-                );
+            let person = person_of(&caller);
+            if hosted {
+                // Before the words, the limit and the cursor apply: live
+                // pages for all but the owner, pages out of an admin's
+                // reach, and others' search words.
+                let known = st.artifact_ids_known()?;
+                if !caller.is_owner() {
+                    q.hidden = known.iter().filter(|a| live.contains(a)).cloned().collect();
+                }
+                if let Some(m) = &scope {
+                    q.within = Some(known.into_iter().filter(|a| m.lists(st, a)).collect());
+                }
+                q.searcher.clone_from(&person);
             }
             let page = st.query_audit(&reader, &q)?;
             let mut names = Names::new(st);
@@ -217,12 +240,18 @@ pub async fn list(
                 .filter(|e| !hide_live(st, &caller, &live, e))
                 .map(|e| event_view(&mut names, e, false))
                 .collect::<clax_core::Result<Vec<_>>>()?;
-            // On a hosted daemon a view filtered by an artifact names it, so
-            // only admins who reach it read it.
+            // On a hosted daemon a view filtered by an artifact its viewer
+            // reaches names it, so only admins who reach it read it.
             let mut rec =
                 clax_http::bot::view(st, AuditKind::ViewAudit).with("filters", raw.as_str());
-            if hosted {
-                rec.ids.artifact = q.artifact.clone();
+            if hosted && let Some(a) = &q.artifact {
+                let reach = match &scope {
+                    Some(m) => Some(m.clone()),
+                    None => super::bot::scope_of(st, &caller)?,
+                };
+                if ArtifactId::parse(a).is_ok() && reach.is_some_and(|m| m.lists(st, a)) {
+                    rec.ids.artifact = Some(a.clone());
+                }
             }
             record_view(st, &bot, &who, &caller, &raw, rec)?;
             Ok(json!({"events": events, "next_cursor": page.next_cursor}))
@@ -240,14 +269,17 @@ pub async fn get(
     d.refuse_agents()?;
     let (caller, reader, scope) = reader(&s, &d).await?;
     let seq = path(p)?;
-    let live = s.live_ids.clone();
+    let (live, hosted) = (s.live_ids.clone(), s.hosted.is_some());
     let v = s
         .store_call(move |st| {
-            let e = st
+            let mut e = st
                 .audit_event(&reader, seq)?
                 .filter(|e| !hide_live(st, &caller, &live, e))
                 .filter(|e| !out_of_reach(st, scope.as_ref(), e))
                 .ok_or(CoreError::NotFound)?;
+            if hosted {
+                without_others_words(&mut e, person_of(&caller).as_deref());
+            }
             event_view(&mut Names::new(st), &e, true)
         })
         .await?;

@@ -59,6 +59,14 @@ pub struct AuditQuery {
     /// cursor tells the others are there, and an artifact made since the
     /// list was read is left out.
     pub within: Option<Vec<String>>,
+    /// Artifacts whose events are left out, as [`AuditQuery::within`]
+    /// leaves out the rest (a non-owner's on a hosted daemon: the live
+    /// pages, the owner's alone); only `artifact_id` is compared.
+    pub hidden: Vec<String>,
+    /// When set, a `view.audit` recorded by anyone but this person (a
+    /// person key) matches `q` by its kind and actor alone, never by its
+    /// body, whose filters hold its viewer's search words.
+    pub searcher: Option<String>,
 }
 
 pub const DEFAULT_PAGE: u32 = 50;
@@ -181,6 +189,17 @@ fn actor_sql(filter: &ActorFilter, n: usize) -> (String, Option<String>) {
     }
 }
 
+/// Whether `actor` (as stored) is person `person` (a person key), as
+/// [`ActorFilter::Person`] selects it: the person, or their agent.
+pub fn acted_as(actor: &serde_json::Value, person: &str) -> bool {
+    let ty = actor["type"].as_str();
+    if person == super::roles::OWNER {
+        return ty == Some("owner") || (ty == Some("agent") && actor["person"].is_null());
+    }
+    (ty == Some("viewer") && actor["public_id"].as_str() == Some(person))
+        || (ty == Some("agent") && actor["person"].as_str() == Some(person))
+}
+
 /// The kinds `group` holds, as an SQL condition on `kind` (range scans of
 /// `audit_events_kind` for the prefixed groups).
 fn group_sql(group: KindGroup) -> &'static str {
@@ -273,10 +292,27 @@ impl Store {
                  AND (artifact2_id IS NULL OR artifact2_id IN (SELECT value FROM json_each(?{n})))"
             ));
         }
+        if !query.hidden.is_empty() {
+            let ids = serde_json::to_string(&query.hidden).unwrap_or_else(|_| "[]".into());
+            let n = bind(&mut args, Box::new(ids));
+            conds.push(format!(
+                "(artifact_id IS NULL OR artifact_id NOT IN (SELECT value FROM json_each(?{n})))"
+            ));
+        }
         if let Some(q) = query.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
             let n = bind(&mut args, Box::new(like_escape(q)));
+            let body = match &query.searcher {
+                Some(p) => {
+                    let (own, arg) = actor_sql(&ActorFilter::Person(p.clone()), args.len() + 1);
+                    if let Some(arg) = arg {
+                        bind(&mut args, Box::new(arg));
+                    }
+                    format!("(body LIKE ?{n} ESCAPE '\\' AND (kind <> 'view.audit' OR {own}))")
+                }
+                None => format!("body LIKE ?{n} ESCAPE '\\'"),
+            };
             conds.push(format!(
-                "(kind LIKE ?{n} ESCAPE '\\' OR actor LIKE ?{n} ESCAPE '\\' OR body LIKE ?{n} ESCAPE '\\')"
+                "(kind LIKE ?{n} ESCAPE '\\' OR actor LIKE ?{n} ESCAPE '\\' OR {body})"
             ));
         }
         if let Some(a) = &query.actor {
