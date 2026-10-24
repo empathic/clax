@@ -4,6 +4,9 @@ load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load(":ios_rust.bzl", "ios_platform_probe")
 
+# rules_apple's patch (MODULE.bazel).
+exports_files(["rules_apple.patch"])
+
 # Every Mach-O object of an archive built for one platform and minimum OS.
 sh_binary(
     name = "check_build_version",

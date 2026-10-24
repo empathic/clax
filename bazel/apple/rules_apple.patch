@@ -1,0 +1,15 @@
+--- a/MODULE.bazel
++++ b/MODULE.bazel
+@@ -20,6 +20,12 @@
+ bazel_dep(name = "rules_shell", version = "0.6.1")
+ bazel_dep(name = "xctestrunner", version = "0.2.16-20260212-4c6f493")
+ 
++# Every py_binary here lists its own sources and imports its packages
++# (tools.*) as namespace packages, so none needs a generated __init__.py
++# (a patch Clax keeps: bazel/apple/rules_apple.patch).
++rules_python_config = use_extension("@rules_python//python/extensions:config.bzl", "config")
++rules_python_config.explicit_init_py(default = True)
++
+ system_sdk = use_extension("@rules_swift//swift:extensions.bzl", "system_sdk")
+ system_sdk.configure_sdks(
+     # NOTE: This doesn't apply to downstream repos

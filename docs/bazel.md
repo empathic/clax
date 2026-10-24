@@ -352,6 +352,19 @@ AVD's small files (about 32 MB after a run); `--clean` removes it and
   C toolchain compiles for it, and `bazel/apple/ios_rust.bzl` passes it to
   rustc as `IPHONEOS_DEPLOYMENT_TARGET`. The web builds a library for iOS
   embeds are built for the host, as for Android (`bazel/dirs.bzl`).
+- The Rust toolchain (`rules_rust`, patched by `bazel/rules_rust.patch`
+  so that `rust.toolchain`'s `strip_level` reaches the toolchains; without
+  the patch it is dropped). rustc strips in no compilation mode: on Apple
+  targets its strip is `rust-objcopy` run after the link, which can leave
+  the symbol string table 4-byte aligned, and macOS 27's dyld loads no
+  such library (`mis-aligned LINKEDIT string pool`), proc macros
+  included. `-c opt` has no debug information of its own, so the strip
+  would remove only the standard library's debug map (69 KB of the
+  embedded core's 56 MB).
+- `rules_apple`, patched by `bazel/apple/rules_apple.patch` to build its
+  Python tools without generated `__init__.py` files (rules_python's
+  `explicit_init_py`), which rules_python otherwise warns about once per
+  tool on every analysis.
 - The Android SDK's build tools 36.0.0, platform android-36 and platform
   tools (`rules_android`, patched by `bazel/android/rules_android.patch` to
   fetch pinned archives instead of reading `ANDROID_HOME`).

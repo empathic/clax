@@ -1,0 +1,22 @@
+--- a/rust/private/repositories.bzl
++++ b/rust/private/repositories.bzl
+@@ -174,6 +174,10 @@
+     for exec_triple, name in toolchain_triples.items():
+         extra = extra_target_triples.keys() if type(extra_target_triples) == "dict" else extra_target_triples
+         opt_level_by_triple = {t: opt_level for t in depset([exec_triple] + list(extra)).to_list()} if opt_level else None
++
++        # rust_repository_set looks strip_level up by target triple, as
++        # opt_level (a patch Clax keeps: bazel/rules_rust.patch).
++        strip_level_by_triple = {t: strip_level for t in depset([exec_triple] + list(extra)).to_list()} if strip_level else None
+ 
+         maybe(
+             rust_repository_set,
+@@ -188,7 +192,7 @@
+             extra_rustc_flags = extra_rustc_flags,
+             extra_exec_rustc_flags = extra_exec_rustc_flags,
+             opt_level = opt_level_by_triple,
+-            strip_level = strip_level,
++            strip_level = strip_level_by_triple,
+             sha256s = sha256s,
+             urls = urls,
+             versions = versions,

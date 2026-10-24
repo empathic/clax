@@ -1,6 +1,14 @@
 module(name = "clax")
 
 bazel_dep(name = "rules_rust", version = "0.74.0")
+# rust.toolchain's strip_level reaches the toolchains it registers
+# (bazel/rules_rust.patch); without it the setting is dropped silently.
+single_version_override(
+    module_name = "rules_rust",
+    patch_strip = 1,
+    patches = ["//bazel:rules_rust.patch"],
+    version = "0.74.0",
+)
 
 # The same compiler as rust-toolchain.toml, for macOS (Apple silicon and
 # Intel) and Linux (x86-64 and arm64); scripts/bazel-sync.sh --check fails
@@ -52,6 +60,18 @@ rust.toolchain(
     # rustfmt from the same release, so the format check agrees with
     # `cargo fmt`.
     rustfmt_version = "1.94.0",
+    # rustc strips in no compilation mode. On Apple targets its strip is a
+    # pass of rust-objcopy after the link, which leaves the symbol string
+    # table 4-byte aligned where an odd count of indirect symbols precedes
+    # it; macOS 27's dyld loads no such library (`mis-aligned LINKEDIT
+    # string pool`), proc macros included. opt builds have no debug
+    # information of their own (debuginfo=0): what the strip would remove is
+    # the standard library's debug map, 69 KB of the 56 MB embedded core.
+    strip_level = {
+        "dbg": "none",
+        "fastbuild": "none",
+        "opt": "none",
+    },
     versions = ["1.94.0"],
 )
 use_repo(rust, "rust_toolchains")
@@ -194,6 +214,15 @@ register_toolchains("@flutter_toolchains//:all")
 # The Swift package speech_to_text's Apple code needs
 # (bazel/flutter/plugin_overlays/speech_to_text).
 bazel_dep(name = "rules_apple", version = "5.2.0")
+# Its Python tools are built without generated __init__.py files
+# (rules_python's explicit_init_py), which rules_python otherwise warns
+# about once per tool on every analysis (bazel/apple/rules_apple.patch).
+single_version_override(
+    module_name = "rules_apple",
+    patch_strip = 1,
+    patches = ["//bazel/apple:rules_apple.patch"],
+    version = "5.2.0",
+)
 # Apple's platforms (@apple_support//platforms:ios_arm64, :ios_sim_arm64)
 # and the C toolchain that compiles ring's and SQLite's C for iOS at
 # --ios_minimum_os (crates/clax-embed); the version rules_flutter asks for.
