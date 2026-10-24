@@ -8264,9 +8264,9 @@ time (503 `export_busy`), and refuses an unknown or repeated parameter, a
 selector naming nothing, a bad time or an empty range with 400 before any
 output. On a hosted Clax the export leaves out every step that names an
 artifact out of the owner's reach (another person's, unless shared with
-the owner), and a selector naming one names nothing (400
-`unknown_artifact`); steps that name no artifact, such as `person.*`,
-stay.
+the owner; an admin's export, out of their own reach), and a selector
+naming one names nothing (400 `unknown_artifact`); steps that name no
+artifact, such as `person.*`, stay.
 
 - **Selection.** None means the whole install. `--artifact` and `--live`
   choose artifacts (a live page by origin and path); `--by-session` keeps
@@ -8604,17 +8604,17 @@ handle, `*system` as "Clax".
 | Route | Who | Records |
 |---|---|---|
 | `GET /api/me/bot`, `PUT /api/me/bot {use_own}`, `PUT`/`DELETE /api/me/bot/key` | the owner and connected people, their own | `admin.key` (scope `own`) |
-| `GET /api/me/usage?week=` | the same | `view.usage` |
+| `GET /api/me/usage?week=` | the same; on a hosted Clax a run's `artifact_title` is `null` once its artifact is out of the caller's reach (its cost rows stay) | `view.usage` |
 | `GET /api/agents` | as before; ClaxBot is listed first (`handle: "claxbot"`, `builtin: true`, `live`, or `unavailable: no_flag\|no_credits\|not_configured\|model_not_priced`) where the caller may send | — |
 | `POST /api/bot/runs {thread_ids, artifact_id}`; a send or batch with `to: "claxbot"`; `POST /api/artifacts:new` with `build: "claxbot"`; a person's comment on a thread whose last run ended | the sender (a person, or their agent: the run acts for that person); SameOrigin | `bot.run_start`, or `bot.refused` and 403 `no_flag`, `credits_exhausted`, `not_configured` or `model_not_priced` before any model call |
-| `GET /api/bot/runs?artifact=`, `GET /api/bot/runs/<id>`, `GET /api/bot/runs/<id>/events` | the person a run acts for, admins, and anyone who may read its artifact (read-only); a live page's runs the owner's alone | `view.run` |
-| `POST /api/bot/runs/<id>/cancel`, `GET /api/bot/runs/<id>/draft/<path>` | the person it acts for and admins (403 `not_permitted`, a draft 404) | `bot.cancel` |
+| `GET /api/bot/runs?artifact=`, `GET /api/bot/runs/<id>`, `GET /api/bot/runs/<id>/events` | the person a run acts for, admins, and anyone who may read its artifact (read-only); a live page's runs the owner's alone; on a hosted Clax an admin as below | `view.run` |
+| `POST /api/bot/runs/<id>/cancel`, `GET /api/bot/runs/<id>/draft/<path>` | the person it acts for and admins (403 `not_permitted`, a draft 404); on a hosted Clax a draft for an admin only within their reach | `bot.cancel` |
 | `GET /api/admin/people`, `PUT …/<person>/flags`, `…/credits` | admins | `view.admin {page: people}`, `admin.flag`, `admin.credits` |
 | `PUT /api/admin/people/<person>/role {role}` | the owner alone (403 `owner_only`); the owner's own role 400 `owner_role` | `admin.role` |
 | `GET`/`PUT /api/admin/provider`, `PUT`/`DELETE …/key`, `POST …/test`, `GET …/models` | admins | `view.admin {page: provider\|provider.test\|provider.models}`, `admin.provider`, `admin.key` (scope `instance`) |
 | `GET`/`PUT /api/admin/pricing`, `GET /api/admin/usage?week=` | admins | `view.admin {page: pricing\|usage}`, `admin.cost_line` |
-| `GET /api/audit?…`, `GET /api/audit/<seq>` | admins every event, anyone else their scope (Toolpath journal, "Kinds"); a live page's events the owner's alone | `view.audit {filters}` |
-| `GET /api/toolpath/export` | the owner, and admins (live pages refused) | — |
+| `GET /api/audit?…`, `GET /api/audit/<seq>` | admins every event (on a hosted Clax every event but those naming an artifact out of their own reach), anyone else their scope (Toolpath journal, "Kinds"); a live page's events the owner's alone | `view.audit {filters}` |
+| `GET /api/toolpath/export` | the owner, and admins (live pages refused); on a hosted Clax each exports their own reach | — |
 
 Admins are the owner (on a hosted daemon, the `OWNER_GITHUB` account) and
 the people the owner made admins. Agents get 403 `not_for_agents` on every
@@ -8624,6 +8624,36 @@ admin route 403 `forbidden`. A key is write-only: no answer, event or log
 carries it, only `{set, last4, set_at, set_by, last_ok_at}`; without a
 key-encryption key the key routes answer 503 `no_kek`. A view is recorded
 at most once in five minutes per viewer and subject.
+
+On a hosted Clax being an admin is a power over runs, not a window into
+pages (the reach, see "Security model"): no account, the owner's
+included, sees the artifacts of people who did not share them.
+
+- The owner's ClaxBot acts at the owner's reach, as the owner's other
+  agents do: `POST /api/bot/runs` and `GET /api/bot/runs?artifact=` answer
+  404 `not_found` for an artifact out of the owner's reach, as for one
+  that does not exist; a run of the owner's reads and writes its artifact
+  only by the owner's scope (at another person's page, its share with the
+  owner's rights, and its documents at the share's level), and a script's
+  document write is announced at the level it wrote at. A connected
+  person's runs hold to their scope the same way.
+- An admin (the owner, or a person made admin) sees every run by its ID
+  (`GET /api/bot/runs/<id>`) and stops any (`…/cancel`). Of a run whose
+  artifact is out of their own reach (and that does not act for them)
+  they see its status, request, model, key, credits, tokens, who it acts
+  for and its times: `artifact_id`, `thread_ids`, `reason`, `draft` and
+  `last_event_id` are `null` and `steps` is left out, the cancel's
+  answer alike; its events and draft answer 404 `not_found`, and listing
+  its artifact's runs 404 as for anyone out of reach.
+- An admin's audit trail leaves out every event naming an artifact
+  (`artifact_id`, or the second artifact a fork or a cross-read names)
+  out of their own reach, and `GET /api/audit/<seq>` of one is 404
+  `not_found`; events naming none stay. A page can come back with fewer
+  events than its `limit`, still with a `next_cursor`.
+- An admin's Toolpath export (`GET /api/toolpath/export`) leaves out
+  every step naming an artifact out of their own reach (the owner's
+  export, out of the owner's), and an `artifact` selector naming one is 400
+  `unknown_artifact`; steps naming none stay.
 
 On the local daemon `[bot]` in `config.toml` (or a `CLAX_BOT__*` variable)
 is laid over the settings the admin pages store, on every read, the
@@ -8728,11 +8758,13 @@ it starts, the runs a previous process left. A build without the
   events); the questions the caller's agents asked about an artifact out
   of reach (`GET /api/questions`, the summary's `questions`, `GET
   /api/questions/<qid>` and its answers 404, and the `questions` events);
-  `GET /api/agents` (see it); `GET /api/tags`' counts;
+  `GET /api/agents` (see it); `GET /api/tags`' counts; ClaxBot's runs,
+  usage and audit trail (see "ClaxBot routes");
   `GET /api/viewers/me/attention` without `?artifact=`; the
   Toolpath export, which leaves out every step that names an artifact out
   of the owner's reach, a purged one included unless the history shows
-  the owner made it (steps that name none stay), and answers an
+  the owner made it (an admin's, out of their own reach, every purged one
+  included; steps that name none stay), and answers an
   `artifact` selector naming one 400 `unknown_artifact`; `GET /api/drafts`;
   and a cross-app read's grants and consents (`/api/artifacts/<A>/db-grants`,
   `/api/agent-read-consents`), where a source or reader out of reach is 404

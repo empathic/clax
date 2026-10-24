@@ -294,9 +294,9 @@ where
 /// audit event): a connected person's browser whose person the owner made
 /// an admin, refused live pages (`live`, or an `artifact` that is one),
 /// which are the owner's alone. On a hosted daemon it leaves out every
-/// step that names an artifact out of the owner's reach, and an `artifact`
-/// selector naming one is 400 `unknown_artifact`; steps that name no
-/// artifact stay.
+/// step that names an artifact out of the exporter's reach (the owner's,
+/// or an admin's own: spec 2026-10-22 §3), and an `artifact` selector
+/// naming one is 400 `unknown_artifact`; steps that name no artifact stay.
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn export(
     axum::extract::State(s): axum::extract::State<AppState>,
@@ -306,6 +306,14 @@ pub async fn export(
 ) -> Result<axum::response::Response, clax_http::error::ApiError> {
     let owner = admin_reads_history(&s, &d, &who).await?;
     d.refuse_agents()?;
+    // An admin who is not the owner exports their own reach on hosted.
+    let admin = match (owner, s.hosted.is_some()) {
+        (false, true) => match d.caller(&s).await? {
+            clax_http::auth::Caller::Person { viewer } => Some(viewer.public_id),
+            _ => return Err(ApiError::not_found()),
+        },
+        _ => None,
+    };
     let req = export_query(query.as_deref().unwrap_or(""))?;
     if !owner
         && (!req.selection.live_pages.is_empty()
@@ -341,7 +349,10 @@ pub async fn export(
                     let _permit = permit;
                     let mut req = req;
                     if hosted {
-                        req.selection.out_of_reach = out_of_owners_reach(st)?;
+                        req.selection.out_of_reach = match &admin {
+                            None => out_of_owners_reach(st)?,
+                            Some(person) => out_of_persons_reach(st, person)?,
+                        };
                     }
                     let env = project::ExportEnv {
                         render: RenderEnv::export(st.install_id()?, view_base),
@@ -368,6 +379,24 @@ fn out_of_owners_reach(
         .artifacts_made_by_people()?
         .into_iter()
         .filter(|a| !owner.lists(st, a))
+        .collect())
+}
+
+/// The artifacts out of person `person`'s reach on a hosted daemon (a
+/// public ID), as their listings decide it
+/// ([`clax_http::hosted::MemberRights::lists`]): of every artifact the
+/// store or the history names, each their scope does not list, a purged
+/// one included. What an admin's export leaves out.
+#[cfg(not(target_arch = "wasm32"))]
+fn out_of_persons_reach(
+    st: &clax_store::Store,
+    person: &str,
+) -> clax_core::Result<std::collections::BTreeSet<String>> {
+    let scope = clax_http::hosted::MemberRights::of_person(st, person)?;
+    Ok(st
+        .artifact_ids_known()?
+        .into_iter()
+        .filter(|a| !scope.lists(st, a))
         .collect())
 }
 

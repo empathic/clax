@@ -8,7 +8,10 @@
 //!
 //! The host acts as the person a run acts for, with that person's rights:
 //! it reads only what they may read, only on the run's artifact, and only
-//! the run's threads.
+//! the run's threads. On a hosted daemon those rights hold within the
+//! person's reach alone (the owner's included, spec 2026-10-22 §3): an
+//! artifact another person made is reached only through its share with
+//! them.
 
 use crate::routes::bot::reads_artifact;
 use clax_bot::host::{
@@ -86,12 +89,6 @@ pub fn person_caller(st: &Store, person: &str) -> clax_core::Result<Option<Calle
         .map(|viewer| Caller::Person { viewer }))
 }
 
-/// The document caller a run reads (`action` `read`) or writes (`write`)
-/// as: the owner's own run at the owner's level; otherwise its person,
-/// at the `clax-db` level the run's rights ([`Store::bot_rights`]: its
-/// person's, narrowed by the asking agent's grant) give that action at its
-/// artifact (`view` where none does), the owner's agent as the owner's
-/// row.
 /// The guard of a ClaxBot document write of `run`'s, run inside the
 /// instance's transactions around it: whether its person may still write
 /// documents on the run's artifact.
@@ -134,23 +131,52 @@ enum DataRead {
     Page { list: bool },
 }
 
-fn db_caller(st: &Store, run: &Run, action: &str) -> Result<clax_core::db::Caller, HostError> {
+/// The document caller a run reads (`action` `read`) or writes (`write`)
+/// as: the owner's own run at the owner's level; otherwise its person,
+/// at the `clax-db` level the run's rights ([`Store::bot_rights`]: its
+/// person's, narrowed by the asking agent's grant) give that action at its
+/// artifact (`view` where none does), the owner's agent as the owner's
+/// row. On a hosted daemon (`hosted`), at an artifact beyond its person's
+/// reach (another person's, the owner's own run included), the level is
+/// the one the artifact's share with that person gives, never above the
+/// run's rights' (`view` where none does).
+fn db_caller(
+    st: &Store,
+    hosted: bool,
+    run: &Run,
+    action: &str,
+) -> Result<clax_core::db::Caller, HostError> {
+    use clax_core::db::Level;
     use clax_core::visibility::Author;
     let rights = st
         .bot_rights(&run.person, run.agent_grant.as_deref())
         .map_err(|e| host_error(&e))?;
-    let Some(rights) = rights else {
-        return Ok(clax_core::db::Caller::new(
-            clax_core::db::Level::Owner,
-            None,
-        ));
-    };
     let owner = run.person == OWNER;
     let maker = (!owner).then_some(run.person.as_str());
+    let beyond = hosted
+        && st
+            .reach(&run.artifact_id, maker)
+            .map_err(|e| host_error(&e))?
+            != clax_store::reach::Reach::Within;
+    if rights.is_none() && !beyond {
+        return Ok(clax_core::db::Caller::new(Level::Owner, None));
+    }
     let own = |x: &str| st.artifact_created_by(x, maker).unwrap_or(false);
-    let level = rights
-        .db_level(&run.artifact_id, action, &own)
-        .unwrap_or(clax_core::db::Level::View);
+    let granted = rights
+        .as_ref()
+        .map(|r| r.db_level(&run.artifact_id, action, &own));
+    let level = if beyond {
+        let shared = clax_http::hosted::shares_of(st, maker)
+            .map_err(|e| host_error(&e))?
+            .db_level(&run.artifact_id, action, &|_| false);
+        match granted {
+            None => shared,
+            Some(g) => shared.zip(g).map(|(s, g)| s.min(g)),
+        }
+    } else {
+        granted.flatten()
+    }
+    .unwrap_or(Level::View);
     let viewer = if owner {
         st.owner().map_err(|e| host_error(&e))?.map(|v| v.public_id)
     } else {
@@ -218,7 +244,7 @@ impl ServerHost {
         let hosted = self.state.hosted.is_some();
         if !reads_artifact(st, hosted, &caller, &run.artifact_id, live)
             .map_err(|e| host_error(&e))?
-            || !Self::allows(st, run, RightType::Artifacts, "read")?
+            || !self.allows(st, run, RightType::Artifacts, "read")?
         {
             return Err(forbidden(
                 "the person this run acts for may not read its artifact",
@@ -289,7 +315,7 @@ impl ServerHost {
                 .unwrap_or("")
                 .to_string()
         };
-        let dbc = db_caller(st, run, "read")?;
+        let dbc = db_caller(st, self.state.hosted.is_some(), run, "read")?;
         let caps = st.doc_capabilities(&id).map_err(|e| host_error(&e))?;
         match op {
             "artifact.get" => Ok(ReadNow::Done(
@@ -402,14 +428,33 @@ impl ServerHost {
     /// [`Store::bot_rights`] gives, its person's narrowed by the grant of
     /// the agent that asked for it, so a run never exceeds that agent; the
     /// owner's own run every right. An artifact its person made is their
-    /// own.
+    /// own. On a hosted daemon (`hosted`) an artifact must also allow it by
+    /// its person's scope ([`clax_http::hosted::MemberRights::allows_at`],
+    /// the owner's for the owner's run), as the person's own request
+    /// there would be asked.
     fn allows_at(
         st: &Store,
+        hosted: bool,
         run: &Run,
         kind: RightType,
         action: &str,
         at: Option<&str>,
     ) -> Result<bool, HostError> {
+        if let (true, Some(aid)) = (hosted, at) {
+            use clax_http::hosted::MemberRights;
+            let scope = if run.person == OWNER {
+                MemberRights::owner(st)
+            } else {
+                MemberRights::of_person(st, &run.person)
+            }
+            .map_err(|e| host_error(&e))?;
+            if !scope
+                .allows_at(st, (kind, action), aid)
+                .map_err(|e| host_error(&e))?
+            {
+                return Ok(false);
+            }
+        }
         let rights = st
             .bot_rights(&run.person, run.agent_grant.as_deref())
             .map_err(|e| host_error(&e))?;
@@ -422,13 +467,21 @@ impl ServerHost {
     }
 
     /// [`ServerHost::allows_at`] at the run's artifact.
-    fn allows(st: &Store, run: &Run, kind: RightType, action: &str) -> Result<bool, HostError> {
-        Self::allows_at(st, run, kind, action, Some(&run.artifact_id))
+    fn allows(
+        &self,
+        st: &Store,
+        run: &Run,
+        kind: RightType,
+        action: &str,
+    ) -> Result<bool, HostError> {
+        let hosted = self.state.hosted.is_some();
+        Self::allows_at(st, hosted, run, kind, action, Some(&run.artifact_id))
     }
 
-    /// Whether the run may create artifacts.
+    /// Whether the run may create artifacts (its person's own, so no
+    /// artifact's scope applies).
     fn allows_create(st: &Store, run: &Run) -> Result<bool, HostError> {
-        Self::allows_at(st, run, RightType::Artifacts, "create", None)
+        Self::allows_at(st, false, run, RightType::Artifacts, "create", None)
     }
 
     /// That the run's person may still write `kind`'s `action` on its
@@ -441,7 +494,7 @@ impl ServerHost {
         action: &str,
     ) -> Result<(), HostError> {
         self.artifact(st, run)?;
-        if !Self::allows(st, run, kind, action)? {
+        if !self.allows(st, run, kind, action)? {
             return Err(forbidden(format!(
                 "the person this run acts for may not {action} {} here",
                 match kind {
@@ -705,10 +758,11 @@ impl BotHost for ServerHost {
                         };
                         let path = format!("{}/{}", s(0), s(1));
                         let (r, e, i) = (run.clone(), entry.clone(), id.clone());
+                        let hosted = state.hosted.is_some();
                         let begun = state
                             .store
                             .call(move |st| {
-                                let caller = db_caller(st, &r, "write").map_err(|e| {
+                                let caller = db_caller(st, hosted, &r, "write").map_err(|e| {
                                     clax_core::CoreError::invalid("forbidden", e.message)
                                 })?;
                                 let guard = bot_guard(st, &r);

@@ -9,7 +9,9 @@
 //!   `cursor` the page before's `next_cursor`.
 //! - `GET /api/audit/<seq>` → the event with its stored `body`.
 //!
-//! Who may: admins read every event; the owner's connected people the
+//! Who may: admins read every event, on a hosted daemon every event but
+//! those naming an artifact out of their own reach (left out of the list,
+//! 404 by `seq`; spec 2026-10-22 §3); the owner's connected people the
 //! events their scope holds ([`clax_store::audit_query`]); agents get 403
 //! `not_for_agents`, anyone else 403 `forbidden`, no credential 401.
 //! Opening or filtering the view is recorded as `view.audit {filters}`, at
@@ -25,19 +27,35 @@ use clax_http::agent::DeniedToGrants;
 use clax_http::auth::Caller;
 use clax_http::bot::{ACTOR_ID, HANDLE, Names, may_use, record_view, role_of};
 use clax_http::error::ApiError;
+use clax_http::hosted::MemberRights;
 use clax_http::identity::Identity;
 use clax_http::state::AppState;
 use clax_store::Store;
 use clax_store::audit_query::{ActorFilter, AuditEvent, AuditQuery, AuditReader};
 use serde_json::{Value, json};
 
-/// Who reads, and as whom.
-async fn reader(s: &AppState, d: &DeniedToGrants) -> Result<(Caller, AuditReader), ApiError> {
+/// Who reads, and as whom: the caller, their reader and, for an admin on
+/// a hosted daemon, their scope, which events naming an artifact out of
+/// it are left out by ([`out_of_reach`]).
+async fn reader(
+    s: &AppState,
+    d: &DeniedToGrants,
+) -> Result<(Caller, AuditReader, Option<MemberRights>), ApiError> {
     d.refuse_agents()?;
     let caller = d.caller(s).await?;
     let person = may_use(&caller)?;
-    let c = caller.clone();
-    let admin = s.store_call(move |st| role_of(st, &c)).await?.is_admin();
+    let (c, hosted) = (caller.clone(), s.hosted.is_some());
+    let (admin, scope) = s
+        .store_call(move |st| {
+            let admin = role_of(st, &c)?.is_admin();
+            let scope = if admin && hosted {
+                super::bot::scope_of(st, &c)?
+            } else {
+                None
+            };
+            Ok((admin, scope))
+        })
+        .await?;
     Ok((
         caller,
         if admin {
@@ -45,7 +63,21 @@ async fn reader(s: &AppState, d: &DeniedToGrants) -> Result<(Caller, AuditReader
         } else {
             AuditReader::Person(person)
         },
+        scope,
     ))
+}
+
+/// Whether event `e` names an artifact (either of its two) out of
+/// `scope`'s reach, as its listings decide it ([`MemberRights::lists`]);
+/// never without a scope.
+fn out_of_reach(st: &Store, scope: Option<&MemberRights>, e: &AuditEvent) -> bool {
+    let Some(m) = scope else {
+        return false;
+    };
+    [e.ids.artifact.as_deref(), e.ids.artifact2.as_deref()]
+        .into_iter()
+        .flatten()
+        .any(|a| !m.lists(st, a))
 }
 
 /// A time of a filter.
@@ -163,7 +195,7 @@ pub async fn list(
     RawQuery(raw): RawQuery,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
-    let (caller, reader) = reader(&s, &d).await?;
+    let (caller, reader, scope) = reader(&s, &d).await?;
     let raw = raw.unwrap_or_default();
     let q = audit_query(&raw)?;
     let (bot, live) = (s.bot.clone(), s.live_ids.clone());
@@ -175,6 +207,7 @@ pub async fn list(
                 .events
                 .iter()
                 .filter(|e| !hide_live(st, &caller, &live, e))
+                .filter(|e| !out_of_reach(st, scope.as_ref(), e))
                 .map(|e| event_view(&mut names, e, false))
                 .collect::<clax_core::Result<Vec<_>>>()?;
             let rec = clax_http::bot::view(st, AuditKind::ViewAudit).with("filters", raw.as_str());
@@ -192,7 +225,7 @@ pub async fn get(
     p: Result<Path<i64>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
-    let (caller, reader) = reader(&s, &d).await?;
+    let (caller, reader, scope) = reader(&s, &d).await?;
     let seq = path(p)?;
     let live = s.live_ids.clone();
     let v = s
@@ -200,6 +233,7 @@ pub async fn get(
             let e = st
                 .audit_event(&reader, seq)?
                 .filter(|e| !hide_live(st, &caller, &live, e))
+                .filter(|e| !out_of_reach(st, scope.as_ref(), e))
                 .ok_or(CoreError::NotFound)?;
             event_view(&mut Names::new(st), &e, true)
         })

@@ -123,6 +123,21 @@ impl Store {
         })
     }
 
+    /// Every artifact ID the store holds (deleted ones included) or the
+    /// history names (purged ones too), each once.
+    pub fn artifact_ids_known(&self) -> Result<Vec<String>> {
+        self.with_read(|c| {
+            let mut st = c.prepare_cached(
+                "SELECT id FROM artifacts
+                 UNION SELECT artifact_id FROM audit_events WHERE artifact_id IS NOT NULL
+                 UNION SELECT artifact2_id FROM audit_events WHERE artifact2_id IS NOT NULL",
+            )?;
+            Ok(st
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?)
+        })
+    }
+
     /// The rights the shares of viewer `public_id` alone hold (the owner's
     /// public ID included), at live artifacts whose maker is not revoked;
     /// none when it has none. Not the stored rights [`Store::person_rights`]

@@ -7,7 +7,8 @@
 //!   /api/me/bot/key` change their own key and answer the same. A key is
 //!   write-only: no answer carries it.
 //! - `GET /api/me/usage?week=<time>` → their runs and line totals of the
-//!   week the time falls in (this week without it).
+//!   week the time falls in (this week without it); on a hosted daemon a
+//!   run's `artifact_title` only while its artifact is in their reach.
 //! - `POST /api/bot/runs {thread_ids, artifact_id}` → `{run}`: a run of
 //!   threads of an artifact, acting for the caller. Refused before any
 //!   model call with 403 `no_flag`, `credits_exhausted`,
@@ -21,7 +22,10 @@
 //! connected person; agents 403 `not_for_agents`). A run is seen by the
 //! person it acts for, by admins, and by anyone who may read its artifact
 //! (read-only); stopped by the person it acts for and by admins; its draft
-//! read by the person it acts for and by admins. Each view is recorded
+//! read by the person it acts for and by admins. On a hosted daemon an
+//! admin whose own reach does not hold a run's artifact oversees it alone
+//! ([`RunAccess::Overseer`]): its status, cost, person and times, and
+//! stopping it. Each view is recorded
 //! (`view.usage`, `view.run`) at most once in five minutes per viewer and
 //! subject ([`clax_http::bot::ViewLimiter`]).
 
@@ -374,10 +378,11 @@ pub async fn usage(
     let q = q
         .map(|Query(q)| q)
         .map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
-    let bot = s.bot.clone();
+    let (bot, hosted) = (s.bot.clone(), s.hosted.is_some());
     let v = s
         .store_call(move |st| {
             let at = week_at(st, q.week.as_deref()).map_err(api_to_core)?;
+            let scope = if hosted { scope_of(st, &caller)? } else { None };
             let labels = line_labels(st)?;
             let mut totals: BTreeMap<String, clax_store::credits::Totals> = BTreeMap::new();
             let mut runs = Vec::new();
@@ -395,6 +400,11 @@ pub async fn usage(
                 };
                 let title = st
                     .get_artifact(&ArtifactId::parse(&run.artifact_id)?)?
+                    .filter(|_| {
+                        scope
+                            .as_ref()
+                            .is_none_or(|m| m.lists(st, &run.artifact_id))
+                    })
                     .map(|a| a.title);
                 let tokens: i64 = u
                     .lines
@@ -432,6 +442,23 @@ pub async fn usage(
     Ok(Json(v))
 }
 
+/// The hosted scope of `caller`: the owner's, or a connected person's;
+/// `None` for anyone else.
+///
+/// # Errors
+/// The store's.
+pub fn scope_of(
+    st: &Store,
+    caller: &Caller,
+) -> clax_core::Result<Option<clax_http::hosted::MemberRights>> {
+    use clax_http::hosted::MemberRights;
+    Ok(match caller {
+        Caller::Owner { .. } => Some(MemberRights::owner(st)?),
+        Caller::Person { viewer } => Some(MemberRights::of_person(st, &viewer.public_id)?),
+        _ => None,
+    })
+}
+
 /// An [`ApiError`] carried through a store job, as a `CoreError`.
 fn api_to_core(e: ApiError) -> CoreError {
     CoreError::invalid(e.code, e.message)
@@ -446,24 +473,38 @@ fn api_to_core(e: ApiError) -> CoreError {
 pub enum RunAccess {
     /// The person it acts for: may stop it and read its draft.
     Acting,
-    /// An admin: the same.
+    /// An admin who may read its artifact (any admin on a local daemon):
+    /// the same.
     Admin,
+    /// An admin on a hosted daemon whose own reach does not hold its
+    /// artifact: may stop it and see what it cost, who it acts for and
+    /// when, never its artifact, steps, events or draft ([`for_overseer`]).
+    Overseer,
     /// Someone who may read its artifact: may follow it, read-only.
     Reader,
 }
 
 impl RunAccess {
-    /// Whether this access may stop the run and read its draft.
+    /// Whether this access may stop the run.
     pub fn controls(self) -> bool {
+        matches!(
+            self,
+            RunAccess::Acting | RunAccess::Admin | RunAccess::Overseer
+        )
+    }
+
+    /// Whether this access may read the run's draft.
+    pub fn reads_draft(self) -> bool {
         matches!(self, RunAccess::Acting | RunAccess::Admin)
     }
 }
 
 /// Whether `caller` may read artifact `aid` (`live`: a live page, the
-/// owner's alone): the owner always; a connected person by their rights
-/// (on a hosted daemon, or at an artifact shared with them by link, the
-/// link's too); a LAN viewer on the local daemon; a hosted guest while the
-/// page is shared by link.
+/// owner's alone): the owner always on a local daemon, by the owner's
+/// scope on a hosted one ([`clax_http::hosted::MemberRights::owner`]); a
+/// connected person by their rights (on a hosted daemon, or at an artifact
+/// shared with them by link, the link's too); a LAN viewer on the local
+/// daemon; a hosted guest while the page is shared by link.
 ///
 /// # Errors
 /// The store's.
@@ -475,6 +516,11 @@ pub fn reads_artifact(
     live: bool,
 ) -> clax_core::Result<bool> {
     match caller {
+        Caller::Owner { .. } if hosted => clax_http::hosted::MemberRights::owner(st)?.allows_at(
+            st,
+            (clax_core::rights::RightType::Artifacts, "read"),
+            aid,
+        ),
         Caller::Owner { .. } => Ok(true),
         _ if live => Ok(false),
         Caller::Person { viewer } => {
@@ -488,7 +534,9 @@ pub fn reads_artifact(
 }
 
 /// What `caller` may do with `run`, or 404 when they may not see it (a
-/// run is not known to exist to someone who may not).
+/// run is not known to exist to someone who may not). On a hosted daemon
+/// an admin is [`RunAccess::Admin`] only where they read the run's
+/// artifact ([`reads_artifact`]), else [`RunAccess::Overseer`].
 ///
 /// # Errors
 /// As above; the store's.
@@ -503,6 +551,9 @@ pub fn run_access(
         return Ok(RunAccess::Acting);
     }
     if role_of(st, caller)?.is_admin() {
+        if s_hosted && !reads_artifact(st, s_hosted, caller, &run.artifact_id, live)? {
+            return Ok(RunAccess::Overseer);
+        }
         return Ok(RunAccess::Admin);
     }
     if reads_artifact(st, s_hosted, caller, &run.artifact_id, live)? {
@@ -560,6 +611,22 @@ pub fn run_view(st: &Store, run: &Run) -> clax_core::Result<Value> {
     }))
 }
 
+/// What of run view `v` ([`run_view`]) an overseer
+/// ([`RunAccess::Overseer`]) sees: its status, request kind, model, key,
+/// cost, tokens, who it acts for and its times; its artifact, threads,
+/// reason, draft and event position are `null`.
+pub fn for_overseer(v: &mut Value) {
+    for k in [
+        "artifact_id",
+        "thread_ids",
+        "reason",
+        "draft",
+        "last_event_id",
+    ] {
+        v[k] = Value::Null;
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunsQuery {
@@ -570,7 +637,9 @@ pub struct RunsQuery {
 const RUNS_LISTED: u32 = 50;
 
 /// `GET /api/bot/runs?artifact=` (see the module documentation): the
-/// runs on an artifact the caller may read, newest first.
+/// runs on an artifact the caller may read, newest first. An admin lists
+/// any artifact's on a local daemon; on a hosted one only those they read,
+/// as anyone (404 for any other, as for none).
 pub async fn list(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -588,7 +657,7 @@ pub async fn list(
     let v = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            let admin = role_of(st, &caller)?.is_admin();
+            let admin = !hosted && role_of(st, &caller)?.is_admin();
             if !admin && !reads_artifact(st, hosted, &caller, id.as_str(), live)? {
                 return Err(CoreError::NotFound);
             }
@@ -620,11 +689,15 @@ pub async fn get(
             let live = live_ids.contains(&run.artifact_id);
             let access = run_access(st, hosted, live, &caller, &run)?;
             let mut v = run_view(st, &run)?;
-            let mut steps = steps_view(st, &run.id, &steps)?;
-            if access == RunAccess::Reader {
-                steps.iter_mut().for_each(for_reader);
+            if access == RunAccess::Overseer {
+                for_overseer(&mut v);
+            } else {
+                let mut steps = steps_view(st, &run.id, &steps)?;
+                if access == RunAccess::Reader {
+                    steps.iter_mut().for_each(for_reader);
+                }
+                v["steps"] = json!(steps);
             }
-            v["steps"] = json!(steps);
             let rec = clax_http::bot::view(st, AuditKind::ViewRun).with("run", run.id.as_str());
             record_view(st, &bot, &who, &caller, &run.id, rec)?;
             Ok(v)
@@ -1044,7 +1117,8 @@ pub async fn cancel(
         .store_call(move |st| {
             let run = st.run(&rid)?.ok_or(CoreError::NotFound)?;
             let live = live_ids.contains(&run.artifact_id);
-            if !run_access(st, hosted, live, &caller, &run)?.controls() {
+            let access = run_access(st, hosted, live, &caller, &run)?;
+            if !access.controls() {
                 return Err(CoreError::invalid(
                     "not_permitted",
                     "only the person this run acts for, or an admin, stops it",
@@ -1052,7 +1126,11 @@ pub async fn cancel(
             }
             let ctx = audit.resolve(st)?;
             let run = st.cancel_run(&ctx, &run.id)?;
-            run_view(st, &run)
+            let mut v = run_view(st, &run)?;
+            if access == RunAccess::Overseer {
+                for_overseer(&mut v);
+            }
+            Ok(v)
         })
         .await?;
     if let Some(rid) = v["id"].as_str() {
@@ -1067,8 +1145,9 @@ const DRAFT_POLICY: &str = "sandbox allow-scripts allow-forms allow-modals allow
 
 /// `GET /api/bot/runs/<id>/draft/` and `…/draft/<path>`: a run's draft
 /// (its writes over the version it was based on), read-only, for the
-/// person it acts for and admins; served sandboxed, as page content on the
-/// main origin is.
+/// person it acts for and admins who read its artifact
+/// ([`RunAccess::reads_draft`]; 404 for anyone else); served sandboxed,
+/// as page content on the main origin is.
 pub async fn draft_index(
     s: State<AppState>,
     d: DeniedToGrants,
@@ -1101,7 +1180,7 @@ async fn serve_draft(
         .store_call_async(move |st| async move {
             let run = st.run(&rid)?.ok_or(CoreError::NotFound)?;
             let live = live_ids.contains(&run.artifact_id);
-            if !run_access(&st, hosted, live, &caller, &run)?.controls() {
+            if !run_access(&st, hosted, live, &caller, &run)?.reads_draft() {
                 return Err(CoreError::NotFound);
             }
             if let Some(f) = st
@@ -1401,7 +1480,8 @@ pub fn panel_event(
 /// event after it, then the live ones; without, from the run's first.
 /// The stream ends after `run_end`, when the reader falls too far behind
 /// (it reconnects with the last ID it applied), and when the daemon stops.
-/// Who may: as `GET /api/bot/runs/<id>`, and a reader of the artifact
+/// Who may: as `GET /api/bot/runs/<id>`, but never an overseer
+/// ([`RunAccess::Overseer`], 404), and a reader of the artifact
 /// alone sees what [`for_reader`] leaves; access is checked again at
 /// every step's end and every [`RECHECK_EVERY`] of quiet, and the stream
 /// ends once it is gone. Opening it records `view.run` (at most once in
@@ -1427,6 +1507,9 @@ pub async fn events(
             let run = st.run(&r)?.ok_or(CoreError::NotFound)?;
             let live = live_ids.contains(&run.artifact_id);
             let access = run_access(st, hosted, live, &c, &run)?;
+            if access == RunAccess::Overseer {
+                return Err(CoreError::NotFound);
+            }
             let rec = clax_http::bot::view(st, AuditKind::ViewRun).with("run", run.id.as_str());
             record_view(st, &bot, &who, &c, &run.id, rec)?;
             Ok((access, bot.events.subscribe(st, &run.id, after)?))
@@ -1454,7 +1537,7 @@ pub async fn events(
                 return Ok(false);
             };
             let live = live_ids.contains(&run.artifact_id);
-            Ok(run_access(st, hosted, live, &caller, &run).is_ok())
+            Ok(run_access(st, hosted, live, &caller, &run).is_ok_and(|a| a != RunAccess::Overseer))
         })
         .await
         .unwrap_or(false)

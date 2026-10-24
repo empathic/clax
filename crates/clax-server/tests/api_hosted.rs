@@ -8581,3 +8581,421 @@ async fn an_owner_row_grant_reaches_only_the_owners_reach() {
     want.sort();
     assert_eq!(listed(&v), want);
 }
+
+/// ClaxBot on a hosted daemon (spec 2026-10-22 §3, D5): the owner, Ana (a
+/// person the owner made an admin, with a member's own space alone), Mia
+/// with a private page and a page she shared with Ana and with the owner as
+/// a commenter, and the owner's own page; each page with one thread.
+struct BotWorld {
+    site: Site,
+    owner: Browser,
+    ana: Browser,
+    ana_pid: String,
+    mia: Browser,
+    mia_pid: String,
+    /// The ID of Mia's share of her shared page with Ana.
+    anas_share: String,
+    /// (artifact ID, thread ID) of each page.
+    plan: (String, String),
+    private: (String, String),
+    shared: (String, String),
+}
+
+impl BotWorld {
+    async fn new() -> BotWorld {
+        let site = Site::new().await;
+        let owner = site.owner().await;
+        let ana = site.member(&owner, "Ana").await;
+        let ana_pid = site.pid(&ana).await;
+        site.ts
+            .store
+            .set_admin(&clax_core::audit::AuditCtx::DAEMON, &ana_pid, true)
+            .unwrap();
+        let mia = site.person(&owner, "Mia").await;
+        let mia_pid = site.pid(&mia).await;
+        let plan = site.made_by(&owner, "Plan").await;
+        let private = site.made_by(&mia, "Mia's diary").await;
+        let shared = site.made_by(&mia, "Mia's shared notes").await;
+        let owner_pid = site.pid(&owner).await;
+        let mut shares = Vec::new();
+        for who in [&ana_pid, &owner_pid] {
+            let (s, v) = site
+                .put(
+                    &mia,
+                    &format!("/api/hosted/artifacts/{shared}/shares"),
+                    json!({"person": who, "access": "commenter"}),
+                )
+                .await;
+            assert_eq!(s, 200, "{v}");
+            shares.push(v["share"]["id"].as_str().unwrap().to_string());
+        }
+        let mut threads = Vec::new();
+        for (b, aid) in [(&owner, &plan), (&mia, &private), (&mia, &shared)] {
+            let (s, v) = site.thread(b, aid, "Make it blue").await;
+            assert_eq!(s, 201, "{v}");
+            threads.push(v["thread"]["id"].as_str().unwrap().to_string());
+        }
+        let tid = |i: usize| threads[i].clone();
+        BotWorld {
+            plan: (plan, tid(0)),
+            private: (private, tid(1)),
+            shared: (shared, tid(2)),
+            anas_share: shares[0].clone(),
+            site,
+            owner,
+            ana,
+            ana_pid,
+            mia,
+            mia_pid,
+        }
+    }
+
+    /// A run acting for `person` (a person key) on `page`, as a driver
+    /// leaves it after one turn: its step committed with a charge, its
+    /// `bot.turn` event and a draft of `index.html`. Returns its ID.
+    fn run(&self, person: &str, page: &(String, String)) -> String {
+        use clax_store::bot_runs::{
+            DraftChange, DriverId, NewRun, RequestKind, StepCommit, StepKind,
+        };
+        use clax_store::credits::{KeySource, Metered, Unit, token_line};
+        let st = &self.site.ts.store;
+        let model = st
+            .bot_setting(clax_store::bot_settings::Setting::ModelDefault)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string();
+        let run = st
+            .create_run(
+                &clax_core::audit::AuditCtx::DAEMON,
+                NewRun {
+                    artifact_id: page.0.clone(),
+                    person: person.into(),
+                    request: RequestKind::Thread,
+                    thread_ids: vec![page.1.clone()],
+                    model: model.clone(),
+                    key_source: KeySource::Instance,
+                    base_version: 1,
+                    agent_grant: None,
+                },
+            )
+            .unwrap();
+        let driver = DriverId::mint();
+        st.claim_run(&run.id, &driver, 60).unwrap().unwrap();
+        st.begin_step(&run.id, &driver, 1, StepKind::Turn).unwrap();
+        st.commit_bot_step(
+            &clax_bot::run::bot_ctx(person),
+            &run.id,
+            &driver,
+            1,
+            StepCommit {
+                payload: json!({"assistant": [{"type": "text", "text": "The diary says: secret"}]}),
+                usage: vec![Metered::new(
+                    token_line(&model, Unit::MtokInput),
+                    1000,
+                    KeySource::Instance,
+                )],
+                events: vec![clax_store::bot_runs::turn_record(
+                    st.now(),
+                    &model,
+                    KeySource::Instance,
+                    1000,
+                    0,
+                    10,
+                    "tool_use",
+                )],
+                draft: vec![DraftChange::Write {
+                    path: "index.html".into(),
+                    content: b"<p>the draft</p>".to_vec(),
+                    content_type: Some("text/html".into()),
+                }],
+                reason: None,
+            },
+        )
+        .unwrap();
+        st.release_run(&run.id, &driver).unwrap();
+        run.id
+    }
+}
+
+#[tokio::test]
+async fn claxbot_starts_and_lists_the_owners_runs_only_within_the_owners_reach() {
+    let w = BotWorld::new().await;
+    let (site, owner) = (&w.site, &w.owner);
+    let (s, v) = site
+        .put(
+            owner,
+            "/api/admin/provider/key",
+            json!({"key": "sk-ant-api03-FAKEKEYFORTESTS-wxyz"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    // Mia's private page is not there for the owner's ClaxBot: no run on
+    // it, no listing of its runs.
+    let (s, v) = site
+        .post(
+            owner,
+            "/api/bot/runs",
+            json!({"thread_ids": [w.private.1], "artifact_id": w.private.0}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    w.run(&w.mia_pid, &w.private);
+    let (s, v) = site
+        .get(owner, &format!("/api/bot/runs?artifact={}", w.private.0))
+        .await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    // Her page shared with the owner, and the owner's own, are.
+    for page in [&w.shared, &w.plan] {
+        let (s, v) = site
+            .post(
+                owner,
+                "/api/bot/runs",
+                json!({"thread_ids": [page.1], "artifact_id": page.0}),
+            )
+            .await;
+        assert_eq!(s, 201, "{}: {v}", page.0);
+        let (s, v) = site
+            .get(owner, &format!("/api/bot/runs?artifact={}", page.0))
+            .await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v["runs"].as_array().unwrap().len(), 1, "{v}");
+    }
+}
+
+#[tokio::test]
+async fn claxbot_runs_of_the_owner_act_at_the_owners_reach_alone() {
+    use clax_bot::BotHost;
+    let w = BotWorld::new().await;
+    let st = &w.site.ts.store;
+    let host = clax_server::bot::ServerHost::new(w.site.ts.state.clone());
+    let audit = clax_bot::run::bot_ctx(clax_store::roles::OWNER);
+    let code = |r: Result<clax_bot::host::WritePlan<'_>, clax_bot_sandbox::HostError>| match r {
+        Ok(_) => "planned".to_string(),
+        Err(e) => e.code,
+    };
+    let draft = || clax_bot::host::PublishDraft {
+        files: vec![clax_bot::host::PublishFile {
+            path: "index.html".into(),
+            content: b"<p>blue</p>".to_vec(),
+            content_type: "text/html".into(),
+        }],
+        if_version: 1,
+        note: None,
+        addresses: vec![],
+    };
+    let set = [json!("notes"), json!("a"), json!({"x": 1}), json!({})];
+    // A run of the owner's on Mia's private page (made before it left
+    // the owner's reach, or by hand) reads and writes nothing of it.
+    let rid = w.run(clax_store::roles::OWNER, &w.private);
+    let run = st.run(&rid).unwrap().unwrap();
+    let cx = clax_bot::OpCtx::new(&run, &audit, 900_000, 1, 0);
+    let Err(e) = host.context(&run).await else {
+        panic!("the owner's run read Mia's private page");
+    };
+    assert_eq!(e.code, "forbidden", "{}", e.message);
+    let e = host.read(&cx, "artifact.get", &[]).await.unwrap_err();
+    assert_eq!(e.code, "forbidden", "{}", e.message);
+    assert_eq!(
+        code(host.plan_reply(&cx, &w.private.1, "hi").await),
+        "forbidden"
+    );
+    assert_eq!(code(host.plan_publish(&cx, draft()).await), "forbidden");
+    assert_eq!(
+        code(host.plan_write(&cx, "db.set", &set).await),
+        "forbidden"
+    );
+    // On her page shared with the owner as a commenter: it reads and
+    // replies, as the share lets the owner, and publishes nothing.
+    let rid = w.run(clax_store::roles::OWNER, &w.shared);
+    let run = st.run(&rid).unwrap().unwrap();
+    let cx = clax_bot::OpCtx::new(&run, &audit, 900_000, 1, 0);
+    let ctx = host.context(&run).await.unwrap();
+    assert_eq!(ctx.artifact.title, "Mia's shared notes");
+    assert_eq!(
+        code(host.plan_reply(&cx, &w.shared.1, "hi").await),
+        "planned"
+    );
+    assert_eq!(code(host.plan_publish(&cx, draft()).await), "forbidden");
+    // On the owner's own page, every right.
+    let rid = w.run(clax_store::roles::OWNER, &w.plan);
+    let run = st.run(&rid).unwrap().unwrap();
+    let cx = clax_bot::OpCtx::new(&run, &audit, 900_000, 1, 0);
+    assert!(host.context(&run).await.is_ok());
+    assert_eq!(code(host.plan_publish(&cx, draft()).await), "planned");
+    assert_eq!(code(host.plan_reply(&cx, &w.plan.1, "hi").await), "planned");
+}
+
+#[tokio::test]
+async fn claxbot_admins_oversee_runs_out_of_their_reach_without_seeing_the_page() {
+    let w = BotWorld::new().await;
+    let site = &w.site;
+    let private = w.run(&w.mia_pid, &w.private);
+    let shared = w.run(&w.mia_pid, &w.shared);
+    for (who, b) in [("owner", &w.owner), ("Ana", &w.ana)] {
+        // Mia's private page's run: its status, cost, person and times,
+        // never its page, steps, events or draft.
+        let (s, v) = site.get(b, &format!("/api/bot/runs/{private}")).await;
+        assert_eq!(s, 200, "{who}: {v}");
+        assert_eq!(v["status"], "running", "{who}: {v}");
+        assert!(v["credits_milli"].as_i64().unwrap() > 0, "{who}: {v}");
+        assert_eq!(v["acting_for"]["id"], json!(w.mia_pid), "{who}: {v}");
+        assert!(v["started_at"].is_string(), "{who}: {v}");
+        assert!(v.get("steps").is_none(), "{who}: {v}");
+        for k in ["artifact_id", "thread_ids", "draft", "last_event_id"] {
+            assert!(v[k].is_null(), "{who}: {k}: {v}");
+        }
+        assert!(!v.to_string().contains(&w.private.0), "{who}: {v}");
+        assert!(!v.to_string().contains("secret"), "{who}: {v}");
+        for p in [
+            format!("/api/bot/runs/{private}/events"),
+            format!("/api/bot/runs/{private}/draft/"),
+            format!("/api/bot/runs/{private}/draft/index.html"),
+        ] {
+            let (s, v) = site.get(b, &p).await;
+            assert_eq!((s, code(&v)), (404, "not_found"), "{who}: {p}: {v}");
+        }
+        // Its page lists none of its runs.
+        let (s, v) = site
+            .get(b, &format!("/api/bot/runs?artifact={}", w.private.0))
+            .await;
+        assert_eq!((s, code(&v)), (404, "not_found"), "{who}: {v}");
+        // The page shared with them: the run whole, its draft too.
+        let (s, v) = site.get(b, &format!("/api/bot/runs/{shared}")).await;
+        assert_eq!(s, 200, "{who}: {v}");
+        assert_eq!(v["artifact_id"], json!(w.shared.0), "{who}: {v}");
+        assert_eq!(v["steps"].as_array().unwrap().len(), 1, "{who}: {v}");
+        let r = site
+            .req(
+                b,
+                reqwest::Method::GET,
+                &format!("/api/bot/runs/{shared}/draft/index.html"),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200, "{who}");
+        assert_eq!(r.text().await.unwrap(), "<p>the draft</p>", "{who}");
+        let (s, v) = site
+            .get(b, &format!("/api/bot/runs?artifact={}", w.shared.0))
+            .await;
+        assert_eq!(s, 200, "{who}: {v}");
+        assert_eq!(v["runs"][0]["id"], json!(shared), "{who}: {v}");
+    }
+    // An admin stops a run they may not see into, and learns no more.
+    let (s, v) = site
+        .post(
+            &w.ana,
+            &format!("/api/bot/runs/{private}/cancel"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert!(v["run"]["artifact_id"].is_null(), "{v}");
+    assert_ne!(v["run"]["status"], "running", "{v}");
+}
+
+#[tokio::test]
+async fn claxbot_usage_names_only_the_pages_still_in_the_callers_reach() {
+    let w = BotWorld::new().await;
+    let site = &w.site;
+    w.run(&w.ana_pid, &w.shared);
+    let title = |v: &Value| v["runs"][0]["artifact_title"].clone();
+    let (s, v) = site.get(&w.ana, "/api/me/usage").await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(title(&v), json!("Mia's shared notes"), "{v}");
+    // Mia stops sharing it: Ana's usage keeps the run and its cost, not
+    // its page's title.
+    let (s, v) = site
+        .send(
+            &w.mia,
+            reqwest::Method::DELETE,
+            &format!(
+                "/api/hosted/artifacts/{}/shares/{}",
+                w.shared.0, w.anas_share
+            ),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site.get(&w.ana, "/api/me/usage").await;
+    assert_eq!(s, 200, "{v}");
+    assert!(title(&v).is_null(), "{v}");
+    assert!(v["runs"][0]["credits_milli"].as_i64().unwrap() > 0, "{v}");
+    assert!(!v.to_string().contains("Mia's shared notes"), "{v}");
+}
+
+#[tokio::test]
+async fn claxbot_admins_audit_trail_and_export_hold_their_own_reach() {
+    let w = BotWorld::new().await;
+    let site = &w.site;
+    w.run(&w.mia_pid, &w.private);
+    w.run(&w.mia_pid, &w.shared);
+    let seqs = |v: &Value, aid: &str| -> Vec<i64> {
+        v["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["artifact_id"] == json!(aid))
+            .map(|e| e["seq"].as_i64().unwrap())
+            .collect()
+    };
+    let all = site.ts.store.events_after(0, 10_000).unwrap();
+    let on = |aid: &str| -> Vec<i64> {
+        all.iter()
+            .filter(|e| e.ids.artifact.as_deref() == Some(aid))
+            .map(|e| e.seq)
+            .collect()
+    };
+    assert!(!on(&w.private.0).is_empty());
+    for (who, b, plan_in_reach) in [("owner", &w.owner, true), ("Ana", &w.ana, false)] {
+        let (s, v) = site.get(b, "/api/audit?limit=200").await;
+        assert_eq!(s, 200, "{who}: {v}");
+        // Nothing on Mia's private page; her page shared with them, and
+        // what names no page, stay.
+        assert!(seqs(&v, &w.private.0).is_empty(), "{who}: {v}");
+        assert!(!seqs(&v, &w.shared.0).is_empty(), "{who}: {v}");
+        assert_eq!(!seqs(&v, &w.plan.0).is_empty(), plan_in_reach, "{who}: {v}");
+        assert!(
+            v["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["artifact_id"].is_null()),
+            "{who}: {v}"
+        );
+        for seq in on(&w.private.0) {
+            let (s, v) = site.get(b, &format!("/api/audit/{seq}")).await;
+            assert_eq!((s, code(&v)), (404, "not_found"), "{who}: {seq}: {v}");
+        }
+        let seq = on(&w.shared.0)[0];
+        let (s, v) = site.get(b, &format!("/api/audit/{seq}")).await;
+        assert_eq!(s, 200, "{who}: {v}");
+    }
+    // Ana's export is her reach's: Mia's page shared with her, not the
+    // owner's page nor Mia's private one.
+    let r = site
+        .req(
+            &w.ana,
+            reqwest::Method::GET,
+            "/api/toolpath/export?shape=journal",
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body = r.text().await.unwrap();
+    assert!(body.contains(&w.shared.0), "{body}");
+    assert!(!body.contains(&w.private.0), "{body}");
+    assert!(!body.contains(&w.plan.0), "{body}");
+    let r = site
+        .req(
+            &w.ana,
+            reqwest::Method::GET,
+            &format!("/api/toolpath/export?artifact={}", w.plan.0),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+}
