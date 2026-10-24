@@ -4,6 +4,6 @@
 // not have, is a type error.
 import type { Parts } from "./parts/types";
 
-const named = { comment: 0, clip: 0, caps: 0, room: 0, sample: 0, live: 0, test: 0 } satisfies Record<keyof Parts, 0>;
+const named = { comment: 0, clip: 0, caps: 0, origin: 0, room: 0, sample: 0, live: 0, test: 0 } satisfies Record<keyof Parts, 0>;
 
 export const PART_NAMES = Object.keys(named) as (keyof Parts)[];

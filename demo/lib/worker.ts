@@ -72,7 +72,7 @@ export interface RunningWorker {
 }
 
 /** The vars a hosted demo Worker runs with: the public origin
- * `http://localhost:<port>`, artifact content on `http://127.0.0.1:<port>`,
+ * `http://localhost:<port>`, each artifact's site on `<id>.localhost:<port>`,
  * the setup secret, `seats` live people seats, and versions in the RepoDO
  * stand-in served over git smart HTTP. No dev or test routes: the demo's
  * git tokens are people's own (`gitToken`). */
@@ -80,7 +80,7 @@ export function demoVars(port: number, secret: string, seats: string): Record<st
   return {
     HOSTED: "1",
     PUBLIC_ORIGIN: `http://localhost:${port}`,
-    CONTENT_ORIGIN: `http://127.0.0.1:${port}`,
+    SITE_DOMAIN: "localhost",
     SETUP_SECRET: secret,
     CLAX_LIVE_PEOPLE_SEATS: seats,
     REPO_STORE: "memory",

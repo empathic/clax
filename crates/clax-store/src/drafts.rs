@@ -4,7 +4,10 @@
 //!
 //! A draft of an app (`draft_of`) starts with a copy of the app's documents
 //! that the owner reads, private per-viewer subtrees left out, so a page
-//! that writes while it renders writes into the copy only. A draft reads
+//! that writes while it renders writes into the copy only: documents live
+//! in each artifact's own store, so whoever makes the draft copies them
+//! there once it is made (`clax_http::app_data_host::copy_app_docs`, up to
+//! [`DRAFT_DOCS_MAX`] documents and [`DRAFT_DOCS_MAX_BYTES`]). A draft reads
 //! no other app's documents, whatever its app may read
 //! ([`Store::may_read`]): a render's reads reach the agent. Deleting
 //! a draft removes its rows and files for good; [`Store::sweep_drafts`]
@@ -14,7 +17,6 @@ use super::Store;
 use super::artifacts::delete_record;
 use super::docs::caps_in;
 use clax_core::audit::AuditCtx;
-use clax_core::db::{Caller, Level, Op, Rules};
 use clax_core::model::{Artifact, CONTRACT_VERSION, Version};
 use clax_core::publish::ValidatedPublish;
 use clax_core::{ArtifactId, CoreError, Result};
@@ -43,7 +45,9 @@ pub struct DraftRow {
     pub created_at: String,
 }
 
-/// A new draft: its artifact and version 1, and what its document copy took.
+/// A new draft: its artifact and version 1, and what its document copy took
+/// (none from [`Store::create_draft`]: its maker copies them, and says so
+/// here).
 #[derive(Clone, Debug)]
 pub struct NewDraft {
     pub artifact: Artifact,
@@ -97,58 +101,6 @@ pub(crate) fn is_hidden_in(c: &Connection, id: &str) -> Result<bool> {
     )
 }
 
-/// Copies `of`'s documents that the owner reads (private per-viewer
-/// subtrees left out) into `draft`, in path order, each at version 1, until
-/// [`DRAFT_DOCS_MAX`] documents or [`DRAFT_DOCS_MAX_BYTES`] of JSON;
-/// returns how many it copied and whether any were left. When `of`'s rules
-/// do not parse, it copies nothing and says documents were left (when the
-/// app has any).
-fn copy_docs(
-    c: &Connection,
-    of: &ArtifactId,
-    draft: &ArtifactId,
-    now: &str,
-) -> Result<(usize, bool)> {
-    let Ok(rules) = Rules::from_capabilities(&caps_in(c, of)?) else {
-        let any: bool = c.query_row(
-            "SELECT EXISTS(SELECT 1 FROM docs WHERE artifact_id = ?1)",
-            params![of.as_str()],
-            |r| r.get(0),
-        )?;
-        return Ok((0, any));
-    };
-    let owner = Caller::new(Level::Owner, None);
-    let mut read =
-        c.prepare("SELECT path, collection, json FROM docs WHERE artifact_id = ?1 ORDER BY path")?;
-    let mut write = c.prepare(
-        "INSERT INTO docs (artifact_id, path, collection, json, version, updated_at)
-         VALUES (?1, ?2, ?3, ?4, 1, ?5)",
-    )?;
-    let (mut copied, mut bytes) = (0usize, 0usize);
-    let mut rows = read.query(params![of.as_str()])?;
-    while let Some(r) = rows.next()? {
-        let path: String = r.get(0)?;
-        if !rules.allows(&path, Op::Read, &owner) {
-            continue;
-        }
-        let json: String = r.get(2)?;
-        if copied == DRAFT_DOCS_MAX || bytes + json.len() > DRAFT_DOCS_MAX_BYTES {
-            return Ok((copied, true));
-        }
-        let collection: String = r.get(1)?;
-        write.execute(params![draft.as_str(), path, collection, json, now])?;
-        copied += 1;
-        bytes += json.len();
-    }
-    if copied > 0 {
-        c.execute(
-            "UPDATE artifacts SET doc_seq = 1 WHERE id = ?1",
-            params![draft.as_str()],
-        )?;
-    }
-    Ok((copied, false))
-}
-
 impl Store {
     /// Whether `id` is, or was while this store was open, a hidden
     /// artifact (a draft), from memory.
@@ -157,10 +109,10 @@ impl Store {
     }
 
     /// Creates a draft of the app `of` (or of a new app, `None`) from `p`:
-    /// a hidden artifact whose version 1 holds `p`'s files and whose
-    /// documents, in the same transaction, are the copy of `of`'s (see
-    /// [`copy_docs`]). It has no owner session. Recorded under `ctx` as any
-    /// artifact's first version is.
+    /// a hidden artifact whose version 1 holds `p`'s files, with no
+    /// documents yet (its maker copies `of`'s into its own store, see the
+    /// module documentation). It has no owner session. Recorded under `ctx`
+    /// as any artifact's first version is.
     ///
     /// # Errors
     /// `NotFound` when `of` is missing or deleted; `invalid_args` when `of`
@@ -242,10 +194,7 @@ impl Store {
             &p,
             &BTreeMap::new(),
             None,
-            |tx, _| match of {
-                Some(of) => copy_docs(tx, of, &id, &now),
-                None => Ok((0, false)),
-            },
+            |_, _| Ok((0, false)),
         ));
         match written {
             Ok((artifact, version, (docs_copied, docs_truncated))) => Ok(NewDraft {
@@ -509,8 +458,10 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::docs::{BatchOp, BatchWrite, Pin};
+    use crate::app_data::shim::Docs;
+    use crate::docs::Pin;
     use crate::test_util::{DAEMON, artifact_with_caps, session, store};
+    use clax_core::db::{Caller, Level};
     use clax_core::publish::validate;
     use serde_json::{Value, json};
 
@@ -542,20 +493,17 @@ mod tests {
             if_version: None,
             lww: true,
         };
-        st.doc_set(DAEMON, id, path, data, lww, caller).unwrap();
+        Docs::of(st)
+            .doc_set(DAEMON, id, path, data, lww, caller)
+            .unwrap();
     }
 
     #[test]
-    fn a_draft_copies_the_owners_documents_at_version_one_and_stays_unlisted() {
+    fn a_draft_holds_no_documents_of_its_own_and_stays_unlisted() {
         // On the pool and the home's files: it reopens the home.
         let (_d, st) = crate::test_util::pool_store();
         let app = artifact_with_caps(&st, json!({"db": {}}));
         set(&st, &app, "notes/n1", json!({"t": 1}), &OWNER);
-        set(&st, &app, "notes/n1", json!({"t": 2}), &OWNER);
-        set(&st, &app, "runs/r1", json!({}), &OWNER);
-        let me = "u_00000000000000000000aa";
-        let viewer = Caller::new(Level::Interact, Some(me.into()));
-        set(&st, &app, &format!("data/users/{me}/x"), json!({}), &viewer);
 
         let d = st
             .create_draft(
@@ -564,12 +512,17 @@ mod tests {
                 publish("Draft", Some(json!({"db": {}}))),
             )
             .unwrap();
-        assert_eq!((d.docs_copied, d.docs_truncated), (2, false));
+        // Its maker copies the app's documents into its own store.
+        assert_eq!((d.docs_copied, d.docs_truncated), (0, false));
         assert_eq!(d.of.as_deref(), Some(app.as_str()));
         assert_eq!(d.version.n, 1);
         let did = ArtifactId::parse(&d.artifact.id).unwrap();
-        let n1 = st.doc_get(&did, "notes/n1", &OWNER).unwrap().unwrap();
-        assert_eq!((n1.data, n1.version), (json!({"t": 2}), 1));
+        assert!(
+            Docs::of(&st)
+                .doc_get(&did, "notes/n1", &OWNER)
+                .unwrap()
+                .is_none()
+        );
         assert!(st.is_hidden(did.as_str()) && !st.is_hidden(app.as_str()));
         assert!(st.get_artifact(&did).unwrap().is_some(), "a draft renders");
         let listed: Vec<String> = st
@@ -579,24 +532,6 @@ mod tests {
             .map(|a| a.id)
             .collect();
         assert_eq!(listed, vec![app.to_string()]);
-        let next = st
-            .doc_set(
-                DAEMON,
-                &did,
-                "notes/n2",
-                json!({}),
-                Pin {
-                    if_version: None,
-                    lww: true,
-                },
-                &OWNER,
-            )
-            .unwrap();
-        assert_eq!(
-            next.doc.unwrap().version,
-            2,
-            "the sequence starts past the copy"
-        );
         assert_eq!(
             st.list_drafts().unwrap(),
             vec![DraftRow {
@@ -638,31 +573,6 @@ mod tests {
     }
 
     #[test]
-    fn the_copy_stops_at_the_byte_cap() {
-        let (_d, st) = store();
-        let app = artifact_with_caps(&st, json!({"db": {}}));
-        let big = "x".repeat(200 * 1024);
-        let writes: Vec<BatchWrite> = (0..45)
-            .map(|i| BatchWrite {
-                path: format!("blobs/b{i:02}"),
-                op: BatchOp::Set(json!({ "s": big })),
-                if_version: None,
-            })
-            .collect();
-        st.doc_batch(DAEMON, &app, writes, true, &OWNER).unwrap();
-        let d = st
-            .create_draft(
-                DAEMON,
-                Some(&app),
-                publish("Draft", Some(json!({"db": {}}))),
-            )
-            .unwrap();
-        let per = json!({ "s": big }).to_string().len();
-        assert_eq!(d.docs_copied, DRAFT_DOCS_MAX_BYTES / per);
-        assert!(d.docs_truncated);
-    }
-
-    #[test]
     fn delete_removes_every_row_and_the_files_and_spares_apps() {
         // On the pool and the home's files: it reads the draft's directory.
         let (_d, st) = crate::test_util::pool_store();
@@ -688,17 +598,14 @@ mod tests {
         for sql in [
             "SELECT COUNT(*) FROM artifacts WHERE id = ?1",
             "SELECT COUNT(*) FROM versions WHERE artifact_id = ?1",
-            "SELECT COUNT(*) FROM docs WHERE artifact_id = ?1",
         ] {
             assert_eq!(count(&st, sql, did.as_str()), 0, "{sql}");
         }
-        assert_eq!(
-            count(
-                &st,
-                "SELECT COUNT(*) FROM docs WHERE artifact_id = ?1",
-                app.as_str()
-            ),
-            1
+        assert!(
+            Docs::of(&st)
+                .doc_get(&app, "notes/n1", &OWNER)
+                .unwrap()
+                .is_some()
         );
         assert!(!dir.exists());
         assert!(
@@ -743,33 +650,6 @@ mod tests {
             .map(|d| d.id)
             .collect();
         assert_eq!(left, vec![new.artifact.id]);
-    }
-
-    #[test]
-    fn the_copy_takes_nothing_when_the_apps_rules_do_not_parse() {
-        let (_d, st) = store();
-        let app = artifact_with_caps(&st, json!({"db": {}}));
-        set(&st, &app, "notes/n1", json!({}), &OWNER);
-        // A declaration stored before validation knew it, straight to the column.
-        st.with_tx(|tx| {
-            tx.execute(
-                "UPDATE artifacts SET capabilities_json = ?2 WHERE id = ?1",
-                params![
-                    app.as_str(),
-                    json!({"db": {"rules": "everyone"}}).to_string()
-                ],
-            )?;
-            Ok(())
-        })
-        .unwrap();
-        let d = st
-            .create_draft(
-                DAEMON,
-                Some(&app),
-                publish("Draft", Some(json!({"db": {}}))),
-            )
-            .unwrap();
-        assert_eq!((d.docs_copied, d.docs_truncated), (0, true));
     }
 
     #[test]

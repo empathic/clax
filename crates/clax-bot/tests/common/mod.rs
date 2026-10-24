@@ -575,7 +575,7 @@ impl Env {
 
     /// Writes document `path` of the artifact as its owner.
     pub fn set_doc(&self, path: &str, data: Value) {
-        self.store
+        clax_store::app_data::shim::Docs::of(&self.store)
             .doc_set(
                 &AuditCtx::DAEMON,
                 &clax_core::ArtifactId::parse(&self.aid).unwrap(),

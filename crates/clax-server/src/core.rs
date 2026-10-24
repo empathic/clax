@@ -192,6 +192,15 @@ impl Core {
         let mut tasks = background_tasks(&state, cfg.reap_interval);
         tasks.extend(listeners);
         tasks.push(crate::bot::start_driver(&bot_driver));
+        // The artifacts whose documents the instance still holds move to
+        // their own stores now, one at a time, rather than each at its
+        // first call.
+        {
+            let (store, host) = (state.store.clone(), state.app_data.clone());
+            tasks.push(tokio::spawn(async move {
+                clax_http::app_data_host::move_pending(&store, &*host).await;
+            }));
+        }
         let router = crate::router::build_router_with_shutdown(state.clone(), shutdown.clone());
         Ok(Core {
             state,

@@ -309,7 +309,7 @@ async fn draft_copy_stops_at_cap() {
                 if_version: None,
             })
             .collect();
-        ts.store
+        clax_store::app_data::shim::Docs::of(&ts.store)
             .doc_batch(&AuditCtx::DAEMON, &aid, writes, true, &owner)
             .unwrap();
     }

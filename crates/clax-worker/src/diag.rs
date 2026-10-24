@@ -286,7 +286,7 @@ mod wasm {
             "repo_store_parsed": repo_store(env).is_ok(),
             "hosted": var(env, "HOSTED"),
             "public_origin": var(env, "PUBLIC_ORIGIN"),
-            "content_origin": var(env, "CONTENT_ORIGIN"),
+            "retired_content_origin": var(env, "RETIRED_CONTENT_ORIGIN"),
             "git_smart_http": var(env, "GIT_SMART_HTTP"),
             "setup_secret_set": !secret(env, "SETUP_SECRET").is_empty(),
             "bindings": {

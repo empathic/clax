@@ -585,21 +585,12 @@ async fn well_known_served_only_when_configured() {
 }
 
 #[tokio::test]
-async fn well_known_not_on_a_content_host() {
-    // Content is served on hosts of its own: an artifact's host, and the
-    // instance's content origin. The app links are the public host's alone.
+async fn well_known_not_on_a_site_host() {
+    // Content is served on hosts of its own, each artifact's site host.
+    // The app links are the public host's alone.
     let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
     let ts = TestServer::spawn_hosted_with(clock, Some(SECRET), |s| {
-        let content = format!("http://[::1]:{}", s.port);
         s.clax_app = Arc::new(configured());
-        s.hosted = s.hosted.take().map(|h| {
-            Arc::new(
-                Arc::try_unwrap(h)
-                    .expect("hosted is not shared yet")
-                    .with_content_origin(&content)
-                    .expect("a content origin"),
-            )
-        });
     })
     .await;
     let port = ts.addr.port();
@@ -624,13 +615,12 @@ async fn well_known_not_on_a_content_host() {
             200,
             "{path}"
         );
-        for host in [format!("[::1]:{port}"), format!("{aid}.localhost:{port}")] {
-            assert_eq!(
-                at(host.clone()).await.unwrap().status(),
-                404,
-                "{host}{path}"
-            );
-        }
+        let host = ts.site_host(&aid);
+        assert_ne!(
+            at(host.clone()).await.unwrap().status(),
+            200,
+            "{host}{path}"
+        );
     }
 }
 

@@ -1203,6 +1203,51 @@ impl Store {
         })
     }
 
+    /// The first half of a write to an artifact's own store journaled as
+    /// `entry` (ClaxBot's `db.set`, `db.update` and `db.delete`): the
+    /// journal's answer when it holds `entry`'s key (the caller writes
+    /// nothing), else `None` once `guard` passed in a transaction of its
+    /// own. The caller then writes under [`CallEntry::op_id`], which the
+    /// artifact's store keeps with the write, and journals it
+    /// ([`Store::journal_app_write`]). There is no transaction across the
+    /// two stores: a crash between the write and its entry leaves the
+    /// write, and the call made again writes nothing more and journals
+    /// what the write answered.
+    ///
+    /// # Errors
+    /// `key_reused`; a recorded failure; `guard`'s; the store's.
+    pub fn app_write_begin(
+        &self,
+        entry: &CallEntry,
+        guard: Guard<'_>,
+    ) -> Result<Option<Journaled>> {
+        if let Some(prev) = self.journaled(entry)? {
+            return Ok(Some(prev));
+        }
+        self.with_tx(|tx| guard(&Tx(tx)))?;
+        Ok(None)
+    }
+
+    /// The second half of [`Store::app_write_begin`]: journals `value`, the
+    /// answer of the write the artifact's store made under `entry`'s
+    /// operation ID, after `guard` passes again, in one transaction. A
+    /// person who lost the right between the write and this call is refused
+    /// here, and the write stands without its entry.
+    ///
+    /// # Errors
+    /// `guard`'s; the store's.
+    pub fn journal_app_write(
+        &self,
+        entry: &CallEntry,
+        guard: Guard<'_>,
+        value: Value,
+    ) -> Result<Journaled> {
+        self.with_tx(|tx| {
+            guard(&Tx(tx))?;
+            self.journal_in(tx, entry, value)
+        })
+    }
+
     /// The journal's answer for `entry`'s key, when it holds one: what a
     /// journaled write answers without writing.
     ///
@@ -1325,6 +1370,17 @@ impl CallEntry {
     #[must_use]
     pub fn run_id(&self) -> &str {
         &self.run_id
+    }
+
+    /// The operation ID a write to an artifact's own store carries for
+    /// this call ([`Store::app_write_begin`]): its place, the same on every
+    /// attempt of the step, and its op and arguments as the digest.
+    #[must_use]
+    pub fn op_id(&self) -> crate::app_data::OpId {
+        crate::app_data::OpId {
+            id: format!("bot:{}:{}:{}", self.run_id, self.step_n, self.seq),
+            digest: format!("{}:{}", self.op, self.args_hash),
+        }
     }
 
     #[must_use]

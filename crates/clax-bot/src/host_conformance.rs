@@ -130,6 +130,41 @@ impl Cases<'_> {
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<Value, String>>,
     {
+        self.crash_then(run, seq, op, args, state, false).await
+    }
+
+    /// [`Cases::crash_once`] for a write that lands in the artifact's own
+    /// store (a document's), which no instance transaction holds: the write
+    /// may stand after the crash, and then the call made again must answer
+    /// without writing it again, so it is applied exactly once.
+    async fn crash_stands<F, Fut>(
+        &self,
+        run: &Run,
+        seq: i64,
+        op: &str,
+        args: Value,
+        state: F,
+    ) -> Result<(), String>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<Value, String>>,
+    {
+        self.crash_then(run, seq, op, args, state, true).await
+    }
+
+    async fn crash_then<F, Fut>(
+        &self,
+        run: &Run,
+        seq: i64,
+        op: &str,
+        args: Value,
+        state: F,
+        stands: bool,
+    ) -> Result<(), String>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<Value, String>>,
+    {
         let before = state().await?;
         let (step, at) = (STEP, seq);
         self.f
@@ -142,7 +177,8 @@ impl Cases<'_> {
         if crashed.is_ok() {
             return Err(format!("{op}: the injected crash did not fail the write"));
         }
-        if state().await? != before {
+        let crashed = state().await?;
+        if !stands && crashed != before {
             return Err(format!("{op}: the write stood without its journal entry"));
         }
         let first = self
@@ -152,6 +188,11 @@ impl Cases<'_> {
         let after = state().await?;
         if after == before {
             return Err(format!("{op}: the resumed write changed nothing"));
+        }
+        if crashed != before && after != crashed {
+            return Err(format!(
+                "{op}: the write stood after the crash, and the resumed call wrote it again"
+            ));
         }
         let again = self
             .write(run, seq, op, args)
@@ -334,7 +375,7 @@ pub async fn check_host(f: &HostFixture) -> Vec<(&'static str, Result<(), String
                 let c = &c;
                 move || async move { c.read(run, "db.get", json!(["conformance", id])).await }
             };
-            c.crash_once(
+            c.crash_stands(
                 run,
                 21,
                 "db.set",
@@ -344,7 +385,7 @@ pub async fn check_host(f: &HostFixture) -> Vec<(&'static str, Result<(), String
             .await?;
             let version =
                 c.read(run, "db.get", json!(["conformance", "a"])).await?["version"].clone();
-            c.crash_once(
+            c.crash_stands(
                 run,
                 22,
                 "db.update",
@@ -354,7 +395,7 @@ pub async fn check_host(f: &HostFixture) -> Vec<(&'static str, Result<(), String
             .await?;
             let version =
                 c.read(run, "db.get", json!(["conformance", "a"])).await?["version"].clone();
-            c.crash_once(
+            c.crash_stands(
                 run,
                 23,
                 "db.delete",
