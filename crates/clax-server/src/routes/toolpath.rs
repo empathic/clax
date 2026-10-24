@@ -297,6 +297,8 @@ where
 /// step that names an artifact out of the exporter's reach (the owner's,
 /// or an admin's own: spec 2026-10-22 §3), and an `artifact` selector
 /// naming one is 400 `unknown_artifact`; steps that name no artifact stay.
+/// There a `view.audit` anyone but the exporter recorded is exported
+/// without its search words (`q` in its `filters`), whatever `no_text`.
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn export(
     axum::extract::State(s): axum::extract::State<AppState>,
@@ -353,6 +355,12 @@ pub async fn export(
                             None => out_of_owners_reach(st)?,
                             Some(person) => out_of_persons_reach(st, person)?,
                         };
+                        // Others' search words are their own.
+                        req.selection.words_of = Some(
+                            admin
+                                .clone()
+                                .unwrap_or_else(|| clax_store::roles::OWNER.to_string()),
+                        );
                     }
                     let env = project::ExportEnv {
                         render: RenderEnv::export(st.install_id()?, view_base),

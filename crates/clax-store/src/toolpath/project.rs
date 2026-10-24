@@ -65,6 +65,11 @@ pub struct Selection {
     /// naming one is exported, and a selector naming one names nothing in
     /// the history. Not part of the selection's digest.
     pub out_of_reach: BTreeSet<String>,
+    /// When set, the exporting person (a person key, on a hosted daemon):
+    /// a `view.audit` anyone else recorded is exported without its search
+    /// words (`q` in its `filters`), whatever the redaction. Not part of
+    /// the selection's digest.
+    pub words_of: Option<String>,
 }
 
 /// An export's shape (spec §8.1).
@@ -193,6 +198,8 @@ struct Resolved {
     until: Option<DateTime<Utc>>,
     /// [`Selection::out_of_reach`].
     out_of_reach: BTreeSet<String>,
+    /// [`Selection::words_of`].
+    words_of: Option<String>,
     /// The selection as `graph.meta.clax.selection` names it.
     canonical: Value,
 }
@@ -254,6 +261,32 @@ fn row_artifacts(row: &AuditRow) -> impl Iterator<Item = &str> {
 }
 
 impl Resolved {
+    /// `row` as it is exported: a `view.audit` without its search words
+    /// unless [`Resolved::words_of`] recorded it.
+    fn shown(&self, mut row: AuditRow) -> AuditRow {
+        let Some(person) = &self.words_of else {
+            return row;
+        };
+        if row.kind != "view.audit"
+            || serde_json::from_str::<Value>(&row.actor)
+                .is_ok_and(|a| crate::audit_query::acted_as(&a, person))
+        {
+            return row;
+        }
+        if let Ok(Value::Object(mut body)) = serde_json::from_str::<Value>(&row.body)
+            && let Some(filters) = body.get("filters").and_then(Value::as_str)
+        {
+            let kept = url::form_urlencoded::Serializer::new(String::new())
+                .extend_pairs(
+                    url::form_urlencoded::parse(filters.as_bytes()).filter(|(k, _)| k != "q"),
+                )
+                .finish();
+            body.insert("filters".into(), kept.into());
+            row.body = Value::Object(body).to_string();
+        }
+        row
+    }
+
     /// Whether `row` is selected where it is being placed.
     fn admits(&self, row: &AuditRow, place: Place<'_>) -> bool {
         if row_artifacts(row).any(|a| self.out_of_reach.contains(a)) {
@@ -383,6 +416,7 @@ fn resolve(src: &dyn Source, sel: &Selection) -> Result<Resolved> {
         since,
         until,
         out_of_reach: sel.out_of_reach.clone(),
+        words_of: sel.words_of.clone(),
         canonical,
     })
 }
@@ -686,7 +720,7 @@ impl Ctx<'_> {
     fn each(&self, place: Place<'_>, f: &mut dyn FnMut(AuditRow) -> Result<()>) -> Result<()> {
         self.src.rows(Self::scope_of(place), &mut |row| {
             if self.sel.admits(&row, place) {
-                f(row)?;
+                f(self.sel.shown(row))?;
             }
             Ok(true)
         })

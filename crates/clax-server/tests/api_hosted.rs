@@ -9286,6 +9286,49 @@ async fn an_audit_views_search_terms_are_its_viewers_alone() {
 }
 
 #[tokio::test]
+async fn an_admins_export_holds_their_own_search_words_alone() {
+    let w = BotWorld::new().await;
+    let site = &w.site;
+    for (b, words) in [
+        (&w.mia, "quokkaterms"),
+        (&w.owner, "ownerwords"),
+        (&w.ana, "anawords"),
+    ] {
+        let (s, v) = site
+            .get(b, &format!("/api/audit?q={words}&group=changes"))
+            .await;
+        assert_eq!(s, 200, "{v}");
+    }
+    // The owner exports with the token, Ana, an admin, from her browser.
+    let ana = site
+        .req(
+            &w.ana,
+            reqwest::Method::GET,
+            "/api/toolpath/export?shape=journal",
+        )
+        .send()
+        .await
+        .unwrap();
+    let owner = daemon_token_get(site, "/api/toolpath/export?shape=journal")
+        .send()
+        .await
+        .unwrap();
+    for (who, r, own, others) in [
+        ("owner", owner, "ownerwords", ["quokkaterms", "anawords"]),
+        ("Ana", ana, "anawords", ["quokkaterms", "ownerwords"]),
+    ] {
+        assert_eq!(r.status(), 200, "{who}");
+        let body = r.text().await.unwrap();
+        // Every view is there, with the other filters it was given.
+        assert_eq!(body.matches("group=changes").count(), 3, "{who}: {body}");
+        assert!(body.contains(own), "{who}: {body}");
+        for words in others {
+            assert!(!body.contains(words), "{who}: {words}: {body}");
+        }
+    }
+}
+
+#[tokio::test]
 async fn claxbot_document_writes_are_announced_at_the_paths_read_level() {
     use clax_bot::BotHost;
     let w = BotWorld::new().await;

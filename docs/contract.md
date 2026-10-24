@@ -8671,7 +8671,10 @@ included, sees the artifacts of people who did not share them.
 - An admin's Toolpath export (`GET /api/toolpath/export`) leaves out
   every step naming an artifact out of their own reach (the owner's
   export, out of the owner's), and an `artifact` selector naming one is 400
-  `unknown_artifact`; steps naming none stay.
+  `unknown_artifact`; steps naming none stay. Every export on a hosted
+  Clax (the owner's too) gives a `view.audit` that someone other than the
+  exporter recorded without its search words (`q` in its `filters`, the
+  other filters kept), whatever `no_text`.
 
 On the local daemon `[bot]` in `config.toml` (or a `CLAX_BOT__*` variable)
 is laid over the settings the admin pages store, on every read, the
