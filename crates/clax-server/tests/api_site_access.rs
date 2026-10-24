@@ -1643,25 +1643,27 @@ async fn removing_a_person_closes_their_room_socket() {
     stays_open(&mut owners).await;
 }
 
-/// Inviting a person again with narrower rights takes away what their old
-/// rights let them read: their room socket on its site closes.
+/// Narrowing a person's rights takes away what their old rights let them
+/// read: their room socket on its site closes. (On a hosted Clax an invite
+/// makes a new person only; a person's rights change in People.)
 #[tokio::test]
-async fn inviting_a_person_again_with_narrower_rights_closes_their_room_socket() {
+async fn narrowing_a_persons_rights_closes_their_room_socket() {
     let site = Site::new().await;
     let owner = site.owner().await;
     let aid = site.room_artifact("Board").await;
     let (sam, sam_pid) = site.member(&owner, "Sam").await;
-    let invite = |rights: Value| {
+    let rights_at = format!("/api/people/{sam_pid}/rights");
+    let set_rights = |rights: Value| {
         site.send(
             &owner,
-            reqwest::Method::POST,
-            "/api/people/invites",
-            json!({"viewer": sam_pid, "rights": rights}),
+            reqwest::Method::PUT,
+            &rights_at,
+            json!({"rights": rights}),
         )
     };
     let reads = json!({"type": "clax-artifacts", "actions": ["read"], "locations": ["*"]});
-    let (s, v) = invite(json!([reads])).await;
-    assert_eq!(s, 201, "{v}");
+    let (s, v) = set_rights(json!([reads])).await;
+    assert_eq!(s, 200, "{v}");
     let sam_cookie = site.site_cookie(&sam, &aid).await;
     let mut sams = site
         .holder_room(&aid, &sam_cookie, "000000000000000s")
@@ -1670,8 +1672,8 @@ async fn inviting_a_person_again_with_narrower_rights_closes_their_room_socket()
     let mut owners = site
         .holder_room(&aid, &owner_cookie, "000000000000000o")
         .await;
-    let (s, v) = invite(json!([])).await;
-    assert_eq!(s, 201, "{v}");
+    let (s, v) = set_rights(json!([])).await;
+    assert_eq!(s, 200, "{v}");
     let (code, reason) = closed(&mut sams).await;
     assert_eq!((code, reason.as_str()), REVOKED);
     stays_open(&mut owners).await;

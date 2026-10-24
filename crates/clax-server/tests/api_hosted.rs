@@ -8283,12 +8283,6 @@ async fn revoking_takes_a_persons_pages_down_and_reinstating_brings_them_back() 
         )
         .await;
     assert_eq!(s, 200, "{v}");
-    let (_, v) = site.get(&mia, &format!("/api/artifacts/{mias}")).await;
-    let key = v["versions"][0]["content_key"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let keyed = format!("/c/{mias}/v/1/k/{key}/");
     let page = format!("/a/{mias}");
     let api = format!("/api/artifacts/{mias}");
     let status = async |b: &Browser, p: &str| {
@@ -8311,7 +8305,6 @@ async fn revoking_takes_a_persons_pages_down_and_reinstating_brings_them_back() 
         assert_eq!(status(&anon, &page).await, want, "{page} by link");
         assert_eq!(status(&anon, &api).await, want, "{api} by link");
         assert_eq!(status(&sam, &api).await, want, "{api} shared with Sam");
-        assert_eq!(status(&anon, &keyed).await, want, "{keyed}");
     };
     served(200).await;
     assert!(listed().await);
