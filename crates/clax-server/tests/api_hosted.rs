@@ -9498,3 +9498,39 @@ async fn claxbot_document_writes_are_announced_at_the_paths_read_level() {
     };
     assert_eq!(level, clax_core::db::Level::Interact);
 }
+
+#[tokio::test]
+async fn the_owner_forks_another_persons_page_only_once_it_is_shared_with_them() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let owner_pid = site.pid(&owner).await;
+    let (mia, _) = site
+        .person_with(&owner, "Mia", json!("clax:collaborator"))
+        .await;
+    let mias = site.made_by(&mia, "Mia's plan").await;
+    let fork = format!("/api/artifacts/{mias}/fork");
+    // Neither the owner's browser nor the daemon token forks it (or copies
+    // its assets): it is not there for them.
+    let (s, v) = site.post(&owner, &fork, json!({})).await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    let r = site
+        .ts
+        .authed(site.ts.client.post(site.url(&fork)))
+        .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+    // Shared with the owner, it is theirs to fork.
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{mias}/shares"),
+            json!({"person": owner_pid, "access": "viewer"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site.post(&owner, &fork, json!({})).await;
+    assert_eq!(s, 201, "{v}");
+}
