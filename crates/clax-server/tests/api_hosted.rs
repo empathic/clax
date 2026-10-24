@@ -5571,7 +5571,7 @@ async fn device_kind_token_refused_on_others_artifact() {
     let site = Site::new().await;
     let owner = site.owner().await;
     let plan = site.titled("Plan").await;
-    // Sam reads every artifact; Mia only her own.
+    // Sam reads every artifact in his reach; Mia only her own.
     let sam = site.person(&owner, "Sam").await;
     let mia = site.member(&owner, "Mia").await;
     let hers = site.made_by(&mia, "Mia's").await;
@@ -5586,9 +5586,9 @@ async fn device_kind_token_refused_on_others_artifact() {
     let sid = v["share"]["id"].as_str().unwrap().to_string();
     let (sam_t, _) = site.device_token(&sam, Some("clax-app")).await;
     let (mia_t, _) = site.device_token(&mia, Some("clax-app")).await;
-    // Sam reads the owner's Plan and Mia's page but made neither: he is
-    // told he may not share them, as in his browser.
-    for aid in [&plan, &hers] {
+    // Sam reads the owner's Plan but did not make it: he is told he may
+    // not share it, as in his browser.
+    for aid in [&plan] {
         let (s, v) = site
             .bearer(
                 &sam_t,
@@ -5606,10 +5606,14 @@ async fn device_kind_token_refused_on_others_artifact() {
             assert_eq!((s, code(&v)), (403, "forbidden"), "{m} {path}: {v}");
         }
     }
-    // An artifact its person may not read is not there.
-    for (m, path, body) in sharing_routes(&plan, &sid) {
-        let (s, v) = site.bearer(&mia_t, m.clone(), &path, body).await;
-        assert_eq!((s, code(&v)), (404, "not_found"), "{m} {path}: {v}");
+    // An artifact its person may not read is not there: the owner's Plan
+    // for Mia, and for Sam Mia's page, which she shared with no one (out
+    // of his reach).
+    for (t, aid) in [(&mia_t, &plan), (&sam_t, &hers)] {
+        for (m, path, body) in sharing_routes(aid, &sid) {
+            let (s, v) = site.bearer(t, m.clone(), &path, body).await;
+            assert_eq!((s, code(&v)), (404, "not_found"), "{m} {path}: {v}");
+        }
     }
     // Nothing changed.
     assert!(site.ts.store.link_access(&plan).unwrap().is_none());

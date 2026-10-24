@@ -1326,7 +1326,8 @@ async fn a_device_reads_shared_apps_as_its_person() {
     );
     let (s, _, got) = bytes(&sam, &format!("{copy}/versions/1/files/index.html")).await;
     assert_eq!((s, got.as_slice()), (200, &b"<h1>v1</h1>"[..]));
-    // An app of Ada's not shared with Sam: his phone reads none of it.
+    // An app of Ada's not shared with Sam: his phone reads none of it, as
+    // one that is not there (out of his reach).
     let other = app(&ada, "Ada's own", &[("index.html", "<h1>mine</h1>")]).await;
     let (s, v) = publish(&ada, &other, 1).await;
     assert_eq!(s, 200, "{v}");
@@ -1338,7 +1339,7 @@ async fn a_device_reads_shared_apps_as_its_person() {
         format!("{own}/versions/1/files/index.html"),
     ] {
         let (s, v) = get(&sam, &path).await;
-        assert_eq!((s, code(&v)), (403, "not_permitted"), "{path} {v}");
+        assert_eq!((s, code(&v)), (404, "not_found"), "{path} {v}");
     }
     // A plain agent token of Sam's still reads it as an agent channel.
     let laptop = TestServer::spawn().await;

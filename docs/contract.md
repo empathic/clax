@@ -1343,7 +1343,9 @@ app's versions with the bundle each carries.
   whatever the page; any other agent credential (`Bearer cxa_…`, or a
   signed grant) is refused 403 `forbidden`. On a hosted Clax a page the
   visitor may not open, or none, and every refusal but `not_for_agents`
-  are one 404 page with the sign-in link, whichever it was. The web shell
+  are one 404 page with the sign-in link, whichever it was; for the
+  owner's agents too, a page out of the owner's reach, or none, is that
+  404 page. The web shell
   shows Get in Clax on an app's page (in the more menu on a phone).
 - **App links.** `GET /.well-known/apple-app-site-association` and `GET
   /.well-known/assetlinks.json`, on the hosted public host alone and with

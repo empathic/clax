@@ -720,24 +720,21 @@ async fn get_page_on_a_local_daemon_offers_download_alone() {
 #[tokio::test]
 async fn get_page_refuses_the_owners_agent_as_the_contract_says() {
     // docs/contract.md: GET /a/{aid}/get answers the owner's agents 403
-    // not_for_agents, on a hosted Clax as on a local daemon, whether or
-    // not the page exists.
+    // not_for_agents, on a hosted Clax as on a local daemon, whatever the
+    // page; on a hosted Clax one out of the owner's reach, or none, is the
+    // one 404 page first, as for anyone.
     let site = Site::new(configured()).await;
     let owner = site.owner("Ada").await;
     let aid = site.artifact("Tip Calculator").await;
     site.bundle(&owner, &aid, 1).await;
-    for path in [
-        format!("/a/{aid}/get"),
-        format!("/a/{aid}/get/"),
-        format!("/a/{NEVER}/get"),
-    ] {
-        let r = site
-            .ts
+    let agent = |path: String| {
+        site.ts
             .authed(site.req(&Browser::default(), reqwest::Method::GET, &path))
             .header("X-Clax-Session", "s1")
             .send()
-            .await
-            .unwrap();
+    };
+    for path in [format!("/a/{aid}/get"), format!("/a/{aid}/get/")] {
+        let r = agent(path.clone()).await.unwrap();
         let status = r.status().as_u16();
         let body: Value = r.json().await.unwrap();
         assert_eq!(
@@ -746,6 +743,9 @@ async fn get_page_refuses_the_owners_agent_as_the_contract_says() {
             "{path}: {body}"
         );
     }
+    let r = agent(format!("/a/{NEVER}/get")).await.unwrap();
+    assert_eq!(r.status(), 404);
+    assert!(r.text().await.unwrap().contains("Not found"));
     // The owner by hand, with the token alone, still gets the page.
     let r = site
         .ts
