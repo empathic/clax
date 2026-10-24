@@ -8659,7 +8659,9 @@ included, sees the artifacts of people who did not share them.
   length nor its `next_cursor` tells they exist, and `artifact=<id>` of
   one answers as of an unknown ID. A `view.audit` filtered by
   `artifact=` names that artifact, and a `view.run` its run's artifact,
-  so a view of a page counts as an event on it.
+  so a view of a page counts, for an admin, as an event on it; in anyone
+  else's scope a view stays their own (and a run's view the run's
+  person's), not an event of the page's other readers.
 - An admin's Toolpath export (`GET /api/toolpath/export`) leaves out
   every step naming an artifact out of their own reach (the owner's
   export, out of the owner's), and an `artifact` selector naming one is 400

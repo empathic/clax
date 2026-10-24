@@ -52,11 +52,13 @@ pub struct AuditQuery {
     pub cursor: Option<i64>,
     /// At most this many (1 to [`MAX_PAGE`]; 0 is [`DEFAULT_PAGE`]).
     pub limit: u32,
-    /// Artifacts whose events are left out whatever else is asked (an
-    /// admin's on a hosted daemon: those out of their reach), before the
-    /// words, the page's limit and its cursor apply, so neither a page's
-    /// length nor its cursor tells they are there.
-    pub exclude: Vec<String>,
+    /// When set, the only artifacts whose events are kept, whatever else
+    /// is asked (an admin's on a hosted daemon: those in their reach);
+    /// events naming no artifact stay. Applied before the words, the
+    /// page's limit and its cursor, so neither a page's length nor its
+    /// cursor tells the others are there, and an artifact made since the
+    /// list was read is left out.
+    pub within: Option<Vec<String>>,
 }
 
 pub const DEFAULT_PAGE: u32 = 50;
@@ -113,6 +115,9 @@ fn like_escape(s: &str) -> String {
 /// (as themselves, through their agent, or through ClaxBot acting for
 /// them), it is on an artifact they created, it belongs to a run acting
 /// for them, or it is on an artifact shared with them while the share held.
+/// A view (`view.audit`, `view.run`) names its artifact for an admin's
+/// reach alone: what someone else looked at is not an event of the
+/// artifact's other readers.
 ///
 /// A share's period is read from the trail itself: from an
 /// `artifact.update` setting a share naming the person to the next one
@@ -142,16 +147,17 @@ fn scope_sql(n: usize) -> String {
         "((json_extract(e.actor, '$.type') = 'viewer' AND json_extract(e.actor, '$.public_id') = ?{n})
           OR (json_extract(e.actor, '$.type') = 'agent' AND json_extract(e.actor, '$.person') = ?{n})
           OR (json_extract(e.actor, '$.type') = 'bot' AND json_extract(e.actor, '$.on_behalf_of') = ?{n})
-          OR e.artifact_id IN (SELECT id FROM artifacts WHERE person = ?{n})
-          OR e.artifact2_id IN (SELECT id FROM artifacts WHERE person = ?{n})
           OR json_extract(e.body, '$.run') IN (SELECT id FROM bot_runs WHERE person = ?{n})
-          OR (e.artifact_id IS NOT NULL AND ({shared_by_trail}
+          OR (e.kind NOT IN ('view.audit', 'view.run') AND (
+             e.artifact_id IN (SELECT id FROM artifacts WHERE person = ?{n})
+             OR e.artifact2_id IN (SELECT id FROM artifacts WHERE person = ?{n})
+             OR (e.artifact_id IS NOT NULL AND ({shared_by_trail}
               OR EXISTS (SELECT 1 FROM artifact_shares sh JOIN viewers v ON v.id = sh.viewer_id
                  WHERE sh.artifact_id = e.artifact_id AND v.public_id = ?{n}
                    AND sh.created_at <= e.at
                    AND NOT EXISTS (SELECT 1 FROM audit_events r
                      WHERE r.kind = 'person.revoke' AND r.seq <= e.seq AND r.at >= sh.created_at
-                       AND json_extract(r.body, '$.person') = ?{n})))))"
+                       AND json_extract(r.body, '$.person') = ?{n})))))))"
     )
 }
 
@@ -259,12 +265,12 @@ impl Store {
             let n = bind(&mut args, Box::new(p.clone()));
             conds.push(scope_sql(n));
         }
-        if !query.exclude.is_empty() {
-            let ids = serde_json::to_string(&query.exclude).unwrap_or_else(|_| "[]".into());
+        if let Some(within) = &query.within {
+            let ids = serde_json::to_string(within).unwrap_or_else(|_| "[]".into());
             let n = bind(&mut args, Box::new(ids));
             conds.push(format!(
-                "(artifact_id IS NULL OR artifact_id NOT IN (SELECT value FROM json_each(?{n})))
-                 AND (artifact2_id IS NULL OR artifact2_id NOT IN (SELECT value FROM json_each(?{n})))"
+                "(artifact_id IS NULL OR artifact_id IN (SELECT value FROM json_each(?{n})))
+                 AND (artifact2_id IS NULL OR artifact2_id IN (SELECT value FROM json_each(?{n})))"
             ));
         }
         if let Some(q) = query.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
@@ -670,7 +676,7 @@ mod tests {
         let ana = person(&st, "Ana", 2);
         let aid = artifact(&st, None).to_string();
         let on = |what: &str| {
-            let mut rec = AuditRecord::new(AuditKind::ViewRun, st.now()).with("run", what);
+            let mut rec = AuditRecord::new(AuditKind::BotCancel, st.now()).with("run", what);
             rec.ids.artifact = Some(aid.clone());
             st.record_event(DAEMON, rec).unwrap()
         };
@@ -719,7 +725,7 @@ mod tests {
         let aid = artifact(&st, None).to_string();
         let on = |what: &str| {
             clock.advance(1);
-            let mut rec = AuditRecord::new(AuditKind::ViewRun, st.now()).with("run", what);
+            let mut rec = AuditRecord::new(AuditKind::BotCancel, st.now()).with("run", what);
             rec.ids.artifact = Some(aid.clone());
             st.record_event(DAEMON, rec).unwrap()
         };

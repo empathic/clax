@@ -9115,6 +9115,53 @@ async fn claxbot_views_of_a_page_out_of_reach_are_not_in_an_admins_audit() {
 }
 
 #[tokio::test]
+async fn claxbot_views_of_a_page_stay_their_viewers_in_its_readers_audit() {
+    let w = BotWorld::new().await;
+    let site = &w.site;
+    let rid = w.run(&w.ana_pid, &w.shared);
+    // Ana searches the audit trail of the page Mia shared with her, and
+    // opens her own run on it.
+    let (s, v) = site
+        .get(
+            &w.ana,
+            &format!("/api/audit?artifact={}&q=anasterms", w.shared.0),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site.get(&w.ana, &format!("/api/bot/runs/{rid}")).await;
+    assert_eq!(s, 200, "{v}");
+    let all = site.ts.store.events_after(0, 10_000).unwrap();
+    let views: Vec<i64> = all
+        .iter()
+        .filter(|e| {
+            (e.kind == "view.audit" && e.body.contains("anasterms"))
+                || (e.kind == "view.run" && e.body.contains(&rid))
+        })
+        .map(|e| e.seq)
+        .collect();
+    assert_eq!(views.len(), 2, "{all:?}");
+    // Mia, who made the page, reads its events but not what Ana looked at.
+    let (_, v) = site.get(&w.mia, "/api/audit?limit=200").await;
+    for seq in &views {
+        assert!(
+            !v["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["seq"] == json!(seq)),
+            "{seq}: {v}"
+        );
+        let (s, v) = site.get(&w.mia, &format!("/api/audit/{seq}")).await;
+        assert_eq!((s, code(&v)), (404, "not_found"), "{seq}: {v}");
+    }
+    // Ana reads her own.
+    for seq in &views {
+        let (s, v) = site.get(&w.ana, &format!("/api/audit/{seq}")).await;
+        assert_eq!(s, 200, "{seq}: {v}");
+    }
+}
+
+#[tokio::test]
 async fn claxbot_document_writes_are_announced_at_the_paths_read_level() {
     use clax_bot::BotHost;
     let w = BotWorld::new().await;

@@ -720,7 +720,11 @@ pub async fn get(
                 v["steps"] = json!(steps);
             }
             let mut rec = clax_http::bot::view(st, AuditKind::ViewRun).with("run", run.id.as_str());
-            rec.ids.artifact = Some(run.artifact_id.clone());
+            // On a hosted daemon the view names its run's artifact, so only
+            // admins who reach it read it.
+            if hosted {
+                rec.ids.artifact = Some(run.artifact_id.clone());
+            }
             record_view(st, &bot, &who, &caller, &run.id, rec)?;
             Ok(v)
         })
@@ -1533,7 +1537,9 @@ pub async fn events(
                 return Err(CoreError::NotFound);
             }
             let mut rec = clax_http::bot::view(st, AuditKind::ViewRun).with("run", run.id.as_str());
-            rec.ids.artifact = Some(run.artifact_id.clone());
+            if hosted {
+                rec.ids.artifact = Some(run.artifact_id.clone());
+            }
             record_view(st, &bot, &who, &c, &run.id, rec)?;
             Ok((access, bot.events.subscribe(st, &run.id, after)?))
         })

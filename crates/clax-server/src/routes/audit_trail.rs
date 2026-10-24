@@ -198,15 +198,16 @@ pub async fn list(
     let (caller, reader, scope) = reader(&s, &d).await?;
     let raw = raw.unwrap_or_default();
     let mut q = audit_query(&raw)?;
-    let (bot, live) = (s.bot.clone(), s.live_ids.clone());
+    let (bot, live, hosted) = (s.bot.clone(), s.live_ids.clone(), s.hosted.is_some());
     let v = s
         .store_call(move |st| {
             if let Some(m) = &scope {
-                q.exclude = st
-                    .artifact_ids_known()?
-                    .into_iter()
-                    .filter(|a| !m.lists(st, a))
-                    .collect();
+                q.within = Some(
+                    st.artifact_ids_known()?
+                        .into_iter()
+                        .filter(|a| m.lists(st, a))
+                        .collect(),
+                );
             }
             let page = st.query_audit(&reader, &q)?;
             let mut names = Names::new(st);
@@ -216,11 +217,13 @@ pub async fn list(
                 .filter(|e| !hide_live(st, &caller, &live, e))
                 .map(|e| event_view(&mut names, e, false))
                 .collect::<clax_core::Result<Vec<_>>>()?;
-            // A view filtered by an artifact is an event on it, which only
-            // those who reach it read.
+            // On a hosted daemon a view filtered by an artifact names it, so
+            // only admins who reach it read it.
             let mut rec =
                 clax_http::bot::view(st, AuditKind::ViewAudit).with("filters", raw.as_str());
-            rec.ids.artifact = q.artifact.clone();
+            if hosted {
+                rec.ids.artifact = q.artifact.clone();
+            }
             record_view(st, &bot, &who, &caller, &raw, rec)?;
             Ok(json!({"events": events, "next_cursor": page.next_cursor}))
         })
