@@ -375,10 +375,10 @@ async fn docs_tag(s: &AppState, aid: &ArtifactId, caller: &SiteCaller) -> Option
         .app_data_call(aid, clax_store::app_data::AppDataOp::Seq, |r| r?.into_seq())
         .await
         .ok()?;
-    let (caller, aid) = (caller.clone(), aid.clone());
+    let (caller, aid, hosted) = (caller.clone(), aid.clone(), s.hosted.is_some());
     let who = s
         .store_call(move |st| {
-            let c = clax_http::db_caller::site_caller(st, &caller)?;
+            let c = clax_http::db_caller::site_caller_at(st, hosted, &caller, aid.as_str())?;
             let caps = st.doc_capabilities(&aid)?;
             Ok(format!(
                 "{}\n{}\n{caps}",
@@ -413,11 +413,11 @@ fn method_not_allowed() -> ApiError {
 
 /// The identity a site caller's request carries to the public host's
 /// routes: the holder's browser session as the hosted gate would find it
-/// (with a person's rights), its `Origin` checked; a link viewer and a
-/// visitor have none.
+/// (with a person's scope, and on a hosted daemon the owner's), its
+/// `Origin` checked; a link viewer and a visitor have none.
 async fn holder_request(s: &AppState, caller: &SiteCaller) -> Result<HostedRequest, ApiError> {
-    let caller = caller.clone();
-    s.store_call(move |st| site_hosted_request(st, &caller))
+    let (caller, hosted) = (caller.clone(), s.hosted.is_some());
+    s.store_call(move |st| site_hosted_request(st, hosted, &caller))
         .await
 }
 
@@ -428,16 +428,23 @@ async fn holder_request(s: &AppState, caller: &SiteCaller) -> Result<HostedReque
 /// The store's.
 pub(crate) fn site_hosted_request(
     st: &clax_store::Store,
+    hosted: bool,
     caller: &SiteCaller,
 ) -> clax_core::Result<HostedRequest> {
     let (session, member) = match caller {
+        // On a hosted daemon the owner is held to their reach, as the gate
+        // holds the owner's browser.
         SiteCaller::Holder(Holder::Owner) => (
             Some(SessionViewer {
                 viewer: st.owner_viewer(true)?,
                 owner: true,
                 guest: false,
             }),
-            None,
+            if hosted {
+                Some(MemberRights::owner(st)?)
+            } else {
+                None
+            },
         ),
         SiteCaller::Holder(Holder::Person(pid)) => match st.viewer_by_public_id(pid)? {
             Some(viewer) => (
@@ -476,19 +483,27 @@ pub(crate) fn site_hosted_request(
 /// none); `name` the viewer's display name, when they have one; `level` the
 /// caller's `db` level (`public` for a guest, a link viewer and a visitor);
 /// `can_edit` whether they may publish the artifact's versions (the owner,
-/// and a person whose rights `update` it).
+/// on a hosted daemon at an artifact the owner made or one shared with them
+/// to edit, and a person whose rights `update` it).
 async fn whoami(s: &AppState, aid: &ArtifactId, caller: &SiteCaller) -> Result<Response, ApiError> {
-    let (caller, aid) = (caller.clone(), aid.clone());
+    let (caller, aid, hosted) = (caller.clone(), aid.clone(), s.hosted.is_some());
     let v = s
         .store_call(move |st| {
-            let level = clax_http::db_caller::site_caller(st, &caller)?.level;
+            let level =
+                clax_http::db_caller::site_caller_at(st, hosted, &caller, aid.as_str())?.level;
             let viewer = |pid: &str| -> clax_core::Result<Option<String>> {
                 Ok(st.viewer_by_public_id(pid)?.and_then(|v| v.display_name))
             };
             let (kind, id, name, can_edit) = match &caller {
                 SiteCaller::Holder(Holder::Owner) => {
                     let v = st.owner_viewer(true)?;
-                    ("owner", Some(v.public_id), v.display_name, true)
+                    let edits = !hosted
+                        || MemberRights::owner(st)?.allows_at(
+                            st,
+                            (RightType::Artifacts, "update"),
+                            aid.as_str(),
+                        )?;
+                    ("owner", Some(v.public_id), v.display_name, edits)
                 }
                 SiteCaller::Holder(Holder::Person(pid)) => {
                     let m = MemberRights::of_person(st, pid)?;

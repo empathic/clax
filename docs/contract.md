@@ -8929,7 +8929,14 @@ it starts, the runs a previous process left. A build without the
   `Path=/`, for the browser's session), naming a site session of that
   artifact whose holder may read it now: removing a share or the person,
   turning a link off, deleting the artifact or signing out refuses the
-  very next request. Without one, a navigation (a browser's
+  very next request. On a hosted Clax the owner, the owner's browser and
+  the daemon token included, holds a session only of an artifact in their
+  reach (one the owner made, or one shared with them or open by its
+  link): another person's site is not there for them (404 for a code,
+  `/site-signin` sends them to the page, which is 404), and on one shared
+  with them their `db` level and `can_edit` are the share's, never
+  `admin`. A revoked person's sites, a world site among them, are down
+  until they are reinstated. Without one, a navigation (a browser's
   `Sec-Fetch-Mode: navigate` of a document or frame, or a `GET` that
   accepts `text/html` and names no subresource) is sent (302) to the main
   origin's `/site-signin?host=<site host>&next=<path>&state=<state>`, and
@@ -8969,8 +8976,8 @@ it starts, the runs a previous process left. A build without the
   `SameSite=None; Secure; Partitioned` for a frame, else `SameSite=Lax`;
   `next` is a path on that host of at most 2048 bytes (anything else is
   `/`). A session lasts an hour from its last use.
-- A site is private until whoever administers its artifact (the owner, by
-  hand or in their browser, and the page's maker) sends `PATCH
+- A site is private until whoever administers its artifact (the page's
+  maker, and on a local Clax the owner, by hand or in their browser) sends `PATCH
   /api/artifacts/<id> {"site_access": "world"}` (`"private"` closes it;
   anything else is 400 `invalid_argument`; anyone else 403 `admin_only`).
   The answer adds `artifact.site_access` and `site_url`, the site's

@@ -1861,3 +1861,230 @@ async fn a_kept_visitor_room_socket_reopens_while_the_site_is_open_to_the_world(
         "closed to the world, it reopens no visitor's socket"
     );
 }
+
+// The reach rule on a hosted Clax: the owner is a person with extra powers,
+// never universal access, so another person's site opens to them only as
+// the artifacts shared with them, or open by their link, do.
+
+impl Site {
+    /// An artifact person `b` starts in their browser (the gallery's New):
+    /// theirs, beyond the owner's reach.
+    async fn made_by(&self, b: &Browser, title: &str) -> String {
+        let (s, v) = self
+            .send(
+                b,
+                reqwest::Method::POST,
+                "/api/artifacts:new",
+                json!({"title": title, "brief": "x"}),
+            )
+            .await;
+        assert_eq!(s, 201, "{v}");
+        v["artifact"]["id"].as_str().unwrap().to_string()
+    }
+
+    /// `b`'s public ID.
+    async fn pid(&self, b: &Browser) -> String {
+        let (_, me) = self
+            .send(b, reqwest::Method::GET, "/api/hosted/me", Value::Null)
+            .await;
+        me["person"]["public_id"].as_str().unwrap().to_string()
+    }
+
+    /// A site API request on `aid`'s host from its own origin, with site
+    /// cookie `cookie`.
+    async fn site_api(
+        &self,
+        aid: &str,
+        cookie: &str,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> (u16, Value) {
+        let mut r = self
+            .raw
+            .request(method, format!("{}/_clax/api/{path}", self.ts.base))
+            .header(HOST, self.site_host(aid))
+            .header(ORIGIN, format!("http://{}", self.site_host(aid)))
+            .header(COOKIE, cookie);
+        if let Some(b) = body {
+            r = r.json(&b);
+        }
+        let res = r.send().await.unwrap();
+        let s = res.status().as_u16();
+        (s, res.json().await.unwrap_or(Value::Null))
+    }
+}
+
+#[tokio::test]
+async fn the_owner_signs_in_to_no_site_of_another_persons_page() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let (mia, _) = site.member(&owner, "Mia").await;
+    let mias = site.made_by(&mia, "Mia's plan").await;
+    // Mia signs in to her own site.
+    let (s, _) = site.code(&mia, &mias, json!({})).await;
+    assert_eq!(s, 200);
+    // The owner's browser and the owner's token mint no code for it.
+    let (s, _) = site.code(&owner, &mias, json!({})).await;
+    assert_eq!(s, 404);
+    let r = site
+        .ts
+        .authed(
+            site.ts
+                .client
+                .post(format!("{}/api/artifacts/{mias}/site-code", site.ts.base)),
+        )
+        .header(HOST, site.public_host())
+        .header(ORIGIN, &site.origin)
+        .json(&json!({"state": STATE}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+    // A top-level visit is sent to the page, which is not there for them.
+    let host = site.site_host(&mias);
+    let r = site
+        .public(
+            &owner,
+            reqwest::Method::GET,
+            &format!("/site-signin?host={host}&next=%2F&state={STATE}"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 302);
+    assert_eq!(r.headers()[LOCATION], format!("/a/{mias}"));
+    let r = site
+        .public(&owner, reqwest::Method::GET, &format!("/a/{mias}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+    // And the site itself serves the owner nothing.
+    assert_eq!(site.on_site(&mias, "/", None).await.status(), 401);
+}
+
+#[tokio::test]
+async fn a_page_shared_with_the_owner_opens_on_its_site_at_the_shares_level_alone() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let owner_pid = site.pid(&owner).await;
+    let (mia, _) = site.member(&owner, "Mia").await;
+    let mias = site.made_by(&mia, "Mia's plan").await;
+    let shares = format!("/api/hosted/artifacts/{mias}/shares");
+    let (s, v) = site
+        .send(
+            &mia,
+            reqwest::Method::PUT,
+            &shares,
+            json!({"person": owner_pid, "access": "viewer"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let share = v["share"]["id"].as_str().unwrap().to_string();
+    let cookie = site.site_cookie(&owner, &mias).await;
+    assert_eq!(site.on_site(&mias, "/", Some(&cookie)).await.status(), 200);
+    // The owner reads as a viewer of Mia's page, never as its admin.
+    let (s, v) = site
+        .site_api(&mias, &cookie, reqwest::Method::GET, "whoami", None)
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["kind"], "owner", "{v}");
+    assert_ne!(v["level"], "admin", "{v}");
+    assert_eq!(v["can_edit"], false, "{v}");
+    // A viewer uploads nothing to it.
+    let form = reqwest::multipart::Form::new().part(
+        "file",
+        reqwest::multipart::Part::bytes(clax_testkit::FAKE_PNG.to_vec())
+            .file_name("a.png")
+            .mime_str("image/png")
+            .unwrap(),
+    );
+    let r = site
+        .raw
+        .post(format!("{}/_clax/api/assets", site.ts.base))
+        .header(HOST, site.site_host(&mias))
+        .header(ORIGIN, format!("http://{}", site.site_host(&mias)))
+        .header(COOKIE, &cookie)
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    let status = r.status().as_u16();
+    assert!(
+        status == 403 || status == 404,
+        "upload: {status} {}",
+        r.text().await.unwrap()
+    );
+    let (_, assets) = site
+        .send(
+            &mia,
+            reqwest::Method::GET,
+            &format!("/api/artifacts/{mias}/assets"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(assets["assets"], json!([]), "{assets}");
+    // Once Mia ends the share, the owner's next request is refused.
+    let (s, _) = site
+        .send(
+            &mia,
+            reqwest::Method::DELETE,
+            &format!("{shares}/{share}"),
+            Value::Null,
+        )
+        .await;
+    assert!(s == 200 || s == 204, "{s}");
+    assert_eq!(site.on_site(&mias, "/", Some(&cookie)).await.status(), 401);
+}
+
+#[tokio::test]
+async fn only_its_maker_opens_a_persons_site_to_the_world_and_revoking_them_takes_it_down() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let owner_pid = site.pid(&owner).await;
+    let (mia, mia_pid) = site.member(&owner, "Mia").await;
+    let mias = site.made_by(&mia, "Mia's plan").await;
+    // Out of the owner's reach, it is not there for them to open.
+    let (s, v) = site.site_access(&owner, &mias, "world").await;
+    assert_eq!(s, 404, "{v}");
+    // Shared with the owner to edit, it is still Mia's to manage.
+    let (s, v) = site
+        .send(
+            &mia,
+            reqwest::Method::PUT,
+            &format!("/api/hosted/artifacts/{mias}/shares"),
+            json!({"person": owner_pid, "access": "editor"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site.site_access(&owner, &mias, "world").await;
+    assert_eq!((s, code_of(&v)), (403, "admin_only"), "{v}");
+    assert_eq!(site.on_site(&mias, "/", None).await.status(), 401);
+    // Mia opens it, and anyone reads it: her choice, no leak.
+    let (s, v) = site.site_access(&mia, &mias, "world").await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(site.on_site(&mias, "/", None).await.status(), 200);
+    // Revoking Mia takes her pages down, her world site too, until she is
+    // reinstated.
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::DELETE,
+            &format!("/api/people/{mia_pid}"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(site.on_site(&mias, "/", None).await.status(), 401);
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::POST,
+            &format!("/api/people/{mia_pid}/reinstate"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(site.on_site(&mias, "/", None).await.status(), 200);
+}

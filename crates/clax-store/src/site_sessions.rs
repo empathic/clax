@@ -298,7 +298,8 @@ impl Store {
 
     /// Whether artifact `aid`'s site is open to the world
     /// (`artifacts.site_access` is `world`); false for one that does not
-    /// exist.
+    /// exist, and while its maker is revoked (their pages are taken down
+    /// until they are reinstated, `crate::reach`).
     ///
     /// # Errors
     /// The database's.
@@ -306,7 +307,9 @@ impl Store {
         self.with_read(|c| {
             let v: Option<String> = c
                 .query_row(
-                    "SELECT site_access FROM artifacts WHERE id = ?1 AND deleted_at IS NULL",
+                    "SELECT a.site_access FROM artifacts a
+                       LEFT JOIN viewers m ON m.public_id = a.person
+                      WHERE a.id = ?1 AND a.deleted_at IS NULL AND m.person_revoked_at IS NULL",
                     params![aid.as_str()],
                     |r| r.get(0),
                 )

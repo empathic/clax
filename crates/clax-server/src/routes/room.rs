@@ -1043,7 +1043,7 @@ pub async fn reopen(
             if let Some(sc) = site {
                 let id = clax_core::ArtifactId::parse(&a).map_err(|_| CoreError::NotFound)?;
                 let found = sc.check(st, &id)?.ok_or(CoreError::NotFound)?;
-                let who = super::site_api::site_hosted_request(st, &found)?.identity(who);
+                let who = super::site_api::site_hosted_request(st, hosted, &found)?.identity(who);
                 let caller = who.caller(st, None).ok();
                 if caller
                     .as_ref()
@@ -1051,7 +1051,7 @@ pub async fn reopen(
                 {
                     return Err(CoreError::NotFound);
                 }
-                let resolved = clax_http::db_caller::site_caller(st, &found)?;
+                let resolved = clax_http::db_caller::site_caller_at(st, hosted, &found, &a)?;
                 return admission(st, &a, peer, caller.as_ref(), resolved, Some(sc));
             }
             // On a hosted daemon only a session or the token opened it.

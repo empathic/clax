@@ -244,11 +244,37 @@ pub fn base_caller(st: &Store, token: bool, who: &Identity) -> clax_core::Result
 /// `interact` with a display name, else `view`, as their browser is; a
 /// guest, a link viewer and a world visitor are `public` (their viewer ID,
 /// none, their visitor ID), so they meet only the rules that name `public`.
-/// Every one writes as a page.
+/// Every one writes as a page. The owner's level as on a local daemon, or
+/// at an artifact the owner made: [`site_caller_at`] decides a hosted
+/// one's.
 ///
 /// # Errors
 /// The store's.
 pub fn site_caller(st: &Store, site: &SiteCaller) -> clax_core::Result<Caller> {
+    site_caller_with(st, site, true)
+}
+
+/// [`site_caller`] on artifact `aid`'s site: on a hosted daemon (`hosted`)
+/// the owner is `admin` only at an artifact the owner made ([`token_at`]);
+/// at one shared with them or open by its link, the owner's viewer as
+/// their browser is without the token (`interact` with a display name,
+/// else `view`), so a share or a link never makes the owner its maker's
+/// equal.
+///
+/// # Errors
+/// The store's.
+pub fn site_caller_at(
+    st: &Store,
+    hosted: bool,
+    site: &SiteCaller,
+    aid: &str,
+) -> clax_core::Result<Caller> {
+    site_caller_with(st, site, token_at(st, hosted, true, aid)?)
+}
+
+/// [`site_caller`], the owner at `admin` when `owner_level`, else as their
+/// browser without the token.
+fn site_caller_with(st: &Store, site: &SiteCaller, owner_level: bool) -> clax_core::Result<Caller> {
     let page = |level, viewer: Option<String>, person| Caller {
         level,
         viewer,
@@ -256,11 +282,20 @@ pub fn site_caller(st: &Store, site: &SiteCaller) -> clax_core::Result<Caller> {
         via_page: true,
     };
     Ok(match site {
-        SiteCaller::Holder(Holder::Owner) => page(
+        SiteCaller::Holder(Holder::Owner) if owner_level => page(
             Level::Admin,
             Some(st.owner_viewer(true)?.public_id),
             Author::Owner,
         ),
+        SiteCaller::Holder(Holder::Owner) => {
+            let v = st.owner_viewer(true)?;
+            let level = if v.display_name.is_some() {
+                Level::Interact
+            } else {
+                Level::View
+            };
+            page(level, Some(v.public_id), Author::Owner)
+        }
         SiteCaller::Holder(Holder::Person(pid)) => {
             let named = st
                 .viewer_by_public_id(pid)?
@@ -409,7 +444,7 @@ impl CallerParts {
     /// ([`site_caller`]).
     fn resolve(&self, st: &Store, token: bool) -> clax_core::Result<Caller> {
         let base = match &self.site {
-            Some(site) => site_caller(st, site)?,
+            Some(site) => site_caller_with(st, site, token)?,
             None => base_caller(st, token, &self.who)?,
         };
         self.narrowed(base)
@@ -558,7 +593,7 @@ impl Subscriber {
     /// site host, the site's caller ([`site_caller`]).
     pub fn resolve_at(&self, st: &Store, hosted: bool, aid: &str) -> clax_core::Result<Caller> {
         match &self.site {
-            Some(site) => site_caller(st, site),
+            Some(site) => site_caller_at(st, hosted, site, aid),
             None => base_caller_at(st, hosted, self.token, &self.who, aid),
         }
     }

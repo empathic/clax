@@ -384,10 +384,13 @@ pub fn clear_state_cookie(secure: bool, partitioned: bool) -> HeaderValue {
 }
 
 /// Whether `holder` may read artifact `aid` now, as `GET
-/// /api/artifacts/<id>` decides for them: the owner always; a person by
-/// their rights (their shares among them) or the artifact's link; a guest
-/// and a link viewer while it is shared by link. No one reads one that is
-/// deleted, or that does not exist.
+/// /api/artifacts/<id>` decides for them: the owner and a person by their
+/// scope ([`MemberRights::allows_at`]: within their reach their rights,
+/// beyond it the shares they hold, then the artifact's link), so on a
+/// hosted daemon the owner reads another person's artifact only as one
+/// shared with them or open by its link; a guest and a link viewer while
+/// it is shared by link. No one reads one that is deleted, that does not
+/// exist, or whose maker is revoked.
 ///
 /// # Errors
 /// The store's.
@@ -400,7 +403,10 @@ pub fn holder_reads(
         return Ok(false);
     }
     match holder {
-        Holder::Owner => Ok(true),
+        // Every artifact on a local daemon, where every one is the owner's.
+        Holder::Owner => {
+            MemberRights::owner(st)?.allows_at(st, (RightType::Artifacts, "read"), aid.as_str())
+        }
         Holder::Person(pid) => {
             let member = match MemberRights::of_person(st, pid) {
                 Ok(m) => m,
