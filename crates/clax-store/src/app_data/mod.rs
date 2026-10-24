@@ -40,8 +40,7 @@
 
 mod instance;
 mod migrations;
-#[cfg(test)]
-pub(crate) mod shim;
+pub mod shim;
 #[cfg(test)]
 mod tests;
 pub mod wire;
@@ -106,6 +105,10 @@ impl AuditEnv {
 pub struct WriteCtx {
     pub audit: AuditEnv,
     pub page_authors: Vec<String>,
+    /// The write's operation ID, when the instance records the write after
+    /// it lands here ([`OpId`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op: Option<OpId>,
 }
 
 impl WriteCtx {
@@ -114,8 +117,42 @@ impl WriteCtx {
         WriteCtx {
             audit: AuditEnv::of(ctx),
             page_authors: Vec::new(),
+            op: None,
         }
     }
+
+    /// This write under operation ID `op`.
+    #[must_use]
+    pub fn with_op(mut self, op: OpId) -> WriteCtx {
+        self.op = Some(op);
+        self
+    }
+}
+
+/// One of ClaxBot's document writes, journaled as its call
+/// ([`Store::app_write_begin`](crate::Store::app_write_begin)): `db.set`'s
+/// data, `db.update`'s patch, or `db.delete`, each with its pin.
+#[derive(Clone, Debug, PartialEq)]
+pub enum JournaledDoc {
+    Set(Value, Pin),
+    Update(Value, Pin),
+    Delete(Pin),
+}
+
+/// The operation ID a document write carries when the instance records it
+/// after it lands in the artifact's store (a job's publish step, a
+/// ClaxBot call's journal entry): there is no transaction across the two
+/// stores, so the write is made idempotent instead. The store keeps each
+/// ID with `digest` (what the write asked, as the caller sums it) and the
+/// write's answer, in the write's own transaction: the same write made
+/// again under the ID (a retry after a crash between this write and the
+/// instance's record) answers as the first did and changes nothing, and
+/// another write under it is `key_reused`. A write that fails records
+/// nothing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpId {
+    pub id: String,
+    pub digest: String,
 }
 
 /// What an agent channel's reader may see of one artifact's documents: its
@@ -220,6 +257,49 @@ pub struct Fold {
     pub audit: AuditEnv,
 }
 
+/// The checks of a batch of `writes` that need no store: 1 to
+/// [`MAX_BATCH`] writes, each a document path, each document at most once,
+/// each update's patch a body, and, with `sets`, each set's data a body
+/// ([`AppData::doc_batch`] checks those as it writes, at their place).
+/// Whatever a batch fails here it fails in every store.
+///
+/// # Errors
+/// `invalid_argument`, or [`CoreError::InBatch`] naming the write.
+pub fn check_batch(writes: &[BatchWrite], sets: bool) -> Result<()> {
+    if writes.is_empty() || writes.len() > MAX_BATCH {
+        return Err(invalid_argument(format!(
+            "a batch holds 1 to {MAX_BATCH} writes"
+        )));
+    }
+    let in_batch = |op: usize, path: &str, error: CoreError| CoreError::InBatch {
+        op,
+        path: path.to_string(),
+        error: Box::new(error),
+    };
+    for (i, w) in writes.iter().enumerate() {
+        doc_path(&w.path).map_err(|e| in_batch(i, &w.path, e))?;
+    }
+    let mut seen = HashSet::new();
+    for (i, w) in writes.iter().enumerate() {
+        if !seen.insert(w.path.as_str()) {
+            return Err(in_batch(
+                i,
+                &w.path,
+                invalid_argument(format!(
+                    "a batch addresses each document at most once; '{}' appears twice",
+                    w.path
+                )),
+            ));
+        }
+        match &w.op {
+            BatchOp::Update(p) => check_body(p, true).map_err(|e| in_batch(i, &w.path, e))?,
+            BatchOp::Set(d) if sets => check_body(d, false).map_err(|e| in_batch(i, &w.path, e))?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// One artifact's app data, on one connection.
 pub struct AppData {
     conn: Connection,
@@ -285,6 +365,55 @@ impl AppData {
         Ok(out)
     }
 
+    /// [`AppData::with_tx`] for a document write made under `w`: with an
+    /// operation ID ([`OpId`]) the store already holds, the answer it
+    /// recorded (`key_reused` for another digest) and nothing runs; else
+    /// `f`, its answer recorded under the ID in the same transaction.
+    fn with_write_tx<T: Serialize + serde::de::DeserializeOwned>(
+        &self,
+        w: &WriteCtx,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.with_tx(|tx| {
+            if let Some(op) = &w.op {
+                let held: Option<(String, String)> = tx
+                    .query_row(
+                        "SELECT digest, reply FROM applied_ops WHERE op_id = ?1",
+                        params![op.id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+                if let Some((digest, reply)) = held {
+                    if digest != op.digest {
+                        return Err(CoreError::invalid(
+                            "key_reused",
+                            format!("operation {} was made with other arguments", op.id),
+                        ));
+                    }
+                    let artifact_id = AppData::artifact_in(tx)?.unwrap_or_default();
+                    return serde_json::from_str(&reply).map_err(|_| CoreError::Corrupt {
+                        artifact_id,
+                        column: "applied_ops.reply",
+                        version: None,
+                    });
+                }
+            }
+            let out = f(tx)?;
+            if let Some(op) = &w.op {
+                tx.execute(
+                    "INSERT INTO applied_ops (op_id, digest, reply, at) VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        op.id,
+                        op.digest,
+                        serde_json::to_string(&out).expect("a write's answer serialises"),
+                        self.now()
+                    ],
+                )?;
+            }
+            Ok(out)
+        })
+    }
+
     /// The artifact this store is, once an import named it.
     fn artifact_in(c: &Connection) -> Result<Option<String>> {
         Ok(c.query_row("SELECT artifact_id FROM doc_seq", [], |r| r.get(0))?)
@@ -332,7 +461,7 @@ impl AppData {
         caller: &Caller,
     ) -> Result<Written> {
         let body = Body::new(data);
-        self.with_tx(|tx| {
+        self.with_write_tx(w, |tx| {
             let rc = Recorder { tx, w, op: "set" };
             write_in(&rc, rules, caller, path, pin, &self.now(), |_| {
                 body.map(Some)
@@ -378,7 +507,7 @@ impl AppData {
     ) -> Result<Written> {
         let dp = doc_path(path)?;
         check_body(&patch, true)?;
-        self.with_tx(|tx| {
+        self.with_write_tx(w, |tx| {
             refuse_withheld(tx, rules, caller, &dp.path, view)?;
             let rc = Recorder {
                 tx,
@@ -401,7 +530,7 @@ impl AppData {
         pin: Pin,
         caller: &Caller,
     ) -> Result<Written> {
-        self.with_tx(|tx| {
+        self.with_write_tx(w, |tx| {
             let rc = Recorder {
                 tx,
                 w,
@@ -453,7 +582,7 @@ impl AppData {
         if r.old_str.is_empty() {
             return Err(invalid_argument("old_str must not be empty"));
         }
-        self.with_tx(|tx| {
+        self.with_write_tx(w, |tx| {
             refuse_withheld(tx, rules, caller, &dp.path, view)?;
             let rc = Recorder { tx, w, op: "str_replace" };
             write_in(&rc, rules, caller, path, pin, &self.now(), |cur| Body::of((|| {
@@ -644,35 +773,12 @@ impl AppData {
         caller: &Caller,
         view: Option<&DocView>,
     ) -> Result<Vec<Written>> {
-        if writes.is_empty() || writes.len() > MAX_BATCH {
-            return Err(invalid_argument(format!(
-                "a batch holds 1 to {MAX_BATCH} writes"
-            )));
-        }
+        check_batch(&writes, false)?;
         let in_batch = |op: usize, path: &str, error: CoreError| CoreError::InBatch {
             op,
             path: path.to_string(),
             error: Box::new(error),
         };
-        for (i, w) in writes.iter().enumerate() {
-            doc_path(&w.path).map_err(|e| in_batch(i, &w.path, e))?;
-        }
-        let mut seen = HashSet::new();
-        for (i, w) in writes.iter().enumerate() {
-            if !seen.insert(w.path.as_str()) {
-                return Err(in_batch(
-                    i,
-                    &w.path,
-                    invalid_argument(format!(
-                        "a batch addresses each document at most once; '{}' appears twice",
-                        w.path
-                    )),
-                ));
-            }
-            if let BatchOp::Update(p) = &w.op {
-                check_body(p, true).map_err(|e| in_batch(i, &w.path, e))?;
-            }
-        }
         // Set bodies are checked and serialised before the transaction; a bad
         // one still fails at its own place in the batch.
         let writes: Vec<(String, Option<u64>, Prepared)> = writes
@@ -686,7 +792,7 @@ impl AppData {
                 (w.path, w.if_version, op)
             })
             .collect();
-        self.with_tx(|tx| {
+        self.with_write_tx(w, |tx| {
             writes
                 .into_iter()
                 .enumerate()
@@ -929,6 +1035,110 @@ impl AppData {
     /// at an unchanged sequence finds what it found before.
     pub fn doc_seq(&self) -> Result<i64> {
         self.with_read(|c| Ok(c.query_row("SELECT seq FROM doc_seq", [], |r| r.get(0))?))
+    }
+
+    /// Each collection holding documents, with its document count, in name
+    /// order. With `caller`, only the collections that hold a document it
+    /// may read (by `rules`), each counted whole; without, every collection
+    /// but those under a private per-viewer prefix (`data/users/<id>` and
+    /// each `{self}` rule's prefix not opened by a rule at it), so no
+    /// viewer's public ID or private count shows.
+    pub fn doc_collections(
+        &self,
+        rules: &Rules,
+        caller: Option<&Caller>,
+    ) -> Result<Vec<(String, u64)>> {
+        self.with_read(|c| {
+            let mut q = c.prepare_cached(
+                "SELECT collection, COUNT(*), MIN(path) FROM docs GROUP BY collection ORDER BY collection",
+            )?;
+            let rows = q.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                let (collection, n, first) = row?;
+                let shown = match caller {
+                    Some(caller) => rules.allows(&first, Op::Read, caller),
+                    None => rules.private_to(&collection).is_none(),
+                };
+                if shown {
+                    out.push((collection, n as u64));
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    /// The documents `caller` may read by `rules`, in path order, as stored,
+    /// until `max_docs` documents or `max_bytes` of stored JSON; and whether
+    /// any were left. What a draft's copy of its app takes
+    /// ([`AppData::seed`]).
+    pub fn copy_out(
+        &self,
+        rules: &Rules,
+        caller: &Caller,
+        max_docs: usize,
+        max_bytes: usize,
+    ) -> Result<(Vec<ExportedDoc>, bool)> {
+        self.with_read(|c| {
+            let mut q = c.prepare(
+                "SELECT path, collection, json, version, updated_at FROM docs ORDER BY path",
+            )?;
+            let mut rows = q.query([])?;
+            let (mut out, mut bytes) = (Vec::new(), 0usize);
+            while let Some(r) = rows.next()? {
+                let path: String = r.get(0)?;
+                if !rules.allows(&path, Op::Read, caller) {
+                    continue;
+                }
+                let json: String = r.get(2)?;
+                if out.len() == max_docs || bytes + json.len() > max_bytes {
+                    return Ok((out, true));
+                }
+                bytes += json.len();
+                out.push(ExportedDoc {
+                    path,
+                    collection: r.get(1)?,
+                    json,
+                    version: r.get(3)?,
+                    updated_at: r.get(4)?,
+                });
+            }
+            Ok((out, false))
+        })
+    }
+
+    /// Puts `docs` in a store that holds no document, each at version 1 at
+    /// `now`, with no authors and the sequence at 1 (none when `docs` is
+    /// empty): a draft's copy of its app's documents. `invalid_args` when the
+    /// store holds a document already.
+    pub fn seed(&self, docs: &[ExportedDoc]) -> Result<usize> {
+        self.with_tx(|tx| {
+            let any: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM docs)", [], |r| r.get(0))?;
+            if any {
+                return Err(CoreError::invalid(
+                    "invalid_args",
+                    "only a store with no documents takes a copy",
+                ));
+            }
+            let now = self.now();
+            for d in docs {
+                tx.execute(
+                    "INSERT INTO docs (path, collection, json, version, updated_at)
+                     VALUES (?1, ?2, ?3, 1, ?4)",
+                    params![d.path, d.collection, d.json, now],
+                )?;
+            }
+            if !docs.is_empty() {
+                tx.execute("UPDATE doc_seq SET seq = MAX(seq, 1)", [])?;
+            }
+            Ok(docs.len())
+        })
     }
 
     /// The newest audit record's `seq` (0 when there is none).

@@ -12,10 +12,10 @@
 //! the core's, in memory, and no rule here reads a clock.
 
 use super::Store;
-use super::docs::{BatchWrite, Written};
+use super::app_data::OpId;
+use super::docs::{BatchOp, BatchWrite, Written};
 use super::questions::Reason;
 use clax_core::audit::AuditCtx;
-use clax_core::db::{Caller, Level};
 use clax_core::feedback::Touched;
 use clax_core::model::{Artifact, Comment, Version};
 use clax_core::publish::ValidatedPublish;
@@ -1198,6 +1198,35 @@ pub(crate) fn mark_of(
     })
 }
 
+/// Where a publish step's documents are written: the step's artifact's own
+/// store (the app data host's, `clax_http::app_data_host`), as the owner,
+/// last-writer-wins off, under the step's operation ID ([`OpId`]), so the
+/// same writes made again for the step (a retry after a crash between them
+/// and the step's commit) answer as the first did and change nothing.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+pub trait StepDocs: Send + Sync {
+    async fn write(
+        &self,
+        aid: &ArtifactId,
+        op: OpId,
+        writes: Vec<BatchWrite>,
+    ) -> clax_core::Result<Vec<Written>>;
+}
+
+/// The operation ID of publish step `key` of job `id`'s document writes,
+/// the digest summing the writes.
+pub fn step_op(id: &str, key: &str, writes: &[BatchWrite]) -> OpId {
+    OpId {
+        id: format!("job:{id}:{key}"),
+        digest: clax_core::audit::sha256_hex(
+            serde_json::to_string(writes)
+                .expect("writes serialise")
+                .as_bytes(),
+        ),
+    }
+}
+
 /// A publish step's body: the version it publishes and the document writes
 /// that land with it.
 pub struct PublishStep {
@@ -1391,15 +1420,18 @@ impl Store {
     /// [`StepError::VersionMoved`]; [`StepError::DocMoved`];
     /// [`StepError::NotRenderedClean`] for a draft's files the app did not
     /// render clean; [`StepError::Job`] for a missing or final job; the
-    /// publish's own errors.
+    /// publish's own errors; the documents' writes' (a new artifact's after
+    /// its step committed: the step is recorded, and a retry of it writes
+    /// them again).
     pub fn commit_publish_step(
         &self,
         ctx: &AuditCtx,
         id: &str,
         key: &str,
         s: PublishStep,
+        docs: &dyn StepDocs,
     ) -> StepResult<Published> {
-        self.block_on(async { Ok(self.commit_publish_step_async(ctx, id, key, s).await) })
+        self.block_on(async { Ok(self.commit_publish_step_async(ctx, id, key, s, docs).await) })
             .unwrap_or_else(|e| Err(e.into()))
     }
 
@@ -1410,6 +1442,7 @@ impl Store {
         id: &str,
         key: &str,
         s: PublishStep,
+        docs: &dyn StepDocs,
     ) -> StepResult<Published> {
         self.publish_step_cut(ctx, id, key, s, docs, |_| Ok(()))
             .await
@@ -1424,6 +1457,7 @@ impl Store {
         id: &str,
         key: &str,
         s: PublishStep,
+        writer: &dyn StepDocs,
         cut: impl FnOnce(&Transaction<'_>) -> clax_core::Result<()>,
     ) -> StepResult<Published> {
         if let Some(done) = self.replay(id, key)? {
@@ -1445,6 +1479,12 @@ impl Store {
                 "a step that makes a new artifact has base 0",
             )));
         }
+        // Writes every store refuses refuse the step before anything is
+        // recorded: a new artifact's are written only after its step
+        // commits, where a refusal could no longer undo it.
+        if !docs.is_empty() {
+            super::app_data::check_batch(&docs, true)?;
+        }
         // The render gate: a
         // draft's files are published only as the app rendered them clean.
         if let Some(d) = &draft
@@ -1463,6 +1503,43 @@ impl Store {
             self.begin_publish_step(id, key, named.as_ref(), base + 1, session_id.as_deref())?;
         request.step = Some(step_mark(id, key, &begun.nonce));
         let aid = begun.artifact_id;
+        let op = step_op(id, key, &docs);
+        let n_docs = docs.len();
+        // An artifact that exists takes the documents first, once found at
+        // the step's base; a new one, once the step made it, and only
+        // writes that need no document there.
+        let mut written = Vec::new();
+        let mut after = Vec::new();
+        match &named {
+            Some(a) if !docs.is_empty() => {
+                let current = self
+                    .get_artifact(a)?
+                    .ok_or(StepError::Store(CoreError::NotFound))?
+                    .current_version;
+                if current != base {
+                    return match self.replay(id, key)? {
+                        Some(done) => Ok(done),
+                        None => Err(StepError::VersionMoved { current }),
+                    };
+                }
+                written = writer
+                    .write(a, op.clone(), docs)
+                    .await
+                    .map_err(doc_refusal)?;
+            }
+            Some(_) => {}
+            None => {
+                if let Some(w) = docs
+                    .iter()
+                    .find(|w| w.if_version.is_some() || matches!(w.op, BatchOp::Update(_)))
+                {
+                    return Err(StepError::DocMoved {
+                        path: w.path.clone(),
+                    });
+                }
+                after = docs;
+            }
+        }
         let mut cutting = None;
         let then = |tx: &Transaction<'_>, n: u32| {
             let made = publish_step_tx(self, tx, id, key, &aid, n, n_docs, &after, done);
@@ -1492,10 +1569,18 @@ impl Store {
         match (out, cutting) {
             (Ok((artifact, version, (step, job))), _) => {
                 if !after.is_empty() {
-                    written = writer
-                        .write(&aid, op, after)
-                        .await
-                        .map_err(StepError::Store)?;
+                    match writer.write(&aid, op, after).await {
+                        Ok(w) => written = w,
+                        Err(e) => {
+                            // Refused for good: a retry would be refused
+                            // the same, so the step answers as recorded
+                            // from now on, and this call reports why.
+                            if refused_for_good(&e) {
+                                self.docs_landed(id, key)?;
+                            }
+                            return Err(StepError::Store(e));
+                        }
+                    }
                     self.docs_landed(id, key)?;
                 }
                 Ok(StepCommit {
@@ -1863,7 +1948,9 @@ impl Store {
     /// step recorded as still to land (`job_step_docs`: a new artifact's,
     /// which a crash kept from landing after its step committed) are
     /// written now, to the artifact it recorded, under the step's
-    /// operation ID, so each applies once.
+    /// operation ID, so each applies once. Writes the store refuses for
+    /// good ([`refused_for_good`]) are given up, with a warning: the step
+    /// stands without them, as the call that committed it reported.
     async fn docs_left(
         &self,
         id: &str,
@@ -1894,10 +1981,18 @@ impl Store {
         let aid = ArtifactId::parse(&named).map_err(|_| corrupt())?;
         let docs: Vec<BatchWrite> = serde_json::from_str(&left).map_err(|_| corrupt())?;
         let op = step_op(id, key, &docs);
-        writer
-            .write(&aid, op, docs)
-            .await
-            .map_err(StepError::Store)?;
+        match writer.write(&aid, op, docs).await {
+            Ok(_) => {}
+            Err(e) if refused_for_good(&e) => {
+                tracing::warn!(
+                    job = id,
+                    key,
+                    error = %e,
+                    "a publish step's recorded documents were refused; the step stands without them"
+                );
+            }
+            Err(e) => return Err(StepError::Store(e)),
+        }
         self.docs_landed(id, key)?;
         Ok(done)
     }
@@ -2024,6 +2119,23 @@ fn insert_step(
     wrote.map_err(refused)
 }
 
+/// Whether the artifact's store refused a step's document writes for
+/// good, as it would every retry of them: writes it finds invalid, a
+/// declaration it lacks, a document pinned, missing or withheld. Anything
+/// else (a store that could not be reached or answer) may pass on a retry.
+fn refused_for_good(e: &CoreError) -> bool {
+    matches!(
+        e,
+        CoreError::InBatch { .. }
+            | CoreError::Invalid { .. }
+            | CoreError::NotDeclared { .. }
+            | CoreError::DocConflict { .. }
+            | CoreError::DocPinRequired { .. }
+            | CoreError::DocWithheld { .. }
+            | CoreError::DocNotFound { .. }
+    )
+}
+
 /// The body of a publish step's transaction, once version `n` of its
 /// artifact is recorded: the step, whose result counts its `n_docs`
 /// document writes (the artifact's own store takes them,
@@ -2033,7 +2145,6 @@ fn insert_step(
 fn publish_step_tx(
     st: &Store,
     tx: &Transaction<'_>,
-    ctx: &AuditCtx,
     id: &str,
     key: &str,
     aid: &ArtifactId,
@@ -2041,8 +2152,7 @@ fn publish_step_tx(
     n_docs: usize,
     deferred: &[BatchWrite],
     done: bool,
-) -> Result<(StepRow, JobRow, Vec<Written>), Cut> {
-    let aid_id = aid;
+) -> Result<(StepRow, JobRow), Cut> {
     let aid = aid.as_str().to_string();
     // A change publishes only its own artifact.
     let named: Option<String> = tx
@@ -2063,14 +2173,7 @@ fn publish_step_tx(
             .into(),
         ));
     }
-    let written = if docs.is_empty() {
-        Vec::new()
-    } else {
-        let owner = Caller::new(Level::Owner, None);
-        st.doc_batch_in(tx, ctx, aid_id, docs, false, &owner)
-            .map_err(|e| Cut::Refused(doc_refusal(e)))?
-    };
-    let result = serde_json::json!({"artifact_id": aid, "version": n, "docs": written.len()});
+    let result = serde_json::json!({"artifact_id": aid, "version": n, "docs": n_docs});
     let (step, row) = insert_step(st, tx, id, key, &result, Some(n), Some(&aid), done)?;
     // Committed: its version is recorded, and its mark names nothing left.
     tx.execute(
@@ -2193,8 +2296,43 @@ mod tests {
     use super::*;
     use crate::questions::{Close, NewQuestion, Source};
     use crate::test_util::{DAEMON, artifact, session, store};
+    use clax_core::db::{Caller, Level};
     use clax_core::questions::Answer;
     use serde_json::json;
+
+    /// Each artifact's own store as its file in the store's home, written
+    /// directly (the daemon's host moves and mirrors as well), as the owner
+    /// under its artifact's declared rules.
+    struct FileDocs<'a> {
+        st: &'a Store,
+    }
+
+    impl FileDocs<'_> {
+        fn of(st: &Store) -> FileDocs<'_> {
+            FileDocs { st }
+        }
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    impl StepDocs for FileDocs<'_> {
+        async fn write(
+            &self,
+            aid: &ArtifactId,
+            op: OpId,
+            writes: Vec<BatchWrite>,
+        ) -> clax_core::Result<Vec<Written>> {
+            let rules = clax_core::db::Rules::from_capabilities(&self.st.doc_capabilities(aid)?)?;
+            let ad = crate::app_data::shim::Docs::of(self.st).data(aid)?;
+            ad.doc_batch(
+                &crate::app_data::WriteCtx::of(DAEMON).with_op(op),
+                &rules,
+                writes,
+                false,
+                &clax_core::db::Caller::new(clax_core::db::Level::Owner, None),
+            )
+        }
+    }
 
     fn new_job(id: &str) -> NewJob {
         NewJob {
@@ -2407,19 +2545,6 @@ mod tests {
         assert!(st.list_artifacts().unwrap().is_empty());
         // A writer that dies before the documents land: the step is
         // committed, its documents not.
-        struct Dies;
-        #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-        #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-        impl StepDocs for Dies {
-            async fn write(
-                &self,
-                _: &ArtifactId,
-                _: OpId,
-                _: Vec<BatchWrite>,
-            ) -> clax_core::Result<Vec<Written>> {
-                Err(CoreError::invalid("cut", "the process died"))
-            }
-        }
         assert!(
             st.commit_publish_step(DAEMON, "j1", "publish:0", step(note(1)), &Dies)
                 .is_err()
@@ -2442,6 +2567,158 @@ mod tests {
             Some((json!({"t": 1}), 1)),
             "applied once"
         );
+    }
+
+    /// A writer whose store cannot be reached: the writes may land on a
+    /// retry.
+    struct Dies;
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    impl StepDocs for Dies {
+        async fn write(
+            &self,
+            _: &ArtifactId,
+            _: OpId,
+            _: Vec<BatchWrite>,
+        ) -> clax_core::Result<Vec<Written>> {
+            Err(CoreError::TaskFailed)
+        }
+    }
+
+    /// A writer whose store refuses the writes for good.
+    struct Refuses;
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    impl StepDocs for Refuses {
+        async fn write(
+            &self,
+            _: &ArtifactId,
+            _: OpId,
+            _: Vec<BatchWrite>,
+        ) -> clax_core::Result<Vec<Written>> {
+            Err(CoreError::invalid("invalid_argument", "refused"))
+        }
+    }
+
+    /// The writes job `id`'s step `key` still has to land, as recorded.
+    fn docs_left_of(st: &Store, id: &str, key: &str) -> Option<String> {
+        st.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT writes_json FROM job_step_docs WHERE job_id = ?1 AND key = ?2",
+                params![id, key],
+                |r| r.get(0),
+            )
+            .optional()?)
+        })
+        .unwrap()
+    }
+
+    /// More writes than a batch holds.
+    fn too_many() -> Vec<BatchWrite> {
+        (0..=crate::docs::MAX_BATCH)
+            .map(|i| BatchWrite {
+                path: format!("notes/n{i}"),
+                ..note(1).remove(0)
+            })
+            .collect()
+    }
+
+    /// A new app's writes every store refuses (too many; a body too deep)
+    /// refuse its step before anything is recorded, and a step without
+    /// them then commits.
+    #[test]
+    fn a_new_apps_refused_writes_refuse_its_step_before_it_commits() {
+        let (_d, st) = store();
+        running(&st, "j1");
+        let step = |docs: Vec<BatchWrite>| PublishStep {
+            docs,
+            request: request_with_caps("<p>a", json!({"db": {}})),
+            ..publish_step(None, 0, "<p>a", false)
+        };
+        let mut deep = json!(1);
+        for _ in 0..=crate::docs::MAX_DEPTH {
+            deep = json!({ "d": deep });
+        }
+        let too_deep = vec![BatchWrite {
+            op: BatchOp::Set(deep),
+            ..note(1).remove(0)
+        }];
+        for docs in [too_many(), too_deep] {
+            let e = st
+                .commit_publish_step(DAEMON, "j1", "publish:0", step(docs), &FileDocs::of(&st))
+                .unwrap_err();
+            assert!(
+                matches!(
+                    e,
+                    StepError::Store(CoreError::Invalid { .. } | CoreError::InBatch { .. })
+                ),
+                "{e:?}"
+            );
+            assert!(st.list_artifacts().unwrap().is_empty());
+            assert!(st.job("j1").unwrap().unwrap().steps.is_empty());
+            assert_eq!(docs_left_of(&st, "j1", "publish:0"), None);
+        }
+        let c = st
+            .commit_publish_step(DAEMON, "j1", "publish:0", step(note(1)), &FileDocs::of(&st))
+            .unwrap();
+        assert!(!c.replayed);
+    }
+
+    /// Writes a new app's store refuses for good after its step committed
+    /// are reported by that call and then given up: the step stands without
+    /// them, and its retries answer it as recorded. Recorded writes a
+    /// replay finds refused are given up the same way; ones whose store
+    /// could not be reached stay to land.
+    #[test]
+    fn a_new_apps_writes_refused_after_its_step_are_given_up_and_the_step_answered() {
+        let (_d, st) = store();
+        let step = |docs: Vec<BatchWrite>| PublishStep {
+            docs,
+            request: request_with_caps("<p>a", json!({"db": {}})),
+            ..publish_step(None, 0, "<p>a", false)
+        };
+        // Refused by the write that follows the commit.
+        running(&st, "j1");
+        let e = st
+            .commit_publish_step(DAEMON, "j1", "publish:0", step(note(1)), &Refuses)
+            .unwrap_err();
+        assert!(
+            matches!(e, StepError::Store(CoreError::Invalid { .. })),
+            "{e:?}"
+        );
+        assert_eq!(docs_left_of(&st, "j1", "publish:0"), None);
+        let c = st
+            .commit_publish_step(DAEMON, "j1", "publish:0", step(note(1)), &FileDocs::of(&st))
+            .unwrap();
+        assert!(c.replayed);
+        let aid = ArtifactId::parse(c.step.result["artifact_id"].as_str().unwrap()).unwrap();
+        assert_eq!(note_of(&st, &aid), None);
+        // Refused by a replay: recorded writes the store cannot take, as a
+        // build without the up-front checks could record them.
+        running(&st, "j2");
+        assert!(matches!(
+            st.commit_publish_step(DAEMON, "j2", "publish:0", step(note(1)), &Dies),
+            Err(StepError::Store(CoreError::TaskFailed))
+        ));
+        assert!(
+            docs_left_of(&st, "j2", "publish:0").is_some(),
+            "unreachable: kept"
+        );
+        st.with_write(|c| {
+            c.execute(
+                "UPDATE job_step_docs SET writes_json = ?1 WHERE job_id = 'j2'",
+                params![serde_json::to_string(&too_many()).unwrap()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        for _ in 0..2 {
+            let c = st
+                .commit_publish_step(DAEMON, "j2", "publish:0", step(note(1)), &FileDocs::of(&st))
+                .unwrap();
+            assert!(c.replayed);
+            assert_eq!(docs_left_of(&st, "j2", "publish:0"), None);
+        }
     }
 
     /// A replay of a committed step answers the step as recorded and writes
@@ -2666,7 +2943,7 @@ mod tests {
             if_version: None,
             lww: true,
         };
-        let w = st
+        let w = crate::app_data::shim::Docs::of(&st)
             .doc_set(DAEMON, &aid, "notes/n1", json!({"t": 1}), pin, &owner)
             .unwrap();
         let planned = w.doc.unwrap().version;
@@ -2681,7 +2958,7 @@ mod tests {
             if_version: Some(planned),
         }];
         let e = st
-            .commit_publish_step(DAEMON, "j1", "publish:1", step)
+            .commit_publish_step(DAEMON, "j1", "publish:1", step, &FileDocs::of(&st))
             .unwrap_err();
         assert!(
             matches!(&e, StepError::DocMoved { path } if path == "notes/n1"),
@@ -2704,7 +2981,7 @@ mod tests {
             if_version: None,
         }];
         let c = st
-            .commit_publish_step(DAEMON, "j1", "publish:1", step)
+            .commit_publish_step(DAEMON, "j1", "publish:1", step, &FileDocs::of(&st))
             .unwrap();
         let made = c.made.unwrap();
         assert_eq!((made.version.n, made.docs.len()), (2, 1));
@@ -2721,7 +2998,7 @@ mod tests {
         s: PublishStep,
         cut: impl FnOnce(&Transaction<'_>) -> clax_core::Result<()>,
     ) -> StepResult<Published> {
-        clax_core::content::wait(st.publish_step_cut(DAEMON, id, key, s, cut))
+        clax_core::content::wait(st.publish_step_cut(DAEMON, id, key, s, &FileDocs::of(st), cut))
     }
 
     #[test]
@@ -2930,14 +3207,15 @@ mod tests {
         change(&st, "j1", &aid);
         let step = || publish_step(Some(&aid), 1, "<p>v2", false);
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let docs = FileDocs::of(&st);
         // The first call holds the content lock, waiting on its write; the
         // second has passed its replay check and waits for the lock.
         gated.set_open(false);
         let mut first =
-            std::pin::pin!(st.commit_publish_step_async(DAEMON, "j1", "publish:1", step()));
+            std::pin::pin!(st.commit_publish_step_async(DAEMON, "j1", "publish:1", step(), &docs));
         assert!(first.as_mut().poll(&mut cx).is_pending());
         let mut second =
-            std::pin::pin!(st.commit_publish_step_async(DAEMON, "j1", "publish:1", step()));
+            std::pin::pin!(st.commit_publish_step_async(DAEMON, "j1", "publish:1", step(), &docs));
         assert!(second.as_mut().poll(&mut cx).is_pending());
         gated.set_open(true);
         let first = clax_core::content::wait(first).unwrap();
@@ -3158,7 +3436,7 @@ mod tests {
         change(&st, "j1", &aid);
         let mut step = publish_step(Some(&aid), 1, "<p>v2", false);
         step.session_id = Some(sid.clone());
-        st.commit_publish_step(DAEMON, "j1", "publish:1", step)
+        st.commit_publish_step(DAEMON, "j1", "publish:1", step, &FileDocs::of(&st))
             .unwrap();
         // The app is killed and relaunched more than five minutes later.
         let idle = std::time::Duration::from_secs(Store::SESSION_IDLE_SECS);
@@ -3187,7 +3465,7 @@ mod tests {
         change(&st, "j1", &aid);
         let mut step = publish_step(Some(&aid), 1, "<p>v2", false);
         step.session_id = Some(sid.clone());
-        st.commit_publish_step(DAEMON, "j1", "publish:1", step)
+        st.commit_publish_step(DAEMON, "j1", "publish:1", step, &FileDocs::of(&st))
             .unwrap();
         let idle = std::time::Duration::from_secs(Store::SESSION_IDLE_SECS);
         clock.advance(Store::SESSION_IDLE_SECS as i64 + 60);
@@ -3217,7 +3495,7 @@ mod tests {
         let mut step = publish_step(None, 0, "<p>a", true);
         step.session_id = Some(sid.clone());
         let c = st
-            .commit_publish_step(DAEMON, "j1", "publish:0", step)
+            .commit_publish_step(DAEMON, "j1", "publish:0", step, &FileDocs::of(&st))
             .unwrap();
         assert_eq!(
             c.made.unwrap().version.session_id.as_deref(),
