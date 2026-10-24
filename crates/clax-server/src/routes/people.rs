@@ -721,8 +721,11 @@ pub async fn set_rights(
 /// with their tokens and live sessions (each session's end cleans up as
 /// §14 says), their unused invites are revoked, and their browser is a
 /// plain viewer's from then on. Their viewer row, authorship and approvals
-/// stay as history. Recorded as each `grant.revoke`, `invite.revoke`, then
-/// `person.revoke`. 400 `not_a_person`; 404 for an unknown public ID.
+/// stay as history. What they made is down until they are reinstated: the
+/// room sockets on their sites close, a world visitor's included
+/// (`Event::SiteAccess`). Recorded as each `grant.revoke`,
+/// `invite.revoke`, then `person.revoke`. 400 `not_a_person`; 404 for an
+/// unknown public ID.
 pub async fn revoke_person(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -736,21 +739,31 @@ pub async fn revoke_person(
     let pid = path(pid)?;
     let (state, ctx) = (s.clone(), s.feedback_ctx());
     let who = pid.clone();
-    let v = s
+    let (v, world) = s
         .store_call(move |st| {
             let r = st.revoke_person(&audit.resolve(st)?, &pid)?;
             announce_ended(&state, &ctx, st, &r.grants, "owner");
             let person = person_of(&state, st, &pid)?;
             announce(&state, json!({"what": "person_revoked", "person": person}));
-            Ok(json!({
-                "person": person,
-                "ended_grants": r.grants.iter().filter(|g| g.ended).map(|g| &g.grant_id).collect::<Vec<_>>(),
-                "revoked_invites": r.invites,
-            }))
+            Ok((
+                json!({
+                    "person": person,
+                    "ended_grants": r.grants.iter().filter(|g| g.ended).map(|g| &g.grant_id).collect::<Vec<_>>(),
+                    "revoked_invites": r.invites,
+                }),
+                st.world_sites_made_by(&pid)?,
+            ))
         })
         .await?;
-    // Their site sockets close.
+    // Their site sockets close, and their world sites' visitors' with
+    // them: those sites are down while they are revoked.
     crate::hosted::access_changed(&s, None);
+    for artifact_id in world {
+        s.events.publish(clax_core::Event::SiteAccess {
+            artifact_id,
+            world: false,
+        });
+    }
     // Their repository tokens and their agents' go with them.
     clax_http::git_remotes::rights_changed(&s, &who, None, None).await?;
     Ok(Json(v))

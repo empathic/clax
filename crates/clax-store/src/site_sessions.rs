@@ -318,6 +318,24 @@ impl Store {
         })
     }
 
+    /// The live artifacts person `public_id` made whose sites are open to
+    /// the world (whatever their maker's standing): what revoking them
+    /// takes down.
+    ///
+    /// # Errors
+    /// The database's.
+    pub fn world_sites_made_by(&self, public_id: &str) -> Result<Vec<String>> {
+        self.with_read(|c| {
+            let mut q = c.prepare_cached(
+                "SELECT id FROM artifacts
+                  WHERE person = ?1 AND deleted_at IS NULL AND site_access = 'world'
+                  ORDER BY id",
+            )?;
+            Ok(q.query_map(params![public_id], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?)
+        })
+    }
+
     /// Opens artifact `aid`'s site to the world (`world`) or closes it.
     ///
     /// # Errors

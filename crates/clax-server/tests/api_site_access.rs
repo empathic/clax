@@ -2088,3 +2088,40 @@ async fn only_its_maker_opens_a_persons_site_to_the_world_and_revoking_them_take
     assert_eq!(s, 200, "{v}");
     assert_eq!(site.on_site(&mias, "/", None).await.status(), 200);
 }
+
+#[tokio::test]
+async fn revoking_a_person_closes_their_world_sites_visitor_sockets() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let (mia, mia_pid) = site.member(&owner, "Mia").await;
+    let board = site.room_artifact("Board").await;
+    let (mias, _) = site
+        .ts
+        .store
+        .fork_artifact_async(
+            &clax_core::audit::AuditCtx::DAEMON,
+            &clax_core::ArtifactId::parse(&board).unwrap(),
+            None,
+            Some(&mia_pid),
+            None,
+        )
+        .await
+        .unwrap();
+    let mias = mias.id;
+    let (s, v) = site.site_access(&mia, &mias, "world").await;
+    assert_eq!(s, 200, "{v}");
+    let mut visitor = site.visitor_room(&mias).await;
+    let welcome = visitor.next().await.unwrap().unwrap();
+    assert!(welcome.to_text().unwrap().contains("welcome"), "{welcome}");
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::DELETE,
+            &format!("/api/people/{mia_pid}"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (code, reason) = closed(&mut visitor).await;
+    assert_eq!((code, reason.as_str()), REVOKED);
+}
