@@ -850,3 +850,68 @@ async fn patch_cannot_change_a_declaration_clax_json_owns() {
     let v: serde_json::Value = res.json().await.unwrap();
     assert_eq!(v["artifact"]["capabilities"], json!({"user": {}}), "{v}");
 }
+
+#[tokio::test]
+async fn a_clax_json_from_before_manifests_owns_nothing() {
+    use clax_core::publish::{DecodedFile, FileChange, PublishRequest, validate};
+    let ts = TestServer::spawn().await;
+    // A page's own clax.json, published before clax.json meant anything.
+    let req: PublishRequest = serde_json::from_value(json!({
+        "title": "Old",
+        "files": {"index.html": {"content": "<p>1</p>"}},
+    }))
+    .unwrap();
+    let mut v1 = validate(req).unwrap();
+    v1.files.insert(
+        "clax.json".into(),
+        FileChange::Put(DecodedFile {
+            bytes: br#"{"theme": "dark"}"#.to_vec(),
+            content_type: "application/json".into(),
+        }),
+    );
+    let (a, _) = ts
+        .store
+        .create_artifact_async(&clax_core::audit::AuditCtx::DAEMON, v1, None)
+        .await
+        .unwrap();
+    let aid = a.id;
+    // PATCH declares as for a page without one.
+    let res = patch(&ts, &aid, json!({"capabilities": {"db": {}}})).await;
+    assert_eq!(res.status(), 200);
+    // A publish naming neither carries it, unread, and keeps the declaration.
+    let (s, v) = publish_body(
+        &ts,
+        Some(&aid),
+        1,
+        json!({"files": {"index.html": {"content": "<p>2</p>"}}}),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["artifact"]["capabilities"], json!({"db": {}}), "{v}");
+    assert_eq!(
+        version_file(&ts, &aid, 2, "clax.json")
+            .await
+            .text()
+            .await
+            .unwrap(),
+        r#"{"theme": "dark"}"#
+    );
+    // Declaring writes over it.
+    let (s, _) = publish_body(
+        &ts,
+        Some(&aid),
+        2,
+        json!({"capabilities": {"db": {}}, "files": {"index.html": {"content": "<p>3</p>"}}}),
+    )
+    .await;
+    assert_eq!(s, 201);
+    assert_eq!(
+        version_file(&ts, &aid, 3, "clax.json")
+            .await
+            .bytes()
+            .await
+            .unwrap()
+            .to_vec(),
+        clax_core::manifest::render(&json!({"db": {}}))
+    );
+}

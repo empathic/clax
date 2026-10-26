@@ -93,8 +93,10 @@ class PublishedFiles {
   /// is read here; [contentSha256] hashes the files when first asked.
   factory PublishedFiles.of(Bundle b) {
     final m = b.manifest;
+    // A clax.json a bundle should not hold is left out: the manifest's
+    // capabilities are the declaration, and the daemon writes the file.
     final entries = <String, FileEntry>{
-      for (final MapEntry(:key, :value) in m.files.entries)
+      for (final MapEntry(:key, :value) in withoutManifest(m.files).entries)
         key: FileEntry.bytes(b.files[key]!, type: value.type),
     };
     String? change;

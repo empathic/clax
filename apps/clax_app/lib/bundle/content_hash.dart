@@ -36,6 +36,15 @@ int compareUtf8(String a, String b) {
 /// declaration, which travels beside the files (`clax_core::manifest`).
 const manifestPath = 'clax.json';
 
+/// [files] without [manifestPath]. A bundle never carries `clax.json`: its
+/// manifest carries the declaration (as `shareableCapabilities` in
+/// `installer.dart` leaves it), and a publish from a bundle passes that as `capabilities`, so the
+/// daemon writes the file.
+Map<String, T> withoutManifest<T>(Map<String, T> files) => {
+  for (final MapEntry(:key, :value) in files.entries)
+    if (key != manifestPath) key: value,
+};
+
 /// The content hash of [files] (path to file hash and size): `sha256:`
 /// and the hex SHA-256 of one line `<path>\0<sha256 hex>\0<size>\n` per
 /// file but [manifestPath], in byte order of path. It equals the daemon's

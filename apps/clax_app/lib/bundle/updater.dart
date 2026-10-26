@@ -356,10 +356,12 @@ class Updater {
     }
     final base = live.artifact.currentVersion;
     final files = PublishedFiles.of(bundle);
+    // Never clax.json: `capabilities` declares, and the daemon writes it.
     final entries = merged == null
         ? files.entries
         : {
-            for (final MapEntry(:key, :value) in merged.files.entries)
+            for (final MapEntry(:key, :value)
+                in withoutManifest(merged.files).entries)
               key: FileEntry.bytes(value, type: m.files[key]?.type),
           };
     final title = merged?.title ?? m.title;
@@ -935,8 +937,10 @@ class Updater {
     }
     final base = live.artifact.currentVersion;
     final version = (await store.entry(aid))?.version ?? 0;
+    // Never clax.json: `capabilities` declares, and the daemon writes it.
+    final sent = withoutManifest(entries);
     final kept = {
-      for (final MapEntry(:key, :value) in entries.entries) key: ?value,
+      for (final MapEntry(:key, :value) in sent.entries) key: ?value,
     };
     if (stop) return const UpdateCancelled();
     onStep?.call(UpdateStep.data);
@@ -997,9 +1001,9 @@ class Updater {
           label: label,
           note: note,
           entries: {
-            ...entries,
+            ...sent,
             for (final p in live.current?.files.keys ?? const <String>[])
-              if (!entries.containsKey(p)) p: null,
+              if (!sent.containsKey(p)) p: null,
           },
         ),
       );

@@ -724,11 +724,12 @@ class FakeClaxApi implements ClaxApi {
       throw _invalid('missing_index', 'a version must include index.html');
     }
     _checkIcon(files);
+    final declared = _declare(_requestFiles(r), r.capabilities, files);
     final aid = _newArtifactId();
     final a = _artifacts[aid] = _FakeArtifact(
       id: aid,
       title: title,
-      capabilities: Map.of(r.capabilities ?? const {}),
+      capabilities: Map.of(declared ?? const {}),
       ownerSession: sessionId,
       versions: [],
     )..icon = r.icon;
@@ -760,9 +761,10 @@ class FakeClaxApi implements ClaxApi {
         files[e.key] = e.value!;
       }
     }
+    final declared = _declare(_requestFiles(r), r.capabilities, files);
     if (r.title != null) a.title = r.title!;
     if (r.icon != null) a.icon = r.icon;
-    if (r.capabilities != null) a.capabilities = Map.of(r.capabilities!);
+    if (declared != null) a.capabilities = Map.of(declared);
     a.versions.add(
       _version(
         aid,
@@ -806,12 +808,17 @@ class FakeClaxApi implements ClaxApi {
     _checkVersion(a, ifVersion);
     if (title != null) a.title = title;
     if (icon != null) a.icon = icon;
-    if (capabilities != null) a.capabilities = Map.of(capabilities);
+    final files = Map.of(a.versions[n - 1].blobs);
+    // As the daemon does, a declaration given with the restore is written
+    // as its clax.json.
+    if (capabilities != null) {
+      a.capabilities = Map.of(_declare(const {}, capabilities, files)!);
+    }
     a.versions.add(
       _version(
         aid,
         a.current + 1,
-        Map.of(a.versions[n - 1].blobs),
+        files,
         label: label ?? 'Restored v$n',
         note: note ?? 'Restored version $n',
       ),
@@ -1350,9 +1357,10 @@ class FakeClaxApi implements ClaxApi {
         files[e.key] = e.value!;
       }
     }
+    final declared = _declare(_requestFiles(r), r.capabilities, files);
     if (r.title != null) a.title = r.title!;
     if (r.icon != null) a.icon = r.icon;
-    if (r.capabilities != null) a.capabilities = Map.of(r.capabilities!);
+    if (declared != null) a.capabilities = Map.of(declared);
     a.versions.add(
       _version(draftId, a.current + 1, files, label: r.label, note: r.note),
     );
@@ -2290,6 +2298,70 @@ class FakeClaxApi implements ClaxApi {
       _FakeFile(e.bytes, e.type ?? _type(path), text: e.text);
 
   /// A request's files and entries (an entry wins), null for a removal.
+  /// The declaration a publish makes, as the daemon decides it
+  /// (`clax_core::publish`): a `clax.json` it sends is the declaration (400
+  /// `invalid_manifest` when it is not `{"capabilities": {…}}`, and
+  /// `manifest_mismatch` when [capabilities] differs); [capabilities]
+  /// without one writes it into [files]; a removal of it with none clears
+  /// the declaration; neither keeps it (null).
+  static Map<String, Object?>? _declare(
+    Map<String, _FakeFile?> sent,
+    Map<String, Object?>? capabilities,
+    Map<String, _FakeFile> files,
+  ) {
+    if (sent[manifestPath] case final file?) {
+      Map<String, Object?>? declared;
+      try {
+        final j = jsonDecode(utf8.decode(file.bytes));
+        if (j is Map<String, Object?> &&
+            j.length == 1 &&
+            j['capabilities'] is Map<String, Object?>) {
+          declared = j['capabilities'] as Map<String, Object?>;
+        }
+      } on FormatException {
+        declared = null;
+      }
+      if (declared == null) {
+        throw _invalid(
+          'invalid_manifest',
+          'clax.json must be {"capabilities": {...}}',
+        );
+      }
+      if (capabilities != null &&
+          _canonical(capabilities) != _canonical(declared)) {
+        throw _invalid(
+          'manifest_mismatch',
+          "capabilities differs from clax.json's",
+        );
+      }
+      return declared;
+    }
+    if (capabilities != null) {
+      final text =
+          '${const JsonEncoder.withIndent('  ').convert({'capabilities': capabilities})}\n';
+      files[manifestPath] = _FakeFile(
+        Uint8List.fromList(utf8.encode(text)),
+        'application/json',
+        text: text,
+      );
+      return capabilities;
+    }
+    if (sent.containsKey(manifestPath)) return const {};
+    return null;
+  }
+
+  /// [v] as JSON with every object's keys sorted, for comparing
+  /// declarations as the daemon does (key order does not count).
+  static String _canonical(Object? v) => jsonEncode(_sorted(v));
+
+  static Object? _sorted(Object? v) => switch (v) {
+    final Map<String, Object?> m => {
+      for (final k in m.keys.toList()..sort()) k: _sorted(m[k]),
+    },
+    final List<Object?> l => [for (final e in l) _sorted(e)],
+    _ => v,
+  };
+
   static Map<String, _FakeFile?> _requestFiles(PublishRequest r) => {
     for (final e in r.files.entries)
       e.key: e.value == null ? null : _texts({e.key: e.value!})[e.key],

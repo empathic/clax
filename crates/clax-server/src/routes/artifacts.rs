@@ -1107,10 +1107,11 @@ pub(crate) async fn admin_change(
 }
 
 /// 400 `manifest_owned` when `capabilities` would change artifact `id`'s
-/// declaration and its current version holds `clax.json`
-/// ([`clax_core::manifest::MANIFEST_PATH`]): the file declares it, and only
-/// a version that changes the file changes it. An artifact without one
-/// takes the change as before.
+/// declaration and its current version holds a `clax.json`
+/// ([`clax_core::manifest::MANIFEST_PATH`]) that parses as a manifest: the
+/// file declares it, and only a version that changes the file changes it.
+/// An artifact without one, or whose `clax.json` is not a manifest, takes
+/// the change as before.
 async fn manifest_owned(
     s: &AppState,
     id: &ArtifactId,
@@ -1118,7 +1119,7 @@ async fn manifest_owned(
 ) -> Result<(), ApiError> {
     let id = id.clone();
     let owned = s
-        .store_call(move |st| {
+        .store_call_async(move |st| async move {
             // No such artifact is the edit's own answer.
             let Some(cur) = st.get_artifact(&id)? else {
                 return Ok(false);
@@ -1126,9 +1127,13 @@ async fn manifest_owned(
             if capabilities == cur.capabilities {
                 return Ok(false);
             }
+            let path = clax_core::manifest::MANIFEST_PATH;
+            // A clax.json that is no manifest (a file of the page's own,
+            // from before manifests) declares nothing.
             Ok(st
-                .get_version(&id, cur.current_version)?
-                .is_some_and(|v| v.files.contains_key(clax_core::manifest::MANIFEST_PATH)))
+                .read_file_async(&id, cur.current_version, path)
+                .await?
+                .is_some_and(|(bytes, _)| clax_core::manifest::parse(&bytes).is_ok()))
         })
         .await?;
     if owned {

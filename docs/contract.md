@@ -239,6 +239,11 @@ other top-level keys, or a file that is not such an object, are 400
 previous version's `clax.json` forward with its declaration, and
 `"clax.json": null` without `capabilities` clears the declaration to `{}`.
 A page published before `clax.json` has none until a publish declares.
+A `clax.json` such a page held of its own, which is not a manifest, declares
+nothing while it is carried forward: a publish naming neither keeps the
+stored declaration and the file as they are, and `PATCH` still declares.
+A publish that sends that file again is 400 `invalid_manifest`, and one
+with `capabilities` writes the manifest over it.
 On either refusal nothing is published. A declaration that
 changes the page's needs the publisher to administer it (403
 `admin_only`, below). A commit pushed to the artifact's repository
@@ -283,11 +288,10 @@ title, description, icon and capabilities stay as they are, and documents
 are not touched. The body may also carry `title`, `icon`, `capabilities`
 (a full set), `label` and `note`, set in the same version as a publish
 sets them and checked as a publish's (400 `invalid_capabilities`,
-`label_too_long`; a longer note is cut, with `note_truncated: true`), the
-`capabilities` written as the new version's `clax.json` in place of
-`n`'s: the
-Clax app rolls an update back to the version before it this way, with
-that version's declaration. An `X-Clax-Session`, when given, must
+`label_too_long`; a longer note is cut, with `note_truncated: true`).
+A `capabilities` given is written as the new version's `clax.json`, in
+place of `n`'s. The Clax app rolls an update back to the version before it
+this way, with that version's declaration. An `X-Clax-Session`, when given, must
 name a live session (400 `unknown_session` otherwise), which the version
 records. It
 answers as a publish does (201 `{artifact, version, url, note_truncated}`),
@@ -307,7 +311,8 @@ The declaration can also be changed without publishing a version:
 replaces it the same way (omitted or `null` keeps, `{}` clears) and returns
 `{"artifact": ...}`; a declaration that does not validate is 400
 `invalid_capabilities` (checked before the artifact is looked up). When the
-current version holds `clax.json`, the file owns the declaration: a
+current version holds a `clax.json` that is a manifest, the file owns
+the declaration: a
 `capabilities` that differs from it is 400 `manifest_owned` (publish a
 version that changes `clax.json` instead), and one equal to it is no
 change. The daemon
@@ -3290,6 +3295,9 @@ characters.
 ("Versions, seen marks and attention"): `sha256:` and the hex SHA-256 of
 one line `<path>\0<sha256 hex>\0<size>\n` per file but `clax.json` in byte
 order of path (the declaration travels as the manifest's `capabilities`).
+A bundle holds no `clax.json`: the app leaves it out when it exports, and
+when it installs, updates or takes files it sends none and passes the
+manifest's (or its own) `capabilities`, so the daemon writes the file.
 The signature is Ed25519 (RFC 8032, pure) by the author key over the 14
 bytes `clax-bundle/1\n` followed by the exact bytes of the `manifest.json`
 entry; the manifest holds every file's hash and the seed's, so it covers
