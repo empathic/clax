@@ -200,9 +200,9 @@ No existing capability sets it in v1.
   `apps/clax_app/lib/bundle/updater.dart`, ported) is not approved; until
   the owner approves it, the shell serves it the last approved
   declaration, and shows a bar: "v4 asks for: the internet
-  (api.example.com), Claude. Review". The first version's declaration
-  needs approval too, except when the owner or one of the owner's agents
-  published it.
+  (api.example.com), Claude. Review". Every artifact's first declaration
+  needs approval too, the owner's and their agents' included (owner,
+  2026-10-26).
 - **The view.** A Permissions panel in the artifact's more menu (owner
   only) lists what the page may use, with each grant's state and a
   revoke: `net` hosts (`net_grants`), Claude (`sample_grants`), other
@@ -242,10 +242,12 @@ nothing about agents or harnesses (D8).
   sets the flag. The empty gallery is never seen empty.
 - **Hosted.** A person new through GitHub sign-in (`GitHubOutcome::New`)
   or an invite gets the same, owned by them.
-- **Updates.** At start, a seeded quickstart whose current version is
-  still the one Clax published (no other version since) gets the bundled
-  release's newer files as a new version, labelled "Quickstart
-  <release>". Once the person publishes or forks a change, Clax stops.
+- **Updates.** At start, a seeded quickstart nobody has touched (no
+  version but Clax's, no comment thread) gets the bundled release's newer
+  files as a new version, labelled "Quickstart <release>". The person's
+  first activity on it, a comment or a change, stops updates for good
+  (owner, 2026-10-26), so comments never point at elements a release
+  moved.
 - Deleting it is final: the flag stays set.
 
 ## 10. H. Always publish to clax.dev
@@ -280,10 +282,7 @@ uses E and F.
 - Q2. E local: may a page sign in to an origin other than clax.dev when
   it declares no `origins`?
 - Q3. E: should `status()` be available without declaring `account`?
-- Q4. D: should the owner's own and their agents' first versions really
-  skip approval (§7), or should every artifact ask once?
-- Q5. G: should the seeded quickstart keep following releases after the
-  person comments on it (comments are not changes), and stop only on a
-  new version they or their agent publish (§9)?
+- Q4. Decided: every artifact asks once (§7).
+- Q5. Decided: updates stop at the first comment or change (§9).
 - Q6. H: `always` pushes every new artifact, drafts excluded. Should it
   also push existing artifacts when first turned on?

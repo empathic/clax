@@ -127,7 +127,7 @@
 
 ### Task D (scoped; detail after C): one permissions system
 
-Spec §7. Migration 57 `capability_approvals`; port `addedCapabilities` (`apps/clax_app/lib/bundle/updater.dart:41`) to Rust as `clax_core::capabilities::added(live, next)`; the shell serves the last approved declaration until the owner approves (`web/shell/src/caps/availability.ts`, `view/artifact-controller.ts:718`); an approval bar; a Permissions panel in `MoreMenu.svelte` over `net-grants`, `sample-grant`, `db-grants` and the new approvals. Waits on Q4.
+Spec §7. Migration 57 `capability_approvals`; port `addedCapabilities` (`apps/clax_app/lib/bundle/updater.dart:41`) to Rust as `clax_core::capabilities::added(live, next)`; the shell serves the last approved declaration until the owner approves (`web/shell/src/caps/availability.ts`, `view/artifact-controller.ts:718`); an approval bar; a Permissions panel in `MoreMenu.svelte` over `net-grants`, `sample-grant`, `db-grants` and the new approvals. Every artifact's first declaration asks (Q4 decided).
 
 ### Task E (scoped; detail after D): the `account` capability
 
@@ -139,4 +139,4 @@ Spec §8. `ClaxExtensions.Shell` (`highlight`, `commentMode`, `can`); shell hand
 
 ### Task G (scoped): the quickstart in every new gallery
 
-Spec §9. `web/quickstart/` copied into `web/dist/quickstart/` by the web build (`web/BUILD.bazel` `dist_all`); a `home_flags` row and a seeding function in `clax-store`, called from the owner's first gallery listing (local) and `GitHubOutcome::New` / invite redemption (hosted); release tag and update-at-start rule. The page switches step 1 to `account.signIn()` and its tour to `shell.highlight`. Waits on Q5.
+Spec §9. `web/quickstart/` copied into `web/dist/quickstart/` by the web build (`web/BUILD.bazel` `dist_all`); a `home_flags` row and a seeding function in `clax-store`, called from the owner's first gallery listing (local) and `GitHubOutcome::New` / invite redemption (hosted); release tag and update-at-start rule, stopping at the first comment or version by anyone but Clax (Q5 decided). The page switches step 1 to `account.signIn()` and its tour to `shell.highlight`.
