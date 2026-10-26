@@ -65,16 +65,16 @@
   <SampleCount {ctl} />
   {#if Who}<Who {ctl} {s} open={ctl.openCount(s)} />{/if}
   {#if s.newer && !s.deleted}<button class="primary reload" onclick={() => ctl.reloadLatest()}>Reload</button>{/if}
-  <button class="comment" aria-pressed={s.commenting} disabled={s.deleted || !!live || !!s.spectator || off || s.showDraft !== null}
+  <button class="comment" data-shell-control="comment" aria-pressed={s.commenting} disabled={s.deleted || !!live || !!s.spectator || off || s.showDraft !== null}
     title={live ? "Comment on the live page with the Clax extension" : s.spectator ? "Commenting is paused while you're viewing" : off ? COMMENTS_OFF : s.showDraft !== null ? "Comments go on published versions" : undefined}
     onclick={() => ctl.toggleComment()}>Comment <span class="kc" aria-hidden="true">C</span></button>
-  <button class="threads hide-sm" aria-pressed={s.panel} onclick={() => ctl.togglePanel()}>Threads <span class="cnt">{ctl.openCount(s)}</span></button>
+  <button class="threads hide-sm" data-shell-control="threads" aria-pressed={s.panel} onclick={() => ctl.togglePanel()}>Threads <span class="cnt">{ctl.openCount(s)}</span></button>
   <VersionMenu {shown} {latest} live={!!live} dot={s.decided?.dot ?? false} open={s.menu === "versions"} onToggle={() => ctl.openMenu("versions")}
     input={() => ({ versions: s.data.versions, latest, shown, now: new Date(), threads: s.threads, numbers: ctl.numbers(s), me: s.me?.public_id ?? null, live: !!live })}
     hrefFor={n => ctl.here(n === latest ? null : n, s)} onChoose={n => { ctl.closeMenu(); ctl.chooseVersion(n); }} />
   {#if shown < latest && !s.newer && !s.deleted}<a class="latest hide-sm" href={ctl.here(null, s)}>Latest</a>{/if}
   {@const forkable = !!MoreMenu && (ownerShell || !!s.data.artifact.may_fork) && !live && !s.deleted}
-  {#if forkable}<button class="fork hide-sm" disabled={forking} title={`Fork v${shown} into an artifact of your own`} onclick={() => fork(shown)}>Fork</button>{/if}
+  {#if forkable}<button class="fork hide-sm" data-shell-control="fork" disabled={forking} title={`Fork v${shown} into an artifact of your own`} onclick={() => fork(shown)}>Fork</button>{/if}
   {#if s.data.artifact.app && !s.deleted}
     {#await import("./GetInClax.svelte") then { default: GetInClax }}<GetInClax id={ctl.id} ghost={ownerShell || !!shareOpen.current} />{/await}
   {/if}

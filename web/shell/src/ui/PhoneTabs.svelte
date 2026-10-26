@@ -6,5 +6,5 @@
 
 <div class="phone-tabs" role="group" aria-label="Page or threads">
   <button type="button" aria-pressed={!panel} onclick={onPage}>Page</button>
-  <button type="button" aria-pressed={panel} onclick={onThreads}>Threads <span class="cnt">{open}</span></button>
+  <button type="button" data-shell-control="threads" aria-pressed={panel} onclick={onThreads}>Threads <span class="cnt">{open}</span></button>
 </div>

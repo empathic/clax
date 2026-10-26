@@ -196,10 +196,10 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <span class="pub" bind:this={root} onkeydown={key}>
     {#if !link || behind > 0}
-      <button type="button" class="publish hide-sm" aria-haspopup="dialog" aria-expanded={open} onclick={() => (open ? close() : show())}>{action}</button>
+      <button type="button" class="publish hide-sm" data-shell-control="publish" aria-haspopup="dialog" aria-expanded={open} onclick={() => (open ? close() : show())}>{action}</button>
     {/if}
     {#if link && behind === 0}
-      <button type="button" class="linked hide-sm" data-warn={warn ? "" : undefined} aria-haspopup="dialog" aria-expanded={open} title={`Its link to ${host}: versions and comments`} onclick={() => (open ? close() : show())}>Linked{#if warn}<span class="warn-dot" aria-label={since ? `${host} unreachable` : `${notSentLabel(failed, failedQuestions)} not sent`}></span>{/if}</button>
+      <button type="button" class="linked hide-sm" data-shell-control="publish" data-warn={warn ? "" : undefined} aria-haspopup="dialog" aria-expanded={open} title={`Its link to ${host}: versions and comments`} onclick={() => (open ? close() : show())}>Linked{#if warn}<span class="warn-dot" aria-label={since ? `${host} unreachable` : `${notSentLabel(failed, failedQuestions)} not sent`}></span>{/if}</button>
     {/if}
     {#if link}
       <a class="public hide-sm" href={link.url} target="_blank" rel="noopener noreferrer" title={`Its public copy on ${host}`}>Public ↗</a>
