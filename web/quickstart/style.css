@@ -314,3 +314,18 @@
   .tag.st-running, .tag.st-review { color: var(--accent); background: var(--accent-soft); }
   .tag.st-done { color: var(--ok); background: var(--ok-soft); }
   .tag.st-waiting { color: var(--med); }
+
+  /* The step you are on: an accent outline with a soft halo, and a ring that
+     travels out from it when focus arrives. Box-shadow only: ring boxes are
+     positioned with transforms. */
+  .node.sel, .deck.sel { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 0 0 7px var(--accent-soft), 0 10px 28px rgba(0, 0, 0, .22); }
+  .node:focus-visible, .deck-tabs button[role="tab"]:focus-visible, .fab:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .arrive { animation: arrive 1.1s ease-out 1; }
+  @keyframes arrive {
+    0%   { box-shadow: 0 0 0 2px var(--accent), 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); }
+    60%  { box-shadow: 0 0 0 2px var(--accent), 0 0 0 16px color-mix(in srgb, var(--accent) 0%, transparent); }
+    100% { box-shadow: 0 0 0 2px var(--accent), 0 0 0 7px var(--accent-soft), 0 10px 28px rgba(0, 0, 0, .22); }
+  }
+  .deck-tabs button[role="tab"].arrive { animation: arrive-tab 1.1s ease-out 1; }
+  @keyframes arrive-tab { 0% { background: color-mix(in srgb, var(--accent) 35%, var(--surface)); } 100% { background: var(--surface); } }
+  @media (prefers-reduced-motion: reduce) { .arrive, .deck-tabs button[role="tab"].arrive { animation: none; } }
