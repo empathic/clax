@@ -2,7 +2,7 @@
 //! pushes of its artifacts to them ([`clax_http::public`]).
 //!
 //! - `GET /api/remotes` lists them; `POST /api/remotes {url, name?,
-//!   machine?}` starts a device sign-in there; `POST
+//!   machine?, kind?, return_to?}` starts a device sign-in there; `POST
 //!   /api/remotes/<id>/poll` polls it once; `DELETE /api/remotes/<id>`
 //!   forgets one. Adding, polling and removing are the owner's alone (the
 //!   CLI by hand or the owner's browser): 403 `not_for_agents` for an
@@ -30,7 +30,7 @@ use crate::public::{self, Mode, SignIn};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::questions::{QOption, Question};
 use clax_core::{ArtifactId, CoreError};
@@ -117,21 +117,64 @@ pub struct AddBody {
     /// marks as the person's own device; absent for a daemon.
     #[serde(default)]
     kind: Option<String>,
+    /// The page of this daemon's the approval page sends the person back to
+    /// once they decide: a path (`/a/<id>?publish=1`) ([`return_address`]).
+    #[serde(default)]
+    return_to: Option<String>,
 }
 
-/// `POST /api/remotes {url, name?, machine?, kind?}` (the owner) → 201 `{remote,
-/// user_code, verification_url, expires_at, interval}`: a device sign-in
-/// started at `url`. Open `verification_url` (signed in there), check the
-/// user code and approve; then poll. `kind` `clax-app` (the only kind)
-/// names the sign-in as the Clax app's, which the approval page says may
-/// manage the sharing of the person's artifacts. 400 `invalid_args` for a
-/// URL that is not a public origin, or another kind; 400 `remote_exists` for one signed in to already;
+/// `path` made absolute against the shell origin the request came to (its
+/// `Host`, `http://localhost:<port>` or `http://127.0.0.1:<port>`), for a
+/// public Clax to send the person back to once they decide; `None` when
+/// the request came to another host, so the sign-in goes on without it.
+///
+/// # Errors
+/// 400 `invalid_args` when `path` is not a path on this origin
+/// ([`clax_http::site_access::safe_next`]).
+fn return_address(
+    s: &AppState,
+    headers: &HeaderMap,
+    path: &str,
+) -> Result<Option<String>, ApiError> {
+    use clax_http::site_access as sa;
+    if sa::safe_next(path) != path {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            "return_to is a path on this Clax, starting with one /",
+        ));
+    }
+    let host = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    let origin = format!("http://{host}");
+    if !sa::shell_origins(s, host).contains(&origin) {
+        return Ok(None);
+    }
+    Ok(clax_http::loopback::loopback_return(&format!(
+        "{origin}{path}"
+    )))
+}
+
+/// `POST /api/remotes {url, name?, machine?, kind?, return_to?}` (the
+/// owner) → 201 `{remote, user_code, verification_url, expires_at,
+/// interval, return_to_kept}`: a device sign-in started at `url`. Open
+/// `verification_url` (signed in there), check the user code and approve;
+/// then poll. `kind` `clax-app` (the only kind) names the sign-in as the
+/// Clax app's, which the approval page says may manage the sharing of the
+/// person's artifacts. `return_to`, a path here, is the page the approval
+/// page sends the person back to once they decide ([`return_address`]);
+/// `return_to_kept` says whether it will (false without one, at another
+/// host, or at a public Clax that refused the field). 400 `invalid_args`
+/// for a URL that is not a public origin, another kind or a `return_to`
+/// that is not a path; 400 `remote_exists` for one signed in to already;
 /// 502 for a remote that refused or could not be reached.
 pub async fn add(
     State(s): State<AppState>,
     d: DeniedToGrants,
     who: Identity,
     _o: SameOrigin,
+    headers: HeaderMap,
     req: Result<Json<AddBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     local_only(&s)?;
@@ -148,6 +191,10 @@ pub async fn add(
             "kind is clax-app or absent",
         ));
     }
+    let return_to = match b.return_to.as_deref() {
+        Some(p) => return_address(&s, &headers, p)?,
+        None => None,
+    };
     let origin = public::origin_of(&b.url)?;
     let name = b
         .name
@@ -169,8 +216,13 @@ pub async fn add(
             ),
         ));
     }
-    let sign_in =
-        clax_rt::sendable(public::start_sign_in(&origin, &machine, b.kind.as_deref())).await?;
+    let (sign_in, return_to_kept) = clax_rt::sendable(public::start_sign_in(
+        &origin,
+        &machine,
+        b.kind.as_deref(),
+        return_to.as_deref(),
+    ))
+    .await?;
     // What the token will read threads as there: a device's unfiltered,
     // an agent token's filtered by the person's approvals.
     let kind = match b.kind.as_deref() {
@@ -192,6 +244,7 @@ pub async fn add(
             "verification_url": r.verification_url,
             "expires_at": r.sign_in_expires_at,
             "interval": r.poll_interval_s,
+            "return_to_kept": return_to_kept,
         })),
     )
         .into_response())

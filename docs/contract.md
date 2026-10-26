@@ -1012,14 +1012,28 @@ here changes a local daemon or the plugins until a remote is added.
 
 **Signing in, by device code.** `clax remote add <url>`, the shell's
 Publish button on a Clax signed in to none (it signs in to
-`https://clax.dev`, opens the approval page in a new tab and polls at the
-remote's interval while its dialog is open), or `POST
-/api/remotes {url, name?, machine?, kind?}` with the daemon token, the
+`https://clax.dev` and sends its tab to the approval page, which sends it
+back to the artifact's page with `publish=1&clax_signin=approved` or
+`denied`; there the shell drops both from the address, polls the pending
+sign-in once and reopens its dialog, or says it was declined; when the
+daemon could not pass the page on, the dialog shows the code and a link to
+the approval page and polls at the remote's interval while it is open), or
+`POST /api/remotes {url, name?, machine?, kind?, return_to?}` with the
+daemon token, the
 owner's alone (403 `not_for_agents` for an agent), asks the public Clax for
 a device sign-in naming this machine (`Clax on <host name>`, or
 `machine`), and its kind (`kind`: `clax-app` for the Clax app, which
 passes it on as `client_kind`; absent for a daemon; any other is 400
-`invalid_args`), prints the user code and opens the approval page; the person,
+`invalid_args`), and the page to send the person back to once they decide
+(`return_to`: a path on this daemon, `/a/<id>?publish=1`, which must
+start with one `/` and hold no backslash or control character, else 400
+`invalid_args`; the daemon makes it absolute against the shell origin the
+request came to, `http://localhost:<port>` or `http://127.0.0.1:<port>`,
+and passes it on as `return_to`, or drops it when the request came to any
+other host; a public Clax that refuses the field as unknown is asked again
+without it). The answer, 201 `{remote, user_code, verification_url,
+expires_at, interval, return_to_kept}`, says with `return_to_kept` whether
+the approval page will send the person back. The CLI prints the user code and opens the approval page; the person,
 signed in there, checks the code and approves; the CLI polls (`POST
 /api/remotes/<id or name>/poll` → `{remote, status}`, status `pending`,
 `connected`, `denied` or `expired`; a denied or expired sign-in forgets the

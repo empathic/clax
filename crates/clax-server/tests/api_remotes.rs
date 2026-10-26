@@ -6,7 +6,7 @@
 
 use clax_core::ArtifactId;
 use clax_testkit::TestServer;
-use clax_testkit::remotes::{Public, connect, json_of, local_req, post};
+use clax_testkit::remotes::{Public, connect, connect_with, json_of, local_req, post};
 use reqwest::header::HOST;
 use serde_json::{Value, json};
 
@@ -906,6 +906,61 @@ async fn an_agents_cli_push_is_refused_and_pointed_at_publish_public() {
             .unwrap()
             .contains("publish_public")
     );
+}
+
+#[tokio::test]
+async fn a_sign_in_names_the_page_to_return_to() {
+    let public = Public::new().await;
+    let local = TestServer::spawn().await;
+    let port = local.addr.port();
+    // A path on this daemon's own origin alone.
+    for bad in ["https://evil.example/", "//evil.example/a", "a/x", "/a\\x"] {
+        let (s, v) = post(
+            &local,
+            "/api/remotes",
+            json!({"url": public.origin, "return_to": bad}),
+        )
+        .await;
+        assert_eq!((s, code(&v)), (400, "invalid_args"), "{bad}: {v}");
+    }
+    // Asked at a host the API answers that is not one of the shell's
+    // origins, the sign-in starts without one.
+    let res = local
+        .authed(local.client.post(format!("{}/api/remotes", local.base)))
+        .header(HOST, format!("[::1]:{port}"))
+        .json(&json!({"url": public.origin, "return_to": "/a/x?publish=1"}))
+        .send()
+        .await
+        .unwrap();
+    let (s, v) = json_of(res).await;
+    assert_eq!((s, &v["return_to_kept"]), (201, &json!(false)), "{v}");
+    let uc = v["user_code"].as_str().unwrap();
+    let (_, peek) = public
+        .browser(
+            reqwest::Method::GET,
+            &format!("/api/hosted/device/{uc}"),
+            json!(null),
+        )
+        .await;
+    assert!(peek["return_to"].is_null(), "{peek}");
+    let id = v["remote"]["id"].as_str().unwrap();
+    let (s, _) = local_req(
+        &local,
+        reqwest::Method::DELETE,
+        &format!("/api/remotes/{id}"),
+        json!(null),
+        None,
+    )
+    .await;
+    assert!(s < 300, "{s}");
+    // At its own origin, the approval page sends the person back there.
+    connect_with(
+        &local,
+        &public,
+        json!({"url": public.origin, "return_to": "/a/x?publish=1"}),
+        Some(&format!("http://localhost:{port}/a/x?publish=1")),
+    )
+    .await;
 }
 
 #[tokio::test]
