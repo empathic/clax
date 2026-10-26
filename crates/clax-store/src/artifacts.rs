@@ -396,6 +396,16 @@ impl Store {
                     text
                 ],
             )?;
+            if let Some(caps) = &patch.capabilities {
+                // The current version keeps the declaration the artifact
+                // now has, so the two never disagree.
+                tx.execute(
+                    "UPDATE versions SET capabilities_json = ?2
+                     WHERE artifact_id = ?1
+                       AND n = (SELECT current_version FROM artifacts WHERE id = ?1)",
+                    params![id.as_str(), caps.to_string()],
+                )?;
+            }
             let mut fields = serde_json::Map::new();
             let mut set = |k: &str, v: Option<serde_json::Value>| {
                 if let Some(v) = v {
@@ -1140,6 +1150,39 @@ fn fields_set(p: &ValidatedPublish, first: bool) -> Vec<&'static str> {
         .collect()
 }
 
+/// Version `n` of `id`'s stored declaration; `NotFound` when the artifact
+/// is missing or deleted or has no version `n`, `None` when it is not known.
+fn recorded_declaration(c: &rusqlite::Connection, id: &str, n: u32) -> Result<Option<String>> {
+    c.query_row(
+        "SELECT v.capabilities_json FROM versions v JOIN artifacts a ON a.id = v.artifact_id
+         WHERE v.artifact_id = ?1 AND v.n = ?2 AND a.deleted_at IS NULL",
+        params![id, n],
+        |r| r.get(0),
+    )
+    .optional()?
+    .ok_or(CoreError::NotFound)
+}
+
+fn parse_declaration(raw: &str, id: &str, n: u32) -> Result<serde_json::Value> {
+    serde_json::from_str(raw).map_err(|_| CoreError::Corrupt {
+        artifact_id: id.to_string(),
+        column: "capabilities_json",
+        version: Some(n),
+    })
+}
+
+/// [`Store::version_capabilities`] on `c`.
+pub(crate) fn version_capabilities_in(
+    c: &rusqlite::Connection,
+    id: &str,
+    n: u32,
+) -> Result<serde_json::Value> {
+    match recorded_declaration(c, id, n)? {
+        Some(raw) => parse_declaration(&raw, id, n),
+        None => super::docs::caps_in(c, &ArtifactId::parse(id).map_err(|_| CoreError::NotFound)?),
+    }
+}
+
 impl Store {
     /// Creates an artifact and writes its version 1. `p.files` are all stored;
     /// nothing is carried forward. The artifact is invisible until version 1 is
@@ -1440,8 +1483,10 @@ impl Store {
     /// otherwise, checked again inside the version's transaction). Each file
     /// keeps version `n`'s bytes, content type and hash, so the new version's
     /// `content_sha256` equals `n`'s; files of the current version that `n`
-    /// lacks are not carried. Title, description, icon and capabilities stay
-    /// as they are, and documents are not touched. `session_id` is recorded
+    /// lacks are not carried. Title, description and icon stay as they are,
+    /// and the capabilities become the declaration version `n` was
+    /// published under ([`Store::version_capabilities`]; the current one
+    /// stays when `n`'s is not known), and documents are not touched. `session_id` is recorded
     /// on the new version, and the version as `version.publish` under `ctx`
     /// with `restored_from: n`; its `carried` names only the files (other
     /// than `index.html`) whose bytes equal the previous version's.
@@ -1458,6 +1503,27 @@ impl Store {
         session_id: Option<&str>,
     ) -> Result<(Artifact, Version)> {
         self.block_on(self.restore_version_async(ctx, id, n, if_version, session_id))
+    }
+
+    /// The capability declaration version `n` of `id` was published under,
+    /// or the artifact's current one when it is not known (a version made
+    /// before versions kept theirs, other than the then-current one).
+    ///
+    /// # Errors
+    /// `NotFound` for an unknown or deleted artifact or version `n`;
+    /// `Corrupt` when a stored declaration is malformed.
+    pub fn version_capabilities(&self, id: &str, n: u32) -> Result<serde_json::Value> {
+        self.with_read(|c| version_capabilities_in(c, id, n))
+    }
+
+    /// Version `n`'s own recorded declaration, `None` when it is not known.
+    fn recorded_version_capabilities(
+        &self,
+        id: &ArtifactId,
+        n: u32,
+    ) -> Result<Option<serde_json::Value>> {
+        let raw = self.with_read(|c| recorded_declaration(c, id.as_str(), n))?;
+        raw.map(|raw| parse_declaration(&raw, id.as_str(), n)).transpose()
     }
 
     /// [`Store::restore_version`], awaiting its content store. Version
@@ -1529,7 +1595,10 @@ impl Store {
                     .unwrap_or_else(|| format!("Restored v{n}")),
             ),
             if_version: Some(if_version),
-            capabilities: declaration.capabilities,
+            capabilities: match declaration.capabilities {
+                Some(c) => Some(c),
+                None => self.recorded_version_capabilities(id, n)?,
+            },
             files,
             note: Some(
                 declaration
@@ -1915,8 +1984,9 @@ impl Store {
                 version_authors(tx, id.as_str(), expected, p, session_id, &files)?;
             tx.execute(
                 "INSERT INTO versions (artifact_id, n, label, created_at, session_id, files_json, note,
-                    content_sha256, person, by_page, file_authors_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    content_sha256, person, by_page, file_authors_json, capabilities_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                         COALESCE(?12, (SELECT capabilities_json FROM artifacts WHERE id = ?1)))",
                 params![
                     id.as_str(),
                     n,
@@ -1931,7 +2001,8 @@ impl Store {
                     authors
                         .files
                         .as_ref()
-                        .map(|f| serde_json::to_string(f).expect("serialisable map"))
+                        .map(|f| serde_json::to_string(f).expect("serialisable map")),
+                    p.capabilities.as_ref().map(|c| c.to_string()),
                 ],
             )?;
             link_version(tx, id.as_str(), n, p, &self.now())?;
@@ -2516,6 +2587,125 @@ mod tests {
             ..Default::default()
         })
         .unwrap()
+    }
+
+    fn declaring(
+        files: &[(&str, Option<&str>)],
+        if_version: Option<u32>,
+        caps: serde_json::Value,
+    ) -> clax_core::publish::ValidatedPublish {
+        let mut p = publish(files, if_version);
+        p.capabilities = Some(caps);
+        p
+    }
+
+    #[test]
+    fn each_version_keeps_its_declaration() {
+        let (_d, store) = store();
+        let v1 = serde_json::json!({"db": {}});
+        let v2 = serde_json::json!({"db": {}, "net": {"hosts": ["a.example"]}});
+        let (a, _) = store
+            .create_artifact(
+                DAEMON,
+                declaring(&[("index.html", Some("<p>1"))], None, v1.clone()),
+                None,
+            )
+            .unwrap();
+        let id = clax_core::ArtifactId::parse(&a.id).unwrap();
+        store
+            .publish_version(
+                DAEMON,
+                &id,
+                declaring(&[("index.html", Some("<p>2"))], Some(1), v2.clone()),
+                None,
+            )
+            .unwrap();
+        // A version that declares nothing keeps the declaration in force.
+        store
+            .publish_version(
+                DAEMON,
+                &id,
+                publish(&[("index.html", Some("<p>3"))], Some(2)),
+                None,
+            )
+            .unwrap();
+        assert_eq!(store.version_capabilities(&a.id, 1).unwrap(), v1);
+        assert_eq!(store.version_capabilities(&a.id, 2).unwrap(), v2);
+        assert_eq!(store.version_capabilities(&a.id, 3).unwrap(), v2);
+        assert!(matches!(
+            store.version_capabilities(&a.id, 9),
+            Err(clax_core::CoreError::NotFound)
+        ));
+        // A version whose declaration is not known reads as the current one.
+        store
+            .with_tx(|tx| {
+                tx.execute(
+                    "UPDATE versions SET capabilities_json = NULL WHERE artifact_id = ?1 AND n = 1",
+                    params![a.id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.version_capabilities(&a.id, 1).unwrap(), v2);
+        // A patch of the declaration changes the current version's too.
+        let patch = serde_json::json!({"db": {}, "net": {"hosts": ["b.example"]}});
+        store
+            .update_meta(
+                DAEMON,
+                &id,
+                MetaPatch {
+                    capabilities: Some(patch.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(store.version_capabilities(&a.id, 3).unwrap(), patch);
+        assert_eq!(store.version_capabilities(&a.id, 2).unwrap(), v2);
+    }
+
+    #[test]
+    fn restore_takes_the_restored_versions_declaration() {
+        let (_d, store) = store();
+        let v1 = serde_json::json!({"db": {}});
+        let v2 = serde_json::json!({"db": {}, "net": {"hosts": ["a.example"]}});
+        let (a, _) = store
+            .create_artifact(
+                DAEMON,
+                declaring(&[("index.html", Some("<p>1"))], None, v1.clone()),
+                None,
+            )
+            .unwrap();
+        let id = clax_core::ArtifactId::parse(&a.id).unwrap();
+        store
+            .publish_version(
+                DAEMON,
+                &id,
+                declaring(&[("index.html", Some("<p>2"))], Some(1), v2.clone()),
+                None,
+            )
+            .unwrap();
+        let (now, v) = store.restore_version(DAEMON, &id, 1, 2, None).unwrap();
+        assert_eq!(v.n, 3);
+        assert_eq!(now.capabilities, v1);
+        assert_eq!(store.version_capabilities(&a.id, 3).unwrap(), v1);
+        // An unknown declaration leaves the current one in force.
+        store
+            .with_tx(|tx| {
+                tx.execute(
+                    "UPDATE versions SET capabilities_json = NULL WHERE artifact_id = ?1 AND n = 2",
+                    params![a.id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let (now, _) = store.restore_version(DAEMON, &id, 2, 3, None).unwrap();
+        assert_eq!(now.capabilities, v1);
+        // A fork's version 1 takes the forked version's declaration.
+        let (fork, _) = store
+            .fork_artifact(DAEMON, &id, Some(1), None, None)
+            .unwrap();
+        assert_eq!(fork.capabilities, v1);
+        assert_eq!(store.version_capabilities(&fork.id, 1).unwrap(), v1);
     }
 
     #[test]
