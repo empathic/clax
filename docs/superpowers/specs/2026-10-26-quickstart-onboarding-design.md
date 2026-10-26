@@ -69,7 +69,7 @@ origin. The device sign-in gets a return address instead.
   `return_to`, accepted only as a loopback URL: scheme `http`, host
   `localhost`, `127.0.0.1` or `[::1]`, any port, a path, at most 2048
   bytes, no userinfo or fragment; anything else is 400 `invalid_args`. It
-  is stored with the device code (`device_codes.return_to`) and served
+  is stored with the device code (`device_codes.return_to`, migration 55) and served
   only in `GET /api/hosted/device/<code>` to the approving member. The
   approval page (`/device`) says "Approve, then go back to
   localhost:7480", and after Approve or Deny navigates there with
@@ -183,7 +183,7 @@ No existing capability sets it in v1.
   `clax.json` into the version from it, so every new version has one.
   When neither is given, the previous version's `clax.json` carries
   forward as files do.
-- The declaration is kept per version: migration 55 adds
+- The declaration is kept per version: migration 56 adds
   `versions.capabilities_json`; `artifacts.capabilities_json` stays the
   current version's, for the routes that read it. Restore takes the
   restored version's declaration (today it keeps the current one).
@@ -192,7 +192,7 @@ No existing capability sets it in v1.
 
 ## 7. D. One permissions system
 
-- **Approval per version.** Migration 56 adds `capability_approvals
+- **Approval per version.** Migration 57 adds `capability_approvals
   (artifact_id, version_n, capabilities_json, approved_at, by)`: the
   declaration the owner approved, and at which version. A version whose
   declaration adds to the last approved one (new top-level names, or new
