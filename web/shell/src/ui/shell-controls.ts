@@ -7,12 +7,19 @@ export type ShellControl = (typeof SHELL_CONTROLS)[number];
 
 export const isShellControl = (v: unknown): v is ShellControl => typeof v === "string" && (SHELL_CONTROLS as readonly string[]).includes(v);
 
+/** `el`'s own visibility and opacity: `checkVisibility` where the browser has it, else the computed style. */
+function visible(el: Element): boolean {
+  if (typeof el.checkVisibility === "function") return el.checkVisibility({ opacityProperty: true, visibilityProperty: true });
+  const cs = getComputedStyle(el);
+  return cs.visibility !== "hidden" && cs.visibility !== "collapse" && cs.opacity !== "0";
+}
+
 /** Whether `el` is shown now: connected, laid out with a box, visible
  * (opacity and visibility included), not `disabled`, and under no `[inert]`
  * or `[aria-hidden="true"]` ancestor. */
 export function isShown(el: Element): boolean {
   if (!el.isConnected || el.getClientRects().length === 0) return false;
-  if (!el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return false;
+  if (!visible(el)) return false;
   if (el.matches(":disabled")) return false;
   return el.closest('[inert], [aria-hidden="true"]') === null;
 }
