@@ -1831,3 +1831,25 @@ impl TestServer {
             .to_string()
     }
 }
+
+/// A web tree holding only a quickstart release that `mark` tells apart: two
+/// marks give two releases ([`clax_core::quickstart::Release::id`]).
+pub fn quickstart_tree(mark: &str) -> clax_core::embedded::MemTree {
+    let files = [
+        (
+            "quickstart/index.html",
+            format!("<!doctype html><title>Clax Quickstart</title><p>{mark}</p>"),
+        ),
+        (
+            "quickstart/clax.json",
+            r#"{"capabilities":{"db":{}}}"#.to_string(),
+        ),
+        ("quickstart/style.css", mark.to_string()),
+    ];
+    clax_core::embedded::MemTree(
+        files
+            .into_iter()
+            .map(|(p, c)| (p.to_string(), c.into_bytes()))
+            .collect(),
+    )
+}

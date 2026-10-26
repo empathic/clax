@@ -4,7 +4,7 @@
 //! `toml_edit`, which keeps the file's comments, order and spelling.
 //!
 //! The fields are those that have defaults (`[serve]`, `[sample]`,
-//! `[toolpath]`, `[questions]`, `[bot]`) and the top-level `bin`. `bin` is
+//! `[toolpath]`, `[gallery]`, `[questions]`, `[bot]`) and the top-level `bin`. `bin` is
 //! listed but not editable here: `clax bin set` writes it, as the one line
 //! the plugins' wrapper reads ([`super::bin_line`]). `[hosted]` is not
 //! listed: a daemon with a `[hosted]` table serves no settings.
@@ -147,11 +147,12 @@ pub fn fields_in_effect(running: &HomeConfig, current: &HomeConfig) -> Vec<Field
 /// What is wrong with each table of `cfg` that does not check, as its
 /// reader reports it.
 pub fn problems(cfg: &HomeConfig) -> Vec<Problem> {
-    let checks: [(&'static str, Result<()>); 6] = [
+    let checks: [(&'static str, Result<()>); 7] = [
         ("bin", cfg.bin().map(drop)),
         ("serve", cfg.serve_port().map(drop)),
         ("sample", cfg.sample().map(drop)),
         ("toolpath", cfg.toolpath().map(drop)),
+        ("gallery", cfg.gallery().map(drop)),
         ("questions", questions_check(cfg)),
         ("bot", cfg.bot().map(drop)),
     ];
@@ -197,6 +198,7 @@ fn check_table(cfg: &HomeConfig, table: &str) -> Result<()> {
         "serve" => cfg.serve_port().map(drop),
         "sample" => cfg.sample().map(drop),
         "toolpath" => cfg.toolpath().map(drop),
+        "gallery" => cfg.gallery().map(drop),
         "questions" => questions_check(cfg),
         "bot" => cfg.bot().map(drop),
         _ => Ok(()),

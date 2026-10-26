@@ -40,6 +40,7 @@ pub mod names;
 pub mod perf;
 pub mod presence;
 pub mod publish;
+pub mod quickstart;
 pub mod questions;
 pub mod remote;
 pub mod rights;
