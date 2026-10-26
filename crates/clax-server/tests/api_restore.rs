@@ -454,6 +454,55 @@ async fn restore_puts_back_a_declaration_with_the_files_unchecked() {
 }
 
 #[tokio::test]
+async fn a_restore_that_declares_writes_its_clax_json() {
+    let ts = TestServer::spawn().await;
+    let p = ts
+        .post_json(
+            "/api/artifacts",
+            json!({"title": "Runs", "capabilities": {"db": {}},
+                   "files": {"index.html": {"content": "<p>1</p>"}}}),
+        )
+        .await
+        .json::<Value>()
+        .await
+        .unwrap();
+    let aid = p["artifact"]["id"].as_str().unwrap().to_string();
+    let v1_hash = p["version"]["content_sha256"].clone();
+    publish(&ts, &aid, 1, json!({"index.html": {"content": "<p>2</p>"}})).await;
+    let res = restore(
+        &ts,
+        &aid,
+        json!({"version": 1, "if_version": 2, "capabilities": {"user": {}}}),
+    )
+    .await;
+    assert_eq!(res.status(), 201, "{}", res.text().await.unwrap());
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["artifact"]["capabilities"], json!({"user": {}}));
+    let manifest = file(&ts, &aid, 3, "clax.json").await.bytes().await.unwrap();
+    assert_eq!(
+        manifest.to_vec(),
+        clax_core::manifest::render(&json!({"user": {}})),
+        "the file says what the version declares"
+    );
+    assert_eq!(
+        v["version"]["content_sha256"], v1_hash,
+        "the content hash leaves clax.json out, so it is still version 1's"
+    );
+    // Without a declaration, version 1's clax.json comes back as it was.
+    let res = restore(&ts, &aid, json!({"version": 1, "if_version": 3})).await;
+    assert_eq!(res.status(), 201);
+    assert_eq!(
+        file(&ts, &aid, 4, "clax.json")
+            .await
+            .bytes()
+            .await
+            .unwrap()
+            .to_vec(),
+        clax_core::manifest::render(&json!({"db": {}}))
+    );
+}
+
+#[tokio::test]
 async fn restore_refuses_a_field_it_does_not_take_naming_it() {
     let ts = TestServer::spawn().await;
     let aid = runs(&ts).await;

@@ -220,13 +220,37 @@ Arguments:
 | `label` | string | no | Short name for this version, at most 60 characters. |
 | `note` | string | no | This version's change note for the person, at most 280 characters (longer is cut, with `note_truncated: true`). |
 | `addresses` | array of thread IDs | no | Threads of this artifact this version addresses (at most 50). Linking does not resolve them. |
-| `capabilities` | object | no | The page's runtime capabilities declaration, as a full set (below). |
+| `capabilities` | object | no | The page's runtime capabilities declaration, as a full set (below). Clax writes it as the version's `clax.json`; with a `clax.json` in `files`, it must equal that file's. |
 | `tags` | array of strings | no | Existing tags (names or IDs, see "Tags") to add to the artifact once published. |
 
 On an update, an omitted `title`, `description`, `icon` or `capabilities`
 keeps the artifact's current value, and so does `capabilities: null`. A
 given `capabilities` object is the full declaration: it replaces the stored
 one rather than merging with it, and `{}` clears it.
+
+The declaration is also a file: `clax.json` at the artifact's root,
+`{"capabilities": {...}}`, versioned, read, forked and pushed like any
+other. A publish whose `files` carry `clax.json` declares what it says;
+other top-level keys, or a file that is not such an object, are 400
+`invalid_manifest`, and a `capabilities` argument that differs from it is
+400 `manifest_mismatch` (equal, omitted or `null` agree). A publish with
+`capabilities` and no `clax.json` gets one, written by the daemon
+(two-space indented JSON with a trailing newline). Naming neither carries the
+previous version's `clax.json` forward with its declaration, and
+`"clax.json": null` without `capabilities` clears the declaration to `{}`.
+A page published before `clax.json` has none until a publish declares.
+On either refusal nothing is published. A declaration that
+changes the page's needs the publisher to administer it (403
+`admin_only`, below). A commit pushed to the artifact's repository
+declares the same way: one that adds or changes `clax.json` declares what
+it says, and one that removes it clears the declaration. A commit whose
+`clax.json` is not a manifest or does not validate, or that changes the
+declaration when its pusher does not administer the page, is no version
+(`version.push_refused`, reason `invalid_manifest`,
+`invalid_capabilities` or `admin_only`) and stays in git. A restore's
+`capabilities` is written as the restored version's `clax.json`.
+`clax.json` is in no content hash (`content_sha256`), so a version the
+daemon writes it into keeps the hash of the files it was sent.
 
 The result also carries `note` and `addressed` (every thread linked to the
 new version: those named, plus those this session was marked working on for
@@ -259,7 +283,9 @@ title, description, icon and capabilities stay as they are, and documents
 are not touched. The body may also carry `title`, `icon`, `capabilities`
 (a full set), `label` and `note`, set in the same version as a publish
 sets them and checked as a publish's (400 `invalid_capabilities`,
-`label_too_long`; a longer note is cut, with `note_truncated: true`): the
+`label_too_long`; a longer note is cut, with `note_truncated: true`), the
+`capabilities` written as the new version's `clax.json` in place of
+`n`'s: the
 Clax app rolls an update back to the version before it this way, with
 that version's declaration. An `X-Clax-Session`, when given, must
 name a live session (400 `unknown_session` otherwise), which the version
@@ -280,7 +306,11 @@ The declaration can also be changed without publishing a version:
 `PATCH /api/artifacts/<id>` (token required) with `{"capabilities": {...}}`
 replaces it the same way (omitted or `null` keeps, `{}` clears) and returns
 `{"artifact": ...}`; a declaration that does not validate is 400
-`invalid_capabilities` (checked before the artifact is looked up). The daemon
+`invalid_capabilities` (checked before the artifact is looked up). When the
+current version holds `clax.json`, the file owns the declaration: a
+`capabilities` that differs from it is 400 `manifest_owned` (publish a
+version that changes `clax.json` instead), and one equal to it is no
+change. The daemon
 reads the declaration on every call, so a change applies to `db` rules from
 the next call, and to what `use()` resolves in views loaded afterwards. A view
 already open keeps the declaration it loaded, including for other pages of the
@@ -2383,8 +2413,8 @@ artifact's threads, or watch, else its registration). Each version view
 carries `agent` (its publishing session's handle) and `agent_harness`, both
 `null` for a version published without a session. It also carries
 `content_sha256`, `sha256:` and the hex SHA-256 of the version's file
-manifest (one `<path>\0<sha256 hex>\0<size>\n` line per file, in path
-order), and each file's `sha256` (lowercase hex). On versions written
+manifest (one `<path>\0<sha256 hex>\0<size>\n` line per file but
+`clax.json`, in path order), and each file's `sha256` (lowercase hex). On versions written
 before content hashes, `content_sha256` is `null` and `sha256` is absent. A moved copy of such a version records both.
 
 With a viewer cookie, `GET /api/artifacts/<aid>` also carries `attention`,
@@ -3028,7 +3058,7 @@ need the token:
 - `POST /api/drafts/<id>/renders` with `{digest, errors, failed_tests}`
   records the app's render of the draft's files (403 `not_for_agents` to
   the owner's agents): `digest` is `sha256:` and the hex SHA-256 of one
-  line `<path>\0<sha256 hex>\0<size>\n` per file but `icon.svg`, in byte
+  line `<path>\0<sha256 hex>\0<size>\n` per file but `icon.svg` and `clax.json`, in byte
   order of path (a version's `content_sha256` for the same files), and
   the render is clean when `errors` (a list) is empty and `failed_tests`
   is 0. A later render of the same digest replaces it. Answers `{render:
@@ -3258,7 +3288,8 @@ characters.
 
 `content_sha256` is the version's content hash as the daemon reports it
 ("Versions, seen marks and attention"): `sha256:` and the hex SHA-256 of
-one line `<path>\0<sha256 hex>\0<size>\n` per file in byte order of path.
+one line `<path>\0<sha256 hex>\0<size>\n` per file but `clax.json` in byte
+order of path (the declaration travels as the manifest's `capabilities`).
 The signature is Ed25519 (RFC 8032, pure) by the author key over the 14
 bytes `clax-bundle/1\n` followed by the exact bytes of the `manifest.json`
 entry; the manifest holds every file's hash and the seed's, so it covers
@@ -6273,9 +6304,12 @@ before writing a page, fetch the one you use from your daemon,
 comes from the `status` tool (names: `claude`, `permissions`, `artifact`,
 `db`, `downloads`, `user`, `comments`, `assets`, `room`, `sample`).
 
-Declare what the page uses in `capabilities` on `publish`, for example
-`{"db": {}, "user": {"scopes": ["profile"]}}`. The object is the full set:
-passing it replaces the stored one, omitting it keeps it, and `{}` clears it.
+Declare what the page uses in `clax.json` at its root,
+`{"capabilities": {"db": {}, "user": {"scopes": ["profile"]}}}`, or pass the
+inner object as `capabilities` on `publish` and Clax writes the file. The
+object is the full set: passing it replaces the stored one, omitting it (and
+any `clax.json`) keeps it, and `{}` clears it. A `capabilities` argument that
+differs from the `clax.json` sent with it is refused (`manifest_mismatch`).
 `use()` never rejects: it resolves `null` for a name the page did not declare,
 for `files` and `mcp`, and outside the Clax viewer (on the artifact's own site
 opened directly, `db`, `assets`, `user` and `room` still resolve), so render without the
@@ -8054,7 +8088,7 @@ the body below.
 |---|---|---|
 | `artifact.create` | `title, kind (html\|live), icon, capabilities, contract_version`; `forked_from{artifact_id, n}` on a fork | first publish, a fork, or a live page's creation |
 | `version.publish` | `n, label, note, title, files{path:{sha256,size,content_type}}, content_sha256, carried[paths], addresses[thread IDs], by_page`; `source{artifact_id, n}` on a fork's version 1; `restored_from` (the version restored) for a restore | every version write, a restore (`versions:restore`) included; for a restore, `carried` names only the files (other than `index.html`) whose bytes equal the previous version's |
-| `version.push_refused` | `commit, person, session, reason (unknown_person\|person_revoked\|not_a_person\|no_right\|session_ended\|foreign_session\|grant_ended)` (`system:daemon`) | a commit pushed to an artifact's repository left unrecorded because its pusher may not publish the artifact, once per commit |
+| `version.push_refused` | `commit, person, session, reason (unknown_person\|person_revoked\|not_a_person\|no_right\|session_ended\|foreign_session\|grant_ended\|push_too_large\|invalid_manifest\|invalid_capabilities\|admin_only)` (`system:daemon`) | a commit pushed to an artifact's repository left unrecorded because its pusher may not publish the artifact, its trees are too large, or its `clax.json` is not a valid manifest or changes the declaration its pusher does not administer; once per commit |
 | `artifact.update` | `fields{title?, description?, icon?, pinned?, capabilities?, db_read_grants?, tags?, share?{op (set\|remove), id, person, github_login, access?, reason? (owner)}}`; `db_read_grants` is `{"grant": <source ID>}` or `{"revoke": <source ID>}`, with the source as `artifact2_id` | pin, unpin, metadata edits, the owner's cross-app read grants (see "Reading another app's documents"); a change to its tags (`tags`: the names it carries after); a share set or removed (`reason: owner` when a share is dropped because it reached the owner, at the owner's GitHub sign-in or a viewer folded into the owner) |
 | `artifact.delete` | `title, current_version` | delete |
 | `asset.upload` | `asset_id, path, sha256, size, content_type`; `forked_from{artifact_id, asset_id}` on a fork's copy | asset store writes, and each asset a fork copies |

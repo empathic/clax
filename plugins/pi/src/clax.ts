@@ -65,7 +65,7 @@ const PublishArgs = Type.Object({
   description: opt(str("One-line description.")),
   icon: opt(str("One generic word for the icon, such as chart or map.")),
   label: opt(str("Short label for this version.")),
-  capabilities: opt(Type.Record(Type.String(), Type.Unknown(), { description: "Runtime capabilities the page declares." })),
+  capabilities: opt(Type.Record(Type.String(), Type.Unknown(), { description: "Runtime capabilities the page declares, written as the version's `clax.json`; with a `clax.json` in `files`, it must equal that file's." })),
   note: opt(str("A short change note for the person, at most 280 characters.")),
   addresses: opt(Type.Array(Type.String(), { description: "IDs of the comment threads this version addresses." })),
   tags: opt(Type.Array(Type.String(), { description: "Existing tags (names, from `tags`) to add to the artifact once published. Only the owner makes tags: an unknown one fails before anything is published, listing the tags there are." })),

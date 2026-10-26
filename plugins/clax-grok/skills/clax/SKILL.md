@@ -151,7 +151,8 @@ Arguments:
   version addresses. Threads you were marked working on are added for you.
   Listing a thread does not resolve it.
 - `capabilities` (object, optional): the page's runtime capabilities
-  declaration, as a full set (see "Runtime capabilities").
+  declaration, as a full set, written as the version's `clax.json` (see
+  "Runtime capabilities").
 
 Returns `artifact_id`, `url` (for the person), `version` (the new version
 number), `title`, `files` (the published paths), `note`, `note_truncated`, and
@@ -538,9 +539,12 @@ before writing a page, fetch the one you use from your daemon,
 comes from the `status` tool (names: `claude`, `permissions`, `artifact`,
 `db`, `downloads`, `user`, `comments`, `assets`, `room`, `sample`).
 
-Declare what the page uses in `capabilities` on `publish`, for example
-`{"db": {}, "user": {"scopes": ["profile"]}}`. The object is the full set:
-passing it replaces the stored one, omitting it keeps it, and `{}` clears it.
+Declare what the page uses in `clax.json` at its root,
+`{"capabilities": {"db": {}, "user": {"scopes": ["profile"]}}}`, or pass the
+inner object as `capabilities` on `publish` and Clax writes the file. The
+object is the full set: passing it replaces the stored one, omitting it (and
+any `clax.json`) keeps it, and `{}` clears it. A `capabilities` argument that
+differs from the `clax.json` sent with it is refused (`manifest_mismatch`).
 `use()` never rejects: it resolves `null` for a name the page did not declare,
 for `files` and `mcp`, and outside the Clax viewer (on the artifact's own site
 opened directly, `db`, `assets`, `user` and `room` still resolve), so render without the

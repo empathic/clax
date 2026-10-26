@@ -2559,15 +2559,86 @@ async fn an_editors_restore_of_a_version_that_declared_others_is_admin_only() {
     // Version 1 declared more than the page does now: the maker's to bring back.
     let (s, v) = restore(1, 2).await;
     assert_eq!((s, code(&v)), (403, "admin_only"), "{v}");
-    assert_eq!(site.ts.store.list_versions(&clax_core::ArtifactId::parse(&id).unwrap()).unwrap().len(), 2);
     assert_eq!(
-        site.ts.store.get_artifact(&clax_core::ArtifactId::parse(&id).unwrap()).unwrap().unwrap().capabilities,
+        site.ts
+            .store
+            .list_versions(&clax_core::ArtifactId::parse(&id).unwrap())
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        site.ts
+            .store
+            .get_artifact(&clax_core::ArtifactId::parse(&id).unwrap())
+            .unwrap()
+            .unwrap()
+            .capabilities,
         json!({})
     );
     // A version that declared what is in force restores.
     let (s, v) = restore(2, 2).await;
     assert_eq!(s, 201, "{v}");
     assert_eq!(v["artifact"]["capabilities"], json!({}), "{v}");
+}
+
+#[tokio::test]
+async fn an_editors_clax_json_that_changes_the_declaration_is_admin_only() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let owner_pid = site.pid(&owner).await;
+    let mia = site.person(&owner, "Mia").await;
+    let mut agent = site.token_agent(&mia, "laptop").await;
+    assert_eq!(agent.initialize("claude-code").await, 200);
+    let (_, r) = agent
+        .call(
+            "publish",
+            json!({"html": "<h1>1</h1>", "title": "Mia's", "capabilities": {}}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    let id = site
+        .ts
+        .store
+        .list_artifacts()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.title == "Mia's")
+        .unwrap()
+        .id;
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{id}/shares"),
+            json!({"person": owner_pid, "access": "editor"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let publish = async |manifest: &str| {
+        json_of(
+            site.ts
+                .client
+                .post(site.url(&format!("/api/artifacts/{id}/versions")))
+                .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+                .bearer_auth(&site.ts.token)
+                .json(&json!({"if_version": 1, "files": {
+                    "index.html": {"content": "<h1>2</h1>"},
+                    "clax.json": {"content": manifest},
+                }}))
+                .send()
+                .await
+                .unwrap(),
+        )
+        .await
+    };
+    // The file declares as the argument does: a change is the maker's.
+    let (s, v) = publish(r#"{"capabilities": {"db": {}}}"#).await;
+    assert_eq!((s, code(&v)), (403, "admin_only"), "{v}");
+    let aid = clax_core::ArtifactId::parse(&id).unwrap();
+    assert_eq!(site.ts.store.list_versions(&aid).unwrap().len(), 1);
+    // The declaration in force, as the file, is the editor's to publish.
+    let (s, v) = publish(r#"{"capabilities": {}}"#).await;
+    assert_eq!(s, 201, "{v}");
 }
 
 #[tokio::test]

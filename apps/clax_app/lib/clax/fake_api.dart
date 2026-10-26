@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:cryptography/dart.dart' show DartSha256;
 
 import '../agent/icon_svg.dart' show appIconPath, iconBytesProblem;
+import '../bundle/content_hash.dart' show manifestPath;
 import 'api.dart';
 
 /// One call [FakeClaxApi] received: the method's name and its arguments.
@@ -2231,7 +2232,9 @@ class FakeClaxApi implements ClaxApi {
     String? note,
     List<String> addresses = const [],
   }) {
-    final paths = files.keys.toList()..sort(_byteOrder);
+    // The daemon's content hash leaves the capability declaration out.
+    final paths = files.keys.where((p) => p != manifestPath).toList()
+      ..sort(_byteOrder);
     final manifest = StringBuffer();
     for (final p in paths) {
       final f = files[p]!;

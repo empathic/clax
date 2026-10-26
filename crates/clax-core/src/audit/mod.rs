@@ -659,10 +659,16 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 
 /// A version's content hash (spec §5.3): `sha256:` and the hex SHA-256 of
 /// its manifest, one `<path>\0<sha256 hex>\0<size>\n` line per file in path
-/// order. `None` when a file has no hash.
+/// order, every file but `clax.json` ([`crate::manifest::MANIFEST_PATH`]):
+/// the declaration it holds travels beside the files (a bundle's manifest, a
+/// publish's `capabilities`), so a copy the daemon writes it into keeps the
+/// hash of the files it was sent. `None` when a file has no hash.
 pub fn content_manifest_sha256(files: &BTreeMap<String, crate::model::FileMeta>) -> Option<String> {
     let mut manifest = Vec::new();
     for (path, meta) in files {
+        if path == crate::manifest::MANIFEST_PATH {
+            continue;
+        }
         let sha = meta.sha256.as_deref()?;
         manifest.extend_from_slice(path.as_bytes());
         manifest.push(0);
@@ -706,6 +712,16 @@ mod tests {
             content_manifest_sha256(&BTreeMap::new()).as_deref(),
             Some(format!("sha256:{}", sha256_hex(b""))).as_deref()
         );
+        let mut declared = files.clone();
+        declared.insert("clax.json".to_string(), meta(b"{}"));
+        assert_eq!(
+            content_manifest_sha256(&declared).as_deref(),
+            Some(expected),
+            "clax.json is left out"
+        );
+        let mut nested = files.clone();
+        nested.insert("a/clax.json".to_string(), meta(b"{}"));
+        assert_ne!(content_manifest_sha256(&nested).as_deref(), Some(expected));
         let mut unhashed = files.clone();
         unhashed.get_mut("app.js").unwrap().sha256 = None;
         assert_eq!(content_manifest_sha256(&unhashed), None);

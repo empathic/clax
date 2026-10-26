@@ -633,11 +633,58 @@ pub fn check_meta_text(
     Ok(())
 }
 
+/// The declaration a publish makes, from its `capabilities` argument
+/// (`None` when omitted or `null`, already validated) and its files:
+///
+/// - a `clax.json` among them ([`crate::manifest::MANIFEST_PATH`]) is the
+///   declaration: its `capabilities` must parse and validate, and an
+///   argument must equal it (else 400 `manifest_mismatch`);
+/// - an argument without one writes it ([`crate::manifest::render`]) into
+///   the files, replacing a removal of it;
+/// - a removal of it with no argument clears the declaration to `{}`;
+/// - neither keeps the stored declaration (`None`), and the previous
+///   version's `clax.json`, if any, carries forward as files do.
+///
+/// # Errors
+/// `invalid_manifest`, `invalid_capabilities` or `manifest_mismatch`.
+fn declaration(
+    argument: Option<serde_json::Value>,
+    files: &mut BTreeMap<String, FileChange>,
+) -> Result<Option<serde_json::Value>> {
+    use crate::manifest::{MANIFEST_PATH, parse, render};
+    match (files.get(MANIFEST_PATH), argument) {
+        (Some(FileChange::Put(f)), argument) => {
+            let caps = parse(&f.bytes)?;
+            crate::capabilities::validate(&caps)?;
+            if argument.is_some_and(|a| a != caps) {
+                return Err(CoreError::invalid(
+                    "manifest_mismatch",
+                    "capabilities differs from clax.json's; pass one of them, or the same declaration in both",
+                ));
+            }
+            Ok(Some(caps))
+        }
+        (_, Some(caps)) => {
+            files.insert(
+                MANIFEST_PATH.to_string(),
+                FileChange::Put(DecodedFile {
+                    bytes: render(&caps),
+                    content_type: content_type_for(MANIFEST_PATH),
+                }),
+            );
+            Ok(Some(caps))
+        }
+        (Some(FileChange::Remove), None) => Ok(Some(serde_json::json!({}))),
+        (None, None) => Ok(None),
+    }
+}
+
 /// Checks a publish request: `index.html` present and not removed, every path
 /// safe, encodings decodable, size caps, label length and the text metadata
-/// ([`check_meta_text`]) respected, and an `icon.svg` within the icon rules
-/// ([`crate::icon::problem`]). Base64 content may contain ASCII whitespace
-/// (line breaks from encoders), which is ignored.
+/// ([`check_meta_text`]) respected, an `icon.svg` within the icon rules
+/// ([`crate::icon::problem`]), and the declaration resolved from the
+/// `capabilities` argument and `clax.json` ([`declaration`]). Base64 content
+/// may contain ASCII whitespace (line breaks from encoders), which is ignored.
 pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
     let (note, note_truncated) = check_declared(
         req.capabilities.as_ref(),
@@ -729,13 +776,14 @@ pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
             }
         }
     }
+    let capabilities = declaration(req.capabilities, &mut files)?;
     Ok(ValidatedPublish {
         title: req.title,
         description: req.description,
         icon: req.icon,
         label: req.label,
         if_version: req.if_version,
-        capabilities: req.capabilities,
+        capabilities,
         files,
         note,
         note_truncated,
@@ -853,6 +901,46 @@ mod tests {
             ("icon.svg", utf8(good)),
         ]))
         .unwrap();
+    }
+
+    #[test]
+    fn clax_json_and_the_capabilities_argument_make_one_declaration() {
+        use serde_json::json;
+        let manifest = |m: &str| req(&[("index.html", utf8("<p>")), ("clax.json", utf8(m))]);
+        let p = validate(manifest(r#"{"capabilities": {"db": {}}}"#)).unwrap();
+        assert_eq!(p.capabilities, Some(json!({"db": {}})));
+        let mut r = manifest(r#"{"capabilities": {"db": {}}}"#);
+        r.capabilities = Some(json!({"db": {}}));
+        assert!(validate(r).is_ok(), "an equal argument agrees");
+        let mut r = manifest(r#"{"capabilities": {"db": {}}}"#);
+        r.capabilities = Some(json!({}));
+        assert!(matches!(
+            validate(r).unwrap_err(),
+            CoreError::Invalid {
+                code: "manifest_mismatch",
+                ..
+            }
+        ));
+        // An argument writes the file, even over its removal.
+        for removal in [false, true] {
+            let mut r = if removal {
+                req(&[("index.html", utf8("<p>")), ("clax.json", None)])
+            } else {
+                req(&[("index.html", utf8("<p>"))])
+            };
+            r.capabilities = Some(json!({"user": {}}));
+            let p = validate(r).unwrap();
+            let Some(FileChange::Put(f)) = p.files.get("clax.json") else {
+                panic!("{:?}", p.files.keys());
+            };
+            assert_eq!(f.bytes, crate::manifest::render(&json!({"user": {}})));
+            assert_eq!(f.content_type, "application/json");
+        }
+        let p = validate(req(&[("index.html", utf8("<p>")), ("clax.json", None)])).unwrap();
+        assert_eq!(p.capabilities, Some(json!({})), "a removal clears");
+        let p = validate(req(&[("index.html", utf8("<p>"))])).unwrap();
+        assert_eq!(p.capabilities, None, "neither keeps");
+        assert!(!p.files.contains_key("clax.json"));
     }
 
     #[test]

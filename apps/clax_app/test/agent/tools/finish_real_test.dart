@@ -99,6 +99,9 @@ class RealRun {
   }
 }
 
+/// The `clax.json` the daemon writes for the runs' declaration, `{db: {}}`.
+const dbManifest = '{\n  "capabilities": {\n    "db": {}\n  }\n}\n';
+
 /// The finish tool against the real embedded core (the library
 /// `CLAX_EMBED_LIB` names): the publish conflicts, document pins and
 /// restores the core applies.
@@ -147,6 +150,7 @@ void main() {
         isA<RunFinished>().having((o) => o.version, 'version', 3),
       );
       expect(await api.readFiles(r.aid, 3), {
+        'clax.json': dbManifest,
         'index.html': page.replaceFirst('Save', 'Keep'),
         'style.css': 'p{color:red}',
       });
@@ -218,7 +222,10 @@ void main() {
       });
       final detail = await api.getArtifact(r.aid);
       expect(detail.artifact.currentVersion, 3);
-      expect(await api.readFiles(r.aid, 3), {'index.html': page});
+      expect(await api.readFiles(r.aid, 3), {
+        'clax.json': dbManifest,
+        'index.html': page,
+      });
       expect(await r.ledger.of(r.aid), isEmpty);
     },
     skip: skip,
@@ -243,6 +250,7 @@ void main() {
       );
       expect(o, isA<RunFinished>().having((o) => o.version, 'version', 2));
       expect(await api.readFiles(r.aid, 2), {
+        'clax.json': dbManifest,
         'index.html': page.replaceFirst('Save', 'Keep'),
       });
       final v2 = (await api.getArtifact(r.aid)).versions.last;

@@ -239,6 +239,10 @@ pub struct Store {
     /// Told of each version recorded from a pushed commit
     /// ([`Store::set_pushed_listener`]).
     pushed_listener: RwLock<Option<PushedListener>>,
+    /// Whether this store is a hosted daemon's, which decides who
+    /// administers an artifact for a pushed declaration
+    /// ([`Store::set_hosted`]).
+    hosted: AtomicBool,
     /// Where every time the store writes or compares is read
     /// ([`Store::now`]). IDs are minted from the system clock.
     clock: Arc<dyn Clock>,
@@ -422,6 +426,7 @@ impl Store {
             publish_key_locks: ArtifactLocks::default(),
             brief_key_locks: ArtifactLocks::default(),
             shut_down: AtomicBool::new(false),
+            hosted: AtomicBool::new(false),
             inbox_changes,
             inbox_listener: RwLock::new(None),
             request_changes,

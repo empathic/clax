@@ -1523,7 +1523,8 @@ impl Store {
         n: u32,
     ) -> Result<Option<serde_json::Value>> {
         let raw = self.with_read(|c| recorded_declaration(c, id.as_str(), n))?;
-        raw.map(|raw| parse_declaration(&raw, id.as_str(), n)).transpose()
+        raw.map(|raw| parse_declaration(&raw, id.as_str(), n))
+            .transpose()
     }
 
     /// [`Store::restore_version`], awaiting its content store. Version
@@ -1551,9 +1552,10 @@ impl Store {
     /// [`Store::restore_version_async`] that also sets `declaration`'s
     /// title, icon and capabilities (a full set) in the same version, and
     /// labels and notes it with `declaration`'s label and note when it has
-    /// them. The caller validates `declaration`
-    /// ([`RestoreDeclaration::validated`]); the restored files are never
-    /// checked, as history.
+    /// them; its capabilities are written as the version's `clax.json`
+    /// ([`clax_core::manifest::render`]), in place of version `n`'s. The
+    /// caller validates `declaration` ([`RestoreDeclaration::validated`]);
+    /// the restored files are never checked, as history.
     pub async fn restore_version_declaring_async(
         &self,
         ctx: &AuditCtx,
@@ -1585,6 +1587,20 @@ impl Store {
                 }),
             );
         }
+        // A declaration given with the restore is written as its
+        // `clax.json`, as a publish's `capabilities` is, so the file and
+        // the declaration agree.
+        let manifest = clax_core::manifest::MANIFEST_PATH;
+        if let Some(caps) = &declaration.capabilities {
+            files.insert(
+                manifest.to_string(),
+                FileChange::Put(DecodedFile {
+                    bytes: clax_core::manifest::render(caps),
+                    content_type: clax_core::publish::content_type_for(manifest),
+                }),
+            );
+        }
+        let rewritten = declaration.capabilities.is_some();
         let p = ValidatedPublish {
             title: declaration.title,
             description: None,
@@ -1623,6 +1639,7 @@ impl Store {
             .iter()
             .filter(|(path, meta)| {
                 *path != INDEX
+                    && !(rewritten && *path == manifest)
                     && meta.sha256.is_some()
                     && previous.get(*path).map(|m| &m.sha256) == Some(&meta.sha256)
             })

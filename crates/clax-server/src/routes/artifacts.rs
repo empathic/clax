@@ -1106,6 +1106,41 @@ pub(crate) async fn admin_change(
     }
 }
 
+/// 400 `manifest_owned` when `capabilities` would change artifact `id`'s
+/// declaration and its current version holds `clax.json`
+/// ([`clax_core::manifest::MANIFEST_PATH`]): the file declares it, and only
+/// a version that changes the file changes it. An artifact without one
+/// takes the change as before.
+async fn manifest_owned(
+    s: &AppState,
+    id: &ArtifactId,
+    capabilities: Value,
+) -> Result<(), ApiError> {
+    let id = id.clone();
+    let owned = s
+        .store_call(move |st| {
+            // No such artifact is the edit's own answer.
+            let Some(cur) = st.get_artifact(&id)? else {
+                return Ok(false);
+            };
+            if capabilities == cur.capabilities {
+                return Ok(false);
+            }
+            Ok(st
+                .get_version(&id, cur.current_version)?
+                .is_some_and(|v| v.files.contains_key(clax_core::manifest::MANIFEST_PATH)))
+        })
+        .await?;
+    if owned {
+        Err(ApiError::bad_request(
+            "manifest_owned",
+            "this artifact declares its capabilities in clax.json: publish a new version that changes it",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Metadata edits. `capabilities` replaces the whole declaration (omitted
 /// keeps, `{}` clears); it and the text fields are validated like a
 /// publish's.
@@ -1218,6 +1253,9 @@ pub async fn patch(
         b.description.as_deref(),
         b.icon.as_deref(),
     )?;
+    if let Some(caps) = b.capabilities.clone() {
+        manifest_owned(&s, &id, caps).await?;
+    }
     admin_change(&s, &a.caller, &id, b.pinned, b.capabilities.clone()).await?;
     if let Some(world) = world
         && let super::world::Change::Pending(body) =

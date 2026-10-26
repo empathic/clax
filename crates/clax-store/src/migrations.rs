@@ -4850,8 +4850,13 @@ mod tests {
             super::VERSION_CAPABILITIES_MIGRATION,
             super::RETURN_TO_MIGRATION + 1
         );
-        assert!(MIGRATIONS[first + 14].contains("ALTER TABLE versions ADD COLUMN capabilities_json"));
-        assert_eq!(MIGRATIONS.len() as u32, super::VERSION_CAPABILITIES_MIGRATION);
+        assert!(
+            MIGRATIONS[first + 14].contains("ALTER TABLE versions ADD COLUMN capabilities_json")
+        );
+        assert_eq!(
+            MIGRATIONS.len() as u32,
+            super::VERSION_CAPABILITIES_MIGRATION
+        );
     }
 
     #[test]
@@ -4875,7 +4880,9 @@ mod tests {
         c.execute_batch(MIGRATIONS[super::VERSION_CAPABILITIES_MIGRATION as usize - 1])
             .unwrap();
         let rows: Vec<(String, u32, Option<String>)> = c
-            .prepare("SELECT artifact_id, n, capabilities_json FROM versions ORDER BY artifact_id, n")
+            .prepare(
+                "SELECT artifact_id, n, capabilities_json FROM versions ORDER BY artifact_id, n",
+            )
             .unwrap()
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .unwrap()
@@ -4885,7 +4892,11 @@ mod tests {
             rows,
             vec![
                 ("7q3k9mzx2b4t".to_string(), 1, None),
-                ("7q3k9mzx2b4t".to_string(), 2, Some("{\"db\":{}}".to_string())),
+                (
+                    "7q3k9mzx2b4t".to_string(),
+                    2,
+                    Some("{\"db\":{}}".to_string())
+                ),
                 ("8r4m2nzy3c5v".to_string(), 1, Some("{}".to_string())),
             ]
         );

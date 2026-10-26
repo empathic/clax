@@ -14,8 +14,11 @@ use crate::error::ApiError;
 use crate::state::AppState;
 
 /// Publishes `Event::Version` for every version the store records from a
-/// pushed commit.
+/// pushed commit, and tells the store whether it is a hosted daemon's
+/// (`Store::set_hosted`).
 pub fn listen(s: &AppState) {
+    // Who administers an artifact for a pushed declaration.
+    s.store.set_hosted(s.hosted.is_some());
     let events = s.events.clone();
     s.store.set_pushed_listener(move |a, v| {
         events.publish(Event::Version {

@@ -102,7 +102,8 @@ pub struct PublishArgs {
     pub icon: Option<String>,
     /// Short label for this version.
     pub label: Option<String>,
-    /// Runtime capabilities the page declares.
+    /// Runtime capabilities the page declares, written as the version's
+    /// `clax.json`; with a `clax.json` in `files`, it must equal that file's.
     pub capabilities: Option<Value>,
     /// A short change note for the person, at most 280 characters.
     pub note: Option<String>,

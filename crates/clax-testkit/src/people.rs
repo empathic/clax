@@ -355,11 +355,12 @@ impl World {
         // The person columns, as Mia's own publish will write them.
         let mia = self.mia_public.clone();
         let authors = json!({
-            "index.html": [mia], FILE_NAME: [mia], CARRIED_NAME: [mia]
+            "index.html": [mia], FILE_NAME: [mia], CARRIED_NAME: [mia], "clax.json": [mia]
         })
         .to_string();
         let authors_v2 = json!({
-            "index.html": [mia], FILE_NAME: [mia], CARRIED_NAME: [mia], "owner.html": [null]
+            "index.html": [mia], FILE_NAME: [mia], CARRIED_NAME: [mia], "clax.json": [mia],
+            "owner.html": [null]
         })
         .to_string();
         let db = rusqlite::Connection::open(ts.home.db_path()).unwrap();

@@ -33,6 +33,7 @@ pub mod icon;
 pub mod ids;
 pub mod live;
 pub mod live_layers;
+pub mod manifest;
 pub mod mentions;
 pub mod model;
 pub mod names;
