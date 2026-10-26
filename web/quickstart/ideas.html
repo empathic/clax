@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clax Quickstart Ideas</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="5" fill="var(--accent)"/><path d="M8 7h8M12 7v4M8 15h8M12 11v4" stroke="var(--bg)" stroke-width="2" stroke-linecap="round"/></svg>
+    Clax
+  </div>
+  <h1>Make the quickstart better</h1>
+  <p class="lede">What Clax would need for its quickstart to be better. Each idea was found while building the quickstart, and names the step where a new user would feel it. Vote for the ones you want; agents add new ones as they find them.</p>
+  <nav class="tabs" aria-label="Sections">
+    <a href="index.html" id="tab-start">Quickstart</a>
+    <a href="ideas.html" id="tab-ideas" aria-current="page">Make it better<span class="count" id="idea-count"></span></a>
+  </nav>
+</header>
+
+<main>
+  <section class="flight" id="flight" hidden aria-label="In flight"></section>
+  <p class="notice" id="ideas-notice" hidden></p>
+  <div class="filters" id="filters"></div>
+  <div class="cards" id="cards"></div>
+</main>
+
+<script src="ideas-data.js"></script>
+<script>
+(() => {
+  "use strict";
+
+  // The quickstart's steps, for each idea's "Felt at" link back to it.
+  const STEPS = {
+    signin: "Sign in to clax.dev", install: "Install", link: "Link Clax to your account", attach: "Attach your agent",
+    fork: "Make it yours", comment: "Comment on your copy", send: "Send it to the agent", change: "Watch it change",
+    ask: "A page from scratch", devserver: "Your dev server", data: "Pages that do more", share: "Share nearby", invite: "Invite someone",
+  };
+  const STATUSES = ["proposed", "planned", "building", "shipped", "declined"];
+  const PRI = { high: 0, medium: 1, low: 2 };
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+  let ideas = (window.CLAX_IDEAS_SEED || []).slice();
+  let votes = {};      // idea ID -> count
+  let myVotes = {};    // idea ID -> true
+  let filter = "all";
+  let db = null, uid = null, isOwner = false;
+
+  function render() {
+    document.getElementById("idea-count").textContent = String(ideas.filter((i) => i.status !== "shipped" && i.status !== "declined").length);
+    const areas = [...new Set(ideas.map((i) => i.area))].sort();
+    document.getElementById("filters").innerHTML = ["all", "high", ...areas].map((f) => `<button type="button" class="chip${f === filter ? " on" : ""}" data-f="${esc(f)}">${f === "all" ? "All" : f === "high" ? "High priority" : esc(f)}</button>`).join("");
+    const shown = ideas
+      .filter((i) => filter === "all" || (filter === "high" ? i.priority === "high" : i.area === filter))
+      .sort((a, b) => (PRI[a.priority] ?? 3) - (PRI[b.priority] ?? 3) || (votes[b.id] || 0) - (votes[a.id] || 0) || (a.order ?? 99) - (b.order ?? 99));
+    renderFlight();
+    const flash = decodeURIComponent(location.hash.slice(1));
+    const cards = document.getElementById("cards");
+    cards.innerHTML = shown.length ? "" : `<p class="empty">No ideas here yet.</p>`;
+    for (const i of shown) {
+      const c = document.createElement("article");
+      c.className = "card" + (i.id === flash ? " flash" : "");
+      c.id = i.id;
+      const step = STEPS[i.step] ? `<a href="index.html#${esc(i.step === "install" ? "agent" : i.step)}">${esc(STEPS[i.step])}</a>` : esc(i.step || "");
+      const statusCtl = isOwner && db
+        ? `<select data-status="${esc(i.id)}" aria-label="Status">${STATUSES.map((s) => `<option${s === i.status ? " selected" : ""}>${s}</option>`).join("")}</select>`
+        : `<span class="tag st st-${esc(i.status || "proposed")}">${esc(i.status || "proposed")}</span>`;
+      const vote = db && uid
+        ? `<button type="button" class="vote${myVotes[i.id] ? " on" : ""}" data-vote="${esc(i.id)}" aria-pressed="${!!myVotes[i.id]}">▲ ${votes[i.id] || 0}</button>`
+        : (votes[i.id] ? `<span class="tag">▲ ${votes[i.id]}</span>` : "");
+      c.innerHTML = `<h3>${esc(i.title)}</h3>
+        <div class="meta"><span class="tag p-${esc(i.priority)}">${esc(i.priority)}</span><span class="tag">${esc(i.area)}</span>${statusCtl}</div>
+        <p><span class="lbl">The gap</span>${esc(i.problem)}</p>
+        <p><span class="lbl">Proposal</span>${esc(i.proposal)}</p>
+        ${tracking(i)}
+        <div class="foot"><span>Felt at: ${step}</span>${vote}</div>`;
+      cards.appendChild(c);
+    }
+    if (flash) document.getElementById(flash)?.scrollIntoView({ block: "center" });
+  }
+  // What is in flight: each idea's work, as agents record it in the db
+  // (`work`: {branch, commit, spec}, `log`: [{at, text}], newest last).
+  const ago = (at) => {
+    const s = Math.max(0, (Date.now() - Date.parse(at)) / 1000);
+    return s < 60 ? "just now" : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`;
+  };
+  function tracking(i) {
+    const w = i.work || {}, log = Array.isArray(i.log) ? i.log.slice(-3).reverse() : [];
+    if (!w.branch && !log.length) return "";
+    return `<div class="track st-${esc(i.status || "proposed")}">
+      <div class="track-head">${w.spec ? `<span class="tag">${esc(w.spec)}</span>` : ""}${w.branch ? `<span class="tag mono">⎇ ${esc(w.branch)}</span>` : ""}${w.commit ? `<span class="tag mono">${esc(w.commit)}</span>` : ""}</div>
+      ${log.length ? `<ul class="track-log">${log.map((e) => `<li><time datetime="${esc(e.at)}" title="${esc(e.at)}">${esc(ago(e.at))}</time> ${esc(e.text)}</li>`).join("")}</ul>` : ""}
+    </div>`;
+  }
+  function renderFlight() {
+    const f = document.getElementById("flight");
+    const moving = ideas.filter((i) => i.status === "building" || i.status === "planned");
+    if (!moving.length) { f.hidden = true; return; }
+    const by = (st) => ideas.filter((i) => i.status === st).length;
+    const last = ideas.flatMap((i) => (Array.isArray(i.log) ? i.log.map((e) => ({ ...e, title: i.title, id: i.id })) : [])).sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0];
+    f.hidden = false;
+    f.innerHTML = `<div class="flight-counts"><b>In flight</b>
+        <span class="tag st-building">building ${by("building")}</span><span class="tag st-planned">planned ${by("planned")}</span><span class="tag st-shipped">shipped ${by("shipped")}</span><span class="tag">proposed ${by("proposed")}</span></div>
+      ${last ? `<p class="flight-last">Latest: <a href="#${esc(last.id)}">${esc(last.title)}</a>: ${esc(last.text)} <time>${esc(ago(last.at))}</time></p>` : ""}`;
+  }
+
+  function notice(text) { const n = document.getElementById("ideas-notice"); n.textContent = text; n.hidden = !text; }
+
+  document.getElementById("filters").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-f]"); if (!b) return; filter = b.dataset.f; render();
+  });
+  document.getElementById("cards").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-vote]"); if (!b || !db || !uid) return;
+    const id = b.dataset.vote;
+    if (myVotes[id]) delete myVotes[id]; else myVotes[id] = true;
+    db.doc(`votes/${uid}`).set({ ideas: myVotes }).catch(() => notice("Your vote wasn't saved. Enter a name in Clax to vote, then try again."));
+    render();
+  });
+  document.getElementById("cards").addEventListener("change", (e) => {
+    const s = e.target.closest("[data-status]"); if (!s || !db) return;
+    db.doc(`extensions/${s.dataset.status}`).update({ status: s.value }).catch(() => notice("The status wasn't saved."));
+  });
+  addEventListener("hashchange", render);
+  render();
+
+  (async () => {
+    const c = window.claude;
+    if (!c || typeof c.use !== "function") return;
+    let user = null;
+    try { user = await c.use("user"); } catch (_) {}
+    try { db = await c.use("db"); } catch (_) {}
+    try { uid = user ? await user.id() : null; } catch (_) {}
+    try { isOwner = user ? await user.isOwner() : false; } catch (_) {}
+    if (!db) return;
+    db.collection("extensions").onSnapshot((snap) => {
+      const list = snap.docs.map((d) => Object.assign({ id: d.id }, d.data())).filter((i) => i.title);
+      if (list.length) ideas = list;
+      render();
+    }, () => {});
+    db.collection("votes").onSnapshot((snap) => {
+      votes = {};
+      for (const d of snap.docs) {
+        const v = (d.data() || {}).ideas || {};
+        for (const k in v) if (v[k]) votes[k] = (votes[k] || 0) + 1;
+        if (uid && d.id === uid) myVotes = Object.assign({}, v);
+      }
+      render();
+    }, () => {});
+    render();
+  })();
+})();
+</script>
+</body>
+</html>

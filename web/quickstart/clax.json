@@ -1,0 +1,12 @@
+{
+  "capabilities": {
+    "db": {
+      "rules": [
+        { "path": "extensions", "read": "view", "write": "admin" },
+        { "path": "votes", "read": "view", "write": "admin" },
+        { "path": "votes/{self}", "write": "interact" }
+      ]
+    },
+    "user": {}
+  }
+}
