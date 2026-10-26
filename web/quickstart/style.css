@@ -289,25 +289,28 @@
   .votes .vote.down.on { color: var(--lo); background: var(--surface-2); }
   .votes .score { min-width: 18px; text-align: center; font-size: 13px; font-variant-numeric: tabular-nums; }
 
-  /* The roadmap on the ideas page. */
-  .roadmap { margin-bottom: 18px; }
-  .roadmap h2 { font-size: 18px; margin: 0; }
-  .roadmap-sub { margin: 2px 0 12px; color: var(--muted); font-size: 14px; }
-  .road { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
-  .step { position: relative; display: grid; grid-template-columns: 28px 1fr; gap: 12px; padding-bottom: 14px; }
-  .step::before { content: ""; position: absolute; left: 13px; top: 28px; bottom: 0; width: 2px; background: var(--line); }
-  .step:last-child::before { display: none; }
-  .step .dot { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700;
-    border: 2px solid var(--edge); background: var(--bg); color: var(--muted); position: relative; z-index: 1; }
-  .step.st-done .dot { background: var(--ok); border-color: var(--ok); color: var(--surface); }
-  .step.st-done::before { background: var(--ok); }
-  .step.st-running .dot, .step.st-review .dot { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
-  .step.st-waiting .dot { border-style: dashed; border-color: var(--med); color: var(--med); }
+  /* The roadmap on the ideas page: one row of steps, the picked one's details below. */
+  .roadmap { margin-bottom: 16px; border: 1px solid var(--line); background: var(--surface); border-radius: 12px; padding: 12px 14px; }
+  .roadmap h2 { font-size: 16px; margin: 0; }
+  .roadmap-sub { margin: 2px 0 10px; color: var(--muted); font-size: 13px; }
+  .stepper { display: flex; gap: 0; overflow-x: auto; scrollbar-width: thin; padding-bottom: 4px; }
+  .sp { position: relative; flex: 1 0 84px; display: grid; justify-items: center; gap: 4px; border: 0; background: none; padding: 2px 4px; color: var(--muted); }
+  .sp::before { content: ""; position: absolute; top: 13px; left: -50%; width: 100%; height: 2px; background: var(--line); z-index: 0; }
+  .sp:first-child::before { display: none; }
+  .sp.st-done::before, .sp.st-running::before, .sp.st-review::before { background: var(--ok); }
+  .sp .dot { position: relative; z-index: 1; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700;
+    border: 2px solid var(--edge); background: var(--surface); color: var(--muted); }
+  .sp.st-done .dot { background: var(--ok); border-color: var(--ok); color: var(--surface); }
+  .sp.st-running .dot, .sp.st-review .dot { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+  .sp.st-waiting .dot { border-style: dashed; border-color: var(--med); color: var(--med); }
+  .sp-t { font-size: 11.5px; line-height: 1.25; text-align: center; max-width: 92px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .sp[aria-selected="true"] .sp-t { color: var(--fg); font-weight: 600; }
+  .step-detail { margin-top: 8px; padding: 10px 12px; border-radius: 8px; background: var(--surface-2); min-height: 74px; }
+  .step-detail p { margin: 4px 0 0; font-size: 14px; }
   .step-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-  .step-body p { margin: 2px 0 0; font-size: 14px; }
-  .step-body .waits { color: var(--med); font-size: 13px; }
-  .step-body .for { color: var(--muted); font-size: 13px; }
-  .step.st-queued .step-body, .step.st-next .step-body { opacity: .85; }
+  .road-count { margin-left: auto; font-size: 12px; color: var(--muted); }
+  .step-detail .waits { color: var(--med); }
+  .step-detail .for { color: var(--muted); font-size: 13px; }
   .tag.st-running, .tag.st-review { color: var(--accent); background: var(--accent-soft); }
   .tag.st-done { color: var(--ok); background: var(--ok-soft); }
   .tag.st-waiting { color: var(--med); }

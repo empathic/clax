@@ -23,8 +23,8 @@
 <main>
   <section class="roadmap" id="roadmap" hidden aria-labelledby="roadmap-h">
     <h2 id="roadmap-h">Roadmap</h2>
-    <p class="roadmap-sub">The order the accepted ideas are being built in, on the <code>quickstart</code> branch.</p>
-    <ol class="road" id="road"></ol>
+    <p class="roadmap-sub">The accepted ideas, in the order they're being built on the <code>quickstart</code> branch. Pick a step for its details.</p>
+    <div class="road" id="road"></div>
   </section>
   <section class="flight" id="flight" hidden aria-label="In flight"></section>
   <p class="notice" id="ideas-notice" hidden></p>
@@ -118,22 +118,28 @@
   // title, what, state, ideas, commit, waits}), kept by the agents doing them.
   let road = [];
   const STATE = { done: "Done", review: "In review", running: "Running now", next: "Next", queued: "Queued", waiting: "Waiting on a decision" };
+  let picked = null;
   function renderRoad() {
     const sec = document.getElementById("roadmap");
     if (!road.length) { sec.hidden = true; return; }
     sec.hidden = false;
+    const steps = road.slice().sort((a, b) => a.order - b.order);
+    const now = steps.find((r) => r.state === "running" || r.state === "review") || steps.find((r) => r.state !== "done") || steps[steps.length - 1];
+    const shown = steps.find((r) => r.id === picked) || now;
     const titleOf = (id) => (ideas.find((i) => i.id === id) || {}).title || id;
-    document.getElementById("road").innerHTML = road.slice().sort((a, b) => a.order - b.order).map((r) => `
-      <li class="step st-${esc(r.state)}">
-        <span class="dot" aria-hidden="true">${r.state === "done" ? "✓" : esc(r.order)}</span>
-        <div class="step-body">
-          <div class="step-head"><b>${esc(r.title)}</b><span class="tag st-${esc(r.state)}">${esc(STATE[r.state] || r.state)}</span>${r.commit ? `<span class="tag mono">${esc(r.commit)}</span>` : ""}</div>
-          <p>${esc(r.what)}</p>
-          ${r.waits ? `<p class="waits">Waits on: ${esc(r.waits)}</p>` : ""}
-          ${Array.isArray(r.ideas) && r.ideas.length ? `<p class="for">For: ${r.ideas.map((id) => `<a href="#${esc(id)}">${esc(titleOf(id))}</a>`).join(", ")}</p>` : ""}
-        </div>
-      </li>`).join("");
+    const done = steps.filter((r) => r.state === "done").length;
+    document.getElementById("road").innerHTML = `
+      <div class="stepper" role="tablist" aria-label="Steps">${steps.map((r) => `<button type="button" role="tab" class="sp st-${esc(r.state)}" data-step="${esc(r.id)}" aria-selected="${r === shown}" title="${esc(r.title)}: ${esc(STATE[r.state] || r.state)}"><span class="dot">${r.state === "done" ? "✓" : esc(r.order)}</span><span class="sp-t">${esc(r.title)}</span></button>`).join("")}</div>
+      <div class="step-detail st-${esc(shown.state)}" role="tabpanel">
+        <div class="step-head"><b>${esc(shown.order)}. ${esc(shown.title)}</b><span class="tag st-${esc(shown.state)}">${esc(STATE[shown.state] || shown.state)}</span>${shown.commit ? `<span class="tag mono">${esc(shown.commit)}</span>` : ""}<span class="road-count">${done} of ${steps.length} done</span></div>
+        <p>${esc(shown.what)}${shown.waits ? ` <span class="waits">Waits on: ${esc(shown.waits)}</span>` : ""}</p>
+        ${Array.isArray(shown.ideas) && shown.ideas.length ? `<p class="for">For: ${shown.ideas.map((id) => `<a href="#${esc(id)}">${esc(titleOf(id))}</a>`).join(", ")}</p>` : ""}
+      </div>`;
+    // On a narrow screen the row scrolls: keep the step shown in view.
+    const row = document.querySelector(".stepper"), sel = row.querySelector('[aria-selected="true"]');
+    if (sel) row.scrollLeft = sel.offsetLeft - (row.clientWidth - sel.offsetWidth) / 2;
   }
+
 
   function notice(text) { const n = document.getElementById("ideas-notice"); n.textContent = text; n.hidden = !text; }
 
@@ -153,6 +159,9 @@
     db.doc(`extensions/${s.dataset.status}`).update({ status: s.value }).catch(() => notice("The status wasn't saved."));
   });
   addEventListener("hashchange", render);
+  document.getElementById("road").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-step]"); if (!b) return; picked = b.dataset.step; renderRoad();
+  });
   render();
 
   (async () => {
