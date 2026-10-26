@@ -61,6 +61,9 @@ pub struct DeviceRequest {
     /// The kind it named ([`CLAX_APP_KIND`] for the Clax app, whose token
     /// may manage sharing), if any (untrusted).
     pub client_kind: Option<String>,
+    /// The loopback page on the machine to send its person to once the
+    /// sign-in is decided (already vetted by the caller), if any.
+    pub return_to: Option<String>,
     pub created_at: String,
     pub expires_at: String,
 }
@@ -97,7 +100,7 @@ impl Store {
     /// `invalid_args` for a name over the label limit or with control
     /// characters; `limit_reached` with [`MAX_PENDING_DEVICES`] waiting.
     pub fn start_device(&self, client_name: &str, peer_ip: &str) -> Result<DeviceStart> {
-        self.start_device_kind(client_name, peer_ip, None)
+        self.start_device_kind(client_name, peer_ip, None, None)
     }
 
     /// [`Store::start_device`] for a machine that names its kind too:
@@ -107,11 +110,15 @@ impl Store {
     /// # Errors
     /// [`Store::start_device`]'s, and `invalid_args` for a kind over 64
     /// characters or with any but ASCII letters, digits and `-`.
+    ///
+    /// `return_to` is kept as given for [`Store::peek_device`] to serve:
+    /// the caller has checked that it names a page on the machine.
     pub fn start_device_kind(
         &self,
         client_name: &str,
         peer_ip: &str,
         kind: Option<&str>,
+        return_to: Option<&str>,
     ) -> Result<DeviceStart> {
         if let Some(k) = kind
             && (k.is_empty()
@@ -160,8 +167,8 @@ impl Store {
             let expires_at = self.device_later(DEVICE_TTL_SECS);
             tx.execute(
                 "INSERT INTO device_codes (id, device_sha256, user_sha256, client_name, peer_ip,
-                    created_at, expires_at, client_kind)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    created_at, expires_at, client_kind, return_to)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     new_ulid(),
                     device_code.sha256_hex(),
@@ -170,7 +177,8 @@ impl Store {
                     peer_ip,
                     now,
                     expires_at,
-                    kind
+                    kind,
+                    return_to
                 ],
             )?;
             Ok(DeviceStart {
@@ -190,7 +198,8 @@ impl Store {
         let now = self.now();
         self.with_read(|c| {
             Ok(c.query_row(
-                "SELECT client_name, peer_ip, client_kind, created_at, expires_at FROM device_codes
+                "SELECT client_name, peer_ip, client_kind, return_to, created_at, expires_at
+                 FROM device_codes
                  WHERE user_sha256 = ?1 AND status = 'pending' AND expires_at > ?2",
                 params![hash, now],
                 |r| {
@@ -198,8 +207,9 @@ impl Store {
                         client_name: r.get(0)?,
                         peer_ip: r.get(1)?,
                         client_kind: r.get(2)?,
-                        created_at: r.get(3)?,
-                        expires_at: r.get(4)?,
+                        return_to: r.get(3)?,
+                        created_at: r.get(4)?,
+                        expires_at: r.get(5)?,
                     })
                 },
             )
@@ -597,12 +607,24 @@ mod tests {
 
     /// Approves a sign-in of `kind` and returns its grant's ID.
     fn approved(st: &Store, ada: &str, kind: Option<&str>) -> String {
-        let s = st.start_device_kind("phone", "::1", kind).unwrap();
+        let s = st.start_device_kind("phone", "::1", kind, None).unwrap();
         let peek = st.peek_device(s.user_code.expose()).unwrap().unwrap();
         assert_eq!(peek.client_kind.as_deref(), kind);
         st.approve_device(&AuditCtx::DAEMON, ada, s.user_code.expose())
             .unwrap()
             .id
+    }
+
+    #[test]
+    fn a_sign_ins_return_to_is_kept_for_its_peek() {
+        let (_d, st, _c) = store();
+        let to = "http://localhost:7480/a/x?publish=1";
+        let s = st.start_device_kind("box", "::1", None, Some(to)).unwrap();
+        let peek = st.peek_device(s.user_code.expose()).unwrap().unwrap();
+        assert_eq!(peek.return_to.as_deref(), Some(to));
+        let plain = st.start_device("box", "::1").unwrap();
+        let peek = st.peek_device(plain.user_code.expose()).unwrap().unwrap();
+        assert_eq!(peek.return_to, None);
     }
 
     #[test]
@@ -654,7 +676,7 @@ mod tests {
         );
         for bad in ["", "clax app", "clax-app\n", &"k".repeat(65)] {
             assert_eq!(
-                code_of(st.start_device_kind("phone", "::1", Some(bad))),
+                code_of(st.start_device_kind("phone", "::1", Some(bad), None)),
                 "invalid_args",
                 "{bad:?}"
             );

@@ -5178,6 +5178,38 @@ impl Site {
 }
 
 #[tokio::test]
+async fn a_device_sign_in_carries_a_loopback_return_to_and_refuses_any_other() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sam = site.person(&owner, "Sam").await;
+    let (s, v) = site
+        .machine(
+            "/api/hosted/device/code",
+            json!({"client_name": "box", "return_to": "http://localhost:7480/a/x?publish=1"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let uc = v["user_code"].as_str().unwrap().to_string();
+    let (s, v) = site.get(&sam, &format!("/api/hosted/device/{uc}")).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["return_to"], "http://localhost:7480/a/x?publish=1");
+    // Without one, the page has nowhere to go.
+    let plain = site.start_device("box").await;
+    let uc = plain["user_code"].as_str().unwrap();
+    let (_, v) = site.get(&sam, &format!("/api/hosted/device/{uc}")).await;
+    assert!(v["return_to"].is_null(), "{v}");
+    for bad in ["https://evil.example/", "http://localhost.evil.example/"] {
+        let (s, v) = site
+            .machine(
+                "/api/hosted/device/code",
+                json!({"client_name": "box", "return_to": bad}),
+            )
+            .await;
+        assert_eq!((s, code(&v)), (400, "invalid_args"), "{bad}: {v}");
+    }
+}
+
+#[tokio::test]
 async fn a_person_approves_a_machines_device_sign_in_and_it_gets_their_agent_token_once() {
     let site = Site::new().await;
     let owner = site.owner().await;
