@@ -261,7 +261,7 @@
       if (t.dataset.slide) return showSlide(Number(t.dataset.slide));
       if (t.dataset.step === "prev") return showSlide(slide - 1);
       if (t.dataset.step === "next") return showSlide(slide + 1);
-      if (t.dataset.toggle) return toggleDone(t.dataset.toggle);
+      if (t.dataset.toggle) return toggleDone(t.dataset.toggle, t.dataset.toggle);
     });
     deck.addEventListener("keydown", (e) => {
       if (e.target.closest("button, a, pre")) return;
@@ -306,10 +306,20 @@
   /** The ✓ that marks a step done, sitting on the edge of its box. */
   const keyOf = (id) => (id.startsWith("install") ? "install" : id);
   const fab = (id) => `<button type="button" class="fab" data-toggle="${keyOf(id)}" title="Mark done" aria-label="Mark “${NODES[id].title}” done" aria-pressed="false">✓</button>`;
-  function toggleDone(key) {
-    if (state.done[key]) delete state.done[key]; else state.done[key] = true;
+  /** Marks step `key` (the box `from`) done or not done; marking it done moves on to the next step and its focus. */
+  function toggleDone(key, from = key) {
+    const doneNow = !state.done[key];
+    if (doneNow) state.done[key] = true; else delete state.done[key];
     save();
-    select(selected, { quiet: true });
+    const nx = doneNow ? nextOf(from) : null;
+    if (!nx) { select(selected, { quiet: true }); return; }
+    select(nx);
+    focusStep(nx);
+  }
+  /** Puts keyboard focus on step `id`: its box, or its tab when it is one of the deck's slides. */
+  function focusStep(id) {
+    const tab = DECK.includes(id) && deck ? deck.querySelector(`[data-slide="${DECK.indexOf(id)}"]`) : null;
+    (tab || els[id])?.focus({ preventScroll: false });
   }
 
   /** A box: a focusable element that selects its step, and may hold a link or button of its own. */
@@ -318,7 +328,7 @@
     b.dataset.id = id; b.tabIndex = 0; b.setAttribute("role", "button");
     b.addEventListener("click", (e) => {
       const inner = e.target.closest("a, button");
-      if (inner && inner !== b) { if (inner.dataset.toggle) toggleDone(inner.dataset.toggle); else if (inner.dataset.go) select(inner.dataset.go); return; }
+      if (inner && inner !== b) { if (inner.dataset.toggle) toggleDone(inner.dataset.toggle, id); else if (inner.dataset.go) select(inner.dataset.go); return; }
       select(id);
     });
     b.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target === b) { e.preventDefault(); select(id); } });
