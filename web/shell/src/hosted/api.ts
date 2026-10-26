@@ -73,8 +73,8 @@ export const signOut = () => call<unknown>("/api/hosted/signout", "POST");
 export const tokens = () => call<{ tokens: AgentToken[] }>("/api/hosted/agent-tokens");
 export const mintToken = (label: string) => call<NewAgentToken>("/api/hosted/agent-tokens", "POST", { label });
 export const revokeToken = (id: string) => call<{ token: AgentToken | null }>(`/api/hosted/agent-tokens/${e(id)}`, "DELETE");
-/** A waiting device sign-in: the machine it names, and its kind (`clax-app` for the Clax app). */
-export type DeviceRequest = { client_name: string; peer_ip: string; client_kind?: string | null; created_at: string; expires_at: string; same_address?: boolean };
+/** A waiting device sign-in: the machine it names, its kind (`clax-app` for the Clax app), and the loopback page of that machine's Clax to send the person back to once they decide. */
+export type DeviceRequest = { client_name: string; peer_ip: string; client_kind?: string | null; created_at: string; expires_at: string; same_address?: boolean; return_to?: string | null };
 export const peekDevice = (code: string) => call<DeviceRequest>(`/api/hosted/device/${e(code)}`);
 export const approveDevice = (code: string) => call<{ token: AgentToken }>(`/api/hosted/device/${e(code)}/approve`, "POST");
 export const denyDevice = (code: string) => call<unknown>(`/api/hosted/device/${e(code)}/deny`, "POST");

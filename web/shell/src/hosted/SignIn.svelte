@@ -35,7 +35,8 @@
   import ThemeSwitch from "../ui/ThemeSwitch.svelte";
   import * as api from "./api";
   import { refusal } from "../people/refusal";
-  import { nextOfPage } from "./next";
+  import { nextOfPage, loopbackReturn } from "./next";
+  import { nav } from "../nav";
 
   type Page = { kind: "setup" } | { kind: "join"; code: string } | { kind: "signin"; code: string } | { kind: "device" } | { kind: "status" };
   const page: Page = (() => {
@@ -68,6 +69,8 @@
   let device = $state<api.DeviceRequest | null | false>(null);
   let decided = $state<"approved" | "denied" | null>(null);
   const isApp = $derived(device ? device.client_kind === "clax-app" : false);
+  // Where the machine's Clax asked to be sent back to: its own loopback page.
+  const back = $derived(device ? loopbackReturn(device.return_to) : null);
   async function lookUp(e?: Event) {
     e?.preventDefault();
     if (busy || !deviceCode.trim()) return;
@@ -80,6 +83,11 @@
     try {
       await (approve ? api.approveDevice(deviceCode.trim()) : api.denyDevice(deviceCode.trim()));
       decided = approve ? "approved" : "denied";
+      if (back) {
+        const u = new URL(back);
+        u.searchParams.set("clax_signin", decided);
+        nav.assign(u.href);
+      }
     } catch (x) { err = msg(x); } finally { busy = false; }
   }
 
@@ -179,15 +187,16 @@
       {:else if !me.person || me.person.guest}
         <p>Another Clax asks to publish here as you. Sign in first: open a sign-in link from a device that is signed in, then come back to this page.</p>
       {:else if decided === "approved"}
-        <p><strong>{device ? device.client_name : "That Clax"}</strong> is signed in as you. It shows on People among your {isApp ? "devices" : "agent tokens"}, where you can revoke it. You can close this tab.</p>
+        <p><strong>{device ? device.client_name : "That Clax"}</strong> is signed in as you. It shows on People among your {isApp ? "devices" : "agent tokens"}, where you can revoke it.{back ? " Going back to it…" : " You can close this tab."}</p>
         <div class="acts"><a class="go" href="/people">Open People</a></div>
       {:else if decided === "denied"}
-        <p>Denied: that Clax is not signed in. You can close this tab.</p>
+        <p>Denied: that Clax is not signed in.{back ? " Going back to it…" : " You can close this tab."}</p>
       {:else if device}
         <p><strong>{device.client_name}</strong>{isApp ? ", the Clax app," : ","} from {device.peer_ip || "an unknown address"}, asks to publish here as you, <strong>{me.person.display_name ?? "you"}</strong>. Check that it shows the code <code>{deviceCode.trim().toUpperCase()}</code>.</p>
         {#if !device.same_address}<p class="now" data-testid="other-address">It asked from another address than this browser's. Approve only if you started this sign-in yourself, just now, on that machine: anyone who sent you this link would publish as you.</p>{/if}
         <p class="hint" data-testid={isApp ? "device-app" : undefined}>It gets an agent token of yours: {isApp ? "what it publishes is yours, within your rights, and an app it publishes stays private until you share it." : "what it publishes is public as yours, within your rights."}{#if isApp}{" "}As the Clax app, it may also change who can see or edit the pages you made{me.person.owner ? " and, as the owner, any page on this site" : ""}, and whether anyone may comment on them.{/if} It shows on People{isApp ? " among your devices" : ""}, where you can revoke it.{#if legal}{" "}<span class="legal">What it does here is yours under the <a href={legal.terms_url} target="_blank" rel="noopener">Terms of Service</a>.</span>{/if}</p>
         <div class="acts"><button class="primary" type="button" disabled={busy} onclick={() => decide(true)}>Approve</button><button type="button" disabled={busy} onclick={() => decide(false)}>Deny</button></div>
+        {#if back}<p class="hint" data-testid="device-return">Approve or deny, then go back to {new URL(back).host}.</p>{/if}
       {:else}
         <form onsubmit={lookUp}>
           {#if device === false}<p>No Clax is waiting with that code. It may have expired (codes last ten minutes) or been used: start again on that machine.</p>{/if}
