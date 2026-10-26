@@ -288,3 +288,26 @@
   .votes .vote.on { color: var(--accent); background: var(--accent-soft); }
   .votes .vote.down.on { color: var(--lo); background: var(--surface-2); }
   .votes .score { min-width: 18px; text-align: center; font-size: 13px; font-variant-numeric: tabular-nums; }
+
+  /* The roadmap on the ideas page. */
+  .roadmap { margin-bottom: 18px; }
+  .roadmap h2 { font-size: 18px; margin: 0; }
+  .roadmap-sub { margin: 2px 0 12px; color: var(--muted); font-size: 14px; }
+  .road { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
+  .step { position: relative; display: grid; grid-template-columns: 28px 1fr; gap: 12px; padding-bottom: 14px; }
+  .step::before { content: ""; position: absolute; left: 13px; top: 28px; bottom: 0; width: 2px; background: var(--line); }
+  .step:last-child::before { display: none; }
+  .step .dot { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700;
+    border: 2px solid var(--edge); background: var(--bg); color: var(--muted); position: relative; z-index: 1; }
+  .step.st-done .dot { background: var(--ok); border-color: var(--ok); color: var(--surface); }
+  .step.st-done::before { background: var(--ok); }
+  .step.st-running .dot, .step.st-review .dot { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+  .step.st-waiting .dot { border-style: dashed; border-color: var(--med); color: var(--med); }
+  .step-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .step-body p { margin: 2px 0 0; font-size: 14px; }
+  .step-body .waits { color: var(--med); font-size: 13px; }
+  .step-body .for { color: var(--muted); font-size: 13px; }
+  .step.st-queued .step-body, .step.st-next .step-body { opacity: .85; }
+  .tag.st-running, .tag.st-review { color: var(--accent); background: var(--accent-soft); }
+  .tag.st-done { color: var(--ok); background: var(--ok-soft); }
+  .tag.st-waiting { color: var(--med); }

@@ -21,6 +21,11 @@
 </header>
 
 <main>
+  <section class="roadmap" id="roadmap" hidden aria-labelledby="roadmap-h">
+    <h2 id="roadmap-h">Roadmap</h2>
+    <p class="roadmap-sub">The order the accepted ideas are being built in, on the <code>quickstart</code> branch.</p>
+    <ol class="road" id="road"></ol>
+  </section>
   <section class="flight" id="flight" hidden aria-label="In flight"></section>
   <p class="notice" id="ideas-notice" hidden></p>
   <div class="filters" id="filters"></div>
@@ -109,6 +114,27 @@
       ${last ? `<p class="flight-last">Latest: <a href="#${esc(last.id)}">${esc(last.title)}</a>: ${esc(last.text)} <time>${esc(ago(last.at))}</time></p>` : ""}`;
   }
 
+  // The roadmap: the plan's steps in order (db `roadmap`, each {order,
+  // title, what, state, ideas, commit, waits}), kept by the agents doing them.
+  let road = [];
+  const STATE = { done: "Done", review: "In review", running: "Running now", next: "Next", queued: "Queued", waiting: "Waiting on a decision" };
+  function renderRoad() {
+    const sec = document.getElementById("roadmap");
+    if (!road.length) { sec.hidden = true; return; }
+    sec.hidden = false;
+    const titleOf = (id) => (ideas.find((i) => i.id === id) || {}).title || id;
+    document.getElementById("road").innerHTML = road.slice().sort((a, b) => a.order - b.order).map((r) => `
+      <li class="step st-${esc(r.state)}">
+        <span class="dot" aria-hidden="true">${r.state === "done" ? "✓" : esc(r.order)}</span>
+        <div class="step-body">
+          <div class="step-head"><b>${esc(r.title)}</b><span class="tag st-${esc(r.state)}">${esc(STATE[r.state] || r.state)}</span>${r.commit ? `<span class="tag mono">${esc(r.commit)}</span>` : ""}</div>
+          <p>${esc(r.what)}</p>
+          ${r.waits ? `<p class="waits">Waits on: ${esc(r.waits)}</p>` : ""}
+          ${Array.isArray(r.ideas) && r.ideas.length ? `<p class="for">For: ${r.ideas.map((id) => `<a href="#${esc(id)}">${esc(titleOf(id))}</a>`).join(", ")}</p>` : ""}
+        </div>
+      </li>`).join("");
+  }
+
   function notice(text) { const n = document.getElementById("ideas-notice"); n.textContent = text; n.hidden = !text; }
 
   document.getElementById("filters").addEventListener("click", (e) => {
@@ -142,6 +168,10 @@
       const list = snap.docs.map((d) => Object.assign({ id: d.id }, d.data())).filter((i) => i.title);
       if (list.length) ideas = list;
       render();
+    }, () => {});
+    db.collection("roadmap").onSnapshot((snap) => {
+      road = snap.docs.map((d) => Object.assign({ id: d.id }, d.data())).filter((r) => r.title);
+      renderRoad();
     }, () => {});
     db.collection("votes").onSnapshot((snap) => {
       votes = {};

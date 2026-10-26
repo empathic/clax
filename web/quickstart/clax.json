@@ -2,9 +2,25 @@
   "capabilities": {
     "db": {
       "rules": [
-        { "path": "extensions", "read": "view", "write": "admin" },
-        { "path": "votes", "read": "view", "write": "admin" },
-        { "path": "votes/{self}", "write": "interact" }
+        {
+          "path": "extensions",
+          "read": "view",
+          "write": "admin"
+        },
+        {
+          "path": "roadmap",
+          "read": "view",
+          "write": "admin"
+        },
+        {
+          "path": "votes",
+          "read": "view",
+          "write": "admin"
+        },
+        {
+          "path": "votes/{self}",
+          "write": "interact"
+        }
       ]
     },
     "user": {}
