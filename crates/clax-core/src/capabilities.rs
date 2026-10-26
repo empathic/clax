@@ -17,7 +17,8 @@ fn bad(message: impl Into<String>) -> CoreError {
 /// `comments.customAnchors` are booleans; `user.scopes` is an array of
 /// `"profile"` and `"email"`; `room.topics` must pass
 /// [`Topics::from_capabilities`](crate::room::Topics::from_capabilities); `net.hosts` must pass
-/// [`net_hosts`]. Other names are stored as given.
+/// [`net_hosts`]; `shell` takes no options (`{}`). Other names are stored as
+/// given.
 ///
 /// # Errors
 /// `invalid_capabilities` naming the first problem.
@@ -36,6 +37,13 @@ pub fn validate(caps: &Value) -> Result<()> {
     ReadDecl::check(caps)?;
     crate::room::Topics::from_capabilities(caps)?;
     net_hosts(caps)?;
+    if obj
+        .get("shell")
+        .and_then(Value::as_object)
+        .is_some_and(|o| !o.is_empty())
+    {
+        return Err(bad("capabilities.shell takes no options: declare it as {}"));
+    }
     if let Some(c) = obj.get("comments") {
         for k in ["composer_only", "customAnchors"] {
             if c.get(k).is_some_and(|v| !v.is_boolean()) {
@@ -131,9 +139,25 @@ mod tests {
             json!({"self": {}, "downloads": {}, "assets": {}, "room": {"topics": {"chat": "interact"}}}),
             json!({"db": {"read": ["7q3k9mzx2b4t"], "share": {"read": ["8r4m0nay3c5v"]}}}),
             json!({"net": {"hosts": ["api.example.com", "x-1.example.co.uk"]}}),
+            json!({"shell": {}}),
         ] {
             validate(&ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
         }
+    }
+
+    #[test]
+    fn shell_takes_no_options() {
+        let e = validate(&json!({"shell": {"controls": ["fork"]}})).unwrap_err();
+        assert!(
+            matches!(
+                &e,
+                crate::CoreError::Invalid {
+                    code: "invalid_capabilities",
+                    message,
+                } if message.contains("capabilities.shell takes no options")
+            ),
+            "{e:?}"
+        );
     }
 
     #[test]

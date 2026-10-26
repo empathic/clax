@@ -992,6 +992,7 @@ pub async fn get(
     let hosted = s.hosted.is_some();
     let reader = SourceReader::new(a.caller.clone(), a.member().cloned(), hosted);
     let (caller, member) = (a.caller.clone(), a.member_rights());
+    let browser_member = a.member().cloned();
     let wakes = super::sessions::Wakes::for_caller(&s, &a.caller);
     let may_resolve = super::threads::resolves(&a, &s, &id).await?;
     let mut v = s
@@ -1034,6 +1035,14 @@ pub async fn get(
             // Whether the caller may resolve its threads, so also send them
             // while its Comments switch is off (the shell's Send).
             artifact["may_resolve"] = json!(may_resolve);
+            // Whether the caller may edit it (the shell's Edit control).
+            artifact["may_edit"] = json!(browser_edits(
+                st,
+                &caller,
+                browser_member.as_ref(),
+                hosted,
+                a.id.as_str()
+            )?);
             // Its Comments switch, forks and app (an artifact carrying a
             // bundle).
             super::app_bundles::stamp_app_fields(st, &a, &mut artifact)?;
@@ -1809,6 +1818,32 @@ pub(crate) fn fork_refusal(
         )),
         Caller::Anonymous => Some(ApiError::unauthorized()),
     })
+}
+
+/// Whether a browser's `caller` may edit artifact `aid`, as `whoami`'s
+/// `can_edit` says (never a person's agent): the owner, and the owner's
+/// agents, on a daemon with no hosted people, else when the owner's rights
+/// `update` it; a signed-in person (`member`) whose rights `update` it;
+/// no one else.
+///
+/// # Errors
+/// The store's.
+pub(crate) fn browser_edits(
+    st: &Store,
+    caller: &clax_http::auth::Caller,
+    member: Option<&clax_http::hosted::MemberRights>,
+    hosted: bool,
+    aid: &str,
+) -> clax_core::Result<bool> {
+    use clax_http::auth::Caller;
+    let update = (RightType::Artifacts, "update");
+    match (caller, member) {
+        (Caller::Owner { .. } | Caller::OwnerAgent { .. }, _) => Ok(
+            !hosted || clax_http::hosted::MemberRights::owner(st)?.allows_at(st, update, aid)?
+        ),
+        (_, Some(m)) => m.allows_at(st, update, aid),
+        _ => Ok(false),
+    }
 }
 
 /// `POST /api/artifacts/<aid>/fork` body.

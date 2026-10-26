@@ -907,7 +907,7 @@ async fn golden_now() -> Value {
 /// [`compare_with_section_19`] accepts as [`moved_to_its_place`].
 /// `site` (`GET /api/artifacts/<id>`'s) names the site hosts the shell
 /// frames an artifact on, on every install.
-pub const ADDITIVE_KEYS: [&str; 22] = [
+pub const ADDITIVE_KEYS: [&str; 23] = [
     "owner",
     "taken_by",
     "name",
@@ -918,6 +918,7 @@ pub const ADDITIVE_KEYS: [&str; 22] = [
     "may_fork",
     "may_tag",
     "may_resolve",
+    "may_edit",
     "linked",
     "wake",
     "wakes",
@@ -937,8 +938,8 @@ pub const ADDITIVE_KEYS: [&str; 22] = [
 /// null; `name`, and an artifact's `owner_name`, null or a name; `person` null or the owner (`owner: true`,
 /// the owner's public ID); a thread's `owner` or `taken_by` null or one of
 /// the owner's agents (`person` null); `rights` the owner's, `clax:full`;
-/// an artifact's `may_fork`, `may_tag` and `may_resolve` true (the owner's
-/// agents may fork, tag and resolve it); an answer's `linked` null (no remote is linked);
+/// an artifact's `may_fork`, `may_tag`, `may_resolve` and `may_edit` true
+/// (the owner's agents may fork, tag, resolve and edit it); an answer's `linked` null (no remote is linked);
 /// `where_to_ask` a suggestion; a question asked before them neither in the terminal nor
 /// pulled, in no thread; an artifact's `tags` none (an install migrated
 /// from before tags has none); an artifact's `comments` on, `forks` a
@@ -960,7 +961,7 @@ pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
         }
         "owner" | "taken_by" => owners_agent(v),
         "rights" => *v == clax_core::rights::Rights::full().to_json(),
-        "may_fork" | "may_tag" | "may_resolve" => *v == json!(true),
+        "may_fork" | "may_tag" | "may_resolve" | "may_edit" => *v == json!(true),
         "linked" => v.is_null(),
         "wake" => v["when_idle"].is_boolean() && v["do"].is_string(),
         "wakes" => v.is_boolean() || v == "unsure",

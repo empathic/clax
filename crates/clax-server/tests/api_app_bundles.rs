@@ -969,6 +969,30 @@ async fn may_resolve_is_said_and_a_comments_switch_change_announced() {
     assert_eq!(switches(&mut rx), [(aid.clone(), true)]);
 }
 
+/// Who may edit the artifact is said to the caller: the owner and a person
+/// it is shared with to edit, not one it is shared with to comment.
+#[tokio::test]
+async fn may_edit_is_said_to_owner_and_editors_only() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.artifact("Plan").await;
+    let sam = site.member(&owner, "Sam").await;
+    site.share(&owner, &aid, &site.pid(&sam).await, "editor")
+        .await;
+    let kim = site.member(&owner, "Kim").await;
+    site.share(&owner, &aid, &site.pid(&kim).await, "commenter")
+        .await;
+    for (who, b, may) in [
+        ("owner", &owner, true),
+        ("editor", &sam, true),
+        ("commenter", &kim, false),
+    ] {
+        let (s, v) = site.get(b, &format!("/api/artifacts/{aid}")).await;
+        assert_eq!(s, 200, "{who}: {v}");
+        assert_eq!(v["artifact"]["may_edit"], json!(may), "{who}: {v}");
+    }
+}
+
 /// An artifact shared with Sam at Can comment and by link at Can comment,
 /// with a guest, four open threads of the guest's, and its Comments switch
 /// off: the site, the owner, Sam, the guest, the artifact, the threads.

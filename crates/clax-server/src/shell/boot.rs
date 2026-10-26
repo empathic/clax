@@ -333,6 +333,17 @@ pub async fn assemble(
                 a.id.as_str(),
             )?;
             artifact["may_resolve"] = json!(may_resolve);
+            // Whether the caller may edit it, as `GET /api/artifacts/<id>`
+            // says.
+            artifact["may_edit"] = json!(crate::routes::artifacts::browser_edits(
+                st,
+                caller
+                    .as_ref()
+                    .unwrap_or(&clax_http::auth::Caller::Anonymous),
+                member.as_ref(),
+                hosted,
+                a.id.as_str(),
+            )?);
             let may_fork = match caller {
                 Ok(c) if a.kind != clax_core::live::KIND_LIVE => {
                     crate::routes::artifacts::fork_refusal(st, &c, member_rights.as_deref(), &a.id)?

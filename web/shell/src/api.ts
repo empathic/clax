@@ -35,6 +35,8 @@ export type Artifact = {
   may_tag?: boolean;
   /** From the same: the viewer may resolve its threads, and so send them while its Comments switch is off. */
   may_resolve?: boolean;
+  /** From `GET /api/artifacts/<id>` and the bootstrap: the viewer may edit it (publish its versions). */
+  may_edit?: boolean;
   /** From `GET /api/artifacts/<id>` and the bootstrap: its Comments switch; false, nobody may comment on it. */
   comments?: boolean;
   /** From the same: how many live forks it has. */

@@ -194,6 +194,11 @@ async fn names_the_cookies_viewer_only() {
         "on a local daemon everyone resolves"
     );
     assert_eq!(
+        b["artifact"]["artifact"]["may_edit"],
+        json!(false),
+        "a guest edits nothing"
+    );
+    assert_eq!(
         b["attention"]["open_in"],
         json!([]),
         "the cookie's viewer gets its attention"
@@ -494,7 +499,9 @@ async fn boot_marks_the_owners_viewer() {
         .text()
         .await
         .unwrap();
-    assert_eq!(boot(&html).1["viewer"], me["viewer"]);
+    let b = boot(&html).1;
+    assert_eq!(b["viewer"], me["viewer"]);
+    assert_eq!(b["artifact"]["artifact"]["may_edit"], json!(true));
 }
 
 /// The `content` attribute of the `clax-embed` meta, unescaped, and where
