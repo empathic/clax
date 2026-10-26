@@ -16,7 +16,7 @@
   <p class="lede">The pages your coding agent builds (reports, dashboards, prototypes, charts) live on your own machine, every version kept. Point at anything on a page, comment, and the agent makes the change. This chart takes you from sign-in to your first round trip in about five minutes. Click any box.</p>
   <nav class="tabs" aria-label="Sections">
     <a href="index.html" id="tab-start" aria-current="page">Quickstart</a>
-    <a href="ideas.html" id="tab-ideas">Make it better<span class="count" id="idea-count"></span></a>
+    <a href="ideas.html" id="tab-ideas" hidden>Make it better<span class="count" id="idea-count"></span></a>
   </nav>
 </header>
 
@@ -577,7 +577,11 @@
   // The full list is ideas.html; this page shows which steps have some.
   let ideas = SEED.slice();
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-  const countIdeas = () => { document.getElementById("idea-count").textContent = String(ideas.filter((i) => i.status !== "shipped" && i.status !== "declined").length); };
+  const countIdeas = () => {
+    // The tab is for a page that has ideas: a copy shipped without them shows none.
+    document.getElementById("tab-ideas").hidden = !ideas.length;
+    document.getElementById("idea-count").textContent = String(ideas.filter((i) => i.status !== "shipped" && i.status !== "declined").length);
+  };
 
   // ---------- Deep links ----------
   // index.html#<step> opens that step (ideas.html links here so).

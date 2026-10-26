@@ -115,6 +115,8 @@ mod api_push;
 mod api_pushes;
 #[cfg(any(not(clax_split), clax_split = "api_questions"))]
 mod api_questions;
+#[cfg(any(not(clax_split), clax_split = "api_quickstart"))]
+mod api_quickstart;
 #[cfg(any(not(clax_split), clax_split = "api_remotes"))]
 mod api_remotes;
 #[cfg(any(not(clax_split), clax_split = "api_remotes_app"))]
