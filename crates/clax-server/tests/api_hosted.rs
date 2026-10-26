@@ -2503,6 +2503,74 @@ async fn room_clears(site: &Site, aid: &str) -> Value {
 }
 
 #[tokio::test]
+async fn an_editors_restore_of_a_version_that_declared_others_is_admin_only() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let owner_pid = site.pid(&owner).await;
+    let mia = site.person(&owner, "Mia").await;
+    let mut agent = site.token_agent(&mia, "laptop").await;
+    assert_eq!(agent.initialize("claude-code").await, 200);
+    let wide = json!({"db": {}});
+    let (_, r) = agent
+        .call(
+            "publish",
+            json!({"html": "<h1>1</h1>", "title": "Mia's", "capabilities": wide.clone()}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    let id = site
+        .ts
+        .store
+        .list_artifacts()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.title == "Mia's")
+        .unwrap()
+        .id;
+    let (_, r) = agent
+        .call(
+            "publish",
+            json!({"id": id, "if_version": 1, "html": "<h1>2</h1>", "capabilities": {}}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{id}/shares"),
+            json!({"person": owner_pid, "access": "editor"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let restore = async |version: u32, if_version: u32| {
+        json_of(
+            site.ts
+                .client
+                .post(site.url(&format!("/api/artifacts/{id}/versions:restore")))
+                .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+                .bearer_auth(&site.ts.token)
+                .json(&json!({"version": version, "if_version": if_version}))
+                .send()
+                .await
+                .unwrap(),
+        )
+        .await
+    };
+    // Version 1 declared more than the page does now: the maker's to bring back.
+    let (s, v) = restore(1, 2).await;
+    assert_eq!((s, code(&v)), (403, "admin_only"), "{v}");
+    assert_eq!(site.ts.store.list_versions(&clax_core::ArtifactId::parse(&id).unwrap()).unwrap().len(), 2);
+    assert_eq!(
+        site.ts.store.get_artifact(&clax_core::ArtifactId::parse(&id).unwrap()).unwrap().unwrap().capabilities,
+        json!({})
+    );
+    // A version that declared what is in force restores.
+    let (s, v) = restore(2, 2).await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["artifact"]["capabilities"], json!({}), "{v}");
+}
+
+#[tokio::test]
 async fn the_daemon_tokens_own_routes_at_a_page_shared_with_the_owner_hold_to_the_share() {
     let site = Site::new().await;
     let owner = site.owner().await;

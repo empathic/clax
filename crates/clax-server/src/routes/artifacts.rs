@@ -1515,9 +1515,24 @@ pub async fn restore(
         ));
     };
     let (declaration, truncated) = b.declaration.validated()?;
-    if declaration.capabilities.is_some() {
+    // A restore that declares none takes the restored version's: that is a
+    // change of capabilities when it differs from the current one.
+    let capabilities = match declaration.capabilities.clone() {
+        Some(c) => Some(c),
+        None => {
+            let aid = id.as_str().to_string();
+            s.store_call(move |st| match st.version_capabilities(&aid, n) {
+                Ok(c) => Ok(Some(c)),
+                // The restore itself answers an unknown artifact or version.
+                Err(clax_core::CoreError::NotFound) => Ok(None),
+                Err(e) => Err(e),
+            })
+            .await?
+        }
+    };
+    if capabilities.is_some() {
         let caller = d.caller(&s).await?;
-        admin_change(&s, &caller, &id, None, declaration.capabilities.clone()).await?;
+        admin_change(&s, &caller, &id, None, capabilities).await?;
     }
     let session = session_header(&headers)?;
     let events = s.events.clone();

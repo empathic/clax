@@ -1740,7 +1740,7 @@ pub const SITE_SESSIONS_MIGRATION: u32 = APP_DATA_MIGRATION + 1;
 /// version.
 pub const ASSET_KEYS_MIGRATION: u32 = SITE_SESSIONS_MIGRATION + 1;
 
-/// The migration that adds `device_codes.return_to`, as a schema version,
+/// The migration that adds `device_codes.return_to`, as a schema version.
 pub const RETURN_TO_MIGRATION: u32 = ASSET_KEYS_MIGRATION + 1;
 
 /// The migration that adds `versions.capabilities_json`, as a schema
@@ -4852,6 +4852,43 @@ mod tests {
         );
         assert!(MIGRATIONS[first + 14].contains("ALTER TABLE versions ADD COLUMN capabilities_json"));
         assert_eq!(MIGRATIONS.len() as u32, super::VERSION_CAPABILITIES_MIGRATION);
+    }
+
+    #[test]
+    fn migration_56_gives_each_artifacts_current_version_its_declaration() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        drop(Store::open(&home).unwrap());
+        let c = Connection::open(home.db_path()).unwrap();
+        // The schema as it was before 56, with versions of two artifacts.
+        c.execute_batch("ALTER TABLE versions DROP COLUMN capabilities_json;")
+            .unwrap();
+        c.execute_batch(
+            "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version, capabilities_json)
+                VALUES ('7q3k9mzx2b4t', 'A', 'x', 'x', 2, '0', '{\"db\":{}}'),
+                       ('8r4m2nzy3c5v', 'B', 'x', 'x', 1, '0', '{}');
+             INSERT INTO versions (artifact_id, n, created_at, files_json) VALUES
+                ('7q3k9mzx2b4t', 1, 'x', '{}'), ('7q3k9mzx2b4t', 2, 'x', '{}'),
+                ('8r4m2nzy3c5v', 1, 'x', '{}');",
+        )
+        .unwrap();
+        c.execute_batch(MIGRATIONS[super::VERSION_CAPABILITIES_MIGRATION as usize - 1])
+            .unwrap();
+        let rows: Vec<(String, u32, Option<String>)> = c
+            .prepare("SELECT artifact_id, n, capabilities_json FROM versions ORDER BY artifact_id, n")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("7q3k9mzx2b4t".to_string(), 1, None),
+                ("7q3k9mzx2b4t".to_string(), 2, Some("{\"db\":{}}".to_string())),
+                ("8r4m2nzy3c5v".to_string(), 1, Some("{}".to_string())),
+            ]
+        );
     }
 
     #[test]
