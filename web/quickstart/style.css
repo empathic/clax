@@ -234,20 +234,24 @@
   .deck-tabs button[role="tab"][aria-selected="true"] { background: var(--surface); color: var(--fg); border-bottom-color: var(--accent); }
   .deck-tabs .dn { width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid currentColor; display: grid; place-items: center; font-size: 11px; }
   .deck-tabs button.is-done .dn { background: var(--ok); border-color: var(--ok); color: var(--surface); }
-  .deck-slide { height: 196px; overflow: auto; padding: 16px 20px 4px; }
+  .deck-slide { height: 138px; overflow: auto; padding: 14px 20px 2px; }
   .deck-slide.slide-in { animation: slide-in .22s ease-out; }
   @keyframes slide-in { from { opacity: 0; transform: translateX(14px); } }
   @media (prefers-reduced-motion: reduce) { .deck-slide.slide-in { animation: none; } }
-  .deck-slide h3 { margin: 0 0 8px; font-size: 20px; line-height: 1.25; letter-spacing: -.01em; }
+  .deck-slide h3 { margin: 0 0 6px; font-size: 19px; line-height: 1.25; letter-spacing: -.01em; }
   .deck-body p { margin: 0 0 8px; }
   .deck-body .cmd { margin: 6px 0 8px; }
   .deck-alt { color: var(--muted); font-size: 13.5px; }
-  .deck-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); }
+  .deck-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; border-top: 1px solid var(--line); }
   .deck-foot .btn { padding: 7px 16px; }
-  .deck-nav { width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); font-size: 15px; }
+  .deck-nav { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); font-size: 15px; }
   .deck-nav:hover:not([disabled]) { border-color: var(--accent); }
   .deck-nav[disabled] { opacity: .3; cursor: default; }
-  @media (max-width: 900px) { .deck-slide { height: 236px; padding: 14px 16px 4px; } }
+  @media (max-width: 900px) {
+    .deck-slide { height: 158px; padding: 12px 16px 2px; }
+    .deck-tabs button[role="tab"] { padding-right: 24px; gap: 5px; font-size: 13px; }
+    .deck-tabs .fab { right: 4px; width: 18px; height: 18px; font-size: 10px; }
+  }
 
   /* Mark done: a small round ✓ on the right edge of each step's box. */
   .fab { position: absolute; right: -14px; top: 50%; transform: translateY(-50%); z-index: 3; width: 28px; height: 28px; border-radius: 50%;

@@ -276,11 +276,10 @@
   }
   // Each slide: one action and at most one command; the side panel keeps the detail.
   const SLIDES = {
-    link: { tab: "Link", html: () => `<p>Press <b>Publish to clax.dev</b> in the top bar, then approve the code on clax.dev. Nothing else to install.</p>
-      <p class="deck-alt">From a terminal: <code>clax remote add https://clax.dev</code></p>` },
-    attach: { tab: "Attach", html: () => `<p>In your agent's chat:</p>${cmd(`Watch the Clax Quickstart page (${ARTIFACT}) for my comments.`)}
-      <p class="deck-alt">Check: comment <code>@agent hello</code> here, and it replies.</p>` },
-    fork: { tab: "Fork", html: () => `<p>Press <b>Fork</b> in the top bar (in ⋯ on a phone), or ask your agent:</p>${cmd(`Fork the Clax Quickstart page (${ARTIFACT}) for me and watch the fork.`)}` },
+    link: { tab: "Link", html: () => `<p>Press <b>Publish to clax.dev</b> in the top bar, then approve the code on clax.dev.</p>
+      <p class="deck-alt">Terminal: <code>clax remote add https://clax.dev</code></p>` },
+    attach: { tab: "Attach", html: () => `<p>In your agent's chat:</p>${cmd(`Watch Clax page ${ARTIFACT} for my comments`)}` },
+    fork: { tab: "Fork", html: () => `<p>Press <b>Fork</b> in the top bar, or ask your agent:</p>${cmd(`Fork Clax page ${ARTIFACT} and watch the fork`)}` },
   };
   function renderDeck(anim) {
     if (!deck) return;
