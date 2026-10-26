@@ -297,7 +297,12 @@ public Clax cannot be reached, what you write waits, marked "Sending…",
 then "Not sent" with Retry after five minutes; nothing local waits on it.
 
 On an artifact's page, Publish to `<host>` does the same in the browser
-(and Push v`<N>` once it is public, beside a link to its public copy). An
+(and Push v`<N>` once it is public, beside a link to its public copy). Your
+Clax shows it on every artifact, even before it is signed in anywhere: then
+it reads Publish to clax.dev, and pressing it signs this Clax in there
+first, as `clax remote add https://clax.dev` does (the approval page opens
+in a new tab, and the button waits for your approval), before asking to
+publish. An
 agent publishes with the `publish_public` tool, which asks you first: the
 question waits in your inbox beside the artifact, and only your answer in
 the browser or the extension counts. Choose Publish and push new versions

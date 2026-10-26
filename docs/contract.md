@@ -1010,9 +1010,12 @@ A local Clax publishes artifacts to a public one (a hosted daemon, or the
 Cloudflare Worker in hosted mode) as a person signed in there. Nothing
 here changes a local daemon or the plugins until a remote is added.
 
-**Signing in, by device code.** `clax remote add <url>` (or `POST
+**Signing in, by device code.** `clax remote add <url>`, the shell's
+Publish button on a Clax signed in to none (it signs in to
+`https://clax.dev`, opens the approval page in a new tab and polls at the
+remote's interval while its dialog is open), or `POST
 /api/remotes {url, name?, machine?, kind?}` with the daemon token, the
-owner's alone: 403 `not_for_agents` for an agent) asks the public Clax for
+owner's alone (403 `not_for_agents` for an agent), asks the public Clax for
 a device sign-in naming this machine (`Clax on <host name>`, or
 `machine`), and its kind (`kind`: `clax-app` for the Clax app, which
 passes it on as `client_kind`; absent for a daemon; any other is 400

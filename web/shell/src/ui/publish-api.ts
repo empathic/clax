@@ -68,6 +68,22 @@ export async function push(id: string, remote: string, mode: Mode, auto?: boolea
   }));
 }
 
+/** The public Clax the Publish button signs in to when this Clax is signed in to none. */
+export const DEFAULT_ORIGIN = "https://clax.dev";
+
+/** `POST /api/remotes`'s answer: a device sign-in waiting for the person's approval there. */
+export type SignIn = { remote: Remote; user_code: string; verification_url: string; expires_at: string; interval: number };
+
+/** Starts signing this Clax in to the public Clax at `url`. */
+export function startSignIn(url: string): Promise<SignIn> {
+  return send("POST", "/api/remotes", { url });
+}
+
+/** Asks whether remote `id`'s sign-in was approved there. */
+export function pollSignIn(id: string): Promise<{ remote: Remote; status: "pending" | "connected" | "denied" | "expired" }> {
+  return send("POST", `/api/remotes/${encodeURIComponent(id)}/poll`, {});
+}
+
 /** A remote's short label: its host. */
 export function hostOf(origin: string | null): string {
   if (!origin) return "the public Clax";

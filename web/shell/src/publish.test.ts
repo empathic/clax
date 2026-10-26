@@ -20,17 +20,75 @@ function daemon(remotes: unknown, pushed: Reply = [200, {}]) {
   return pushes;
 }
 
+/** Stubs fetch for a local Clax signed in nowhere: `POST /api/remotes`
+ * starts a sign-in to clax.dev, and its first poll answers `status`; once
+ * connected, the artifact's remotes list `connected`. Records each start's
+ * body and each poll's remote. */
+function signInDaemon(connected: unknown, status: string) {
+  const calls = { added: [] as unknown[], polled: [] as string[] };
+  let remotes: unknown[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    if (url === "/api/token") return new Response(JSON.stringify({ token: "t-local" }));
+    if (url === "/api/artifacts/a1/remotes") return new Response(JSON.stringify({ links: [], remotes }));
+    if (url === "/api/remotes" && init?.method === "POST") {
+      calls.added.push(JSON.parse(String(init.body)));
+      return new Response(JSON.stringify({
+        remote: { id: "r_2", origin: "https://clax.dev", name: "clax.dev", status: "pending", person_name: null },
+        user_code: "ABCD-1234", verification_url: "https://clax.dev/device?code=ABCD-1234", expires_at: "2026-10-26T19:00:00Z", interval: 5,
+      }), { status: 201 });
+    }
+    const poll = /^\/api\/remotes\/([^/]+)\/poll$/.exec(url);
+    if (poll && init?.method === "POST") {
+      calls.polled.push(poll[1]);
+      if (status === "connected") remotes = [connected];
+      return new Response(JSON.stringify({ remote: connected, status }));
+    }
+    return new Response("{}", { status: 404 });
+  }));
+  return calls;
+}
+
 const settle = async () => { for (let i = 0; i < 5; i++) { await new Promise(r => setTimeout(r)); flush(); } };
 const remote = { id: "r_1", origin: "https://clax.example", name: "clax.example", status: "connected", person_name: "Ada" };
 
 describe("the Publish button", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("shows nothing when this Clax is signed in to no public Clax", async () => {
-    daemon({ links: [], remotes: [] });
+  it("with no public Clax, offers Publish to clax.dev, signs this Clax in there first, then asks to publish", async () => {
+    const dev = { id: "r_2", origin: "https://clax.dev", name: "clax.dev", status: "connected", person_name: "Ada" };
+    const calls = signInDaemon(dev, "connected");
+    const tab = { location: { href: "" }, opener: {} as unknown };
+    const opened = vi.fn(() => tab);
+    vi.stubGlobal("open", opened);
     const m = mount(Publish, { id: "a1", title: "Plan", latest: 2 });
     await settle();
-    expect(m.root.querySelector("button, a")).toBeNull();
+    const b = m.root.querySelector<HTMLButtonElement>("button.publish")!;
+    expect(b.textContent).toBe("Publish to clax.dev");
+    flush(() => b.click());
+    const pop = m.root.querySelector("[role=dialog]")!;
+    expect(pop.textContent).toContain("sign this Clax in to clax.dev");
+    flush(() => pop.querySelector<HTMLButtonElement>("button.primary")!.click());
+    await settle();
+    expect(calls.added).toEqual([{ url: "https://clax.dev" }]);
+    expect(opened).toHaveBeenCalledTimes(1);
+    expect(tab.location.href).toBe("https://clax.dev/device?code=ABCD-1234");
+    expect(tab.opener).toBeNull();
+    expect(calls.polled).toEqual(["r_2"]);
+    expect(m.root.querySelector("[role=dialog]")!.textContent).toContain("Publish “Plan” on clax.dev, as Ada");
+    m.unmount();
+  });
+
+  it("shows the code while the sign-in waits, and says so when it is denied", async () => {
+    signInDaemon(null, "denied");
+    vi.stubGlobal("open", vi.fn(() => null));
+    const m = mount(Publish, { id: "a1", title: "Plan", latest: 1 });
+    await settle();
+    flush(() => m.root.querySelector<HTMLButtonElement>("button.publish")!.click());
+    flush(() => m.root.querySelector<HTMLButtonElement>("[role=dialog] button.primary")!.click());
+    await settle();
+    const pop = m.root.querySelector("[role=dialog]")!;
+    expect(pop.querySelector("[role=alert]")!.textContent).toContain("was declined");
+    expect(pop.querySelector<HTMLButtonElement>("button.primary")!.textContent).toBe("Sign in to clax.dev");
     m.unmount();
   });
 
