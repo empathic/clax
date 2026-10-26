@@ -329,3 +329,6 @@
   .deck-tabs button[role="tab"].arrive { animation: arrive-tab 1.1s ease-out 1; }
   @keyframes arrive-tab { 0% { background: color-mix(in srgb, var(--accent) 35%, var(--surface)); } 100% { background: var(--surface); } }
   @media (prefers-reduced-motion: reduce) { .arrive, .deck-tabs button[role="tab"].arrive { animation: none; } }
+
+  /* Progress stays in view while the chart scrolls under it. */
+  .progress { position: sticky; top: 0; z-index: 6; background: var(--bg); padding: 10px 0; margin-bottom: 6px; box-shadow: 0 8px 8px -8px rgba(0, 0, 0, .35); }
