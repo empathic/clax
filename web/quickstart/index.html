@@ -347,22 +347,24 @@
   function drawRing() {
     if (!ring) return;
     const box = ring.getBoundingClientRect();
-    const c = (el) => { const r = el.getBoundingClientRect(); return { x: r.left - box.left + r.width / 2, y: r.top - box.top + r.height / 2, w: r.width / 2 + 8, h: r.height / 2 + 8 }; };
+    const c = (el) => { const r = el.getBoundingClientRect(); return { x: r.left - box.left + r.width / 2, y: r.top - box.top + r.height / 2, l: r.left - box.left, t: r.top - box.top, r: r.right - box.left, b: r.bottom - box.top }; };
     const P = RING.map((id) => c(els[id]));
     const cx = box.width / 2, cy = box.height / 2;
     const rx = Math.max(...P.map((p) => Math.abs(p.x - cx))), ry = Math.max(...P.map((p) => Math.abs(p.y - cy)));
     const allDone = RING.every((id) => isDone(id));
-    let out = `<defs><marker id="rm" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>
+    let out = `<defs><marker id="rm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>
       <ellipse class="ring-track" cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}"/>`;
-    // An arc from each step to the next, leaving each box's edge.
+    // An arc from each step to the next, starting and ending exactly where
+    // the ring crosses each box's edge.
     const angle = (p) => Math.atan2((p.y - cy) / ry, (p.x - cx) / rx);
     const at = (t) => [cx + rx * Math.cos(t), cy + ry * Math.sin(t)];
+    const inside = (p, [x, y], pad) => x >= p.l - pad && x <= p.r + pad && y >= p.t - pad && y <= p.b + pad;
+    const leave = (p, t, dir, pad) => { let s = t; for (let i = 0; i < 2000 && inside(p, at(s), pad); i++) s += dir * 0.002; return s; };
     for (let i = 0; i < 3; i++) {
       const a = P[i], z = P[(i + 1) % 3];
       let t0 = angle(a), t1 = angle(z);
       if (t1 <= t0) t1 += Math.PI * 2;
-      const pad0 = Math.min(0.9, (a.w + a.h) / (rx + ry)), pad1 = Math.min(0.9, (z.w + z.h) / (rx + ry));
-      const s0 = t0 + pad0, s1 = t1 - pad1;
+      const s0 = leave(a, t0, 1, 1), s1 = leave(z, t1, -1, 3);
       if (s1 <= s0) continue;
       const [x0, y0] = at(s0), [x1, y1] = at(s1);
       const large = s1 - s0 > Math.PI ? 1 : 0;
