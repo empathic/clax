@@ -196,7 +196,7 @@
         {#if !device.same_address}<p class="now" data-testid="other-address">It asked from another address than this browser's. Approve only if you started this sign-in yourself, just now, on that machine: anyone who sent you this link would publish as you.</p>{/if}
         <p class="hint" data-testid={isApp ? "device-app" : undefined}>It gets an agent token of yours: {isApp ? "what it publishes is yours, within your rights, and an app it publishes stays private until you share it." : "what it publishes is public as yours, within your rights."}{#if isApp}{" "}As the Clax app, it may also change who can see or edit the pages you made{me.person.owner ? " and, as the owner, any page on this site" : ""}, and whether anyone may comment on them.{/if} It shows on People{isApp ? " among your devices" : ""}, where you can revoke it.{#if legal}{" "}<span class="legal">What it does here is yours under the <a href={legal.terms_url} target="_blank" rel="noopener">Terms of Service</a>.</span>{/if}</p>
         <div class="acts"><button class="primary" type="button" disabled={busy} onclick={() => decide(true)}>Approve</button><button type="button" disabled={busy} onclick={() => decide(false)}>Deny</button></div>
-        {#if back}<p class="hint" data-testid="device-return">Approve or deny, then go back to {new URL(back).host}.</p>{/if}
+        {#if back}<p class="hint" data-testid="device-return">Approve, then go back to {new URL(back).host}.</p>{/if}
       {:else}
         <form onsubmit={lookUp}>
           {#if device === false}<p>No Clax is waiting with that code. It may have expired (codes last ten minutes) or been used: start again on that machine.</p>{/if}

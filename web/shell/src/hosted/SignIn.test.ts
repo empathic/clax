@@ -56,7 +56,7 @@ describe("returning to the Clax that asked", () => {
   it("approving_returns_to_the_loopback_page", async () => {
     const assign = vi.spyOn(nav, "assign").mockImplementation(() => {});
     const m = await approvalPage(null, false, to);
-    expect(m.root.textContent).toContain("go back to localhost:7480");
+    expect(m.root.textContent).toContain("Approve, then go back to localhost:7480.");
     await press(m, "Approve");
     expect(assign).toHaveBeenCalledWith("http://localhost:7480/a/x?publish=1&clax_signin=approved");
   });
