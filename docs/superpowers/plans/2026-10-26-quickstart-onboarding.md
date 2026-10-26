@@ -30,7 +30,7 @@
 
 ---
 
-### Task B1: Hosted device sign-in accepts a loopback `return_to`
+### Task 1 (B1): Hosted device sign-in accepts a loopback `return_to`
 
 **Files:**
 - Modify: `crates/clax-store/src/migrations.rs` (migration 55: `ALTER TABLE device_codes ADD COLUMN return_to TEXT;`, its `Mark`, `RETURN_TO_MIGRATION` const, sequence tests)
@@ -51,7 +51,7 @@
 - [ ] **Step 6: Run** `just test-affected` and see the device tests and migration sequence tests pass.
 - [ ] **Step 7: Commit** `Let a device sign-in name a loopback page to return to once decided`.
 
-### Task B2: The approval page returns the person to their Clax
+### Task 2 (B2): The approval page returns the person to their Clax
 
 **Files:**
 - Modify: `web/shell/src/hosted/api.ts:76-80` (`DeviceRequest.return_to: string | null`)
@@ -67,7 +67,7 @@
 - [ ] **Step 4: Run** `bazel test //web:unit //web:typecheck //web:lint` and see them pass.
 - [ ] **Step 5: Commit** `Send the person back to their Clax after they approve or deny its sign-in`.
 
-### Task B3: Local sign-in passes `return_to`, and Publish uses the same tab
+### Task 3 (B3): Local sign-in passes `return_to`, and Publish uses the same tab
 
 **Files:**
 - Modify: `crates/clax-server/src/routes/remotes.rs:103-120,130-205` (`AddBody.return_to: Option<String>`, a path checked with `safe_next`, made absolute against the request's loopback shell origin)
@@ -89,7 +89,7 @@
 - [ ] **Step 5: Run** `just test-affected`; see them pass. Update both docs.
 - [ ] **Step 6: Commit** `Sign in from Publish in the same tab and come back to the page`.
 
-### Task C1: Declarations kept per version
+### Task 4 (C1): Declarations kept per version
 
 **Files:**
 - Modify: `crates/clax-store/src/migrations.rs` (migration 56: `ALTER TABLE versions ADD COLUMN capabilities_json TEXT;` backfilled for each artifact's current version from `artifacts.capabilities_json`)
@@ -106,7 +106,7 @@
 - [ ] **Step 4: Run** `just test-affected`; see them pass.
 - [ ] **Step 5: Commit** `Keep each version's capability declaration, and restore it with the version`.
 
-### Task C2: `clax.json`, the manifest
+### Task 5 (C2): `clax.json`, the manifest
 
 **Files:**
 - Create: `crates/clax-core/src/manifest.rs` (`pub const MANIFEST_PATH: &str = "clax.json"`; `pub fn parse(bytes: &[u8]) -> Result<Value>` returning the `capabilities` object; `pub fn render(caps: &Value) -> Vec<u8>`, two-space JSON with a trailing newline)
@@ -125,18 +125,18 @@
 - [ ] **Step 5: Run** `just test-affected` (includes `scripts/test-plugins.sh` for the skills); see them pass.
 - [ ] **Step 6: Commit** `Declare an artifact's capabilities in clax.json, versioned with its files`.
 
-### Task D (scoped; detail after C): one permissions system
+### Task 6 (D, scoped; detail after C): one permissions system
 
 Spec §7. Migration 57 `capability_approvals`; port `addedCapabilities` (`apps/clax_app/lib/bundle/updater.dart:41`) to Rust as `clax_core::capabilities::added(live, next)`; the shell serves the last approved declaration until the owner approves (`web/shell/src/caps/availability.ts`, `view/artifact-controller.ts:718`); an approval bar; a Permissions panel in `MoreMenu.svelte` over `net-grants`, `sample-grant`, `db-grants` and the new approvals. Every artifact's first declaration asks (Q4 decided).
 
-### Task E (scoped; detail after D): the `account` capability
+### Task 7 (E, scoped; detail after D): the `account` capability
 
 Spec §5. Bridge `web/bridge/src/caps/account.ts` + `capabilities.ts` `CAPABILITY_METHODS.account = ["status","onChange","signIn"]`; shell `web/shell/src/caps/account.ts` (consent through D's grants, local device sign-in reusing B3's same-tab flow with `account=1`, hosted `/auth/github?next=`), `registry.ts`, `availability.ts` (`account`, `needsAccount`); `clax-core::capabilities::validate` checks `account.origins`; contract and skills. Waits on Q1 to Q3.
 
-### Task F (scoped): the `shell` capability
+### Task 8 (F, scoped): the `shell` capability
 
 Spec §8. `ClaxExtensions.Shell` (`highlight`, `commentMode`, `can`); shell handler driving `ArtifactController.toggleComment` (:1656) with the strict gesture (`caps/gesture.ts` `frameGestureStrict`) and a coach-mark component over `TopbarIsland.svelte` controls; consent through D.
 
-### Task G (scoped): the quickstart in every new gallery
+### Task 9 (G, scoped): the quickstart in every new gallery
 
 Spec §9. `web/quickstart/` copied into `web/dist/quickstart/` by the web build (`web/BUILD.bazel` `dist_all`); a `home_flags` row and a seeding function in `clax-store`, called from the owner's first gallery listing (local) and `GitHubOutcome::New` / invite redemption (hosted); release tag and update-at-start rule, stopping at the first comment or version by anyone but Clax (Q5 decided). The page switches step 1 to `account.signIn()` and its tour to `shell.highlight`.
