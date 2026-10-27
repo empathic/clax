@@ -803,9 +803,11 @@ impl HomeConfig {
         self.table("gallery")
     }
 
-    /// `[gallery] quickstart`: whether a new gallery is seeded with the
-    /// Clax Quickstart page. Default true; a `[gallery]` that does not
-    /// check is logged and leaves it true.
+    /// `[gallery] quickstart`: whether a hosted site seeds a new person's
+    /// gallery with the Clax Quickstart page, and whether a quickstart is
+    /// moved to newer releases (a local home is never seeded). Default
+    /// true; a `[gallery]` that does not check is logged and leaves it
+    /// true.
     pub fn gallery_quickstart(&self) -> bool {
         match self.gallery() {
             Ok(g) => g.quickstart,
@@ -929,8 +931,8 @@ impl Default for SampleModels {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct GalleryConfig {
-    /// `quickstart`: seed each new gallery with the Clax Quickstart page
-    /// (default true).
+    /// `quickstart`: seed each new hosted gallery with the Clax Quickstart
+    /// page, and move an untouched one to newer releases (default true).
     pub quickstart: bool,
 }
 

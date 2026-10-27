@@ -1,8 +1,9 @@
-//! The Clax Quickstart in each gallery (spec
-//! 2026-10-26-quickstart-onboarding-design §9), for every host: a local
-//! core's owner at start, and on a hosted site a person at their first
-//! sign-in or invite accept and again at every later sign-in (GitHub or a
-//! sign-in link). The store's seed and update
+//! The Clax Quickstart in each hosted gallery (spec
+//! 2026-10-26-quickstart-onboarding-design §9): on a hosted site a person
+//! at their first sign-in or invite accept and again at every later
+//! sign-in (GitHub or a sign-in link). A local core seeds nothing; at start
+//! it only updates a quickstart its owner's gallery already holds. The
+//! store's seed and update
 //! ([`clax_store::Store::seed_quickstart`],
 //! [`clax_store::Store::update_quickstart`]) run for a person with the
 //! release the web UI carries ([`AppState::quickstart`]); a state with no

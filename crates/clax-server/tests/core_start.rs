@@ -107,20 +107,39 @@ async fn artifacts(core: &Core) -> Vec<serde_json::Value> {
 }
 
 #[tokio::test]
-async fn a_fresh_home_starts_with_the_quickstart_pinned() {
+async fn a_fresh_local_home_starts_with_an_empty_gallery() {
     let dir = tempfile::tempdir().unwrap();
     let core = Core::start(cfg(dir.path(), tree("a"), true), &mut |_| {})
         .await
         .unwrap();
-    let list = artifacts(&core).await;
-    assert_eq!(list.len(), 1, "{list:?}");
-    assert_eq!(list[0]["title"], "Clax Quickstart");
-    assert_eq!(list[0]["pinned"], true);
+    assert!(artifacts(&core).await.is_empty());
+    assert!(core.state().store.quickstart_of(None).unwrap().is_none());
     core.stop().await;
 }
 
-/// The owner's seeded quickstart: its view and its approval, `(version,
-/// by)`.
+/// A home whose owner holds the quickstart of `mark`'s release, as one
+/// seeded before local homes stopped being seeded: the store's seed, run
+/// under a core with the switch off, so the core itself writes nothing.
+async fn home_with_a_quickstart(dir: &std::path::Path, mark: &str) {
+    let core = Core::start(cfg(dir, tree(mark), false), &mut |_| {})
+        .await
+        .unwrap();
+    let release =
+        clax_core::quickstart::Release::from_tree(&clax_testkit::quickstart_tree(mark)).unwrap();
+    let seeded = core
+        .state()
+        .store
+        .seed_quickstart(&clax_core::audit::AuditCtx::DAEMON, None, &release)
+        .await
+        .unwrap();
+    assert!(
+        matches!(seeded, clax_store::quickstart::Seeded::Made { .. }),
+        "{seeded:?}"
+    );
+    core.stop().await;
+}
+
+/// The owner's quickstart: its view and its approval, `(version, by)`.
 async fn quickstart_approval(core: &Core) -> (serde_json::Value, (u32, String)) {
     let list = artifacts(core).await;
     assert_eq!(list.len(), 1, "{list:?}");
@@ -136,8 +155,9 @@ async fn quickstart_approval(core: &Core) -> (serde_json::Value, (u32, String)) 
 }
 
 #[tokio::test]
-async fn a_seeded_quickstart_has_its_declaration_in_force() {
+async fn a_local_quickstart_keeps_its_declaration_in_force_and_is_not_seeded_again() {
     let dir = tempfile::tempdir().unwrap();
+    home_with_a_quickstart(dir.path(), "a").await;
     let core = Core::start(cfg(dir.path(), tree("a"), true), &mut |_| {})
         .await
         .unwrap();
@@ -155,26 +175,9 @@ async fn a_seeded_quickstart_has_its_declaration_in_force() {
 }
 
 #[tokio::test]
-async fn a_second_start_seeds_nothing_more() {
+async fn a_new_release_reaches_an_untouched_local_quickstart_at_start() {
     let dir = tempfile::tempdir().unwrap();
-    let core = Core::start(cfg(dir.path(), tree("a"), true), &mut |_| {})
-        .await
-        .unwrap();
-    core.stop().await;
-    let core = Core::start(cfg(dir.path(), tree("a"), true), &mut |_| {})
-        .await
-        .unwrap();
-    assert_eq!(artifacts(&core).await.len(), 1);
-    core.stop().await;
-}
-
-#[tokio::test]
-async fn a_new_release_reaches_an_untouched_quickstart_at_start() {
-    let dir = tempfile::tempdir().unwrap();
-    let core = Core::start(cfg(dir.path(), tree("a"), true), &mut |_| {})
-        .await
-        .unwrap();
-    core.stop().await;
+    home_with_a_quickstart(dir.path(), "a").await;
     let b = clax_core::quickstart::Release::from_tree(&clax_testkit::quickstart_tree("b")).unwrap();
     let core = Core::start(cfg(dir.path(), tree("b"), true), &mut |_| {})
         .await
@@ -202,35 +205,15 @@ async fn a_new_release_reaches_an_untouched_quickstart_at_start() {
 }
 
 #[tokio::test]
-async fn the_switch_off_seeds_nothing() {
+async fn the_switch_off_updates_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let core = Core::start(cfg(dir.path(), tree("a"), false), &mut |_| {})
+    home_with_a_quickstart(dir.path(), "a").await;
+    let core = Core::start(cfg(dir.path(), tree("b"), false), &mut |_| {})
         .await
         .unwrap();
-    assert!(artifacts(&core).await.is_empty());
-    assert!(core.state().store.quickstart_of(None).unwrap().is_none());
-    core.stop().await;
-}
-
-#[tokio::test]
-async fn a_web_ui_without_the_quickstart_seeds_nothing() {
-    let dir = tempfile::tempdir().unwrap();
-    let bare: std::sync::Arc<dyn clax_core::embedded::FileTree> =
-        std::sync::Arc::new(clax_core::embedded::MemTree(
-            [("index.html".to_string(), b"<p>".to_vec())]
-                .into_iter()
-                .collect(),
-        ));
-    let core = Core::start(cfg(dir.path(), bare, true), &mut |_| {})
-        .await
-        .unwrap();
-    assert!(artifacts(&core).await.is_empty());
-    assert!(core.state().store.quickstart_of(None).unwrap().is_none());
-    core.stop().await;
-    let core = Core::start(cfg(dir.path(), tree("a"), true), &mut |_| {})
-        .await
-        .unwrap();
-    assert_eq!(artifacts(&core).await.len(), 1);
+    let list = artifacts(&core).await;
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["current_version"], 1, "{list:?}");
     core.stop().await;
 }
 

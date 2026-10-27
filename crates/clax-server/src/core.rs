@@ -208,11 +208,12 @@ impl Core {
                 clax_http::app_data_host::move_pending(&store, &*host).await;
             }));
         }
-        // The owner's quickstart, before any person's: the owner's held-
-        // artifact check counts every person's artifacts.
+        // A local home is not seeded with the quickstart (only a hosted
+        // site's galleries are, at sign-in and invite accept); a quickstart
+        // a local home already holds still follows each release until
+        // someone touches it.
         if state.hosted.is_none() {
             crate::quickstart::update(&state, None).await;
-            crate::quickstart::seed(&state, None).await;
         }
         let router = crate::router::build_router_with_shutdown(state.clone(), shutdown.clone());
         Ok(Core {
