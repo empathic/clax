@@ -39,26 +39,41 @@
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use postgres::config::SslMode;
 use postgres::{Client, Transaction};
+
+pub use postgres::types::Type;
 
 /// An error from PostgreSQL or the pool, as text.
 pub type PgError = String;
 
 type Job = Box<dyn FnOnce(&mut Option<Client>, &Connector) + Send>;
 
+/// How long a connection may take to open.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long a connection may sit idle before TCP keepalives probe it, so a
+/// server lost without a reset is noticed and its calls fail.
+pub const KEEPALIVE_IDLE: Duration = Duration::from_secs(30);
+
+/// The longest one statement may run (`statement_timeout`): a call that
+/// would hang on a stuck server fails instead.
+pub const STATEMENT_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// How a thread of the pool connects.
 #[derive(Clone)]
 struct Connector {
-    url: String,
+    config: postgres::Config,
     tls: Option<crate::tls::RustlsConnect>,
 }
 
 impl Connector {
     fn connect(&self) -> Result<Client, postgres::Error> {
         match &self.tls {
-            Some(tls) => Client::connect(&self.url, tls.clone()),
-            None => Client::connect(&self.url, postgres::NoTls),
+            Some(tls) => self.config.connect(tls.clone()),
+            None => self.config.connect(postgres::NoTls),
         }
     }
 }
@@ -69,8 +84,9 @@ pub struct Pool {
     threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
-/// TLS for the connections: off, or on with the public roots and the
-/// certificates in a PEM file, when one is named.
+/// TLS for the connections: off, or required (no connection without it)
+/// with the public roots and the certificates in a PEM file, when one is
+/// named.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Tls {
     #[default]
@@ -106,23 +122,69 @@ fn tls_connector(tls: &Tls) -> Result<Option<crate::tls::RustlsConnect>, PgError
     Ok(Some(crate::tls::RustlsConnect::new(config)))
 }
 
+/// The connection settings `url` (a libpq connection string or URI) gives,
+/// with TLS as `tls` says and the pool's timeouts. TLS on is required: the
+/// connection never falls back to plain text, whatever the server answers.
+/// A URL whose `sslmode` contradicts `tls` is refused rather than either
+/// silently winning.
+///
+/// # Errors
+/// The URL does not parse, or its `sslmode` contradicts `tls`.
+pub fn config(url: &str, tls: &Tls) -> Result<postgres::Config, PgError> {
+    let mut c: postgres::Config = url
+        .parse()
+        .map_err(|e| format!("the PostgreSQL URL: {e}"))?;
+    let asked = c.get_ssl_mode();
+    match tls {
+        Tls::On { .. } if asked == SslMode::Disable => {
+            return Err(
+                "the PostgreSQL URL says sslmode=disable, but CLAX_POSTGRES_TLS is on".into(),
+            );
+        }
+        Tls::On { .. } => {
+            c.ssl_mode(SslMode::Require);
+        }
+        Tls::Off if asked == SslMode::Require => {
+            return Err(
+                "the PostgreSQL URL asks for TLS (sslmode), but CLAX_POSTGRES_TLS is off: set it to on"
+                    .into(),
+            );
+        }
+        Tls::Off => {
+            c.ssl_mode(SslMode::Disable);
+        }
+    }
+    c.connect_timeout(CONNECT_TIMEOUT)
+        .keepalives(true)
+        .keepalives_idle(KEEPALIVE_IDLE)
+        .options(&format!(
+            "-c statement_timeout={}",
+            STATEMENT_TIMEOUT.as_millis()
+        ));
+    Ok(c)
+}
+
 impl Pool {
-    /// A pool of `size` threads (at least one) connecting to `url` (a
-    /// libpq connection string or URI), each on its first job. Connects
-    /// once here, so a bad URL or an unreachable server fails at once.
+    /// A pool of `size` threads (at least one) connecting with `config`
+    /// ([`config`]), each on its first job. Connects once here, so an
+    /// unreachable server fails at once. `name` names the threads.
     ///
     /// # Errors
-    /// The URL does not parse, the CA file cannot be read, or the first
-    /// connection fails.
-    pub fn connect(url: &str, tls: &Tls, size: usize) -> Result<Arc<Pool>, PgError> {
+    /// The CA file cannot be read, or the first connection fails.
+    pub fn connect(
+        name: &str,
+        config: postgres::Config,
+        tls: &Tls,
+        size: usize,
+    ) -> Result<Arc<Pool>, PgError> {
         let connector = Connector {
-            url: url.to_string(),
+            config,
             tls: tls_connector(tls)?,
         };
         // Connecting outside any runtime: the caller may be inside one.
         let first = {
             let c = connector.clone();
-            std::thread::spawn(move || c.connect().map_err(|e| e.to_string()))
+            std::thread::spawn(move || c.connect().map_err(err))
                 .join()
                 .map_err(|_| "the connecting thread panicked".to_string())??
         };
@@ -136,7 +198,7 @@ impl Pool {
             let mut client = first.take();
             threads.push(
                 std::thread::Builder::new()
-                    .name(format!("clax-pg-{i}"))
+                    .name(format!("clax-pg-{name}-{i}"))
                     .spawn(move || {
                         loop {
                             let job = match rx.lock().unwrap_or_else(|e| e.into_inner()).recv() {
@@ -164,6 +226,40 @@ impl Pool {
         }))
     }
 
+    /// Queues `f` with `done` to hear its answer.
+    fn send<R: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut Client) -> Result<R, PgError> + Send + 'static,
+        done: impl FnOnce(Result<R, PgError>) + Send + 'static,
+    ) -> Result<(), PgError> {
+        let job: Job = Box::new(move |client, connector| {
+            if client.as_ref().is_none_or(Client::is_closed) {
+                match connector.connect() {
+                    Ok(c) => *client = Some(c),
+                    Err(e) => {
+                        done(Err(format!("connecting to PostgreSQL: {}", err(e))));
+                        return;
+                    }
+                }
+            }
+            let c = client.as_mut().expect("connected above");
+            let r = f(c);
+            if c.is_closed() {
+                *client = None;
+            }
+            done(r);
+        });
+        let sent = match &*self.jobs.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some(tx) => tx.send(job).is_ok(),
+            None => false,
+        };
+        if sent {
+            Ok(())
+        } else {
+            Err("the PostgreSQL pool is closed".into())
+        }
+    }
+
     /// Runs `f` on a client of the pool and answers what it answers,
     /// blocking the calling thread until then. A connection error drops
     /// the client, so the next job connects again; `f` is not retried.
@@ -174,49 +270,29 @@ impl Pool {
         &self,
         f: impl FnOnce(&mut Client) -> Result<R, PgError> + Send + 'static,
     ) -> Result<R, PgError> {
-        let (done, answer) = mpsc::sync_channel(1);
-        let job: Job = Box::new(move |client, connector| {
-            if client.as_ref().is_none_or(Client::is_closed) {
-                match connector.connect() {
-                    Ok(c) => *client = Some(c),
-                    Err(e) => {
-                        let _ = done.send(Err(format!("connecting to PostgreSQL: {e}")));
-                        return;
-                    }
-                }
-            }
-            let c = client.as_mut().expect("connected above");
-            let r = f(c);
-            if c.is_closed() {
-                *client = None;
-            }
-            let _ = done.send(r);
-        });
-        let sent = match &*self.jobs.lock().unwrap_or_else(|e| e.into_inner()) {
-            Some(tx) => tx.send(job).is_ok(),
-            None => false,
-        };
-        if !sent {
-            return Err("the PostgreSQL pool is closed".into());
-        }
-        answer
-            .recv()
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send(f, move |r| {
+            let _ = tx.send(r);
+        })?;
+        rx.recv()
             .map_err(|_| "a PostgreSQL job panicked".to_string())?
     }
 
-    /// [`Pool::run`] from async code: on a blocking thread, so the runtime's
-    /// own threads never wait on the database.
+    /// [`Pool::run`] from async code: the caller's task awaits the answer,
+    /// and no thread of the runtime waits on the database.
     ///
     /// # Errors
     /// [`Pool::run`]'s.
     pub async fn call<R: Send + 'static>(
-        self: &Arc<Self>,
+        &self,
         f: impl FnOnce(&mut Client) -> Result<R, PgError> + Send + 'static,
     ) -> Result<R, PgError> {
-        let pool = self.clone();
-        tokio::task::spawn_blocking(move || pool.run(f))
-            .await
-            .map_err(|e| e.to_string())?
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.send(f, move |r| {
+            let _ = tx.send(r);
+        })?;
+        rx.await
+            .map_err(|_| "a PostgreSQL job panicked".to_string())?
     }
 
     /// Stops taking jobs and joins the threads once their jobs end.
@@ -238,7 +314,7 @@ pub fn err(e: postgres::Error) -> PgError {
 }
 
 /// The schema's version; [`migrate`] brings a database to it.
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 /// The fleet's tables (see the [module docs](self)).
 const SCHEMA_1: &str = "
@@ -304,6 +380,25 @@ CREATE TABLE IF NOT EXISTS clax_fleet_assets (
 );
 ";
 
+/// What version 2 adds: each chunk kept inline (compressed when that helps)
+/// rather than in TOAST, and its table vacuumed sooner, since every commit
+/// rewrites its pages' rows; each instance's public origin, as it first
+/// started, so a name given to another tenant never opens its data
+/// ([`claim_origin`]); and the fleet's settings, its peer key among them
+/// ([`peer_key`]).
+const SCHEMA_2: &str = "
+ALTER TABLE clax_fleet_chunks ALTER COLUMN bytes SET STORAGE MAIN;
+ALTER TABLE clax_fleet_chunks SET (autovacuum_vacuum_scale_factor = 0.02);
+CREATE TABLE IF NOT EXISTS clax_fleet_instances (
+    instance text PRIMARY KEY,
+    origin text NOT NULL
+);
+CREATE TABLE IF NOT EXISTS clax_fleet_settings (
+    name text PRIMARY KEY,
+    value text NOT NULL
+);
+";
+
 /// Brings the database to the fleet's schema, once, under an advisory lock
 /// (a fleet's pods may start together). Refuses a database a newer fleet
 /// migrated.
@@ -332,6 +427,9 @@ pub fn migrate(pool: &Pool) -> Result<(), PgError> {
         }
         if version < 1 {
             tx.batch_execute(SCHEMA_1).map_err(err)?;
+        }
+        if version < 2 {
+            tx.batch_execute(SCHEMA_2).map_err(err)?;
         }
         if version < SCHEMA_VERSION {
             tx.execute("DELETE FROM clax_fleet_schema", &[]).map_err(err)?;
@@ -381,11 +479,15 @@ impl Fence {
     pub fn check(&self, tx: &mut Transaction<'_>) -> Result<(), PgError> {
         let epoch = self.epoch();
         let held = tx
-            .query_opt(
+            .query_typed_opt(
                 "SELECT 1 FROM clax_fleet_leases
                  WHERE instance = $1 AND holder = $2 AND epoch = $3
                  FOR SHARE",
-                &[&self.instance, &self.holder, &epoch],
+                &[
+                    (&self.instance, Type::TEXT),
+                    (&self.holder, Type::TEXT),
+                    (&epoch, Type::INT8),
+                ],
             )
             .map_err(err)?;
         if held.is_none() || epoch == 0 {
@@ -396,4 +498,65 @@ impl Fence {
         }
         Ok(())
     }
+}
+
+/// Records `origin` as instance `instance`'s, under its lease, the first
+/// time it starts, and fails when an earlier start recorded another: its
+/// rows are another tenant's, kept under a name the catalog gave again.
+///
+/// # Errors
+/// `instance_reused` naming both origins, `lease_lost`, or PostgreSQL's.
+pub fn claim_origin(pool: &Pool, fence: &Arc<Fence>, origin: &str) -> Result<(), PgError> {
+    let (fence, origin) = (fence.clone(), origin.to_string());
+    pool.run(move |c| {
+        let mut tx = c.transaction().map_err(err)?;
+        fence.check(&mut tx)?;
+        tx.execute_typed(
+            "INSERT INTO clax_fleet_instances (instance, origin) VALUES ($1, $2)
+             ON CONFLICT (instance) DO NOTHING",
+            &[(&fence.instance, Type::TEXT), (&origin, Type::TEXT)],
+        )
+        .map_err(err)?;
+        let held: String = tx
+            .query_typed_one(
+                "SELECT origin FROM clax_fleet_instances WHERE instance = $1",
+                &[(&fence.instance, Type::TEXT)],
+            )
+            .map_err(err)?
+            .get(0);
+        tx.commit().map_err(err)?;
+        if held != origin {
+            return Err(format!(
+                "instance_reused: instance {}'s data was made for {held}, not {origin}; a name is never given to another tenant (docs/kubernetes.md, The catalog)",
+                fence.instance
+            ));
+        }
+        Ok(())
+    })
+}
+
+/// The fleet's peer key: the one `CLAX_FLEET_PEER_KEY` names when set
+/// (stored for the processes that have none), else the one the database
+/// holds, made at random by the first process to ask.
+///
+/// # Errors
+/// PostgreSQL's.
+pub fn peer_key(pool: &Pool, given: Option<&str>) -> Result<String, PgError> {
+    let fresh = given.map(str::to_string).unwrap_or_else(|| {
+        let bytes: [u8; 32] = clax_core::secret::random_bytes::<32>();
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    });
+    let set = given.is_some();
+    pool.run(move |c| {
+        let sql = if set {
+            "INSERT INTO clax_fleet_settings (name, value) VALUES ('peer_key', $1)
+             ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value RETURNING value"
+        } else {
+            "INSERT INTO clax_fleet_settings (name, value) VALUES ('peer_key', $1)
+             ON CONFLICT (name) DO UPDATE SET value = clax_fleet_settings.value RETURNING value"
+        };
+        Ok(c.query_typed_one(sql, &[(&fresh, Type::TEXT)])
+            .map_err(err)?
+            .get(0))
+    })
 }

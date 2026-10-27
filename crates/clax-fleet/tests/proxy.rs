@@ -15,7 +15,7 @@ use axum::routing::get;
 use futures::{SinkExt, StreamExt};
 use tokio::sync::oneshot;
 
-use clax_fleet::proxy::{HOP_HEADER, INSTANCE_HEADER, forward};
+use clax_fleet::proxy::{HOP_HEADER, INSTANCE_HEADER, KEY_HEADER, Proxy};
 
 type Release = Arc<Mutex<Option<oneshot::Receiver<()>>>>;
 
@@ -59,10 +59,11 @@ async fn owner(release: Release) -> SocketAddr {
                         .to_string()
                 };
                 format!(
-                    "host={} hop={} instance={} keep-alive={} x-dropped={} x-kept={}",
+                    "host={} hop={} instance={} key={} keep-alive={} x-dropped={} x-kept={}",
                     get("host"),
                     get(HOP_HEADER),
                     get(INSTANCE_HEADER),
+                    get(KEY_HEADER),
                     get("keep-alive"),
                     get("x-dropped"),
                     get("x-kept")
@@ -77,9 +78,10 @@ async fn owner(release: Release) -> SocketAddr {
 
 /// A process that forwards everything to `to` as hop 1.
 async fn front(to: String) -> SocketAddr {
+    let proxy = std::sync::Arc::new(Proxy::new("k"));
     let app = Router::new().fallback(move |req: Request| {
-        let to = to.clone();
-        async move { forward(&to, 1, "acme", req).await }
+        let (to, proxy) = (to.clone(), proxy.clone());
+        async move { proxy.forward(&to, 1, "acme", req).await }
     });
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
@@ -141,7 +143,7 @@ async fn the_host_and_hop_are_kept_and_hop_by_hop_headers_dropped() {
         .unwrap();
     assert_eq!(
         body,
-        "host=acme.test hop=1 instance=acme keep-alive=- x-dropped=- x-kept=1"
+        "host=acme.test hop=1 instance=acme key=k keep-alive=- x-dropped=- x-kept=1"
     );
 }
 

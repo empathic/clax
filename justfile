@@ -42,7 +42,7 @@ check-wasm-native *ARGS:
 worker-test:
     ./scripts/run.sh worker-test
 
-# Run clax-fleet's PostgreSQL tests against the database CLAX_TEST_PG_URL names, which they may fill (each test keeps to instances of its own)
+# Run clax-fleet's PostgreSQL tests against the database CLAX_TEST_PG_URL names, which they may fill (each test keeps to instances of its own); a word filters the tests by name
 fleet-pg-test *ARGS:
     ./scripts/run.sh fleet-pg-test "$@"
 

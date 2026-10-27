@@ -83,19 +83,38 @@ pub trait PageStore: Send + Sync {
     /// One chunk of the file, or `None` when it was never written.
     fn read_chunk(&self, file: &str, index: u64) -> Result<Option<Vec<u8>>, StoreError>;
 
-    /// Applies one committed transaction atomically: sets the file's size to
-    /// `size`, replaces each chunk in `chunks`, and deletes every chunk whose
-    /// index is `keep_below` or more. On an error, none of it applies.
-    fn commit(
-        &self,
-        file: &str,
-        size: u64,
-        chunks: &Chunks,
-        keep_below: u64,
-    ) -> Result<(), StoreError>;
+    /// Applies one committed transaction atomically (see [`Commit`]). On an
+    /// error, none of it applies.
+    fn commit(&self, file: &str, commit: &Commit) -> Result<(), StoreError>;
 
     /// Deletes the file and its chunks.
     fn delete(&self, file: &str) -> Result<(), StoreError>;
+}
+
+/// One committed transaction of a file: set its size to `size`, replace
+/// each chunk in `chunks`, and delete every chunk whose index is
+/// `keep_below` or more.
+///
+/// `stored_size` is the size the store held before (0 for a file it did
+/// not have), so a store can skip what did not change: the size when it
+/// is the same, the deletion when no stored chunk is at `keep_below` or
+/// above. The chunks are shared, not copied: a store may keep a clone of
+/// the [`Arc`] while it commits (to hand them to another thread), and
+/// drops every clone before it returns, when the VFS takes them back.
+#[derive(Debug)]
+pub struct Commit {
+    pub size: u64,
+    pub stored_size: u64,
+    pub chunks: Arc<Chunks>,
+    pub keep_below: u64,
+}
+
+impl Commit {
+    /// Whether the commit deletes stored chunks: some stored chunk is at
+    /// `keep_below` or above.
+    pub fn truncates(&self) -> bool {
+        self.stored_size.div_ceil(CHUNK_SIZE as u64) > self.keep_below
+    }
 }
 
 /// The memory one database's connection may use, beyond the store.
@@ -115,6 +134,16 @@ pub const CACHE_BYTES: u64 = 64 << 20;
 /// The most bytes of chunks one transaction may write: 64 MiB. See
 /// [`Limits::default`].
 pub const MAX_TRANSACTION_BYTES: u64 = 64 << 20;
+
+impl Limits {
+    /// For a small database many of which a process keeps open (an
+    /// artifact's app data store): a 2 MiB page cache and 16 MiB
+    /// transactions.
+    pub const SMALL: Limits = Limits {
+        cache_bytes: 2 << 20,
+        max_transaction_bytes: 16 << 20,
+    };
+}
 
 impl Default for Limits {
     /// [`CACHE_BYTES`] and [`MAX_TRANSACTION_BYTES`]. A server process has
@@ -332,15 +361,23 @@ impl VfsFile for StoredFile {
             }
         }
         debug_assert!(self.dirty.range(keep_below..).next().is_none());
-        self.store
-            .commit(&self.name, self.size, &self.dirty, keep_below)
-            .map_err(|e| io_err(SQLITE_IOERR_FSYNC, e))?;
-        let written = self.dirty.len() as u64;
+        // The store reads the chunks in place, and hands them back.
+        let commit = Commit {
+            size: self.size,
+            stored_size: self.stored_size,
+            chunks: Arc::new(std::mem::take(&mut self.dirty)),
+            keep_below,
+        };
+        let result = self.store.commit(&self.name, &commit);
+        let written = commit.chunks.len() as u64;
+        if let Err(e) = result {
+            self.dirty = Arc::try_unwrap(commit.chunks).unwrap_or_else(|kept| (*kept).clone());
+            return Err(io_err(SQLITE_IOERR_FSYNC, e));
+        }
         self.count(|s| {
             s.commits += 1;
             s.chunk_writes += written;
         });
-        self.dirty.clear();
         self.truncated_to = None;
         self.stored_size = self.size;
         self.refused_at_cap = false;
@@ -874,18 +911,12 @@ impl PageStore for MemPages {
             .get(file)
             .and_then(|f| f.1.get(&index).cloned()))
     }
-    fn commit(
-        &self,
-        file: &str,
-        size: u64,
-        chunks: &Chunks,
-        keep_below: u64,
-    ) -> Result<(), StoreError> {
+    fn commit(&self, file: &str, c: &Commit) -> Result<(), StoreError> {
         let mut files = lock(&self.files);
         let f = files.entry(file.to_owned()).or_default();
-        f.0 = size;
-        f.1.extend(chunks.iter().map(|(i, c)| (*i, c.clone())));
-        f.1.split_off(&keep_below);
+        f.0 = c.size;
+        f.1.extend(c.chunks.iter().map(|(i, c)| (*i, c.clone())));
+        f.1.split_off(&c.keep_below);
         self.commits
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())

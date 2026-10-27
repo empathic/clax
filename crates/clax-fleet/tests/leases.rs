@@ -38,8 +38,8 @@ async fn pair(dir: &std::path::Path, names: &[&str]) -> (Arc<MemCoordinator>, Pr
     // One data directory, as the processes share PostgreSQL: an instance
     // that moves finds its home.
     let data = dir.join("data");
-    let a = process("a", listener().await, &data, &cat, None, leases(&c)).await;
-    let b = process("b", listener().await, &data, &cat, None, leases(&c)).await;
+    let a = process("a", listener().await, &data, &cat, leases(&c)).await;
+    let b = process("b", listener().await, &data, &cat, leases(&c)).await;
     (c, a, b)
 }
 
@@ -122,6 +122,8 @@ async fn a_live_lease_is_never_taken_and_a_request_out_of_hops_is_refused() {
             clax_fleet::proxy::HOP_HEADER,
             clax_fleet::fleet::MAX_HOPS.to_string(),
         )
+        .header(clax_fleet::proxy::INSTANCE_HEADER, &name)
+        .header(clax_fleet::proxy::KEY_HEADER, crate::common::PEER_KEY)
         .send()
         .await
         .unwrap();
@@ -166,10 +168,84 @@ async fn a_request_out_of_hops_never_places_an_instance_off_its_preferred_member
             clax_fleet::fleet::MAX_HOPS.to_string(),
         )
         .header(clax_fleet::proxy::INSTANCE_HEADER, &name)
+        .header(clax_fleet::proxy::KEY_HEADER, crate::common::PEER_KEY)
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 503);
     assert!(b.fleet.running().is_empty());
     assert!(c.lease(&name).await.unwrap().is_none());
+}
+
+/// A client's hop and instance headers, without the peer key, are not
+/// believed: the request is routed as any other.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_clients_hop_headers_are_ignored_without_the_peer_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let name = preferring("a");
+    let host = format!("{name}.test");
+    let (_c, a, b) = pair(dir.path(), &[&name]).await;
+    a.fleet.tick().await;
+    b.fleet.tick().await;
+    let resp = reqwest::Client::new()
+        .get(format!("http://{}/healthz", b.addr))
+        .header("host", &host)
+        .header(
+            clax_fleet::proxy::HOP_HEADER,
+            clax_fleet::fleet::MAX_HOPS.to_string(),
+        )
+        .header(clax_fleet::proxy::INSTANCE_HEADER, "someone-else")
+        .header(clax_fleet::proxy::KEY_HEADER, "a guess")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(a.fleet.running(), std::slice::from_ref(&name));
+}
+
+/// While the database is out of reach a held instance keeps serving, and
+/// the process answers not ready; once renewals have failed RENEW_FAILURES
+/// ticks in a row, the instance stops.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_instance_stops_once_its_renewals_have_failed_long_enough() {
+    let dir = tempfile::tempdir().unwrap();
+    let name = preferring("a");
+    let host = format!("{name}.test");
+    let (c, a, _b) = pair(dir.path(), &[&name]).await;
+    a.fleet.tick().await;
+    assert_eq!(healthz(a.addr, &host).await.0, 200);
+    c.fail(true);
+    for i in 1..clax_fleet::fleet::RENEW_FAILURES {
+        a.fleet.tick().await;
+        assert!(!a.fleet.ready(), "tick {i}");
+        assert_eq!(a.fleet.running(), std::slice::from_ref(&name), "tick {i}");
+    }
+    a.fleet.tick().await;
+    assert!(a.fleet.running().is_empty());
+    c.fail(false);
+    a.fleet.tick().await;
+    assert!(a.fleet.ready());
+}
+
+/// A paused instance answers 503 on every process, never the default
+/// instance in its place, and a running one stops at the next tick.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_paused_instance_answers_503_and_stops() {
+    let dir = tempfile::tempdir().unwrap();
+    let name = preferring("a");
+    let host = format!("{name}.test");
+    let (_c, a, b) = pair(dir.path(), &[&name]).await;
+    a.fleet.tick().await;
+    b.fleet.tick().await;
+    assert_eq!(healthz(b.addr, &host).await.0, 200);
+    let paused = catalog(&[(name.as_str(), None)]).replace(
+        &format!("name = \"{name}\"\n"),
+        &format!("name = \"{name}\"\npaused = true\n"),
+    );
+    write_catalog(dir.path(), &paused);
+    a.fleet.tick().await;
+    b.fleet.tick().await;
+    assert!(a.fleet.running().is_empty());
+    assert_eq!(healthz(a.addr, &host).await.0, 503);
+    assert_eq!(healthz(b.addr, &host).await.0, 503);
 }

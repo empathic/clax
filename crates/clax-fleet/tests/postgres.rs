@@ -13,7 +13,8 @@ use clax_fleet::pg::{Fence, Pool, Tls};
 fn pool() -> Arc<Pool> {
     let url = std::env::var("CLAX_TEST_PG_URL")
         .expect("CLAX_TEST_PG_URL names the PostgreSQL server these tests use");
-    let pool = Pool::connect(&url, &Tls::Off, 4).unwrap();
+    let config = clax_fleet::pg::config(&url, &Tls::Off).unwrap();
+    let pool = Pool::connect("test", config, &Tls::Off, 4).unwrap();
     clax_fleet::pg::migrate(&pool).unwrap();
     pool
 }
@@ -125,10 +126,17 @@ async fn every_write_of_a_lost_lease_is_refused() {
     let e1 = c.acquire(&inst, &old, "o:1").await.unwrap().unwrap();
     let stale = Fence::new(&inst, &old, e1);
     let pages = clax_fleet::pages::PgPages::new(p.clone(), stale.clone());
-    let chunk =
-        |b: u8| std::collections::BTreeMap::from([(0u64, vec![b; clax_pagevfs::CHUNK_SIZE])]);
+    let chunk = |b: u8, stored: u64| clax_pagevfs::Commit {
+        size: 4096,
+        stored_size: stored,
+        chunks: std::sync::Arc::new(std::collections::BTreeMap::from([(
+            0u64,
+            vec![b; clax_pagevfs::CHUNK_SIZE],
+        )])),
+        keep_below: 1,
+    };
     let (pages, size) = tokio::task::spawn_blocking(move || {
-        pages.commit("db", 4096, &chunk(1), 1).unwrap();
+        pages.commit("db", &chunk(1, 0)).unwrap();
         let size = pages.size("db").unwrap();
         (pages, size)
     })
@@ -142,9 +150,9 @@ async fn every_write_of_a_lost_lease_is_refused() {
     let fresh = clax_fleet::pages::PgPages::new(p.clone(), Fence::new(&inst, &new, e2));
     let stale_content = clax_fleet::content::PgContent::new(p.clone(), stale.clone());
     tokio::task::spawn_blocking(move || {
-        let err = pages.commit("db", 4096, &chunk(2), 1).unwrap_err();
+        let err = pages.commit("db", &chunk(2, 4096)).unwrap_err();
         assert!(err.contains("lease_lost"), "{err}");
-        fresh.commit("db", 4096, &chunk(3), 1).unwrap();
+        fresh.commit("db", &chunk(3, 4096)).unwrap();
         assert_eq!(fresh.read_chunk("db", 0).unwrap().unwrap()[0], 3);
         let id = clax_core::ArtifactId::generate();
         let w = clax_core::content::VersionWrite {
@@ -177,4 +185,106 @@ async fn the_content_store_keeps_the_content_contract() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs CLAX_TEST_PG_URL"]
+async fn the_postgresql_coordinator_keeps_the_contract() {
+    let c = PgCoordinator::new(pool());
+    clax_fleet::coord::contract::run(&c, &|p| unique(p)).await;
+}
+
+/// TLS on is required: a URL that turns it off is refused, and with TLS off
+/// a URL that asks for it is refused too.
+#[test]
+fn tls_on_never_falls_back_to_plain_text() {
+    let on = Tls::On { ca_file: None };
+    assert!(clax_fleet::pg::config("postgresql://u@h/db?sslmode=disable", &on).is_err());
+    assert!(clax_fleet::pg::config("postgresql://u@h/db?sslmode=require", &Tls::Off).is_err());
+    let c = clax_fleet::pg::config("postgresql://u@h/db", &on).unwrap();
+    assert_eq!(c.get_ssl_mode(), postgres::config::SslMode::Require);
+    let c = clax_fleet::pg::config("postgresql://u@h/db", &Tls::Off).unwrap();
+    assert_eq!(c.get_ssl_mode(), postgres::config::SslMode::Disable);
+}
+
+/// The catalog file of one instance named `name` at `origin`.
+fn one_instance(name: &str, origin: &str) -> String {
+    format!(
+        "[[instance]]\nname = \"{name}\"\nconfig = \"\"\"\n[hosted]\npublic_origin = \"{origin}\"\n\"\"\"\n"
+    )
+}
+
+/// Two processes on PostgreSQL storage: an instance started on one starts
+/// on the other from the same data, and a name given to another origin
+/// does not open it.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs CLAX_TEST_PG_URL"]
+async fn an_instance_moves_between_processes_with_its_data() {
+    use clax_core::embedded::MemTree;
+    use clax_fleet::fleet::{Fleet, FleetConfig, Placement, Route, Storage};
+    let p = pool();
+    let coord: Arc<dyn Coordinator> = Arc::new(PgCoordinator::new(p.clone()));
+    let dir = tempfile::tempdir().unwrap();
+    let catalog = dir.path().join("fleet.toml");
+    std::fs::write(
+        &catalog,
+        one_instance("placeholder", "https://placeholder.test"),
+    )
+    .unwrap();
+    let fleet = |pod: String, data: &str| {
+        Fleet::new(FleetConfig {
+            pod,
+            advertise: "127.0.0.1:1".into(),
+            data_dir: dir.path().join(data),
+            catalog: catalog.clone(),
+            version: "test",
+            web: Arc::new(MemTree(Default::default())),
+            placement: Placement::Leases(coord.clone()),
+            storage: Storage::Postgres(p.clone()),
+            kek: Some([3; 32]),
+            peer_key: "k".into(),
+            db_limits: clax_pagevfs::Limits::default(),
+            port: 1,
+        })
+        .unwrap()
+    };
+    let (pa, pb) = (unique("a"), unique("b"));
+    let (a, b) = (fleet(pa.clone(), "a"), fleet(pb.clone(), "b"));
+    a.tick().await;
+    b.tick().await;
+    // A name hashing gives a, and b once a has left: other test runs may
+    // be members too.
+    let members = coord.members().await.unwrap();
+    let without_a: Vec<_> = members.iter().filter(|m| m.pod != pa).cloned().collect();
+    let name = (0..)
+        .map(|i| unique(&format!("moving{i}")))
+        .find(|n| {
+            clax_fleet::coord::preferred(n, &members).is_some_and(|m| m.pod == pa)
+                && clax_fleet::coord::preferred(n, &without_a).is_some_and(|m| m.pod == pb)
+        })
+        .unwrap();
+    std::fs::write(
+        &catalog,
+        one_instance(&name, &format!("https://{name}.test")),
+    )
+    .unwrap();
+    a.tick().await;
+    b.tick().await;
+    let inst = a.catalog().get(&name).unwrap().clone();
+    assert!(matches!(a.route(&inst, 2).await, Route::Local(_)));
+    a.drain().await;
+    // b reads the members again, without a.
+    b.tick().await;
+    let inst = b.catalog().get(&name).unwrap().clone();
+    assert!(matches!(b.route(&inst, 2).await, Route::Local(_)));
+    b.stop(&name, "test").await;
+    // The same name for another origin: its data is not opened.
+    std::fs::write(
+        &catalog,
+        one_instance(&name, &format!("https://other-{name}.test")),
+    )
+    .unwrap();
+    b.tick().await;
+    let inst = b.catalog().get(&name).unwrap().clone();
+    assert!(matches!(b.route(&inst, 2).await, Route::Unavailable(_)));
 }

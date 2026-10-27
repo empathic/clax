@@ -24,16 +24,30 @@ spec:
       # forgets the pod, every instance stopped (at most 10 s), then the
       # open connections (at most 10 s).
       terminationGracePeriodSeconds: 45
+      # Each shard is the only home of its instances: keep them on
+      # different nodes where it can.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: clax
+              app.kubernetes.io/component: fleet
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
         runAsGroup: 10001
         fsGroup: 10001
+        # Re-own the volume only when its root is not the pod's group, not
+        # every file at every start.
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: clax-fleet
-          image: ghcr.io/empathic/clax-fleet:latest
+          # Set by the overlay's `images` (kustomization.yaml).
+          image: clax-fleet
           args: ["serve"]
           ports:
             - name: http
@@ -43,8 +57,6 @@ spec:
           env:
             - name: CLAX_FLEET_BACKEND
               value: sqlite
-            - name: CLAX_FLEET_SHARDS
-              value: "2"
             - name: CLAX_FLEET_PEER
               value: "clax-{shard}.clax-peers:7480"
             - name: CLAX_FLEET_CATALOG
@@ -59,8 +71,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
-          # Each instance's setup secret (its [hosted] setup_secret_env),
-          # and CLAX_KEK when every shard should seal secrets under one key.
+          # CLAX_FLEET_PEER_KEY (every shard the same), each instance's setup
+          # secret (its [hosted] setup_secret_env), and CLAX_KEK if every
+          # shard should seal secrets under one key: set it before an
+          # instance first starts, as a home's own key is never replaced.
           envFrom:
             - secretRef:
                 name: clax-secrets

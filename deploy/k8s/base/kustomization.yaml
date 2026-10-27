@@ -13,6 +13,7 @@ resources:
   - serviceaccount.yaml
   - service.yaml
   - pdb.yaml
+  - networkpolicy.yaml
 configMapGenerator:
   # The catalog (crates/clax-fleet/src/catalog.rs): every process reloads
   # it as the mounted file changes, so it keeps one name, and editing it

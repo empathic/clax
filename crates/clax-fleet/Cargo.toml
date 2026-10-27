@@ -33,7 +33,7 @@ http-body-util.workspace = true
 # The proxy between processes: a connection per forwarded request, with
 # upgrades (the stream's WebSocket).
 hyper = { version = "1", features = ["client", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 # PostgreSQL, synchronous: the VFS and the content store call it from the
 # store's threads (`pg::Pool` keeps each client on a thread of its own).
 postgres = "0.19"
@@ -48,7 +48,7 @@ tokio = { workspace = true, features = ["full"] }
 toml.workspace = true
 tower = { workspace = true, features = ["util"] }
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, features = ["json"] }
 url.workspace = true
 
 [dev-dependencies]

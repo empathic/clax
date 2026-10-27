@@ -252,8 +252,17 @@ _bazel() {
         web-e2e) _run "${b[@]}" test --lockfile_mode=error //web:e2e_gesture //web:e2e_chrome_overlay //web:e2e_rest "$@" ;;
         fleet-pg-test)
             _fleet_pg_url || return $?
+            # A bare word filters the tests, as it does natively; a flag is
+            # Bazel's.
+            local arg flags=()
+            for arg in "$@"; do
+                case "$arg" in
+                    -*) flags+=("$arg") ;;
+                    *) flags+=("--test_arg=$arg") ;;
+                esac
+            done
             _run "${b[@]}" test --lockfile_mode=error --test_env=CLAX_TEST_PG_URL \
-                --test_arg=--ignored //crates/clax-fleet:postgres "$@"
+                --test_arg=--ignored "${flags[@]+"${flags[@]}"}" //crates/clax-fleet:postgres
             ;;
         worker-test)
             _run "${b[@]}" build --lockfile_mode=error --config=fmt //crates/clax-worker/... &&

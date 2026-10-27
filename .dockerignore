@@ -1,5 +1,8 @@
 # What `docker build` (deploy/Dockerfile) leaves out of the context: builds,
-# caches and installs, each of which the image makes again.
+# caches and installs, each of which the image makes again, and the parts
+# of the repository the image never reads (the app, the Worker, the demo,
+# the docs but the legal pages the web build renders and the contract
+# ClaxBot's prompt carries).
 .git
 target
 **/target
@@ -11,6 +14,15 @@ web/dist-extension/*
 !web/dist-extension/.gitkeep
 web/test-results
 web/playwright-report
-apps/clax_app/build
+web/e2e
+web/perf
+apps
+crates/clax-worker
+demo
+design
 local
+deploy/k8s
+docs/*
+!docs/legal
+!docs/contract.md
 .wrangler

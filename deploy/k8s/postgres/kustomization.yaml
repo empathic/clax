@@ -15,3 +15,9 @@ resources:
   - ../base
   - deployment.yaml
   - hpa.yaml
+# The image every pod runs: a release's version, or your own build
+# (`kustomize edit set image clax-fleet=<registry>/clax-fleet:<tag>`).
+images:
+  - name: clax-fleet
+    newName: ghcr.io/empathic/clax-fleet
+    newTag: "0.6.0"

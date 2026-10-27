@@ -19,6 +19,14 @@ spec:
         target:
           type: Utilization
           averageUtilization: 70
+    # Each running instance holds its caches (docs/kubernetes.md, Sizing):
+    # memory grows with the instances a pod runs.
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 75
   behavior:
     # Every scale-down moves instances (their streams reconnect): slowly.
     scaleDown:

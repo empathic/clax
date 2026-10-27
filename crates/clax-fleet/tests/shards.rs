@@ -19,7 +19,6 @@ async fn every_process_answers_every_instance_and_each_runs_its_own_shard() {
         l0,
         &dir.path().join("data-0"),
         &cat,
-        Some(2),
         Placement::Shards {
             ordinal: 0,
             peers: Peers::List(peers.clone()),
@@ -31,7 +30,6 @@ async fn every_process_answers_every_instance_and_each_runs_its_own_shard() {
         l1,
         &dir.path().join("data-1"),
         &cat,
-        Some(2),
         Placement::Shards {
             ordinal: 1,
             peers: Peers::List(peers),
@@ -81,7 +79,6 @@ async fn a_request_that_made_its_hops_is_not_forwarded_again() {
         l0,
         dir.path(),
         &cat,
-        Some(2),
         Placement::Shards {
             ordinal: 0,
             peers: Peers::List(vec![self_addr.clone(), self_addr]),
@@ -109,7 +106,6 @@ async fn the_catalog_reloads_and_stops_what_changed() {
         l0,
         dir.path(),
         &cat,
-        Some(1),
         Placement::Shards {
             ordinal: 0,
             peers: Peers::List(peers),
@@ -161,8 +157,33 @@ async fn a_forward_for_an_instance_the_owner_lacks_is_refused_not_defaulted() {
         ordinal,
         peers: Peers::List(peers.clone()),
     };
-    let p0 = process("clax-0", l0, &d0, &cat0, Some(2), shards(0)).await;
-    let p1 = process("clax-1", l1, &d1, &cat1, Some(2), shards(1)).await;
+    let p0 = process("clax-0", l0, &d0, &cat0, shards(0)).await;
+    let p1 = process("clax-1", l1, &d1, &cat1, shards(1)).await;
     assert_eq!(healthz(p0.addr, "acme.test").await.0, 503);
     assert!(p1.fleet.running().is_empty(), "{:?}", p1.fleet.running());
+}
+
+/// On SQLite an instance's home is the instance: a shard that has none for
+/// it, and may not make one, refuses it rather than start it empty.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shard_without_the_home_does_not_start_an_empty_instance() {
+    let dir = tempfile::tempdir().unwrap();
+    let moved = catalog(&[("acme", Some(0))]).replace("create = true\n", "");
+    let cat = write_catalog(dir.path(), &moved);
+    let l0 = listener().await;
+    let peers = vec![l0.1.to_string()];
+    let p0 = process(
+        "clax-0",
+        l0,
+        dir.path(),
+        &cat,
+        Placement::Shards {
+            ordinal: 0,
+            peers: Peers::List(peers),
+        },
+    )
+    .await;
+    assert_eq!(healthz(p0.addr, "acme.test").await.0, 503);
+    assert!(p0.fleet.running().is_empty());
+    assert!(!dir.path().join("instances/acme/clax.db").exists());
 }

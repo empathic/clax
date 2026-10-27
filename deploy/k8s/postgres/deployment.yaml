@@ -3,7 +3,9 @@ kind: Deployment
 metadata:
   name: clax
 spec:
-  replicas: 2
+  # No replicas: the HorizontalPodAutoscaler (hpa.yaml) owns the count, and
+  # a replicas here would reset it at every apply. Without the autoscaler,
+  # add it back.
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -42,7 +44,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: clax-fleet
-          image: ghcr.io/empathic/clax-fleet:latest
+          # Set by the overlay's `images` (kustomization.yaml).
+          image: clax-fleet
           args: ["serve"]
           ports:
             - name: http
@@ -65,11 +68,18 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
-            # `on` for a managed database; CLAX_POSTGRES_CA names a PEM of
-            # its CA when the public roots do not cover it.
+            # TLS to the database, required (never a fallback to plain
+            # text). postgres-dev turns it off for its in-cluster database.
             - name: CLAX_POSTGRES_TLS
-              value: "off"
-          # CLAX_POSTGRES_URL, CLAX_KEK and each instance's setup secret.
+              value: "on"
+            # A managed database's own CA, when the public roots do not
+            # cover it: mount it from a Secret (the commented volume below).
+            # - name: CLAX_POSTGRES_CA
+            #   value: /etc/clax/postgres-ca/ca.pem
+          # CLAX_POSTGRES_URL, CLAX_KEK and each instance's setup secret
+          # (CLAX_FLEET_PEER_KEY is kept in the database when unset). Pods
+          # read them at start: `kubectl rollout restart deploy/clax` after
+          # adding an instance's secret or rotating one.
           envFrom:
             - secretRef:
                 name: clax-secrets
@@ -110,7 +120,13 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            # - name: postgres-ca
+            #   mountPath: /etc/clax/postgres-ca
+            #   readOnly: true
       volumes:
+        # - name: postgres-ca
+        #   secret:
+        #     secretName: clax-postgres-ca
         - name: data
           emptyDir: {}
         - name: catalog

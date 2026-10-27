@@ -1,17 +1,24 @@
 # The instances the fleet serves (crates/clax-fleet/src/catalog.rs). Each
 # is a hosted Clax at its own public origin; its `config` is the
-# config.toml its home is given. Check a catalog before applying it:
+# config.toml its home is given. Check a catalog before applying it, with
+# the image (docs/kubernetes.md, The catalog):
 #
-#   clax-fleet check-catalog fleet.toml            # PostgreSQL
-#   clax-fleet check-catalog fleet.toml --shards 2 # SQLite, two shards
+#   clax-fleet check-catalog fleet.toml           # PostgreSQL
+#   clax-fleet check-catalog fleet.toml --sqlite  # SQLite
 #
-# On the SQLite backend each instance names its `shard`: the StatefulSet
-# pod (clax-<shard>) whose volume keeps it. The PostgreSQL backend ignores
-# `shard` and places instances itself.
+# On the SQLite backend `shards` is the StatefulSet's replica count, and
+# each instance names its `shard`: the pod (clax-<shard>) whose volume
+# keeps it; `create = true` lets that pod make the instance's home, for a
+# new instance only. The PostgreSQL backend ignores both and places
+# instances itself. Never give a removed instance's name to another
+# tenant: its data is kept under the name.
+
+shards = 2
 
 [[instance]]
 name = "example"
 shard = 0
+create = true
 default = true
 config = '''
 [hosted]

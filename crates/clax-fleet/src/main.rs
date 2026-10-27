@@ -6,8 +6,10 @@
 //!   serving for `--drain-delay` while the Service stops sending requests
 //!   here, then stops every instance (releasing its lease) and ends the
 //!   connections left within [`CONNECTIONS_DRAIN`].
-//! - `clax-fleet check-catalog <file>`: validates a catalog and prints its
-//!   instances, as `serve` would read it.
+//! - `clax-fleet check-catalog <file> [--sqlite]`: validates a catalog and
+//!   prints its instances, as `serve` would read it.
+//! - `clax-fleet status`: which process runs which instance, across the
+//!   fleet: the leases in PostgreSQL, or each shard's `/status`.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -22,6 +24,10 @@ use clax_fleet::fleet::{Fleet, FleetConfig, Peers, Placement, Storage};
 /// How long open connections may take to end once every instance stopped.
 const CONNECTIONS_DRAIN: Duration = Duration::from_secs(10);
 
+/// Connections the coordinator's own pool keeps: heartbeats, renewals and
+/// lease lookups never wait behind an instance's page and content I/O.
+const COORD_POOL: usize = 2;
+
 #[derive(Parser)]
 #[command(
     name = "clax-fleet",
@@ -29,8 +35,24 @@ const CONNECTIONS_DRAIN: Duration = Duration::from_secs(10);
     about = "Clax instances across processes, on SQLite or PostgreSQL"
 )]
 struct Cli {
+    /// Log as JSON lines (`json`) or as text (`text`); the filter is
+    /// RUST_LOG's (`info` by default).
+    #[arg(
+        long,
+        env = "CLAX_FLEET_LOG_FORMAT",
+        value_enum,
+        default_value = "text",
+        global = true
+    )]
+    log_format: LogFormat,
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum LogFormat {
+    Text,
+    Json,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -52,10 +74,50 @@ enum Cmd {
     /// Validate a catalog and list its instances.
     CheckCatalog {
         file: PathBuf,
-        /// Check it for the SQLite backend with this many shards.
+        /// Check it for the SQLite backend (its shards and each instance's).
         #[arg(long)]
-        shards: Option<u32>,
+        sqlite: bool,
     },
+    /// List which process runs which instance, across the fleet.
+    Status(Box<Status>),
+}
+
+#[derive(clap::Args)]
+struct Pg {
+    /// PostgreSQL: the connection string or URI. Prefer the environment to
+    /// the command line, which other processes can read.
+    #[arg(long, env = "CLAX_POSTGRES_URL", hide_env_values = true)]
+    postgres_url: Option<String>,
+    /// PostgreSQL: TLS to the server, required when on (never a fallback
+    /// to plain text); a URL whose `sslmode` says otherwise is refused.
+    #[arg(long, env = "CLAX_POSTGRES_TLS", value_enum, default_value = "off")]
+    postgres_tls: PgTls,
+    /// PostgreSQL: a PEM file of certificates to trust beside the public
+    /// roots (a managed database's own CA).
+    #[arg(long, env = "CLAX_POSTGRES_CA")]
+    postgres_ca: Option<PathBuf>,
+}
+
+impl Pg {
+    fn tls(&self) -> clax_fleet::pg::Tls {
+        match self.postgres_tls {
+            PgTls::Off => clax_fleet::pg::Tls::Off,
+            PgTls::On => clax_fleet::pg::Tls::On {
+                ca_file: self.postgres_ca.clone(),
+            },
+        }
+    }
+
+    /// A pool of `size` connections named `name`.
+    fn pool(&self, name: &str, size: usize) -> anyhow::Result<Arc<clax_fleet::pg::Pool>> {
+        let url = self.postgres_url.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("the PostgreSQL backend needs --postgres-url (CLAX_POSTGRES_URL)")
+        })?;
+        let tls = self.tls();
+        let config = clax_fleet::pg::config(url, &tls).map_err(anyhow::Error::msg)?;
+        clax_fleet::pg::Pool::connect(name, config, &tls, size)
+            .map_err(|e| anyhow::anyhow!("PostgreSQL: {e}"))
+    }
 }
 
 #[derive(clap::Args)]
@@ -77,7 +139,7 @@ struct Serve {
     /// processes.
     #[arg(long, env = "CLAX_FLEET_LISTEN", default_value = "0.0.0.0:7480")]
     listen: SocketAddr,
-    /// Where `/healthz`, `/readyz` and `/status` are served.
+    /// Where `/healthz`, `/readyz`, `/status` and `/metrics` are served.
     #[arg(long, env = "CLAX_FLEET_ADMIN_LISTEN", default_value = "0.0.0.0:7481")]
     admin_listen: SocketAddr,
     /// This process's name in the fleet (the pod's).
@@ -90,11 +152,8 @@ struct Serve {
     /// This pod's IP, for the advertised address.
     #[arg(long, env = "POD_IP")]
     pod_ip: Option<String>,
-    /// SQLite: how many shards (StatefulSet replicas) there are.
-    #[arg(long, env = "CLAX_FLEET_SHARDS")]
-    shards: Option<u32>,
     /// SQLite: this process's shard (the ordinal ending the pod's name when
-    /// absent).
+    /// absent). The number of shards is the catalog's.
     #[arg(long, env = "CLAX_FLEET_ORDINAL")]
     ordinal: Option<u32>,
     /// SQLite: where shard `{shard}`'s process is reached.
@@ -104,36 +163,72 @@ struct Serve {
         default_value = "clax-{shard}.clax-peers:7480"
     )]
     peer: String,
-    /// PostgreSQL: the connection string or URI. Prefer the environment to
-    /// the command line, which other processes can read.
-    #[arg(long, env = "CLAX_POSTGRES_URL", hide_env_values = true)]
-    postgres_url: Option<String>,
-    /// PostgreSQL: TLS to the server.
-    #[arg(long, env = "CLAX_POSTGRES_TLS", value_enum, default_value = "off")]
-    postgres_tls: PgTls,
-    /// PostgreSQL: a PEM file of certificates to trust beside the public
-    /// roots (a managed database's own CA).
-    #[arg(long, env = "CLAX_POSTGRES_CA")]
-    postgres_ca: Option<PathBuf>,
-    /// PostgreSQL: connections in the pool.
-    #[arg(long, env = "CLAX_POSTGRES_POOL", default_value_t = 16)]
+    /// The key forwards between the fleet's processes carry, so a client
+    /// cannot pass for one. On PostgreSQL it is kept in the database when
+    /// unset; on SQLite every shard needs the same one.
+    #[arg(long, env = "CLAX_FLEET_PEER_KEY", hide_env_values = true)]
+    peer_key: Option<String>,
+    #[command(flatten)]
+    pg: Pg,
+    /// PostgreSQL: connections in the data pool. Every pod holds this many
+    /// and two more; keep pods x (pool + 2) under the server's
+    /// max_connections.
+    #[arg(long, env = "CLAX_POSTGRES_POOL", default_value_t = 8)]
     postgres_pool: usize,
+    /// PostgreSQL: SQLite's page cache per instance database, in MiB.
+    #[arg(long, env = "CLAX_FLEET_DB_CACHE_MIB", default_value_t = 32)]
+    db_cache_mib: u64,
+    /// PostgreSQL: the most one transaction of an instance database may
+    /// write, in MiB (a migration that rebuilds a table writes it whole).
+    #[arg(long, env = "CLAX_FLEET_DB_MAX_TRANSACTION_MIB", default_value_t = 256)]
+    db_max_transaction_mib: u64,
     /// How long, after SIGTERM, to keep serving before stopping instances.
     #[arg(long, env = "CLAX_FLEET_DRAIN_DELAY", default_value = "5")]
     drain_delay_secs: u64,
 }
 
+#[derive(clap::Args)]
+struct Status {
+    /// Where the instances keep their data.
+    #[arg(long, env = "CLAX_FLEET_BACKEND", value_enum)]
+    backend: Backend,
+    /// SQLite: the catalog, for the number of shards.
+    #[arg(
+        long,
+        env = "CLAX_FLEET_CATALOG",
+        default_value = "/etc/clax/fleet.toml"
+    )]
+    catalog: PathBuf,
+    /// SQLite: where shard `{shard}`'s admin port is reached.
+    #[arg(
+        long,
+        env = "CLAX_FLEET_ADMIN_PEER",
+        default_value = "clax-{shard}.clax-peers:7481"
+    )]
+    admin_peer: String,
+    /// SQLite: the fleet's peer key, which each shard's `/status` asks for.
+    #[arg(long, env = "CLAX_FLEET_PEER_KEY", hide_env_values = true)]
+    peer_key: Option<String>,
+    #[command(flatten)]
+    pg: Pg,
+}
+
 fn main() -> std::process::ExitCode {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
     let cli = Cli::parse();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    match cli.log_format {
+        LogFormat::Text => tracing_subscriber::fmt().with_env_filter(filter).init(),
+        LogFormat::Json => tracing_subscriber::fmt()
+            .json()
+            .with_current_span(true)
+            .with_env_filter(filter)
+            .init(),
+    }
     let r = match cli.cmd {
-        Cmd::CheckCatalog { file, shards } => check_catalog(&file, shards),
+        Cmd::CheckCatalog { file, sqlite } => check_catalog(&file, sqlite),
         Cmd::Serve(s) => serve(*s),
+        Cmd::Status(s) => status(*s),
     };
     match r {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -144,12 +239,16 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-fn check_catalog(file: &std::path::Path, shards: Option<u32>) -> anyhow::Result<()> {
-    let c = Catalog::load(file, shards).map_err(anyhow::Error::msg)?;
+fn check_catalog(file: &std::path::Path, sqlite: bool) -> anyhow::Result<()> {
+    let c = Catalog::load(file, sqlite).map_err(anyhow::Error::msg)?;
+    if let Some(n) = c.shards {
+        println!("shards: {n}");
+    }
     for i in &c.instances {
         let shard = i.shard.map(|s| format!(" shard {s}")).unwrap_or_default();
         let default = if i.default { " (default)" } else { "" };
-        println!("{}{shard}{default}: {}", i.name, i.origin);
+        let paused = if i.paused { " (paused)" } else { "" };
+        println!("{}{shard}{default}{paused}: {}", i.name, i.origin);
     }
     Ok(())
 }
@@ -176,6 +275,13 @@ fn kek_from_env() -> anyhow::Result<Option<[u8; 32]>> {
     Ok(Some(bytes.try_into().expect("32 bytes")))
 }
 
+fn random_key() -> String {
+    clax_core::secret::random_bytes::<32>()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 fn serve(a: Serve) -> anyhow::Result<()> {
     let pod = match a.pod {
         Some(p) => p,
@@ -189,46 +295,41 @@ fn serve(a: Serve) -> anyhow::Result<()> {
     };
     let kek = kek_from_env()?;
     let rt = tokio::runtime::Runtime::new()?;
-    let (placement, storage, shards) = match a.backend {
+    let (placement, storage, peer_key) = match a.backend {
         Backend::Sqlite => {
-            let shards = a.shards.ok_or_else(|| {
-                anyhow::anyhow!("the SQLite backend needs --shards (CLAX_FLEET_SHARDS)")
-            })?;
             let ordinal = a.ordinal.or_else(|| ordinal_of(&pod)).ok_or_else(|| {
                 anyhow::anyhow!("no --ordinal, and the pod name {pod} does not end in one")
             })?;
-            anyhow::ensure!(
-                ordinal < shards,
-                "ordinal {ordinal} is past the {shards} shards"
-            );
+            let key = match a.peer_key {
+                Some(k) => k,
+                None => {
+                    tracing::warn!(
+                        "no CLAX_FLEET_PEER_KEY: forwards between shards are not told from a client's request (their instance is found by Host alone); give every shard the same key"
+                    );
+                    random_key()
+                }
+            };
             (
                 Placement::Shards {
                     ordinal,
                     peers: Peers::Template(a.peer),
                 },
                 Storage::Disk,
-                Some(shards),
+                key,
             )
         }
         Backend::Postgres => {
-            let url = a.postgres_url.ok_or_else(|| {
-                anyhow::anyhow!("the PostgreSQL backend needs --postgres-url (CLAX_POSTGRES_URL)")
-            })?;
             anyhow::ensure!(
                 kek.is_some(),
                 "the PostgreSQL backend needs CLAX_KEK (64 hex digits): instances move between processes, and every one must open the secrets the others sealed"
             );
-            let tls = match a.postgres_tls {
-                PgTls::Off => clax_fleet::pg::Tls::Off,
-                PgTls::On => clax_fleet::pg::Tls::On {
-                    ca_file: a.postgres_ca,
-                },
-            };
-            let pool = clax_fleet::pg::Pool::connect(&url, &tls, a.postgres_pool)
-                .map_err(|e| anyhow::anyhow!("PostgreSQL: {e}"))?;
+            let pool = a.pg.pool("data", a.postgres_pool)?;
             clax_fleet::pg::migrate(&pool).map_err(|e| anyhow::anyhow!("PostgreSQL: {e}"))?;
-            let coord = Arc::new(clax_fleet::coord::PgCoordinator::new(pool.clone()));
-            (Placement::Leases(coord), Storage::Postgres(pool), None)
+            let key = clax_fleet::pg::peer_key(&pool, a.peer_key.as_deref())
+                .map_err(|e| anyhow::anyhow!("PostgreSQL: {e}"))?;
+            let coord_pool = a.pg.pool("coord", COORD_POOL)?;
+            let coord = Arc::new(clax_fleet::coord::PgCoordinator::new(coord_pool));
+            (Placement::Leases(coord), Storage::Postgres(pool), key)
         }
     };
     let fleet = Fleet::new(FleetConfig {
@@ -236,12 +337,16 @@ fn serve(a: Serve) -> anyhow::Result<()> {
         advertise: advertise.clone(),
         data_dir: a.data_dir,
         catalog: a.catalog,
-        shards,
         version: env!("CARGO_PKG_VERSION"),
         web: web_ui(),
         placement,
         storage,
         kek,
+        peer_key,
+        db_limits: clax_pagevfs::Limits {
+            cache_bytes: a.db_cache_mib << 20,
+            max_transaction_bytes: a.db_max_transaction_mib << 20,
+        },
         port: a.listen.port(),
     })?;
     let drain_delay = Duration::from_secs(a.drain_delay_secs);
@@ -260,6 +365,8 @@ async fn run(
     use tokio::signal::unix::{SignalKind, signal};
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sigint = signal(SignalKind::interrupt())?;
+    // Leases an earlier run under this pod's name held are free at once.
+    fleet.release_own_leases().await;
     // The first tick joins the membership before the first request.
     fleet.tick().await;
     let listener = tokio::net::TcpListener::bind(listen).await?;
@@ -269,6 +376,7 @@ async fn run(
         let fleet = fleet.clone();
         tokio::spawn(async move {
             let mut every = tokio::time::interval(clax_fleet::coord::HEARTBEAT_EVERY);
+            every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             every.tick().await;
             loop {
                 every.tick().await;
@@ -277,7 +385,9 @@ async fn run(
         })
     };
     let admin_server = {
-        let app = fleet.admin_router();
+        let app = fleet
+            .admin_router()
+            .into_make_service_with_connect_info::<SocketAddr>();
         tokio::spawn(async move { axum::serve(admin, app).await })
     };
     let (stopping_tx, stopping_rx) = tokio::sync::oneshot::channel::<()>();
@@ -313,6 +423,98 @@ async fn run(
     }
     admin_server.abort();
     Ok(())
+}
+
+fn status(a: Status) -> anyhow::Result<()> {
+    match a.backend {
+        Backend::Postgres => {
+            let pool = a.pg.pool("status", 1)?;
+            let rows = pool
+                .run(|c| {
+                    let rows = c
+                        .query(
+                            "SELECT l.instance, l.holder, l.addr, l.epoch,
+                                    extract(epoch FROM l.expires - now())::float8,
+                                    m.pod IS NOT NULL
+                             FROM clax_fleet_leases l
+                             LEFT JOIN clax_fleet_members m
+                               ON m.pod = l.holder AND m.seen >= now() - interval '20 seconds'
+                             ORDER BY l.instance",
+                            &[],
+                        )
+                        .map_err(clax_fleet::pg::err)?;
+                    Ok(rows
+                        .into_iter()
+                        .map(|r| {
+                            let (i, h, ad, e, left, live): (
+                                String,
+                                String,
+                                String,
+                                i64,
+                                f64,
+                                bool,
+                            ) = (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5));
+                            (i, h, ad, e, left, live)
+                        })
+                        .collect::<Vec<_>>())
+                })
+                .map_err(anyhow::Error::msg)?;
+            println!(
+                "{:<24} {:<28} {:<22} {:>6}  lease",
+                "instance", "pod", "address", "epoch"
+            );
+            for (i, h, ad, e, left, live) in rows {
+                let lease = if left > 0.0 {
+                    format!(
+                        "held, {left:.0}s left{}",
+                        if live { "" } else { " (pod not seen)" }
+                    )
+                } else {
+                    "free".to_string()
+                };
+                println!("{i:<24} {h:<28} {ad:<22} {e:>6}  {lease}");
+            }
+            Ok(())
+        }
+        Backend::Sqlite => {
+            let catalog = Catalog::load(&a.catalog, true).map_err(anyhow::Error::msg)?;
+            let key = a.peer_key.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "each shard's /status asks for the peer key: set CLAX_FLEET_PEER_KEY"
+                )
+            })?;
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                let client: hyper_util::client::legacy::Client<_, axum::body::Body> =
+                    hyper_util::client::legacy::Client::builder(
+                        hyper_util::rt::TokioExecutor::new(),
+                    )
+                    .build_http();
+                for shard in 0..catalog.shards.unwrap_or(0) {
+                    let addr = a.admin_peer.replace("{shard}", &shard.to_string());
+                    let req = axum::http::Request::get(format!("http://{addr}/status"))
+                        .header(clax_fleet::proxy::KEY_HEADER, &key)
+                        .body(axum::body::Body::empty())?;
+                    match client.request(req).await {
+                        Ok(resp) => {
+                            use http_body_util::BodyExt;
+                            let body = resp.into_body().collect().await?.to_bytes();
+                            let v: serde_json::Value =
+                                serde_json::from_slice(&body).unwrap_or_default();
+                            println!(
+                                "shard {shard} ({}): ready {}, running {}",
+                                v["pod"].as_str().unwrap_or("?"),
+                                v["ready"],
+                                v["running"]
+                            );
+                        }
+                        Err(e) => println!("shard {shard} ({addr}): did not answer: {e}"),
+                    }
+                }
+                anyhow::Ok(())
+            })
+        }
+    }
 }
 
 fn nix_hostname() -> anyhow::Result<String> {
@@ -383,9 +585,10 @@ mod tests {
     fn the_manifests_set_only_variables_the_binary_reads() {
         use clap::CommandFactory;
         let cmd = Cli::command();
-        let serve = cmd.find_subcommand("serve").unwrap();
-        let mut known: Vec<String> = serve
-            .get_arguments()
+        let mut known: Vec<String> = cmd
+            .get_subcommands()
+            .flat_map(|c| c.get_arguments())
+            .chain(cmd.get_arguments())
             .filter_map(|a| a.get_env())
             .map(|e| e.to_string_lossy().into_owned())
             .collect();
@@ -425,8 +628,8 @@ mod tests {
     #[test]
     fn the_example_catalog_is_valid_for_both_backends() {
         let path = manifests().join("base/fleet.toml");
-        let pg = Catalog::load(&path, None).unwrap();
-        let sqlite = Catalog::load(&path, Some(2)).unwrap();
+        let pg = Catalog::load(&path, false).unwrap();
+        let sqlite = Catalog::load(&path, true).unwrap();
         assert_eq!(pg, sqlite);
         let secret =
             std::fs::read_to_string(manifests().join("postgres/kustomization.yaml")).unwrap();

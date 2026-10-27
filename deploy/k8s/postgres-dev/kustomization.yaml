@@ -12,9 +12,20 @@ kind: Kustomization
 resources:
   - ../postgres
   - postgres.yaml
-secretGenerator:
-  - name: clax-postgres-dev
-    literals:
-      - POSTGRES_USER=clax
-      - POSTGRES_PASSWORD=clax-dev
-      - POSTGRES_DB=clax
+patches:
+  # The in-cluster database speaks plain text inside the cluster; an image
+  # built and loaded locally (kind load docker-image) is used as it is.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: clax
+      spec:
+        template:
+          spec:
+            containers:
+              - name: clax-fleet
+                imagePullPolicy: IfNotPresent
+                env:
+                  - name: CLAX_POSTGRES_TLS
+                    value: "off"

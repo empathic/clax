@@ -18,12 +18,13 @@
 //! move.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
-use crate::pg::{PgError, Pool, err};
+use crate::pg::{PgError, Pool, Type, err};
 
 /// How long a member is seen alive after its last heartbeat.
 pub const MEMBER_TTL: Duration = Duration::from_secs(20);
@@ -70,12 +71,25 @@ pub trait Coordinator: Send + Sync {
     /// names another process: the new epoch, or `None` when another holds
     /// it.
     async fn acquire(&self, instance: &str, pod: &str, addr: &str) -> Result<Option<i64>, PgError>;
-    /// Extends `pod`'s lease of `instance` at `epoch`: false when it no
-    /// longer holds it.
-    async fn renew(&self, instance: &str, pod: &str, epoch: i64) -> Result<bool, PgError>;
+    /// Extends each of `pod`'s leases in `holds` (instance and epoch) that
+    /// it still holds, in one call: the instances renewed.
+    async fn renew_all(&self, pod: &str, holds: &[(String, i64)]) -> Result<Vec<String>, PgError>;
     /// Gives up `pod`'s lease of `instance` at `epoch`, when it still holds
     /// it.
     async fn release(&self, instance: &str, pod: &str, epoch: i64) -> Result<(), PgError>;
+    /// Gives up every lease that names `pod`: what a process does as it
+    /// starts, so leases its previous run under the same name held are
+    /// free at once rather than when they expire.
+    async fn release_all(&self, pod: &str) -> Result<(), PgError>;
+
+    /// Extends `pod`'s lease of `instance` at `epoch`: false when it no
+    /// longer holds it.
+    async fn renew(&self, instance: &str, pod: &str, epoch: i64) -> Result<bool, PgError> {
+        let renewed = self
+            .renew_all(pod, &[(instance.to_string(), epoch)])
+            .await?;
+        Ok(!renewed.is_empty())
+    }
 }
 
 fn score(instance: &str, pod: &str) -> [u8; 32] {
@@ -97,7 +111,8 @@ pub fn preferred<'a>(instance: &str, members: &'a [Member]) -> Option<&'a Member
     })
 }
 
-/// [`Coordinator`] over the fleet's tables (`crate::pg`).
+/// [`Coordinator`] over the fleet's tables (`crate::pg`), on a pool of its
+/// own so its calls never wait behind an instance's page and content I/O.
 pub struct PgCoordinator {
     pool: Arc<Pool>,
 }
@@ -119,7 +134,7 @@ impl Coordinator for PgCoordinator {
         self.pool
             .call(move |c| {
                 // A member that was seen dead joins again: its age restarts.
-                c.execute(
+                c.execute_typed(
                     "INSERT INTO clax_fleet_members (pod, addr, joined, seen)
                      VALUES ($1, $2, now(), now())
                      ON CONFLICT (pod) DO UPDATE SET
@@ -128,7 +143,11 @@ impl Coordinator for PgCoordinator {
                        joined = CASE
                          WHEN clax_fleet_members.seen < now() - make_interval(secs => $3)
                          THEN now() ELSE clax_fleet_members.joined END",
-                    &[&pod, &addr, &secs(MEMBER_TTL)],
+                    &[
+                        (&pod, Type::TEXT),
+                        (&addr, Type::TEXT),
+                        (&secs(MEMBER_TTL), Type::FLOAT8),
+                    ],
                 )
                 .map_err(err)?;
                 Ok(())
@@ -140,8 +159,11 @@ impl Coordinator for PgCoordinator {
         let pod = pod.to_string();
         self.pool
             .call(move |c| {
-                c.execute("DELETE FROM clax_fleet_members WHERE pod = $1", &[&pod])
-                    .map_err(err)?;
+                c.execute_typed(
+                    "DELETE FROM clax_fleet_members WHERE pod = $1",
+                    &[(&pod, Type::TEXT)],
+                )
+                .map_err(err)?;
                 Ok(())
             })
             .await
@@ -151,12 +173,12 @@ impl Coordinator for PgCoordinator {
         self.pool
             .call(|c| {
                 let rows = c
-                    .query(
+                    .query_typed(
                         "SELECT pod, addr, extract(epoch FROM now() - joined)::float8
                          FROM clax_fleet_members
                          WHERE seen >= now() - make_interval(secs => $1)
                          ORDER BY pod",
-                        &[&secs(MEMBER_TTL)],
+                        &[(&secs(MEMBER_TTL), Type::FLOAT8)],
                     )
                     .map_err(err)?;
                 Ok(rows
@@ -176,10 +198,10 @@ impl Coordinator for PgCoordinator {
         self.pool
             .call(move |c| {
                 let row = c
-                    .query_opt(
+                    .query_typed_opt(
                         "SELECT holder, addr, epoch FROM clax_fleet_leases
                          WHERE instance = $1 AND expires > now()",
-                        &[&instance],
+                        &[(&instance, Type::TEXT)],
                     )
                     .map_err(err)?;
                 Ok(row.map(|r| Lease {
@@ -199,7 +221,7 @@ impl Coordinator for PgCoordinator {
                 // taken again at a new epoch too (a restart that kept its
                 // name), so nothing of the earlier hold writes on.
                 let row = c
-                    .query_opt(
+                    .query_typed_opt(
                         "INSERT INTO clax_fleet_leases (instance, holder, addr, epoch, expires)
                          VALUES ($1, $2, $3, 1, now() + make_interval(secs => $4))
                          ON CONFLICT (instance) DO UPDATE SET
@@ -210,7 +232,12 @@ impl Coordinator for PgCoordinator {
                          WHERE clax_fleet_leases.expires <= now()
                             OR clax_fleet_leases.holder = EXCLUDED.holder
                          RETURNING epoch",
-                        &[&instance, &pod, &addr, &secs(LEASE_TTL)],
+                        &[
+                            (&instance, Type::TEXT),
+                            (&pod, Type::TEXT),
+                            (&addr, Type::TEXT),
+                            (&secs(LEASE_TTL), Type::FLOAT8),
+                        ],
                     )
                     .map_err(err)?;
                 Ok(row.map(|r| r.get(0)))
@@ -218,19 +245,30 @@ impl Coordinator for PgCoordinator {
             .await
     }
 
-    async fn renew(&self, instance: &str, pod: &str, epoch: i64) -> Result<bool, PgError> {
-        let (instance, pod) = (instance.to_string(), pod.to_string());
+    async fn renew_all(&self, pod: &str, holds: &[(String, i64)]) -> Result<Vec<String>, PgError> {
+        if holds.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pod = pod.to_string();
+        let (instances, epochs): (Vec<String>, Vec<i64>) = holds.iter().cloned().unzip();
         self.pool
             .call(move |c| {
-                let n = c
-                    .execute(
-                        "UPDATE clax_fleet_leases
+                let rows = c
+                    .query_typed(
+                        "UPDATE clax_fleet_leases l
                          SET expires = now() + make_interval(secs => $4)
-                         WHERE instance = $1 AND holder = $2 AND epoch = $3",
-                        &[&instance, &pod, &epoch, &secs(LEASE_TTL)],
+                         FROM unnest($2::text[], $3::bigint[]) AS h(instance, epoch)
+                         WHERE l.instance = h.instance AND l.epoch = h.epoch AND l.holder = $1
+                         RETURNING l.instance",
+                        &[
+                            (&pod, Type::TEXT),
+                            (&instances, Type::TEXT_ARRAY),
+                            (&epochs, Type::INT8_ARRAY),
+                            (&secs(LEASE_TTL), Type::FLOAT8),
+                        ],
                     )
                     .map_err(err)?;
-                Ok(n == 1)
+                Ok(rows.into_iter().map(|r| r.get(0)).collect())
             })
             .await
     }
@@ -240,10 +278,29 @@ impl Coordinator for PgCoordinator {
         self.pool
             .call(move |c| {
                 // Expired, not deleted: the epoch keeps rising.
-                c.execute(
+                c.execute_typed(
                     "UPDATE clax_fleet_leases SET expires = now()
                      WHERE instance = $1 AND holder = $2 AND epoch = $3",
-                    &[&instance, &pod, &epoch],
+                    &[
+                        (&instance, Type::TEXT),
+                        (&pod, Type::TEXT),
+                        (&epoch, Type::INT8),
+                    ],
+                )
+                .map_err(err)?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn release_all(&self, pod: &str) -> Result<(), PgError> {
+        let pod = pod.to_string();
+        self.pool
+            .call(move |c| {
+                c.execute_typed(
+                    "UPDATE clax_fleet_leases SET expires = now()
+                     WHERE holder = $1 AND expires > now()",
+                    &[(&pod, Type::TEXT)],
                 )
                 .map_err(err)?;
                 Ok(())
@@ -253,10 +310,12 @@ impl Coordinator for PgCoordinator {
 }
 
 /// [`Coordinator`] in memory, on a clock the test moves: what several
-/// processes of a test share in place of PostgreSQL.
+/// processes of a test share in place of PostgreSQL. [`MemCoordinator::fail`]
+/// makes every call fail, as a database out of reach does.
 #[derive(Default)]
 pub struct MemCoordinator {
     inner: Mutex<MemState>,
+    failing: AtomicBool,
 }
 
 #[derive(Default)]
@@ -275,18 +334,26 @@ impl MemCoordinator {
 
     /// Moves the clock on by `d`.
     pub fn advance(&self, d: Duration) {
-        self.state().now += d;
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).now += d;
     }
 
-    fn state(&self) -> std::sync::MutexGuard<'_, MemState> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    /// Makes every call fail (`true`) or answer again (`false`).
+    pub fn fail(&self, failing: bool) {
+        self.failing.store(failing, Ordering::SeqCst);
+    }
+
+    fn state(&self) -> Result<std::sync::MutexGuard<'_, MemState>, PgError> {
+        if self.failing.load(Ordering::SeqCst) {
+            return Err("the coordinator is out of reach (MemCoordinator::fail)".into());
+        }
+        Ok(self.inner.lock().unwrap_or_else(|e| e.into_inner()))
     }
 }
 
 #[async_trait::async_trait]
 impl Coordinator for MemCoordinator {
     async fn heartbeat(&self, pod: &str, addr: &str) -> Result<(), PgError> {
-        let mut s = self.state();
+        let mut s = self.state()?;
         let now = s.now;
         let joined = match s.members.get(pod) {
             Some((_, joined, seen)) if now.saturating_sub(*seen) <= MEMBER_TTL => *joined,
@@ -298,12 +365,12 @@ impl Coordinator for MemCoordinator {
     }
 
     async fn leave(&self, pod: &str) -> Result<(), PgError> {
-        self.state().members.remove(pod);
+        self.state()?.members.remove(pod);
         Ok(())
     }
 
     async fn members(&self) -> Result<Vec<Member>, PgError> {
-        let s = self.state();
+        let s = self.state()?;
         let mut m: Vec<Member> = s
             .members
             .iter()
@@ -319,7 +386,7 @@ impl Coordinator for MemCoordinator {
     }
 
     async fn lease(&self, instance: &str) -> Result<Option<Lease>, PgError> {
-        let s = self.state();
+        let s = self.state()?;
         Ok(s.leases
             .get(instance)
             .filter(|(_, expires)| *expires > s.now)
@@ -327,7 +394,7 @@ impl Coordinator for MemCoordinator {
     }
 
     async fn acquire(&self, instance: &str, pod: &str, addr: &str) -> Result<Option<i64>, PgError> {
-        let mut s = self.state();
+        let mut s = self.state()?;
         let now = s.now;
         let epoch = match s.leases.get(instance) {
             Some((l, expires)) if *expires > now && l.holder != pod => return Ok(None),
@@ -348,28 +415,108 @@ impl Coordinator for MemCoordinator {
         Ok(Some(epoch))
     }
 
-    async fn renew(&self, instance: &str, pod: &str, epoch: i64) -> Result<bool, PgError> {
-        let mut s = self.state();
+    async fn renew_all(&self, pod: &str, holds: &[(String, i64)]) -> Result<Vec<String>, PgError> {
+        let mut s = self.state()?;
         let now = s.now;
-        match s.leases.get_mut(instance) {
-            Some((l, expires)) if l.holder == pod && l.epoch == epoch => {
+        let mut renewed = Vec::new();
+        for (instance, epoch) in holds {
+            if let Some((l, expires)) = s.leases.get_mut(instance)
+                && l.holder == pod
+                && l.epoch == *epoch
+            {
                 *expires = now + LEASE_TTL;
-                Ok(true)
+                renewed.push(instance.clone());
             }
-            _ => Ok(false),
         }
+        Ok(renewed)
     }
 
     async fn release(&self, instance: &str, pod: &str, epoch: i64) -> Result<(), PgError> {
-        let mut s = self.state();
+        let mut s = self.state()?;
         let now = s.now;
         if let Some((l, expires)) = s.leases.get_mut(instance)
             && l.holder == pod
             && l.epoch == epoch
+            && *expires > now
         {
             *expires = now;
         }
         Ok(())
+    }
+
+    async fn release_all(&self, pod: &str) -> Result<(), PgError> {
+        let mut s = self.state()?;
+        let now = s.now;
+        for (l, expires) in s.leases.values_mut() {
+            if l.holder == pod && *expires > now {
+                *expires = now;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The rules every [`Coordinator`] keeps that need no clock: `run` panics on
+/// the first it breaks. Each check names its instances and pods with
+/// `unique`, so runs against one database never meet. The rules about
+/// expiry are checked on [`MemCoordinator`], whose clock a test moves
+/// (this module's tests).
+pub mod contract {
+    use super::Coordinator;
+
+    pub async fn run(c: &dyn Coordinator, unique: &dyn Fn(&str) -> String) {
+        let inst = unique("inst");
+        let (a, b) = (unique("pod-a"), unique("pod-b"));
+        // One holder at a time; each new hold raises the epoch.
+        assert_eq!(c.acquire(&inst, &a, "a:1").await.unwrap(), Some(1));
+        assert_eq!(c.acquire(&inst, &b, "b:1").await.unwrap(), None);
+        let l = c.lease(&inst).await.unwrap().unwrap();
+        assert_eq!(
+            (l.holder.as_str(), l.addr.as_str(), l.epoch),
+            (a.as_str(), "a:1", 1)
+        );
+        // Only the holder renews, at its own epoch.
+        assert!(c.renew(&inst, &a, 1).await.unwrap());
+        assert!(!c.renew(&inst, &b, 1).await.unwrap());
+        assert!(!c.renew(&inst, &a, 2).await.unwrap());
+        // Taking it again while holding it is a new hold.
+        assert_eq!(c.acquire(&inst, &a, "a:1").await.unwrap(), Some(2));
+        assert!(!c.renew(&inst, &a, 1).await.unwrap());
+        // Released, it is anyone's, at a higher epoch.
+        c.release(&inst, &a, 2).await.unwrap();
+        assert!(c.lease(&inst).await.unwrap().is_none());
+        assert_eq!(c.acquire(&inst, &b, "b:1").await.unwrap(), Some(3));
+        // A release by a past holder does nothing.
+        c.release(&inst, &a, 2).await.unwrap();
+        assert_eq!(c.lease(&inst).await.unwrap().unwrap().holder, b);
+        // Renewing several answers the ones still held.
+        let other = unique("inst");
+        assert_eq!(c.acquire(&other, &b, "b:1").await.unwrap(), Some(1));
+        let mut renewed = c
+            .renew_all(
+                &b,
+                &[(inst.clone(), 3), (other.clone(), 1), (unique("none"), 1)],
+            )
+            .await
+            .unwrap();
+        renewed.sort();
+        let mut want = vec![inst.clone(), other.clone()];
+        want.sort();
+        assert_eq!(renewed, want);
+        // Releasing all of a pod's frees each, and leaves the others'.
+        let kept = unique("inst");
+        assert_eq!(c.acquire(&kept, &a, "a:1").await.unwrap(), Some(1));
+        c.release_all(&b).await.unwrap();
+        assert!(c.lease(&inst).await.unwrap().is_none());
+        assert!(c.lease(&other).await.unwrap().is_none());
+        assert_eq!(c.lease(&kept).await.unwrap().unwrap().holder, a);
+        // Members: a heartbeat joins and moves the address; leave removes.
+        c.heartbeat(&a, "a:1").await.unwrap();
+        c.heartbeat(&a, "a:2").await.unwrap();
+        let m = c.members().await.unwrap();
+        assert_eq!(m.iter().find(|m| m.pod == a).unwrap().addr, "a:2");
+        c.leave(&a).await.unwrap();
+        assert!(!c.members().await.unwrap().iter().any(|m| m.pod == a));
     }
 }
 
@@ -456,5 +603,22 @@ mod tests {
         assert_eq!(a.age, Duration::ZERO, "a joined again");
         c.leave("b").await.unwrap();
         assert_eq!(c.members().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_memory_coordinator_keeps_the_contract() {
+        let n = std::sync::atomic::AtomicU32::new(0);
+        let unique = |p: &str| format!("{p}-{}", n.fetch_add(1, Ordering::SeqCst));
+        contract::run(&*MemCoordinator::new(), &unique).await;
+    }
+
+    #[tokio::test]
+    async fn a_failing_coordinator_fails_every_call_until_it_answers_again() {
+        let c = MemCoordinator::new();
+        c.fail(true);
+        assert!(c.heartbeat("a", "a:1").await.is_err());
+        assert!(c.acquire("x", "a", "a:1").await.is_err());
+        c.fail(false);
+        assert_eq!(c.acquire("x", "a", "a:1").await.unwrap(), Some(1));
     }
 }

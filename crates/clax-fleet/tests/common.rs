@@ -9,12 +9,21 @@ use std::sync::Arc;
 use clax_core::embedded::MemTree;
 use clax_fleet::fleet::{Fleet, FleetConfig, Placement, Storage};
 
+/// The peer key every process of a test fleet shares.
+pub const PEER_KEY: &str = "test-peer-key";
+
 /// A catalog of the named instances, each at `https://<name>.test` with its
-/// sites under `<name>-sites.test`, on the shard its entry gives.
+/// sites under `<name>-sites.test`, on the shard its entry gives (two
+/// shards, and each instance may make its home, when any names one).
 pub fn catalog(instances: &[(&str, Option<u32>)]) -> String {
     let mut out = String::new();
+    if instances.iter().any(|(_, s)| s.is_some()) {
+        out.push_str("shards = 2\n\n");
+    }
     for (name, shard) in instances {
-        let shard = shard.map(|s| format!("shard = {s}\n")).unwrap_or_default();
+        let shard = shard
+            .map(|s| format!("shard = {s}\ncreate = true\n"))
+            .unwrap_or_default();
         out.push_str(&format!(
             "[[instance]]\nname = \"{name}\"\n{shard}config = '''\n[hosted]\npublic_origin = \"https://{name}.test\"\nsite_domain = \"{name}-sites.test\"\n'''\n\n"
         ));
@@ -50,7 +59,6 @@ pub async fn process(
     (listener, addr): (tokio::net::TcpListener, SocketAddr),
     data_dir: &Path,
     catalog: &Path,
-    shards: Option<u32>,
     placement: Placement,
 ) -> Process {
     let fleet = Fleet::new(FleetConfig {
@@ -58,12 +66,13 @@ pub async fn process(
         advertise: addr.to_string(),
         data_dir: data_dir.to_path_buf(),
         catalog: catalog.to_path_buf(),
-        shards,
         version: "test",
         web: Arc::new(MemTree(Default::default())),
         placement,
         storage: Storage::Disk,
         kek: Some([7; 32]),
+        peer_key: PEER_KEY.to_string(),
+        db_limits: clax_pagevfs::Limits::default(),
         port: addr.port(),
     })
     .unwrap();

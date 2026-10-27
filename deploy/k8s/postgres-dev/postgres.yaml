@@ -12,6 +12,25 @@ spec:
       port: 5432
       targetPort: postgres
 ---
+# Only the fleet's pods reach the database.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: clax-postgres
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: clax-postgres
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: clax
+              app.kubernetes.io/component: fleet
+      ports:
+        - port: 5432
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -32,6 +51,9 @@ spec:
       containers:
         - name: postgres
           image: postgres:17
+          # Every fleet pod holds CLAX_POSTGRES_POOL + 2 connections: room
+          # for the autoscaler's 10 pods and a rollout's surge.
+          args: ["-c", "max_connections=200"]
           ports:
             - name: postgres
               containerPort: 5432
