@@ -353,3 +353,10 @@
   @media (prefers-reduced-motion: reduce) { .fab.pop, .edges path.e.draw { animation: none; stroke-dasharray: none; stroke-dashoffset: 0; } }
   .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 20; max-width: calc(100% - 32px); padding: 10px 16px; border-radius: 999px;
     background: var(--fg); color: var(--bg); font-size: 14px; font-weight: 550; box-shadow: var(--shadow); }
+
+  /* The line above "Where next?" once the first round trip is done. */
+  .celebrate { position: absolute; left: 50%; bottom: 100%; margin-bottom: 6px !important; transform: translateX(-50%); z-index: 2; margin: 0; max-width: 100%; padding: 4px 14px; border-radius: 999px; text-align: center;
+    background: var(--ok-soft); color: var(--ok); border: 1px solid var(--ok); font-size: 14px; font-weight: 600; }
+  .celebrate.pop { animation: celebrate-in .5s ease-out 1; }
+  @keyframes celebrate-in { from { opacity: 0; transform: translateX(-50%) translateY(8px) scale(.96); } }
+  @media (prefers-reduced-motion: reduce) { .celebrate.pop { animation: none; } }

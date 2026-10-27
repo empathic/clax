@@ -166,9 +166,8 @@
         <p>Ask your agent, in its chat, to watch this page:</p>
         ${cmd(`Watch the Clax Quickstart page (${ARTIFACT}) for my comments.`)}
         <p>Your agent shows up in this page's agent list, and a comment you send it here reaches it. To check, leave a comment here, write <code>@agent hello</code>, and send it: your agent should reply.</p>` },
-    fork: { kind: "small", kicker: "Next", title: "Make it yours", sub: "Fork any page into your own copy",
-      body: `<p>Fork any page into your own copy that you can change however you like. Press <b>Fork</b> in its top bar (on a phone, it's in the ⋯ menu). Or ask your agent or ClaxBot:</p>
-        ${cmd(`Fork the Clax Quickstart page (${ARTIFACT}) into a page of my own, open it, and watch it.`)}
+    fork: { kind: "small", kicker: "Next", title: "Make it yours", sub: "Fork any page into your own copy", starter: `Fork the Clax Quickstart page (${ARTIFACT}) into a page of my own, open it, and watch it.`,
+      body: `<p>Fork any page into your own copy that you can change however you like. Press <b>Fork</b> in its top bar (on a phone, it's in the ⋯ menu). Or ask your agent or ClaxBot, as below.</p>
         <p>This Quickstart is a good first page to fork: comment on your copy and watch it change.</p>` },
     comment: { kicker: "Step", title: "Comment on a page", sub: "Point at what you want changed",
       body: `<p>On this page or any page of yours, turn on comment mode, then do one of these:</p>
@@ -186,40 +185,24 @@
         <p>That's the whole loop. Comment again whenever you want another change.</p>` },
     next: { kind: "decision", kicker: "Decision", title: "Where next?",
       body: `<p>You've done the core loop. Pick whatever's useful. You can come back for the others:</p>` },
-    ask: { kind: "small", kicker: "Next", title: "A page from scratch", sub: "Ask your agent for anything",
+    ask: { kind: "small", kicker: "Next", title: "A page from scratch", sub: "Ask your agent for anything", starter: "Make me a page that tracks …",
       body: `<p>Ask for anything you'd rather look at than read:</p>
         <ul><li>"Make me a dashboard of this week's test failures"</li><li>"Sketch three layouts for the settings screen"</li><li>"Chart the benchmark results"</li></ul>
         <p>The agent publishes the page to Clax and gives you a link. Every page lands in the gallery.</p>
         ${tip("Or start in the browser", "Press <b>New</b> in the gallery, give the page a title and a brief, and pick a connected agent to build it.")}` },
-    devserver: { kind: "small", kicker: "Next", title: "Your dev server", sub: "Comment on any web page",
+    devserver: { kind: "small", kicker: "Next", title: "Your dev server", sub: "Comment on any web page", starter: "Watch http://localhost:5173 for my comments.",
       body: `<p>The Clax Chrome extension puts the same comment overlay on any page, such as your dev server, so you can point at what's wrong and send it to your agent.</p>
         <ol><li>Install it: <code>clax init</code>, or <code>/clax:extension</code> in Claude Code.</li><li>Once, open <code>chrome://extensions</code>, turn on Developer mode, choose <b>Load unpacked</b> and pick <code>~/.clax/extension</code>.</li><li>Ask your agent to watch your dev server's URL.</li></ol>
         <p>It works with Chrome, Chromium, Brave and Edge on macOS and Linux.</p>` },
-    data: { kind: "small", kicker: "Next", title: "Pages that do more", sub: "Data, live rooms, questions",
+    data: { kind: "small", kicker: "Next", title: "Pages that do more", sub: "Data, live rooms, questions", starter: "Add a shared to-do list to this page.",
       body: `<p>Pages can do more than display. Ask your agent for:</p>
         <ul><li><b>Shared data</b>: a tracker or a sign-up sheet that keeps what people enter.</li><li><b>Live updates</b> while others view the page.</li><li><b>Questions</b> the agent asks you and you answer in the browser.</li><li><b>Claude inside the page</b>, paid for by your own API key: set <code>ANTHROPIC_API_KEY</code> before Clax starts.</li>
         <li><b>A tour of Clax</b> that points at its own buttons, as this page does.</li></ul>
         <p class="muted-note">A page declares what it uses in <code>clax.json</code>. One that uses more than the basics (the network, Claude, the shell) asks its owner once per artifact, and again when a version asks for more, in a bar in Clax.</p>
         ${tip("Try", `"Turn this into a checklist my team can tick off."`)}` },
-    share: { kind: "small", kicker: "Next", title: "Share nearby", sub: "People on your network",
-      body: `<p>Others on your network can view and comment on your pages and connect their own agents, with the rights you give them.</p>
-        ${cmd("clax stop\nclax serve --bind 0.0.0.0")}
-        <p>Then invite people from the <b>People</b> page.</p>
-        ${tip("Trusted networks only", "Traffic on the LAN is not encrypted.")}` },
-    done: { kind: "terminal", kicker: "Done", title: "You're set", sub: "Anyone you want to collaborate with?",
-      cta: `<button type="button" class="btn invite" data-go="invite">Invite someone →</button>`,
-      body: `${tip("Build it together", `Invite a teammate to your page: they comment, and their agents can pick up threads too. <button type="button" class="btn invite" data-go="invite">Invite someone →</button>`)}
-        <p>To give any page a public link, press <b>Publish to clax.dev</b> in its top bar, then <b>Push v&lt;N&gt;</b> for later versions. When an agent wants to publish, it asks you first.</p>
-        <p>Your agent does most things for you, but the <code>clax</code> command is there when you want it.</p>
-        ${cmd("clax open &lt;ID&gt;    # open a page\nclax list           # list pages\nclax comments       # open threads, newest first\nclax push &lt;ID&gt;     # publish a page to clax.dev\nclax status         # is Clax running, who is working on what\nclax doctor         # health check")}
-        <h3>Something's off?</h3>
-        ${cmd("clax doctor --agent claude  # check one harness's plugin: claude, codex, pi or grok")}
-        <p>Every hook run, MCP start and install is logged in <code>~/.clax/logs/hooks.log</code>. Your pages and comments live in <code>~/.clax</code>.</p>
-        <p><code>clax --help</code> lists every command. The <a href="https://github.com/empathic/clax#readme" target="_blank" rel="noopener">README</a> and the usage guide cover the rest.</p>` },
   };
 
-  // Reached from the last box's call to action, not drawn in the chart.
-  NODES.invite = { kicker: "Share", title: "Invite someone to build with you",
+  NODES.invite = { kind: "small", kicker: "Next", title: "Bring someone in", sub: "Anyone you want to collaborate with?", starter: "Publish this page to clax.dev and tell me how to share it with a teammate.",
     body: `<p>Clax pages are better with two people pointing at them. Bring a teammate in to comment on your page; their agents can pick up threads too.</p>
       <h3>Anywhere: through clax.dev</h3>
       <ol><li>On your page, press <b>Publish to clax.dev</b> in the top bar.</li><li>On its public copy, press <b>Share</b>: add people by GitHub login as Can view, Can comment or Can edit, or copy the link.</li><li>Comments they leave there come back to your page here, and your agent answers them.</li></ol>
@@ -229,14 +212,14 @@
 
   const LAYOUT = [
     ["signin"], ["@split"], ["@loop"], ["next"],
-    ["fork", "ask", "devserver", "data", "share"], ["done"],
+    ["fork", "ask", "devserver", "data", "invite"],
   ];
   const INSTALLS = ["install-claude", "install-codex", "install-pi", "install-grok", "install-all"];
-  const BRANCHES = ["fork", "ask", "devserver", "data", "share"];
+  const BRANCHES = ["fork", "ask", "devserver", "data", "invite"];
   const EDGES = [
     ["signin", "install"], ["signin", "claxbot"], ["install", "attach"], ["attach", "comment"], ["claxbot", "comment"],
     ["change", "next"],
-    ...BRANCHES.map((b) => ["next", b]), ...BRANCHES.map((b) => [b, "done"]),
+    ...BRANCHES.map((b) => ["next", b]),
   ];
   // Two routes after sign-in: bring your own agent (install, then attach), or
   // ClaxBot, which needs none of them. Saved "new" and null are the first.
@@ -280,7 +263,7 @@
   const nodeDim = (id) => (claxbotRoute() && (id === "install" || id === "agent" || id === "attach" || INSTALLS.includes(id)))
     || (!claxbotRoute() && id === "claxbot")
     || (INSTALLS.includes(id) && state.agent && NODES[id].agent !== state.agent);
-  const ideasFor = (id) => ideas.filter((i) => i.step === (id.startsWith("install") ? "install" : id));
+  const ideasFor = (id) => ideas.filter((i) => i.step === (id.startsWith("install") ? "install" : id) || (id === "invite" && i.step === "share"));
 
   /** The fork after sign-in: bring your own agent (install, then attach)
    * on the left, ClaxBot on the right. Both rejoin at the core loop. */
@@ -395,7 +378,7 @@
         b.className = "decision";
         b.innerHTML = `<span>${n.title}</span>`;
       } else {
-        const label = id === "done" ? "★" : numOf(id) ?? "";
+        const label = numOf(id) ?? "";
         b.className = "node" + (n.kind === "small" ? " small" : "") + (INSTALLS.includes(id) ? " inst" : "") + (n.kind === "terminal" ? " terminal" : "");
         const brand = n.agent && BRAND[n.agent];
         if (brand) b.style.setProperty("--brand", brand.color);
@@ -416,8 +399,24 @@
       row.forEach((id) => r.appendChild(makeBox(id)));
       chart.appendChild(r);
     });
+    const c = document.createElement("p");
+    c.id = "celebrate"; c.className = "celebrate"; c.hidden = true; c.setAttribute("role", "status");
+    c.textContent = "Your first round trip — nice. Pick what's next:";
+    els.next.parentElement.appendChild(c);
   }
 
+  // The first round trip: a line above "Where next?" the moment the core route
+  // completes in this visit. A route already complete on load is not celebrated.
+  let wasComplete = null;
+  function celebrate(complete) {
+    const el = document.getElementById("celebrate");
+    if (wasComplete === false && complete && el) {
+      el.hidden = false;
+      if (!matchMedia("(prefers-reduced-motion: reduce)").matches) { el.classList.remove("pop"); void el.offsetWidth; el.classList.add("pop"); }
+    }
+    if (!complete && el) el.hidden = true;
+    wasComplete = complete;
+  }
   function refreshNodes() {
     for (const id in els) {
       const el = els[id];
@@ -425,7 +424,7 @@
       el.classList.toggle("dim", nodeDim(id));
       el.classList.toggle("sel", id === selected);
       const num = el.querySelector(":scope > .n > span");
-      if (num && id !== "done") num.textContent = numOf(id) ?? "";
+      if (num) num.textContent = numOf(id) ?? "";
       el.querySelectorAll(":scope > .fab").forEach((f) => { const on = !!state.done[f.dataset.toggle]; f.classList.toggle("on", on); f.setAttribute("aria-pressed", String(on)); f.classList.toggle("beckon", f.dataset.toggle === "signin" && !Object.keys(state.done).length); });
       el.querySelectorAll("[data-pick]").forEach((c) => c.classList.toggle("on", c.dataset.pick === state.agent));
       const bulb = el.querySelector(".idea");
@@ -436,7 +435,8 @@
     document.getElementById("bar").style.width = `${(n / CORE.length) * 100}%`;
     document.querySelector(".bar").setAttribute("aria-valuemax", String(CORE.length));
     document.querySelector(".bar").setAttribute("aria-valuenow", String(n));
-    document.getElementById("progress-text").textContent = n === CORE.length ? "Core loop done" : `${n} of ${CORE.length} steps`;
+    document.getElementById("progress-text").textContent = n === CORE.length ? "Done — keep going" : `${n} of ${CORE.length} steps`;
+    celebrate(n === CORE.length);
     drawEdges();
   }
 
@@ -523,7 +523,16 @@
     }
     if (id === "next") {
       html += `<div class="choices">${BRANCHES.map((b) => `<button type="button" data-go="${b}"><b>${NODES[b].title}</b><span>${NODES[b].sub}</span></button>`).join("")}</div>`;
+      html += `<h3>Handy to know</h3>
+        <p>To give any page a public link, press <b>Publish to clax.dev</b> in its top bar, then <b>Push v&lt;N&gt;</b> for later versions. When an agent wants to publish, it asks you first.</p>
+        <p>Your agent does most things for you, but the <code>clax</code> command is there when you want it.</p>
+        ${cmd("clax open &lt;ID&gt;    # open a page\nclax list           # list pages\nclax comments       # open threads, newest first\nclax push &lt;ID&gt;     # publish a page to clax.dev\nclax status         # is Clax running, who is working on what\nclax doctor         # health check")}
+        <h3>Something's off?</h3>
+        ${cmd("clax doctor --agent claude  # check one harness's plugin: claude, codex, pi or grok")}
+        <p>Every hook run, MCP start and install is logged in <code>~/.clax/logs/hooks.log</code>. Your pages and comments live in <code>~/.clax</code>.</p>
+        <p><code>clax --help</code> lists every command. The <a href="https://github.com/empathic/clax#readme" target="_blank" rel="noopener">README</a> and the usage guide cover the rest.</p>`;
     }
+    if (n.starter) html = `<h3>Try this</h3><p>Paste it to your agent, or send it to ClaxBot:</p>${cmd(n.starter)}` + html;
     if (SHOWME[id]) html += `<div class="showme-wrap">${showMe(id)}</div>`;
     const here = ideasFor(id);
     if (here.length) {
@@ -545,7 +554,7 @@
     }
   }
   function nextOf(id) {
-    if (BRANCHES.includes(id)) return "done";
+    if (BRANCHES.includes(id)) return null;
     if (id === "install" || id === "agent") return state.agent ? `install-${state.agent}` : null;
     if (id.startsWith("install-")) return "attach";
     const c = [...core(), "next"], i = c.indexOf(id);
@@ -638,7 +647,9 @@
   // index.html#<step> opens that step (ideas.html links here so).
   function route() {
     const id = decodeURIComponent(location.hash.slice(1)).replace(/^start\//, "");
-    if (NODES[id]) select(id);
+    // Links from the ideas page and older links name steps this chart has folded together.
+    const to = NODES[id] ? id : { share: "invite", link: "attach", have: "install", done: "next" }[id];
+    if (to) select(to);
     requestAnimationFrame(drawEdges);
   }
   addEventListener("hashchange", route);
@@ -665,7 +676,7 @@
     if (uid) {
       try {
         const snap = await db.doc(`data/users/${uid}/progress`).get();
-        if (snap.exists) { const d = snap.data(); state.agent = d.agent ?? state.agent; state.have = d.have ?? state.have; state.done = Object.assign({}, state.done, d.done || {}); knownAgent(); normalize(); }
+        if (snap.exists) { const d = snap.data(); state.agent = d.agent ?? state.agent; state.have = d.have ?? state.have; state.done = Object.assign({}, state.done, d.done || {}); knownAgent(); normalize(); wasComplete = null; }
         else save();
       } catch (_) {}
       refreshNodes();
