@@ -52,7 +52,7 @@
   .kpi .label { color: var(--fg2); font-size: 12.5px; }
   .kpi .value { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; margin: 2px 0 0; font-variant-numeric: tabular-nums; }
   .kpi .row { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; }
-  .kpi .delta { color: var(--good); font-size: 12.5px; font-weight: 600; }
+  .kpi .delta { color: var(--good); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
   .kpi .delta small { color: var(--muted); font-weight: 400; }
   .kpi svg { display: block; }
   .grid2 { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr); gap: 12px; }
@@ -152,7 +152,7 @@
   }
 
   function spark(values, color) {
-    const w = 84, h = 28, lo = Math.min(...values), hi = Math.max(...values);
+    const w = 72, h = 28, lo = Math.min(...values), hi = Math.max(...values);
     const pts = values.map((v, i) => `${(i / (values.length - 1)) * w},${h - 3 - ((v - lo) / (hi - lo || 1)) * (h - 6)}`).join(" ");
     return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
   }

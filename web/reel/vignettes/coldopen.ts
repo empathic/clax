@@ -1,30 +1,49 @@
 // "Your agents build pages. Clax gives them a home." (spec
-// 2026-10-27-sizzle-reel-design §3, the cold open). On a hosted daemon,
-// Alex's gallery holds a few of Northwind's pages; an agent session,
-// scripted through the API, publishes "Northwind Q4 Revenue", a dashboard
-// with KPI tiles, a three-region chart and a filterable accounts table; its
-// card lands first in Alex's open gallery from the gallery's stream, without
-// a reload; Alex opens it and the app fills the screen, and his pointer
-// runs along the chart, its crosshair and tooltip following.
+// 2026-10-27-sizzle-reel-design §3, the cold open): ask, and it delivers.
+// On a hosted daemon, Alex's gallery holds a few of Northwind's pages. He
+// presses New artifact, names it "Q4 Revenue", writes what he wants and
+// sends the brief to his live `claude` agent, all in the gallery's own New
+// dialog; he lands on the placeholder page with the brief as its first
+// thread. The agent, scripted through the API, says it is working on the
+// thread, then publishes v2 addressing it: a dashboard with KPI tiles, a
+// three-region chart and a filterable accounts table
+// (fixtures/coldopen/revenue.html). Alex's view offers Reload; he takes it
+// and the dashboard replaces the placeholder; his pointer runs along the
+// chart, its crosshair and tooltip following.
 //
-// The daemon stamps its own times, and the camera's clock reads REEL_EPOCH:
-// the camera's API answers are restamped (`restamp`), each seeded page to an
-// age of its own before the film's now and anything else to the film's
-// now, so the cards read "2 h ago" and "just now" each run, whatever the
-// day.
+// Times: the daemon stamps real ones. The camera's page runs LAG_MS behind
+// real time, so everything made during the film reads "just now" and the
+// agent's elapsed clock 0:00 (both clamp at zero), and the seeded pages'
+// times are restamped in the camera's API answers (`restamp`) to fixed ages
+// before the page's clock.
 //
-// Beats: `gallery` (the gallery, before the agent publishes), `lands` (the
-// new card shows), `open` (Alex clicks it).
+// Beats: `ask` (the gallery, then New), `working` (the agent takes the
+// brief), `reveal` (v2 shows, after Reload), `touch` (the pointer on the chart).
 import { readFileSync } from "node:fs";
-import type { Page, Route } from "@playwright/test";
-import { NO_KEY_CONFIG, contentFrame, publishAs, publishNext, registerSession } from "../../e2e/fixtures.ts";
+import type { Frame, Locator, Page, Route } from "@playwright/test";
+import { NO_KEY_CONFIG, contentFrame, publishAs, publishNext, registerSession, setWorking } from "../../e2e/fixtures.ts";
 import { SECRET, freePort, ownerOf } from "../../e2e/hosted-helpers.ts";
-import { REEL_EPOCH, ROLL_AT_MS, quietIn } from "../camera.ts";
+import { quietIn } from "../camera.ts";
+import { cursorPress } from "../cursor.ts";
 import type { Director, Stage, Vignette } from "../director.ts";
 
-const TITLE = "Northwind Q4 Revenue";
+const NAME = "Q4 Revenue";
+const BRIEF = "Q4 revenue by region, with our top accounts";
 /** The hosted daemon's port: the gallery's header shows it. */
 const PORT = 47391;
+/** How far the camera's page clock runs behind real time. */
+const LAG_MS = 120_000;
+/** How long the director holds after each typed key: under a frame. */
+const KEY_MS = 25;
+
+/** The opening of the one haiku the shell shows (web/shell/src/view/haiku.json). */
+const HAIKU = "A page, freshly made";
+
+/** A style in each of the camera's documents that stops the caret's blink. */
+const STILL_CARET = `(() => {
+  const add = () => { const s = document.createElement("style"); s.textContent = "* { caret-animation: manual !important; }"; document.head.append(s); };
+  if (document.head) add(); else document.addEventListener("DOMContentLoaded", add, { once: true });
+})()`;
 
 /** Northwind's earlier pages: title, how many versions, how long ago (min)
  * the gallery says each was last published, and its one line of copy. All
@@ -39,35 +58,22 @@ const SEEDS = [
 
 const stub = (title: string, line: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head><body><main><h1>${title}</h1><p>${line}</p></main></body></html>`;
 
-/** The film's now on the camera's clock (the deterministic camera's first frame). */
-const FILM_NOW = REEL_EPOCH.getTime() + ROLL_AT_MS;
-
-/** Rewrites the daemon's times in an API answer: an object whose `id` is a
- * seeded page's takes that page's age; every other time, the film's now. */
-function restamp(v: unknown, ages: Map<string, number>, own?: number): unknown {
-  if (Array.isArray(v)) return v.map(x => restamp(x, ages, own));
+/** Rewrites the times of a seeded page in an API answer (an object whose
+ * `id` or `artifact_id` names one, and everything inside it) to its age
+ * before `now`; every other time is left as the daemon stamped it. */
+function restamp(v: unknown, ages: Map<string, number>, now: number, own?: number): unknown {
+  if (Array.isArray(v)) return v.map(x => restamp(x, ages, now, own));
   if (!v || typeof v !== "object") return v;
   const o = v as Record<string, unknown>;
   const key = [o.id, o.artifact_id].find(k => typeof k === "string" && ages.has(k)) as string | undefined;
   const age = key ? ages.get(key) : own;
   const out: Record<string, unknown> = {};
   for (const [k, x] of Object.entries(o)) {
-    if (typeof x === "string" && /_at$/.test(k) && !Number.isNaN(Date.parse(x))) out[k] = new Date(FILM_NOW - (age ?? 0) * 60_000).toISOString();
-    else out[k] = restamp(x, ages, age);
+    if (age !== undefined && typeof x === "string" && /_at$/.test(k) && !Number.isNaN(Date.parse(x))) out[k] = new Date(now - age * 60_000).toISOString();
+    else out[k] = restamp(x, ages, now, age);
   }
   return out;
 }
-
-/** Math.random as mulberry32 from a fixed seed, in every document of the camera's page. */
-const SEEDED_RANDOM = `(() => {
-  let a = 0x5eed;
-  Math.random = () => {
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-})()`;
 
 /** A hosted daemon whose public origin is localhost:`port`; one that took
  * another port (`port` was taken) is not usable as it stands. */
@@ -76,7 +82,15 @@ function hosted(stage: Stage, port: number) {
   return stage.startDaemon({ config, port, env: { CLAX_E2E_SETUP_SECRET: SECRET } });
 }
 
-type Cast = { alex: Page; base: string; token: string; origin: string; sid: string; html: string };
+/** `target`'s centre in the viewport, as the director moves to it. */
+async function centre(target: Locator): Promise<{ x: number; y: number }> {
+  await target.waitFor({ state: "visible" });
+  const box = await target.boundingBox();
+  if (!box) throw new Error(`${String(target)} has no box`);
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+}
+
+type Cast = { alex: Page; base: string; token: string; sid: string; html: string };
 
 export default {
   id: "coldopen",
@@ -96,8 +110,8 @@ export default {
     const origin = `http://localhost:${d.port}`;
     const html = readFileSync(new URL("../fixtures/coldopen/revenue.html", import.meta.url), "utf8");
 
-    // The agent of the film, live, with nothing published yet; registered
-    // first, it is plain "claude".
+    // Alex's agent, live and offered by New; registered first, it is plain
+    // "claude".
     const agent = await registerSession(d.base, d.token, "claude", "coldopen-agent");
     // Another agent published Northwind's earlier pages, oldest first.
     const ages = new Map<string, number>();
@@ -108,81 +122,149 @@ export default {
       for (let v = 1; v < s.versions; v++) await publishNext(d.base, d.token, earlier.id, artifact.id, v, { files: page });
       ages.set(artifact.id, s.ago);
     }
-    // Alex has read his inbox: the new page is its one unread item.
+    // Alex has read his inbox, and has ClaxBot off for himself (his flag,
+    // as Admin › People sets it), so New hands the brief to an agent.
     const owner = await ownerOf(stage.browser, origin, "Alex");
     await owner.evaluate(async () => {
-      const r = await fetch("/api/inbox/read", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ all: true }) });
-      if (!r.ok) throw new Error(`inbox read: ${r.status} ${await r.text()}`);
+      for (const [url, method, body] of [["/api/inbox/read", "POST", { all: true }], [`/api/admin/people/${encodeURIComponent("*owner")}/flags`, "PUT", { claxbot: false }]] as const) {
+        const r = await fetch(url, { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+        if (!r.ok) throw new Error(`${method} ${url}: ${r.status} ${await r.text()}`);
+      }
     });
     const signedIn = await owner.context().storageState();
     await owner.context().close();
 
     const alex = await stage.newCamera({ storageState: signedIn });
-    // The gallery's footer picks a haiku with Math.random: seeded, it picks the same one each run.
-    await alex.addInitScript(SEEDED_RANDOM);
+    // The page's clock behind real time; the seeded pages' ages count back
+    // from where it stands now (a few seconds of setup later is still the
+    // same whole minute of each age).
+    const now = Date.now() - LAG_MS;
+    await alex.clock.setSystemTime(now);
     await alex.context().route(/\/api\/(artifacts(\/[^/?]+)?|inbox(\/summary)?)(\?.*)?$/, async (route: Route) => {
       if (route.request().method() !== "GET") return route.continue();
       const res = await route.fetch();
       const type = res.headers()["content-type"] ?? "";
       if (!res.ok() || !type.includes("json")) return route.fulfill({ response: res });
-      return route.fulfill({ response: res, json: restamp(await res.json(), ages) });
+      return route.fulfill({ response: res, json: restamp(await res.json(), ages, now) });
+    });
+    // A text caret blinks on the browser's own time, not the camera's: it
+    // holds still here (caret-animation: manual), shown while it is in a field.
+    await alex.addInitScript(STILL_CARET);
+    // The shell's haiku (the gallery's footer, the working strip's line)
+    // picks from its list by Math.random or by the working record's key, a
+    // fresh ULID each run: the camera's list holds one of them, the same
+    // one each run.
+    await alex.context().route(/\/haiku[^/]*\.json$/, async (route: Route) => {
+      const res = await route.fetch();
+      const list = (await res.json()) as string[];
+      const one = list.find(h => h.startsWith(HAIKU));
+      if (!one) throw new Error(`the shell's haiku list has none starting "${HAIKU}"`);
+      return route.fulfill({ response: res, json: [one] });
     });
     await alex.goto(`${origin}/`);
     // A second tab of Alex's on the gallery, never filmed, keeps the shell's
-    // shared stream worker alive across the click into the artifact: the
+    // shared stream worker alive across the move into the artifact: the
     // artifact page joins it rather than fetching its script again, a
     // request the deterministic camera would wait on and never see end.
     const keeper = await alex.context().newPage();
     await keeper.goto(`${origin}/`);
     for (const s of SEEDS) await alex.locator(".card-wrap", { hasText: s.title }).waitFor({ state: "visible" });
+    await alex.getByRole("button", { name: "New artifact" }).waitFor({ state: "visible" });
     await alex.waitForFunction(() => ((window as unknown as { claxStreamLive?: number }).claxStreamLive ?? 0) > 0);
-    return { alex, base: d.base, token: d.token, origin, sid: agent.id, html };
+    return { alex, base: d.base, token: d.token, sid: agent.id, html };
   },
 
   async play(d: Director, cast: Cast) {
     const { alex, base, token, sid, html } = cast;
-    const card = alex.locator(".card-wrap", { hasText: TITLE });
+    // Where the pointer is: the page under a still pointer can change
+    // (a dialog's next step, a page loaded), and the browser restyles its
+    // hover on its own time; a real move to the same place restyles it at
+    // once, before the next frame.
+    let at = { x: 0, y: 0 };
+    const click = async (target: Locator) => {
+      at = await centre(target);
+      await d.click(target);
+    };
+    // A click that navigates: the press shows, and no frame is filmed until
+    // the next page has its content frame (the director's click rolls on
+    // while the old page's frames go, which the camera cannot freeze).
+    const navClick = async (target: Locator) => {
+      at = await centre(target);
+      await d.move(target);
+      await cursorPress(alex);
+      await d.offstage(async () => {
+        await alex.mouse.down();
+        await alex.mouse.up();
+      });
+    };
+    const settleHover = () => d.offstage(() => alex.mouse.move(at.x, at.y));
+    const typeFast = async (text: string) => {
+      for (const ch of Array.from(text)) {
+        await alex.keyboard.type(ch);
+        await d.hold(KEY_MS);
+      }
+    };
 
-    // Alex's gallery: Northwind's pages, his pointer resting by them.
-    d.beat("gallery");
-    await d.hold(300);
-    // It rests in the gallery's empty right side, where nothing lands: a
-    // card arriving under a still pointer takes its hover style when the
-    // browser next checks, on its own time, not the camera's.
-    const gal = alex.locator("main.gal");
-    const box = await gal.boundingBox();
-    if (!box) throw new Error("the gallery has no box");
-    await d.move(gal, { offset: { x: 1010 - (box.x + box.width / 2), y: 590 - (box.y + box.height / 2) } });
-    await d.hold(500);
+    // The ask: New, a name, what he wants, and Create.
+    d.beat("ask");
+    await d.hold(200);
+    await click(alex.getByRole("button", { name: "New artifact" }));
+    const form = alex.getByRole("dialog", { name: "New artifact" });
+    const name = form.getByLabel("Name");
+    await d.until(async () => (await name.count()) > 0 && (await name.evaluate(e => e === document.activeElement)), "New's dialog is open, its name focused");
+    await settleHover();
+    await typeFast(NAME);
+    await click(form.getByLabel("Description"));
+    await typeFast(BRIEF);
+    await d.hold(100);
+    await click(form.getByRole("button", { name: "Create" }));
+    // Who builds it: his live agent, sent the brief.
+    const who = alex.getByRole("dialog", { name: "Who builds it?" });
+    const claude = who.locator("button.agent", { hasText: "claude" });
+    await d.until(async () => (await claude.count()) > 0, "New offers the claude agent");
+    await settleHover();
+    await d.hold(200);
+    await navClick(claude);
+    await d.until(async () => /\/a\/[a-z0-9]+$/.test(new URL(alex.url()).pathname), "New landed on the artifact");
+    const aid = /\/a\/([a-z0-9]+)$/.exec(new URL(alex.url()).pathname)![1]!;
+    const placeholder = await d.offstage(() => contentFrame(alex, aid, 1));
+    await d.until(async () => (await placeholder.locator("h1").count()) > 0, "the placeholder page shows");
+    await settleHover();
+    await d.hold(150);
 
-    // The agent publishes: its card lands first in the gallery, live.
-    // The page hears the publish as two stream events (the gallery's
-    // version, the inbox's item); once both are in, the card is fetched on
-    // the next frame's clock, whatever the network took.
-    const heard = () => quietIn<number>(alex, alex.mainFrame(), "window.claxStreamEvents ?? 0");
-    const before = await heard();
-    const { artifact } = await d.offstage(() => publishAs(base, token, sid, TITLE, { "index.html": html }));
-    await d.until(async () => (await heard()) - before >= 2, "Alex's gallery heard the publish");
-    d.beat("lands");
-    await d.hold(800);
-    if ((await card.count()) === 0) throw new Error("the new card did not reach Alex's gallery");
-    const order = await quietIn<string[]>(alex, alex.mainFrame(), `[...document.querySelectorAll(".card-wrap h3")].map(h => h.textContent)`);
-    if (order[0] !== TITLE) throw new Error(`the new card did not land first: ${JSON.stringify(order)}`);
-    await d.move(card.locator("h3"));
-    await d.hold(450);
+    // The agent takes the brief: it says it is working on the thread.
+    const threads = await d.offstage(async () => {
+      const r = await fetch(`${base}/api/artifacts/${aid}/threads`, { headers: { authorization: `Bearer ${token}` } });
+      return ((await r.json()) as { threads: { id: string }[] }).threads;
+    });
+    const tid = threads[0]!.id;
+    d.beat("working");
+    await d.offstage(() => setWorking(base, token, sid, aid, { thread_ids: [tid] }));
+    await d.until(async () => (await alex.locator(".topbar.working").count()) > 0, "Alex's view shows the agent working");
+    await d.hold(600);
 
-    // Alex opens it: the app fills the screen.
-    d.beat("open");
-    await d.click(card.locator("a.card"));
-    const frame = await d.offstage(() => contentFrame(alex, artifact.id, 1));
-    await d.until(async () => (await frame.locator("#chart svg").count()) > 0, "the dashboard drew its chart");
-    await d.hold(500);
-    // He hides the threads, and the app takes the whole width.
-    await d.click(alex.getByRole("button", { name: "Hide threads" }));
-    await d.hold(400);
+    // It publishes v2, addressing the brief: Alex's view offers Reload, and
+    // he takes it, onto the dashboard.
+    await d.offstage(() => publishNext(base, token, sid, aid, 1, { files: { "index.html": html }, addresses: [tid], note: "Q4 revenue by region, KPIs and top accounts" }));
+    const reload = alex.locator(".topbar button.reload");
+    await d.until(async () => (await reload.count()) > 0, "Alex's view offers v2");
+    await d.hold(250);
+    await navClick(reload);
+    let frame: Frame | null = null;
+    await d.until(async () => {
+      frame = alex.frames().find(f => /\/_clax\/v\/2\//.test(f.url())) ?? null;
+      return !!frame && (await frame.locator("#chart svg").count()) > 0;
+    }, "v2 drew its chart in Alex's view");
+    await settleHover();
+    d.beat("reveal");
+    await d.hold(700);
+
     // His pointer runs along the chart: the crosshair and tooltip follow.
-    await d.move(frame.locator("#chart svg"), { offset: { x: -120, y: 0 } });
-    await d.move(frame.locator("#chart svg"), { offset: { x: 150, y: -20 } });
-    await d.hold(900);
+    d.beat("touch");
+    const chart = (frame as unknown as Frame).locator("#chart svg");
+    await d.move(chart, { offset: { x: -110, y: 0 } });
+    await d.move(chart, { offset: { x: 130, y: -20 } });
+    await d.hold(600);
+    if (!(await quietIn<boolean>(alex, frame as unknown as Frame, `getComputedStyle(document.getElementById("tip")).display !== "none"`))) throw new Error("the chart's tooltip is not showing");
   },
 } satisfies Vignette<Cast>;
