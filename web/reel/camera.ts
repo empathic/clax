@@ -16,8 +16,13 @@ import type { Camera } from "./director.ts";
 export const FPS = 30;
 
 /** The wall clock every camera page starts at, so relative times and dates
- * on screen read the same each run (spec §7.1). */
-export const REEL_EPOCH = new Date("2026-11-03T09:41:00Z");
+ * on screen read the same each run (spec §7.1). It is in the past: the
+ * daemons keep real time, and a page behind them reads every time they
+ * stamp (a comment's, a working record's start) as "just now" or 0:00,
+ * whatever day the reel is rendered on. A page ahead of them would read
+ * "7 d ago" one day and "6 d ago" the next, and a working clock that
+ * counts the real seconds between two renders. */
+export const REEL_EPOCH = new Date("2025-11-03T09:41:00Z");
 
 /** The fast camera for a video that began recording at `startedAt` (the
  * camera page's creation, `Date.now()`): its frame is the real time since. */
@@ -60,9 +65,25 @@ const FREEZE_IN = `function (t) {
 }`;
 const FREEZE = (t: number) => `(${FREEZE_IN}).call(document, ${t})`;
 
+// Hides the text caret in a document, as Playwright's screenshots do: it
+// blinks on the browser's own clock, which the camera does not hold, so a
+// frame would show it or not by the real time it was taken at. A style of
+// the recorder's own, added once per document.
+const NO_CARET = `(() => {
+  if (document.getElementById("reel-no-caret")) return;
+  const s = document.createElement("style");
+  s.id = "reel-no-caret";
+  s.textContent = "*, *::before, *::after { caret-color: transparent !important; }";
+  (document.head ?? document.documentElement)?.appendChild(s);
+})()`;
+
 // Resolves once every task the frame had queued has run: a message posted
 // to itself (no clock involved) comes back after them.
 const DRAINED = `new Promise(r => { const c = new MessageChannel(); c.port1.onmessage = () => r(0); c.port2.postMessage(0); })`;
+
+/** The path of the shell's shared worker script, whose request a page that
+ * loads anew never hears end. */
+const SHARED_WORKER = /^\/_clax\/shell\/stream-worker-[^/]*\.js$/;
 
 /** How long a frame waits for the page's requests to finish before the
  * recording fails, naming them: a guard against a request that never ends,
@@ -114,7 +135,11 @@ async function reachOf(page: Page, frame: Frame): Promise<Reach> {
 export async function quietIn<T = unknown>(page: Page, frame: Frame, expression: string): Promise<T> {
   const s = cached(page);
   for (let attempt = 0; ; attempt++) {
-    const { session, contextId } = await reachOf(page, frame);
+    // A frame not found (it was navigating, or is gone) is looked up afresh next time.
+    const { session, contextId } = await reachOf(page, frame).catch(e => {
+      s.frames.delete(frame);
+      throw e;
+    });
     try {
       const r = await session.send("Runtime.evaluate", { expression, contextId, awaitPromise: true, userGesture: false, returnByValue: true });
       if (r.exceptionDetails) throw new Error(`${frame.url()}: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
@@ -162,11 +187,15 @@ export async function deterministicCamera(page: Page, out: string, fps = FPS): P
   // Time rolled so far, in ms: the frames due are those it covers.
   let rolled = 0;
 
-  // The page's requests in flight, but for the streams that never end.
+  // The page's requests in flight, but for the streams that never end and
+  // the script of the shell's shared worker (web/shell/src/stream.ts): a
+  // shell that loads anew while the camera rolls (a Reload) asks for it
+  // again, and the page never hears that request end.
   const pending = new Set<Request>();
   let settled: (() => void) | null = null;
   page.on("request", r => {
-    if (r.resourceType() !== "eventsource" && r.resourceType() !== "websocket") pending.add(r);
+    if (r.resourceType() === "eventsource" || r.resourceType() === "websocket" || SHARED_WORKER.test(new URL(r.url()).pathname)) return;
+    pending.add(r);
   });
   const done = (r: Request) => {
     if (pending.delete(r)) settled?.();
@@ -198,13 +227,26 @@ export async function deterministicCamera(page: Page, out: string, fps = FPS): P
     }
   }
 
-  /** Pauses every animation of the page at its first sight, at `t`, and sets each to its age. */
-  async function freeze(t: number): Promise<void> {
+  /** Runs `expression` in each of `docs`, but for one the page is
+   * replacing (a navigating or detached frame, which `reach` cannot find):
+   * its new document is reached at the next frame. The sessions reached. */
+  async function inEach(docs: Frame[], expression: string): Promise<Set<CDPSession>> {
     const reached = new Set<CDPSession>();
-    for (const frame of page.frames()) {
-      await quietIn(page, frame, FREEZE(t));
-      reached.add((await reachOf(page, frame)).session);
+    for (const frame of docs) {
+      try {
+        await quietIn(page, frame, expression);
+        reached.add((await reachOf(page, frame)).session);
+      } catch (e) {
+        if (!frame.isDetached() && !/^Error: no frame /.test(String(e))) throw e;
+      }
     }
+    return reached;
+  }
+
+  /** Pauses every animation of the page at its first sight, at `t`, and
+   * sets each to its age; hides each document's text caret (NO_CARET). */
+  async function freeze(t: number): Promise<void> {
+    const reached = await inEach(page.frames(), `${FREEZE(t)}; ${NO_CARET}`);
     for (const session of reached) await freezeShadows(session, t);
   }
 
@@ -214,7 +256,7 @@ export async function deterministicCamera(page: Page, out: string, fps = FPS): P
       // Whatever the page queued runs, and the requests it made are heard:
       // the frames inside first, then the page, twice over, so what one
       // posted to another (in another process) has arrived and run.
-      for (let pass = 0; pass < 2; pass++) for (const frame of page.frames().reverse()) await quietIn(page, frame, DRAINED);
+      for (let pass = 0; pass < 2; pass++) await inEach(page.frames().reverse(), DRAINED);
       if (!pending.size) return;
       const finished = new Promise<boolean>(resolve => {
         settled = () => resolve(true);
@@ -226,7 +268,7 @@ export async function deterministicCamera(page: Page, out: string, fps = FPS): P
       const ok = await Promise.race([finished, late]);
       clearTimeout(guard);
       settled = null;
-      if (!ok) throw new Error(`a frame waited ${QUIET_MS / 1000} s on ${[...pending].map(r => r.url()).join(", ")}`);
+      if (!ok) throw new Error(`a frame waited ${QUIET_MS / 1000} s on ${[...pending].map(r => `${r.url()} (${r.resourceType()})`).join(", ")}`);
     }
   }
 

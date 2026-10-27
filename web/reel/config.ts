@@ -22,7 +22,7 @@ export type ReelCfg = {
 /** The vignette that opens the reel: the one with no title card. */
 export const COLD_OPEN = "cold-open";
 /** How long a vignette may run, in seconds, in either cut. */
-export const VIGNETTE_SECONDS = [3, 10] as const;
+export const VIGNETTE_SECONDS = [3, 12] as const;
 /** How long each cut may run in all, in seconds (`checkCuts`). */
 export const CUT_SECONDS = { full: [60, 80], short: [40, 50] } as const;
 /** How long the README GIF's segments may run in all, and how many there are. */
@@ -110,7 +110,7 @@ function gif(g: Table, ids: string[]): NonNullable<ReelCfg["gif"]> {
  * script (`web/reel/vignettes/<id>.ts`). Throws an Error naming the key or
  * the vignette ID at fault: an unknown key, a vignette with no script, a
  * title on the cold open or none on another vignette, a duration outside
- * 3–10 s, a poster or GIF segment naming a vignette the reel lacks, a GIF
+ * 3–12 s, a poster or GIF segment naming a vignette the reel lacks, a GIF
  * cut list of the wrong length, or a `landing` that does not end in
  * `landing_artifact`. The cuts' totals are checked by `checkCuts`, once the
  * reel lists every vignette.

@@ -6,7 +6,7 @@
 #
 #   sh reel/determinism.sh [<vignette>]     (from web/; realtime by default)
 #
-# //web/reel:realtime_determinism runs it (pnpm run reel:determinism) with
+# //web/reel:<vignette>_determinism runs it (pnpm run reel:determinism) with
 # what the recorder reads, as web/reel/reel.bzl gives a recording.
 set -eu
 

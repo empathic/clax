@@ -18,7 +18,7 @@
 ## Global Constraints
 
 - Every reel target is tagged `manual`; none is reached by `//...`, `just ci` or `just test-affected` (spec §8).
-- Canvas 1920 × 1080 at 30 fps; camera viewport 1280 × 800 CSS px at device scale 1.25 (captures 1600 × 1000), light theme, locale `en-US`, timezone `UTC`, `REEL_EPOCH = 2026-11-03T09:41:00Z` (spec §5, §7.1).
+- Canvas 1920 × 1080 at 30 fps; camera viewport 1280 × 800 CSS px at device scale 1.25 (captures 1600 × 1000), light theme, locale `en-US`, timezone `UTC`, `REEL_EPOCH = 2025-11-03T09:41:00Z` (spec §5, §7.1).
 - `reel.gif` under 2 MiB, 720 px wide, 15 fps, 6–10 s, made from the vignettes' frames and never from an MP4 (spec §9.4); `reel.mp4` under 18 MiB; full reel 60–80 s; short cut 40–50 s; each vignette 3–10 s (spec §8.1, §9.3).
 - Silent (no audio track), light theme only, no Clax app or phone shown (spec D10, D11, D14).
 - The landing artifact is published only by `reel-upload`, which stages `web/quickstart/`'s files with the reel's; `web/quickstart/` stays the canonical Quickstart (spec D8, R8). `[upload] landing_artifact` and `landing` in `web/reel/reel.toml` are set once, in the commit after the Quickstart's first publish; until then they are empty and `reel-upload` and the README block wait.
