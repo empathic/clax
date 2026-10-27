@@ -352,7 +352,7 @@
       const n = NODES[id];
       const b = box(id);
       b.className = `node ring-node ring-${i}`;
-      b.innerHTML = `<span class="n"><span>${numOf(id) ?? "→"}</span></span><span class="t">${n.title}</span><span class="s">${n.sub || ""}</span><span class="idea" hidden>💡</span>${fab(id)}`;
+      b.innerHTML = `<span class="n"><span>${numOf(id) ?? ""}</span></span><span class="t">${n.title}</span><span class="s">${n.sub || ""}</span><span class="idea" hidden>💡</span>${fab(id)}`;
       els[id] = b;
       ring.appendChild(b);
     });
@@ -394,7 +394,7 @@
         b.className = "decision";
         b.innerHTML = `<span>${n.title}</span>`;
       } else {
-        const label = id === "done" ? "★" : numOf(id) ?? "→";
+        const label = id === "done" ? "★" : numOf(id) ?? "";
         b.className = "node" + (n.kind === "small" ? " small" : "") + (INSTALLS.includes(id) ? " inst" : "") + (n.kind === "terminal" ? " terminal" : "");
         const brand = n.agent && BRAND[n.agent];
         if (brand) b.style.setProperty("--brand", brand.color);
@@ -424,7 +424,7 @@
       el.classList.toggle("dim", nodeDim(id));
       el.classList.toggle("sel", id === selected);
       const num = el.querySelector(":scope > .n > span");
-      if (num && id !== "done") num.textContent = numOf(id) ?? "→";
+      if (num && id !== "done") num.textContent = numOf(id) ?? "";
       el.querySelectorAll(":scope > .fab").forEach((f) => { const on = !!state.done[f.dataset.toggle]; f.classList.toggle("on", on); f.setAttribute("aria-pressed", String(on)); f.classList.toggle("beckon", f.dataset.toggle === "signin" && !Object.keys(state.done).length); });
       el.querySelectorAll("[data-pick]").forEach((c) => c.classList.toggle("on", c.dataset.pick === state.agent));
       const bulb = el.querySelector(".idea");

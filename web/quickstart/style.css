@@ -71,6 +71,8 @@
   .node.done .n { background: var(--ok); border-color: var(--ok); color: var(--surface); }
   .node.done .n::after { content: "✓"; font-size: 12px; }
   .node.done .n span { display: none; }
+  /* A box off the numbered route (the next steps) shows no badge. */
+  .node .n:has(> span:empty) { display: none; }
   .node.sel { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); }
   .node.dim { opacity: .45; }
   .node.small { width: 182px; min-height: 92px; }
