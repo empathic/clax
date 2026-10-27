@@ -4,14 +4,16 @@
 # section 9) lands; run by hand, outputs under target/reel/ (git-ignored).
 #
 #   web/reel/compose/compose.sh -o OUT [--order ID,ID,...] [--titles FILE]
-#                               [--overlay-titles] FRAMES_DIR [FRAMES_DIR...]
+#                               [--cards] [--title-seconds S] FRAMES_DIR [FRAMES_DIR...]
 #
 # Each FRAMES_DIR holds frames/NNNNNN.png and beats.json (30 fps, 1600x1000);
 # its basename minus a "_frames" suffix is the vignette ID. Titles come from
 # web/reel/reel.toml, overridden per ID by --titles FILE (lines "id=title").
+# A titles line may be "id=Title|context line": the lower-third's second line.
 # --order plays only the named vignettes, in that order (default: argument
-# order). --overlay-titles shows the title as a lower-third over the first
-# second of each vignette instead of a 0.6 s card before it.
+# order). Titles are lower-thirds over the start of each vignette, shown
+# --title-seconds (2.5; fade in 0.25 s, out 0.35 s); --cards instead puts a
+# 0.6 s full card (title only) before each vignette.
 #
 # Pace, from beats.json (beats ask, working, reveal, touch; frames are 30 fps):
 #   start..ask 1.5x; ask+0.6 s..reveal 5x (the wait); reveal..reveal+1.5 s 1x
@@ -22,7 +24,9 @@
 # The GIF is each vignette's reveal window (reveal-0.3 s .. +2.2 s; for the
 # fallback, the 2.5 s ending 1 s after its last beat), 720 px, 15 fps, one
 # global palette, hard cuts.
-# Outputs in OUT: cards/*.png, clips/<n>-<id>.mp4, clax-reel.mp4, clax-reel.gif.
+# Outputs in OUT: cards/*.png, clips/<n>-<id>.mp4, clax-reel.mp4, clax-reel.gif,
+# cut.json (duration; per vignette id, title, context, start/end in the mp4,
+# its clip and clip_duration, and its beats as t_cut/t_clip seconds).
 # Environment: FFMPEG, CHROME, GIF_WIDTH (720), GIF_FPS (15).
 set -euo pipefail
 
@@ -33,10 +37,11 @@ GIF_FPS="${GIF_FPS:-15}"
 CARD_SECONDS=0.6
 END_SECONDS=2
 FPS=30
+FFPROBE="${FFPROBE:-$(dirname "$FFMPEG")/ffprobe}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 toml="$here/../reel.toml"
-out=""; order=""; titles_file=""; overlay=0
+out=""; order=""; titles_file=""; overlay=1; tsec=2.5
 dirs=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -44,12 +49,15 @@ while [ $# -gt 0 ]; do
     --order) order="$2"; shift 2 ;;
     --titles) titles_file="$2"; shift 2 ;;
     --overlay-titles) overlay=1; shift ;;
-    -h|--help) sed -n 2,27p "$0"; exit 0 ;;
+    --cards) overlay=0; shift ;;
+    --title-seconds) tsec="$2"; shift 2 ;;
+    -h|--help) sed -n 2,29p "$0"; exit 0 ;;
     *) dirs+=("$1"); shift ;;
   esac
 done
-[ -n "$out" ] && [ ${#dirs[@]} -gt 0 ] || { echo "usage: compose.sh -o OUT_DIR [--order IDS] [--titles FILE] [--overlay-titles] FRAMES_DIR..." >&2; exit 2; }
+[ -n "$out" ] && [ ${#dirs[@]} -gt 0 ] || { echo "usage: compose.sh -o OUT_DIR [--order IDS] [--titles FILE] [--cards] [--title-seconds S] FRAMES_DIR..." >&2; exit 2; }
 mkdir -p "$out/cards" "$out/clips"
+rm -f "$out/cards/cut.tsv"
 out="$(cd "$out" && pwd)"
 
 log() { echo "compose: $*" >&2; }
@@ -157,18 +165,20 @@ done
 
 clips=()
 for ((k = 0; k < n; k++)); do
-  d="${dirs[k]}"; tag="${tags[k]}"; title="$(toml_get title "${ids[k]}")"
+  d="${dirs[k]}"; tag="${tags[k]}"; title="$(toml_get title "${ids[k]}")"; sub=""
+  case "$title" in *"|"*) sub="${title#*|}"; title="${title%%|*}" ;; esac
   inputs=(); filt=""; labels=""; i=0
   while read -r kind a len v; do
     [ "$kind" = seg ] || continue
     inputs+=(-start_number "$a" -framerate $FPS -i "$d/frames/%06d.png")
     filt+="[$i:v]trim=end_frame=$len,setpts=(PTS-STARTPTS)/$v,fps=$FPS,format=yuv420p,setsar=1[s$i];"
     labels+="[s$i]"; i=$((i + 1))
-  done < <(plan "$d")
+  done < <(plan "$d" | tee "$out/cards/$tag.plan")
+  printf '%s\t%s\t%s\t%s\n' "$tag" "${ids[k]}" "$title" "$sub" >> "$out/cards/cut.tsv"
   if [ "$overlay" = 1 ]; then
-    shot "$out/cards/$tag.png" "lower=1&title=$(urlenc "$title")" --default-background-color=00000000
-    inputs+=(-loop 1 -framerate $FPS -t 1 -i "$out/cards/$tag.png")
-    filt+="${labels}concat=n=$i:v=1:a=0[body];[$i:v]format=rgba,fade=t=in:st=0:d=0.15:alpha=1,fade=t=out:st=0.85:d=0.15:alpha=1[ov];[body][ov]overlay=0:0:enable='lt(t,1)',format=yuv420p[o]"
+    shot "$out/cards/$tag.png" "lower=1&title=$(urlenc "$title")&sub=$(urlenc "$sub")" --default-background-color=00000000
+    inputs+=(-loop 1 -framerate $FPS -t $tsec -i "$out/cards/$tag.png")
+    filt+="${labels}concat=n=$i:v=1:a=0[body];[$i:v]format=rgba,fade=t=in:st=0:d=0.25:alpha=1,fade=t=out:st=$(python3 -I -c "print($tsec-0.35)"):d=0.35:alpha=1[ov];[body][ov]overlay=0:0:enable='lt(t,$tsec)',format=yuv420p[o]"
     pieces="$out/clips/$tag.mp4"
     ff "${inputs[@]}" -filter_complex "$filt" -map "[o]" -r $FPS -c:v libx264 -pix_fmt yuv420p -crf 20 -preset medium -an "$pieces"
   else
@@ -191,6 +201,38 @@ for c in "${clips[@]}"; do printf "file '%s'\n" "$c" >> "$list"; done
 ff -f concat -safe 0 -i "$list" -c copy -movflags +faststart "$out/clax-reel.mp4"
 rm -f "$list"
 log "mp4 done"
+
+# cut.json: map each vignette's beats through its speed ramp.
+python3 -I - "$out" "$FFPROBE" "$overlay" "$CARD_SECONDS" "${dirs[@]}" <<'PY'
+import json, subprocess, sys
+out, probe, overlay, card = sys.argv[1], sys.argv[2], sys.argv[3] == "1", float(sys.argv[4])
+dirs = sys.argv[5:]
+dur = lambda p: float(subprocess.check_output([probe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", p]).decode())
+fps = 30
+res = {"duration": round(dur(out + "/clax-reel.mp4"), 3), "vignettes": []}
+t = 0.0
+for line, d in zip(open(out + "/cards/cut.tsv").read().splitlines(), dirs):
+    tag, id_, title, sub = line.split("\t")
+    segs = [l.split() for l in open(out + "/cards/%s.plan" % tag) if l.startswith("seg")]
+    segs = [(int(a), int(n), float(v)) for _, a, n, v in segs]
+    beats = json.load(open(d + "/beats.json"))["beats"]
+    def body(f):  # source frame -> seconds into the played body
+        acc = 0.0
+        for a, n, v in segs:
+            if f < a: return acc
+            if f < a + n: return acc + (f - a) / fps / v
+            acc += n / fps / v
+        return acc
+    lead = 0.0 if overlay else card
+    clip = "clips/%s.mp4" % tag
+    cd = dur(out + "/" + clip)
+    res["vignettes"].append({"id": id_, "title": title, "context": sub, "start": round(t, 3), "end": round(t + cd, 3),
+        "clip": clip, "clip_duration": round(cd, 3),
+        "beats": [{"name": b["name"], "t_cut": round(t + lead + body(b["frame"]), 3), "t_clip": round(lead + body(b["frame"]), 3)} for b in beats]})
+    t += cd
+json.dump(res, open(out + "/cut.json", "w"), indent=2)
+PY
+rm -f "$out"/cards/*.plan "$out/cards/cut.tsv"
 
 # GIF: each vignette's reveal window, hard cuts, one global palette; no
 # dithering vs sierra2_4a, the smaller wins.

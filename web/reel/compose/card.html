@@ -36,6 +36,8 @@
   body.lower, body.lower html { background: transparent; }
   body.lower main { padding: 0; justify-content: flex-end; align-items: flex-start; }
   body.lower svg.mark, body.lower .rule, body.lower .footer { display: none; }
+  .sub { display: none; }
+  body.lower .sub:not(:empty) { display: block; margin: -72px 0 72px 72px; padding: 0 36px 22px 48px; font-size: 34px; color: var(--muted); background: var(--bg); border-left: 12px solid var(--agent); border-radius: 0 0 8px 8px; max-width: 1100px; }
   body.lower h1 { font-size: 64px; line-height: 1.1; margin: 0 0 72px 72px; padding: 22px 36px; background: var(--bg); border-left: 12px solid var(--agent); border-radius: 8px; max-width: 1100px; }
 </style>
 </head>
@@ -49,11 +51,13 @@
   <h1 id="title"></h1>
   <div class="rule"></div>
   <div class="footer" id="footer"></div>
+  <div class="sub" id="sub"></div>
 </main>
 <script>
   const q = new URLSearchParams(location.search);
   document.getElementById('title').textContent = q.get('title') || '';
   document.getElementById('footer').textContent = q.get('footer') || '';
+  document.getElementById('sub').textContent = q.get('sub') || '';
   if (q.get('end')) document.body.classList.add('end');
   if (q.get('lower')) { document.body.classList.add('lower'); document.documentElement.style.background = 'transparent'; }
   const p = q.has('p') ? Math.min(1, Math.max(0, parseFloat(q.get('p')))) : 1;
