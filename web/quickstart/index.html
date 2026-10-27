@@ -85,8 +85,8 @@
       body: `<p>Start with your clax.dev account. It's where your pages get public links, where you share them, and where comments come back from.</p>
         <a class="gh wide" href="${CLAXDEV}/auth/github" target="_blank" rel="noopener">${GH}Sign in with GitHub</a>
         <p class="muted-note">Sign-in opens in a new tab; this one stays here. Come back when you're done.</p>` },
-    have: { kind: "decision", kicker: "Decision", title: "Already use Clax?",
-      body: `<p>Clax runs on your own machine. Is it set up there yet?</p>` },
+    have: { kind: "decision", kicker: "Decision", title: "Have an agent to connect?", sub: "Claude Code, Codex, Pi or Grok Build",
+      body: `<p>Claude Code, Codex, Pi or Grok Build. Clax works with each, and has an agent of its own for when you have none to connect.</p>` },
     install: { kicker: "Step", title: "Install the plugin", sub: "Pick your agent",
       body: `<p>Clax works with Claude Code, Codex, Pi and Grok Build. Each gets the same tools and the same <code>clax</code> skill. Pick yours:</p>` },
     agent: { kind: "decision", kicker: "Decision", title: "Which agent do you use?",
@@ -112,13 +112,19 @@
       body: `${cmd("curl -fsSL https://github.com/empathic/clax/releases/latest/download/install.sh | bash\nclax init")}
         <p><code>install.sh</code> puts <code>clax</code> in <code>~/.local/bin</code> after checking it against the release's checksums. <code>clax init</code> registers the plugin with Claude Code, Codex, Pi and Grok Build (whichever are installed) and sets up the Chrome extension. Start a new session in each harness afterwards. Run the same two commands again to upgrade.</p>
         ${tip("Platforms", "Prebuilt releases cover macOS (Apple silicon and Intel) and Linux (x86-64 and arm64).")}` },
-    existing: { kind: "small", kicker: "Already set up", title: "Already set up", sub: "Skip the install",
-      body: `<p>Clax is already on this machine, so skip the install and link it to your account.</p>
+    existing: { kind: "small", kicker: "Already set up", title: "Already set up", sub: "Clax is installed for your agent",
+      body: `<p>Clax is already installed for your agent, so skip the install and link it to your account.</p>
         ${tip("Check it's healthy", `${cmd("clax doctor --agent claude   # or codex, pi, grok")}`)}
         <p>To upgrade, run your install again; it's safe to repeat.</p>` },
+    claxbot: { kind: "small", kicker: "ClaxBot", title: "Use ClaxBot", sub: "Nothing to install",
+      body: `<p>ClaxBot is Clax's own agent. It runs in the daemon, so there's nothing to install and it works from your browser.</p>
+        <ul><li><b>On clax.dev</b> it runs on your account's credits.</li>
+        <li><b>On your own Clax</b> it needs a model key first. Set <code>ANTHROPIC_API_KEY</code> before <code>clax serve</code>, or have an admin add one at <code>/admin</code> (Provider).</li></ul>
+        ${cmd("ANTHROPIC_API_KEY=… clax serve")}
+        <p>Then press <b>New</b> in your gallery and pick ClaxBot to build a page, or send any comment thread to ClaxBot.</p>` },
     link: { kicker: "Step", title: "Link Clax to your account", sub: "One click, one approval",
       body: `<p>Press <b>Publish to clax.dev</b> in the top bar, on this page or any other. Clax asks to sign in to clax.dev first: it opens clax.dev's approval page, shows a code, and waits.</p>
-        <p>You're already signed in there, so check that the code matches and approve. That links this Clax to your account, and the same button then publishes the page. You don't need to install anything else; the plugin you installed is enough.</p>
+        <p>You're already signed in there, so check that the code matches and approve. That links this Clax to your account, and the same button then publishes the page. You don't need to install anything else.</p>
         ${tip("Prefer the terminal?", `If the <code>clax</code> command is on your PATH, this does the same:${cmd("clax remote add https://clax.dev")}`)}
         ${tip("Using the Clax app?", "Settings › Sharing › clax.dev › Connect.")}` },
     attach: { kicker: "Step", title: "Attach your agent to this page", sub: "So your comments here reach it",
@@ -129,19 +135,20 @@
     fork: { kicker: "Step", title: "Make it yours", sub: "Fork this page into your own copy",
       body: `<p>Press <b>Fork</b> in the top bar (on a phone, it's in the ⋯ menu). You get your own copy of this page that you can change however you like. Or ask your agent:</p>
         ${cmd(`Fork the Clax Quickstart page (${ARTIFACT}) into a page of my own, open it, and watch it.`)}
-        <p>The rest of this chart happens on your copy: you'll comment on it and your agent will change it.</p>` },
+        <p>The rest of this chart happens on your copy: you'll comment on it and your agent, or ClaxBot, will change it.</p>` },
     comment: { kicker: "Step", title: "Comment on your copy", sub: "Point at what you want changed",
       body: `<p>On your fork, turn on comment mode, then do one of these:</p>
         <ul><li><b>Point</b> at an element</li><li><b>Select</b> some text</li><li><b>Drag</b> over part of an image or an area</li><li>Comment on the <b>whole page</b></li></ul>
-        <p>Ask for anything: "make the boxes blue", "add a step for our team's setup", "cut the parts I've done". A comment stays between people until you send it to an agent.</p>` },
-    send: { kicker: "Step", title: "Send it to the agent", sub: "Send to agent, or write @agent",
-      body: `<p>Press <b>Send to agent</b> on the thread, or write <code>@agent</code> in it. When several agents are watching, pick which one gets it, or write <code>@&lt;agent name&gt;</code>.</p>
+        <p>Ask for anything: "make the boxes blue", "add a step for our team's setup", "cut the parts I've done". A comment stays between people until you send it to an agent or ClaxBot.</p>` },
+    send: { kicker: "Step", title: "Send it to the agent", sub: "To your agent, or ClaxBot",
+      body: `<p>Press <b>Send to agent</b> on the thread, or write <code>@agent</code> in it. When several agents are watching, pick which one gets it, or write <code>@&lt;agent name&gt;</code>. To use ClaxBot, pick ClaxBot.</p>
         <h3>How the agent hears about it</h3>
-        <ul><li><b>Codex and Pi</b> wake on a new comment by themselves, even when idle.</li>
+        <ul><li><b>ClaxBot</b> runs inside Clax, so there is nothing to wake.</li>
+        <li><b>Codex and Pi</b> wake on a new comment by themselves, even when idle.</li>
         <li><b>Claude Code</b> gets it with its next Clax tool call, at the end of its turn, or with your next message. To wake an idle session, the skill keeps a background follower running after it publishes, or you can launch Claude Code with the Clax channel:</li></ul>
         ${cmd("claude --dangerously-load-development-channels plugin:clax@clax")}` },
     change: { kicker: "Step", title: "Watch it change", sub: "A new version, and a reply in the thread",
-      body: `<p>The agent picks up the comment, publishes a new version of your copy and replies in the thread. Earlier versions stay one click away under <b>Versions</b>.</p>
+      body: `<p>Your agent (or ClaxBot) picks up the comment, publishes a new version of your copy and replies in the thread. Earlier versions stay one click away under <b>Versions</b>.</p>
         <p>That's the whole loop. Comment again whenever you want another change.</p>` },
     next: { kind: "decision", kicker: "Decision", title: "Where next?",
       body: `<p>You've done the core loop. Pick whatever's useful. You can come back for the others:</p>` },
@@ -192,11 +199,15 @@
   const INSTALLS = ["install-claude", "install-codex", "install-pi", "install-grok", "install-all"];
   const BRANCHES = ["ask", "devserver", "data", "share"];
   const EDGES = [
-    ["signin", "have"], ["have", "install"], ["have", "existing"], ["install", "link"], ["existing", "link"],
+    ["signin", "have"], ["have", "install"], ["have", "existing"], ["have", "claxbot"], ["install", "link"], ["existing", "link"], ["claxbot", "link"],
     ["fork", "comment"], ["change", "next"],
     ...BRANCHES.map((b) => ["next", b]), ...BRANCHES.map((b) => [b, "done"]),
   ];
-  const core = () => ["signin", ...(state.have === "existing" ? [] : ["install"]), "link", "attach", "fork", "comment", "send", "change"];
+  // Routes that skip the install: an agent already set up, or ClaxBot.
+  const noInstall = () => state.have === "existing" || state.have === "claxbot";
+  // Steps this route does not need: ClaxBot is already attached to every page.
+  const notApplicable = (id) => state.have === "claxbot" && id === "attach";
+  const core = () => ["signin", ...(noInstall() ? [] : ["install"]), "link", ...(notApplicable("attach") ? [] : ["attach"]), "fork", "comment", "send", "change"];
   const ORDER = ["signin", "have", "agent", "install", "link", "attach", "fork", "comment", "send", "change", "next"];
 
   const SEED = window.CLAX_IDEAS_SEED || [];
@@ -222,7 +233,9 @@
   let selected = null;
 
   const isDone = (id) => !!state.done[id.startsWith("install-") ? "install" : id];
-  const nodeDim = (id) => (state.have === "existing" && (id === "install" || id === "agent" || INSTALLS.includes(id)))
+  const nodeDim = (id) => (noInstall() && (id === "install" || id === "agent" || INSTALLS.includes(id)))
+    || (state.have === "claxbot" && id === "existing")
+    || ((state.have === "new" || state.have === "existing") && id === "claxbot")
     || (state.have === "new" && id === "existing")
     || (INSTALLS.includes(id) && state.agent && NODES[id].agent !== state.agent);
   const ideasFor = (id) => ideas.filter((i) => i.step === (id.startsWith("install") ? "install" : id));
@@ -240,7 +253,9 @@
     top.appendChild(b);
     left.append(top);
     right.appendChild(makeBox("existing", NUM));
-    row.append(left, right);
+    const bot = document.createElement("div"); bot.className = "lane lane-existing lane-claxbot";
+    bot.appendChild(makeBox("claxbot", NUM));
+    row.append(left, right, bot);
   }
 
   // Steps 3 to 5 as a small slide deck: one step at a time, with its
@@ -288,11 +303,12 @@
     const id = DECK[slide], n = NODES[id], done = !!state.done[id];
     deck.classList.toggle("done", DECK.every((k) => state.done[k]));
     deck.classList.toggle("sel", DECK.includes(selected));
+    deck.classList.toggle("na", notApplicable(id));
     deck.innerHTML = `
-      <div class="deck-tabs" role="tablist">${DECK.map((k, i) => `<div class="tab-cell"><button type="button" role="tab" data-slide="${i}" aria-selected="${i === slide}" class="${state.done[k] ? "is-done" : ""}"><span class="dn">${3 + i}</span>${SLIDES[k].tab}</button>${fab(k)}</div>`).join("")}</div>
+      <div class="deck-tabs" role="tablist">${DECK.map((k, i) => `<div class="tab-cell"><button type="button" role="tab" data-slide="${i}" aria-selected="${i === slide}" class="${state.done[k] ? "is-done" : ""}${notApplicable(k) ? " na" : ""}"><span class="dn">${3 + i}</span>${SLIDES[k].tab}</button>${notApplicable(k) ? "" : fab(k)}</div>`).join("")}</div>
       <div class="deck-slide${anim ? " " + anim : ""}" role="tabpanel">
         <h3>${n.title}</h3>
-        <div class="deck-body">${SLIDES[id].html()}</div>
+        <div class="deck-body">${notApplicable(id) ? `<p>Not needed with ClaxBot: it runs in Clax, so it already hears every comment you send it.</p>` : SLIDES[id].html()}</div>
       </div>
       <div class="deck-foot">
         <button type="button" class="deck-nav" data-step="prev" ${slide === 0 ? "disabled" : ""} aria-label="Previous step">←</button>
@@ -400,7 +416,7 @@
         b.className = "node" + (n.kind === "small" ? " small" : "") + (INSTALLS.includes(id) ? " inst" : "") + (n.kind === "terminal" ? " terminal" : "");
         const brand = n.agent && BRAND[n.agent];
         if (brand) b.style.setProperty("--brand", brand.color);
-        b.innerHTML = `<span class="n"><span>${label}</span></span>${brand ? `<span class="mark">${brand.mark}</span>` : ""}<span class="t">${n.title}</span><span class="s">${n.sub || ""}</span><span class="idea" hidden>💡</span>${id === "done" || id === "existing" ? "" : fab(id)}`;
+        b.innerHTML = `<span class="n"><span>${label}</span></span>${brand ? `<span class="mark">${brand.mark}</span>` : ""}<span class="t">${n.title}</span><span class="s">${n.sub || ""}</span><span class="idea" hidden>💡</span>${id === "done" || id === "existing" || id === "claxbot" ? "" : fab(id)}`;
       }
       if (n.cta) { b.insertAdjacentHTML("beforeend", `<span class="cta">${n.cta}</span>`); b.classList.add("has-cta"); }
       els[id] = b;
@@ -500,11 +516,13 @@
     document.getElementById("p-title").textContent = n.kind === "small" && n.agent ? `Install for ${n.title}` : n.title;
     let html = n.body;
     if (id === "have") {
-      html += `<div class="choices"><button type="button" data-have="new" class="${state.have === "new" ? "on" : ""}"><b>I'm new to Clax</b><span>Install it for your agent first</span></button><button type="button" data-have="existing" class="${state.have === "existing" ? "on" : ""}"><b>I already use Clax</b><span>Link it to your account and carry on</span></button></div>`;
+      const pick = (v, t, d) => `<button type="button" data-have="${v}" class="${state.have === v ? "on" : ""}"><b>${t}</b><span>${d}</span></button>`;
+      html += `<div class="choices">${pick("new", "Yes, set it up", "Install the Clax plugin for it")}${pick("existing", "Yes, it's set up", "Clax is already installed for it")}${pick("claxbot", "No, use ClaxBot", "Clax's own agent, nothing to install")}</div>`;
     }
     if (id === "agent" || id === "install") {
       html += `<div class="choices">${Object.entries(AGENTS).map(([k, a]) => `<button type="button" data-agent="${k}" class="brandchoice${state.agent === k ? " on" : ""}" style="--brand:${BRAND[k].color}"><span class="mark">${BRAND[k].mark}</span><span><b>${a.label}</b><span>${a.sub}</span></span></button>`).join("")}</div>`;
     }
+    if (id === "attach" && notApplicable(id)) html += tip("Not needed with ClaxBot", "ClaxBot runs in Clax and already hears every comment you send it, so there is no agent to attach.");
     if (id === "next") {
       html += `<div class="choices">${BRANCHES.map((b) => `<button type="button" data-go="${b}"><b>${NODES[b].title}</b><span>${NODES[b].sub}</span></button>`).join("")}</div>`;
     }
@@ -528,10 +546,11 @@
   }
   function nextOf(id) {
     if (BRANCHES.includes(id)) return "done";
-    if (id === "have") return state.have === "existing" ? "existing" : state.have === "new" ? "install" : null;
+    if (id === "have") return state.have === "existing" ? "existing" : state.have === "claxbot" ? "claxbot" : state.have === "new" ? "install" : null;
     if (id === "install") return state.agent ? `install-${state.agent}` : null;
     if (id === "agent") return state.agent ? `install-${state.agent}` : null;
-    if (id.startsWith("install-") || id === "existing") return "link";
+    if (id.startsWith("install-") || id === "existing" || id === "claxbot") return "link";
+    if (id === "link" && notApplicable("attach")) return "fork";
     const i = ORDER.indexOf(id);
     return i < 0 || i === ORDER.length - 1 ? null : ORDER[i + 1];
   }
@@ -541,7 +560,7 @@
     const t = e.target.closest("button, a");
     if (!t) return;
     if (t.dataset.copy !== undefined) return copy(t);
-    if (t.dataset.have) { state.have = t.dataset.have; save(); return select(state.have === "existing" ? "existing" : "install"); }
+    if (t.dataset.have) { state.have = t.dataset.have; save(); return select(state.have === "existing" || state.have === "claxbot" ? state.have : "install"); }
     if (t.dataset.agent) { state.agent = t.dataset.agent; state.have = "new"; save(); return select(`install-${state.agent}`); }
     if (t.dataset.done) {
       state.done[t.dataset.done] = true; save();
@@ -557,7 +576,7 @@
   // Clicking an unchosen install box switches the agent.
   chart.addEventListener("click", (e) => {
     const b = e.target.closest("[data-id]");
-    if (b && b.dataset.id === "existing" && !e.target.closest("a, button")) { state.have = "existing"; save(); refreshNodes(); }
+    if (b && (b.dataset.id === "existing" || b.dataset.id === "claxbot") && !e.target.closest("a, button")) { state.have = b.dataset.id; save(); refreshNodes(); }
     const pick = e.target.closest("[data-pick]");
     if (pick) { state.agent = pick.dataset.pick; state.have = "new"; save(); refreshNodes(); }
     if (b && INSTALLS.includes(b.dataset.id) && !e.target.closest("a, button")) { state.agent = NODES[b.dataset.id].agent; state.have = "new"; save(); refreshNodes(); }
