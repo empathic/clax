@@ -286,9 +286,9 @@ hosted-demo *ARGS:
 hosted-deploy *ARGS:
     cd crates/clax-worker && node deploy.mjs "$@"
 
-# Deploy clax.dev, Empathic's hosted Clax, with the settings saved in ~/.config/clax/deploy/setup.env and the bundled Terms of Service and Privacy Policy (scripts/cloudflare-setup.sh --legal bundled). A dry run that changes nothing on the account unless given --i-know-what-i-am-doing; --smoke smoke-tests the deployment too. Production (PRODUCTION=1 in setup.env) deploys from GitHub Actions on pushes to prod (docs/prod.md); from a laptop only at a clean checkout of origin's prod tip and with --from-laptop
+# Deploy clax.dev, Empathic's hosted Clax and the production instance, with the settings saved in ~/.config/clax/deploy/setup.env and the bundled Terms of Service and Privacy Policy (scripts/cloudflare-setup.sh --legal bundled --production). A dry run that changes nothing on the account unless given --i-know-what-i-am-doing; --smoke smoke-tests the deployment too. clax.dev deploys from GitHub Actions on pushes to prod (docs/prod.md); this deploys it from a laptop only at a clean checkout of origin's prod tip and with --from-laptop. Other instances deploy with scripts/cloudflare-setup.sh
 clax-dev-deploy *ARGS:
-    ./scripts/cloudflare-setup.sh --legal bundled "$@"
+    ./scripts/cloudflare-setup.sh --legal bundled --production "$@"
 
 # Release Clax VERSION and every plugin: Claude Code, Codex and Grok through the repo's marketplaces, Pi through npm (scripts/release.sh); a dry run unless --i-know-what-i-am-doing
 release VERSION *ARGS:

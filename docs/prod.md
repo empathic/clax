@@ -177,9 +177,11 @@ clax.dev runs something other than `prod`'s tip.
 
 ## Deploying from a laptop
 
-`scripts/cloudflare-setup.sh` (`just clax-dev-deploy`) refuses to deploy
-the production instance (a `setup.env` with `PRODUCTION=1`) from anywhere
-but GitHub Actions at `origin/prod`'s tip. In an emergency, `--from-laptop`
+`just clax-dev-deploy` deploys clax.dev alone, so it always passes
+`--production` (which also writes `PRODUCTION=1` to `setup.env`): it
+refuses to deploy from anywhere but GitHub Actions at `origin/prod`'s tip,
+whatever `setup.env` says. `scripts/cloudflare-setup.sh` run directly
+refuses the same for a `setup.env` with `PRODUCTION=1`. In an emergency, `--from-laptop`
 lifts the Actions requirement only: the checkout must still be clean and at
 `origin/prod`'s tip, so the laptop deploys exactly what Actions would. The
 next drift check then passes, since clax.dev runs `prod`'s tip. First-time

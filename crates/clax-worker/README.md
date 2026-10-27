@@ -122,9 +122,11 @@ scripts/cloudflare-setup.sh --login                                             
 `PRODUCTION=1`, and from then on every run passes `--production` to
 `deploy.mjs`, which deploys only a clean checkout whose `HEAD` is origin's
 `prod` tip (`git ls-remote origin refs/heads/prod`, checked again just
-before the upload), and only in GitHub Actions. To deploy production from a
-laptop anyway (say, while Actions is down), check out `origin/prod`'s tip
-and add `--from-laptop`, which lifts only the Actions condition:
+before the upload), and only in GitHub Actions. `just clax-dev-deploy`,
+which deploys clax.dev alone, always passes `--production`. To deploy
+production from a laptop anyway (say, while Actions is down), check out
+`origin/prod`'s tip and add `--from-laptop`, which lifts only the Actions
+condition:
 
 ```sh
 git fetch origin prod && git switch --detach origin/prod && git status --short   # clean, at prod's tip
