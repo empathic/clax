@@ -214,7 +214,7 @@ test(`a_commenter_gets_no_shell_and_an_editor_does`, async ({ browser }) => {
     const eve = await memberOf(browser, owner, origin, "Eve", rights);
     await eve.goto(`${origin}/a/${aid}`);
     const ef = await contentFrame(eve, aid, 1);
-    await expect(ef.locator("#probe")).toHaveText("can,commentMode,highlight");
+    await expect(ef.locator("#probe")).toHaveText("address,can,commentMode,highlight");
   } finally {
     await hd.stop();
   }
