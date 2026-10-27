@@ -6,7 +6,7 @@
 // colours each run mints invites until the person's ID hashes to the colour
 // it wants (revoking the rest), and has its people join the page in an
 // order where nobody holds another's colour.
-import type { Browser, Page } from "@playwright/test";
+import type { Browser, Page, WebSocket } from "@playwright/test";
 
 /** How many live colours the daemon has (LIVE_COLORS). */
 export const LIVE_COLORS = 8;
@@ -69,15 +69,23 @@ export async function memberIn(browser: Browser, owner: Page, origin: string, na
  */
 export function welcomedColor(page: Page): Promise<number> {
   return new Promise(resolve => {
-    page.on("websocket", ws => {
-      ws.on("framereceived", ({ payload }) => {
-        try {
-          const m = JSON.parse(String(payload)) as { t?: string; color?: number };
-          if (m.t === "welcome" && typeof m.color === "number") resolve(m.color);
-        } catch {
-          // Not JSON: not the welcome.
-        }
-      });
-    });
+    const sockets: WebSocket[] = [];
+    const onFrame = ({ payload }: { payload: string | Buffer }) => {
+      try {
+        const m = JSON.parse(String(payload)) as { t?: string; color?: number };
+        if (m.t !== "welcome" || typeof m.color !== "number") return;
+        // Heard: the listeners go.
+        page.off("websocket", onSocket);
+        for (const ws of sockets) ws.off("framereceived", onFrame);
+        resolve(m.color);
+      } catch {
+        // Not JSON: not the welcome.
+      }
+    };
+    const onSocket = (ws: WebSocket) => {
+      sockets.push(ws);
+      ws.on("framereceived", onFrame);
+    };
+    page.on("websocket", onSocket);
   });
 }

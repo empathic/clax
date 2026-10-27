@@ -40,11 +40,16 @@ export function fastCamera(startedAt: number, fps = FPS): Camera & { elapsedMs()
 /** The file of frame `n` (from 0) under a recording's directory. */
 export const framePath = (out: string, n: number) => join(out, "frames", `${String(n).padStart(6, "0")}.png`);
 
-/** How long after REEL_EPOCH a deterministic camera starts rolling: the
- * camera page's setup runs on the wall clock before it (the shell boots and
- * hears the daemon), and every recording then starts its film at the same
- * time, whatever the setup took. */
-export const ROLL_AT_MS = 60_000;
+/** A deterministic camera starts rolling at the first whole multiple of
+ * this many ms of its page's clock (since REEL_EPOCH) at least
+ * ROLL_MARGIN_MS ahead: a jump of at most 2.25 s, well under every
+ * staleness rule of the shell's (its stream counts as dead after 35 s
+ * unheard, DEAD_MS in web/shell/src/stream.ts), and a multiple of the
+ * clock's 16 ms animation frame, so frames fall on the same phase each run. */
+export const ROLL_GRID_MS = 2_000;
+export const ROLL_MARGIN_MS = 250;
+/** The most the camera lets its page's clock jump when it starts rolling. */
+export const MAX_ROLL_JUMP_MS = 5_000;
 
 // Pauses every animation of `this` (a document or a shadow root) at its
 // first sight, on the camera's time `t` (ms), and sets each to its age in
@@ -52,10 +57,16 @@ export const ROLL_AT_MS = 60_000;
 // alike. `Animation.id` (shared by every world) keeps when it was first
 // seen. A document's getAnimations() leaves out its shadow trees' (and
 // brings its style up to date, which makes its new transitions).
+// One whose age has reached its end is finished instead, so its finish
+// event fires as it would for a person (Svelte's transitions and
+// element.animate() callers wait for it).
 const FREEZE_IN = `function (t) {
   for (const a of this.getAnimations()) {
     if (!a.id.startsWith("reel@")) { a.id = "reel@" + t; a.pause(); }
-    a.currentTime = t - Number(a.id.slice(5));
+    const age = t - Number(a.id.slice(5));
+    const end = a.effect ? a.effect.getComputedTiming().endTime : Infinity;
+    if (Number.isFinite(end) && age >= end) a.finish();
+    else a.currentTime = age;
   }
 }`;
 const FREEZE = (t: number) => `(${FREEZE_IN}).call(document, ${t})`;
@@ -131,9 +142,10 @@ export async function quietIn<T = unknown>(page: Page, frame: Frame, expression:
  * The deterministic camera on `page`, writing `<out>/frames/NNNNNN.png`
  * (from 000000, so a beat's frame names its file) of the page's device
  * pixels. Its context must have Playwright's clock installed
- * (`context.clock.install`): the camera pauses it at REEL_EPOCH +
- * ROLL_AT_MS, and from then on the page's time moves only when `roll`
- * moves it. Timers, `Date`, `performance.now()` and animation frames run on
+ * (`context.clock.install`): the camera pauses it on the next ROLL_GRID_MS
+ * step of its time (a jump of a second or two, which no staleness rule of
+ * the shell's notices), and from then on the page's time moves only when
+ * `roll` moves it. Timers, `Date`, `performance.now()` and animation frames run on
  * that clock in every frame of the page; its CSS and Web animations are
  * paused when first seen and set to their age on it. Network answers, the
  * daemon's events and the browser's own rendering run on real time, so a
@@ -149,9 +161,11 @@ export async function quietIn<T = unknown>(page: Page, frame: Frame, expression:
 export async function deterministicCamera(page: Page, out: string, fps = FPS): Promise<Camera> {
   const frameMs = 1000 / fps;
   const cdp = await page.context().newCDPSession(page);
-  const start = await quietIn<number>(page, page.mainFrame(), "Date.now()");
-  if (start > REEL_EPOCH.getTime() + ROLL_AT_MS) throw new Error(`the camera's page is at ${new Date(start).toISOString()}, past the roll at REEL_EPOCH + ${ROLL_AT_MS} ms: its setup took too long`);
-  await page.clock.pauseAt(REEL_EPOCH.getTime() + ROLL_AT_MS);
+  // The page's clock has run since REEL_EPOCH while the vignette set up.
+  const ran = (await quietIn<number>(page, page.mainFrame(), "Date.now()")) - REEL_EPOCH.getTime();
+  const rollAt = Math.ceil((ran + ROLL_MARGIN_MS) / ROLL_GRID_MS) * ROLL_GRID_MS;
+  if (rollAt - ran > MAX_ROLL_JUMP_MS) throw new Error(`the camera's clock would jump ${rollAt - ran} ms to roll, over ${MAX_ROLL_JUMP_MS}`);
+  await page.clock.pauseAt(REEL_EPOCH.getTime() + rollAt);
   mkdirSync(join(out, "frames"), { recursive: true });
   // The viewport at its device pixels (a screenshot is otherwise at its CSS size).
   const [width, height, scale] = await quietIn<[number, number, number]>(page, page.mainFrame(), "[innerWidth, innerHeight, devicePixelRatio]");
@@ -165,8 +179,12 @@ export async function deterministicCamera(page: Page, out: string, fps = FPS): P
   // The page's requests in flight, but for the streams that never end.
   const pending = new Set<Request>();
   let settled: (() => void) | null = null;
+  const endless = (r: Request) =>
+    r.resourceType() === "eventsource" || r.resourceType() === "websocket" ||
+    // The shell's event stream fetched as a stream (without a shared worker).
+    new URL(r.url()).pathname === "/api/stream" || (r.headers()["accept"] ?? "").includes("text/event-stream");
   page.on("request", r => {
-    if (r.resourceType() !== "eventsource" && r.resourceType() !== "websocket") pending.add(r);
+    if (!endless(r)) pending.add(r);
   });
   const done = (r: Request) => {
     if (pending.delete(r)) settled?.();
@@ -198,12 +216,26 @@ export async function deterministicCamera(page: Page, out: string, fps = FPS): P
     }
   }
 
+  // The renderers whose animation timelines are stopped: nothing the page
+  // starts between two freezes moves on real time, however long the frame
+  // takes (a 120 ms transition would otherwise finish unfilmed on a loaded
+  // machine). Each animation is then set to its age on the camera's clock.
+  const stopped = new Set<CDPSession>();
+  async function stop(session: CDPSession): Promise<void> {
+    if (stopped.has(session)) return;
+    stopped.add(session);
+    await session.send("Animation.enable");
+    await session.send("Animation.setPlaybackRate", { playbackRate: 0 });
+  }
+
   /** Pauses every animation of the page at its first sight, at `t`, and sets each to its age. */
   async function freeze(t: number): Promise<void> {
     const reached = new Set<CDPSession>();
     for (const frame of page.frames()) {
+      const { session } = await reachOf(page, frame);
+      await stop(session);
       await quietIn(page, frame, FREEZE(t));
-      reached.add((await reachOf(page, frame)).session);
+      reached.add(session);
     }
     for (const session of reached) await freezeShadows(session, t);
   }

@@ -320,9 +320,14 @@ people's pointers are Clax's live layers, which the shell draws.
 - One Chromium, the pinned `@chromium//:browsers`; the camera's context
   has the viewport, scale and colour scheme of §5, `reducedMotion:
   "no-preference"`, locale `en-US`, timezone `UTC`.
-- Wall time in the pages is fixed: Playwright's `page.clock.install({
-  time: REEL_EPOCH })` with `REEL_EPOCH = 2026-11-03T09:41:00Z`, so
-  relative times and dates on screen are the same each run.
+- Wall time in the camera's pages starts at `REEL_EPOCH =
+  2026-11-03T09:41:00Z`: Playwright's `clock.install({ time: REEL_EPOCH })`
+  on the camera's context. It flows while the vignette sets up; a
+  deterministic camera then pauses it on the next whole 2 s of that time
+  (a jump of under 2.25 s, well inside every staleness rule of the
+  shell's, such as the stream's 35 s), so dates on screen read the same
+  each run (to within the setup's few seconds). Times the daemon stamps
+  are real ones, not the page's.
 - The shell's own timers (consent arming, the hint, presence reports)
   run on its test clock; the director advances it with `advance()` from
   `web/e2e/time.ts` where an e2e test would, never for pacing.
@@ -332,18 +337,25 @@ people's pointers are Clax's live layers, which the shell draws.
 - **Fast:** `recordVideo` at 1600 × 1000 on the camera's context.
   Real time; frames are whatever Chromium painted. For iterating on a
   script: seconds per vignette, not identical twice.
-- **Deterministic:** the camera's page runs on Chromium's virtual time
-  (`Emulation.setVirtualTimePolicy`, policy `pause`): JavaScript timers,
-  `requestAnimationFrame` and CSS animations advance only when the
-  recorder grants a budget. A frame is: grant 1000/30 ms of virtual time,
-  wait for the page to settle (two animation frames), `Page.captureScreenshot`
-  (PNG). Between frames the director's actions and offstage work run
-  with virtual time paused; network answers and stream events are still
-  delivered, so a `d.until` waits for real state without frames passing.
-  The result is one PNG per frame, identical on the same machine and
-  inputs (§12, R1).
+- **Deterministic** (`web/reel/camera.ts`): the camera's page runs on
+  its own clock, which only the camera moves. Playwright's clock (timers,
+  `Date`, `performance.now()`, `requestAnimationFrame`, in every frame of
+  the page) is paused at the roll; the DevTools Animation domain's
+  playback rate is 0 on every renderer of the page, so no animation moves
+  on real time; and every animation (shadow trees included, found through
+  `DOM.getDocument` with `pierce`) is paused when first seen and set to its
+  age on the camera's clock, or finished once its age reaches its end, so
+  its finish event fires. `Math.random` is seeded in the camera's
+  documents. A frame is: run the clock 1000/30 ms (in whole ms), wait out
+  the page's requests (but the event stream) and drain every frame's task
+  queue, set every animation to its age, `Page.captureScreenshot` (PNG, the
+  viewport at its device pixels). Network answers, the daemon's events and
+  Chromium's rendering run on real time, so between frames a `d.until`
+  waits for real state while no frame passes; what another person does is
+  waited for in the camera's page before the film moves on. The result is
+  one PNG per frame, identical on the same machine and inputs (§12, R1).
 - The `devserver` vignette needs the extension and so new headless; if
-  virtual time does not drive its frames, that vignette renders in fast
+  the deterministic camera does not drive its frames, that vignette renders in fast
   mode in the final reel too, and the manifest says so. Task 2 of the
   plan finds out.
 
@@ -698,13 +710,15 @@ landing page, once phase 3 publishes it.
 
 ## 12. Risks
 
-- R1. **Virtual time and Clax's realtime UI.** The shell reacts to stream
-  and WebSocket events; with virtual time paused, events must still be
-  delivered and painted when the next budget is granted. If not, the
-  deterministic mode falls back to Playwright's `page.clock` (timers,
-  `requestAnimationFrame`, `Date`) and the CDP Animation domain (CSS
-  animations paused and sought per frame). The plan proves it on
-  `realtime` before any other vignette (Task 2).
+- R1. **A deterministic clock and Clax's realtime UI.** Chromium's
+  virtual time was the first design and could not film `realtime`: its
+  screenshots stopped returning once pointers moved over the artifact
+  frame, and the bridge's 25 ms snapshot timer never ran while it was
+  paused. The camera as built (§7.2) steps the page's own clock and
+  animations instead; what crosses from the network or another renderer
+  is waited for (requests per frame, other people's steps in the
+  vignette), and `//web/reel:realtime_determinism` checks two recordings
+  frame for frame.
 - R2. **The composer's toolchain.** FFmpeg arrives unpinned (§8);
   x264 is GPL (`libav-agree-gpl`); a first build compiles FFmpeg when no
   prebuilt archive matches. The composer is a developer tool never
