@@ -725,6 +725,8 @@
     db.collection("extensions").onSnapshot((snap) => {
       const list = snap.docs.map((d) => Object.assign({ id: d.id || (d.ref && d.ref.id) }, d.data())).filter((i) => i.title);
       if (list.length) ideas = list;
+      // The open panel lists its step's ideas: draw it again from the loaded list, keeping its scroll.
+      if (selected) { const pb = panel.querySelector(".pb"), top = pb.scrollTop; select(selected, { quiet: true }); pb.scrollTop = top; }
       refreshNodes();
       countIdeas();
     }, () => {});
