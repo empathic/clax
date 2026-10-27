@@ -84,3 +84,26 @@ describe("returning to the Clax that asked", () => {
     expect(assign).not.toHaveBeenCalled();
   });
 });
+
+describe("the device page signed out", () => {
+  const signedOut = async (github: boolean) => {
+    history.replaceState(null, "", "/device?code=WXYZ-4821");
+    stubFetch({ "GET /api/hosted/me": { origin: "https://clax.example", setup_open: false, signed_in: false, person: null, github } });
+    const m = mount(SignIn, {});
+    await settle();
+    return m;
+  };
+
+  it("offers_github_sign_in_that_returns_to_the_code", async () => {
+    const m = await signedOut(true);
+    const a = m.root.querySelector<HTMLAnchorElement>("[data-testid=github-signin]");
+    expect(a?.getAttribute("href")).toBe("/auth/github?next=%2Fdevice%3Fcode%3DWXYZ-4821");
+    expect(m.root.textContent).toContain("Another Clax asks to publish here as you. Sign in first");
+  });
+
+  it("asks_for_a_sign_in_link_without_github", async () => {
+    const m = await signedOut(false);
+    expect(m.root.querySelector("[data-testid=github-signin]")).toBeNull();
+    expect(m.root.textContent).toContain("open a sign-in link from a device that is signed in");
+  });
+});
