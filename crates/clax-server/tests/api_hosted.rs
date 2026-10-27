@@ -866,6 +866,12 @@ async fn a_member_mints_agent_tokens_with_their_rights_and_revokes_them() {
             .unwrap()
             .contains(&format!("url = \"{mcp}\""))
     );
+    assert_eq!(
+        v["grok_command"].as_str().unwrap(),
+        format!(
+            "grok mcp add --transport http clax_hosted {mcp} --header \"Authorization: Bearer {token}\""
+        )
+    );
     let gid = v["id"].as_str().unwrap().to_string();
     // The token's grant has Sam's rights.
     assert_eq!(

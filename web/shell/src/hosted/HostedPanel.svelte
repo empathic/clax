@@ -100,6 +100,10 @@
       <div class="cmd"><code>{minted.claude_command}</code><button type="button" onclick={() => copy("claude", minted!.claude_command)}>{copied === "claude" ? "Copied" : "Copy"}</button></div>
       <p class="lead">Or to Codex, in <code>~/.codex/config.toml</code>:</p>
       <div class="cmd"><pre>{minted.codex_config}</pre><button type="button" onclick={() => copy("codex", minted!.codex_config)}>{copied === "codex" ? "Copied" : "Copy"}</button></div>
+      {#if minted.grok_command}
+        <p class="lead">Or to Grok Build:</p>
+        <div class="cmd"><code>{minted.grok_command}</code><button type="button" onclick={() => copy("grok", minted!.grok_command!)}>{copied === "grok" ? "Copied" : "Copy"}</button></div>
+      {/if}
       <p class="meta">The token is shown this once.</p>
     </div>
   {/if}

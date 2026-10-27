@@ -22,7 +22,7 @@ export type HostedMe = { origin: string; setup_open: boolean; signed_in: boolean
 /** An agent token; `kind` is `device` for the person's own device (the Clax app's sign-in, which may manage the sharing of their artifacts), else `agent`. */
 export type AgentToken = { id: string; label: string; status: string; created_at: string; last_used_at: string | null; ended_at: string | null; kind?: "device" | "agent" };
 /** A new agent token: `token` and the commands that carry it are shown this once. */
-export type NewAgentToken = { id: string; label: string; created_at: string; token: string; mcp_url: string; claude_command: string; codex_config: string };
+export type NewAgentToken = { id: string; label: string; created_at: string; token: string; mcp_url: string; claude_command: string; codex_config: string; grok_command?: string };
 export type LinkAccess = "viewer" | "commenter";
 /** A page shared by link; `listed` when the public gallery lists it. */
 export type SharedLink = { artifact_id: string; title: string; access: LinkAccess; url: string; listed?: boolean };

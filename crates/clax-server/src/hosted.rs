@@ -554,9 +554,11 @@ struct TokenBody {
 }
 
 /// `POST /api/hosted/agent-tokens {label?}` (a member) → `{id, label,
-/// token, mcp_url, claude_command, codex_config, created_at}`: an agent
-/// token for the caller's remote agents, shown this once, with the commands
-/// that add it to Claude Code and Codex. Its rights are the caller's.
+/// token, mcp_url, claude_command, codex_config, grok_command,
+/// created_at}`: an agent token for the caller's remote agents, shown this
+/// once, with the commands that add it to Claude Code, Codex and Grok Build
+/// (as the MCP server `clax_hosted`, a name apart from the `clax` and
+/// `clax_grok` servers the plugins add in Grok). Its rights are the caller's.
 /// `mcp_url` is the MCP adapter's, which serves agent tokens
 /// (`crate::routes::mcp_http::PATH`: `/mcp/json` on the daemon, `/mcp` on
 /// a Durable Object).
@@ -594,6 +596,9 @@ async fn mint_token(
                 ),
                 "codex_config": format!(
                     "[mcp_servers.clax]\nurl = \"{mcp_url}\"\nhttp_headers = {{ \"Authorization\" = \"Bearer {secret}\" }}\n"
+                ),
+                "grok_command": format!(
+                    "grok mcp add --transport http clax_hosted {mcp_url} --header \"Authorization: Bearer {secret}\""
                 ),
             })),
         )
