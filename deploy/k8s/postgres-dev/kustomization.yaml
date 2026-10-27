@@ -1,0 +1,20 @@
+# postgres/ with a single PostgreSQL of its own, for trying the backend in
+# a scratch cluster (kind, minikube). Not for production: one database pod
+# on one volume, and a password in this file.
+#
+#   kubectl create secret generic clax-secrets \
+#     --from-literal=CLAX_POSTGRES_URL='postgresql://clax:clax-dev@clax-postgres:5432/clax' \
+#     --from-literal=CLAX_KEK="$(openssl rand -hex 32)" \
+#     --from-literal=CLAX_SETUP_SECRET_EXAMPLE="$(openssl rand -hex 16)"
+#   kubectl apply -k deploy/k8s/postgres-dev
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../postgres
+  - postgres.yaml
+secretGenerator:
+  - name: clax-postgres-dev
+    literals:
+      - POSTGRES_USER=clax
+      - POSTGRES_PASSWORD=clax-dev
+      - POSTGRES_DB=clax

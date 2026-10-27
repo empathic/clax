@@ -1,0 +1,17 @@
+# The PostgreSQL backend: a Deployment of interchangeable pods and its
+# autoscaler. Every instance's database, content and app data are in
+# PostgreSQL; a pod's disk holds nothing that must outlive it.
+#
+#   kubectl create secret generic clax-secrets \
+#     --from-literal=CLAX_POSTGRES_URL='postgresql://clax:…@db:5432/clax' \
+#     --from-literal=CLAX_KEK="$(openssl rand -hex 32)" \
+#     --from-literal=CLAX_SETUP_SECRET_EXAMPLE="$(openssl rand -hex 16)"
+#   kubectl apply -k deploy/k8s/postgres
+#
+# postgres-dev/ is this with a PostgreSQL of its own, for trying it out.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+  - deployment.yaml
+  - hpa.yaml

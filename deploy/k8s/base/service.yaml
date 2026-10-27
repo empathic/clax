@@ -1,0 +1,16 @@
+# Where clients (an Ingress, a load balancer) reach the fleet. Any pod
+# answers any instance: one that does not run it forwards the request to
+# the one that does, WebSockets and event streams included, so no session
+# affinity is needed.
+apiVersion: v1
+kind: Service
+metadata:
+  name: clax
+spec:
+  selector:
+    app.kubernetes.io/name: clax
+    app.kubernetes.io/component: fleet
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

@@ -1,0 +1,7 @@
+# The manifests and the example catalog, which clax-fleet's tests read to
+# check they name only what the binary reads (crates/clax-fleet/src/main.rs).
+filegroup(
+    name = "manifests",
+    srcs = glob(["**/*.yaml", "**/*.toml"]),
+    visibility = ["//crates/clax-fleet:__pkg__"],
+)

@@ -42,6 +42,14 @@ check-wasm-native *ARGS:
 worker-test:
     ./scripts/run.sh worker-test
 
+# Run clax-fleet's PostgreSQL tests against the database CLAX_TEST_PG_URL names, which they may fill (each test keeps to instances of its own)
+fleet-pg-test *ARGS:
+    ./scripts/run.sh fleet-pg-test "$@"
+
+# Run clax-fleet's PostgreSQL tests natively (cargo test)
+fleet-pg-test-native *ARGS:
+    CLAX_BUILD=native ./scripts/run.sh fleet-pg-test "$@"
+
 # Run crates/clax-worker's checks natively, with Cargo, pnpm and worker-build (scripts/worker-checks.sh, then the e2e runs)
 worker-test-native:
     CLAX_BUILD=native ./scripts/run.sh worker-test

@@ -357,4 +357,83 @@ mod tests {
         assert_eq!(ordinal_of("clax"), None);
         assert_eq!(ordinal_of("clax-abc12"), None);
     }
+
+    /// `deploy/k8s`, from the repository root.
+    fn manifests() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/k8s")
+    }
+
+    fn files(dir: &std::path::Path, ext: &str, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                files(&p, ext, out);
+            } else if p.extension().is_some_and(|x| x == ext) {
+                out.push(p);
+            }
+        }
+    }
+
+    /// Every variable the manifests give the container is one `serve`
+    /// reads (a flag's, or `CLAX_KEK`), or an instance's setup secret,
+    /// which the catalog names.
+    #[test]
+    fn the_manifests_set_only_variables_the_binary_reads() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let serve = cmd.find_subcommand("serve").unwrap();
+        let mut known: Vec<String> = serve
+            .get_arguments()
+            .filter_map(|a| a.get_env())
+            .map(|e| e.to_string_lossy().into_owned())
+            .collect();
+        known.push("CLAX_KEK".into());
+        let mut yamls = Vec::new();
+        files(&manifests(), "yaml", &mut yamls);
+        assert!(yamls.len() >= 8, "{yamls:?}");
+        let mut seen = 0;
+        for path in yamls {
+            let text = std::fs::read_to_string(&path).unwrap();
+            if !text.contains("name: clax-fleet") {
+                continue;
+            }
+            for line in text.lines() {
+                let Some(name) = line.trim().strip_prefix("- name: ") else {
+                    continue;
+                };
+                if name.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
+                    assert!(
+                        known.iter().any(|k| k == name),
+                        "{} sets {name}, which clax-fleet serve does not read",
+                        path.display()
+                    );
+                    seen += 1;
+                }
+            }
+        }
+        assert!(seen >= 10, "only {seen} variables found: the scan missed them");
+    }
+
+    /// The example catalog is valid for both backends, and its instances'
+    /// setup secrets are in the variables the postgres/ overlay's comments
+    /// put in the Secret.
+    #[test]
+    fn the_example_catalog_is_valid_for_both_backends() {
+        let path = manifests().join("base/fleet.toml");
+        let pg = Catalog::load(&path, None).unwrap();
+        let sqlite = Catalog::load(&path, Some(2)).unwrap();
+        assert_eq!(pg, sqlite);
+        let secret = std::fs::read_to_string(manifests().join("postgres/kustomization.yaml"))
+            .unwrap();
+        for i in &pg.instances {
+            let config = clax_core::config::HomeConfig::from_text(
+                path.clone(),
+                &i.config,
+                std::iter::empty(),
+            )
+            .unwrap();
+            let env = config.hosted().unwrap().unwrap().setup_secret_env;
+            assert!(secret.contains(&env), "{env} is not in the Secret's example");
+        }
+    }
 }

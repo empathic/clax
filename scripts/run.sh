@@ -17,6 +17,8 @@
 #                                    scripts/worker-checks.sh and e2e.mjs)
 #   scripts/run.sh check-wasm        the crates a hosted Worker runs, built for wasm32 with
 #                                    warnings denied (natively scripts/check-wasm.sh)
+#   scripts/run.sh fleet-pg-test     clax-fleet's PostgreSQL tests, against the server
+#                                    CLAX_TEST_PG_URL names (a database they may fill)
 #   scripts/run.sh build             the clax binary
 #   scripts/run.sh web               web/dist and web/dist-extension, built
 #   scripts/run.sh clax [args]       build the debug clax and run it (serve, stop, doctor, …)
@@ -81,6 +83,7 @@ case "$task" in
     web-e2e) needs=(rust web) ;;
     worker-test) needs=(rust web) ;;
     check-wasm) needs=(rust) ;;
+    fleet-pg-test) needs=(rust) ;;
     app-test|app-integration|app-apk|app-macos) needs=(rust web flutter) ;;
     home-bundle) needs=(flutter) ;;
     reel) needs=(rust web) ;;
@@ -247,6 +250,11 @@ _bazel() {
         web-test) _run "${b[@]}" test --lockfile_mode=error //web:lint //web:typecheck //web:unit //web:bundle_size "$@" ;;
         pi-test) _run "${b[@]}" test --lockfile_mode=error //plugins/pi:typecheck //plugins/pi:test "$@" ;;
         web-e2e) _run "${b[@]}" test --lockfile_mode=error //web:e2e_gesture //web:e2e_chrome_overlay //web:e2e_rest "$@" ;;
+        fleet-pg-test)
+            _fleet_pg_url || return $?
+            _run "${b[@]}" test --lockfile_mode=error --test_env=CLAX_TEST_PG_URL \
+                --test_arg=--ignored //crates/clax-fleet:postgres "$@"
+            ;;
         worker-test)
             _run "${b[@]}" build --lockfile_mode=error --config=fmt //crates/clax-worker/... &&
                 _run "${b[@]}" build --lockfile_mode=error --config=clippy //crates/clax-worker/... &&
@@ -305,6 +313,16 @@ _bazel() {
     esac
 }
 
+# clax-fleet's PostgreSQL tests need a server: refuse plainly without one,
+# rather than run tests that are all ignored.
+_fleet_pg_url() {
+    if [ -z "${CLAX_TEST_PG_URL:-}" ]; then
+        echo "fleet-pg-test: set CLAX_TEST_PG_URL to a PostgreSQL database the tests may fill" >&2
+        echo "  (for example postgresql://postgres@127.0.0.1:5432/clax_test)" >&2
+        return 2
+    fi
+}
+
 _native() {
     case "$task" in
         ci) _run "${awake[@]+"${awake[@]}"}" ./scripts/quality_gates.sh "$@" ;;
@@ -320,6 +338,10 @@ _native() {
         web-e2e)
             _run bash -c 'cd web && pnpm install --frozen-lockfile' && _run ./scripts/build-web.sh &&
                 _run bash -c 'cd web && pnpm exec playwright install --with-deps chromium && pnpm run e2e'
+            ;;
+        fleet-pg-test)
+            _fleet_pg_url || return $?
+            _run cargo test -p clax-fleet --test postgres -- --ignored "$@"
             ;;
         worker-test)
             _run cargo fmt -p clax-worker -p clax-do-vfs -- --check &&

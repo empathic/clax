@@ -1,0 +1,16 @@
+# What `docker build` (deploy/Dockerfile) leaves out of the context: builds,
+# caches and installs, each of which the image makes again.
+.git
+target
+**/target
+**/node_modules
+bazel-*
+web/dist/*
+!web/dist/.gitkeep
+web/dist-extension/*
+!web/dist-extension/.gitkeep
+web/test-results
+web/playwright-report
+apps/clax_app/build
+local
+.wrangler

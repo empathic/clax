@@ -1,0 +1,29 @@
+# Instances spread over the pods by rendezvous hashing, so a pod added
+# takes its share of them (each moves once that pod has been alive 30 s),
+# and a pod removed hands its share to the others.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: clax
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: clax
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    # Every scale-down moves instances (their streams reconnect): slowly.
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120

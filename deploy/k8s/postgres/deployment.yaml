@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clax
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clax
+      app.kubernetes.io/component: fleet
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clax
+        app.kubernetes.io/component: fleet
+    spec:
+      serviceAccountName: clax
+      # SIGTERM drains: CLAX_FLEET_DRAIN_DELAY of serving while the Service
+      # forgets the pod, every instance stopped and its lease released (at
+      # most 10 s; the others take them at their next request), then the
+      # open connections (at most 10 s).
+      terminationGracePeriodSeconds: 45
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: clax
+              app.kubernetes.io/component: fleet
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: clax-fleet
+          image: ghcr.io/empathic/clax-fleet:latest
+          args: ["serve"]
+          ports:
+            - name: http
+              containerPort: 7480
+            - name: admin
+              containerPort: 7481
+          env:
+            - name: CLAX_FLEET_BACKEND
+              value: postgres
+            - name: CLAX_FLEET_CATALOG
+              value: /etc/clax/fleet.toml
+            - name: CLAX_FLEET_DATA_DIR
+              value: /var/lib/clax
+            # Other pods forward to this one at the pod's IP.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            # `on` for a managed database; CLAX_POSTGRES_CA names a PEM of
+            # its CA when the public roots do not cover it.
+            - name: CLAX_POSTGRES_TLS
+              value: "off"
+          # CLAX_POSTGRES_URL, CLAX_KEK and each instance's setup secret.
+          envFrom:
+            - secretRef:
+                name: clax-secrets
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # The instances' homes: their config, the audit journal's
+            # export and caches, all made again on any pod.
+            - name: data
+              mountPath: /var/lib/clax
+            - name: catalog
+              mountPath: /etc/clax
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: catalog
+          configMap:
+            name: clax-fleet-catalog
+        - name: tmp
+          emptyDir: {}

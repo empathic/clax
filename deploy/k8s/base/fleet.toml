@@ -1,0 +1,23 @@
+# The instances the fleet serves (crates/clax-fleet/src/catalog.rs). Each
+# is a hosted Clax at its own public origin; its `config` is the
+# config.toml its home is given. Check a catalog before applying it:
+#
+#   clax-fleet check-catalog fleet.toml            # PostgreSQL
+#   clax-fleet check-catalog fleet.toml --shards 2 # SQLite, two shards
+#
+# On the SQLite backend each instance names its `shard`: the StatefulSet
+# pod (clax-<shard>) whose volume keeps it. The PostgreSQL backend ignores
+# `shard` and places instances itself.
+
+[[instance]]
+name = "example"
+shard = 0
+default = true
+config = '''
+[hosted]
+public_origin = "https://clax.example.com"
+site_domain = "clax-sites.example.com"
+# The setup secret the first visit to /setup asks for, from the
+# environment (the clax-secrets Secret): one variable per instance.
+setup_secret_env = "CLAX_SETUP_SECRET_EXAMPLE"
+'''

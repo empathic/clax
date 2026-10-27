@@ -1,0 +1,16 @@
+# The SQLite backend: a StatefulSet whose pods (clax-0, clax-1, …) each
+# keep the homes of their shard's instances on a volume of their own.
+#
+#   kubectl create secret generic clax-secrets --from-literal=...
+#   kubectl apply -k deploy/k8s/sqlite
+#
+# To scale out, raise the StatefulSet's `replicas` and CLAX_FLEET_SHARDS
+# together (a pod whose ordinal is past the shards refuses to start) and
+# give new instances the new shards; an instance moves only with its home
+# (docs/kubernetes.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+  - statefulset.yaml
+  - peers.yaml
