@@ -7,6 +7,8 @@ composer (compose.sh).
   camera.py path FRAMES_DIR PLAN [--insert] [--camera-motion | --no-camera]
                                                -> the per-output-frame treatment (or crop) TSV
   camera.py render FRAMES_DIR PATH             -> rgb24 frames on stdout, for ffmpeg
+  camera.py focus-report FRAMES_DIR PLAN       -> each focus region: fully on vs its first
+                                                  change, fade-out vs its last (seconds)
 
 plan turns a vignette's beats into speed-ramped segments: source frames A..A+N
 play as M output frames (M = round(N / SPEED)). path decides, for every output
@@ -17,16 +19,18 @@ the same inputs give the same path byte for byte.
 The default path never moves the frame. It draws the eye with a treatment:
 outside a focus region the page is greyed (TREAT_DESAT) and dimmed toward
 NEUTRAL (TREAT_DIM) behind a feathered edge; the region keeps its colour and
-gets a thin accent ring with a low glow. The region comes from where the page
-changes (action_boxes: each frame against the one ACTION_LAG_SECONDS earlier,
-changed clusters no bigger than the pointer left out), grown to the UI block
-around it (snap: the connected run of edges that holds it). It appears once
-the action has lasted ADOPT_SECONDS, moves only when the action has been
-mostly outside it for SWITCH_SECONDS (and it has stood DWELL_SECONDS),
-narrows when the action keeps to a small part of it, and cross-fades on every
-change. By beat: at the working beat it moves to what answered the ask; it is
-gone from PRE_REVEAL_SECONDS before the reveal until REVEAL_CLEAN_SECONDS
-after it (and the touch), then returns on the touch's action.
+gets a thin accent ring with a low glow. The composer is offline, so the
+focus looks ahead (focus_plan): the action at frame t is what changes from t
+to t + ACTION_LOOK_SECONDS (_Changes.box; changed clusters no bigger than the
+pointer left out), grown to the UI block around it (snap: the connected run
+of edges that holds it). A region is chosen as its action is about to start
+and moves when the action over the next SWITCH_SECONDS will be mostly outside
+it (once it has stood DWELL_SECONDS); each region is fully on LEAD_SECONDS
+before its first changed frame, after a FADE_SECONDS fade or cross-fade, and
+fades out LINGER_SECONDS after its last one. At the working beat it moves to
+the card that answered the ask. It is gone PRE_REVEAL_SECONDS before the
+reveal's first changed frame, stays off REVEAL_CLEAN_SECONDS after it, and
+takes no action until the touch. focus-report prints that timeline.
 
 --camera-motion is the earlier path: a crop toward the change (path), eased by
 a raised-cosine average over EASE_SECONDS, zoom 1.0..ZOOM_MAX, whole page from
@@ -82,7 +86,6 @@ WORK_ZOOM_MAX = 1.3      # while the agent works, so the reveal's pull-back star
 POINTER_PX = 40          # changed clusters no larger than this each way (the pointer, a caret,
                          # a ticking digit) never draw the focus
 MIN_ACTION_PX = 600      # and the rest must cover at least this much
-ACTION_LAG_SECONDS = 0.5 # each frame against the one this much earlier
 ACTION_PCT = 5           # action box: the 5th..95th percentile of the changed cells
 BAND_MIN_W_PX = 700      # a change this wide and under BAND_MAX_H_PX tall (a header strip,
 BAND_MAX_H_PX = 100      # a progress line) never draws the focus
@@ -91,23 +94,27 @@ SNAP_LINK = 3            # edges within 3 cells (12 px) belong to one block
 SNAP_MAX_AREA = 0.25     # a block larger than this share of the page is no block
 FOCUS_PAD_PX = 14        # the focus region's margin around its block,
 FALLBACK_PAD_PX = 44     # or around the action itself when no block holds it
-ADOPT_SECONDS = 0.3      # a focus appears once the action has lasted this long (of the last 0.5 s)
-SWITCH_SECONDS = 0.5     # it moves only once the action has been mostly outside it this long
-SWITCH_OUTSIDE = 0.5     # "mostly outside": less than this share of the action is inside it
+ACTION_LOOK_SECONDS = 0.3  # action at frame t: what changes from t to t+0.3 s (output time),
+                         # so a region is known before its action starts
+ADOPT_SECONDS = 0.3      # a focus needs this much action within the next SWITCH_SECONDS
+SWITCH_SECONDS = 0.5     # it moves when, over the next 0.5 s, the action is mostly outside it
+SWITCH_OUTSIDE = 0.5     # "outside": less than this share of an action box is inside the region
 SWITCH_IOU = 0.75        # a new region this much like the current one is no move
-DWELL_SECONDS = 1.0      # a region stays at least this long before it moves
+DWELL_SECONDS = 1.0      # a region stands at least this long before it moves
 SHRINK_SHARE = 0.3       # action held within this share of a large region's area narrows it
 WORK_LOOK_SECONDS = (0.3, 1.5)  # at the working beat, the focus moves to what changed from this
                          # long before it to this long after it (in source time)
-IDLE_SECONDS = 2.5       # with no action for this long, the focus fades away
+SAME_GAP_SECONDS = 1.0   # actions in one region this close keep it on between them
 REGION_MIN_PX = (360, 170)  # a region is at least this big (around its centre, inside the page)
 REGION_MAX_AREA = 0.55   # a region covering more of the page than this is no focus
-FADE_IN_SECONDS = 0.5    # a focus fades in over this long, and out to nothing over FADE_OUT
-FADE_OUT_SECONDS = 0.5
-CROSS_SECONDS = 0.4      # a move cross-fades the old region into the new one over this long
-PRE_REVEAL_SECONDS = 0.3  # the treatment is gone this long before the reveal's frame ...
-REVEAL_CLEAN_SECONDS = 1.2  # ... and stays off this long after it (and until the touch)
-TOUCH_FADE_SECONDS = 0.6  # then fades back in on the touch's action over this long
+LEAD_SECONDS = 0.15      # a region is fully on this long before its first changed frame,
+FADE_SECONDS = 0.4       # after fading (or cross-fading) in over this long
+LINGER_SECONDS = 0.8     # it starts fading out this long after its last changed frame,
+FADE_OUT_SECONDS = 0.4   # over this long
+REVEAL_CHANGE = 0.05     # the reveal is the first frame, from 0.3 s before its beat, where this
+                         # share of the page changes from the frame before (the beat can be off)
+PRE_REVEAL_SECONDS = 0.3  # the treatment is gone this long before that frame ...
+REVEAL_CLEAN_SECONDS = 1.2  # ... stays off this long after it, and takes no action until the touch
 TREAT_DIM = 0.35         # outside the focus: this much toward NEUTRAL (inserts: INSERT_DIM)
 INSERT_DIM = 0.2
 TREAT_DESAT = 0.85       # and this much of its colour gone (inserts: 0.6)
@@ -310,48 +317,71 @@ def _components(cells, link):
     return comps
 
 
-def action_boxes(frames_dir, needed):
-    """{source frame: box or None}: where the page changed, the pointer, a caret and
-    ticking digits left out (changed clusters no larger than POINTER_PX each way)."""
-    import numpy as np
-    lag = secs(ACTION_LAG_SECONDS)
-    top = math.ceil(TOP_IGNORE_PX / ANALYSIS_SCALE)
-    cache, boxes = {}, {}
+class _Changes:
+    """Where frames differ, at 1/ANALYSIS_SCALE size below the top bar."""
 
-    def grey(i):
-        if i not in cache:
-            cache[i] = _grey(frames_dir, i)
-        return cache[i]
+    def __init__(self, frames_dir):
+        self.dir, self.cache, self.boxes = frames_dir, {}, {}
+        self.top = math.ceil(TOP_IGNORE_PX / ANALYSIS_SCALE)
 
-    s = ANALYSIS_SCALE * 2  # clusters on an 8 px grid
-    small = POINTER_PX / s
-    for i in sorted(needed):
-        boxes[i] = None
-        if i >= lag:
-            d = np.abs(grey(i) - grey(i - lag)) > DIFF_LEVEL
-            d[:top] = False
-            h, w = d.shape[0] // 2 * 2, d.shape[1] // 2 * 2
-            c = d[:h, :w].reshape(h // 2, 2, w // 2, 2).any(axis=(1, 3))
-            n = int(c.sum())
-            if n * s * s >= MIN_ACTION_PX:
-                if n > 3000:  # a whole-page change: nothing small to sort out
-                    ys, xs = np.nonzero(c)
-                else:
-                    keep = []
-                    for comp in _components(c, 2):
-                        cy = [p[0] for p in comp]; cx = [p[1] for p in comp]
-                        if max(cy) - min(cy) + 1 > small or max(cx) - min(cx) + 1 > small:
-                            keep += comp
-                    ys = np.array([p[0] for p in keep]); xs = np.array([p[1] for p in keep])
-                if len(xs) * s * s >= MIN_ACTION_PX:
-                    x0, x1 = np.percentile(xs, [ACTION_PCT, 100 - ACTION_PCT])
-                    y0, y1 = np.percentile(ys, [ACTION_PCT, 100 - ACTION_PCT])
-                    b = (float(x0) * s, float(y0) * s, float(x1 + 1) * s, float(y1 + 1) * s)
-                    if not (b[2] - b[0] > BAND_MIN_W_PX and b[3] - b[1] < BAND_MAX_H_PX):
-                        boxes[i] = b
-        for k in [k for k in cache if k < i - lag]:
-            del cache[k]
-    return boxes
+    def grey(self, i):
+        if i not in self.cache:
+            if len(self.cache) >= 96:
+                del self.cache[next(iter(self.cache))]
+            self.cache[i] = _grey(self.dir, i)
+        return self.cache[i]
+
+    def mask(self, a, b):
+        import numpy as np
+        d = np.abs(self.grey(b) - self.grey(a)) > DIFF_LEVEL
+        d[:self.top] = False
+        return d
+
+    def share(self, a, b):
+        """The share of the page that changed from a to b."""
+        return float(self.mask(a, b).mean())
+
+    def moved(self, a, b, region):
+        """Changed cells from a to b inside region."""
+        s = ANALYSIS_SCALE
+        x0, y0, x1, y1 = (int(region[0] // s), int(region[1] // s),
+                          int(math.ceil(region[2] / s)), int(math.ceil(region[3] / s)))
+        return int(self.mask(a, b)[y0:y1, x0:x1].sum())
+
+    def box(self, a, b):
+        """The action from a to b: a box, or None. Changed clusters no larger than
+        POINTER_PX each way (the pointer, a caret, ticking digits) and wide header
+        strips are left out; the rest must cover MIN_ACTION_PX."""
+        import numpy as np
+        if a == b:
+            return None
+        if (a, b) in self.boxes:
+            return self.boxes[(a, b)]
+        d = self.mask(a, b)
+        s = ANALYSIS_SCALE * 2  # clusters on an 8 px grid
+        small = POINTER_PX / s
+        h, w = d.shape[0] // 2 * 2, d.shape[1] // 2 * 2
+        c = d[:h, :w].reshape(h // 2, 2, w // 2, 2).any(axis=(1, 3))
+        n = int(c.sum())
+        out = None
+        if n * s * s >= MIN_ACTION_PX:
+            if n > 3000:  # a whole-page change: nothing small to sort out
+                ys, xs = np.nonzero(c)
+            else:
+                keep = []
+                for comp in _components(c, 2):
+                    cy = [p[0] for p in comp]; cx = [p[1] for p in comp]
+                    if max(cy) - min(cy) + 1 > small or max(cx) - min(cx) + 1 > small:
+                        keep += comp
+                ys = np.array([p[0] for p in keep]); xs = np.array([p[1] for p in keep])
+            if len(xs) * s * s >= MIN_ACTION_PX:
+                x0, x1 = np.percentile(xs, [ACTION_PCT, 100 - ACTION_PCT])
+                y0, y1 = np.percentile(ys, [ACTION_PCT, 100 - ACTION_PCT])
+                b_ = (float(x0) * s, float(y0) * s, float(x1 + 1) * s, float(y1 + 1) * s)
+                if not (b_[2] - b_[0] > BAND_MIN_W_PX and b_[3] - b_[1] < BAND_MAX_H_PX):
+                    out = b_
+        self.boxes[(a, b)] = out
+        return out
 
 
 def snap(frames_dir, i, box, size):
@@ -574,133 +604,214 @@ def _union(bs):
     return (min(b[0] for b in bs), min(b[1] for b in bs), max(b[2] for b in bs), max(b[3] for b in bs))
 
 
-def focus_path(frames_dir, segs, beats, size, insert=False):
-    """Rows (src, amount, [(region, alpha), ...]) per output frame: no motion; the
-    focus is a region that changes rarely, each change a cross-fade."""
+def _smooth(t):
+    t = min(1.0, max(0.0, t))
+    return t * t * (3 - 2 * t)
+
+
+def focus_plan(frames_dir, segs, beats, size):
+    """The focus timeline: (intervals, clean) where each interval is a dict with the
+    region and, in output frames, in_start, on_full, first (its first changed frame),
+    last (its last), off_start and off_end; clean is the reveal's (start, end) or None.
+
+    Offline, so it looks ahead: the action at frame t is what changes from t to
+    t + ACTION_LOOK_SECONDS; a region is chosen when the action is about to start,
+    moves when the action over the next SWITCH_SECONDS will be mostly outside it,
+    and is fully on LEAD_SECONDS before its first changed frame."""
     W, H = size
     src, _ = source_frames(segs)
     m = len(src)
     at = roles(beats)
     out_of = _out_of(segs)
-    clean = [False] * m
-    work = None
+    ch = _Changes(frames_dir)
+    nframes = len([f for f in os.listdir(frames_dir + "/frames") if f.endswith(".png")])
+    K = secs(ACTION_LOOK_SECONDS)
+
+    clean, quiet_until, work = None, None, None
     if "ask" in at and "reveal" in at and at["reveal"] > at["ask"]:
-        rev = out_of(at["reveal"])
-        c0 = max(0, rev - secs(PRE_REVEAL_SECONDS))
+        vis = at["reveal"]
+        for f in range(max(0, at["reveal"] - secs(0.3)), min(nframes - 1, at["reveal"] + secs(1.5))):
+            if ch.share(f, f + 1) > REVEAL_CHANGE:
+                vis = f + 1  # the first frame of the changed page
+                break
+        v = out_of(vis)
         touch = out_of(at["touch"]) if "touch" in at and at["touch"] >= at["reveal"] else m
-        c1 = max(rev + secs(REVEAL_CLEAN_SECONDS), touch)
+        clean = (max(0, v - secs(PRE_REVEAL_SECONDS)), min(m, v + secs(REVEAL_CLEAN_SECONDS)))
+        quiet_until = max(clean[1], touch)  # no new action until the touch
         if "working" in at and at["ask"] < at["working"] < at["reveal"]:
-            work = (out_of(at["working"]), at["working"])
-        for j in range(c0, min(c1, m)):
-            clean[j] = True
-    need = set(src)
-    if work:
-        w0 = work[1] - secs(WORK_LOOK_SECONDS[0])
-        w1 = min(work[1] + secs(WORK_LOOK_SECONDS[1]), at["reveal"] - secs(PRE_REVEAL_SECONDS))
-        need |= set(range(max(0, w0), min(w1, len(os.listdir(frames_dir + "/frames")))))
-    acts = action_boxes(frames_dir, need)
-    act = [acts[x] for x in src]
+            work = out_of(at["working"])
 
-    # Regions over time: [region or None, first frame, fade-in frames].
-    spans = []
-    R, pending, idle = None, [], 0
-    adopt, switch, idle_max = secs(ADOPT_SECONDS), secs(SWITCH_SECONDS), secs(IDLE_SECONDS)
-    look = secs(0.5)
+    def quiet(j):
+        return clean is not None and clean[0] <= j < quiet_until
 
-    def start(region, j, fade):
+    act = []
+    for j in range(m):
+        e = min(m - 1, j + K)
+        if clean is not None and j < clean[0]:
+            e = min(e, clean[0] - 1)  # never look into the reveal
+        act.append(None if quiet(j) else ch.box(src[j], src[e]))
+
+    def iou(a, b):
+        return _inter(a, b) / max(1.0, _area(a) + _area(b) - _inter(a, b))
+
+    def fit(region):
+        region = list(region)
+        for lo, hi, size_, least in ((0, 2, W, REGION_MIN_PX[0]), (1, 3, H, REGION_MIN_PX[1])):
+            grow = max(0.0, least - (region[hi] - region[lo])) / 2
+            a, b = region[lo] - grow, region[hi] + grow
+            shift = max(0.0, -a) - max(0.0, b - size_)
+            region[lo], region[hi] = max(0.0, a + shift), min(float(size_), b + shift)
+        region = tuple(region)
+        return None if _area(region) > REGION_MAX_AREA * W * H else region
+
+    # Pass 1: which region each action belongs to. occ: [region, [action frames]].
+    occ = []
+    R, Rstart, Rlast = None, None, None
+    adopt, look, dwell = secs(ADOPT_SECONDS), secs(SWITCH_SECONDS), secs(DWELL_SECONDS)
+
+    def begin(region, j):
+        nonlocal R, Rstart, Rlast
+        region = fit(region)
+        R, Rstart, Rlast = region, j, j
         if region is not None:
-            region = list(region)
-            for lo, hi, size, least in ((0, 2, W, REGION_MIN_PX[0]), (1, 3, H, REGION_MIN_PX[1])):
-                grow = max(0.0, least - (region[hi] - region[lo])) / 2
-                a, b = region[lo] - grow, region[hi] + grow
-                shift = max(0.0, -a) - max(0.0, b - size)
-                region[lo], region[hi] = max(0.0, a + shift), min(float(size), b + shift)
-            region = tuple(region)
-        if region is not None and _area(region) > REGION_MAX_AREA * W * H:
-            region = None
-        if region != (spans[-1][0] if spans else None):
-            spans.append([region, j, fade])
-        return region
+            occ.append([region, [j]])
 
-    def dwelt(j):
-        return not spans or j - spans[-1][1] >= secs(DWELL_SECONDS)
+    forced = None
+    if work is not None:
+        wsrc = [f for f in range(at["working"] - secs(WORK_LOOK_SECONDS[0]),
+                                 min(at["working"] + secs(WORK_LOOK_SECONDS[1]),
+                                     at["reveal"] - secs(PRE_REVEAL_SECONDS)))
+                if 0 < f < nframes - 1]
+        got = [(f, ch.box(f, min(nframes - 1, f + K))) for f in wsrc]
+        got = [(f, b) for f, b in got if b is not None]
+        if got:
+            boxes = [b for _f, b in got]
+            count = [sum(iou(g, h) > 0.7 for h in boxes) for g in boxes]
+            # Held for longer than a single change's look-ahead lasts (adopt + K/3).
+            held = [k for k in range(len(boxes)) if count[k] >= adopt + K // 3]
+            best = (min(held, key=lambda k: (_area(boxes[k]), -k)) if held
+                    else max(range(len(boxes)), key=lambda k: (count[k], k)))
+            group = [(f, b) for f, b in got if iou(boxes[best], b) > 0.7]
+            # The card that answered the ask, from the first output frame its change shows in.
+            first = max(work, min(out_of(f) for f, _b in group))
+            forced = (min(first, m - 1), snap(frames_dir, group[0][0] + K, _union([b for _f, b in group]), size))
+            if clean is not None and forced[0] > clean[0] - secs(0.3) - secs(FADE_SECONDS) - secs(LEAD_SECONDS):
+                forced = None  # it could not stand before the reveal
 
-    cool = 0
     for j in range(m):
+        if forced and j == forced[0] and not quiet(j):
+            begin(forced[1], j)
+            continue
         c = act[j]
-        if work and j == work[0] and not clean[j]:
-            # The ask is sent: look at what answered it (the thread card, the working indicator).
-            got = [acts[f] for f in range(w0, w1) if acts.get(f) is not None]
-            if got:
-                # The smallest box that holds still for ADOPT_SECONDS (the card that
-                # appeared, not the whole stretch the posting redrew); else the most recurring.
-                def iou(a, b):
-                    return _inter(a, b) / max(1.0, _area(a) + _area(b) - _inter(a, b))
-                count = [sum(iou(g, h) > 0.7 for h in got) for g in got]
-                held = [k for k in range(len(got)) if count[k] >= adopt]
-                if held:
-                    best = min(held, key=lambda k: (_area(got[k]), -k))
-                else:
-                    best = max(range(len(got)), key=lambda k: (count[k], k))
-                group = [g for g in got if iou(got[best], g) > 0.7]
-                R = start(snap(frames_dir, src[j], _union(group), size), j, secs(CROSS_SECONDS))
-                pending, idle, cool = [], 0, look
+        if c is None:
+            continue
+        fut = [b for b in act[j:j + look] if b is not None]
+        # Just before the working beat's region, keep the one on screen: no flash between.
+        # No new region that could not stand DWELL_SECONDS (fully on) before the working
+        # beat's region or the reveal takes over.
+        span = dwell + secs(FADE_SECONDS) + secs(LEAD_SECONDS)
+        short = secs(0.5) + secs(FADE_SECONDS) + secs(LEAD_SECONDS)  # on at least 0.5 s
+        hold = ((forced is not None and forced[0] - span < j < forced[0] and R is not None)
+                or (clean is not None and clean[0] - short < j < clean[0]))
+        if R is None or j - Rlast > secs(SAME_GAP_SECONDS):
+            if len(fut) >= adopt and not hold:
+                begin(snap(frames_dir, src[min(m - 1, j + K)], _union(fut), size), j)
+            continue
+        inside = _inter(c, R) >= SWITCH_OUTSIDE * _area(c)
+        outs = [b for b in fut if _inter(b, R) < SWITCH_OUTSIDE * _area(b)]
+        stood = j - Rstart >= dwell + secs(FADE_SECONDS)  # fully on for DWELL_SECONDS
+        if not inside and stood and not hold and len(outs) >= adopt and len(outs) >= 0.7 * len(fut):
+            new = snap(frames_dir, src[min(m - 1, j + K)], _union(outs), size)
+            if iou(new, R) < SWITCH_IOU:
+                begin(new, j)
                 continue
-        if clean[j]:
-            if R is not None or not spans or spans[-1][0] is not None:
-                start(None, j, secs(PRE_REVEAL_SECONDS))
-            R, pending, idle = None, [], 0
-            continue
-        idle = 0 if c is not None else idle + 1
-        if R is None:
-            recent = [b for b in act[max(0, j - look + 1):j + 1] if b is not None]
-            if c is not None and len(recent) >= adopt:
-                fade = secs(TOUCH_FADE_SECONDS) if any(clean[:j]) else secs(FADE_IN_SECONDS)
-                R = start(snap(frames_dir, src[j], _union(recent), size), j, fade)
-            continue
-        if idle > idle_max:
-            R = start(None, j, secs(FADE_OUT_SECONDS))
-            pending = []
-            continue
-        if c is not None:
-            if _inter(c, R) < SWITCH_OUTSIDE * _area(c):
-                pending.append(c)
-            else:
-                pending = []
-        cool -= 1
-        recent = [b for b in act[max(0, j - look + 1):j + 1] if b is not None]
-        if (cool <= 0 and dwelt(j) and not pending and len(recent) >= adopt and _area(R) > 0.12 * W * H
-                and _area(_union(recent)) < SHRINK_SHARE * _area(R)):
-            # The action keeps to a small part of a large region: narrow to its block.
-            cool = look
-            new = snap(frames_dir, src[j], _union(recent), size)
-            iou = _inter(new, R) / max(1.0, _area(new) + _area(R) - _inter(new, R))
-            if _area(new) < 0.6 * _area(R) and iou < SWITCH_IOU:
-                R = start(new, j, secs(CROSS_SECONDS))
-                continue
-        if len(pending) >= switch and dwelt(j):
-            new = snap(frames_dir, src[j], _union(pending), size)
-            pending = []
-            iou = _inter(new, R) / max(1.0, _area(new) + _area(R) - _inter(new, R))
-            if iou < SWITCH_IOU:
-                R = start(new, j, secs(CROSS_SECONDS))
+        if inside:
+            Rlast = j
+            if occ and occ[-1][0] == R:
+                occ[-1][1].append(j)
+            if (stood and not hold and _area(R) > 0.12 * W * H and len(fut) >= adopt
+                    and _area(_union(fut)) < SHRINK_SHARE * _area(R)):
+                new = snap(frames_dir, src[min(m - 1, j + K)], _union(fut), size)
+                if _area(new) < 0.6 * _area(R) and iou(new, R) < SWITCH_IOU:
+                    begin(new, j)
 
-    # Alphas: each span fades in over its fade; the one before it fades out over the same.
-    rows = []
+    # Pass 2: on-intervals, timed to the changes themselves.
+    intervals = []
+    for region, frames in occ:
+        runs, cur = [], [frames[0]]
+        for j in frames[1:]:
+            if j - cur[-1] > secs(SAME_GAP_SECONDS):
+                runs.append(cur)
+                cur = []
+            cur.append(j)
+        runs.append(cur)
+        for run in runs:
+            def changed(j):
+                return j > 0 and ch.moved(src[j - 1], src[j], region) > 0
+            span0 = range(run[0], min(m, run[0] + K + 1))
+            first = next((j for j in span0 if changed(j)), run[0])
+            span1 = range(min(m - 1, run[-1] + K), run[-1], -1)
+            last = next((j for j in span1 if changed(j)), run[-1])
+            intervals.append({"region": region, "first": first, "last": max(first, last)})
+    lead, fade = secs(LEAD_SECONDS), secs(FADE_SECONDS)
+    for iv in intervals:
+        iv["on_full"] = iv["first"] - lead
+        iv["in_start"] = iv["on_full"] - fade
+        iv["off_start"] = iv["last"] + secs(LINGER_SECONDS)
+        iv["off_end"] = iv["off_start"] + secs(FADE_OUT_SECONDS)
+        if clean is not None and iv["first"] >= clean[1] and iv["in_start"] < clean[1]:
+            # Back after the reveal: never before its clean stretch ends, and never abrupt.
+            iv["in_start"], iv["on_full"] = clean[1], clean[1] + fade
+        if iv["in_start"] < 0:  # on from the clip's first frame (it opens on a cut)
+            iv["in_start"], iv["on_full"] = 0, 0
+    for a, b in zip(intervals, intervals[1:]):
+        if b["region"] != a["region"] and b["in_start"] < a["off_end"]:
+            # Cross-fade: the old region goes as the new one comes.
+            a["off_start"] = min(a["off_start"], b["in_start"])
+            a["off_end"] = max(a["off_start"] + 1, min(a["off_end"], b["on_full"]))
+    for iv in intervals:
+        if clean is not None and iv["first"] < clean[0] and iv["off_end"] > clean[0]:
+            iv["off_end"] = clean[0]
+            iv["off_start"] = min(iv["off_start"], clean[0] - secs(PRE_REVEAL_SECONDS))
+    return intervals, clean
+
+
+def focus_path(frames_dir, segs, beats, size, insert=False):
+    """Rows (src, amount, [(region, alpha), ...]) per output frame: the frame never
+    moves; the regions of focus_plan fade in ahead of their action and out after it."""
+    src, _ = source_frames(segs)
+    intervals, _clean = focus_plan(frames_dir, segs, beats, size)
     amount = (INSERT_DIM, INSERT_DESAT) if insert else (TREAT_DIM, TREAT_DESAT)
-    for j in range(m):
-        live = []
-        for k, (region, s0, fade) in enumerate(spans):
-            if region is None or j < s0:
+    rows = []
+    for j in range(len(src)):
+        alpha = {}
+        for iv in intervals:
+            if not iv["in_start"] <= j < iv["off_end"]:
                 continue
-            a = min(1.0, (j - s0 + 1) / max(1, fade))
-            if k + 1 < len(spans) and j >= spans[k + 1][1]:
-                nfade = max(1, spans[k + 1][2])
-                a = min(a, 1.0 - (j - spans[k + 1][1] + 1) / nfade)
-            if a > 0:
-                live.append((region, a))
-        rows.append((src[j], amount, live))
+            up = (1.0 if iv["on_full"] <= iv["in_start"] else
+                  _smooth((j - iv["in_start"] + 1) / (iv["on_full"] - iv["in_start"])))
+            down = 1.0 - _smooth((j - iv["off_start"] + 1) / max(1, iv["off_end"] - iv["off_start"]))
+            a = min(up, down if j >= iv["off_start"] else 1.0)
+            if a > 1e-3:
+                alpha[iv["region"]] = max(alpha.get(iv["region"], 0.0), a)
+        rows.append((src[j], amount, sorted(alpha.items())))
     return rows
+
+
+def focus_report(frames_dir, segs, beats, size):
+    """Lines: per interval, when it is fully on vs its first change, and its fade-out
+    vs its last change (seconds of the clip)."""
+    intervals, clean = focus_plan(frames_dir, segs, beats, size)
+    t = lambda j: j / FPS
+    lines = ["region\tin\ton\tfirst\tlead\tlast\toff\tgap\tend"]
+    for iv in intervals:
+        lines.append("%s\t%.2f\t%.2f\t%.2f\t%+.2f\t%.2f\t%.2f\t%.2f\t%.2f" % (
+            ",".join("%d" % v for v in iv["region"]), t(iv["in_start"]), t(iv["on_full"]),
+            t(iv["first"]), t(iv["first"] - iv["on_full"]), t(iv["last"]), t(iv["off_start"]),
+            t(iv["off_start"] - iv["last"]), t(iv["off_end"])))
+    if clean:
+        lines.append("clean\t%.2f\t%.2f" % (t(clean[0]), t(clean[1])))
+    return lines
 
 
 def write_focus(rows, size, f):
@@ -830,6 +941,12 @@ def main(argv):
         else:
             write_focus(focus_path(frames_dir, segs, beats, size, insert="--insert" in argv),
                         size, sys.stdout)
+    elif cmd == "focus-report":
+        from PIL import Image
+        frames_dir = argv[2]
+        size = Image.open(frame_path(frames_dir, 0)).size
+        print("\n".join(focus_report(frames_dir, read_plan(argv[3]),
+                                      json.load(open(frames_dir + "/beats.json")), size)))
     elif cmd == "render":
         if open(argv[3]).readline().startswith("# treatment"):
             render_focus(argv[2], [l.rstrip("\n").split("\t") for l in open(argv[3]) if not l.startswith("#")])

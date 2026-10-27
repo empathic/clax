@@ -30,9 +30,10 @@
 # 1.0-1.2x (ClaxBot's brief, building, done count as ask, working, reveal).
 # The frame never moves: the eye is drawn by a treatment. Outside a focus region
 # the page is greyed and dimmed, inside it keeps its colour with a thin accent
-# ring; the region comes from where the page changes (not the pointer), snaps
-# to the UI block around it, changes rarely and cross-fades when it does; it is
-# off for each reveal. --camera-motion instead crops and eases toward the
+# ring; the region comes from where the page is about to change (not the
+# pointer), snaps to the UI block around it, is fully on just before that
+# change and fades soon after it, changes rarely and cross-fades when it does;
+# it is off for each reveal. --camera-motion instead crops and eases toward the
 # change (zoom 1.0-1.8); --no-camera shows plain frames. The lower-third goes
 # on after either. The per-frame treatment (or crop path) is kept in
 # OUT/camera/<n>-<id>.tsv. Cards are 0.6 s with a quick slide/scale-in; every
@@ -84,7 +85,7 @@ while [ $# -gt 0 ]; do
     --teaser) teaser="$2"; shift 2 ;;
     --intro) intro="$2"; shift 2 ;;
     --inserts) inserts="$2"; shift 2 ;;
-    -h|--help) sed -n 2,53p "$0"; exit 0 ;;
+    -h|--help) sed -n 2,54p "$0"; exit 0 ;;
     *) dirs+=("$1"); shift ;;
   esac
 done

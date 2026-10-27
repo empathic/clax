@@ -172,7 +172,7 @@ class FocusPathTest(unittest.TestCase):
                 x = 450 + (c % 30) * 9  # 10 px inside the card, like a composer's padding
                 dr.rectangle([x, 310 + (c // 30) * 20, x + 6, 322 + (c // 30) * 20], fill=(30, 30, 30))
             # A pointer wandering over the upper left the whole time: never a focus.
-            px, py = 40 + (i * 3) % 300, 120 + (i * 2) % 100
+            px, py = 40 + (i * 9) % 300, 120 + (i * 5) % 100  # travelling, as a pointer does
             dr.rectangle([px, py, px + 10, py + 16], fill=(0, 0, 0))
             if i >= 220:  # the reveal: the page changes
                 dr.rectangle([60, 300, 400, 480], fill=(40, 90, 200))
@@ -206,7 +206,16 @@ class FocusPathTest(unittest.TestCase):
     def test_region_changes_rarely_and_fades(self):
         alphas = [sum(a for _r, a in live) for _s, _a, live in self.rows]
         steps = [abs(b - a) for a, b in zip(alphas, alphas[1:])]
-        self.assertLessEqual(max(steps), 1.0 / (camera.secs(camera.PRE_REVEAL_SECONDS) - 1) + 1e-6)
+        # The steepest fade (out before the reveal, smoothstep) moves at most 1.5/n a frame.
+        self.assertLessEqual(max(steps), 1.5 / camera.secs(camera.PRE_REVEAL_SECONDS) + 1e-6)
+
+    def test_region_is_on_before_its_action(self):
+        intervals, clean = camera.focus_plan(self.dir, self.segs, self.beats, (W, H))
+        self.assertTrue(intervals)
+        for iv in intervals:
+            if iv["in_start"] > 0 and not (clean and iv["in_start"] == clean[1]):
+                self.assertLessEqual(iv["on_full"], iv["first"] - camera.secs(camera.LEAD_SECONDS) + 1)
+            self.assertLessEqual(iv["off_start"], iv["last"] + camera.secs(camera.LINGER_SECONDS))
 
     def test_reveal_is_clean(self):
         src, _ = camera.source_frames(self.segs)
