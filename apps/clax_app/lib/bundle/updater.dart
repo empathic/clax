@@ -19,7 +19,7 @@ import '../remote/models.dart'
 import 'bundle_reader.dart';
 import 'content_hash.dart';
 import 'doc_snapshot.dart';
-import 'installer.dart' show PublishedFiles;
+import 'installer.dart' show PublishedFiles, approveCapabilities;
 import 'lineage_store.dart';
 
 /// What an update's capabilities add over the live app's (§8.2): new
@@ -499,6 +499,14 @@ class Updater {
       );
     }
     final landed = published;
+    if (landed != null && confirm != null) {
+      await approveCapabilities(
+        api,
+        aid,
+        landed.pendingCapabilities,
+        _log,
+      );
+    }
     if (landed == null) {
       snapshots.discard(aid);
       _dropPending(aid);
@@ -1007,6 +1015,9 @@ class Updater {
           },
         ),
       );
+      if (confirm != null) {
+        await approveCapabilities(api, aid, r.pendingCapabilities, _log);
+      }
       return FilesTaken(
         r.version.n,
         r.version.contentSha256 ??

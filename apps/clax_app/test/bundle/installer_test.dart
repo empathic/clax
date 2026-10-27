@@ -11,6 +11,7 @@ import 'package:clax_app/bundle/lineage_store.dart';
 import 'package:clax_app/bundle/manifest.dart';
 import 'package:clax_app/bundle/trust.dart';
 import 'package:clax_app/clax/api.dart';
+import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/remote/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -167,6 +168,33 @@ void main() {
     final again = await me.installer.open(w.bytes);
     expect(again.decision.answer, TrustAnswer.current);
     expect(again.decision.aid, aid);
+  });
+
+  test('an install approves the version its person accepted', () async {
+    final w = await makeBundle(lineage: lineageA);
+    final aid = (await me.installer.install(await me.installer.open(w.bytes)))
+        .aid;
+    expect(me.api.approved, [(aid, 1, FakeClaxApi.pendingSha256(aid, 1))]);
+  });
+
+  test('an install with nothing pending approves nothing', () async {
+    me.api.pendsApproval = false;
+    final w = await makeBundle(lineage: lineageA);
+    await me.installer.install(await me.installer.open(w.bytes));
+    expect(me.api.callNames, isNot(contains('approveCapabilities')));
+  });
+
+  test('a refused approval leaves the install landed', () async {
+    me.api.failNext(
+      'approveCapabilities',
+      ClaxApiError(status: 403, code: 'admin_only', message: 'owner only'),
+    );
+    final w = await makeBundle(lineage: lineageA);
+    final aid = (await me.installer.install(await me.installer.open(w.bytes)))
+        .aid;
+    expect(me.api.approved, isEmpty);
+    expect((await me.api.getArtifact(aid)).current!.n, 1);
+    expect(await me.store.entry(aid), isNotNull);
   });
 
   // An icon the app's old check passed and the core now refuses (a bare

@@ -156,8 +156,14 @@ class Installed {
 
 /// Opens and installs bundles.
 class Installer {
-  Installer({required this.api, required this.store, required this.key});
+  Installer({
+    required this.api,
+    required this.store,
+    required this.key,
+    void Function(String)? log,
+  }) : _log = log ?? ((_) {});
 
+  final void Function(String) _log;
   final ClaxApi api;
   final LineageStore store;
   final BundleKey key;
@@ -295,6 +301,9 @@ class Installer {
     }
     final aid = created.artifact.id;
     made?.call(aid);
+    // The person accepted this install: what it declares is approved with
+    // it. A refusal leaves the install landed; the shell's bar asks instead.
+    await approveCapabilities(api, aid, created.pendingCapabilities, _log);
     final mine =
         opened.decision.mine && opened.decision.answer == TrustAnswer.install;
     try {
@@ -474,3 +483,26 @@ StreamSubscription<StreamEvent> forgetDeleted(
   await store.forget(aid);
   snapshots?.discard(aid);
 });
+
+/// Approves the declaration [pending] names (a create's or publish's
+/// `pending_capabilities`) for app [aid], as the person who accepted it.
+/// Nothing is called when [pending] is null. A refusal (403 `admin_only`,
+/// 409 `stale_version`, the network) is logged and not thrown: what landed
+/// stays, and the shell's bar asks.
+Future<void> approveCapabilities(
+  ClaxApi api,
+  String aid,
+  PendingCapabilities? pending,
+  void Function(String) log,
+) async {
+  if (pending == null) return;
+  try {
+    await api.approveCapabilities(
+      aid,
+      pending.version,
+      pending.declarationSha256,
+    );
+  } on Object catch (e) {
+    log('approving v${pending.version} of $aid failed: $e');
+  }
+}

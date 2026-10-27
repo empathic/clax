@@ -52,6 +52,18 @@ abstract interface class ClaxApi {
   /// [createArtifact]'s.
   Future<PublishResult> publish(String aid, PublishRequest r);
 
+  /// `PUT /api/artifacts/<aid>/capability-approval`, as the person (no
+  /// session): approves version [version]'s declaration, named by its
+  /// [declarationSha256] from a create's or publish's
+  /// `pending_capabilities`. Refused for anyone but the owner on a local
+  /// daemon (403 `admin_only`), or the page's maker on a hosted Clax; a
+  /// declaration that moved on is 409 `stale_version`.
+  Future<void> approveCapabilities(
+    String aid,
+    int version,
+    String declarationSha256,
+  );
+
   /// `POST versions:restore`: republishes version [n]'s files as a new
   /// version, as they are (history is not checked as a publish is), and
   /// documents untouched; 409 `conflict` when [ifVersion] is not the

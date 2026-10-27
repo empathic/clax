@@ -148,6 +148,19 @@ class HttpClaxApi implements ClaxApi {
   }
 
   @override
+  Future<void> approveCapabilities(
+    String aid,
+    int version,
+    String declarationSha256,
+  ) async {
+    await _json(
+      'PUT',
+      '/api/artifacts/${_seg(aid)}/capability-approval',
+      body: {'version': version, 'declaration_sha256': declarationSha256},
+    );
+  }
+
+  @override
   Future<PublishResult> restoreVersion(
     String aid,
     int n, {

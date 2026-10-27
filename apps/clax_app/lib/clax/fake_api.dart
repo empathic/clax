@@ -782,6 +782,31 @@ class FakeClaxApi implements ClaxApi {
     return _landed(a, r.addresses);
   }
 
+  /// What [approveCapabilities] was called with, in order: the artifact,
+  /// the version and the declaration's hash.
+  final List<(String, int, String)> approved = [];
+
+  /// Whether a create's or publish's answer names a declaration to approve
+  /// (`pending_capabilities`); its hash is [pendingSha256].
+  bool pendsApproval = true;
+
+  static String pendingSha256(String aid, int n) => 'sha-$aid-$n';
+
+  @override
+  Future<void> approveCapabilities(
+    String aid,
+    int version,
+    String declarationSha256,
+  ) async {
+    _call('approveCapabilities', {
+      'aid': aid,
+      'version': version,
+      'declaration_sha256': declarationSha256,
+    });
+    _artifact(aid);
+    approved.add((aid, version, declarationSha256));
+  }
+
   @override
   Future<PublishResult> restoreVersion(
     String aid,
@@ -2371,11 +2396,20 @@ class FakeClaxApi implements ClaxApi {
 
   PublishResult _landed(_FakeArtifact a, List<String> addresses) {
     final v = a.versions.last.info;
+    final pending = pendsApproval
+        ? PendingCapabilities(
+            version: v.n,
+            capabilities: a.capabilities.keys.toList(),
+            hosts: const [],
+            declarationSha256: pendingSha256(a.id, v.n),
+          )
+        : null;
     if (a.hidden) {
       return PublishResult(
         artifact: a.summary(_now()),
         version: v,
         url: '/a/${a.id}',
+        pendingCapabilities: pending,
       );
     }
     if (sessionId != null) working.remove(a.id);
@@ -2389,6 +2423,7 @@ class FakeClaxApi implements ClaxApi {
       artifact: a.summary(_now()),
       version: v,
       url: '/a/${a.id}',
+      pendingCapabilities: pending,
     );
   }
 

@@ -10,6 +10,7 @@ import 'package:clax_app/bundle/doc_snapshot.dart';
 import 'package:clax_app/bundle/installer.dart' show PublishedFiles;
 import 'package:clax_app/bundle/updater.dart';
 import 'package:clax_app/clax/api.dart';
+import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/remote/merge.dart' show Merged;
 import 'package:clax_app/remote/models.dart';
@@ -34,6 +35,7 @@ void main() {
     me.api.putDoc(aid, 'plants/p1', {'name': 'fern'});
     me.api.putDoc(aid, 'plants/p2', {'name': 'moss'});
     me.api.calls.clear();
+    me.api.approved.clear();
   });
   tearDown(() => tmp.deleteSync(recursive: true));
 
@@ -78,6 +80,37 @@ void main() {
     );
     expect(d.capabilities, ['notify']);
     expect(d.hosts, ['b.com']);
+  });
+
+  test('an accepted update approves its version', () async {
+    final out = await me.updater.update(
+      aid,
+      await v2(),
+      confirm: () async => true,
+    );
+    expect(out, isA<UpdateLanded>());
+    expect(me.api.approved, [(aid, 2, FakeClaxApi.pendingSha256(aid, 2))]);
+  });
+
+  test('an automatic update approves nothing', () async {
+    final out = await me.updater.update(aid, await v2());
+    expect(out, isA<UpdateLanded>());
+    expect(me.api.approved, isEmpty);
+  });
+
+  test('a refused approval leaves the accepted update landed', () async {
+    me.api.failNext(
+      'approveCapabilities',
+      ClaxApiError(status: 409, code: 'stale_version', message: 'moved on'),
+    );
+    final out = await me.updater.update(
+      aid,
+      await v2(),
+      confirm: () async => true,
+    );
+    expect(out, isA<UpdateLanded>());
+    expect(me.api.approved, isEmpty);
+    expect((await me.api.getArtifact(aid)).current!.n, 2);
   });
 
   test('a passing update publishes every file, null for removed ones, '

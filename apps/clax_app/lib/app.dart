@@ -1298,7 +1298,12 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   late final BundleFlows? _bundles = switch (_s.bundleKey) {
     final key? => BundleFlows(
       exporter: Exporter(api: _api, store: _lineages, key: key),
-      installer: Installer(api: _api, store: _lineages, key: key),
+      installer: Installer(
+        api: _api,
+        store: _lineages,
+        key: key,
+        log: (l) => debugPrint('clax bundles: $l'),
+      ),
       updater: _updater,
       files:
           _s.bundleFiles ??
