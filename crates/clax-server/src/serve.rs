@@ -220,6 +220,10 @@ pub struct ServeConfig {
     /// `trusted_hosts` is the viewer its tailnet login names (`clax serve`
     /// reads the home's `[serve] tailscale_identity`).
     pub tailscale_identity: bool,
+    /// The tailnet login whose browser, through `tailscale serve` on one of
+    /// `trusted_hosts`, is the owner's (`clax serve` reads the home's
+    /// `[serve] owner_tailscale_login`); `None` for none.
+    pub owner_tailscale_login: Option<String>,
     /// Serve nothing but `/healthz`, static files and content by ID without
     /// a credential ([`clax_http::state::AppState::require_credential`]).
     pub require_credential: bool,
@@ -374,6 +378,7 @@ pub async fn serve(
             hosted: cfg.hosted,
             trusted_hosts: cfg.trusted_hosts,
             tailscale_identity: cfg.tailscale_identity,
+            owner_tailscale_login: cfg.owner_tailscale_login,
             require_credential: cfg.require_credential,
             bind: cfg.bind,
             port,
@@ -641,6 +646,7 @@ mod tests {
             hosted: None,
             trusted_hosts: Vec::new(),
             tailscale_identity: false,
+            owner_tailscale_login: None,
             require_credential: false,
             embed: None,
             quickstart: false,

@@ -200,6 +200,17 @@ tailscale_identity = true   # off by default; needs trusted_hosts
 
 `tailscale serve` adds `Tailscale-User-Login` (such as `bdelanghe@github`) and `Tailscale-User-Name` to each request of a tailnet user, and removes any copy the client sent. Clax reads them only from a request that came through it: a loopback peer naming a trusted host. Every other request (a LAN client, or a local process naming `localhost`) has them ignored, since anyone could send them there. Such a request is the viewer its login names, one per login, with Tailscale's name (the login when Tailscale gives no name, or one that looks like the owner's or a connected person's), shown on its comments and in the People list with its `tailscale_login`. "Your name" cannot change it (409 `name_from_tailscale`); change the name in the tailnet. It is a name, not a credential: a tailnet viewer is a viewer like any other, never the owner, never served the token, and cannot publish. `tailscale_identity = true` without `trusted_hosts`, or a value that is not `true` or `false`, stops the daemon from starting; `clax doctor` shows the setting on its `config` line.
 
+To be the owner from your own devices on the tailnet (the inbox, approvals, People, publishing from the shell), name your tailnet login as the owner's:
+
+```toml
+[serve]
+trusted_hosts = ["phobos.tail556f5b.ts.net"]
+tailscale_identity = true
+owner_tailscale_login = "bdelanghe@github"   # exact; no wildcard
+```
+
+A request that came through `tailscale serve` (a loopback peer naming a trusted host) whose `Tailscale-User-Login` is exactly that login is then the owner's browser, as one on this machine is: it is served the token and the owner's cookies. Any other login, a request on any other host, a request from any other peer, and a request the browser marks as made by another site (`Sec-Fetch-Site: cross-site` or `same-site`: `tailscale serve` adds the login to every request of your device, another site's too) are never the owner, whatever headers they carry. It is off unless set; set without `tailscale_identity = true`, or to a value that is not one login, it stops the daemon from starting; `clax doctor` shows it on its `config` line. Anyone who can sign in to the tailnet as that login can do whatever the owner can, so name only a login only you hold.
+
 To serve the internet (hosted mode), put the daemon behind a proxy that terminates TLS and keeps the `Host` header, and name its public origin in `config.toml`:
 
 ```toml

@@ -29,7 +29,10 @@
 //! or no one. With the home's `[serve] tailscale_identity` on, a request that
 //! came through `tailscale serve` with a tailnet user's headers is instead
 //! the viewer that user's login names ([`crate::auth::TailscaleUser`]): a
-//! viewer like any other, never the owner, whatever its login.
+//! viewer like any other, never the owner, whatever its login, except the
+//! one login the home's `[serve] owner_tailscale_login` names, matched
+//! exactly ([`crate::auth::TailscaleOwner`]): that request is a browser of
+//! the owner's ([`Identity::tailnet_owner`]), as one on this machine is.
 //!
 //! A hosted daemon ([`crate::hosted`]) serves the internet, so no request is
 //! from this machine: the owner and events cookies and the `clax_viewer`
@@ -248,6 +251,11 @@ pub struct Identity {
     ///
     /// [`cookie`]: Identity::cookie
     pub tailscale: Option<crate::auth::TailscaleUser>,
+    /// The request's tailnet user is the owner's login (the home's `[serve]
+    /// owner_tailscale_login`; [`crate::auth::TailscaleOwner`]): a browser
+    /// of the owner's, as one on this machine is, and its owner and events
+    /// cookies count as they do here. Never set without that marker.
+    pub tailnet_owner: bool,
 }
 
 use crate::headers::SESSION_HEADER;
@@ -286,6 +294,7 @@ impl Identity {
             hosted_viewer: None,
             device: None,
             tailscale: None,
+            tailnet_owner: false,
         }
     }
 
@@ -304,14 +313,29 @@ impl Identity {
             .get::<crate::auth::TailscaleUser>()
             .filter(|_| !id.grant_header)
             .cloned();
+        // The owner's tailnet login is the owner's browser, not a viewer:
+        // its cookies count as this machine's browser's do.
+        let tailnet_owner = !id.grant_header
+            && tailscale.is_some()
+            && extensions.get::<crate::auth::TailscaleOwner>().is_some();
+        let cookies_count = tailnet_owner && !crate::viewer::fetched_from_elsewhere(headers);
+        let tailscale = tailscale.filter(|_| !tailnet_owner);
         let id = Identity {
+            tailnet_owner,
+            owner_cookie: id.owner_cookie || (cookies_count && has_owner_cookie(headers, token)),
+            events_cookie: id.events_cookie
+                || (cookies_count && crate::auth::has_events_cookie(headers, token)),
             extension: !id.grant_header
                 && extensions.get::<crate::extension::ViaExtension>().is_some(),
             grant: extensions.get::<crate::agent::VerifiedGrant>().cloned(),
             device: extensions
                 .get::<crate::agent::PersonDevice>()
                 .map(|d| d.who.clone()),
-            cookie: if tailscale.is_some() { None } else { id.cookie },
+            cookie: if tailscale.is_some() || tailnet_owner {
+                None
+            } else {
+                id.cookie
+            },
             tailscale,
             ..id
         };
@@ -507,7 +531,8 @@ impl Identity {
                 || self.events_cookie
                 || self.owner_cookie
                 || self.extension
-                || self.hosted_owner)
+                || self.hosted_owner
+                || self.tailnet_owner)
     }
 
     /// 403 `forbidden` ("only the owner `what`") unless the request speaks
@@ -528,7 +553,11 @@ impl Identity {
     /// extension is a browser of the owner's.
     pub fn owner_browser(&self) -> bool {
         !self.grant_header
-            && (self.owner_cookie || self.events_cookie || self.extension || self.hosted_owner)
+            && (self.owner_cookie
+                || self.events_cookie
+                || self.extension
+                || self.hosted_owner
+                || self.tailnet_owner)
     }
 
     /// The viewer the request speaks for: the owner's row for the owner

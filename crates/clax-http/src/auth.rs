@@ -539,6 +539,23 @@ pub struct TailscaleUser {
     pub name: Option<String>,
 }
 
+/// Marker request extension: the request's [`TailscaleUser`] is the one the
+/// home's `[serve] owner_tailscale_login` names, so its browser is the
+/// owner's, as this machine's own is ([`crate::identity::Identity`]). Set by
+/// [`require_api_host`] only beside a [`TailscaleUser`], which itself needs
+/// `tailscale_identity`, a trusted host and a loopback peer
+/// ([`TailscaleUser::of_request`]), and only on a request the browser does
+/// not mark as made by another origin (`Sec-Fetch-Site` `same-site` or
+/// `cross-site`, [`crate::viewer::fetched_from_elsewhere`]); never otherwise.
+#[derive(Clone, Copy, Debug)]
+pub struct TailscaleOwner;
+
+/// Whether `user` is the owner's tailnet login `owner` (`[serve]
+/// owner_tailscale_login`): equal, byte for byte; never without one.
+pub fn tailscale_owner(user: &TailscaleUser, owner: Option<&str>) -> bool {
+    owner.is_some_and(|o| !o.is_empty() && o == user.login)
+}
+
 /// Login header `tailscale serve` sets for a tailnet user.
 pub const TAILSCALE_LOGIN_HEADER: &str = "tailscale-user-login";
 /// Display-name header `tailscale serve` sets for a tailnet user.
@@ -649,7 +666,9 @@ pub fn request_host_allowed(
 /// them, are its artifact's, which the site routes serve; nor are non-API
 /// paths (the shell, `/healthz`). A request on a trusted host, on any path,
 /// is marked [`ViaTrustedHost`], and with the home's `[serve]
-/// tailscale_identity` on, it carries its [`TailscaleUser`] when it has one.
+/// tailscale_identity` on, it carries its [`TailscaleUser`] when it has one,
+/// and [`TailscaleOwner`] when that is the home's `[serve]
+/// owner_tailscale_login`.
 pub async fn require_api_host(
     axum::extract::State(s): axum::extract::State<AppState>,
     mut req: axum::extract::Request,
@@ -666,6 +685,15 @@ pub async fn require_api_host(
         req.uri(),
         req.extensions(),
     ) {
+        // Never for a request the browser says another origin made: the
+        // proxy adds the login to every request of the owner's device, a
+        // cross-site one too, as a browser sends a cookie (the owner
+        // cookie's own rule, `crate::identity`).
+        if tailscale_owner(&u, s.owner_tailscale_login.as_deref())
+            && !crate::viewer::fetched_from_elsewhere(req.headers())
+        {
+            req.extensions_mut().insert(TailscaleOwner);
+        }
         req.extensions_mut().insert(u);
     }
     let path = req.uri().path();
@@ -974,6 +1002,28 @@ mod tests {
                 name: None
             })
         );
+    }
+
+    #[test]
+    fn only_the_exact_owner_login_is_the_owner() {
+        let u = |login: &str| TailscaleUser {
+            login: login.into(),
+            name: None,
+        };
+        assert!(tailscale_owner(
+            &u("bdelanghe@github"),
+            Some("bdelanghe@github")
+        ));
+        for (login, owner) in [
+            ("bdelanghe@github", None),
+            ("bdelanghe@github", Some("")),
+            ("eve@github", Some("bdelanghe@github")),
+            ("BDELANGHE@github", Some("bdelanghe@github")),
+            ("bdelanghe@github.evil", Some("bdelanghe@github")),
+            ("bdelanghe", Some("bdelanghe@github")),
+        ] {
+            assert!(!tailscale_owner(&u(login), owner), "{login} {owner:?}");
+        }
     }
 
     #[test]

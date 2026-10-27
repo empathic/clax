@@ -7904,7 +7904,8 @@ wildcard, IP address, `localhost` or `*.localhost`, or a value that is not
 an array of strings, is `bad_config` naming the file, and the daemon does
 not start. A browser on such a name is a viewer: it reads and comments
 (the comment routes accept `https://` or `http://` with that name as its
-origin), it is never served the token, and its loopback peer (the proxy)
+origin), it is never served the token (but see `owner_tailscale_login`
+below), and its loopback peer (the proxy)
 earns it nothing a loopback peer alone is trusted with (live pages, the
 extension's gateway). Artifact sites stay `<id>.localhost`, so the pages
 themselves open on this machine alone. `tailscale_identity = true`
@@ -7915,7 +7916,16 @@ Tailscale's name (see "The owner and other viewers"); the headers are
 ignored on every other request. It grants nothing. A value that is not a
 boolean, or `true` with no `trusted_hosts`, is `bad_config` naming the
 file, and the daemon does not start; `clax doctor`'s `config` line shows
-it when on. Other keys in `[serve]` are logged and ignored. `just watch` and `just dev` write
+it when on. `owner_tailscale_login` (a string, unset by default)
+names one tailnet login, matched exactly, whose browser is the owner's on a
+request `tailscale_identity` trusts (as above): such a request counts as an
+owner browser (`GET /api/token` serves it the token and the owner and
+events cookies, as it does on this machine's literal local host); any other
+login, host or peer, and a request whose `Sec-Fetch-Site` is `same-site` or
+`cross-site`, is never the owner. Set without `tailscale_identity =
+true`, or to anything but one login with no whitespace, control character
+or `*`, it is `bad_config` and the daemon does not start; `clax doctor`'s
+`config` line shows it. Other keys in `[serve]` are logged and ignored. `just watch` and `just dev` write
 `port = 7481` (or `CLAX_DEV_PORT`'s value) into `~/.clax-dev/config.toml`
 when it has no `[serve]` table, so every daemon for that home, whoever
 starts it, listens there. Outside `--shared`, both first stop a daemon of

@@ -18,6 +18,7 @@ fn cfg(
         hosted: None,
         trusted_hosts: Vec::new(),
         tailscale_identity: false,
+        owner_tailscale_login: None,
         require_credential: true,
         bind: std::net::Ipv4Addr::LOCALHOST.into(),
         port: 0,

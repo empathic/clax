@@ -24,17 +24,27 @@ use clax_store::viewers::Claim;
 /// names is claimed for the owner ([`clax_store::Store::claim_for_owner`]:
 /// only a viewer minted on this machine), the cookie removed, and a viewer
 /// the claim retired leaves every presence list and room at once.
+///
+/// The browser of the owner's tailnet login is served it too: a request
+/// marked [`clax_http::auth::TailscaleOwner`] (the home's `[serve]
+/// owner_tailscale_login`, through `tailscale serve` on a trusted host from
+/// a loopback peer; [`clax_http::auth::require_api_host`]) is the owner's
+/// browser on another machine of the owner's.
 pub async fn token(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
     clax_http::auth::PeerConn(Conn { peer: addr, .. }): clax_http::auth::PeerConn,
+    extensions: axum::http::Extensions,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let host = headers
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if !is_loopback(addr) || !is_local_host(host) {
+    let tailnet_owner = extensions
+        .get::<clax_http::auth::TailscaleOwner>()
+        .is_some();
+    if !tailnet_owner && (!is_loopback(addr) || !is_local_host(host)) {
         return Err(ApiError::forbidden(
             "not_loopback",
             "the token is only served to local processes",

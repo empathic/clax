@@ -712,6 +712,7 @@ impl TestServer {
             // None; tests of trusted hosts set them with `spawn_with`.
             trusted_hosts: Arc::default(),
             tailscale_identity: false,
+            owner_tailscale_login: None,
             grant_auth,
             agent_gate: Arc::new(clax_http::agent::Gate::new(Arc::new(
                 clax_http::agent::TokioTimer::default(),

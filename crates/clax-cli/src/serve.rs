@@ -47,6 +47,7 @@ pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
             .map(|c| c.gallery_quickstart())
             .unwrap_or(true),
         stop: clax_server::serve::StopOn::Signals,
+        owner_tailscale_login: owner_tailscale_login(home)?,
     };
     let r = rt.block_on(serve(cfg, None));
     // Dropping the runtime would wait without limit for its blocking tasks:
@@ -94,6 +95,16 @@ fn tailscale_identity(home: &Home) -> anyhow::Result<bool> {
         tracing::info!("viewers through [serve] trusted_hosts are named by their tailnet login");
     }
     Ok(on)
+}
+
+/// The home's `[serve] owner_tailscale_login`. A bad value, or one without
+/// `tailscale_identity = true`, stops the daemon.
+fn owner_tailscale_login(home: &Home) -> anyhow::Result<Option<String>> {
+    let login = clax_core::config::HomeConfig::load(home.root())?.serve_owner_tailscale_login()?;
+    if let Some(l) = &login {
+        tracing::info!(login = %l, "the tailnet login's browser through [serve] trusted_hosts is the owner's");
+    }
+    Ok(login)
 }
 
 /// The daemon outlives whoever started it, so any descriptor it inherits stays

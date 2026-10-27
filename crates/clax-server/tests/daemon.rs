@@ -135,6 +135,7 @@ async fn serve_picks_a_free_port_writes_info_and_shuts_down_on_request() {
         stop: StopOn::Signals,
         embed: None,
         quickstart: false,
+        owner_tailscale_login: None,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -183,6 +184,7 @@ fn config_on(home: &Home, port: u16) -> ServeConfig {
         stop: StopOn::Signals,
         embed: None,
         quickstart: false,
+        owner_tailscale_login: None,
     }
 }
 
@@ -287,6 +289,7 @@ async fn shutdown_completes_while_an_sse_client_stays_connected() {
         stop: StopOn::Signals,
         embed: None,
         quickstart: false,
+        owner_tailscale_login: None,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -337,6 +340,7 @@ async fn serve_exits_when_daemon_json_is_deleted() {
         stop: StopOn::Signals,
         embed: None,
         quickstart: false,
+        owner_tailscale_login: None,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     rx.await.unwrap();
@@ -372,6 +376,7 @@ async fn reaper_ends_idle_sessions_whose_process_is_gone() {
         stop: StopOn::Signals,
         embed: None,
         quickstart: false,
+        owner_tailscale_login: None,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -615,6 +620,7 @@ async fn a_serve_that_fails_after_its_core_started_stops_the_core() {
             hosted: None,
             trusted_hosts: Vec::new(),
             tailscale_identity: false,
+            owner_tailscale_login: None,
             require_credential: false,
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 0,
@@ -694,6 +700,7 @@ async fn a_stopped_core_leaves_no_task_of_its_linked_sync() {
             hosted: None,
             trusted_hosts: Vec::new(),
             tailscale_identity: false,
+            owner_tailscale_login: None,
             require_credential: false,
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 0,

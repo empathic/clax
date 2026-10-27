@@ -555,6 +555,7 @@ impl Fleet {
             hosted: Some(Arc::new(hosted)),
             trusted_hosts: Vec::new(),
             tailscale_identity: false,
+            owner_tailscale_login: None,
             require_credential: false,
             bind: IpAddr::from([0, 0, 0, 0]),
             port: self.cfg.port,

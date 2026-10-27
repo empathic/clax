@@ -26,7 +26,9 @@
 //! [`HomeConfig::serve_trusted_hosts`]); a daemon whose list is invalid does
 //! not start. `[serve] tailscale_identity` names a viewer that came through
 //! `tailscale serve` by its tailnet login
-//! ([`HomeConfig::serve_tailscale_identity`]). Any other key in `[serve]`
+//! ([`HomeConfig::serve_tailscale_identity`]), and `[serve]
+//! owner_tailscale_login` names the one tailnet login whose browser is the
+//! owner's ([`HomeConfig::serve_owner_tailscale_login`]). Any other key in `[serve]`
 //! is logged and ignored. `[sample]`
 //! configures the
 //! `sample` capability ([`HomeConfig::sample`]); a daemon whose `[sample]` is
@@ -635,6 +637,53 @@ impl HomeConfig {
         Ok(on)
     }
 
+    /// `[serve] owner_tailscale_login`: the one tailnet login (such as
+    /// `bdelanghe@github`, matched exactly) whose browser, on a request
+    /// through `tailscale serve` that [`HomeConfig::serve_tailscale_identity`]
+    /// trusts, is the owner's, as this machine's own browser is; `None` when
+    /// absent.
+    ///
+    /// # Errors
+    /// `Invalid { code: "bad_config" }` naming the file (or the variable)
+    /// and the key when `[serve]` is not a table, the key is not a string of
+    /// 1 to 256 bytes with no whitespace, control character or `*`, or it is
+    /// set without `tailscale_identity = true` (whose errors it also
+    /// returns). The daemon does not start on it.
+    pub fn serve_owner_tailscale_login(&self) -> Result<Option<String>> {
+        if let Some(serve) = self.value("serve")
+            && serve.as_dict().is_none()
+        {
+            return Err(self.bad(
+                "serve",
+                "[serve]",
+                format!("must be a table, not {}", kind_of(&serve)),
+            ));
+        }
+        let Some(v) = self.value("serve.owner_tailscale_login") else {
+            return Ok(None);
+        };
+        let bad = |what: String| self.bad("serve.owner_tailscale_login", "[serve]", what);
+        let Some(login) = v.as_str().filter(|l| {
+            (1..=256).contains(&l.len())
+                && !l
+                    .chars()
+                    .any(|c| c.is_whitespace() || c.is_control() || c == '*')
+        }) else {
+            return Err(bad(format!(
+                "owner_tailscale_login must be one tailnet login such as \"you@github\" (no space, control character or wildcard), not {}",
+                shown(&v)
+            )));
+        };
+        let login = login.to_string();
+        if !self.serve_tailscale_identity()? {
+            return Err(bad(
+                "owner_tailscale_login needs tailscale_identity = true (and trusted_hosts)"
+                    .to_string(),
+            ));
+        }
+        Ok(Some(login))
+    }
+
     /// `[sample]`: the default when absent.
     ///
     /// # Errors
@@ -957,7 +1006,12 @@ fn bad_file(path: &Path, e: &dyn std::fmt::Display) -> CoreError {
 }
 
 /// Keys `[serve]` understands; any other key there is logged and ignored.
-const SERVE_KEYS: &[&str] = &["port", "trusted_hosts", "tailscale_identity"];
+const SERVE_KEYS: &[&str] = &[
+    "port",
+    "trusted_hosts",
+    "tailscale_identity",
+    "owner_tailscale_login",
+];
 
 /// `[sample]`: the `sample` capability's provider, key variable, models, and cap.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -2455,6 +2509,37 @@ mod tests {
             c.serve_trusted_hosts().unwrap(),
             ["phobos.tail556f5b.ts.net"]
         );
+    }
+
+    #[test]
+    fn the_owner_tailscale_login_is_exact_and_needs_tailscale_identity() {
+        const ON: &str =
+            "[serve]\ntrusted_hosts = [\"phobos.tail556f5b.ts.net\"]\ntailscale_identity = true\n";
+        for t in ["", "[serve]\nport = 7481\n", ON] {
+            assert_eq!(with(t).serve_owner_tailscale_login().unwrap(), None, "{t}");
+        }
+        assert_eq!(
+            with(&format!(
+                "{ON}owner_tailscale_login = \"bdelanghe@github\"\n"
+            ))
+            .serve_owner_tailscale_login()
+            .unwrap()
+            .as_deref(),
+            Some("bdelanghe@github")
+        );
+        for t in [
+            "[serve]\nowner_tailscale_login = \"bdelanghe@github\"\n".to_string(),
+            "[serve]\ntrusted_hosts = [\"phobos.tail556f5b.ts.net\"]\nowner_tailscale_login = \"bdelanghe@github\"\n".to_string(),
+            format!("{ON}owner_tailscale_login = \"\"\n"),
+            format!("{ON}owner_tailscale_login = \"*\"\n"),
+            format!("{ON}owner_tailscale_login = \"*@github\"\n"),
+            format!("{ON}owner_tailscale_login = \"a b\"\n"),
+            format!("{ON}owner_tailscale_login = 1\n"),
+            format!("{ON}owner_tailscale_login = [\"bdelanghe@github\"]\n"),
+        ] {
+            let e = with(&t).serve_owner_tailscale_login().unwrap_err().to_string();
+            assert!(e.contains("config.toml") && e.contains("[serve]"), "{t}: {e}");
+        }
     }
 
     #[test]

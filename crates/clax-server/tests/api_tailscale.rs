@@ -219,3 +219,174 @@ async fn the_headers_are_ignored_from_a_peer_that_is_not_loopback() {
     assert_eq!(v["display_name"], Value::Null);
     assert!(cookie, "a cookie viewer, as without the headers");
 }
+
+/// A daemon trusting [`TRUSTED`], naming tailnet viewers, whose `[serve]
+/// owner_tailscale_login` is `owner`.
+async fn owned_by(owner: Option<&str>) -> TestServer {
+    let owner = owner.map(str::to_string);
+    TestServer::spawn_with(move |s| {
+        s.trusted_hosts = vec![TRUSTED.to_string()].into();
+        s.tailscale_identity = true;
+        s.owner_tailscale_login = owner.map(std::sync::Arc::from);
+    })
+    .await
+}
+
+/// `GET path` on `base` through `host` as the tailnet user `login`: its
+/// status and body.
+async fn get_as(ts: &TestServer, base: &str, path: &str, host: &str, login: &str) -> (u16, Value) {
+    let res = ts
+        .client
+        .get(format!("{base}{path}"))
+        .header("host", host)
+        .header("tailscale-user-login", login)
+        .header("tailscale-user-name", "Robert DeLanghe")
+        .header("sec-fetch-site", "same-origin")
+        .send()
+        .await
+        .unwrap();
+    let status = res.status().as_u16();
+    (status, res.json().await.unwrap_or(Value::Null))
+}
+
+/// Whether `login` through `host` on `base` is the owner's browser: it is
+/// served the token and the owner's inbox.
+async fn is_owner(ts: &TestServer, base: &str, host: &str, login: &str) -> bool {
+    let (token, body) = get_as(ts, base, "/api/token", host, login).await;
+    let (inbox, _) = get_as(ts, base, "/api/inbox", host, login).await;
+    let (_, me) = get_as(ts, base, "/api/viewers/me", host, login).await;
+    let owner = token == 200 && body["token"] == ts.token.as_str();
+    assert_eq!(
+        owner,
+        inbox == 200,
+        "{login} via {host}: token {token}, inbox {inbox}"
+    );
+    // What the localhost owner's browser gets on main besides the inbox:
+    // People, the agents' questions and the approval requests.
+    for path in ["/api/people", "/api/questions", "/api/approvals/requests"] {
+        let (status, _) = get_as(ts, base, path, host, login).await;
+        assert_eq!(
+            owner,
+            status == 200,
+            "{login} via {host}: {path} answered {status}"
+        );
+    }
+    assert_eq!(
+        owner,
+        me["viewer"].get("tailscale_login").is_none(),
+        "{login} via {host}: the owner is the owner's row, not a tailnet viewer: {me}"
+    );
+    owner
+}
+
+#[tokio::test]
+async fn the_owners_tailnet_login_through_serve_is_the_owner() {
+    let ts = owned_by(Some("bdelanghe@github")).await;
+    assert!(is_owner(&ts, &ts.base, TRUSTED, "bdelanghe@github").await);
+    assert!(is_owner(&ts, &ts.base, &format!("{TRUSTED}:443"), "bdelanghe@github").await);
+    // The token it holds publishes, as the localhost shell's does.
+    let (_, body) = get_as(&ts, &ts.base, "/api/token", TRUSTED, "bdelanghe@github").await;
+    let res = ts
+        .client
+        .get(format!("{}/api/artifacts", ts.base))
+        .header("host", TRUSTED)
+        .header(
+            "authorization",
+            format!("Bearer {}", body["token"].as_str().unwrap()),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+}
+
+#[tokio::test]
+async fn another_login_or_host_or_no_setting_is_never_the_owner() {
+    let ts = owned_by(Some("bdelanghe@github")).await;
+    for login in [
+        "eve@github",
+        "BDELANGHE@github",
+        "bdelanghe@github.evil",
+        "bdelanghe",
+    ] {
+        assert!(!is_owner(&ts, &ts.base, TRUSTED, login).await, "{login}");
+    }
+    // A host the daemon does not trust: the headers count for nothing, and
+    // the API refuses the host anyway.
+    let (status, _) = get_as(
+        &ts,
+        &ts.base,
+        "/api/token",
+        "evil.example",
+        "bdelanghe@github",
+    )
+    .await;
+    assert_eq!(status, 403);
+    // localhost with the headers: this machine's own rule (the token for a
+    // local process), never the tailnet one, and the headers name nothing.
+    let port = ts.addr.port();
+    let (_, me) = get_as(
+        &ts,
+        &ts.base,
+        "/api/viewers/me",
+        &format!("localhost:{port}"),
+        "bdelanghe@github",
+    )
+    .await;
+    assert!(me["viewer"].get("tailscale_login").is_none(), "{me}");
+    // With the setting unset, the owner's login is a tailnet viewer.
+    for owner in [None, Some("someone-else@github")] {
+        let ts = owned_by(owner).await;
+        assert!(
+            !is_owner(&ts, &ts.base, TRUSTED, "bdelanghe@github").await,
+            "{owner:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_owners_login_from_a_peer_that_is_not_loopback_is_not_the_owner() {
+    let Some(ip) = non_loopback_ipv4() else {
+        eprintln!("skipping: this machine has no non-loopback IPv4 address");
+        return;
+    };
+    let ts = TestServer::spawn_on(ip, |s| {
+        s.trusted_hosts = vec![TRUSTED.to_string()].into();
+        s.tailscale_identity = true;
+        s.owner_tailscale_login = Some(std::sync::Arc::from("bdelanghe@github"));
+    })
+    .await;
+    let lan = format!("http://{ip}:{}", ts.addr.port());
+    let (token, _) = get_as(&ts, &lan, "/api/token", TRUSTED, "bdelanghe@github").await;
+    assert_eq!(
+        token, 403,
+        "a LAN client naming the trusted host is not the proxy"
+    );
+    let (inbox, _) = get_as(&ts, &lan, "/api/inbox", TRUSTED, "bdelanghe@github").await;
+    assert_ne!(inbox, 200);
+}
+
+#[tokio::test]
+async fn the_owners_login_on_a_request_another_origin_made_is_not_the_owner() {
+    // `tailscale serve` adds the login to every request of the owner's
+    // device, one another site's page makes too: the browser's
+    // `Sec-Fetch-Site` keeps such a request from being the owner's, as it
+    // keeps the owner cookie from counting.
+    let ts = owned_by(Some("bdelanghe@github")).await;
+    for site in ["cross-site", "same-site"] {
+        for path in ["/api/token", "/api/inbox", "/api/people"] {
+            let res = ts
+                .client
+                .get(format!("{}{path}", ts.base))
+                .header("host", TRUSTED)
+                .header("tailscale-user-login", "bdelanghe@github")
+                .header("sec-fetch-site", site)
+                .send()
+                .await
+                .unwrap();
+            assert_ne!(res.status(), 200, "{site} {path}");
+        }
+    }
+    // The same request from the shell's own origin is the owner's.
+    assert!(is_owner(&ts, &ts.base, TRUSTED, "bdelanghe@github").await);
+}

@@ -213,6 +213,10 @@ pub struct AppState {
     /// `[serve] tailscale_identity`: a request through `tailscale serve` is
     /// the viewer its tailnet login names ([`crate::auth::TailscaleUser`]).
     pub tailscale_identity: bool,
+    /// `[serve] owner_tailscale_login`: the tailnet login that, on a request
+    /// [`crate::auth::TailscaleUser`] trusts, is the owner's browser
+    /// ([`crate::auth::TailscaleOwner`]); `None` for none.
+    pub owner_tailscale_login: Option<Arc<str>>,
     /// The grant flow's token index and nonce caches (spec §6.4, §6.6).
     pub grant_auth: Arc<crate::grant_auth::GrantAuth>,
     /// The bounds on agents' unverified request bodies (spec §6.6).
@@ -345,6 +349,8 @@ pub struct StateParts {
     pub trusted_hosts: Vec<String>,
     /// `[serve] tailscale_identity`; `false` for off.
     pub tailscale_identity: bool,
+    /// `[serve] owner_tailscale_login`; `None` for none.
+    pub owner_tailscale_login: Option<String>,
     /// Hosted mode ([`crate::hosted`]); `None` for the local daemon.
     pub hosted: Option<Arc<crate::hosted::Hosted>>,
     /// The web UI the daemon serves.
@@ -434,6 +440,7 @@ impl AppState {
             lan_host: None,
             trusted_hosts: p.trusted_hosts.into(),
             tailscale_identity: p.tailscale_identity,
+            owner_tailscale_login: p.owner_tailscale_login.map(Arc::from),
             grant_auth,
             agent_gate: Arc::new(crate::agent::Gate::new(p.agent_timer)),
             vis_gen,

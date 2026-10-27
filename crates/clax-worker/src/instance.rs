@@ -661,6 +661,7 @@ impl Instance {
             // A hosted daemon's gate stands in for the `/api` host check.
             trusted_hosts: Vec::new(),
             tailscale_identity: false,
+            owner_tailscale_login: None,
             hosted,
             web: Arc::new(crate::web::WebUi),
             embed: None,

@@ -564,8 +564,9 @@ fn journal_check(daemon: bool, status: Option<&serde_json::Value>) -> serde_json
 /// present, is a boolean that is `true` only with trusted hosts. The detail
 /// names the port daemons for this home start on and where it comes from
 /// (`CLAX_PORT`, `CLAX_SERVE__PORT`, the file, or the default), the trusted
-/// hosts when there are any, and whether Tailscale names their viewers, or
-/// the error.
+/// hosts when there are any, whether Tailscale names their viewers, and the
+/// owner's tailnet login (`[serve] owner_tailscale_login`) when set, or the
+/// error.
 fn config_check(home: &Home, env: Option<std::ffi::OsString>) -> serde_json::Value {
     config_check_with(home, env, clax_core::config::process_env())
 }
@@ -600,22 +601,28 @@ fn config_check_with(
     let serve = cfg.as_ref().map_err(|e| e.to_string()).and_then(|c| {
         let hosts = c.serve_trusted_hosts().map_err(|e| e.to_string())?;
         let on = c.serve_tailscale_identity().map_err(|e| e.to_string())?;
-        Ok((hosts, on))
+        let owner = c.serve_owner_tailscale_login().map_err(|e| e.to_string())?;
+        Ok((hosts, on, owner))
     });
     match serve {
         Err(e) => check("config", false, e),
-        Ok((hosts, _)) if hosts.is_empty() => check("config", true, port),
-        Ok((hosts, on)) => check(
+        Ok((hosts, _, _)) if hosts.is_empty() => check("config", true, port),
+        Ok((hosts, on, owner)) => check(
             "config",
             true,
             format!(
-                "{port}; [serve] trusted_hosts = {}{}",
+                "{port}; [serve] trusted_hosts = {}{}{}",
                 hosts.join(", "),
                 if on {
                     "; [serve] tailscale_identity = true (viewers through them are named by their tailnet login)"
                 } else {
                     ""
-                }
+                },
+                owner
+                    .map(|l| format!(
+                        "; [serve] owner_tailscale_login = {l} (that login's browser through them is the owner's)"
+                    ))
+                    .unwrap_or_default()
             ),
         ),
     }
@@ -983,6 +990,30 @@ mod tests {
         assert_eq!(
             c["detail"],
             "default port 7480; [serve] trusted_hosts = phobos.tail556f5b.ts.net; [serve] tailscale_identity = true (viewers through them are named by their tailnet login)"
+        );
+        toml(
+            "[serve]\ntrusted_hosts = [\"phobos.tail556f5b.ts.net\"]\ntailscale_identity = true\nowner_tailscale_login = \"bdelanghe@github\"\n",
+        );
+        let c = config_check_with(&home, None, []);
+        assert_eq!(c["ok"], true, "{c}");
+        assert!(
+            c["detail"]
+                .as_str()
+                .unwrap()
+                .ends_with("; [serve] owner_tailscale_login = bdelanghe@github (that login's browser through them is the owner's)"),
+            "{c}"
+        );
+        toml(
+            "[serve]\ntrusted_hosts = [\"phobos.tail556f5b.ts.net\"]\nowner_tailscale_login = \"bdelanghe@github\"\n",
+        );
+        let bad = config_check_with(&home, None, []);
+        assert_eq!(bad["ok"], false, "{bad}");
+        assert!(
+            bad["detail"]
+                .as_str()
+                .unwrap()
+                .contains("owner_tailscale_login"),
+            "{bad}"
         );
         toml("[serve]\ntailscale_identity = true\n");
         let bad = config_check_with(&home, None, []);
