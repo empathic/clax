@@ -3,7 +3,7 @@
 //   node --test crates/clax-worker/deploy-lib.test.mjs
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildId, healthOf, partialTriggerUpdate } from "./deploy-lib.mjs";
+import { buildId, doneText, healthOf, partialTriggerUpdate } from "./deploy-lib.mjs";
 
 // What `wrangler deploy` printed when the custom-domains call failed after
 // the upload (Cloudflare API code 10013); running it again succeeded.
@@ -68,4 +68,30 @@ test("an instance from before the deploy, of the same version, is waited past", 
   const older = healthOf(JSON.stringify({ version: "0.6.0", build: "0a2f4805a1b2-20261023T090000Z-00000000" }), want);
   assert.match(older.waiting, /build 0a2f4805a1b2-20261023T090000Z-00000000/);
   assert.match(healthOf("ok", want).waiting, /not its JSON/);
+});
+
+const DONE = { pub: "clax.example.com", name: "clax", diag: false, record: "/r/clax.example.com.json", kek: "/r/clax.example.com.kek", smoke: "node smoke-remote.mjs --deploy /r/clax.example.com.json" };
+const FIRST_TIME = [/Shown once/, /Setup: +https:\/\/clax\.example\.com\/setup/, /Next:/, /Smoke the platform first/];
+
+test("the first deploy prints its secrets once and the setup steps", () => {
+  const t = doneText({ ...DONE, generated: { SETUP_SECRET: "s3cret", CLAX_TOKEN: "t0ken", CLAX_KEK: "kek-never-shown" } });
+  for (const re of FIRST_TIME) assert.match(t, re);
+  assert.match(t, /SETUP_SECRET {2}s3cret/);
+  assert.match(t, /CLAX_TOKEN {4}t0ken/);
+  assert.doesNotMatch(t, /kek-never-shown/);
+  assert.match(t, /Record: +\/r\/clax\.example\.com\.json/);
+});
+
+test("a redeploy prints no first-time setup text, whatever else it uploaded", () => {
+  for (const generated of [null, undefined, {}, { GITHUB_CLIENT_SECRET: "gh" }, { CLAX_KEK: "k" }]) {
+    const t = doneText({ ...DONE, generated });
+    for (const re of FIRST_TIME) assert.doesNotMatch(t, re, JSON.stringify(generated));
+    assert.match(t, /Record: +\/r\/clax\.example\.com\.json/);
+    assert.match(t, /CLAX_KEK backup: \/r\/clax\.example\.com\.kek/);
+    assert.match(t, /Logs: +npx wrangler tail clax/);
+  }
+});
+
+test("a --ci deploy names no CLAX_KEK backup", () => {
+  assert.doesNotMatch(doneText({ ...DONE, kek: null, generated: null }), /CLAX_KEK/);
 });

@@ -48,7 +48,9 @@
 //    `https://<random ID>.<site domain>/_clax/healthz`; when that fails it
 //    prints the manual steps a wildcard needs (the zone on the account, a
 //    proxied `*` DNS record, a certificate covering `*.<site domain>`), each
-//    with what it found; then the setup URL and the next steps.
+//    with what it found; then, on a first deploy (it generated
+//    SETUP_SECRET or CLAX_TOKEN), the secrets once, the setup URL and the
+//    next steps.
 //
 // `--config-only` stops after step 5 and runs neither wrangler nor a build:
 // it needs no login and changes nothing but the config file.
@@ -85,7 +87,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { dirname, join, resolve } from "node:path";
-import { buildId, healthOf, partialTriggerUpdate } from "./deploy-lib.mjs";
+import { buildId, doneText, healthOf, partialTriggerUpdate } from "./deploy-lib.mjs";
 import { HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
@@ -866,24 +868,8 @@ async function main() {
   await checkSiteHost(site, account, Math.min(o.wait, 120));
 
   step("Done");
-  if (secrets) {
-    console.log("\n   Shown once (also in the record below, 0600; delete the record once set up):");
-    if (secrets.SETUP_SECRET) console.log(`     SETUP_SECRET  ${secrets.SETUP_SECRET}`);
-    if (secrets.CLAX_TOKEN) console.log(`     CLAX_TOKEN    ${secrets.CLAX_TOKEN}`);
-  }
-  console.log(`
-   Record:  ${recordPath(pub)}
-   CLAX_KEK backup: ${kekPath(pub)} (0600; keep it: without it and the Worker's
-            secret, every model key ClaxBot stored is lost)
-   Setup:   https://${pub}/setup  (enter SETUP_SECRET and your name; this browser becomes the owner)
-
-   Next:
-   1. Smoke the platform first (it can do the setup itself if you have not):
-        node smoke-remote.mjs --deploy ${recordPath(pub)}
-   2. Open https://${pub}/setup in your browser, or, if the smoke did the setup,
-      sign in with the link it printed.
-   3. Logs: npx wrangler tail ${o.name}${o.diag ? `
-   4. Once the smoke is green, turn the diagnostics off: the same command without --diag` : ""}`);
+  // The first-time setup text only when this deploy generated the secrets.
+  console.log(doneText({ pub, name: o.name, diag: o.diag, generated: secrets, record: recordPath(pub), kek: kekPath(pub), smoke: `node smoke-remote.mjs --deploy ${recordPath(pub)}` }));
   if (o.diag) diagReminder(pub);
 }
 

@@ -37,3 +37,42 @@ export function healthOf(body, want) {
   const was = j.build ? `build ${j.build}` : "a build that reports none";
   return { waiting: `the instance from before this deploy (${was}, started ${j.started_at ?? "?"}) still answers; waiting for build ${want}` };
 }
+
+/** What deploy.mjs prints when it is done. The first-time setup text (the
+ * secrets shown once, the setup URL, the next steps) only when this deploy
+ * generated SETUP_SECRET or CLAX_TOKEN (`generated`, the secrets it made);
+ * every deploy names the record and the logs, and the CLAX_KEK backup
+ * when `kek` names it (a --ci deploy keeps none). */
+export function doneText({ pub, name, diag, generated, record, kek, smoke }) {
+  const first = Boolean(generated?.SETUP_SECRET || generated?.CLAX_TOKEN);
+  const lines = [];
+  if (first) {
+    lines.push("", "   Shown once (also in the record below, 0600; delete the record once set up):");
+    if (generated.SETUP_SECRET) lines.push(`     SETUP_SECRET  ${generated.SETUP_SECRET}`);
+    if (generated.CLAX_TOKEN) lines.push(`     CLAX_TOKEN    ${generated.CLAX_TOKEN}`);
+  }
+  lines.push("", `   Record:  ${record}`);
+  if (kek) {
+    lines.push(
+      `   CLAX_KEK backup: ${kek} (0600; keep it: without it and the Worker's`,
+      "            secret, every model key ClaxBot stored is lost)",
+    );
+  }
+  if (first) {
+    lines.push(
+      `   Setup:   https://${pub}/setup  (enter SETUP_SECRET and your name; this browser becomes the owner)`,
+      "",
+      "   Next:",
+      "   1. Smoke the platform first (it can do the setup itself if you have not):",
+      `        ${smoke}`,
+      `   2. Open https://${pub}/setup in your browser, or, if the smoke did the setup,`,
+      "      sign in with the link it printed.",
+      `   3. Logs: npx wrangler tail ${name}`,
+    );
+    if (diag) lines.push("   4. Once the smoke is green, turn the diagnostics off: the same command without --diag");
+  } else {
+    lines.push(`   Logs:    npx wrangler tail ${name}`);
+    if (diag) lines.push("   Once the smoke is green, turn the diagnostics off: the same command without --diag");
+  }
+  return lines.join("\n");
+}
