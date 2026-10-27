@@ -27,6 +27,7 @@ APP_DIRS = [
     "contract/**",
     "scripts/**",
     "quickstart/**",
+    "sdk/**",
 ]
 
 TEST_FILES = [

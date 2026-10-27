@@ -10,7 +10,7 @@
     "bundle-size": "node scripts/bundle-size.mjs",
     "dev": "vite -c vite.shell.config.ts",
     "test": "vitest run",
-    "lint": "oxlint --deny-warnings shell bridge extension e2e perf reel scripts vite.shell.config.ts vite.bridge.config.ts vite.bridge-parts.config.ts vite.transport.config.ts vitest.config.ts svelte.config.js playwright.config.ts",
+    "lint": "oxlint --deny-warnings shell bridge extension sdk e2e perf reel scripts vite.shell.config.ts vite.bridge.config.ts vite.bridge-parts.config.ts vite.transport.config.ts vitest.config.ts svelte.config.js playwright.config.ts",
     "typecheck": "tsc --noEmit && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "e2e": "playwright test",
     "perf": "playwright test -c perf/playwright.config.ts",
