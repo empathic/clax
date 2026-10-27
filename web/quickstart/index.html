@@ -84,14 +84,16 @@
   let shell = null;
   const canCache = {};
   const SHOWME = {
-    comment: ["comment", "Show me Comment"], send: ["send", "Show me Send to agent"],
+    send: ["send", "Show me Send to agent"],
     change: ["versions", "Show me Versions"], fork: ["fork", "Show me Fork"],
   };
   const showOk = (name) => !!shell && (name === "send" || !!canCache[name]);
   function showMe(id) {
     const [name, label] = SHOWME[id];
-    return `<span class="showme-row"><button type="button" class="btn showme" data-show="${name}"${showOk(name) ? "" : " hidden"}>${label}</button>${id === "comment" ? `<button type="button" class="btn showme" data-try${shell ? "" : " hidden"}>Try it</button>` : ""}<span class="muted-note showme-hint" role="status" hidden></span></span>`;
+    return `<span class="showme-row"><button type="button" class="btn showme" data-show="${name}"${showOk(name) ? "" : " hidden"}>${label}</button><span class="muted-note showme-hint" role="status" hidden></span></span>`;
   }
+  /** The comment step's one button, a small copy of Clax's own Comment control: it rings the real one and turns comment mode on from the same click. */
+  const commentButton = () => `<span class="showme-row"><button type="button" class="btn showme commentbtn" data-comment${shell ? "" : " hidden"}><span class="keycap" aria-hidden="true">C</span>Comment</button><span class="muted-note comment-or"${shell ? "" : " hidden"}>or press C</span><span class="muted-note showme-hint" role="status" hidden></span></span>`;
   /** Shows each "Show me" under `root` whose control is on screen now (Send always, with a hint when it is not). */
   async function syncShow(root) {
     if (!shell) return;
@@ -100,7 +102,7 @@
       try { canCache[name] = await shell.can(name); } catch (_) { canCache[name] = false; }
       b.hidden = !showOk(name);
     }
-    root.querySelectorAll("[data-try]").forEach((b) => { b.hidden = false; });
+    root.querySelectorAll("[data-comment], .comment-or").forEach((b) => { b.hidden = false; });
   }
   async function shellClick(btn) {
     const hint = btn.parentElement.querySelector(".showme-hint");
@@ -108,13 +110,16 @@
     hint.hidden = true;
     let ok = false;
     try {
-      if (btn.dataset.try !== undefined) {
-        ok = await shell.commentMode(true);
+      if (btn.dataset.comment !== undefined) {
+        // Both calls start inside the click, so comment mode has the viewer's gesture.
+        const ring = shell.highlight("comment"), on = shell.commentMode(true);
+        ring.catch(() => {});
+        ok = await on;
         say(ok ? "Comment mode is on. Press Escape to leave it." : "Comment mode did not turn on.");
         return;
       }
       ok = await shell.highlight(btn.dataset.show);
-    } catch (_) { ok = false; if (btn.dataset.try !== undefined) return say("Comment mode is not available here."); }
+    } catch (_) { ok = false; if (btn.dataset.comment !== undefined) return say("Comment mode is not available here."); }
     if (!ok) say(btn.dataset.show === "send" ? "Open Threads first." : "Not on screen right now.");
   }
   const tip = (h, s) => `<div class="tip"><b>${h}</b>${s}</div>`;
@@ -183,7 +188,7 @@
       body: `<p>On this page or any page of yours, turn on comment mode, then do one of these:</p>
         <ul><li><b>Point</b> at an element</li><li><b>Select</b> some text</li><li><b>Drag</b> over part of an image or an area</li><li>Comment on the <b>whole page</b></li></ul>
         <p>Ask for anything: "make the boxes blue", "add a step for our team's setup", "cut the parts I've done". A comment stays between people until you send it to an agent or ClaxBot.</p>` },
-    send: { kicker: "Step", title: "Send it to the agent", sub: "To your agent, or ClaxBot",
+    send: { kicker: "Step", title: "Send it to the agent", sub: "To your agent or ClaxBot",
       body: `<p>Press <b>Send to agent</b> on the thread, or write <code>@agent</code> in it. When several agents are watching, pick which one gets it, or write <code>@&lt;agent name&gt;</code>. To use ClaxBot, pick ClaxBot.</p>
         <h3>How the agent hears about it</h3>
         <ul><li><b>ClaxBot</b> runs inside Clax, so it answers at once.</li>
@@ -318,7 +323,7 @@
     b.dataset.id = id; b.tabIndex = 0; b.setAttribute("role", "button");
     b.addEventListener("click", (e) => {
       const inner = e.target.closest("a, button");
-      if (inner && inner !== b) { if (inner.dataset.toggle) toggleDone(inner.dataset.toggle, id); else if (inner.dataset.show !== undefined || inner.dataset.try !== undefined) shellClick(inner); else if (inner.dataset.go) select(inner.dataset.go); return; }
+      if (inner && inner !== b) { if (inner.dataset.toggle) toggleDone(inner.dataset.toggle, id); else if (inner.dataset.show !== undefined || inner.dataset.comment !== undefined) shellClick(inner); else if (inner.dataset.go) select(inner.dataset.go); return; }
       select(id);
     });
     b.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target === b) { e.preventDefault(); select(id); } });
@@ -526,7 +531,8 @@
       html += `<p class="muted-note">Running Clax on your own machine, or hosting it yourself? That has its own guide in the <a href="https://github.com/empathic/clax#readme" target="_blank" rel="noopener">README</a>.</p>`;
     }
     if (n.starter) html = `<h3>Try this</h3><p>Paste it to your agent, or send it to ClaxBot:</p>${cmd(n.starter, { plain: true })}` + html;
-    if (SHOWME[id]) html += `<div class="showme-wrap">${showMe(id)}</div>`;
+    if (id === "comment") html += `<div class="showme-wrap">${commentButton()}</div>`;
+    else if (SHOWME[id]) html += `<div class="showme-wrap">${showMe(id)}</div>`;
     const here = ideasFor(id);
     if (here.length) {
       const rank = { building: 0, planned: 1, proposed: 2, implemented: 3, shipped: 4 };
@@ -563,7 +569,7 @@
     const t = e.target.closest("button, a");
     if (!t) return;
     if (t.dataset.copy !== undefined) return copy(t);
-    if (t.dataset.show !== undefined || t.dataset.try !== undefined) return shellClick(t);
+    if (t.dataset.show !== undefined || t.dataset.comment !== undefined) return shellClick(t);
     if (t.dataset.skip) { skipInstall(); return select("attach"); }
     if (t.dataset.agent) { state.agent = t.dataset.agent; state.have = "new"; save(); return select(`install-${state.agent}`); }
     if (t.dataset.done) {

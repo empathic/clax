@@ -390,3 +390,8 @@
   /* A step's ideas show their stage; built ones read as done. */
   .ideas-here li .tag { font-size: 11px; padding: 1px 6px; margin-left: 4px; vertical-align: 1px; }
   .ideas-here li.made a { color: var(--muted); text-decoration-color: var(--ok); }
+
+  /* The comment step's button: a small copy of Clax's Comment control, with its C keycap. */
+  .btn.commentbtn { display: inline-flex; align-items: center; gap: 8px; }
+  .keycap { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border: 1px solid var(--edge); border-bottom-width: 2px; border-radius: 5px; background: var(--surface-2); color: var(--fg); font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .comment-or { margin: 0; }
