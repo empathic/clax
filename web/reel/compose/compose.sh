@@ -4,7 +4,9 @@
 # section 9) lands; run by hand, outputs under target/reel/ (git-ignored).
 #
 #   web/reel/compose/compose.sh -o OUT [--order ID,ID,...] [--titles FILE]
-#                               [--cards] [--title-seconds S] FRAMES_DIR [FRAMES_DIR...]
+#                               [--cards] [--title-seconds S] [--no-camera]
+#                               [--teaser ID@AT,...] [--intro TEXT] [--inserts ID[@AT],...]
+#                               FRAMES_DIR [FRAMES_DIR...]
 #
 # Each FRAMES_DIR holds frames/NNNNNN.png and beats.json (30 fps, 1600x1000);
 # its basename minus a "_frames" suffix is the vignette ID. Titles come from
@@ -15,19 +17,33 @@
 # --title-seconds (2.5; fade in 0.25 s, out 0.35 s); --cards instead puts a
 # 0.6 s full card (title only) before each vignette.
 #
-# Pace, from beats.json (beats ask, working, reveal, touch; frames are 30 fps):
-#   start..ask 1.5x; ask+0.6 s..reveal 5x (the wait); reveal..reveal+1.5 s 1x
-#   (the hold on the result); touch..touch+1 s 1.25x. Without a touch beat the
-#   cut ends at reveal+2.5 s. Vignettes lacking ask or reveal play at 1.6x with
-#   0.5 s trimmed from each end. Cards are 0.6 s with a quick slide/scale-in;
-#   every join is a hard cut; the end card is 2 s.
+# The reel: --teaser's shots (TEASER_SECONDS each at 1x, whole frame, hard
+# cuts; AT is a beat, BEAT+S / BEAT-S in seconds, or a frame number), then the
+# --intro card (INTRO_SECONDS), then the vignettes in order, then the end card
+# (reel.toml's [end] headline and footer, END_SECONDS). Vignettes named by
+# --inserts are quick "and also" shots: their last two beats only (camera.py
+# plan --insert), or from AT when named as ID@AT; the camera zooms less on them.
+# Pace and camera: camera.py (its constants document both). From beats.json
+# (beats ask, working, reveal, touch; frames are 30 fps): start..ask and
+# ask..working at 1.25x, working..reveal in 1.2 s, reveal at 1x for 2.5 s,
+# touch at 1x for up to 2.5 s; other vignettes play their beats' span at
+# 1.0-1.2x (ClaxBot's brief, building, done count as ask, working, reveal).
+# A virtual camera crops and eases toward where the pixels change
+# (whole page at each reveal), with a soft spotlight while near 1x; the
+# lower-third goes on after it. --no-camera shows the whole frame throughout.
+# The per-frame crop path is kept in OUT/camera/<n>-<id>.tsv. Cards are 0.6 s
+# with a quick slide/scale-in; every join is a hard cut.
 # The GIF is each vignette's reveal window (reveal-0.3 s .. +2.2 s; for the
 # fallback, the 2.5 s ending 1 s after its last beat), 720 px, 15 fps, one
 # global palette, hard cuts.
-# Outputs in OUT: cards/*.png, clips/<n>-<id>.mp4, clax-reel.mp4, clax-reel.gif,
-# cut.json (duration; per vignette id, title, context, start/end in the mp4,
-# its clip and clip_duration, and its beats as t_cut/t_clip seconds).
-# Environment: FFMPEG, CHROME, GIF_WIDTH (720), GIF_FPS (15).
+# Outputs in OUT: cards/*.png, clips/<n>-<id>.mp4, camera/*.tsv, clax-reel.mp4,
+# clax-reel.gif, cut.json (duration; the prelude's clips (teaser, intro) with
+# start/end; per vignette id, title, context, start/end in the mp4, its clip
+# and clip_duration, and its beats as t_cut/t_clip seconds, null for a beat
+# outside the vignette's cut).
+# Environment: FFMPEG, CHROME, GIF_WIDTH (720), GIF_FPS (15), REEL_PYTHON (a
+# Python with numpy and Pillow; by default target/reel-venv in the worktree,
+# made on first use).
 set -euo pipefail
 
 FFMPEG="${FFMPEG:-$HOME/.local/homebrew/bin/ffmpeg}"
@@ -35,13 +51,16 @@ CHROME="${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
 GIF_WIDTH="${GIF_WIDTH:-720}"
 GIF_FPS="${GIF_FPS:-15}"
 CARD_SECONDS=0.6
-END_SECONDS=2
+END_SECONDS=3.5
+TEASER_SECONDS=0.5
+INTRO_SECONDS=1.8
 FPS=30
 FFPROBE="${FFPROBE:-$(dirname "$FFMPEG")/ffprobe}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 toml="$here/../reel.toml"
-out=""; order=""; titles_file=""; overlay=1; tsec=2.5
+out=""; order=""; titles_file=""; overlay=1; tsec=2.5; camera=1
+teaser=""; intro=""; inserts=""
 dirs=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -51,16 +70,34 @@ while [ $# -gt 0 ]; do
     --overlay-titles) overlay=1; shift ;;
     --cards) overlay=0; shift ;;
     --title-seconds) tsec="$2"; shift 2 ;;
-    -h|--help) sed -n 2,29p "$0"; exit 0 ;;
+    --no-camera) camera=0; shift ;;
+    --teaser) teaser="$2"; shift 2 ;;
+    --intro) intro="$2"; shift 2 ;;
+    --inserts) inserts="$2"; shift 2 ;;
+    -h|--help) sed -n 2,46p "$0"; exit 0 ;;
     *) dirs+=("$1"); shift ;;
   esac
 done
-[ -n "$out" ] && [ ${#dirs[@]} -gt 0 ] || { echo "usage: compose.sh -o OUT_DIR [--order IDS] [--titles FILE] [--cards] [--title-seconds S] FRAMES_DIR..." >&2; exit 2; }
-mkdir -p "$out/cards" "$out/clips"
+[ -n "$out" ] && [ ${#dirs[@]} -gt 0 ] || { echo "usage: compose.sh -o OUT_DIR [--order IDS] [--titles FILE] [--cards] [--title-seconds S] [--no-camera] [--teaser ID@AT,...] [--intro TEXT] [--inserts ID[@AT],...] FRAMES_DIR..." >&2; exit 2; }
+mkdir -p "$out/cards" "$out/clips" "$out/camera"
 rm -f "$out/cards/cut.tsv"
 out="$(cd "$out" && pwd)"
 
 log() { echo "compose: $*" >&2; }
+
+# The camera's Python: REEL_PYTHON, or a venv in the worktree's target/ with
+# pinned numpy and Pillow, made on first use.
+PY="${REEL_PYTHON:-}"
+if [ -z "$PY" ]; then
+  venv="$(git -C "$here" rev-parse --show-toplevel)/target/reel-venv"
+  if ! "$venv/bin/python" -I -c 'import numpy, PIL' 2>/dev/null; then
+    log "making $venv (numpy, Pillow)"
+    python3 -I -m venv "$venv"
+    "$venv/bin/python" -I -m pip install -q numpy==2.0.2 pillow==11.3.0
+  fi
+  PY="$venv/bin/python"
+fi
+cam() { "$PY" -I "$here/camera.py" "$@"; }
 ff() { "$FFMPEG" -hide_banner -loglevel error -y "$@"; }
 
 # toml_get title ID | headline | footer: values from reel.toml (a flat subset).
@@ -102,45 +139,20 @@ if [ -n "$order" ]; then
 else
   sel=("${dirs[@]}")
 fi
+all_dirs=("${dirs[@]}")
 dirs=("${sel[@]}")
 
-# plan DIR: prints "kind START LEN SPEED" lines (kind seg), then "gif START LEN".
-plan() {
-  python3 -I - "$1/beats.json" "$(ls "$1/frames" | grep -c '\.png$')" <<'PY'
-import json, sys
-b = json.load(open(sys.argv[1])); n = int(sys.argv[2]); fps = 30
-at = {}
-for x in b["beats"]:
-    at.setdefault(x["name"], x["frame"])
-s = lambda sec: round(sec * fps)
-segs = []
-if "ask" in at and "reveal" in at and at["reveal"] > at["ask"]:
-    ask, rev = at["ask"], at["reveal"]
-    segs.append((0, ask, 1.5))
-    # The ask plays at 2x so the request reads; only the agent's working stretch races.
-    work = at.get("working", rev)
-    work = min(max(work, ask), rev)
-    segs.append((ask, work, 2.0))
-    segs.append((work, rev, 5.0))
-    hold_end = rev + s(1.5)
-    segs.append((rev, hold_end, 1.0))
-    if "touch" in at and at["touch"] >= rev:
-        t0 = max(at["touch"], hold_end)
-        segs.append((t0, at["touch"] + s(1.0) if at["touch"] + s(1.0) > t0 else t0 + s(1.0), 1.25))
-    else:
-        segs.append((hold_end, rev + s(2.5), 1.0))
-    g0 = max(0, rev - s(0.3)); glen = s(2.5)
-else:
-    segs.append((s(0.5), n - s(0.5), 1.6))
-    last = max([x["frame"] for x in b["beats"]] or [n // 2])
-    g0 = max(0, min(last + s(1.0) - s(2.5), n - s(2.5))); glen = s(2.5)
-for a, e, v in segs:
-    e = min(e, n)
-    if e > a:
-        print("seg", a, e - a, v)
-g0 = min(g0, max(0, n - 1)); glen = min(glen, n - g0)
-print("gif", g0, glen)
-PY
+# plan DIR: prints "seg START LEN SPEED OUT_FRAMES" lines, then "gif START LEN".
+plan() { cam plan "$1/beats.json" "$(ls "$1/frames" | grep -c '\.png$')" ${2:+"$2"}; }
+# insert_flag ID: "--insert" or "--insert-from=AT" when --inserts names ID (as ID or ID@AT).
+insert_flag() {
+  local e
+  IFS=, read -r -a ins <<<"$inserts"
+  for e in ${ins[@]+"${ins[@]}"}; do
+    [ "$e" = "$1" ] && { echo --insert; return; }
+    [ "${e%%@*}" = "$1" ] && { echo "--insert-from=${e#*@}"; return; }
+  done
+  return 0
 }
 
 # card_clip OUT.mp4 QUERY SECONDS [flags]: 3-phase slide/scale-in then a hold.
@@ -166,32 +178,58 @@ for d in "${dirs[@]}"; do
   tags+=("$(printf '%02d-%s' "$n" "$id")"); ids+=("$id")
 done
 
-clips=()
+clips=(); prelude=()
+# The teaser: whole-frame shots, hard cuts, no titles.
+if [ -n "$teaser" ]; then
+  IFS=, read -r -a shots <<<"$teaser"; tl="$out/cards/teaser.txt"; : > "$tl"
+  for ((k = 0; k < ${#shots[@]}; k++)); do
+    tid="${shots[k]%%@*}"; tat="${shots[k]#*@}"; td=""
+    for d in "${all_dirs[@]}"; do [ "$(basename "${d%/}")" = "${tid}_frames" ] && td="$(cd "$d" && pwd)"; done
+    [ -n "$td" ] || { echo "compose: --teaser names $tid but no ${tid}_frames directory was given" >&2; exit 1; }
+    f="$(cam at "$td/beats.json" "$tat")"; m="$(python3 -I -c "print(round($TEASER_SECONDS * $FPS))")"
+    printf 'seg %s %s 1.0 %s\n' "$f" "$m" "$m" > "$out/cards/teaser-$k.plan"
+    cam path "$td" "$out/cards/teaser-$k.plan" --no-camera > "$out/camera/teaser-$k.tsv"
+    read -r w h < <(head -1 "$out/camera/teaser-$k.tsv" | sed -E 's/.*; ([0-9]+)x([0-9]+).*/\1 \2/')
+    cam render "$td" "$out/camera/teaser-$k.tsv" |
+      ff -f rawvideo -pix_fmt rgb24 -s "${w}x$h" -framerate $FPS -i - -vf "setsar=1,format=yuv420p" \
+         -r $FPS -c:v libx264 -pix_fmt yuv420p -crf 20 -preset medium -an "$out/cards/teaser-$k.mp4"
+    printf "file '%s'\n" "$out/cards/teaser-$k.mp4" >> "$tl"
+    rm -f "$out/cards/teaser-$k.plan"
+  done
+  ff -f concat -safe 0 -i "$tl" -c copy "$out/clips/00-teaser.mp4"
+  rm -f "$tl" "$out"/cards/teaser-*.mp4
+  prelude+=("$out/clips/00-teaser.mp4")
+  log "clip teaser"
+fi
+if [ -n "$intro" ]; then
+  card_clip "$out/clips/00-intro.mp4" "title=$(urlenc "$intro")" "$INTRO_SECONDS"
+  mv "$out/clips/00-intro.png" "$out/cards/intro.png"
+  prelude+=("$out/clips/00-intro.mp4")
+fi
 for ((k = 0; k < n; k++)); do
   d="${dirs[k]}"; tag="${tags[k]}"; title="$(toml_get title "${ids[k]}")"; sub=""
   case "$title" in *"|"*) sub="${title#*|}"; title="${title%%|*}" ;; esac
-  inputs=(); filt=""; labels=""; i=0
-  while read -r kind a len v; do
-    [ "$kind" = seg ] || continue
-    inputs+=(-start_number "$a" -framerate $FPS -i "$d/frames/%06d.png")
-    filt+="[$i:v]trim=end_frame=$len,setpts=(PTS-STARTPTS)/$v,fps=$FPS,format=yuv420p,setsar=1[s$i];"
-    labels+="[s$i]"; i=$((i + 1))
-  done < <(plan "$d" | tee "$out/cards/$tag.plan")
+  ins="$(insert_flag "${ids[k]}")"
+  plan "$d" "$ins" > "$out/cards/$tag.plan"
+  cam path "$d" "$out/cards/$tag.plan" $([ "$camera" = 1 ] || echo --no-camera) ${ins:+--insert} > "$out/camera/$tag.tsv"
+  read -r w h < <(head -1 "$out/camera/$tag.tsv" | sed -E 's/.*; ([0-9]+)x([0-9]+).*/\1 \2/')
   printf '%s\t%s\t%s\t%s\n' "$tag" "${ids[k]}" "$title" "$sub" >> "$out/cards/cut.tsv"
+  raw=(-f rawvideo -pix_fmt rgb24 -s "${w}x$h" -framerate $FPS -i -)
+  enc=(-r $FPS -c:v libx264 -pix_fmt yuv420p -crf 20 -preset medium -an)
   if [ "$overlay" = 1 ]; then
     shot "$out/cards/$tag.png" "lower=1&title=$(urlenc "$title")&sub=$(urlenc "$sub")" --default-background-color=00000000
-    inputs+=(-loop 1 -framerate $FPS -t $tsec -i "$out/cards/$tag.png")
-    filt+="${labels}concat=n=$i:v=1:a=0[body];[$i:v]format=rgba,fade=t=in:st=0:d=0.25:alpha=1,fade=t=out:st=$(python3 -I -c "print($tsec-0.35)"):d=0.35:alpha=1[ov];[body][ov]overlay=0:0:enable='lt(t,$tsec)',format=yuv420p[o]"
-    pieces="$out/clips/$tag.mp4"
-    ff "${inputs[@]}" -filter_complex "$filt" -map "[o]" -r $FPS -c:v libx264 -pix_fmt yuv420p -crf 20 -preset medium -an "$pieces"
+    filt="[0:v]setsar=1[body];[1:v]format=rgba,fade=t=in:st=0:d=0.25:alpha=1,fade=t=out:st=$(python3 -I -c "print($tsec-0.35)"):d=0.35:alpha=1[ov];[body][ov]overlay=0:0:enable='lt(t,$tsec)',format=yuv420p[o]"
+    cam render "$d" "$out/camera/$tag.tsv" |
+      ff "${raw[@]}" -loop 1 -framerate $FPS -t "$tsec" -i "$out/cards/$tag.png" -filter_complex "$filt" -map "[o]" "${enc[@]}" "$out/clips/$tag.mp4"
   else
     card_clip "$out/cards/$tag.card.mp4" "title=$(urlenc "$title")" "$CARD_SECONDS"
-    filt+="${labels}concat=n=$i:v=1:a=0[o]"
-    ff "${inputs[@]}" -filter_complex "$filt" -map "[o]" -r $FPS -c:v libx264 -pix_fmt yuv420p -crf 20 -preset medium -an "$out/cards/$tag.body.mp4"
+    cam render "$d" "$out/camera/$tag.tsv" |
+      ff "${raw[@]}" -vf "setsar=1,format=yuv420p" "${enc[@]}" "$out/cards/$tag.body.mp4"
     printf "file '%s'\nfile '%s'\n" "$out/cards/$tag.card.mp4" "$out/cards/$tag.body.mp4" > "$out/cards/$tag.txt"
     ff -f concat -safe 0 -i "$out/cards/$tag.txt" -c copy -movflags +faststart "$out/clips/$tag.mp4"
     rm -f "$out/cards/$tag.card.mp4" "$out/cards/$tag.body.mp4" "$out/cards/$tag.txt"
   fi
+  log "clip $tag"
   clips+=("$out/clips/$tag.mp4")
 done
 card_clip "$out/clips/end.mp4" "end=1&title=$(urlenc "$(toml_get headline)")&footer=$(urlenc "$(toml_get footer)")" "$END_SECONDS"
@@ -200,38 +238,49 @@ clips+=("$out/clips/end.mp4")
 log "clips done"
 
 list="$out/clips.txt"; : > "$list"
-for c in "${clips[@]}"; do printf "file '%s'\n" "$c" >> "$list"; done
+for c in ${prelude[@]+"${prelude[@]}"} "${clips[@]}"; do printf "file '%s'\n" "$c" >> "$list"; done
 ff -f concat -safe 0 -i "$list" -c copy -movflags +faststart "$out/clax-reel.mp4"
 rm -f "$list"
 log "mp4 done"
 
 # cut.json: map each vignette's beats through its speed ramp.
-python3 -I - "$out" "$FFPROBE" "$overlay" "$CARD_SECONDS" "${dirs[@]}" <<'PY'
+python3 -I - "$out" "$FFPROBE" "$overlay" "$CARD_SECONDS" "${#prelude[@]}" ${prelude[@]+"${prelude[@]}"} "${dirs[@]}" <<'PY'
 import json, subprocess, sys
 out, probe, overlay, card = sys.argv[1], sys.argv[2], sys.argv[3] == "1", float(sys.argv[4])
-dirs = sys.argv[5:]
+npre = int(sys.argv[5]); pre = sys.argv[6:6 + npre]; dirs = sys.argv[6 + npre:]
 dur = lambda p: float(subprocess.check_output([probe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", p]).decode())
 fps = 30
 res = {"duration": round(dur(out + "/clax-reel.mp4"), 3), "vignettes": []}
 t = 0.0
+res["prelude"] = []
+for p in pre:  # the teaser and the intro card, before the vignettes
+    cd = dur(p)
+    res["prelude"].append({"clip": "clips/" + p.rsplit("/", 1)[1], "start": round(t, 3), "end": round(t + cd, 3)})
+    t += cd
 for line, d in zip(open(out + "/cards/cut.tsv").read().splitlines(), dirs):
     tag, id_, title, sub = line.split("\t")
     segs = [l.split() for l in open(out + "/cards/%s.plan" % tag) if l.startswith("seg")]
-    segs = [(int(a), int(n), float(v)) for _, a, n, v in segs]
+    segs = [(int(a), int(n), int(m)) for _, a, n, _v, m in segs]
     beats = json.load(open(d + "/beats.json"))["beats"]
-    def body(f):  # source frame -> seconds into the played body
+    def body(f):  # source frame -> seconds into the played body; None when not played
+        if f < segs[0][0] or f >= segs[-1][0] + segs[-1][1]: return None
         acc = 0.0
-        for a, n, v in segs:
+        for a, n, m in segs:  # source a..a+n plays as m frames (camera.py source_frames)
             if f < a: return acc
-            if f < a + n: return acc + (f - a) / fps / v
-            acc += n / fps / v
+            if f < a + n: return acc + (-(-(f - a) * m // n)) / fps  # first out frame showing f
+            acc += m / fps
         return acc
     lead = 0.0 if overlay else card
+    def beat(b):
+        x = body(b["frame"])
+        if x is None:  # outside this vignette's cut
+            return {"name": b["name"], "t_cut": None, "t_clip": None}
+        return {"name": b["name"], "t_cut": round(t + lead + x, 3), "t_clip": round(lead + x, 3)}
     clip = "clips/%s.mp4" % tag
     cd = dur(out + "/" + clip)
     res["vignettes"].append({"id": id_, "title": title, "context": sub, "start": round(t, 3), "end": round(t + cd, 3),
         "clip": clip, "clip_duration": round(cd, 3),
-        "beats": [{"name": b["name"], "t_cut": round(t + lead + body(b["frame"]), 3), "t_clip": round(lead + body(b["frame"]), 3)} for b in beats]})
+        "beats": [beat(b) for b in beats]})
     t += cd
 json.dump(res, open(out + "/cut.json", "w"), indent=2)
 PY
