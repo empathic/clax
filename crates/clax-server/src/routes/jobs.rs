@@ -791,6 +791,16 @@ pub async fn commit(
                         }
                     }
                     let sid = p.session_id.clone();
+                    // The approval before the step, to tell open views when
+                    // the version's declaration narrowed it.
+                    let approved = p
+                        .artifact_id
+                        .as_deref()
+                        .and_then(|a| ArtifactId::parse(a).ok())
+                        .map(|a| {
+                            let before = st.capability_approval(&a).ok().flatten();
+                            (a, before)
+                        });
                     match st
                         .commit_publish_step_async(&audit, &id, &key, p, &step_docs)
                         .await
@@ -819,6 +829,17 @@ pub async fn commit(
                                         Ok(())
                                     },
                                 );
+                                if let Some((aid, before)) = &approved
+                                    && let Err(e) = super::permissions::tell_if_narrowed(
+                                        st,
+                                        &events,
+                                        aid,
+                                        before.as_ref(),
+                                    )
+                                {
+                                    tracing::warn!(artifact = aid.as_str(), error = %e,
+                                        "a committed publish step's permissions event failed");
+                                }
                             }
                             Ok(Ok((
                                 json!({

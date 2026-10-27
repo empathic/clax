@@ -573,7 +573,7 @@ async fn a_store_on_one_connection_records_a_push_before_a_publish() {
     );
     let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
     let tell = heard.clone();
-    st.set_pushed_listener(move |_, v| tell.lock().unwrap().push(v.n));
+    st.set_pushed_listener(move |_, v, _| tell.lock().unwrap().push(v.n));
     let (a, _) = st
         .call_async(|st| async move {
             st.create_artifact_async(DAEMON, publish("<p>one</p>", None), None)

@@ -14,13 +14,15 @@ use crate::error::ApiError;
 use crate::state::AppState;
 
 /// Publishes `Event::Version` for every version the store records from a
-/// pushed commit, and tells the store whether it is a hosted daemon's
+/// pushed commit, and `Event::Permissions` after it when its declaration
+/// changed the artifact's capability approval, so open views refetch what
+/// is in force; and tells the store whether it is a hosted daemon's
 /// (`Store::set_hosted`).
 pub fn listen(s: &AppState) {
     // Who administers an artifact for a pushed declaration.
     s.store.set_hosted(s.hosted.is_some());
     let events = s.events.clone();
-    s.store.set_pushed_listener(move |a, v| {
+    s.store.set_pushed_listener(move |a, v, approval_changed| {
         events.publish(Event::Version {
             artifact_id: a.id.clone(),
             n: v.n,
@@ -28,6 +30,11 @@ pub fn listen(s: &AppState) {
             title: Some(a.title.clone()),
             at: Some(v.created_at.clone()),
         });
+        if approval_changed {
+            events.publish(Event::Permissions {
+                artifact_id: a.id.clone(),
+            });
+        }
     });
 }
 

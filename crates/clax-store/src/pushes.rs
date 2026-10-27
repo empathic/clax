@@ -107,8 +107,14 @@ enum Standing {
 
 impl Store {
     /// Installs `f`, called with each version recorded from a pushed
-    /// commit, after its transaction commits. Replaces any earlier one.
-    pub fn set_pushed_listener(&self, f: impl Fn(&Artifact, &Version) + Send + Sync + 'static) {
+    /// commit, after its transaction commits, and whether the version
+    /// changed the artifact's capability approval (a pushed declaration
+    /// narrowed it, [`crate::capability_approvals`]). Replaces any earlier
+    /// one.
+    pub fn set_pushed_listener(
+        &self,
+        f: impl Fn(&Artifact, &Version, bool) + Send + Sync + 'static,
+    ) {
         *self.pushed_listener.write().unwrap() = Some(std::sync::Arc::new(f));
     }
 
@@ -191,6 +197,7 @@ impl Store {
                     continue;
                 }
             };
+            let approved = self.capability_approval(id).ok();
             match self
                 .record_push(ctx, id, current, c, person, session.as_deref(), &refused)
                 .await
@@ -216,7 +223,13 @@ impl Store {
                     refused.clear();
                     let listen = self.pushed_listener.read().unwrap().clone();
                     if let Some(listen) = listen {
-                        listen(&a, &v);
+                        // A failed read counts as a change: a view's
+                        // refetch costs less than a stale approval bar.
+                        let changed = match (&approved, self.capability_approval(id)) {
+                            (Some(before), Ok(now)) => &now != before,
+                            _ => true,
+                        };
+                        listen(&a, &v, changed);
                     }
                     out.recorded.push((a, v));
                 }

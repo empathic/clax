@@ -202,7 +202,7 @@ type AgentsListener = Arc<dyn Fn(Vec<String>) + Send + Sync>;
 
 /// The installed pushed versions listener, cloned out of its lock.
 pub(crate) type PushedListener =
-    Arc<dyn Fn(&clax_core::model::Artifact, &clax_core::model::Version) + Send + Sync>;
+    Arc<dyn Fn(&clax_core::model::Artifact, &clax_core::model::Version, bool) + Send + Sync>;
 
 pub struct Store {
     home: Home,
