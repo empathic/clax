@@ -895,6 +895,15 @@ fn migrate_steps(
     }
     {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if migrations::adopt_wip_tailscale(&tx)? {
+            tx.commit()?;
+            tracing::warn!(
+                "renumbered a database from a wip/bdelanghe build (tailnet logins at 40)"
+            );
+        }
+    }
+    {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         if let Some((from, to)) = migrations::adopt_earlier_flutter_app(&tx, numbering)? {
             tx.commit()?;
             tracing::warn!(
@@ -911,7 +920,8 @@ fn migrate_steps(
         let version: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         check(version)?;
         if version == known {
-            return Ok(());
+            drop(tx);
+            return migrations::restore_wip_tailscale(conn);
         }
         report(&backfill::Progress {
             phase: backfill::Phase::Migrating,

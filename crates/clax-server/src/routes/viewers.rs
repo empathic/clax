@@ -57,6 +57,24 @@ async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Res
         return Ok(Json(json!({"viewer": v, "may_create": may_create})).into_response());
     }
     let owner = who.is_owner();
+    // A tailnet user is the viewer its login names, named by Tailscale: no
+    // cookie is minted, and a typed name never replaces Tailscale's.
+    if !owner && let Some(u) = who.tailscale.clone() {
+        if name.is_some() {
+            return Err(ApiError::new(
+                axum::http::StatusCode::CONFLICT,
+                "name_from_tailscale",
+                "this viewer is named by its Tailscale login; its name is the tailnet's",
+            ));
+        }
+        let v = s
+            .store_call(move |st| st.tailscale_viewer(&u.login, u.name.as_deref()))
+            .await?;
+        for aid in s.presence.rename(&v.public_id, v.display_name.as_deref()) {
+            clax_realtime::presence::announce(&s.events, &s.presence, &aid);
+        }
+        return Ok(Json(json!({"viewer": v, "may_create": may_create})).into_response());
+    }
     let (before, viewer, fresh) = s
         .store_call(move |st| {
             if who.is_owner() {
@@ -123,9 +141,10 @@ async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Res
 
 /// The viewer the request speaks for ([`Identity`]): the owner for an owner
 /// credential (the token, or the owner cookie of the owner's browsers; `null`
-/// for the token alone before the owner exists), else the cookie's viewer,
-/// created (and its cookie set, noting whether it was minted on this
-/// machine) on first contact.
+/// for the token alone before the owner exists), else a tailnet user's
+/// viewer (its name Tailscale's, carrying `tailscale_login`; no cookie), else
+/// the cookie's viewer, created (and its cookie set, noting whether it was
+/// minted on this machine) on first contact.
 pub async fn me(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
@@ -138,7 +157,8 @@ pub async fn me(
 /// Sets the display name of the viewer [`me`] answers (for the owner, the
 /// owner's one name, in every browser and the CLI); an empty name clears it.
 /// A change reaches everyone at once through the presence of every artifact
-/// that lists the viewer.
+/// that lists the viewer. A tailnet user's viewer is named by Tailscale: 409
+/// `name_from_tailscale`, and its name stays.
 pub async fn set_me(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
@@ -167,7 +187,8 @@ pub struct LookupQuery {
 /// left out. `GET /api/viewers?q=<text>` (token only) returns up to
 /// [`MAX_SEARCH`] named viewers whose name contains the text, ignoring case.
 /// Both answer `{viewers: [{id, display_name}]}` with public IDs, never
-/// cookies; to the owner's agents, a viewer who is not connected is named
+/// cookies, and `tailscale_login` for a viewer a tailnet login names; to
+/// the owner's agents, a viewer who is not connected is named
 /// `<name> (not connected)`.
 pub async fn lookup(
     State(s): State<AppState>,
@@ -221,7 +242,13 @@ pub async fn lookup(
     let mut viewers = json!(
         viewers
             .iter()
-            .map(|v| json!({"id": v.public_id, "display_name": v.display_name}))
+            .map(|v| {
+                let mut j = json!({"id": v.public_id, "display_name": v.display_name});
+                if let Some(l) = &v.tailscale_login {
+                    j["tailscale_login"] = json!(l);
+                }
+                j
+            })
             .collect::<Vec<_>>()
     );
     // The owner's agents read a viewer who is not connected as `<name> (not
@@ -286,7 +313,7 @@ pub async fn set_seen(
     let b = body(req)?;
     let id = parse_id(&b.artifact_id)?;
     sees.check(&s.live_ids, id.as_str())?;
-    if !who.is_owner() && who.cookie.is_none() {
+    if !who.is_owner() && who.cookie.is_none() && who.tailscale.is_none() {
         return Err(ApiError::bad_request(
             "no_viewer",
             "open /api/viewers/me first",

@@ -1704,6 +1704,14 @@ pub const MIGRATIONS: &[&str] = &[
         AND NOT EXISTS (SELECT 1 FROM assets a WHERE a.id = page_authors.id);
     UPDATE page_authors SET id = (SELECT a.artifact_id FROM assets a WHERE a.id = page_authors.id) || '/' || id
         WHERE kind = 'asset';",
+    // 55: the tailnet login that names a viewer coming through `tailscale
+    // serve` (`[serve] tailscale_identity`; `crate::viewers`), one viewer
+    // per login. `NULL` for every other viewer. (wip/bdelanghe builds made
+    // it as their 40; `crate::migrations::adopt_wip_tailscale` renumbers
+    // such a database.)
+    "ALTER TABLE viewers ADD COLUMN tailscale_login TEXT;
+    CREATE UNIQUE INDEX viewers_tailscale_login ON viewers(tailscale_login)
+        WHERE tailscale_login IS NOT NULL;",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -1725,8 +1733,12 @@ pub const APP_DATA_MIGRATION: u32 = LEGACY_PATHS_MIGRATION + 1;
 pub const SITE_SESSIONS_MIGRATION: u32 = APP_DATA_MIGRATION + 1;
 
 /// The migration that keys assets by artifact and asset ID, as a schema
-/// version, and this build's last.
+/// version.
 pub const ASSET_KEYS_MIGRATION: u32 = SITE_SESSIONS_MIGRATION + 1;
+
+/// The migration that adds `viewers.tailscale_login`, as a schema version,
+/// and this build's last.
+pub const TAILSCALE_LOGIN_MIGRATION: u32 = ASSET_KEYS_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -1886,16 +1898,17 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`ASSET_KEYS_MIGRATION`]. They follow the app's in every
+/// [`TAILSCALE_LOGIN_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 5] = [
+const MARKS_AFTER_APP: [Mark<'static>; 6] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
     Mark::Table("site_codes"),
     Mark::Index("assets_by_id"),
+    Mark::Column("viewers", "tailscale_login"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -2499,6 +2512,59 @@ const REPAIR_INDEXES: &str = "CREATE INDEX IF NOT EXISTS viewer_cookies_by_viewe
     CREATE INDEX IF NOT EXISTS questions_closed_by_person ON questions(COALESCE(person, ''), closed_at, id)
         WHERE status <> 'open';
     CREATE INDEX IF NOT EXISTS question_keys_by_question ON question_keys(question_id, grant_id);";
+
+/// Where a wip/bdelanghe build's database stands: those builds numbered
+/// `viewers.tailscale_login` ([`TAILSCALE_LOGIN_MIGRATION`]) 40, where
+/// main's 40 makes `briefs`, so such a database is at 40 with that column
+/// and without `briefs`.
+const WIP_TAILSCALE_VERSION: u32 = WHERE_TO_ASK_MIGRATION + 2;
+
+/// Brings a database a wip/bdelanghe build migrated (see
+/// [`WIP_TAILSCALE_VERSION`]) back onto this numbering, in `tx`: its
+/// logins are kept in the TEMP table `wip_tailscale_logins` of `tx`'s
+/// connection, the column and its index dropped, and its version set to
+/// 39, so main's 40 onwards run and [`TAILSCALE_LOGIN_MIGRATION`] makes the
+/// column again; [`restore_wip_tailscale`] then puts the logins back.
+/// `Ok(false)` for any other database, left untouched.
+pub(crate) fn adopt_wip_tailscale(tx: &rusqlite::Transaction<'_>) -> clax_core::Result<bool> {
+    let version: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version != WIP_TAILSCALE_VERSION
+        || !has_column(tx, "viewers", "tailscale_login")?
+        || has_table(tx, "briefs")?
+    {
+        return Ok(false);
+    }
+    tx.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS wip_tailscale_logins (id TEXT PRIMARY KEY, login TEXT NOT NULL);
+         INSERT OR REPLACE INTO temp.wip_tailscale_logins (id, login)
+             SELECT id, tailscale_login FROM main.viewers WHERE tailscale_login IS NOT NULL;
+         DROP INDEX IF EXISTS main.viewers_tailscale_login;
+         ALTER TABLE main.viewers DROP COLUMN tailscale_login;",
+    )?;
+    tx.pragma_update(None, "user_version", WIP_TAILSCALE_VERSION - 1)?;
+    Ok(true)
+}
+
+/// The logins [`adopt_wip_tailscale`] kept, put back on their viewers once
+/// the column is there again, and the TEMP table dropped; nothing without
+/// that table.
+pub(crate) fn restore_wip_tailscale(conn: &rusqlite::Connection) -> clax_core::Result<()> {
+    let kept: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM temp.sqlite_master WHERE name = 'wip_tailscale_logins')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !kept || !has_column(conn, "viewers", "tailscale_login")? {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "UPDATE main.viewers SET tailscale_login =
+             (SELECT w.login FROM temp.wip_tailscale_logins w WHERE w.id = viewers.id)
+             WHERE id IN (SELECT id FROM temp.wip_tailscale_logins);
+         DROP TABLE temp.wip_tailscale_logins;",
+    )?;
+    Ok(())
+}
 
 fn has_table(tx: &rusqlite::Connection, table: &str) -> clax_core::Result<bool> {
     Ok(tx.query_row(
@@ -4823,11 +4889,12 @@ mod tests {
         assert!(MIGRATIONS[first + 10].contains("CREATE TABLE app_data_moved ("));
         assert!(MIGRATIONS[first + 11].contains("CREATE TABLE site_codes ("));
         assert!(MIGRATIONS[first + 12].contains("CREATE INDEX assets_by_id"));
-        assert_eq!(MIGRATIONS.len() as u32, ASSET_KEYS_MIGRATION);
+        assert!(MIGRATIONS[first + 13].contains("ADD COLUMN tailscale_login"));
+        assert_eq!(MIGRATIONS.len() as u32, super::TAILSCALE_LOGIN_MIGRATION);
     }
 
     #[test]
-    fn a_fresh_database_reaches_54() {
+    fn a_fresh_database_reaches_55() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -4840,7 +4907,8 @@ mod tests {
         assert_eq!(super::APP_DATA_MIGRATION, 52);
         assert_eq!(super::SITE_SESSIONS_MIGRATION, 53);
         assert_eq!(ASSET_KEYS_MIGRATION, 54);
-        assert_eq!(user_version(&c), ASSET_KEYS_MIGRATION);
+        assert_eq!(super::TAILSCALE_LOGIN_MIGRATION, 55);
+        assert_eq!(user_version(&c), super::TAILSCALE_LOGIN_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -5582,7 +5650,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), ASSET_KEYS_MIGRATION);
+        assert_eq!(user_version(&c), super::TAILSCALE_LOGIN_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -6081,7 +6149,7 @@ mod tests {
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), ASSET_KEYS_MIGRATION);
+            assert_eq!(user_version(&c), super::TAILSCALE_LOGIN_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -6089,8 +6157,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            ASSET_KEYS_MIGRATION + 1,
-            "ClaxBot's 50 and the site migrations' 51 to 54 are one later now"
+            super::TAILSCALE_LOGIN_MIGRATION + 1,
+            "ClaxBot's 50 and the site migrations' 51 to 55 are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -6109,7 +6177,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), ASSET_KEYS_MIGRATION);
+        assert_eq!(user_version(&copied), super::TAILSCALE_LOGIN_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -6123,7 +6191,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (ASSET_KEYS_MIGRATION + 1, schema, rows)
+            (super::TAILSCALE_LOGIN_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -6397,7 +6465,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, ASSET_KEYS_MIGRATION);
+        assert_eq!(last, super::TAILSCALE_LOGIN_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
@@ -6740,5 +6808,74 @@ mod tests {
                 assert_eq!((schema_of(&c), every_row(&c)), (schema, rows), "{mark}");
             }
         }
+    }
+
+    /// A database a wip/bdelanghe build left: main's 1 to 39, then
+    /// `viewers.tailscale_login` as its 40. Opened, it gets main's 40 on
+    /// (`briefs`) and keeps each viewer's login.
+    #[test]
+    fn a_wip_tailscale_database_is_renumbered_and_keeps_its_logins() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        {
+            let mut c = Connection::open(home.db_path()).unwrap();
+            for v in 0..super::WIP_TAILSCALE_VERSION - 1 {
+                let tx = c.transaction().unwrap();
+                tx.execute_batch(MIGRATIONS[v as usize]).unwrap();
+                super::rust_step(&tx, v + 1).unwrap();
+                tx.pragma_update(None, "user_version", v + 1).unwrap();
+                tx.commit().unwrap();
+            }
+            c.execute_batch(MIGRATIONS[super::TAILSCALE_LOGIN_MIGRATION as usize - 1])
+                .unwrap();
+            c.pragma_update(None, "user_version", super::WIP_TAILSCALE_VERSION)
+                .unwrap();
+        }
+        // A wip database with no logins migrates; one names a viewer here.
+        let st = Store::open(&home).unwrap();
+        let v = st.tailscale_viewer("alex@github", Some("Alex")).unwrap();
+        drop(st);
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            assert_eq!(user_version(&c), super::TAILSCALE_LOGIN_MIGRATION);
+            assert_eq!(table_count(&c, "briefs"), 1);
+        }
+        // Another wip database already holding that viewer and its login.
+        let dir2 = tempfile::tempdir().unwrap();
+        let home2 = Home::at(dir2.path().join("ax"));
+        home2.ensure_dirs().unwrap();
+        {
+            let mut c = Connection::open(home2.db_path()).unwrap();
+            for v in 0..super::WIP_TAILSCALE_VERSION - 1 {
+                let tx = c.transaction().unwrap();
+                tx.execute_batch(MIGRATIONS[v as usize]).unwrap();
+                super::rust_step(&tx, v + 1).unwrap();
+                tx.pragma_update(None, "user_version", v + 1).unwrap();
+                tx.commit().unwrap();
+            }
+            c.execute_batch(MIGRATIONS[super::TAILSCALE_LOGIN_MIGRATION as usize - 1])
+                .unwrap();
+            c.execute(
+                "INSERT INTO viewers (id, public_id, created_at, minted_local, tailscale_login)
+                 VALUES (?1, ?2, '2026-10-25T00:00:00Z', 0, 'alex@github')",
+                rusqlite::params![v.id, v.public_id],
+            )
+            .unwrap();
+            c.pragma_update(None, "user_version", super::WIP_TAILSCALE_VERSION)
+                .unwrap();
+        }
+        let st = Store::open(&home2).unwrap();
+        let again = st.tailscale_viewer("alex@github", Some("Alex")).unwrap();
+        assert_eq!(
+            (again.id.as_str(), again.public_id.as_str()),
+            (v.id.as_str(), v.public_id.as_str()),
+            "the login names the same viewer"
+        );
+        drop(st);
+        let c = Connection::open(home2.db_path()).unwrap();
+        assert_eq!(user_version(&c), super::TAILSCALE_LOGIN_MIGRATION);
+        assert_eq!(table_count(&c, "briefs"), 1, "main's 40 ran");
+        assert_eq!(table_count(&c, "tags"), 1);
     }
 }

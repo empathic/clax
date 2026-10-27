@@ -26,7 +26,10 @@
 //! ignore ports, so another local server's page may send them too.
 //!
 //! Anyone else is the viewer the `clax_viewer` cookie names (a LAN viewer),
-//! or no one.
+//! or no one. With the home's `[serve] tailscale_identity` on, a request that
+//! came through `tailscale serve` with a tailnet user's headers is instead
+//! the viewer that user's login names ([`crate::auth::TailscaleUser`]): a
+//! viewer like any other, never the owner, whatever its login.
 //!
 //! A hosted daemon ([`crate::hosted`]) serves the internet, so no request is
 //! from this machine: the owner and events cookies and the `clax_viewer`
@@ -237,6 +240,14 @@ pub struct Identity {
     /// ([`crate::agent::PersonDevice`]): the request is that person's, as
     /// their browser's would be.
     pub device: Option<clax_store::hosted::SessionViewer>,
+    /// The tailnet user `tailscale serve` names
+    /// ([`crate::auth::TailscaleUser`], set only on a request it trusts):
+    /// the viewer its login names stands where a `clax_viewer` cookie's
+    /// would ([`cookie`] is `None` there). A viewer's identity only: the
+    /// token rules, and so what the request may do, are unchanged.
+    ///
+    /// [`cookie`]: Identity::cookie
+    pub tailscale: Option<crate::auth::TailscaleUser>,
 }
 
 use crate::headers::SESSION_HEADER;
@@ -274,6 +285,7 @@ impl Identity {
             hosted_owner: false,
             hosted_viewer: None,
             device: None,
+            tailscale: None,
         }
     }
 
@@ -286,6 +298,12 @@ impl Identity {
         token: &str,
     ) -> Identity {
         let id = Identity::of(headers, token, peer_of(extensions));
+        // A tailnet user is the viewer its login names, whatever viewer
+        // cookie the browser also holds.
+        let tailscale = extensions
+            .get::<crate::auth::TailscaleUser>()
+            .filter(|_| !id.grant_header)
+            .cloned();
         let id = Identity {
             extension: !id.grant_header
                 && extensions.get::<crate::extension::ViaExtension>().is_some(),
@@ -293,6 +311,8 @@ impl Identity {
             device: extensions
                 .get::<crate::agent::PersonDevice>()
                 .map(|d| d.who.clone()),
+            cookie: if tailscale.is_some() { None } else { id.cookie },
+            tailscale,
             ..id
         };
         match extensions.get::<crate::hosted::HostedRequest>() {
@@ -325,16 +345,21 @@ impl Identity {
     }
 
     /// Whether the request names a viewer of its own: a `clax_viewer`
-    /// cookie, or a hosted session's viewer.
+    /// cookie, a hosted session's viewer, or a tailnet user.
     pub fn names_viewer(&self) -> bool {
-        self.cookie.is_some() || self.hosted_viewer.is_some()
+        self.cookie.is_some() || self.hosted_viewer.is_some() || self.tailscale.is_some()
     }
 
     /// The viewer the request's own credential names: a hosted session's,
-    /// else the `clax_viewer` cookie's when it has a row.
+    /// a tailnet user's (made on first use, its name Tailscale's:
+    /// [`Store::tailscale_viewer`]), else the `clax_viewer` cookie's when
+    /// it has a row.
     pub fn cookie_viewer(&self, st: &Store) -> clax_core::Result<Option<Viewer>> {
         if let Some(v) = &self.hosted_viewer {
             return Ok(Some(v.clone()));
+        }
+        if let Some(u) = &self.tailscale {
+            return st.tailscale_viewer(&u.login, u.name.as_deref()).map(Some);
         }
         match &self.cookie {
             Some(c) => st.get_viewer(c),
