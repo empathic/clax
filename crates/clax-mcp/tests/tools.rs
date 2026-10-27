@@ -204,7 +204,7 @@ async fn publish_says_what_waits_for_approval() {
         .await);
     assert_eq!(
         waits["waiting"],
-        "Waiting for the owner's approval in Clax: the internet (api.clax.invalid).",
+        "Waiting for approval in Clax: the internet (api.clax.invalid).",
         "{waits}"
     );
     let plain = ok(t
@@ -214,7 +214,7 @@ async fn publish_says_what_waits_for_approval() {
         }))
         .await);
     assert!(plain.get("waiting").is_none(), "{plain}");
-    assert!(!plain.to_string().contains("Waiting for the owner"), "{plain}");
+    assert!(!plain.to_string().contains("Waiting for approval"), "{plain}");
 }
 
 #[tokio::test]

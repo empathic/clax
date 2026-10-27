@@ -119,7 +119,7 @@ async fn declared(s: &AppState, aid: &str) -> Result<String, ApiError> {
     if in_force.get("sample").is_none() {
         return Err(ApiError::forbidden(
             "not_approved",
-            "sample waits for the owner to approve this version's capabilities in Clax",
+            "sample waits for approval in Clax",
         ));
     }
     Ok(canonical)

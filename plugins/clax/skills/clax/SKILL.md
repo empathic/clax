@@ -162,7 +162,7 @@ Arguments:
 
 Returns `artifact_id`, `url` (for the person), `version` (the new version
 number), `title`, `files` (the published paths), `note`, `note_truncated`, and
-`addressed` (the thread IDs linked to the new version).
+`addressed` (the thread IDs linked to the new version), and `waiting` when a declared capability awaits approval in Clax.
 
 Update workflow: the `version` from the last `publish` or `read` of that artifact
 is the `if_version` for the next update. Pass it whenever you might not be the

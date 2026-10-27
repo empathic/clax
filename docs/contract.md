@@ -265,8 +265,8 @@ the artifact). `addresses` may name resolved threads. A thread ID in
 
 When the version declares a capability that waits for approval (see
 "Approving capabilities"), the HTTP answer's `pending_capabilities` is set
-and the tool result carries `waiting`, one line such as `Waiting for the
-owner's approval in Clax: the internet (api.example.com), Claude.` (the
+and the tool result carries `waiting`, one line such as `Waiting for
+approval in Clax: the internet (api.example.com), Claude.` (the
 labels are the Clax shell's approval bar's: the internet, Claude, sign-in,
 Clax's controls, notifications, sharing, files, the camera, your
 location). A version that needs no approval carries no `waiting`.
@@ -6785,7 +6785,8 @@ cut to the approved hosts, and `net` gone when none is approved.
 
 **Who approves.** Only the person who answers for the artifact, in Clax
 itself: on a local Clax its owner alone (a maker who is not the owner gets
-403 `admin_only`, saying so); on a hosted Clax the page's maker. Never an
+403 `admin_only`, saying so); on a hosted Clax the page's maker (anyone
+else gets 403 `admin_only`). Never an
 agent (403 `not_for_agents`, and `forbidden` for a person's agent), and
 never a page (403 `not_for_pages`, for a request carrying
 `x-clax-via: page`). Publishing, creating a version and restoring never
@@ -6831,8 +6832,9 @@ All three are 404 for an unknown artifact. A change to the declaration
 narrows the approval to what is still declared and revokes the `net` and
 `sample` grants it no longer covers; a name or host a later version
 declares again asks again. A declared but unapproved capability answers
-403 `not_approved` on `net:fetch`, `sample` and the `sample-grant` and
-`net-grants` writes, where an undeclared one answers `not_declared`.
+403 `not_approved` on `net:fetch`, `sample` and the `sample-grant` write,
+where an undeclared one answers `not_declared`. The `net-grants` write
+grants only the hosts in force and answers 400 `not_declared` when none is.
 
 ### Fetching from the network (`net`)
 
@@ -6852,9 +6854,10 @@ and `PATCH`. Declaring grants nothing alone.
 26), with the token:
 
 - `PUT /api/artifacts/<id>/net-grants`, body `{hosts: [host]}` (the hosts
-  the owner was shown): grants each of them the live version declares,
-  ignoring the rest; hosts already granted keep their time. 400
-  `not_declared` when it declares none, `invalid_argument` without `hosts`.
+  the owner was shown): grants each of them in force (declared by the live
+  version and approved), ignoring the rest, those that wait for approval
+  included; hosts already granted keep their time. 400 `not_declared` when
+  none is in force, `invalid_argument` without `hosts`.
 - `DELETE /api/artifacts/<id>/net-grants`: `{revoked}`, how many grants
   there were.
 - `GET /api/artifacts/<id>/net-grants`: `{declared: [host], grants:

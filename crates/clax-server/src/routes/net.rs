@@ -90,7 +90,7 @@ pub async fn fetch(
     if access.waiting.iter().any(|h| h == host) {
         return Err(ApiError::forbidden(
             "not_approved",
-            format!("{host} waits for the owner to approve this version's capabilities in Clax"),
+            format!("{host} waits for approval in Clax"),
         ));
     }
     if !access.declared.iter().any(|h| h == host) {
