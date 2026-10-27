@@ -332,7 +332,10 @@ async fn the_installed_flutter_app_home_backs_up_and_is_adopted() {
 
     // Adopted and migrated to this build's last migration, the version declarations'.
     let version = clax_store::schema_version(&home).unwrap();
-    assert_eq!(version, Some(clax_store::migrations::VERSION_CAPABILITIES_MIGRATION));
+    assert_eq!(
+        version,
+        Some(clax_store::migrations::VERSION_CAPABILITIES_MIGRATION)
+    );
     assert_eq!(
         version,
         Some(clax_store::migrations::MIGRATIONS.len() as u32)
