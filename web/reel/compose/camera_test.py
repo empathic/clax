@@ -1,4 +1,5 @@
-"""Tests for camera.py: pacing, the crop path's rules and its determinism.
+"""Tests for camera.py: pacing, the focus treatment's and the camera path's rules,
+and their determinism.
 
   target/reel-venv/bin/python -I web/reel/compose/camera_test.py
   REEL_FRAMES=<a FRAMES_DIR> ... also checks a real recording's path twice.
@@ -63,7 +64,9 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(camera.beat_frame(b, "42"), 42)
 
 
-class PathTest(unittest.TestCase):
+class MotionPathTest(unittest.TestCase):
+    """The opt-in --camera-motion path."""
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
@@ -149,6 +152,79 @@ class PathTest(unittest.TestCase):
         self.assertEqual(len(out), 5 * W * H * 3)
 
 
+class FocusPathTest(unittest.TestCase):
+    """The default treatment: the whole frame always, a focus region that moves rarely."""
+
+    @classmethod
+    def setUpClass(cls):
+        from PIL import Image, ImageDraw
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.dir = cls.tmp.name + "/demo_frames"
+        os.makedirs(cls.dir + "/frames")
+        n = 330
+        for i in range(n):
+            im = Image.new("RGB", (W, H), (240, 240, 236))
+            dr = ImageDraw.Draw(im)
+            # A card at the lower right, its text typed in from frame 30 to 180.
+            dr.rectangle([440, 300, 760, 470], outline=(60, 60, 60), width=2)
+            k = min(max(i - 30, 0), 150)
+            for c in range(k // 2):  # a character every 2 frames, as fast as the director types
+                x = 450 + (c % 30) * 9  # 10 px inside the card, like a composer's padding
+                dr.rectangle([x, 310 + (c // 30) * 20, x + 6, 322 + (c // 30) * 20], fill=(30, 30, 30))
+            # A pointer wandering over the upper left the whole time: never a focus.
+            px, py = 40 + (i * 3) % 300, 120 + (i * 2) % 100
+            dr.rectangle([px, py, px + 10, py + 16], fill=(0, 0, 0))
+            if i >= 220:  # the reveal: the page changes
+                dr.rectangle([60, 300, 400, 480], fill=(40, 90, 200))
+            im.save("%s/frames/%06d.png" % (cls.dir, i))
+        cls.beats = {"fps": 30, "frames": n, "beats": [
+            {"name": "ask", "frame": 20}, {"name": "working", "frame": 190},
+            {"name": "reveal", "frame": 220}, {"name": "touch", "frame": 300}]}
+        cls.segs, _ = camera.plan(cls.beats, n)
+        cls.rows = camera.focus_path(cls.dir, cls.segs, cls.beats, (W, H))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def text(self, rows):
+        f = io.StringIO()
+        camera.write_focus(rows, (W, H), f)
+        return f.getvalue()
+
+    def test_deterministic(self):
+        again = camera.focus_path(self.dir, self.segs, self.beats, (W, H))
+        self.assertEqual(self.text(self.rows), self.text(again))
+
+    def test_focus_is_the_card_not_the_pointer(self):
+        regions = {r for _s, _a, live in self.rows for r, _al in live}
+        self.assertTrue(regions)
+        for x0, y0, x1, y1 in regions:
+            self.assertTrue(x0 <= 440 and y0 <= 300 and 760 <= x1 and 470 <= y1, (x0, y0, x1, y1))
+            self.assertGreater(x0, 300)  # nowhere near the pointer's corner
+
+    def test_region_changes_rarely_and_fades(self):
+        alphas = [sum(a for _r, a in live) for _s, _a, live in self.rows]
+        steps = [abs(b - a) for a, b in zip(alphas, alphas[1:])]
+        self.assertLessEqual(max(steps), 1.0 / (camera.secs(camera.PRE_REVEAL_SECONDS) - 1) + 1e-6)
+
+    def test_reveal_is_clean(self):
+        src, _ = camera.source_frames(self.segs)
+        rev = src.index(220)
+        for j in range(rev, rev + camera.secs(camera.REVEAL_CLEAN_SECONDS)):
+            self.assertEqual(self.rows[j][2], [], "treatment during the reveal")
+
+    def test_render_keeps_the_whole_frame(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as f:
+            camera.write_focus(self.rows[100:103], (W, H), f)
+        try:
+            out = subprocess.run([sys.executable, "-I", HERE + "/camera.py", "render", self.dir, f.name],
+                                 check=True, capture_output=True).stdout
+        finally:
+            os.unlink(f.name)
+        self.assertEqual(len(out), 3 * W * H * 3)
+
+
 @unittest.skipUnless(os.environ.get("REEL_FRAMES"), "REEL_FRAMES names no recording")
 class RealPathTest(unittest.TestCase):
     def test_same_path_twice(self):
@@ -158,12 +234,13 @@ class RealPathTest(unittest.TestCase):
         segs, _ = camera.plan(beats, n)
         from PIL import Image
         size = Image.open(camera.frame_path(d, 0)).size
-        texts = []
-        for _ in range(2):
-            f = io.StringIO()
-            camera.write_path(camera.path(d, segs, beats, size), size, f)
-            texts.append(f.getvalue())
-        self.assertEqual(texts[0], texts[1])
+        for make, write in ((camera.focus_path, camera.write_focus), (camera.path, camera.write_path)):
+            texts = []
+            for _ in range(2):
+                f = io.StringIO()
+                write(make(d, segs, beats, size), size, f)
+                texts.append(f.getvalue())
+            self.assertEqual(texts[0], texts[1])
 
 
 if __name__ == "__main__":

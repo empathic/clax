@@ -4,7 +4,7 @@
 # section 9) lands; run by hand, outputs under target/reel/ (git-ignored).
 #
 #   web/reel/compose/compose.sh -o OUT [--order ID,ID,...] [--titles FILE]
-#                               [--cards] [--title-seconds S] [--no-camera]
+#                               [--cards] [--title-seconds S] [--no-camera | --camera-motion]
 #                               [--teaser ID@AT,...] [--intro TEXT] [--inserts ID[@AT],...]
 #                               FRAMES_DIR [FRAMES_DIR...]
 #
@@ -22,26 +22,33 @@
 # --intro card (INTRO_SECONDS), then the vignettes in order, then the end card
 # (reel.toml's [end] headline and footer, END_SECONDS). Vignettes named by
 # --inserts are quick "and also" shots: their last two beats only (camera.py
-# plan --insert), or from AT when named as ID@AT; the camera zooms less on them.
+# plan --insert), or from AT when named as ID@AT; their treatment is lighter.
 # Pace and camera: camera.py (its constants document both). From beats.json
 # (beats ask, working, reveal, touch; frames are 30 fps): start..ask and
 # ask..working at 1.25x, working..reveal in 1.2 s, reveal at 1x for 2.5 s,
 # touch at 1x for up to 2.5 s; other vignettes play their beats' span at
 # 1.0-1.2x (ClaxBot's brief, building, done count as ask, working, reveal).
-# A virtual camera crops and eases toward where the pixels change
-# (whole page at each reveal), with a soft spotlight while near 1x; the
-# lower-third goes on after it. --no-camera shows the whole frame throughout.
-# The per-frame crop path is kept in OUT/camera/<n>-<id>.tsv. Cards are 0.6 s
-# with a quick slide/scale-in; every join is a hard cut.
-# The GIF is each vignette's reveal window (reveal-0.3 s .. +2.2 s; for the
-# fallback, the 2.5 s ending 1 s after its last beat), 720 px, 15 fps, one
-# global palette, hard cuts.
+# The frame never moves: the eye is drawn by a treatment. Outside a focus region
+# the page is greyed and dimmed, inside it keeps its colour with a thin accent
+# ring; the region comes from where the page changes (not the pointer), snaps
+# to the UI block around it, changes rarely and cross-fades when it does; it is
+# off for each reveal. --camera-motion instead crops and eases toward the
+# change (zoom 1.0-1.8); --no-camera shows plain frames. The lower-third goes
+# on after either. The per-frame treatment (or crop path) is kept in
+# OUT/camera/<n>-<id>.tsv. Cards are 0.6 s with a quick slide/scale-in; every
+# join is a hard cut.
+# The GIF is each vignette's reveal window cut from its rendered clip
+# (reveal-0.3 s .. +2.2 s; without a reveal, the 2.5 s ending 1 s after its
+# last beat), 720 px, 15 fps, one global palette, hard cuts.
+# clax-reel-hq.mp4 joins the clips as rendered (CRF 20); clax-reel.mp4 is
+# that at CRF MP4_CRF (24), or two-pass to MP4_MAX_BYTES (16 MB) when larger.
 # Outputs in OUT: cards/*.png, clips/<n>-<id>.mp4, camera/*.tsv, clax-reel.mp4,
-# clax-reel.gif, cut.json (duration; the prelude's clips (teaser, intro) with
+# clax-reel-hq.mp4, clax-reel.gif, cut.json (duration; the prelude's clips (teaser, intro) with
 # start/end; per vignette id, title, context, start/end in the mp4, its clip
 # and clip_duration, and its beats as t_cut/t_clip seconds, null for a beat
 # outside the vignette's cut).
-# Environment: FFMPEG, CHROME, GIF_WIDTH (720), GIF_FPS (15), REEL_PYTHON (a
+# Environment: FFMPEG, CHROME, GIF_WIDTH (720), GIF_FPS (15), MP4_CRF,
+# MP4_MAX_BYTES, REEL_PYTHON (a
 # Python with numpy and Pillow; by default target/reel-venv in the worktree,
 # made on first use).
 set -euo pipefail
@@ -52,6 +59,8 @@ GIF_WIDTH="${GIF_WIDTH:-720}"
 GIF_FPS="${GIF_FPS:-15}"
 CARD_SECONDS=0.6
 END_SECONDS=3.5
+MP4_CRF="${MP4_CRF:-24}"
+MP4_MAX_BYTES="${MP4_MAX_BYTES:-16000000}"
 TEASER_SECONDS=0.5
 INTRO_SECONDS=1.8
 FPS=30
@@ -59,7 +68,7 @@ FFPROBE="${FFPROBE:-$(dirname "$FFMPEG")/ffprobe}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 toml="$here/../reel.toml"
-out=""; order=""; titles_file=""; overlay=1; tsec=2.5; camera=1
+out=""; order=""; titles_file=""; overlay=1; tsec=2.5; camera=1; motion=0
 teaser=""; intro=""; inserts=""
 dirs=()
 while [ $# -gt 0 ]; do
@@ -71,14 +80,15 @@ while [ $# -gt 0 ]; do
     --cards) overlay=0; shift ;;
     --title-seconds) tsec="$2"; shift 2 ;;
     --no-camera) camera=0; shift ;;
+    --camera-motion) motion=1; shift ;;
     --teaser) teaser="$2"; shift 2 ;;
     --intro) intro="$2"; shift 2 ;;
     --inserts) inserts="$2"; shift 2 ;;
-    -h|--help) sed -n 2,46p "$0"; exit 0 ;;
+    -h|--help) sed -n 2,53p "$0"; exit 0 ;;
     *) dirs+=("$1"); shift ;;
   esac
 done
-[ -n "$out" ] && [ ${#dirs[@]} -gt 0 ] || { echo "usage: compose.sh -o OUT_DIR [--order IDS] [--titles FILE] [--cards] [--title-seconds S] [--no-camera] [--teaser ID@AT,...] [--intro TEXT] [--inserts ID[@AT],...] FRAMES_DIR..." >&2; exit 2; }
+[ -n "$out" ] && [ ${#dirs[@]} -gt 0 ] || { echo "usage: compose.sh -o OUT_DIR [--order IDS] [--titles FILE] [--cards] [--title-seconds S] [--no-camera | --camera-motion] [--teaser ID@AT,...] [--intro TEXT] [--inserts ID[@AT],...] FRAMES_DIR..." >&2; exit 2; }
 mkdir -p "$out/cards" "$out/clips" "$out/camera"
 rm -f "$out/cards/cut.tsv"
 out="$(cd "$out" && pwd)"
@@ -211,7 +221,7 @@ for ((k = 0; k < n; k++)); do
   case "$title" in *"|"*) sub="${title#*|}"; title="${title%%|*}" ;; esac
   ins="$(insert_flag "${ids[k]}")"
   plan "$d" "$ins" > "$out/cards/$tag.plan"
-  cam path "$d" "$out/cards/$tag.plan" $([ "$camera" = 1 ] || echo --no-camera) ${ins:+--insert} > "$out/camera/$tag.tsv"
+  cam path "$d" "$out/cards/$tag.plan" $([ "$camera" = 1 ] || echo --no-camera) $([ "$motion" = 0 ] || echo --camera-motion) ${ins:+--insert} > "$out/camera/$tag.tsv"
   read -r w h < <(head -1 "$out/camera/$tag.tsv" | sed -E 's/.*; ([0-9]+)x([0-9]+).*/\1 \2/')
   printf '%s\t%s\t%s\t%s\n' "$tag" "${ids[k]}" "$title" "$sub" >> "$out/cards/cut.tsv"
   raw=(-f rawvideo -pix_fmt rgb24 -s "${w}x$h" -framerate $FPS -i -)
@@ -239,8 +249,19 @@ log "clips done"
 
 list="$out/clips.txt"; : > "$list"
 for c in ${prelude[@]+"${prelude[@]}"} "${clips[@]}"; do printf "file '%s'\n" "$c" >> "$list"; done
-ff -f concat -safe 0 -i "$list" -c copy -movflags +faststart "$out/clax-reel.mp4"
+ff -f concat -safe 0 -i "$list" -c copy -movflags +faststart "$out/clax-reel-hq.mp4"
 rm -f "$list"
+# The shareable mp4: CRF MP4_CRF, or two-pass to fit MP4_MAX_BYTES when that is larger.
+enc_small=(-c:v libx264 -pix_fmt yuv420p -preset slow -an -movflags +faststart)
+ff -i "$out/clax-reel-hq.mp4" "${enc_small[@]}" -crf "$MP4_CRF" "$out/clax-reel.mp4"
+if [ "$(stat -f %z "$out/clax-reel.mp4" 2>/dev/null || stat -c %s "$out/clax-reel.mp4")" -gt "$MP4_MAX_BYTES" ]; then
+  secs="$("$FFPROBE" -v error -show_entries format=duration -of csv=p=0 "$out/clax-reel-hq.mp4")"
+  kbps="$(python3 -I -c "print(int($MP4_MAX_BYTES * 0.97 * 8 / $secs / 1000))")"
+  log "over $MP4_MAX_BYTES bytes at CRF $MP4_CRF: two-pass at ${kbps}k"
+  ( cd "$out" && ff -i clax-reel-hq.mp4 "${enc_small[@]}" -b:v "${kbps}k" -pass 1 -passlogfile "$out/x264pass" -f mp4 /dev/null &&
+    ff -i clax-reel-hq.mp4 "${enc_small[@]}" -b:v "${kbps}k" -pass 2 -passlogfile "$out/x264pass" clax-reel.mp4 )
+  rm -f "$out"/x264pass*
+fi
 log "mp4 done"
 
 # cut.json: map each vignette's beats through its speed ramp.
@@ -250,7 +271,8 @@ out, probe, overlay, card = sys.argv[1], sys.argv[2], sys.argv[3] == "1", float(
 npre = int(sys.argv[5]); pre = sys.argv[6:6 + npre]; dirs = sys.argv[6 + npre:]
 dur = lambda p: float(subprocess.check_output([probe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", p]).decode())
 fps = 30
-res = {"duration": round(dur(out + "/clax-reel.mp4"), 3), "vignettes": []}
+res = {"duration": round(dur(out + "/clax-reel-hq.mp4"), 3), "vignettes": []}
+gif = open(out + "/cards/gif.tsv", "w")
 t = 0.0
 res["prelude"] = []
 for p in pre:  # the teaser and the intro card, before the vignettes
@@ -281,20 +303,29 @@ for line, d in zip(open(out + "/cards/cut.tsv").read().splitlines(), dirs):
     res["vignettes"].append({"id": id_, "title": title, "context": sub, "start": round(t, 3), "end": round(t + cd, 3),
         "clip": clip, "clip_duration": round(cd, 3),
         "beats": [beat(b) for b in beats]})
+    # The GIF's window of this clip: from 0.3 s before the reveal, or the 2.5 s
+    # ending 1 s after the last beat in the cut.
+    v = res["vignettes"][-1]
+    at = {b["name"]: b["t_clip"] for b in v["beats"] if b["t_clip"] is not None}
+    rev = at.get("reveal", at.get("done"))
+    g0 = rev - 0.3 if rev is not None else (max(at.values()) + 1.0 - 2.5 if at else cd - 2.5)
+    g0 = max(0.0, min(g0, cd - 2.5))
+    gif.write("%s\t%.3f\t%.3f\n" % (out + "/" + clip, g0, min(2.5, cd - g0)))
     t += cd
 json.dump(res, open(out + "/cut.json", "w"), indent=2)
 PY
 rm -f "$out"/cards/*.plan "$out/cards/cut.tsv"
+# The release mp4 is the small one; the hq copy keeps the clips' quality.
 
-# GIF: each vignette's reveal window, hard cuts, one global palette; no
-# dithering vs sierra2_4a, the smaller wins.
-inputs=(); filt=""; labels=""
-for ((k = 0; k < n; k++)); do
-  read -r _ start len < <(plan "${dirs[k]}" | grep '^gif')
-  inputs+=(-start_number "$start" -framerate $FPS -i "${dirs[k]}/frames/%06d.png")
-  filt+="[$k:v]trim=end_frame=$len,setpts=PTS-STARTPTS,fps=$GIF_FPS,scale=$GIF_WIDTH:-1:flags=lanczos,setsar=1[g$k];"
-  labels+="[g$k]"
-done
+# GIF: each vignette's reveal window cut from its rendered clip (treatment and
+# all), hard cuts, one global palette; no dithering vs sierra2_4a, the smaller wins.
+inputs=(); filt=""; labels=""; k=0
+while IFS=$'\t' read -r clip g0 glen; do
+  inputs+=(-i "$clip")
+  filt+="[$k:v]trim=start=$g0:duration=$glen,setpts=PTS-STARTPTS,fps=$GIF_FPS,scale=$GIF_WIDTH:-1:flags=lanczos,setsar=1[g$k];"
+  labels+="[g$k]"; k=$((k + 1))
+done < "$out/cards/gif.tsv"
+rm -f "$out/cards/gif.tsv"
 filt+="${labels}concat=n=$n:v=1:a=0[all]"
 pal="$out/palette.png"
 ff "${inputs[@]}" -filter_complex "$filt;[all]palettegen=stats_mode=full:max_colors=256[p]" -map "[p]" -frames:v 1 "$pal"
@@ -309,6 +340,6 @@ done
 mv "$best" "$out/clax-reel.gif"
 rm -f "$out"/clax-reel.*.gif "$pal"
 
-echo "mp4: $(du -h "$out/clax-reel.mp4" | cut -f1)  $out/clax-reel.mp4"
+echo "mp4: $(du -h "$out/clax-reel.mp4" | cut -f1)  $out/clax-reel.mp4 (hq: $(du -h "$out/clax-reel-hq.mp4" | cut -f1))"
 echo "gif: $(du -h "$out/clax-reel.gif" | cut -f1)  $out/clax-reel.gif"
 echo "clips: $out/clips/"
