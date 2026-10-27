@@ -1,6 +1,9 @@
 name: ci
-on: { push: { branches: [main] }, pull_request: {} }
+on: { push: { branches: [main, prod] }, pull_request: {} }
 permissions: { contents: read }
+# On prod (docs/prod.md), the bazel, worker and version jobs are the
+# ruleset's required checks: keep their names. Only main's pushes commit
+# Bazel's state and log perf.
 # One job through Bazel (docs/bazel.md, "CI"): `scripts/bazel-test.sh --ci`
 # checks what scripts/quality_gates.sh checks with Cargo and pnpm, the quick
 # checks first. The native gates do not run here; they are a manual
@@ -153,6 +156,19 @@ jobs:
       # host and its app data in its own object, on the same build.
       - name: Run the Worker's hosted e2e
         run: cd crates/clax-worker && node e2e-hosted.mjs --no-build
+
+  # On a pull request into prod: the head's version is X.Y.Z, every version
+  # file agrees, and it is greater than prod's (scripts/check-version-bump.sh).
+  # The full fetch brings origin/prod.
+  version:
+    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'prod' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0, persist-credentials: false }
+      - name: Check the version is raised over prod's
+        run: scripts/check-version-bump.sh origin/prod
 
   # The perf benchmarks after every green push to main, kept in a log, never
   # a gate (docs/usage.md, "Developing Clax"): each run appends one JSON line to

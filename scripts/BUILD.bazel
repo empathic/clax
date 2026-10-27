@@ -148,6 +148,14 @@ sh_test(
     data = [":all"],
 )
 
+# scripts/check-version-bump.sh (CI's `version` job on pull requests into
+# prod) in a scratch repository of the release files.
+sh_test(
+    name = "version_bump",
+    srcs = ["test-check-version-bump.sh"],
+    data = [":all"] + RELEASE_FILES,
+)
+
 sh_test(
     name = "installer",
     srcs = ["test-install.sh"],
