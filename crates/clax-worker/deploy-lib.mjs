@@ -22,6 +22,19 @@ export function buildId(commit, now = new Date(), random = "") {
   return [commit ? commit.slice(0, 12) : "", at, random].filter(Boolean).join("-");
 }
 
+/** Why a `--no-build` deploy must not upload `wasm` (build/index_bg.wasm's
+ * bytes as a Buffer, null when there is none), or null when it may. The Worker embeds
+ * the commit it was built from (`CLAX_BUILD_COMMIT`, src/instance.rs
+ * BUILD_COMMIT), so a build from another commit, or from none, is refused
+ * rather than deployed as `head`'s. Without `head` (not a git checkout)
+ * there is nothing to compare, and only a missing build is refused. */
+export function builtFromRefusal(wasm, head) {
+  if (!wasm) return "no build/index_bg.wasm: build first (drop --no-build)";
+  if (!head) return null;
+  if (wasm.indexOf(head) >= 0) return null;
+  return `build/index_bg.wasm was not built from HEAD ${head.slice(0, 12)}: build it from this checkout (drop --no-build)`;
+}
+
 /** What a 200 from `/healthz` says while waiting for build `want`:
  * `{ done: true }` once it reports that build, else `{ waiting }` naming
  * what answers instead (an instance from before this deploy). */

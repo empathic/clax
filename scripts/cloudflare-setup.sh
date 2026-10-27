@@ -40,6 +40,11 @@
 # the deploy record in $CLAX_DEPLOY_HOME. Its smoke runs as the agent token
 # in CLAX_SMOKE_TOKEN.
 #
+# --no-build installs and builds nothing: deploy.mjs deploys what an earlier
+# run (a dry run, say) built and installed in this checkout, and refuses a
+# Worker built from another commit. The deploy workflow builds in a step
+# without the Cloudflare token, then deploys with --no-build.
+#
 # Every other option is passed to crates/clax-worker/deploy.mjs (see the top of
 # that file), e.g. --store memory, --account <ID>, --rotate-secrets, --yes,
 # --github-client-id <ID> --owner-github <login> (GitHub sign-in; the client
@@ -51,7 +56,7 @@
 #    LLVM whose clang targets wasm32, git) and says how to get any that is
 #    missing, adding only the rustup target itself, which is per-user;
 # 2. installs the web UI's packages with pnpm and the Worker's with npm when
-#    their lockfiles changed since the last install;
+#    their lockfiles changed since the last install (not with --no-build);
 # 3. checks `wrangler whoami`: when you are not signed in and the script runs
 #    on a terminal, it starts `wrangler login` for you to complete in the
 #    browser (`--login` does only that); otherwise it stops and says so (a
@@ -82,6 +87,7 @@ smoke=0
 dry=1
 login_only=0
 ci=0
+no_build=0
 set_production=0
 args=()
 set_public="" set_site="" set_store="" set_gh_id="" set_owner=""
@@ -90,6 +96,7 @@ while [ $# -gt 0 ]; do
     --smoke) smoke=1 ;;
     --login) login_only=1 ;;
     --ci) ci=1; args+=("$1") ;;
+    --no-build) no_build=1; args+=("$1") ;;
     --production) set_production=1 ;;
     --i-know-what-i-am-doing) dry=0 ;;
     --dry-run) ;;
@@ -201,8 +208,12 @@ if [ "$llvm_ok" = 0 ] && command -v clang >/dev/null && clang --print-targets 2>
 echo "ok"
 
 say "Installing packages"
-"$root/scripts/pnpm-install-stamped.sh" "$root/web"
-"$root/scripts/npm-ci-stamped.sh" "$worker"
+if [ "$no_build" = 1 ]; then
+  echo "skipped (--no-build: the packages an earlier run installed)"
+else
+  "$root/scripts/pnpm-install-stamped.sh" "$root/web"
+  "$root/scripts/npm-ci-stamped.sh" "$worker"
+fi
 
 wrangler() { (cd "$worker" && ./node_modules/.bin/wrangler "$@"); }
 signed_in() { ! wrangler whoami 2>&1 | grep -i "not authenticated\|You are not logged in" >/dev/null; }

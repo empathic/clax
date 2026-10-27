@@ -35,7 +35,9 @@
 //    (`--diag` turns them on, for `smoke-remote.mjs`'s probe, git token and
 //    reconcile steps, with a reminder before and after the deploy to deploy
 //    again without it);
-// 6. builds the web UI and then the Worker (release), unless `--no-build`;
+// 6. builds the web UI and then the Worker (release), unless `--no-build`,
+//    which deploys what an earlier run built and refuses a Worker that was
+//    not built from the checked-out commit;
 // 7. runs `wrangler deploy` (with `--dry-run`, `wrangler deploy --dry-run`)
 //    and reports the upload size against the Workers Paid limit; when it
 //    fails only because the triggers (custom domains) were left partially
@@ -106,7 +108,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { dirname, join, resolve } from "node:path";
-import { buildId, checkCiOptions, ciSecretsRefusal, doneText, healthOf, partialTriggerUpdate, prodTipOf, productionGate } from "./deploy-lib.mjs";
+import { buildId, builtFromRefusal, checkCiOptions, ciSecretsRefusal, doneText, healthOf, partialTriggerUpdate, prodTipOf, productionGate } from "./deploy-lib.mjs";
 import { HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
@@ -841,6 +843,12 @@ async function main() {
     await buildWorker();
   } else {
     step("Build: skipped (--no-build)");
+    // What an earlier run built, from this commit (deploy-lib.mjs
+    // builtFromRefusal): never a stale build, nor one from another commit.
+    const wasm = join(HERE, "build/index_bg.wasm");
+    const refusal = builtFromRefusal(existsSync(wasm) ? readFileSync(wasm) : null, commit);
+    if (refusal) throw new Error(refusal);
+    info(commit ? `the Worker in build/ was built from HEAD ${commit.slice(0, 12)}` : "the Worker in build/ is deployed as it is (no commit to check it against)");
   }
   if (!existsSync(config.main)) throw new Error(`no ${config.main}: build first (drop --no-build)`);
   // The Worker embeds web/dist when clax-worker compiles (rust-embed,

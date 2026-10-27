@@ -3,9 +3,10 @@ name: Deploy prod
 # Deploys the hosted Clax instance (clax.dev) from the tip of `prod`
 # (docs/prod.md): on every push to prod, and by hand (Actions, Deploy prod,
 # Run workflow, on the branch prod), which redeploys prod's tip. A deploy
-# runs scripts/cloudflare-setup.sh in CI mode: it builds the Worker,
-# deploys it, waits for /healthz to report the build, checks a site host and
-# runs the smoke as an agent token. A failure fails the run, and GitHub
+# runs scripts/cloudflare-setup.sh in CI mode: it builds the Worker in a
+# step without the deploy's secrets, then, in the next, deploys it, waits
+# for /healthz to report the build, checks a site host and runs the smoke
+# as an agent token. A failure fails the run, and GitHub
 # notifies the owner; nothing is rolled back (docs/prod.md, "Rollback").
 #
 # Hourly, the drift check compares the commit /healthz reports with prod's
@@ -35,6 +36,18 @@ jobs:
     # One deploy at a time, and a running one is never cancelled. GitHub
     # keeps at most one waiting run per group, the newest, which is the tip.
     concurrency: { group: deploy-prod, cancel-in-progress: false }
+    # The deploy's settings (none of them secret), for the build and the
+    # deploy alike.
+    env:
+      PUBLIC_HOST: ${{ vars.PUBLIC_HOST }}
+      SITE_DOMAIN: ${{ vars.SITE_DOMAIN }}
+      STORE: ${{ vars.STORE }}
+      # The GitHub OAuth App's client ID (GitHub refuses a variable named
+      # GITHUB_*).
+      OAUTH_CLIENT_ID: ${{ vars.OAUTH_CLIENT_ID }}
+      OWNER_GITHUB: ${{ vars.OWNER_GITHUB }}
+      RETIRED_CONTENT_ORIGIN: ${{ vars.RETIRED_CONTENT_ORIGIN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { ref: "${{ github.sha }}", fetch-depth: 0, persist-credentials: false }
@@ -62,17 +75,31 @@ jobs:
       - name: Install clang, lld and llvm
         run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm
 
-      - name: Deploy (scripts/cloudflare-setup.sh --ci --production --smoke)
+      # Installs and builds with no secret in the environment, so no
+      # package's install script and no crate's build script runs with the
+      # Cloudflare token: a dry run of the deploy below, with its settings,
+      # which installs the packages, builds the web UI and the Worker from
+      # this commit as the deploy would, and ends at `wrangler deploy
+      # --dry-run`.
+      - name: Build (scripts/cloudflare-setup.sh --ci --production, a dry run; no secrets)
         env:
-          PUBLIC_HOST: ${{ vars.PUBLIC_HOST }}
-          SITE_DOMAIN: ${{ vars.SITE_DOMAIN }}
-          STORE: ${{ vars.STORE }}
-          # The GitHub OAuth App's client ID (GitHub refuses a variable
-          # named GITHUB_*).
-          OAUTH_CLIENT_ID: ${{ vars.OAUTH_CLIENT_ID }}
-          OWNER_GITHUB: ${{ vars.OWNER_GITHUB }}
-          RETIRED_CONTENT_ORIGIN: ${{ vars.RETIRED_CONTENT_ORIGIN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLAX_DEPLOY_HOME: ${{ runner.temp }}/clax-deploy
+        run: |
+          set -euo pipefail
+          args=(--legal bundled --public "$PUBLIC_HOST" --site-domain "$SITE_DOMAIN" --store "$STORE")
+          if [ -n "$OAUTH_CLIENT_ID" ]; then
+            args+=(--github-client-id "$OAUTH_CLIENT_ID" --owner-github "$OWNER_GITHUB")
+          fi
+          if [ -n "$RETIRED_CONTENT_ORIGIN" ]; then
+            args+=(--retired-content-origin "$RETIRED_CONTENT_ORIGIN")
+          fi
+          scripts/cloudflare-setup.sh "${args[@]}" --account "$CLOUDFLARE_ACCOUNT_ID" --ci --production
+
+      # Deploys what the step above built (--no-build installs and builds
+      # nothing, and refuses a Worker built from another commit); only this
+      # step has the secrets.
+      - name: Deploy (scripts/cloudflare-setup.sh --ci --production --no-build --smoke)
+        env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLAX_SMOKE_TOKEN: ${{ secrets.CLAX_SMOKE_TOKEN }}
           # The deploy record (setup secrets included on a first deploy)
@@ -88,14 +115,13 @@ jobs:
             args+=(--retired-content-origin "$RETIRED_CONTENT_ORIGIN")
           fi
           scripts/cloudflare-setup.sh "${args[@]}" --account "$CLOUDFLARE_ACCOUNT_ID" \
-            --ci --production --smoke --i-know-what-i-am-doing
+            --ci --production --no-build --smoke --i-know-what-i-am-doing
 
       # The commit, the build the record names, and what /healthz answers
       # now; only the record's `build`, since the record holds secrets.
       - name: Summary
         if: ${{ always() }}
         env:
-          PUBLIC_HOST: ${{ vars.PUBLIC_HOST }}
           RECORD: ${{ runner.temp }}/clax-deploy/${{ vars.PUBLIC_HOST }}.json
         run: |
           build="$(node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).build ?? "") } catch { console.log("") }' "$RECORD")"

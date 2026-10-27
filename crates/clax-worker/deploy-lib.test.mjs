@@ -6,6 +6,7 @@ import { test } from "node:test";
 import {
   SMOKE_CANNOT,
   buildId,
+  builtFromRefusal,
   checkCiOptions,
   ciSecretsRefusal,
   doneText,
@@ -234,4 +235,18 @@ test("the owner token skips only what a browser session alone can do; a session 
   assert.deepEqual(Object.keys(SMOKE_CANNOT.token).sort(), ["agent token", "site: /site-signin, then /_clax/session (SameSite=Lax)", "site: two db artifacts kept apart"]);
   assert.equal(smokeCannot("token", "diagnostics: env"), null);
   for (const as of ["session", "setup", "", null]) assert.equal(smokeCannot(as, "agent token"), null);
+});
+
+test("--no-build deploys only a Worker built from the checked-out commit", () => {
+  const head = "0a2f4805a1b2c3d4e5f60718293a4b5c6d7e8f90";
+  const built = (commit) => Buffer.concat([Buffer.from([0, 97, 115, 109]), Buffer.from(`...${commit}...`)]);
+  assert.equal(builtFromRefusal(built(head), head), null);
+  const other = "ffffffffffffffffffffffffffffffffffffffff";
+  assert.match(builtFromRefusal(built(other), head), /not built from HEAD 0a2f4805a1b2/);
+  // A Worker built with no commit reports "unknown": not this one either.
+  assert.match(builtFromRefusal(built("unknown"), head), /not built from HEAD/);
+  // Nothing built at all.
+  assert.match(builtFromRefusal(null, head), /no build\/index_bg\.wasm/);
+  // No commit to compare (not a git checkout): nothing to refuse on.
+  assert.equal(builtFromRefusal(built(other), ""), null);
 });

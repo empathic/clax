@@ -127,17 +127,25 @@ deploy runs at a time and a running one is never cancelled; GitHub keeps
 only the newest waiting run. It checks out the pushed commit and refuses
 unless it is still `origin/prod`'s tip, sets up Node 26, pnpm, the Rust
 toolchain of `rust-toolchain.toml` with `wasm32-unknown-unknown`, and
-clang, lld and llvm, then runs
+clang, lld and llvm, then runs `scripts/cloudflare-setup.sh` twice, with
+`CLAX_DEPLOY_HOME` in the runner's temporary directory:
 
 ```
 scripts/cloudflare-setup.sh --legal bundled --public "$PUBLIC_HOST" --site-domain "$SITE_DOMAIN" --store "$STORE" \
   [--github-client-id "$OAUTH_CLIENT_ID" --owner-github "$OWNER_GITHUB"] [--retired-content-origin "$RETIRED_CONTENT_ORIGIN"] \
-  --account "$CLOUDFLARE_ACCOUNT_ID" --ci --production --smoke --i-know-what-i-am-doing
+  --account "$CLOUDFLARE_ACCOUNT_ID" --ci --production                                         # build
+... --ci --production --no-build --smoke --i-know-what-i-am-doing                            # deploy
 ```
 
-with `CLAX_DEPLOY_HOME` in the runner's temporary directory: it builds the
-web UI and the Worker, deploys, waits for `/healthz` to report the build,
-checks a site host and runs the smoke. The deploy record stays on the
+The first, a dry run in a step that has neither secret, installs the
+packages and builds the web UI and the Worker from the commit, so no
+package's install script and no crate's build script runs with the
+Cloudflare token. The second, the one step given `CLOUDFLARE_API_TOKEN`
+and `CLAX_SMOKE_TOKEN`, installs and builds nothing (`--no-build`; it
+refuses a Worker not built from the checked-out commit), deploys, waits
+for `/healthz` to report the build, checks a site host and runs the
+smoke. Both run in one job, so the build step could still change files
+the deploy step runs. The deploy record stays on the
 runner. The job summary gives the commit, the record's build and what
 `/healthz` answers. A failure fails the run and GitHub notifies the owner;
 nothing is rolled back.
