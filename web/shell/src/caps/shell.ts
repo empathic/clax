@@ -6,7 +6,8 @@
 //   control (ui/shell-controls.ts) with a coach mark (ui/coach-mark.ts) and
 //   resolves `true`; `false`, drawing nothing, when none is shown. One ring
 //   at a time; the ring goes with the frame's document (`leave`, `reset`,
-//   `dispose`). A `send` control is scrolled into its sidebar first.
+//   `dispose`). A `send` control is scrolled into its sidebar first, only when it
+//   is not wholly in view there.
 // - `can(control)` answers the same without drawing.
 // - `commentMode(on)` enters or leaves comment mode through the view
 //   (`CapEnv.commentMode`), only on the viewer's gesture in the page (the
@@ -14,7 +15,7 @@
 //   where the view cannot comment.
 // This module is a lazy chunk (registry.ts), loaded on the page's first call.
 import { showCoachMark } from "../ui/coach-mark";
-import { SHELL_CONTROLS, type ShellControl, findControl, isShellControl } from "../ui/shell-controls";
+import { SHELL_CONTROLS, type ShellControl, findControl, isShellControl, revealIfOutside } from "../ui/shell-controls";
 import { CapError } from "./errors";
 import { frameGesture } from "./gesture";
 import type { HandlerFactory } from "./host";
@@ -65,7 +66,7 @@ export function makeShellHandler(deps: ShellDeps): HandlerFactory {
 export const shellHandler: HandlerFactory = makeShellHandler({
   find: c => findControl(c, document),
   mark: el => {
-    if (el.getAttribute("data-shell-control") === "send") el.scrollIntoView?.({ block: "nearest" });
+    if (el.getAttribute("data-shell-control") === "send") revealIfOutside(el);
     return showCoachMark(el);
   },
 });

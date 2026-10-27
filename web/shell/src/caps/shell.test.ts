@@ -89,6 +89,7 @@ describe("the shell capability", () => {
     const el = button();
     el.getClientRects = () => [{}] as unknown as DOMRectList;
     el.checkVisibility = () => true;
+    el.getBoundingClientRect = () => ({ x: 10, y: 10, left: 10, top: 10, width: 50, height: 20, right: 60, bottom: 30, toJSON() {} }) as DOMRect;
     const h = makeShellHandler({ find: () => el, mark: e => showCoachMark(e) })({} as CapEnv, {} as Grants);
     try {
       for (let i = 0; i < 100; i++) await expect(h.call("highlight", ["comment"])).resolves.toBe(true);

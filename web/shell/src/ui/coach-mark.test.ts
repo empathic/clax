@@ -91,6 +91,40 @@ describe("a coach mark", () => {
     expect(marks()[0].style.width).toBe("18px");
   });
 
+  it("follows_its_control_when_any_scrolling_ancestor_scrolls", () => {
+    const box = document.createElement("div");
+    box.style.overflowX = "auto";
+    box.style.overflowY = "auto";
+    document.body.appendChild(box);
+    box.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, width: 400, height: 300, right: 400, bottom: 300, toJSON() {} }) as DOMRect;
+    const el = document.createElement("button");
+    box.appendChild(el);
+    let top = 100;
+    el.getBoundingClientRect = () => ({ x: 20, y: top, left: 20, top, width: 80, height: 32, right: 100, bottom: top + 32, toJSON() {} }) as DOMRect;
+    show(el);
+    expect(marks()[0].style.top).toBe("96px");
+    top = 60;
+    box.dispatchEvent(new Event("scroll"));
+    expect(marks()).toHaveLength(1);
+    expect(marks()[0].style.top).toBe("56px");
+  });
+
+  it("a_mark_goes_when_its_control_scrolls_out_of_view", () => {
+    const box = document.createElement("div");
+    box.style.overflowX = "auto";
+    box.style.overflowY = "auto";
+    document.body.appendChild(box);
+    box.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, width: 400, height: 300, right: 400, bottom: 300, toJSON() {} }) as DOMRect;
+    const el = document.createElement("button");
+    box.appendChild(el);
+    let top = 100;
+    el.getBoundingClientRect = () => ({ x: 20, y: top, left: 20, top, width: 80, height: 32, right: 100, bottom: top + 32, toJSON() {} }) as DOMRect;
+    show(el);
+    top = 500;
+    box.dispatchEvent(new Event("scroll"));
+    expect(marks()).toHaveLength(0);
+  });
+
   it("dismiss_is_idempotent", () => {
     const d = show(control());
     d();

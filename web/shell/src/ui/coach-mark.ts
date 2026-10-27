@@ -1,9 +1,10 @@
 // The coach mark: a ring drawn around one of the shell's controls (spec
 // 2026-10-26 §8). One at a time in the window; it goes after `COACH_MS`, on
-// any press or Escape, and when its control stops being shown. It follows the
-// control on `resize` and the control's own resizes.
+// any press or Escape, and when its control stops being shown or scrolls out of
+// view. It follows the control on `resize`, on a scroll of the window or any
+// element, and on the control's own resizes.
 import { after } from "../clock";
-import { isShown } from "./shell-controls";
+import { inView, isShown } from "./shell-controls";
 
 export const COACH_MS = 6_000;
 /** The ring's distance from the control's box, in px. */
@@ -34,7 +35,7 @@ export function showCoachMark(el: HTMLElement, shown: (el: Element) => boolean =
   document.body.appendChild(ring);
 
   const place = () => {
-    if (!shown(el)) { dismiss(); return; }
+    if (!shown(el) || !inView(el)) { dismiss(); return; }
     const r = el.getBoundingClientRect();
     ring.style.left = `${r.left - COACH_PAD}px`;
     ring.style.top = `${r.top - COACH_PAD}px`;
@@ -53,12 +54,14 @@ export function showCoachMark(el: HTMLElement, shown: (el: Element) => boolean =
     cancel();
     observer?.disconnect();
     window.removeEventListener("resize", place);
+    window.removeEventListener("scroll", place, true);
     window.removeEventListener("pointerdown", dismiss, true);
     window.removeEventListener("keydown", onKey, true);
     ring.remove();
   }
   current = dismiss;
   window.addEventListener("resize", place);
+  window.addEventListener("scroll", place, true);
   window.addEventListener("pointerdown", dismiss, true);
   window.addEventListener("keydown", onKey, true);
   observer?.observe(el);

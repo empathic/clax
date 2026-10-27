@@ -7,7 +7,7 @@ import Publish from "./Publish.svelte";
 import SendButton from "./SendButton.svelte";
 import Sidebar from "./Sidebar.svelte";
 import VersionMenu from "./VersionMenu.svelte";
-import { SHELL_CONTROLS, findControl, isShellControl, isShown } from "./shell-controls";
+import { SHELL_CONTROLS, findControl, inView, isShellControl, isShown, revealIfOutside } from "./shell-controls";
 
 const marked = (name: string, host: HTMLElement = document.body, tag = "button") => {
   const el = document.createElement(tag);
@@ -183,6 +183,56 @@ describe("the shell's marked controls", () => {
       expect(bar[0].textContent).toBe("Send 2 unsent to codex");
       m.unmount();
     });
+  });
+});
+
+const rectOf = (el: Element, x: number, y: number, w: number, h: number) => {
+  el.getBoundingClientRect = () => ({ x, y, left: x, top: y, width: w, height: h, right: x + w, bottom: y + h, toJSON() {} }) as DOMRect;
+};
+
+describe("a control's place in its scroll containers", () => {
+  const scroller = () => {
+    const box = document.createElement("div");
+    box.style.overflowX = "auto";
+    box.style.overflowY = "auto";
+    document.body.appendChild(box);
+    rectOf(box, 0, 100, 300, 200);
+    const el = document.createElement("button");
+    box.appendChild(el);
+    return { box, el };
+  };
+
+  it("in_view_is_judged_against_the_viewport_and_every_scrolling_ancestor", () => {
+    const { el } = scroller();
+    rectOf(el, 10, 120, 50, 20);
+    expect(inView(el)).toBe(true);
+    expect(inView(el, true)).toBe(true);
+    rectOf(el, 10, 290, 50, 20);
+    expect(inView(el)).toBe(true);
+    expect(inView(el, true)).toBe(false);
+    rectOf(el, 10, 400, 50, 20);
+    expect(inView(el)).toBe(false);
+    rectOf(el, 10, -400, 50, 20);
+    expect(inView(el)).toBe(false);
+    // Inside its container but below the window.
+    const free = document.createElement("button");
+    document.body.appendChild(free);
+    rectOf(free, 10, window.innerHeight + 10, 50, 20);
+    expect(inView(free)).toBe(false);
+  });
+
+  it("reveal_scrolls_a_control_only_when_it_is_not_whole_in_its_container", () => {
+    const { el } = scroller();
+    const spy = vi.fn();
+    el.scrollIntoView = spy;
+    rectOf(el, 10, 120, 50, 20);
+    revealIfOutside(el);
+    revealIfOutside(el);
+    expect(spy).not.toHaveBeenCalled();
+    rectOf(el, 10, 400, 50, 20);
+    revealIfOutside(el);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith({ block: "nearest" });
   });
 });
 
