@@ -117,20 +117,24 @@ jobs:
           scripts/cloudflare-setup.sh "${args[@]}" --account "$CLOUDFLARE_ACCOUNT_ID" \
             --ci --production --no-build --smoke --i-know-what-i-am-doing
 
-      # The commit, the build the record names, and what /healthz answers
-      # now; only the record's `build`, since the record holds secrets.
+      # The commit, the build and the Cloudflare version the record names
+      # (`wrangler rollback <version ID>` returns to it), and what /healthz
+      # answers now; only those two fields, since the record holds secrets.
       - name: Summary
         if: ${{ always() }}
         env:
           RECORD: ${{ runner.temp }}/clax-deploy/${{ vars.PUBLIC_HOST }}.json
         run: |
-          build="$(node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).build ?? "") } catch { console.log("") }' "$RECORD")"
+          field() { node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]] ?? "") } catch { console.log("") }' "$RECORD" "$1"; }
+          build="$(field build)"
+          version="$(field version_id)"
           health="$(curl -fsS --max-time 20 "https://$PUBLIC_HOST/healthz" 2>&1 || true)"
           {
             echo "**Deploy of https://$PUBLIC_HOST**"
             echo
             echo "- commit: \`$GITHUB_SHA\`"
             echo "- build: \`${build:-none recorded}\`"
+            echo "- Cloudflare version: \`${version:-none recorded}\`"
             echo "- /healthz:"
             echo
             echo '```'

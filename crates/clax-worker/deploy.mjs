@@ -41,7 +41,8 @@
 // 7. runs `wrangler deploy` (with `--dry-run`, `wrangler deploy --dry-run`)
 //    and reports the upload size against the Workers Paid limit; when it
 //    fails only because the triggers (custom domains) were left partially
-//    updated, it runs the same deploy once more, without rebuilding;
+//    updated, it runs the same deploy once more, without rebuilding; the
+//    record keeps the Worker version it names (`version_id`);
 // 8. waits for `/healthz` on the public host to report this upload's build
 //    (`CLAX_BUILD`, a build ID made per deploy from the commit, the time and
 //    a random part; the instance from before the deploy answers 200 too),
@@ -108,7 +109,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { dirname, join, resolve } from "node:path";
-import { buildId, builtFromRefusal, checkCiOptions, ciSecretsRefusal, doneText, healthOf, partialTriggerUpdate, prodTipOf, productionGate } from "./deploy-lib.mjs";
+import { buildId, builtFromRefusal, checkCiOptions, ciSecretsRefusal, doneText, healthOf, partialTriggerUpdate, prodTipOf, productionGate, versionIdOf } from "./deploy-lib.mjs";
 import { HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
@@ -905,8 +906,10 @@ async function main() {
     return;
   }
 
-  // An older record's content_origin is kept as the retired one.
-  const { content_origin: _old, retired_content_origin: _kept, ...kept } = record;
+  // An older record's content_origin is kept as the retired one; its
+  // version_id was an earlier deploy's.
+  const { content_origin: _old, retired_content_origin: _kept, version_id: _was, ...kept } = record;
+  const versionId = versionIdOf(r.out + r.err);
   const next = {
     ...kept,
     ...(retired ? { retired_content_origin: retired } : {}),
@@ -918,6 +921,9 @@ async function main() {
     diag: o.diag,
     deployed_at: new Date().toISOString(),
     build,
+    // The Cloudflare Worker version this deploy made (`wrangler rollback
+    // <version ID>` returns to it), when wrangler named it.
+    ...(versionId ? { version_id: versionId } : {}),
     ...(github.client_id ? { github_client_id: github.client_id } : {}),
     ...(github.owner ? { owner_github: github.owner } : {}),
     ...legal,

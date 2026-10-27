@@ -146,8 +146,9 @@ refuses a Worker not built from the checked-out commit), deploys, waits
 for `/healthz` to report the build, checks a site host and runs the
 smoke. Both run in one job, so the build step could still change files
 the deploy step runs. The deploy record stays on the
-runner. The job summary gives the commit, the record's build and what
-`/healthz` answers. A failure fails the run and GitHub notifies the owner;
+runner. The job summary gives the commit, the record's build, the Cloudflare
+Worker version the deploy made (the record's `version_id`, from `wrangler
+deploy`'s "Current Version ID") and what `/healthz` answers. A failure fails the run and GitHub notifies the owner;
 nothing is rolled back.
 
 ## Drift

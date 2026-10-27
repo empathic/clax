@@ -22,6 +22,14 @@ export function buildId(commit, now = new Date(), random = "") {
   return [commit ? commit.slice(0, 12) : "", at, random].filter(Boolean).join("-");
 }
 
+/** The Worker version a `wrangler deploy` made, from its output's
+ * "Current Version ID: <UUID>" line (the last, when it printed several),
+ * or null when it named none. `wrangler rollback <version ID>` takes it. */
+export function versionIdOf(text) {
+  const ids = [...String(text ?? "").matchAll(/Current Version ID:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/gi)];
+  return ids.length ? ids[ids.length - 1][1].toLowerCase() : null;
+}
+
 /** Why a `--no-build` deploy must not upload `wasm` (build/index_bg.wasm's
  * bytes as a Buffer, null when there is none), or null when it may. The Worker embeds
  * the commit it was built from (`CLAX_BUILD_COMMIT`, src/instance.rs

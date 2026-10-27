@@ -16,6 +16,7 @@ import {
   productionGate,
   smokeCannot,
   smokeCredential,
+  versionIdOf,
 } from "./deploy-lib.mjs";
 
 // What `wrangler deploy` printed when the custom-domains call failed after
@@ -235,6 +236,26 @@ test("the owner token skips only what a browser session alone can do; a session 
   assert.deepEqual(Object.keys(SMOKE_CANNOT.token).sort(), ["agent token", "site: /site-signin, then /_clax/session (SameSite=Lax)", "site: two db artifacts kept apart"]);
   assert.equal(smokeCannot("token", "diagnostics: env"), null);
   for (const as of ["session", "setup", "", null]) assert.equal(smokeCannot(as, "agent token"), null);
+});
+
+// What `wrangler deploy` printed after a deploy that went through.
+const DEPLOYED = `Total Upload: 31456.12 KiB / gzip: 7801.55 KiB
+Worker Startup Time: 412 ms
+Uploaded clax (21.37 sec)
+Deployed clax triggers (3.02 sec)
+  clax.dev (custom domain)
+  *.clax.run/* (zone name: clax.run)
+Current Version ID: 3f1c9a2e-7b4d-4e8f-9a01-5c6d7e8f9a0b
+`;
+
+test("the version ID is the one wrangler deploy names as current", () => {
+  assert.equal(versionIdOf(DEPLOYED), "3f1c9a2e-7b4d-4e8f-9a01-5c6d7e8f9a0b");
+  assert.equal(versionIdOf(DEPLOYED.replace("Current Version ID: ", "Current Version ID:   ")), "3f1c9a2e-7b4d-4e8f-9a01-5c6d7e8f9a0b");
+  // A deploy that printed none (an older wrangler, or a dry run) has none.
+  assert.equal(versionIdOf(PARTIAL), null);
+  assert.equal(versionIdOf("Current Version ID: not-a-uuid"), null);
+  assert.equal(versionIdOf(""), null);
+  assert.equal(versionIdOf(undefined), null);
 });
 
 test("--no-build deploys only a Worker built from the checked-out commit", () => {
