@@ -133,11 +133,16 @@ just clax-dev-deploy --from-laptop --smoke --i-know-what-i-am-doing
 
 A dry run (the default) never refuses; it says what a deploy would refuse.
 
-The deploy workflow runs the same script headless:
+The deploy workflow runs the same script headless, twice: a dry run, in a
+step without the Cloudflare token, installs the packages and builds; then
+the step given the token deploys that build with `--no-build`, which
+installs and builds nothing and refuses a Worker not built from the
+checked-out commit:
 
 ```sh
 scripts/cloudflare-setup.sh --legal bundled --public clax.dev --site-domain clax.run --store artifacts \
-  --github-client-id … --owner-github … --account … --ci --production --smoke --i-know-what-i-am-doing
+  --github-client-id … --owner-github … --account … --ci --production                                  # build
+scripts/cloudflare-setup.sh … --ci --production --no-build --smoke --i-know-what-i-am-doing             # deploy
 ```
 
 `--ci` neither reads nor writes `setup.env`, asks nothing (`deploy.mjs`
