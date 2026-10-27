@@ -175,6 +175,19 @@ export async function api(base: string, token: string, path: string, init: Reque
   return res.status === 204 ? {} : res.json();
 }
 
+/** Approves, as the owner by hand (the token, no session), what artifact
+ * `id`'s current version declares that waits for approval: the
+ * `pending_capabilities` of `GET /api/artifacts/<id>`, by their version and
+ * declaration hash (`PUT /api/artifacts/<id>/capability-approval`).
+ * Approving grants the `net` hosts and the `sample` that waited. Sends
+ * nothing, and answers null, when nothing waits. */
+export async function approve(base: string, token: string, id: string) {
+  const { artifact } = await api(base, token, `/api/artifacts/${id}`) as { artifact: { pending_capabilities?: { version: number; declaration_sha256: string } | null } };
+  const p = artifact.pending_capabilities;
+  if (!p) return null;
+  return api(base, token, `/api/artifacts/${id}/capability-approval`, { method: "PUT", body: JSON.stringify({ version: p.version, declaration_sha256: p.declaration_sha256 }) });
+}
+
 /** Sets session `sid`'s working record on artifact `aid` (`PUT /api/sessions/<sid>/working/<aid>`). */
 export async function setWorking(base: string, token: string, sid: string, aid: string, body: { thread_ids?: string[]; message?: string }) {
   return api(base, token, `/api/sessions/${sid}/working/${aid}`, { method: "PUT", body: JSON.stringify(body) });

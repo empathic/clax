@@ -2760,6 +2760,72 @@ async fn an_editors_clax_json_that_changes_the_declaration_is_admin_only() {
 }
 
 #[tokio::test]
+async fn a_members_page_waits_for_its_maker() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let owner_pid = site.pid(&owner).await;
+    let mia = site.person(&owner, "Mia").await;
+    let mut agent = site.token_agent(&mia, "laptop").await;
+    assert_eq!(agent.initialize("claude-code").await, 200);
+    let (_, r) = agent
+        .call(
+            "publish",
+            json!({"html": "<h1>1</h1>", "title": "Mia's controls", "capabilities": {"shell": {}}}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    let id = site
+        .ts
+        .store
+        .list_artifacts()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.title == "Mia's controls")
+        .unwrap()
+        .id;
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{id}/shares"),
+            json!({"person": owner_pid, "access": "editor"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let path = format!("/api/artifacts/{id}");
+    let approve = format!("/api/artifacts/{id}/capability-approval");
+    // The editor gets the declaration in force, and no approval to give.
+    let (s, v) = site.get(&owner, &path).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["artifact"]["capabilities_in_force"], json!({}), "{v}");
+    assert_eq!(v["artifact"].get("pending_capabilities"), None, "{v}");
+    assert_eq!(v["artifact"].get("may_approve"), None, "{v}");
+    let (s, v) = site.get(&mia, &path).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["artifact"]["may_approve"], json!(true), "{v}");
+    let pending = v["artifact"]["pending_capabilities"].clone();
+    assert_eq!(pending["capabilities"], json!(["shell"]), "{v}");
+    let shown =
+        json!({"version": pending["version"], "declaration_sha256": pending["declaration_sha256"]});
+    let (s, v) = site
+        .send(&owner, reqwest::Method::PUT, &approve, shown.clone())
+        .await;
+    assert_eq!((s, code(&v)), (403, "admin_only"), "{v}");
+    // Its maker approves it, and the editor's view has it in force.
+    let (s, v) = site.send(&mia, reqwest::Method::PUT, &approve, shown).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        v["approval"]["by"],
+        json!(format!("person:{}", site.pid(&mia).await))
+    );
+    let (_, v) = site.get(&owner, &path).await;
+    assert_eq!(
+        v["artifact"]["capabilities_in_force"],
+        json!({"shell": {}}),
+        "{v}"
+    );
+}
+
+#[tokio::test]
 async fn the_daemon_tokens_own_routes_at_a_page_shared_with_the_owner_hold_to_the_share() {
     let site = Site::new().await;
     let owner = site.owner().await;

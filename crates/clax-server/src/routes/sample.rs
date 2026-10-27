@@ -9,7 +9,9 @@
 //! route streams `start`, `text`, `tool_call`, and one `done` or `error` over
 //! SSE; closing the stream cancels the call.
 //!
-//! An app calls only with the owner's grant, kept per artifact until revoked
+//! An app calls only once the owner approved its declaration of `sample`
+//! (403 `not_approved` until then, whatever grant is kept), with the owner's
+//! grant, kept per artifact until revoked
 //! (`/api/artifacts/{aid}/sample-grant`; 403 `not_granted` without it), and
 //! within its daily cost cap (`[sample] daily_cost_cap_usd`, priced from each
 //! round's usage; 429 `rate_limited` once the day's spend reaches it).
@@ -91,17 +93,33 @@ fn start_json(call_id: &str, cached: bool, calls_today: u32, cap: Option<u32>) -
     json!({"call_id": call_id, "cached": cached, "calls_today": calls_today, "daily_call_cap": cap})
 }
 
+/// `aid` canonical, once its declaration in force
+/// ([`clax_store::Store::capabilities_in_force`]) has `sample`: 404 for an
+/// unknown artifact, 403 `not_declared` when the current version does not
+/// declare it, `not_approved` when it does but the declaration waits for
+/// the owner's approval (a grant made before stays unused until then).
 async fn declared(s: &AppState, aid: &str) -> Result<String, ApiError> {
     let id = parse_id(aid)?;
     let canonical = id.as_str().to_string();
-    let artifact = s
-        .store_call(move |st| st.get_artifact(&id))
+    let (artifact, in_force) = s
+        .store_call(move |st| {
+            let Some(a) = st.get_artifact(&id)? else {
+                return Ok(None);
+            };
+            Ok(Some((a, st.capabilities_in_force(&id)?)))
+        })
         .await?
         .ok_or_else(ApiError::not_found)?;
     if artifact.capabilities.get("sample").is_none() {
         return Err(ApiError::forbidden(
             "not_declared",
             "this artifact does not declare sample",
+        ));
+    }
+    if in_force.get("sample").is_none() {
+        return Err(ApiError::forbidden(
+            "not_approved",
+            "sample waits for the owner to approve this version's capabilities in Clax",
         ));
     }
     Ok(canonical)
@@ -431,7 +449,8 @@ pub async fn grant_status(
 
 /// `PUT /api/artifacts/{aid}/sample-grant` (token): lets the app call
 /// `sample()` until the grant is revoked; answers as [`grant_status`]. The
-/// artifact must declare `sample` (403 `not_declared`).
+/// artifact must declare `sample` (403 `not_declared`) and its declaration
+/// be approved (403 `not_approved`).
 pub async fn grant(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,

@@ -907,8 +907,11 @@ async fn golden_now() -> Value {
 /// 2026-10-16-ask-where-attention-is-design §2), which
 /// [`compare_with_section_19`] accepts as [`moved_to_its_place`].
 /// `site` (`GET /api/artifacts/<id>`'s) names the site hosts the shell
-/// frames an artifact on, on every install.
-pub const ADDITIVE_KEYS: [&str; 23] = [
+/// frames an artifact on, on every install. An artifact's
+/// `capabilities_in_force`, and for the owner `may_approve` and
+/// `pending_capabilities`, say what of its declaration its owner approved,
+/// on every install.
+pub const ADDITIVE_KEYS: [&str; 26] = [
     "owner",
     "taken_by",
     "name",
@@ -932,6 +935,9 @@ pub const ADDITIVE_KEYS: [&str; 23] = [
     "comments",
     "forks",
     "app",
+    "capabilities_in_force",
+    "may_approve",
+    "pending_capabilities",
 ];
 
 /// Whether `v`, the value of item 6's key `key` that the golden lacks, is
@@ -945,7 +951,10 @@ pub const ADDITIVE_KEYS: [&str; 23] = [
 /// pulled, in no thread; an artifact's `tags` none (an install migrated
 /// from before tags has none); an artifact's `comments` on, `forks` a
 /// count and `app` null (spec 2026-10-21-app-push-pull §5.6, §5.9: every
-/// artifact made before apps has its Comments switch on and no bundle).
+/// artifact made before apps has its Comments switch on and no bundle); an
+/// artifact's `capabilities_in_force` a declaration, `may_approve` true and
+/// `pending_capabilities` null (a declaration in force before approvals
+/// were kept counts as approved).
 pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
     let owners_agent = |a: &Value| {
         a.is_null()
@@ -974,6 +983,9 @@ pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
         "comments" => *v == json!(true),
         "forks" => v.is_u64(),
         "app" => v.is_null(),
+        "capabilities_in_force" => v.is_object(),
+        "may_approve" => *v == json!(true),
+        "pending_capabilities" => v.is_null(),
         _ => false,
     }
 }

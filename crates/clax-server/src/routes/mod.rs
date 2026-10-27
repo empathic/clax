@@ -33,6 +33,7 @@ pub mod mcp_http;
 pub mod net;
 pub mod people;
 pub mod perf;
+pub mod permissions;
 pub mod questions;
 pub mod remote_apps;
 pub mod remotes;

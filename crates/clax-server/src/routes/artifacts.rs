@@ -437,7 +437,8 @@ pub async fn list(
 /// `comments` 400 `invalid_args`: it has no route to turn the switch back
 /// on (`PUT /api/hosted/artifacts/<aid>/comments` is a hosted daemon's). A person's agent creates from a
 /// session, as its person (spec §6.7, §8.2); the answer is filtered for an
-/// agent channel's reader.
+/// agent channel's reader. Its `pending_capabilities` says what the
+/// declaration holds that waits for the owner's approval (`say_pending`).
 pub async fn create(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<clax_http::agent::ArtifactsCreate>,
@@ -539,6 +540,7 @@ pub async fn create(
     let url = format!("/a/{}", artifact["id"].as_str().unwrap_or_default());
     let mut v =
         json!({"artifact": artifact, "version": version, "url": url, "note_truncated": truncated});
+    say_pending(&s, &mut v).await?;
     if !a.holds_token() {
         strip_sessions(&mut v);
     }
@@ -1026,12 +1028,8 @@ pub async fn get(
             );
             // Whether the caller may change its tags (the shell's tag
             // editor): those who administer it, as for its pin.
-            artifact["may_tag"] = json!(clax_http::agent::administers(
-                st,
-                &caller,
-                a.id.as_str(),
-                hosted
-            )?);
+            let administers = clax_http::agent::administers(st, &caller, a.id.as_str(), hosted)?;
+            artifact["may_tag"] = json!(administers);
             // Whether the caller may resolve its threads, so also send them
             // while its Comments switch is off (the shell's Send).
             artifact["may_resolve"] = json!(may_resolve);
@@ -1046,6 +1044,14 @@ pub async fn get(
             // Its Comments switch, forks and app (an artifact carrying a
             // bundle).
             super::app_bundles::stamp_app_fields(st, &a, &mut artifact)?;
+            // The declaration in force, and for who approves it (never an
+            // agent) what waits.
+            super::app_bundles::stamp_capabilities(
+                st,
+                &a,
+                administers && !caller.is_agent(),
+                &mut artifact,
+            )?;
             let mut v = json!({
                 "artifact": artifact,
                 "versions": vis.filter_versions(&versions),
@@ -1385,6 +1391,7 @@ pub async fn list_versions(
 /// filtered for an agent channel's reader, so a file carried forward from
 /// someone it has not approved stays withheld. A body naming `comments` is
 /// 400 `invalid_args`: the switch is set at creation and by its own route.
+/// The answer carries `pending_capabilities`, as a create's does.
 pub async fn publish(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<clax_http::agent::Publish>,
@@ -1495,6 +1502,7 @@ pub async fn publish(
     let url = format!("/a/{}", artifact["id"].as_str().unwrap_or_default());
     let mut v =
         json!({"artifact": artifact, "version": version, "url": url, "note_truncated": truncated});
+    say_pending(&s, &mut v).await?;
     if !a.holds_token() {
         strip_sessions(&mut v);
     }
@@ -1521,7 +1529,7 @@ pub struct RestoreBody {
 /// as a publish sets them (checked as a publish's: 400
 /// `invalid_capabilities`, `label_too_long`); without them the declaration
 /// is untouched. The answer is publish's (201 `{artifact, version, url,
-/// note_truncated}`), and a `version` event follows. 409
+/// note_truncated, pending_capabilities}`), and a `version` event follows. 409
 /// `conflict` with `current` when `if_version` is not the current version,
 /// 404 `not_found` for an unknown artifact or version, 400 `invalid_args`
 /// when a field is missing or one it does not take is sent (naming it),
@@ -1613,12 +1621,34 @@ pub async fn restore(
         })
         .await?;
     let url = format!("/a/{}", artifact.id);
-    Ok((
-        StatusCode::CREATED,
-        Json(
-            json!({"artifact": artifact, "version": version, "url": url, "note_truncated": truncated}),
-        ),
-    ))
+    let mut v =
+        json!({"artifact": artifact, "version": version, "url": url, "note_truncated": truncated});
+    say_pending(&s, &mut v).await?;
+    Ok((StatusCode::CREATED, Json(v)))
+}
+
+/// Sets `answer`'s `pending_capabilities` (a publish answer's): what its
+/// artifact's current version declares that waits for the owner's approval
+/// ([`clax_store::Store::pending_capabilities`]), `null` when nothing does.
+/// Publishing never approves, whoever publishes. An answer that withholds
+/// the declaration from its reader (`artifact.capabilities` null, as the
+/// visibility filter leaves it) says nothing of it either.
+async fn say_pending(s: &AppState, answer: &mut Value) -> Result<(), ApiError> {
+    if answer["artifact"]
+        .get("capabilities")
+        .is_some_and(Value::is_null)
+    {
+        return Ok(());
+    }
+    let Some(id) = answer["artifact"]["id"]
+        .as_str()
+        .and_then(|i| ArtifactId::parse(i).ok())
+    else {
+        return Ok(());
+    };
+    let pending = s.store_call(move |st| st.pending_capabilities(&id)).await?;
+    answer["pending_capabilities"] = json!(pending);
+    Ok(())
 }
 
 /// Version `n`, filtered for an agent channel's reader; without the token,

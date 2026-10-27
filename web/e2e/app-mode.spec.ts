@@ -7,7 +7,7 @@
 // ./app-host.ts.
 import { type CDPSession, type Frame, type Locator, type Page } from "@playwright/test";
 import { hostChannel, host, initHost, NONCE, noFrames, ofType, toHost } from "./app-host";
-import { test, expect, type Daemon, api, contentFrame, publishAs, publishNext, record, registerSession, streamLive } from "./fixtures";
+import { test, expect, type Daemon, api, approve, contentFrame, publishAs, publishNext, record, registerSession, streamLive } from "./fixtures";
 import { ask } from "./questions-helpers";
 import { advance, quietEval } from "./time";
 
@@ -25,6 +25,11 @@ async function openApp(page: Page, title: string, mode: "subdomain" | "sandbox",
   const { artifact } = opts.capabilities
     ? await api(d.base, d.token, "/api/artifacts", { method: "POST", session: s.id, body: JSON.stringify({ title, capabilities: opts.capabilities, files: { "index.html": { content: html, encoding: "utf8" } } }) }) as { artifact: { id: string } }
     : await publishAs(d.base, d.token, s.id, title, { "index.html": html });
+  if (opts.capabilities) {
+    // Approved, then any grant approving made revoked: the page asks first.
+    await approve(d.base, d.token, artifact.id);
+    await api(d.base, d.token, `/api/artifacts/${artifact.id}/net-grants`, { method: "DELETE" });
+  }
   if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
   await hostChannel(page);
   await record(page);

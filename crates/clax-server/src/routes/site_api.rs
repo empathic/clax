@@ -530,8 +530,10 @@ async fn whoami(s: &AppState, aid: &ArtifactId, caller: &SiteCaller) -> Result<R
 }
 
 /// `artifact` for a visitor: `{artifact: {id, title, current_version,
-/// capabilities}}`, what a page reads of itself (its declaration, from which
-/// the bridge decides what `use()` resolves), and nothing of who works on it.
+/// capabilities}}`, what a page reads of itself (`capabilities` its
+/// declaration in force, [`clax_store::Store::capabilities_in_force`], from
+/// which the bridge decides what `use()` resolves), and nothing of who
+/// works on it.
 async fn visitor_artifact(s: &AppState, aid: &ArtifactId) -> Result<Response, ApiError> {
     let aid = aid.clone();
     let v: Value = s
@@ -543,7 +545,7 @@ async fn visitor_artifact(s: &AppState, aid: &ArtifactId) -> Result<Response, Ap
                 "id": a.id.as_str(),
                 "title": a.title,
                 "current_version": a.current_version,
-                "capabilities": a.capabilities,
+                "capabilities": st.capabilities_in_force(&aid)?,
             }}))
         })
         .await?;

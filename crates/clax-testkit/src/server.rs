@@ -1073,6 +1073,41 @@ impl TestServer {
         assert_eq!(res.status(), 201, "{}", res.text().await.unwrap());
         res.json().await.unwrap()
     }
+
+    /// Approves, as the owner by hand (the token, no session), what
+    /// artifact `aid`'s current version declares that waits for approval:
+    /// reads its `pending_capabilities` (`GET /api/artifacts/<aid>`) and
+    /// sends their `version` and `declaration_sha256` to `PUT
+    /// /api/artifacts/<aid>/capability-approval`. Returns the answer, or
+    /// `None` when nothing waits.
+    pub async fn approve(&self, aid: &str) -> Option<serde_json::Value> {
+        let res = self.get_authed(&format!("/api/artifacts/{aid}")).await;
+        assert_eq!(res.status(), 200, "GET /api/artifacts/{aid}");
+        let v: serde_json::Value = res.json().await.unwrap();
+        let pending = &v["artifact"]["pending_capabilities"];
+        if pending.is_null() {
+            return None;
+        }
+        let res = self
+            .authed(
+                self.client
+                    .put(format!(
+                        "{}/api/artifacts/{aid}/capability-approval",
+                        self.base
+                    ))
+                    .json(&serde_json::json!({
+                        "version": pending["version"],
+                        "declaration_sha256": pending["declaration_sha256"],
+                    })),
+            )
+            .send()
+            .await
+            .unwrap();
+        let status = res.status();
+        let body: serde_json::Value = res.json().await.unwrap_or_default();
+        assert_eq!(status, 200, "approve {aid}: {body}");
+        Some(body)
+    }
 }
 
 /// Bytes that pass the daemon's PNG check (signature only); not a decodable image.

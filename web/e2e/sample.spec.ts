@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { type Frame, type Page } from "@playwright/test";
-import { test, expect, type Daemon, STUB_CONFIG, contentFrame, openArtifact, publishWith, reach, startDaemon } from "./fixtures";
+import { test, expect, type Daemon, STUB_CONFIG, api, approve, contentFrame, openArtifact, publishWith, reach, startDaemon } from "./fixtures";
 import { hostedDaemon, openAt, ownerOf, shareByLink } from "./hosted-helpers";
 
 const PAGE = readFileSync(new URL("./pages/sample.html", import.meta.url), "utf8");
@@ -11,14 +11,23 @@ test.describe("with the stub provider", () => {
   test.beforeAll(async () => { d = await startDaemon({ config: STUB_CONFIG }); });
   test.afterAll(async () => { await d?.stop(); });
 
+  /** Publishes the page, approves its declaration, and revokes the grant
+   * approving made: the page asks the owner again on its first call. */
+  async function publishApproved(title: string) {
+    const made = await publishWith(d.base, d.token, title, PAGE, { sample: {} });
+    await approve(d.base, d.token, made.artifact.id);
+    await api(d.base, d.token, `/api/artifacts/${made.artifact.id}/sample-grant`, { method: "DELETE" });
+    return made;
+  }
+
   async function open(page: Page, title: string): Promise<Frame> {
-    const { artifact } = await publishWith(d.base, d.token, title, PAGE, { sample: {} });
+    const { artifact } = await publishApproved(title);
     const f = await openArtifact(page, d.base, artifact.id, 1);
     await expect(f.locator("#status")).toHaveText("ready");
     return f;
   }
 
-  /** Fills the prompt, clicks `button`, and answers the consent dialog with `consent` (every test's first call asks). */
+  /** Fills the prompt, clicks `button`, and answers the consent dialog with `consent` (every test's first call asks: the grant approving made was revoked). */
   async function ask(page: Page, f: Frame, prompt: string, button = "#ask", consent: "Allow" | "Don't allow" = "Allow") {
     await f.locator("#prompt").fill(prompt);
     await f.locator(button).click();
@@ -46,7 +55,7 @@ test.describe("with the stub provider", () => {
   });
 
   test(`consent lasts for the app until revoked: a reload does not ask`, async ({ page }) => {
-    const { artifact } = await publishWith(d.base, d.token, `Sample reload`, PAGE, { sample: {} });
+    const { artifact } = await publishApproved(`Sample reload`);
     const f = await openArtifact(page, d.base, artifact.id, 1);
     await expect(f.locator("#status")).toHaveText("ready");
     await ask(page, f, "first");

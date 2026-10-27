@@ -5369,6 +5369,8 @@ router), and a test fails when it differs:
 | `POST /api/approvals/requests/{rid}/decide` | Denied | yes: 403 `browser_required` |
 | `DELETE /api/approvals/{id}` | Denied | yes: 403 `browser_required` |
 | `GET /api/artifacts/{aid}/approves-first` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/artifacts/{aid}/capability-approval` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/artifacts/{aid}/capability-approval/{name}` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/artifacts/{aid}/db-grants` | Denied | no |
 | `DELETE /api/artifacts/{aid}/db-grants/{source}` | Denied | no |
 | `PUT /api/artifacts/{aid}/db-grants/{source}` | Denied | no |
@@ -5381,6 +5383,7 @@ router), and a test fails when it differs:
 | `GET /api/artifacts/{aid}/net-grants` | Denied | no |
 | `PUT /api/artifacts/{aid}/net-grants` | Denied | no |
 | `POST /api/artifacts/{aid}/net:fetch` | Denied | no |
+| `GET /api/artifacts/{aid}/permissions` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/artifacts/{aid}/push` | Denied | no |
 | `GET /api/artifacts/{aid}/remotes` | Denied | no |
 | `DELETE /api/artifacts/{aid}/remotes/{rid}` | Denied | no |
