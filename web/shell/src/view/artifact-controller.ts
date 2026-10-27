@@ -30,7 +30,7 @@ import { FrameGate } from "./frame-gate";
 import type { PresenceView } from "./presence-model";
 import type { Presence, PresenceReporter } from "./presence-reporter";
 import type { FrameHost } from "./frame-host";
-import { type KeyAction, holdKeysAcrossLoad, keyAction, keysHeldAtLoad } from "./keys";
+import { type KeyAction, holdKeysAcrossLoad, keyAction, keysHeldAtLoad, pageKeyAction } from "./keys";
 import { keyboardTrail } from "./trail";
 import { type Ask, promptQueue } from "./prompt-queue";
 import { defaultTarget, rememberTarget } from "./send-target";
@@ -385,6 +385,13 @@ export class ArtifactController {
    * control: it neither sets this nor reaches the shell's buttons, where a
    * Space would press them natively. */
   private keysOwned = !this.heldAtLoad;
+  /** Whether C pressed in the page (`clax:shortcut`) is held: the viewer may
+   * still be typing for the page, and focus the shell gave back to the frame
+   * (`listen`) took their keys there. It starts set on a load the page caused
+   * (`holdKeysAcrossLoad`), is set when a prompt the page raised opens or
+   * closes, and is cleared where `keysOwned` is set again: a trusted press in
+   * the shell, or focus landing on a specific shell control. */
+  private pageKeysHeld = this.heldAtLoad;
   // A prompt closes the keys sheet, so nothing covers or disables the prompt.
   private readonly prompt = promptQueue(ask => this.set(ask ? { ask, sheet: null } : { ask }));
   /** The frame's handshake with its site (`showFrame`): `el` opened on the
@@ -559,6 +566,7 @@ export class ArtifactController {
     // came before the close, so the viewer's next keys may still be meant for
     // the page (`keysOwned`).
     if (!!prev.ask !== !!this.s.ask || !!prev.draft !== !!this.s.draft) this.keysOwned = false;
+    if (!!prev.ask !== !!this.s.ask) this.pageKeysHeld = true;
     // Comment mode cannot come on in a page whose comment part did not load,
     // however it was asked for: the viewer is told again instead.
     if (this.s.commenting && this.failedParts.has("comment")) this.state.set({ commenting: false, notice: `${PART_FAILED.comment}.` });
@@ -1190,6 +1198,7 @@ export class ArtifactController {
     const onPress = (e: PointerEvent) => {
       if (!e.isTrusted) return;
       this.keysOwned = true;
+      this.pageKeysHeld = false;
       giveBackTo = null;
       restoreTo = null;
       const target = e.target instanceof Element ? e.target : null;
@@ -1212,6 +1221,7 @@ export class ArtifactController {
       if (!restored && !pressing && (e.relatedTarget === null || (e.relatedTarget instanceof Element && e.relatedTarget.localName === "iframe"))) keyboardTrail.taint();
       if (!t.closest("[role=dialog], [aria-modal=true], .composer")) {
         this.keysOwned = true;
+        this.pageKeysHeld = false;
         giveBackTo = null;
       }
     };
@@ -1460,6 +1470,12 @@ export class ArtifactController {
         break;
       }
       case "clax:cancel": this.set({ commenting: false }); break;
+      // C pressed in the page: the shell's own C, from the frame.
+      case "clax:shortcut": {
+        const a = pageKeyAction(m.key);
+        if (a && this.gate.open) this.shortcut(a, "page");
+        break;
+      }
       case "clax:hash":
         // The page's fragment moved (a link, a script): the address bar
         // follows in place, once per animation frame (or `nextFrame`'s
@@ -1740,14 +1756,19 @@ export class ArtifactController {
   /** The sheet's code did not load: close it, so the keys act again, and say so. */
   sheetFailed(): void { this.set({ sheet: null, notice: `${SHEET_FAILED}.` }); }
 
-  /** A shell key (spec §8, "Keys"); `keyAction` decided it applies. Returns
-   * whether it acted, so a key that does nothing is left to the browser.
-   * Nothing acts while the sheet, a page's prompt or the composer is open,
-   * or while the keys are held (`keysOwned`): Escape (handled in `listen`)
-   * is their only shell key. */
-  shortcut(a: KeyAction): boolean {
+  /** A shell key (spec §8, "Keys"); `keyAction` decided it applies, or, for
+   * one pressed in the `page`, `pageKeyAction`. Returns whether it acted, so
+   * a key that does nothing is left to the browser. Nothing acts while the
+   * sheet, a page's prompt or the composer is open, or while the keys are
+   * held: a shell key while they are not the shell's (`keysOwned`), Escape
+   * (handled in `listen`) being their only shell key; a page's while they
+   * are held for it (`pageKeysHeld`), or while the frame does not hold the
+   * viewer's gesture (`frameGesture`: the page can post `clax:shortcut`
+   * itself, so it counts only as a pick's start does). */
+  shortcut(a: KeyAction, from: "shell" | "page" = "shell"): boolean {
     const s = this.s;
-    if (!viewReady(s) || s.deleted || s.sheet || s.ask || s.draft || !this.keysOwned) return false;
+    const owned = from === "shell" ? this.keysOwned : !this.pageKeysHeld && frameGesture();
+    if (!viewReady(s) || s.deleted || s.sheet || s.ask || s.draft || !owned) return false;
     if (a === "help") this.set({ sheet: "keys" }); else this.toggleComment();
     return true;
   }

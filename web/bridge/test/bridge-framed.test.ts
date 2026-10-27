@@ -174,3 +174,25 @@ describe("the app shell's scroll", () => {
     await frames();
   });
 });
+
+describe("C pressed in the page", () => {
+  const press = (target: EventTarget, trustedKey = true) => {
+    const e = new KeyboardEvent("keydown", { key: "c", bubbles: true, cancelable: true });
+    if (trustedKey) dispatchTrusted(target, e); else target.dispatchEvent(e);
+  };
+  const shortcuts = () => posted.filter(m => m.type === "clax:shortcut");
+
+  it("is told to the shell, unless the page cancels it, even in a window listener added after the bridge's, or dispatched it itself", async () => {
+    posted.length = 0;
+    const cancel = (e: Event) => e.preventDefault();
+    addEventListener("keydown", cancel);
+    press(document.documentElement);
+    removeEventListener("keydown", cancel);
+    press(document.documentElement, false);
+    press(document.documentElement);
+    // Each press is judged a task later, in order: a task queued after the
+    // last runs once all three are judged, and only the last was told.
+    await new Promise(r => setTimeout(r));
+    expect(shortcuts()).toEqual([{ type: "clax:shortcut", key: "c" }]);
+  });
+});

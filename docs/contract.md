@@ -1988,6 +1988,22 @@ Option returns to the usual target, and a click, or a drag selection, while
 widened picks that element (a drag selection is widened at least to its
 block); Option never starts an area drag. Option, Up, Down, and Escape work
 with focus in the page or in the shell while the pointer is over the page.
+C, the Comment button's key, which turns comment mode on or off, works with
+focus in the page too: the bridge tells the shell of a C the viewer pressed
+there (`clax:shortcut`) when the browser delivered it, with no modifier (not
+Shift either; Caps Lock does not matter), not repeated or composing, not
+typed into an input, textarea, select, editable content, or an element with
+the role `textbox` or `combobox` (or inside one), and not cancelled by the
+page: a page that uses C itself calls `preventDefault()` on its `keydown`,
+in any listener, and keeps it. The shell then acts as on its own C, under
+the same rules (nothing while the Comment button is off or disabled, or
+while a dialog, the keys sheet or a composer is open), and only while the
+frame holds the viewer's gesture (the check `compose` uses), since the page
+can post that message itself; after a load the page caused, or once a
+prompt the page raised opens or closes, the viewer's C in the page does
+nothing until they press in the shell, as they may still be typing for the
+page. No other key leaves the page: `?` stays the page's, and Escape in the
+page ends comment mode there itself.
 Only the viewer's own input counts: the bridge ignores events the page
 dispatched, and the shell takes a pick only from its start
 (`clax:pick-start`, sent by the bridge at the viewer's click or release with
@@ -9559,7 +9575,9 @@ it starts, the runs a previous process left. A build without the
   selection and gives C and `?` back.
 - A page shares its realm with the bridge, so while the viewer has comment
   mode on it can report a pick the viewer did not make; the composer that
-  opens holds only what the viewer types into it.
+  opens holds only what the viewer types into it. For the same reason, while
+  the frame holds the viewer's gesture, it can turn comment mode on or off
+  as their C in the page does (`clax:shortcut`).
 - Over the LAN, anyone who reaches the daemon can make viewers, threads,
   comments, sends to the agent and `db` documents at their level, with no
   rate limit; the LAN bind is for a network the person trusts. Room sockets
