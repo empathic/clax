@@ -242,6 +242,19 @@
     50%      { box-shadow: 0 0 0 7px color-mix(in srgb, var(--ok) 0%, transparent), 0 0 14px color-mix(in srgb, var(--ok) 60%, transparent); }
   }
   @media (prefers-reduced-motion: reduce) { .fab.beckon { animation: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 35%, transparent); } }
+  /* Beside the glowing ✓, a small note says what it is for. */
+  .fab.beckon::after { content: "Mark when you're signed in"; position: absolute; left: calc(100% + 10px); top: 50%; transform: translateY(-50%);
+    white-space: nowrap; pointer-events: none; padding: 4px 9px; border-radius: 6px; font-size: 12px; font-weight: 600; line-height: 1.3;
+    background: var(--ok); color: var(--surface); box-shadow: 0 2px 8px rgba(0, 0, 0, .18); }
+  .fab.beckon::before { content: ""; position: absolute; left: calc(100% + 4px); top: 50%; transform: translateY(-50%);
+    border: 6px solid transparent; border-right-color: var(--ok); border-left: 0; pointer-events: none; }
+  /* Narrow: no room beside the box, so the note hangs under the box's right corner. */
+  @media (max-width: 900px) {
+    .fab.beckon::after, .fab.beckon::before { display: none; }
+    .node:has(> .fab.beckon)::after { content: "Mark when you're signed in"; position: absolute; right: -14px; top: calc(100% + 8px); z-index: 4;
+      white-space: nowrap; pointer-events: none; padding: 4px 9px; border-radius: 6px; font-size: 12px; font-weight: 600; line-height: 1.3;
+      background: var(--ok); color: var(--surface); box-shadow: 0 2px 8px rgba(0, 0, 0, .18); }
+  }
   @media (max-width: 900px) { .fab { right: -10px; width: 26px; height: 26px; } .node .n { left: -9px; width: 18px; height: 18px; font-size: 10px; } .row.branches .node.small { width: calc(50% - 12px); } }
 
   /* What is in flight, on the ideas page. */
