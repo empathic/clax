@@ -374,7 +374,7 @@
       const n = NODES[id];
       const b = box(id);
       b.className = `node ring-node ring-${i}`;
-      b.innerHTML = `<span class="n"><span>${numOf(id) ?? ""}</span></span><span class="t">${n.title}</span><span class="s">${n.sub || ""}</span><span class="idea" hidden>💡</span>${fab(id)}`;
+      b.innerHTML = `<span class="n"><span>${numOf(id) ?? ""}</span></span><span class="t">${n.title}</span><span class="s">${n.sub || ""}</span>${fab(id)}`;
       els[id] = b;
       ring.appendChild(b);
     });
@@ -420,7 +420,7 @@
         b.className = "node" + (n.kind === "small" ? " small" : "") + (INSTALLS.includes(id) ? " inst" : "") + (n.kind === "terminal" ? " terminal" : "");
         const brand = n.agent && BRAND[n.agent];
         if (brand) b.style.setProperty("--brand", brand.color);
-        b.innerHTML = `<span class="n"><span>${label}</span></span>${brand ? `<span class="mark">${brand.mark}</span>` : ""}<span class="t">${n.title}</span><span class="s">${n.sub || ""}</span><span class="idea" hidden>💡</span>${fab(id)}`;
+        b.innerHTML = `<span class="n"><span>${label}</span></span>${brand ? `<span class="mark">${brand.mark}</span>` : ""}<span class="t">${n.title}</span><span class="s">${n.sub || ""}</span>${fab(id)}`;
       }
       if (n.cta) { b.insertAdjacentHTML("beforeend", `<span class="cta">${n.cta}</span>`); b.classList.add("has-cta"); }
       els[id] = b;
@@ -465,8 +465,6 @@
       if (num && id !== "done") num.textContent = numOf(id) ?? "";
       el.querySelectorAll(":scope > .fab").forEach((f) => { const on = !!state.done[f.dataset.toggle]; f.classList.toggle("on", on); f.setAttribute("aria-pressed", String(on)); f.classList.toggle("beckon", f.dataset.toggle === "signin" && !Object.keys(state.done).length); });
       el.querySelectorAll("[data-pick]").forEach((c) => c.classList.toggle("on", c.dataset.pick === state.agent));
-      const bulb = el.querySelector(".idea");
-      if (bulb) { const n = ideasFor(id).filter((i) => i.status !== "declined" && !DONE_STATUS.has(i.status || "proposed")).length; bulb.hidden = !n; bulb.title = `${n} idea${n === 1 ? "" : "s"} to make this step better`; }
     }
     const CORE = core();
     const n = CORE.filter((c) => state.done[c]).length;
