@@ -97,7 +97,7 @@ fn start_json(call_id: &str, cached: bool, calls_today: u32, cap: Option<u32>) -
 /// ([`clax_store::Store::capabilities_in_force`]) has `sample`: 404 for an
 /// unknown artifact, 403 `not_declared` when the current version does not
 /// declare it, `not_approved` when it does but the declaration waits for
-/// the owner's approval (a grant made before stays unused until then).
+/// approval in Clax (a grant made before stays unused until then).
 async fn declared(s: &AppState, aid: &str) -> Result<String, ApiError> {
     let id = parse_id(aid)?;
     let canonical = id.as_str().to_string();

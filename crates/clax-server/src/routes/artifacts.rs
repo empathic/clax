@@ -438,7 +438,7 @@ pub async fn list(
 /// on (`PUT /api/hosted/artifacts/<aid>/comments` is a hosted daemon's). A person's agent creates from a
 /// session, as its person (spec §6.7, §8.2); the answer is filtered for an
 /// agent channel's reader. Its `pending_capabilities` says what the
-/// declaration holds that waits for the owner's approval (`say_pending`).
+/// declaration holds that waits for approval in Clax (`say_pending`).
 pub async fn create(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<clax_http::agent::ArtifactsCreate>,
@@ -1635,8 +1635,10 @@ pub async fn restore(
 }
 
 /// Sets `answer`'s `pending_capabilities` (a publish answer's): what its
-/// artifact's current version declares that waits for the owner's approval
-/// ([`clax_store::Store::pending_capabilities`]), `null` when nothing does.
+/// artifact's current version declares that waits for approval in Clax
+/// ([`clax_store::Store::pending_capabilities`]), `null` when nothing does,
+/// and `null` too when the current version is no longer the answer's
+/// `version` (another publish landed after this one; [`pending_of`]).
 /// Publishing never approves, whoever publishes. An answer that withholds
 /// the declaration from its reader (`artifact.capabilities` null, as the
 /// visibility filter leaves it) says nothing of it either.
@@ -1654,8 +1656,22 @@ async fn say_pending(s: &AppState, answer: &mut Value) -> Result<(), ApiError> {
         return Ok(());
     };
     let pending = s.store_call(move |st| st.pending_capabilities(&id)).await?;
-    answer["pending_capabilities"] = json!(pending);
+    answer["pending_capabilities"] = pending_of(&answer["version"], pending);
     Ok(())
+}
+
+/// `pending` as the `pending_capabilities` of an answer whose version is
+/// `version`: read after the publish's transaction, it is of a later
+/// version when another publish landed meanwhile, and then says nothing of
+/// this one (`null`).
+fn pending_of(
+    version: &Value,
+    pending: Option<clax_store::capability_approvals::Pending>,
+) -> Value {
+    match pending {
+        Some(p) if version["n"].as_u64() == Some(u64::from(p.version)) => json!(p),
+        _ => Value::Null,
+    }
 }
 
 /// Version `n`, filtered for an agent channel's reader; without the token,
@@ -1976,4 +1992,36 @@ pub async fn fork(
         strip_sessions(&mut v);
     }
     Ok((StatusCode::CREATED, Json(v)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pending_of;
+    use clax_core::capabilities::Added;
+    use clax_store::capability_approvals::Pending;
+    use serde_json::{Value, json};
+
+    fn pending_at(version: u32) -> Pending {
+        Pending {
+            version,
+            declaration_sha256: "sha".into(),
+            added: Added {
+                capabilities: vec!["shell".into()],
+                hosts: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_publish_answer_says_only_its_own_versions_pending() {
+        let mine = json!({"n": 3});
+        assert_eq!(
+            pending_of(&mine, Some(pending_at(3)))["capabilities"],
+            json!(["shell"])
+        );
+        // Another publish landed before the read: it is not this answer's.
+        assert_eq!(pending_of(&mine, Some(pending_at(4))), Value::Null);
+        assert_eq!(pending_of(&mine, None), Value::Null);
+        assert_eq!(pending_of(&Value::Null, Some(pending_at(3))), Value::Null);
+    }
 }

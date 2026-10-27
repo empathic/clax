@@ -61,7 +61,7 @@ fn net_error(e: &NetError) -> ApiError {
 /// final URL after redirects, `body` the response as text when it is UTF-8;
 /// any other response (an image, say) comes as `body_base64` instead. 404 for an unknown artifact; 403 `not_declared` when
 /// the live version does not declare the URL's host, `not_approved` when it
-/// does but its declaration of the host waits for the owner's approval
+/// does but its declaration of the host waits for approval in Clax
 /// (for a draft: its live app's approval), `not_granted` when the
 /// owner has not allowed it (for a draft: has not allowed its live app),
 /// `redirect_refused` or `blocked_address`; 400
