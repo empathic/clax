@@ -61,6 +61,11 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = () => {};
 });
 afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); history.replaceState(null, "", location.pathname); });
+// The page draws its edges on an animation frame, which jsdom runs from an
+// interval while one is pending; a test that ends before a frame would leave
+// that interval running. This hook, declared later, runs first: the frame
+// fires while the page is still there.
+afterEach(() => new Promise<void>((done) => { requestAnimationFrame(() => done()); }));
 
 describe("the quickstart notices a sign-in", () => {
   it("ticks_sign_in_and_says_so_for_a_person_on_clax_dev", async () => {

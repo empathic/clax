@@ -10,10 +10,14 @@
 <header>
   <h1 class="sr-only">Start here: Clax in five minutes</h1>
   <figure class="reel" id="reel" hidden>
+    <figcaption class="reel-bar">
+      <span class="reel-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="reel-title">Clax in a minute</span>
+      <button class="reel-hide" id="reel-hide" type="button" aria-label="Hide video" title="Hide video">Hide<span aria-hidden="true">✕</span></button>
+    </figcaption>
     <video src="reel.mp4" poster="reel-poster.jpg" muted loop playsinline controls preload="metadata" aria-label="Clax in about a minute: people ask an agent for pages, it builds them, and they shape them together"></video>
-    <figcaption><button class="linkbtn" id="reel-hide" type="button">Hide video</button></figcaption>
   </figure>
-  <button class="linkbtn reel-show" id="reel-show" type="button" hidden>Watch Clax in a minute</button>
+  <button class="reel-show" id="reel-show" type="button" hidden><span class="play" aria-hidden="true"></span>Watch Clax in a minute</button>
   <nav class="tabs" aria-label="Sections">
     <a href="index.html" id="tab-start" aria-current="page">Quickstart</a>
     <a href="ideas.html" id="tab-ideas" hidden>Make it better<span class="count" id="idea-count"></span></a>
@@ -24,10 +28,13 @@
   <section id="view-start" aria-label="Quickstart">
     <div class="qs">
       <div>
-        <div class="progress">
-          <div class="bar" role="progressbar" aria-label="Quickstart progress" aria-valuemin="0" aria-valuemax="8" aria-valuenow="0"><i id="bar"></i></div>
-          <span id="progress-text">0 of 8 steps</span>
-          <button class="linkbtn" id="reset" type="button">Start over</button>
+        <div class="qs-head">
+          <h2>Your first round trip</h2>
+          <div class="progress">
+            <div class="bar" role="progressbar" aria-label="Quickstart progress" aria-valuemin="0" aria-valuemax="8" aria-valuenow="0"><i id="bar"></i></div>
+            <span id="progress-text">0 of 8 steps</span>
+            <button class="linkbtn" id="reset" type="button">Start over</button>
+          </div>
         </div>
         <div class="chart" id="chart">
           <svg class="edges" id="edges" aria-hidden="true"></svg>
