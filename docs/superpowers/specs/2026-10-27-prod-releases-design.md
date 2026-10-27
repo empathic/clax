@@ -103,9 +103,9 @@ Until it deploys, the drift check keeps failing, which is the alert wanted.
   The owner bypasses it, so that `release.sh` can push the pin commit
   directly.
 - **Environment `production`:** deployment branches `prod` only; variables
-  for the settings `deploy.mjs` takes (for clax.dev: public host `clax.dev`,
-  site domain `clax.run`, store `artifacts`, legal `bundled`, the GitHub
-  OAuth client ID and owner login, account `00000000…`, worker `clax`);
+  for the settings `deploy.mjs` takes (public host, site domain, store, the
+  GitHub OAuth client ID and owner login, the Cloudflare account), set from
+  the owner's local deploy configuration, never written into the repository;
   secrets `CLOUDFLARE_API_TOKEN` (the permissions a full `wrangler deploy`
   needs, triggers included, since each deploy re-applies the custom domain
   and the `*.<site domain>/*` route; the docs list them exactly), `CLOUDFLARE_ACCOUNT_ID`,

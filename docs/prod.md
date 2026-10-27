@@ -54,15 +54,16 @@ differs (the ruleset it writes whole each time). It
   into and push to `prod` too. No approval is required: the owner cannot
   approve the release pull request `just release` opens as them;
 - creates the environment `production`, deployable from `prod` only, with
-  the variables the deploy reads: `PUBLIC_HOST` (`clax.dev`), `SITE_DOMAIN`
-  (`clax.run`), `STORE` (`artifacts`), `OAUTH_CLIENT_ID` (the GitHub OAuth
-  App's client ID; GitHub refuses variable names starting with `GITHUB_`),
-  `OWNER_GITHUB` (`akesling`), `CLOUDFLARE_ACCOUNT_ID`, and
-  `RETIRED_CONTENT_ORIGIN` when given `--retired-content-origin`. Each has
-  a flag (`--help`). Give `--retired-content-origin` when your local
-  deploy record (`~/.config/clax/deploy/clax.dev.json`) names a
-  `retired_content_origin`: the workflow starts from an empty record and
-  would otherwise stop serving the old content host;
+  the variables the deploy reads: `PUBLIC_HOST`, `SITE_DOMAIN`, `STORE`,
+  `OAUTH_CLIENT_ID` (the GitHub OAuth App's client ID; GitHub refuses
+  variable names starting with `GITHUB_`), `OWNER_GITHUB`,
+  `CLOUDFLARE_ACCOUNT_ID`, and `RETIRED_CONTENT_ORIGIN` when the instance
+  has one. It takes their values from your deploy configuration, the one
+  `scripts/cloudflare-setup.sh` keeps in `~/.config/clax/deploy`:
+  `setup.env` (only the settings above; never its client secret) and the
+  deploy record's `account` and `retired_content_origin`. A flag replaces
+  each (`--help`), and a setting found in neither fails the run, naming
+  its flag. None of these values is kept in this repository;
 - sets the repository variable `PUBLIC_HOST` to the same host, for the
   drift check, which runs outside the environment;
 - makes the environment `npm` deployable from `prod` in place of `main`;
@@ -76,9 +77,9 @@ gh secret set CLAX_SMOKE_TOKEN --env production --repo empathic/clax
 ### The Cloudflare API token
 
 Make it in the Cloudflare dashboard (My Profile, API Tokens, Create Token,
-Custom token), limited to the account `00000000…` and to the zones
-`clax.dev` and `clax.run` (and the retired content host's zone, if there
-is one). A full deploy re-applies every binding, the custom domain and the
+Custom token), limited to your Cloudflare account and to the zones of
+the public host and the site domain (and the retired content host's zone,
+if there is one). A full deploy re-applies every binding, the custom domain and the
 route, and makes what is missing, so it needs:
 
 | Scope | Permission | For |

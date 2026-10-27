@@ -148,16 +148,18 @@ jobs:
     timeout-minutes: 5
     # No environment: the production environment admits prod only, and this
     # job needs none of its secrets. The host is the repository variable
-    # PUBLIC_HOST (scripts/setup-prod-github.sh sets it), else clax.dev.
+    # PUBLIC_HOST (scripts/setup-prod-github.sh sets it); without it the
+    # check fails, naming the variable.
     permissions: { contents: read, actions: read }
     steps:
       - name: Compare /healthz's commit with prod's tip
         env:
-          HOST: ${{ vars.PUBLIC_HOST || 'clax.dev' }}
+          HOST: ${{ vars.PUBLIC_HOST }}
           GH_TOKEN: ${{ github.token }}
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
           set -euo pipefail
+          [ -n "$HOST" ] || { echo "::error::the repository variable PUBLIC_HOST is not set (scripts/setup-prod-github.sh sets it)"; exit 1; }
           tip="$(git ls-remote "$REPO_URL" refs/heads/prod | cut -f1)"
           [ -n "$tip" ] || { echo "::error::$REPO_URL has no branch prod"; exit 1; }
           health="$(curl -fsS --max-time 30 --retry 3 --retry-all-errors "https://$HOST/healthz")" \

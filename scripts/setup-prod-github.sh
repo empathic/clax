@@ -13,19 +13,29 @@
 #   scripts/setup-prod-github.sh                            # dry run
 #   scripts/setup-prod-github.sh --i-know-what-i-am-doing   # act
 #
-# Options (defaults are clax.dev's):
+# The instance's settings come from your deploy configuration, the one
+# scripts/cloudflare-setup.sh keeps: setup.env (PUBLIC_HOST, SITE_DOMAIN,
+# STORE, GITHUB_CLIENT_ID, OWNER_GITHUB; nothing else in it is read) and the
+# deploy record <public host>.json (its `account` and
+# `retired_content_origin`), in $CLAX_DEPLOY_HOME, else
+# $XDG_CONFIG_HOME/clax/deploy, else ~/.config/clax/deploy. A flag takes the
+# place of each; a setting found in neither fails the run, naming its flag.
+# None is written into this repository.
+#
+# Options:
 #   --repo <owner/name>             empathic/clax
 #   --commit <sha>                  where `prod` starts, only when it does not
 #                                   exist (default: the `commit` that
 #                                   https://<public host>/healthz reports);
 #                                   it must be on main
-#   --public-host <host>            clax.dev
-#   --site-domain <domain>          clax.run
-#   --store <artifacts|memory>      artifacts
-#   --owner-github <login>          akesling
-#   --github-client-id <ID>         Iv1.exampleclient
-#   --cloudflare-account-id <ID>    00000000000000000000000000000000
-#   --retired-content-origin <URL>  none (an existing variable is kept)
+#   --public-host <host>
+#   --site-domain <domain>
+#   --store <artifacts|memory>      (artifacts when setup.env names none)
+#   --owner-github <login>          with --github-client-id, or neither
+#   --github-client-id <ID>         (no GitHub sign-in without them)
+#   --cloudflare-account-id <ID>
+#   --retired-content-origin <URL>  the record's `retired_content_origin`, else
+#                                   none (an existing variable is kept)
 #
 # In order, it
 #
@@ -68,14 +78,14 @@ commit=""
 # to scripts/cloudflare-setup.sh; step 3 reads them by name. The GitHub
 # OAuth App's client ID is OAUTH_CLIENT_ID: GitHub refuses a variable whose
 # name starts with GITHUB_.
-PUBLIC_HOST="clax.dev"
-SITE_DOMAIN="clax.run"
-STORE="artifacts"
-OWNER_GITHUB="akesling"
-OAUTH_CLIENT_ID="Iv1.exampleclient"
-CLOUDFLARE_ACCOUNT_ID="00000000000000000000000000000000"
+PUBLIC_HOST=""
+SITE_DOMAIN=""
+STORE=""
+OWNER_GITHUB=""
+OAUTH_CLIENT_ID=""
+CLOUDFLARE_ACCOUNT_ID=""
 RETIRED_CONTENT_ORIGIN=""
-usage() { sed -n '2,33p' "$0"; }
+usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d'; }
 while [ $# -gt 0 ]; do
     case "$1" in
         --i-know-what-i-am-doing) act=1 ;;
@@ -94,6 +104,40 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
+# The deploy configuration's settings, each only where no flag gave it.
+deploy_home="${CLAX_DEPLOY_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/clax/deploy}"
+# setting FILE KEY: the value of KEY=… in setup.env, or nothing. Reads that
+# one line, so the file's GITHUB_CLIENT_SECRET is never read into the run.
+setting() {
+    [ -f "$1" ] || return 0
+    sed -n "s/^$2=//p" "$1" | tail -n 1
+}
+env_file="$deploy_home/setup.env"
+[ -n "$PUBLIC_HOST" ] || PUBLIC_HOST="$(setting "$env_file" PUBLIC_HOST)"
+[ -n "$SITE_DOMAIN" ] || SITE_DOMAIN="$(setting "$env_file" SITE_DOMAIN)"
+[ -n "$STORE" ] || STORE="$(setting "$env_file" STORE)"
+[ -n "$STORE" ] || STORE="artifacts"
+[ -n "$OWNER_GITHUB" ] || OWNER_GITHUB="$(setting "$env_file" OWNER_GITHUB)"
+[ -n "$OAUTH_CLIENT_ID" ] || OAUTH_CLIENT_ID="$(setting "$env_file" GITHUB_CLIENT_ID)"
+# record KEY: KEY's value in the deploy record, or nothing; the record's
+# other fields (its secrets among them) are not printed.
+record() {
+    [ -n "$PUBLIC_HOST" ] && [ -f "$deploy_home/$PUBLIC_HOST.json" ] || return 0
+    python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get(sys.argv[2]) or "")' "$deploy_home/$PUBLIC_HOST.json" "$1"
+}
+[ -n "$CLOUDFLARE_ACCOUNT_ID" ] || CLOUDFLARE_ACCOUNT_ID="$(record account)"
+[ -n "$RETIRED_CONTENT_ORIGIN" ] || RETIRED_CONTENT_ORIGIN="$(record retired_content_origin)"
+missing=""
+[ -n "$PUBLIC_HOST" ] || missing="$missing --public-host"
+[ -n "$SITE_DOMAIN" ] || missing="$missing --site-domain"
+[ -n "$CLOUDFLARE_ACCOUNT_ID" ] || missing="$missing --cloudflare-account-id"
+if [ -n "$OAUTH_CLIENT_ID" ] && [ -z "$OWNER_GITHUB" ]; then missing="$missing --owner-github"; fi
+if [ -n "$OWNER_GITHUB" ] && [ -z "$OAUTH_CLIENT_ID" ]; then missing="$missing --github-client-id"; fi
+if [ -n "$missing" ]; then
+    echo "setup-prod-github: not in $deploy_home and not given:$missing" >&2
+    exit 2
+fi
 public_host="$PUBLIC_HOST"
 
 say() { printf '\n== %s\n' "$*"; }

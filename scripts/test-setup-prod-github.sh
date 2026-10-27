@@ -119,8 +119,10 @@ cat "$FAKE_STATE/healthz"
 SH
 
 # A case: a state directory with GitHub as it is before any setup (no prod,
-# no ruleset, no production environment, npm deployable from main), and
-# clax.dev reporting a short commit on main.
+# no ruleset, no production environment, npm deployable from main); the
+# instance pub.example reporting a short commit on main; and a deploy
+# configuration as scripts/cloudflare-setup.sh keeps it, its client secret
+# and owner token included, which the script must never read out.
 C=""
 new_case() {
     C="$T/case-$1"
@@ -132,9 +134,21 @@ new_case() {
                   "branches": [{"id": 11, "name": "main", "type": "branch"}], "vars": {}}}}
 JSON
     echo '{"version":"0.6.0","commit":"012345678","build":"b-1"}' > "$C/healthz"
+    mkdir -p "$C/deploy"
+    cat > "$C/deploy/setup.env" <<ENV
+PUBLIC_HOST=pub.example
+SITE_DOMAIN=sites.example
+STORE=artifacts
+GITHUB_CLIENT_ID=Iv1.testclient
+OWNER_GITHUB=octo-owner
+GITHUB_CLIENT_SECRET=$SECRET
+ENV
+    echo "{\"account\": \"$ACC\", \"owner_token\": \"$SECRET\", \"setup_secret\": \"$SECRET\"}" > "$C/deploy/pub.example.json"
     : > "$C/calls"
 }
-run() { (cd "$T" && FAKE_STATE="$C" PATH="$T/bin:$PATH" "$SCRIPT" "$@" > "$C/out" 2>&1); }
+SECRET=never-printed-0f0f0f
+ACC=00000000000000000000000000acc0de
+run() { (cd "$T" && FAKE_STATE="$C" CLAX_DEPLOY_HOME="$C/deploy" PATH="$T/bin:$PATH" "$SCRIPT" "$@" > "$C/out" 2>&1); }
 # q EXPR: the Python expression EXPR over the case's GitHub, bound to `g`.
 q() { python3 -c 'import json, sys; g = json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$C/github.json" "$1"; }
 writes() { grep -v '^GET \|^curl ' "$C/calls"; }
@@ -145,18 +159,18 @@ cp "$C/github.json" "$C/before.json"
 if run; then pass "the dry run succeeds"; else fail "the dry run succeeds ($(cat "$C/out"))"; fi
 if [ -z "$(writes)" ] && cmp -s "$C/github.json" "$C/before.json"; then pass "the dry run makes no write"
 else fail "the dry run makes no write ($(writes))"; fi
-if grep -q "^curl .*https://clax.dev/healthz" "$C/calls" && grep -q "GET repos/$R/commits/012345678" "$C/calls" \
+if grep -q "^curl .*https://pub.example/healthz" "$C/calls" && grep -q "GET repos/$R/commits/012345678" "$C/calls" \
     && grep -q "GET repos/$R/compare/main...$FULL" "$C/calls"; then
-    pass "the dry run reads clax.dev's commit and checks it is on main"
-else fail "the dry run reads clax.dev's commit ($(cat "$C/calls"))"; fi
+    pass "the dry run reads the instance's commit and checks it is on main"
+else fail "the dry run reads the instance's commit ($(cat "$C/calls"))"; fi
 for want in \
     "would run: gh api --method POST repos/$R/git/refs --input - <<< '{\"ref\":\"refs/heads/prod\",\"sha\":\"$FULL\"}'" \
     "would run: gh api --method POST repos/$R/rulesets --input -" \
     "would run: gh api --method PUT repos/$R/environments/production --input -" \
     "would run: gh api --method POST repos/$R/environments/production/deployment-branch-policies --input - <<< '{\"name\":\"prod\",\"type\":\"branch\"}'" \
-    "would run: gh api --method POST repos/$R/environments/production/variables --input - <<< '{\"name\":\"PUBLIC_HOST\",\"value\":\"clax.dev\"}'" \
-    "would run: gh api --method POST repos/$R/environments/production/variables --input - <<< '{\"name\":\"CLOUDFLARE_ACCOUNT_ID\",\"value\":\"00000000000000000000000000000000\"}'" \
-    "would run: gh api --method POST repos/$R/actions/variables --input - <<< '{\"name\":\"PUBLIC_HOST\",\"value\":\"clax.dev\"}'" \
+    "would run: gh api --method POST repos/$R/environments/production/variables --input - <<< '{\"name\":\"PUBLIC_HOST\",\"value\":\"pub.example\"}'" \
+    "would run: gh api --method POST repos/$R/environments/production/variables --input - <<< '{\"name\":\"CLOUDFLARE_ACCOUNT_ID\",\"value\":\"$ACC\"}'" \
+    "would run: gh api --method POST repos/$R/actions/variables --input - <<< '{\"name\":\"PUBLIC_HOST\",\"value\":\"pub.example\"}'" \
     "would run: gh api --method POST repos/$R/environments/npm/deployment-branch-policies --input - <<< '{\"name\":\"prod\",\"type\":\"branch\"}'" \
     "would run: gh api --method DELETE repos/$R/environments/npm/deployment-branch-policies/11" \
     "gh secret set CLOUDFLARE_API_TOKEN --env production --repo $R" \
@@ -167,7 +181,7 @@ done
 # Acting: GitHub ends as set up.
 new_case act
 if run --i-know-what-i-am-doing; then pass "acting succeeds"; else fail "acting succeeds ($(cat "$C/out"))"; fi
-if [ "$(q 'g["refs"].get("prod")')" = "$FULL" ]; then pass "prod starts at clax.dev's commit, in full"; else fail "prod starts at clax.dev's commit ($(q 'g["refs"]'))"; fi
+if [ "$(q 'g["refs"].get("prod")')" = "$FULL" ]; then pass "prod starts at the instance's commit, in full"; else fail "prod starts at the instance's commit ($(q 'g["refs"]'))"; fi
 rules="$(q 'sorted(r["type"] for r in g["rulesets"][0]["rules"])')"
 if [ "$(q 'len(g["rulesets"])')" = 1 ] && [ "$(q 'g["rulesets"][0]["conditions"]["ref_name"]["include"]')" = "['refs/heads/prod']" ] \
     && [ "$rules" = "['deletion', 'non_fast_forward', 'pull_request', 'required_signatures', 'required_status_checks', 'update']" ] \
@@ -189,9 +203,9 @@ else fail "the ruleset's checks, merge method and bypass ($(q 'g["rulesets"][0]'
 if [ "$(q 'g["envs"]["production"]["policy"]["custom_branch_policies"]')" = True ] \
     && [ "$(q '[b["name"] for b in g["envs"]["production"]["branches"]]')" = "['prod']" ]; then
     pass "production deploys from prod only"; else fail "production deploys from prod only ($(q 'g["envs"]["production"]'))"; fi
-if [ "$(q 'sorted(g["envs"]["production"]["vars"].items())')" = "[('CLOUDFLARE_ACCOUNT_ID', '00000000000000000000000000000000'), ('OAUTH_CLIENT_ID', 'Iv1.exampleclient'), ('OWNER_GITHUB', 'akesling'), ('PUBLIC_HOST', 'clax.dev'), ('SITE_DOMAIN', 'clax.run'), ('STORE', 'artifacts')]" ]; then
-    pass "production's variables are clax.dev's"; else fail "production's variables ($(q 'g["envs"]["production"]["vars"]'))"; fi
-if [ "$(q 'g.get("repo_vars")')" = "{'PUBLIC_HOST': 'clax.dev'}" ]; then pass "the repository variable PUBLIC_HOST is clax.dev, for the drift check"
+if [ "$(q 'sorted(g["envs"]["production"]["vars"].items())')" = "[('CLOUDFLARE_ACCOUNT_ID', '$ACC'), ('OAUTH_CLIENT_ID', 'Iv1.testclient'), ('OWNER_GITHUB', 'octo-owner'), ('PUBLIC_HOST', 'pub.example'), ('SITE_DOMAIN', 'sites.example'), ('STORE', 'artifacts')]" ]; then
+    pass "production's variables are the deploy configuration's"; else fail "production's variables ($(q 'g["envs"]["production"]["vars"]'))"; fi
+if [ "$(q 'g.get("repo_vars")')" = "{'PUBLIC_HOST': 'pub.example'}" ]; then pass "the repository variable PUBLIC_HOST is the instance's, for the drift check"
 else fail "the repository variable PUBLIC_HOST ($(q 'g.get("repo_vars")'))"; fi
 if [ "$(q '[b["name"] for b in g["envs"]["npm"]["branches"]]')" = "['prod']" ]; then pass "npm deploys from prod in place of main"
 else fail "npm deploys from prod ($(q 'g["envs"]["npm"]'))"; fi
@@ -217,8 +231,9 @@ else fail "flags update the variables ($(writes))"; fi
 if run --i-know-what-i-am-doing && [ "$(q 'g["envs"]["production"]["vars"]["RETIRED_CONTENT_ORIGIN"]')" = https://old.example ]; then
     pass "a variable with no flag is kept"; else fail "a variable with no flag is kept"; fi
 # --public-host: the environment's PUBLIC_HOST and the repository's both.
+# Another host has no deploy record here, so its account is a flag too.
 : > "$C/calls"
-if run --i-know-what-i-am-doing --public-host other.example \
+if run --i-know-what-i-am-doing --public-host other.example --cloudflare-account-id "$ACC" \
     && [ "$(writes | grep -c 'PUBLIC_HOST')" = 2 ] \
     && writes | grep -F "PATCH repos/$R/actions/variables/PUBLIC_HOST {\"name\":\"PUBLIC_HOST\",\"value\":\"other.example\"}" >/dev/null \
     && [ "$(q 'g["repo_vars"]["PUBLIC_HOST"]')" = other.example ] \
@@ -226,7 +241,7 @@ if run --i-know-what-i-am-doing --public-host other.example \
     pass "--public-host updates the environment's and the repository's PUBLIC_HOST"
 else fail "--public-host updates both PUBLIC_HOSTs ($(writes))"; fi
 
-# --commit in place of clax.dev's, and a commit not on main.
+# --commit in place of the instance's, and a commit not on main.
 new_case commit
 if run --i-know-what-i-am-doing --commit fedcba98; then fail "a commit not on main is refused"
 elif grep -q "is not on main" "$C/out" && [ -z "$(writes)" ]; then pass "a commit not on main is refused before any write"
@@ -236,10 +251,10 @@ python3 -c 'import json, sys; p = sys.argv[1]; g = json.load(open(p)); g["on_mai
 : > "$C/calls"
 if run --i-know-what-i-am-doing --commit fedcba98 && [ "$(q 'g["refs"]["prod"]')" = fedcba9876543210fedcba9876543210fedcba98 ] \
     && ! grep -q '^curl ' "$C/calls"; then
-    pass "--commit names where prod starts, and clax.dev is not asked"
+    pass "--commit names where prod starts, and the instance is not asked"
 else fail "--commit names where prod starts ($(cat "$C/out"))"; fi
 
-# clax.dev without a commit, and an error from GitHub that is not a 404.
+# The instance without a commit, and an error from GitHub that is not a 404.
 new_case nocommit
 echo '{"version":"0.6.0","commit":null}' > "$C/healthz"
 if run; then fail "a healthz without a commit is refused"
@@ -250,5 +265,30 @@ new_case forbidden
 if run --i-know-what-i-am-doing; then fail "an error other than a 404 stops the run"
 elif grep -q "HTTP 403" "$C/out" && ! writes | grep "rulesets\|environments" >/dev/null; then pass "an error other than a 404 stops the run where it happens"
 else fail "an error other than a 404 stops the run ($(cat "$C/out"); $(writes))"; fi
+
+# The deploy configuration's secrets are never read out, in any case.
+if grep -rqF "$SECRET" "$T"/case-*/out "$T"/case-*/calls "$T"/case-*/github.json; then
+    fail "the client secret and the record's secrets never reach gh or the output"
+else pass "the client secret and the record's secrets never reach gh or the output"; fi
+
+# No deploy configuration: every setting a flag, or the run fails naming
+# the flags it lacks, before asking GitHub anything.
+new_case noconfig
+rm -rf "$C/deploy"
+if run; then fail "with no deploy configuration and no flags the run fails"
+elif grep -q "not given: --public-host --site-domain --cloudflare-account-id" "$C/out" && [ ! -s "$C/calls" ]; then
+    pass "with no deploy configuration the run names the missing flags, before any call"
+else fail "with no deploy configuration the run names the missing flags ($(cat "$C/out"))"; fi
+: > "$C/calls"
+if run --public-host flags.example --site-domain sites.flags --cloudflare-account-id f1a65 \
+    && grep -qF '{"name":"CLOUDFLARE_ACCOUNT_ID","value":"f1a65"}' "$C/out" \
+    && ! grep -q OAUTH_CLIENT_ID "$C/out"; then
+    pass "flags alone set it up, GitHub sign-in off without a client ID"
+else fail "flags alone set it up ($(cat "$C/out"))"; fi
+: > "$C/calls"
+if run --public-host flags.example --site-domain sites.flags --cloudflare-account-id f1a65 --github-client-id Iv1.x; then
+    fail "a client ID without an owner login is refused"
+elif grep -q "not given: --owner-github" "$C/out"; then pass "a client ID without an owner login is refused, naming --owner-github"
+else fail "a client ID without an owner login is refused ($(cat "$C/out"))"; fi
 
 exit "$FAILED"
