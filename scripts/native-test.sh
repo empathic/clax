@@ -5,6 +5,9 @@
 # so macOS assesses it once per build rather than once per run.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# The daemons the tests start keep their homes unseeded (the Clax Quickstart
+# is off: [gallery] quickstart).
+export CLAX_GALLERY__QUICKSTART=false
 if cargo nextest --version >/dev/null 2>&1; then
     cargo build -q -p clax-cli
     bin="$(scripts/stable-bin.sh target/debug/clax target/clax-bin/debug)"

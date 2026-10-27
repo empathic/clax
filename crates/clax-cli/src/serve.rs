@@ -41,6 +41,9 @@ pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
         embed: a
             .embed
             .map(|(shell, content)| clax_http::state::EmbedOrigins { shell, content }),
+        quickstart: clax_core::config::HomeConfig::load(home.root())
+            .map(|c| c.gallery_quickstart())
+            .unwrap_or(true),
         stop: clax_server::serve::StopOn::Signals,
     };
     let r = rt.block_on(serve(cfg, None));

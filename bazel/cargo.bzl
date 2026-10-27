@@ -207,7 +207,8 @@ def cargo_package(
 
     def test_kwargs(name, integration = False, uses_clax = None):
         data = own_files + test_data
-        env = dict(test_env)
+        # The daemons the tests start keep their homes unseeded.
+        env = {"CLAX_GALLERY__QUICKSTART": "false"} | test_env
         if name in tests_use_clax or uses_clax in tests_use_clax:
             data += [_CLAX, _CLAX_WARM]
             env["CLAX_TEST_BIN"] = "$(rootpath %s)" % _CLAX

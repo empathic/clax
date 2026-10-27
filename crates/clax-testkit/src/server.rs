@@ -699,6 +699,7 @@ impl TestServer {
             // The checkout's web UI; tests of the shell serve their own
             // with `spawn_with_web`.
             web: web_ui(),
+            quickstart: None,
             hosted: None,
             // No app links or store pages; tests of them set their own.
             clax_app: Arc::default(),

@@ -837,6 +837,7 @@ async fn claude_hook(ts: &TestServer, event: &str, name: &str, hsid: &str) -> St
         .env("HOME", &scratch)
         .env("TMPDIR", &scratch)
         .env("CLAX_HOME", ts.home.root())
+        .env("CLAX_GALLERY__QUICKSTART", "false")
         .env("CLAX_NO_OPEN", "1")
         .env("CLAX_CODEX_BIN", "")
         .env("RUST_LOG", "error")

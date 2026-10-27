@@ -964,6 +964,12 @@ impl Store {
                  VALUES (?1, ?2, ?3, ?4, 'open', 0, ?5, ?6)",
                 params![tid, id.as_str(), t.version_n, anchor_json, t.clip.is_some(), now],
             )?;
+            // A comment on a seeded quickstart stops Clax's updates to it for
+            // good, even if the thread is deleted later.
+            tx.execute(
+                "UPDATE quickstarts SET stopped_at = ?2 WHERE artifact_id = ?1 AND stopped_at IS NULL",
+                params![id.as_str(), now],
+            )?;
             let cid = new_ulid();
             tx.execute(
                 "INSERT INTO comments (id, thread_id, author_kind, author_name, author_public_id, via_session_id, via_page, body, created_at)

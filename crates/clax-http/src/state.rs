@@ -109,6 +109,10 @@ pub struct AppState {
     /// The web UI the shell routes serve (`clax_server::shell`): the binary's
     /// embedded one, or a directory read from disk.
     pub web: Arc<dyn clax_core::embedded::FileTree>,
+    /// The quickstart page the web UI carries, when the core seeds and
+    /// updates it ([`clax_server::quickstart`]); `None` from
+    /// [`AppState::assemble`].
+    pub quickstart: Option<Arc<clax_core::quickstart::Release>>,
     /// Deadline for ordinary `/api` requests.
     pub request_timeout: Duration,
     /// Deadline for the publish routes and asset upload.
@@ -429,6 +433,7 @@ impl AppState {
             test_daemon: false,
             app_data,
             web: p.web,
+            quickstart: None,
             embed: p.embed,
             clax_app: Arc::default(),
             build: None,

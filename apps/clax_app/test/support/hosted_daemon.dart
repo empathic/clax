@@ -49,6 +49,7 @@ class HostedDaemon {
       environment: {
         'CLAX_HOME': home.path,
         'CLAX_CODEX_BIN': '',
+        'CLAX_GALLERY__QUICKSTART': 'false',
         'CLAX_E2E_UNSET_KEY': '',
         'CLAX_E2E_SETUP_SECRET': _secret,
       },

@@ -72,7 +72,7 @@ export async function startDaemon(opts: { config?: string; home?: string; port?:
   writeFileSync(join(home, "config.toml"), opts.config ?? NO_KEY_CONFIG);
   rmSync(join(home, "daemon.json"), { force: true });
   const child: ChildProcess = spawn(bin, ["serve", "--foreground", "--bind", opts.bind ?? "127.0.0.1", "--port", String(opts.port ?? 0), ...(dist ? ["--web-dist", dist] : []), ...(opts.args ?? [])],
-    { cwd: repoRoot, env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "", CLAX_E2E_UNSET_KEY: "", ...opts.env }, stdio: ["ignore", "inherit", "pipe"] });
+    { cwd: repoRoot, env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "", CLAX_E2E_UNSET_KEY: "", CLAX_GALLERY__QUICKSTART: "false", ...opts.env }, stdio: ["ignore", "inherit", "pipe"] });
   // The daemon's stderr goes on to the test's, and its end is kept for a failed start.
   let stderr = "";
   child.stderr?.on("data", (b: Buffer) => { process.stderr.write(b); stderr = (stderr + b.toString()).slice(-4000); });

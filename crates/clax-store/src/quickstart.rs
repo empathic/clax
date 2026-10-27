@@ -616,6 +616,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_thread_made_and_deleted_before_an_update_stops_updates_for_good() {
+        let (_d, st) = store();
+        let id = seeded(&st, &release("a")).await;
+        let tid = thread_on(&st, &id);
+        assert!(
+            st.quickstart_of(None)
+                .unwrap()
+                .unwrap()
+                .stopped_at
+                .is_some(),
+            "the thread's creation stopped updates"
+        );
+        st.delete_thread(DAEMON, &tid).unwrap();
+        assert!(matches!(
+            st.update_quickstart(DAEMON, None, &release("b"))
+                .await
+                .unwrap(),
+            Updated::Stopped
+        ));
+        assert_eq!(st.get_artifact(&id).unwrap().unwrap().current_version, 1);
+    }
+
+    #[tokio::test]
     async fn a_version_by_anyone_else_stops_updates() {
         let (_d, st) = store();
         let id = seeded(&st, &release("a")).await;

@@ -2473,7 +2473,13 @@ mod tests {
     #[test]
     fn gallery_quickstart_defaults_on_and_reads_env() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(HomeConfig::load(dir.path()).unwrap().gallery_quickstart());
+        // The process environment is not read: the test runs under
+        // CLAX_GALLERY__QUICKSTART=false.
+        assert!(
+            HomeConfig::load_with_env(dir.path(), [])
+                .unwrap()
+                .gallery_quickstart()
+        );
         assert!(!with("[gallery]\nquickstart = false\n").gallery_quickstart());
         assert!(with("[gallery]\nquickstart = \"no\"\n").gallery_quickstart());
         let c = HomeConfig::load_with_env(

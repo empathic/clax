@@ -264,6 +264,7 @@ E2E_DATA = [
 ]
 
 E2E_ENV = {
+    "CLAX_GALLERY__QUICKSTART": "false",
     "CLAX_E2E_WEB_DIST": "$(rootpath :dist_e2e)",
     "CLAX_TEST_BIN": "$(rootpath //crates/clax-cli:clax)",
     "PLAYWRIGHT_BROWSERS_PATH": "$(rootpath @chromium//:browsers)",
