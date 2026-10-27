@@ -55,6 +55,9 @@ queue, claim reports, act on them and answer the reporters.
   change to it is recorded in the Toolpath journal (§6.6).
 - D16. The opaque pair of D6 attaches to artifacts (`external_id`,
   `metadata`, §6.1) and to threads (`reporter_id`, `metadata`, §6.4).
+- D17. An `external_id` names one artifact on an instance: two apps that
+  send the same ID mean the same artifact. Integrators choose IDs unique
+  for the objects they name; Clax does not namespace them (§6.1).
 
 ## 3. What exists
 
@@ -253,7 +256,9 @@ An artifact of a new kind, `external`, beside `html` and `live`
 
 - `external_id`: an opaque string, at most 512 bytes, compared byte for
   byte, never parsed. Clax looks artifacts up by it and returns it on
-  every read, so an app maps a Clax artifact back to its own record.
+  every read, so an app maps a Clax artifact back to its own record. It
+  is unique per instance, and the same ID from any app, queue or person
+  is the same artifact (D17).
 - `metadata`: an opaque JSON value, at most 64 KiB, stored and returned as
   written; never interpreted, indexed or searched. Written with
   `if_version`, as db writes are, by anyone who may edit the artifact
@@ -335,6 +340,13 @@ A queue is an object of its own, made by a person in a browser session:
   pages that declare none, a URL-keyed artifact per page that belongs to
   the queue, not to the owner, so that it is in reach on a hosted Clax
   (`2026-10-22-no-god-account-design.md` §3) for the queue's members.
+
+One external artifact can hold reports of several queues (D17). Each
+thread records the queue it was filed through, and a queue's rights reach
+its own threads: reporters and triage members of queue A never see queue
+B's reports on the same artifact. The artifact's own fields (title, URL,
+`metadata`, `revision`) are shared: whoever reaches the artifact through
+any queue reads them, and its editors through any queue write them.
 
 ### 7.2 Visibility
 
@@ -446,7 +458,7 @@ carries an ID the receiver uses to drop repeats.
 
 - `docs/contract.md` changes with the code: credentials, the extension,
   external artifacts, queues, leases, reporter tokens, webhooks, and the
-  errors `external_artifact`, `lease_lost`, `external_id_taken`, and the
+  errors `external_artifact` and `lease_lost`, and the
   Toolpath "Kinds" table (§6.6).
 - Migrations take the next free number in
   `crates/clax-store/src/migrations.rs`.
@@ -457,12 +469,6 @@ carries an ID the receiver uses to drop repeats.
   `apps/clax_app/lib/remote/fake_remote_api.dart`, Pi's).
 - Rights tests for reporter tokens: another queue, another origin,
   another `reporter_id` under `own`, a revoked service grant, and every
-  route outside the queue.
-
-## 13. Open for the owner
-
-- O2. `external_id` is unique per instance (one organization's instance
-  shares artifacts by it); on clax.dev an ID another person holds answers
-  that artifact only to someone who may read it, and 409
-  `external_id_taken` otherwise. The alternative is unique per creating
-  person.
+  route outside the queue; and two queues filing onto one external
+  artifact, where neither queue's reporters or triage members read the
+  other's threads.
