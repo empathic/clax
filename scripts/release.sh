@@ -56,7 +56,9 @@
 #   18  carry the release to main: the release commit and the pin commit
 #       cherry-picked (-S -x) onto origin/main's tip as two signed commits,
 #       from a temporary worktree, and pushed to main, which takes no merge
-#       commit. A conflict stops the run, saying what to resolve.
+#       commit. A conflict, or versions that disagree after the cherry-picks
+#       (scripts/check-version.sh: main gained a version file since step 3),
+#       stops the run, saying what to resolve.
 #   19  wait for CI on the pin commit on prod
 #   20  gh workflow run publish-pi.yml --ref prod on the pin commit, and
 #       wait for it. While the Pi package does not exist on npm (trusted
@@ -998,6 +1000,22 @@ step_18() {
             return 1
         fi
     done
+    # The bump was made against the release branch's merge of main: a version
+    # file main gained since then still names the old version.
+    if ! files="$(bash "$dir/scripts/check-version.sh" 2>&1)"; then
+        g worktree remove --force "$dir"
+        say "  after the cherry-picks onto origin/main ($base), main's versions disagree"
+        say "  (scripts/check-version.sh), as main has gained version files since $RB merged it:"
+        printf '%s\n' "$files" | sed 's/^/    /'
+        say "  Nothing was pushed to main. Carry it by hand, keeping each commit's subject, each signed:"
+        say "    git worktree add --detach target/release/$V/carry origin/main"
+        say "    cd target/release/$V/carry && git cherry-pick -S -x ${picks[*]}"
+        say "    scripts/bump-version.sh $V && just bazel-sync && scripts/check-version.sh"
+        say "    git commit -S -a --amend --no-edit"
+        say "  then git push origin HEAD:refs/heads/main, remove the worktree"
+        say "  (git worktree remove target/release/$V/carry) and run this again."
+        return 1
+    fi
     head="$(git -C "$dir" rev-parse HEAD)"
     g worktree remove --force "$dir"
     all_signed "$base..$head" || return 1

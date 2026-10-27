@@ -338,6 +338,12 @@ new_case() {
 cd "$(dirname "$0")/.." || exit 1
 v="$(sed -n 's/^CLAX_VERSION="\(.*\)"$/\1/p' scripts/ensure-clax.sh)"
 [ -n "$v" ] || { echo "versions differ" >&2; exit 1; }
+bad=0
+for f in plugins/*/VERSION; do
+    [ -e "$f" ] || continue
+    if [ "$(cat "$f")" != "$v" ]; then echo "$f: $(cat "$f"), not $v" >&2; bad=1; fi
+done
+[ "$bad" = 0 ] || exit 1
 echo "$v"
 SH
     cat > "$r/scripts/bump-version.sh" <<'SH'
@@ -348,6 +354,7 @@ echo "bump $1" >> "$FAKE_STATE/calls"
 sed -i.bak "s/^CLAX_VERSION=.*/CLAX_VERSION=\"$1\"/" scripts/ensure-clax.sh plugins/pi/scripts/ensure-clax.sh
 sed -i.bak "s/^  \"version\": \".*\",/  \"version\": \"$1\",/" plugins/pi/package.json
 rm scripts/ensure-clax.sh.bak plugins/pi/scripts/ensure-clax.sh.bak plugins/pi/package.json.bak
+for f in plugins/*/VERSION; do [ ! -e "$f" ] || echo "$1" > "$f"; done
 SH
     cat > "$r/scripts/pin-release.sh" <<'SH'
 #!/usr/bin/env bash
@@ -866,6 +873,47 @@ case_11() {
         pass "carried by hand as told, the next run goes on to CI and the Pi package"
     else fail "resume after a carry by hand (rc=$rc: $(cat "$C/out"))"; fi
 }
+case_11b() {
+    # main gains a version file after the release branch merged it: the
+    # cherry-picked bump leaves it at the old version, so the run stops
+    # before pushing main, naming it; bumped by hand as told, the next run
+    # goes on.
+    new_case
+    ready_to_cut
+    local w="$C/other"
+    git clone -q "$C/origin.git" "$w"
+    mkdir -p "$w/plugins/new"
+    echo 0.5.0 > "$w/plugins/new/VERSION"
+    git -C "$w" add plugins/new/VERSION
+    git -C "$w" -c user.name=Other -c user.email=other@example.com -c commit.gpgsign=false commit -q -m "Add a plugin"
+    git -C "$w" push -q origin main
+    main1="$(o rev-parse main)"
+    act; rc=$?
+    rel="$(o rev-parse 'v0.6.0^{commit}^2')"
+    pin="$(o rev-parse prod)"
+    if [ "$rc" = 1 ] && has "step 18 (Carry the release to main) failed" && has "main's versions disagree" \
+        && has "plugins/new/VERSION: 0.5.0, not 0.6.0" && has "scripts/bump-version.sh 0.6.0 && just bazel-sync" \
+        && has "git cherry-pick -S -x $rel $pin" && [ "$(o rev-parse main)" = "$main1" ] \
+        && [ "$(subject prod)" = "Pin the plugins to Clax 0.6.0" ] \
+        && [ "$(git -C "$C/repo" worktree list | wc -l | tr -d ' ')" = 1 ] \
+        && [ "$(count "gh workflow run publish-pi.yml --ref prod -f dry_run=false -f sha=$pin")" = 0 ]; then
+        pass "versions that disagree after the carry stop step 18 with main untouched, naming the file"
+    else fail "versions that disagree after the carry (rc=$rc: $(cat "$C/out"))"; fi
+    # By hand, as the run said.
+    local d="$C/repo/target/release/0.6.0/carry"
+    git -C "$C/repo" fetch -q origin main
+    git -C "$C/repo" worktree add -q --detach "$d" origin/main
+    git -C "$d" cherry-pick -S -x "$rel" "$pin" >/dev/null
+    bash "$d/scripts/bump-version.sh" 0.6.0
+    git -C "$d" commit -q -S -a --amend --no-edit
+    git -C "$d" push -q origin HEAD:refs/heads/main
+    git -C "$C/repo" worktree remove "$d"
+    act; rc=$?
+    if [ "$rc" = 0 ] && released && [ "$(o show main:plugins/new/VERSION)" = 0.6.0 ] \
+        && has "step 18/21 Carry the release to main: done already" && published_from_pin; then
+        pass "bumped by hand as told, the next run goes on to CI and the Pi package"
+    else fail "resume after a bump by hand on main (rc=$rc: $(cat "$C/out"))"; fi
+}
 case_12() {
     new_case
     ready_to_cut
@@ -1251,7 +1299,7 @@ case_41() {
 
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 [ "$JOBS" -le 8 ] || JOBS=8
-CASES="case_1 case_2 case_3 case_3b case_3c case_3d case_4 case_5 case_5b case_5c case_6 case_7 case_8 case_9 case_10 case_11 case_12 case_13 case_14 case_15 case_15b case_16 case_16b case_16c case_17 case_18 case_19 case_20 case_21 case_22 case_22b case_22c case_23 case_24 case_25 case_26 case_27 case_28 case_29 case_30 case_31 case_32 case_33 case_34 case_35 case_36 case_37 case_38 case_39 case_40 case_41"
+CASES="case_1 case_2 case_3 case_3b case_3c case_3d case_4 case_5 case_5b case_5c case_6 case_7 case_8 case_9 case_10 case_11 case_11b case_12 case_13 case_14 case_15 case_15b case_16 case_16b case_16c case_17 case_18 case_19 case_20 case_21 case_22 case_22b case_22c case_23 case_24 case_25 case_26 case_27 case_28 case_29 case_30 case_31 case_32 case_33 case_34 case_35 case_36 case_37 case_38 case_39 case_40 case_41"
 # A case's subshell exits 0 once its last check has run; one that dies on
 # the way (an unbound variable under set -u, say) exits otherwise, and fails
 # the gate whatever it printed before. Each case's status is collected by its

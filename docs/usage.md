@@ -1458,7 +1458,12 @@ the pin changes) stops step 18 with `prod` pushed and `main` untouched,
 naming the files and the commits: cherry-pick them by hand in a worktree
 of `origin/main`, keeping their subjects and signing each, push `main`,
 and run the command again, which finds both subjects on `main` and goes
-on. A refused push of `main` (it moved meanwhile) is carried onto its new
+on. Before pushing `main`, step 18 also runs `scripts/check-version.sh` on
+the cherry-picked tree: a version file `main` gained after step 3 merged
+it still names the old version, and the run stops the same way, naming
+it; carry by hand, then run `scripts/bump-version.sh <version>` and `just
+bazel-sync` there and amend the pin copy (`git commit -S -a --amend
+--no-edit`) before the push. A refused push of `main` (it moved meanwhile) is carried onto its new
 tip by the next run. A commit amended unsigned is refused with how to sign
 it (`git commit --amend -S --no-edit`). A failed workflow run is rerun on
 GitHub (`gh run rerun <ID> --failed`), then the command again picks it up;
@@ -1509,7 +1514,8 @@ resuming after: a failed `just ci`; a refused push of the release branch
 conflicts; a failed, never-listed or unfinished Release run; a release of
 the version from another build; a refused push of `prod` and an unsigned
 pin commit; a refused push of `main`; a carry that conflicts, carried by
-hand; a failed CI run on the pin commit, also once `main` has moved on;
+hand; versions that disagree after the carry, bumped by hand; a failed
+CI run on the pin commit, also once `main` has moved on;
 and a failed Publish Pi package run. It also checks `bazel-sync` that
 never settles, `gh` failing during a wait, `main` moving during the
 Release wait, a release of the version from an earlier build of the same
