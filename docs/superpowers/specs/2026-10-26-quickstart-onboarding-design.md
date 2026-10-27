@@ -229,26 +229,44 @@ and editors' views:
 It reveals nothing about the shell beyond whether a control exists, and
 nothing about agents or harnesses (D8).
 
-## 9. G. The quickstart in every new gallery
+## 9. G. The quickstart in every new hosted gallery
+
+As built (`crates/clax-store/src/quickstart.rs`,
+`crates/clax-server/src/quickstart.rs`):
 
 - `web/quickstart/` holds the page (`index.html`, `ideas.html`,
-  `style.css`, `ideas-data.js`, `icon.svg`, `clax.json`). The web build
-  copies it into `web/dist/quickstart/`, which `clax-embedded` already
-  embeds.
-- **Local.** When the owner's gallery is first listed and the home has
-  never seeded the quickstart (a `home_flags` row `quickstart_seeded`),
-  the daemon publishes the bundled quickstart as a new artifact owned by
-  the owner, pinned, tagged with its release (`quickstart@<release>`), and
-  sets the flag. The empty gallery is never seen empty.
-- **Hosted.** A person new through GitHub sign-in (`GitHubOutcome::New`)
-  or an invite gets the same, owned by them.
-- **Updates.** At start, a seeded quickstart nobody has touched (no
-  version but Clax's, no comment thread) gets the bundled release's newer
-  files as a new version, labelled "Quickstart <release>". The person's
-  first activity on it, a comment or a change, stops updates for good
-  (owner, 2026-10-26), so comments never point at elements a release
-  moved.
-- Deleting it is final: the flag stays set.
+  `style.css`, `ideas-data.js`, `icon.svg`, `clax.json`, `logos/`). The web
+  build (`web/scripts/build-quickstart.mjs`) copies only what ships
+  (`index.html`, `style.css`, `icon.svg`, `clax.json`, `logos/`) into
+  `web/dist/quickstart/`, which `clax-embedded` embeds; the shipped
+  `index.html` drops its `ideas-data.js` tag. The release is identified by
+  the hash of what ships (`clax_core::quickstart::Release`).
+- **Hosted only** (owner, 2026-10-27). A hosted site (a daemon in hosted
+  mode, or the Worker that serves clax.dev) seeds a person's gallery at
+  their first GitHub sign-in or sign-in link, and at an invite accept:
+  the bundled quickstart becomes a new artifact of theirs, pinned, comments
+  on, its declaration approved by `clax` (§7). A local home is not seeded:
+  its owner's gallery starts empty. A gallery is seeded only when its
+  person never held an artifact with a version.
+- **The record.** Migration 57's `quickstarts` table holds one row per
+  person (`*owner` for the owner): the artifact seeded (none when the
+  gallery was skipped), the release and version Clax last wrote, and
+  `stopped_at`. The row is written in version 1's transaction, so it is
+  both the once-per-person flag and the record of what Clax wrote. No tag
+  marks the artifact.
+- **Updates.** At each later sign-in on a hosted site, and at start for a
+  quickstart a local home already holds (seeded by an earlier build), a
+  quickstart nobody has touched gets the bundled release as a new
+  version, labelled "Quickstart <release>", approved by `clax`, keeping its
+  title, pin and tags. Untouched means no version but Clax's, no comment
+  thread ever, no declaration change by a metadata patch, and no approval
+  change by a person (an approval or a withdrawal). The first of those
+  stops updates for good (owner, 2026-10-26), so comments never point at
+  elements a release moved and a release never re-approves a name taken
+  away.
+- `[gallery] quickstart = false` (`CLAX_GALLERY__QUICKSTART=false`) turns
+  seeding and updates off; the Worker always carries its build's release.
+- Deleting it is final: the row stays.
 
 ## 10. H. Always publish to clax.dev
 

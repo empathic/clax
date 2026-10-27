@@ -7826,6 +7826,23 @@ When the variable is unset, sample is off and `use("sample")` resolves `null`.
 The `[questions]` table sets how long a mirrored `AskUserQuestion` waits in
 Clax (see "Agent questions").
 
+The `[gallery]` table sets what a gallery starts with:
+
+```toml
+[gallery]
+quickstart = true   # the default
+```
+
+With `quickstart` true, a hosted daemon seeds the Clax Quickstart into a
+person's gallery at their first sign-in or invite accept, when the gallery
+never held an artifact, and moves an untouched quickstart (one with no
+comment thread, no version but Clax's, no capabilities change by a
+metadata patch and no approval change by a person) to the release the web
+UI carries, at each later sign-in, and on a local daemon at start; a local
+home is never seeded. `false` (`CLAX_GALLERY__QUICKSTART=false`) does
+neither. A `[gallery]` table that does not check is logged and leaves it
+on. The Worker has no such setting: it carries its build's release.
+
 The `[bot]` table configures ClaxBot, Clax's own agent (spec
 `docs/superpowers/specs/2026-10-21-claxbot-design.md` §8). Every key is
 optional; the defaults are:
