@@ -14,6 +14,11 @@
   </div>
   <h1>Your agents build pages. Clax gives them a home.</h1>
   <p class="lede">The pages your coding agent builds (reports, dashboards, prototypes, charts) live on clax.dev, every version kept. Point at anything on a page, comment, and the agent makes the change. This chart takes you from sign-in to your first round trip in about five minutes. Click any box.</p>
+  <figure class="reel" id="reel" hidden>
+    <video src="reel.mp4" poster="reel-poster.jpg" muted loop playsinline controls preload="metadata" aria-label="Clax in about a minute: people ask an agent for pages, it builds them, and they shape them together"></video>
+    <figcaption><button class="linkbtn" id="reel-hide" type="button">Hide video</button></figcaption>
+  </figure>
+  <button class="linkbtn reel-show" id="reel-show" type="button" hidden>Watch Clax in a minute</button>
   <nav class="tabs" aria-label="Sections">
     <a href="index.html" id="tab-start" aria-current="page">Quickstart</a>
     <a href="ideas.html" id="tab-ideas" hidden>Make it better<span class="count" id="idea-count"></span></a>
@@ -51,6 +56,34 @@
 <script>
 (() => {
   "use strict";
+
+  // ---------- The reel ----------
+  // reel.mp4 is a build artifact published beside the page, not part of the
+  // repository: the figure shows once the video loads, and nothing shows
+  // where it is absent. It plays by itself unless the viewer asks for
+  // reduced motion. A viewer who hides it keeps it hidden on later visits
+  // (REEL_HIDDEN in localStorage, where storage works) and can bring it back.
+  {
+    const REEL_HIDDEN = "clax-quickstart-reel-hidden";
+    const reel = document.getElementById("reel"), video = reel.querySelector("video");
+    const show = document.getElementById("reel-show");
+    let loaded = false, hidden = false;
+    try { hidden = localStorage.getItem(REEL_HIDDEN) === "1"; } catch (_) {}
+    const play = () => {
+      let still = false;
+      try { still = matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (_) {}
+      if (!still) Promise.resolve().then(() => video.play()).catch(() => {});
+    };
+    const draw = () => { reel.hidden = !loaded || hidden; show.hidden = !loaded || !hidden; };
+    const keep = (h) => {
+      hidden = h;
+      try { if (h) localStorage.setItem(REEL_HIDDEN, "1"); else localStorage.removeItem(REEL_HIDDEN); } catch (_) {}
+      draw();
+    };
+    video.addEventListener("loadedmetadata", () => { loaded = true; draw(); if (!hidden) play(); }, { once: true });
+    document.getElementById("reel-hide").addEventListener("click", () => { try { video.pause(); } catch (_) {} keep(true); });
+    show.addEventListener("click", () => { keep(false); play(); });
+  }
 
   // ---------- Content ----------
   /** Colours the parts of one shell or slash command. The text is unchanged, so the

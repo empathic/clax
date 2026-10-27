@@ -34,6 +34,11 @@
   .brand svg { width: 22px; height: 22px; }
   h1 { font-size: clamp(26px, 4vw, 36px); line-height: 1.15; margin: 8px 0 6px; letter-spacing: -.01em; }
   .lede { color: var(--muted); margin: 0 0 18px; max-width: 62ch; }
+  .reel { margin: 0 0 20px; max-width: 880px; }
+  .reel figcaption { display: flex; justify-content: flex-end; margin-top: 6px; font-size: 13px; }
+  .reel-show { display: block; margin: -8px 0 18px; font-size: 13px; }
+  .reel-show[hidden] { display: none; }
+  .reel video { display: block; width: 100%; height: auto; aspect-ratio: 8 / 5; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
   nav.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
   nav.tabs a { padding: 10px 14px; text-decoration: none; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 550; }
   nav.tabs a[aria-current="page"] { color: var(--fg); border-color: var(--accent); }

@@ -133,3 +133,46 @@ describe("the attach step names the page's address", () => {
     expect(prompt()).toBe("Watch the Clax Quickstart page (this page) for my comments.");
   });
 });
+
+describe("the reel", () => {
+  const fig = () => document.getElementById("reel")!;
+  const watch = () => document.getElementById("reel-show")!;
+  const loaded = () => fig().querySelector("video")!.dispatchEvent(new Event("loadedmetadata"));
+
+  it("shows_only_once_the_video_loads", () => {
+    load(null);
+    expect(fig().hidden).toBe(true);
+    expect(watch().hidden).toBe(true);
+    loaded();
+    expect(fig().hidden).toBe(false);
+    expect(watch().hidden).toBe(true);
+  });
+
+  it("stays_hidden_once_hidden_and_comes_back_on_request", () => {
+    load(null);
+    loaded();
+    (document.getElementById("reel-hide") as HTMLButtonElement).click();
+    expect(fig().hidden).toBe(true);
+    expect(watch().hidden).toBe(false);
+    // A later visit keeps it hidden, offering it back.
+    load(null);
+    loaded();
+    expect(fig().hidden).toBe(true);
+    expect(watch().hidden).toBe(false);
+    watch().click();
+    expect(fig().hidden).toBe(false);
+    expect(localStorage.getItem("clax-quickstart-reel-hidden")).toBeNull();
+  });
+
+  it("works_without_storage", () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("blocked"); });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("blocked"); });
+    try {
+      load(null);
+      loaded();
+      expect(fig().hidden).toBe(false);
+      (document.getElementById("reel-hide") as HTMLButtonElement).click();
+      expect(fig().hidden).toBe(true);
+    } finally { vi.restoreAllMocks(); }
+  });
+});
