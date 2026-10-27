@@ -5,11 +5,15 @@ import { describe, expect, it } from "vitest";
 import { checkCuts, parseReel, totalSeconds } from "./config.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const committed = readFileSync(join(here, "reel.toml"), "utf8");
+const file = readFileSync(join(here, "reel.toml"), "utf8");
 const scripted = readdirSync(join(here, "vignettes")).filter(f => f.endsWith(".ts")).map(f => f.slice(0, -3));
 
 /** A reel.toml with `vignettes` (TOML tables) in place of the committed one's. */
-const withVignettes = (vignettes: string) => committed.replace(/\[\[vignette\]\][\s\S]*?(?=\n\[end\])/, vignettes);
+const withVignettes = (vignettes: string) => file.replace(/\[\[vignette\]\][\s\S]*?(?=\n\[end\])/, vignettes);
+
+/** The committed reel.toml with realtime its one vignette, whatever else it
+ * lists: the cases below edit that table. */
+const committed = withVignettes('[[vignette]]\nid = "realtime"\ntitle = "Realtime collaboration"\nseconds = 7\nin_short = true\n');
 
 /** The nine vignettes of the spec's table (§3), as reel.toml lists them. */
 const NINE = [
@@ -45,7 +49,7 @@ describe("parseReel", () => {
   });
 
   it("names only vignettes that have a script", () => {
-    expect(() => parseReel(committed, scripted)).not.toThrow();
+    expect(() => parseReel(file, scripted)).not.toThrow();
   });
 
   it("refuses an unknown key", () => {
