@@ -1,17 +1,18 @@
 <svelte:options css="injected" />
 <script lang="ts">
   // The approval dialog: what each item the version asks for lets the page
-  // do, with Approve and Cancel. A modal like the keys sheet: the rest of the
-  // document is inert while it is open, Tab stays inside it, Escape or a
-  // click outside the panel closes it, and focus goes back to where it was.
+  // do, with Approve and Not now (which hides the bar for this view). A modal
+  // like the keys sheet: the rest of the document is inert while it is open,
+  // focus starts on Not now, Tab stays inside it, Escape or a click outside
+  // the panel closes it, and focus goes back to where it was.
   // It sits at the stage's root, not in the stage's foot, whose pointer
   // events are off.
   import type { PendingCapabilities } from "../api";
   import { pendingItems } from "../caps/approval";
   import { inertOutside, trapTab } from "./modal";
 
-  let { pending, title, busy, onApprove, onClose }: {
-    pending: PendingCapabilities; title: string; busy: boolean; onApprove(): void; onClose(): void;
+  let { pending, title, busy, owner, onApprove, onNotNow, onClose }: {
+    pending: PendingCapabilities; title: string; busy: boolean; owner: boolean; onApprove(): void; onNotNow(): void; onClose(): void;
   } = $props();
   const back = document.activeElement as HTMLElement | null;
   let panel: HTMLElement | undefined = $state();
@@ -24,7 +25,7 @@
     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); return; }
     if (panel) trapTab(e, panel);
   }
-  const items = $derived(pendingItems(pending));
+  const items = $derived(pendingItems(pending, owner));
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
@@ -40,8 +41,8 @@
       {/each}
     </ul>
     <div class="foot">
-      <button type="button" onclick={onClose}>Cancel</button>
-      <button type="button" class="primary" disabled={busy} {@attach focus} onclick={() => { onClose(); onApprove(); }}>Approve</button>
+      <button type="button" {@attach focus} onclick={() => { onClose(); onNotNow(); }}>Not now</button>
+      <button type="button" class="primary" disabled={busy} onclick={() => { onClose(); onApprove(); }}>Approve</button>
     </div>
   </div>
 </div>

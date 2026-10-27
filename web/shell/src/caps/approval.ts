@@ -1,12 +1,12 @@
 // The approval bar's copy and its one write: what a version asks for, what
 // approving lets the page do, and the PUT that approves the declaration the
-// bar showed (docs/contract.md, the capability approval).
+// bar showed (plan 2026-10-26-quickstart-d-permissions, Decisions 8 and 9).
 import { ApiError, type PendingCapabilities, getToken } from "../api";
 
 type Words = { label: string; detail: string };
 
 const WORDS: Record<string, Words> = {
-  net: { label: "the internet", detail: "Fetch from the hosts listed, through Clax. The first request to each asks again." },
+  net: { label: "the internet", detail: "Fetch from the hosts listed, through Clax." },
   sample: { label: "Claude", detail: "Ask Claude, paid for by this machine's Anthropic API key, within a daily spending cap." },
   account: { label: "sign-in", detail: "Sign in people to this page with their Clax account." },
   shell: { label: "Clax's controls", detail: "Point at Clax's own controls, such as Fork and Publish, to guide you through them." },
@@ -17,18 +17,22 @@ const WORDS: Record<string, Words> = {
   location: { label: "your location", detail: "Read your device's location through the Clax app." },
 };
 
+/** What a hosted member's approval leaves to the owner's answer on the page's first use (the owner's approval writes these grants). */
+const ASKS_OWNER = new Set(["net", "sample"]);
+
 /** One thing a version asks for: the capability `name`, how the bar names it, and what approving lets the page do. */
 export type PendingItem = { name: string; label: string; detail: string };
 
-/** The items of `p`, in the order the daemon lists them; `net` stands for its
+/** The items of `p` (as approved by the owner, or, with `owner` false, by a
+ * member whose approval leaves `net` and `sample` to the owner's first ask), in the order the daemon lists them; `net` stands for its
  * new hosts too, and leads when only hosts are new. The label of `net` names
  * its hosts. */
-export function pendingItems(p: PendingCapabilities): PendingItem[] {
+export function pendingItems(p: PendingCapabilities, owner = true): PendingItem[] {
   const names = p.capabilities.includes("net") || p.hosts.length === 0 ? p.capabilities : ["net", ...p.capabilities];
   return names.map(name => {
     const w = WORDS[name] ?? { label: name, detail: `Use ${name}.` };
     const hosts = name === "net" && p.hosts.length ? ` (${p.hosts.join(", ")})` : "";
-    return { name, label: w.label + hosts, detail: w.detail };
+    return { name, label: w.label + hosts, detail: owner || !ASKS_OWNER.has(name) ? w.detail : `${w.detail} The owner is asked at the page's first request.` };
   });
 }
 

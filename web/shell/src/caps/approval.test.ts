@@ -19,6 +19,18 @@ describe("the approval bar's copy", () => {
   });
 });
 
+describe("who approves", () => {
+  it("the owner's approval lets the page reach its hosts; a member's leaves the owner to be asked at the first request", () => {
+    const p = { version: 1, capabilities: ["net", "sample"], hosts: ["a.example.com"], declaration_sha256: SHA };
+    const asOwner = pendingItems(p).map(i => i.detail);
+    expect(asOwner).toEqual(["Fetch from the hosts listed, through Clax.", "Ask Claude, paid for by this machine's Anthropic API key, within a daily spending cap."]);
+    const asMember = pendingItems(p, false).map(i => i.detail);
+    expect(asMember[0]).toBe("Fetch from the hosts listed, through Clax. The owner is asked at the page's first request.");
+    expect(asMember[1]).toContain("The owner is asked at the page's first request.");
+    expect(pendingItems({ ...p, capabilities: ["shell"], hosts: [] }, false)[0].detail).toBe(pendingItems({ ...p, capabilities: ["shell"], hosts: [] })[0].detail);
+  });
+});
+
 describe("approveCapabilities", () => {
   afterEach(() => vi.unstubAllGlobals());
 

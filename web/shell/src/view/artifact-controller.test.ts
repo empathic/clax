@@ -1478,7 +1478,69 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     answer = { may_approve: true, pending_capabilities: null, capabilities_in_force: {} };
     es.emit("permissions", { type: "permissions", artifact_id: ID });
     await vi.waitFor(() => expect(ctl.pending()).toBeNull());
+    expect(ctl.state.get().declarationStale).toBe(false);
     ctl.dispose();
+  });
+
+  /** A view whose frame was served `before`; later answers carry `answer.capabilities_in_force`. */
+  async function servedWith(before: Record<string, unknown>) {
+    const answer: { v: Record<string, unknown> } = { v: before };
+    const { nav } = await import("../nav");
+    const assign = vi.spyOn(nav, "assign").mockImplementation(() => {});
+    const started1 = await started({
+      artifact: { capabilities: before, capabilities_in_force: before },
+      routes: url => (url === `/api/artifacts/${ID}` ? { ...loaded, artifact: { ...loaded.artifact, capabilities: { ...answer.v, net: { hosts: ["x.clax.invalid"] } }, capabilities_in_force: answer.v } } : undefined),
+    });
+    return { ...started1, answer, assign };
+  }
+
+  it("a_permissions_event_that_removes_a_name_reloads_this_view_at_once", async () => {
+    const { ctl, frame, answer, assign } = await servedWith({ shell: {}, db: {} });
+    const es = await streamOf(frame);
+    assign.mockClear();
+    answer.v = { db: {} };
+    es.emit("permissions", { type: "permissions", artifact_id: ID });
+    await vi.waitFor(() => expect(assign).toHaveBeenCalledTimes(1));
+    expect(ctl.state.get().declarationStale).toBe(false);
+    ctl.dispose();
+  });
+
+  it("a_permissions_event_that_only_adds_offers_reload_and_navigates_nowhere", async () => {
+    const { ctl, frame, answer, assign } = await servedWith({ db: {} });
+    const es = await streamOf(frame);
+    assign.mockClear();
+    answer.v = { db: {}, shell: {} };
+    es.emit("permissions", { type: "permissions", artifact_id: ID });
+    await vi.waitFor(() => expect(ctl.state.get().declarationStale).toBe(true));
+    expect(assign).not.toHaveBeenCalled();
+    ctl.dispose();
+  });
+
+  it("a_ready_after_a_missed_event_judges_the_declaration_in_force_the_same_way", async () => {
+    const removal = await servedWith({ shell: {}, db: {} });
+    const es1 = await streamOf(removal.frame);
+    removal.assign.mockClear();
+    removal.answer.v = { db: {} };
+    es1.emit("ready", { type: "ready" });
+    await vi.waitFor(() => expect(removal.assign).toHaveBeenCalledTimes(1));
+    removal.ctl.dispose();
+    const addition = await servedWith({ db: {} });
+    const es2 = await streamOf(addition.frame);
+    addition.assign.mockClear();
+    addition.answer.v = { db: {}, shell: {} };
+    es2.emit("ready", { type: "ready" });
+    await vi.waitFor(() => expect(addition.ctl.state.get().declarationStale).toBe(true));
+    expect(addition.assign).not.toHaveBeenCalled();
+    addition.ctl.dispose();
+  });
+
+  it("declarationMoved_tells_removal_from_addition", async () => {
+    const { declarationMoved } = await import("./artifact-controller");
+    expect(declarationMoved({ db: {} }, { db: {} })).toBe("same");
+    expect(declarationMoved({ db: {} }, { db: {}, shell: {} })).toBe("added");
+    expect(declarationMoved({ db: {}, shell: {} }, { db: {} })).toBe("removed");
+    expect(declarationMoved({ net: { hosts: ["a", "b"] } }, { net: { hosts: ["a"] } })).toBe("removed");
+    expect(declarationMoved({ net: { hosts: ["a"] } }, { net: { hosts: ["a", "b"] } })).toBe("added");
   });
 
   it("carries app=1 in its URLs and no other query", async () => {

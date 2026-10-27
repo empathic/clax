@@ -1,9 +1,9 @@
 // A page is handed only the capabilities approved for its version, and the
-// owner approves what a version adds from a bar over the page (docs/contract.md,
-// the capability approval). The declared host is under `.invalid`, so the
+// owner approves what a version adds from a bar over the page (plan
+// 2026-10-26-quickstart-d-permissions, Decisions 9 and 15). The declared host is under `.invalid`, so the
 // daemon's fetch after approving never reaches a network (`upstream_error`).
 import type { Frame, Page } from "@playwright/test";
-import { expect, api, contentFrame, openArtifact, publishWith, startDaemon, test, type Daemon } from "./fixtures";
+import { expect, api, contentFrame, openArtifact, publishWith, startDaemon, streamLive, test, type Daemon } from "./fixtures";
 import { type Person, connect, invite, leave } from "./people-helpers";
 
 let d: Daemon;
@@ -80,9 +80,16 @@ test("only the owner sees the bar", async ({ browser }) => {
     const owner = await ownerCtx.newPage();
     await owner.goto(`${lan.base}/a/${artifact.id}`);
     await expect(barText(owner)).toHaveText("v1 asks for: the internet (api.clax.invalid)");
-    // Sam's view holds the page, and no bar, once the artifact has loaded.
+    // Sam's view has loaded the artifact. The daemon withholds the approval
+    // from a connected person, and the view takes the answer again once its
+    // stream is live (the step that gives the owner's view its bar), so the
+    // absence is judged after both.
     await sam.page.goto(`${sam.lan}/a/${artifact.id}`);
     await expect(sam.page.locator(".topbar")).toContainText("Forecast owner");
+    await streamLive(sam.page);
+    const seen = await sam.page.evaluate(async id => (await (await fetch(`/api/artifacts/${id}`)).json()).artifact as { may_approve?: boolean; pending_capabilities?: unknown }, artifact.id);
+    expect(seen.may_approve ?? false).toBe(false);
+    expect(seen.pending_capabilities ?? null).toBeNull();
     await expect(sam.page.locator("[data-approval-bar]")).toHaveCount(0);
   } finally {
     await leave(sam);

@@ -15,6 +15,7 @@
   import type { Component } from "svelte";
   import { fromStore } from "svelte/store";
   import { INDEX_FILE } from "../../../bridge/src/protocol";
+  import { getToken } from "../api";
   import { registerShield } from "../caps/gesture";
   import { shellPath } from "../route";
   import { type ArtifactController, viewReady } from "../view/artifact-controller";
@@ -34,6 +35,10 @@
   // What waits for this viewer's approval, once the daemon says they may approve it.
   const pending = $derived(ctl.pending(s));
   let reviewing = $state(false);
+  $effect(() => { if (!pending) reviewing = false; });
+  // Whether this viewer is the owner (holds the token): the owner's approval also lets the page reach its hosts and Claude.
+  let owner = $state(false);
+  $effect(() => { if (pending) getToken().then(t => { owner = t !== null; }); });
   // Agents' drafts (hosted spec §16.4): the list names one only once their
   // code (view/drafts.ts, with the banner) has loaded.
   const drafts = $derived(s.drafts.length ? ctl.drafts : null);
@@ -85,7 +90,7 @@
       <drafts.Banner {s} {shown} onShow={a => ctl.showDraftOf(a)} onBack={() => ctl.backFromDraft()} />
     {/if}
     {#if pending && !s.deleted}
-      <ApprovalBar {pending} onReview={() => { reviewing = true; }} onNotNow={() => ctl.notNow()} />
+      <ApprovalBar {pending} onReview={() => { reviewing = true; }} />
     {/if}
     {#if s.spectator && SpectatorBanner}
       <SpectatorBanner code={s.spectator.code} joinable={s.spectator.joinable} onJoin={() => ctl.joinLive()} />
@@ -105,7 +110,7 @@
     <div class="banner notice" role="alert"><span>{s.notice}</span><button onclick={() => ctl.dismissNotice()}>Dismiss</button></div>
   {/if}
   {#if reviewing && pending}
-    <ApprovalDialog {pending} title={s.data?.artifact.title ?? ""} busy={s.approving} onApprove={() => { void ctl.approve(); }} onClose={() => { reviewing = false; }} />
+    <ApprovalDialog {pending} title={s.data?.artifact.title ?? ""} busy={s.approving} {owner} onNotNow={() => ctl.notNow()} onApprove={() => { void ctl.approve(); }} onClose={() => { reviewing = false; }} />
   {/if}
   {#if s.ask && !s.native?.includes("ask")}<PromptDialog ask={s.ask} />{/if}
   {#if s.sheet === "keys" && KeysSheet}<KeysSheet onClose={() => ctl.closeSheet()} />{/if}

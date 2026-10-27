@@ -64,7 +64,7 @@
   {@const off = commentsOff(s)}
   <SampleCount {ctl} />
   {#if Who}<Who {ctl} {s} open={ctl.openCount(s)} />{/if}
-  {#if s.newer && !s.deleted}<button class="primary reload" onclick={() => ctl.reloadLatest()}>Reload</button>{/if}
+  {#if (s.newer || s.declarationStale) && !s.deleted}<button class="primary reload" onclick={() => (s.newer ? ctl.reloadLatest() : ctl.reloadHere())}>Reload</button>{/if}
   <button class="comment" data-shell-control="comment" aria-pressed={s.commenting} disabled={s.deleted || !!live || !!s.spectator || off || s.showDraft !== null}
     title={live ? "Comment on the live page with the Clax extension" : s.spectator ? "Commenting is paused while you're viewing" : off ? COMMENTS_OFF : s.showDraft !== null ? "Comments go on published versions" : undefined}
     onclick={() => ctl.toggleComment()}>Comment <span class="kc" aria-hidden="true">C</span></button>

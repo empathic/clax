@@ -47,7 +47,7 @@ export type Artifact = {
   app?: AppInfo | null;
   /** From `GET /api/artifacts/<id>` and the bootstrap: the declaration in
    * force, the part of `capabilities` approved for the current version. */
-  capabilities_in_force?: Record<string, unknown>;
+  capabilities_in_force?: Record<string, unknown> | null;
   /** From the same: the daemon says this viewer may approve the declaration
    * (on a local daemon the owner alone, on a hosted one the page's maker;
    * never an agent). */

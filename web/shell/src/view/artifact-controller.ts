@@ -61,6 +61,8 @@ export type ViewState = {
   approvalHidden: string | null;
   /** An approval is in flight. */
   approving: boolean;
+  /** The declaration in force gained something since the frame was served: the top bar offers Reload. */
+  declarationStale: boolean;
   /** The artifact's site origin, undefined until the artifact is known. */
   origin: string | undefined;
   /** The page's own address on its site, when the frame could not open it
@@ -174,6 +176,16 @@ export function commentsOff(s: ViewState): boolean {
 }
 
 /** The artifact and its site are known: the islands show. */
+/** How the declaration in force `next` differs from `served`, the one a
+ * frame was served: "removed" when a name or a `net` host it had is gone,
+ * "added" when it only gained, else "same". */
+export function declarationMoved(served: Declared, next: Declared): "same" | "added" | "removed" {
+  const hosts = (d: Declared): string[] => (Array.isArray(d.net?.hosts) ? (d.net.hosts as string[]) : []);
+  const nextHosts = hosts(next);
+  if (Object.keys(served).some(k => !Object.hasOwn(next, k)) || hosts(served).some(h => !nextHosts.includes(h))) return "removed";
+  return JSON.stringify(served) === JSON.stringify(next) ? "same" : "added";
+}
+
 export function viewReady(s: ViewState): s is ViewState & { data: Loaded } {
   return !s.error && !!s.data && s.origin !== undefined;
 }
@@ -249,6 +261,10 @@ export class ArtifactController {
   latestKnown = 0;
   /** The last ticket taken for the artifact's tags, and the one whose answer is shown. */
   private tagsAsked = 0;
+  private approvalAsked = 0;
+  private servedFor: string | null = null;
+  /** The declaration in force the capability host of the shown frame was built with. */
+  private served: Declared = {};
   private tagsShown = 0;
   /** A ticket for a request whose answer carries the artifact's tags (a
    * refetch, the tag editor's change), taken as it starts. */
@@ -391,7 +407,7 @@ export class ArtifactController {
     this.frameHash = this.startHash;
     this.state = new Store<ViewState>({
       pinnedVersion, startFile,
-      data: null, error: null, approvalHidden: null, approving: false, origin: undefined, openInTab: null, elsewhere: false, newer: null, deleted: false, commenting: false,
+      data: null, error: null, approvalHidden: null, approving: false, declarationStale: false, origin: undefined, openInTab: null, elsewhere: false, newer: null, deleted: false, commenting: false,
       panel: media("(min-width: 900px)"), narrow: media("(max-width: 480px)"),
       threads: [], resolved: {}, draft: null, selected: null, hovered: null, busy: 0,
       notice: null, hint: null, me: null, ask: null, file: startFile, sheet: null, working: [], attention: null,
@@ -712,6 +728,10 @@ export class ArtifactController {
       if (this.host) this.prompt.cancel();
       this.host?.dispose();
       const data = s.data;
+      // The declaration the page is served for as long as this frame lives:
+      // a refetch of the artifact does not change it (`declarationMoved`).
+      if (this.servedFor !== key) { this.servedFor = key; this.served = (data.artifact.capabilities_in_force ?? {}) as Declared; }
+      const declared = this.served;
       this.host = new CapabilityHost(getToken().then(token => {
         let status: Promise<SampleStatus | null> | null = null;
         return {
@@ -721,7 +741,7 @@ export class ArtifactController {
           token,
           mayEdit: data.artifact.may_edit === true,
           viewer: currentViewer,
-          declared: (data.artifact.capabilities_in_force ?? {}) as Declared,
+          declared,
           prompt: this.prompt,
           post: m => { if (this.gate.open) this.send(m); },
           reload: () => { holdKeysAcrossLoad(); nav.assign(this.here(null)); },
@@ -1772,8 +1792,8 @@ export class ArtifactController {
     const p = this.pending();
     if (p) this.set({ approvalHidden: p.declaration_sha256 });
   }
-  /** Approves the declaration the bar shows, then reloads the frame so the
-   * page asks again and is served what is now in force. A 409 means the
+  /** Approves the declaration the bar shows, then reloads the frame once so
+   * the page asks again and is served what is now in force. A 409 means the
    * declaration changed under the bar: the artifact is refetched and the
    * bar shows the new one, with no retry. */
   async approve(): Promise<void> {
@@ -1783,6 +1803,7 @@ export class ArtifactController {
     try {
       await approveCapabilities(this.id, p.version, p.declaration_sha256);
     } catch (e) {
+      if (this.disposed) return;
       if (e instanceof ApiError && e.status === 409) await this.refetchArtifact();
       else this.setNotice(failureText(APPROVE_FAILED, e));
       this.set({ approving: false });
@@ -1791,30 +1812,38 @@ export class ArtifactController {
     if (this.disposed) return;
     this.set({ approving: false });
     holdKeysAcrossLoad();
-    nav.assign(this.here(null));
+    nav.assign(this.here(this.pinnedVersion));
   }
-  /** Another view, or an agent's publish, changed what is approved: refetch,
-   * and reload the frame when the declaration in force differs from the
-   * one the page was served. */
-  permissionsChanged(): void {
-    const before = JSON.stringify(this.s.data?.artifact.capabilities_in_force ?? {});
-    void this.refetchArtifact().then(() => {
-      if (!this.disposed && JSON.stringify(this.s.data?.artifact.capabilities_in_force ?? {}) !== before) { holdKeysAcrossLoad(); nav.assign(this.here(null)); }
-    });
-  }
-  /** Takes the fields about approval from a fresh answer for the artifact:
-   * who may approve depends on the caller, and the owner's browser is the
-   * owner only once its token request has set the owner cookie, after the
-   * document that carried the first answer. */
-  takeApproval(a: Artifact): void {
-    const fields = (x: Artifact) => JSON.stringify([x.capabilities, x.capabilities_in_force, x.may_approve === true, x.pending_capabilities ?? null]);
+  /** Another view, or an agent's publish, changed what is approved: refetch
+   * the artifact and judge the declaration in force against the one the
+   * frame was served (`takeApproval`). */
+  permissionsChanged(): void { void this.refetchArtifact(); }
+  /** Reloads the shown version, so the page is served the declaration now in force. */
+  reloadHere(): void { holdKeysAcrossLoad(); nav.assign(this.here(this.pinnedVersion)); }
+  /** A ticket for one fetch of the artifact's approval fields; an answer older than the latest ticket is dropped (`takeApproval`). */
+  approvalTicket(): number { return ++this.approvalAsked; }
+  /** Takes the fields about approval from a fresh answer `a` for the artifact
+   * (ticket `t`): who may approve depends on the caller, and the owner's
+   * browser is the owner only once its token request has set the owner
+   * cookie, after the document that carried the first answer. Then the
+   * declaration in force is judged against the one the frame was served:
+   * a name or host gone from it reloads at once (the page must not keep what
+   * is withdrawn), and one only gained shows Reload in the top bar. */
+  takeApproval(t: number, a: Artifact): void {
+    const fields = (x: Artifact) => JSON.stringify([x.capabilities, x.capabilities_in_force ?? null, x.may_approve === true, x.pending_capabilities ?? null]);
     const cur = this.s.data?.artifact;
-    if (this.disposed || !cur || fields(cur) === fields(a)) return;
-    this.set(s => s.data ? { data: { ...s.data, artifact: { ...s.data.artifact, capabilities: a.capabilities, capabilities_in_force: a.capabilities_in_force, may_approve: a.may_approve, pending_capabilities: a.pending_capabilities } } } : {});
+    if (this.disposed || t !== this.approvalAsked || !cur) return;
+    if (fields(cur) !== fields(a)) {
+      this.set(s => s.data ? { data: { ...s.data, artifact: { ...s.data.artifact, capabilities: a.capabilities, capabilities_in_force: a.capabilities_in_force, may_approve: a.may_approve, pending_capabilities: a.pending_capabilities } } } : {});
+    }
+    const moved = declarationMoved(this.served, (a.capabilities_in_force ?? {}) as Declared);
+    if (moved === "removed") this.reloadHere();
+    else if (moved === "added" && !this.s.declarationStale) this.set({ declarationStale: true });
   }
   /** Refetches the artifact and takes the fields about approval from the answer. */
   private async refetchArtifact(): Promise<void> {
-    try { this.takeApproval((await getArtifact(this.id)).artifact); } catch { /* the next event or reload shows it */ }
+    const t = this.approvalTicket();
+    try { this.takeApproval(t, (await getArtifact(this.id)).artifact); } catch { /* the next event or reload shows it */ }
   }
   setMe(v: Viewer): void {
     this.set({ me: v });
