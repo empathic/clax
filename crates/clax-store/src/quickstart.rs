@@ -7,7 +7,11 @@
 //! Untouched means: the row has no `stopped_at`, its artifact is live, the
 //! artifact's current and newest version are both the one Clax last wrote,
 //! and the artifact has no comment thread of any status. Any other state
-//! stops updates for good the first time the rule runs on it. Renames,
+//! stops updates for good the first time the rule runs on it. A thread's
+//! creation and an approval change not made by `clax` or `migration` (a
+//! withdrawal, or an approval by a person) stop them for good in their own
+//! transaction ([`stop_in`]), so neither is undone by a later release's
+//! approval. Renames,
 //! pins, tags and the page's documents are not versions, so they do not
 //! stop updates, and an update leaves them as they are.
 
@@ -302,6 +306,16 @@ impl Store {
 fn approve_as_clax(tx: &Transaction<'_>, id: &ArtifactId, n: u32, now: &str) -> Result<()> {
     let caps = super::artifacts::version_capabilities_in(tx, id.as_str(), n)?;
     super::capability_approvals::record_in(tx, id, n, &caps, "clax", now)?;
+    Ok(())
+}
+
+/// Inside a write that touches artifact `id`, stops Clax's updates to it
+/// for good when it is a seeded quickstart (sets `stopped_at` to `now`).
+pub(crate) fn stop_in(tx: &Transaction<'_>, id: &ArtifactId, now: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE quickstarts SET stopped_at = ?2 WHERE artifact_id = ?1 AND stopped_at IS NULL",
+        params![id.as_str(), now],
+    )?;
     Ok(())
 }
 
@@ -889,5 +903,62 @@ mod tests {
             Updated::Stopped
         ));
         assert_eq!(st.get_artifact(&id).unwrap().unwrap().current_version, 2);
+    }
+
+    #[tokio::test]
+    async fn a_withdrawal_stops_updates_and_stays_withdrawn() {
+        let (_d, st) = store();
+        let caps = serde_json::json!({"db": {}, "user": {}, "shell": {}});
+        let id = seeded(&st, &release_declaring("a", &caps)).await;
+        assert!(st.withdraw_capability(DAEMON, &id, "shell").unwrap());
+        assert!(matches!(
+            st.update_quickstart(DAEMON, None, &release_declaring("b", &caps))
+                .await
+                .unwrap(),
+            Updated::Stopped
+        ));
+        assert_eq!(st.get_artifact(&id).unwrap().unwrap().current_version, 1);
+        let p = st.pending_capabilities(&id).unwrap().expect("shell waits");
+        assert_eq!(p.added.capabilities, ["shell"]);
+    }
+
+    #[tokio::test]
+    async fn an_approval_by_a_person_stops_updates_and_one_by_clax_does_not() {
+        for (by, stops) in [("owner", true), ("person:u_mia", true), ("clax", false)] {
+            let (_d, st) = store();
+            let id = seeded(&st, &release("a")).await;
+            // A metadata change declaring `shell` leaves it waiting, so there is
+            // something to approve; it is not a version, so not a touch.
+            st.update_meta(
+                DAEMON,
+                &id,
+                crate::MetaPatch {
+                    capabilities: Some(serde_json::json!({"db": {}, "shell": {}})),
+                    ..crate::MetaPatch::default()
+                },
+            )
+            .unwrap();
+            let p = st.pending_capabilities(&id).unwrap().expect("shell waits");
+            st.approve_capabilities(DAEMON, &id, p.version, &p.declaration_sha256, by, false)
+                .unwrap();
+            assert_eq!(
+                st.quickstart_of(None)
+                    .unwrap()
+                    .unwrap()
+                    .stopped_at
+                    .is_some(),
+                stops,
+                "approval by {by}"
+            );
+            let updated = st
+                .update_quickstart(DAEMON, None, &release("b"))
+                .await
+                .unwrap();
+            assert_eq!(
+                matches!(updated, Updated::Stopped),
+                stops,
+                "approval by {by}"
+            );
+        }
     }
 }

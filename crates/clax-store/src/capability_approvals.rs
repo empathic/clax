@@ -269,7 +269,9 @@ impl Store {
     /// grant; without it the declaration is in force and the grants are
     /// left to the owner's first answer. It records one `artifact.update`
     /// under `audit` whose fields hold `capability_approval` and any
-    /// `net_grants` and `sample_grant` made.
+    /// `net_grants` and `sample_grant` made. An approval by anyone but
+    /// `clax` or `migration` stops Clax's updates to a seeded quickstart for
+    /// good (`crate::quickstart`), in the same transaction.
     ///
     /// # Errors
     /// `NotFound` when the artifact is missing or deleted; `draft`
@@ -296,6 +298,9 @@ impl Store {
             let waited = pending(before.as_ref(), &caps);
             let now = self.now();
             let approval = record_in(tx, id, version, &caps, by, &now)?;
+            if !matches!(by, "clax" | "migration") {
+                super::quickstart::stop_in(tx, id, &now)?;
+            }
             let mut fields = json!({"capability_approval": {
                 "version": version, "by": by, "capabilities": caps,
             }});
@@ -329,7 +334,9 @@ impl Store {
     /// Takes `name` out of `id`'s approved declaration, so the current
     /// version's declaration of it waits for approval again; whether it was
     /// approved. A withdrawal is recorded as `artifact.update` under
-    /// `audit`. Grants made on approval stay: revoke them on their own.
+    /// `audit` and stops Clax's updates to a seeded quickstart for good
+    /// (`crate::quickstart`), so a release never approves the name again.
+    /// Grants made on approval stay: revoke them on their own.
     ///
     /// # Errors
     /// `invalid_args` (invalid) when `name` is not one of [`GATED`];
@@ -364,8 +371,10 @@ impl Store {
                 "UPDATE capability_approvals SET capabilities_json = ?2 WHERE artifact_id = ?1",
                 params![id.as_str(), approval.capabilities.to_string()],
             )?;
+            let now = self.now();
+            super::quickstart::stop_in(tx, id, &now)?;
             let fields = json!({"capability_approval": {"withdraw": name}});
-            self.record_audit(tx, audit, approval_record(self.now(), id, fields))?;
+            self.record_audit(tx, audit, approval_record(now, id, fields))?;
             Ok(true)
         })
     }
