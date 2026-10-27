@@ -243,8 +243,13 @@ void main() {
     // Backoff on the injected clock: nothing before the first retry is due.
     await clock.advance(const Duration(seconds: 1));
     expect(remote.calls.where((c) => c == 'putBundle'), hasLength(1));
+    // The retry reads the store and the bundle's file, real IO, before it
+    // sends: waited for by what it does, not by turns of the event loop.
     await clock.advance(const Duration(seconds: 1));
-    expect(remote.calls.where((c) => c == 'putBundle'), hasLength(2));
+    await waitUntil(
+      () => remote.calls.where((c) => c == 'putBundle').length == 2,
+      what: 'the first retry to send the bundle',
+    );
     expect(done, isFalse);
 
     final copy = remote.copies.values.single;
@@ -263,7 +268,7 @@ void main() {
     // The first run's next retry finds the bundle landed and sends
     // nothing more.
     await clock.advance(const Duration(minutes: 1));
-    expect(done, isTrue);
+    await waitUntil(() => done, what: 'the first publish to end');
     expect(await going, isA<Published>());
     expect(remote.calls.where((c) => c == 'putBundle'), hasLength(3));
     expect(copy.versions, hasLength(1));
