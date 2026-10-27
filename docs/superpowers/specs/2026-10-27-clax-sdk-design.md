@@ -47,6 +47,14 @@ queue, claim reports, act on them and answer the reporters.
   the SDK's `auth` callback (§5.3).
 - D13. A person with the triage right may also file into a queue directly
   from the Clax UI, as a person, with the existing thread model.
+- D14. Credentials are of two kinds, browser session and signed grant;
+  consent is given only in a browser session; the daemon token becomes a
+  bootstrap; the extension's `cxe_` credential is replaced by a grant
+  (§5.1, §5.2).
+- D15. Anyone who may edit an artifact may write its metadata, and every
+  change to it is recorded in the Toolpath journal (§6.6).
+- D16. The opaque pair of D6 attaches to artifacts (`external_id`,
+  `metadata`, §6.1) and to threads (`reporter_id`, `metadata`, §6.4).
 
 ## 3. What exists
 
@@ -213,7 +221,11 @@ consent call from the extension fails to compile rather than answering
 - **What a reporter token may do:** file reports into its queue, and read,
   reply on and see the replies to the reports `reporters_see` (§7.2) shows
   that `reporter_id`. Nothing else; it is never a person.
-- **`reporter_id`** is taken from the token, never from a request body. Clax
+- **`reporter_id`** names one of the deployer's users: every user of their
+  app has their own, and it means something only within its queue (the
+  same string in another deployer's queue is someone else). Clax makes no
+  object per reporter and needs no uniqueness of it beyond that.
+- **It is taken from the token**, never from a request body. Clax
   trusts the deployer's backend to name its employees; that is the trust
   boundary. Rate limits apply per `reporter_id` and per service grant;
   revoking the service grant ends every reporter token it minted.
@@ -244,8 +256,9 @@ An artifact of a new kind, `external`, beside `html` and `live`
   every read, so an app maps a Clax artifact back to its own record.
 - `metadata`: an opaque JSON value, at most 64 KiB, stored and returned as
   written; never interpreted, indexed or searched. Written with
-  `if_version`, as db writes are. Readable by anyone who may read the
-  artifact: it holds no secrets.
+  `if_version`, as db writes are, by anyone who may edit the artifact
+  (D15). Readable by anyone who may read the artifact: it holds no
+  secrets.
 - `revision`: an optional opaque string, the app's revision of its record;
   each thread's anchor records the revision it was made on.
 - Title, URL, tags, threads, comments, watches, presence, working records
@@ -285,6 +298,25 @@ and never reads it.
 metadata, like comment text, is untrusted input written by the app's
 users, and agents treat it as data. An agent sees the record itself at its
 URL: Clax has no copy.
+
+### 6.6 Audit (D15)
+
+Every change to an external artifact and to a thread's metadata is an
+event in the Toolpath journal (`audit_events`, `docs/contract.md`
+"Toolpath journal and export"), written in the same transaction as the
+change, with the actor, `via` and `call` the envelope already carries.
+New kinds:
+
+| Kind | Body |
+|---|---|
+| `external.create` | `external_id, title, url, revision, metadata, metadata_sha256` |
+| `external.update` | the fields changed, each with its new value; for `metadata` the new value, `metadata_sha256` and `previous_sha256` |
+| `external.delete` | `external_id, metadata_sha256` |
+| `thread.metadata` | `thread_id, metadata, metadata_sha256, previous_sha256` |
+
+The journal keeps each metadata value, so its history can be rebuilt
+from the events alone; the 64 KiB and 16 KiB caps bound each event. A
+write that changes nothing records nothing, as for every kind.
 
 ## 7. Queues
 
@@ -414,7 +446,8 @@ carries an ID the receiver uses to drop repeats.
 
 - `docs/contract.md` changes with the code: credentials, the extension,
   external artifacts, queues, leases, reporter tokens, webhooks, and the
-  errors `external_artifact`, `lease_lost`, `external_id_taken`.
+  errors `external_artifact`, `lease_lost`, `external_id_taken`, and the
+  Toolpath "Kinds" table (§6.6).
 - Migrations take the next free number in
   `crates/clax-store/src/migrations.rs`.
 - Every SDK transport passes one conformance suite against the real
@@ -428,15 +461,8 @@ carries an ID the receiver uses to drop repeats.
 
 ## 13. Open for the owner
 
-- O1. The credential model of §5.1 and §5.2: two kinds, consent only in a
-  browser session, the daemon token reduced to a bootstrap, the
-  extension's `cxe_` credential replaced by a grant.
 - O2. `external_id` is unique per instance (one organization's instance
   shares artifacts by it); on clax.dev an ID another person holds answers
   that artifact only to someone who may read it, and 409
   `external_id_taken` otherwise. The alternative is unique per creating
   person.
-- O3. Who may write an artifact's metadata: anyone who may edit the
-  artifact (proposed), or only its creator.
-- O4. The opaque pair of D6 is attached both to artifacts (§6.1) and to
-  threads, as `reporter_id` and thread metadata (§6.4).
