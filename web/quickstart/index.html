@@ -382,7 +382,7 @@
       if (s1 <= s0) continue;
       const [x0, y0] = at(s0), [x1, y1] = at(s1);
       const large = s1 - s0 > Math.PI ? 1 : 0;
-      out += `<path class="ring-arc${allDone || isDone(RING[i]) ? " done" : ""}" marker-end="url(#rm)" d="M${x0},${y0} A${rx},${ry} 0 ${large} 1 ${x1},${y1}"/>`;
+      out += `<path class="ring-arc${allDone || isDone(RING[i]) || (i < 2 && isDone(RING[i + 1])) ? " done" : ""}" marker-end="url(#rm)" d="M${x0},${y0} A${rx},${ry} 0 ${large} 1 ${x1},${y1}"/>`;
     }
     ring.querySelector(".ring-svg").innerHTML = out;
   }
@@ -442,6 +442,13 @@
   /** Right-angled connectors. One box splitting into several draws one
    * trunk to a bar and a drop into each; several joining into one draw a
    * drop from each to a bar and one trunk down. */
+  /** The box before `id` on the person's route: the one whose connector into it turns green when `id` is checked. */
+  function prevOf(id) {
+    if (id === "next") return "change";
+    if (BRANCHES.includes(id)) return "next";
+    const c = core(), i = c.indexOf(id);
+    return i > 0 ? c[i - 1] : null;
+  }
   function drawEdges() {
     const box = chart.getBoundingClientRect();
     const pt = (id) => { const r = els[id].getBoundingClientRect(); return { x: r.left - box.left + r.width / 2, top: r.top - box.top, bot: r.bottom - box.top }; };
@@ -449,7 +456,22 @@
       <marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker>
       <marker id="md" class="m-done" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>`];
     const line = (pts, cls, arrow) => out.push(`<path class="e${cls}"${arrow ? ` marker-end="url(#${cls.includes("done") ? "md" : "m"})"` : ""} d="M${pts.map((p) => p.join(",")).join(" L")}"/>`);
-    const cls = (a, b) => (isDone(a) && !nodeDim(a) && !nodeDim(b) ? " done" : "") + (nodeDim(a) || nodeDim(b) ? " dim" : "");
+    // An edge is green on the way out of a done box, and on the way into one from
+    // the box before it on this route; it is dimmed when either end is off the route.
+    const prev = prevOf;
+    const onpath = (a, b) => !nodeDim(a) && !nodeDim(b) && (isDone(a) || (isDone(b) && prev(b) === a));
+    const cls = (a, b) => (onpath(a, b) ? " done" : "") + (nodeDim(a) || nodeDim(b) ? " dim" : "");
+    // Which side of the trunk at `x0` a box at `x` hangs on.
+    const side = (x, x0) => (x < x0 - 1 ? "L" : x > x0 + 1 ? "R" : "C");
+    /** A bus bar as two pieces either side of its trunk, each coloured by the edges that use it. */
+    const bar = (x0, y, xs, green, dimmed) => {
+      for (const sd of ["L", "R"]) {
+        const on = xs.filter((x) => side(x, x0) === sd);
+        if (!on.length) continue;
+        const end = sd === "L" ? Math.min(...on) : Math.max(...on);
+        line([[x0, y], [end, y]], (green(sd) ? " done" : dimmed(sd) ? " dim" : ""), false);
+      }
+    };
     const from = {}, to = {};
     for (const [a, b] of EDGES) { (from[a] ||= []).push(b); (to[b] ||= []).push(a); }
     const drawn = new Set();
@@ -458,9 +480,8 @@
       if (from[a].length < 2) continue;
       const A = pt(a), T = from[a].map((b) => [b, pt(b)]);
       const bus = A.bot + (Math.min(...T.map(([, B]) => B.top)) - A.bot) / 2;
-      line([[A.x, A.bot], [A.x, bus]], cls(a, a), false);
-      const xs = T.map(([, B]) => B.x).concat(A.x);
-      line([[Math.min(...xs), bus], [Math.max(...xs), bus]], cls(a, a), false);
+      line([[A.x, A.bot], [A.x, bus]], (T.some(([b]) => onpath(a, b)) ? " done" : "") + (nodeDim(a) ? " dim" : ""), false);
+      bar(A.x, bus, T.map(([, B]) => B.x), (sd) => T.some(([b, B]) => side(B.x, A.x) === sd && onpath(a, b)), (sd) => T.filter(([, B]) => side(B.x, A.x) === sd).every(([b]) => nodeDim(a) || nodeDim(b)));
       for (const [b, B] of T) { line([[B.x, bus], [B.x, B.top - 2]], cls(a, b), true); drawn.add(a + ">" + b); }
     }
     // Joins: a drop from each, a bar, one trunk.
@@ -470,9 +491,8 @@
       const B = pt(b), P = S.map((a) => [a, pt(a)]);
       const bus = B.top - (B.top - Math.max(...P.map(([, A]) => A.bot))) / 2;
       for (const [a, A] of P) { line([[A.x, A.bot], [A.x, bus]], cls(a, b), false); drawn.add(a + ">" + b); }
-      const xs = P.map(([, A]) => A.x).concat(B.x);
-      const anyDone = S.some((a) => isDone(a) && !nodeDim(a));
-      line([[Math.min(...xs), bus], [Math.max(...xs), bus]], anyDone ? " done" : "", false);
+      const anyDone = S.some((a) => onpath(a, b));
+      bar(B.x, bus, P.map(([, A]) => A.x), (sd) => P.some(([a, A]) => side(A.x, B.x) === sd && onpath(a, b)), () => false);
       line([[B.x, bus], [B.x, B.top - 2]], anyDone ? " done" : "", true);
     }
     // The rest: straight down, or down, across and down.
