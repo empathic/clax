@@ -1716,6 +1716,22 @@ pub const MIGRATIONS: &[&str] = &[
     UPDATE versions SET capabilities_json = (
             SELECT a.capabilities_json FROM artifacts a WHERE a.id = versions.artifact_id)
         WHERE n = (SELECT a.current_version FROM artifacts a WHERE a.id = versions.artifact_id);",
+    // 57: the Clax Quickstart seeded into each person's gallery
+    // (`crate::quickstart`). One row per person, keyed by public ID or
+    // `*owner`, written when the gallery is seeded: `artifact_id` is the
+    // artifact made, or NULL when none was (a home that already held
+    // artifacts); `release` and `version_n` are the release and version
+    // Clax last wrote to it; `seeded_at` is when the row was written; and
+    // `stopped_at` is when updates stopped for good (the person touched or
+    // deleted it), NULL while Clax still moves it to each release.
+    "CREATE TABLE quickstarts (
+        person TEXT PRIMARY KEY,
+        artifact_id TEXT,
+        release TEXT,
+        version_n INTEGER,
+        seeded_at TEXT NOT NULL,
+        stopped_at TEXT
+    );",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -1744,8 +1760,12 @@ pub const ASSET_KEYS_MIGRATION: u32 = SITE_SESSIONS_MIGRATION + 1;
 pub const RETURN_TO_MIGRATION: u32 = ASSET_KEYS_MIGRATION + 1;
 
 /// The migration that adds `versions.capabilities_json`, as a schema
-/// version, and this build's last.
+/// version.
 pub const VERSION_CAPABILITIES_MIGRATION: u32 = RETURN_TO_MIGRATION + 1;
+
+/// The migration that adds `quickstarts`, each person's seeded Clax
+/// Quickstart, as a schema version, and this build's last.
+pub const QUICKSTART_MIGRATION: u32 = VERSION_CAPABILITIES_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -1905,11 +1925,11 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`VERSION_CAPABILITIES_MIGRATION`]. They follow the app's in every
+/// [`QUICKSTART_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 7] = [
+const MARKS_AFTER_APP: [Mark<'static>; 8] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -1917,6 +1937,7 @@ const MARKS_AFTER_APP: [Mark<'static>; 7] = [
     Mark::Index("assets_by_id"),
     Mark::Column("device_codes", "return_to"),
     Mark::Column("versions", "capabilities_json"),
+    Mark::Table("quickstarts"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -4854,9 +4875,11 @@ mod tests {
             MIGRATIONS[first + 14].contains("ALTER TABLE versions ADD COLUMN capabilities_json")
         );
         assert_eq!(
-            MIGRATIONS.len() as u32,
-            super::VERSION_CAPABILITIES_MIGRATION
+            super::QUICKSTART_MIGRATION,
+            super::VERSION_CAPABILITIES_MIGRATION + 1
         );
+        assert!(MIGRATIONS[first + 15].contains("CREATE TABLE quickstarts ("));
+        assert_eq!(MIGRATIONS.len() as u32, super::QUICKSTART_MIGRATION);
     }
 
     #[test]
@@ -4903,7 +4926,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_database_reaches_56() {
+    fn a_fresh_database_reaches_57() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -4918,7 +4941,8 @@ mod tests {
         assert_eq!(ASSET_KEYS_MIGRATION, 54);
         assert_eq!(super::RETURN_TO_MIGRATION, 55);
         assert_eq!(super::VERSION_CAPABILITIES_MIGRATION, 56);
-        assert_eq!(user_version(&c), super::VERSION_CAPABILITIES_MIGRATION);
+        assert_eq!(super::QUICKSTART_MIGRATION, 57);
+        assert_eq!(user_version(&c), super::QUICKSTART_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -5660,7 +5684,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::VERSION_CAPABILITIES_MIGRATION);
+        assert_eq!(user_version(&c), super::QUICKSTART_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -6152,15 +6176,15 @@ mod tests {
         // The owner's home after this build's first open: 43 adopted to 46,
         // then the jobs migration to 47, the app push migration to 48, the
         // remote kind migration to 49, ClaxBot's to 50, the site
-        // migrations to 54, the return-to migration to 55 and the version
-        // declarations' to 56.
+        // migrations to 54, the return-to migration to 55, the version
+        // declarations' to 56 and the quickstart's to 57.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::VERSION_CAPABILITIES_MIGRATION);
+            assert_eq!(user_version(&c), super::QUICKSTART_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -6168,8 +6192,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            super::VERSION_CAPABILITIES_MIGRATION + 1,
-            "ClaxBot's 50 and the site migrations' 51 to 56 are one later now"
+            super::QUICKSTART_MIGRATION + 1,
+            "ClaxBot's 50 and the migrations 51 to 57 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -6188,7 +6212,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), super::VERSION_CAPABILITIES_MIGRATION);
+        assert_eq!(user_version(&copied), super::QUICKSTART_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -6202,7 +6226,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (super::VERSION_CAPABILITIES_MIGRATION + 1, schema, rows)
+            (super::QUICKSTART_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -6476,7 +6500,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, super::VERSION_CAPABILITIES_MIGRATION);
+        assert_eq!(last, super::QUICKSTART_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
