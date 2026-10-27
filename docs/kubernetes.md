@@ -303,7 +303,9 @@ each. A transaction's writes are buffered until commit, up to
 `CLAX_FLEET_DB_MAX_TRANSACTION_MIB` (256; a migration that rebuilds a table
 writes it whole). Budget about 250 MiB per busy instance on top of 200 MiB
 per pod, and size the 2 Gi limit by the instances a pod is expected to
-run. The autoscaler scales on memory as well as CPU. On SQLite an
+run. `CLAX_FLEET_SQLITE_HEAP_MIB` (1024) bounds every SQLite database of a
+pod together: past it, page caches give memory back. Keep it under the
+pod's limit. The autoscaler scales on memory as well as CPU. On SQLite an
 instance's footprint is its store's (WAL, reader pool) and its realtime
 state.
 
@@ -371,6 +373,7 @@ sets the filter (`info`).
 | `CLAX_POSTGRES_POOL` | `--postgres-pool` | PostgreSQL: data connections per pod (8) |
 | `CLAX_FLEET_DB_CACHE_MIB` | `--db-cache-mib` | PostgreSQL: SQLite's page cache per instance (32) |
 | `CLAX_FLEET_DB_MAX_TRANSACTION_MIB` | `--db-max-transaction-mib` | PostgreSQL: the most one transaction writes (256) |
+| `CLAX_FLEET_SQLITE_HEAP_MIB` | `--sqlite-heap-mib` | the memory all of a pod's SQLite databases aim to stay under (1024; 0 for none) |
 | `CLAX_KEK` | | the key secrets are sealed under (64 hex digits; required on PostgreSQL) |
 | `CLAX_FLEET_DRAIN_DELAY` | `--drain-delay-secs` | seconds to keep serving after SIGTERM (5) |
 | `CLAX_FLEET_LOG_FORMAT` | `--log-format` | `text` or `json` |

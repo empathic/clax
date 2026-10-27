@@ -185,6 +185,11 @@ struct Serve {
     /// How long, after SIGTERM, to keep serving before stopping instances.
     #[arg(long, env = "CLAX_FLEET_DRAIN_DELAY", default_value = "5")]
     drain_delay_secs: u64,
+    /// The memory all of this process's SQLite databases aim to stay under,
+    /// in MiB (SQLite's soft heap limit: past it, page caches give memory
+    /// back); 0 for none. Size it under the pod's memory limit.
+    #[arg(long, env = "CLAX_FLEET_SQLITE_HEAP_MIB", default_value_t = 1024)]
+    sqlite_heap_mib: u64,
 }
 
 #[derive(clap::Args)]
@@ -294,6 +299,14 @@ fn serve(a: Serve) -> anyhow::Result<()> {
         (None, None) => format!("{pod}:{}", a.listen.port()),
     };
     let kek = kek_from_env()?;
+    if a.sqlite_heap_mib > 0 {
+        // Process-wide: one bound for every instance's caches together.
+        rusqlite::Connection::open_in_memory()?.query_row(
+            &format!("PRAGMA soft_heap_limit = {}", a.sqlite_heap_mib << 20),
+            [],
+            |_| Ok(()),
+        )?;
+    }
     let rt = tokio::runtime::Runtime::new()?;
     let (placement, storage, peer_key) = match a.backend {
         Backend::Sqlite => {
