@@ -4,25 +4,25 @@ name: Publish Pi package
 # Publish Pi package, Run workflow) or by scripts/release.sh, once the
 # plugins are pinned to the release that shares the package's version
 # (docs/usage.md, "Releasing"). It publishes from the commit `sha` names
-# (by default main's tip), which must be on main with CI passed on it: the
-# package's tests, which need a clax build, are CI's (scripts/run.sh
-# pi-test). It refuses a package whose wrapper pins another release, a
-# version npm already has, and a package that does not typecheck. With
-# `dry_run` it does everything but publish. The run is titled "Publish Pi
-# package <sha>", or "Publish Pi package (dry run) <sha>", so a caller can
-# find it.
+# (by default the tip of the ref it runs on), which must be on prod, where
+# releases come from, with CI passed on it: the package's tests, which
+# need a clax build, are CI's (scripts/run.sh pi-test). It refuses a
+# package whose wrapper pins another release, a version npm already has,
+# and a package that does not typecheck. With `dry_run` it does everything
+# but publish. The run is titled "Publish Pi package <sha>", or "Publish Pi
+# package (dry run) <sha>", so a caller can find it.
 #
 # It publishes through npm trusted publishing (OIDC, no token) with
 # provenance, so the package on npmjs.com must name this repository, this
 # workflow and the environment `npm` as its trusted publisher. The job runs
 # in that environment, whose deployment branches the repository's settings
-# limit to main (Settings, Environments, npm, Deployment branches and tags:
-# Selected, main), so npm refuses a token from a run dispatched on any
+# limit to prod (Settings, Environments, npm, Deployment branches and tags:
+# Selected, prod), so npm refuses a token from a run dispatched on any
 # other ref, whatever that ref's copy of this file checks. npm offers
 # trusted publishing only for a package that exists, so the first version
 # is not published here: scripts/release.sh publishes it from the
-# releaser's machine (npm publish from a worktree of the pin commit) and
-# prints that setup.
+# releaser's machine (npm publish from a worktree of the pin commit on
+# prod) and prints that setup.
 on:
   workflow_dispatch:
     inputs:
@@ -31,7 +31,7 @@ on:
         type: boolean
         default: true
       sha:
-        description: "The commit to publish from: on main, with CI passed (default: main's tip)"
+        description: "The commit to publish from: on prod, with CI passed (default: the tip of the ref run on)"
         type: string
         default: ""
 
@@ -66,7 +66,7 @@ jobs:
         with:
           ref: ${{ inputs.sha || github.sha }}
           fetch-depth: 0
-      - name: Check the commit is on main and CI passed on it
+      - name: Check the commit is on prod and CI passed on it
         working-directory: .
         shell: bash
         env:
@@ -75,9 +75,9 @@ jobs:
         run: |
           set -euo pipefail
           sha="$(git rev-parse --verify "$SHA^{commit}")"
-          git fetch --quiet --no-tags origin main
+          git fetch --quiet --no-tags origin prod
           if ! git merge-base --is-ancestor "$sha" FETCH_HEAD; then
-            echo "$sha is not on main" >&2
+            echo "$sha is not on prod: the Pi package is published from the pin commit on prod" >&2
             exit 1
           fi
           # The gate is ci.yml's bazel job: the run's own conclusion also
