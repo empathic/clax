@@ -32,6 +32,14 @@ export function agentNames(list: Working[], agents: AgentView[]): Map<string, st
   return new Map([...all].map(([handle, h]) => [handle, !apps.has(handle) && (count.get(h) ?? 0) > 1 ? `${h} ${handle.slice(2, 6)}` : h]));
 }
 
+/** How long after its last act an agent whose session ended still counts
+ * as active: a headless agent runs one turn per wake and ends between. */
+export const RECENT_MS = 5 * 60_000;
+
+/** Whether `a` acted on the artifact within {@link RECENT_MS} of `now`. */
+export const recentlyActive = (a: Pick<AgentView, "active_at">, now: Date): boolean =>
+  !!a.active_at && now.getTime() - new Date(a.active_at).getTime() < RECENT_MS;
+
 export function clock(since: string, now: Date): string {
   const s = Math.max(0, Math.floor((now.getTime() - new Date(since).getTime()) / 1000));
   const two = (n: number) => String(n).padStart(2, "0");

@@ -29,6 +29,11 @@ pub struct AgentView {
     /// agent's name (and `harness` its harness).
     pub name: Option<String>,
     pub live: bool,
+    /// When it last acted on the artifact: the newest of its versions of it,
+    /// its replies on its threads and its watch of it, else when its session
+    /// started. A browser keeps an ended agent that replied a moment ago
+    /// among the active ones by it.
+    pub active_at: String,
     /// Whose agent it is (§10, §11 "Display"): names are not filtered (§21.9).
     pub person: AgentPerson,
     /// For a session of another Clax (signed in by device code), whose
@@ -198,8 +203,8 @@ macro_rules! agents_sql {
                            COALESCE((SELECT w.created_at FROM watches w WHERE w.session_id = s.id AND w.artifact_id = k.aid), ''),
                            s.started_at) AS active_at
                   FROM rel k CROSS JOIN sessions s ON s.id = k.sid)
-            SELECT aid, agent_handle, harness, live, name, person, relay_name, relay_harness, relay, id, hsk, gr FROM
-              (SELECT aid, agent_handle, harness, live, name, person, relay_name, relay_harness, relay, id, hsk, gr,
+            SELECT aid, agent_handle, harness, live, name, person, relay_name, relay_harness, relay, id, hsk, gr, active_at FROM
+              (SELECT aid, agent_handle, harness, live, name, person, relay_name, relay_harness, relay, id, hsk, gr, active_at,
                       ROW_NUMBER() OVER (PARTITION BY aid ORDER BY live DESC, active_at DESC, id) AS rn
                  FROM ranked)
              WHERE rn <= :limit ORDER BY aid, rn"
@@ -471,6 +476,7 @@ fn participants_in(c: &Connection, aid: Option<&str>) -> Result<BTreeMap<String,
             harness: relay_harness.unwrap_or(r.get(2)?),
             name: relay_name.or(r.get(4)?),
             live: r.get(3)?,
+            active_at: r.get(12)?,
             person,
             via,
             wakes: None,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentNames, chips, clock, harnessLabel, harnessName, stripText, summary, threadMarker, type Working } from "./working-model";
+import { agentNames, chips, clock, harnessLabel, harnessName, recentlyActive, stripText, summary, threadMarker, type Working } from "./working-model";
 
 const w = (over: Partial<Working>): Working => ({
   key: "k", agent: "a_1111aaaa", harness: "claude", message: null, thread_ids: [], started_at: "2026-09-30T10:00:00.000Z", last_heartbeat: "2026-09-30T10:00:00.000Z", ...over,
@@ -36,6 +36,12 @@ describe("working-model", () => {
     expect(agentNames([w({})], agents).get("a_1111aaaa")).toBe("claude");
     const two = agentNames([w({}), w({ agent: "a_3333cccc" })], [...agents, { handle: "a_3333cccc", harness: "claude", live: true }]);
     expect([two.get("a_1111aaaa"), two.get("a_3333cccc")]).toEqual(["claude 1111", "claude 3333"]);
+  });
+
+  it("keeps an agent active for a few minutes after it last acted", () => {
+    expect(recentlyActive({ active_at: "2026-09-30T09:56:00.000Z" }, now)).toBe(true);
+    expect(recentlyActive({ active_at: "2026-09-30T09:55:42.000Z" }, now)).toBe(false);
+    expect(recentlyActive({}, now)).toBe(false);
   });
 
   it("names another Clax's agent with whose Clax it relays from", () => {
