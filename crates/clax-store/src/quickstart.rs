@@ -42,8 +42,8 @@ pub struct Quickstart {
 pub enum Seeded {
     /// It made the person's quickstart: the pinned artifact and its version 1.
     Made {
-        artifact: Artifact,
-        version: Version,
+        artifact: Box<Artifact>,
+        version: Box<Version>,
     },
     /// The person has a row already (seeded, skipped or deleted): nothing
     /// was made.
@@ -58,8 +58,8 @@ pub enum Seeded {
 pub enum Updated {
     /// It published the release as the artifact's next version.
     Made {
-        artifact: Artifact,
-        version: Version,
+        artifact: Box<Artifact>,
+        version: Box<Version>,
     },
     /// The quickstart already holds the release.
     Current,
@@ -142,7 +142,10 @@ impl Store {
             })
             .await;
         match made {
-            Ok((artifact, version, ())) => Ok(Seeded::Made { artifact, version }),
+            Ok((artifact, version, ())) => Ok(Seeded::Made {
+                artifact: Box::new(artifact),
+                version: Box::new(version),
+            }),
             Err(CoreError::Conflict { .. }) => Ok(Seeded::Already),
             Err(e) => Err(e),
         }
@@ -208,7 +211,10 @@ impl Store {
             })
             .await;
         match written {
-            Ok((artifact, version, ())) => Ok(Updated::Made { artifact, version }),
+            Ok((artifact, version, ())) => Ok(Updated::Made {
+                artifact: Box::new(artifact),
+                version: Box::new(version),
+            }),
             Err(e @ CoreError::Conflict { .. }) => match self.apply_rule(&key)? {
                 Rule::NoRow | Rule::Stopped => Ok(Updated::Stopped),
                 Rule::Untouched { release: r, .. } if r == release.id => Ok(Updated::Current),
@@ -300,9 +306,12 @@ fn held_an_artifact(tx: &Transaction<'_>) -> Result<bool> {
     )?)
 }
 
+/// A `quickstarts` row's `artifact_id`, `release`, `version_n` and `stopped_at`.
+type RuleRow = (Option<String>, Option<String>, Option<u32>, Option<String>);
+
 /// Where the row of `key` stands under the module's untouched rule.
 fn rule_in(tx: &Transaction<'_>, key: &str) -> Result<Rule> {
-    let row: Option<(Option<String>, Option<String>, Option<u32>, Option<String>)> = tx
+    let row: Option<RuleRow> = tx
         .query_row(
             "SELECT artifact_id, release, version_n, stopped_at FROM quickstarts WHERE person = ?1",
             params![key],
@@ -391,7 +400,7 @@ mod tests {
 
     fn made(s: Seeded) -> (clax_core::model::Artifact, clax_core::model::Version) {
         match s {
-            Seeded::Made { artifact, version } => (artifact, version),
+            Seeded::Made { artifact, version } => (*artifact, *version),
             other => panic!("expected Made, got {other:?}"),
         }
     }

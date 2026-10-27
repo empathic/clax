@@ -307,9 +307,9 @@ impl Store {
 
     /// Refuses one more artifact for person `person` (a public ID) when it
     /// would take their account past its cap. The quickstart seeded for
-    /// them is not counted. Only a GitHub member is capped, and only while the store has caps. A read before the work
-    /// of making the artifact starts; the transaction that inserts it
-    /// checks again ([`Store::check_quota_in`]).
+    /// them is not counted. Only a GitHub member is capped, and only while the
+    /// store has caps. A read before the work of making the artifact starts;
+    /// the transaction that inserts it checks again ([`Store::check_quota_in`]).
     ///
     /// # Errors
     /// `quota_exceeded`, naming the cap.
