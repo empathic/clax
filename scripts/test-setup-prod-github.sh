@@ -190,8 +190,8 @@ else fail "a second run changes nothing ($(writes))"; fi
 # existing variable left as it is when its flag is not given.
 : > "$C/calls"
 if run --i-know-what-i-am-doing --site-domain example.run --retired-content-origin https://old.example \
-    && writes | grep -qF "PATCH repos/$R/environments/production/variables/SITE_DOMAIN {\"name\":\"SITE_DOMAIN\",\"value\":\"example.run\"}" \
-    && writes | grep -qF "POST repos/$R/environments/production/variables {\"name\":\"RETIRED_CONTENT_ORIGIN\",\"value\":\"https://old.example\"}" \
+    && writes | grep -F "PATCH repos/$R/environments/production/variables/SITE_DOMAIN {\"name\":\"SITE_DOMAIN\",\"value\":\"example.run\"}" >/dev/null \
+    && writes | grep -F "POST repos/$R/environments/production/variables {\"name\":\"RETIRED_CONTENT_ORIGIN\",\"value\":\"https://old.example\"}" >/dev/null \
     && [ "$(writes | grep -c variables)" = 2 ]; then
     pass "a changed variable is updated and a new one created, the rest left"
 else fail "flags update the variables ($(writes))"; fi
@@ -221,7 +221,7 @@ else fail "a healthz without a commit is refused ($(cat "$C/out"))"; fi
 new_case forbidden
 : > "$C/fail-repos_${R//\//_}_rulesets?includes_parents=false"
 if run --i-know-what-i-am-doing; then fail "an error other than a 404 stops the run"
-elif grep -q "HTTP 403" "$C/out" && ! writes | grep -q "rulesets\|environments"; then pass "an error other than a 404 stops the run where it happens"
+elif grep -q "HTTP 403" "$C/out" && ! writes | grep "rulesets\|environments" >/dev/null; then pass "an error other than a 404 stops the run where it happens"
 else fail "an error other than a 404 stops the run ($(cat "$C/out"); $(writes))"; fi
 
 exit "$FAILED"
