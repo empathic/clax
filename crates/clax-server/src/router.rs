@@ -1028,11 +1028,14 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
             get_page::refusals,
         ))
     } else {
-        r.layer(axum::middleware::from_fn(auth::require_api_host))
-            .layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                clax_http::identity::local_peers,
-            ))
+        r.layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_api_host,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            clax_http::identity::local_peers,
+        ))
     };
     r.layer(axum::middleware::from_fn_with_state(
         state,

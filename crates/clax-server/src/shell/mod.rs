@@ -181,7 +181,7 @@ pub async fn artifact_page(
     };
     let template = String::from_utf8_lossy(&f.data).into_owned();
     // A hosted daemon's gate checked the host already ([`clax_http::hosted::gate`]).
-    let host_ok = clax_http::auth::request_host_allowed(&req, &uri, &extensions)
+    let host_ok = clax_http::auth::request_host_allowed(&req, &uri, &extensions, &s.trusted_hosts)
         || extensions
             .get::<clax_http::hosted::HostedRequest>()
             .is_some();

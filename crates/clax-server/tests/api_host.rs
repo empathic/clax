@@ -1,5 +1,6 @@
 //! Every `/api` route answers only to a `Host` that names this machine
-//! literally, or to the address the daemon is bound to (DNS rebinding).
+//! literally, to the address the daemon is bound to, or to a name the home's
+//! `[serve] trusted_hosts` lists exactly (DNS rebinding).
 use clax_core::working::ManualClock;
 use clax_testkit::TestServer;
 use serde_json::Value;
@@ -244,4 +245,158 @@ async fn a_configured_site_domain_names_the_artifact_hosts() {
             );
         }
     }
+}
+
+/// The `tailscale serve` name these tests trust.
+const TRUSTED: &str = "phobos.tail556f5b.ts.net";
+
+/// A daemon whose `[serve] trusted_hosts` is [`TRUSTED`].
+async fn trusting() -> TestServer {
+    TestServer::spawn_with(|s| s.trusted_hosts = vec![TRUSTED.to_string()].into()).await
+}
+
+#[tokio::test]
+async fn a_trusted_host_is_admitted_like_localhost_and_nothing_like_it_is() {
+    let ts = trusting().await;
+    let a = ts.publish("Doc", &[("index.html", "<h2>x</h2>")]).await;
+    let aid = a["artifact"]["id"].as_str().unwrap();
+    let port = ts.addr.port();
+    for host in [
+        TRUSTED.to_string(),
+        TRUSTED.to_ascii_uppercase(),
+        format!("{TRUSTED}:443"),
+        format!("{TRUSTED}:{port}"),
+    ] {
+        for path in [
+            "/api/artifacts".to_string(),
+            format!("/api/artifacts/{aid}"),
+        ] {
+            let (status, _) = status_with_host(&ts, &ts.base, &path, &host).await;
+            assert_eq!(status, 200, "{host} {path}");
+        }
+    }
+    // Exact names only: no suffix, prefix or lookalike, and no other name.
+    for host in [
+        "evil-phobos.tail556f5b.ts.net",
+        "phobos.tail556f5b.ts.net.evil.com",
+        "x.phobos.tail556f5b.ts.net",
+        "tail556f5b.ts.net",
+        "phobos.tail556f5b.ts.net.",
+        "phobos",
+        "other.tail556f5b.ts.net",
+        "evil.example",
+    ] {
+        let (status, body) = status_with_host(&ts, &ts.base, "/api/artifacts", host).await;
+        assert_eq!(
+            (status, body["error"]["code"].as_str()),
+            (403, Some("forbidden_host")),
+            "{host}"
+        );
+    }
+    // The token stays for this machine's own names: a browser on the
+    // trusted host never holds it.
+    let (status, body) = status_with_host(&ts, &ts.base, "/api/token", TRUSTED).await;
+    assert_eq!(
+        (status, body["error"]["code"].as_str()),
+        (403, Some("not_loopback"))
+    );
+}
+
+#[tokio::test]
+async fn with_no_trusted_hosts_the_name_is_refused_as_before() {
+    let ts = TestServer::spawn().await;
+    for host in [TRUSTED.to_string(), format!("{TRUSTED}:443")] {
+        let (status, body) = status_with_host(&ts, &ts.base, "/api/artifacts", &host).await;
+        assert_eq!(
+            (status, body["error"]["code"].as_str()),
+            (403, Some("forbidden_host")),
+            "{host}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_trusted_hosts_own_origin_may_comment_and_no_other_may() {
+    let ts = trusting().await;
+    let a = ts.publish("Doc", &[("index.html", "<h2>x</h2>")]).await;
+    let aid = a["artifact"]["id"].as_str().unwrap();
+    let v = ts.viewer(Some("Bobby")).await;
+    let port = ts.addr.port();
+    let post = |origin: String| {
+        let form = reqwest::multipart::Form::new()
+            .text("anchor", clax_testkit::element_anchor().to_string())
+            .text("body", "from the phone")
+            .text("version", "1");
+        ts.client
+            .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+            .header("host", TRUSTED)
+            .header("origin", origin)
+            .header("cookie", format!("clax_viewer={}", v.cookie))
+            .multipart(form)
+            .send()
+    };
+    for origin in [format!("https://{TRUSTED}"), format!("http://{TRUSTED}")] {
+        let res = post(origin.clone()).await.unwrap();
+        assert_eq!(res.status(), 201, "{origin}");
+    }
+    for origin in [
+        "https://evil.example".to_string(),
+        "https://evil-phobos.tail556f5b.ts.net".to_string(),
+        format!("https://{TRUSTED}.evil.com"),
+        format!("http://localhost:{port}"),
+        format!("http://{aid}.localhost:{port}"),
+        "null".to_string(),
+    ] {
+        let res = post(origin.clone()).await.unwrap();
+        assert_eq!(res.status(), 403, "{origin}");
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "forbidden_origin", "{origin}");
+    }
+    let listed: Value = ts
+        .get(&format!("/api/artifacts/{aid}/threads"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["threads"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_trusted_host_never_sees_live_pages_through_its_loopback_proxy() {
+    let ts = trusting().await;
+    let v = ts.viewer(Some("Alex")).await;
+    let form = reqwest::multipart::Form::new()
+        .text("url", "http://localhost:5173/")
+        .text("title", "Settings")
+        .text(
+            "anchor",
+            serde_json::json!({"kind": "element", "selector": "main", "quote": "Save", "file": "index.html"})
+                .to_string(),
+        )
+        .text("body", "The button overflows")
+        .text("pending", "[]")
+        .text("snapshot", "<p>a live page</p>");
+    let res = ts
+        .client
+        .post(format!("{}/api/live/threads", ts.base))
+        .header("cookie", format!("clax_viewer={}", v.cookie))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let page: Value = res.json().await.unwrap();
+    let aid = page["page"]["artifact_id"].as_str().unwrap().to_string();
+    let port = ts.addr.port();
+    let (status, _) = status_with_host(
+        &ts,
+        &ts.base,
+        &format!("/api/artifacts/{aid}"),
+        &format!("localhost:{port}"),
+    )
+    .await;
+    assert_eq!(status, 200, "this machine's browser sees it");
+    let (status, _) =
+        status_with_host(&ts, &ts.base, &format!("/api/artifacts/{aid}"), TRUSTED).await;
+    assert_eq!(status, 404, "the trusted host does not");
 }
