@@ -954,7 +954,7 @@ async function main() {
     const l = await local(o);
     base = l.base;
     token = l.token;
-    agent = l.agent;
+    agent = l.agent || agent;
     o.secret = l.agent ? undefined : l.secret;
     o.work = l.work;
     o.siteDomain = "localhost";
