@@ -57,7 +57,8 @@ fn a_reused_name_address_never_reaches_another_file() {
         let (conn, registered) = open(&format!("other-{}.db", i % 10), other.clone())
             .unwrap()
             .into_parts();
-        conn.execute_batch("CREATE TABLE IF NOT EXISTS t(k)").unwrap();
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS t(k)")
+            .unwrap();
         names_by_address(&mut seen);
         drop(conn);
         parked.push(registered);
@@ -110,8 +111,10 @@ fn a_transaction_past_the_cap_rolls_back_to_the_last_commit() {
         max_transaction_bytes: 256 << 10,
     };
     let db = open_with("cap.db", store.clone(), limits).unwrap();
-    db.execute_batch("CREATE TABLE t(k INTEGER PRIMARY KEY, v BLOB); INSERT INTO t VALUES (1, 'a');")
-        .unwrap();
+    db.execute_batch(
+        "CREATE TABLE t(k INTEGER PRIMARY KEY, v BLOB); INSERT INTO t VALUES (1, 'a');",
+    )
+    .unwrap();
     let err = db
         .execute_batch(
             "BEGIN;

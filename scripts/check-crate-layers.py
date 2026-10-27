@@ -83,6 +83,10 @@ ALLOWED = {
     # which depends on no workspace crate).
     "clax-do-vfs": set(),
     "clax-worker": HTTP | {"clax-server", "clax-git", "clax-content-git", "clax-do-vfs"},
+    # Clax across processes (the Kubernetes deployment's server): the
+    # daemon's core per instance, on its pages VFS, with the web UI the
+    # binary embeds.
+    "clax-fleet": SERVER | {"clax-pagevfs", "clax-embedded"},
     # ClaxBot's code-mode sandbox: the contract (pure types, a trait and
     # the conformance suite, for both targets) and its native QuickJS
     # implementation over it.

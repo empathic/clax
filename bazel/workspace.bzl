@@ -285,6 +285,34 @@ CRATES = {
         "tests": {},
         "version": "0.6.0"
     },
+    "crates/clax-fleet": {
+        "bins": {
+            "clax-fleet": "src/main.rs"
+        },
+        "default_features": [],
+        "deps": [
+            "//crates/clax-core:clax_core",
+            "//crates/clax-embedded:clax_embedded",
+            "//crates/clax-http:clax_http",
+            "//crates/clax-pagevfs:clax_pagevfs",
+            "//crates/clax-realtime:clax_realtime",
+            "//crates/clax-sample:clax_sample",
+            "//crates/clax-server:clax_server",
+            "//crates/clax-store:clax_store"
+        ],
+        "dev_deps": [],
+        "edition": "2024",
+        "features": [],
+        "has_build_script": False,
+        "lib": "clax_fleet",
+        "lib_root": "src/lib.rs",
+        "name": "clax-fleet",
+        "tests": {
+            "integration": "tests/integration.rs",
+            "postgres": "tests/postgres.rs"
+        },
+        "version": "0.6.0"
+    },
     "crates/clax-git": {
         "bins": {},
         "default_features": [],

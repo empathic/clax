@@ -100,6 +100,23 @@ impl Core {
     ) -> anyhow::Result<Core> {
         cfg.home.ensure_dirs()?;
         let store = Arc::new(Store::open_reporting(&cfg.home, progress)?);
+        Core::start_on(cfg, store, None).await
+    }
+
+    /// [`Core::start`] on `store`, which its host opened (a fleet
+    /// instance's, on a connection of its own VFS), keeping each artifact's
+    /// app data where `app_data` keeps it (the host wraps its own in
+    /// [`clax_http::app_data_host::MovingAppData`]), or, with `None`, in
+    /// the home as [`Core::start`] does.
+    ///
+    /// # Errors
+    /// When the state cannot be assembled.
+    pub async fn start_on(
+        cfg: CoreConfig,
+        store: Arc<Store>,
+        app_data: Option<Arc<dyn clax_http::app_data_host::AppDataHost>>,
+    ) -> anyhow::Result<Core> {
+        cfg.home.ensure_dirs()?;
         // Hooks that waited on the previous daemon are gone: their questions
         // are withdrawn (and kept, as every question is).
         let gone = store.withdraw_hook_questions_on_start()?;
@@ -156,6 +173,9 @@ impl Core {
         state.clax_app = Arc::new(clax_app);
         if cfg.quickstart {
             state.quickstart = clax_core::quickstart::Release::from_tree(&*state.web).map(Arc::new);
+        }
+        if let Some(app_data) = app_data {
+            state.app_data = app_data;
         }
         // The core's `net` keeps a shared disk cache in the home.
         state.net = Arc::new(clax_http::net_cache::daemon_net(cfg.home.root()));
