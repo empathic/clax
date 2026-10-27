@@ -21,7 +21,7 @@ export const CAPABILITY_METHODS = {
   // Clax's network, through the daemon (clax-extensions.d.ts `Net`).
   net: ["fetch"],
   // Clax's own controls around the page (clax-extensions.d.ts `Shell`).
-  shell: ["highlight", "commentMode", "can"],
+  shell: ["highlight", "commentMode", "can", "address"],
 } as const satisfies Record<string, readonly string[]>;
 
 export type CapabilityName = keyof typeof CAPABILITY_METHODS;

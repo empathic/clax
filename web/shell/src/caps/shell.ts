@@ -13,15 +13,29 @@
 //   (`CapEnv.commentMode`), only on the viewer's gesture in the page (the
 //   composer tier, judged when the call arrives: registry.ts); `unavailable`
 //   where the view cannot comment.
+// - `address()` resolves `{origin, url}`: the shell's own origin and the
+//   artifact's unpinned address in it (`<origin>/a/<aid>`), or `null` where
+//   the shell is not on an `http`/`https` origin (the Clax app's
+//   `clax://app`). A framed page cannot read either itself: the site's
+//   `Referrer-Policy: no-referrer` leaves its `document.referrer` empty.
 // This module is a lazy chunk (registry.ts), loaded on the page's first call.
+import { shellPath } from "../route";
 import { showCoachMark } from "../ui/coach-mark";
 import { SHELL_CONTROLS, type ShellControl, findControl, isShellControl, revealIfOutside } from "../ui/shell-controls";
 import { CapError } from "./errors";
 import { frameGesture } from "./gesture";
 import type { HandlerFactory } from "./host";
 
-/** Where the handler finds a shown control, and how it rings one (returning its dismiss, or `null` when nothing was drawn). */
-export type ShellDeps = { find(c: ShellControl): HTMLElement | null; mark(el: HTMLElement): (() => void) | null };
+/** Where the handler finds a shown control, how it rings one (returning its
+ * dismiss, or `null` when nothing was drawn), and the shell's own origin. */
+export type ShellDeps = { find(c: ShellControl): HTMLElement | null; mark(el: HTMLElement): (() => void) | null; origin(): string };
+
+/** What `address()` resolves: the shell's origin and the artifact's address
+ * in it, or `null` on an origin that is not `http`/`https`. */
+export function shellAddress(origin: string, aid: string): { origin: string; url: string } | null {
+  if (!/^https?:\/\/[^/]+$/.test(origin)) return null;
+  return { origin, url: origin + shellPath(aid, null, "index.html") };
+}
 
 function control(v: unknown): ShellControl {
   if (!isShellControl(v)) throw new CapError("invalid_argument", `control is one of ${SHELL_CONTROLS.map(c => `"${c}"`).join(", ")}`);
@@ -52,6 +66,8 @@ export function makeShellHandler(deps: ShellDeps): HandlerFactory {
             if (now === null) throw new CapError("unavailable", "comments cannot be made in this view");
             return now;
           }
+          case "address":
+            return shellAddress(deps.origin(), env.aid);
           default:
             throw new CapError("capability_removed", `shell.${String(method)} is not part of this runtime`);
         }
@@ -69,4 +85,5 @@ export const shellHandler: HandlerFactory = makeShellHandler({
     if (el.getAttribute("data-shell-control") === "send") revealIfOutside(el);
     return showCoachMark(el);
   },
+  origin: () => location.origin,
 });

@@ -3,7 +3,7 @@ import { showCoachMark } from "../ui/coach-mark";
 import type { ShellControl } from "../ui/shell-controls";
 import type { Grants } from "./grants";
 import type { CapEnv, Handler } from "./host";
-import { type ShellDeps, makeShellHandler } from "./shell";
+import { type ShellDeps, makeShellHandler, shellAddress } from "./shell";
 
 const button = () => {
   const el = document.createElement("button");
@@ -13,11 +13,11 @@ const button = () => {
 
 /** A handler over fake deps: `find` answers from `shown`, `mark` records the
  * element it rings and returns a dismiss spy. */
-function setup(shown: Partial<Record<ShellControl, HTMLElement>> = {}, commentMode: (on: boolean) => boolean | null = on => on) {
+function setup(shown: Partial<Record<ShellControl, HTMLElement>> = {}, commentMode: (on: boolean) => boolean | null = on => on, origin = "https://clax.dev") {
   const marked: HTMLElement[] = [];
   const dismiss = vi.fn();
-  const deps: ShellDeps = { find: c => shown[c] ?? null, mark: el => { marked.push(el); return dismiss; } };
-  const env = { commentMode: vi.fn(commentMode) } as unknown as CapEnv & { commentMode: ReturnType<typeof vi.fn> };
+  const deps: ShellDeps = { find: c => shown[c] ?? null, mark: el => { marked.push(el); return dismiss; }, origin: () => origin };
+  const env = { aid: "abcd1234efgh", commentMode: vi.fn(commentMode) } as unknown as CapEnv & { commentMode: ReturnType<typeof vi.fn> };
   const h = makeShellHandler(deps)(env, {} as Grants);
   return { h, env, marked, dismiss };
 }
@@ -50,10 +50,10 @@ describe("the shell capability", () => {
 
   it("highlight_resolves_false_when_the_ring_could_not_be_drawn", async () => {
     const el = button();
-    const h = makeShellHandler({ find: () => el, mark: () => null })({} as CapEnv, {} as Grants);
+    const h = makeShellHandler({ find: () => el, mark: () => null, origin: () => "" })({} as CapEnv, {} as Grants);
     await expect(h.call("highlight", ["comment"])).resolves.toBe(false);
     // The real mark: a control that is not in view at once draws nothing.
-    const hidden = makeShellHandler({ find: () => el, mark: e => showCoachMark(e, () => false) })({} as CapEnv, {} as Grants);
+    const hidden = makeShellHandler({ find: () => el, mark: e => showCoachMark(e, () => false), origin: () => "" })({} as CapEnv, {} as Grants);
     await expect(hidden.call("highlight", ["comment"])).resolves.toBe(false);
     expect(document.querySelectorAll(".coach-mark")).toHaveLength(0);
     document.head.querySelector("style[data-coach-mark]")?.remove();
@@ -90,7 +90,7 @@ describe("the shell capability", () => {
   it("comment_mode_where_the_view_cannot_comment_is_unavailable", async () => {
     const { h } = setup({}, () => null);
     await expect(h.call("commentMode", [true], ok)).rejects.toMatchObject({ code: "unavailable" });
-    const without = makeShellHandler({ find: () => null, mark: () => () => {} })({} as CapEnv, {} as Grants);
+    const without = makeShellHandler({ find: () => null, mark: () => () => {}, origin: () => "" })({} as CapEnv, {} as Grants);
     await expect(without.call("commentMode", [true], ok)).rejects.toMatchObject({ code: "unavailable" });
   });
 
@@ -109,7 +109,7 @@ describe("the shell capability", () => {
     el.getClientRects = () => [{}] as unknown as DOMRectList;
     el.checkVisibility = () => true;
     el.getBoundingClientRect = () => ({ x: 10, y: 10, left: 10, top: 10, width: 50, height: 20, right: 60, bottom: 30, toJSON() {} }) as DOMRect;
-    const h = makeShellHandler({ find: () => el, mark: e => showCoachMark(e) })({} as CapEnv, {} as Grants);
+    const h = makeShellHandler({ find: () => el, mark: e => showCoachMark(e), origin: () => "" })({} as CapEnv, {} as Grants);
     try {
       for (let i = 0; i < 100; i++) await expect(h.call("highlight", ["comment"])).resolves.toBe(true);
       expect(document.querySelectorAll(".coach-mark")).toHaveLength(1);
@@ -118,6 +118,28 @@ describe("the shell capability", () => {
       document.head.querySelector("style[data-coach-mark]")?.remove();
     }
     expect(document.querySelectorAll(".coach-mark")).toHaveLength(0);
+  });
+
+  it("address_is_the_shells_origin_and_the_artifacts_latest_address_there", async () => {
+    const { h, marked } = setup();
+    await expect(h.call("address", [])).resolves.toEqual({ origin: "https://clax.dev", url: "https://clax.dev/a/abcd1234efgh" });
+    // A local daemon's shell, on a port.
+    const local = setup({}, on => on, "http://localhost:7480");
+    await expect(local.h.call("address", [])).resolves.toEqual({ origin: "http://localhost:7480", url: "http://localhost:7480/a/abcd1234efgh" });
+    expect(marked).toEqual([]);
+  });
+
+  it("address_is_null_off_the_web", async () => {
+    // The Clax app's shell document is on its own scheme, which no agent can open.
+    for (const o of ["clax://app", "null", "", "file://"]) expect(shellAddress(o, "abcd1234efgh"), o).toBeNull();
+    const { h } = setup({}, on => on, "clax://app");
+    await expect(h.call("address", [])).resolves.toBeNull();
+  });
+
+  it("the_real_handler_answers_with_this_windows_origin", async () => {
+    const { shellHandler } = await import("./shell");
+    const h = shellHandler({ aid: "abcd1234efgh" } as CapEnv, {} as Grants);
+    await expect(h.call("address", [])).resolves.toEqual({ origin: location.origin, url: `${location.origin}/a/abcd1234efgh` });
   });
 
   it("an_unknown_method_is_capability_removed", async () => {

@@ -1,8 +1,8 @@
 // The quickstart page's own script (web/quickstart/index.html), run under
-// jsdom with a stubbed referrer and `window.claude`: a signed-in person on
-// clax.dev has step 1 ticked and is told so. The page runs on its artifact's
-// own site, so clax.dev is known from the shell's origin, the referrer of the
-// first load in the tab, which sessionStorage keeps for loads inside the frame.
+// jsdom with a stubbed `window.claude`: a signed-in person on clax.dev has
+// step 1 ticked and is told so. The page runs on its artifact's own site,
+// which sends no referrer, so clax.dev and the page's address in Clax are
+// known from the `shell` capability's `address()`.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,18 +23,30 @@ const userOf = (guest: boolean) => ({
   id: async () => "u1",
 });
 
-/** Runs the page as loaded with `referrer`, for a viewer `user` names. */
-function load(referrer: string, user = userOf(false)) {
+/** A `shell` whose `address()` answers `address` (rejecting when it is an Error). */
+const shellAt = (address: unknown) => ({
+  can: async () => false,
+  highlight: async () => false,
+  commentMode: async () => false,
+  address: async () => { if (address instanceof Error) throw address; return address; },
+});
+
+/** Runs the page for a viewer `user` names, with `shell` (null: not served) and `referrer`. */
+function load(shell: unknown, user = userOf(false), referrer = "") {
   document.body.innerHTML = body;
+  // The site's no-referrer policy: a page that read the referrer would find nothing, or a spoof.
   Object.defineProperty(document, "referrer", { value: referrer, configurable: true });
   vi.stubGlobal("claude", {
     use: async (name: string) => {
       if (name === "user") return user;
+      if (name === "shell") return shell;
       throw new Error(`no ${name}`);
     },
   });
   new Function(script)();
 }
+
+const at = (origin: string) => shellAt({ origin, url: `${origin}/a/abcd1234efgh` });
 
 const toast = () => document.getElementById("toast")!;
 const saved = () => JSON.parse(localStorage.getItem("clax-quickstart") ?? "null");
@@ -48,11 +60,11 @@ beforeEach(() => {
   vi.stubGlobal("ResizeObserver", class { observe() {} });
   Element.prototype.scrollIntoView = () => {};
 });
-afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
+afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); history.replaceState(null, "", location.pathname); });
 
 describe("the quickstart notices a sign-in", () => {
   it("ticks_sign_in_and_says_so_for_a_person_on_clax_dev", async () => {
-    load("https://clax.dev/a/abcd1234");
+    load(at("https://clax.dev"));
     await settle();
     expect(toast().hidden).toBe(false);
     expect(toast().textContent).toBe("Signed in as Ada Lovelace — on to step 2");
@@ -60,26 +72,64 @@ describe("the quickstart notices a sign-in", () => {
     expect(document.querySelector('[data-id="signin"] .fab')!.classList.contains("on")).toBe(true);
   });
 
-  it("keeps_the_shell_origin_after_the_frame_navigates", async () => {
-    sessionStorage.setItem("clax-quickstart-shell", "https://clax.dev");
-    // A load inside the frame (back from ideas.html): the referrer is this site.
-    load(`${location.origin}/ideas.html`);
+  it("is_hosted_under_clax_dev_only", async () => {
+    for (const [origin, hosted] of [["https://eu.clax.dev", true], ["https://clax.dev.evil.example", false], ["https://notclax.dev", false], ["http://localhost:7480", false], ["https://clax.example.com", false]] as const) {
+      localStorage.clear();
+      load(at(origin));
+      await settle();
+      expect(saved()?.done?.signin === true, origin).toBe(hosted);
+      document.body.replaceChildren();
+    }
+  });
+
+  it("does_not_trust_the_referrer", async () => {
+    // No shell answer: a referrer that names clax.dev decides nothing.
+    load(null, userOf(false), "https://clax.dev/a/abcd1234efgh");
     await settle();
-    expect(saved()?.done?.signin).toBe(true);
+    expect(toast().hidden).toBe(true);
+    expect(saved()?.done?.signin).toBeUndefined();
   });
 
   it("leaves_sign_in_alone_on_a_local_clax", async () => {
-    load("http://localhost:7480/a/abcd1234");
+    load(at("http://localhost:7480"));
     await settle();
     expect(toast().hidden).toBe(true);
     expect(saved()?.done?.signin).toBeUndefined();
-    expect(sessionStorage.getItem("clax-quickstart-shell")).toBe("http://localhost:7480");
   });
 
   it("leaves_sign_in_alone_for_a_guest", async () => {
-    load("https://clax.dev/a/abcd1234", userOf(true));
+    load(at("https://clax.dev"), userOf(true));
     await settle();
     expect(toast().hidden).toBe(true);
     expect(saved()?.done?.signin).toBeUndefined();
+  });
+
+  it("leaves_sign_in_alone_when_the_shell_cannot_say", async () => {
+    for (const shell of [shellAt(null), shellAt(new Error("capability_removed")), shellAt({ origin: 1 })]) {
+      load(shell);
+      await settle();
+      expect(saved()?.done?.signin).toBeUndefined();
+      document.body.replaceChildren();
+    }
+  });
+});
+
+describe("the attach step names the page's address", () => {
+  const prompt = () => [...document.querySelectorAll(".cmd pre")].map((p) => p.textContent).find((t) => t?.startsWith("Watch ")) ?? null;
+
+  it("gives_the_address_the_shell_says", async () => {
+    location.hash = "#attach";
+    // A guest: a person's sign-in would move the open step on to the next.
+    load(at("https://clax.dev"), userOf(true));
+    await settle();
+    expect(prompt()).toBe("Watch https://clax.dev/a/abcd1234efgh for my comments.");
+  });
+
+  it("names_the_page_by_its_title_without_an_address", async () => {
+    location.hash = "#attach";
+    load(null);
+    await settle();
+    // jsdom's host is no artifact's site, so the page has neither address nor ID.
+    expect(prompt()).toBe("Watch the Clax Quickstart page (this page) for my comments.");
   });
 });

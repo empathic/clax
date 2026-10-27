@@ -537,9 +537,16 @@ declare namespace ClaxExtensions {
    * - `commentMode(on)` turns comment mode on or off, only from a click or key press in the page (while comment mode is on, a click in the page picks what to comment on and never reaches the page, so leave it from a key press; the viewer's Escape or Comment button also leaves it), and resolves whether comment mode is on
    *   afterwards: leaving keeps it on while the viewer's comment holds
    *   typed text.
+   * - `address()` resolves where this page is in Clax: `origin`, the Clax
+   *   that frames it (`https://clax.dev`, `http://localhost:7480`), and
+   *   `url`, this artifact's address there (`<origin>/a/<ID>`, the latest
+   *   version), the one to give an agent to watch. It resolves `null` in
+   *   the Clax app. The page cannot learn the origin otherwise: its site
+   *   sends no referrer, so `document.referrer` is empty.
    *
-   * It says only whether a named control is shown; nothing about who else
-   * is here, or which agent works on the artifact.
+   * It says only whether a named control is shown, and the Clax and
+   * address the page is already shown at; nothing about who else is here,
+   * which agent works on the artifact, or any credential.
    */
   namespace Shell {
     /** `comment`: the Comment button. `threads`: the Threads button.
@@ -563,6 +570,13 @@ declare namespace ClaxExtensions {
       highlight(control: Control): Promise<boolean>;
       commentMode(on: boolean): Promise<boolean>;
       can(control: Control): Promise<boolean>;
+      address(): Promise<Address | null>;
+    }
+
+    /** `address()`'s answer: the framing Clax's origin, and this artifact's address there. */
+    interface Address {
+      origin: string;
+      url: string;
     }
   }
 }

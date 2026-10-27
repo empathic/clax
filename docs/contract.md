@@ -6411,7 +6411,7 @@ A capability that reaches past the page (`net`, `sample`, `shell`, `notify`, `sh
   `"comment"`, `"threads"`, `"versions"`, `"publish"`, `"fork"` or
   `"send"`, for 6 s or until the viewer presses anywhere in Clax's own bar or panels or presses Escape there (a press in the page does not reach Clax: call `highlight` again to move the ring, or let it lapse), and resolves `false` when that control is not shown to them now
   (on a phone, versions, publish and fork are in a menu); `can(control)`
-  answers the same without drawing; `commentMode(on)` turns comment mode on or off, only from a click or key press in the page (while comment mode is on, a click in the page picks what to comment on and never reaches the page, so leave it from a key press; the viewer's Escape or Comment button also leaves it). Declare `{"shell": {}}`.
+  answers the same without drawing; `commentMode(on)` turns comment mode on or off, only from a click or key press in the page (while comment mode is on, a click in the page picks what to comment on and never reaches the page, so leave it from a key press; the viewer's Escape or Comment button also leaves it); `address()` resolves `{origin, url}`, the Clax that frames the page and the page's address there (`<origin>/a/<ID>`), or `null` in the Clax app: a page's site sends no referrer, so this is how a page learns them. Declare `{"shell": {}}`.
   Only the owner and editors get it: elsewhere `use("shell")` resolves
   `null`. Types: `ClaxExtensions.Shell` in `clax-extensions.d.ts`.
 - `notify`, `share`, `file`, `camera`, `location`: Clax's device
@@ -6994,6 +6994,18 @@ panel or a tab to reach a control.
   the Comment button does, and resolves whether comment mode is on
   afterwards: leaving keeps it on while the viewer's comment holds typed
   text. It needs the viewer's click or key press in the page, as `openComposer` does (see the viewer's gesture under "Runtime capabilities"); while comment mode is on, a click in the page picks what to comment on and never reaches the page, so leave it from a key press; the viewer's Escape or Comment button also leaves it.
+- `address()` resolves `{origin, url}`: `origin` is the origin of the Clax
+  shell that frames the page (`https://clax.dev`, `http://localhost:7480`),
+  and `url` the artifact's address there, `<origin>/a/<ID>`, which shows
+  its latest version (whatever version the frame shows) and is the address
+  to give an agent to watch. It resolves `null` where the shell is not on an
+  `http` or `https` origin (the Clax app). The page cannot learn either
+  itself: its site answers every request, redirects included, with
+  `Referrer-Policy: no-referrer`, so its `document.referrer` is empty, and
+  `location.ancestorOrigins` is not in every browser. No gesture is needed.
+  It tells the page only the Clax it is already shown in and its own
+  artifact ID: no credential, no viewer, and nothing of the shell's
+  address beyond its origin (not the version, query or hash in view).
 
 Rejections: `invalid_argument` (a control name outside the six, or `on`
 not a boolean); `no_gesture` (`commentMode` without the viewer's recent
@@ -7001,7 +7013,8 @@ input in the page; nothing changes); `unavailable` (`commentMode` where
 this view cannot comment: a live page, a crowd's spectator, Comments off,
 an agent's draft shown, the Clax app's inspector); `capability_removed`
 for any other member. The namespace says only whether a named control is
-shown now; it names no agent, harness, session or person.
+shown now and where the page is shown; it names no agent, harness, session
+or person.
 
 ## Room protocol
 

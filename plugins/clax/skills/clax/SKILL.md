@@ -593,7 +593,7 @@ A capability that reaches past the page (`net`, `sample`, `shell`, `notify`, `sh
   `"comment"`, `"threads"`, `"versions"`, `"publish"`, `"fork"` or
   `"send"`, for 6 s or until the viewer presses anywhere in Clax's own bar or panels or presses Escape there (a press in the page does not reach Clax: call `highlight` again to move the ring, or let it lapse), and resolves `false` when that control is not shown to them now
   (on a phone, versions, publish and fork are in a menu); `can(control)`
-  answers the same without drawing; `commentMode(on)` turns comment mode on or off, only from a click or key press in the page (while comment mode is on, a click in the page picks what to comment on and never reaches the page, so leave it from a key press; the viewer's Escape or Comment button also leaves it). Declare `{"shell": {}}`.
+  answers the same without drawing; `commentMode(on)` turns comment mode on or off, only from a click or key press in the page (while comment mode is on, a click in the page picks what to comment on and never reaches the page, so leave it from a key press; the viewer's Escape or Comment button also leaves it); `address()` resolves `{origin, url}`, the Clax that frames the page and the page's address there (`<origin>/a/<ID>`), or `null` in the Clax app: a page's site sends no referrer, so this is how a page learns them. Declare `{"shell": {}}`.
   Only the owner and editors get it: elsewhere `use("shell")` resolves
   `null`. Types: `ClaxExtensions.Shell` in `clax-extensions.d.ts`.
 - `notify`, `share`, `file`, `camera`, `location`: Clax's device

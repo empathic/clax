@@ -129,28 +129,19 @@
   const README_LOCAL = "https://github.com/empathic/clax#pi-grok-build-or-every-harness-at-once";
   // This page's artifact ID: the first label of its own <ID>.localhost site.
   const ARTIFACT = (/^([a-z0-9]{8,})\./.exec(location.hostname) || [])[1] || "this page";
-  /** The origin of the Clax shell that frames this page, or null when unknown. It is the referrer's (the
-   * frame's parent) on the first load in this tab, kept in sessionStorage, so a navigation inside the frame
-   * (to ideas.html and back), whose referrer is this page's own site, keeps it. */
-  const SHELL_KEY = "clax-quickstart-shell";
-  const SHELL = (() => {
-    try {
-      const r = document.referrer && new URL(document.referrer);
-      if (r && r.origin !== location.origin) {
-        try { sessionStorage.setItem(SHELL_KEY, r.origin); } catch (_) {}
-        return r.origin;
-      }
-    } catch (_) {}
-    try { return sessionStorage.getItem(SHELL_KEY); } catch (_) { return null; }
-  })();
-  /** The page's own address in Clax, for an agent to watch: `<shell>/a/<ID>`, with the shell's origin
-   * ({@link SHELL}), else, on a local Clax's `<ID>.localhost` site, from that host's port. */
-  const PAGE_URL = (() => {
-    if (ARTIFACT === "this page") return null;
-    if (SHELL) return `${SHELL}/a/${ARTIFACT}`;
-    if (/\.localhost$/.test(location.hostname)) return `${location.protocol}//localhost${location.port ? ":" + location.port : ""}/a/${ARTIFACT}`;
-    return null;
-  })();
+  /** The origin of the Clax shell that frames this page, or null while unknown: the `shell` capability's
+   * `address()` says it (see the boot below). The page cannot read it itself, since its site sends no
+   * referrer, so it stays null for a viewer without `shell` (one who cannot edit) and in the Clax app. */
+  let SHELL = null;
+  /** The page's own address in Clax, for an agent to watch: `<shell>/a/<ID>` from `address()`; until then,
+   * on a local Clax's `<ID>.localhost` site, from that host's port; else null. */
+  let PAGE_URL = ARTIFACT !== "this page" && /\.localhost$/.test(location.hostname)
+    ? `${location.protocol}//localhost${location.port ? ":" + location.port : ""}/a/${ARTIFACT}` : null;
+  /** Takes `address()`'s answer, `{origin, url}` or null; anything else is ignored. */
+  function placed(a) {
+    if (!a || typeof a.origin !== "string" || typeof a.url !== "string") return;
+    SHELL = a.origin; PAGE_URL = a.url;
+  }
   const GH = '<svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>';
 
   // Each harness's colour and its own logo (web/quickstart/logos, inlined;
@@ -200,7 +191,7 @@
         <li>Start a new Grok session: the Clax tools are there, under <code>clax_hosted</code>.</li></ol>
         ${tip("Approvals", "Grok asks before every tool call. For headless runs, pass <code>--always-approve</code>.")}` },
     "install-pi": { kind: "small", agent: "pi", kicker: "Connect · Pi", title: "Pi", sub: "With a Clax on your machine",
-      body: `<p class="muted-note"><b>Not yet on clax.dev.</b> Pi has no built-in MCP support, so it cannot take an agent token: its Clax package talks to a Clax on your own machine. Use it with a local Clax, as the <a href="${README_LOCAL}" target="_blank" rel="noopener">README</a> covers.</p>
+      body: `<p class="muted-note"><b>Not yet on clax.dev.</b> Pi has no built-in MCP support, so it cannot take an agent token: its Clax package talks to a Clax on your own machine, or to one that machine is connected to with <code>clax connect</code>. Use it with a local Clax, as the <a href="${README_LOCAL}" target="_blank" rel="noopener">README</a> covers.</p>
         ${cmds(["curl -fsSL https://github.com/empathic/clax/releases/latest/download/install.sh | bash", "clax init"], true)}
         <p>Then start a new Pi session. To give a page a public link here, press <b>Publish to clax.dev</b> on it in your local Clax, or ask Pi to publish it to clax.dev; comments people leave here come back to Pi.</p>` },
     "install-all": { kind: "small", agent: "all", kicker: "Your own Clax", title: "All local agents / CLI", sub: "Running Clax yourself",
@@ -210,9 +201,10 @@
         <p>It runs on your account's credits.</p>
         <p>Press <b>New</b> in your gallery and pick ClaxBot to build a page, or send any comment thread to ClaxBot.</p>` },
     attach: { kicker: "Step", title: "Attach your agent", sub: "So your comments here reach it",
-      body: `<p>Ask your agent, in its chat, to watch this page:</p>
+      // A getter: PAGE_URL is known only once the shell answers.
+      get body() { return `<p>Ask your agent, in its chat, to watch this page:</p>
         ${cmd(PAGE_URL ? `Watch ${PAGE_URL} for my comments.` : `Watch the Clax Quickstart page (${ARTIFACT}) for my comments.`, { plain: true })}
-        <p>Your agent shows up in this page's agent list, and a comment you send it here reaches it. To check, leave a comment here, write <code>@agent hello</code>, and send it: your agent should reply.</p>` },
+        <p>Your agent shows up in this page's agent list, and a comment you send it here reaches it. To check, leave a comment here, write <code>@agent hello</code>, and send it: your agent should reply.</p>`; } },
     fork: { kind: "small", kicker: "Next", title: "Make it yours", sub: "Fork any page into your own copy", starter: `Fork the Clax Quickstart page (${ARTIFACT}) into a page of my own, open it, and watch it.`,
       body: `<p>Fork any page into your own copy that you can change however you like. Press <b>Fork</b> in its top bar (on a phone, it's in the ⋯ menu). Or ask your agent or ClaxBot, as below.</p>
         <p>This Quickstart is a good first page to fork: comment on your copy and watch it change.</p>` },
@@ -642,16 +634,16 @@
   // ---------- Noticing a sign-in ----------
   // On clax.dev a viewer who is a signed-in person has done step 1. The page
   // itself runs on its own site's domain, so clax.dev is known from the
-  // shell's origin ({@link SHELL}). A local Clax cannot say whether it is
-  // linked to clax.dev, so it never decides.
-  const HOSTED = (() => { try { return !!SHELL && /(^|\.)clax\.dev$/.test(new URL(SHELL).hostname); } catch (_) { return false; } })();
+  // shell's origin ({@link SHELL}), as the shell itself says it. A local
+  // Clax cannot say whether it is linked to clax.dev, so it never decides.
+  const hosted = () => { try { return !!SHELL && /(^|\.)clax\.dev$/.test(new URL(SHELL).hostname); } catch (_) { return false; } };
   const toast = document.getElementById("toast");
   function say(text) {
     toast.textContent = text; toast.hidden = false;
     clearTimeout(say.t); say.t = setTimeout(() => { toast.hidden = true; }, 4500);
   }
   async function noticeSignIn() {
-    if (!HOSTED || !user || state.done.signin) return;
+    if (!hosted() || !user || state.done.signin) return;
     try {
       const m = await user.me();
       if (!m || !m.id) return;
@@ -707,7 +699,12 @@
     try { user = await c.use("user"); } catch (_) {}
     try { db = await c.use("db"); } catch (_) {}
     try { shell = (await c.use("shell")) || null; } catch (_) { shell = null; }
-    if (shell) { syncShow(panel); syncShow(chart); }
+    if (shell) {
+      syncShow(panel); syncShow(chart);
+      try { placed(await shell.address()); } catch (_) {}
+      // The open panel names PAGE_URL: draw it again with the shell's answer, keeping its scroll.
+      if (selected === "attach") { const pb = panel.querySelector(".pb"), top = pb.scrollTop; select(selected, { quiet: true }); pb.scrollTop = top; }
+    }
     try { uid = user ? await user.id() : null; } catch (_) {}
     if (!db) { await noticeSignIn(); return; }
     if (uid) {
