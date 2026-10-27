@@ -196,7 +196,7 @@
   .btn.invite { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); padding: 6px 12px; font-size: 14px; }
   nav.tabs a[aria-current="page"] .count { background: var(--accent-soft); }
 
-  /* Bring your own agent (left: install, then the deck) and ClaxBot (right), side by side. */
+  /* Bring your own agent (left: install, then attach) and ClaxBot (right), side by side. */
   .row.split { flex-wrap: nowrap; align-items: stretch; gap: 28px; justify-content: center; }
   .lane-new { flex: 1 1 auto; min-width: 0; }
   .lane-new > .row { margin-bottom: 34px; }
@@ -229,44 +229,11 @@
   .chip-agent:hover { border-color: var(--brand); }
   .chip-agent.on { border-color: var(--brand); background: color-mix(in srgb, var(--brand) 16%, var(--surface)); }
 
-  /* Steps 3 to 5: a small slide deck, one constant height. */
-  .deck { position: relative; z-index: 1; width: 100%; max-width: 560px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); overflow: visible; outline: none; display: flex; flex-direction: column; }
-  .deck:focus-visible, .deck.sel { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); }
-  .deck.done { border-color: var(--ok); }
-  .deck-tabs { display: grid; grid-template-columns: repeat(2, 1fr); border-bottom: 1px solid var(--line); border-radius: 14px 14px 0 0; overflow: hidden; }
-  .tab-cell { position: relative; display: flex; }
-  .tab-cell + .tab-cell { border-left: 1px solid var(--line); }
-  .tab-cell > button[role="tab"] { flex: 1; }
-  .deck-tabs .fab { position: absolute; right: 8px; top: 50%; width: 22px; height: 22px; font-size: 12px; transform: translateY(-50%); }
-  .deck-tabs .fab:hover { transform: translateY(-50%) scale(1.08); }
-  .deck-tabs button[role="tab"] { display: flex; align-items: center; justify-content: center; gap: 7px; padding: 10px 6px; border: 0; background: var(--surface-2); color: var(--muted); font-size: 13.5px; font-weight: 600; border-bottom: 2px solid transparent; }
-  .deck-tabs button[role="tab"][aria-selected="true"] { background: var(--surface); color: var(--fg); border-bottom-color: var(--accent); }
-  .deck-tabs .dn { width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid currentColor; display: grid; place-items: center; font-size: 11px; }
-  .deck-tabs button.is-done .dn { background: var(--ok); border-color: var(--ok); color: var(--surface); }
-  .deck-slide { height: 172px; overflow: auto; padding: 14px 20px 2px; }
-  .deck-slide.slide-in { animation: slide-in .22s ease-out; }
-  @keyframes slide-in { from { opacity: 0; transform: translateX(14px); } }
-  @media (prefers-reduced-motion: reduce) { .deck-slide.slide-in { animation: none; } }
-  .deck-slide h3 { margin: 0 0 6px; font-size: 19px; line-height: 1.25; letter-spacing: -.01em; }
-  .deck-body p { margin: 0 0 8px; }
-  .deck-body .cmd { margin: 6px 0 8px; }
-  .deck-alt { color: var(--muted); font-size: 13.5px; }
-  .deck-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; border-top: 1px solid var(--line); }
-  .deck-foot .btn { padding: 7px 16px; }
-  .deck-nav { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); font-size: 15px; }
-  .deck-nav:hover:not([disabled]) { border-color: var(--accent); }
-  .deck-nav[disabled] { opacity: .3; cursor: default; }
-  @media (max-width: 900px) {
-    .deck-slide { height: 236px; padding: 12px 12px 2px; }
-    .deck-tabs button[role="tab"] { padding-right: 24px; gap: 5px; font-size: 13px; }
-    .deck-tabs .fab { right: 4px; width: 18px; height: 18px; font-size: 10px; }
-  }
-
   /* Mark done: a small round ✓ on the right edge of each step's box. */
   .fab { position: absolute; right: -14px; top: 50%; transform: translateY(-50%); z-index: 3; width: 28px; height: 28px; border-radius: 50%;
     border: 1.5px solid var(--edge); background: var(--bg); color: var(--muted); font-size: 14px; font-weight: 700; line-height: 1; padding: 0;
     display: grid; place-items: center; opacity: .55; transition: opacity .15s, background .15s, border-color .15s, transform .15s; }
-  .node:hover > .fab, .tab-cell:hover > .fab, .fab:focus-visible, .node.sel > .fab, .tab-cell:has([aria-selected="true"]) > .fab { opacity: 1; }
+  .node:hover > .fab, .fab:focus-visible, .node.sel > .fab { opacity: 1; }
   .fab:hover { border-color: var(--ok); color: var(--ok); transform: translateY(-50%) scale(1.08); }
   .fab.on { opacity: 1; background: var(--ok); border-color: var(--ok); color: var(--surface); }
   /* Until anything is done, the first step's ✓ glows, to show where to press. */
@@ -276,7 +243,6 @@
     50%      { box-shadow: 0 0 0 7px color-mix(in srgb, var(--ok) 0%, transparent), 0 0 14px color-mix(in srgb, var(--ok) 60%, transparent); }
   }
   @media (prefers-reduced-motion: reduce) { .fab.beckon { animation: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 35%, transparent); } }
-  .deck-pos { font-size: 12.5px; color: var(--muted); }
   @media (max-width: 900px) { .fab { right: -10px; width: 26px; height: 26px; } }
 
   /* What is in flight, on the ideas page. */
@@ -334,24 +300,20 @@
   /* The step you are on: an accent outline with a soft halo, and a ring that
      travels out from it when focus arrives. Box-shadow only: ring boxes are
      positioned with transforms. */
-  .node.sel, .deck.sel { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 0 0 7px var(--accent-soft), 0 10px 28px rgba(0, 0, 0, .22); }
-  .node:focus-visible, .deck-tabs button[role="tab"]:focus-visible, .fab:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .node.sel { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 0 0 7px var(--accent-soft), 0 10px 28px rgba(0, 0, 0, .22); }
+  .node:focus-visible, .fab:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   .arrive { animation: arrive 1.1s ease-out 1; }
   @keyframes arrive {
     0%   { box-shadow: 0 0 0 2px var(--accent), 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); }
     60%  { box-shadow: 0 0 0 2px var(--accent), 0 0 0 16px color-mix(in srgb, var(--accent) 0%, transparent); }
     100% { box-shadow: 0 0 0 2px var(--accent), 0 0 0 7px var(--accent-soft), 0 10px 28px rgba(0, 0, 0, .22); }
   }
-  .deck-tabs button[role="tab"].arrive { animation: arrive-tab 1.1s ease-out 1; }
-  @keyframes arrive-tab { 0% { background: color-mix(in srgb, var(--accent) 35%, var(--surface)); } 100% { background: var(--surface); } }
-  @media (prefers-reduced-motion: reduce) { .arrive, .deck-tabs button[role="tab"].arrive { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { .arrive { animation: none; } }
 
   /* Progress stays in view while the chart scrolls under it. */
   .progress { position: sticky; top: 0; z-index: 6; background: var(--bg); padding: 10px 0; margin-bottom: 6px; box-shadow: 0 8px 8px -8px rgba(0, 0, 0, .35); }
 
-  /* The deck on the ClaxBot route, which skips it. */
-  .deck { transition: opacity .2s; }
-  .deck.dim { opacity: .45; }
+  .node .showme-row { position: relative; z-index: 2; }
 
   /* "Show me" and "Try it": shown only where Clax can point at its own controls. */
   .showme-wrap { margin: 10px 0; }
