@@ -87,7 +87,8 @@ impl Store {
     /// the artifact [`clax_core::quickstart::TITLE`], theirs, pinned, with
     /// comments on, through the publish checks
     /// ([`clax_core::publish::validate`]); its row is written in version
-    /// 1's transaction under `ctx`. A person is seeded once: a second seed,
+    /// 1's transaction under `ctx`, with an approval of exactly version 1's
+    /// declaration by `clax` that grants nothing. A person is seeded once: a second seed,
     /// or one racing it, makes nothing. A gallery is seeded only when its
     /// person (the owner: the home) has never held an artifact with a
     /// version (deleted ones and drafts count); otherwise the row is
@@ -138,7 +139,7 @@ impl Store {
                     // Another seed wrote the row first: this artifact rolls back.
                     return Err(CoreError::Conflict { current: 0 });
                 }
-                Ok(())
+                approve_as_clax(tx, &id, n, &now)
             })
             .await;
         match made {
@@ -158,7 +159,9 @@ impl Store {
     /// Moves the quickstart of `person` (`None`: the owner) to `release`
     /// while it is untouched (the module's rule): its next version holds
     /// exactly the release's files, labelled `Quickstart <release>`, with
-    /// the release's capabilities, keeping the title, pin and tags. A
+    /// the release's capabilities, keeping the title, pin and tags, and in
+    /// its transaction approves exactly that version's declaration by
+    /// `clax`, granting nothing. A
     /// touched or deleted quickstart has updates stopped for good
     /// (`stopped_at`), and a thread made or version published while this
     /// one is written stops them too.
@@ -192,6 +195,7 @@ impl Store {
         let mut p = validate(release.request(&previous, false)?)?;
         p.person = person.map(str::to_string);
         p.if_version = Some(version_n);
+        let now = self.now();
         let written = self
             .publish_version_then_async(ctx, &artifact_id, p, None, |tx, n| {
                 let threads: bool = tx.query_row(
@@ -211,7 +215,7 @@ impl Store {
                 if wrote == 0 {
                     return Err(CoreError::Conflict { current: version_n });
                 }
-                Ok(())
+                approve_as_clax(tx, &artifact_id, n, &now)
             })
             .await;
         match written {
@@ -288,6 +292,17 @@ impl Store {
             Ok(rule)
         })
     }
+}
+
+/// Records version `n`'s declaration as `id`'s approved one, by `clax`,
+/// granting nothing. It is the exception to every first declaration
+/// waiting for approval (spec 2026-10-26-quickstart-onboarding-design §7):
+/// Clax, not a person or an agent, wrote the version. It runs in the
+/// version's transaction, after the write narrowed any earlier approval.
+fn approve_as_clax(tx: &Transaction<'_>, id: &ArtifactId, n: u32, now: &str) -> Result<()> {
+    let caps = super::artifacts::version_capabilities_in(tx, id.as_str(), n)?;
+    super::capability_approvals::record_in(tx, id, n, &caps, "clax", now)?;
+    Ok(())
 }
 
 /// Whether `key` has a `quickstarts` row.
@@ -392,6 +407,18 @@ mod tests {
 
     fn release(mark: &str) -> Release {
         release_with(mark, &[])
+    }
+
+    /// The release of [`release`]`(mark)` whose `clax.json` declares `caps`.
+    fn release_declaring(mark: &str, caps: &serde_json::Value) -> Release {
+        let manifest = serde_json::json!({ "capabilities": caps }).to_string();
+        release_with(mark, &[("quickstart/clax.json", manifest.as_str())])
+    }
+
+    /// `id`'s approval as `(version, declaration, by)`.
+    fn approval_of(st: &Store, id: &ArtifactId) -> (u32, serde_json::Value, String) {
+        let a = st.capability_approval(id).unwrap().expect("an approval");
+        (a.version, a.capabilities, a.by)
     }
 
     fn id_of(a: &clax_core::model::Artifact) -> ArtifactId {
@@ -787,5 +814,80 @@ mod tests {
                 .await
                 .unwrap(),
         );
+    }
+
+    #[tokio::test]
+    async fn a_seeded_quickstart_is_approved_by_clax_and_granted_nothing() {
+        let (_d, st) = store();
+        // The shipped declaration's names, and gated ones besides: what
+        // Clax seeds is in force with nothing waiting.
+        let caps = serde_json::json!({
+            "db": {"rules": [{"path": "votes", "read": "view", "write": "admin"}]},
+            "user": {},
+            "shell": {},
+            "net": {"hosts": ["a.example.com"]},
+            "sample": {},
+        });
+        let id = seeded(&st, &release_declaring("a", &caps)).await;
+        assert_eq!(approval_of(&st, &id), (1, caps.clone(), "clax".to_string()));
+        assert_eq!(st.pending_capabilities(&id).unwrap(), None);
+        assert_eq!(st.capabilities_in_force(&id).unwrap(), caps);
+        // Approving by Clax grants nothing: the owner is asked on first use.
+        assert!(st.net_access(&id).unwrap().grants.is_empty());
+        assert_eq!(st.sample_grant(&id).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn an_update_to_a_new_release_is_approved_by_clax() {
+        let (_d, st) = store();
+        let id = seeded(&st, &release("a")).await;
+        let caps = serde_json::json!({"db": {}, "shell": {}});
+        assert!(matches!(
+            st.update_quickstart(DAEMON, None, &release_declaring("b", &caps))
+                .await
+                .unwrap(),
+            Updated::Made { .. }
+        ));
+        assert_eq!(approval_of(&st, &id), (2, caps.clone(), "clax".to_string()));
+        assert_eq!(st.pending_capabilities(&id).unwrap(), None);
+        assert_eq!(st.capabilities_in_force(&id).unwrap(), caps);
+    }
+
+    #[tokio::test]
+    async fn the_untouched_rule_holds_with_an_approval_on_record() {
+        let (_d, st) = store();
+        let id = seeded(&st, &release("a")).await;
+        assert_eq!(approval_of(&st, &id).0, 1);
+        // The approval is not a touch: the next release still lands.
+        assert!(matches!(
+            st.update_quickstart(DAEMON, None, &release("b"))
+                .await
+                .unwrap(),
+            Updated::Made { .. }
+        ));
+        // A thread still stops updates for good.
+        thread_on(&st, &id);
+        assert!(matches!(
+            st.update_quickstart(DAEMON, None, &release("c"))
+                .await
+                .unwrap(),
+            Updated::Stopped
+        ));
+        assert_eq!(st.get_artifact(&id).unwrap().unwrap().current_version, 2);
+
+        // So does a version by anyone else.
+        let (_d, st) = store();
+        let id = seeded(&st, &release("a")).await;
+        let mut req = release("mine").request(&[], false).unwrap();
+        req.if_version = Some(1);
+        st.publish_version(DAEMON, &id, validate(req).unwrap(), None)
+            .unwrap();
+        assert!(matches!(
+            st.update_quickstart(DAEMON, None, &release("b"))
+                .await
+                .unwrap(),
+            Updated::Stopped
+        ));
+        assert_eq!(st.get_artifact(&id).unwrap().unwrap().current_version, 2);
     }
 }

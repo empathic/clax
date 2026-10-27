@@ -35,8 +35,9 @@ pub struct Approval {
     /// The declaration approved, less any names withdrawn since.
     pub capabilities: Value,
     pub approved_at: String,
-    /// `owner`, `person:<ID>`, or `migration` for a declaration in force
-    /// before approvals were kept.
+    /// `owner`, `person:<ID>`, `migration` for a declaration in force
+    /// before approvals were kept, or `clax` for a quickstart version Clax
+    /// seeded or updated (`crate::quickstart`).
     pub by: String,
 }
 

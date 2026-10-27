@@ -338,8 +338,16 @@ async fn a_new_github_person_starts_with_the_quickstart() {
     // The listing names no maker: the person's quickstart row holds it.
     let held = site.ts.store.quickstart_of(Some(&pid)).unwrap().unwrap();
     assert_eq!(
-        held.artifact_id.map(|a| a.to_string()).as_deref(),
+        held.artifact_id.as_ref().map(|a| a.to_string()).as_deref(),
         list[0]["id"].as_str()
+    );
+    // Clax approved exactly what it seeded: nothing waits, all is in force.
+    let id = held.artifact_id.unwrap();
+    assert_eq!(clax_approval(&site, &id), 1);
+    assert_eq!(site.ts.store.pending_capabilities(&id).unwrap(), None);
+    assert_eq!(
+        site.ts.store.capabilities_in_force(&id).unwrap(),
+        site.ts.store.version_capabilities(id.as_str(), 1).unwrap()
     );
     // Another sign-in of the same member makes no second one, and the
     // owner's own listing and sign-in are untouched.
@@ -381,12 +389,30 @@ async fn a_returning_person_gets_the_new_release() {
     site.account(2, "grace", None);
     let grace = site.sign_in(2).await.unwrap();
     let after = site.ts.store.quickstart_of(Some(&pid)).unwrap().unwrap();
-    assert_eq!(after.artifact_id.map(|a| a.to_string()), Some(id.clone()));
+    assert_eq!(
+        after.artifact_id.as_ref().map(|a| a.to_string()),
+        Some(id.clone())
+    );
     assert_eq!(after.version_n, Some(2));
     assert_ne!(after.release, before.release);
+    let aid = after.artifact_id.clone().unwrap();
+    assert_eq!(clax_approval(&site, &aid), 2, "the update is approved");
+    assert_eq!(site.ts.store.pending_capabilities(&aid).unwrap(), None);
     let list = site.listing(&grace).await;
     assert_eq!(list.len(), 1, "{list:?}");
     assert_eq!(list[0]["id"], id);
+}
+
+/// The version of `id`'s approval, which Clax recorded.
+fn clax_approval(site: &Site, id: &clax_core::ArtifactId) -> u32 {
+    let a = site
+        .ts
+        .store
+        .capability_approval(id)
+        .unwrap()
+        .expect("Clax approved what it wrote");
+    assert_eq!(a.by, "clax");
+    a.version
 }
 
 async fn pid_of(site: &Site, session: &str) -> String {

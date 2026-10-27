@@ -119,6 +119,41 @@ async fn a_fresh_home_starts_with_the_quickstart_pinned() {
     core.stop().await;
 }
 
+/// The owner's seeded quickstart: its view and its approval, `(version,
+/// by)`.
+async fn quickstart_approval(core: &Core) -> (serde_json::Value, (u32, String)) {
+    let list = artifacts(core).await;
+    assert_eq!(list.len(), 1, "{list:?}");
+    let id = list[0]["id"].as_str().unwrap();
+    let view = get(core, &format!("/api/artifacts/{id}")).await["artifact"].clone();
+    let approval = core
+        .state()
+        .store
+        .capability_approval(&clax_core::ArtifactId::parse(id).unwrap())
+        .unwrap()
+        .expect("Clax approved what it seeded");
+    (view, (approval.version, approval.by))
+}
+
+#[tokio::test]
+async fn a_seeded_quickstart_has_its_declaration_in_force() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::start(cfg(dir.path(), tree("a"), true), &mut |_| {})
+        .await
+        .unwrap();
+    let (view, approval) = quickstart_approval(&core).await;
+    assert_eq!(approval, (1, "clax".to_string()));
+    assert_eq!(view["may_approve"], true, "{view}");
+    assert_eq!(
+        view.get("pending_capabilities"),
+        Some(&serde_json::Value::Null),
+        "{view}"
+    );
+    assert!(view["capabilities"].is_object(), "{view}");
+    assert_eq!(view["capabilities_in_force"], view["capabilities"]);
+    core.stop().await;
+}
+
 #[tokio::test]
 async fn a_second_start_seeds_nothing_more() {
     let dir = tempfile::tempdir().unwrap();
@@ -155,6 +190,13 @@ async fn a_new_release_reaches_an_untouched_quickstart_at_start() {
     assert!(
         labels.contains(&serde_json::json!(format!("Quickstart {}", b.id))),
         "{labels:?}"
+    );
+    let (view, approval) = quickstart_approval(&core).await;
+    assert_eq!(approval, (2, "clax".to_string()), "the update is approved");
+    assert_eq!(
+        view.get("pending_capabilities"),
+        Some(&serde_json::Value::Null),
+        "{view}"
     );
     core.stop().await;
 }

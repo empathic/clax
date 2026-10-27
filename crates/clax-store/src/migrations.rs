@@ -1735,7 +1735,8 @@ pub const MIGRATIONS: &[&str] = &[
     // 58: each artifact's approved capability declaration
     // (`crate::capability_approvals`): the last declaration its
     // administrator approved, the version it was approved at, when and by
-    // whom (`owner`, `person:<ID>` or `migration`). Every live artifact but
+    // whom (`owner`, `person:<ID>`, `migration`, or `clax` for a quickstart
+    // version Clax wrote). Every live artifact but
     // a hidden draft has its current declaration approved here (`by =
     // 'migration'`), since it is in force today. Deleting the artifact
     // removes its row (the foreign key on a row delete, the trigger on the
