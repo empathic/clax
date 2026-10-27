@@ -82,7 +82,9 @@ export type Participants = { people: { public_id: string; display_name: string |
   /** Clax's own agent, ClaxBot (spec 2026-10-21-claxbot §6.4), which the
    * Send menu lists first, live or not, under `line`: its availability;
    * `unavailable` says why it is not live. */
-  builtin?: boolean; line?: string; unavailable?: "no_flag" | "no_credits" | "not_configured" | "model_not_priced" | null }[] };
+  builtin?: boolean; line?: string; unavailable?: "no_flag" | "no_credits" | "not_configured" | "model_not_priced" | null;
+  /** When it last acted on the artifact: its newest version, reply or watch there, else its start. */
+  active_at?: string }[] };
 export type AttentionSummary = { addressed: string[]; addressed_v: number | null; new_replies: string[]; open_in: string[]; seen: number | null };
 export type Attention = AttentionSummary & { looked: Record<string, string> };
 /** `sha256`: the file's lowercase hex SHA-256; absent on versions written before content hashes. */

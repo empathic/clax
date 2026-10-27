@@ -62,6 +62,12 @@ pub struct ReplyArgs {
     pub thread: String,
     /// The reply; `-` reads it from stdin.
     pub text: String,
+    /// Reply as this agent session (a Clax session ID, `status` reports it
+    /// as session.id) instead of as you: an agent reply, listed with the
+    /// session's agent among the artifact's agents. Only on a thread sent
+    /// to the agent; on another, nothing is written and the command fails.
+    #[arg(long)]
+    pub session: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -701,6 +707,9 @@ fn reply(cli: &crate::Cli, home: &Home, r: &ReplyArgs) -> anyhow::Result<()> {
     }
     let c = Client::connect(home, cli.port_for(home)?)?;
     let (g, i) = locate_raw(&c, &r.thread)?;
+    if let Some(sid) = &r.session {
+        return reply_as_agent(cli, &c, &g, i, sid, &text);
+    }
     // A remote person writes in their browser; their replies here are
     // refused for want of a session (spec §6.7), and they have no owner
     // identity to read.
@@ -737,6 +746,46 @@ fn reply(cli: &crate::Cli, home: &Home, r: &ReplyArgs) -> anyhow::Result<()> {
     if !cli.json && me["display_name"].is_null() {
         eprintln!("hint: set the name your replies carry with `clax comments name <name>`");
     }
+    Ok(())
+}
+
+/// [`reply`] as agent session `sid`: `author_kind: "agent"` with
+/// `X-Clax-Session`. The daemon's guidance (a thread not sent to the agent)
+/// is an error: nothing was written.
+fn reply_as_agent(
+    cli: &crate::Cli,
+    c: &Client,
+    g: &Group,
+    i: usize,
+    sid: &str,
+    text: &str,
+) -> anyhow::Result<()> {
+    let tid = g.threads[i]["id"].as_str().unwrap_or_default();
+    let res = c.request_with(
+        Method::POST,
+        &format!("/api/artifacts/{}/threads/{tid}/comments", g.artifact_id),
+        Some(&json!({"body": text, "author_kind": "agent"})),
+        None,
+        &[("x-clax-session", sid)],
+    )?;
+    if let Some(guidance) = res["guidance"].as_str() {
+        anyhow::bail!("{}", term::clean_line(guidance));
+    }
+    let reference = format!("{}#{}", g.artifact_id, i + 1);
+    let out = json!({
+        "thread_id": tid,
+        "ref": reference,
+        "replied": true,
+        "comment_id": res["comment"]["id"],
+        "author_name": res["comment"]["author_name"],
+        "author_kind": "agent",
+    });
+    super::print(cli, out, |j| {
+        format!(
+            "replied to {reference} as agent {}",
+            term::snippet(j["author_name"].as_str().unwrap_or("?"), 40)
+        )
+    });
     Ok(())
 }
 

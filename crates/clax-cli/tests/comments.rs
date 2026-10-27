@@ -456,6 +456,52 @@ fn show_prints_the_whole_thread() {
 }
 
 #[test]
+fn a_reply_with_a_session_is_that_agents_reply() {
+    let w = world();
+    let d = &w.d;
+    let r1 = format!("{}#1", w.review);
+    let v = d.json(&["comments", "reply", "--session", &w.sid, &r1, "Fixed"]);
+    assert_eq!(v["replied"], true);
+    assert_eq!(v["author_kind"], "agent");
+    let t = d.api(
+        reqwest::Method::GET,
+        &format!("/api/artifacts/{}/threads/{}", w.review, w.t[0]),
+        None,
+    );
+    let last = t["thread"]["comments"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(last["author_kind"], "agent");
+    assert_eq!(last["body"], "Fixed");
+    assert!(last["author_public_id"].is_null(), "{last}");
+    let a = d.api(
+        reqwest::Method::GET,
+        &format!("/api/artifacts/{}", w.review),
+        None,
+    );
+    let agent = &a["artifact"]["participants"]["agents"][0];
+    assert_eq!(
+        agent["active_at"], last["created_at"],
+        "the reply is the agent's latest activity: {a}"
+    );
+    // A plain thread takes no agent reply: nothing is written.
+    let e = d.fails(&[
+        "comments",
+        "reply",
+        "--session",
+        &w.sid,
+        &format!("{}#3", w.review),
+        "Mine",
+    ]);
+    assert!(e.contains("not sent to you"), "{e}");
+    let e = d.fails(&["comments", "reply", "--session", "nope", &r1, "Hi"]);
+    assert!(e.contains("unknown_session"), "{e}");
+}
+
+#[test]
 fn acting_on_threads_is_acting_as_the_owner_in_the_browser() {
     let w = world();
     let d = &w.d;
