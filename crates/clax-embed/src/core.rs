@@ -638,6 +638,7 @@ async fn opening(sh: Arc<Shared>, opts: OpenOptions) {
         hosted: None,
         trusted_hosts: Vec::new(),
         tailscale_identity: false,
+        owner_tailscale_login: None,
         require_credential: true,
         bind: Ipv4Addr::LOCALHOST.into(),
         port: 0,
