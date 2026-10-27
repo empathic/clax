@@ -16,5 +16,5 @@ export default defineConfig({
   // Every test and hook may take up to MOUNT_TIMEOUT_MS: a limit that ends a
   // test that hangs, well above what a loaded machine takes to load a fresh
   // module registry, so it never decides whether a test passes.
-  test: { environment: "jsdom", testTimeout: MOUNT_TIMEOUT_MS, hookTimeout: MOUNT_TIMEOUT_MS, setupFiles: ["shell/test-setup.ts"], include: ["bridge/test/**/*.test.ts", "extension/src/**/*.test.ts", "shell/src/**/*.test.ts", "scripts/**/*.test.ts", "../apps/clax_app/home_unit/**/*.test.js"] },
+  test: { environment: "jsdom", testTimeout: MOUNT_TIMEOUT_MS, hookTimeout: MOUNT_TIMEOUT_MS, setupFiles: ["shell/test-setup.ts"], include: ["bridge/test/**/*.test.ts", "extension/src/**/*.test.ts", "shell/src/**/*.test.ts", "scripts/**/*.test.ts", "reel/**/*.test.ts", "../apps/clax_app/home_unit/**/*.test.js"] },
 });

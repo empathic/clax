@@ -147,6 +147,20 @@ _expect "native: app-apk is Cargo's core, the home bundle and Gradle" 0 \
     "1xwould run: ./scripts/build-app-clax.sh android$" \
     "1xwould run: ./scripts/build-home-bundle.sh --i-know-what-i-am-doing$" "1xflutter build apk --release"
 
+# The reel: Bazel targets only, copied into target/reel/<id>/; refused
+# natively, where its recorder would need a pnpm install.
+_stubs bazelisk "${native[@]}"
+_try -- --dry-run reel --fast realtime
+_expect "bazelisk: reel --fast builds the vignette's fast target and copies it" 0 \
+    "1xwould run: .*bazelisk build --lockfile_mode=error //web/reel:realtime_fast$" \
+    "1xwould run: copy the files of //web/reel:realtime_fast to target/reel/realtime/$"
+_try -- --dry-run reel realtime
+_expect "bazelisk: reel without --fast is refused, naming the usage" 2 "1xusage: just reel --fast <vignette>"
+_try -- --dry-run reel --fast ../etc
+_expect "bazelisk: reel refuses what is not a vignette ID" 2 "1xnot a vignette ID"
+_try CLAX_BUILD=native -- --dry-run reel --fast realtime
+_expect "native: reel is refused, naming Bazel" 2 "1xruns only with Bazel" "0xwould run"
+
 # 2. Bazelisk alone, no native tools: fine, and nothing is said.
 _stubs bazelisk
 _try -- web-test

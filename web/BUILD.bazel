@@ -197,10 +197,12 @@ filegroup(
 # What the unit tests and the typecheck read outside web/: the toolpath
 # vectors, the browser tests of the hosted demo (they import demo/lib), the
 # home app's modules, its unit tests and the kit (apps/clax_app/home_unit),
-# and the host relay's scripts for one long answer (relay_fixture).
+# the host relay's scripts for one long answer (relay_fixture), and the
+# reel's recorder (web/reel, a package of its own, so no input of :dist).
 UNIT_DATA = [
     ":files",
     ":node_modules",
+    "//web/reel:files",
     "//apps/clax_app:home",
     "//apps/clax_app:home_unit",
     "//apps/clax_app:kit",

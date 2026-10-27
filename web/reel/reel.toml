@@ -1,0 +1,31 @@
+# The sizzle reel (docs/superpowers/specs/2026-10-27-sizzle-reel-design.md
+# §9.3): its vignettes in reel order, their titles and durations, the cuts,
+# the end card, the poster frame and the landing artifact. config.ts and the
+# composer read this file and refuse anything it does not define.
+
+[reel]
+fps = 30
+size = [1920, 1080]
+capture = { viewport = [1280, 800], scale = 1.25, theme = "light" }
+card_seconds = { full = 1.2, short = 1.0 }
+
+[[vignette]]
+id = "realtime"
+title = "Realtime collaboration"
+seconds = 7
+in_short = true
+
+[end]
+seconds = 4
+headline = "Your agents build pages. Clax gives them a home."
+footer = "clax.dev"
+
+[poster]
+vignette = "realtime"
+at = 3.5
+
+# Empty until the Quickstart is first published to clax.dev from
+# web/quickstart/; the commit after that publish sets both.
+[upload]
+landing_artifact = ""       # the landing artifact's ID on clax.dev
+landing = ""                # its public URL, ending in that ID
