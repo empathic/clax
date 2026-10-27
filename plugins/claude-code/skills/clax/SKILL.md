@@ -581,7 +581,7 @@ opened directly, `db`, `assets`, `user` and `room` still resolve), so render wit
 capability first and light features up when it resolves.
 `permissions` and `user` need no declaration.
 
-A capability that reaches past the page (`net`, `sample`, `account`, `shell`, `notify`, `share`, `file`, `camera`, `location`) is in force only once the person who answers for the artifact approves (on your own Clax, its owner; on a hosted Clax, the page's maker) the version that first declares it, or a new `net` host, in Clax. Until then `use()` resolves `null` for it, and the version before keeps what was approved. Publishing never approves, whoever publishes; the publish result says what waits. Tell the person to approve it in Clax.
+A capability that reaches past the page (`net`, `sample`, `shell`, `notify`, `share`, `file`, `camera`, `location`) is in force only once the person who answers for the artifact approves (on your own Clax, its owner; on a hosted Clax, the page's maker) the version that first declares it, or a new `net` host, in Clax. Until then `use()` resolves `null` for it, and the version before keeps what was approved. Publishing never approves, whoever publishes; the publish result says what waits. Tell the person to approve it in Clax.
 
 - `artifact` (alias `self`): `publish(html)` saves a complete document
   (starting `<!doctype html>`) as a new version, and every open view reloads

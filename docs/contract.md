@@ -6354,7 +6354,7 @@ opened directly, `db`, `assets`, `user` and `room` still resolve), so render wit
 capability first and light features up when it resolves.
 `permissions` and `user` need no declaration.
 
-A capability that reaches past the page (`net`, `sample`, `account`, `shell`, `notify`, `share`, `file`, `camera`, `location`) is in force only once the person who answers for the artifact approves (on your own Clax, its owner; on a hosted Clax, the page's maker) the version that first declares it, or a new `net` host, in Clax. Until then `use()` resolves `null` for it, and the version before keeps what was approved. Publishing never approves, whoever publishes; the publish result says what waits. Tell the person to approve it in Clax.
+A capability that reaches past the page (`net`, `sample`, `shell`, `notify`, `share`, `file`, `camera`, `location`) is in force only once the person who answers for the artifact approves (on your own Clax, its owner; on a hosted Clax, the page's maker) the version that first declares it, or a new `net` host, in Clax. Until then `use()` resolves `null` for it, and the version before keeps what was approved. Publishing never approves, whoever publishes; the publish result says what waits. Tell the person to approve it in Clax.
 
 - `artifact` (alias `self`): `publish(html)` saves a complete document
   (starting `<!doctype html>`) as a new version, and every open view reloads
@@ -6793,9 +6793,11 @@ of the event stream), and any later `get()` rejects `not_granted`.
 
 ### Approving capabilities
 
-The gated capabilities are `net`, `sample`, `account`, `shell`, `notify`,
-`share`, `file`, `camera` and `location`; the rest act only inside the
-artifact. A gated name takes effect only once it is approved, and the
+The gated capabilities are `net`, `sample`, `shell`, `notify`, `share`,
+`file`, `camera` and `location`; the rest act only inside the artifact.
+`account` is reserved: it is gated too, but no runtime serves it yet, so
+`use("account")` resolves `null` even once approved, and a page should not
+declare it. A gated name takes effect only once it is approved, and the
 declaration in force is the declaration without what waits: `net.hosts`
 cut to the approved hosts, and `net` gone when none is approved.
 
@@ -8927,10 +8929,10 @@ it starts, the runs a previous process left. A build without the
 
 ## Security model
 
-- A page's gated capabilities (`net`, `sample`, `account`, `shell`,
-  `notify`, `share`, `file`, `camera`, `location`) take effect only once the
-  person who answers for it approves them in Clax: on a local Clax its
-  owner alone, on a hosted Clax the page's maker, never an agent or the
+- A page's gated capabilities (`net`, `sample`, `shell`, `notify`,
+  `share`, `file`, `camera`, `location`, and the reserved `account`) take
+  effect only once the person who answers for it approves them in Clax: on
+  a local Clax its owner alone, on a hosted Clax the page's maker, never an agent or the
   page itself (see "Approving capabilities").
 - The daemon binds `127.0.0.1` by default. `clax serve --bind 0.0.0.0` (or
   another address) serves on the LAN.
