@@ -14,7 +14,7 @@ import { Lifecycle, onPageCache, retrying } from "../lifecycle";
 import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
 import { type SiteHosts, artifactOrigin, pageSrc, startSrc } from "../origin";
-import { appQuery, parseShellPath, shellPath } from "../route";
+import { appQuery, inspectQuery, parseShellPath, shellPath } from "../route";
 import { type Thread, type Viewer, addComment, createThread, currentViewer, fetchThread, getViewer, listThreads, onViewer, reopenThread, resolveThread, seedViewer, sendBatch, sendToAgent, upsert } from "../threads";
 import { after } from "../clock";
 import { afterPaint, nextFrame } from "./after-paint";
@@ -714,6 +714,7 @@ export class ArtifactController {
           version: shown,
           pinned: this.pinnedVersion !== null,
           token,
+          mayEdit: data.artifact.may_edit === true,
           viewer: currentViewer,
           declared: (data.artifact.capabilities ?? {}) as Declared,
           prompt: this.prompt,
@@ -722,6 +723,7 @@ export class ArtifactController {
           ownPublish: this.ownPublish,
           page: () => this.s.file,
           comments: this.commentsUi,
+          commentMode: (on: boolean) => this.pageCommenting(on),
           working: () => this.s.working,
           files: data.versions.find(v => v.n === shown)?.files,
           sampleStatus: token === null ? undefined : () => status ??= getSampleStatus(this.id, token),
@@ -1652,8 +1654,23 @@ export class ArtifactController {
 
   // ---- intents ----
 
-  /** The Comment button and C; nothing on a live page, whose comments come from Chrome with the Clax extension. */
-  toggleComment(): void { if (!this.s.data?.artifact.live && !this.s.spectator && !commentsOff(this.s) && this.s.showDraft === null) { this.resumeAfter = null; this.set(s => ({ commenting: !s.commenting })); } }
+  /** Whether the view can enter comment mode: not on a live page (its
+   * comments come from Chrome with the Clax extension), for a spectator,
+   * with Comments off, or while an agent's draft is shown. */
+  mayComment(s: ViewState = this.s): boolean { return !s.data?.artifact.live && !s.spectator && !commentsOff(s) && s.showDraft === null; }
+
+  /** The Comment button and C; nothing where `mayComment` is false. */
+  toggleComment(): void { if (this.mayComment()) { this.resumeAfter = null; this.set(s => ({ commenting: !s.commenting })); } }
+
+  /** A page's `shell.commentMode(on)`: enters comment mode, or leaves it
+   * unless the composer holds typed text, and says whether comment mode is
+   * on afterwards; `null`, changing nothing, where `mayComment` is false and
+   * in the app's inspect view. */
+  pageCommenting(on: boolean): boolean | null {
+    if (!this.mayComment() || inspectQuery(location.search)) return null;
+    if (on !== this.s.commenting && (on || !this.composerText.trim())) { this.resumeAfter = null; this.set({ commenting: on }); }
+    return this.s.commenting;
+  }
 
   // ---- agents' drafts (hosted spec §16.4) ----
 

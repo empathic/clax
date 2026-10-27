@@ -6378,6 +6378,15 @@ capability first and light features up when it resolves.
   once per app for its host list. Only the person's own views get it:
   elsewhere `use("net")` resolves `null`. Types:
   `ClaxExtensions.Net` in `clax-extensions.d.ts`.
+- `shell` (Clax's own): `highlight(control)` rings one of Clax's controls,
+  `"comment"`, `"threads"`, `"versions"`, `"publish"`, `"fork"` or
+  `"send"`, for 6 s or until the person presses anywhere in the Clax
+  window, and resolves `false` when that control is not shown to them now
+  (on a phone, versions, publish and fork are in a menu); `can(control)`
+  answers the same without drawing; `commentMode(on)`, from a click
+  handler only, turns comment mode on or off. Declare `{"shell": {}}`.
+  Only the owner and editors get it: elsewhere `use("shell")` resolves
+  `null`. Types: `ClaxExtensions.Shell` in `clax-extensions.d.ts`.
 - `notify`, `share`, `file`, `camera`, `location`: Clax's device
   capabilities, served only in the Clax app and `null` everywhere else;
   their types are `ClaxExtensions.Device` in `clax-extensions.d.ts`. Call
@@ -6853,6 +6862,58 @@ the grant stands in later views. The app's inspect view never asks: there
 a refusal stands. Other codes reach the page as the daemon answers them;
 the shell adds `unavailable` (the daemon could not be reached) and
 `session_expired`.
+
+### Pointing at Clax's controls (`shell`)
+
+A page that walks its viewer through Clax (a tour) points at Clax's own
+controls around it. It declares `{"shell": {}}`, which takes no options
+(any key in it is 400 `invalid_capabilities` on publish and `PATCH`), and
+`const shell = await window.claude.use("shell")` resolves the namespace in
+the owner's views and an editor's (a viewer whose artifact answers
+`may_edit: true`), and `null` for every other viewer and when undeclared.
+The types are `ClaxExtensions.Shell` in `clax-extensions.d.ts`.
+
+The controls a page names:
+
+| Name | Wider than 700 px | 700 px or narrower |
+|---|---|---|
+| `comment` | the top bar's Comment button | the same |
+| `threads` | the top bar's Threads button | the Threads tab |
+| `versions` | the version menu's button | not shown (in the more menu) |
+| `publish` | Publish, or the linked site's button on the owner's local daemon | not shown |
+| `fork` | the top bar's Fork button | not shown |
+| `send` | the first Send to agent in the threads sidebar (a thread card's, the unsent bar's, the selection bar's) | the same, while the Threads tab shows the sidebar |
+
+A control is shown when it is laid out with a box, visible (opacity and
+visibility included), not disabled, and under nothing inert or hidden from
+assistive technology. A disabled Comment (a live page, a crowd's
+spectator, Comments off, an agent's draft shown) is not shown, and in the
+Clax app, which hides Clax's own bar, none is. Clax never opens a menu, a
+panel or a tab to reach a control.
+
+- `highlight(control)` draws a ring around the control and resolves
+  `true`, or resolves `false`, drawing nothing, when it is not shown. One
+  ring shows at a time in the Clax window: the next `highlight` moves it.
+  The ring goes after 6 s, when the viewer presses anywhere in the Clax
+  window (a press on the control acts as usual) or presses Escape, when
+  its control stops being shown, and when the page's document leaves. It
+  follows the control as the window resizes; a `send` control is first
+  scrolled into the sidebar's view. No gesture is needed.
+- `can(control)` resolves what `highlight` would, drawing nothing.
+- `commentMode(on)` enters (`true`) or leaves (`false`) comment mode, as
+  the Comment button does, and resolves whether comment mode is on
+  afterwards: leaving keeps it on while the viewer's comment holds typed
+  text. It needs the viewer's click or key press in the page, as
+  `openComposer` does (see the viewer's gesture under "Runtime
+  capabilities").
+
+Rejections: `invalid_argument` (a control name outside the six, or `on`
+not a boolean); `no_gesture` (`commentMode` without the viewer's recent
+input in the page; nothing changes); `unavailable` (`commentMode` where
+this view cannot comment: a live page, a crowd's spectator, Comments off,
+an agent's draft shown, the Clax app's inspector); `capability_removed`
+for any other member. The namespace says only whether a named control is
+shown now; it names no agent, harness, session or person.
 
 ## Room protocol
 

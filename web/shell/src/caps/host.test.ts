@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ShellToBridge } from "../../../bridge/src/protocol";
+import { approved, isAvailable } from "./availability";
 import { CapError } from "./errors";
 import { CapabilityHost, type CapEnv, type HandlerFactory } from "./host";
 import { REGISTRY } from "./registry";
@@ -45,6 +46,27 @@ describe("CapabilityHost", () => {
     const { e, posted } = env({ declared: { room: {} }, token: null });
     await new CapabilityHost(Promise.resolve(e), REGISTRY, null).handle({ type: "clax:use", id: "u", name: "room" });
     expect(posted[0]).toMatchObject({ granted: true, config: {} });
+  });
+
+  it("shell_is_served_to_owner_and_editors_only", async () => {
+    const granted = async (over: Partial<CapEnv>) => {
+      const { e, posted } = env({ declared: { shell: {} }, ...over });
+      await new CapabilityHost(Promise.resolve(e), REGISTRY, null).handle({ type: "clax:use", id: "u", name: "shell" });
+      return (posted[0] as { granted: boolean }).granted;
+    };
+    expect(await granted({ token: "tok" })).toBe(true);
+    expect(await granted({ token: null, mayEdit: true })).toBe(true);
+    expect(await granted({ token: null })).toBe(false);
+    expect(await granted({ token: null, mayEdit: false })).toBe(false);
+    expect(await granted({ token: "tok", declared: {} })).toBe(false);
+  });
+
+  it("shell_waits_for_the_owners_approval_once_d_says", () => {
+    expect(approved("shell", {})).toBe(true);
+    expect(approved("shell", { approved: new Set(["db"]) })).toBe(false);
+    expect(approved("shell", { approved: new Set(["shell"]) })).toBe(true);
+    expect(isAvailable("shell", { shell: {} }, true, { approved: new Set() })).toBe(false);
+    expect(isAvailable("shell", { shell: {} }, true, { approved: new Set(["shell"]) })).toBe(true);
   });
 
   it("answers artifact declared under its legacy name self", async () => {

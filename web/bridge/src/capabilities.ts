@@ -1,5 +1,5 @@
 // The capability namespaces of contract 0.2.61 (web/contract/0.2.61), and
-// Clax's device capabilities (web/contract/clax-extensions.d.ts): each
+// Clax's own capabilities (web/contract/clax-extensions.d.ts): each
 // name `use()` can resolve and the members its namespace carries. The lists
 // are checked against the .d.ts files (bridge/test/capabilities.test.ts).
 import type { Rpc } from "./rpc";
@@ -20,6 +20,8 @@ export const CAPABILITY_METHODS = {
   location: ["current", "watch"],
   // Clax's network, through the daemon (clax-extensions.d.ts `Net`).
   net: ["fetch"],
+  // Clax's own controls around the page (clax-extensions.d.ts `Shell`).
+  shell: ["highlight", "commentMode", "can"],
 } as const satisfies Record<string, readonly string[]>;
 
 export type CapabilityName = keyof typeof CAPABILITY_METHODS;

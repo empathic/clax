@@ -55,6 +55,9 @@ export interface CapEnv {
   /** The shell is pinned to `/a/<aid>/v/<n>`. */
   pinned: boolean;
   token: string | null;
+  /** The viewer may edit the artifact (the daemon's `may_edit`): the owner
+   * and editors. */
+  mayEdit?: boolean;
   viewer(): Promise<ViewerInfo>;
   declared: Declared;
   prompt(p: Prompt): Promise<PromptAnswer>;
@@ -75,6 +78,11 @@ export interface CapEnv {
   page?(): string | null;
   /** The shell's comment UI, when this view has one. */
   comments?: CommentsUi;
+  /** Enters (`on`) or leaves comment mode for the page, as the Comment
+   * button does, and says whether comment mode is on afterwards; leaving
+   * keeps it while the composer holds typed text. `null` where this view
+   * cannot comment (nothing changes). */
+  commentMode?(on: boolean): boolean | null;
   /** Who is working on the artifact now (the view's latest working list). */
   working?(): Working[];
   /** `GET /api/artifacts/<aid>/sample` with the token: set only for the owner
@@ -158,6 +166,7 @@ export class CapabilityHost {
     const named = m.type === "clax:use" ? m.name : m.ns;
     this.served.device = deviceLink.call !== null;
     this.served.site = onHost();
+    this.served.edits = env.mayEdit === true;
     // Only a request about sample (or permissions, which lists it) waits for the daemon's answer.
     if (named === "sample" || named === "permissions") await this.checkServed(env);
     if (named === "home") this.served.home = await deviceLink.home?.();

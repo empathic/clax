@@ -6,19 +6,28 @@
 // `camera`, `location`) when declared and the Clax app hosts the view
 // (device-link.ts); `home` when declared, the Clax app hosts the view and
 // the app says this view is its home app (`home.available`); `net` to the
-// owner shell when declared; `site` (no capability a page declares: the
-// relay of a page's own site API calls) where the Clax app hosts the view;
-// claude.ai's
-// `files` and `mcp` never.
+// owner shell when declared; `shell` to the owner shell and editors (the
+// viewer's `may_edit`) when declared and approved (`approved`); `site` (no
+// capability a page declares: the relay of a page's own site API calls)
+// where the Clax app hosts the view; claude.ai's `files` and `mcp` never.
 
 export type Declared = Record<string, Record<string, unknown> | undefined>;
 
 /** The declarable capabilities this runtime serves, in the order `permissions.state()` lists them. */
 /** What this daemon serves beyond the declaration: `sample` needs a provider
- * (`GET /api/artifacts/<aid>/sample`), asked when the page names it. */
-export type Served = { sample?: boolean; device?: boolean; home?: boolean; site?: boolean };
+ * (`GET /api/artifacts/<aid>/sample`), asked when the page names it.
+ * `edits`: the viewer may edit the artifact (the daemon's `may_edit`).
+ * `approved`: the declared capabilities the owner approved for the shown
+ * version; absent, every declared one is. */
+export type Served = { sample?: boolean; device?: boolean; home?: boolean; site?: boolean; edits?: boolean; approved?: ReadonlySet<string> };
 
 export const CAPABILITIES = ["artifact", "db", "downloads", "user", "comments", "assets", "room", "sample"] as const;
+
+/** Whether the owner approved capability `name` for the shown version:
+ * true for every name until `served.approved` says which. */
+export function approved(name: string, served: Served): boolean {
+  return served.approved === undefined || served.approved.has(name);
+}
 
 const declares = (name: string, declared: Declared) =>
   Object.prototype.hasOwnProperty.call(declared, name) || (name === "artifact" && Object.prototype.hasOwnProperty.call(declared, "self"));
@@ -38,6 +47,8 @@ export function isAvailable(name: string, declared: Declared, owner: boolean, se
     case "home": return declares(name, declared) && served.home === true;
     // The owner's views only: the fetch route takes the token (net.ts).
     case "net": return owner && declares(name, declared);
+    // The owner's and editors' views: a reader's tour has no Fork or Publish to point at.
+    case "shell": return (owner || served.edits === true) && declares(name, declared) && approved(name, served);
     // Not a capability a page declares: the relay of its own site's API
     // calls, which the Clax app's shell alone makes (site.ts).
     case "site": return served.site === true;

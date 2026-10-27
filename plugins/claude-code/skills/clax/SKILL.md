@@ -632,6 +632,15 @@ capability first and light features up when it resolves.
   once per app for its host list. Only the person's own views get it:
   elsewhere `use("net")` resolves `null`. Types:
   `ClaxExtensions.Net` in `clax-extensions.d.ts`.
+- `shell` (Clax's own): `highlight(control)` rings one of Clax's controls,
+  `"comment"`, `"threads"`, `"versions"`, `"publish"`, `"fork"` or
+  `"send"`, for 6 s or until the person presses anywhere in the Clax
+  window, and resolves `false` when that control is not shown to them now
+  (on a phone, versions, publish and fork are in a menu); `can(control)`
+  answers the same without drawing; `commentMode(on)`, from a click
+  handler only, turns comment mode on or off. Declare `{"shell": {}}`.
+  Only the owner and editors get it: elsewhere `use("shell")` resolves
+  `null`. Types: `ClaxExtensions.Shell` in `clax-extensions.d.ts`.
 - `notify`, `share`, `file`, `camera`, `location`: Clax's device
   capabilities, served only in the Clax app and `null` everywhere else;
   their types are `ClaxExtensions.Device` in `clax-extensions.d.ts`. Call

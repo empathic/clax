@@ -253,6 +253,51 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     ctl.dispose();
   });
 
+  it("page_comment_mode_follows_the_comment_buttons_guard", async () => {
+    const { ctl } = await started();
+    expect(ctl.mayComment()).toBe(true);
+    expect(ctl.pageCommenting(true)).toBe(true);
+    expect(ctl.state.get().commenting).toBe(true);
+    expect(ctl.pageCommenting(false)).toBe(false);
+    expect(ctl.state.get().commenting).toBe(false);
+    const data = ctl.state.get().data!;
+    for (const [what, patch] of [
+      ["a spectator", { spectator: { code: "s", joinable: false } }],
+      ["Comments off", { data: { ...data, artifact: { ...data.artifact, comments: false } } }],
+      ["a draft shown", { showDraft: "a_1" }],
+      ["a live page", { data: { ...data, artifact: { ...data.artifact, live: true } } }],
+    ] as const) {
+      ctl.set({ spectator: null, showDraft: null, data, commenting: false });
+      ctl.set(patch as Parameters<typeof ctl.set>[0]);
+      expect(ctl.mayComment(), what).toBe(false);
+      expect(ctl.pageCommenting(true), what).toBeNull();
+      expect(ctl.state.get().commenting, what).toBe(false);
+    }
+    ctl.set({ spectator: null, showDraft: null, data, commenting: false });
+    const was = location.href;
+    history.replaceState(null, "", `/a/${ID}?app=1&inspect=1`);
+    try {
+      expect(ctl.pageCommenting(true)).toBeNull();
+    } finally {
+      history.replaceState(null, "", was);
+    }
+    expect(ctl.state.get().commenting).toBe(false);
+  });
+
+  it("page_comment_mode_keeps_a_typed_comment", async () => {
+    const { ctl } = await started();
+    expect(ctl.pageCommenting(true)).toBe(true);
+    ctl.composerInput("half");
+    expect(ctl.pageCommenting(false)).toBe(true);
+    expect(ctl.state.get().commenting).toBe(true);
+    // The Comment button leaves whatever is typed.
+    ctl.toggleComment();
+    expect(ctl.state.get().commenting).toBe(false);
+    ctl.composerInput("  ");
+    ctl.set({ commenting: true });
+    expect(ctl.pageCommenting(false)).toBe(false);
+  });
+
   it("forgets a failed part when the frame's document goes without greeting, not at its own load", async () => {
     const { ctl, frame } = await started();
     frame.contentWindow!.postMessage = (() => {}) as Window["postMessage"];
