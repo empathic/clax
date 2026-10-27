@@ -5,6 +5,10 @@ project's `reel:record` script (web/reel/record.ts):
 
 - `<id>_fast`: the vignette in fast mode, `<id>_fast/clip.webm` and
   `<id>_fast/beats.json` (Playwright's `recordVideo`, real time).
+- `<id>_frames`: the vignette in deterministic mode,
+  `<id>_frames/frames/NNNNNN.png` and `<id>_frames/beats.json` (Chromium's
+  virtual time, a screenshot per frame): the same frames each run on one
+  machine.
 
 Each reads the recorder, its own script, the web project's files and
 packages, the e2e build of the web UI, the warmed `clax` and the pinned
@@ -64,22 +68,22 @@ def reel_vignette(name):
         "//web:dist_e2e",
         _BROWSERS,
     ]
-    out = name + "_fast"
-    npm_script_build(
-        name = out,
-        project = "web",
-        script = "reel:record",
-        args = [
-            "--vignette",
-            name,
-            "--mode",
-            "fast",
-            "--out",
-            "reel/" + out,
-        ],
-        srcs = srcs,
-        in_place = in_place,
-        out_dirs = [out],
-        env = _ENV,
-        tags = _TAGS,
-    )
+    for mode, out in [("fast", name + "_fast"), ("deterministic", name + "_frames")]:
+        npm_script_build(
+            name = out,
+            project = "web",
+            script = "reel:record",
+            args = [
+                "--vignette",
+                name,
+                "--mode",
+                mode,
+                "--out",
+                "reel/" + out,
+            ],
+            srcs = srcs,
+            in_place = in_place,
+            out_dirs = [out],
+            env = _ENV,
+            tags = _TAGS,
+        )

@@ -15,7 +15,8 @@
     "e2e": "playwright test",
     "perf": "playwright test -c perf/playwright.config.ts",
     "reel:record": "node reel/record.ts",
-    "reel:test": "playwright test -c reel/playwright.config.ts"
+    "reel:test": "playwright test -c reel/playwright.config.ts",
+    "reel:determinism": "sh reel/determinism.sh"
   },
   "devDependencies": {
     "@playwright/test": "^1.50.0",

@@ -4,7 +4,8 @@
 // rhythm of typing. Everything here is a pure function of its arguments, so
 // two renders of a vignette pace it identically.
 
-/** `design/tokens.json` `motion.curves`, as cubic Bézier control points. */
+/** `design/tokens.json` `motion.curves`, as cubic Bézier control points
+ * (//design:tokens_sync checks they match: scripts/sync-tokens.py). */
 export const CURVES = {
   standard: [0.4, 0, 0.2, 1],
   decelerate: [0.05, 0.7, 0.1, 1],

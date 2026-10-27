@@ -6,16 +6,17 @@
 // It starts what the vignette asks for (daemons on scratch homes and ports
 // the system picks, never ~/.clax or 7480), launches the pinned Chromium,
 // plays the vignette through the director, and writes <dir>/clip.webm (fast
-// mode) and <dir>/beats.json: {"fps": 30, "frames": <n>, "beats": [{"name",
-// "frame"}]}, each beat with its first frame. Every daemon it started is
-// stopped by its handle, and the browser closed, however the run ends.
-// Deterministic mode (frames/NNNNNN.png) is not built yet.
+// mode) or <dir>/frames/NNNNNN.png (deterministic mode, from 000000, one PNG
+// of the capture's device pixels per frame), and <dir>/beats.json: {"fps":
+// 30, "frames": <n>, "beats": [{"name", "frame"}]}, each beat with its first
+// frame. Every daemon it started is stopped by its handle, and the browser
+// closed, however the run ends.
 //
 // It needs CLAX_E2E_BIN (the clax binary), CLAX_E2E_WEB_DIST (the web UI
 // built with the test clock, //web:dist_e2e) and PLAYWRIGHT_BROWSERS_PATH,
 // as the browser tests do; under Bazel (web/reel/reel.bzl) they name files
 // from the execution root, made absolute here.
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -39,6 +40,11 @@ registerHooks({
 /** Chromium's flags for the camera: no font hinting and no subpixel text, so text renders the same each run (spec §5). */
 const CHROMIUM_ARGS = ["--font-render-hinting=none", "--disable-lcd-text"];
 
+/** Chromium's flags for a deterministic camera: every compositor stage
+ * (raster, decoding) done before a frame is drawn, so a screenshot never
+ * shows a tile or image still on its way. */
+const DETERMINISTIC_ARGS = ["--run-all-compositor-stages-before-draw", "--disable-checker-imaging", "--disable-threaded-scrolling"];
+
 function fail(message: string): never {
   console.error(`error: ${message}`);
   process.exit(2);
@@ -51,23 +57,26 @@ const { values: opts } = parseArgs({
 const id = opts.vignette ?? fail("usage: node reel/record.ts --vignette <id> --mode fast|deterministic --out <dir>");
 if (!/^[a-z][a-z0-9-]*$/.test(id)) fail(`--vignette ${JSON.stringify(id)}: not a vignette ID`);
 const mode = opts.mode ?? "fast";
-if (mode === "deterministic") fail("--mode deterministic: not built yet; use --mode fast");
-if (mode !== "fast") fail(`--mode ${JSON.stringify(mode)}: want fast or deterministic`);
+if (mode !== "fast" && mode !== "deterministic") fail(`--mode ${JSON.stringify(mode)}: want fast or deterministic`);
 const out = resolve(opts.out ?? fail("--out <dir> is required"));
 
-// Under Bazel the paths name files from the execution root.
-const execroot = process.env.JS_BINARY__EXECROOT;
+// Under Bazel the paths name files from the execution root (a recording,
+// web/reel/reel.bzl) or from the runfiles (a test, web/reel/BUILD.bazel).
+const roots = [
+  process.env.JS_BINARY__EXECROOT,
+  process.env.JS_BINARY__RUNFILES && join(process.env.JS_BINARY__RUNFILES, process.env.JS_BINARY__WORKSPACE ?? "_main"),
+].filter((r): r is string => !!r);
 for (const name of ["CLAX_E2E_BIN", "CLAX_E2E_WEB_DIST", "PLAYWRIGHT_BROWSERS_PATH"]) {
   const value = process.env[name];
   if (!value) fail(`${name} is unset (web/reel/reel.bzl sets it under Bazel)`);
-  if (!isAbsolute(value)) process.env[name] = execroot ? join(execroot, value) : resolve(value);
+  if (!isAbsolute(value)) process.env[name] = roots.map(r => join(r, value)).find(p => existsSync(p)) ?? resolve(value);
 }
 
 // Loaded after the paths are fixed: Playwright reads its browsers' path as it loads.
 const { chromium } = await import("@playwright/test");
 const { parse } = await import("smol-toml");
 const { parseReel } = await import("./config.ts");
-const { fastCamera, FPS, REEL_EPOCH } = await import("./camera.ts");
+const { deterministicCamera, fastCamera, FPS, REEL_EPOCH } = await import("./camera.ts");
 const { installCursor } = await import("./cursor.ts");
 const { Director } = await import("./director.ts");
 const { NO_KEY_CONFIG, startDaemon } = await import("../e2e/fixtures.ts");
@@ -86,8 +95,8 @@ const vignette = ((await import(`./vignettes/${id}.ts`)) as { default: Vignette 
 if (vignette.id !== id) fail(`vignettes/${id}.ts is vignette ${vignette.id}`);
 
 const stops: (() => Promise<void> | void)[] = [];
-const browser = await chromium.launch({ args: CHROMIUM_ARGS });
-const videoDir = mkdtempSync(join(tmpdir(), "clax-reel-video-"));
+const browser = await chromium.launch({ args: mode === "deterministic" ? [...CHROMIUM_ARGS, ...DETERMINISTIC_ARGS] : CHROMIUM_ARGS });
+const videoDir = mode === "fast" ? mkdtempSync(join(tmpdir(), "clax-reel-video-")) : null;
 let camera: { page: Page; startedAt: number } | null = null;
 
 /** startDaemon, stopped when the recording ends. */
@@ -125,8 +134,8 @@ const stage: Stage = {
       storageState: o.storageState,
       // At the viewport's CSS size: Playwright's video scales a page down
       // to fit, never up, so the capture's device pixels (spec §5) would
-      // only pad it. Deterministic mode captures those.
-      recordVideo: { dir: videoDir, size: { width, height } },
+      // only pad it. Deterministic mode captures those, as screenshots.
+      ...(videoDir ? { recordVideo: { dir: videoDir, size: { width, height } } } : {}),
     });
     await context.clock.install({ time: REEL_EPOCH });
     const page = await context.newPage();
@@ -145,17 +154,28 @@ try {
   const cast = await vignette.setup(stage);
   if (!camera) throw new Error(`${id}: its setup made no camera (stage.newCamera)`);
   const { page, startedAt } = camera as { page: Page; startedAt: number };
-  const cam = fastCamera(startedAt, FPS);
-  await vignette.play(new Director(page, cam, id), cast);
-  const frames = cam.frame();
-  const video = page.video();
-  if (!video) throw new Error("the camera recorded no video");
-  await page.context().close();
+  const beats = (cam: { beats: { name: string; frame: number }[] }) => cam.beats.map(b => `${b.name}@${b.frame}`).join(", ");
   mkdirSync(out, { recursive: true });
-  await video.saveAs(join(out, "clip.webm"));
-  writeFileSync(join(out, "beats.json"), `${JSON.stringify({ fps: FPS, frames, beats: cam.beats }, null, 2)}\n`);
-  const seconds = (cam.elapsedMs() / 1000).toFixed(1);
-  console.log(`recorded ${id} (fast, ${seconds} s, ${vcfg.seconds} s in the reel) to ${out}: clip.webm, beats.json (${cam.beats.map(b => `${b.name}@${b.frame}`).join(", ")})`);
+  if (mode === "fast") {
+    const cam = fastCamera(startedAt, FPS);
+    await vignette.play(new Director(page, cam, id), cast);
+    const frames = cam.frame();
+    const video = page.video();
+    if (!video) throw new Error("the camera recorded no video");
+    await page.context().close();
+    await video.saveAs(join(out, "clip.webm"));
+    writeFileSync(join(out, "beats.json"), `${JSON.stringify({ fps: FPS, frames, beats: cam.beats }, null, 2)}\n`);
+    const seconds = (cam.elapsedMs() / 1000).toFixed(1);
+    console.log(`recorded ${id} (fast, ${seconds} s, ${vcfg.seconds} s in the reel) to ${out}: clip.webm, beats.json (${beats(cam)})`);
+  } else {
+    // The page's time stops here and moves only as the director rolls.
+    const cam = await deterministicCamera(page, out, FPS);
+    await vignette.play(new Director(page, cam, id), cast);
+    const frames = cam.frame();
+    writeFileSync(join(out, "beats.json"), `${JSON.stringify({ fps: FPS, frames, beats: cam.beats }, null, 2)}\n`);
+    const seconds = (frames / FPS).toFixed(1);
+    console.log(`recorded ${id} (deterministic, ${frames} frames, ${seconds} s, ${vcfg.seconds} s in the reel) to ${out}: frames/, beats.json (${beats(cam)})`);
+  }
 } catch (e) {
   failed = true;
   console.error(`error: recording ${id}: ${e instanceof Error ? e.stack ?? e.message : String(e)}`);
@@ -168,6 +188,6 @@ try {
     }
   }
   await browser.close();
-  rmSync(videoDir, { recursive: true, force: true });
+  if (videoDir) rmSync(videoDir, { recursive: true, force: true });
 }
 process.exit(failed ? 1 : 0);
