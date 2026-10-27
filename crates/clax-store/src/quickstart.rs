@@ -124,7 +124,7 @@ impl Store {
         p.person = person.map(str::to_string);
         let id = ArtifactId::generate();
         let made = self
-            .create_artifact_then_async(ctx, &id, p, None, |tx, n| {
+            .create_artifact_quota_async(ctx, &id, p, None, false, |tx, n| {
                 tx.execute(
                     "UPDATE artifacts SET pinned = 1 WHERE id = ?1",
                     params![id.as_str()],

@@ -382,7 +382,8 @@ async fn accept_invite(
         &s,
         json!({"what": "person_joined", "person": signed.who.viewer.public_id}),
     );
-    // The new person's quickstart; a failure is logged, never the accept's.
+    // The new person's quickstart: awaited before the response so the first
+    // page load sees it; errors are logged only, never failing the accept.
     crate::quickstart::seed(&s, Some(&signed.who.viewer.public_id)).await;
     Ok(signed_in_response(&h, signed, json!({}), "person"))
 }

@@ -1293,6 +1293,23 @@ impl Store {
         session_id: Option<&str>,
         then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
     ) -> Result<(Artifact, Version, T)> {
+        self.create_artifact_quota_async(ctx, id, p, session_id, true, then)
+            .await
+    }
+
+    /// [`Store::create_artifact_then_async`], checking the member's
+    /// artifact cap only when `capped`: the seeded quickstart is made
+    /// without counting against it ([`Store::check_quota_in`] does not
+    /// count it either).
+    pub(crate) async fn create_artifact_quota_async<T>(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        p: ValidatedPublish,
+        session_id: Option<&str>,
+        capped: bool,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
+    ) -> Result<(Artifact, Version, T)> {
         let id = id.clone();
         let now = self.now();
         let title = p
@@ -1316,7 +1333,9 @@ impl Store {
                 None => None,
             },
         };
-        self.check_quota(creator.as_deref())?;
+        if capped {
+            self.check_quota(creator.as_deref())?;
+        }
         #[cfg(test)]
         self.point("artifact.create.insert");
         self.with_tx(|tx| {
@@ -1327,7 +1346,9 @@ impl Store {
                 "DELETE FROM artifacts WHERE id = ?1 AND current_version = 0",
                 params![id.as_str()],
             )?;
-            self.check_quota_in(tx, creator.as_deref())?;
+            if capped {
+                self.check_quota_in(tx, creator.as_deref())?;
+            }
             tx.execute(
                 "INSERT INTO artifacts (id, title, description, icon, created_at, updated_at, current_version,
                     pinned, capabilities_json, contract_version, owner_session_id, person)

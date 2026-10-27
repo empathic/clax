@@ -242,7 +242,8 @@ pub async fn callback(
         );
     }
     // A person's quickstart: made at their first sign-in, moved to a newer
-    // release at a later one. Neither can fail the sign-in.
+    // release at a later one. Awaited before the redirect so the first page
+    // load sees it; errors are logged only, never failing the sign-in.
     match outcome {
         GitHubOutcome::New => {
             crate::quickstart::seed(&s, Some(&signed.who.viewer.public_id)).await;

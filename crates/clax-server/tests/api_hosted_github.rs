@@ -307,8 +307,8 @@ fn cookie_of(res: &reqwest::Response, name: &str) -> Option<String> {
 }
 
 impl Site {
-    /// The titles, pinned flags, people and latest version numbers of the
-    /// artifacts `session` lists.
+    /// The artifacts `session` lists (`/api/artifacts`' `artifacts`
+    /// array), as the server returns them.
     async fn listing(&self, session: &str) -> Vec<Value> {
         let v: Value = self
             .get("/api/artifacts", Some(session))
@@ -347,6 +347,21 @@ async fn a_new_github_person_starts_with_the_quickstart() {
     assert_eq!(site.listing(&again).await.len(), 1);
     let owner = site.sign_in(1).await.unwrap();
     assert!(site.listing(&owner).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_quickstart_is_made_for_a_member_at_a_cap_of_zero_and_counts_toward_it_not() {
+    let site = Site::build(0, Some("a"), None).await;
+    site.account(2, "grace", None);
+    let grace = site.sign_in(2).await.unwrap();
+    let list = site.listing(&grace).await;
+    assert_eq!(list.len(), 1, "{list:?}");
+    assert_eq!(list[0]["title"], "Clax Quickstart");
+    let token = site.token(&grace).await;
+    assert_eq!(
+        site.publish(&token, "Mine").await,
+        Err("quota_exceeded".to_string())
+    );
 }
 
 #[tokio::test]
