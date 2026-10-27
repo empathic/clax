@@ -13,7 +13,7 @@
     Clax
   </div>
   <h1>Your agents build pages. Clax gives them a home.</h1>
-  <p class="lede">The pages your coding agent builds (reports, dashboards, prototypes, charts) live on your own machine, every version kept. Point at anything on a page, comment, and the agent makes the change. This chart takes you from sign-in to your first round trip in about five minutes. Click any box.</p>
+  <p class="lede">The pages your coding agent builds (reports, dashboards, prototypes, charts) live on clax.dev, every version kept. Point at anything on a page, comment, and the agent makes the change. This chart takes you from sign-in to your first round trip in about five minutes. Click any box.</p>
   <nav class="tabs" aria-label="Sections">
     <a href="index.html" id="tab-start" aria-current="page">Quickstart</a>
     <a href="ideas.html" id="tab-ideas" hidden>Make it better<span class="count" id="idea-count"></span></a>
@@ -84,7 +84,7 @@
   let shell = null;
   const canCache = {};
   const SHOWME = {
-    attach: ["publish", "Show me Publish"], comment: ["comment", "Show me Comment"], send: ["send", "Show me Send to agent"],
+    comment: ["comment", "Show me Comment"], send: ["send", "Show me Send to agent"],
     change: ["versions", "Show me Versions"], fork: ["fork", "Show me Fork"],
   };
   const showOk = (name) => !!shell && (name === "send" || !!canCache[name]);
@@ -138,17 +138,11 @@
   const BRAND = {
     claude: { color: "#d97757", mark: `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z" fill="#D97757" fill-rule="nonzero"></path></svg>` },
     codex:  { color: "#6366f1", mark: `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M19.503 0H4.496A4.496 4.496 0 000 4.496v15.007A4.496 4.496 0 004.496 24h15.007A4.496 4.496 0 0024 19.503V4.496A4.496 4.496 0 0019.503 0z" fill="#fff"></path><path d="M9.064 3.344a4.578 4.578 0 012.285-.312c1 .115 1.891.54 2.673 1.275.01.01.024.017.037.021a.09.09 0 00.043 0 4.55 4.55 0 013.046.275l.047.022.116.057a4.581 4.581 0 012.188 2.399c.209.51.313 1.041.315 1.595a4.24 4.24 0 01-.134 1.223.123.123 0 00.03.115c.594.607.988 1.33 1.183 2.17.289 1.425-.007 2.71-.887 3.854l-.136.166a4.548 4.548 0 01-2.201 1.388.123.123 0 00-.081.076c-.191.551-.383 1.023-.74 1.494-.9 1.187-2.222 1.846-3.711 1.838-1.187-.006-2.239-.44-3.157-1.302a.107.107 0 00-.105-.024c-.388.125-.78.143-1.204.138a4.441 4.441 0 01-1.945-.466 4.544 4.544 0 01-1.61-1.335c-.152-.202-.303-.392-.414-.617a5.81 5.81 0 01-.37-.961 4.582 4.582 0 01-.014-2.298.124.124 0 00.006-.056.085.085 0 00-.027-.048 4.467 4.467 0 01-1.034-1.651 3.896 3.896 0 01-.251-1.192 5.189 5.189 0 01.141-1.6c.337-1.112.982-1.985 1.933-2.618.212-.141.413-.251.601-.33.215-.089.43-.164.646-.227a.098.098 0 00.065-.066 4.51 4.51 0 01.829-1.615 4.535 4.535 0 011.837-1.388zm3.482 10.565a.637.637 0 000 1.272h3.636a.637.637 0 100-1.272h-3.636zM8.462 9.23a.637.637 0 00-1.106.631l1.272 2.224-1.266 2.136a.636.636 0 101.095.649l1.454-2.455a.636.636 0 00.005-.64L8.462 9.23z" fill="url(#lobe-icons-codex-_R_0_)"></path><defs><linearGradient gradientUnits="userSpaceOnUse" id="lobe-icons-codex-_R_0_" x1="12" x2="12" y1="3" y2="21"><stop stop-color="#B1A7FF"></stop><stop offset=".5" stop-color="#7A9DFF"></stop><stop offset="1" stop-color="#3941FF"></stop></linearGradient></defs></svg>` },
-    pi:     { color: "#4d9abf", mark: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800"> <path fill="#F09082" d="M165.29 165.29H517.36V400H400V282.65H165.29Z"/> <path fill="#4D9ABF" d="M165.29 282.65H282.65V400H400V517.36H282.65V634.72H165.29Z"/> <path fill="#F1BE58" d="M517.36 400H634.72V634.72H517.36Z"/> </svg>` },
-    grok:   { color: "var(--fg)", mark: `<svg fill="currentColor" fill-rule="evenodd" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815"></path></svg>` },
-    all:    { color: "#c2410c", mark: `<svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="2" fill="currentColor"/><rect x="13" y="3" width="8" height="8" rx="2" fill="currentColor" opacity=".7"/><rect x="3" y="13" width="8" height="8" rx="2" fill="currentColor" opacity=".7"/><rect x="13" y="13" width="8" height="8" rx="2" fill="currentColor" opacity=".45"/></svg>` },
   };
 
   const AGENTS = {
-    claude: { label: "Claude Code", sub: "Plugin from the marketplace" },
-    codex:  { label: "Codex", sub: "Plugin from the marketplace" },
-    pi:     { label: "Pi", sub: "One npm package" },
-    grok:   { label: "Grok Build", sub: "The clax command sets it up" },
-    all:    { label: "All local agents / CLI", sub: "Set up every harness at once" },
+    claude: { label: "Claude Code", sub: "An agent token and one command" },
+    codex:  { label: "Codex", sub: "An agent token and a few lines of config" },
   };
 
   const NODES = {
@@ -157,44 +151,29 @@
       body: `<p>Start with your clax.dev account. It's where your pages get public links, where you share them, and where comments come back from.</p>
         <a class="gh wide" href="${CLAXDEV}/auth/github" target="_blank" rel="noopener">${GH}Sign in with GitHub</a>
         <p class="muted-note">Sign-in opens in a new tab; this one stays here. Come back when you're done.</p>
-        <p class="muted-note">Already signed in, or reading this in your own gallery? Press its ✓ to mark it done.</p>` },
-    install: { kicker: "Bring your own agent", title: "Bring your own agent", sub: "Install the plugin, pick yours",
-      body: `<p>Clax works with Claude Code, Codex, Pi and Grok Build. Each gets the same tools and the same <code>clax</code> skill. Pick yours:</p>` },
+        <p class="muted-note">Already signed in? Press its ✓ to mark it done.</p>` },
+    install: { kicker: "Bring your own agent", title: "Bring your own agent", sub: "Make a token, pick yours",
+      body: `<p>On clax.dev, Claude Code and Codex connect with an agent token from your People page. Pick yours:</p>
+        <p class="muted-note">Pi and Grok Build do not connect to clax.dev yet: their plugins work with a Clax on your own machine, which the <a href="https://github.com/empathic/clax#readme" target="_blank" rel="noopener">README</a> covers.</p>` },
     agent: { kind: "decision", kicker: "Decision", title: "Which agent do you use?",
-      body: `<p>Clax works with Claude Code, Codex, Pi and Grok Build. Each gets the same tools and the same <code>clax</code> skill. Pick yours:</p>` },
-    "install-claude": { kind: "small", agent: "claude", kicker: "Install · Claude Code", title: "Claude Code", sub: "Two commands in Claude Code",
-      body: `<p>In Claude Code, run these one at a time:</p>${cmds(["/plugin marketplace add empathic/clax", "/plugin install clax@clax"], true)}
-        <p>That's it. On first use the plugin downloads the Clax release it needs (about 10 MB, checked against a pinned checksum) and starts Clax when an agent first calls it.</p>
-        ${tip("Fewer prompts", `In Manual mode Claude Code asks before each Clax tool call. To allow them all, add <code>"mcp__plugin_clax_clax__*"</code> to <code>permissions.allow</code> in <code>~/.claude/settings.json</code>, or pick them with <code>/permissions</code>.`)}` },
-    "install-codex": { kind: "small", agent: "codex", kicker: "Install · Codex", title: "Codex", sub: "Two commands, then a new session",
-      body: `<p>Run these one at a time:</p>${cmds(["codex plugin marketplace add empathic/clax", "codex plugin add clax@clax"], true)}
-        <p>Then start a new session. The plugin downloads the Clax release it needs on first use.</p>
-        ${tip("Approvals", "Codex runs most Clax tools without asking, but stops before the six that replace or remove data. The plugin's README has the lines that approve them.")}` },
-    "install-pi": { kind: "small", agent: "pi", kicker: "Install · Pi", title: "Pi", sub: "One npm package",
-      body: `<p>Install the Clax package from npm:</p>
-        ${cmd("pi install npm:@empathic/clax-pi")}
-        <p>Then start a new Pi session. On first use the package downloads the Clax release it pins. Pi wakes on a new comment by itself, even when idle.</p>` },
-    "install-grok": { kind: "small", agent: "grok", kicker: "Install · Grok Build", title: "Grok Build", sub: "Install clax, then clax init",
-      body: `<p>Install the <code>clax</code> command, then let it register the clax-grok plugin:</p>
-        ${cmds(["curl -fsSL https://github.com/empathic/clax/releases/latest/download/install.sh | bash", "clax init --agent grok"], true)}
-        <p>Then start a new Grok session.</p>
-        ${tip("Approvals", "Grok asks before every tool call. For headless runs, pass <code>--always-approve</code> or <code>--allow 'MCPTool(clax_grok__*)'</code>.")}` },
-    "install-all": { kind: "small", agent: "all", kicker: "Install · every harness", title: "All local agents / CLI", sub: "One script covers them all",
-      body: `${cmds(["curl -fsSL https://github.com/empathic/clax/releases/latest/download/install.sh | bash", "clax init"], true)}
-        <p><code>install.sh</code> puts <code>clax</code> in <code>~/.local/bin</code> after checking it against the release's checksums. <code>clax init</code> registers the plugin with Claude Code, Codex, Pi and Grok Build (whichever are installed) and sets up the Chrome extension. Start a new session in each harness afterwards. Run the same two commands again to upgrade.</p>
-        ${tip("Platforms", "Prebuilt releases cover macOS (Apple silicon and Intel) and Linux (x86-64 and arm64).")}` },
+      body: `<p>On clax.dev, Claude Code and Codex connect with an agent token from your People page. Pick yours:</p>` },
+    "install-claude": { kind: "small", agent: "claude", kicker: "Connect · Claude Code", title: "Claude Code", sub: "A token, one command",
+      body: `<p>Claude Code reaches clax.dev through an agent token. The agent acts as you, with your rights, and you can revoke it on People.</p>
+        <ol><li>Open <a href="${CLAXDEV}/people" target="_blank" rel="noopener">People</a>, find <b>Agent tokens</b>, name this machine and press <b>Create token</b>.</li>
+        <li>Copy the <code>claude mcp add</code> command it shows and run it in your terminal. The token is shown only once.</li>
+        <li>Start a new Claude Code session: the Clax tools are there.</li></ol>
+        ${tip("Fewer prompts", `Claude Code asks before each tool call. To allow Clax's, add <code>"mcp__clax__*"</code> to <code>permissions.allow</code> in <code>~/.claude/settings.json</code>.`)}` },
+    "install-codex": { kind: "small", agent: "codex", kicker: "Connect · Codex", title: "Codex", sub: "A token, a few lines of config",
+      body: `<p>Codex reaches clax.dev through an agent token. The agent acts as you, with your rights, and you can revoke it on People.</p>
+        <ol><li>Open <a href="${CLAXDEV}/people" target="_blank" rel="noopener">People</a>, find <b>Agent tokens</b>, name this machine and press <b>Create token</b>.</li>
+        <li>Copy the Codex config it shows into <code>~/.codex/config.toml</code>. The token is shown only once.</li>
+        <li>Start a new Codex session: the Clax tools are there.</li></ol>` },
     claxbot: { kind: "small", kicker: "ClaxBot", title: "Use ClaxBot", sub: "Instead of connecting an agent",
-      body: `<p>ClaxBot is Clax's own agent. It runs in the daemon, so there's nothing to install and it works from your browser. Use it instead of connecting an agent of your own.</p>
-        <ul><li><b>On clax.dev</b> it runs on your account's credits.</li>
-        <li><b>On your own Clax</b> it needs a model key first. Set <code>ANTHROPIC_API_KEY</code> before <code>clax serve</code>, or have an admin add one at <code>/admin</code> (Provider).</li></ul>
-        ${cmd("ANTHROPIC_API_KEY=… clax serve")}
-        <p>Then press <b>New</b> in your gallery and pick ClaxBot to build a page, or send any comment thread to ClaxBot.</p>` },
-    attach: { kicker: "Step", title: "Attach your agent", sub: "Link to clax.dev, then attach",
-      body: `<h3>1. Link this Clax to your account</h3>
-        <p>Press <b>Publish to clax.dev</b> in the top bar, on this page or any other. Clax signs you in on clax.dev in this tab: check the code matches and approve there, and you land back here, linked.</p>
-        ${tip("Prefer the terminal?", `If the <code>clax</code> command is on your PATH, this does the same:${cmd("clax remote add https://clax.dev")}`)}
-        <h3>2. Attach your agent</h3>
-        <p>Ask your agent, in its chat, to watch this page:</p>
+      body: `<p>ClaxBot is Clax's own agent. It runs on clax.dev, so there's nothing to install and it works from your browser. Use it instead of connecting an agent of your own.</p>
+        <p>It runs on your account's credits.</p>
+        <p>Press <b>New</b> in your gallery and pick ClaxBot to build a page, or send any comment thread to ClaxBot.</p>` },
+    attach: { kicker: "Step", title: "Attach your agent", sub: "So your comments here reach it",
+      body: `<p>Ask your agent, in its chat, to watch this page:</p>
         ${cmd(PAGE_URL ? `Watch ${PAGE_URL} for my comments.` : `Watch the Clax Quickstart page (${ARTIFACT}) for my comments.`, { plain: true })}
         <p>Your agent shows up in this page's agent list, and a comment you send it here reaches it. To check, leave a comment here, write <code>@agent hello</code>, and send it: your agent should reply.</p>` },
     fork: { kind: "small", kicker: "Next", title: "Make it yours", sub: "Fork any page into your own copy", starter: `Fork the Clax Quickstart page (${ARTIFACT}) into a page of my own, open it, and watch it.`,
@@ -207,10 +186,8 @@
     send: { kicker: "Step", title: "Send it to the agent", sub: "To your agent, or ClaxBot",
       body: `<p>Press <b>Send to agent</b> on the thread, or write <code>@agent</code> in it. When several agents are watching, pick which one gets it, or write <code>@&lt;agent name&gt;</code>. To use ClaxBot, pick ClaxBot.</p>
         <h3>How the agent hears about it</h3>
-        <ul><li><b>ClaxBot</b> runs inside Clax, so there is nothing to wake.</li>
-        <li><b>Codex and Pi</b> wake on a new comment by themselves, even when idle.</li>
-        <li><b>Claude Code</b> gets it with its next Clax tool call, at the end of its turn, or with your next message. To wake an idle session, the skill keeps a background follower running after it publishes, or you can launch Claude Code with the Clax channel:</li></ul>
-        ${cmd("claude --dangerously-load-development-channels plugin:clax@clax")}` },
+        <ul><li><b>ClaxBot</b> runs inside Clax, so it answers at once.</li>
+        <li><b>Your agent</b> gets a sent comment with its next Clax tool call. To hear it right away, ask it to wait for feedback.</li></ul>` },
     change: { kicker: "Step", title: "Watch it change", sub: "A new version, and a reply in the thread",
       body: `<p>Your agent (or ClaxBot) picks up the comment, publishes a new version of the page and replies in the thread. Earlier versions stay one click away under <b>Versions</b>.</p>
         <p>That's the whole loop. Comment again whenever you want another change.</p>` },
@@ -221,37 +198,25 @@
         <ul><li>"Make me a dashboard of this week's test failures"</li><li>"Sketch three layouts for the settings screen"</li><li>"Chart the benchmark results"</li></ul>
         <p>The agent publishes the page to Clax and gives you a link. Every page lands in the gallery.</p>
         ${tip("Or start in the browser", "Press <b>New</b> in the gallery, give the page a title and a brief, and pick a connected agent to build it.")}` },
-    devserver: { kind: "small", kicker: "Next", title: "Your dev server", sub: "Comment on any web page", starter: "Watch http://localhost:5173 for my comments.",
-      body: `<p>The Clax Chrome extension puts the same comment overlay on any page, such as your dev server, so you can point at what's wrong and send it to your agent.</p>
-        <ol><li>Install it: <code>clax init</code>, or <code>/clax:extension</code> in Claude Code.</li><li>Once, open <code>chrome://extensions</code>, turn on Developer mode, choose <b>Load unpacked</b> and pick <code>~/.clax/extension</code>.</li><li>Ask your agent to watch your dev server's URL.</li></ol>
-        <p>It works with Chrome, Chromium, Brave and Edge on macOS and Linux.</p>` },
     data: { kind: "small", kicker: "Next", title: "Pages that do more", sub: "Data, live rooms, questions", starter: "Add a shared to-do list to this page.",
       body: `<p>Pages can do more than display. Ask your agent for:</p>
-        <ul><li><b>Shared data</b>: a tracker or a sign-up sheet that keeps what people enter.</li><li><b>Live updates</b> while others view the page.</li><li><b>Questions</b> the agent asks you and you answer in the browser.</li><li><b>Claude inside the page</b>, paid for by your own API key: set <code>ANTHROPIC_API_KEY</code> before Clax starts.</li>
-        <li><b>A tour of Clax</b> that points at its own buttons, as this page does.</li></ul>
+        <ul><li><b>Shared data</b>: a tracker or a sign-up sheet that keeps what people enter.</li><li><b>Live updates</b> while others view the page.</li><li><b>Questions</b> the agent asks you and you answer in the browser.</li>        <li><b>A tour of Clax</b> that points at its own buttons, as this page does.</li></ul>
         <p class="muted-note">A page declares what it uses in <code>clax.json</code>. One that uses more than the basics (the network, Claude, the shell) asks its owner once per artifact, and again when a version asks for more, in a bar in Clax.</p>
         ${tip("Try", `"Turn this into a checklist my team can tick off."`)}` },
   };
 
-  NODES.share = { kind: "small", kicker: "Next", title: "Share nearby", sub: "People on your network",
-    body: `<p>Others on your network can view and comment on your pages and connect their own agents, with the rights you give them.</p>
-      ${cmds(["clax stop", "clax serve --bind 0.0.0.0"], true)}
-      <p>Then invite people from the <b>People</b> page.</p>
-      ${tip("Trusted networks only", "Traffic on the LAN is not encrypted.")}` };
   // The last step, below Where next?: bringing someone in. Its panel holds the clax.dev way.
   NODES.done = { kind: "terminal", kicker: "Next", title: "Clax is fun with friends", sub: "Anyone you want to collaborate with?",
-    cta: `<button type="button" class="btn invite" data-go="done">Invite someone →</button>`, starter: "Publish this page to clax.dev and tell me how to share it with a teammate.",
+    cta: `<button type="button" class="btn invite" data-go="done">Invite someone →</button>`, starter: "Help me share this page with a teammate so they can comment on it.",
     body: `<p>Clax pages are better with two people pointing at them. Bring a teammate in to comment on your page; their agents can pick up threads too.</p>
-      <h3>Anywhere: through clax.dev</h3>
-      <ol><li>On your page, press <b>Publish to clax.dev</b> in the top bar.</li><li>On its public copy, press <b>Share</b>: add people by GitHub login as Can view, Can comment or Can edit, or copy the link.</li><li>Comments they leave there come back to your page here, and your agent answers them.</li></ol>
-      <p>On your own network instead? <button type="button" class="linkbtn" data-go="share">Share nearby</button> has the commands.</p>` };
+      <ol><li>Open your page on clax.dev and press <b>Share</b>.</li><li>Add people by GitHub login as Can view, Can comment or Can edit, or copy the link.</li><li>Comments they leave come back to your page, and your agent answers them.</li></ol>` };
 
   const LAYOUT = [
     ["signin"], ["@split"], ["@loop"], ["next"],
-    ["fork", "ask", "devserver", "data", "share"], ["done"],
+    ["fork", "ask", "data"], ["done"],
   ];
-  const INSTALLS = ["install-claude", "install-codex", "install-pi", "install-grok", "install-all"];
-  const BRANCHES = ["fork", "ask", "devserver", "data", "share"];
+  const INSTALLS = ["install-claude", "install-codex"];
+  const BRANCHES = ["fork", "ask", "data"];
   const EDGES = [
     ["signin", "install"], ["signin", "claxbot"], ["install", "attach"], ["attach", "comment"], ["claxbot", "comment"],
     ["change", "next"],
@@ -312,12 +277,11 @@
     const top = document.createElement("div"); top.className = "row";
     const b = makeBox("install");
     b.classList.add("install-box");
-    b.insertAdjacentHTML("beforeend", `<span class="chips">${Object.keys(AGENTS).map((k) => `<button type="button" class="chip-agent" data-go="install-${k}" data-pick="${k}" style="--brand:${BRAND[k].color}" title="${AGENTS[k].label}"><span class="mark">${BRAND[k].mark}</span><span>${AGENTS[k].label}</span></button>`).join("")}</span><button type="button" class="linkbtn skip" data-go="attach" data-skip>Already installed? Skip to Attach</button>`);
+    b.insertAdjacentHTML("beforeend", `<span class="chips">${Object.keys(AGENTS).map((k) => `<button type="button" class="chip-agent" data-go="install-${k}" data-pick="${k}" style="--brand:${BRAND[k].color}" title="${AGENTS[k].label}"><span class="mark">${BRAND[k].mark}</span><span>${AGENTS[k].label}</span></button>`).join("")}</span><button type="button" class="linkbtn skip" data-go="attach" data-skip>Already connected? Skip to Attach</button>`);
     top.appendChild(b);
     const at = document.createElement("div"); at.className = "row";
     const ab = makeBox("attach");
     ab.classList.add("install-box");
-    ab.insertAdjacentHTML("beforeend", showMe("attach"));
     at.appendChild(ab);
     left.append(top, at);
     right.appendChild(makeBox("claxbot"));
@@ -555,18 +519,11 @@
     document.getElementById("p-title").textContent = n.kind === "small" && n.agent ? `Install for ${n.title}` : n.title;
     let html = n.body;
     if (id === "agent" || id === "install") {
-      html += `<div class="choices">${Object.entries(AGENTS).map(([k, a]) => `<button type="button" data-agent="${k}" class="brandchoice${state.agent === k ? " on" : ""}" style="--brand:${BRAND[k].color}"><span class="mark">${BRAND[k].mark}</span><span><b>${a.label}</b><span>${a.sub}</span></span></button>`).join("")}</div><p class="muted-note">Already installed? <button type="button" class="linkbtn" data-go="attach" data-skip>Skip to Attach</button></p>`;
+      html += `<div class="choices">${Object.entries(AGENTS).map(([k, a]) => `<button type="button" data-agent="${k}" class="brandchoice${state.agent === k ? " on" : ""}" style="--brand:${BRAND[k].color}"><span class="mark">${BRAND[k].mark}</span><span><b>${a.label}</b><span>${a.sub}</span></span></button>`).join("")}</div><p class="muted-note">Already connected? <button type="button" class="linkbtn" data-go="attach" data-skip>Skip to Attach</button></p>`;
     }
     if (id === "next") {
       html += `<div class="choices">${BRANCHES.map((b) => `<button type="button" data-go="${b}"><b>${NODES[b].title}</b><span>${NODES[b].sub}</span></button>`).join("")}</div>`;
-      html += `<h3>Handy to know</h3>
-        <p>To give any page a public link, press <b>Publish to clax.dev</b> in its top bar, then <b>Push v&lt;N&gt;</b> for later versions. When an agent wants to publish, it asks you first.</p>
-        <p>Your agent does most things for you, but the <code>clax</code> command is there when you want it.</p>
-        ${cmds([["clax open &lt;ID&gt;", "open a page"], ["clax list", "list pages"], ["clax comments", "open threads, newest first"], ["clax push &lt;ID&gt;", "publish a page to clax.dev"], ["clax status", "is Clax running, who is working on what"], ["clax doctor", "health check"]])}
-        <h3>Something's off?</h3>
-        ${cmd("clax doctor --agent claude", { note: "check one harness's plugin: claude, codex, pi or grok" })}
-        <p>Every hook run, MCP start and install is logged in <code>~/.clax/logs/hooks.log</code>. Your pages and comments live in <code>~/.clax</code>.</p>
-        <p><code>clax --help</code> lists every command. The <a href="https://github.com/empathic/clax#readme" target="_blank" rel="noopener">README</a> and the usage guide cover the rest.</p>`;
+      html += `<p class="muted-note">Running Clax on your own machine, or hosting it yourself? That has its own guide in the <a href="https://github.com/empathic/clax#readme" target="_blank" rel="noopener">README</a>.</p>`;
     }
     if (n.starter) html = `<h3>Try this</h3><p>Paste it to your agent, or send it to ClaxBot:</p>${cmd(n.starter, { plain: true })}` + html;
     if (SHOWME[id]) html += `<div class="showme-wrap">${showMe(id)}</div>`;
@@ -688,7 +645,7 @@
   function route() {
     const id = decodeURIComponent(location.hash.slice(1)).replace(/^start\//, "");
     // Links from the ideas page and older links name steps this chart has folded together.
-    const to = NODES[id] ? id : { invite: "done", link: "attach", have: "install" }[id];
+    const to = NODES[id] ? id : { invite: "done", share: "done", devserver: "next", link: "attach", have: "install" }[id];
     if (to) select(to);
     requestAnimationFrame(drawEdges);
   }
