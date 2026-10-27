@@ -226,24 +226,29 @@
         ${tip("Try", `"Turn this into a checklist my team can tick off."`)}` },
   };
 
-  NODES.invite = { kind: "small", kicker: "Next", title: "Bring someone in", sub: "Anyone you want to collaborate with?", starter: "Publish this page to clax.dev and tell me how to share it with a teammate.",
+  NODES.share = { kind: "small", kicker: "Next", title: "Share nearby", sub: "People on your network",
+    body: `<p>Others on your network can view and comment on your pages and connect their own agents, with the rights you give them.</p>
+      ${cmds(["clax stop", "clax serve --bind 0.0.0.0"], true)}
+      <p>Then invite people from the <b>People</b> page.</p>
+      ${tip("Trusted networks only", "Traffic on the LAN is not encrypted.")}` };
+  // The last step, below Where next?: bringing someone in. Its panel holds the clax.dev way.
+  NODES.done = { kind: "terminal", kicker: "Next", title: "Bring someone in", sub: "Anyone you want to collaborate with?",
+    cta: `<button type="button" class="btn invite" data-go="done">Invite someone →</button>`, starter: "Publish this page to clax.dev and tell me how to share it with a teammate.",
     body: `<p>Clax pages are better with two people pointing at them. Bring a teammate in to comment on your page; their agents can pick up threads too.</p>
       <h3>Anywhere: through clax.dev</h3>
       <ol><li>On your page, press <b>Publish to clax.dev</b> in the top bar.</li><li>On its public copy, press <b>Share</b>: add people by GitHub login as Can view, Can comment or Can edit, or copy the link.</li><li>Comments they leave there come back to your page here, and your agent answers them.</li></ol>
-      <h3>Nearby: on your network</h3>
-      ${cmds(["clax stop", "clax serve --bind 0.0.0.0"], true)}
-      <p>Then invite them from the <b>People</b> page. Use a network you trust: LAN traffic is not encrypted.</p>` };
+      <p>On your own network instead? <button type="button" class="linkbtn" data-go="share">Share nearby</button> has the commands.</p>` };
 
   const LAYOUT = [
     ["signin"], ["@split"], ["@loop"], ["next"],
-    ["fork", "ask", "devserver", "data", "invite"],
+    ["fork", "ask", "devserver", "data", "share"], ["done"],
   ];
   const INSTALLS = ["install-claude", "install-codex", "install-pi", "install-grok", "install-all"];
-  const BRANCHES = ["fork", "ask", "devserver", "data", "invite"];
+  const BRANCHES = ["fork", "ask", "devserver", "data", "share"];
   const EDGES = [
     ["signin", "install"], ["signin", "claxbot"], ["install", "attach"], ["attach", "comment"], ["claxbot", "comment"],
     ["change", "next"],
-    ...BRANCHES.map((b) => ["next", b]),
+    ...BRANCHES.map((b) => ["next", b]), ...BRANCHES.map((b) => [b, "done"]),
   ];
   // Two routes after sign-in: bring your own agent (install, then attach), or
   // ClaxBot, which needs none of them. Saved "new" and null are the first.
@@ -287,7 +292,7 @@
   const nodeDim = (id) => (claxbotRoute() && (id === "install" || id === "agent" || id === "attach" || INSTALLS.includes(id)))
     || (!claxbotRoute() && id === "claxbot")
     || (INSTALLS.includes(id) && state.agent && NODES[id].agent !== state.agent);
-  const ideasFor = (id) => ideas.filter((i) => i.step === (id.startsWith("install") ? "install" : id) || (id === "invite" && i.step === "share"));
+  const ideasFor = (id) => ideas.filter((i) => i.step === (id.startsWith("install") ? "install" : id));
 
   /** The fork after sign-in: bring your own agent (install, then attach)
    * on the left, ClaxBot on the right. Both rejoin at the core loop. */
@@ -402,11 +407,11 @@
         b.className = "decision";
         b.innerHTML = `<span>${n.title}</span>`;
       } else {
-        const label = numOf(id) ?? "";
+        const label = id === "done" ? "★" : numOf(id) ?? "";
         b.className = "node" + (n.kind === "small" ? " small" : "") + (INSTALLS.includes(id) ? " inst" : "") + (n.kind === "terminal" ? " terminal" : "");
         const brand = n.agent && BRAND[n.agent];
         if (brand) b.style.setProperty("--brand", brand.color);
-        b.innerHTML = `<span class="n"><span>${label}</span></span>${brand ? `<span class="mark">${brand.mark}</span>` : ""}<span class="t">${n.title}</span><span class="s">${n.sub || ""}</span><span class="idea" hidden>💡</span>${id === "done" ? "" : fab(id)}`;
+        b.innerHTML = `<span class="n"><span>${label}</span></span>${brand ? `<span class="mark">${brand.mark}</span>` : ""}<span class="t">${n.title}</span><span class="s">${n.sub || ""}</span><span class="idea" hidden>💡</span>${fab(id)}`;
       }
       if (n.cta) { b.insertAdjacentHTML("beforeend", `<span class="cta">${n.cta}</span>`); b.classList.add("has-cta"); }
       els[id] = b;
@@ -448,7 +453,7 @@
       el.classList.toggle("dim", nodeDim(id));
       el.classList.toggle("sel", id === selected);
       const num = el.querySelector(":scope > .n > span");
-      if (num) num.textContent = numOf(id) ?? "";
+      if (num && id !== "done") num.textContent = numOf(id) ?? "";
       el.querySelectorAll(":scope > .fab").forEach((f) => { const on = !!state.done[f.dataset.toggle]; f.classList.toggle("on", on); f.setAttribute("aria-pressed", String(on)); f.classList.toggle("beckon", f.dataset.toggle === "signin" && !Object.keys(state.done).length); });
       el.querySelectorAll("[data-pick]").forEach((c) => c.classList.toggle("on", c.dataset.pick === state.agent));
       const bulb = el.querySelector(".idea");
@@ -579,7 +584,7 @@
     }
   }
   function nextOf(id) {
-    if (BRANCHES.includes(id)) return null;
+    if (BRANCHES.includes(id)) return "done";
     if (id === "install" || id === "agent") return state.agent ? `install-${state.agent}` : null;
     if (id.startsWith("install-")) return "attach";
     const c = [...core(), "next"], i = c.indexOf(id);
@@ -673,7 +678,7 @@
   function route() {
     const id = decodeURIComponent(location.hash.slice(1)).replace(/^start\//, "");
     // Links from the ideas page and older links name steps this chart has folded together.
-    const to = NODES[id] ? id : { share: "invite", link: "attach", have: "install", done: "next" }[id];
+    const to = NODES[id] ? id : { invite: "done", link: "attach", have: "install" }[id];
     if (to) select(to);
     requestAnimationFrame(drawEdges);
   }
