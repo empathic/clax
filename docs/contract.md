@@ -6380,11 +6380,9 @@ capability first and light features up when it resolves.
   `ClaxExtensions.Net` in `clax-extensions.d.ts`.
 - `shell` (Clax's own): `highlight(control)` rings one of Clax's controls,
   `"comment"`, `"threads"`, `"versions"`, `"publish"`, `"fork"` or
-  `"send"`, for 6 s or until the person presses anywhere in the Clax
-  window, and resolves `false` when that control is not shown to them now
+  `"send"`, for 6 s or until the viewer presses anywhere in Clax's own bar or panels or presses Escape there (a press in the page does not reach Clax: call `highlight` again to move the ring, or let it lapse), and resolves `false` when that control is not shown to them now
   (on a phone, versions, publish and fork are in a menu); `can(control)`
-  answers the same without drawing; `commentMode(on)`, from a click
-  handler only, turns comment mode on or off. Declare `{"shell": {}}`.
+  answers the same without drawing; `commentMode(on)` turns comment mode on or off, only from a click or key press in the page (while comment mode is on, a click in the page picks what to comment on and never reaches the page, so leave it from a key press; the viewer's Escape or Comment button also leaves it). Declare `{"shell": {}}`.
   Only the owner and editors get it: elsewhere `use("shell")` resolves
   `null`. Types: `ClaxExtensions.Shell` in `clax-extensions.d.ts`.
 - `notify`, `share`, `file`, `camera`, `location`: Clax's device
@@ -6894,8 +6892,7 @@ panel or a tab to reach a control.
 - `highlight(control)` draws a ring around the control and resolves
   `true`, or resolves `false`, drawing nothing, when it is not shown. One
   ring shows at a time in the Clax window: the next `highlight` moves it.
-  The ring goes after 6 s, when the viewer presses anywhere in the Clax
-  window (a press on the control acts as usual) or presses Escape, when
+  The ring goes after 6 s, when the viewer presses anywhere in Clax's own bar or panels or presses Escape there (a press on the control acts as usual; a press in the page does not reach Clax: call `highlight` again to move the ring, or let it lapse), when
   its control stops being shown, and when the page's document leaves. It
   follows the control as the window resizes; a `send` control is first
   scrolled into the sidebar's view. No gesture is needed.
@@ -6903,9 +6900,7 @@ panel or a tab to reach a control.
 - `commentMode(on)` enters (`true`) or leaves (`false`) comment mode, as
   the Comment button does, and resolves whether comment mode is on
   afterwards: leaving keeps it on while the viewer's comment holds typed
-  text. It needs the viewer's click or key press in the page, as
-  `openComposer` does (see the viewer's gesture under "Runtime
-  capabilities").
+  text. It needs the viewer's click or key press in the page, as `openComposer` does (see the viewer's gesture under "Runtime capabilities"); while comment mode is on, a click in the page picks what to comment on and never reaches the page, so leave it from a key press; the viewer's Escape or Comment button also leaves it.
 
 Rejections: `invalid_argument` (a control name outside the six, or `on`
 not a boolean); `no_gesture` (`commentMode` without the viewer's recent

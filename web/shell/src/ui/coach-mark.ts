@@ -1,8 +1,10 @@
 // The coach mark: a ring drawn around one of the shell's controls (spec
 // 2026-10-26 §8). One at a time in the window; it goes after `COACH_MS`, on
-// any press or Escape, and when its control stops being shown or scrolls out of
-// view. It follows the control on `resize`, on a scroll of the window or any
-// element, and on the control's own resizes.
+// a press or Escape in the shell window (the page's own frame never reaches
+// them), and when its control stops being shown or scrolls out of view. While
+// it is up it is placed again on every animation frame, so it follows its
+// control however the control moves, and goes when the control is disabled,
+// hidden or removed.
 import { after } from "../clock";
 import { inView, isShown } from "./shell-controls";
 
@@ -18,10 +20,20 @@ const STYLE = `
 @media (prefers-reduced-motion: reduce) { .coach-mark { animation: none; } }
 `;
 
+/** Runs `fn` on the next animation frame; returns its cancel. */
+export type FrameScheduler = (fn: () => void) => () => void;
+
+const animationFrames: FrameScheduler = fn => {
+  const id = requestAnimationFrame(() => fn());
+  return () => cancelAnimationFrame(id);
+};
+
 let current: (() => void) | null = null;
 
-/** Draws the ring around `el`, replacing any ring already drawn; returns its idempotent dismiss. */
-export function showCoachMark(el: HTMLElement, shown: (el: Element) => boolean = isShown): () => void {
+/** Draws the ring around `el`, replacing any ring already drawn; returns its
+ * idempotent dismiss, or `null` when the control is not shown or in view at
+ * once and nothing was drawn. `frames` schedules the per-frame placement. */
+export function showCoachMark(el: HTMLElement, shown: (el: Element) => boolean = isShown, frames: FrameScheduler = animationFrames): (() => void) | null {
   current?.();
   if (!document.head.querySelector("style[data-coach-mark]")) {
     const style = document.createElement("style");
@@ -46,12 +58,20 @@ export function showCoachMark(el: HTMLElement, shown: (el: Element) => boolean =
   const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(place);
 
   let done = false;
-  const cancel = after(COACH_MS, () => dismiss());
+  const cancel = after(COACH_MS, () => dismiss(), "coach-mark");
+  let cancelFrame: (() => void) | null = null;
+  const tick = () => {
+    cancelFrame = null;
+    place();
+    if (!done) cancelFrame = frames(tick);
+  };
   function dismiss() {
     if (done) return;
     done = true;
     if (current === dismiss) current = null;
     cancel();
+    cancelFrame?.();
+    cancelFrame = null;
     observer?.disconnect();
     window.removeEventListener("resize", place);
     window.removeEventListener("scroll", place, true);
@@ -66,5 +86,7 @@ export function showCoachMark(el: HTMLElement, shown: (el: Element) => boolean =
   window.addEventListener("keydown", onKey, true);
   observer?.observe(el);
   place();
+  if (done) return null;
+  cancelFrame = frames(tick);
   return dismiss;
 }

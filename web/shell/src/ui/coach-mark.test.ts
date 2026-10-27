@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { COACH_MS, COACH_PAD, showCoachMark } from "./coach-mark";
+import { COACH_MS, COACH_PAD, type FrameScheduler, showCoachMark } from "./coach-mark";
 
 type TestClock = { advance(ms: number): number };
 const advance = (ms: number) => (globalThis as unknown as { claxTestClock: TestClock }).claxTestClock.advance(ms);
@@ -13,11 +13,27 @@ const control = (rect = { x: 100, y: 10, width: 80, height: 32 }) => {
 const marks = () => [...document.querySelectorAll<HTMLElement>(".coach-mark")];
 const always = () => true;
 
+/** A frame scheduler a test steps: `flush()` runs the callbacks waiting now, once. */
+function fakeFrames() {
+  let waiting: Array<{ fn: () => void; live: boolean }> = [];
+  const schedule: FrameScheduler = fn => {
+    const w = { fn, live: true };
+    waiting.push(w);
+    return () => { w.live = false; };
+  };
+  return { schedule, flush() { const run = waiting; waiting = []; for (const w of run) if (w.live) w.fn(); }, get waiting() { return waiting.filter(w => w.live).length; } };
+}
+let frames = fakeFrames();
+
 const dismissers: Array<() => void> = [];
-const show = (el: HTMLElement, shown: (e: Element) => boolean = always) => { const d = showCoachMark(el, shown); dismissers.push(d); return d; };
+const show = (el: HTMLElement, shown: (e: Element) => boolean = always) => {
+  const d = showCoachMark(el, shown, frames.schedule);
+  if (d) dismissers.push(d);
+  return d!;
+};
 
 // Fake timers pin performance.now(), which the clock reads, so a test's advance is exact however loaded the machine.
-beforeEach(() => { vi.useFakeTimers(); });
+beforeEach(() => { vi.useFakeTimers(); frames = fakeFrames(); });
 
 afterEach(() => {
   for (const d of dismissers.splice(0)) d();
@@ -141,5 +157,70 @@ describe("a coach mark", () => {
     expect(marks()).toHaveLength(1);
     document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
     expect(marks()).toHaveLength(0);
+  });
+
+  it("a_control_disabled_while_ringed_loses_its_ring_on_the_next_frame", () => {
+    const el = control();
+    // The real test of "shown": a disabled control is not shown.
+    const d = showCoachMark(el, e => !(e as HTMLButtonElement).disabled, frames.schedule)!;
+    dismissers.push(d);
+    expect(marks()).toHaveLength(1);
+    el.disabled = true;
+    expect(marks()).toHaveLength(1);
+    frames.flush();
+    expect(marks()).toHaveLength(0);
+    expect(frames.waiting).toBe(0);
+  });
+
+  it("the_ring_follows_a_control_that_a_sibling_pushed_sideways", () => {
+    const el = control();
+    // The control's box is where it sits among its siblings.
+    el.getBoundingClientRect = () => {
+      const x = 100 + [...document.body.children].filter(c => c.classList.contains("pushed")).length * 60;
+      return { x, y: 10, left: x, top: 10, width: 80, height: 32, right: x + 80, bottom: 42, toJSON() {} } as DOMRect;
+    };
+    show(el);
+    expect(marks()[0].style.left).toBe("96px");
+    const sibling = document.createElement("span");
+    sibling.className = "pushed";
+    document.body.insertBefore(sibling, el);
+    expect(marks()[0].style.left).toBe("96px");
+    frames.flush();
+    expect(marks()[0].style.left).toBe("156px");
+    frames.flush();
+    expect(marks()).toHaveLength(1);
+  });
+
+  it("a_mark_not_shown_at_once_draws_nothing_and_returns_null", () => {
+    expect(showCoachMark(control(), () => false, frames.schedule)).toBeNull();
+    expect(marks()).toHaveLength(0);
+    expect(frames.waiting).toBe(0);
+    expect(document.querySelectorAll(".coach-mark")).toHaveLength(0);
+  });
+
+  describe("once dismissed, nothing listens or polls", () => {
+    const ways: Array<[string, () => void]> = [
+      ["the timer", () => advance(COACH_MS)],
+      ["a press", () => { document.body.dispatchEvent(new Event("pointerdown", { bubbles: true })); }],
+      ["Escape", () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); }],
+      ["a replacing highlight", () => { show(control()); }],
+    ];
+    for (const [name, dismissIt] of ways) {
+      it(`dismissed_by_${name.replace(/\s/g, "_")}`, () => {
+        const shown = vi.fn(() => true);
+        const inner = document.createElement("div");
+        document.body.appendChild(inner);
+        showCoachMark(control(), shown, frames.schedule);
+        dismissIt();
+        // A replacement's own mark is dismissed too, so only the first's listeners could call `shown`.
+        for (const d of dismissers.splice(0)) d();
+        shown.mockClear();
+        inner.dispatchEvent(new Event("scroll"));
+        window.dispatchEvent(new Event("resize"));
+        frames.flush();
+        expect(shown).not.toHaveBeenCalled();
+        expect(marks()).toHaveLength(0);
+      });
+    }
   });
 });

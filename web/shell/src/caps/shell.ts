@@ -4,7 +4,7 @@
 //
 // - `highlight(control)` rings the first shown element marked for that
 //   control (ui/shell-controls.ts) with a coach mark (ui/coach-mark.ts) and
-//   resolves `true`; `false`, drawing nothing, when none is shown. One ring
+//   resolves `true`; `false`, drawing nothing and clearing any earlier ring, when none is shown or the ring cannot be drawn. One ring
 //   at a time; the ring goes with the frame's document (`leave`, `reset`,
 //   `dispose`). A `send` control is scrolled into its sidebar first, only when it
 //   is not wholly in view there.
@@ -20,8 +20,8 @@ import { CapError } from "./errors";
 import { frameGesture } from "./gesture";
 import type { HandlerFactory } from "./host";
 
-/** Where the handler finds a shown control, and how it rings one (returning its dismiss). */
-export type ShellDeps = { find(c: ShellControl): HTMLElement | null; mark(el: HTMLElement): () => void };
+/** Where the handler finds a shown control, and how it rings one (returning its dismiss, or `null` when nothing was drawn). */
+export type ShellDeps = { find(c: ShellControl): HTMLElement | null; mark(el: HTMLElement): (() => void) | null };
 
 function control(v: unknown): ShellControl {
   if (!isShellControl(v)) throw new CapError("invalid_argument", `control is one of ${SHELL_CONTROLS.map(c => `"${c}"`).join(", ")}`);
@@ -37,17 +37,17 @@ export function makeShellHandler(deps: ShellDeps): HandlerFactory {
         switch (method) {
           case "highlight": {
             const el = deps.find(control(args[0]));
-            if (!el) return false;
             clear();
+            if (!el) return false;
             dismiss = deps.mark(el);
-            return true;
+            return dismiss !== null;
           }
           case "can":
             return deps.find(control(args[0])) !== null;
           case "commentMode": {
             const on = args[0];
             if (typeof on !== "boolean") throw new CapError("invalid_argument", "commentMode takes true or false");
-            if (!(gesture?.composer ?? frameGesture())) throw new CapError("no_gesture", "shell.commentMode needs the person's click or key press in the page; call it from a click handler");
+            if (!(gesture?.composer ?? frameGesture())) throw new CapError("no_gesture", "shell.commentMode needs the person's click or key press in the page; while comment mode is on, a click in the page picks what to comment on and never reaches the page, so leave it from a key press; the viewer's Escape or Comment button also leaves it");
             const now = env.commentMode?.(on) ?? null;
             if (now === null) throw new CapError("unavailable", "comments cannot be made in this view");
             return now;

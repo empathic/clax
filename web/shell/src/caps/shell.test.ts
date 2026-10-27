@@ -40,6 +40,25 @@ describe("the shell capability", () => {
     expect(marked).toEqual([]);
   });
 
+  it("highlight_of_a_control_not_shown_clears_the_previous_ring", async () => {
+    const { h, dismiss } = setup({ comment: button() });
+    await expect(h.call("highlight", ["comment"])).resolves.toBe(true);
+    expect(dismiss).not.toHaveBeenCalled();
+    await expect(h.call("highlight", ["fork"])).resolves.toBe(false);
+    expect(dismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("highlight_resolves_false_when_the_ring_could_not_be_drawn", async () => {
+    const el = button();
+    const h = makeShellHandler({ find: () => el, mark: () => null })({} as CapEnv, {} as Grants);
+    await expect(h.call("highlight", ["comment"])).resolves.toBe(false);
+    // The real mark: a control that is not in view at once draws nothing.
+    const hidden = makeShellHandler({ find: () => el, mark: e => showCoachMark(e, () => false) })({} as CapEnv, {} as Grants);
+    await expect(hidden.call("highlight", ["comment"])).resolves.toBe(false);
+    expect(document.querySelectorAll(".coach-mark")).toHaveLength(0);
+    document.head.querySelector("style[data-coach-mark]")?.remove();
+  });
+
   it("can_says_whether_shown_and_draws_nothing", async () => {
     const { h, marked } = setup({ threads: button() });
     await expect(h.call("can", ["threads"])).resolves.toBe(true);

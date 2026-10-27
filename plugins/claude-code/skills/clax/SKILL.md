@@ -634,11 +634,9 @@ capability first and light features up when it resolves.
   `ClaxExtensions.Net` in `clax-extensions.d.ts`.
 - `shell` (Clax's own): `highlight(control)` rings one of Clax's controls,
   `"comment"`, `"threads"`, `"versions"`, `"publish"`, `"fork"` or
-  `"send"`, for 6 s or until the person presses anywhere in the Clax
-  window, and resolves `false` when that control is not shown to them now
+  `"send"`, for 6 s or until the viewer presses anywhere in Clax's own bar or panels or presses Escape there (a press in the page does not reach Clax: call `highlight` again to move the ring, or let it lapse), and resolves `false` when that control is not shown to them now
   (on a phone, versions, publish and fork are in a menu); `can(control)`
-  answers the same without drawing; `commentMode(on)`, from a click
-  handler only, turns comment mode on or off. Declare `{"shell": {}}`.
+  answers the same without drawing; `commentMode(on)` turns comment mode on or off, only from a click or key press in the page (while comment mode is on, a click in the page picks what to comment on and never reaches the page, so leave it from a key press; the viewer's Escape or Comment button also leaves it). Declare `{"shell": {}}`.
   Only the owner and editors get it: elsewhere `use("shell")` resolves
   `null`. Types: `ClaxExtensions.Shell` in `clax-extensions.d.ts`.
 - `notify`, `share`, `file`, `camera`, `location`: Clax's device

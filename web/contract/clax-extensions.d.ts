@@ -524,7 +524,9 @@ declare namespace ClaxExtensions {
    * and when undeclared, so render without it first.
    *
    * - `highlight(control)` rings that control for 6 s or until the viewer
-   *   presses anywhere in the Clax window (the control's own click acts as
+   *   presses anywhere in Clax's own bar or panels or presses Escape there
+   *   (a press in the page does not reach Clax: call `highlight` again to
+   *   move the ring, or let it lapse; the control's own click acts as
    *   usual), one ring at a time: the next `highlight` moves it. It
    *   resolves `true` once drawn, and `false`, drawing nothing, when the
    *   control is not shown to this viewer now: at phone width `versions`,
@@ -532,8 +534,7 @@ declare namespace ClaxExtensions {
    *   threads shown. Clax opens no menu, panel or tab to reach a control.
    *   No gesture is needed.
    * - `can(control)` answers what `highlight` would, without drawing.
-   * - `commentMode(on)` turns comment mode on or off, only from a click or
-   *   key press in the page, and resolves whether comment mode is on
+   * - `commentMode(on)` turns comment mode on or off, only from a click or key press in the page (while comment mode is on, a click in the page picks what to comment on and never reaches the page, so leave it from a key press; the viewer's Escape or Comment button also leaves it), and resolves whether comment mode is on
    *   afterwards: leaving keeps it on while the viewer's comment holds
    *   typed text.
    *

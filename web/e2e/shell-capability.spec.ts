@@ -1,7 +1,7 @@
 import { type Frame, type Locator, type Page } from "@playwright/test";
 import { test, expect, type Daemon, contentFrame, openArtifact, postThread, publishWith, reach, registerSession } from "./fixtures";
 import { hostedDaemon, memberOf, ownerOf, rightsOn } from "./hosted-helpers";
-import { advance, quietEval, shellNow } from "./time";
+import { advance, quietEval } from "./time";
 
 // The shell capability against the real shell in Chromium: the ring is
 // judged on the control's own box, on desktop and on a phone.
@@ -92,16 +92,29 @@ test(`a_highlight_rings_the_real_comment_button`, async ({ page }) => {
 
 test(`a_ring_goes_after_six_seconds`, async ({ page }) => {
   const { f } = await tour(page);
-  // The shell's clock also runs in real time, so the ring's start is only
-  // known to lie between two readings: step to 1 ms short of its six seconds
-  // from the first, then past six seconds from the second.
-  const a = await shellNow(page);
   expect(await press(page, f, "hl-threads")).toBe("true");
   await expectRingAround(page, page.locator("button.threads"));
-  const b = await shellNow(page);
-  await advance(page, a + 5_999 - b);
+  // One evaluate reads the ring's due time off the clock and steps to 1 ms
+  // short of it, so real time between the two cannot carry it past.
+  await quietEval(page, `globalThis.claxTestClock.advance(globalThis.claxTestClock.dueIn("coach-mark") - 1)`);
   await expect(ring(page)).toHaveCount(1);
-  await advance(page, b - a + 1);
+  await advance(page, 1);
+  await expect(ring(page)).toHaveCount(0);
+});
+
+test(`app_mode_shows_no_controls`, async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const { artifact } = await publishWith(d.base, d.token, `Tour`, TOUR, { shell: {} });
+  await page.goto(`${d.base}/a/${artifact.id}?app=1`);
+  const f = await contentFrame(page, artifact.id, 1);
+  await expect(f.locator("#load")).not.toHaveText("-");
+  // The Clax app hides Clax's own bar: `shell` is served, no control reads
+  // as shown and nothing is ringed.
+  await expect(f.locator("#probe")).not.toHaveText("null");
+  for (const name of NAMES) {
+    expect(await press(page, f, `can-${name}`), name).toBe("false");
+    expect(await press(page, f, `hl-${name}`), name).toBe("false");
+  }
   await expect(ring(page)).toHaveCount(0);
 });
 

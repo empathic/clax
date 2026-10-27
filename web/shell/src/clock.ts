@@ -14,7 +14,7 @@
 declare const __CLAX_TEST_CLOCK__: boolean;
 
 const SKEW_KEY = "clax.test-clock.skew";
-type Pending = { due: number; seq: number; fn: () => void; real: ReturnType<typeof setTimeout> };
+type Pending = { due: number; seq: number; fn: () => void; label?: string; real: ReturnType<typeof setTimeout> };
 
 let skew = 0;
 let seq = 0;
@@ -41,6 +41,12 @@ if (__CLAX_TEST_CLOCK__) {
       try { sessionStorage.setItem(SKEW_KEY, String(skew)); } catch { /* storage unavailable: this load keeps it */ }
       return skew;
     },
+    /** Milliseconds until the most recently started pending timer labelled `label` falls due; `null` when none is pending. */
+    dueIn(label: string): number | null {
+      let last: Pending | undefined;
+      for (const p of pending) if (p.label === label && (!last || p.seq > last.seq)) last = p;
+      return last ? last.due - now() : null;
+    },
     /** How far the clock has been moved, in milliseconds. */
     get skew() { return skew; },
     /** How many timers started through `after` are waiting. */
@@ -54,13 +60,13 @@ export const now = (): number => performance.now() + skew;
 /** Milliseconds since the epoch, as `Date.now()`. */
 export const wall = (): number => Date.now() + skew;
 
-/** Runs `fn` once `ms` of this clock have passed; returns its cancel. */
-export function after(ms: number, fn: () => void): () => void {
+/** Runs `fn` once `ms` of this clock have passed; returns its cancel. A test-clock build keeps `label` on the pending timer for `claxTestClock.dueIn`; production ignores it. */
+export function after(ms: number, fn: () => void, label?: string): () => void {
   if (!__CLAX_TEST_CLOCK__) {
     const id = setTimeout(fn, ms);
     return () => clearTimeout(id);
   }
-  const p: Pending = { due: now() + ms, seq: ++seq, fn, real: setTimeout(() => { if (pending.delete(p)) fn(); }, ms) };
+  const p: Pending = { due: now() + ms, seq: ++seq, fn, label, real: setTimeout(() => { if (pending.delete(p)) fn(); }, ms) };
   pending.add(p);
   return () => { clearTimeout(p.real); pending.delete(p); };
 }
