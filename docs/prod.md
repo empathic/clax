@@ -18,8 +18,8 @@ cutting a release is `docs/usage.md`, "Releasing".
    `scripts/check-version-bump.sh origin/prod` passes when the head's
    version is `X.Y.Z`, every version file agrees
    (`scripts/check-version.sh`) and the version is greater than `prod`'s.
-3. The owner merges it with a merge commit (the only method the ruleset
-   allows: the next release branch's merge of `main` needs `main`'s
+3. The owner merges it (only a repository admin can merge into `prod`)
+   with a merge commit (the only method the ruleset allows: the next release branch's merge of `main` needs `main`'s
    commits in `prod`'s history). The push to `prod` runs Deploy prod
    (`.github/workflows/deploy-prod.yml`).
 4. `just release X.Y.Z` again, on `prod`, tags, pins the plugins, pushes
@@ -45,8 +45,14 @@ differs (the ruleset it writes whole each time). It
 - creates or updates the repository ruleset `prod` on `refs/heads/prod`:
   pull request required, merge commits only, required checks `bazel`,
   `worker` and `version` from GitHub Actions, no deletion, no force push,
-  signed commits (GitHub signs the merge commits it makes); the repository
-  admin role bypasses it;
+  signed commits (GitHub signs the merge commits it makes), and updates
+  restricted (GitHub's "Restrict updates" rule): only the ruleset's bypass
+  actors, the repository admin role, update `prod`. Anyone with write
+  access can open a pull request into `prod`, but only an admin merges it,
+  and an admin pushes the release's pin commit directly. GitHub cannot
+  narrow a bypass to one person, so the repository's other admin can merge
+  into and push to `prod` too. No approval is required: the owner cannot
+  approve the release pull request `just release` opens as them;
 - creates the environment `production`, deployable from `prod` only, with
   the variables the deploy reads: `PUBLIC_HOST` (`clax.dev`), `SITE_DOMAIN`
   (`clax.run`), `STORE` (`artifacts`), `OAUTH_CLIENT_ID` (the GitHub OAuth

@@ -33,7 +33,9 @@
 # 2. creates, or updates, the repository ruleset `prod` on refs/heads/prod:
 #    a pull request, merged with a merge commit, with CI's `bazel`, `worker`
 #    and `version` checks passed; no deletion, no force push, signed commits;
-#    repository admins bypass it (scripts/release.sh pushes the pin commit);
+#    updates restricted to the bypass actors, the repository admins, who
+#    alone merge into prod (anyone with write access opens pull requests)
+#    and push to it directly (scripts/release.sh pushes the pin commit);
 # 3. creates the environment `production`, deployable from `prod` only, and
 #    sets its variables;
 # 4. sets the repository variable PUBLIC_HOST, which the hourly drift check
@@ -47,6 +49,8 @@
 #   compare       https://docs.github.com/en/rest/commits/commits#compare-two-commits
 #   rulesets      https://docs.github.com/en/rest/repos/rules#create-a-repository-ruleset
 #                 https://docs.github.com/en/rest/repos/rules#update-a-repository-ruleset
+#   restrict updates (rule type `update`)
+#                 https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#restrict-updates
 #   environments  https://docs.github.com/en/rest/deployments/environments#create-or-update-an-environment
 #   branch policy https://docs.github.com/en/rest/deployments/branch-policies
 #   variables     https://docs.github.com/en/rest/actions/variables#create-an-environment-variable
@@ -158,11 +162,16 @@ fi
 
 say "2. Ruleset prod on refs/heads/prod"
 # actor_id 5 with actor_type RepositoryRole is the repository's admin role;
-# integration_id 15368 is GitHub Actions, so only its checks count.
+# integration_id 15368 is GitHub Actions, so only its checks count. The
+# `update` rule lets only the bypass actors update prod, so only an admin
+# merges a pull request into it: GitHub cannot narrow a bypass to one
+# person, so every admin can. No approval is required: the owner cannot
+# approve the release pull request scripts/release.sh opens as them.
 ruleset='{"name":"prod","target":"branch","enforcement":"active",'\
 '"conditions":{"ref_name":{"include":["refs/heads/prod"],"exclude":[]}},'\
 '"bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}],'\
 '"rules":[{"type":"deletion"},{"type":"non_fast_forward"},{"type":"required_signatures"},'\
+'{"type":"update","parameters":{"update_allows_fetch_and_merge":false}},'\
 '{"type":"pull_request","parameters":{"required_approving_review_count":0,"dismiss_stale_reviews_on_push":false,'\
 '"require_code_owner_review":false,"require_last_push_approval":false,"required_review_thread_resolution":false,'\
 '"allowed_merge_methods":["merge"]}},'\

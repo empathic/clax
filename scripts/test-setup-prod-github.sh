@@ -170,10 +170,17 @@ if run --i-know-what-i-am-doing; then pass "acting succeeds"; else fail "acting 
 if [ "$(q 'g["refs"].get("prod")')" = "$FULL" ]; then pass "prod starts at clax.dev's commit, in full"; else fail "prod starts at clax.dev's commit ($(q 'g["refs"]'))"; fi
 rules="$(q 'sorted(r["type"] for r in g["rulesets"][0]["rules"])')"
 if [ "$(q 'len(g["rulesets"])')" = 1 ] && [ "$(q 'g["rulesets"][0]["conditions"]["ref_name"]["include"]')" = "['refs/heads/prod']" ] \
-    && [ "$rules" = "['deletion', 'non_fast_forward', 'pull_request', 'required_signatures', 'required_status_checks']" ] \
+    && [ "$rules" = "['deletion', 'non_fast_forward', 'pull_request', 'required_signatures', 'required_status_checks', 'update']" ] \
     && [ "$(q 'g["rulesets"][0]["enforcement"]')" = active ]; then
-    pass "the ruleset on refs/heads/prod: pull request, checks, signatures, no deletion, no force push"
+    pass "the ruleset on refs/heads/prod: pull request, checks, signatures, updates restricted, no deletion, no force push"
 else fail "the ruleset on refs/heads/prod ($rules)"; fi
+# Only the bypass actors update prod: they alone merge its pull requests.
+# No approval is required: the owner cannot approve the pull request
+# scripts/release.sh opens as them.
+if [ "$(q '[r.get("parameters") for r in g["rulesets"][0]["rules"] if r["type"] == "update"]')" = "[{'update_allows_fetch_and_merge': False}]" ] \
+    && [ "$(q '[r["parameters"]["required_approving_review_count"] for r in g["rulesets"][0]["rules"] if r["type"] == "pull_request"]')" = "[0]" ]; then
+    pass "only the bypass actors update prod, and no approval is required"
+else fail "the ruleset's update restriction and approvals ($(q 'g["rulesets"][0]["rules"]'))"; fi
 if [ "$(q '[c["context"] for r in g["rulesets"][0]["rules"] if r["type"] == "required_status_checks" for c in r["parameters"]["required_status_checks"]]')" = "['bazel', 'worker', 'version']" ] \
     && [ "$(q '[r["parameters"]["allowed_merge_methods"] for r in g["rulesets"][0]["rules"] if r["type"] == "pull_request"]')" = "[['merge']]" ] \
     && [ "$(q 'g["rulesets"][0]["bypass_actors"]')" = "[{'actor_id': 5, 'actor_type': 'RepositoryRole', 'bypass_mode': 'always'}]" ]; then
