@@ -28,6 +28,7 @@
   </section>
   <section class="flight" id="flight" hidden aria-label="In flight"></section>
   <p class="notice" id="ideas-notice" hidden></p>
+  <div class="stages" id="stages" role="group" aria-label="Show ideas by stage"></div>
   <div class="filters" id="filters"></div>
   <div class="cards" id="cards"></div>
 </main>
@@ -52,20 +53,37 @@
   let myVotes = {};    // idea ID -> 1 (up) or -1 (down); an older `true` is up
   const weight = (v) => (v === true ? 1 : v === 1 || v === -1 ? v : 0);
   let filter = "all";
+  // Stages shown: by default all but shipped and declined. Kept per viewer in localStorage.
+  const SKEY = "clax-quickstart-idea-stages";
+  const OPEN = ["proposed", "planned", "building"], DEFAULT = [...OPEN, "implemented"];
+  let stages = new Set(DEFAULT);
+  try {
+    const saved = JSON.parse(localStorage.getItem(SKEY) || "null");
+    if (Array.isArray(saved)) stages = new Set(saved.filter((x) => STATUSES.includes(x)));
+  } catch (_) {}
+  const saveStages = () => { try { localStorage.setItem(SKEY, JSON.stringify([...stages])); } catch (_) {} };
+  const stageOf = (i) => (STATUSES.includes(i.status) ? i.status : "proposed");
+  const sameSet = (list) => list.length === stages.size && list.every((x) => stages.has(x));
   let db = null, uid = null, isOwner = false;
 
   function render() {
     document.getElementById("idea-count").textContent = String(ideas.filter((i) => i.status !== "shipped" && i.status !== "declined").length);
+    const count = (st) => ideas.filter((i) => stageOf(i) === st).length;
+    document.getElementById("stages").innerHTML = `<span class="stage-lbl">Stage</span>`
+      + STATUSES.map((st) => `<button type="button" class="chip stage st-${st}${stages.has(st) ? " on" : ""}" data-s="${st}" aria-pressed="${stages.has(st)}">${st}<span class="ct">${count(st)}</span></button>`).join("")
+      + `<button type="button" class="chip preset${sameSet(OPEN) ? " on" : ""}" data-p="open" aria-pressed="${sameSet(OPEN)}">Open</button>`
+      + `<button type="button" class="chip preset${sameSet(STATUSES) ? " on" : ""}" data-p="all" aria-pressed="${sameSet(STATUSES)}">All</button>`;
     const areas = [...new Set(ideas.map((i) => i.area))].sort();
     document.getElementById("filters").innerHTML = ["all", "high", ...areas].map((f) => `<button type="button" class="chip${f === filter ? " on" : ""}" data-f="${esc(f)}">${f === "all" ? "All" : f === "high" ? "High priority" : esc(f)}</button>`).join("");
     const shown = ideas
+      .filter((i) => stages.has(stageOf(i)))
       .filter((i) => filter === "all" || (filter === "high" ? i.priority === "high" : i.area === filter))
       // Votes first, so a down vote pushes an idea below the ones nobody voted on; then priority.
       .sort((a, b) => (votes[b.id] || 0) - (votes[a.id] || 0) || (PRI[a.priority] ?? 3) - (PRI[b.priority] ?? 3) || (a.order ?? 99) - (b.order ?? 99));
     renderFlight();
     const flash = decodeURIComponent(location.hash.slice(1));
     const cards = document.getElementById("cards");
-    cards.innerHTML = shown.length ? "" : `<p class="empty">No ideas here yet.</p>`;
+    cards.innerHTML = shown.length ? "" : `<p class="empty">${ideas.length ? "Nothing in these stages." : "No ideas here yet."}</p>`;
     for (const i of shown) {
       const c = document.createElement("article");
       c.className = "card" + (i.id === flash ? " flash" : "");
@@ -143,6 +161,14 @@
 
   function notice(text) { const n = document.getElementById("ideas-notice"); n.textContent = text; n.hidden = !text; }
 
+  document.getElementById("stages").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-s], [data-p]"); if (!b) return;
+    if (b.dataset.s) { if (stages.has(b.dataset.s)) stages.delete(b.dataset.s); else stages.add(b.dataset.s); }
+    else stages = new Set(b.dataset.p === "open" ? OPEN : STATUSES);
+    saveStages(); render();
+    // The bar is redrawn: put keyboard focus back on the button pressed.
+    document.querySelector(b.dataset.s ? `#stages [data-s="${b.dataset.s}"]` : `#stages [data-p="${b.dataset.p}"]`)?.focus();
+  });
   document.getElementById("filters").addEventListener("click", (e) => {
     const b = e.target.closest("[data-f]"); if (!b) return; filter = b.dataset.f; render();
   });

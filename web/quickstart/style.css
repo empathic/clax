@@ -335,3 +335,12 @@
   .showme-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; }
   .btn.showme { padding: 4px 10px; font-size: 13px; }
   .showme-hint { margin: 0; }
+
+  /* Stage filter on the ideas page: toggle chips with counts, and two presets. */
+  .stages { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px; }
+  .stage-lbl { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-right: 4px; }
+  .chip.stage .ct { margin-left: 6px; font-size: 12px; font-variant-numeric: tabular-nums; opacity: .7; }
+  .chip.stage:not(.on) { color: var(--muted); }
+  .chip.preset { border-style: dashed; }
+  .chip.preset.on { border-style: solid; }
+  .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
