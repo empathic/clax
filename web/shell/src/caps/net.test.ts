@@ -100,6 +100,18 @@ describe("net in the shell", () => {
     expect(granted.prompt).not.toHaveBeenCalled();
   });
 
+  it("asks again when a grant its Allow made is revoked, while a denial still stands", async () => {
+    const { h, state, prompt } = setup();
+    await h.call("fetch", [fetchCall("https://api.example.com/")]);
+    expect(prompt).toHaveBeenCalledTimes(1);
+    state.granted = false;
+    await h.call("fetch", [fetchCall("https://api.example.com/")]);
+    expect(prompt).toHaveBeenCalledTimes(2);
+    const denied = setup({ answer: "deny" });
+    for (let i = 0; i < 3; i++) await expect(denied.h.call("fetch", [fetchCall("https://api.example.com/")])).rejects.toMatchObject({ code: "not_granted" });
+    expect(denied.prompt).toHaveBeenCalledTimes(1);
+  });
+
   it("never asks in the app's inspect view", async () => {
     const { h, prompt } = setup();
     const was = location.href;

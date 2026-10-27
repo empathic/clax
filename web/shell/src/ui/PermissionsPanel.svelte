@@ -9,9 +9,9 @@
   // waiting for approval offers Review, which opens the approval dialog
   // (ApprovalDialog). Withdrawing an approval changes what the page is
   // served, so the view reloads (ArtifactController.permissionsChanged); the
-  // panel then opens again on the new document (`REOPEN`). Loaded after the
+  // panel then opens again on the new document (the flag `reopenKey`). Loaded after the
   // first paint (`more-menu.svelte.ts`), which keeps its opener.
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { fromStore } from "svelte/store";
   import { ApiError, getToken } from "../api";
   import type { ArtifactController } from "../view/artifact-controller";
@@ -53,6 +53,11 @@
       error = failureText("Could not load the permissions.", e);
     }
   }
+  // What the controller's refetch (a permissions event, an approval from
+  // another view or from this panel's Review) changed about approval: read
+  // the answer again, so no row lingers as it was.
+  const approvalKey = $derived(JSON.stringify([s.data?.artifact.capabilities_in_force ?? null, s.data?.artifact.pending_capabilities ?? null, s.data?.artifact.may_approve ?? null]));
+  $effect(() => { void approvalKey; if (untrack(() => open)) void untrack(load); });
   function show() {
     back.el = document.activeElement as HTMLElement | null;
     open = true;
@@ -142,7 +147,7 @@
     </div>
   </div>
   {#if reviewing && answer?.pending}
-    <ApprovalDialog pending={answer.pending} title={s.data?.artifact.title ?? ""} busy={s.approving} owner={token !== null} onNotNow={() => ctl.notNow()} onApprove={() => { void ctl.approve(); }} onClose={() => { reviewing = false; }} />
+    <ApprovalDialog pending={answer.pending} title={s.data?.artifact.title ?? ""} busy={s.approving} owner={token !== null} onNotNow={() => ctl.notNow()} onApprove={() => { void ctl.approve().then(load); }} onClose={() => { reviewing = false; }} />
   {/if}
 {/if}
 

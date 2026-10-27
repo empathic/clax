@@ -47,6 +47,14 @@ describe("db.artifact(id)'s consent in the shell", () => {
     expect(put).toEqual([{ method: "PUT", url: `/api/artifacts/${A}/db-grants/${B}`, auth: "Bearer tok" }]);
   });
 
+  it("asks again when a call finds the grant it saved revoked", async () => {
+    const { h, prompts } = setup();
+    expect(await h.call("grant", [B])).toBe(true);
+    // The page's next read was refused not_granted: the grant is gone.
+    expect(await h.call("grant", [B])).toBe(true);
+    expect(prompts).toHaveLength(2);
+  });
+
   it("answers false on Don't allow, which stands for the view", async () => {
     const { h, prompts, requests } = setup({ answer: "deny" });
     expect(await h.call("grant", [B])).toBe(false);
