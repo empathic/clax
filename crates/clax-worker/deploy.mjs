@@ -60,8 +60,27 @@
 // --account <ID> (else CLOUDFLARE_ACCOUNT_ID, else the login's one account),
 // --rotate-secrets, --diag (--no-diag, the default, keeps them off),
 // --no-build, --wait <s> (default 600), --out <path>, --config-only,
-// --dry-run, --yes (no questions; fails on what it would ask). --content is
+// --dry-run, --yes (no questions; fails on what it would ask),
+// --retired-content-origin <https origin> (the content host an instance
+// served assets on before site hosts; else the record's). --content is
 // gone: artifacts are served on the site domain's hosts.
+//
+// --ci: a deploy from a CI runner (scripts/cloudflare-setup.sh --ci): it
+// asks nothing, and fails naming each setting not given as a flag (the
+// public host, the site domain, --store, the legal documents, the account
+// or CLOUDFLARE_ACCOUNT_ID; --owner-github with --github-client-id); it
+// refuses --rotate-secrets, --diag and a Worker without SETUP_SECRET,
+// CLAX_TOKEN or CLAX_KEK (first-time setup runs from a laptop), keeps the
+// Worker's secrets, notes that it keeps no CLAX_KEK backup, and fails when
+// the health wait or the site host check does.
+//
+// --production: this is the production instance. A deploy refuses unless
+// the checkout is clean and its HEAD is origin's prod tip (`git ls-remote
+// origin refs/heads/prod`, checked again before the upload), and unless it
+// runs in GitHub Actions (GITHUB_ACTIONS=true) or is given --from-laptop,
+// which lifts only that last condition. A dry run says what a deploy would
+// refuse. Production deploys run from GitHub Actions on pushes to prod
+// (docs/prod.md).
 //
 // GitHub sign-in: --github-client-id <ID> (a GitHub OAuth App's) and
 // --owner-github <login> (whoever signs in as that GitHub account is the
@@ -87,7 +106,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { dirname, join, resolve } from "node:path";
-import { buildId, doneText, healthOf, partialTriggerUpdate } from "./deploy-lib.mjs";
+import { buildId, checkCiOptions, ciSecretsRefusal, doneText, healthOf, partialTriggerUpdate, prodTipOf, productionGate } from "./deploy-lib.mjs";
 import { HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
@@ -119,8 +138,8 @@ const NAMESPACE = "clax";
 const PAID_LIMIT_KIB = 10 * 1024;
 
 export function parseArgs(argv) {
-  const o = { store: "artifacts", name: "clax", wait: 600, diag: false, build: true, dryRun: false, yes: false, rotate: false, configOnly: false };
-  const takes = new Set(["--public", "--site-domain", "--zone", "--store", "--name", "--account", "--wait", "--out", "--github-client-id", "--owner-github", "--legal", "--terms-url", "--privacy-url", "--legal-version"]);
+  const o = { store: "artifacts", storeGiven: false, name: "clax", wait: 600, diag: false, build: true, dryRun: false, yes: false, rotate: false, configOnly: false, ci: false, production: false, fromLaptop: false };
+  const takes = new Set(["--public", "--site-domain", "--zone", "--store", "--name", "--account", "--wait", "--out", "--github-client-id", "--owner-github", "--legal", "--terms-url", "--privacy-url", "--legal-version", "--retired-content-origin"]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const [flag, inline] = a.includes("=") ? a.split(/=(.*)/s) : [a, undefined];
@@ -132,7 +151,11 @@ export function parseArgs(argv) {
       const v = value();
       if (v === undefined) throw new Error(`${flag} takes a value`);
       o[flag.slice(2)] = flag === "--wait" ? Number(v) : v;
+      if (flag === "--store") o.storeGiven = true;
     } else if (flag === "--dry-run") o.dryRun = true;
+    else if (flag === "--ci") o.ci = o.yes = true;
+    else if (flag === "--production") o.production = true;
+    else if (flag === "--from-laptop") o.fromLaptop = true;
     else if (flag === "--yes" || flag === "-y") o.yes = true;
     else if (flag === "--diag") o.diag = true;
     else if (flag === "--no-diag") o.diag = false;
@@ -143,6 +166,9 @@ export function parseArgs(argv) {
     else throw new Error(`unknown option ${a} (see the top of deploy.mjs)`);
   }
   if (!["artifacts", "memory"].includes(o.store)) throw new Error(`--store is artifacts or memory, not ${o.store}`);
+  if (o["retired-content-origin"] !== undefined && !retiredContentOrigin({ retired_content_origin: o["retired-content-origin"] })) {
+    throw new Error(`--retired-content-origin takes an https:// origin (e.g. https://content.example.com), not ${o["retired-content-origin"]}`);
+  }
   return o;
 }
 
@@ -189,19 +215,42 @@ function wrangler(args, { account, show = false, input } = {}) {
   });
 }
 
-/** The checked-out commit (full lowercase hex, as `CLAX_BUILD_COMMIT`
- * takes it); empty when it cannot be read. */
-function sourceCommit() {
+/** Runs git with `args` in the repository: {code, out}. */
+function git(args) {
   return new Promise((resolve) => {
-    const child = spawn("git", ["rev-parse", "HEAD"], { cwd: ROOT, stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn("git", args, { cwd: ROOT, stdio: ["ignore", "pipe", "ignore"] });
     let out = "";
     child.stdout.on("data", (d) => (out += d));
-    child.on("error", () => resolve(""));
-    child.on("close", (code) => {
-      const c = out.trim();
-      resolve(code === 0 && /^[0-9a-f]{7,64}$/.test(c) ? c : "");
-    });
+    child.on("error", () => resolve({ code: -1, out }));
+    child.on("close", (code) => resolve({ code, out }));
   });
+}
+
+/** The checked-out commit (full lowercase hex, as `CLAX_BUILD_COMMIT`
+ * takes it); empty when it cannot be read. */
+async function sourceCommit() {
+  const r = await git(["rev-parse", "HEAD"]);
+  const c = r.out.trim();
+  return r.code === 0 && /^[0-9a-f]{7,64}$/.test(c) ? c : "";
+}
+
+/** Whether this deploy may go on, by deploy-lib.mjs productionGate: with
+ * --production, what git says of the checkout (clean, HEAD) and of
+ * origin's prod tip. Throws its refusal; answers what to say, if
+ * anything. */
+async function checkProduction(o) {
+  const facts = {};
+  if (o.production) {
+    const status = await git(["status", "--porcelain"]);
+    const tip = await git(["ls-remote", "origin", "refs/heads/prod"]);
+    facts.githubActions = process.env.GITHUB_ACTIONS === "true";
+    facts.clean = status.code === 0 && status.out.trim() === "";
+    facts.head = await sourceCommit();
+    facts.prodTip = tip.code === 0 ? prodTipOf(tip.out) : null;
+  }
+  const gate = productionGate({ production: o.production, fromLaptop: o.fromLaptop, dryRun: o.dryRun, ...facts });
+  if (gate.refuse) throw new Error(gate.refuse);
+  return gate.say;
 }
 
 function run(cmd, args, env = {}) {
@@ -670,7 +719,8 @@ async function writeDeployConfig(o, account) {
   if (github.client_id) info(`GitHub sign-in: OAuth App ${github.client_id}, owner ${github.owner ? `@${github.owner}` : "(none named)"}`);
   const legal = legalSettings(o, early);
   info(`Terms and Privacy: ${legal.legal ? "the bundled documents" : legal.terms_url ? `${legal.terms_url}, ${legal.privacy_url} (version ${legal.legal_version})` : "none"}`);
-  const retired = retiredContentOrigin(early);
+  // The flag's (a --ci deploy has no record), else the record's.
+  const retired = retiredContentOrigin({ retired_content_origin: o["retired-content-origin"] }) ?? retiredContentOrigin(early);
   if (retired) info(`retired content origin ${retired}: its old asset addresses redirect to their sites`);
   const configPath = o.out ? resolve(o.out) : DEPLOY_CONFIG;
   const commit = await sourceCommit();
@@ -691,14 +741,18 @@ async function main() {
     await writeDeployConfig(o, o.account ?? process.env.CLOUDFLARE_ACCOUNT_ID);
     return;
   }
+  if (o.ci) checkCiOptions(o, process.env);
+  const production = await checkProduction(o);
   moveOldRecords();
   if (!existsSync(WRANGLER)) throw new Error(`no wrangler at ${WRANGLER}: run npm install in ${HERE}`);
   const version = (await wrangler(["--version"])).out.trim();
-  console.log(`hosted Clax deploy${o.dryRun ? " (dry run: no account changes)" : ""}; wrangler ${version}; store ${o.store}`);
+  console.log(`hosted Clax deploy${o.dryRun ? " (dry run: no account changes)" : ""}${o.ci ? " (--ci: no questions)" : ""}; wrangler ${version}; store ${o.store}`);
+  if (production) info(production);
 
   step("Login");
   const who = await login(o);
   if (!who) {
+    if (!o.dryRun && o.ci) throw new Error("wrangler is not logged in: --ci signs in with CLOUDFLARE_API_TOKEN");
     if (!o.dryRun) throw new Error("wrangler is not logged in: run `npx wrangler login` in this directory, then this again");
     info("not logged in: the account calls (bucket, queue, Artifacts, secrets) are skipped, each named below");
   } else {
@@ -737,6 +791,13 @@ async function main() {
   const have = who ? await secretNames(account, configPath) : [];
   let secrets = null;
   const needed = ["SETUP_SECRET", "CLAX_TOKEN"].filter((n) => o.rotate || !have.includes(n));
+  if (o.ci && who) {
+    // First-time setup stays on a laptop: a --ci deploy changes no secret
+    // but the GitHub client secret it is given.
+    const refusal = ciSecretsRefusal(have, { githubClientId: github.client_id, githubSecretGiven: Boolean(process.env.GITHUB_CLIENT_SECRET?.trim()) });
+    if (refusal && !o.dryRun) throw new Error(refusal);
+    if (refusal) info(`a deploy would refuse: ${refusal}`);
+  }
   if (!who) info("skipped (no login): wrangler secret list; a deploy generates SETUP_SECRET and CLAX_TOKEN when the Worker has neither");
   else if (needed.length === 0) {
     info(`the Worker has SETUP_SECRET and CLAX_TOKEN; kept${record.setup_secret ? ` (in ${recordPath(pub)})` : " (not shown: --rotate-secrets makes new ones)"}`);
@@ -753,7 +814,9 @@ async function main() {
   // Worker without it gets the backup's, else a new one.
   const kek = kekPlan({ have: who ? have : null, ...readKek(pub, record), dryRun: o.dryRun });
   info(kek.say);
-  if (kek.warn) info(`WARNING: ${kek.warn}: ${kekPath(pub)}`);
+  // A --ci deploy keeps no backup: the one made by the instance's first
+  // deploy is on the machine that ran it.
+  if (kek.warn) info(o.ci ? "notice: the Worker has CLAX_KEK and this run keeps no backup of it (--ci: the backup is kept where the instance was first deployed)" : `WARNING: ${kek.warn}: ${kekPath(pub)}`);
   if (kek.save) writeKek(pub, kek.save);
   if (kek.upload) secrets = { ...(secrets ?? {}), CLAX_KEK: kek.upload };
   if (github.client_id) {
@@ -793,6 +856,9 @@ async function main() {
   }
   info("the Worker embeds the web UI in web/dist");
 
+  // Only prod's tip at the time of the upload goes to production: prod
+  // may have moved while this deploy built.
+  if (o.production && !o.dryRun) await checkProduction(o);
   step(o.dryRun ? "wrangler deploy --dry-run" : "wrangler deploy");
   const args = ["deploy", "--config", configPath];
   let secretsFile;
@@ -865,12 +931,16 @@ async function main() {
   }
   // The wildcard's DNS record and certificate are the account's, not the
   // deploy's: a shorter wait, then the steps that are left.
-  await checkSiteHost(site, account, Math.min(o.wait, 120));
+  const siteOk = await checkSiteHost(site, account, Math.min(o.wait, 120));
 
   step("Done");
   // The first-time setup text only when this deploy generated the secrets.
-  console.log(doneText({ pub, name: o.name, diag: o.diag, generated: secrets, record: recordPath(pub), kek: kekPath(pub), smoke: `node smoke-remote.mjs --deploy ${recordPath(pub)}` }));
+  console.log(doneText({ pub, name: o.name, diag: o.diag, generated: secrets, record: recordPath(pub), kek: o.ci ? null : kekPath(pub), smoke: `node smoke-remote.mjs --deploy ${recordPath(pub)}` }));
   if (o.diag) diagReminder(pub);
+  // A --ci deploy passes only when the instance answers as this build on
+  // the public host and on a site host.
+  const failed = [...(healthy ? [] : [`https://${pub}/healthz did not report build ${build} within ${o.wait} s`]), ...(siteOk ? [] : [`a site host of ${site} is not served`])];
+  if (o.ci && failed.length) throw new Error(failed.join("; "));
 }
 
 /** The reminder a deploy with the diagnostics routes on prints. */

@@ -38,6 +38,87 @@ export function healthOf(body, want) {
   return { waiting: `the instance from before this deploy (${was}, started ${j.started_at ?? "?"}) still answers; waiting for build ${want}` };
 }
 
+/** The commit `git ls-remote origin refs/heads/prod` printed for prod, or
+ * null when it printed none (no such branch, or the call failed). */
+export function prodTipOf(lsRemote) {
+  const line = String(lsRemote ?? "")
+    .split("\n")
+    .map((l) => l.trim().split(/\s+/))
+    .find(([sha, ref]) => ref === "refs/heads/prod" && /^[0-9a-f]{40,64}$/.test(sha ?? ""));
+  return line ? line[0] : null;
+}
+
+/** Whether a deploy of the production instance may go on. A deploy given
+ * `production` runs only from a clean checkout whose HEAD is origin's
+ * prod tip (`prodTip`, null when origin has none), and only in GitHub
+ * Actions (`githubActions`) unless `fromLaptop` lifts that one condition.
+ * Answers `{ ok: true, say }`, or `{ refuse }` naming what is wrong; a dry
+ * run changes nothing, so it is never refused and `say` names what a
+ * deploy would refuse. */
+export function productionGate({ production, fromLaptop, githubActions, clean, head, prodTip, dryRun }) {
+  if (!production) {
+    if (fromLaptop) return { refuse: "--from-laptop goes with --production" };
+    return { ok: true, say: null };
+  }
+  const why = [];
+  if (!githubActions && !fromLaptop) {
+    why.push("production deploys run from GitHub Actions on pushes to prod (docs/prod.md); --from-laptop deploys from here instead");
+  }
+  if (!clean) why.push("the checkout has changes: commit or remove them");
+  if (!prodTip) why.push("origin has no branch prod (git ls-remote origin refs/heads/prod printed none)");
+  else if (head !== prodTip) why.push(`HEAD is ${head ? head.slice(0, 12) : "unknown"}, not origin's prod tip ${prodTip.slice(0, 12)}`);
+  if (why.length === 0) {
+    return { ok: true, say: `production: HEAD is origin's prod tip ${prodTip.slice(0, 12)}, clean, ${githubActions ? "in GitHub Actions" : "from a laptop (--from-laptop)"}` };
+  }
+  if (dryRun) return { ok: true, say: `production: a deploy would refuse: ${why.join("; ")}` };
+  return { refuse: `refusing to deploy the production instance: ${why.join("; ")}` };
+}
+
+/** What `--ci` requires of the options before anything runs: every
+ * setting given as a flag (a CI run has no record and asks nothing), and
+ * none of the options that need a person. Throws naming each flag
+ * missing or refused. `env` is the environment (CLOUDFLARE_ACCOUNT_ID). */
+export function checkCiOptions(o, env = {}) {
+  const missing = [];
+  if (!o.public && !o.zone) missing.push("--public <host>");
+  if (!o["site-domain"]) missing.push("--site-domain <domain>");
+  if (!o.storeGiven) missing.push("--store artifacts|memory");
+  if (o.legal === undefined && !o["terms-url"] && !o["privacy-url"] && !o["legal-version"]) {
+    missing.push("--legal bundled (or --terms-url, --privacy-url and --legal-version)");
+  }
+  if (!o.account && !env.CLOUDFLARE_ACCOUNT_ID) missing.push("--account <ID> (or CLOUDFLARE_ACCOUNT_ID)");
+  if (o["github-client-id"] && !o["owner-github"]) missing.push("--owner-github <login> (with --github-client-id)");
+  const refused = [];
+  if (o.rotate) refused.push("--rotate-secrets (new secrets are shown once, on a terminal: rotate from a laptop)");
+  if (o.diag) refused.push("--diag (the diagnostics routes take the owner token, which a CI run does not have)");
+  const parts = [];
+  if (missing.length) parts.push(`--ci asks nothing: give ${missing.join(", ")}`);
+  if (refused.length) parts.push(`--ci takes no ${refused.join(", no ")}`);
+  if (parts.length) throw new Error(parts.join("; "));
+}
+
+/** What a `--ci` deploy refuses about the Worker's secrets, given `have`,
+ * the names the Worker has: first-time setup stays on a laptop (it
+ * generates secrets that are shown once and backs up CLAX_KEK on the
+ * machine that ran it), so a Worker missing SETUP_SECRET, CLAX_TOKEN or
+ * CLAX_KEK is refused; so is a GitHub sign-in that would turn off (the
+ * Worker has GITHUB_CLIENT_SECRET but no --github-client-id was given) or
+ * stay off (--github-client-id, and neither the Worker nor
+ * GITHUB_CLIENT_SECRET has its secret). Answers the reason, or null. */
+export function ciSecretsRefusal(have, { githubClientId, githubSecretGiven }) {
+  const missing = ["SETUP_SECRET", "CLAX_TOKEN", "CLAX_KEK"].filter((n) => !have.includes(n));
+  if (missing.length) {
+    return `the Worker has no ${missing.join(", ")} (or wrangler secret list failed): its first deploy, which generates them, runs from a laptop (scripts/cloudflare-setup.sh), not --ci`;
+  }
+  if (!githubClientId && have.includes("GITHUB_CLIENT_SECRET")) {
+    return "the Worker has GITHUB_CLIENT_SECRET but no --github-client-id was given: this deploy would turn GitHub sign-in off; give --github-client-id and --owner-github";
+  }
+  if (githubClientId && !githubSecretGiven && !have.includes("GITHUB_CLIENT_SECRET")) {
+    return "--github-client-id, but neither the Worker nor GITHUB_CLIENT_SECRET has the client secret";
+  }
+  return null;
+}
+
 /** What deploy.mjs prints when it is done. The first-time setup text (the
  * secrets shown once, the setup URL, the next steps) only when this deploy
  * generated SETUP_SECRET or CLAX_TOKEN (`generated`, the secrets it made);

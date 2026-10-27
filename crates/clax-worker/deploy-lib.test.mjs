@@ -3,7 +3,16 @@
 //   node --test crates/clax-worker/deploy-lib.test.mjs
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildId, doneText, healthOf, partialTriggerUpdate } from "./deploy-lib.mjs";
+import {
+  buildId,
+  checkCiOptions,
+  ciSecretsRefusal,
+  doneText,
+  healthOf,
+  partialTriggerUpdate,
+  prodTipOf,
+  productionGate,
+} from "./deploy-lib.mjs";
 
 // What `wrangler deploy` printed when the custom-domains call failed after
 // the upload (Cloudflare API code 10013); running it again succeeded.
@@ -68,6 +77,100 @@ test("an instance from before the deploy, of the same version, is waited past", 
   const older = healthOf(JSON.stringify({ version: "0.6.0", build: "0a2f4805a1b2-20261023T090000Z-00000000" }), want);
   assert.match(older.waiting, /build 0a2f4805a1b2-20261023T090000Z-00000000/);
   assert.match(healthOf("ok", want).waiting, /not its JSON/);
+});
+
+const TIP = "0a2f4805a1b2c3d4e5f60718293a4b5c6d7e8f90";
+const OTHER = "1111111111111111111111111111111111111111";
+
+test("prod's tip is read from git ls-remote's line for refs/heads/prod alone", () => {
+  assert.equal(prodTipOf(`${TIP}\trefs/heads/prod\n`), TIP);
+  assert.equal(prodTipOf(`${OTHER}\trefs/heads/production\n${TIP}\trefs/heads/prod\n`), TIP);
+  for (const out of ["", undefined, `${OTHER}\trefs/heads/main\n`, "fatal: 'origin' does not appear to be a git repository\n"]) {
+    assert.equal(prodTipOf(out), null, String(out));
+  }
+});
+
+test("a deploy not of the production instance is not checked, and --from-laptop needs --production", () => {
+  assert.deepEqual(productionGate({ production: false }), { ok: true, say: null });
+  assert.match(productionGate({ production: false, fromLaptop: true }).refuse, /--from-laptop goes with --production/);
+});
+
+test("production deploys from GitHub Actions at a clean checkout of prod's tip", () => {
+  const g = productionGate({ production: true, githubActions: true, clean: true, head: TIP, prodTip: TIP });
+  assert.equal(g.ok, true);
+  assert.match(g.say, /prod tip 0a2f4805a1b2, clean, in GitHub Actions/);
+});
+
+test("production off GitHub Actions is refused unless --from-laptop", () => {
+  const off = productionGate({ production: true, githubActions: false, clean: true, head: TIP, prodTip: TIP });
+  assert.match(off.refuse, /run from GitHub Actions on pushes to prod \(docs\/prod\.md\); --from-laptop/);
+  const laptop = productionGate({ production: true, fromLaptop: true, githubActions: false, clean: true, head: TIP, prodTip: TIP });
+  assert.equal(laptop.ok, true);
+  assert.match(laptop.say, /from a laptop \(--from-laptop\)/);
+});
+
+test("--from-laptop lifts only the Actions requirement: a dirty checkout or another commit is refused", () => {
+  for (const [facts, why] of [
+    [{ clean: false, head: TIP, prodTip: TIP }, /the checkout has changes/],
+    [{ clean: true, head: OTHER, prodTip: TIP }, /HEAD is 111111111111, not origin's prod tip 0a2f4805a1b2/],
+    [{ clean: true, head: TIP, prodTip: null }, /origin has no branch prod/],
+  ]) {
+    for (const githubActions of [true, false]) {
+      const g = productionGate({ production: true, fromLaptop: true, githubActions, ...facts });
+      assert.equal(g.ok, undefined);
+      assert.match(g.refuse, why);
+    }
+  }
+});
+
+test("a production dry run is never refused, and says what a deploy would refuse", () => {
+  const g = productionGate({ production: true, githubActions: false, clean: false, head: OTHER, prodTip: TIP, dryRun: true });
+  assert.equal(g.ok, true);
+  assert.match(g.say, /a deploy would refuse: .*GitHub Actions.*changes.*not origin's prod tip/);
+});
+
+const CI = { public: "clax.example.com", "site-domain": "example.run", store: "artifacts", storeGiven: true, legal: "bundled", account: "abc" };
+
+test("--ci takes every setting as a flag", () => {
+  assert.doesNotThrow(() => checkCiOptions(CI));
+  assert.doesNotThrow(() => checkCiOptions({ ...CI, public: undefined, zone: "example.com" }));
+  assert.doesNotThrow(() => checkCiOptions({ ...CI, account: undefined }, { CLOUDFLARE_ACCOUNT_ID: "abc" }));
+  assert.doesNotThrow(() => checkCiOptions({ ...CI, legal: undefined, "terms-url": "https://t", "privacy-url": "https://p", "legal-version": "1" }));
+  assert.doesNotThrow(() => checkCiOptions({ ...CI, "github-client-id": "Iv1", "owner-github": "someone" }));
+});
+
+test("--ci names each missing flag at once, the store's default included", () => {
+  // What parseArgs gives with no flags: the store defaulted, not given.
+  assert.throws(() => checkCiOptions({ store: "artifacts", storeGiven: false }), (e) => {
+    for (const f of ["--public <host>", "--site-domain <domain>", "--store artifacts|memory", "--legal bundled", "--account <ID> (or CLOUDFLARE_ACCOUNT_ID)"]) {
+      assert.ok(e.message.includes(f), `${f} in ${e.message}`);
+    }
+    return true;
+  });
+  assert.throws(() => checkCiOptions({ ...CI, "github-client-id": "Iv1" }), /--owner-github <login> \(with --github-client-id\)/);
+});
+
+test("--ci refuses what needs a person: new secrets and the diagnostics", () => {
+  assert.throws(() => checkCiOptions({ ...CI, rotate: true }), /--ci takes no --rotate-secrets/);
+  assert.throws(() => checkCiOptions({ ...CI, diag: true }), /--ci takes no --diag/);
+});
+
+const ALL = ["SETUP_SECRET", "CLAX_TOKEN", "CLAX_KEK"];
+
+test("--ci deploys a Worker set up from a laptop, keeping its secrets", () => {
+  assert.equal(ciSecretsRefusal(ALL, {}), null);
+  assert.equal(ciSecretsRefusal([...ALL, "GITHUB_CLIENT_SECRET"], { githubClientId: "Iv1" }), null);
+  assert.equal(ciSecretsRefusal(ALL, { githubClientId: "Iv1", githubSecretGiven: true }), null);
+});
+
+test("--ci refuses a first deploy: the Worker lacks a secret, or the list failed", () => {
+  assert.match(ciSecretsRefusal([], {}), /no SETUP_SECRET, CLAX_TOKEN, CLAX_KEK .*runs from a laptop/);
+  assert.match(ciSecretsRefusal(["SETUP_SECRET", "CLAX_TOKEN"], {}), /no CLAX_KEK/);
+});
+
+test("--ci refuses to turn GitHub sign-in off, or to leave it without its secret", () => {
+  assert.match(ciSecretsRefusal([...ALL, "GITHUB_CLIENT_SECRET"], {}), /would turn GitHub sign-in off/);
+  assert.match(ciSecretsRefusal(ALL, { githubClientId: "Iv1" }), /neither the Worker nor GITHUB_CLIENT_SECRET/);
 });
 
 const DONE = { pub: "clax.example.com", name: "clax", diag: false, record: "/r/clax.example.com.json", kek: "/r/clax.example.com.kek", smoke: "node smoke-remote.mjs --deploy /r/clax.example.com.json" };
