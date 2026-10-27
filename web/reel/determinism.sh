@@ -27,21 +27,29 @@ sums b > "$tmp/b.sums"
 
 na=$(wc -l < "$tmp/a.sums" | tr -d ' ')
 nb=$(wc -l < "$tmp/b.sums" | tr -d ' ')
-paste -d' ' "$tmp/a.sums" "$tmp/b.sums" | awk '$1 != $3 || $2 != $4 { print $1 }' > "$tmp/differ"
+if [ "$na" != "$nb" ]; then
+  echo "error: $vignette: one recording has $na frames, the other $nb" >&2
+  exit 1
+fi
+# The same frame names in both, in order: a gap in one is named, not diffed.
+cut -d' ' -f1 "$tmp/a.sums" > "$tmp/a.names"
+cut -d' ' -f1 "$tmp/b.sums" > "$tmp/b.names"
+if ! cmp -s "$tmp/a.names" "$tmp/b.names"; then
+  missing=$(diff "$tmp/a.names" "$tmp/b.names" | sed -n 's/^[<>] //p' | head -n 1)
+  echo "error: $vignette: frame $missing is in one recording only" >&2
+  exit 1
+fi
+paste -d' ' "$tmp/a.sums" "$tmp/b.sums" | awk '$2 != $4 { print $1 }' > "$tmp/differ"
 first=$(head -n 1 "$tmp/differ")
 if [ -n "$first" ]; then
-  echo "error: $vignette: frame $first differs between two recordings ($na and $nb frames; $(wc -l < "$tmp/differ" | tr -d ' ') differ: $(head -n 8 "$tmp/differ" | tr '\n' ' '))" >&2
+  echo "error: $vignette: frame $first differs between two recordings ($na frames; $(wc -l < "$tmp/differ" | tr -d ' ') differ: $(head -n 8 "$tmp/differ" | tr '\n' ' '))" >&2
   # Under Bazel the pair is kept, in the test's outputs (bazel-testlogs/.../test.outputs).
   if [ -n "${TEST_UNDECLARED_OUTPUTS_DIR:-}" ]; then
     cp "$tmp/a/frames/$first" "$TEST_UNDECLARED_OUTPUTS_DIR/a-$first"
-    cp "$tmp/b/frames/$first" "$TEST_UNDECLARED_OUTPUTS_DIR/b-$first" 2>/dev/null || true
+    cp "$tmp/b/frames/$first" "$TEST_UNDECLARED_OUTPUTS_DIR/b-$first"
     cp "$tmp/differ" "$TEST_UNDECLARED_OUTPUTS_DIR/differ.txt"
     echo "the two frames $first are in $TEST_UNDECLARED_OUTPUTS_DIR" >&2
   fi
-  exit 1
-fi
-if [ "$na" != "$nb" ]; then
-  echo "error: $vignette: one recording has $na frames, the other $nb" >&2
   exit 1
 fi
 if ! cmp -s "$tmp/a/beats.json" "$tmp/b/beats.json"; then

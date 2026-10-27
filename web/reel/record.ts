@@ -45,6 +45,19 @@ const CHROMIUM_ARGS = ["--font-render-hinting=none", "--disable-lcd-text"];
  * shows a tile or image still on its way. */
 const DETERMINISTIC_ARGS = ["--run-all-compositor-stages-before-draw", "--disable-checker-imaging", "--disable-threaded-scrolling"];
 
+/** Math.random for a deterministic camera's documents: mulberry32 from one
+ * seed, so a page drawing on it (backoff jitter, a random haiku) draws the
+ * same numbers in the same order each run. */
+const SEEDED_RANDOM = `(() => {
+  let s = 0x2f6b1a3d;
+  Math.random = () => {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+})()`;
+
 function fail(message: string): never {
   console.error(`error: ${message}`);
   process.exit(2);
@@ -138,6 +151,7 @@ const stage: Stage = {
       ...(videoDir ? { recordVideo: { dir: videoDir, size: { width, height } } } : {}),
     });
     await context.clock.install({ time: REEL_EPOCH });
+    if (mode === "deterministic") await context.addInitScript(SEEDED_RANDOM);
     const page = await context.newPage();
     // The video began with the page.
     camera = { page, startedAt: Date.now() };

@@ -108,3 +108,33 @@ test("a roll films a frame per 1/30 s of the page's clock, and a still camera fi
     rmSync(out, { recursive: true, force: true });
   }
 });
+
+test("an animation started between frames waits for the camera, and one past its end finishes", async ({ browser }) => {
+  const out = mkdtempSync(join(tmpdir(), "clax-reel-camera-"));
+  try {
+    const context = await browser.newContext({ viewport: { width: 200, height: 100 } });
+    await context.clock.install({ time: REEL_EPOCH });
+    const page = await context.newPage();
+    await page.setContent(`<div id="a" style="width:100px;height:100px;background:#000"></div>`);
+    type Probe = { a: Animation; finished: boolean };
+    const cam = await deterministicCamera(page, out);
+    await cam.roll(34);
+    await page.evaluate(() => {
+      const w = window as unknown as Probe;
+      w.finished = false;
+      w.a = document.getElementById("a")!.animate({ opacity: [0, 1] }, 50);
+      w.a.onfinish = () => { w.finished = true; };
+    });
+    // Real time passes, frames are rendered between these, but the
+    // animation's timeline stands: it has not moved.
+    for (let i = 0; i < 3; i++) await page.evaluate(() => { let x = 0; for (let j = 0; j < 1e8; j++) x = (x + j) % 7; return x; });
+    expect(await page.evaluate(() => (window as unknown as Probe).a.currentTime ?? 0)).toBe(0);
+    expect(await page.evaluate(() => (window as unknown as Probe).finished)).toBe(false);
+    // 67 ms of the camera's clock later it is past its 50 ms: finished, as for a person.
+    await cam.roll(66);
+    await expect.poll(() => page.evaluate(() => (window as unknown as Probe).finished)).toBe(true);
+    await context.close();
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
