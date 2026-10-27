@@ -9,8 +9,9 @@
 //! and the artifact has no comment thread of any status. Any other state
 //! stops updates for good the first time the rule runs on it. A thread's
 //! creation and an approval change not made by `clax` or `migration` (a
-//! withdrawal, or an approval by a person) stop them for good in their own
-//! transaction ([`stop_in`]), so neither is undone by a later release's
+//! withdrawal, or an approval by a person), and a metadata patch that
+//! changes the declaration, stop them for good in their own transaction
+//! ([`stop_in`]), so none is undone by a later release's version or
 //! approval. Renames,
 //! pins, tags and the page's documents are not versions, so they do not
 //! stop updates, and an update leaves them as they are.
@@ -927,17 +928,29 @@ mod tests {
         for (by, stops) in [("owner", true), ("person:u_mia", true), ("clax", false)] {
             let (_d, st) = store();
             let id = seeded(&st, &release("a")).await;
-            // A metadata change declaring `shell` leaves it waiting, so there is
-            // something to approve; it is not a version, so not a touch.
-            st.update_meta(
-                DAEMON,
-                &id,
-                crate::MetaPatch {
-                    capabilities: Some(serde_json::json!({"db": {}, "shell": {}})),
-                    ..crate::MetaPatch::default()
-                },
-            )
+            // A declaration of `shell` written past the untouched rule (a
+            // metadata patch would stop updates itself) leaves it waiting,
+            // so there is something to approve.
+            let caps = serde_json::json!({"db": {}, "shell": {}}).to_string();
+            st.with_tx(|tx| {
+                tx.execute(
+                    "UPDATE artifacts SET capabilities_json = ?2 WHERE id = ?1",
+                    params![id.as_str(), caps],
+                )?;
+                tx.execute(
+                    "UPDATE versions SET capabilities_json = ?2 WHERE artifact_id = ?1 AND n = 1",
+                    params![id.as_str(), caps],
+                )?;
+                Ok(())
+            })
             .unwrap();
+            assert!(
+                st.quickstart_of(None)
+                    .unwrap()
+                    .unwrap()
+                    .stopped_at
+                    .is_none()
+            );
             let p = st.pending_capabilities(&id).unwrap().expect("shell waits");
             st.approve_capabilities(DAEMON, &id, p.version, &p.declaration_sha256, by, false)
                 .unwrap();
@@ -960,5 +973,58 @@ mod tests {
                 "approval by {by}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_patch_that_changes_the_declaration_stops_updates() {
+        let caps = serde_json::json!({"db": {}, "user": {}, "shell": {}});
+        let narrowed = serde_json::json!({"db": {}, "user": {}});
+        let (_d, st) = store();
+        let id = seeded(&st, &release_declaring("a", &caps)).await;
+        st.update_meta(
+            DAEMON,
+            &id,
+            MetaPatch {
+                capabilities: Some(narrowed.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            st.quickstart_of(None)
+                .unwrap()
+                .unwrap()
+                .stopped_at
+                .is_some()
+        );
+        assert!(matches!(
+            st.update_quickstart(DAEMON, None, &release_declaring("b", &caps))
+                .await
+                .unwrap(),
+            Updated::Stopped
+        ));
+        // The release did not put `shell` back, declared or approved.
+        assert_eq!(st.get_artifact(&id).unwrap().unwrap().current_version, 1);
+        assert_eq!(st.capabilities_in_force(&id).unwrap(), narrowed);
+        assert_eq!(approval_of(&st, &id).1, narrowed);
+
+        // A patch that sets the declaration it already has is no change.
+        let (_d, st) = store();
+        let id = seeded(&st, &release_declaring("a", &caps)).await;
+        st.update_meta(
+            DAEMON,
+            &id,
+            MetaPatch {
+                capabilities: Some(caps.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            st.update_quickstart(DAEMON, None, &release_declaring("b", &caps))
+                .await
+                .unwrap(),
+            Updated::Made { .. }
+        ));
     }
 }

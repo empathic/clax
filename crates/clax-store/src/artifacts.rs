@@ -317,7 +317,11 @@ impl Store {
     /// bump `updated_at` (metadata edits are not new content). Recorded,
     /// in the same transaction, as `artifact.update` under `ctx`, naming in
     /// `fields` each field the patch sets, even to the value it had (an
-    /// explicit request); a patch that sets nothing records nothing.
+    /// explicit request); a patch that sets nothing records nothing. A
+    /// patch that changes the declaration of a seeded quickstart stops
+    /// Clax's updates to it for good, in the same transaction
+    /// ([`super::quickstart::stop_in`]), so a later release never puts back
+    /// a name the patch removed.
     ///
     /// # Errors
     /// `NotFound` when the artifact does not exist or is deleted;
@@ -420,6 +424,9 @@ impl Store {
             if let Some(caps) = &patch.capabilities {
                 self.drop_undeclared_grants(tx, ctx, id, caps)?;
                 super::capability_approvals::narrow_in(self, tx, ctx, id, caps)?;
+                if *caps != before.capabilities {
+                    super::quickstart::stop_in(tx, id, &self.now())?;
+                }
             }
             if !fields.is_empty() {
                 let mut rec =
