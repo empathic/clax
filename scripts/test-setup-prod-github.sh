@@ -2,7 +2,8 @@
 # Tests scripts/setup-prod-github.sh against a fake gh and a fake curl on
 # PATH; the real gh and curl are never run. The fake gh plays GitHub's REST
 # API from $FAKE_STATE/github.json (refs, commits, what main holds,
-# rulesets, environments with their branch policies and variables), applies
+# rulesets, environments with their branch policies and variables, the
+# repository's variables), applies
 # every write to it, and logs each call ("METHOD path [body]") to
 # $FAKE_STATE/calls. A GET of something that does not exist fails as gh
 # does, with "HTTP 404"; $FAKE_STATE/fail-<path with / as _> makes a GET of
@@ -81,6 +82,9 @@ if method == "GET":
     if (m := re.fullmatch(r"environments/([^/]+)/variables/(\w+)", rest)):
         v = (envs.get(m.group(1)) or {}).get("vars", {}).get(m.group(2))
         out({"name": m.group(2), "value": v}) if v is not None else missing()
+    if (m := re.fullmatch(r"actions/variables/(\w+)", rest)):
+        v = db.get("repo_vars", {}).get(m.group(1))
+        out({"name": m.group(1), "value": v}) if v is not None else missing()
     missing()
 if method == "POST" and rest == "git/refs":
     db.setdefault("refs", {})[body["ref"].removeprefix("refs/heads/")] = body["sha"]; save()
@@ -101,6 +105,10 @@ if method == "POST" and (m := re.fullmatch(r"environments/([^/]+)/variables", re
     envs[m.group(1)].setdefault("vars", {})[body["name"]] = body["value"]; save()
 if method == "PATCH" and (m := re.fullmatch(r"environments/([^/]+)/variables/(\w+)", rest)):
     envs[m.group(1)]["vars"][m.group(2)] = body["value"]; save()
+if method == "POST" and rest == "actions/variables":
+    db.setdefault("repo_vars", {})[body["name"]] = body["value"]; save()
+if method == "PATCH" and (m := re.fullmatch(r"actions/variables/(\w+)", rest)):
+    db["repo_vars"][m.group(1)] = body["value"]; save()
 print(f"fake gh: no such call: {log}", file=sys.stderr)
 sys.exit(2)
 PY
@@ -148,6 +156,7 @@ for want in \
     "would run: gh api --method POST repos/$R/environments/production/deployment-branch-policies --input - <<< '{\"name\":\"prod\",\"type\":\"branch\"}'" \
     "would run: gh api --method POST repos/$R/environments/production/variables --input - <<< '{\"name\":\"PUBLIC_HOST\",\"value\":\"clax.dev\"}'" \
     "would run: gh api --method POST repos/$R/environments/production/variables --input - <<< '{\"name\":\"CLOUDFLARE_ACCOUNT_ID\",\"value\":\"00000000000000000000000000000000\"}'" \
+    "would run: gh api --method POST repos/$R/actions/variables --input - <<< '{\"name\":\"PUBLIC_HOST\",\"value\":\"clax.dev\"}'" \
     "would run: gh api --method POST repos/$R/environments/npm/deployment-branch-policies --input - <<< '{\"name\":\"prod\",\"type\":\"branch\"}'" \
     "would run: gh api --method DELETE repos/$R/environments/npm/deployment-branch-policies/11" \
     "gh secret set CLOUDFLARE_API_TOKEN --env production --repo $R" \
@@ -175,6 +184,8 @@ if [ "$(q 'g["envs"]["production"]["policy"]["custom_branch_policies"]')" = True
     pass "production deploys from prod only"; else fail "production deploys from prod only ($(q 'g["envs"]["production"]'))"; fi
 if [ "$(q 'sorted(g["envs"]["production"]["vars"].items())')" = "[('CLOUDFLARE_ACCOUNT_ID', '00000000000000000000000000000000'), ('OAUTH_CLIENT_ID', 'Iv1.exampleclient'), ('OWNER_GITHUB', 'akesling'), ('PUBLIC_HOST', 'clax.dev'), ('SITE_DOMAIN', 'clax.run'), ('STORE', 'artifacts')]" ]; then
     pass "production's variables are clax.dev's"; else fail "production's variables ($(q 'g["envs"]["production"]["vars"]'))"; fi
+if [ "$(q 'g.get("repo_vars")')" = "{'PUBLIC_HOST': 'clax.dev'}" ]; then pass "the repository variable PUBLIC_HOST is clax.dev, for the drift check"
+else fail "the repository variable PUBLIC_HOST ($(q 'g.get("repo_vars")'))"; fi
 if [ "$(q '[b["name"] for b in g["envs"]["npm"]["branches"]]')" = "['prod']" ]; then pass "npm deploys from prod in place of main"
 else fail "npm deploys from prod ($(q 'g["envs"]["npm"]'))"; fi
 if grep -q "UNEXPECTED\|secret" "$C/calls"; then fail "no gh call but gh api, and no secret set ($(cat "$C/calls"))"; else pass "no gh call but gh api, and no secret set"; fi
@@ -198,6 +209,15 @@ else fail "flags update the variables ($(writes))"; fi
 : > "$C/calls"
 if run --i-know-what-i-am-doing && [ "$(q 'g["envs"]["production"]["vars"]["RETIRED_CONTENT_ORIGIN"]')" = https://old.example ]; then
     pass "a variable with no flag is kept"; else fail "a variable with no flag is kept"; fi
+# --public-host: the environment's PUBLIC_HOST and the repository's both.
+: > "$C/calls"
+if run --i-know-what-i-am-doing --public-host other.example \
+    && [ "$(writes | grep -c 'PUBLIC_HOST')" = 2 ] \
+    && writes | grep -F "PATCH repos/$R/actions/variables/PUBLIC_HOST {\"name\":\"PUBLIC_HOST\",\"value\":\"other.example\"}" >/dev/null \
+    && [ "$(q 'g["repo_vars"]["PUBLIC_HOST"]')" = other.example ] \
+    && [ "$(q 'g["envs"]["production"]["vars"]["PUBLIC_HOST"]')" = other.example ]; then
+    pass "--public-host updates the environment's and the repository's PUBLIC_HOST"
+else fail "--public-host updates both PUBLIC_HOSTs ($(writes))"; fi
 
 # --commit in place of clax.dev's, and a commit not on main.
 new_case commit

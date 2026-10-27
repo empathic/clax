@@ -118,7 +118,7 @@ jobs:
     timeout-minutes: 5
     # No environment: the production environment admits prod only, and this
     # job needs none of its secrets. The host is the repository variable
-    # PUBLIC_HOST when one is set, else clax.dev.
+    # PUBLIC_HOST (scripts/setup-prod-github.sh sets it), else clax.dev.
     permissions: { contents: read, actions: read }
     steps:
       - name: Compare /healthz's commit with prod's tip

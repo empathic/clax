@@ -36,8 +36,10 @@
 #    repository admins bypass it (scripts/release.sh pushes the pin commit);
 # 3. creates the environment `production`, deployable from `prod` only, and
 #    sets its variables;
-# 4. makes the environment `npm` deployable from `prod` in place of `main`;
-# 5. prints the `gh secret set` commands for the production environment's
+# 4. sets the repository variable PUBLIC_HOST, which the hourly drift check
+#    (.github/workflows/deploy-prod.yml) reads outside the environment;
+# 5. makes the environment `npm` deployable from `prod` in place of `main`;
+# 6. prints the `gh secret set` commands for the production environment's
 #    two secrets, which it never runs: their values are yours to paste.
 #
 # The REST API shapes are GitHub's:
@@ -49,6 +51,8 @@
 #   branch policy https://docs.github.com/en/rest/deployments/branch-policies
 #   variables     https://docs.github.com/en/rest/actions/variables#create-an-environment-variable
 #                 https://docs.github.com/en/rest/actions/variables#update-an-environment-variable
+#                 https://docs.github.com/en/rest/actions/variables#create-a-repository-variable
+#                 https://docs.github.com/en/rest/actions/variables#update-a-repository-variable
 # The variables' settings are read by name (${!name}), out of shellcheck's sight.
 # shellcheck disable=SC2034
 set -euo pipefail
@@ -200,27 +204,36 @@ branch_policy() {
     done <<< "$policies"
 }
 
+# set_var VARIABLES NAME VALUE: creates the variable NAME under the
+# collection path VARIABLES, or updates it when its value differs.
+set_var() {
+    local at="$1" name="$2" value="$3" have body
+    body="{\"name\":\"$name\",\"value\":\"$value\"}"
+    if have="$(get "$at/$name")"; then
+        have="$(json 'j["value"]' <<< "$have")"
+        if [ "$have" = "$value" ]; then info "$name=$value already"; return 0; fi
+        info "$name is $have; set to $value"
+        write PATCH "$at/$name" "$body"
+    else
+        write POST "$at" "$body"
+    fi
+}
+
 say "3. Environment production"
 branch_policy production
 for name in CLOUDFLARE_ACCOUNT_ID OAUTH_CLIENT_ID OWNER_GITHUB PUBLIC_HOST RETIRED_CONTENT_ORIGIN SITE_DOMAIN STORE; do
-    value="${!name}"
-    [ -n "$value" ] || continue
-    body="{\"name\":\"$name\",\"value\":\"$value\"}"
-    if have="$(get "repos/$repo/environments/production/variables/$name")"; then
-        have="$(json 'j["value"]' <<< "$have")"
-        if [ "$have" = "$value" ]; then info "$name=$value already"; continue; fi
-        info "$name is $have; set to $value"
-        write PATCH "repos/$repo/environments/production/variables/$name" "$body"
-    else
-        write POST "repos/$repo/environments/production/variables" "$body"
-    fi
+    [ -z "${!name}" ] || set_var "repos/$repo/environments/production/variables" "$name" "${!name}"
 done
 [ -n "$RETIRED_CONTENT_ORIGIN" ] || info "RETIRED_CONTENT_ORIGIN: not given, so left as it is (pass --retired-content-origin when the instance's deploy record names one)"
 
-say "4. Environment npm"
+# The drift job runs outside the environment, so it reads the repository's.
+say "4. Repository variable PUBLIC_HOST (the drift check's host)"
+set_var "repos/$repo/actions/variables" PUBLIC_HOST "$PUBLIC_HOST"
+
+say "5. Environment npm"
 branch_policy npm
 
-say "5. Secrets (yours to run; this script never sets them)"
+say "6. Secrets (yours to run; this script never sets them)"
 info "gh secret set CLOUDFLARE_API_TOKEN --env production --repo $repo   # the token docs/prod.md describes"
 info "gh secret set CLAX_SMOKE_TOKEN --env production --repo $repo       # an agent token named smoke, from https://$public_host's settings"
 [ "$act" = 1 ] && echo "setup-prod-github: done" || echo "setup-prod-github: dry run done; run again with --i-know-what-i-am-doing to act"

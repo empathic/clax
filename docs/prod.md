@@ -57,6 +57,8 @@ differs (the ruleset it writes whole each time). It
   deploy record (`~/.config/clax/deploy/clax.dev.json`) names a
   `retired_content_origin`: the workflow starts from an empty record and
   would otherwise stop serving the old content host;
+- sets the repository variable `PUBLIC_HOST` to the same host, for the
+  drift check, which runs outside the environment;
 - makes the environment `npm` deployable from `prod` in place of `main`;
 - prints the two commands that set the secrets, which it never runs:
 
@@ -143,8 +145,8 @@ nothing is rolled back.
 ## Drift
 
 Every hour the same workflow's `drift` job compares the `commit` that
-`https://clax.dev/healthz` reports (the repository variable `PUBLIC_HOST`
-names another host) with `prod`'s tip, and fails when they differ, unless
+`https://$PUBLIC_HOST/healthz` reports (the repository variable the setup
+script sets; `clax.dev` when it is unset) with `prod`'s tip, and fails when they differ, unless
 a Deploy prod run of the tip is still running or waiting. It holds no
 deploy credential and deploys nothing. When it fails: open the latest
 Deploy prod run; if it failed, fix the cause and release again, or rerun
