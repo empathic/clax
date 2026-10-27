@@ -10,6 +10,12 @@ capture = { viewport = [1280, 800], scale = 1.25, theme = "light" }
 card_seconds = { full = 1.2, short = 1.0 }
 
 [[vignette]]
+id = "coldopen"
+title = "Your agents build pages. Clax gives them a home."
+seconds = 7.7
+in_short = true
+
+[[vignette]]
 id = "realtime"
 title = "Realtime collaboration"
 seconds = 7
