@@ -25,12 +25,13 @@
   // menu item. Neither shows on a live page or a deleted one; a spectator,
   // who reads, forks too. Publish (to a public Clax this Clax is signed in
   // to) comes with the more menu too, in the owner's shell of a local daemon
-  // only; on a phone it is a more menu item.
+  // only; on a phone it is a more menu item. The more menu's Permissions…
+  // (the Permissions panel) comes for a viewer who may approve what the page uses.
   import { fromStore } from "svelte/store";
   import { getToken } from "../api";
   import { COMMENTS_OFF } from "../failure";
   import { type ArtifactController, commentsOff, viewReady } from "../view/artifact-controller";
-  import { clone, cloneOpen, legal, moreMenu, publish, publishOpen, share, shareOpen, who } from "./more-menu.svelte";
+  import { clone, cloneOpen, legal, moreMenu, permissions, permissionsOpen, publish, publishOpen, share, shareOpen, who } from "./more-menu.svelte";
   import SampleCount from "./SampleCount.svelte";
   import ThemeSwitch from "./ThemeSwitch.svelte";
   import VersionMenu from "./VersionMenu.svelte";
@@ -45,6 +46,7 @@
   const Clone = $derived(clone.current);
   const Share = $derived(share.current);
   const Publish = $derived(publish.current);
+  const Permissions = $derived(permissions.current);
   let forking = $state(false);
   // The owner's shell (it holds the token) may always fork; anyone else as
   // the daemon says (`may_fork`).
@@ -81,8 +83,10 @@
   {#if Share && !s.deleted}<Share id={ctl.id} title={s.data.artifact.title} onComments={on => ctl.noteComments(on)} />{/if}
   {#if Clone && !live && !s.deleted}<Clone id={ctl.id} />{/if}
   {#if Publish && ownerShell && !live && !s.deleted}<Publish id={ctl.id} title={s.data.artifact.title} {latest} />{/if}
+  {@const mayApprove = s.data.artifact.may_approve === true && !s.deleted}
+  {#if Permissions && mayApprove}<Permissions {ctl} />{/if}
   {#if MoreMenu}
-    <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} getHref={s.data.artifact.app && !s.deleted ? `/a/${encodeURIComponent(ctl.id)}/get` : null} onVersions={() => ctl.openMenu("versions")} pageHref={live?.page_url} onFork={forkable && !forking ? () => fork(shown) : undefined} onClone={live || s.deleted ? null : cloneOpen.current} onShare={s.deleted ? null : shareOpen.current} onPublish={live || s.deleted ? null : publishOpen.current} legal={legal.current} />
+    <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} getHref={s.data.artifact.app && !s.deleted ? `/a/${encodeURIComponent(ctl.id)}/get` : null} onVersions={() => ctl.openMenu("versions")} pageHref={live?.page_url} onFork={forkable && !forking ? () => fork(shown) : undefined} onClone={live || s.deleted ? null : cloneOpen.current} onShare={s.deleted ? null : shareOpen.current} onPublish={live || s.deleted ? null : publishOpen.current} onPermissions={mayApprove ? permissionsOpen.current : null} legal={legal.current} />
   {:else}
     <span class="more-slot"></span>
   {/if}

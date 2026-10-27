@@ -66,8 +66,10 @@ function checkRequest(arg: unknown): { url: string; method: string; headers: Rec
 export const netHandler: HandlerFactory = env => {
   const auth = { authorization: `Bearer ${env.token ?? ""}` };
   const hosts = declaredHosts(env.declared);
-  /** The owner's answer, asked at most once per view. */
+  /** The owner's answer, asked once per view, and again when a grant their Allow made has since been revoked (the Permissions panel). */
   let asked: Promise<boolean> | null = null;
+  /** The owner's Allow made a grant that a later `not_granted` shows was revoked. */
+  let allowed = false;
   let disposed = false;
 
   async function title(): Promise<string> {
@@ -129,8 +131,10 @@ export const netHandler: HandlerFactory = env => {
       return await send(req);
     } catch (e) {
       if (!(e instanceof CapError && e.code === "not_granted") || env.token === null || inspectQuery(location.search)) throw e;
+      if (allowed) { asked = null; allowed = false; }
       asked ??= ask();
       if (!(await asked)) throw e;
+      allowed = true;
       return send(req);
     }
   }

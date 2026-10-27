@@ -11,7 +11,7 @@ import { type Declared, type Served, declaredConfig, isAvailable } from "./avail
 import { deviceLink } from "./device-link";
 import { CapError } from "./errors";
 import type { ArrivalGesture } from "./gesture";
-import { Grants, type Prompt, type PromptAnswer, grantsKey } from "./grants";
+import { Grants, type PermissionState, type Prompt, type PromptAnswer, grantsKey } from "./grants";
 import { REGISTRY } from "./registry";
 import { onHost } from "../transport";
 
@@ -187,6 +187,19 @@ export class CapabilityHost {
         : { code: "upstream_error", message: e instanceof Error ? e.message : String(e) };
       env.post({ type: "clax:call-result", id: m.id, ok: false, error });
     }
+  }
+
+  /** This viewer's state of capability `name` (`comments`), or null when the page cannot use it. */
+  async grantState(name: string): Promise<PermissionState | null> {
+    const { grants } = await this.ready;
+    const st = grants.state(name);
+    return st === "unavailable" ? null : st;
+  }
+
+  /** Takes back this viewer's grant of `name`, so the page's next use asks again. */
+  async revoke(name: string): Promise<void> {
+    const { grants } = await this.ready;
+    grants.revoke(name);
   }
 
   /** Asks the daemon once whether it samples for this view, only for the

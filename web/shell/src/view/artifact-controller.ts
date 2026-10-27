@@ -1792,6 +1792,8 @@ export class ArtifactController {
     const p = this.pending();
     if (p) this.set({ approvalHidden: p.declaration_sha256 });
   }
+  /** Shows the bar again for a declaration "Not now" hid, so Approve acts on it (the Permissions panel's Review). */
+  showApproval(): void { this.set({ approvalHidden: null }); }
   /** Approves the declaration the bar shows, then reloads the frame once so
    * the page asks again and is served what is now in force. A 409 means the
    * declaration changed under the bar: the artifact is refetched and the

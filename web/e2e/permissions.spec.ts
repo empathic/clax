@@ -97,3 +97,31 @@ test("only the owner sees the bar", async ({ browser }) => {
     await lan.stop();
   }
 });
+
+test("the Permissions panel revokes the internet and the page asks again", async ({ page }) => {
+  const { artifact } = await publishWith(d.base, d.token, "Forecast panel", PAGE, { net: { hosts: ["api.clax.invalid"] } });
+  await openArtifact(page, d.base, artifact.id, 1);
+  await barText(page).waitFor();
+  await page.getByRole("button", { name: "Review" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Approve", exact: true }).click();
+  await expect.poll(() => reported(page, artifact.id, 1)).toMatchObject({ net: true });
+  const f = await contentFrame(page, artifact.id, 1);
+
+  await page.getByRole("button", { name: "More" }).click();
+  await page.getByRole("menuitem", { name: "Permissions…" }).click();
+  const panel = page.getByRole("dialog", { name: /Permissions for/ });
+  const row = panel.locator("[data-permission=net]");
+  await expect(row).toContainText("The internet (api.clax.invalid)");
+  await expect(row).toContainText("Allowed since");
+  await row.getByRole("button", { name: "Revoke" }).click();
+  await expect(row).toContainText("Asks on first use");
+  await expect(row.getByRole("button", { name: "Revoke" })).toHaveCount(0);
+  await panel.getByRole("button", { name: "Close" }).click();
+
+  // The page asks again, in the existing dialog.
+  const answer = fetchHost(f, "api.clax.invalid");
+  const ask = page.getByRole("dialog", { name: "Let “Forecast panel” use the internet?" });
+  await expect(ask).toBeVisible();
+  await ask.getByRole("button", { name: "Don't allow", exact: true }).click();
+  expect(await answer).toBe("not_granted");
+});

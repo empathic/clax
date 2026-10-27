@@ -20,6 +20,12 @@ const WORDS: Record<string, Words> = {
 /** What a hosted member's approval leaves to the owner's answer on the page's first use (the owner's approval writes these grants). */
 const ASKS_OWNER = new Set(["net", "sample"]);
 
+/** How the bar, the dialog and the Permissions panel name capability `name`, as the start of a sentence: `The internet`, `Claude`, `Clax's controls`. */
+export function capabilityTitle(name: string): string {
+  const label = WORDS[name]?.label ?? name;
+  return label[0].toUpperCase() + label.slice(1);
+}
+
 /** One thing a version asks for: the capability `name`, how the bar names it, and what approving lets the page do. */
 export type PendingItem = { name: string; label: string; detail: string };
 
