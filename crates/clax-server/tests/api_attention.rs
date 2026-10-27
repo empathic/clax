@@ -286,6 +286,44 @@ async fn agents_are_live_only_when_a_send_can_reach_them_and_the_most_recently_a
 }
 
 #[tokio::test]
+async fn an_agent_that_replied_on_a_thread_is_listed_without_watching() {
+    let ts = TestServer::spawn().await;
+    let (owner, aid) = artifact(&ts).await;
+    let res = ts
+        .authed(ts.client.patch(format!("{}/api/sessions/{owner}", ts.base)))
+        .json(&json!({"ended": true}))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success());
+    let r = ts.register_session("codex", "att-reply").await;
+    let replier = r["id"].as_str().unwrap().to_string();
+    let alex = ts.viewer(Some("Alex")).await;
+    let tid = ts.thread_as(&aid, &alex.cookie, "Two columns").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ts.send_thread(&aid, &tid).await;
+    ts.reply_as_agent(&replier, &aid, &tid, "Done").await;
+    let v: Value = ts
+        .get(&format!("/api/artifacts/{aid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let agents = v["artifact"]["participants"]["agents"].as_array().unwrap();
+    let harnesses: Vec<(&str, bool)> = agents
+        .iter()
+        .map(|a| (a["harness"].as_str().unwrap(), a["live"].as_bool().unwrap()))
+        .collect();
+    assert_eq!(
+        harnesses,
+        [("codex", false), ("claude", false)],
+        "the replier is listed, most recently active first, and not live: it watches nothing here"
+    );
+}
+
+#[tokio::test]
 async fn no_session_id_reaches_a_tokenless_caller() {
     let ts = TestServer::spawn().await;
     let (sid, aid) = artifact(&ts).await;
