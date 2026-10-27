@@ -709,6 +709,8 @@ impl TestServer {
             // Invites from a daemon on every interface name the address
             // `lan()` requests arrive on.
             lan_host: bind.is_unspecified().then_some(IpAddr::V4(LAN_LOCAL)),
+            // None; tests of trusted hosts set them with `spawn_with`.
+            trusted_hosts: Arc::default(),
             grant_auth,
             agent_gate: Arc::new(clax_http::agent::Gate::new(Arc::new(
                 clax_http::agent::TokioTimer::default(),

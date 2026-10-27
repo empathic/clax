@@ -37,6 +37,7 @@ pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
         })),
         web,
         hosted: hosted(home)?,
+        trusted_hosts: trusted_hosts(home)?,
         require_credential: a.require_credential,
         embed: a
             .embed
@@ -72,6 +73,16 @@ fn hosted(home: &Home) -> anyhow::Result<Option<Arc<clax_http::hosted::Hosted>>>
     }
     tracing::info!(origin = %h.origin, "hosted mode");
     Ok(Some(Arc::new(h)))
+}
+
+/// The home's `[serve] trusted_hosts`. A bad list stops the daemon: it
+/// trusts none of a list it cannot read.
+fn trusted_hosts(home: &Home) -> anyhow::Result<Vec<String>> {
+    let hosts = clax_core::config::HomeConfig::load(home.root())?.serve_trusted_hosts()?;
+    if !hosts.is_empty() {
+        tracing::info!(hosts = ?hosts, "the API also answers to [serve] trusted_hosts");
+    }
+    Ok(hosts)
 }
 
 /// The daemon outlives whoever started it, so any descriptor it inherits stays

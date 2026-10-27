@@ -1098,11 +1098,14 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
             get_page::refusals,
         ))
     } else {
-        r.layer(axum::middleware::from_fn(auth::require_api_host))
-            .layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                clax_http::identity::local_peers,
-            ))
+        r.layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_api_host,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            clax_http::identity::local_peers,
+        ))
     };
     // A queue's reporter and service routes carry their own credentials
     // and answer other origins: on the instance's host they are matched in

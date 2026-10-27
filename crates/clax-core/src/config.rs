@@ -20,8 +20,12 @@
 //! it configures. `[serve] port` is the port a daemon started for the home
 //! listens on (7480 when absent; `--port` and `CLAX_PORT` come ahead of this
 //! whole stack, see `clax_commands::Cli::port_for`); `just dev` and `just
-//! watch` write `port = 7481` into `~/.clax-dev/config.toml`, and any other
-//! key in `[serve]` is logged and ignored. `[sample]` configures the
+//! watch` write `port = 7481` into `~/.clax-dev/config.toml`. `[serve]
+//! trusted_hosts` names the DNS names, beside this machine's own, that the
+//! API answers to (a reverse proxy's, such as `tailscale serve`'s;
+//! [`HomeConfig::serve_trusted_hosts`]); a daemon whose list is invalid does
+//! not start. Any other key in `[serve]` is logged and ignored. `[sample]`
+//! configures the
 //! `sample` capability ([`HomeConfig::sample`]); a daemon whose `[sample]` is
 //! invalid starts with sample off. `[toolpath]` configures the audit
 //! journal ([`HomeConfig::toolpath`]); a daemon whose `[toolpath]` is
@@ -539,6 +543,54 @@ impl HomeConfig {
             })
     }
 
+    /// `[serve] trusted_hosts`: the host names, lowercased, that the API
+    /// answers to as it does to `localhost` (a reverse proxy in front of the
+    /// daemon that keeps its own name in `Host`, such as `tailscale serve`);
+    /// empty when absent. Each is matched exactly, never as a suffix or a
+    /// pattern ([`trusted_host_ok`] says which names may be listed).
+    ///
+    /// # Errors
+    /// `Invalid { code: "bad_config" }` naming the file (or the variable)
+    /// and the key when `[serve]` is not a table, the key is not an array of
+    /// strings, or an entry is not a name [`trusted_host_ok`] accepts. The
+    /// daemon does not start on it: no entry of a list that is wrong is
+    /// trusted.
+    pub fn serve_trusted_hosts(&self) -> Result<Vec<String>> {
+        if let Some(serve) = self.value("serve")
+            && serve.as_dict().is_none()
+        {
+            return Err(self.bad(
+                "serve",
+                "[serve]",
+                format!("must be a table, not {}", kind_of(&serve)),
+            ));
+        }
+        let Some(list) = self.value("serve.trusted_hosts") else {
+            return Ok(Vec::new());
+        };
+        let bad = |what: String| self.bad("serve.trusted_hosts", "[serve]", what);
+        let Some(list) = list.as_array() else {
+            return Err(bad(format!(
+                "trusted_hosts must be an array of host names, not {}",
+                kind_of(&list)
+            )));
+        };
+        let mut out: Vec<String> = Vec::with_capacity(list.len());
+        for v in list {
+            let name = v.as_str().filter(|n| trusted_host_ok(n)).ok_or_else(|| {
+                bad(format!(
+                    "trusted_hosts entries are bare DNS names (no scheme, port, path or wildcard; not localhost or an IP address), not {}",
+                    shown(v)
+                ))
+            })?;
+            let name = name.to_ascii_lowercase();
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+        Ok(out)
+    }
+
     /// `[sample]`: the default when absent.
     ///
     /// # Errors
@@ -861,7 +913,7 @@ fn bad_file(path: &Path, e: &dyn std::fmt::Display) -> CoreError {
 }
 
 /// Keys `[serve]` understands; any other key there is logged and ignored.
-const SERVE_KEYS: &[&str] = &["port"];
+const SERVE_KEYS: &[&str] = &["port", "trusted_hosts"];
 
 /// `[sample]`: the `sample` capability's provider, key variable, models, and cap.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -1475,6 +1527,30 @@ pub fn bin_path_ok(path: &str) -> bool {
 /// [`bin_path_ok`]: `bin = "<path>"`.
 pub fn bin_line(path: &str) -> String {
     format!("bin = \"{path}\"")
+}
+
+/// Whether `name` may be listed in `[serve] trusted_hosts`: a DNS name of
+/// dot-separated labels (letters, digits and inner hyphens, 1 to 63 bytes
+/// each, 253 in all) whose last label is not all digits, with no scheme,
+/// port, path, trailing dot or wildcard. `localhost`, `*.localhost` (the
+/// artifact origins) and IP addresses are refused: the API's own rule
+/// already decides those.
+pub fn trusted_host_ok(name: &str) -> bool {
+    let label_ok = |l: &str| {
+        (1..=63).contains(&l.len())
+            && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+    };
+    let lower = name.to_ascii_lowercase();
+    name.len() <= 253
+        && name.split('.').all(label_ok)
+        && !name
+            .rsplit('.')
+            .next()
+            .is_some_and(|last| last.bytes().all(|b| b.is_ascii_digit()))
+        && lower != "localhost"
+        && !lower.ends_with(".localhost")
 }
 
 /// Whether `url` may receive the API key: `https://` with a host, or
@@ -2299,6 +2375,65 @@ mod tests {
             "serve = 7481\n",
         ] {
             let e = with(t).serve_port().unwrap_err().to_string();
+            assert!(
+                e.contains("config.toml") && e.contains("[serve]"),
+                "{t}: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn trusted_hosts_are_empty_by_default_and_read_lowercased_once_each() {
+        for t in [
+            "",
+            "[serve]\nport = 7481\n",
+            "[serve]\ntrusted_hosts = []\n",
+        ] {
+            assert!(with(t).serve_trusted_hosts().unwrap().is_empty(), "{t}");
+        }
+        let c = with(
+            "[serve]\nport = 7480\ntrusted_hosts = [\"Phobos.tail556f5b.ts.net\", \"phobos\", \"phobos.tail556f5b.ts.net\"]\n",
+        );
+        assert_eq!(
+            c.serve_trusted_hosts().unwrap(),
+            ["phobos.tail556f5b.ts.net", "phobos"]
+        );
+        assert_eq!(c.serve_port().unwrap(), Some(7480));
+        // The environment sets it as it does any other key.
+        let c = under(
+            "",
+            &[(
+                "CLAX_SERVE__TRUSTED_HOSTS",
+                "[\"phobos.tail556f5b.ts.net\"]",
+            )],
+        );
+        assert_eq!(
+            c.serve_trusted_hosts().unwrap(),
+            ["phobos.tail556f5b.ts.net"]
+        );
+    }
+
+    #[test]
+    fn a_bad_trusted_host_is_an_error_naming_the_file_and_key() {
+        for t in [
+            "[serve]\ntrusted_hosts = \"phobos.tail556f5b.ts.net\"\n",
+            "[serve]\ntrusted_hosts = [1]\n",
+            "[serve]\ntrusted_hosts = [\"\"]\n",
+            "[serve]\ntrusted_hosts = [\"*\"]\n",
+            "[serve]\ntrusted_hosts = [\"*.tail556f5b.ts.net\"]\n",
+            "[serve]\ntrusted_hosts = [\"https://phobos.tail556f5b.ts.net\"]\n",
+            "[serve]\ntrusted_hosts = [\"phobos.tail556f5b.ts.net:443\"]\n",
+            "[serve]\ntrusted_hosts = [\"phobos.tail556f5b.ts.net/\"]\n",
+            "[serve]\ntrusted_hosts = [\"phobos.tail556f5b.ts.net.\"]\n",
+            "[serve]\ntrusted_hosts = [\"ok.example\", \"bad host\"]\n",
+            "[serve]\ntrusted_hosts = [\"localhost\"]\n",
+            "[serve]\ntrusted_hosts = [\"7q3k9mzx2b4t.LOCALHOST\"]\n",
+            "[serve]\ntrusted_hosts = [\"100.64.0.1\"]\n",
+            "[serve]\ntrusted_hosts = [\"[::1]\"]\n",
+            "[serve]\ntrusted_hosts = [\"-a.example\"]\n",
+            "serve = 1\n",
+        ] {
+            let e = with(t).serve_trusted_hosts().unwrap_err().to_string();
             assert!(
                 e.contains("config.toml") && e.contains("[serve]"),
                 "{t}: {e}"

@@ -7863,8 +7863,21 @@ browser that resolves `localhost` to `[::1]` would reach it), and a port
 whose bind fails as in use; it binds the first other one. `daemon.json`,
 and so `status`'s `daemon_url` and every URL Clax returns, carry the port
 it took. The probe opens and closes one connection per address and sends
-nothing. Port 0 lets the system choose and is not probed. Other keys
-in `[serve]` are logged and ignored. `just watch` and `just dev` write
+nothing. Port 0 lets the system choose and is not probed.
+`trusted_hosts` lists the DNS names, beside this machine's own, that the
+`/api` host rule admits: a reverse proxy's on this machine that keeps its
+name in `Host`, such as `tailscale serve`'s
+(`trusted_hosts = ["phobos.tail556f5b.ts.net"]`). Each entry is a bare DNS
+name, matched exactly ignoring case; a scheme, port, path, trailing dot,
+wildcard, IP address, `localhost` or `*.localhost`, or a value that is not
+an array of strings, is `bad_config` naming the file, and the daemon does
+not start. A browser on such a name is a viewer: it reads and comments
+(the comment routes accept `https://` or `http://` with that name as its
+origin), it is never served the token, and its loopback peer (the proxy)
+earns it nothing a loopback peer alone is trusted with (live pages, the
+extension's gateway). Artifact sites stay `<id>.localhost`, so the pages
+themselves open on this machine alone. Other keys in `[serve]` are
+logged and ignored. `just watch` and `just dev` write
 `port = 7481` (or `CLAX_DEV_PORT`'s value) into `~/.clax-dev/config.toml`
 when it has no `[serve]` table, so every daemon for that home, whoever
 starts it, listens there. Outside `--shared`, both first stop a daemon of
@@ -9022,8 +9035,12 @@ it starts, the runs a previous process left. A build without the
 - Every `/api/**` route answers only when the `Host` header is literally
   `localhost`, `127.0.0.1` or `[::1]` (port optional), or exactly the IP and
   port the connection arrived on (the port may be left out only when it is
-  80); anything else, including every other DNS name, gets 403
-  `forbidden_host`, which defeats DNS rebinding. Under a LAN bind (including
+  80), or a name the home's `[serve] trusted_hosts` lists (matched exactly,
+  ignoring case and any port; empty by default); anything else, including
+  every other DNS name, gets 403 `forbidden_host`, which defeats DNS
+  rebinding. A request on a trusted name never gets the token
+  (`/api/token` stays 403 `not_loopback`) and never sees live pages, even
+  though its peer, the proxy, is a loopback address. Under a LAN bind (including
   `0.0.0.0` or `::`) a viewer reaches the API on `http://<the interface's
   IP>:<port>`; another IP or port, or a name for it, is refused. The shell,
   content, blob, and `/healthz` paths are not subject to this check.

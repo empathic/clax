@@ -558,9 +558,11 @@ fn journal_check(daemon: bool, status: Option<&serde_json::Value>) -> serde_json
 }
 
 /// `config`: the home's `config.toml` reads and parses, its `[serve] port`,
-/// when present, is a port, and so is `CLAX_PORT` (`env`), when set. The
-/// detail names the port daemons for this home start on and where it comes
-/// from (`CLAX_PORT`, `CLAX_SERVE__PORT`, the file, or the default), or the
+/// when present, is a port, and so is `CLAX_PORT` (`env`), when set; its
+/// `[serve] trusted_hosts`, when present, are host names (a bad one keeps the
+/// daemon from starting). The detail names the port daemons for this home
+/// start on and where it comes from (`CLAX_PORT`, `CLAX_SERVE__PORT`, the
+/// file, or the default), and the trusted hosts when there are any, or the
 /// error.
 fn config_check(home: &Home, env: Option<std::ffi::OsString>) -> serde_json::Value {
     config_check_with(home, env, clax_core::config::process_env())
@@ -585,20 +587,25 @@ fn config_check_with(
                 _ => format!("[serve] port = {p}"),
             })
         });
-    match (crate::env_port(env), file) {
-        (Some(Err(e)), _) => check("config", false, e.to_string()),
-        (_, Err(e)) => check("config", false, e),
-        (Some(Ok(p)), Ok(Some(f))) => check(
+    let port = match (crate::env_port(env), file) {
+        (Some(Err(e)), _) => return check("config", false, e.to_string()),
+        (_, Err(e)) => return check("config", false, e),
+        (Some(Ok(p)), Ok(Some(f))) => format!("{}={p} (overrides {f})", crate::PORT_ENV),
+        (Some(Ok(p)), Ok(None)) => format!("{}={p}", crate::PORT_ENV),
+        (None, Ok(Some(f))) => f,
+        (None, Ok(None)) => format!("default port {}", clax_core::daemon::DEFAULT_PORT),
+    };
+    let trusted = cfg
+        .as_ref()
+        .map_err(|e| e.to_string())
+        .and_then(|c| c.serve_trusted_hosts().map_err(|e| e.to_string()));
+    match trusted {
+        Err(e) => check("config", false, e),
+        Ok(hosts) if hosts.is_empty() => check("config", true, port),
+        Ok(hosts) => check(
             "config",
             true,
-            format!("{}={p} (overrides {f})", crate::PORT_ENV),
-        ),
-        (Some(Ok(p)), Ok(None)) => check("config", true, format!("{}={p}", crate::PORT_ENV)),
-        (None, Ok(Some(f))) => check("config", true, f),
-        (None, Ok(None)) => check(
-            "config",
-            true,
-            format!("default port {}", clax_core::daemon::DEFAULT_PORT),
+            format!("{port}; [serve] trusted_hosts = {}", hosts.join(", ")),
         ),
     }
 }
@@ -942,6 +949,28 @@ mod tests {
         assert!(
             bad["detail"].as_str().unwrap().contains("CLAX_PORT"),
             "{bad}"
+        );
+    }
+
+    #[test]
+    fn the_config_check_names_the_trusted_hosts_or_fails_on_a_bad_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = clax_core::Home::at(dir.path().to_path_buf());
+        let toml = |t: &str| std::fs::write(dir.path().join("config.toml"), t).unwrap();
+        toml("[serve]\ntrusted_hosts = [\"phobos.tail556f5b.ts.net\", \"Phobos\"]\n");
+        let c = config_check_with(&home, None, []);
+        assert_eq!(c["ok"], true, "{c}");
+        assert_eq!(
+            c["detail"],
+            "default port 7480; [serve] trusted_hosts = phobos.tail556f5b.ts.net, phobos"
+        );
+        toml("[serve]\nport = 7481\ntrusted_hosts = [\"*\"]\n");
+        let bad = config_check_with(&home, None, []);
+        assert_eq!(bad["ok"], false, "{bad}");
+        let d = bad["detail"].as_str().unwrap();
+        assert!(
+            d.contains("config.toml") && d.contains("trusted_hosts"),
+            "{d}"
         );
     }
 

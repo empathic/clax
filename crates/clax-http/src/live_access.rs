@@ -13,7 +13,9 @@ use clax_realtime::live::LiveIds;
 
 /// Whether the request may see live pages: it came from a loopback peer
 /// ([`loopback_peer`]: never on a hosted daemon, which a proxy on its
-/// machine may reach from loopback for anyone), or it carries the token;
+/// machine may reach from loopback for anyone, nor on a `[serve]
+/// trusted_hosts` name, whose loopback peer is such a proxy), or it carries
+/// the token;
 /// never with an agent credential of another machine, whatever its peer
 /// (spec §7.5). (Unlike [`crate::identity::is_local`], the `Host` does not
 /// matter: the `/api` host rule applies on its own.)
@@ -192,6 +194,11 @@ mod tests {
         assert!(sees_live_pages(&token, &conn("192.168.1.9:5000"), "tok"));
         assert!(!sees_live_pages(&token, &conn("192.168.1.9:5000"), "other"));
         assert!(!sees_live_pages(&none, &Extensions::new(), "tok"));
+        // Through a proxy on a trusted host, the loopback peer is the proxy.
+        let mut proxied = conn("127.0.0.1:5000");
+        proxied.insert(crate::auth::ViaTrustedHost);
+        assert!(!sees_live_pages(&none, &proxied, "tok"));
+        assert!(sees_live_pages(&token, &proxied, "tok"));
     }
 
     #[test]

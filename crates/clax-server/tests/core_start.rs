@@ -16,6 +16,7 @@ fn cfg(
         sample: std::sync::Arc::new(clax_sample::Sampler::disabled()),
         web,
         hosted: None,
+        trusted_hosts: Vec::new(),
         require_credential: true,
         bind: std::net::Ipv4Addr::LOCALHOST.into(),
         port: 0,

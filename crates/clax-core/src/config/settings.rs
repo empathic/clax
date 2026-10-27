@@ -149,7 +149,7 @@ pub fn fields_in_effect(running: &HomeConfig, current: &HomeConfig) -> Vec<Field
 pub fn problems(cfg: &HomeConfig) -> Vec<Problem> {
     let checks: [(&'static str, Result<()>); 7] = [
         ("bin", cfg.bin().map(drop)),
-        ("serve", cfg.serve_port().map(drop)),
+        ("serve", serve_check(cfg)),
         ("sample", cfg.sample().map(drop)),
         ("toolpath", cfg.toolpath().map(drop)),
         ("gallery", cfg.gallery().map(drop)),
@@ -192,10 +192,17 @@ fn questions_check(cfg: &HomeConfig) -> Result<()> {
     }
 }
 
+/// `[serve]` as the daemon reads it when it starts: its port and its
+/// trusted hosts.
+fn serve_check(cfg: &HomeConfig) -> Result<()> {
+    cfg.serve_port()?;
+    cfg.serve_trusted_hosts().map(drop)
+}
+
 /// The check a write to `table` must pass.
 fn check_table(cfg: &HomeConfig, table: &str) -> Result<()> {
     match table {
-        "serve" => cfg.serve_port().map(drop),
+        "serve" => serve_check(cfg),
         "sample" => cfg.sample().map(drop),
         "toolpath" => cfg.toolpath().map(drop),
         "gallery" => cfg.gallery().map(drop),

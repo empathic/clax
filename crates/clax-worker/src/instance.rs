@@ -658,6 +658,8 @@ impl Instance {
             // Loopback: the most restrictive bind (invites need a LAN one).
             bind: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             port: 0,
+            // A hosted daemon's gate stands in for the `/api` host check.
+            trusted_hosts: Vec::new(),
             hosted,
             web: Arc::new(crate::web::WebUi),
             embed: None,

@@ -636,6 +636,7 @@ async fn opening(sh: Arc<Shared>, opts: OpenOptions) {
         )),
         web: crate::web::web_ui(),
         hosted: None,
+        trusted_hosts: Vec::new(),
         require_credential: true,
         bind: Ipv4Addr::LOCALHOST.into(),
         port: 0,

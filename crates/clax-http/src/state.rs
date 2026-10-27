@@ -206,6 +206,10 @@ pub struct AppState {
     /// The address invites name; `None` to use the bound one or, for an
     /// unspecified bind, the machine's LAN address at each invite.
     pub lan_host: Option<std::net::IpAddr>,
+    /// `[serve] trusted_hosts`, lowercased: the DNS names the `/api` host
+    /// check admits beside this machine's own ([`crate::auth::trusted_host`]).
+    /// Empty unless the home's config names some.
+    pub trusted_hosts: Arc<[String]>,
     /// The grant flow's token index and nonce caches (spec §6.4, §6.6).
     pub grant_auth: Arc<crate::grant_auth::GrantAuth>,
     /// The bounds on agents' unverified request bodies (spec §6.6).
@@ -334,6 +338,8 @@ pub struct StateParts {
     pub terminal_after_s: u64,
     pub bind: std::net::IpAddr,
     pub port: u16,
+    /// `[serve] trusted_hosts`; empty for none.
+    pub trusted_hosts: Vec<String>,
     /// Hosted mode ([`crate::hosted`]); `None` for the local daemon.
     pub hosted: Option<Arc<crate::hosted::Hosted>>,
     /// The web UI the daemon serves.
@@ -421,6 +427,7 @@ impl AppState {
             bind: p.bind,
             port: p.port,
             lan_host: None,
+            trusted_hosts: p.trusted_hosts.into(),
             grant_auth,
             agent_gate: Arc::new(crate::agent::Gate::new(p.agent_timer)),
             vis_gen,

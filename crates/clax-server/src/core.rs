@@ -55,6 +55,10 @@ pub struct CoreConfig {
     pub web: Arc<dyn clax_core::embedded::FileTree>,
     /// Hosted mode ([`clax_http::hosted`]), or `None` for the local daemon.
     pub hosted: Option<Arc<clax_http::hosted::Hosted>>,
+    /// The DNS names the API answers to beside this machine's own (the
+    /// home's `[serve] trusted_hosts`, which `clax serve` reads); empty for
+    /// none.
+    pub trusted_hosts: Vec<String>,
     /// Serve nothing but `/healthz`, static files and content by ID without
     /// a credential ([`AppState::require_credential`]).
     pub require_credential: bool,
@@ -149,6 +153,7 @@ impl Core {
             terminal_after_s,
             bind: cfg.bind,
             port,
+            trusted_hosts: cfg.trusted_hosts,
             hosted: cfg.hosted,
             web: cfg.web,
             embed: cfg.embed,

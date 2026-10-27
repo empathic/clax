@@ -502,42 +502,78 @@ pub fn api_host_allowed(host: &str, local: Option<SocketAddr>) -> bool {
     })
 }
 
+/// True when `host` (a `Host` header) names one of `trusted`, the home's
+/// `[serve] trusted_hosts` (lowercased): its name, with any numeric port
+/// removed, equals an entry ignoring case. Never a suffix or a pattern:
+/// `evil-phobos.example` and `phobos.example.evil.com` are not
+/// `phobos.example`. Such a host is a reverse proxy's in front of the daemon
+/// (`tailscale serve`), whose peer is this machine but whose browser is not.
+pub fn trusted_host(host: &str, trusted: &[String]) -> bool {
+    let name = match host.rsplit_once(':') {
+        Some((h, p)) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => h,
+        Some(_) => return false,
+        None => host,
+    };
+    !name.is_empty() && trusted.iter().any(|t| t.eq_ignore_ascii_case(name))
+}
+
+/// Marker request extension: the request's `Host` is one of the home's
+/// `[serve] trusted_hosts` ([`trusted_host`]), set by [`require_api_host`]
+/// on every path. Its connection is a proxy's on this machine, so nothing
+/// a loopback peer is trusted with alone ([`loopback_peer`]: live pages,
+/// the extension's gateway) is granted to it.
+#[derive(Clone, Copy, Debug)]
+pub struct ViaTrustedHost;
+
+/// The request's `Host`, else the URI's authority; empty for neither.
+fn request_host<'a>(headers: &'a axum::http::HeaderMap, uri: &'a axum::http::Uri) -> &'a str {
+    headers
+        .get(axum::http::header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .or_else(|| uri.authority().map(|a| a.as_str()))
+        .unwrap_or("")
+}
+
 /// Whether the request (its `Host`, else the URI's authority, and the
 /// connection it arrived on) may read what the API serves: the
-/// [`api_host_allowed`] rule, shared by [`require_api_host`] and by the shell
-/// page that embeds API data (`clax_server::shell::boot`).
+/// [`api_host_allowed`] rule, or a name of `trusted` ([`trusted_host`]),
+/// shared by [`require_api_host`] and by the shell page that embeds API data
+/// (`clax_server::shell::boot`).
 pub fn request_host_allowed(
     headers: &axum::http::HeaderMap,
     uri: &axum::http::Uri,
     extensions: &axum::http::Extensions,
+    trusted: &[String],
 ) -> bool {
-    let host = headers
-        .get(axum::http::header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .or_else(|| uri.authority().map(|a| a.as_str()))
-        .unwrap_or("");
+    let host = request_host(headers, uri);
     let local = conn_of(extensions).map(|c| c.local);
-    api_host_allowed(host, local)
+    api_host_allowed(host, local) || trusted_host(host, trusted)
 }
 
 /// Middleware: every `/api` path answers 403 `forbidden_host` unless the
-/// request's `Host` passes [`api_host_allowed`]. A site host's request
+/// request passes [`request_host_allowed`] with the home's
+/// `[serve] trusted_hosts`. A site host's request
 /// ([`crate::host::SiteRequest`]) is not checked: its paths, `/api/…` among
 /// them, are its artifact's, which the site routes serve; nor are non-API
-/// paths (the shell, `/healthz`).
+/// paths (the shell, `/healthz`). A request on a trusted host, on any path,
+/// is marked [`ViaTrustedHost`].
 pub async fn require_api_host(
-    req: axum::extract::Request,
+    axum::extract::State(s): axum::extract::State<AppState>,
+    mut req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
+    if trusted_host(request_host(req.headers(), req.uri()), &s.trusted_hosts) {
+        req.extensions_mut().insert(ViaTrustedHost);
+    }
     let path = req.uri().path();
     if (path == "/api" || path.starts_with("/api/"))
         && req.extensions().get::<crate::host::SiteRequest>().is_none()
-        && !request_host_allowed(req.headers(), req.uri(), req.extensions())
+        && !request_host_allowed(req.headers(), req.uri(), req.extensions(), &s.trusted_hosts)
     {
         return ApiError::forbidden(
             "forbidden_host",
-            "the API answers only to localhost, 127.0.0.1, [::1], or the address the daemon is bound to",
+            "the API answers only to localhost, 127.0.0.1, [::1], the address the daemon is bound to, or a name in [serve] trusted_hosts",
         )
         .into_response();
     }
@@ -551,9 +587,12 @@ pub fn is_loopback(addr: SocketAddr) -> bool {
 /// Whether a request's connection is trusted as this machine's: its peer
 /// is loopback ([`conn_of`]), and it is not a hosted daemon's request
 /// ([`crate::hosted::HostedRequest`]), whose clients of the internet reach it
-/// through a proxy that may itself connect from loopback.
+/// through a proxy that may itself connect from loopback; nor one on a
+/// `[serve] trusted_hosts` name ([`ViaTrustedHost`]), whose loopback peer is
+/// the proxy on this machine (`tailscale serve`), not its browser.
 pub fn loopback_peer(extensions: &axum::http::Extensions) -> bool {
     extensions.get::<crate::hosted::HostedRequest>().is_none()
+        && extensions.get::<ViaTrustedHost>().is_none()
         && conn_of(extensions).is_some_and(|c| is_loopback(c.peer))
 }
 
@@ -706,5 +745,45 @@ mod tests {
         assert!(loopback_peer(&ext));
         ext.insert(crate::hosted::HostedRequest::default());
         assert!(!loopback_peer(&ext), "a same-machine proxy's connection");
+    }
+
+    #[test]
+    fn a_request_on_a_trusted_host_has_no_loopback_peer() {
+        let mut ext = axum::http::Extensions::new();
+        ext.insert(axum::extract::ConnectInfo(Conn {
+            peer: "127.0.0.1:5000".parse().unwrap(),
+            local: "127.0.0.1:7480".parse().unwrap(),
+        }));
+        assert!(loopback_peer(&ext));
+        ext.insert(ViaTrustedHost);
+        assert!(!loopback_peer(&ext), "tailscale serve's connection");
+    }
+
+    #[test]
+    fn trusted_hosts_match_exactly_ignoring_case_and_port() {
+        let trusted = ["phobos.tail556f5b.ts.net".to_string()];
+        for h in [
+            "phobos.tail556f5b.ts.net",
+            "PHOBOS.tail556f5b.ts.net",
+            "phobos.tail556f5b.ts.net:443",
+            "phobos.tail556f5b.ts.net:7480",
+        ] {
+            assert!(trusted_host(h, &trusted), "{h}");
+        }
+        for h in [
+            "evil-phobos.tail556f5b.ts.net",
+            "phobos.tail556f5b.ts.net.evil.com",
+            "x.phobos.tail556f5b.ts.net",
+            "tail556f5b.ts.net",
+            "phobos.tail556f5b.ts.net.",
+            "phobos.tail556f5b.ts.net:",
+            "phobos.tail556f5b.ts.net:x",
+            "phobos",
+            "",
+            ":443",
+        ] {
+            assert!(!trusted_host(h, &trusted), "{h}");
+        }
+        assert!(!trusted_host("phobos.tail556f5b.ts.net", &[]));
     }
 }

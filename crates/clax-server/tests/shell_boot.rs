@@ -441,6 +441,47 @@ async fn a_host_the_api_refuses_gets_no_data() {
 }
 
 #[tokio::test]
+async fn a_trusted_host_gets_the_data() {
+    // `tailscale serve`'s name: the API's host rule admits it, so the page
+    // embeds what the API would answer it.
+    const TRUSTED: &str = "phobos.tail556f5b.ts.net";
+    let dist = dist();
+    let ts = TestServer::spawn_with(|s| {
+        s.web = std::sync::Arc::new(clax_core::embedded::DiskTree::new(dist.path()));
+        s.trusted_hosts = vec![TRUSTED.to_string()].into();
+    })
+    .await;
+    let id = ts.publish("Plans", &[("index.html", "<p>x</p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ts.thread(&id, 1, "a remark").await;
+    for host in [TRUSTED.to_string(), format!("{TRUSTED}:443")] {
+        let html = page(&ts, &format!("/a/{id}"), &[("host", host.clone())])
+            .await
+            .text()
+            .await
+            .unwrap();
+        let (_, b) = boot(&html);
+        assert_eq!(b["threads"][0]["comments"][0]["body"], "a remark", "{host}");
+        // Sites stay this machine's (`<id>.localhost`): the shell on another
+        // machine says no page opens there.
+        assert_eq!(b["site"]["domain"], "localhost", "{host}");
+    }
+    // A name the daemon does not trust gets the bare entry, as before.
+    let html = page(
+        &ts,
+        &format!("/a/{id}"),
+        &[("host", format!("evil-{TRUSTED}"))],
+    )
+    .await
+    .text()
+    .await
+    .unwrap();
+    assert!(!html.contains(OPEN) && !html.contains("<iframe"), "{html}");
+}
+
+#[tokio::test]
 async fn no_page_may_frame_the_shell() {
     let dist = dist();
     let ts = TestServer::spawn_with_web(dist.path()).await;

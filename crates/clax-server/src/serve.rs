@@ -213,6 +213,9 @@ pub struct ServeConfig {
     /// [`clax_http::hosted::Hosted::from_config`] on the home's `[hosted]`), or
     /// `None` for the local daemon.
     pub hosted: Option<Arc<clax_http::hosted::Hosted>>,
+    /// The DNS names the API answers to beside this machine's own (`clax
+    /// serve` reads the home's `[serve] trusted_hosts`); empty for none.
+    pub trusted_hosts: Vec<String>,
     /// Serve nothing but `/healthz`, static files and content by ID without
     /// a credential ([`clax_http::state::AppState::require_credential`]).
     pub require_credential: bool,
@@ -365,6 +368,7 @@ pub async fn serve(
             sample: cfg.sample,
             web: cfg.web,
             hosted: cfg.hosted,
+            trusted_hosts: cfg.trusted_hosts,
             require_credential: cfg.require_credential,
             bind: cfg.bind,
             port,
@@ -630,6 +634,7 @@ mod tests {
             sample: std::sync::Arc::new(clax_sample::Sampler::disabled()),
             web: std::sync::Arc::new(clax_core::embedded::MemTree::default()),
             hosted: None,
+            trusted_hosts: Vec::new(),
             require_credential: false,
             embed: None,
             quickstart: false,
