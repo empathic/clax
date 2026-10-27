@@ -2770,7 +2770,8 @@ async fn a_members_page_waits_for_its_maker() {
     let (_, r) = agent
         .call(
             "publish",
-            json!({"html": "<h1>1</h1>", "title": "Mia's controls", "capabilities": {"shell": {}}}),
+            json!({"html": "<h1>1</h1>", "title": "Mia's controls",
+                "capabilities": {"shell": {}, "sample": {}, "net": {"hosts": ["x.clax.invalid"]}}}),
         )
         .await;
     assert_eq!(tool_code(&r), "", "{r}");
@@ -2803,7 +2804,11 @@ async fn a_members_page_waits_for_its_maker() {
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["artifact"]["may_approve"], json!(true), "{v}");
     let pending = v["artifact"]["pending_capabilities"].clone();
-    assert_eq!(pending["capabilities"], json!(["shell"]), "{v}");
+    assert_eq!(
+        pending["capabilities"],
+        json!(["net", "sample", "shell"]),
+        "{v}"
+    );
     let shown =
         json!({"version": pending["version"], "declaration_sha256": pending["declaration_sha256"]});
     let (s, v) = site
@@ -2817,12 +2822,46 @@ async fn a_members_page_waits_for_its_maker() {
         v["approval"]["by"],
         json!(format!("person:{}", site.pid(&mia).await))
     );
+    let declared = json!({"shell": {}, "sample": {}, "net": {"hosts": ["x.clax.invalid"]}});
     let (_, v) = site.get(&owner, &path).await;
-    assert_eq!(
-        v["artifact"]["capabilities_in_force"],
-        json!({"shell": {}}),
-        "{v}"
-    );
+    assert_eq!(v["artifact"]["capabilities_in_force"], declared, "{v}");
+    // A member's approval grants nothing: the grants stand for the owner's
+    // consent, given on the page's first use.
+    let aid = clax_core::ArtifactId::parse(&id).unwrap();
+    let net = site.ts.store.net_access(&aid).unwrap();
+    assert!(net.grants.is_empty() && !net.all_granted(), "{net:?}");
+    assert_eq!(site.ts.store.sample_grant(&aid).unwrap(), None);
+
+    // The owner's approval of their own page grants what waited.
+    let (status, made) = json_of(
+        site.ts
+            .client
+            .post(site.url("/api/artifacts"))
+            .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+            .bearer_auth(&site.ts.token)
+            .json(&json!({"title": "Ada's", "capabilities": declared,
+                "files": {"index.html": {"content": "<h1>a</h1>"}}}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, 201, "{made}");
+    let own = made["artifact"]["id"].as_str().unwrap().to_string();
+    let p = &made["pending_capabilities"];
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &format!("/api/artifacts/{own}/capability-approval"),
+            json!({"version": p["version"], "declaration_sha256": p["declaration_sha256"]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["approval"]["by"], json!("owner"), "{v}");
+    let own = clax_core::ArtifactId::parse(&own).unwrap();
+    assert!(site.ts.store.net_access(&own).unwrap().all_granted());
+    assert!(site.ts.store.sample_grant(&own).unwrap().is_some());
 }
 
 #[tokio::test]

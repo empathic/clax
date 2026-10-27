@@ -261,10 +261,14 @@ impl Store {
     /// Approves `id`'s current declaration as of `version` and
     /// `declaration_sha256` (a [`Pending`]'s), which must be the current
     /// version and declaration, so neither a version published since nor a
-    /// declaration changed at the same version is approved unseen. In one transaction it records the declaration, grants the
-    /// `net` hosts that waited and, when `sample` waited, the sample grant,
-    /// and records one `artifact.update` under `audit` whose fields hold
-    /// `capability_approval` and any `net_grants` and `sample_grant` made.
+    /// declaration changed at the same version is approved unseen. In one
+    /// transaction it records the declaration and, with `grant` (the
+    /// approver is the owner, whose consent the grants stand for), grants
+    /// the `net` hosts that waited and, when `sample` waited, the sample
+    /// grant; without it the declaration is in force and the grants are
+    /// left to the owner's first answer. It records one `artifact.update`
+    /// under `audit` whose fields hold `capability_approval` and any
+    /// `net_grants` and `sample_grant` made.
     ///
     /// # Errors
     /// `NotFound` when the artifact is missing or deleted; `draft`
@@ -278,6 +282,7 @@ impl Store {
         version: u32,
         declaration_sha256: &str,
         by: &str,
+        grant: bool,
     ) -> Result<Approval> {
         self.with_tx(|tx| {
             let caps = caps_in(tx, id)?;
@@ -294,7 +299,7 @@ impl Store {
                 "version": version, "by": by, "capabilities": caps,
             }});
             let mut granted = Vec::new();
-            for h in &waited.hosts {
+            for h in waited.hosts.iter().filter(|_| grant) {
                 let n = tx.execute(
                     "INSERT OR IGNORE INTO net_grants (artifact_id, host, granted_at) VALUES (?1, ?2, ?3)",
                     params![id.as_str(), h, now],
@@ -306,7 +311,8 @@ impl Store {
             if !granted.is_empty() {
                 fields["net_grants"] = json!({"grant": granted});
             }
-            if waited.capabilities.iter().any(|c| c == "sample")
+            if grant
+                && waited.capabilities.iter().any(|c| c == "sample")
                 && tx.execute(
                     "INSERT OR IGNORE INTO sample_grants (artifact_id, granted_at) VALUES (?1, ?2)",
                     params![id.as_str(), now],
@@ -393,8 +399,29 @@ mod tests {
             .pending_capabilities(id)
             .unwrap()
             .expect("something pending");
-        st.approve_capabilities(DAEMON, id, p.version, &p.declaration_sha256, "owner")
+        st.approve_capabilities(DAEMON, id, p.version, &p.declaration_sha256, "owner", true)
             .unwrap()
+    }
+
+    #[test]
+    fn an_approval_that_is_not_the_owners_grants_nothing() {
+        let (_d, st) = store();
+        let caps = json!({"net": {"hosts": ["a.example.com"]}, "sample": {}});
+        let a = artifact_declaring(&st, caps.clone());
+        let p = st.pending_capabilities(&a).unwrap().unwrap();
+        st.approve_capabilities(
+            DAEMON,
+            &a,
+            p.version,
+            &p.declaration_sha256,
+            "person:u_mia",
+            false,
+        )
+        .unwrap();
+        assert_eq!(st.capabilities_in_force(&a).unwrap(), caps);
+        let acc = st.net_access(&a).unwrap();
+        assert!(acc.grants.is_empty() && !acc.allows("a.example.com"));
+        assert_eq!(st.sample_grant(&a).unwrap(), None);
     }
 
     fn set_caps(st: &Store, id: &ArtifactId, caps: Value) {
@@ -512,7 +539,7 @@ mod tests {
             .unwrap()
             .declaration_sha256;
         assert!(matches!(
-            st.approve_capabilities(DAEMON, &a, 1, &sha, "owner"),
+            st.approve_capabilities(DAEMON, &a, 1, &sha, "owner", true),
             Err(CoreError::StaleVersion { current: 2 })
         ));
         assert_eq!(rows(&st), 0, "nothing recorded");
@@ -721,7 +748,8 @@ mod tests {
                 &a,
                 shown.version,
                 &shown.declaration_sha256,
-                "owner"
+                "owner",
+                true
             ),
             Err(CoreError::StaleVersion { current: 1 })
         ));
@@ -779,7 +807,7 @@ mod tests {
         );
         let before = rows(&st);
         assert!(matches!(
-            st.approve_capabilities(DAEMON, &d, n, &p_sha, "owner"),
+            st.approve_capabilities(DAEMON, &d, n, &p_sha, "owner", true),
             Err(CoreError::Invalid { code: "draft", .. })
         ));
         assert_eq!(rows(&st), before, "nothing recorded");
@@ -803,7 +831,7 @@ mod tests {
             st.capability_approval(&a).map(|_| ()),
             st.capabilities_in_force(&a).map(|_| ()),
             st.pending_capabilities(&a).map(|_| ()),
-            st.approve_capabilities(DAEMON, &a, 1, "x", "owner")
+            st.approve_capabilities(DAEMON, &a, 1, "x", "owner", true)
                 .map(|_| ()),
         ] {
             assert!(matches!(r, Err(CoreError::NotFound)), "{r:?}");

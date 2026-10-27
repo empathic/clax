@@ -16,24 +16,51 @@
 //! or an agent: 403 `not_for_agents` for the owner's agents and `forbidden`
 //! for a person's (`Clax-Grant`), 403 `not_for_pages` for a request with
 //! the page marker (`x-clax-via: page`), 403 `admin_only` for a caller who
-//! does not administer the artifact ([`clax_http::agent::administers`]: on
-//! a hosted daemon its maker). 404 for an unknown artifact. An approval or
-//! a withdrawal publishes [`Event::Permissions`].
+//! may not approve ([`may_approve`]: on a local daemon the owner alone, on
+//! a hosted one the page's maker), and on the two writes 403
+//! `forbidden_origin` for a request from another origin. 404 for an
+//! unknown artifact. An approval or a withdrawal publishes
+//! [`Event::Permissions`].
 
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Extension, Path, State};
 use axum::http::HeaderMap;
 use clax_core::audit::AuditCtx;
-use clax_core::{ArtifactId, CoreError, Event};
+use clax_core::{ArtifactId, CoreError, Event, EventBus};
 use clax_http::agent::{DeniedToGrants, admin_only, administers, page_marker};
 use clax_http::auth::Caller;
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
 use clax_http::hosted::HostedRequest;
 use clax_http::state::AppState;
+use clax_http::viewer::SameOrigin;
+use clax_store::Store;
+use clax_store::capability_approvals::Approval;
 use serde::Deserialize;
 use serde_json::{Value, json};
+
+/// Publishes [`Event::Permissions`] for `id` when its approval now is not
+/// `before`, the one read before a write that set its declaration: the
+/// write narrowed it ([`clax_store::capability_approvals`]), so open views
+/// refetch what is in force. An approval made between the two reads
+/// publishes one too, which costs a view a refetch.
+///
+/// # Errors
+/// The store's.
+pub(crate) fn tell_if_narrowed(
+    st: &Store,
+    events: &EventBus,
+    id: &ArtifactId,
+    before: Option<&Approval>,
+) -> clax_core::Result<()> {
+    if st.capability_approval(id)?.as_ref() != before {
+        events.publish(Event::Permissions {
+            artifact_id: id.as_str().to_string(),
+        });
+    }
+    Ok(())
+}
 
 /// 403 `not_for_pages`: a page never approves or withdraws its own
 /// capabilities, nor reads its permissions.
@@ -44,9 +71,18 @@ fn not_for_pages() -> ApiError {
     )
 }
 
-/// The caller, once it may approve artifact `id`'s declaration: a person
-/// or the owner, not an agent, not a page, who administers it. Each route
-/// has refused the owner's agents first (`refuse_agents`).
+/// Whether `c`, who administers the artifact or not (`administers`,
+/// [`clax_http::agent::administers`]), may approve its declaration: never
+/// an agent; on a local daemon the owner alone, since what approving
+/// grants (`net` and `sample`) is spent from the owner's machine and key;
+/// on a hosted daemon (`hosted`) who administers it, its maker.
+pub(crate) fn may_approve(c: &Caller, administers: bool, hosted: bool) -> bool {
+    !c.is_agent() && if hosted { administers } else { c.is_owner() }
+}
+
+/// The caller, once it may approve artifact `id`'s declaration
+/// ([`may_approve`]), not as a page. Each route has refused the owner's
+/// agents first (`refuse_agents`).
 async fn approver(
     s: &AppState,
     d: &DeniedToGrants,
@@ -61,13 +97,13 @@ async fn approver(
         return Err(not_for_pages());
     }
     let (c, id, hosted) = (caller.clone(), id.clone(), s.hosted.is_some());
-    let may = s
+    let admin = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
             administers(st, &c, id.as_str(), hosted)
         })
         .await?;
-    if !may {
+    if !may_approve(&caller, admin, hosted) {
         return Err(admin_only());
     }
     Ok(caller)
@@ -161,14 +197,18 @@ pub struct ApproveBody {
 /// `PUT /api/artifacts/<id>/capability-approval` `{version,
 /// declaration_sha256}` (both required: 400 `invalid_args`), the
 /// `pending_capabilities` the caller was shown: approves the current
-/// version's declaration, granting the `net` hosts and the `sample` that
-/// waited ([`clax_store::Store::approve_capabilities`]); `{approval,
-/// in_force}`. 409 `stale_version` with `current` when a version was
+/// version's declaration ([`clax_store::Store::approve_capabilities`]);
+/// `{approval, in_force}`. The owner's approval also grants the `net` hosts
+/// and the `sample` that waited; a hosted member's grants nothing, which
+/// leaves those to the owner's answer on the page's first use (the grants
+/// stand for the owner's consent, as their own routes, which take the
+/// daemon token, do). 409 `stale_version` with `current` when a version was
 /// published, or the declaration changed, since what was shown; 403
 /// `draft` for an app's draft, held to its app's approval.
 pub async fn approve(
     State(s): State<AppState>,
     d: DeniedToGrants,
+    _o: SameOrigin,
     headers: HeaderMap,
     audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,
@@ -184,11 +224,11 @@ pub async fn approve(
             "version and declaration_sha256 are required: send the pending_capabilities shown",
         ));
     };
-    let by = by(&caller);
+    let (by, grant) = (by(&caller), caller.is_owner());
     let events = s.events.clone();
     let v = s
         .store_call(move |st| {
-            let approval = st.approve_capabilities(&audit, &id, version, &sha, &by)?;
+            let approval = st.approve_capabilities(&audit, &id, version, &sha, &by, grant)?;
             events.publish(Event::Permissions {
                 artifact_id: id.as_str().to_string(),
             });
@@ -207,6 +247,7 @@ pub async fn approve(
 pub async fn withdraw(
     State(s): State<AppState>,
     d: DeniedToGrants,
+    _o: SameOrigin,
     headers: HeaderMap,
     audit: AuditCtx,
     p: Result<Path<(String, String)>, PathRejection>,

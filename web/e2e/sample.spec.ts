@@ -111,7 +111,9 @@ test.describe("without a key", () => {
   test.beforeEach(({ daemon }) => { d = daemon; });
 
   test(`use("sample") resolves null and the header shows no count`, async ({ page }) => {
+    // Approved, so it is the missing key that makes it unavailable.
     const { artifact } = await publishWith(d.base, d.token, `No key`, PAGE, { sample: {} });
+    await approve(d.base, d.token, artifact.id);
     const f = await openArtifact(page, d.base, artifact.id, 1);
     await expect(f.locator("#status")).toHaveText("unavailable");
     await expect(page.locator(".sample-count")).toHaveCount(0);
@@ -123,7 +125,9 @@ test.describe("without a key", () => {
 test("a guest, with the stub provider: use(\"sample\") resolves null: no dialog, no count, nothing spent", async ({ browser }) => {
   const { d, origin } = await hostedDaemon("", {}, STUB_CONFIG);
   try {
+    // Approved, so it is the guest's being no owner that makes it unavailable.
     const { artifact } = await publishWith(d.base, d.token, "Sample guest", PAGE, { sample: {} });
+    await approve(d.base, d.token, artifact.id);
     await shareByLink(await ownerOf(browser, origin), artifact.id);
     const page = await (await browser.newContext()).newPage();
     const asked: string[] = [];

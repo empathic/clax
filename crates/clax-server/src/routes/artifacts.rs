@@ -1044,12 +1044,12 @@ pub async fn get(
             // Its Comments switch, forks and app (an artifact carrying a
             // bundle).
             super::app_bundles::stamp_app_fields(st, &a, &mut artifact)?;
-            // The declaration in force, and for who approves it (never an
-            // agent) what waits.
+            // The declaration in force, and for who may approve it what
+            // waits.
             super::app_bundles::stamp_capabilities(
                 st,
                 &a,
-                administers && !caller.is_agent(),
+                super::permissions::may_approve(&caller, administers, hosted),
                 &mut artifact,
             )?;
             let mut v = json!({
@@ -1290,8 +1290,10 @@ pub async fn patch(
         .and_then(|h| h.to_str().ok())
         .unwrap_or_default();
     let site_url = format!("{}/", clax_http::site_access::site_origin(&s, &id, host));
+    let events = s.events.clone();
     let artifact = s
         .store_call(move |st| {
+            let approved = st.capability_approval(&id)?;
             let a = st.update_meta(
                 &audit,
                 &id,
@@ -1305,6 +1307,7 @@ pub async fn patch(
                     via_page,
                 },
             )?;
+            super::permissions::tell_if_narrowed(st, &events, &id, approved.as_ref())?;
             let mut view = json!(a);
             let vis = vf.build(st)?;
             vis.filter_artifact(st, &a, &[], &mut view)?;
@@ -1474,9 +1477,11 @@ pub async fn publish(
                 p.hidden = vis.filter_hidden_files(&prev);
             }
             p.publish_key = publish_key_of(&grant, &key);
+            let approved = st.capability_approval(&id)?;
             let (artifact, version) = st
                 .publish_version_async(&audit, &id, p, session.as_deref())
                 .await?;
+            super::permissions::tell_if_narrowed(st, &events, &id, approved.as_ref())?;
             if let Some(sid) = &session {
                 published_from(st, &audit, &ctx, &drafts, sid, &artifact, retarget)?;
             }
@@ -1600,6 +1605,7 @@ pub async fn restore(
         .store_call_async(move |st| async move {
             let st = &*st;
             let session = publishing_session(st, &session, None)?;
+            let approved = st.capability_approval(&id)?;
             let (artifact, version) = st
                 .restore_version_declaring_async(
                     &audit,
@@ -1610,6 +1616,7 @@ pub async fn restore(
                     declaration,
                 )
                 .await?;
+            super::permissions::tell_if_narrowed(st, &events, &id, approved.as_ref())?;
             events.publish(Event::Version {
                 artifact_id: artifact.id.clone(),
                 n: version.n,

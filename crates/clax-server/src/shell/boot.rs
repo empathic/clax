@@ -321,7 +321,9 @@ pub async fn assemble(
                 Err(_) => false,
             };
             artifact["may_tag"] = json!(may_tag);
-            let may_approve = may_tag && caller.as_ref().is_ok_and(|c| !c.is_agent());
+            let may_approve = caller
+                .as_ref()
+                .is_ok_and(|c| crate::routes::permissions::may_approve(c, may_tag, hosted));
             // Whether the caller may resolve its threads, as `GET
             // /api/artifacts/<id>` says.
             let may_resolve = crate::routes::threads::browser_resolves(
@@ -355,8 +357,7 @@ pub async fn assemble(
             artifact["may_fork"] = json!(may_fork);
             // As `GET /api/artifacts/<id>` says.
             crate::routes::app_bundles::stamp_app_fields(st, &a, &mut artifact)?;
-            // As `GET /api/artifacts/<id>` says: who administers it, never
-            // an agent, may approve.
+            // As `GET /api/artifacts/<id>` says.
             crate::routes::app_bundles::stamp_capabilities(st, &a, may_approve, &mut artifact)?;
             // Who started it from a brief, as `GET /api/artifacts/<id>` says.
             if let Some(by) = st.brief_starters(&[a.id.as_str()])?.remove(&a.id) {

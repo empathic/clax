@@ -318,8 +318,15 @@ mod tests {
             "a host the app dropped and declares again waits for the app's approval"
         );
         let p = st.pending_capabilities(&app).unwrap().unwrap();
-        st.approve_capabilities(DAEMON, &app, p.version, &p.declaration_sha256, "owner")
-            .unwrap();
+        st.approve_capabilities(
+            DAEMON,
+            &app,
+            p.version,
+            &p.declaration_sha256,
+            "owner",
+            true,
+        )
+        .unwrap();
         assert!(st.net_access(&d).unwrap().allows("a.example.com"));
 
         st.revoke_net(DAEMON, &app).unwrap();
@@ -439,7 +446,7 @@ mod tests {
             .unwrap()
             .unwrap()
             .declaration_sha256;
-        st.approve_capabilities(DAEMON, &a, v, &sha, "owner")
+        st.approve_capabilities(DAEMON, &a, v, &sha, "owner", true)
             .unwrap();
         assert!(
             st.net_access(&a).unwrap().allows("new.example.com"),

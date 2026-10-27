@@ -953,8 +953,8 @@ pub const ADDITIVE_KEYS: [&str; 26] = [
 /// count and `app` null (spec 2026-10-21-app-push-pull §5.6, §5.9: every
 /// artifact made before apps has its Comments switch on and no bundle); an
 /// artifact's `capabilities_in_force` a declaration, `may_approve` true and
-/// `pending_capabilities` null (a declaration in force before approvals
-/// were kept counts as approved).
+/// `pending_capabilities` null (the golden's artifacts declare nothing
+/// that needs approval).
 pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
     let owners_agent = |a: &Value| {
         a.is_null()

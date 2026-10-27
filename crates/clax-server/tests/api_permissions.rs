@@ -317,6 +317,32 @@ async fn no_agent_and_no_page_approves() {
     )
     .await;
     assert_eq!((status, code(&body)), (403, "admin_only"), "{body}");
+    // The agent channel's marker on the token.
+    for (m, path) in [
+        (Method::PUT, &approve),
+        (Method::DELETE, &withdraw),
+        (Method::GET, &read),
+    ] {
+        let (status, body) = send(
+            authed(&ts, m.clone(), path)
+                .header("x-clax-channel", "agent")
+                .json(&shown(&pending)),
+        )
+        .await;
+        assert_eq!(
+            (status, code(&body)),
+            (403, "not_for_agents"),
+            "{m} {path}: {body}"
+        );
+    }
+    // A request from another origin.
+    let (status, body) = send(
+        approval(&ts, &aid)
+            .header(ORIGIN, "http://elsewhere.example")
+            .json(&shown(&pending)),
+    )
+    .await;
+    assert_eq!((status, code(&body)), (403, "forbidden_origin"), "{body}");
 
     let a = view(&ts, &aid).await;
     assert_eq!(a["pending_capabilities"], pending, "nothing was approved");
@@ -468,4 +494,137 @@ async fn an_apps_draft_is_held_to_its_apps_approval_and_never_approved_itself() 
     )
     .await;
     assert_eq!((status, code(&body)), (403, "not_approved"), "{body}");
+}
+
+#[tokio::test]
+async fn on_a_local_daemon_a_person_does_not_approve_even_their_own_page() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let sid = sam.register("claude", "sam-h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = sam
+        .agent(
+            "POST",
+            "/api/artifacts",
+            Some(&sid),
+            Some(json!({"title": "Sam's", "capabilities": {"sample": {}, "net": {"hosts": [HOST_NAME]}},
+                "files": {"index.html": {"content": "<p>s</p>", "encoding": "utf8"}}})),
+        )
+        .await;
+    assert_eq!(res.status(), 201);
+    let aid = res.json::<Value>().await.unwrap()["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let pending = view(&ts, &aid).await["pending_capabilities"].clone();
+    let v = ts.store.viewer_of_grant(&sam.grant_id()).unwrap();
+    let sams = format!("clax_viewer={}", ts.browser_cookie(&v.id));
+    let (status, body) = send(
+        ts.client
+            .get(format!("{}/api/artifacts/{aid}", ts.base))
+            .header(COOKIE, &sams),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["artifact"].get("may_approve"), None, "{body}");
+    assert_eq!(body["artifact"].get("pending_capabilities"), None);
+    let (status, body) = send(
+        ts.client
+            .put(format!(
+                "{}/api/artifacts/{aid}/capability-approval",
+                ts.base
+            ))
+            .header(COOKIE, &sams)
+            .json(&shown(&pending)),
+    )
+    .await;
+    assert_eq!((status, code(&body)), (403, "admin_only"), "{body}");
+    let a = view(&ts, &aid).await;
+    assert_eq!(a["pending_capabilities"], pending, "nothing was approved");
+    assert_eq!(a["capabilities_in_force"], json!({}));
+    let id = clax_core::ArtifactId::parse(&aid).unwrap();
+    assert!(ts.store.net_access(&id).unwrap().grants.is_empty());
+    assert_eq!(ts.store.sample_grant(&id).unwrap(), None);
+    // The owner approves it, and that grants what waited.
+    ts.approve(&aid).await.expect("it waited");
+    assert!(ts.store.net_access(&id).unwrap().allows(HOST_NAME));
+    assert!(ts.store.sample_grant(&id).unwrap().is_some());
+}
+
+#[tokio::test]
+async fn withdrawing_net_refuses_its_fetches() {
+    let ts = TestServer::spawn().await;
+    let aid = app(&ts, json!({"net": {"hosts": [HOST_NAME]}})).await;
+    ts.approve(&aid).await.expect("net waited");
+    let (status, body) = send(authed(
+        &ts,
+        Method::DELETE,
+        &format!("/api/artifacts/{aid}/capability-approval/net"),
+    ))
+    .await;
+    assert_eq!((status, &body["withdrawn"]), (200, &json!(true)), "{body}");
+    let (status, body) = send(
+        authed(
+            &ts,
+            Method::POST,
+            &format!("/api/artifacts/{aid}/net:fetch"),
+        )
+        .json(&json!({"url": format!("https://{HOST_NAME}/v1")})),
+    )
+    .await;
+    assert_eq!((status, code(&body)), (403, "not_approved"), "{body}");
+}
+
+#[tokio::test]
+async fn a_patch_that_narrows_the_approval_tells_open_views() {
+    let ts = TestServer::spawn().await;
+    let aid = ts.publish("Weather", &[("index.html", "<p>1</p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let patch = |caps: Value| {
+        authed(&ts, Method::PATCH, &format!("/api/artifacts/{aid}"))
+            .json(&json!({"capabilities": caps}))
+    };
+    let (status, body) = send(patch(
+        json!({"net": {"hosts": [HOST_NAME, "b.clax.invalid"]}}),
+    ))
+    .await;
+    assert_eq!(status, 200, "{body}");
+    ts.approve(&aid).await.expect("net waited");
+    let res = ts.get(&format!("/api/events?artifact={aid}")).await;
+    assert_eq!(res.status(), 200);
+    let mut events = EventReader::from_response(res);
+    assert_eq!(events.next().await.0, "ready");
+    let (status, body) = send(patch(json!({"net": {"hosts": [HOST_NAME]}}))).await;
+    assert_eq!(status, 200, "{body}");
+    let ev = events.next_named("permissions").await;
+    assert_eq!(ev, json!({"type": "permissions", "artifact_id": aid}));
+}
+
+#[tokio::test]
+async fn a_site_holder_reads_the_declaration_in_force() {
+    let ts = TestServer::spawn().await;
+    let aid = app(&ts, json!({"camera": {}, "db": {}})).await;
+    let cookie = ts.site_cookie(&aid).await;
+    let site = ts.site_host(&aid);
+    let read = || {
+        ts.client
+            .get(format!("{}/_clax/api/artifact", ts.base))
+            .header(HOST, &site)
+            .header(ORIGIN, format!("http://{site}"))
+            .header(COOKIE, &cookie)
+    };
+    let (status, v) = send(read()).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["artifact"]["capabilities"], json!({"db": {}}), "{v}");
+    ts.approve(&aid).await.expect("camera waited");
+    let (_, v) = send(read()).await;
+    assert_eq!(
+        v["artifact"]["capabilities"],
+        json!({"camera": {}, "db": {}}),
+        "{v}"
+    );
 }
