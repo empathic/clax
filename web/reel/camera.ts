@@ -69,6 +69,16 @@ const DRAINED = `new Promise(r => { const c = new MessageChannel(); c.port1.onme
  * not a pace. */
 export const QUIET_MS = 10_000;
 
+/** The shell's SharedWorker script (web/shell/src/stream.ts): Chromium
+ * reports its load to the page that started the worker but never its end,
+ * so a shell that loads during the film (a reload after an approval) is not
+ * waited on for it. */
+const SHARED_WORKER = /\/_clax\/shell\/stream-worker-[^/]*\.js$/;
+
+/** What the DevTools protocol and `reach` say of a frame or node whose
+ * document a navigation replaced (or is replacing) as it was asked. */
+const BETWEEN_DOCUMENTS = /^no frame |context|node|navigated|closed/i;
+
 type Reach = { session: CDPSession; contextId?: number };
 const sessions = new WeakMap<Page, { cdp: Promise<CDPSession>; frames: Map<Frame, Promise<Reach>> }>();
 
@@ -98,8 +108,24 @@ function cached(page: Page) {
 /** How `quietIn` reaches `frame` of `page`, made once per frame document. */
 async function reachOf(page: Page, frame: Frame): Promise<Reach> {
   const s = cached(page);
-  if (!s.frames.has(frame)) s.frames.set(frame, s.cdp.then(cdp => reach(page, frame, cdp)));
+  if (!s.frames.has(frame)) {
+    // A frame not reached (one between documents) is tried again next time.
+    const reached = s.cdp.then(cdp => reach(page, frame, cdp));
+    reached.catch(() => s.frames.delete(frame));
+    s.frames.set(frame, reached);
+  }
   return s.frames.get(frame)!;
+}
+
+/** `quietIn`, or undefined when `frame` is between documents (detached, or
+ * navigating: a reload mid-roll), which the frame being taken skips. */
+async function quietInSettled<T>(page: Page, frame: Frame, expression: string): Promise<T | undefined> {
+  try {
+    return await quietIn<T>(page, frame, expression);
+  } catch (e) {
+    if (frame.isDetached() || BETWEEN_DOCUMENTS.test(e instanceof Error ? e.message : String(e))) return undefined;
+    throw e;
+  }
 }
 
 /**
@@ -166,19 +192,37 @@ export async function deterministicCamera(page: Page, out: string, fps = FPS): P
   const pending = new Set<Request>();
   let settled: (() => void) | null = null;
   page.on("request", r => {
-    if (r.resourceType() !== "eventsource" && r.resourceType() !== "websocket") pending.add(r);
+    if (r.resourceType() !== "eventsource" && r.resourceType() !== "websocket" && !SHARED_WORKER.test(r.url())) pending.add(r);
   });
   const done = (r: Request) => {
     if (pending.delete(r)) settled?.();
   };
   page.on("requestfinished", done);
   page.on("requestfailed", done);
+  // A document that navigates away (a reload of the shell after an approval,
+  // say) leaves its requests in flight unheard of: they go with it.
+  page.on("framenavigated", f => {
+    for (const r of [...pending]) {
+      let of: Frame | null = null;
+      try {
+        of = r.frame();
+      } catch {
+        // A worker's request: its document's own.
+      }
+      if (!r.isNavigationRequest() && (of === null || of === f || of.isDetached())) done(r);
+    }
+  });
 
   /** Pauses and sets the animations of every shadow tree `session` reaches
    * (closed ones too, which no script of the page can reach), as FREEZE does
    * a document's. */
   async function freezeShadows(session: CDPSession, t: number): Promise<void> {
-    const { root } = await session.send("DOM.getDocument", { depth: -1, pierce: true });
+    const got = await session.send("DOM.getDocument", { depth: -1, pierce: true }).catch((e: unknown) => {
+      if (BETWEEN_DOCUMENTS.test(e instanceof Error ? e.message : String(e))) return null;
+      throw e;
+    });
+    if (!got) return;
+    const { root } = got;
     type Node = typeof root;
     const shadows: number[] = [];
     const walk = (n: Node): void => {
@@ -191,10 +235,15 @@ export async function deterministicCamera(page: Page, out: string, fps = FPS): P
     };
     walk(root);
     for (const backendNodeId of shadows) {
-      const { object } = await session.send("DOM.resolveNode", { backendNodeId });
-      if (!object.objectId) continue;
-      await session.send("Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: FREEZE_IN, arguments: [{ value: t }], userGesture: false, returnByValue: true });
-      await session.send("Runtime.releaseObject", { objectId: object.objectId });
+      try {
+        const { object } = await session.send("DOM.resolveNode", { backendNodeId });
+        if (!object.objectId) continue;
+        await session.send("Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: FREEZE_IN, arguments: [{ value: t }], userGesture: false, returnByValue: true });
+        await session.send("Runtime.releaseObject", { objectId: object.objectId });
+      } catch (e) {
+        // A shadow root of a document a reload just replaced: gone with it.
+        if (!BETWEEN_DOCUMENTS.test(e instanceof Error ? e.message : String(e))) throw e;
+      }
     }
   }
 
@@ -202,7 +251,7 @@ export async function deterministicCamera(page: Page, out: string, fps = FPS): P
   async function freeze(t: number): Promise<void> {
     const reached = new Set<CDPSession>();
     for (const frame of page.frames()) {
-      await quietIn(page, frame, FREEZE(t));
+      if ((await quietInSettled(page, frame, `${FREEZE(t)}, true`)) === undefined) continue;
       reached.add((await reachOf(page, frame)).session);
     }
     for (const session of reached) await freezeShadows(session, t);
@@ -214,7 +263,7 @@ export async function deterministicCamera(page: Page, out: string, fps = FPS): P
       // Whatever the page queued runs, and the requests it made are heard:
       // the frames inside first, then the page, twice over, so what one
       // posted to another (in another process) has arrived and run.
-      for (let pass = 0; pass < 2; pass++) for (const frame of page.frames().reverse()) await quietIn(page, frame, DRAINED);
+      for (let pass = 0; pass < 2; pass++) for (const frame of page.frames().reverse()) await quietInSettled(page, frame, DRAINED);
       if (!pending.size) return;
       const finished = new Promise<boolean>(resolve => {
         settled = () => resolve(true);

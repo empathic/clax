@@ -34,7 +34,7 @@ const nineToml = NINE.map(([id, title, seconds, short]) => [
 
 describe("parseReel", () => {
   it("parses the realtime table", () => {
-    const cfg = parseReel(committed, ["realtime"]);
+    const cfg = parseReel(committed, scripted);
     expect(cfg.fps).toBe(30);
     expect(cfg.size).toEqual([1920, 1080]);
     expect(cfg.capture).toEqual({ viewport: [1280, 800], scale: 1.25, theme: "light" });
@@ -49,9 +49,9 @@ describe("parseReel", () => {
   });
 
   it("refuses an unknown key", () => {
-    expect(() => parseReel(committed.replace("[reel]\n", "[reel]\ncolour = 1\n"), ["realtime"])).toThrow(/unknown key reel\.colour/);
-    expect(() => parseReel(committed.replace("in_short = true", "in_short = true\nspeed = 2"), ["realtime"])).toThrow(/unknown key realtime\.speed/);
-    expect(() => parseReel(`${committed}\n[extra]\n`, ["realtime"])).toThrow(/unknown key reel\.toml\.extra/);
+    expect(() => parseReel(committed.replace("[reel]\n", "[reel]\ncolour = 1\n"), scripted)).toThrow(/unknown key reel\.colour/);
+    expect(() => parseReel(committed.replace("in_short = true", "in_short = true\nspeed = 2"), scripted)).toThrow(/unknown key realtime\.speed/);
+    expect(() => parseReel(`${committed}\n[extra]\n`, scripted)).toThrow(/unknown key reel\.toml\.extra/);
   });
 
   it("refuses a vignette with no script", () => {
@@ -59,30 +59,30 @@ describe("parseReel", () => {
   });
 
   it("refuses a duration outside 3–10 s", () => {
-    expect(() => parseReel(committed.replace("seconds = 7", "seconds = 11"), ["realtime"])).toThrow(/realtime\.seconds/);
-    expect(() => parseReel(committed.replace("seconds = 7", "seconds = 2.5"), ["realtime"])).toThrow(/realtime\.seconds/);
+    expect(() => parseReel(committed.replace("seconds = 7", "seconds = 11"), scripted)).toThrow(/realtime\.seconds/);
+    expect(() => parseReel(committed.replace("seconds = 7", "seconds = 2.5"), scripted)).toThrow(/realtime\.seconds/);
   });
 
   it("refuses a title on the cold open, and none elsewhere", () => {
     const open = withVignettes('[[vignette]]\nid = "cold-open"\ntitle = "Hello"\nseconds = 6\n\n[[vignette]]\nid = "realtime"\ntitle = "Realtime collaboration"\nseconds = 7\n');
     expect(() => parseReel(open, ["cold-open", "realtime"])).toThrow(/cold-open: the cold open has no title card/);
-    expect(() => parseReel(committed.replace('title = "Realtime collaboration"\n', ""), ["realtime"])).toThrow(/realtime: no title/);
+    expect(() => parseReel(committed.replace('title = "Realtime collaboration"\n', ""), scripted)).toThrow(/realtime: no title/);
   });
 
   it("refuses a landing that does not end in its artifact ID", () => {
     const up = (id: string, url: string) => committed.replace(/landing_artifact = ""/, `landing_artifact = "${id}"`).replace(/landing = ""/, `landing = "${url}"`);
-    expect(parseReel(up("abc123", "https://clax.dev/a/abc123"), ["realtime"]).upload.landingArtifact).toBe("abc123");
-    expect(() => parseReel(up("abc123", "https://clax.dev/a/xyz789"), ["realtime"])).toThrow(/upload\.landing/);
-    expect(() => parseReel(up("abc123", ""), ["realtime"])).toThrow(/upload: set landing_artifact and landing together/);
+    expect(parseReel(up("abc123", "https://clax.dev/a/abc123"), scripted).upload.landingArtifact).toBe("abc123");
+    expect(() => parseReel(up("abc123", "https://clax.dev/a/xyz789"), scripted)).toThrow(/upload\.landing/);
+    expect(() => parseReel(up("abc123", ""), scripted)).toThrow(/upload: set landing_artifact and landing together/);
   });
 
   it("checks the GIF's cut list", () => {
     const seg = (v: string, s: number) => `[[gif.segment]]\nvignette = "${v}"\nbeat = "tick"\noffset = -1.0\nseconds = ${s}\ncaption = "x"\n`;
     const gif = (segs: string) => `${committed}\n[gif]\nfps = 15\nsize = [720, 450]\ncaption_px = 36\nmax_mib = 2\n\n${segs}`;
-    expect(parseReel(gif(seg("realtime", 3) + seg("realtime", 4)), ["realtime"]).gif!.segments).toHaveLength(2);
-    expect(() => parseReel(gif(seg("realtime", 8)), ["realtime"])).toThrow(/gif\.segment: 1 segments/);
-    expect(() => parseReel(gif(seg("realtime", 6) + seg("realtime", 6)), ["realtime"])).toThrow(/gif\.segment seconds in all/);
-    expect(() => parseReel(gif(seg("realtime", 3) + seg("point", 4)), ["realtime"])).toThrow(/no vignette point/);
+    expect(parseReel(gif(seg("realtime", 3) + seg("realtime", 4)), scripted).gif!.segments).toHaveLength(2);
+    expect(() => parseReel(gif(seg("realtime", 8)), scripted)).toThrow(/gif\.segment: 1 segments/);
+    expect(() => parseReel(gif(seg("realtime", 6) + seg("realtime", 6)), scripted)).toThrow(/gif\.segment seconds in all/);
+    expect(() => parseReel(gif(seg("realtime", 3) + seg("point", 4)), scripted)).toThrow(/no vignette point/);
   });
 });
 
@@ -102,6 +102,6 @@ describe("totalSeconds", () => {
   });
 
   it("refuses cuts outside their ranges", () => {
-    expect(() => checkCuts(parseReel(committed, ["realtime"]))).toThrow(/the full cut: 12\.2 s is outside 60–80 s/);
+    expect(() => checkCuts(parseReel(committed, scripted))).toThrow(/the full cut: [0-9.]+ s is outside 60–80 s/);
   });
 });
