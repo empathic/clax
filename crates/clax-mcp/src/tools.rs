@@ -611,6 +611,29 @@ pub struct DbBatchArgs {
 /// A tool's outcome before rendering: the success object, or a finished error result.
 type Outcome = Result<Value, CallToolResult>;
 
+/// The line a publish result carries when the answer's
+/// `pending_capabilities` says what waits for approval, `None` when
+/// nothing does.
+fn waiting_line(pending: &Value) -> Option<String> {
+    let strings = |k: &str| -> Vec<String> {
+        pending[k]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .unwrap_or_default()
+    };
+    let added = clax_core::capabilities::Added {
+        capabilities: strings("capabilities"),
+        hosts: strings("hosts"),
+    };
+    if !pending.is_object() || added.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Waiting for the owner's approval in Clax: {}.",
+        clax_core::capabilities::describe(&added)
+    ))
+}
+
 /// The `timeout` message of a publish that creates an artifact.
 const CREATE_TIMEOUT: &str = "the daemon did not respond in time, and the artifact may have been created: call list (newest first, after pinned artifacts) and look for it by title before publishing it again";
 
@@ -1511,6 +1534,9 @@ impl ClaxTools {
             "addressed": res["version"]["addresses"],
             "tags": tag_names(&res["artifact"]["tags"]),
         });
+        if let Some(waiting) = waiting_line(&res["pending_capabilities"]) {
+            out["waiting"] = json!(waiting);
+        }
         // The version is published whatever the tags' fate: a refusal is
         // reported beside it, never as the publish's failure.
         if !tags.is_empty() {

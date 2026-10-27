@@ -193,6 +193,31 @@ async fn publish_declares_through_clax_json_and_writes_it_from_capabilities() {
 }
 
 #[tokio::test]
+async fn publish_says_what_waits_for_approval() {
+    let ts = TestServer::spawn().await;
+    let t = tools_for(&ts);
+    let waits = ok(t
+        .publish(Parameters(PublishArgs {
+            capabilities: Some(serde_json::json!({"net": {"hosts": ["api.clax.invalid"]}})),
+            ..html("Waits", "<p>1")
+        }))
+        .await);
+    assert_eq!(
+        waits["waiting"],
+        "Waiting for the owner's approval in Clax: the internet (api.clax.invalid).",
+        "{waits}"
+    );
+    let plain = ok(t
+        .publish(Parameters(PublishArgs {
+            capabilities: Some(serde_json::json!({"db": {}})),
+            ..html("Plain", "<p>1")
+        }))
+        .await);
+    assert!(plain.get("waiting").is_none(), "{plain}");
+    assert!(!plain.to_string().contains("Waiting for the owner"), "{plain}");
+}
+
+#[tokio::test]
 async fn stale_if_version_is_an_error_result_naming_current() {
     let ts = TestServer::spawn().await;
     let t = tools_for(&ts);

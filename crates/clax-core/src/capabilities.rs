@@ -153,6 +153,47 @@ impl Added {
     }
 }
 
+/// How a gated capability is named to a person: `the internet`, `Claude`,
+/// `Clax's controls`. A name without a label is its own.
+fn label(name: &str) -> &str {
+    match name {
+        "net" => "the internet",
+        "sample" => "Claude",
+        "account" => "sign-in",
+        "shell" => "Clax's controls",
+        "notify" => "notifications",
+        "share" => "sharing",
+        "file" => "files",
+        "camera" => "the camera",
+        "location" => "your location",
+        other => other,
+    }
+}
+
+/// What `p` asks for, in words for a person: `the internet
+/// (api.example.com), Claude`. The names come in the order the
+/// declaration lists them, with `net` first when only new hosts are
+/// pending; `net` carries its new hosts. The Clax shell's approval bar
+/// (`web/shell/src/caps/approval.ts`) uses the same labels.
+#[must_use]
+pub fn describe(p: &Added) -> String {
+    let mut names: Vec<&str> = p.capabilities.iter().map(String::as_str).collect();
+    if !p.hosts.is_empty() && !names.contains(&"net") {
+        names.insert(0, "net");
+    }
+    names
+        .into_iter()
+        .map(|n| {
+            if n == "net" && !p.hosts.is_empty() {
+                format!("{} ({})", label(n), p.hosts.join(", "))
+            } else {
+                label(n).to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The string entries of `caps.net.hosts`; anything else is skipped, so a
 /// malformed declaration yields no hosts rather than an error.
 fn hosts_of(caps: &Value) -> Vec<&str> {
@@ -265,8 +306,28 @@ pub fn declaration_sha256(caps: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{added, declaration_sha256, in_force, narrow, net_hosts, pending, validate};
+    use super::{
+        Added, added, declaration_sha256, describe, in_force, narrow, net_hosts, pending, validate,
+    };
     use serde_json::json;
+
+    #[test]
+    fn describe_names_what_waits_in_words() {
+        let p = Added {
+            capabilities: vec!["sample".into(), "net".into()],
+            hosts: vec!["api.example.com".into(), "b.example.com".into()],
+        };
+        assert_eq!(
+            describe(&p),
+            "Claude, the internet (api.example.com, b.example.com)"
+        );
+        let hosts_only = Added {
+            capabilities: vec![],
+            hosts: vec!["c.example.com".into()],
+        };
+        assert_eq!(describe(&hosts_only), "the internet (c.example.com)");
+        assert_eq!(describe(&Added::default()), "");
+    }
 
     #[test]
     fn accepts_the_contract_declarations() {

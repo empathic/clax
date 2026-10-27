@@ -263,6 +263,14 @@ the artifact). `addresses` may name resolved threads. A thread ID in
 `addresses` that is not a thread of the artifact fails the call with
 `unknown_thread`, and nothing is published.
 
+When the version declares a capability that waits for approval (see
+"Approving capabilities"), the HTTP answer's `pending_capabilities` is set
+and the tool result carries `waiting`, one line such as `Waiting for the
+owner's approval in Clax: the internet (api.example.com), Claude.` (the
+labels are the Clax shell's approval bar's: the internet, Claude, sign-in,
+Clax's controls, notifications, sharing, files, the camera, your
+location). A version that needs no approval carries no `waiting`.
+
 With `tags`, the tool first reads the tags there are (`GET /api/tags`): a
 name that is none fails the call with `unknown_tag`, naming the tags there
 are, and nothing is published. Once the version is published, it adds them
@@ -6330,6 +6338,8 @@ opened directly, `db`, `assets`, `user` and `room` still resolve), so render wit
 capability first and light features up when it resolves.
 `permissions` and `user` need no declaration.
 
+A capability that reaches past the page (`net`, `sample`, `account`, `shell`, `notify`, `share`, `file`, `camera`, `location`) is in force only once the person who answers for the artifact approves (on your own Clax, its owner; on a hosted Clax, the page's maker) the version that first declares it, or a new `net` host, in Clax. Until then `use()` resolves `null` for it, and the version before keeps what was approved. Publishing never approves, whoever publishes; the publish result says what waits. Tell the person to approve it in Clax.
+
 - `artifact` (alias `self`): `publish(html)` saves a complete document
   (starting `<!doctype html>`) as a new version, and every open view reloads
   to it. Only the person's own browser can publish; other views reject
@@ -6765,6 +6775,65 @@ the page runs, a live listener stops receiving that app's changes at once;
 its error callback gets `not_granted` at its next refresh (after a reconnect
 of the event stream), and any later `get()` rejects `not_granted`.
 
+### Approving capabilities
+
+The gated capabilities are `net`, `sample`, `account`, `shell`, `notify`,
+`share`, `file`, `camera` and `location`; the rest act only inside the
+artifact. A gated name takes effect only once it is approved, and the
+declaration in force is the declaration without what waits: `net.hosts`
+cut to the approved hosts, and `net` gone when none is approved.
+
+**Who approves.** Only the person who answers for the artifact, in Clax
+itself: on a local Clax its owner alone (a maker who is not the owner gets
+403 `admin_only`, saying so); on a hosted Clax the page's maker. Never an
+agent (403 `not_for_agents`, and `forbidden` for a person's agent), and
+never a page (403 `not_for_pages`, for a request carrying
+`x-clax-via: page`). Publishing, creating a version and restoring never
+approve, whoever does it. Declarations in force before approvals existed
+count as approved (by `migration`), and versions Clax itself seeds or
+updates for its quickstart are approved by `clax`.
+
+**What waits.** The artifact view (`GET /api/artifacts/<id>`) always
+carries `capabilities_in_force`; for a caller who may approve it also
+carries `may_approve: true` and `pending_capabilities`, `{version,
+capabilities, hosts, declaration_sha256}` (`null` when nothing waits):
+the gated names the current version declares that the approval does not
+cover and the `net` hosts it does not list, with the SHA-256 of the
+declaration they come from. A publish, new-version or restore answer
+carries `pending_capabilities` the same way. Every artifact read by a
+site's page (a caller of the artifact's own site) serves the declaration in
+force as its `capabilities`. The artifact's event topic carries
+`{"type": "permissions", "artifact_id"}` when an approval changes.
+
+- `PUT /api/artifacts/<id>/capability-approval`, body `{version,
+  declaration_sha256}` (both required: 400 `invalid_args`), the
+  `pending_capabilities` the person was shown: approves the current
+  version's declaration, recorded by `owner` or `person:<ID>`; answers
+  `{approval, in_force}`. 409 `stale_version` with `current` when a
+  version was published, or the declaration changed, since what was shown;
+  403 `draft` for a draft, which is held to its app's approval. Same
+  origin only (403 `forbidden_origin`). The owner's approval also grants the
+  `net` hosts and the `sample` that waited; a hosted maker's approval puts
+  the declaration in force and leaves those grants to the owner's answer on
+  the page's first use.
+- `DELETE /api/artifacts/<id>/capability-approval/<name>`: takes one gated
+  name out of the approval, so the current declaration of it waits again;
+  `{withdrawn, in_force}`, `withdrawn` false when it was not approved.
+  Grants stay until revoked on their own routes. 400 `invalid_args` for a
+  name that needs no approval; 403 `draft`; same origin only.
+- `GET /api/artifacts/<id>/permissions`: `{version, declared, in_force,
+  approved, pending, net: {declared, waiting, grants, granted}, sample:
+  {granted, granted_at}, db_read: [{source_id, title, granted_at}]}`: what
+  the Permissions panel shows (`pending` as `pending_capabilities`; `net`
+  as `GET …/net-grants` with `waiting`, the hosts that wait for approval).
+
+All three are 404 for an unknown artifact. A change to the declaration
+narrows the approval to what is still declared and revokes the `net` and
+`sample` grants it no longer covers; a name or host a later version
+declares again asks again. A declared but unapproved capability answers
+403 `not_approved` on `net:fetch`, `sample` and the `sample-grant` and
+`net-grants` writes, where an undeclared one answers `not_declared`.
+
 ### Fetching from the network (`net`)
 
 An app page cannot connect anywhere itself, nor load anything from another
@@ -6824,7 +6893,7 @@ revalidates it when stale (at most 100 MiB under `CLAX_HOME/net-cache`).
 The daemon, for the first request and each redirect:
 
 - takes only `https` URLs without a user name or password;
-- takes only a host the live version declares and the owner granted;
+- takes only a host the live version declares, the approval covers (403 `not_approved` for one that waits for approval, see "Approving capabilities") and the owner granted;
 - resolves the host and refuses it if any address is not public unicast
   (loopback, private, shared, link-local, multicast, unspecified,
   documentation, benchmarking or reserved, IPv4 inside IPv6 judged as
@@ -8822,6 +8891,11 @@ it starts, the runs a previous process left. A build without the
 
 ## Security model
 
+- A page's gated capabilities (`net`, `sample`, `account`, `shell`,
+  `notify`, `share`, `file`, `camera`, `location`) take effect only once the
+  person who answers for it approves them in Clax: on a local Clax its
+  owner alone, on a hosted Clax the page's maker, never an agent or the
+  page itself (see "Approving capabilities").
 - The daemon binds `127.0.0.1` by default. `clax serve --bind 0.0.0.0` (or
   another address) serves on the LAN.
 - Every `/api/**` route answers only when the `Host` header is literally
