@@ -161,8 +161,9 @@ macro_rules! people_sql {
     };
 }
 
-/// Agents of `arts`: its owner, its watchers and the sessions that published
-/// a version of it, at most `:limit` per artifact. `relay`: a session of
+/// Agents of `arts`: its owner, its watchers, the sessions that published
+/// a version of it and the sessions that replied on its threads (an agent
+/// reply carries its session), at most `:limit` per artifact. `relay`: a session of
 /// another Clax (its grant is a device sign-in's), whose watch may name the
 /// local agent it relays for (`relay_name`, `relay_harness`). `live`: a send can reach
 /// it (live, and the owner or a watcher), as `live_agent` checks. Activity:
@@ -178,7 +179,11 @@ macro_rules! agents_sql {
                 SELECT a.id, a.owner, a.owner FROM arts a WHERE a.owner IS NOT NULL
                 UNION SELECT a.id, a.owner, w.session_id FROM arts a CROSS JOIN watches w ON w.artifact_id = a.id
                 UNION SELECT a.id, a.owner, v.session_id FROM arts a CROSS JOIN versions v ON v.artifact_id = a.id
-                       WHERE v.session_id IS NOT NULL),
+                       WHERE v.session_id IS NOT NULL
+                UNION SELECT a.id, a.owner, c.via_session_id FROM arts a
+                       CROSS JOIN threads t ON t.artifact_id = a.id
+                       CROSS JOIN comments c ON c.thread_id = t.id
+                       WHERE c.via_session_id IS NOT NULL),
             ranked AS (
                 SELECT k.aid, s.id, s.agent_handle, s.harness, s.name, s.person,
                        (SELECT w.relay_name FROM watches w WHERE w.session_id = s.id AND w.artifact_id = k.aid) AS relay_name,
