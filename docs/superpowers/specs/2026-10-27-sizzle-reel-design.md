@@ -321,7 +321,7 @@ people's pointers are Clax's live layers, which the shell draws.
   has the viewport, scale and colour scheme of §5, `reducedMotion:
   "no-preference"`, locale `en-US`, timezone `UTC`.
 - Wall time in the pages is fixed: Playwright's `page.clock.install({
-  time: REEL_EPOCH })` with `REEL_EPOCH = 2026-11-03T09:41:00Z`, so
+  time: REEL_EPOCH })` with `REEL_EPOCH = 2026-10-20T09:41:00Z`, so
   relative times and dates on screen are the same each run.
 - The shell's own timers (consent arming, the hint, presence reports)
   run on its test clock; the director advances it with `advance()` from

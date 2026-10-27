@@ -34,7 +34,7 @@ const nineToml = NINE.map(([id, title, seconds, short]) => [
 
 describe("parseReel", () => {
   it("parses the realtime table", () => {
-    const cfg = parseReel(committed, ["realtime"]);
+    const cfg = parseReel(committed, scripted);
     expect(cfg.fps).toBe(30);
     expect(cfg.size).toEqual([1920, 1080]);
     expect(cfg.capture).toEqual({ viewport: [1280, 800], scale: 1.25, theme: "light" });
@@ -71,18 +71,18 @@ describe("parseReel", () => {
 
   it("refuses a landing that does not end in its artifact ID", () => {
     const up = (id: string, url: string) => committed.replace(/landing_artifact = ""/, `landing_artifact = "${id}"`).replace(/landing = ""/, `landing = "${url}"`);
-    expect(parseReel(up("abc123", "https://clax.dev/a/abc123"), ["realtime"]).upload.landingArtifact).toBe("abc123");
-    expect(() => parseReel(up("abc123", "https://clax.dev/a/xyz789"), ["realtime"])).toThrow(/upload\.landing/);
-    expect(() => parseReel(up("abc123", ""), ["realtime"])).toThrow(/upload: set landing_artifact and landing together/);
+    expect(parseReel(up("abc123", "https://clax.dev/a/abc123"), scripted).upload.landingArtifact).toBe("abc123");
+    expect(() => parseReel(up("abc123", "https://clax.dev/a/xyz789"), scripted)).toThrow(/upload\.landing/);
+    expect(() => parseReel(up("abc123", ""), scripted)).toThrow(/upload: set landing_artifact and landing together/);
   });
 
   it("checks the GIF's cut list", () => {
     const seg = (v: string, s: number) => `[[gif.segment]]\nvignette = "${v}"\nbeat = "tick"\noffset = -1.0\nseconds = ${s}\ncaption = "x"\n`;
     const gif = (segs: string) => `${committed}\n[gif]\nfps = 15\nsize = [720, 450]\ncaption_px = 36\nmax_mib = 2\n\n${segs}`;
-    expect(parseReel(gif(seg("realtime", 3) + seg("realtime", 4)), ["realtime"]).gif!.segments).toHaveLength(2);
-    expect(() => parseReel(gif(seg("realtime", 8)), ["realtime"])).toThrow(/gif\.segment: 1 segments/);
-    expect(() => parseReel(gif(seg("realtime", 6) + seg("realtime", 6)), ["realtime"])).toThrow(/gif\.segment seconds in all/);
-    expect(() => parseReel(gif(seg("realtime", 3) + seg("point", 4)), ["realtime"])).toThrow(/no vignette point/);
+    expect(parseReel(gif(seg("realtime", 3) + seg("realtime", 4)), scripted).gif!.segments).toHaveLength(2);
+    expect(() => parseReel(gif(seg("realtime", 8)), scripted)).toThrow(/gif\.segment: 1 segments/);
+    expect(() => parseReel(gif(seg("realtime", 6) + seg("realtime", 6)), scripted)).toThrow(/gif\.segment seconds in all/);
+    expect(() => parseReel(gif(seg("realtime", 3) + seg("point", 4)), scripted)).toThrow(/no vignette point/);
   });
 });
 
@@ -102,6 +102,6 @@ describe("totalSeconds", () => {
   });
 
   it("refuses cuts outside their ranges", () => {
-    expect(() => checkCuts(parseReel(committed, ["realtime"]))).toThrow(/the full cut: 12\.2 s is outside 60–80 s/);
+    expect(() => checkCuts(parseReel(committed, scripted))).toThrow(/the full cut: [0-9.]+ s is outside 60–80 s/);
   });
 });

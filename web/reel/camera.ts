@@ -16,8 +16,10 @@ import type { Camera } from "./director.ts";
 export const FPS = 30;
 
 /** The wall clock every camera page starts at, so relative times and dates
- * on screen read the same each run (spec §7.1). */
-export const REEL_EPOCH = new Date("2026-11-03T09:41:00Z");
+ * on screen read the same each run (spec §7.1). It is before any recording:
+ * what the daemon stamps while a vignette runs (a thread, a version) is
+ * later than the page's clock, which the shell shows as "just now". */
+export const REEL_EPOCH = new Date("2026-10-20T09:41:00Z");
 
 /** The fast camera for a video that began recording at `startedAt` (the
  * camera page's creation, `Date.now()`): its frame is the real time since. */
