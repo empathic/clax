@@ -24,7 +24,7 @@ async function started(seed: Seed = {}) {
   vi.stubGlobal("SharedWorker", FakeWorker);
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     const own = seed.routes?.(url, init);
-    if (own !== undefined) return new Response(JSON.stringify(own));
+    if (own !== undefined) return own instanceof Response ? own : new Response(JSON.stringify(own));
     if (seed.tokenless && url === "/api/token") return new Response(JSON.stringify({ error: { code: "not_owner", message: "only the owner's browser holds the token" } }), { status: 403 });
     return new Response(JSON.stringify(
       url.includes("/threads") ? { threads: seed.threads ?? [], next_cursor: null }
@@ -1414,6 +1414,70 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(ctl.state.get().selected).toBe("t9");
     expect(await focusAfter(() => ctl.hover(t9))).not.toBeNull();
     expect(await focusAfter(() => ctl.hover(null))).toBeNull();
+    ctl.dispose();
+  });
+
+  it("the_page_gets_the_declaration_in_force", async () => {
+    const declaredOf = async (ctl: { host: unknown }) => ((await (ctl.host as { ready: Promise<{ env: { declared: unknown } }> }).ready).env.declared);
+    const a = await started({ artifact: { capabilities: { net: { hosts: ["api.clax.invalid"] }, db: {} }, capabilities_in_force: { db: {} } } });
+    expect(await declaredOf(a.ctl as never)).toEqual({ db: {} });
+    a.ctl.dispose();
+    const b = await started({ artifact: { capabilities: { net: { hosts: ["api.clax.invalid"] }, db: {} } } });
+    expect(await declaredOf(b.ctl as never)).toEqual({});
+    b.ctl.dispose();
+  });
+
+  it("shows_the_bar_only_when_the_daemon_says_the_viewer_may_approve", async () => {
+    const pending = { version: 2, capabilities: ["net"], hosts: ["api.clax.invalid"], declaration_sha256: "a".repeat(64) };
+    const may = await started({ artifact: { pending_capabilities: pending, may_approve: true } });
+    expect(may.ctl.pending()).toEqual(pending);
+    may.ctl.notNow();
+    expect(may.ctl.pending()).toBeNull();
+    may.ctl.dispose();
+    const not = await started({ artifact: { pending_capabilities: pending, may_approve: false } });
+    expect(not.ctl.pending()).toBeNull();
+    not.ctl.dispose();
+    const none = await started({ artifact: { may_approve: true, pending_capabilities: null } });
+    expect(none.ctl.pending()).toBeNull();
+    none.ctl.dispose();
+  });
+
+  it("a_stale_approval_refetches_and_shows_the_new_bar_without_retrying", async () => {
+    const first = { version: 2, capabilities: ["net"], hosts: ["a.clax.invalid"], declaration_sha256: "a".repeat(64) };
+    const second = { version: 2, capabilities: ["net"], hosts: ["a.clax.invalid", "b.clax.invalid"], declaration_sha256: "b".repeat(64) };
+    let now = first;
+    const puts: unknown[] = [];
+    const { ctl } = await started({
+      artifact: { pending_capabilities: first, may_approve: true },
+      routes: (url, init) => {
+        if (url.endsWith("/capability-approval") && init?.method === "PUT") {
+          puts.push(JSON.parse(String(init.body)));
+          now = second;
+          return new Response(JSON.stringify({ error: { code: "stale_version", message: "the declaration changed", current: 2 } }), { status: 409 });
+        }
+        return url === `/api/artifacts/${ID}` ? { ...loaded, artifact: { ...loaded.artifact, may_approve: true, pending_capabilities: now } } : undefined;
+      },
+    });
+    await ctl.approve();
+    expect(puts).toEqual([{ version: 2, declaration_sha256: "a".repeat(64) }]);
+    await vi.waitFor(() => expect(ctl.pending()).toEqual(second));
+    expect(ctl.state.get().approving).toBe(false);
+    expect(ctl.state.get().notice).toBeNull();
+    ctl.dispose();
+  });
+
+  it("refetches_the_artifact_on_a_permissions_event", async () => {
+    const pending = { version: 2, capabilities: ["shell"], hosts: [], declaration_sha256: "c".repeat(64) };
+    let answer: Record<string, unknown> = { may_approve: true, pending_capabilities: pending };
+    const { ctl, frame } = await started({
+      artifact: answer,
+      routes: url => (url === `/api/artifacts/${ID}` ? { ...loaded, artifact: { ...loaded.artifact, ...answer } } : undefined),
+    });
+    expect(ctl.pending()).toEqual(pending);
+    const es = await streamOf(frame);
+    answer = { may_approve: true, pending_capabilities: null, capabilities_in_force: {} };
+    es.emit("permissions", { type: "permissions", artifact_id: ID });
+    await vi.waitFor(() => expect(ctl.pending()).toBeNull());
     ctl.dispose();
   });
 

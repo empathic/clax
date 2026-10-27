@@ -2,7 +2,8 @@
 // `state` and call the intent methods; the frame is a FrameHost the mount
 // gives it.
 import { type Anchor, type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../../bridge/src/protocol";
-import { ApiError, type Artifact, type Attention, type SampleStatus, type TagRef, type Version, getArtifact, getToken } from "../api";
+import { approveCapabilities } from "../caps/approval";
+import { ApiError, type Artifact, type Attention, type PendingCapabilities, type SampleStatus, type TagRef, type Version, getArtifact, getToken } from "../api";
 import { getDrafts, getSampleStatus, putLooked, putSeen } from "./view-api";
 import { acceptByeFromFrame, acceptFromFrame, acceptSiteState, helloMatches, sendToFrame } from "../bridge-link";
 import type { Declared } from "../caps/availability";
@@ -11,7 +12,7 @@ import { HINT_MS, PICK_ATTEST_WAIT_MS, afterHostAttestation, frameGesture, hostA
 import { CapabilityHost, type CommentsUi, type DbJournal } from "../caps/host";
 import { REQUEST_STUCK, connTrouble } from "../conn-notice";
 import { Lifecycle, onPageCache, retrying } from "../lifecycle";
-import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, report, scopedNotice } from "../failure";
+import { APPROVE_FAILED, LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, failureText, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
 import { type SiteHosts, artifactOrigin, pageSrc, startSrc } from "../origin";
 import { appQuery, inspectQuery, parseShellPath, shellPath } from "../route";
@@ -56,6 +57,10 @@ export type ViewState = {
   startFile: string;
   data: Loaded | null;
   error: string | null;
+  /** The digest of the pending declaration whose bar "Not now" hid for this view; a new declaration shows its bar again. */
+  approvalHidden: string | null;
+  /** An approval is in flight. */
+  approving: boolean;
   /** The artifact's site origin, undefined until the artifact is known. */
   origin: string | undefined;
   /** The page's own address on its site, when the frame could not open it
@@ -386,7 +391,7 @@ export class ArtifactController {
     this.frameHash = this.startHash;
     this.state = new Store<ViewState>({
       pinnedVersion, startFile,
-      data: null, error: null, origin: undefined, openInTab: null, elsewhere: false, newer: null, deleted: false, commenting: false,
+      data: null, error: null, approvalHidden: null, approving: false, origin: undefined, openInTab: null, elsewhere: false, newer: null, deleted: false, commenting: false,
       panel: media("(min-width: 900px)"), narrow: media("(max-width: 480px)"),
       threads: [], resolved: {}, draft: null, selected: null, hovered: null, busy: 0,
       notice: null, hint: null, me: null, ask: null, file: startFile, sheet: null, working: [], attention: null,
@@ -716,7 +721,7 @@ export class ArtifactController {
           token,
           mayEdit: data.artifact.may_edit === true,
           viewer: currentViewer,
-          declared: (data.artifact.capabilities ?? {}) as Declared,
+          declared: (data.artifact.capabilities_in_force ?? {}) as Declared,
           prompt: this.prompt,
           post: m => { if (this.gate.open) this.send(m); },
           reload: () => { holdKeysAcrossLoad(); nav.assign(this.here(null)); },
@@ -1561,7 +1566,7 @@ export class ArtifactController {
 
   /** The `docs` topic, once the stream is open, for a page that declares `db`. */
   private watchDocs(): void {
-    if (this.s.data?.artifact.capabilities?.db) this.stream?.watchDocs();
+    if (this.s.data?.artifact.capabilities_in_force?.db) this.stream?.watchDocs();
   }
 
   /** Takes the artifact's agents as listed now: the Send target stays while
@@ -1753,6 +1758,64 @@ export class ArtifactController {
   copyLink(): void { navigator.clipboard.writeText(location.origin + this.here(this.pinnedVersion) + location.hash).catch(() => {}); }
   reloadLatest(): void { nav.assign(this.here(null)); }
   dismissNotice(): void { this.set({ notice: null }); }
+
+  /** The declaration the approval bar shows: what the current version asks
+   * for, once the daemon says this viewer may approve it and "Not now" has
+   * not hidden this declaration. */
+  pending(s: ViewState = this.s): PendingCapabilities | null {
+    const a = s.data?.artifact;
+    const p = a?.may_approve === true ? a.pending_capabilities ?? null : null;
+    return p && p.declaration_sha256 !== s.approvalHidden ? p : null;
+  }
+  /** Hides the bar for the declaration it shows, for this view only. */
+  notNow(): void {
+    const p = this.pending();
+    if (p) this.set({ approvalHidden: p.declaration_sha256 });
+  }
+  /** Approves the declaration the bar shows, then reloads the frame so the
+   * page asks again and is served what is now in force. A 409 means the
+   * declaration changed under the bar: the artifact is refetched and the
+   * bar shows the new one, with no retry. */
+  async approve(): Promise<void> {
+    const p = this.pending();
+    if (!p || this.s.approving) return;
+    this.set({ approving: true });
+    try {
+      await approveCapabilities(this.id, p.version, p.declaration_sha256);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) await this.refetchArtifact();
+      else this.setNotice(failureText(APPROVE_FAILED, e));
+      this.set({ approving: false });
+      return;
+    }
+    if (this.disposed) return;
+    this.set({ approving: false });
+    holdKeysAcrossLoad();
+    nav.assign(this.here(null));
+  }
+  /** Another view, or an agent's publish, changed what is approved: refetch,
+   * and reload the frame when the declaration in force differs from the
+   * one the page was served. */
+  permissionsChanged(): void {
+    const before = JSON.stringify(this.s.data?.artifact.capabilities_in_force ?? {});
+    void this.refetchArtifact().then(() => {
+      if (!this.disposed && JSON.stringify(this.s.data?.artifact.capabilities_in_force ?? {}) !== before) { holdKeysAcrossLoad(); nav.assign(this.here(null)); }
+    });
+  }
+  /** Takes the fields about approval from a fresh answer for the artifact:
+   * who may approve depends on the caller, and the owner's browser is the
+   * owner only once its token request has set the owner cookie, after the
+   * document that carried the first answer. */
+  takeApproval(a: Artifact): void {
+    const fields = (x: Artifact) => JSON.stringify([x.capabilities, x.capabilities_in_force, x.may_approve === true, x.pending_capabilities ?? null]);
+    const cur = this.s.data?.artifact;
+    if (this.disposed || !cur || fields(cur) === fields(a)) return;
+    this.set(s => s.data ? { data: { ...s.data, artifact: { ...s.data.artifact, capabilities: a.capabilities, capabilities_in_force: a.capabilities_in_force, may_approve: a.may_approve, pending_capabilities: a.pending_capabilities } } } : {});
+  }
+  /** Refetches the artifact and takes the fields about approval from the answer. */
+  private async refetchArtifact(): Promise<void> {
+    try { this.takeApproval((await getArtifact(this.id)).artifact); } catch { /* the next event or reload shows it */ }
+  }
   setMe(v: Viewer): void {
     this.set({ me: v });
     const r = this.reopenAfterName;

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ShellToBridge } from "../../../bridge/src/protocol";
-import { approved, isAvailable } from "./availability";
+import { isAvailable } from "./availability";
 import { CapError } from "./errors";
 import { CapabilityHost, type CapEnv, type HandlerFactory } from "./host";
 import { REGISTRY } from "./registry";
@@ -61,12 +61,10 @@ describe("CapabilityHost", () => {
     expect(await granted({ token: "tok", declared: {} })).toBe(false);
   });
 
-  it("shell_waits_for_the_owners_approval_once_d_says", () => {
-    expect(approved("shell", {})).toBe(true);
-    expect(approved("shell", { approved: new Set(["db"]) })).toBe(false);
-    expect(approved("shell", { approved: new Set(["shell"]) })).toBe(true);
-    expect(isAvailable("shell", { shell: {} }, true, { approved: new Set() })).toBe(false);
-    expect(isAvailable("shell", { shell: {} }, true, { approved: new Set(["shell"]) })).toBe(true);
+  it("serves_a_gated_name_only_once_it_is_in_the_declaration_in_force", () => {
+    expect(isAvailable("shell", {}, true)).toBe(false);
+    expect(isAvailable("shell", { shell: {} }, true)).toBe(true);
+    expect(isAvailable("net", {}, true)).toBe(false);
   });
 
   it("answers artifact declared under its legacy name self", async () => {

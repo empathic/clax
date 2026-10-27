@@ -45,7 +45,20 @@ export type Artifact = {
    * artifact version and release, how many installs it has, who published that bundle and who
    * owns the artifact. */
   app?: AppInfo | null;
+  /** From `GET /api/artifacts/<id>` and the bootstrap: the declaration in
+   * force, the part of `capabilities` approved for the current version. */
+  capabilities_in_force?: Record<string, unknown>;
+  /** From the same: the daemon says this viewer may approve the declaration
+   * (on a local daemon the owner alone, on a hosted one the page's maker;
+   * never an agent). */
+  may_approve?: boolean;
+  /** From the same: what the current version declares that waits for approval, null for nothing. */
+  pending_capabilities?: PendingCapabilities | null;
 };
+/** What a version declares that waits for approval: gated capability names,
+ * hosts `net` has not approved, and the digest of the declaration shown,
+ * which an approval must name. */
+export type PendingCapabilities = { version: number; capabilities: string[]; hosts: string[]; declaration_sha256: string };
 /** A person as an app's header names them: their name, their GitHub login
  * when they have one, and their public ID (null when they have none), which
  * alone tells two people apart. */

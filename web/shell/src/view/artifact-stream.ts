@@ -196,6 +196,8 @@ export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
   }
   // A sharer turned the Comments switch: off, comment mode ends here too.
   if (e.type === "comments") c.noteComments(e.comments);
+  // An approval or a withdrawal, here or in another view: what is in force changed.
+  if (e.type === "permissions") c.permissionsChanged();
   if (e.type === "working") { c.workingAt = ++c.clock; c.set({ working: e.working }); }
   if (e.type === "drafts") { c.draftsAt = ++c.clock; c.draftsChanged(e.drafts); }
   // A name set in another view of this viewer (the owner's other browser,
@@ -218,6 +220,7 @@ export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
     getArtifact(c.id).then(d => {
       const n = d.artifact.current_version;
       c.setTags(tt, { tags: d.artifact.tags ?? [], may: !!d.artifact.may_tag });
+      c.takeApproval(d.artifact);
       // A working delta heard since the request started is newer than its answer.
       c.set(s => ({ working: c.workingAt > t ? s.working : d.artifact.working ?? [], attention: d.attention ?? s.attention, looked: { ...s.looked, ...d.attention?.looked } }));
       c.agentsFetched(t, d.artifact.participants?.agents ?? []);

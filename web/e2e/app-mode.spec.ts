@@ -621,6 +621,7 @@ claude.use("permissions").then(async perm => { document.getElementById("out").te
 <script src="slow.js"></script><p id="after">parsed</p></body></html>`;
     const s = await registerSession(d.base, d.token, "app");
     const { artifact } = await api(d.base, d.token, "/api/artifacts", { method: "POST", session: s.id, body: JSON.stringify({ title: "Native slow page", capabilities: NET_CAPS, files: { "index.html": { content: html, encoding: "utf8" } } }) }) as { artifact: { id: string } };
+    await approve(d.base, d.token, artifact.id);
     let release!: () => void;
     const held = new Promise<void>(r => { release = r; });
     await page.route("**/slow.js", async route => { await held; await route.fulfill({ contentType: "text/javascript", body: "window.slow = true;" }); });

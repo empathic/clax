@@ -200,7 +200,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const thread = { id: "tS", artifact_id: ID, version_n: 1, anchor: pick("x", "Goals").anchor, status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null,
       comments: [{ id: "c1", thread_id: "tS", author_kind: "viewer", author_name: "Viewer", via_harness: null, body: "note", created_at: "x" }] };
     let answerSend!: (r: Response) => void;
-    const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { comments: { customAnchors: true } } } };
+    const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { comments: { customAnchors: true } }, capabilities_in_force: { comments: { customAnchors: true } } } };
     const view = await mountView(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : declared)),
       async (url, init) => url.startsWith("/api/viewers/")
         ? new Response(JSON.stringify(viewer))
@@ -421,7 +421,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const t = { id: "tR", artifact_id: ID, version_n: 1, anchor: pick("x", "Goals").anchor, status: "open", sent_to_agent: true, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null,
       comments: [{ id: "c1", thread_id: "tR", author_kind: "viewer", author_name: "Viewer", via_harness: null, body: "note", created_at: "x" }] };
     let replies = 0;
-    const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { comments: {} } } };
+    const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { comments: {} }, capabilities_in_force: { comments: {} } } };
     const view = await mountView(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : declared)),
       async (url, init) => {
         if (url.startsWith("/api/viewers/")) return new Response(JSON.stringify(viewer));
@@ -491,7 +491,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
   });
 
   it("tells a custom-anchors page comment mode came back, with areas, when a pick's composer closes", async () => {
-    const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { comments: { customAnchors: true } } } };
+    const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { comments: { customAnchors: true } }, capabilities_in_force: { comments: { customAnchors: true } } } };
     const view = await mountView(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : declared)));
     const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");

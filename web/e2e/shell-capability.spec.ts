@@ -1,5 +1,5 @@
 import { type Frame, type Locator, type Page } from "@playwright/test";
-import { test, expect, type Daemon, contentFrame, openArtifact, postThread, publishWith, reach, registerSession } from "./fixtures";
+import { test, expect, type Daemon, approve, contentFrame, openArtifact, postThread, publishWith, reach, registerSession } from "./fixtures";
 import { hostedDaemon, memberOf, ownerOf, rightsOn } from "./hosted-helpers";
 import { advance, quietEval } from "./time";
 
@@ -47,6 +47,7 @@ body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 
 async function tour(page: Page, viewport = { width: 1280, height: 800 }, base = d) {
   await page.setViewportSize(viewport);
   const { artifact } = await publishWith(base.base, base.token, `Tour`, TOUR, { shell: {} });
+  await approve(base.base, base.token, artifact.id);
   const f = await openArtifact(page, base.base, artifact.id, 1);
   await expect(f.locator("#load")).not.toHaveText("-");
   return { f, aid: artifact.id };
@@ -105,6 +106,7 @@ test(`a_ring_goes_after_six_seconds`, async ({ page }) => {
 test(`app_mode_shows_no_controls`, async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   const { artifact } = await publishWith(d.base, d.token, `Tour`, TOUR, { shell: {} });
+  await approve(d.base, d.token, artifact.id);
   await page.goto(`${d.base}/a/${artifact.id}?app=1`);
   const f = await contentFrame(page, artifact.id, 1);
   await expect(f.locator("#load")).not.toHaveText("-");
@@ -170,6 +172,7 @@ test(`the_ring_follows_a_scrolling_container_and_goes_when_its_control_leaves_it
     body: JSON.stringify({ title: "Tour", capabilities: { shell: {} }, files: { "index.html": { content: TOUR.replace("<h2>Tour</h2>", "<h2>Quarterly goals</h2>"), encoding: "utf8" } } }),
   });
   const { artifact } = (await res.json()) as { artifact: { id: string } };
+  await approve(freshDaemon.base, freshDaemon.token, artifact.id);
   for (let i = 0; i < 25; i++) await postThread(freshDaemon.base, artifact.id, `item ${i}`);
   await page.setViewportSize({ width: 1280, height: 800 });
   const f = await openArtifact(page, freshDaemon.base, artifact.id, 1);
@@ -201,6 +204,7 @@ test(`a_commenter_gets_no_shell_and_an_editor_does`, async ({ browser }) => {
     const owner = await ownerOf(browser, origin);
     const { artifact } = await publishWith(hd.base, hd.token, "Tour", TOUR, { shell: {} });
     const aid = artifact.id;
+    await approve(hd.base, hd.token, aid);
     const sam = await memberOf(browser, owner, origin, "Sam", rightsOn(aid));
     await sam.goto(`${origin}/a/${aid}`);
     const sf = await contentFrame(sam, aid, 1);
