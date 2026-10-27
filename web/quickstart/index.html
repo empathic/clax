@@ -53,6 +53,45 @@
 
   // ---------- Content ----------
   const cmd = (s) => `<div class="cmd"><pre>${s}</pre><button type="button" data-copy>Copy</button></div>`;
+  // The shell capability: "Show me" rings one of Clax's own controls. It is
+  // null on a released Clax and for viewers who cannot edit, and then the
+  // buttons stay hidden.
+  let shell = null;
+  const canCache = {};
+  const SHOWME = {
+    link: ["publish", "Show me Publish"], comment: ["comment", "Show me Comment"], send: ["send", "Show me Send to agent"],
+    change: ["versions", "Show me Versions"], fork: ["fork", "Show me Fork"],
+  };
+  const showOk = (name) => !!shell && (name === "send" || !!canCache[name]);
+  function showMe(id) {
+    const [name, label] = SHOWME[id];
+    return `<span class="showme-row"><button type="button" class="btn showme" data-show="${name}"${showOk(name) ? "" : " hidden"}>${label}</button>${id === "comment" ? `<button type="button" class="btn showme" data-try${shell ? "" : " hidden"}>Try it</button>` : ""}<span class="muted-note showme-hint" role="status" hidden></span></span>`;
+  }
+  /** Shows each "Show me" under `root` whose control is on screen now (Send always, with a hint when it is not). */
+  async function syncShow(root) {
+    if (!shell) return;
+    for (const b of root.querySelectorAll("[data-show]")) {
+      const name = b.dataset.show;
+      try { canCache[name] = await shell.can(name); } catch (_) { canCache[name] = false; }
+      b.hidden = !showOk(name);
+    }
+    root.querySelectorAll("[data-try]").forEach((b) => { b.hidden = false; });
+  }
+  async function shellClick(btn) {
+    const hint = btn.parentElement.querySelector(".showme-hint");
+    const say = (t) => { hint.textContent = t; hint.hidden = false; clearTimeout(hint._t); hint._t = setTimeout(() => { hint.hidden = true; }, 5000); };
+    hint.hidden = true;
+    let ok = false;
+    try {
+      if (btn.dataset.try !== undefined) {
+        ok = await shell.commentMode(true);
+        say(ok ? "Comment mode is on. Press Escape to leave it." : "Comment mode did not turn on.");
+        return;
+      }
+      ok = await shell.highlight(btn.dataset.show);
+    } catch (_) { ok = false; if (btn.dataset.try !== undefined) return say("Comment mode is not available here."); }
+    if (!ok) say(btn.dataset.show === "send" ? "Open Threads first." : "Not on screen right now.");
+  }
   const tip = (h, s) => `<div class="tip"><b>${h}</b>${s}</div>`;
 
   const CLAXDEV = "https://clax.dev";
@@ -84,7 +123,8 @@
       cta: `<a class="gh" href="${CLAXDEV}/auth/github" target="_blank" rel="noopener">${GH}Sign in with GitHub</a>`,
       body: `<p>Start with your clax.dev account. It's where your pages get public links, where you share them, and where comments come back from.</p>
         <a class="gh wide" href="${CLAXDEV}/auth/github" target="_blank" rel="noopener">${GH}Sign in with GitHub</a>
-        <p class="muted-note">Sign-in opens in a new tab; this one stays here. Come back when you're done.</p>` },
+        <p class="muted-note">Sign-in opens in a new tab; this one stays here. Come back when you're done.</p>
+        <p class="muted-note">Already signed in, or reading this in your own gallery? Press its ✓ to mark it done.</p>` },
     install: { kicker: "Bring your own agent", title: "Bring your own agent", sub: "Install the plugin, pick yours",
       body: `<p>Clax works with Claude Code, Codex, Pi and Grok Build. Each gets the same tools and the same <code>clax</code> skill. Pick yours:</p>` },
     agent: { kind: "decision", kicker: "Decision", title: "Which agent do you use?",
@@ -117,8 +157,8 @@
         ${cmd("ANTHROPIC_API_KEY=… clax serve")}
         <p>Then press <b>New</b> in your gallery and pick ClaxBot to build a page, or send any comment thread to ClaxBot.</p>` },
     link: { kicker: "Step", title: "Link Clax to your account", sub: "One click, one approval",
-      body: `<p>Press <b>Publish to clax.dev</b> in the top bar, on this page or any other. Clax asks to sign in to clax.dev first: it opens clax.dev's approval page, shows a code, and waits.</p>
-        <p>You're already signed in there, so check that the code matches and approve. That links this Clax to your account, and the same button then publishes the page. You don't need to install anything else.</p>
+      body: `<p>Press <b>Publish to clax.dev</b> in the top bar, on this page or any other. Clax signs you in on clax.dev in this tab: it shows a code and asks you to approve there.</p>
+        <p>Check that the code matches and approve. You land back on this page, linked, with the Publish dialog open.</p>
         ${tip("Prefer the terminal?", `If the <code>clax</code> command is on your PATH, this does the same:${cmd("clax remote add https://clax.dev")}`)}
         ${tip("Using the Clax app?", "Settings › Sharing › clax.dev › Connect.")}` },
     attach: { kicker: "Step", title: "Attach your agent to this page", sub: "So your comments here reach it",
@@ -157,7 +197,9 @@
         <p>It works with Chrome, Chromium, Brave and Edge on macOS and Linux.</p>` },
     data: { kind: "small", kicker: "Next", title: "Pages that do more", sub: "Data, live rooms, questions",
       body: `<p>Pages can do more than display. Ask your agent for:</p>
-        <ul><li><b>Shared data</b>: a tracker or a sign-up sheet that keeps what people enter.</li><li><b>Live updates</b> while others view the page.</li><li><b>Questions</b> the agent asks you and you answer in the browser.</li><li><b>Claude inside the page</b>, paid for by your own API key: set <code>ANTHROPIC_API_KEY</code> before Clax starts.</li></ul>
+        <ul><li><b>Shared data</b>: a tracker or a sign-up sheet that keeps what people enter.</li><li><b>Live updates</b> while others view the page.</li><li><b>Questions</b> the agent asks you and you answer in the browser.</li><li><b>Claude inside the page</b>, paid for by your own API key: set <code>ANTHROPIC_API_KEY</code> before Clax starts.</li>
+        <li><b>A tour of Clax</b> that points at its own buttons, as this page does.</li></ul>
+        <p class="muted-note">A page declares what it uses in <code>clax.json</code>. One that uses more than the basics (the network, Claude, the shell) asks its owner once per artifact, and again when a version asks for more, in a bar in Clax.</p>
         ${tip("Try", `"Turn this into a checklist my team can tick off."`)}` },
     share: { kind: "small", kicker: "Next", title: "Share nearby", sub: "People on your network",
       body: `<p>Others on your network can view and comment on your pages and connect their own agents, with the rights you give them.</p>
@@ -269,6 +311,7 @@
       const t = e.target.closest("button, a");
       if (!t) return;
       if (t.dataset.copy !== undefined) return copy(t);
+      if (t.dataset.show !== undefined || t.dataset.try !== undefined) return shellClick(t);
       if (claxbotRoute()) { state.have = "new"; save(); }
       if (t.dataset.slide) return showSlide(Number(t.dataset.slide));
       if (t.dataset.step === "prev") return showSlide(slide - 1);
@@ -290,8 +333,8 @@
   }
   // Each slide: one action and at most one command; the side panel keeps the detail.
   const SLIDES = {
-    link: { tab: "Link", html: () => `<p>Press <b>Publish to clax.dev</b> in the top bar, then approve the code on clax.dev.</p>
-      <p class="deck-alt">Terminal: <code>clax remote add https://clax.dev</code></p>` },
+    link: { tab: "Link", html: () => `<p>Press <b>Publish to clax.dev</b>, approve on clax.dev, and you land back here, linked.</p>
+      <p class="deck-alt">Terminal: <code>clax remote add https://clax.dev</code></p>${showMe("link")}` },
     attach: { tab: "Attach", html: () => `<p>In your agent's chat:</p>${cmd(`Watch Clax page ${ARTIFACT} for my comments`)}` },
   };
   function renderDeck(anim) {
@@ -311,6 +354,7 @@
         <span class="deck-pos">${slide + 1} of ${DECK.length}</span>
         <button type="button" class="deck-nav" data-step="next" ${slide === DECK.length - 1 ? "disabled" : ""} aria-label="Next step">→</button>
       </div>`;
+    syncShow(deck);
     deck.querySelectorAll(".fab").forEach((f) => { const on = !!state.done[f.dataset.toggle]; f.classList.toggle("on", on); f.setAttribute("aria-pressed", String(on)); });
   }
 
@@ -518,6 +562,7 @@
     if (id === "next") {
       html += `<div class="choices">${BRANCHES.map((b) => `<button type="button" data-go="${b}"><b>${NODES[b].title}</b><span>${NODES[b].sub}</span></button>`).join("")}</div>`;
     }
+    if (SHOWME[id]) html += `<div class="showme-wrap">${showMe(id)}</div>`;
     const here = ideasFor(id);
     if (here.length) {
       html += `<div class="ideas-here"><b>💡 This step could be better</b><ul>${here.map((i) => `<li><a href="ideas.html#${encodeURIComponent(i.id)}">${esc(i.title)}</a></li>`).join("")}</ul></div>`;
@@ -527,6 +572,7 @@
     if (nx) actions += `<button type="button" class="btn" data-go="${nx}">Next: ${NODES[nx].title} →</button>`;
     if (actions) html += `<div class="actions">${actions}</div>`;
     document.getElementById("p-body").innerHTML = html;
+    syncShow(panel);
     panel.querySelector(".pb").scrollTop = 0;
     panel.scrollTop = 0;
     if (!opts.quiet) panel.classList.add("open");
@@ -549,6 +595,7 @@
     const t = e.target.closest("button, a");
     if (!t) return;
     if (t.dataset.copy !== undefined) return copy(t);
+    if (t.dataset.show !== undefined || t.dataset.try !== undefined) return shellClick(t);
     if (t.dataset.skip) { skipInstall(); return select("link"); }
     if (t.dataset.agent) { state.agent = t.dataset.agent; state.have = "new"; save(); return select(`install-${state.agent}`); }
     if (t.dataset.done) {
@@ -620,6 +667,8 @@
     if (!c || typeof c.use !== "function") return;
     try { user = await c.use("user"); } catch (_) {}
     try { db = await c.use("db"); } catch (_) {}
+    try { shell = (await c.use("shell")) || null; } catch (_) { shell = null; }
+    if (shell) { syncShow(panel); renderDeck(); }
     try { uid = user ? await user.id() : null; } catch (_) {}
     if (!db) return;
     if (uid) {

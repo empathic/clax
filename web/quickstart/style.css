@@ -243,7 +243,7 @@
   .deck-tabs button[role="tab"][aria-selected="true"] { background: var(--surface); color: var(--fg); border-bottom-color: var(--accent); }
   .deck-tabs .dn { width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid currentColor; display: grid; place-items: center; font-size: 11px; }
   .deck-tabs button.is-done .dn { background: var(--ok); border-color: var(--ok); color: var(--surface); }
-  .deck-slide { height: 138px; overflow: auto; padding: 14px 20px 2px; }
+  .deck-slide { height: 172px; overflow: auto; padding: 14px 20px 2px; }
   .deck-slide.slide-in { animation: slide-in .22s ease-out; }
   @keyframes slide-in { from { opacity: 0; transform: translateX(14px); } }
   @media (prefers-reduced-motion: reduce) { .deck-slide.slide-in { animation: none; } }
@@ -257,7 +257,7 @@
   .deck-nav:hover:not([disabled]) { border-color: var(--accent); }
   .deck-nav[disabled] { opacity: .3; cursor: default; }
   @media (max-width: 900px) {
-    .deck-slide { height: 200px; padding: 12px 12px 2px; }
+    .deck-slide { height: 236px; padding: 12px 12px 2px; }
     .deck-tabs button[role="tab"] { padding-right: 24px; gap: 5px; font-size: 13px; }
     .deck-tabs .fab { right: 4px; width: 18px; height: 18px; font-size: 10px; }
   }
@@ -352,3 +352,9 @@
   /* The deck on the ClaxBot route, which skips it. */
   .deck { transition: opacity .2s; }
   .deck.dim { opacity: .45; }
+
+  /* "Show me" and "Try it": shown only where Clax can point at its own controls. */
+  .showme-wrap { margin: 10px 0; }
+  .showme-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; }
+  .btn.showme { padding: 4px 10px; font-size: 13px; }
+  .showme-hint { margin: 0; }
