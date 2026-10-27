@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Cuts a Clax release, from the version bump to the Pi package on npm: the
-# procedure docs/usage.md ("Releasing") describes, in one command.
+# Cuts a Clax release from the prod branch, from the release branch to the
+# Pi package on npm: the procedure docs/usage.md ("Releasing") describes, in
+# one command run twice, before and after the release's pull request into
+# prod is merged.
 #
 #   scripts/release.sh X.Y.Z                              a dry run
 #   scripts/release.sh X.Y.Z --i-know-what-i-am-doing     the release
@@ -8,70 +10,91 @@
 #
 # The dry run, the default, runs the read-only checks and prints every step
 # with whether it is done already; it changes nothing (it fetches origin's
-# main, which moves only origin/main). With --i-know-what-i-am-doing it
-# acts, as the checkout's git identity, signing with its signing key:
+# main and prod, and the release branch when origin has it, which moves only
+# the remote-tracking refs). With --i-know-what-i-am-doing it acts, as the
+# checkout's git identity, signing with its signing key.
 #
-#    1  preflight: on main and clean; after a fetch, ahead of origin/main
-#       only by this release's commits (the release commit, the pin commit,
-#       merges of origin/main on top), and not behind it, except between the
-#       release commit and step 12, which merges origin/main in; gh signed
-#       in; X.Y.Z newer than every v* tag; commit signing works; the tools
-#       present; npm reachable (and signed in, for a first Pi publish); the
-#       npm environment limited to main (a dry run only warns). A failure
-#       here changes nothing.
-#    2  scripts/bump-version.sh X.Y.Z
-#    3  just bazel-sync, until it changes nothing (at most 4 runs)
-#    4  just ci
-#    5  a signed commit "Release X.Y.Z" (git commit -S -a)
-#    6  a signed tag vX.Y.Z, "Clax X.Y.Z"
-#    7  git push origin refs/tags/vX.Y.Z (the tag alone)
-#    8  wait for the Release workflow on that tag, then check that the GitHub
+# Which phase a run is in follows from origin's prod: until prod's version
+# is X.Y.Z, the release is prepared (steps 2-9) and its pull request waits
+# for the owner (step 10); once it is, the release is cut (steps 11-21).
+#
+#    1  preflight. Always: gh signed in; X.Y.Z newer than every v* tag;
+#       commit signing works; the tools present; npm reachable (and signed
+#       in, for a first Pi publish); the npm environment limited to prod (a
+#       dry run only warns). Preparing: origin/prod older than X.Y.Z; a clean
+#       checkout on any branch, or on release/X.Y.Z ahead of origin/prod only
+#       by merges of origin/main and the release commit; the release's pull
+#       request not open (an open one refuses: merge it first). Cutting: on
+#       prod, not behind origin/prod and ahead of it only by the pin commit;
+#       origin/prod holds a "Release X.Y.Z" commit main lacks (the pull
+#       request merged with a merge commit). A failure here changes nothing.
+#    2  git switch -c release/X.Y.Z origin/prod (or to that branch, when it
+#       exists here or on origin)
+#    3  a signed merge of origin/main into it, "Merge origin/main into
+#       release/X.Y.Z" (none when it has origin/main already)
+#    4  scripts/bump-version.sh X.Y.Z
+#    5  just bazel-sync, until it changes nothing (at most 4 runs)
+#    6  just ci
+#    7  a signed commit "Release X.Y.Z" (git commit -S -a)
+#    8  git push origin release/X.Y.Z
+#    9  gh pr create --base prod --head release/X.Y.Z; the run stops here,
+#       saying to merge it
+#   10  the owner merges the pull request on GitHub, with a merge commit;
+#       the push to prod deploys clax.dev from GitHub Actions. Done once
+#       origin's prod is at X.Y.Z; then the same command, run again from a
+#       prod checkout at origin/prod's tip, goes on.
+#   11  a signed tag vX.Y.Z, "Clax X.Y.Z", on origin/prod's tip
+#   12  git push origin refs/tags/vX.Y.Z (the tag alone)
+#   13  wait for the Release workflow on that tag, then check that the GitHub
 #       release lists SHA256SUMS and was built from the tag commit's tree
 #       (scripts/release-exists-check.sh --tree)
-#    9  scripts/pin-release.sh vX.Y.Z
-#   10  just ci
-#   11  a signed commit "Pin the plugins to Clax X.Y.Z"
-#   12  git push origin main; when origin's main has moved on since, first a
-#       signed merge of origin/main on top of the pin commit
-#   13  wait for CI on the commit step 12 pushed (the pin commit, or the
-#       merge on it)
-#   14  gh workflow run publish-pi.yml (dry_run off) on that commit, and
+#   14  scripts/pin-release.sh vX.Y.Z
+#   15  just ci
+#   16  a signed commit "Pin the plugins to Clax X.Y.Z"
+#   17  git push origin prod (the owner bypasses prod's pull request rule);
+#       the push deploys clax.dev again, with no server change
+#   18  carry the release to main: the release commit and the pin commit
+#       cherry-picked (-S -x) onto origin/main's tip as two signed commits,
+#       from a temporary worktree, and pushed to main, which takes no merge
+#       commit. A conflict stops the run, saying what to resolve.
+#   19  wait for CI on the pin commit on prod
+#   20  gh workflow run publish-pi.yml --ref prod on the pin commit, and
 #       wait for it. While the Pi package does not exist on npm (trusted
 #       publishing needs an existing package), its first version is
 #       published from here instead: npm publish, from a temporary worktree
-#       of that commit, after the checks publish-pi.yml makes; then the
+#       of the pin commit, after the checks publish-pi.yml makes; then the
 #       trusted-publisher setup is printed. Done once npm has the version.
-#   15  print what is left by hand (the clax.dev deploy, crates.io, and after
-#       a first Pi publish its trusted-publisher setup and the README switch)
+#   21  print what is left by hand (the deploy's runs to check, crates.io,
+#       and after a first Pi publish its trusted-publisher setup and the
+#       README switch)
 #
 # A run that fails stops at that step, says which, and changes nothing after
 # it. Run the same command again: each step's state is read from git and
-# GitHub and npm (the version files, the commits by subject, the tag here
-# and on origin, the release's assets, the workflow runs, the versions npm
-# has), so the run resumes at
-# the first step not done. The release is known by its tag and its pin
-# commit, so it resumes also after main has moved past the pin commit (a
-# failed CI wait or Pi publish), from a checkout pulled up to origin/main.
-# Uncommitted changes are taken only while a step that makes them is
-# pending its commit (2-4 into the release commit, 9-10 into the pin
-# commit); any other change, an untracked file, or a commit on main other
-# than the release's own, refuses to run. It never force-pushes, never deletes a
-# tag, and checks that every commit and the tag it pushes carry a signature.
+# GitHub and npm (the version files, the commits by subject, the release
+# branch here and on origin, its pull request's state, the tag here and on
+# origin, the release's assets, the workflow runs, the versions npm has),
+# so the run resumes at the first step not done. Uncommitted changes are
+# taken only while a step that makes them is pending its commit (4-6 into
+# the release commit, 14-15 into the pin commit); any other change, an
+# untracked file, or a commit other than the release's own, refuses to run.
+# It never force-pushes, never deletes a tag, and checks that every commit
+# and the tag it pushes carry a signature.
 #
 # Before the first step it lists every step, done or to do, with an
 # estimate of the time in all and still to run: the steps' durations in
 # earlier runs' logs (target/release/*.log), averaged, or else typical
-# ones (just ci 7m30s, the Release workflow 11m30s, CI on main 9m, the Pi
-# publish 2m). Each step then prints one line, with the share of the
-# estimate done ([42%]; steps found done count in full), and a step that
-# runs longer prints a heartbeat about every 30 seconds: the time it has
-# taken, the time left, and what is cheap to tell (Bazel's tests done out
-# of the total, the workflow run's state and jobs done). Everything a step
-# prints goes to target/release/X.Y.Z.log only; a failed step's last 50
-# lines are printed with the log's path. With --verbose the steps' output
-# streams to the terminal too, as well as to the log, and there is no
-# heartbeat. The npm publish of a first Pi version and what is left by hand
-# always reach the terminal.
+# ones (just ci 7m30s, the Release workflow 11m30s, CI on prod 9m, the Pi
+# publish 2m); the pull request's review is not counted. Each step then
+# prints one line, with the share of the estimate done ([42%]; steps found
+# done count in full), and a step that runs longer prints a heartbeat about
+# every 30 seconds: the time it has taken, the time left, and what is cheap
+# to tell (Bazel's tests done out of the total, the workflow run's state
+# and jobs done). Everything a step prints goes to target/release/X.Y.Z.log
+# only; a failed step's last 50 lines are printed with the log's path. With
+# --verbose the steps' output streams to the terminal too, as well as to
+# the log, and there is no heartbeat. The pull request's URL, the npm
+# publish of a first Pi version and what is left by hand always reach the
+# terminal.
 #
 # It works from any directory: the checkout is the one holding this script.
 #
@@ -94,9 +117,12 @@ MAX_POLLS="${CLAX_RELEASE_MAX_POLLS:-270}"
 ACT_FLAG="--i-know-what-i-am-doing"
 NPM="${CLAX_RELEASE_NPM:-npm}"
 # The GitHub environment publish-pi.yml's job runs in, which npm's trusted
-# publisher names and the repository limits to main.
+# publisher names and the repository limits to prod.
 NPM_ENV=npm
 PNPM="${CLAX_RELEASE_PNPM:-pnpm}"
+# The branch releases come from, and the last step.
+PROD=prod
+LAST=21
 
 usage() {
     echo "usage: scripts/release.sh X.Y.Z [$ACT_FLAG] [--verbose]" >&2
@@ -116,9 +142,10 @@ for arg in "$@"; do
 done
 [ -n "$V" ] || usage
 TAG="v$V"
+RB="release/$V"
 REL_SUBJECT="Release $V"
 PIN_SUBJECT="Pin the plugins to Clax $V"
-MERGE_SUBJECT="Merge origin/main into the Clax $V release"
+MERGE_SUBJECT="Merge origin/main into $RB"
 LOG="$ROOT/target/release/$V.log"
 RESUME="scripts/release.sh $V $ACT_FLAG"
 # 1 once the run acts: from then on, say and logged append to LOG.
@@ -161,8 +188,10 @@ about() {
     if [ "$1" -ge 60 ]; then printf 'about %dm' $((($1 + 30) / 60)); else printf 'under a minute'; fi
 }
 # Each step's expected seconds: typical durations, replaced by the average
-# of the durations earlier runs' logs recorded ("== step N ran Ss").
-WEIGHTS=([1]=10 [2]=5 [3]=30 [4]=450 [5]=5 [6]=5 [7]=10 [8]=690 [9]=5 [10]=450 [11]=5 [12]=15 [13]=540 [14]=120 [15]=5)
+# of the durations earlier runs' logs recorded ("== step N of 21 ran Ss";
+# logs of the earlier numbering, "== step N ran Ss", are not read).
+WEIGHTS=([1]=10 [2]=5 [3]=5 [4]=5 [5]=30 [6]=450 [7]=5 [8]=10 [9]=5 [10]=5 [11]=5 [12]=10
+    [13]=690 [14]=5 [15]=450 [16]=5 [17]=10 [18]=20 [19]=540 [20]=120 [21]=5)
 LEARNED_FROM=0
 learn_weights() {
     local f n s
@@ -172,14 +201,14 @@ learn_weights() {
     while read -r n s; do
         WEIGHTS[n]="$s"
         LEARNED_FROM="${#logs[@]}"
-    done < <(awk '$1 == "==" && $2 == "step" && $4 == "ran" && $3 ~ /^[0-9]+$/ && $5 ~ /^[0-9]+s$/ {
-            sum[$3] += $5 + 0; c[$3]++ }
+    done < <(awk -v last="$LAST" '$1 == "==" && $2 == "step" && $3 ~ /^[0-9]+$/ && $4 == "of" && $5 == last \
+            && $6 == "ran" && $7 ~ /^[0-9]+s$/ { sum[$3] += $7 + 0; c[$3]++ }
         END { for (n in c) { a = int(sum[n] / c[n] + 0.5); print n, (a < 1 ? 1 : a) } }' "${logs[@]}")
 }
 TOTAL_W=0
 total_weight() {
     local n t=0
-    for n in $(seq 1 15); do t=$((t + WEIGHTS[n])); done
+    for n in $(seq 1 "$LAST"); do t=$((t + WEIGHTS[n])); done
     echo "$t"
 }
 pct() { echo $(($1 * 100 / TOTAL_W)); }
@@ -211,7 +240,7 @@ step_detail() {
     fi
     printf '%s' "$d"
 }
-# One heartbeat line: "[42%] step 4/15 Run the gates: 40/56 tests, 3m12s
+# One heartbeat line: "[42%] step 6/21 Run the gates: 40/56 tests, 3m12s
 # (about 18m left)". The step counts for no more than its weight.
 heartbeat() {
     local e cur d left p
@@ -222,7 +251,7 @@ heartbeat() {
     p="$(pct $((DONE_W + cur)))"
     [ "$p" -le 99 ] || p=99
     d="$(step_detail)"
-    printf '[%d%%] step %d/15 %s: %s%s (%s left)\n' "$p" "$STEP" "${TITLES[STEP]}" "${d:+$d, }" "$(dur "$e")" "$(about "$left")"
+    printf '[%d%%] step %d/%d %s: %s%s (%s left)\n' "$p" "$STEP" "$LAST" "${TITLES[STEP]}" "${d:+$d, }" "$(dur "$e")" "$(about "$left")"
 }
 # Prints a heartbeat to the terminal every HEARTBEAT seconds until stopped.
 HB_SLEEP=""
@@ -273,18 +302,14 @@ ver_cmp() {
 }
 checkout_version() { bash "$ROOT/scripts/check-version.sh" --print 2>/dev/null; }
 pinned_version() { sed -n 's/^PINNED_VERSION="\(.*\)"$/\1/p' "$ROOT/scripts/ensure-clax.sh"; }
+# The Clax version commit $1 carries (its scripts/ensure-clax.sh), or nothing.
+version_at() { g show "$1:scripts/ensure-clax.sh" 2>/dev/null | sed -n 's/^CLAX_VERSION="\(.*\)"$/\1/p'; }
 # The oldest commit in revision range $2 whose subject is exactly $1.
 subject_in() {
-    g log --format='%H%x09%s' --fixed-strings --grep="$1" "$2" -- | awk -F '\t' -v s="$1" '$2 == s { h = $1 } END { print h }'
+    g log --format='%H%x09%s' --fixed-strings --grep="$1" "$2" -- 2>/dev/null | awk -F '\t' -v s="$1" '$2 == s { h = $1 } END { print h }'
 }
+has_ref() { g rev-parse -q --verify "$1^{commit}" >/dev/null 2>&1; }
 local_tag_commit() { g rev-parse -q --verify "refs/tags/$TAG^{commit}" 2>/dev/null || true; }
-# The commit origin's tag of this version tags, or nothing; fails when
-# origin cannot be read.
-remote_tag_commit() {
-    local out
-    out="$(g ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")" || return 1
-    awk -v t="refs/tags/$TAG" '$2 == t "^{}" { p = $1 } $2 == t { q = $1 } END { print (p != "" ? p : q) }' <<< "$out"
-}
 is_signed_commit() { g cat-file commit "$1" | grep -E '^gpgsig(-sha256)? ' >/dev/null; }
 is_signed_tag() { g cat-file tag "$TAG" | grep -E -- '^-----BEGIN [A-Z ]*SIGNATURE-----$' >/dev/null; }
 release_has_sums() {
@@ -304,6 +329,11 @@ ci_gate_state() {
     gh run view "$1" --json jobs --jq '.jobs[] | select(.name == "bazel") | "\(.status) \(.conclusion)"' | sed -n 1p
 }
 release_exists() { gh release view "$TAG" --json tagName >/dev/null 2>&1; }
+# The newest pull request from the release branch into prod, as "STATE URL"
+# (OPEN, CLOSED or MERGED), or nothing.
+pr_state() {
+    gh pr list --head "$RB" --base "$PROD" --state all --limit 1 --json state,url --jq '.[] | "\(.state) \(.url)"'
+}
 # The Pi package's npm name, from plugins/pi/package.json.
 pi_package() { sed -n 's/^  "name": "\(.*\)",$/\1/p' "$ROOT/plugins/pi/package.json"; }
 # Whether the Pi package exists on npm: prints yes or no; fails, saying
@@ -334,7 +364,7 @@ release_of_tree() {
     local tree
     release_has_sums || return 1
     tree="$(release_tree)" || return 1
-    [ -n "$tree" ] && [ "$tree" = "$(g rev-parse "$REL_COMMIT^{tree}")" ]
+    [ -n "$tree" ] && [ "$tree" = "$(g rev-parse "$TAG_COMMIT^{tree}")" ]
 }
 # Says what to do about a release of this version built from another tree
 # than this tag's; $1 is the run on the tag.
@@ -342,41 +372,57 @@ stale_release() {
     local tree
     tree="$(release_tree 2>/dev/null)" || tree=""
     say "  the release $TAG holds a build of ${tree:-an unknown tree}, not of this tag's tree"
-    say "  ($(g rev-parse "$REL_COMMIT^{tree}")): its files are another build's. Delete it, keeping the tag"
+    say "  ($(g rev-parse "$TAG_COMMIT^{tree}")): its files are another build's. Delete it, keeping the tag"
     say "  (gh release delete $TAG --yes --repo $GH_REPO), rerun the run (gh run rerun $1"
     say "  --repo $GH_REPO), then run this again."
 }
 
+CUR="" PINNED="" BRANCH="" PROD_TIP="" PROD_VERSION="" PHASE=1 LOCAL_TAG="" REMOTE_TAG="" REMOTE_RB=""
+TAG_COMMIT="" RB_REF="" REL_COMMIT="" PIN_COMMIT="" PR_STATE="" PR_URL=""
 # Reads the state the steps are judged by; fails, saying why in
-# REFRESH_ERR, when origin cannot be read.
+# REFRESH_ERR, when origin or GitHub cannot be read.
 refresh() {
+    local out
     CUR="$(checkout_version || true)"
     PINNED="$(pinned_version)"
+    BRANCH="$(g symbolic-ref --short -q HEAD || true)"
+    PROD_TIP="$(g rev-parse -q --verify "refs/remotes/origin/$PROD^{commit}" 2>/dev/null || true)"
+    PROD_VERSION=""
+    if [ -n "$PROD_TIP" ]; then PROD_VERSION="$(version_at "$PROD_TIP")"; fi
+    # Cutting once origin's prod carries this version; preparing until then.
+    PHASE=1
+    if [ -n "$PROD_VERSION" ] && [ "$PROD_VERSION" = "$V" ]; then PHASE=2; fi
     LOCAL_TAG="$(local_tag_commit)"
-    REMOTE_TAG="$(remote_tag_commit)" || { REFRESH_ERR="cannot read origin's tags (git ls-remote origin)"; return 1; }
-    # The release commit is the one the tag names, once there is a tag;
-    # before, only a "Release X.Y.Z" commit this checkout has on top of
-    # origin/main, never one from older history (preflight checks both).
+    out="$(g ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}" "refs/heads/$RB")" \
+        || { REFRESH_ERR="cannot read origin (git ls-remote origin)"; return 1; }
+    REMOTE_TAG="$(awk -v t="refs/tags/$TAG" '$2 == t "^{}" { p = $1 } $2 == t { q = $1 } END { print (p != "" ? p : q) }' <<< "$out")"
+    REMOTE_RB="$(awk -v b="refs/heads/$RB" '$2 == b { print $1 }' <<< "$out")"
     TAG_COMMIT="${LOCAL_TAG:-$REMOTE_TAG}"
-    if [ -n "$TAG_COMMIT" ]; then
-        REL_COMMIT="$TAG_COMMIT"
-    else
-        REL_COMMIT="$(subject_in "$REL_SUBJECT" origin/main..HEAD)"
-    fi
+    # The release branch: here, or else origin's copy.
+    RB_REF=""
+    if has_ref "refs/heads/$RB"; then RB_REF="refs/heads/$RB"
+    elif [ -n "$REMOTE_RB" ] && has_ref "refs/remotes/origin/$RB"; then RB_REF="refs/remotes/origin/$RB"; fi
+    # The release commit: once cut, the "Release X.Y.Z" commit the tag (or
+    # origin's prod) has that main lacks; before, the one on the release
+    # branch after origin/prod.
+    REL_COMMIT=""
     PIN_COMMIT=""
-    if [ -n "$REL_COMMIT" ]; then
-        PIN_COMMIT="$(subject_in "$PIN_SUBJECT" "$REL_COMMIT..HEAD")"
-        [ -n "$PIN_COMMIT" ] || PIN_COMMIT="$(subject_in "$PIN_SUBJECT" "$REL_COMMIT..origin/main")"
+    if [ "$PHASE" = 2 ]; then
+        REL_COMMIT="$(subject_in "$REL_SUBJECT" "origin/main..${TAG_COMMIT:-$PROD_TIP}")"
+        if [ -n "$TAG_COMMIT" ]; then
+            PIN_COMMIT="$(subject_in "$PIN_SUBJECT" "$TAG_COMMIT..HEAD")"
+            [ -n "$PIN_COMMIT" ] || PIN_COMMIT="$(subject_in "$PIN_SUBJECT" "$TAG_COMMIT..$PROD_TIP")"
+        fi
+    elif [ -n "$RB_REF" ] && [ -n "$PROD_TIP" ]; then
+        REL_COMMIT="$(subject_in "$REL_SUBJECT" "$PROD_TIP..$RB_REF")"
     fi
-    # The commit step 12 pushes, which CI and the Pi package are run on: the
-    # pin commit, or the newest merge of origin/main on top of it.
-    PUBLISH_COMMIT="$PIN_COMMIT"
-    if [ -n "$PIN_COMMIT" ]; then
-        local ref=HEAD merge
-        if g merge-base --is-ancestor "$PIN_COMMIT" origin/main; then ref=origin/main; fi
-        merge="$(g log --ancestry-path --format='%H%x09%s' "$PIN_COMMIT..$ref" -- \
-            | awk -F '\t' -v s="$MERGE_SUBJECT" '$2 == s { print $1 }' | sed -n 1p)"
-        PUBLISH_COMMIT="${merge:-$PIN_COMMIT}"
+    # The pull request, once the branch is on origin and until prod has it.
+    PR_STATE=""
+    PR_URL=""
+    if [ "$PHASE" = 1 ] && [ -n "$REMOTE_RB" ]; then
+        out="$(pr_state)" || { REFRESH_ERR="cannot read the pull requests from $RB (gh pr list)"; return 1; }
+        PR_STATE="${out%% *}"
+        PR_URL="${out#* }"
     fi
 }
 
@@ -432,11 +478,6 @@ check_version() {
         problem "$V is not a release version (X.Y.Z)"
         return 0
     fi
-    if [ -z "$CUR" ]; then
-        problem "the checkout's versions disagree (scripts/check-version.sh)"
-    elif [ "$(ver_cmp "$CUR" "$V")" = 1 ]; then
-        problem "the checkout is at $CUR, newer than $V"
-    fi
     remote="$(g ls-remote --tags --refs origin 'v*')" || { problem "cannot list origin's tags"; return 0; }
     tags="$( { g tag -l 'v*'; awk '{ sub("refs/tags/", "", $2); print $2 }' <<< "$remote"; } | sort -u)"
     for t in $tags; do
@@ -447,61 +488,93 @@ check_version() {
             0) [[ $t == *-* ]] || problem "$V is not newer than the tag $t" ;;
         esac
     done
-    # A tag of this version is this release's only when it tags a
-    # "Release X.Y.Z" commit main has, here or on origin, and both tags agree.
-    # Without a tag, a "Release X.Y.Z" commit already on origin/main is not
-    # this release's to tag.
+    [ -n "$PROD_TIP" ] || return 0
+    # A tag of this version is this release's only once origin's prod
+    # carries the version: it tags prod's tip, and both tags agree.
     if [ -n "$LOCAL_TAG" ] && [ -n "$REMOTE_TAG" ] && [ "$LOCAL_TAG" != "$REMOTE_TAG" ]; then
         problem "the tag $TAG tags $LOCAL_TAG here and $REMOTE_TAG on origin"
-    elif [ -n "$TAG_COMMIT" ] && [ "$(g log -1 --format=%s "$TAG_COMMIT" 2>/dev/null)" != "$REL_SUBJECT" ]; then
-        problem "the tag $TAG tags $TAG_COMMIT, not a \"$REL_SUBJECT\" commit"
-    elif [ -n "$TAG_COMMIT" ] && ! g merge-base --is-ancestor "$TAG_COMMIT" HEAD \
-        && ! g merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
-        problem "the tag $TAG tags $TAG_COMMIT, which neither this checkout nor origin/main has"
-    elif [ -z "$TAG_COMMIT" ] && old="$(subject_in "$REL_SUBJECT" origin/main)" && [ -n "$old" ]; then
-        problem "origin/main has a \"$REL_SUBJECT\" commit already ($old) and no tag $TAG names it"
-    elif [ -n "$TAG_COMMIT" ] && [ -z "$PIN_COMMIT" ] && g merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
-        # Step 12 pushes the release commit to main together with its pin.
-        problem "$TAG's release commit is on origin/main without a \"$PIN_SUBJECT\" commit after it"
+    elif [ -n "$TAG_COMMIT" ] && [ "$PHASE" = 1 ]; then
+        problem "the tag $TAG exists ($TAG_COMMIT), but origin/$PROD is at ${PROD_VERSION:-an unknown version}, not $V"
+    elif [ -n "$TAG_COMMIT" ] && [ "$(version_at "$TAG_COMMIT")" != "$V" ]; then
+        problem "the tag $TAG tags $TAG_COMMIT, whose version is $(version_at "$TAG_COMMIT"), not $V"
+    elif [ -n "$TAG_COMMIT" ] && ! g merge-base --is-ancestor "$TAG_COMMIT" "$PROD_TIP" \
+        && ! g merge-base --is-ancestor "$TAG_COMMIT" HEAD; then
+        problem "the tag $TAG tags $TAG_COMMIT, which neither this checkout nor origin/$PROD has"
+    fi
+    if [ "$PHASE" = 1 ]; then
+        if [ -n "$PROD_VERSION" ] && [ "$(ver_cmp "$PROD_VERSION" "$V")" = 1 ]; then
+            problem "origin/$PROD is at $PROD_VERSION, newer than $V"
+        fi
+        if old="$(subject_in "$REL_SUBJECT" origin/main)" && [ -n "$old" ]; then
+            problem "origin/main has a \"$REL_SUBJECT\" commit already ($old), but origin/$PROD is not at $V"
+        fi
+        if [ "$BRANCH" = "$RB" ]; then
+            if [ -z "$CUR" ]; then problem "the checkout's versions disagree (scripts/check-version.sh)"
+            elif [ "$(ver_cmp "$CUR" "$V")" = 1 ]; then problem "$RB is at $CUR, newer than $V"; fi
+        fi
+    else
+        [ -n "$CUR" ] || problem "the checkout's versions disagree (scripts/check-version.sh)"
+        if [ -z "$REL_COMMIT" ]; then
+            problem "origin/$PROD has no \"$REL_SUBJECT\" commit that origin/main lacks: merge the release's pull request with a merge commit (not squash or rebase), so that step 18 can carry that commit to main"
+        fi
     fi
 }
 
-check_tree() {
-    local branch behind i dirty untracked subject
-    branch="$(g symbolic-ref --short -q HEAD || true)"
-    [ "$branch" = main ] || problem "the checkout is on ${branch:-a detached HEAD}, not main"
-    [ "$FETCHED" = 1 ] || return 0
-    behind="$(g rev-list --count HEAD..origin/main)"
-    # Behind origin/main is a release's to merge once its release commit is
-    # made and until step 12 pushes it.
-    if [ "$behind" != 0 ] && { [ -z "$REL_COMMIT" ] || g merge-base --is-ancestor "$REL_COMMIT" origin/main; }; then
-        problem "main is $behind commit(s) behind origin/main (git pull --ff-only)"
+# Uncommitted changes and untracked files: refused, but for the changes a
+# step makes while it waits for its commit.
+check_clean() {
+    local dirty untracked
+    untracked="$(g ls-files --others --exclude-standard "$ROOT")"
+    [ -z "$untracked" ] || problem "untracked files: $(echo "$untracked" | tr '\n' ' ')"
+    dirty="$(g diff --name-only HEAD)"
+    [ -n "$dirty" ] || return 0
+    # The bump (4-6) on the release branch; the pin (14-15) on prod.
+    if [ "$PHASE" = 1 ] && [ "$BRANCH" = "$RB" ] && [ "$CUR" = "$V" ] && [ -z "$REL_COMMIT" ]; then return 0; fi
+    if [ "$PHASE" = 2 ] && [ "$BRANCH" = "$PROD" ] && [ "$PINNED" = "$V" ] && [ -n "$TAG_COMMIT" ] && [ -z "$PIN_COMMIT" ]; then return 0; fi
+    problem "uncommitted changes: $(echo "$dirty" | tr '\n' ' ')"
+}
+
+# Preparing: any branch; the release branch, where there is one, holds
+# origin/prod and adds only merges of origin/main and the release commit.
+check_prepare() {
+    local i subject
+    [ -n "$RB_REF" ] || return 0
+    if ! g merge-base --is-ancestor "$PROD_TIP" "$RB_REF"; then
+        problem "$RB does not hold origin/$PROD's tip: origin/$PROD has moved on since the branch was cut"
+        return 0
     fi
-    # Ahead only by this release's own commits, in order: the release
-    # commit, the pin commit, and merges of origin/main on top of it.
+    if [ -n "$REMOTE_RB" ] && { ! has_ref "$REMOTE_RB" || ! g merge-base --is-ancestor "$REMOTE_RB" "$RB_REF"; }; then
+        problem "origin's $RB has commits this checkout's $RB lacks (git switch $RB; git pull --ff-only)"
+    fi
     i=0
     while IFS= read -r subject; do
         [ -n "$subject" ] || continue
         case "$i:$subject" in
+            "0:$MERGE_SUBJECT") ;;
             "0:$REL_SUBJECT") i=1 ;;
-            "1:$PIN_SUBJECT" | "2:$MERGE_SUBJECT") i=2 ;;
             *)
-                problem "the checkout has a commit origin/main lacks that is not this release's: \"$subject\""
+                problem "$RB has a commit that is not this release's: \"$subject\""
                 break ;;
         esac
-    done < <(g log --reverse --topo-order --format=%s origin/main..HEAD)
-    untracked="$(g ls-files --others --exclude-standard "$ROOT")"
-    [ -z "$untracked" ] || problem "untracked files: $(echo "$untracked" | tr '\n' ' ')"
-    dirty="$(g diff --name-only HEAD)"
-    if [ -n "$dirty" ]; then
-        # Changes are this release's while a step that makes them waits for
-        # its commit: the bump (2-4), the pin (9-10).
-        if { [ "$CUR" = "$V" ] && [ -z "$REL_COMMIT" ]; } \
-            || { [ "$PINNED" = "$V" ] && [ -n "$REL_COMMIT" ] && [ -z "$PIN_COMMIT" ]; }; then
-            :
-        else
-            problem "uncommitted changes: $(echo "$dirty" | tr '\n' ' ')"
-        fi
+    done < <(g log --reverse --topo-order --format=%s "$PROD_TIP..$RB_REF" --not origin/main)
+    case "$PR_STATE" in
+        OPEN) problem "the pull request $PR_URL into $PROD is not merged yet: once CI passes, merge it on GitHub (Create a merge commit), then run this again on a $PROD checkout at origin/$PROD's tip (git switch $PROD; git pull --ff-only)" ;;
+        MERGED) problem "the pull request $PR_URL is merged, but origin/$PROD is at ${PROD_VERSION:-an unknown version}, not $V" ;;
+    esac
+}
+
+# Cutting: on prod, at origin/prod's tip, or ahead of it by the pin commit.
+check_cut() {
+    local behind subjects
+    if [ "$BRANCH" != "$PROD" ]; then
+        problem "the checkout is on ${BRANCH:-a detached HEAD}, not $PROD: origin/$PROD is at $V, so the release is cut from $PROD (git switch $PROD; git pull --ff-only)"
+        return 0
+    fi
+    behind="$(g rev-list --count "HEAD..$PROD_TIP")"
+    [ "$behind" = 0 ] || problem "$PROD is $behind commit(s) behind origin/$PROD (git pull --ff-only)"
+    subjects="$(g log --format=%s "$PROD_TIP..HEAD")"
+    if [ -n "$subjects" ] && { [ "$subjects" != "$PIN_SUBJECT" ] || [ -z "$TAG_COMMIT" ]; }; then
+        problem "the checkout has a commit origin/$PROD lacks that is not this release's: \"$(sed -n 1p <<< "$subjects")\""
     fi
 }
 
@@ -509,10 +582,18 @@ preflight() {
     check_tools
     command -v git >/dev/null 2>&1 || return 0
     resolve_repo
-    FETCHED=0
-    if g fetch --quiet --no-tags origin main; then FETCHED=1; else problem "cannot fetch main from origin"; fi
+    g fetch --quiet --no-tags origin main || problem "cannot fetch main from origin"
+    if ! g fetch --quiet --no-tags origin "$PROD"; then
+        problem "cannot fetch $PROD from origin: releases come from a $PROD branch (docs/prod.md)"
+    fi
+    if g ls-remote --exit-code origin "refs/heads/$RB" >/dev/null 2>&1; then
+        g fetch --quiet --no-tags origin "+refs/heads/$RB:refs/remotes/origin/$RB" || problem "cannot fetch $RB from origin"
+    fi
     refresh || problem "$REFRESH_ERR"
-    check_tree
+    if [ -n "${PROD_TIP:-}" ]; then
+        check_clean
+        if [ "$PHASE" = 1 ]; then check_prepare; else check_cut; fi
+    fi
     check_version
     if command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
         problem "gh is not signed in (gh auth login)"
@@ -523,10 +604,7 @@ preflight() {
 }
 
 NOTES=()
-# The Pi package on npm. Trusted publishing (publish-pi.yml) needs a package
-# that exists, so while it does not, step 14 publishes the first version
-# from here, which needs npm signed in and pnpm for the typecheck.
-# The npm environment, read-only: it must exist and allow only main, or a
+# The npm environment, read-only: it must exist and allow only prod, or a
 # run dispatched on another ref could get npm's token. Creating it is a
 # repository setting the owner makes; this only says how. A dry run warns,
 # a release refuses, unless npm has the version already.
@@ -543,19 +621,22 @@ check_npm_environment() {
             *) why="cannot read the environment $NPM_ENV: $(tr '\n' ' ' < "$err")" ;;
         esac
     elif [ "$policy" != "false true" ]; then
-        why="the environment $NPM_ENV does not limit its deployment branches to main"
+        why="the environment $NPM_ENV does not limit its deployment branches to $PROD"
     elif ! branches="$(gh api "repos/$GH_REPO/environments/$NPM_ENV/deployment-branch-policies" \
         --jq '[.branch_policies[] | "\(.type // "branch"):\(.name)"] | join(",")' 2>"$err")"; then
         why="cannot read the environment $NPM_ENV's deployment branches: $(tr '\n' ' ' < "$err")"
-    elif [ "$branches" != "branch:main" ]; then
-        why="the environment $NPM_ENV allows ${branches:-no branch}, not main alone"
+    elif [ "$branches" != "branch:$PROD" ]; then
+        why="the environment $NPM_ENV allows ${branches:-no branch}, not $PROD alone"
     fi
     rm -f "$err"
     [ -n "$why" ] || return 0
-    why="$why. publish-pi.yml runs in it; in GitHub, the repository's Settings, Environments, New environment (or $NPM_ENV), name $NPM_ENV; Deployment branches and tags: Selected branches and tags; Add deployment branch or tag rule: branch main"
+    why="$why. publish-pi.yml runs in it; in GitHub, the repository's Settings, Environments, New environment (or $NPM_ENV), name $NPM_ENV; Deployment branches and tags: Selected branches and tags; Add deployment branch or tag rule: branch $PROD"
     if [ "$ACT" = 1 ]; then problem "$why"; else NOTES+=("WARN: $why"); fi
 }
 
+# The Pi package on npm. Trusted publishing (publish-pi.yml) needs a package
+# that exists, so while it does not, step 20 publishes the first version
+# from here, which needs npm signed in and pnpm for the typecheck.
 check_npm() {
     local on err
     if ! command -v "$NPM" >/dev/null 2>&1; then problem "npm is not on PATH"; return 0; fi
@@ -569,71 +650,99 @@ check_npm() {
     rm -f "$err"
     if [ "$on" = no ]; then
         if ! "$NPM" whoami >/dev/null 2>&1; then
-            problem "$(pi_package) is not on npm yet, so step 14 publishes its first version from here: sign in first (npm login; npm whoami fails)"
+            problem "$(pi_package) is not on npm yet, so step 20 publishes its first version from here: sign in first (npm login; npm whoami fails)"
         fi
         command -v "$PNPM" >/dev/null 2>&1 || problem "pnpm is not on PATH (the first Pi publish typechecks the package)"
-        NOTES+=("$(pi_package) is not on npm yet: step 14 publishes its first version from this machine (npm publish, with npm's own prompts), then prints the trusted-publisher setup")
+        NOTES+=("$(pi_package) is not on npm yet: step 20 publishes its first version from this machine (npm publish, with npm's own prompts), then prints the trusted-publisher setup")
     elif pi_has_version; then
-        NOTES+=("$(pi_package)@$V is on npm already: step 14 is done")
+        NOTES+=("$(pi_package)@$V is on npm already: step 20 is done")
     fi
 }
 
-# --- steps 2-15 -------------------------------------------------------------------
+# --- steps 2-21 -------------------------------------------------------------------
 
 TITLES=(
-    [2]="Bump the version"
-    [3]="Sync Bazel with Cargo"
-    [4]="Run the gates"
-    [5]="Commit the release"
-    [6]="Tag the release"
-    [7]="Push the tag"
-    [8]="Wait for the Release workflow"
-    [9]="Pin the plugins to the release"
-    [10]="Run the gates"
-    [11]="Commit the pin"
-    [12]="Push main"
-    [13]="Wait for CI on main"
-    [14]="Publish the Pi package"
-    [15]="What is left"
+    [2]="Cut the release branch"
+    [3]="Merge main into it"
+    [4]="Bump the version"
+    [5]="Sync Bazel with Cargo"
+    [6]="Run the gates"
+    [7]="Commit the release"
+    [8]="Push the release branch"
+    [9]="Open the pull request into $PROD"
+    [10]="Merge the pull request (you, on GitHub)"
+    [11]="Tag the release"
+    [12]="Push the tag"
+    [13]="Wait for the Release workflow"
+    [14]="Pin the plugins to the release"
+    [15]="Run the gates"
+    [16]="Commit the pin"
+    [17]="Push $PROD"
+    [18]="Carry the release to main"
+    [19]="Wait for CI on $PROD"
+    [20]="Publish the Pi package"
+    [21]="What is left"
 )
 COMMANDS=(
-    [2]="scripts/bump-version.sh $V"
-    [3]="just bazel-sync, until it changes nothing (at most 4 runs)"
-    [4]="just ci"
-    [5]="git commit -S -a -m \"$REL_SUBJECT\""
-    [6]="git tag -s $TAG -m \"Clax $V\""
-    [7]="git push origin refs/tags/$TAG"
-    [8]="gh run list --workflow release.yml (the run on $TAG), wait; gh release view $TAG lists SHA256SUMS"
-    [9]="scripts/pin-release.sh $TAG"
-    [10]="just ci"
-    [11]="git commit -S -a -m \"$PIN_SUBJECT\""
-    [12]="git push origin main (after git merge -S origin/main, when origin's main moved on)"
-    [13]="gh run list --workflow ci.yml (the push run on the pin commit, or the merge on it), wait for its bazel job"
-    [14]="gh workflow run publish-pi.yml --ref main -f dry_run=false -f sha=<that commit>, wait (the first version: npm publish from here)"
-    [15]="print the steps left by hand"
+    [2]="git switch -c $RB origin/$PROD"
+    [3]="git merge -S origin/main -m \"$MERGE_SUBJECT\""
+    [4]="scripts/bump-version.sh $V"
+    [5]="just bazel-sync, until it changes nothing (at most 4 runs)"
+    [6]="just ci"
+    [7]="git commit -S -a -m \"$REL_SUBJECT\""
+    [8]="git push origin $RB"
+    [9]="gh pr create --base $PROD --head $RB"
+    [10]="once CI passes, merge it (Create a merge commit), which deploys clax.dev; then run this again on $PROD"
+    [11]="git tag -s $TAG -m \"Clax $V\" (origin/$PROD's tip)"
+    [12]="git push origin refs/tags/$TAG"
+    [13]="gh run list --workflow release.yml (the run on $TAG), wait; gh release view $TAG lists SHA256SUMS"
+    [14]="scripts/pin-release.sh $TAG"
+    [15]="just ci"
+    [16]="git commit -S -a -m \"$PIN_SUBJECT\""
+    [17]="git push origin $PROD"
+    [18]="git cherry-pick -S -x <the release commit> <the pin commit> onto origin/main; git push origin main"
+    [19]="gh run list --workflow ci.yml (the push run on the pin commit), wait for its bazel job"
+    [20]="gh workflow run publish-pi.yml --ref $PROD -f dry_run=false -f sha=<the pin commit>, wait (the first version: npm publish from here)"
+    [21]="print the steps left by hand"
 )
 
-# done_N: whether step N is done, from the state refresh read.
-done_2() { [ "$CUR" = "$V" ]; }
-done_3() { [ -n "$REL_COMMIT" ]; }
-done_4() { [ -n "$REL_COMMIT" ]; }
-done_5() { [ -n "$REL_COMMIT" ]; }
-done_6() { [ -n "$LOCAL_TAG" ] || [ -n "$REMOTE_TAG" ]; }
-done_7() { [ -n "$REMOTE_TAG" ]; }
+# done_N: whether step N is done, from the state refresh read. Once origin's
+# prod is at this version, the whole preparation is.
+done_2() { [ "$PHASE" = 2 ] || [ "$BRANCH" = "$RB" ]; }
+done_3() {
+    [ "$PHASE" = 2 ] || [ -n "$REL_COMMIT" ] && return 0
+    [ -n "$RB_REF" ] || return 1
+    [ -n "$(subject_in "$MERGE_SUBJECT" "$PROD_TIP..$RB_REF")" ] || g merge-base --is-ancestor origin/main "$RB_REF"
+}
+done_4() { [ "$PHASE" = 2 ] || [ -n "$REL_COMMIT" ] || { [ "$BRANCH" = "$RB" ] && [ "$CUR" = "$V" ]; }; }
+done_5() { [ "$PHASE" = 2 ] || [ -n "$REL_COMMIT" ]; }
+done_6() { done_5; }
+done_7() { done_5; }
+done_8() {
+    [ "$PHASE" = 2 ] && return 0
+    [ -n "$REL_COMMIT" ] && [ -n "$REMOTE_RB" ] && g merge-base --is-ancestor "$REL_COMMIT" "$REMOTE_RB" 2>/dev/null
+}
+done_9() { [ "$PHASE" = 2 ] || { done_8 && { [ "$PR_STATE" = OPEN ] || [ "$PR_STATE" = MERGED ]; }; }; }
+done_10() { [ "$PHASE" = 2 ]; }
+done_11() { [ -n "$LOCAL_TAG" ] || [ -n "$REMOTE_TAG" ]; }
+done_12() { [ -n "$REMOTE_TAG" ]; }
 # Done when the release is the build of this tag's tree.
-done_8() { release_of_tree; }
-done_9() { [ "$PINNED" = "$V" ]; }
-done_10() { [ -n "$PIN_COMMIT" ]; }
-done_11() { [ -n "$PIN_COMMIT" ]; }
-done_12() { [ -n "$PUBLISH_COMMIT" ] && g merge-base --is-ancestor "$PUBLISH_COMMIT" origin/main; }
-done_13() {
+done_13() { release_of_tree; }
+done_14() { [ "$PINNED" = "$V" ]; }
+done_15() { [ -n "$PIN_COMMIT" ]; }
+done_16() { [ -n "$PIN_COMMIT" ]; }
+done_17() { [ -n "$PIN_COMMIT" ] && g merge-base --is-ancestor "$PIN_COMMIT" "$PROD_TIP"; }
+# Done when origin's main has both commits, by subject: the cherry-picks
+# are copies, or a carry made by hand.
+done_18() { [ -n "$(subject_in "$REL_SUBJECT" origin/main)" ] && [ -n "$(subject_in "$PIN_SUBJECT" origin/main)" ]; }
+done_19() {
     local id
-    done_14 && return 0
-    id="$(find_run ci.yml push "$PUBLISH_COMMIT")"
+    done_20 && return 0
+    id="$(find_run ci.yml push "$PIN_COMMIT")"
     [ -n "$id" ] && [ "$(ci_gate_state "$id")" = "completed success" ]
 }
-done_14() { pi_has_version; }
-done_15() { false; }
+done_20() { pi_has_version; }
+done_21() { false; }
 
 # A poll's gh call may fail this many times in a row (a network or API
 # hiccup) before the wait gives up.
@@ -734,8 +843,48 @@ await_run() {
 
 worktree_digest() { { g diff HEAD; g status --porcelain=v1 -uall; } | cksum; }
 
-step_2() { bash "$ROOT/scripts/bump-version.sh" "$V"; }
+# Refuses to push commit range $1 unless each of its commits is signed.
+all_signed() {
+    local c
+    for c in $(g rev-list "$@"); do
+        is_signed_commit "$c" && continue
+        say "  $c (\"$(g log -1 --format=%s "$c")\") carries no signature; not pushing it."
+        if [ "$c" = "$(g rev-parse HEAD)" ]; then
+            say "  Sign it (git commit --amend -S --no-edit), then run this again."
+        else
+            say "  It is not the newest commit; signing it rewrites what follows, so sign it by hand."
+        fi
+        return 1
+    done
+}
+
+# Switches to the release branch: this checkout's, origin's, or a new one
+# from origin/prod.
+step_2() {
+    if has_ref "refs/heads/$RB"; then g switch -q "$RB"
+    elif [ -n "$REMOTE_RB" ]; then g switch -q --track -c "$RB" "origin/$RB"
+    else g switch -q --no-track -c "$RB" "origin/$PROD"; fi
+}
+# Merges origin/main in, signed: main carries every earlier release's
+# version and pin (step 18), so the version files agree.
 step_3() {
+    local files
+    g fetch --quiet --no-tags origin main
+    if g merge-base --is-ancestor origin/main HEAD; then say "  $RB has origin/main already"; return 0; fi
+    if ! g merge -S --no-ff -q -m "$MERGE_SUBJECT" origin/main; then
+        files="$(g diff --name-only --diff-filter=U | tr '\n' ' ' | sed 's/ $//')"
+        g merge --abort 2>/dev/null || true
+        say "  the merge of origin/main into $RB conflicts in: ${files:-(see the log)}"
+        say "  Merge by hand, signed and with this subject:"
+        say "    git merge -S origin/main -m \"$MERGE_SUBJECT\""
+        say "  resolve, then commit it signed (git commit -S; git does not carry -S past a conflict),"
+        say "  then run this again."
+        return 1
+    fi
+    is_signed_commit HEAD || { say "  the merge carries no signature"; return 1; }
+}
+step_4() { bash "$ROOT/scripts/bump-version.sh" "$V"; }
+step_5() {
     local before after n
     for n in 1 2 3 4; do
         before="$(worktree_digest)"
@@ -748,27 +897,46 @@ step_3() {
     say "  just bazel-sync still changed files on its 4th run"
     return 1
 }
-step_4() { (cd "$ROOT" && logged just ci); }
-step_5() {
+step_6() { (cd "$ROOT" && logged just ci); }
+step_7() {
     say "  committing:"
     g status --short | sed 's/^/    /'
     g commit -S -a -q -m "$REL_SUBJECT"
     is_signed_commit HEAD || { say "  the commit carries no signature"; return 1; }
 }
-step_6() {
-    g tag -s "$TAG" -m "Clax $V" "$REL_COMMIT"
+# Pushes the release branch: the commits of its own (the merges and the
+# release commit) are signed; main's it brings along are on origin already.
+step_8() {
+    g fetch --quiet --no-tags origin main
+    all_signed "$PROD_TIP..HEAD" --not origin/main || return 1
+    g push origin "refs/heads/$RB:refs/heads/$RB"
+}
+step_9() {
+    local url
+    url="$(gh pr create --base "$PROD" --head "$RB" --title "$REL_SUBJECT" --body "$(pr_body)")"
+    tell "  the pull request: $url"
+}
+pr_body() {
+    cat <<EOF
+Clax $V: \`origin/$PROD\` with \`origin/main\` merged in and the version bumped (\`scripts/release.sh $V\`).
+
+Merge with a merge commit (not squash or rebase) once CI passes: the push to \`$PROD\` deploys clax.dev. Then, on a \`$PROD\` checkout at \`origin/$PROD\`'s tip, \`just release $V $ACT_FLAG\` tags the release, pins the plugins to it, carries both commits to \`main\` and publishes the Pi package (docs/usage.md, "Releasing").
+EOF
+}
+step_11() {
+    g tag -s "$TAG" -m "Clax $V" "$PROD_TIP"
     is_signed_tag || { say "  the tag $TAG carries no signature"; return 1; }
 }
-step_7() {
+step_12() {
     is_signed_tag || { say "  the tag $TAG carries no signature; not pushing it"; return 1; }
-    is_signed_commit "$REL_COMMIT" || { say "  $REL_COMMIT carries no signature; not pushing it"; return 1; }
+    is_signed_commit "$TAG_COMMIT" || { say "  $TAG_COMMIT carries no signature; not pushing a tag of it"; return 1; }
     g push origin "refs/tags/$TAG"
 }
-step_8() {
+step_13() {
     local id
     say "  waiting for the Release workflow's run on $TAG (polls every ${POLL}s, at most $MAX_POLLS)"
     detail "waiting for the run to start"
-    id="$(await_output find_run release.yml push "$REL_COMMIT")" \
+    id="$(await_output find_run release.yml push "$TAG_COMMIT")" \
         || { say "  no Release workflow run on $TAG appeared"; return 1; }
     if ! await_run "$id" "Release $TAG"; then
         if release_exists && ! release_of_tree; then stale_release "$id"; fi
@@ -777,54 +945,75 @@ step_8() {
     release_has_sums || { say "  the release $TAG does not list SHA256SUMS (gh release view $TAG)"; return 1; }
     release_of_tree || { stale_release "$id"; return 1; }
 }
-step_9() { bash "$ROOT/scripts/pin-release.sh" "$TAG"; }
-step_10() { step_4; }
-step_11() {
+step_14() { bash "$ROOT/scripts/pin-release.sh" "$TAG"; }
+step_15() { step_6; }
+step_16() {
     say "  committing:"
     g status --short | sed 's/^/    /'
     g commit -S -a -q -m "$PIN_SUBJECT"
     is_signed_commit HEAD || { say "  the commit carries no signature"; return 1; }
 }
-# Pushes main. When origin's main has moved on since the release began, it
-# is merged on top of the pin commit first, signed: the tag stays on the
-# release commit, which a rebase would rewrite.
-step_12() {
-    local c
+# Pushes the pin commit to prod, straight (the owner bypasses the pull
+# request rule), never forced.
+step_17() {
+    all_signed "$PROD_TIP..HEAD" || return 1
+    if ! g push origin "refs/heads/$PROD:refs/heads/$PROD"; then
+        say "  the push of $PROD was refused. If origin's $PROD moved on meanwhile, this release's"
+        say "  tag is no longer its tip: see what landed (git log HEAD..origin/$PROD) before going on."
+        return 1
+    fi
+    g fetch --quiet --no-tags origin "$PROD"
+}
+# Carries the release to main: the release commit and the pin commit, those
+# main lacks, cherry-picked onto origin/main's tip in a temporary worktree,
+# signed, and pushed. Main takes no merge commit, and gets the new version
+# and its pin in one push.
+step_18() {
+    local dir="$ROOT/target/release/$V/carry" base head c files
+    local -a picks=()
     g fetch --quiet --no-tags origin main
-    if ! g merge-base --is-ancestor origin/main HEAD; then
-        tell "  origin/main has moved on; merging it: $MERGE_SUBJECT"
-        if ! g merge -S --no-ff -q -m "$MERGE_SUBJECT" origin/main; then
-            g merge --abort 2>/dev/null || true
-            say "  the merge does not apply cleanly. Merge by hand, signed and with this subject:"
-            say "    git merge -S origin/main -m \"$MERGE_SUBJECT\""
-            say "  resolve, then commit it signed (git commit -S; git does not carry -S past a conflict),"
-            say "  then run this again."
+    [ -n "$(subject_in "$REL_SUBJECT" origin/main)" ] || picks+=("$REL_COMMIT")
+    [ -n "$(subject_in "$PIN_SUBJECT" origin/main)" ] || picks+=("$PIN_COMMIT")
+    [ "${#picks[@]}" -gt 0 ] || return 0
+    base="$(g rev-parse origin/main)"
+    if [ -e "$dir" ]; then g worktree remove --force "$dir" 2>/dev/null || rm -rf "$dir"; fi
+    g worktree prune
+    mkdir -p "$(dirname "$dir")"
+    g worktree add --quiet --detach "$dir" "$base"
+    for c in "${picks[@]}"; do
+        say "  git cherry-pick -S -x $c (\"$(g log -1 --format=%s "$c")\")"
+        if ! git -C "$dir" cherry-pick -S -x "$c"; then
+            files="$(git -C "$dir" diff --name-only --diff-filter=U | tr '\n' ' ' | sed 's/ $//')"
+            git -C "$dir" cherry-pick --abort 2>/dev/null || true
+            g worktree remove --force "$dir"
+            say "  cherry-picking $c (\"$(g log -1 --format=%s "$c")\") onto origin/main ($base)"
+            say "  conflicts in: ${files:-(see the log)}. Nothing was pushed to main. Carry it by hand,"
+            say "  keeping each commit's subject, each commit signed:"
+            say "    git worktree add --detach target/release/$V/carry origin/main"
+            say "    cd target/release/$V/carry && git cherry-pick -S -x ${picks[*]}"
+            say "  resolve each conflict, git add it and git cherry-pick --continue; check that each"
+            say "  commit is signed (git log --show-signature origin/main..HEAD; else git commit --amend -S"
+            say "  --no-edit), then git push origin HEAD:refs/heads/main, remove the worktree"
+            say "  (git worktree remove target/release/$V/carry) and run this again."
             return 1
         fi
-    fi
-    for c in $(g rev-list origin/main..HEAD); do
-        is_signed_commit "$c" && continue
-        say "  $c carries no signature; not pushing main."
-        if [ "$c" = "$(g rev-parse HEAD)" ]; then
-            say "  Sign it (git commit --amend -S --no-edit), then run this again."
-        else
-            say "  It is not the newest commit; signing it rewrites what follows, so sign it by hand."
-        fi
-        return 1
     done
-    if ! g push origin refs/heads/main:refs/heads/main; then
+    head="$(git -C "$dir" rev-parse HEAD)"
+    g worktree remove --force "$dir"
+    all_signed "$base..$head" || return 1
+    if ! g push origin "$head:refs/heads/main"; then
         say "  the push of main was refused; if origin's main moved on meanwhile, run this again:"
-        say "  it merges origin/main on top of the pin commit and pushes again."
+        say "  it cherry-picks onto origin/main's new tip."
         return 1
     fi
     g fetch --quiet --no-tags origin main
 }
-step_13() {
+step_19() {
     local id
-    say "  waiting for CI's bazel job on $PUBLISH_COMMIT (polls every ${POLL}s, at most $MAX_POLLS; not perf-log)"
+    say "  waiting for CI's bazel job on $PIN_COMMIT (polls every ${POLL}s, at most $MAX_POLLS; not perf-log)"
     detail "waiting for the run to start"
-    id="$(await_output find_run ci.yml push "$PUBLISH_COMMIT")" || { say "  no CI run on $PUBLISH_COMMIT appeared"; return 1; }
-    await_run "$id" "CI on main (bazel)" ci_gate_state
+    id="$(await_output find_run ci.yml push "$PIN_COMMIT")" || { say "  no CI run on $PIN_COMMIT appeared"; return 1; }
+    await_run "$id" "CI on $PROD (bazel)" ci_gate_state
 }
 # The newest publish-pi.yml run that publishes (not a dry run) from commit
 # $1, by the title the workflow gives it, or nothing.
@@ -839,27 +1028,27 @@ new_publish_run() {
     id="$(publish_run "$1")" || return 1
     if [ "$id" != "$2" ]; then echo "$id"; fi
 }
-# Publishes from the commit step 12 pushed, never main's tip: a run already under way
-# for it is waited for; none, or a failed one, is dispatched anew.
-step_14() {
+# Publishes from the pin commit: a run already under way for it is waited
+# for; none, or a failed one, is dispatched anew.
+step_20() {
     local id state on
     on="$(pi_on_npm)" || { say "  cannot ask npm about $(pi_package)"; return 1; }
     if [ "$on" = no ]; then pi_first_publish; return; fi
-    id="$(gh_retry publish_run "$PUBLISH_COMMIT")" || return 1
+    id="$(gh_retry publish_run "$PIN_COMMIT")" || return 1
     state=""
     if [ -n "$id" ]; then state="$(gh_retry run_state "$id")" || return 1; fi
     case "$state" in
         "" | completed\ *)
-            gh workflow run publish-pi.yml --ref main -f dry_run=false -f "sha=$PUBLISH_COMMIT"
+            gh workflow run publish-pi.yml --ref "$PROD" -f dry_run=false -f "sha=$PIN_COMMIT"
             detail "dispatched; waiting for the run to start"
-            id="$(await_output new_publish_run "$PUBLISH_COMMIT" "$id")" \
-                || { say "  no Publish Pi package run for $PUBLISH_COMMIT appeared"; return 1; } ;;
+            id="$(await_output new_publish_run "$PIN_COMMIT" "$id")" \
+                || { say "  no Publish Pi package run for $PIN_COMMIT appeared"; return 1; } ;;
     esac
     await_run "$id" "Publish Pi package"
 }
 
 # The Pi package's first version, published from here: from a temporary
-# worktree of PUBLISH_COMMIT, after the checks publish-pi.yml makes (the
+# worktree of PIN_COMMIT, after the checks publish-pi.yml makes (the
 # wrapper pins the package's version, npm lacks it, the typecheck passes);
 # npm publish runs on this terminal, so npm's sign-in and one-time-password
 # prompts reach the person.
@@ -869,7 +1058,7 @@ pi_first_publish() {
     if [ -e "$dir" ]; then g worktree remove --force "$dir" 2>/dev/null || rm -rf "$dir"; fi
     g worktree prune
     mkdir -p "$(dirname "$dir")"
-    g worktree add --quiet --detach "$dir" "$PUBLISH_COMMIT"
+    g worktree add --quiet --detach "$dir" "$PIN_COMMIT"
     set +e
     (set -e; pi_publish_from "$dir/plugins/pi")
     rc=$?
@@ -893,11 +1082,11 @@ pi_publish_from() {
     logged "$PNPM" install --frozen-lockfile
     logged "$PNPM" run typecheck
     # On the terminal, for npm's prompts, with no heartbeat meanwhile.
-    tell "  $NPM publish --access public (plugins/pi at $PUBLISH_COMMIT)"
+    tell "  $NPM publish --access public (plugins/pi at $PIN_COMMIT)"
     if [ -n "$HB_DIR" ]; then : > "$HB_DIR/pause"; fi
     "$NPM" publish --access public >&3 2>&4
     if [ -n "$HB_DIR" ]; then rm -f "$HB_DIR/pause"; fi
-    # Kept as soon as npm took the package, so step 15 prints the
+    # Kept as soon as npm took the package, so step 21 prints the
     # trusted-publisher setup even if the wait below gives up.
     : > "$ROOT/target/release/$V/pi-first-publish"
     POLL_FAILS=0
@@ -906,27 +1095,10 @@ pi_publish_from() {
 }
 # Prints version $1 once npm lists it.
 pi_npm_version() { if pi_has_version "$1"; then echo "$1"; fi; }
-step_15() {
-    local prev t migrations=""
-    prev=""
-    for t in $(g tag -l 'v*'); do
-        [[ $t =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
-        [ "$(ver_cmp "${t#v}" "$V")" = -1 ] || continue
-        if [ -z "$prev" ] || [ "$(ver_cmp "${t#v}" "${prev#v}")" = 1 ]; then prev="$t"; fi
-    done
+step_21() {
     tell "Left by hand:"
-    if [ -n "$prev" ] && g rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-        if g diff --quiet "$prev" "$TAG" -- crates/clax-store/src/migrations.rs; then
-            migrations="no new migrations since $prev"
-        else
-            migrations="crates/clax-store/src/migrations.rs changed since $prev"
-        fi
-        tell "  - redeploy clax.dev with \`just clax-dev-deploy\` (a dry run; then $ACT_FLAG) if the"
-        tell "    release has migrations or hosted changes ($migrations)"
-    else
-        tell "  - redeploy clax.dev with \`just clax-dev-deploy\` (a dry run; then $ACT_FLAG) if the"
-        tell "    release has migrations or hosted changes"
-    fi
+    tell "  - check that clax.dev deployed: each push to $PROD deploys it from GitHub Actions (the"
+    tell "    merge, then the pin; docs/prod.md): gh run list --workflow deploy-prod.yml --repo ${GH_REPO:-empathic/clax}"
     if [ -e "$ROOT/target/release/$V/pi-first-publish" ]; then
         tell "  - once: set up npm trusted publishing for $(pi_package) (npmjs.com, the package's Settings,"
         tell "    Trusted Publisher, GitHub Actions: organization ${GH_REPO%%/*}, repository ${GH_REPO#*/},"
@@ -940,14 +1112,16 @@ step_15() {
 
 # --- main -------------------------------------------------------------------------
 
-# Lists steps 2-15, done or to do, with the estimate of the time they take;
+# Lists steps 2-21, done or to do, with the estimate of the time they take;
 # NEXT is the first step to do.
 overview() {
     local n left=0 from
     say ""
-    say "The steps (checkout at ${CUR:-?}, plugins pinned to ${PINNED:-?}):"
+    say "The steps (checkout on ${BRANCH:-a detached HEAD} at ${CUR:-?}, plugins pinned to ${PINNED:-?}; origin/$PROD at ${PROD_VERSION:-?}):"
     NEXT=""
-    for n in $(seq 2 15); do
+    for n in $(seq 2 "$LAST"); do
+        if [ "$n" = 2 ]; then say "  Prepare, then the pull request into $PROD:"; fi
+        if [ "$n" = 11 ]; then say "  Cut, once $PROD has it, from a $PROD checkout:"; fi
         if [ -z "$NEXT" ] && "done_$n" 2>/dev/null; then
             say "  $n. [done] ${TITLES[n]}: ${COMMANDS[n]}"
         else
@@ -961,8 +1135,19 @@ overview() {
     else
         from="typical durations; later runs learn from their logs"
     fi
-    say "Estimated: $(about "$TOTAL_W") in all, $(about "$left") for the steps to do ($from)."
+    say "Estimated: $(about "$TOTAL_W") in all, $(about "$left") for the steps to do ($from; the review not counted)."
     say ""
+}
+
+# The end of the preparation: the pull request waits for the owner.
+prepared() {
+    say ""
+    say "The release is prepared: the pull request ${PR_URL:-from $RB} into $PROD."
+    say "Once CI passes on it, merge it on GitHub with a merge commit (Create a merge commit, not"
+    say "squash or rebase); the push to $PROD deploys clax.dev. Then, on a $PROD checkout at"
+    say "origin/$PROD's tip (git switch $PROD; git pull --ff-only), run \`$RESUME\`"
+    say "again: it tags the release, pins the plugins, carries both commits to main and publishes"
+    say "the Pi package."
 }
 
 learn_weights
@@ -980,8 +1165,10 @@ if [ "${#PROBLEMS[@]}" -gt 0 ]; then
         say "release.sh: preflight failed; nothing was changed."
         exit 1
     fi
+elif [ "$PHASE" = 1 ]; then
+    say "  ok: preparing $V from origin/$PROD (at ${PROD_VERSION:-?}) and origin/main ($GH_REPO), clean, gh signed in, $V newer than every tag, signing works"
 else
-    say "  ok: on main and clean against origin/main ($GH_REPO), gh signed in, $V newer than every tag, signing works"
+    say "  ok: cutting $V on $PROD at origin/$PROD ($GH_REPO), clean, gh signed in, $V newer than every tag, signing works"
 fi
 for note in ${NOTES[@]+"${NOTES[@]}"}; do say "  note: $note"; done
 PREFLIGHT_S=$(($(now) - T0))
@@ -1002,22 +1189,31 @@ HB_DIR="$(mktemp -d)"
 say "== $(date -u +%Y-%m-%dT%H:%M:%SZ) release.sh $V in $ROOT; the log: $LOG"
 overview
 say "Starting at step $NEXT. Each step's output goes to the log$([ "$VERBOSE" = 1 ] && echo ", and here (--verbose)")."
-printf '== step 1 ran %ds\n' "$PREFLIGHT_S" >> "$LOG"
+printf '== step 1 of %d ran %ds\n' "$LAST" "$PREFLIGHT_S" >> "$LOG"
 DONE_W="${WEIGHTS[1]}"
 RUN_START="$(now)"
-for n in $(seq 2 15); do
-    if ! refresh; then
+# The state preflight read holds until a step runs: a step found done
+# changes nothing.
+STALE=0
+for n in $(seq 2 "$LAST"); do
+    if [ "$STALE" = 1 ] && ! refresh; then
         say "release.sh: $REFRESH_ERR before step $n; run \`$RESUME\` again to resume."
         exit 1
     fi
     STEP="$n"
     if "done_$n" 2>/dev/null; then
         DONE_W=$((DONE_W + WEIGHTS[n]))
-        say "[$(pct "$DONE_W")%] step $n/15 ${TITLES[n]}: done already"
+        say "[$(pct "$DONE_W")%] step $n/$LAST ${TITLES[n]}: done already"
         continue
     fi
-    say "[$(pct "$DONE_W")%] step $n/15 ${TITLES[n]}: ${COMMANDS[n]}"
+    # Step 10 is the owner's: the run ends here until the merge.
+    if [ "$n" = 10 ]; then
+        prepared
+        exit 0
+    fi
+    say "[$(pct "$DONE_W")%] step $n/$LAST ${TITLES[n]}: ${COMMANDS[n]}"
     STEP_START="$(now)"
+    STALE=1
     STEP_OFFSET="$(wc -c < "$LOG" | tr -d ' ')"
     start_ticker
     set +e
@@ -1040,7 +1236,7 @@ for n in $(seq 2 15); do
         say "The log: $LOG"
         exit 1
     fi
-    printf '== step %d ran %ds\n' "$n" $(($(now) - STEP_START)) >> "$LOG"
+    printf '== step %d of %d ran %ds\n' "$n" "$LAST" $(($(now) - STEP_START)) >> "$LOG"
     DONE_W=$((DONE_W + WEIGHTS[n]))
 done
 say ""
