@@ -53,7 +53,31 @@
   "use strict";
 
   // ---------- Content ----------
-  const cmd = (s) => `<div class="cmd"><pre>${s}</pre><button type="button" data-copy>Copy</button></div>`;
+  /** Colours the parts of one shell or slash command. The text is unchanged, so the
+   * block's textContent, which Copy reads, is exactly the command. */
+  function hl(line) {
+    let prog = false, subs = 0;
+    const span = (c, t) => `<span class="tk-${c}">${t}</span>`;
+    return line.replace(/(&lt;.*?&gt;)|("[^"]*"|'[^']*')|(\S+)/g, (m, ph, q, w) => {
+      if (ph) return span("ph", ph);
+      if (q) return span("str", q);
+      if (w === "|") { prog = false; subs = 0; return span("op", w); }
+      const env = /^([A-Z_][A-Z0-9_]*=)(.*)$/.exec(w);
+      if (env && !prog) return span("env", env[1]) + env[2];
+      if (!prog) { prog = true; return span("prog", w); }
+      const fl = /^(--?[A-Za-z][\w-]*)(=.*)?$/.exec(w);
+      if (fl) { subs = 9; return span("flag", fl[1]) + (fl[2] || ""); }
+      if (/^https?:\/\//.test(w)) { subs = 9; return span("url", w); }
+      if (/@|^[\w.-]+\/[\w.-]+$/.test(w)) { subs = 9; return span("arg", w); }
+      if (subs < 3 && /^[a-z][a-z-]*$/.test(w)) { subs++; return span("sub", w); }
+      subs = 9;
+      return w;
+    });
+  }
+  /** One command in its own block with its own Copy. `plain` leaves a prompt in words uncoloured, `n` numbers a step, `note` is a caption that is not copied. */
+  const cmd = (s, o = {}) => `<div class="cmd${o.n ? " numbered" : ""}">${o.n ? `<span class="cmd-n" aria-hidden="true">${o.n}</span>` : ""}<pre>${o.plain ? s : hl(s)}</pre><button type="button" data-copy>Copy</button>${o.note ? `<span class="cmd-note">${o.note}</span>` : ""}</div>`;
+  /** Several commands, one block each; numbered when the order matters. */
+  const cmds = (list, numbered) => list.map((c, i) => (Array.isArray(c) ? cmd(c[0], { note: c[1] }) : cmd(c, { n: numbered ? i + 1 : 0 }))).join("");
   // The shell capability: "Show me" rings one of Clax's own controls. It is
   // null on a released Clax and for viewers who cannot edit, and then the
   // buttons stay hidden.
@@ -131,11 +155,11 @@
     agent: { kind: "decision", kicker: "Decision", title: "Which agent do you use?",
       body: `<p>Clax works with Claude Code, Codex, Pi and Grok Build. Each gets the same tools and the same <code>clax</code> skill. Pick yours:</p>` },
     "install-claude": { kind: "small", agent: "claude", kicker: "Install · Claude Code", title: "Claude Code", sub: "Two commands in Claude Code",
-      body: `<p>In Claude Code, run:</p>${cmd("/plugin marketplace add empathic/clax\n/plugin install clax@clax")}
+      body: `<p>In Claude Code, run these one at a time:</p>${cmds(["/plugin marketplace add empathic/clax", "/plugin install clax@clax"], true)}
         <p>That's it. On first use the plugin downloads the Clax release it needs (about 10 MB, checked against a pinned checksum) and starts Clax when an agent first calls it.</p>
         ${tip("Fewer prompts", `In Manual mode Claude Code asks before each Clax tool call. To allow them all, add <code>"mcp__plugin_clax_clax__*"</code> to <code>permissions.allow</code> in <code>~/.claude/settings.json</code>, or pick them with <code>/permissions</code>.`)}` },
     "install-codex": { kind: "small", agent: "codex", kicker: "Install · Codex", title: "Codex", sub: "Two commands, then a new session",
-      body: `${cmd("codex plugin marketplace add empathic/clax\ncodex plugin add clax@clax")}
+      body: `<p>Run these one at a time:</p>${cmds(["codex plugin marketplace add empathic/clax", "codex plugin add clax@clax"], true)}
         <p>Then start a new session. The plugin downloads the Clax release it needs on first use.</p>
         ${tip("Approvals", "Codex runs most Clax tools without asking, but stops before the six that replace or remove data. The plugin's README has the lines that approve them.")}` },
     "install-pi": { kind: "small", agent: "pi", kicker: "Install · Pi", title: "Pi", sub: "One npm package",
@@ -144,11 +168,11 @@
         <p>Then start a new Pi session. On first use the package downloads the Clax release it pins. Pi wakes on a new comment by itself, even when idle.</p>` },
     "install-grok": { kind: "small", agent: "grok", kicker: "Install · Grok Build", title: "Grok Build", sub: "Install clax, then clax init",
       body: `<p>Install the <code>clax</code> command, then let it register the clax-grok plugin:</p>
-        ${cmd("curl -fsSL https://github.com/empathic/clax/releases/latest/download/install.sh | bash\nclax init --agent grok")}
+        ${cmds(["curl -fsSL https://github.com/empathic/clax/releases/latest/download/install.sh | bash", "clax init --agent grok"], true)}
         <p>Then start a new Grok session.</p>
         ${tip("Approvals", "Grok asks before every tool call. For headless runs, pass <code>--always-approve</code> or <code>--allow 'MCPTool(clax_grok__*)'</code>.")}` },
     "install-all": { kind: "small", agent: "all", kicker: "Install · every harness", title: "Several", sub: "One script covers them all",
-      body: `${cmd("curl -fsSL https://github.com/empathic/clax/releases/latest/download/install.sh | bash\nclax init")}
+      body: `${cmds(["curl -fsSL https://github.com/empathic/clax/releases/latest/download/install.sh | bash", "clax init"], true)}
         <p><code>install.sh</code> puts <code>clax</code> in <code>~/.local/bin</code> after checking it against the release's checksums. <code>clax init</code> registers the plugin with Claude Code, Codex, Pi and Grok Build (whichever are installed) and sets up the Chrome extension. Start a new session in each harness afterwards. Run the same two commands again to upgrade.</p>
         ${tip("Platforms", "Prebuilt releases cover macOS (Apple silicon and Intel) and Linux (x86-64 and arm64).")}` },
     claxbot: { kind: "small", kicker: "ClaxBot", title: "Use ClaxBot", sub: "Instead of connecting an agent",
@@ -164,7 +188,7 @@
         ${tip("Using the Clax app?", "Settings › Sharing › clax.dev › Connect.")}
         <h3>2. Attach your agent</h3>
         <p>Ask your agent, in its chat, to watch this page:</p>
-        ${cmd(`Watch the Clax Quickstart page (${ARTIFACT}) for my comments.`)}
+        ${cmd(`Watch the Clax Quickstart page (${ARTIFACT}) for my comments.`, { plain: true })}
         <p>Your agent shows up in this page's agent list, and a comment you send it here reaches it. To check, leave a comment here, write <code>@agent hello</code>, and send it: your agent should reply.</p>` },
     fork: { kind: "small", kicker: "Next", title: "Make it yours", sub: "Fork any page into your own copy", starter: `Fork the Clax Quickstart page (${ARTIFACT}) into a page of my own, open it, and watch it.`,
       body: `<p>Fork any page into your own copy that you can change however you like. Press <b>Fork</b> in its top bar (on a phone, it's in the ⋯ menu). Or ask your agent or ClaxBot, as below.</p>
@@ -207,7 +231,7 @@
       <h3>Anywhere: through clax.dev</h3>
       <ol><li>On your page, press <b>Publish to clax.dev</b> in the top bar.</li><li>On its public copy, press <b>Share</b>: add people by GitHub login as Can view, Can comment or Can edit, or copy the link.</li><li>Comments they leave there come back to your page here, and your agent answers them.</li></ol>
       <h3>Nearby: on your network</h3>
-      ${cmd("clax stop\nclax serve --bind 0.0.0.0")}
+      ${cmds(["clax stop", "clax serve --bind 0.0.0.0"], true)}
       <p>Then invite them from the <b>People</b> page. Use a network you trust: LAN traffic is not encrypted.</p>` };
 
   const LAYOUT = [
@@ -526,13 +550,13 @@
       html += `<h3>Handy to know</h3>
         <p>To give any page a public link, press <b>Publish to clax.dev</b> in its top bar, then <b>Push v&lt;N&gt;</b> for later versions. When an agent wants to publish, it asks you first.</p>
         <p>Your agent does most things for you, but the <code>clax</code> command is there when you want it.</p>
-        ${cmd("clax open &lt;ID&gt;    # open a page\nclax list           # list pages\nclax comments       # open threads, newest first\nclax push &lt;ID&gt;     # publish a page to clax.dev\nclax status         # is Clax running, who is working on what\nclax doctor         # health check")}
+        ${cmds([["clax open &lt;ID&gt;", "open a page"], ["clax list", "list pages"], ["clax comments", "open threads, newest first"], ["clax push &lt;ID&gt;", "publish a page to clax.dev"], ["clax status", "is Clax running, who is working on what"], ["clax doctor", "health check"]])}
         <h3>Something's off?</h3>
-        ${cmd("clax doctor --agent claude  # check one harness's plugin: claude, codex, pi or grok")}
+        ${cmd("clax doctor --agent claude", { note: "check one harness's plugin: claude, codex, pi or grok" })}
         <p>Every hook run, MCP start and install is logged in <code>~/.clax/logs/hooks.log</code>. Your pages and comments live in <code>~/.clax</code>.</p>
         <p><code>clax --help</code> lists every command. The <a href="https://github.com/empathic/clax#readme" target="_blank" rel="noopener">README</a> and the usage guide cover the rest.</p>`;
     }
-    if (n.starter) html = `<h3>Try this</h3><p>Paste it to your agent, or send it to ClaxBot:</p>${cmd(n.starter)}` + html;
+    if (n.starter) html = `<h3>Try this</h3><p>Paste it to your agent, or send it to ClaxBot:</p>${cmd(n.starter, { plain: true })}` + html;
     if (SHOWME[id]) html += `<div class="showme-wrap">${showMe(id)}</div>`;
     const here = ideasFor(id);
     if (here.length) {
@@ -548,7 +572,8 @@
     panel.scrollTop = 0;
     if (!opts.quiet) panel.classList.add("open");
     refreshNodes();
-    if (!opts.quiet && matchMedia("(min-width: 901px)").matches) {
+    // An install-<agent> panel has no box of its own: only a step with one is scrolled to.
+    if (!opts.quiet && els[id] && matchMedia("(min-width: 901px)").matches) {
       const r = els[id].getBoundingClientRect();
       if (r.top < 0 || r.bottom > innerHeight) els[id].scrollIntoView({ block: "center", behavior: "smooth" });
     }

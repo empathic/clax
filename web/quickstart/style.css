@@ -3,6 +3,7 @@
     --line: #d9d5ca; --edge: #b5afa1; --accent: #c2410c; --accent-soft: #fbe6da; --accent-fg: #ffffff;
     --ok: #15803d; --ok-soft: #dcf2e3; --code-bg: #f1efe8; --shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 14px rgba(0,0,0,.05);
     --hi: #b91c1c; --med: #a16207; --lo: #4b5563;
+    --tk-url: #1d4ed8; --tk-arg: #7c3aed;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
@@ -10,6 +11,7 @@
       --line: #36342f; --edge: #57534a; --accent: #f08a4b; --accent-soft: #3a2518; --accent-fg: #1a0f08;
       --ok: #4ade80; --ok-soft: #173322; --code-bg: #24231f; --shadow: 0 1px 2px rgba(0,0,0,.4);
       --hi: #f87171; --med: #fbbf24; --lo: #9ca3af;
+      --tk-url: #7aa7ff; --tk-arg: #c4a1ff;
     }
   }
   :root[data-theme="dark"] {
@@ -17,6 +19,7 @@
     --line: #36342f; --edge: #57534a; --accent: #f08a4b; --accent-soft: #3a2518; --accent-fg: #1a0f08;
     --ok: #4ade80; --ok-soft: #173322; --code-bg: #24231f; --shadow: 0 1px 2px rgba(0,0,0,.4);
     --hi: #f87171; --med: #fbbf24; --lo: #9ca3af;
+      --tk-url: #7aa7ff; --tk-arg: #c4a1ff;
   }
   * { box-sizing: border-box; }
   html { overflow-x: hidden; }
@@ -371,3 +374,16 @@
   }
   @media (prefers-reduced-motion: reduce) { .card.landed { animation: none; box-shadow: 0 0 0 2px var(--accent), 0 0 0 6px var(--accent-soft); } }
   .linked-note { margin: 0; font-size: 13px; color: var(--muted); }
+
+  /* Command blocks: one command each, its parts coloured from the tokens. */
+  .cmd.numbered pre { padding-left: 36px; }
+  .cmd-n { position: absolute; left: 10px; top: 10px; width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--edge); color: var(--muted); font-size: 11px; font-weight: 700; display: grid; place-items: center; }
+  .cmd-note { display: block; padding: 0 12px 8px; color: var(--muted); font-size: 12.5px; }
+  .tk-prog { color: var(--accent); font-weight: 600; }
+  .tk-sub { color: var(--fg); font-weight: 600; }
+  .tk-flag { color: var(--ok); }
+  .tk-url { color: var(--tk-url); }
+  .tk-arg { color: var(--tk-arg); }
+  .tk-str { color: var(--med); }
+  .tk-env, .tk-ph { color: var(--med); }
+  .tk-op { color: var(--muted); }
