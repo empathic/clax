@@ -1839,6 +1839,7 @@ export class ArtifactController {
     const moved = declarationMoved(this.served, (a.capabilities_in_force ?? {}) as Declared);
     if (moved === "removed") this.reloadHere();
     else if (moved === "added" && !this.s.declarationStale) this.set({ declarationStale: true });
+    else if (moved === "same" && this.s.declarationStale) this.set({ declarationStale: false });
   }
   /** Refetches the artifact and takes the fields about approval from the answer. */
   private async refetchArtifact(): Promise<void> {

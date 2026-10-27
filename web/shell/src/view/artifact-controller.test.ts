@@ -1534,6 +1534,40 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     addition.ctl.dispose();
   });
 
+  it("withdraws_the_reload_offer_when_the_declaration_returns_to_the_one_served", async () => {
+    const { ctl, frame, answer, assign } = await servedWith({ db: {} });
+    const es = await streamOf(frame);
+    assign.mockClear();
+    answer.v = { db: {}, shell: {} };
+    es.emit("permissions", { type: "permissions", artifact_id: ID });
+    await vi.waitFor(() => expect(ctl.state.get().declarationStale).toBe(true));
+    answer.v = { db: {} };
+    es.emit("permissions", { type: "permissions", artifact_id: ID });
+    await vi.waitFor(() => expect(ctl.state.get().declarationStale).toBe(false));
+    expect(assign).not.toHaveBeenCalled();
+    ctl.dispose();
+  });
+
+  it("a_removed_net_host_reloads_while_net_stays_and_a_removal_after_an_addition_reloads", async () => {
+    const hosts = await servedWith({ net: { hosts: ["a.clax.invalid", "b.clax.invalid"] } });
+    const es1 = await streamOf(hosts.frame);
+    hosts.assign.mockClear();
+    hosts.answer.v = { net: { hosts: ["a.clax.invalid"] } };
+    es1.emit("permissions", { type: "permissions", artifact_id: ID });
+    await vi.waitFor(() => expect(hosts.assign).toHaveBeenCalledTimes(1));
+    hosts.ctl.dispose();
+    const both = await servedWith({ db: {}, shell: {} });
+    const es2 = await streamOf(both.frame);
+    both.assign.mockClear();
+    both.answer.v = { db: {}, shell: {}, sample: {} };
+    es2.emit("permissions", { type: "permissions", artifact_id: ID });
+    await vi.waitFor(() => expect(both.ctl.state.get().declarationStale).toBe(true));
+    both.answer.v = { db: {}, sample: {} };
+    es2.emit("permissions", { type: "permissions", artifact_id: ID });
+    await vi.waitFor(() => expect(both.assign).toHaveBeenCalledTimes(1));
+    both.ctl.dispose();
+  });
+
   it("declarationMoved_tells_removal_from_addition", async () => {
     const { declarationMoved } = await import("./artifact-controller");
     expect(declarationMoved({ db: {} }, { db: {} })).toBe("same");
