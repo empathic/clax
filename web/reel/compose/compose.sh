@@ -3,38 +3,52 @@
 # fframes composer (docs/superpowers/specs/2026-10-27-sizzle-reel-design.md
 # section 9) lands; run by hand, outputs under target/reel/ (git-ignored).
 #
-#   web/reel/compose/compose.sh -o target/reel/out FRAMES_DIR [FRAMES_DIR...]
+#   web/reel/compose/compose.sh -o OUT [--order ID,ID,...] [--titles FILE]
+#                               [--overlay-titles] FRAMES_DIR [FRAMES_DIR...]
 #
-# Each FRAMES_DIR holds frames/NNNNNN.png and beats.json (30 fps, 1600x1000),
-# given in reel.toml order; its basename minus a "_frames" suffix is the
-# vignette ID whose title comes from web/reel/reel.toml.
+# Each FRAMES_DIR holds frames/NNNNNN.png and beats.json (30 fps, 1600x1000);
+# its basename minus a "_frames" suffix is the vignette ID. Titles come from
+# web/reel/reel.toml, overridden per ID by --titles FILE (lines "id=title").
+# --order plays only the named vignettes, in that order (default: argument
+# order). --overlay-titles shows the title as a lower-third over the first
+# second of each vignette instead of a 0.6 s card before it.
+#
+# Pace, from beats.json (beats ask, working, reveal, touch; frames are 30 fps):
+#   start..ask 1.5x; ask+0.6 s..reveal 5x (the wait); reveal..reveal+1.5 s 1x
+#   (the hold on the result); touch..touch+1 s 1.25x. Without a touch beat the
+#   cut ends at reveal+2.5 s. Vignettes lacking ask or reveal play at 1.6x with
+#   0.5 s trimmed from each end. Cards are 0.6 s with a quick slide/scale-in;
+#   every join is a hard cut; the end card is 2 s.
+# The GIF is each vignette's reveal window (reveal-0.3 s .. +2.2 s; for the
+# fallback, the 2.5 s ending 1 s after its last beat), 720 px, 15 fps, one
+# global palette, hard cuts.
 # Outputs in OUT: cards/*.png, clips/<n>-<id>.mp4, clax-reel.mp4, clax-reel.gif.
-# Environment: FFMPEG, CHROME, GIF_SECONDS (2.5), GIF_LEAD (1.5 s before the
-# last beat), GIF_WIDTH (720), GIF_FPS (15).
+# Environment: FFMPEG, CHROME, GIF_WIDTH (720), GIF_FPS (15).
 set -euo pipefail
 
 FFMPEG="${FFMPEG:-$HOME/.local/homebrew/bin/ffmpeg}"
 CHROME="${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
-GIF_SECONDS="${GIF_SECONDS:-2.5}"
-GIF_LEAD="${GIF_LEAD:-1.5}"
 GIF_WIDTH="${GIF_WIDTH:-720}"
 GIF_FPS="${GIF_FPS:-15}"
-CARD_SECONDS=1.5
-XFADE=0.3
+CARD_SECONDS=0.6
+END_SECONDS=2
 FPS=30
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 toml="$here/../reel.toml"
-out=""
+out=""; order=""; titles_file=""; overlay=0
 dirs=()
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) out="$2"; shift 2 ;;
-    -h|--help) sed -n 2,16p "$0"; exit 0 ;;
+    --order) order="$2"; shift 2 ;;
+    --titles) titles_file="$2"; shift 2 ;;
+    --overlay-titles) overlay=1; shift ;;
+    -h|--help) sed -n 2,27p "$0"; exit 0 ;;
     *) dirs+=("$1"); shift ;;
   esac
 done
-[ -n "$out" ] && [ ${#dirs[@]} -gt 0 ] || { echo "usage: compose.sh -o OUT_DIR FRAMES_DIR..." >&2; exit 2; }
+[ -n "$out" ] && [ ${#dirs[@]} -gt 0 ] || { echo "usage: compose.sh -o OUT_DIR [--order IDS] [--titles FILE] [--overlay-titles] FRAMES_DIR..." >&2; exit 2; }
 mkdir -p "$out/cards" "$out/clips"
 out="$(cd "$out" && pwd)"
 
@@ -44,6 +58,9 @@ ff() { "$FFMPEG" -hide_banner -loglevel error -y "$@"; }
 # toml_get title ID | headline | footer: values from reel.toml (a flat subset).
 toml_get() {
   if [ "$1" = title ]; then
+    if [ -n "$titles_file" ] && grep -q "^$2=" "$titles_file"; then
+      grep -m1 "^$2=" "$titles_file" | cut -d= -f2-; return
+    fi
     awk -v id="$2" '
       /^\[\[vignette\]\]/ { cur = "" }
       /^id *=/ { split($0, a, "\""); cur = a[2] }
@@ -56,80 +73,130 @@ toml_get() {
 
 urlenc() { python3 -I -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$1"; }
 
-card() { # card OUT.png QUERY
+shot() { # shot OUT.png QUERY [extra chrome flags]
+  local dest="$1" query="$2"; shift 2
   "$CHROME" --headless=new --disable-gpu --hide-scrollbars --force-device-scale-factor=1 \
-    --window-size=1600,1000 --virtual-time-budget=2000 \
-    --screenshot="$1" "file://$here/card.html?$2" >/dev/null 2>&1
-  [ -s "$1" ] || { echo "compose: Chrome made no card for $2" >&2; exit 1; }
+    --window-size=1600,1000 --virtual-time-budget=2000 "$@" \
+    --screenshot="$dest" "file://$here/card.html?$query" >/dev/null 2>&1
+  [ -s "$dest" ] || { echo "compose: Chrome made no image for $query" >&2; exit 1; }
 }
 
-ids=(); counts=(); lasts=()
+# Resolve the vignettes (and their order) from the FRAMES_DIR arguments.
+sel=()
+if [ -n "$order" ]; then
+  IFS=, read -r -a want <<<"$order"
+  for id in "${want[@]}"; do
+    hit=""
+    for d in "${dirs[@]}"; do [ "$(basename "${d%/}")" = "${id}_frames" ] && hit="$d"; done
+    [ -n "$hit" ] || { echo "compose: --order names $id but no ${id}_frames directory was given" >&2; exit 1; }
+    sel+=("$hit")
+  done
+else
+  sel=("${dirs[@]}")
+fi
+dirs=("${sel[@]}")
+
+# plan DIR: prints "kind START LEN SPEED" lines (kind seg), then "gif START LEN".
+plan() {
+  python3 -I - "$1/beats.json" "$(ls "$1/frames" | grep -c '\.png$')" <<'PY'
+import json, sys
+b = json.load(open(sys.argv[1])); n = int(sys.argv[2]); fps = 30
+at = {}
+for x in b["beats"]:
+    at.setdefault(x["name"], x["frame"])
+s = lambda sec: round(sec * fps)
+segs = []
+if "ask" in at and "reveal" in at and at["reveal"] > at["ask"]:
+    ask, rev = at["ask"], at["reveal"]
+    segs.append((0, ask, 1.5))
+    if ask + s(0.6) < rev:
+        segs.append((ask + s(0.6), rev, 5.0))
+    hold_end = rev + s(1.5)
+    segs.append((rev, hold_end, 1.0))
+    if "touch" in at and at["touch"] >= rev:
+        t0 = max(at["touch"], hold_end)
+        segs.append((t0, at["touch"] + s(1.0) if at["touch"] + s(1.0) > t0 else t0 + s(1.0), 1.25))
+    else:
+        segs.append((hold_end, rev + s(2.5), 1.0))
+    g0 = max(0, rev - s(0.3)); glen = s(2.5)
+else:
+    segs.append((s(0.5), n - s(0.5), 1.6))
+    last = max([x["frame"] for x in b["beats"]] or [n // 2])
+    g0 = max(0, min(last + s(1.0) - s(2.5), n - s(2.5))); glen = s(2.5)
+for a, e, v in segs:
+    e = min(e, n)
+    if e > a:
+        print("seg", a, e - a, v)
+g0 = min(g0, max(0, n - 1)); glen = min(glen, n - g0)
+print("gif", g0, glen)
+PY
+}
+
+# card_clip OUT.mp4 QUERY SECONDS [flags]: 3-phase slide/scale-in then a hold.
+card_clip() {
+  local dest="$1" query="$2" secs="$3" base="${1%.mp4}" ph
+  local pa=0.3 pb=0.7 pc=1
+  for ph in a b c; do eval "p=\$p$ph"; shot "$base.$ph.png" "$query&p=$p"; done
+  local hold; hold="$(python3 -I -c "print(round($secs - 4/$FPS, 4))")"
+  ff -loop 1 -framerate $FPS -t 0.0667 -i "$base.a.png" -loop 1 -framerate $FPS -t 0.0667 -i "$base.b.png" \
+     -loop 1 -framerate $FPS -t "$hold" -i "$base.c.png" \
+     -filter_complex "[0:v][1:v][2:v]concat=n=3:v=1:a=0,format=yuv420p,setsar=1,fps=$FPS[o]" -map "[o]" -r $FPS \
+     -c:v libx264 -pix_fmt yuv420p -crf 20 -preset medium -an "$dest"
+  mv "$base.c.png" "$base.png"; rm -f "$base.a.png" "$base.b.png"
+}
+
+ids=(); counts=(); tags=()
 n=0
 for d in "${dirs[@]}"; do
   d="$(cd "$d" && pwd)"
   [ -d "$d/frames" ] && [ -f "$d/beats.json" ] || { echo "compose: $d lacks frames/ or beats.json" >&2; exit 1; }
   b="$(basename "$d")"; id="${b%_frames}"
-  n=$((n + 1))
-  tag="$(printf '%02d-%s' "$n" "$id")"
-  ids+=("$tag"); dirs[$((n - 1))]="$d"
-  counts+=("$(ls "$d/frames" | grep -c '\.png$')")
-  lasts+=("$(python3 -I -c 'import json,sys;b=json.load(open(sys.argv[1]));print(max([x["frame"] for x in b["beats"]] or [b["frames"]//2]))' "$d/beats.json")")
-  card "$out/cards/$tag.png" "title=$(urlenc "$(toml_get title "$id")")"
+  dirs[$n]="$d"; n=$((n + 1))
+  tags+=("$(printf '%02d-%s' "$n" "$id")"); ids+=("$id")
 done
-card "$out/cards/end.png" "end=1&title=$(urlenc "$(toml_get headline)")&footer=$(urlenc "$(toml_get footer)")"
-log "cards done"
 
-# chain OUT.mp4 SPEC...: SPEC is "card:PNG:SECS" or "seq:DIR:COUNT"; pieces are
-# joined with XFADE-second crossfades and encoded silent H.264.
-chain() {
-  local dest="$1"; shift
-  local inputs=() filt="" i=0 total=0 prev="" label dur
-  for spec in "$@"; do
-    IFS=: read -r kind path val <<<"$spec"
-    if [ "$kind" = card ]; then
-      inputs+=(-loop 1 -framerate $FPS -t "$val" -i "$path"); dur="$val"
-    else
-      inputs+=(-framerate $FPS -i "$path/frames/%06d.png"); dur="$(python3 -I -c "print($val/$FPS)")"
-    fi
-    filt+="[$i:v]format=yuv420p,setsar=1,fps=$FPS,settb=1/$FPS[v$i];"
-    if [ $i -eq 0 ]; then
-      prev="v0"; total="$dur"
-    else
-      local off; off="$(python3 -I -c "print(round($total-$XFADE,4))")"
-      label="x$i"
-      filt+="[$prev][v$i]xfade=transition=fade:duration=$XFADE:offset=$off[$label];"
-      prev="$label"; total="$(python3 -I -c "print(round($total+$dur-$XFADE,4))")"
-    fi
-    i=$((i + 1))
-  done
-  if [ $i -eq 1 ]; then filt+="[v0]null[outv]"; else filt="${filt%;}"; filt="${filt%\[$prev\]}[outv]"; fi
-  ff "${inputs[@]}" -filter_complex "$filt" -map "[outv]" -r $FPS \
-    -c:v libx264 -pix_fmt yuv420p -crf 20 -preset medium -movflags +faststart -an "$dest"
-}
-
+clips=()
 for ((k = 0; k < n; k++)); do
-  chain "$out/clips/${ids[k]}.mp4" "card:$out/cards/${ids[k]}.png:$CARD_SECONDS" "seq:${dirs[k]}:${counts[k]}"
+  d="${dirs[k]}"; tag="${tags[k]}"; title="$(toml_get title "${ids[k]}")"
+  inputs=(); filt=""; labels=""; i=0
+  while read -r kind a len v; do
+    [ "$kind" = seg ] || continue
+    inputs+=(-start_number "$a" -framerate $FPS -i "$d/frames/%06d.png")
+    filt+="[$i:v]trim=end_frame=$len,setpts=(PTS-STARTPTS)/$v,fps=$FPS,format=yuv420p,setsar=1[s$i];"
+    labels+="[s$i]"; i=$((i + 1))
+  done < <(plan "$d")
+  if [ "$overlay" = 1 ]; then
+    shot "$out/cards/$tag.png" "lower=1&title=$(urlenc "$title")" --default-background-color=00000000
+    inputs+=(-loop 1 -framerate $FPS -t 1 -i "$out/cards/$tag.png")
+    filt+="${labels}concat=n=$i:v=1:a=0[body];[$i:v]format=rgba,fade=t=in:st=0:d=0.15:alpha=1,fade=t=out:st=0.85:d=0.15:alpha=1[ov];[body][ov]overlay=0:0:enable='lt(t,1)',format=yuv420p[o]"
+    pieces="$out/clips/$tag.mp4"
+    ff "${inputs[@]}" -filter_complex "$filt" -map "[o]" -r $FPS -c:v libx264 -pix_fmt yuv420p -crf 20 -preset medium -an "$pieces"
+  else
+    card_clip "$out/cards/$tag.card.mp4" "title=$(urlenc "$title")" "$CARD_SECONDS"
+    filt+="${labels}concat=n=$i:v=1:a=0[o]"
+    ff "${inputs[@]}" -filter_complex "$filt" -map "[o]" -r $FPS -c:v libx264 -pix_fmt yuv420p -crf 20 -preset medium -an "$out/cards/$tag.body.mp4"
+    printf "file '%s'\nfile '%s'\n" "$out/cards/$tag.card.mp4" "$out/cards/$tag.body.mp4" > "$out/cards/$tag.txt"
+    ff -f concat -safe 0 -i "$out/cards/$tag.txt" -c copy -movflags +faststart "$out/clips/$tag.mp4"
+    rm -f "$out/cards/$tag.card.mp4" "$out/cards/$tag.body.mp4" "$out/cards/$tag.txt"
+  fi
+  clips+=("$out/clips/$tag.mp4")
 done
+card_clip "$out/clips/end.mp4" "end=1&title=$(urlenc "$(toml_get headline)")&footer=$(urlenc "$(toml_get footer)")" "$END_SECONDS"
+mv "$out/clips/end.png" "$out/cards/end.png" 2>/dev/null || true
+clips+=("$out/clips/end.mp4")
 log "clips done"
 
-specs=()
-for ((k = 0; k < n; k++)); do
-  specs+=("card:$out/cards/${ids[k]}.png:$CARD_SECONDS" "seq:${dirs[k]}:${counts[k]}")
-done
-specs+=("card:$out/cards/end.png:4")
-chain "$out/clax-reel.mp4" "${specs[@]}"
+list="$out/clips.txt"; : > "$list"
+for c in "${clips[@]}"; do printf "file '%s'\n" "$c" >> "$list"; done
+ff -f concat -safe 0 -i "$list" -c copy -movflags +faststart "$out/clax-reel.mp4"
+rm -f "$list"
 log "mp4 done"
 
-# GIF: a window of GIF_SECONDS ending GIF_SECONDS-GIF_LEAD after each
-# vignette's last beat, hard cuts, one global palette; no dithering vs
-# sierra2_4a, the smaller wins.
+# GIF: each vignette's reveal window, hard cuts, one global palette; no
+# dithering vs sierra2_4a, the smaller wins.
 inputs=(); filt=""; labels=""
 for ((k = 0; k < n; k++)); do
-  read -r start len < <(python3 -I -c "
-fps, lead, secs, last, cnt = $FPS, $GIF_LEAD, $GIF_SECONDS, ${lasts[k]}, ${counts[k]}
-want = round(secs * fps)
-s = max(0, min(round(last - lead * fps), cnt - want))
-print(s, min(want, cnt - s))")
+  read -r _ start len < <(plan "${dirs[k]}" | grep '^gif')
   inputs+=(-start_number "$start" -framerate $FPS -i "${dirs[k]}/frames/%06d.png")
   filt+="[$k:v]trim=end_frame=$len,setpts=PTS-STARTPTS,fps=$GIF_FPS,scale=$GIF_WIDTH:-1:flags=lanczos,setsar=1[g$k];"
   labels+="[g$k]"

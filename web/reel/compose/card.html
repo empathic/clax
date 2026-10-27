@@ -5,7 +5,9 @@
 <title>Reel card</title>
 <!-- Interim card template for web/reel/compose/compose.sh. Colours and the
      font stack are design/tokens.json (light theme); the mark is
-     design/mark.json. Query: ?title=...  or  ?end=1&title=...&footer=... -->
+     design/mark.json. Query: ?title=...  or  ?end=1&title=...&footer=...
+     Optional: p=0..1 (slide/scale-in progress of the contents; default 1) and
+     lower=1 (a transparent lower-third for overlaying on a vignette). -->
 <style>
   :root {
     --bg: #f7f7f5;
@@ -30,6 +32,11 @@
   body.end h1 { font-size: 104px; }
   body.end svg.mark { width: 176px; }
   body.end .rule { display: none; }
+  main { transform-origin: 50% 50%; }
+  body.lower, body.lower html { background: transparent; }
+  body.lower main { padding: 0; justify-content: flex-end; align-items: flex-start; }
+  body.lower svg.mark, body.lower .rule, body.lower .footer { display: none; }
+  body.lower h1 { font-size: 64px; line-height: 1.1; margin: 0 0 72px 72px; padding: 22px 36px; background: var(--bg); border-left: 12px solid var(--agent); border-radius: 8px; max-width: 1100px; }
 </style>
 </head>
 <body>
@@ -48,6 +55,11 @@
   document.getElementById('title').textContent = q.get('title') || '';
   document.getElementById('footer').textContent = q.get('footer') || '';
   if (q.get('end')) document.body.classList.add('end');
+  if (q.get('lower')) { document.body.classList.add('lower'); document.documentElement.style.background = 'transparent'; }
+  const p = q.has('p') ? Math.min(1, Math.max(0, parseFloat(q.get('p')))) : 1;
+  const main = document.querySelector('main');
+  main.style.opacity = Math.min(1, p * 2.5);
+  main.style.transform = `translateX(${(1 - p) * -140}px) scale(${1 + (1 - p) * 0.12})`;
 </script>
 </body>
 </html>
