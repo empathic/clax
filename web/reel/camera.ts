@@ -79,7 +79,8 @@ async function reach(page: Page, frame: Frame, cdp: CDPSession): Promise<Reach> 
   if (own) return { session: own };
   const { frameTree } = await cdp.send("Page.getFrameTree");
   type Tree = typeof frameTree;
-  const find = (t: Tree): string | undefined => (t !== frameTree && t.frame.url === frame.url() && (t.frame.name ?? "") === frame.name() ? t.frame.id : (t.childFrames ?? []).map(find).find(Boolean));
+  // The protocol gives a frame's URL without its fragment, and the fragment apart.
+  const find = (t: Tree): string | undefined => (t !== frameTree && t.frame.url + (t.frame.urlFragment ?? "") === frame.url() && (t.frame.name ?? "") === frame.name() ? t.frame.id : (t.childFrames ?? []).map(find).find(Boolean));
   const frameId = find(frameTree);
   if (!frameId) throw new Error(`no frame ${frame.url()} in ${page.url()}`);
   const { executionContextId } = await cdp.send("Page.createIsolatedWorld", { frameId, worldName: "clax-reel" });
@@ -162,11 +163,14 @@ export async function deterministicCamera(page: Page, out: string, fps = FPS): P
   // Time rolled so far, in ms: the frames due are those it covers.
   let rolled = 0;
 
-  // The page's requests in flight, but for the streams that never end.
+  // The page's requests in flight, but for the streams that never end:
+  // event sources, sockets, and event streams read by fetch (as the
+  // ClaxBot run panel reads a run's events).
   const pending = new Set<Request>();
   let settled: (() => void) | null = null;
   page.on("request", r => {
-    if (r.resourceType() !== "eventsource" && r.resourceType() !== "websocket") pending.add(r);
+    const stream = r.resourceType() === "eventsource" || r.resourceType() === "websocket" || r.headers().accept === "text/event-stream";
+    if (!stream) pending.add(r);
   });
   const done = (r: Request) => {
     if (pending.delete(r)) settled?.();
@@ -191,10 +195,15 @@ export async function deterministicCamera(page: Page, out: string, fps = FPS): P
     };
     walk(root);
     for (const backendNodeId of shadows) {
-      const { object } = await session.send("DOM.resolveNode", { backendNodeId });
-      if (!object.objectId) continue;
-      await session.send("Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: FREEZE_IN, arguments: [{ value: t }], userGesture: false, returnByValue: true });
-      await session.send("Runtime.releaseObject", { objectId: object.objectId });
+      try {
+        const { object } = await session.send("DOM.resolveNode", { backendNodeId });
+        if (!object.objectId) continue;
+        await session.send("Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: FREEZE_IN, arguments: [{ value: t }], userGesture: false, returnByValue: true });
+        await session.send("Runtime.releaseObject", { objectId: object.objectId });
+      } catch (e) {
+        // A document the page navigated away from has no animations left to set.
+        if (!/Cannot find context|No node with given id|Could not find node|does not belong to the document/.test(e instanceof Error ? e.message : String(e))) throw e;
+      }
     }
   }
 

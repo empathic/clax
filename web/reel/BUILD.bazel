@@ -22,6 +22,7 @@ exports_files(
 # The vignettes, one script each (vignettes/<id>.ts), in no particular
 # order: reel.toml orders the reel.
 VIGNETTES = [
+    "claxbot",
     "realtime",
 ]
 
@@ -122,6 +123,43 @@ npm_script_test(
     no_copy_to_bin = ["@chromium//:browsers"],
     project = "web",
     script = "reel:determinism",
+    skips = ["crates/clax-cli/clax"],
+    tags = [
+        "cpu:4",
+        "exclusive",
+        "manual",
+        "no-remote",
+        "no-sandbox",
+    ],
+)
+
+# Two deterministic recordings of claxbot are the same, frame for frame
+# (determinism.sh), on demand and alone: `bazelisk test
+# //web/reel:claxbot_determinism`. It reads what a recording reads
+# (reel.bzl), the binary and the browsers where Bazel put them.
+npm_script_test(
+    name = "claxbot_determinism",
+    data = [
+        ":determinism",
+        ":claxbot_script",
+        ":recorder",
+        "//crates/clax-cli:clax",
+        "//crates/clax-cli:clax_warm",
+        "//web:dist_e2e",
+        "//web:files",
+        "//web:node_modules",
+        "@chromium//:browsers",
+    ],
+    env = {
+        "CLAX_E2E_BIN": "$(rootpath //crates/clax-cli:clax)",
+        "CLAX_E2E_WEB_DIST": "$(rootpath //web:dist_e2e)",
+        "CLAX_GALLERY__QUICKSTART": "false",
+        "PLAYWRIGHT_BROWSERS_PATH": "$(rootpath @chromium//:browsers)",
+    },
+    no_copy_to_bin = ["@chromium//:browsers"],
+    project = "web",
+    script = "reel:determinism",
+    args = ["claxbot"],
     skips = ["crates/clax-cli/clax"],
     tags = [
         "cpu:4",
