@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  SMOKE_CANNOT,
   buildId,
   checkCiOptions,
   ciSecretsRefusal,
@@ -12,6 +13,8 @@ import {
   partialTriggerUpdate,
   prodTipOf,
   productionGate,
+  smokeCannot,
+  smokeCredential,
 } from "./deploy-lib.mjs";
 
 // What `wrangler deploy` printed when the custom-domains call failed after
@@ -197,4 +200,38 @@ test("a redeploy prints no first-time setup text, whatever else it uploaded", ()
 
 test("a --ci deploy names no CLAX_KEK backup", () => {
   assert.doesNotMatch(doneText({ ...DONE, kek: null, generated: null }), /CLAX_KEK/);
+});
+
+test("the smoke's credential: a session, then an agent token, then setup, then the owner token", () => {
+  assert.equal(smokeCredential({ session: "s", agent: "cxa_a", setupOpen: true, secret: "x", token: "t" }), "session");
+  assert.equal(smokeCredential({ agent: "cxa_a", setupOpen: true, secret: "x", token: "t" }), "agent");
+  assert.equal(smokeCredential({ setupOpen: true, secret: "x", token: "t" }), "setup");
+  assert.equal(smokeCredential({ setupOpen: true, token: "t" }), "token");
+  assert.equal(smokeCredential({ setupOpen: false, secret: "x", token: "t" }), "token");
+  // No credential at all fails the smoke.
+  assert.equal(smokeCredential({ setupOpen: false, secret: "x" }), null);
+  assert.equal(smokeCredential({}), null);
+});
+
+test("an agent token skips only what its person alone can do, each with a reason", () => {
+  for (const name of [
+    "diagnostics: env",
+    "agent token",
+    "web UI: the shell's pages",
+    "site: /site-signin, then /_clax/session (SameSite=Lax)",
+    "site: open to the world, then private again",
+    "live: a comment on the WebSocket stream",
+  ]) {
+    assert.ok(smokeCannot("agent", name), name);
+  }
+  for (const name of ["health", "mcp: initialize and tools/list", "publish v1 (mcp)", "fork", "site host: health", "site: a private site refused without a session", "git clone", "git push", "the push becomes a version"]) {
+    assert.equal(smokeCannot("agent", name), null, name);
+  }
+  for (const why of Object.values(SMOKE_CANNOT.agent)) assert.ok(why.length > 20);
+});
+
+test("the owner token skips only what a browser session alone can do; a session and setup skip nothing", () => {
+  assert.deepEqual(Object.keys(SMOKE_CANNOT.token).sort(), ["agent token", "site: /site-signin, then /_clax/session (SameSite=Lax)", "site: two db artifacts kept apart"]);
+  assert.equal(smokeCannot("token", "diagnostics: env"), null);
+  for (const as of ["session", "setup", "", null]) assert.equal(smokeCannot(as, "agent token"), null);
 });

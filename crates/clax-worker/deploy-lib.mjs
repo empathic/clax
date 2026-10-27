@@ -157,3 +157,52 @@ export function doneText({ pub, name, diag, generated, record, kek, smoke }) {
   }
   return lines.join("\n");
 }
+
+/** Who smoke-remote.mjs acts as, in this order: the owner's browser
+ * session when given ("session"); an agent token when given ("agent", as
+ * the deploy workflow's smoke with CLAX_SMOKE_TOKEN); the owner made by
+ * setup with the secret while setup is open ("setup"); the owner token
+ * ("token", every deploy after the first); else null, which fails the
+ * smoke. */
+export function smokeCredential({ session, agent, setupOpen, secret, token }) {
+  if (session) return "session";
+  if (agent) return "agent";
+  if (setupOpen && secret) return "setup";
+  if (token) return "token";
+  return null;
+}
+
+const BROWSER_SIGNIN = "only a signed-in browser is signed in to a site at /site-signin (--session <cookie> runs this step)";
+const OWNER_TOKEN = "the diagnostics take the owner token, which an agent token's smoke does not use";
+
+/** The smoke's steps a credential cannot take, by credential, each with
+ * why: the step is skipped and the reason printed. The owner token cannot
+ * take what only a browser session can (minting an agent token, a site's
+ * sign-in); an agent token cannot take what only its person can (the
+ * owner token's diagnostics, the browser's pages, sign-ins and stream, and
+ * opening a site to the world, which waits on the person's approval).
+ * Every other step runs as the credential. */
+export const SMOKE_CANNOT = {
+  token: {
+    "agent token": "only a signed-in browser mints agent tokens (--session <cookie> runs this step); the MCP steps use the owner token",
+    "site: /site-signin, then /_clax/session (SameSite=Lax)": BROWSER_SIGNIN,
+    "site: two db artifacts kept apart": `each site is signed in to at /site-signin; ${BROWSER_SIGNIN}`,
+  },
+  agent: {
+    "diagnostics: env": OWNER_TOKEN,
+    "artifacts: the binding's raw calls (probe)": OWNER_TOKEN,
+    "artifacts: tree hashes (binding vs clone)": OWNER_TOKEN,
+    "web UI: the shell's pages": "the shell's pages refuse an agent token (403 forbidden): they serve a person's browser",
+    "agent token": "the smoke is an agent token already; minting one takes the owner's browser session",
+    "site: /site-signin, then /_clax/session (SameSite=Lax)": BROWSER_SIGNIN,
+    "site: the shell's code (state-bound, Partitioned, single use)": "only the owner's browser asks for a site's code (an agent token is refused 403)",
+    "site: open to the world, then private again": "opening a site to the world waits on its person's approval",
+    "site: two db artifacts kept apart": `each site is signed in to at /site-signin; ${BROWSER_SIGNIN}`,
+    "live: a comment on the WebSocket stream": "the live stream is a browser's: an agent token's socket is refused",
+  },
+};
+
+/** Why credential `as` cannot take smoke step `name`, or null when it can. */
+export function smokeCannot(as, name) {
+  return SMOKE_CANNOT[as]?.[name] ?? null;
+}
