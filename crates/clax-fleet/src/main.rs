@@ -411,7 +411,10 @@ mod tests {
                 }
             }
         }
-        assert!(seen >= 10, "only {seen} variables found: the scan missed them");
+        assert!(
+            seen >= 10,
+            "only {seen} variables found: the scan missed them"
+        );
     }
 
     /// The example catalog is valid for both backends, and its instances'
@@ -423,8 +426,8 @@ mod tests {
         let pg = Catalog::load(&path, None).unwrap();
         let sqlite = Catalog::load(&path, Some(2)).unwrap();
         assert_eq!(pg, sqlite);
-        let secret = std::fs::read_to_string(manifests().join("postgres/kustomization.yaml"))
-            .unwrap();
+        let secret =
+            std::fs::read_to_string(manifests().join("postgres/kustomization.yaml")).unwrap();
         for i in &pg.instances {
             let config = clax_core::config::HomeConfig::from_text(
                 path.clone(),
@@ -433,7 +436,10 @@ mod tests {
             )
             .unwrap();
             let env = config.hosted().unwrap().unwrap().setup_secret_env;
-            assert!(secret.contains(&env), "{env} is not in the Secret's example");
+            assert!(
+                secret.contains(&env),
+                "{env} is not in the Secret's example"
+            );
         }
     }
 }

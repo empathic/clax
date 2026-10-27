@@ -25,6 +25,8 @@ crates/clax-bot-js/Cargo.toml
 third_party/clax-rquickjs-sys/Cargo.toml
 third_party/clax-rquickjs-core/Cargo.toml
 crates/clax-embed/Cargo.toml
+crates/clax-pagevfs/Cargo.toml
+crates/clax-fleet/Cargo.toml
 crates/clax-worker/Cargo.toml
 crates/clax-worker/vfs/Cargo.toml
 .claude-plugin/marketplace.json
