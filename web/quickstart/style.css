@@ -267,10 +267,13 @@
   .tag.st-building { color: var(--accent); background: var(--accent-soft); }
   .tag.st-planned { color: var(--med); }
   .tag.st-shipped { color: var(--ok); background: var(--ok-soft); }
+  /* Implemented: built and merged on the working branch, not yet in a release. */
+  .tag.st-implemented { color: var(--ok); box-shadow: inset 0 0 0 1px var(--ok); background: transparent; }
   .track { border-left: 3px solid var(--line); padding: 6px 0 2px 10px; display: grid; gap: 6px; }
   .track.st-building { border-left-color: var(--accent); }
   .track.st-planned { border-left-color: var(--med); }
   .track.st-shipped { border-left-color: var(--ok); }
+  .track.st-implemented { border-left-color: var(--ok); border-left-style: dashed; }
   .track-head { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; }
   .track-log { margin: 0; padding: 0; list-style: none; font-size: 13px; display: grid; gap: 3px; }
   .track-log time { color: var(--muted); font-size: 12px; margin-right: 4px; }
