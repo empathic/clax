@@ -198,6 +198,11 @@ notices="$(mktemp -d "${TEST_TMPDIR:-${TMPDIR:-/tmp}}/notices.XXXXXX")"
 trap 'rm -rf "$notices"' EXIT
 unzip -p "$apk" assets/flutter_assets/NOTICES.Z > "$notices/NOTICES.Z"
 check_notices "$notices/NOTICES.Z"
+# A debug key's DN is CN=Android Debug, O=Android, C=US, printed in either
+# order: an Android Studio keystore's as C=US first, rules_android's (the
+# key on a machine without one, bazel/android/debug_keystore.bzl) as
+# CN=Android Debug first.
 certs="$("$apksigner" verify --print-certs "$apk")"
-if grep -q 'certificate DN: C=US, O=Android, CN=Android Debug' <<<"$certs"; then ok "signed with a debug key"; else bad "signed with a debug key: $certs"; fi
+dn="$(sed -n 's/^Signer #1 certificate DN: //p' <<<"$certs" | tr ',' '\n' | sed 's/^ *//' | sort | paste -sd, -)"
+if [ "$dn" = "C=US,CN=Android Debug,O=Android" ]; then ok "signed with a debug key"; else bad "signed with a debug key: $certs"; fi
 exit "$fails"
