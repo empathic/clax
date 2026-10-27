@@ -106,6 +106,7 @@ pub mod batches;
 pub mod bot_runs;
 pub mod bot_settings;
 pub mod briefs;
+pub mod capability_approvals;
 pub mod changelog;
 pub mod credits;
 pub mod device;
@@ -1037,8 +1038,22 @@ pub(crate) mod test_util {
         ArtifactId::parse(&a.id).unwrap()
     }
 
-    /// A one-version artifact declaring `caps`.
+    /// A one-version artifact declaring `caps`, its declaration approved
+    /// (recorded as approved by `owner`, with no grant made), so all of it
+    /// is in force: a test of grants starts from what an approved app has.
     pub fn artifact_with_caps(store: &Store, caps: serde_json::Value) -> ArtifactId {
+        let id = artifact_declaring(store, caps.clone());
+        store
+            .with_tx(|tx| {
+                crate::capability_approvals::record_in(tx, &id, 1, &caps, "owner", &store.now())
+            })
+            .unwrap();
+        id
+    }
+
+    /// A one-version artifact declaring `caps`, nothing of it approved, so
+    /// its gated names wait for approval.
+    pub fn artifact_declaring(store: &Store, caps: serde_json::Value) -> ArtifactId {
         let req: PublishRequest = serde_json::from_value(serde_json::json!({
             "title": "Tracker",
             "capabilities": caps,

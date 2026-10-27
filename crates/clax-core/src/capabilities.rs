@@ -197,14 +197,15 @@ pub fn pending(approved: Option<&Value>, next: &Value) -> Added {
 
 /// The declaration of `next` that is in force given what `approved`
 /// covers: `next` without the pending gated names, `net.hosts` narrowed to
-/// the approved hosts, and `net` dropped when none remain.
+/// the approved hosts, and `net` dropped when none remain. A `next` that
+/// is not an object has nothing in force (`{}`).
 #[must_use]
 pub fn in_force(approved: Option<&Value>, next: &Value) -> Value {
     let empty = Value::Object(serde_json::Map::new());
     let approved = approved.unwrap_or(&empty);
     let mut out = next.clone();
     let Some(map) = out.as_object_mut() else {
-        return out;
+        return empty;
     };
     for name in pending(Some(approved), next).capabilities {
         map.remove(&name);
@@ -343,7 +344,13 @@ mod tests {
             &json!({"db": {}, "comments": {}, "user": {}, "sample": {}, "shell": {}}),
         );
         assert_eq!(p.capabilities, vec!["sample", "shell"]);
-        assert!(pending(Some(&json!({"sample": {}})), &json!({"sample": {}, "db": {}})).is_empty());
+        assert!(
+            pending(
+                Some(&json!({"sample": {}})),
+                &json!({"sample": {}, "db": {}})
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -366,5 +373,16 @@ mod tests {
             ),
             json!({"net": {"hosts": ["b.com"]}})
         );
+    }
+
+    #[test]
+    fn in_force_of_a_declaration_that_is_not_an_object_is_empty() {
+        for next in [json!(null), json!([]), json!("net"), json!(7)] {
+            assert_eq!(
+                in_force(Some(&json!({"net": {}})), &next),
+                json!({}),
+                "{next}"
+            );
+        }
     }
 }

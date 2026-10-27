@@ -330,9 +330,12 @@ async fn the_installed_flutter_app_home_backs_up_and_is_adopted() {
     );
     assert_rows_kept(&before, &copies[0], None);
 
-    // Adopted and migrated to this build's last migration, the quickstart's.
+    // Adopted and migrated to this build's last migration, the capability approvals'.
     let version = clax_store::schema_version(&home).unwrap();
-    assert_eq!(version, Some(clax_store::migrations::QUICKSTART_MIGRATION));
+    assert_eq!(
+        version,
+        Some(clax_store::migrations::CAPABILITY_APPROVALS_MIGRATION)
+    );
     assert_eq!(
         version,
         Some(clax_store::migrations::MIGRATIONS.len() as u32)
@@ -354,7 +357,14 @@ async fn the_installed_flutter_app_home_backs_up_and_is_adopted() {
         );
     }
     let after = Connection::open(home.db_path()).unwrap();
-    for t in ["legal_agreements", "briefs", "jobs", "job_steps"] {
+    // Its artifacts declare nothing (`{}`), so none has an approval to keep.
+    for t in [
+        "legal_agreements",
+        "briefs",
+        "jobs",
+        "job_steps",
+        "capability_approvals",
+    ] {
         assert_eq!(
             count(&after, &format!("SELECT count(*) FROM {t}")),
             0,
