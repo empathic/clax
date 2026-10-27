@@ -494,7 +494,7 @@ mod tests {
         assert_eq!(listed.len(), 1);
         let id = id_of(&listed[0]);
         assert_eq!(listed[0].id, artifact.id);
-        assert_eq!(listed[0].title, "Clax Quickstart");
+        assert_eq!(listed[0].title, clax_core::quickstart::TITLE);
         assert!(listed[0].pinned);
         assert!(artifact.pinned);
         assert_eq!(person_of(&st, &id), None);

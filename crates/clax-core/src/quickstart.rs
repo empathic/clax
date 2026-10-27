@@ -17,7 +17,7 @@ use crate::publish::{Encoding, FileInput, PublishRequest};
 pub const PREFIX: &str = "quickstart/";
 
 /// The title of the page's artifact.
-pub const TITLE: &str = "Clax Quickstart";
+pub const TITLE: &str = "Start here: Clax in five minutes";
 
 /// The page's entry file, relative to [`PREFIX`].
 const PAGE: &str = "index.html";
@@ -192,7 +192,7 @@ mod tests {
         assert_eq!(req.label, Some(r.label()));
         assert_eq!(req.capabilities, Some(json!({"db": {}})));
         let create = r.request(&[], true).unwrap();
-        assert_eq!(create.title.as_deref(), Some("Clax Quickstart"));
+        assert_eq!(create.title.as_deref(), Some(TITLE));
     }
 
     #[test]

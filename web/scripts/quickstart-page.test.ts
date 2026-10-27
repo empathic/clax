@@ -130,7 +130,7 @@ describe("the attach step names the page's address", () => {
     load(null);
     await settle();
     // jsdom's host is no artifact's site, so the page has neither address nor ID.
-    expect(prompt()).toBe("Watch the Clax Quickstart page (this page) for my comments.");
+    expect(prompt()).toBe('Watch the page "Start here: Clax in five minutes" (this page) for my comments.');
   });
 });
 

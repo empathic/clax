@@ -3,17 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Clax Quickstart</title>
+<title>Start here: Clax in five minutes</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <header>
-  <div class="brand">
-    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="5" fill="var(--accent)"/><path d="M8 7h8M12 7v4M8 15h8M12 11v4" stroke="var(--bg)" stroke-width="2" stroke-linecap="round"/></svg>
-    Clax
-  </div>
-  <h1>Your agents build pages. Clax gives them a home.</h1>
-  <p class="lede">The pages your coding agent builds (reports, dashboards, prototypes, charts) live on clax.dev, every version kept. Point at anything on a page, comment, and the agent makes the change. This chart takes you from sign-in to your first round trip in about five minutes. Click any box.</p>
+  <h1 class="sr-only">Start here: Clax in five minutes</h1>
   <figure class="reel" id="reel" hidden>
     <video src="reel.mp4" poster="reel-poster.jpg" muted loop playsinline controls preload="metadata" aria-label="Clax in about a minute: people ask an agent for pages, it builds them, and they shape them together"></video>
     <figcaption><button class="linkbtn" id="reel-hide" type="button">Hide video</button></figcaption>
@@ -26,7 +21,7 @@
 </header>
 
 <main>
-  <section id="view-start" aria-labelledby="tab-start">
+  <section id="view-start" aria-label="Quickstart">
     <div class="qs">
       <div>
         <div class="progress">
@@ -162,6 +157,8 @@
   const README_LOCAL = "https://github.com/empathic/clax#pi-grok-build-or-every-harness-at-once";
   // This page's artifact ID: the first label of its own <ID>.localhost site.
   const ARTIFACT = (/^([a-z0-9]{8,})\./.exec(location.hostname) || [])[1] || "this page";
+  /** The page's name in prompts: its <title>, else its heading. */
+  const PAGE_NAME = document.title.trim() || (document.querySelector("h1")?.textContent || "").trim() || "Start here";
   /** The origin of the Clax shell that frames this page, or null while unknown: the `shell` capability's
    * `address()` says it (see the boot below). The page cannot read it itself, since its site sends no
    * referrer, so it stays null for a viewer without `shell` (one who cannot edit) and in the Clax app. */
@@ -236,9 +233,9 @@
     attach: { kicker: "Step", title: "Attach your agent", sub: "So your comments here reach it",
       // A getter: PAGE_URL is known only once the shell answers.
       get body() { return `<p>Ask your agent, in its chat, to watch this page:</p>
-        ${cmd(PAGE_URL ? `Watch ${PAGE_URL} for my comments.` : `Watch the Clax Quickstart page (${ARTIFACT}) for my comments.`, { plain: true })}
+        ${cmd(PAGE_URL ? `Watch ${PAGE_URL} for my comments.` : `Watch the page "${PAGE_NAME}" (${ARTIFACT}) for my comments.`, { plain: true })}
         <p>Your agent shows up in this page's agent list, and a comment you send it here reaches it. To check, leave a comment here, write <code>@agent hello</code>, and send it: your agent should reply.</p>`; } },
-    fork: { kind: "small", kicker: "Next", title: "Make it yours", sub: "Fork any page into your own copy", starter: `Fork the Clax Quickstart page (${ARTIFACT}) into a page of my own, open it, and watch it.`,
+    fork: { kind: "small", kicker: "Next", title: "Make it yours", sub: "Fork any page into your own copy", starter: `Fork the page "${PAGE_NAME}" (${ARTIFACT}) into a page of my own, open it, and watch it.`,
       body: `<p>Fork any page into your own copy that you can change however you like. Press <b>Fork</b> in its top bar (on a phone, it's in the ⋯ menu). Or ask your agent or ClaxBot, as below.</p>
         <p>This Quickstart is a good first page to fork: comment on your copy and watch it change.</p>` },
     comment: { kicker: "Step", title: "Comment on a page", sub: "Point at what you want changed",
@@ -699,8 +696,12 @@
   // The full list is ideas.html; this page shows which steps have some.
   let ideas = SEED.slice();
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  // The shipped copy has no tabs and no ideas page (web/scripts/build-quickstart.mjs
+  // drops both), so it neither loads ideas nor links to them.
+  const IDEAS_PAGE = !!document.getElementById("tab-ideas");
   const countIdeas = () => {
-    // The tab is for a page that has ideas: a copy shipped without them shows none.
+    if (!IDEAS_PAGE) return;
+    // The tab is for a page that has ideas.
     document.getElementById("tab-ideas").hidden = !ideas.length;
     document.getElementById("idea-count").textContent = String(ideas.filter((i) => i.status !== "shipped" && i.status !== "declined").length);
   };
@@ -749,7 +750,7 @@
       refreshNodes();
     }
     noticeSignIn();
-    db.collection("extensions").onSnapshot((snap) => {
+    if (IDEAS_PAGE) db.collection("extensions").onSnapshot((snap) => {
       const list = snap.docs.map((d) => Object.assign({ id: d.id || (d.ref && d.ref.id) }, d.data())).filter((i) => i.title);
       if (list.length) ideas = list;
       // The open panel lists its step's ideas: draw it again from the loaded list, keeping its scroll.
