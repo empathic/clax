@@ -46,6 +46,7 @@
 
 </main>
 
+<div class="toast" id="toast" role="status" hidden></div>
 <script src="ideas-data.js"></script>
 <script>
 (() => {
@@ -449,13 +450,15 @@
     const c = core(), i = c.indexOf(id);
     return i > 0 ? c[i - 1] : null;
   }
+  let pulse = null; // {a, b}: the edge to draw on at the next redraw
   function drawEdges() {
     const box = chart.getBoundingClientRect();
     const pt = (id) => { const r = els[id].getBoundingClientRect(); return { x: r.left - box.left + r.width / 2, top: r.top - box.top, bot: r.bottom - box.top }; };
     const out = [`<defs>
       <marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker>
       <marker id="md" class="m-done" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>`];
-    const line = (pts, cls, arrow) => out.push(`<path class="e${cls}"${arrow ? ` marker-end="url(#${cls.includes("done") ? "md" : "m"})"` : ""} d="M${pts.map((p) => p.join(",")).join(" L")}"/>`);
+    // `delay` (seconds) draws the line on, for the path a just-noticed sign-in turns green.
+    const line = (pts, cls, arrow, delay) => out.push(`<path class="e${cls}${delay === undefined ? "" : " draw"}"${delay === undefined ? "" : ` pathLength="1" style="animation-delay:${delay}s"`}${arrow ? ` marker-end="url(#${cls.includes("done") ? "md" : "m"})"` : ""} d="M${pts.map((p) => p.join(",")).join(" L")}"/>`);
     // An edge is green on the way out of a done box, and on the way into one from
     // the box before it on this route; it is dimmed when either end is off the route.
     const prev = prevOf;
@@ -464,12 +467,12 @@
     // Which side of the trunk at `x0` a box at `x` hangs on.
     const side = (x, x0) => (x < x0 - 1 ? "L" : x > x0 + 1 ? "R" : "C");
     /** A bus bar as two pieces either side of its trunk, each coloured by the edges that use it. */
-    const bar = (x0, y, xs, green, dimmed) => {
+    const bar = (x0, y, xs, green, dimmed, delayOf = () => undefined) => {
       for (const sd of ["L", "R"]) {
         const on = xs.filter((x) => side(x, x0) === sd);
         if (!on.length) continue;
         const end = sd === "L" ? Math.min(...on) : Math.max(...on);
-        line([[x0, y], [end, y]], (green(sd) ? " done" : dimmed(sd) ? " dim" : ""), false);
+        line([[x0, y], [end, y]], (green(sd) ? " done" : dimmed(sd) ? " dim" : ""), false, delayOf(sd));
       }
     };
     const from = {}, to = {};
@@ -480,9 +483,9 @@
       if (from[a].length < 2) continue;
       const A = pt(a), T = from[a].map((b) => [b, pt(b)]);
       const bus = A.bot + (Math.min(...T.map(([, B]) => B.top)) - A.bot) / 2;
-      line([[A.x, A.bot], [A.x, bus]], (T.some(([b]) => onpath(a, b)) ? " done" : "") + (nodeDim(a) ? " dim" : ""), false);
-      bar(A.x, bus, T.map(([, B]) => B.x), (sd) => T.some(([b, B]) => side(B.x, A.x) === sd && onpath(a, b)), (sd) => T.filter(([, B]) => side(B.x, A.x) === sd).every(([b]) => nodeDim(a) || nodeDim(b)));
-      for (const [b, B] of T) { line([[B.x, bus], [B.x, B.top - 2]], cls(a, b), true); drawn.add(a + ">" + b); }
+      line([[A.x, A.bot], [A.x, bus]], (T.some(([b]) => onpath(a, b)) ? " done" : "") + (nodeDim(a) ? " dim" : ""), false, pulse && pulse.a === a ? 0 : undefined);
+      bar(A.x, bus, T.map(([, B]) => B.x), (sd) => T.some(([b, B]) => side(B.x, A.x) === sd && onpath(a, b)), (sd) => T.filter(([, B]) => side(B.x, A.x) === sd).every(([b]) => nodeDim(a) || nodeDim(b)), (sd) => (pulse && pulse.a === a && side(pt(pulse.b).x, A.x) === sd ? 0.15 : undefined));
+      for (const [b, B] of T) { line([[B.x, bus], [B.x, B.top - 2]], cls(a, b), true, pulse && pulse.a === a && pulse.b === b ? 0.3 : undefined); drawn.add(a + ">" + b); }
     }
     // Joins: a drop from each, a bar, one trunk.
     for (const b in to) {
@@ -592,6 +595,35 @@
     setTimeout(() => (btn.textContent = "Copy"), 1400);
   }
 
+  // ---------- Noticing a sign-in ----------
+  // On clax.dev a viewer who is a signed-in person has done step 1. A local
+  // Clax cannot say whether it is linked to clax.dev, so it never decides.
+  const HOSTED = /(^|\.)clax\.dev$/.test(location.hostname);
+  const toast = document.getElementById("toast");
+  function say(text) {
+    toast.textContent = text; toast.hidden = false;
+    clearTimeout(say.t); say.t = setTimeout(() => { toast.hidden = true; }, 4500);
+  }
+  async function noticeSignIn() {
+    if (!HOSTED || !user || state.done.signin) return;
+    try {
+      const m = await user.me();
+      if (!m || !m.id) return;
+      const mine = ((await user.profiles(m.id)) || {})[m.id];
+      if (!mine || mine.guest !== false) return;
+      if (state.done.signin) return;
+      const nx = nextOf("signin"), reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      state.done.signin = true; save();
+      // Redraws in the next moments (a resize, a refresh) keep the draw-on rather than snapping it off.
+      if (!reduce && nx) { pulse = { a: "signin", b: nx }; setTimeout(() => { pulse = null; }, 900); }
+      select(nx || "signin", { quiet: true });
+      if (nx) focusStep(nx);
+      const fab = els.signin && els.signin.querySelector(".fab");
+      if (fab && !reduce) { fab.classList.add("pop"); fab.addEventListener("animationend", () => fab.classList.remove("pop"), { once: true }); }
+      say(`Signed in as ${mine.name || m.name || "you"} — on to step ${numOf(nx) ?? 2}`);
+    } catch (_) {}
+  }
+
   // ---------- Ideas ----------
   // The full list is ideas.html; this page shows which steps have some.
   let ideas = SEED.slice();
@@ -629,7 +661,7 @@
     try { shell = (await c.use("shell")) || null; } catch (_) { shell = null; }
     if (shell) { syncShow(panel); syncShow(chart); }
     try { uid = user ? await user.id() : null; } catch (_) {}
-    if (!db) return;
+    if (!db) { await noticeSignIn(); return; }
     if (uid) {
       try {
         const snap = await db.doc(`data/users/${uid}/progress`).get();
@@ -638,6 +670,7 @@
       } catch (_) {}
       refreshNodes();
     }
+    noticeSignIn();
     db.collection("extensions").onSnapshot((snap) => {
       const list = snap.docs.map((d) => Object.assign({ id: d.id || (d.ref && d.ref.id) }, d.data())).filter((i) => i.title);
       if (list.length) ideas = list;
