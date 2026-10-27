@@ -60,6 +60,9 @@ ALLOWED = {
     "clax-git": set(),
     "clax-content-git": CORE | {"clax-git"},
     "clax-fake-exe": set(),
+    # A SQLite VFS over a page store (PostgreSQL in the fleet), on no
+    # workspace crate.
+    "clax-pagevfs": set(),
     "clax-embedded": set(),
     "clax-store": CORE,
     "clax-sample": CORE,

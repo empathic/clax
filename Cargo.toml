@@ -25,6 +25,7 @@ members = [
     "third_party/clax-rquickjs-sys",
     "third_party/clax-rquickjs-core",
     "crates/clax-embed",
+    "crates/clax-pagevfs",
     # The Cloudflare Worker and its SQLite VFS. The Worker ships only for
     # wasm32-unknown-unknown; natively it builds for its tests and clippy.
     "crates/clax-worker",
@@ -55,6 +56,7 @@ default-members = [
     "third_party/clax-rquickjs-sys",
     "third_party/clax-rquickjs-core",
     "crates/clax-embed",
+    "crates/clax-pagevfs",
 ]
 
 [workspace.package]

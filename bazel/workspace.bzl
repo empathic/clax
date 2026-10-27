@@ -427,6 +427,23 @@ CRATES = {
         ],
         "wasm_proc_macro_deps": []
     },
+    "crates/clax-pagevfs": {
+        "bins": {},
+        "default_features": [],
+        "deps": [],
+        "dev_deps": [
+            "//crates/clax-core:clax_core",
+            "//crates/clax-store:clax_store"
+        ],
+        "edition": "2024",
+        "features": [],
+        "has_build_script": False,
+        "lib": "clax_pagevfs",
+        "lib_root": "src/lib.rs",
+        "name": "clax-pagevfs",
+        "tests": {},
+        "version": "0.6.0"
+    },
     "crates/clax-realtime": {
         "bins": {},
         "default_features": [],

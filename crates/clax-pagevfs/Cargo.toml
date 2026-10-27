@@ -1,0 +1,23 @@
+[package]
+name = "clax-pagevfs"
+version.workspace = true
+edition.workspace = true
+license = "GPL-2.0-only OR AGPL-3.0-only"
+description = "A thread-safe SQLite VFS that keeps each database's pages in a page store, such as PostgreSQL"
+
+[lints]
+workspace = true
+
+[dependencies]
+# The VFS glue, natively registered into the SQLite rusqlite links through
+# libsqlite3-sys. Exactly 0.1.1: the VFS tells files apart by the address
+# of the name buffer its `xOpen` passes to `VfsStore::add_file` and then
+# keeps in the handle (`Registry::handles` in src/lib.rs), as
+# crates/clax-worker/vfs does.
+rsqlite-vfs = "=0.1.1"
+rusqlite.workspace = true
+
+[dev-dependencies]
+clax-core = { path = "../clax-core" }
+clax-store = { path = "../clax-store" }
+tempfile.workspace = true

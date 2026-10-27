@@ -760,6 +760,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "clax-pagevfs"
+version = "0.6.0"
+dependencies = [
+ "clax-core",
+ "clax-store",
+ "rsqlite-vfs",
+ "rusqlite",
+ "tempfile",
+]
+
+[[package]]
 name = "clax-realtime"
 version = "0.6.0"
 dependencies = [
