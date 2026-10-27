@@ -515,7 +515,7 @@ check_version() {
     else
         [ -n "$CUR" ] || problem "the checkout's versions disagree (scripts/check-version.sh)"
         if [ -z "$REL_COMMIT" ]; then
-            problem "origin/$PROD has no \"$REL_SUBJECT\" commit that origin/main lacks: merge the release's pull request with a merge commit (not squash or rebase), so that step 18 can carry that commit to main"
+            problem "origin/$PROD has no \"$REL_SUBJECT\" commit that origin/main lacks: merge the release's pull request with a merge commit (a squash leaves none), so that step 18 can carry that commit to main"
         fi
     fi
 }
