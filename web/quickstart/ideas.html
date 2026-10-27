@@ -66,7 +66,13 @@
   const sameSet = (list) => list.length === stages.size && list.every((x) => stages.has(x));
   let db = null, uid = null, isOwner = false;
 
-  function render() {
+  // Landing on an idea a link names: scroll, highlight and focus it, on every render
+  // until the viewer scrolls or presses something themselves.
+  let userMoved = false;
+  for (const ev of ["wheel", "touchstart", "keydown", "pointerdown"]) addEventListener(ev, () => { userMoved = true; }, { capture: true, passive: true });
+  const reduceMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function render(opts = {}) {
     document.getElementById("idea-count").textContent = String(ideas.filter((i) => i.status !== "shipped" && i.status !== "declined").length);
     const count = (st) => ideas.filter((i) => stageOf(i) === st).length;
     document.getElementById("stages").innerHTML = `<span class="stage-lbl">Stage</span>`
@@ -75,18 +81,22 @@
       + `<button type="button" class="chip preset${sameSet(STATUSES) ? " on" : ""}" data-p="all" aria-pressed="${sameSet(STATUSES)}">All</button>`;
     const areas = [...new Set(ideas.map((i) => i.area))].sort();
     document.getElementById("filters").innerHTML = ["all", "high", ...areas].map((f) => `<button type="button" class="chip${f === filter ? " on" : ""}" data-f="${esc(f)}">${f === "all" ? "All" : f === "high" ? "High priority" : esc(f)}</button>`).join("");
+    const flash = decodeURIComponent(location.hash.slice(1));
+    const visible = (i) => stages.has(stageOf(i)) && (filter === "all" || (filter === "high" ? i.priority === "high" : i.area === filter));
+    const linked = flash ? ideas.find((i) => i.id === flash) : null;
+    // A followed link shows its idea even when the stage or area filter hides it (the saved filter is untouched).
+    const forced = !!linked && !visible(linked);
     const shown = ideas
-      .filter((i) => stages.has(stageOf(i)))
-      .filter((i) => filter === "all" || (filter === "high" ? i.priority === "high" : i.area === filter))
+      .filter((i) => visible(i) || i === linked)
       // Votes first, so a down vote pushes an idea below the ones nobody voted on; then priority.
       .sort((a, b) => (votes[b.id] || 0) - (votes[a.id] || 0) || (PRI[a.priority] ?? 3) - (PRI[b.priority] ?? 3) || (a.order ?? 99) - (b.order ?? 99));
     renderFlight();
-    const flash = decodeURIComponent(location.hash.slice(1));
     const cards = document.getElementById("cards");
     cards.innerHTML = shown.length ? "" : `<p class="empty">${ideas.length ? "Nothing in these stages." : "No ideas here yet."}</p>`;
     for (const i of shown) {
       const c = document.createElement("article");
-      c.className = "card" + (i.id === flash ? " flash" : "");
+      c.className = "card" + (i.id === flash ? " flash" : "") + (i.id === flash && opts.land && !userMoved ? " landed" : "");
+      c.tabIndex = -1;
       c.id = i.id;
       const step = STEPS[i.step] ? `<a href="index.html#${esc(i.step === "install" ? "agent" : i.step)}">${esc(STEPS[i.step])}</a>` : esc(i.step || "");
       const statusCtl = isOwner && db
@@ -96,7 +106,7 @@
       const vote = db && uid
         ? `<span class="votes"><button type="button" class="vote${mine === 1 ? " on" : ""}" data-vote="${esc(i.id)}" data-dir="1" aria-pressed="${mine === 1}" aria-label="Vote up">▲</button><span class="score" aria-label="Score">${score}</span><button type="button" class="vote down${mine === -1 ? " on" : ""}" data-vote="${esc(i.id)}" data-dir="-1" aria-pressed="${mine === -1}" aria-label="Vote down">▼</button></span>`
         : (score ? `<span class="tag">${score > 0 ? "▲" : "▼"} ${Math.abs(score)}</span>` : "");
-      c.innerHTML = `<h3>${esc(i.title)}</h3>
+      c.innerHTML = `${i === linked && forced ? `<p class="linked-note">Shown because you followed a link · <button type="button" class="linkbtn" data-unlink>show the filtered list</button></p>` : ""}<h3>${esc(i.title)}</h3>
         <div class="meta"><span class="tag p-${esc(i.priority)}">${esc(i.priority)}</span><span class="tag">${esc(i.area)}</span>${statusCtl}</div>
         <p><span class="lbl">The gap</span>${esc(i.problem)}</p>
         <p><span class="lbl">Proposal</span>${esc(i.proposal)}</p>
@@ -104,7 +114,10 @@
         <div class="foot"><span>Felt at: ${step}</span>${vote}</div>`;
       cards.appendChild(c);
     }
-    if (flash) document.getElementById(flash)?.scrollIntoView({ block: "center" });
+    if (linked && opts.land && !userMoved) {
+      const el = document.getElementById(flash);
+      if (el) { el.focus({ preventScroll: true }); el.scrollIntoView({ block: "center", behavior: reduceMotion() ? "auto" : "smooth" }); }
+    }
   }
   // What is in flight: each idea's work, as agents record it in the db
   // (`work`: {branch, commit, spec}, `log`: [{at, text}], newest last).
@@ -173,6 +186,7 @@
     const b = e.target.closest("[data-f]"); if (!b) return; filter = b.dataset.f; render();
   });
   document.getElementById("cards").addEventListener("click", (e) => {
+    if (e.target.closest("[data-unlink]")) { history.replaceState(null, "", location.pathname + location.search); render(); return; }
     const b = e.target.closest("[data-vote]"); if (!b || !db || !uid) return;
     const id = b.dataset.vote, dir = Number(b.dataset.dir);
     // Pressing the vote you already gave takes it back.
@@ -184,11 +198,16 @@
     const s = e.target.closest("[data-status]"); if (!s || !db) return;
     db.doc(`extensions/${s.dataset.status}`).update({ status: s.value }).catch(() => notice("The status wasn't saved."));
   });
-  addEventListener("hashchange", render);
+  addEventListener("hashchange", () => { userMoved = false; render({ land: true }); });
+  // A link to the idea already named in the address does not change it: land on it again.
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest('a[href^="#"]');
+    if (a && a.getAttribute("href") === location.hash) { e.preventDefault(); userMoved = false; render({ land: true }); }
+  });
   document.getElementById("road").addEventListener("click", (e) => {
     const b = e.target.closest("[data-step]"); if (!b) return; picked = b.dataset.step; renderRoad();
   });
-  render();
+  render({ land: true });
 
   (async () => {
     const c = window.claude;
@@ -202,7 +221,7 @@
     db.collection("extensions").onSnapshot((snap) => {
       const list = snap.docs.map((d) => Object.assign({ id: d.id }, d.data())).filter((i) => i.title);
       if (list.length) ideas = list;
-      render();
+      render({ land: true });
     }, () => {});
     db.collection("roadmap").onSnapshot((snap) => {
       road = snap.docs.map((d) => Object.assign({ id: d.id }, d.data())).filter((r) => r.title);
@@ -215,9 +234,9 @@
         for (const k in v) if (weight(v[k])) votes[k] = (votes[k] || 0) + weight(v[k]);
         if (uid && d.id === uid) myVotes = Object.assign({}, v);
       }
-      render();
+      render({ land: true });
     }, () => {});
-    render();
+    render({ land: true });
   })();
 })();
 </script>

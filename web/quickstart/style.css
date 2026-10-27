@@ -360,3 +360,14 @@
   .celebrate.pop { animation: celebrate-in .5s ease-out 1; }
   @keyframes celebrate-in { from { opacity: 0; transform: translateX(-50%) translateY(8px) scale(.96); } }
   @media (prefers-reduced-motion: reduce) { .celebrate.pop { animation: none; } }
+
+  /* Landing on an idea a link names. */
+  .card:focus { outline: none; }
+  .card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .card.landed { animation: landed 2.4s ease-out 1; }
+  @keyframes landed {
+    0%, 40% { box-shadow: 0 0 0 2px var(--accent), 0 0 0 10px color-mix(in srgb, var(--accent) 35%, transparent); }
+    100% { box-shadow: 0 0 0 3px var(--accent-soft); }
+  }
+  @media (prefers-reduced-motion: reduce) { .card.landed { animation: none; box-shadow: 0 0 0 2px var(--accent), 0 0 0 6px var(--accent-soft); } }
+  .linked-note { margin: 0; font-size: 13px; color: var(--muted); }
