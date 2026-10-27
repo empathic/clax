@@ -618,7 +618,11 @@ fn waiting_line(pending: &Value) -> Option<String> {
     let strings = |k: &str| -> Vec<String> {
         pending[k]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default()
     };
     let added = clax_core::capabilities::Added {
