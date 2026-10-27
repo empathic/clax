@@ -525,6 +525,98 @@ pub fn trusted_host(host: &str, trusted: &[String]) -> bool {
 #[derive(Clone, Copy, Debug)]
 pub struct ViaTrustedHost;
 
+/// Request extension: the tailnet user `tailscale serve` says sent the
+/// request (its `Tailscale-User-Login` and `Tailscale-User-Name` headers),
+/// set by [`require_api_host`] only when the home's `[serve]
+/// tailscale_identity` is on and [`TailscaleUser::of_request`] trusts the
+/// request. [`crate::identity::Identity`] makes it the request's viewer; it
+/// grants nothing a viewer cookie does not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TailscaleUser {
+    /// `Tailscale-User-Login`, such as `alex@github`.
+    pub login: String,
+    /// `Tailscale-User-Name`, when it is given once and decodes.
+    pub name: Option<String>,
+}
+
+/// Login header `tailscale serve` sets for a tailnet user.
+pub const TAILSCALE_LOGIN_HEADER: &str = "tailscale-user-login";
+/// Display-name header `tailscale serve` sets for a tailnet user.
+pub const TAILSCALE_NAME_HEADER: &str = "tailscale-user-name";
+
+impl TailscaleUser {
+    /// The tailnet user of a request, when the headers can be trusted:
+    /// `enabled` (`[serve] tailscale_identity`), its `Host` is one of
+    /// `trusted` ([`trusted_host`]: it came through the proxy, which removes
+    /// any copy of these headers a client sends), and its peer is a loopback
+    /// address (the proxy on this machine). Anything else, a LAN client or a
+    /// local process naming no trusted host, could forge them, so they are
+    /// ignored. `None` too without exactly one login header that decodes to
+    /// a login ([`clax_store::viewers::is_tailscale_login`]).
+    pub fn of_request(
+        enabled: bool,
+        trusted: &[String],
+        headers: &axum::http::HeaderMap,
+        uri: &axum::http::Uri,
+        extensions: &axum::http::Extensions,
+    ) -> Option<TailscaleUser> {
+        if !enabled
+            || !trusted_host(request_host(headers, uri), trusted)
+            || !conn_of(extensions).is_some_and(|c| is_loopback(c.peer))
+        {
+            return None;
+        }
+        let one = |name: &str| {
+            let mut all = headers.get_all(name).iter();
+            let first = all.next()?;
+            all.next().is_none().then_some(first)?.to_str().ok()
+        };
+        let login = one(TAILSCALE_LOGIN_HEADER).and_then(header_text)?;
+        let login = login.trim();
+        if !clax_store::viewers::is_tailscale_login(login) {
+            return None;
+        }
+        Some(TailscaleUser {
+            login: login.to_string(),
+            name: one(TAILSCALE_NAME_HEADER)
+                .and_then(header_text)
+                .map(|n| n.trim().to_string())
+                .filter(|n| !n.is_empty()),
+        })
+    }
+}
+
+/// A Tailscale identity header's text: as it is, or, when it is RFC 2047
+/// encoded words (`=?utf-8?q?...?=`, which `tailscale serve` sends for a
+/// value that is not ASCII), their decoded UTF-8; `None` for an encoded
+/// value that does not decode.
+fn header_text(v: &str) -> Option<String> {
+    if !v.starts_with("=?") {
+        return Some(v.to_string());
+    }
+    let mut out = Vec::new();
+    for word in v.split_ascii_whitespace() {
+        let inner = word.strip_prefix("=?")?.strip_suffix("?=")?;
+        let mut parts = inner.splitn(3, '?');
+        let (charset, enc, text) = (parts.next()?, parts.next()?, parts.next()?);
+        if !charset.eq_ignore_ascii_case("utf-8") || !enc.eq_ignore_ascii_case("q") {
+            return None;
+        }
+        let mut bytes = text.bytes();
+        while let Some(b) = bytes.next() {
+            match b {
+                b'_' => out.push(b' '),
+                b'=' => {
+                    let hex = [bytes.next()?, bytes.next()?];
+                    out.push(u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?);
+                }
+                b => out.push(b),
+            }
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 /// The request's `Host`, else the URI's authority; empty for neither.
 fn request_host<'a>(headers: &'a axum::http::HeaderMap, uri: &'a axum::http::Uri) -> &'a str {
     headers
@@ -556,7 +648,8 @@ pub fn request_host_allowed(
 /// ([`crate::host::SiteRequest`]) is not checked: its paths, `/api/…` among
 /// them, are its artifact's, which the site routes serve; nor are non-API
 /// paths (the shell, `/healthz`). A request on a trusted host, on any path,
-/// is marked [`ViaTrustedHost`].
+/// is marked [`ViaTrustedHost`], and with the home's `[serve]
+/// tailscale_identity` on, it carries its [`TailscaleUser`] when it has one.
 pub async fn require_api_host(
     axum::extract::State(s): axum::extract::State<AppState>,
     mut req: axum::extract::Request,
@@ -565,6 +658,15 @@ pub async fn require_api_host(
     use axum::response::IntoResponse;
     if trusted_host(request_host(req.headers(), req.uri()), &s.trusted_hosts) {
         req.extensions_mut().insert(ViaTrustedHost);
+    }
+    if let Some(u) = TailscaleUser::of_request(
+        s.tailscale_identity,
+        &s.trusted_hosts,
+        req.headers(),
+        req.uri(),
+        req.extensions(),
+    ) {
+        req.extensions_mut().insert(u);
     }
     let path = req.uri().path();
     if (path == "/api" || path.starts_with("/api/"))
@@ -757,6 +859,121 @@ mod tests {
         assert!(loopback_peer(&ext));
         ext.insert(ViaTrustedHost);
         assert!(!loopback_peer(&ext), "tailscale serve's connection");
+    }
+
+    #[test]
+    fn tailscale_headers_count_only_through_the_trusted_proxy() {
+        use axum::http::{HeaderMap, Uri};
+        let trusted = ["phobos.tail556f5b.ts.net".to_string()];
+        let headers = |host: &str, extra: &[(&str, &str)]| {
+            let mut h = HeaderMap::new();
+            h.insert("host", host.parse().unwrap());
+            for (k, v) in extra {
+                let name = axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap();
+                h.append(name, v.parse().unwrap());
+            }
+            h
+        };
+        let conn = |peer: &str| {
+            let mut e = axum::http::Extensions::new();
+            e.insert(axum::extract::ConnectInfo(Conn {
+                peer: peer.parse().unwrap(),
+                local: "127.0.0.1:7480".parse().unwrap(),
+            }));
+            e
+        };
+        let uri = Uri::from_static("/api/viewers/me");
+        let ids = [
+            ("tailscale-user-login", "alex@github"),
+            ("tailscale-user-name", "Alex Kesling"),
+        ];
+        let proxied = headers("phobos.tail556f5b.ts.net", &ids);
+        let loopback = conn("127.0.0.1:50000");
+        assert_eq!(
+            TailscaleUser::of_request(true, &trusted, &proxied, &uri, &loopback),
+            Some(TailscaleUser {
+                login: "alex@github".into(),
+                name: Some("Alex Kesling".into())
+            })
+        );
+        // Off, another host, a LAN peer, or no connection: ignored.
+        assert_eq!(
+            TailscaleUser::of_request(false, &trusted, &proxied, &uri, &loopback),
+            None
+        );
+        assert_eq!(
+            TailscaleUser::of_request(true, &[], &proxied, &uri, &loopback),
+            None
+        );
+        for host in ["localhost:7480", "127.0.0.1:7480", "evil.example"] {
+            let h = headers(host, &ids);
+            assert_eq!(
+                TailscaleUser::of_request(true, &trusted, &h, &uri, &loopback),
+                None,
+                "{host}"
+            );
+        }
+        for peer in ["192.168.1.9:5000", "100.64.0.7:5000"] {
+            assert_eq!(
+                TailscaleUser::of_request(true, &trusted, &proxied, &uri, &conn(peer)),
+                None,
+                "{peer}"
+            );
+        }
+        assert_eq!(
+            TailscaleUser::of_request(
+                true,
+                &trusted,
+                &proxied,
+                &uri,
+                &axum::http::Extensions::new()
+            ),
+            None
+        );
+        // No login, two logins, or one that is not a login: no user. A
+        // name given twice is dropped; an encoded one is decoded.
+        for extra in [
+            vec![("tailscale-user-name", "Alex")],
+            vec![
+                ("tailscale-user-login", "alex@github"),
+                ("tailscale-user-login", "eve@github"),
+            ],
+            vec![("tailscale-user-login", "")],
+            vec![("tailscale-user-login", "=?utf-8?q?a_b?=")],
+        ] {
+            let h = headers("phobos.tail556f5b.ts.net", &extra);
+            assert_eq!(
+                TailscaleUser::of_request(true, &trusted, &h, &uri, &loopback),
+                None,
+                "{extra:?}"
+            );
+        }
+        let h = headers(
+            "phobos.tail556f5b.ts.net:443",
+            &[
+                ("tailscale-user-login", "mia@example.com"),
+                ("tailscale-user-name", "=?utf-8?q?Mia_Kova=C4=8D?="),
+            ],
+        );
+        assert_eq!(
+            TailscaleUser::of_request(true, &trusted, &h, &uri, &loopback).and_then(|u| u.name),
+            Some("Mia Kovač".into())
+        );
+        let h = headers(
+            "phobos.tail556f5b.ts.net",
+            &[
+                ("tailscale-user-login", "mia@example.com"),
+                ("tailscale-user-name", "Mia"),
+                ("tailscale-user-name", "Eve"),
+            ],
+        );
+        assert_eq!(
+            TailscaleUser::of_request(true, &trusted, &h, &uri, &loopback),
+            Some(TailscaleUser {
+                login: "mia@example.com".into(),
+                name: None
+            })
+        );
     }
 
     #[test]

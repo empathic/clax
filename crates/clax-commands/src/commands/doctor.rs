@@ -560,10 +560,12 @@ fn journal_check(daemon: bool, status: Option<&serde_json::Value>) -> serde_json
 /// `config`: the home's `config.toml` reads and parses, its `[serve] port`,
 /// when present, is a port, and so is `CLAX_PORT` (`env`), when set; its
 /// `[serve] trusted_hosts`, when present, are host names (a bad one keeps the
-/// daemon from starting). The detail names the port daemons for this home
-/// start on and where it comes from (`CLAX_PORT`, `CLAX_SERVE__PORT`, the
-/// file, or the default), and the trusted hosts when there are any, or the
-/// error.
+/// daemon from starting), and its `[serve] tailscale_identity`, when
+/// present, is a boolean that is `true` only with trusted hosts. The detail
+/// names the port daemons for this home start on and where it comes from
+/// (`CLAX_PORT`, `CLAX_SERVE__PORT`, the file, or the default), the trusted
+/// hosts when there are any, and whether Tailscale names their viewers, or
+/// the error.
 fn config_check(home: &Home, env: Option<std::ffi::OsString>) -> serde_json::Value {
     config_check_with(home, env, clax_core::config::process_env())
 }
@@ -595,17 +597,26 @@ fn config_check_with(
         (None, Ok(Some(f))) => f,
         (None, Ok(None)) => format!("default port {}", clax_core::daemon::DEFAULT_PORT),
     };
-    let trusted = cfg
-        .as_ref()
-        .map_err(|e| e.to_string())
-        .and_then(|c| c.serve_trusted_hosts().map_err(|e| e.to_string()));
-    match trusted {
+    let serve = cfg.as_ref().map_err(|e| e.to_string()).and_then(|c| {
+        let hosts = c.serve_trusted_hosts().map_err(|e| e.to_string())?;
+        let on = c.serve_tailscale_identity().map_err(|e| e.to_string())?;
+        Ok((hosts, on))
+    });
+    match serve {
         Err(e) => check("config", false, e),
-        Ok(hosts) if hosts.is_empty() => check("config", true, port),
-        Ok(hosts) => check(
+        Ok((hosts, _)) if hosts.is_empty() => check("config", true, port),
+        Ok((hosts, on)) => check(
             "config",
             true,
-            format!("{port}; [serve] trusted_hosts = {}", hosts.join(", ")),
+            format!(
+                "{port}; [serve] trusted_hosts = {}{}",
+                hosts.join(", "),
+                if on {
+                    "; [serve] tailscale_identity = true (viewers through them are named by their tailnet login)"
+                } else {
+                    ""
+                }
+            ),
         ),
     }
 }
@@ -963,6 +974,23 @@ mod tests {
         assert_eq!(
             c["detail"],
             "default port 7480; [serve] trusted_hosts = phobos.tail556f5b.ts.net, phobos"
+        );
+        toml(
+            "[serve]\ntrusted_hosts = [\"phobos.tail556f5b.ts.net\"]\ntailscale_identity = true\n",
+        );
+        let c = config_check_with(&home, None, []);
+        assert_eq!(c["ok"], true, "{c}");
+        assert_eq!(
+            c["detail"],
+            "default port 7480; [serve] trusted_hosts = phobos.tail556f5b.ts.net; [serve] tailscale_identity = true (viewers through them are named by their tailnet login)"
+        );
+        toml("[serve]\ntailscale_identity = true\n");
+        let bad = config_check_with(&home, None, []);
+        assert_eq!(bad["ok"], false, "{bad}");
+        let d = bad["detail"].as_str().unwrap();
+        assert!(
+            d.contains("config.toml") && d.contains("tailscale_identity"),
+            "{d}"
         );
         toml("[serve]\nport = 7481\ntrusted_hosts = [\"*\"]\n");
         let bad = config_check_with(&home, None, []);

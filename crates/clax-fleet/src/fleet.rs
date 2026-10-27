@@ -553,6 +553,8 @@ impl Fleet {
             })),
             web: self.cfg.web.clone(),
             hosted: Some(Arc::new(hosted)),
+            trusted_hosts: Vec::new(),
+            tailscale_identity: false,
             require_credential: false,
             bind: IpAddr::from([0, 0, 0, 0]),
             port: self.cfg.port,

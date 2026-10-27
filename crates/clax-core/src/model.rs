@@ -287,6 +287,12 @@ pub struct Viewer {
     /// When the person was revoked; they are a plain viewer from then on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub person_revoked_at: Option<String>,
+    /// The tailnet login (`Tailscale-User-Login`, such as `alex@github`)
+    /// that names this viewer when it comes through `tailscale serve` (the
+    /// home's `[serve] tailscale_identity`); its name is Tailscale's, not
+    /// typed. `None` for every other viewer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tailscale_login: Option<String>,
 }
 
 /// One feedback row: a viewer comment addressed to one target session (or to

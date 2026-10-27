@@ -192,11 +192,12 @@ fn questions_check(cfg: &HomeConfig) -> Result<()> {
     }
 }
 
-/// `[serve]` as the daemon reads it when it starts: its port and its
-/// trusted hosts.
+/// `[serve]` as the daemon reads it when it starts: its port, its
+/// trusted hosts and its tailscale identity.
 fn serve_check(cfg: &HomeConfig) -> Result<()> {
     cfg.serve_port()?;
-    cfg.serve_trusted_hosts().map(drop)
+    cfg.serve_trusted_hosts()?;
+    cfg.serve_tailscale_identity().map(drop)
 }
 
 /// The check a write to `table` must pass.

@@ -2335,6 +2335,34 @@ request speaks for, not what it may do: the owner cookie alone has a
 viewer's level (`interact` once the owner has a name), and only the token
 raises it (see "Security model").
 
+A tailnet user is named by Tailscale instead, when the home's `[serve]
+tailscale_identity` is on (see `[serve]` under "`config.toml`"). `tailscale
+serve` adds `Tailscale-User-Login` (such as `alex@github`) and
+`Tailscale-User-Name` to each request of a tailnet user, and removes any
+copy a client sends. Those headers count only on a request whose peer is a
+loopback address (the proxy on this machine) and whose `Host` is a name in
+`[serve] trusted_hosts` (it came through the proxy), and only when the
+request carries one login header that is 1 to 256 bytes with no whitespace
+or control character; a value `tailscale serve` sends RFC 2047 encoded
+(`=?utf-8?q?...?=`, for text that is not ASCII) is decoded. On any other
+request, a LAN client's or a local process's naming another host, they are
+ignored, as they are with the setting off. Such a request is the viewer its
+login names, whatever `clax_viewer` cookie it also carries: one viewer per
+login, made on first use with a public ID of its own that it keeps, never
+the owner and never a connected person, however its login reads. Its
+display name is Tailscale's: `Tailscale-User-Name` when a viewer may take it
+(a name that does not look like the owner's, a connected person's or a live
+agent's; see "Names"), else the login, else none, updated whenever
+Tailscale's changes. No viewer cookie is minted for it, `PUT
+/api/viewers/me` is 409 `name_from_tailscale` (a typed name never replaces
+Tailscale's), and every view of it (`GET /api/viewers/me`, `GET
+/api/viewers?ids=`, `participants.people`) carries `tailscale_login`, the
+login, so the shell can show the name as Tailscale's. Its comments carry its
+public ID in `author_public_id` and its name in `author_name`. It is an
+identity, not a credential: the token rules are unchanged, so a tailnet
+user is a viewer as a named viewer cookie's is (`interact`), is never served
+the token or the owner cookie, and cannot publish.
+
 The owner's public ID is stable across browsers and the CLI; its display
 name is the one `PUT /api/viewers/me` sets from any of them (the shell's
 "Your name" field, or `clax comments name`). A name change, the owner's or
@@ -2391,7 +2419,8 @@ batches from before senders were recorded) reads the same way, whoever
 wrote it.
 
 Comments name their author: a comment view carries `author_public_id`, the
-viewer's public ID when a viewer cookie wrote it, `null` for agent comments,
+viewer's public ID when a viewer cookie or a tailnet user (above) wrote it,
+`null` for agent comments,
 for comments written without a viewer, and for comments written before
 authors were recorded. A viewer comment mentions a viewer by `@` and that
 viewer's whole display name, in any case, not preceded by a letter or digit
@@ -2431,14 +2460,16 @@ hold yet fetches that card, with `?artifact=<aid>` on both routes.
 
 ```json
 {
-  "people": [{"public_id": "u_…", "display_name": "Alex", "seen": 3}],
+  "people": [{"public_id": "u_…", "display_name": "Alex", "seen": 3,
+              "tailscale_login": "alex@github"}],
   "agents": [{"handle": "a_…", "harness": "claude", "live": true, "name": "clax-claude",
               "person": {"public_id": null, "name": "Alex", "owner": true}}]
 }
 ```
 
 `people` are the viewers who wrote a comment on the artifact, oldest viewer
-first, each with its public seen mark (`null` for none). `agents` are the
+first, each with its public seen mark (`null` for none), and, for a viewer
+a tailnet login names, `tailscale_login` (left out for every other viewer). `agents` are the
 artifact's owner session, its watchers and the sessions that published its
 versions, at most 10. Each is named by its agent handle (`a_` and 22
 lowercase hex digits, assigned once per session), never by session ID.
@@ -7876,8 +7907,15 @@ not start. A browser on such a name is a viewer: it reads and comments
 origin), it is never served the token, and its loopback peer (the proxy)
 earns it nothing a loopback peer alone is trusted with (live pages, the
 extension's gateway). Artifact sites stay `<id>.localhost`, so the pages
-themselves open on this machine alone. Other keys in `[serve]` are
-logged and ignored. `just watch` and `just dev` write
+themselves open on this machine alone. `tailscale_identity = true`
+(default `false`) names a viewer on such a name by its tailnet login: a
+request through `tailscale serve` (a loopback peer naming a trusted host)
+with a `Tailscale-User-Login` header is the viewer that login names, with
+Tailscale's name (see "The owner and other viewers"); the headers are
+ignored on every other request. It grants nothing. A value that is not a
+boolean, or `true` with no `trusted_hosts`, is `bad_config` naming the
+file, and the daemon does not start; `clax doctor`'s `config` line shows
+it when on. Other keys in `[serve]` are logged and ignored. `just watch` and `just dev` write
 `port = 7481` (or `CLAX_DEV_PORT`'s value) into `~/.clax-dev/config.toml`
 when it has no `[serve]` table, so every daemon for that home, whoever
 starts it, listens there. Outside `--shared`, both first stop a daemon of
@@ -9040,7 +9078,10 @@ it starts, the runs a previous process left. A build without the
   every other DNS name, gets 403 `forbidden_host`, which defeats DNS
   rebinding. A request on a trusted name never gets the token
   (`/api/token` stays 403 `not_loopback`) and never sees live pages, even
-  though its peer, the proxy, is a loopback address. Under a LAN bind (including
+  though its peer, the proxy, is a loopback address. With `[serve]
+  tailscale_identity` on, such a request names its viewer by the
+  `Tailscale-User-Login` header the proxy sets; that header is ignored on
+  every other request, and it never raises what the request may do. Under a LAN bind (including
   `0.0.0.0` or `::`) a viewer reaches the API on `http://<the interface's
   IP>:<port>`; another IP or port, or a name for it, is refused. The shell,
   content, blob, and `/healthz` paths are not subject to this check.

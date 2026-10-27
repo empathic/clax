@@ -59,6 +59,10 @@ pub struct CoreConfig {
     /// home's `[serve] trusted_hosts`, which `clax serve` reads); empty for
     /// none.
     pub trusted_hosts: Vec<String>,
+    /// Whether a request through `tailscale serve` on one of
+    /// `trusted_hosts` is the viewer its tailnet login names (the home's
+    /// `[serve] tailscale_identity`).
+    pub tailscale_identity: bool,
     /// Serve nothing but `/healthz`, static files and content by ID without
     /// a credential ([`AppState::require_credential`]).
     pub require_credential: bool,
@@ -154,6 +158,7 @@ impl Core {
             bind: cfg.bind,
             port,
             trusted_hosts: cfg.trusted_hosts,
+            tailscale_identity: cfg.tailscale_identity,
             hosted: cfg.hosted,
             web: cfg.web,
             embed: cfg.embed,

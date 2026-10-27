@@ -24,7 +24,10 @@
 //! trusted_hosts` names the DNS names, beside this machine's own, that the
 //! API answers to (a reverse proxy's, such as `tailscale serve`'s;
 //! [`HomeConfig::serve_trusted_hosts`]); a daemon whose list is invalid does
-//! not start. Any other key in `[serve]` is logged and ignored. `[sample]`
+//! not start. `[serve] tailscale_identity` names a viewer that came through
+//! `tailscale serve` by its tailnet login
+//! ([`HomeConfig::serve_tailscale_identity`]). Any other key in `[serve]`
+//! is logged and ignored. `[sample]`
 //! configures the
 //! `sample` capability ([`HomeConfig::sample`]); a daemon whose `[sample]` is
 //! invalid starts with sample off. `[toolpath]` configures the audit
@@ -591,6 +594,47 @@ impl HomeConfig {
         Ok(out)
     }
 
+    /// `[serve] tailscale_identity`: whether a request through `tailscale
+    /// serve` (a loopback peer naming one of [`HomeConfig::serve_trusted_hosts`])
+    /// is the viewer its `Tailscale-User-Login` header names; `false` when
+    /// absent. It names viewers only: it grants no rights.
+    ///
+    /// # Errors
+    /// `Invalid { code: "bad_config" }` naming the file (or the variable)
+    /// and the key when `[serve]` is not a table, the key is not a boolean,
+    /// or it is `true` with no `trusted_hosts` (there is then no request it
+    /// could trust, and the daemon does not start rather than read the
+    /// headers from anyone); [`HomeConfig::serve_trusted_hosts`]'s errors
+    /// when it is `true`.
+    pub fn serve_tailscale_identity(&self) -> Result<bool> {
+        if let Some(serve) = self.value("serve")
+            && serve.as_dict().is_none()
+        {
+            return Err(self.bad(
+                "serve",
+                "[serve]",
+                format!("must be a table, not {}", kind_of(&serve)),
+            ));
+        }
+        let Some(v) = self.value("serve.tailscale_identity") else {
+            return Ok(false);
+        };
+        let bad = |what: String| self.bad("serve.tailscale_identity", "[serve]", what);
+        let Some(on) = v.to_bool() else {
+            return Err(bad(format!(
+                "tailscale_identity must be true or false, not {}",
+                shown(&v)
+            )));
+        };
+        if on && self.serve_trusted_hosts()?.is_empty() {
+            return Err(bad(
+                "tailscale_identity = true needs trusted_hosts to name the tailscale serve host"
+                    .to_string(),
+            ));
+        }
+        Ok(on)
+    }
+
     /// `[sample]`: the default when absent.
     ///
     /// # Errors
@@ -913,7 +957,7 @@ fn bad_file(path: &Path, e: &dyn std::fmt::Display) -> CoreError {
 }
 
 /// Keys `[serve]` understands; any other key there is logged and ignored.
-const SERVE_KEYS: &[&str] = &["port", "trusted_hosts"];
+const SERVE_KEYS: &[&str] = &["port", "trusted_hosts", "tailscale_identity"];
 
 /// `[sample]`: the `sample` capability's provider, key variable, models, and cap.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -2411,6 +2455,36 @@ mod tests {
             c.serve_trusted_hosts().unwrap(),
             ["phobos.tail556f5b.ts.net"]
         );
+    }
+
+    #[test]
+    fn tailscale_identity_is_off_by_default_and_needs_trusted_hosts() {
+        for t in [
+            "",
+            "[serve]\nport = 7481\n",
+            "[serve]\ntrusted_hosts = [\"phobos.tail556f5b.ts.net\"]\n",
+            "[serve]\ntailscale_identity = false\n",
+        ] {
+            assert!(!with(t).serve_tailscale_identity().unwrap(), "{t}");
+        }
+        let on = with(
+            "[serve]\ntrusted_hosts = [\"phobos.tail556f5b.ts.net\"]\ntailscale_identity = true\n",
+        );
+        assert!(on.serve_tailscale_identity().unwrap());
+        for t in [
+            "[serve]\ntailscale_identity = true\n",
+            "[serve]\ntrusted_hosts = []\ntailscale_identity = true\n",
+            "[serve]\ntrusted_hosts = [\"*\"]\ntailscale_identity = true\n",
+            "[serve]\ntrusted_hosts = [\"phobos.tail556f5b.ts.net\"]\ntailscale_identity = \"yes\"\n",
+            "[serve]\ntrusted_hosts = [\"phobos.tail556f5b.ts.net\"]\ntailscale_identity = 1\n",
+            "serve = 1\n",
+        ] {
+            let e = with(t).serve_tailscale_identity().unwrap_err().to_string();
+            assert!(
+                e.contains("config.toml") && e.contains("[serve]"),
+                "{t}: {e}"
+            );
+        }
     }
 
     #[test]

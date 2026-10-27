@@ -216,6 +216,10 @@ pub struct ServeConfig {
     /// The DNS names the API answers to beside this machine's own (`clax
     /// serve` reads the home's `[serve] trusted_hosts`); empty for none.
     pub trusted_hosts: Vec<String>,
+    /// Whether a request through `tailscale serve` on one of
+    /// `trusted_hosts` is the viewer its tailnet login names (`clax serve`
+    /// reads the home's `[serve] tailscale_identity`).
+    pub tailscale_identity: bool,
     /// Serve nothing but `/healthz`, static files and content by ID without
     /// a credential ([`clax_http::state::AppState::require_credential`]).
     pub require_credential: bool,
@@ -369,6 +373,7 @@ pub async fn serve(
             web: cfg.web,
             hosted: cfg.hosted,
             trusted_hosts: cfg.trusted_hosts,
+            tailscale_identity: cfg.tailscale_identity,
             require_credential: cfg.require_credential,
             bind: cfg.bind,
             port,
@@ -635,6 +640,7 @@ mod tests {
             web: std::sync::Arc::new(clax_core::embedded::MemTree::default()),
             hosted: None,
             trusted_hosts: Vec::new(),
+            tailscale_identity: false,
             require_credential: false,
             embed: None,
             quickstart: false,

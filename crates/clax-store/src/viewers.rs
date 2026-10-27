@@ -21,14 +21,14 @@ pub const MAX_NAME_CHARS: usize = 60;
 /// not found by that search.
 pub const MAX_SEARCH_SCAN: usize = 10_000;
 
-const VIEWER_SELECT: &str =
-    "SELECT id, public_id, display_name, created_at, person, person_revoked_at FROM viewers";
+const VIEWER_SELECT: &str = "SELECT id, public_id, display_name, created_at, person, person_revoked_at, tailscale_login FROM viewers";
 
 /// The viewer a cookie's hash (`?1`) names: never the owner's row, never a
 /// person on a legacy cookie (spec 2026-10-08 §21.4), and not on a legacy
 /// cookie replaced at or before `?2` ([`LEGACY_SWAP_GRACE_SECS`]).
 const VIEWER_BY_COOKIE: &str =
-    "SELECT v.id, v.public_id, v.display_name, v.created_at, v.person, v.person_revoked_at
+    "SELECT v.id, v.public_id, v.display_name, v.created_at, v.person, v.person_revoked_at,
+            v.tailscale_login
      FROM viewer_cookies c JOIN viewers v ON v.id = c.viewer_id
      WHERE c.sha256 = ?1 AND v.owner = 0 AND (c.legacy = 0 OR v.person = 0)
        AND (c.replaced_at IS NULL OR c.replaced_at > ?2)";
@@ -45,6 +45,13 @@ pub const LEGACY_SWAP_GRACE_SECS: i64 = 600;
 /// ID, the cookie before migration 24).
 pub fn is_cookie(cookie: &str) -> bool {
     is_viewer_cookie(cookie) || is_ulid(cookie)
+}
+
+/// Whether `login` may name a viewer as its tailnet login
+/// ([`Store::tailscale_viewer`]): 1 to 256 bytes, with no whitespace or
+/// control character (a login such as `alex@github` or `alex@example.com`).
+pub fn is_tailscale_login(login: &str) -> bool {
+    (1..=256).contains(&login.len()) && !login.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 /// Whether `cookie` is of the legacy form: a ULID.
@@ -80,7 +87,14 @@ fn add_cookie(tx: &rusqlite::Transaction<'_>, id: &str, cookie: &str, now: &str)
     Ok(())
 }
 
+/// A viewer from a row whose first six columns are `id, public_id,
+/// display_name, created_at, person, person_revoked_at`; `tailscale_login`
+/// is read when the query selects it by that name, else `None`.
 pub(super) fn row_to_viewer(r: &rusqlite::Row<'_>) -> rusqlite::Result<Viewer> {
+    let tailscale_login = match r.as_ref().column_index("tailscale_login") {
+        Ok(i) => r.get(i)?,
+        Err(_) => None,
+    };
     Ok(Viewer {
         id: r.get(0)?,
         public_id: r.get(1)?,
@@ -88,6 +102,7 @@ pub(super) fn row_to_viewer(r: &rusqlite::Row<'_>) -> rusqlite::Result<Viewer> {
         created_at: r.get(3)?,
         person: r.get(4)?,
         person_revoked_at: r.get(5)?,
+        tailscale_login,
     })
 }
 
@@ -278,6 +293,68 @@ impl Store {
             return Ok(None);
         }
         self.with_read(|c| Ok(viewer_by_cookie(self, c, cookie)?))
+    }
+
+    /// The viewer tailnet login `login` names (a `Tailscale-User-Login` that
+    /// `tailscale serve` set: the home's `[serve] tailscale_identity`), made
+    /// on first use with a new row ID and a public ID of its own that it
+    /// keeps for good: one viewer per login, never the owner's row, never
+    /// named by a cookie. Its display name is Tailscale's: `name`
+    /// (`Tailscale-User-Name`) when a viewer may take it ([`checked_name`],
+    /// [`check_viewer_name`]: not the owner's, a connected person's or a live
+    /// agent's), else the login when a viewer may take that, else none;
+    /// written only when it changes, so the name follows the tailnet's.
+    ///
+    /// # Errors
+    /// `invalid_viewer` for a login [`is_tailscale_login`] refuses; the
+    /// store's.
+    pub fn tailscale_viewer(&self, login: &str, name: Option<&str>) -> Result<Viewer> {
+        if !is_tailscale_login(login) {
+            return Err(CoreError::invalid(
+                "invalid_viewer",
+                "a tailnet login is 1 to 256 bytes with no space or control character",
+            ));
+        }
+        let select = format!("{VIEWER_SELECT} WHERE tailscale_login = ?1 AND owner = 0");
+        let pick = |tx: &rusqlite::Transaction<'_>, id: &str| -> Result<Option<String>> {
+            for n in [name, Some(login)].into_iter().flatten() {
+                if let Ok(Some(n)) = checked_name(n)
+                    && check_viewer_name(tx, id, n).is_ok()
+                {
+                    return Ok(Some(n.to_string()));
+                }
+            }
+            Ok(None)
+        };
+        self.with_tx(|tx| {
+            let found = tx
+                .query_row(&select, params![login], row_to_viewer)
+                .optional()?;
+            let v = match found {
+                Some(v) => v,
+                None => {
+                    let id = clax_core::new_ulid();
+                    tx.execute(
+                        "INSERT INTO viewers (id, public_id, created_at, minted_local, tailscale_login)
+                         VALUES (?1, ?2, ?3, 0, ?4)",
+                        params![id, new_public_id(), self.now(), login],
+                    )?;
+                    tx.query_row(&select, params![login], row_to_viewer)?
+                }
+            };
+            let want = pick(tx, &v.id)?;
+            if want == v.display_name {
+                return Ok(v);
+            }
+            tx.execute(
+                "UPDATE viewers SET display_name = ?2 WHERE id = ?1 AND owner = 0",
+                params![v.id, want],
+            )?;
+            Ok(Viewer {
+                display_name: want,
+                ..v
+            })
+        })
     }
 
     /// The viewer whose public ID is `public_id`; `None` for anything else,
@@ -966,6 +1043,42 @@ mod tests {
     use crate::test_util::{DAEMON, artifact, store};
     use clax_core::audit::Via;
     use clax_core::{CoreError, new_ulid};
+
+    #[test]
+    fn a_tailnet_login_names_one_viewer_with_tailscales_name() {
+        let (_d, st) = store();
+        let a = st
+            .tailscale_viewer("alex@github", Some("Alex Kesling"))
+            .unwrap();
+        assert_eq!(a.display_name.as_deref(), Some("Alex Kesling"));
+        assert_eq!(a.tailscale_login.as_deref(), Some("alex@github"));
+        assert!(clax_core::is_public_id(&a.public_id) && !a.person);
+        // The same login is the same viewer; its name follows Tailscale's.
+        let again = st.tailscale_viewer("alex@github", Some("Alex K")).unwrap();
+        assert_eq!(
+            (again.id.as_str(), again.public_id.as_str()),
+            (a.id.as_str(), a.public_id.as_str())
+        );
+        assert_eq!(again.display_name.as_deref(), Some("Alex K"));
+        let by_id = st.viewer_by_public_id(&a.public_id).unwrap().unwrap();
+        assert_eq!(by_id.tailscale_login.as_deref(), Some("alex@github"));
+        assert_eq!(by_id.display_name.as_deref(), Some("Alex K"));
+        // No name: the login. Another login is another viewer.
+        let b = st.tailscale_viewer("mia@example.com", None).unwrap();
+        assert_ne!(b.public_id, a.public_id);
+        assert_eq!(b.display_name.as_deref(), Some("mia@example.com"));
+        // The owner's name is protected: the login stands in for it.
+        st.set_owner_name("Bobby", true).unwrap();
+        let c = st.tailscale_viewer("eve@github", Some("Bobby")).unwrap();
+        assert_eq!(c.display_name.as_deref(), Some("eve@github"));
+        // A cookie viewer is never a tailnet one.
+        let cookie = clax_core::secret::viewer_cookie();
+        let v = st.mint_viewer(cookie.expose(), false).unwrap();
+        assert_eq!(v.tailscale_login, None);
+        for bad in ["", "a b", "a\nb", &"x".repeat(257)] {
+            assert!(st.tailscale_viewer(bad, Some("X")).is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn making_the_owners_row_after_an_agent_read_connects_the_owner() {

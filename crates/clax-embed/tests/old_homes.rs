@@ -355,9 +355,13 @@ async fn the_installed_flutter_app_home_backs_up_and_is_adopted() {
     );
     assert_rows_kept(&before, &copies[0], None);
 
-    // Adopted and migrated to this build's last migration, the queues'.
+    // Adopted and migrated to this build's last migration, the tailnet
+    // login's.
     let version = clax_store::schema_version(&home).unwrap();
-    assert_eq!(version, Some(clax_store::migrations::QUEUES_MIGRATION));
+    assert_eq!(
+        version,
+        Some(clax_store::migrations::TAILSCALE_LOGIN_MIGRATION)
+    );
     assert_eq!(
         version,
         Some(clax_store::migrations::MIGRATIONS.len() as u32)

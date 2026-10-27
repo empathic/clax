@@ -14,6 +14,11 @@ pub struct Person {
     pub display_name: Option<String>,
     /// The latest version this person viewed at the artifact's latest URL. Public (spec §14).
     pub seen: Option<u32>,
+    /// The tailnet login that names this viewer, whose name is then
+    /// Tailscale's, not typed ([`clax_core::model::Viewer::tailscale_login`]);
+    /// left out for every other viewer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tailscale_login: Option<String>,
 }
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct AgentView {
@@ -143,7 +148,7 @@ macro_rules! people_sql {
             "WITH arts(id, owner) AS (",
             $arts,
             ")
-            SELECT x.aid, v.public_id, v.display_name, s.seen_n
+            SELECT x.aid, v.public_id, v.display_name, s.seen_n, v.tailscale_login
               FROM (SELECT DISTINCT a.id AS aid, c.author_public_id AS p
                       FROM arts a
                      CROSS JOIN threads t ON t.artifact_id = a.id
@@ -433,6 +438,7 @@ fn participants_in(c: &Connection, aid: Option<&str>) -> Result<BTreeMap<String,
             public_id: r.get(1)?,
             display_name: r.get(2)?,
             seen: r.get(3)?,
+            tailscale_login: r.get(4)?,
         });
     }
     drop(rows);

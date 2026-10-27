@@ -151,6 +151,8 @@ mod api_site_api;
 mod api_stream;
 #[cfg(any(not(clax_split), clax_split = "api_tags"))]
 mod api_tags;
+#[cfg(any(not(clax_split), clax_split = "api_tailscale"))]
+mod api_tailscale;
 #[cfg(any(not(clax_split), clax_split = "api_threads"))]
 mod api_threads;
 #[cfg(any(not(clax_split), clax_split = "api_timeout"))]

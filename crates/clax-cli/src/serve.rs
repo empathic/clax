@@ -38,6 +38,7 @@ pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
         web,
         hosted: hosted(home)?,
         trusted_hosts: trusted_hosts(home)?,
+        tailscale_identity: tailscale_identity(home)?,
         require_credential: a.require_credential,
         embed: a
             .embed
@@ -83,6 +84,16 @@ fn trusted_hosts(home: &Home) -> anyhow::Result<Vec<String>> {
         tracing::info!(hosts = ?hosts, "the API also answers to [serve] trusted_hosts");
     }
     Ok(hosts)
+}
+
+/// The home's `[serve] tailscale_identity`. A bad value, or `true` with no
+/// trusted hosts, stops the daemon rather than read the headers from anyone.
+fn tailscale_identity(home: &Home) -> anyhow::Result<bool> {
+    let on = clax_core::config::HomeConfig::load(home.root())?.serve_tailscale_identity()?;
+    if on {
+        tracing::info!("viewers through [serve] trusted_hosts are named by their tailnet login");
+    }
+    Ok(on)
 }
 
 /// The daemon outlives whoever started it, so any descriptor it inherits stays
