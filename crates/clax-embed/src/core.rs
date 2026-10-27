@@ -1183,13 +1183,24 @@ mod tests {
         let created: serde_json::Value = serde_json::from_slice(created).unwrap();
         let sid = created["session"]["id"].as_str().unwrap();
 
-        let mut in_flight = embed.inner.shared.in_flight.subscribe();
         let poll = send(
             &embed,
             "GET",
             &format!("/api/sessions/{sid}/feedback?tier=wait&wait=600"),
         );
-        let _ = in_flight.wait_for(|n| *n == 1).await;
+        // A call is counted in flight before it is admitted, and one a
+        // close overtakes then answers 503: the close waits for the poll
+        // to be parked in its long wait (the debug waiter route answers
+        // once the count is 1, or after a few seconds with the count).
+        loop {
+            let parked = format!("/api/_test/feedback/{sid}/waiters?parked=wait&until=1");
+            let (status, body) = send(&embed, "GET", &parked).await.unwrap();
+            assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+            let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            if v["count"] == 1 {
+                break;
+            }
+        }
         embed.close();
         let (status, body) = poll.await.unwrap();
         assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
