@@ -79,8 +79,8 @@
   /** Several commands, one block each; numbered when the order matters. */
   const cmds = (list, numbered) => list.map((c, i) => (Array.isArray(c) ? cmd(c[0], { note: c[1] }) : cmd(c, { n: numbered ? i + 1 : 0 }))).join("");
   // The shell capability: "Show me" rings one of Clax's own controls. It is
-  // null on a released Clax and for viewers who cannot edit, and then the
-  // buttons stay hidden.
+  // null on a Clax without the `shell` capability and for viewers who cannot
+  // edit, and then the buttons stay hidden.
   let shell = null;
   const canCache = {};
   const SHOWME = {
@@ -127,11 +127,25 @@
   const CLAXDEV = "https://clax.dev";
   // This page's artifact ID: the first label of its own <ID>.localhost site.
   const ARTIFACT = (/^([a-z0-9]{8,})\./.exec(location.hostname) || [])[1] || "this page";
-  /** The page's own address in Clax, for an agent to watch: `<shell>/a/<ID>`. The shell's origin comes from the
-   * referrer (the frame's parent), else, on a local Clax's `<ID>.localhost` site, from that host's port. */
+  /** The origin of the Clax shell that frames this page, or null when unknown. It is the referrer's (the
+   * frame's parent) on the first load in this tab, kept in sessionStorage, so a navigation inside the frame
+   * (to ideas.html and back), whose referrer is this page's own site, keeps it. */
+  const SHELL_KEY = "clax-quickstart-shell";
+  const SHELL = (() => {
+    try {
+      const r = document.referrer && new URL(document.referrer);
+      if (r && r.origin !== location.origin) {
+        try { sessionStorage.setItem(SHELL_KEY, r.origin); } catch (_) {}
+        return r.origin;
+      }
+    } catch (_) {}
+    try { return sessionStorage.getItem(SHELL_KEY); } catch (_) { return null; }
+  })();
+  /** The page's own address in Clax, for an agent to watch: `<shell>/a/<ID>`, with the shell's origin
+   * ({@link SHELL}), else, on a local Clax's `<ID>.localhost` site, from that host's port. */
   const PAGE_URL = (() => {
     if (ARTIFACT === "this page") return null;
-    try { const r = document.referrer && new URL(document.referrer); if (r && r.host !== location.host) return `${r.origin}/a/${ARTIFACT}`; } catch (_) {}
+    if (SHELL) return `${SHELL}/a/${ARTIFACT}`;
     if (/\.localhost$/.test(location.hostname)) return `${location.protocol}//localhost${location.port ? ":" + location.port : ""}/a/${ARTIFACT}`;
     return null;
   })();
@@ -608,9 +622,11 @@
   }
 
   // ---------- Noticing a sign-in ----------
-  // On clax.dev a viewer who is a signed-in person has done step 1. A local
-  // Clax cannot say whether it is linked to clax.dev, so it never decides.
-  const HOSTED = /(^|\.)clax\.dev$/.test(location.hostname);
+  // On clax.dev a viewer who is a signed-in person has done step 1. The page
+  // itself runs on its own site's domain, so clax.dev is known from the
+  // shell's origin ({@link SHELL}). A local Clax cannot say whether it is
+  // linked to clax.dev, so it never decides.
+  const HOSTED = (() => { try { return !!SHELL && /(^|\.)clax\.dev$/.test(new URL(SHELL).hostname); } catch (_) { return false; } })();
   const toast = document.getElementById("toast");
   function say(text) {
     toast.textContent = text; toast.hidden = false;
