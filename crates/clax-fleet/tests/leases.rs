@@ -147,3 +147,29 @@ async fn a_lost_lease_stops_the_instance() {
     assert!(a.fleet.running().is_empty());
     assert_eq!(c.lease(&name).await.unwrap().unwrap().holder, "z");
 }
+
+/// A request out of hops (or one a client marked so) never starts an
+/// instance away from the member hashing prefers.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_out_of_hops_never_places_an_instance_off_its_preferred_member() {
+    let dir = tempfile::tempdir().unwrap();
+    let name = preferring("a");
+    let host = format!("{name}.test");
+    let (c, a, b) = pair(dir.path(), &[&name]).await;
+    a.fleet.tick().await;
+    b.fleet.tick().await;
+    let resp = reqwest::Client::new()
+        .get(format!("http://{}/healthz", b.addr))
+        .header("host", &host)
+        .header(
+            clax_fleet::proxy::HOP_HEADER,
+            clax_fleet::fleet::MAX_HOPS.to_string(),
+        )
+        .header(clax_fleet::proxy::INSTANCE_HEADER, &name)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 503);
+    assert!(b.fleet.running().is_empty());
+    assert!(c.lease(&name).await.unwrap().is_none());
+}

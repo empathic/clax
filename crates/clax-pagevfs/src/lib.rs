@@ -26,10 +26,11 @@
 //! What differs is where the VFS keeps its files: one registry for the
 //! process behind a mutex, each open file behind a mutex of its own, so a
 //! connection may be used from any thread, one thread at a time (as
-//! `rusqlite::Connection`, which is `Send` and not `Sync`, is). The
-//! registry's lock is never held across a store's I/O except while a file
-//! is deleted; a file's lock is held across its reads and commits, which no
-//! other connection makes.
+//! `rusqlite::Connection`, which is `Send` and not `Sync`, is), and stores
+//! are told apart by their identity, so two stores' files of one name are
+//! two files. The registry's lock is never held across a store's I/O
+//! except while a file is deleted; a file's lock is held across its reads
+//! and commits, which no other connection makes.
 //!
 //! A store that more than one process can write (PostgreSQL) must refuse a
 //! commit from any process but the database's one owner: the VFS assumes
@@ -400,9 +401,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// A database file [`open`] registered and SQLite has not opened yet.
 struct Pending {
-    name: String,
-    store: Arc<dyn PageStore>,
-    limits: Limits,
+    file: StoredFile,
 }
 
 /// The VFS's files in this process. Files are keyed by the name SQLite
@@ -425,9 +424,10 @@ struct Registry {
     /// is. `Store::contains_file` answers `false` for every file it lets
     /// open, so that every open goes through `add_file`.
     handles: HashMap<usize, String>,
-    /// For each name a store keeps a database file under, the SQLite file
-    /// name of its latest [`open`].
-    latest: HashMap<String, String>,
+    /// For each store (by the address of its value) and name it keeps a
+    /// database file under, the SQLite file name of its latest [`open`].
+    /// Two stores may keep files of the same name: each is its own file.
+    latest: HashMap<(usize, String), String>,
     /// Opens so far, which make each SQLite file name unique.
     opens: u64,
 }
@@ -489,11 +489,8 @@ impl VfsStore<PageFile, ()> for Store {
         }
         let mut r = registry();
         let f = match r.pending.remove(file) {
-            Some(p) if flags & SQLITE_OPEN_MAIN_DB != 0 => {
-                // The store's first read, under the registry's lock: an
-                // open happens once per connection.
-                PageFile::Stored(StoredFile::open(&p.name, p.store, p.limits)?)
-            }
+            // Read from the store by [`open_with`], outside the registry's lock.
+            Some(p) if flags & SQLITE_OPEN_MAIN_DB != 0 => PageFile::Stored(p.file),
             Some(p) => {
                 r.pending.insert(file.to_owned(), p);
                 return Err(io_err(
@@ -728,8 +725,14 @@ pub struct Registered(#[allow(dead_code)] OpenFile);
 
 /// A database file's place in the registry, removed when dropped.
 struct OpenFile {
-    name: String,
+    key: (usize, String),
     sqlite_name: String,
+}
+
+/// A store's identity in the registry: the address of its value, which
+/// stays its own while any file of it is registered (the file holds it).
+fn store_key(store: &Arc<dyn PageStore>) -> usize {
+    Arc::as_ptr(store) as *const () as usize
 }
 
 impl Drop for OpenFile {
@@ -738,8 +741,8 @@ impl Drop for OpenFile {
         r.pending.remove(&self.sqlite_name);
         r.files.remove(&self.sqlite_name);
         r.forget_handles(&self.sqlite_name);
-        if r.latest.get(&self.name) == Some(&self.sqlite_name) {
-            r.latest.remove(&self.name);
+        if r.latest.get(&self.key) == Some(&self.sqlite_name) {
+            r.latest.remove(&self.key);
         }
     }
 }
@@ -769,37 +772,38 @@ pub fn open(name: &str, store: Arc<dyn PageStore>) -> rusqlite::Result<Database>
 /// refuse them too, by delegating to [`authorize`].
 ///
 /// `name` is the store's name for the file, so it is unique within a store;
-/// two stores are told apart by the VFS, never by name. A database file is
-/// opened by one connection at a time: opening the same `name` again
-/// replaces the earlier open, whose connection's next read or write of the
-/// file fails, so a connection left over from an earlier start cannot write
-/// into the later one's store.
+/// two stores are told apart by the VFS, never by name: each store's `db`
+/// is its own file. A database file is opened by one connection at a time:
+/// opening the same `name` of the same store again replaces the earlier
+/// open, whose connection's next read or write of the file fails, so a
+/// connection left over from an earlier start cannot write into the later
+/// one's.
 pub fn open_with(
     name: &str,
     store: Arc<dyn PageStore>,
     limits: Limits,
 ) -> rusqlite::Result<Database> {
     register()?;
+    let key = (store_key(&store), name.to_owned());
+    // The store's first read, before the registry is locked: another
+    // database's I/O never waits on this one's store.
+    let stored = StoredFile::open(name, store, limits).map_err(|e| {
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
+            Some(format!("{name}: {e:?}")),
+        )
+    })?;
     let file = {
         let mut r = registry();
         r.opens += 1;
         let sqlite_name = format!("{}/{name}", r.opens);
-        if let Some(earlier) = r.latest.insert(name.to_owned(), sqlite_name.clone()) {
+        if let Some(earlier) = r.latest.insert(key.clone(), sqlite_name.clone()) {
             r.pending.remove(&earlier);
             r.files.remove(&earlier);
         }
-        r.pending.insert(
-            sqlite_name.clone(),
-            Pending {
-                name: name.to_owned(),
-                store,
-                limits,
-            },
-        );
-        OpenFile {
-            name: name.to_owned(),
-            sqlite_name,
-        }
+        r.pending
+            .insert(sqlite_name.clone(), Pending { file: stored });
+        OpenFile { key, sqlite_name }
     };
     let conn = Connection::open_with_flags_and_vfs(
         &file.sqlite_name,
@@ -827,11 +831,14 @@ pub fn open_with(
     Ok(Database { conn, file })
 }
 
-/// The counters for the database file `name`'s latest open, if it is open.
-pub fn stats(name: &str) -> Option<FileStats> {
+/// The counters for the latest open of the database file `name` of
+/// `store`, if it is open.
+pub fn stats(store: &Arc<dyn PageStore>, name: &str) -> Option<FileStats> {
     let file = {
         let r = registry();
-        r.files.get(r.latest.get(name)?)?.clone()
+        r.files
+            .get(r.latest.get(&(store_key(store), name.to_owned()))?)?
+            .clone()
     };
     match &*lock(&file) {
         PageFile::Stored(f) => Some(f.stats.get()),

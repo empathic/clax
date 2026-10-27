@@ -177,6 +177,19 @@ fn copy_files(
              ON CONFLICT DO NOTHING",
             &[&instance, &from.as_str(), &to.as_str(), &hashes],
         )?;
+        // Every blob the copy names must now be the target's: a source
+        // whose blobs are gone (deleted meanwhile) fails the copy.
+        let distinct: std::collections::HashSet<&Vec<u8>> = hashes.iter().copied().collect();
+        let held: i64 = tx
+            .query_one(
+                "SELECT count(*) FROM clax_fleet_blobs
+                 WHERE instance = $1 AND artifact = $2 AND hash = ANY($3)",
+                &[&instance, &to.as_str(), &hashes],
+            )?
+            .get(0);
+        if held as usize != distinct.len() {
+            return Err(Refused::Store(missing(from, from_n, &paths[0])));
+        }
     }
     let (paths, hashes): (Vec<String>, Vec<Vec<u8>>) = found.into_iter().unzip();
     tx.execute(

@@ -140,3 +140,29 @@ async fn the_catalog_reloads_and_stops_what_changed() {
     assert_eq!(p0.fleet.running(), ["acme"]);
     assert_eq!(healthz(p0.addr, "acme.test").await.0, 200);
 }
+
+/// A forward names its instance: a process whose catalog does not have it
+/// yet answers 503, never its default instance in its place.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_forward_for_an_instance_the_owner_lacks_is_refused_not_defaulted() {
+    let dir = tempfile::tempdir().unwrap();
+    let (d0, d1) = (dir.path().join("0"), dir.path().join("1"));
+    std::fs::create_dir_all(&d0).unwrap();
+    std::fs::create_dir_all(&d1).unwrap();
+    // Shard 0 has acme, on shard 1; shard 1's catalog has not caught up
+    // and has a default instance of its own.
+    let cat0 = write_catalog(&d0, &catalog(&[("acme", Some(1)), ("other", Some(1))]));
+    let behind = catalog(&[("other", Some(1))])
+        .replace("name = \"other\"\n", "name = \"other\"\ndefault = true\n");
+    let cat1 = write_catalog(&d1, &behind);
+    let (l0, l1) = (listener().await, listener().await);
+    let peers = vec![l0.1.to_string(), l1.1.to_string()];
+    let shards = |ordinal| Placement::Shards {
+        ordinal,
+        peers: Peers::List(peers.clone()),
+    };
+    let p0 = process("clax-0", l0, &d0, &cat0, Some(2), shards(0)).await;
+    let p1 = process("clax-1", l1, &d1, &cat1, Some(2), shards(1)).await;
+    assert_eq!(healthz(p0.addr, "acme.test").await.0, 503);
+    assert!(p1.fleet.running().is_empty(), "{:?}", p1.fleet.running());
+}

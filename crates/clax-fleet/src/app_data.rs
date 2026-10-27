@@ -94,13 +94,16 @@ impl Stores {
         let at = o.opens;
         o.opened_at.insert(aid.clone(), at);
         o.stores.insert(aid.clone(), open.clone());
+        // Only a store no call holds is closed: closing one in use would
+        // have its next open replace the file under that call.
         while o.stores.len() > OPEN_STORES {
-            let Some(oldest) = o
+            let idle = o
                 .opened_at
                 .iter()
+                .filter(|(a, _)| o.stores.get(*a).is_some_and(|s| Arc::strong_count(s) == 1))
                 .min_by_key(|(_, at)| **at)
-                .map(|(a, _)| a.clone())
-            else {
+                .map(|(a, _)| a.clone());
+            let Some(oldest) = idle else {
                 break;
             };
             o.opened_at.remove(&oldest);
@@ -109,10 +112,23 @@ impl Stores {
         Ok(open)
     }
 
-    fn forget(&self, aid: &ArtifactId) {
+    /// Closes artifact `aid`'s store, once a call in progress on it ends,
+    /// and deletes its file; no call opens it meanwhile.
+    fn erase(&self, aid: &ArtifactId) -> Result<()> {
         let mut o = self.open_stores();
-        o.stores.remove(aid);
         o.opened_at.remove(aid);
+        let held = o.stores.remove(aid);
+        let busy = held
+            .as_ref()
+            .map(|h| h.lock().unwrap_or_else(|e| e.into_inner()));
+        let deleted = self
+            .pages
+            .delete(&file_name(aid))
+            .map_err(|e| CoreError::Io(std::io::Error::other(e)));
+        drop(busy);
+        drop(held);
+        drop(o);
+        deleted
     }
 }
 
@@ -139,13 +155,8 @@ impl AppDataHost for PgAppData {
     async fn erase(&self, aid: &ArtifactId) -> Result<()> {
         let host = self.0.clone();
         let aid = aid.clone();
-        tokio::task::spawn_blocking(move || {
-            host.forget(&aid);
-            host.pages
-                .delete(&file_name(&aid))
-                .map_err(|e| CoreError::Io(std::io::Error::other(e)))
-        })
-        .await
-        .map_err(|_| CoreError::TaskFailed)?
+        tokio::task::spawn_blocking(move || host.erase(&aid))
+            .await
+            .map_err(|_| CoreError::TaskFailed)?
     }
 }

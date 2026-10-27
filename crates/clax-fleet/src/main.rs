@@ -302,8 +302,10 @@ async fn run(
     }
     fleet.begin_draining();
     tokio::time::sleep(drain_delay).await;
-    ticker.abort();
+    // The ticks go on renewing the leases of what still runs while the
+    // instances stop; once all have, nothing is left for them.
     fleet.drain().await;
+    ticker.abort();
     let _ = stopping_tx.send(());
     match tokio::time::timeout(CONNECTIONS_DRAIN, server).await {
         Ok(r) => r??,

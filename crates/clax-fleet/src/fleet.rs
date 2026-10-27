@@ -16,9 +16,14 @@
 //!   is preferred, which takes the lease and starts the instance, else the
 //!   preferred member, which does.
 //!
-//! A forwarded request carries its hop count ([`HOP_HEADER`]); one forwarded
-//! twice is answered where it lands, started there or refused 503, so no
-//! request circles. A process that is draining starts nothing.
+//! A forwarded request carries its hop count ([`HOP_HEADER`]) and its
+//! instance's name ([`INSTANCE_HEADER`]): the process it reaches serves that
+//! instance or answers 503, whatever its own catalog makes of the `Host`.
+//! One forwarded twice is answered where it lands, so no request circles,
+//! and an instance is only ever started on the member hashing prefers. An
+//! instance being stopped here (a handover, a drain) still holds its lease
+//! until the stop releases it; a request for it meanwhile is refused 503,
+//! never started here again. A process that is draining starts nothing.
 //!
 //! # Background
 //!
@@ -50,7 +55,7 @@ use tower::ServiceExt;
 use crate::catalog::{Catalog, Instance};
 use crate::coord::{self, Coordinator};
 use crate::pg::{Fence, Pool};
-use crate::proxy::{self, HOP_HEADER};
+use crate::proxy::{self, HOP_HEADER, INSTANCE_HEADER};
 
 /// Hops a request may make: one forwarded this many times is answered
 /// where it lands.
@@ -149,6 +154,9 @@ struct Running {
 struct Slot {
     router: RwLock<Option<axum::Router>>,
     running: tokio::sync::Mutex<Option<Running>>,
+    /// A stop is under way: its lease is still this process's until the
+    /// stop releases it, and no request may start it again meanwhile.
+    stopping: AtomicBool,
 }
 
 /// Where a request goes.
@@ -240,6 +248,12 @@ impl Fleet {
         r.clone()
     }
 
+    fn is_stopping(&self, name: &str) -> bool {
+        lock(&self.slots)
+            .get(name)
+            .is_some_and(|s| s.stopping.load(Ordering::SeqCst))
+    }
+
     fn cached_route(&self, name: &str) -> Option<String> {
         let routes = lock(&self.routes);
         let (at, addr) = routes.get(name)?;
@@ -264,7 +278,7 @@ impl Fleet {
                 Err(never) => match never {},
             },
             Route::Forward(addr) => {
-                let resp = proxy::forward(&addr, hops + 1, req).await;
+                let resp = proxy::forward(&addr, hops + 1, &inst.name, req).await;
                 if resp.status() == StatusCode::BAD_GATEWAY {
                     self.forget_route(&inst.name);
                 }
@@ -321,27 +335,31 @@ impl Fleet {
                             inst.name, l.holder
                         ));
                     }
+                    // This process's own live lease of an instance it is
+                    // stopping (a handover, a drain): it goes where it is
+                    // going once the stop releases it, never back here.
+                    Ok(Some(_)) if self.is_stopping(&inst.name) => {
+                        return Route::Unavailable(format!("instance {} is moving", inst.name));
+                    }
                     Ok(_) => {}
                 }
-                if can_forward {
-                    match coord.members().await {
-                        Err(e) => return Route::Unavailable(format!("the fleet's database: {e}")),
-                        Ok(members) => {
-                            let others: Vec<coord::Member> = if draining {
-                                members
-                                    .into_iter()
-                                    .filter(|m| m.pod != self.cfg.pod)
-                                    .collect()
-                            } else {
-                                members
-                            };
-                            if let Some(p) = coord::preferred(&inst.name, &others)
-                                && p.pod != self.cfg.pod
-                            {
-                                return Route::Forward(p.addr.clone());
-                            }
-                        }
+                let members = match coord.members().await {
+                    Err(e) => return Route::Unavailable(format!("the fleet's database: {e}")),
+                    Ok(m) if draining => m.into_iter().filter(|m| m.pod != self.cfg.pod).collect(),
+                    Ok(m) => m,
+                };
+                // Started only where it is preferred: a request out of hops
+                // (or one a client marked so) never places it elsewhere.
+                if let Some(p) = coord::preferred(&inst.name, &members)
+                    && p.pod != self.cfg.pod
+                {
+                    if can_forward {
+                        return Route::Forward(p.addr.clone());
                     }
+                    return Route::Unavailable(format!(
+                        "instance {} goes to {}, not here",
+                        inst.name, p.pod
+                    ));
                 }
                 if draining {
                     return Route::Unavailable("this process is stopping".into());
@@ -365,6 +383,12 @@ impl Fleet {
         if let Some(r) = running.as_ref().and_then(|r| r.core.as_ref()) {
             return Route::Local(r.router());
         }
+        // The catalog in effect now, not the one the request was matched
+        // in: a reload while this start waited has the last word.
+        let Some(inst) = self.catalog().get(&inst.name).cloned() else {
+            return Route::Unavailable(format!("instance {} left the catalog", inst.name));
+        };
+        let inst = &inst;
         let fence = match &self.cfg.placement {
             Placement::Shards { .. } => None,
             Placement::Leases(coord) => {
@@ -503,9 +527,11 @@ impl Fleet {
         let Some(slot) = lock(&self.slots).get(name).cloned() else {
             return;
         };
+        slot.stopping.store(true, Ordering::SeqCst);
         let mut running = slot.running.lock().await;
         *slot.router.write().unwrap_or_else(|e| e.into_inner()) = None;
         let Some(mut r) = running.take() else {
+            slot.stopping.store(false, Ordering::SeqCst);
             return;
         };
         if let Some(core) = r.core.take()
@@ -525,102 +551,126 @@ impl Fleet {
             }
         }
         drop(r);
+        drop(running);
+        slot.stopping.store(false, Ordering::SeqCst);
         tracing::info!(instance = %name, why, "instance stopped");
     }
 
-    /// The background work of one tick (see the [module docs](self)).
+    /// The background work of one tick (see the [module docs](self)):
+    /// the heartbeat and every renewal first, so no stop can hold a lease's
+    /// renewal past its expiry, then the stops the catalog, lost leases and
+    /// the handover call for, all at once.
     pub async fn tick(self: &Arc<Self>) {
         let n = self.ticks.fetch_add(1, Ordering::SeqCst);
-        self.reload().await;
-        let Placement::Leases(coord) = &self.cfg.placement else {
-            return;
-        };
-        let draining = self.draining.load(Ordering::SeqCst);
-        if !draining {
-            match coord.heartbeat(&self.cfg.pod, &self.cfg.advertise).await {
-                Ok(()) => self.healthy.store(true, Ordering::SeqCst),
-                Err(e) => {
-                    self.healthy.store(false, Ordering::SeqCst);
-                    tracing::warn!(error = %e, "heartbeat failed");
-                }
-            }
-        }
-        for name in self.running() {
-            let slot = self.slot(&name);
-            let mut lost = None;
-            {
-                let mut running = slot.running.lock().await;
-                let Some((fence, failures)) = running.as_mut().and_then(|r| r.hold.as_mut()) else {
-                    continue;
-                };
-                match coord.renew(&name, &self.cfg.pod, fence.epoch()).await {
-                    Ok(true) => *failures = 0,
-                    Ok(false) => lost = Some("its lease was lost"),
+        let mut stops: Vec<(String, &'static str)> = Vec::new();
+        if let Placement::Leases(coord) = &self.cfg.placement {
+            let draining = self.draining.load(Ordering::SeqCst);
+            if !draining {
+                match coord.heartbeat(&self.cfg.pod, &self.cfg.advertise).await {
+                    Ok(()) => self.healthy.store(true, Ordering::SeqCst),
                     Err(e) => {
-                        *failures += 1;
-                        tracing::warn!(instance = %name, error = %e, failures = *failures, "renewing the lease failed");
-                        if *failures >= RENEW_FAILURES {
-                            lost = Some("its lease could not be renewed");
-                        }
+                        self.healthy.store(false, Ordering::SeqCst);
+                        tracing::warn!(error = %e, "heartbeat failed");
                     }
                 }
             }
-            if let Some(why) = lost {
-                self.stop(&name, why).await;
+            for name in self.running() {
+                if let Some(why) = self.renew(coord.as_ref(), &name).await {
+                    stops.push((name, why));
+                }
+            }
+            // Every third tick, the handover.
+            if !draining
+                && n % 3 == 2
+                && let Ok(members) = coord.members().await
+            {
+                for name in self.running() {
+                    if let Some(p) = coord::preferred(&name, &members)
+                        && p.pod != self.cfg.pod
+                        && p.age >= coord::SETTLE
+                    {
+                        tracing::info!(instance = %name, to = %p.pod, "handing the instance over");
+                        stops.push((name, "another member is preferred"));
+                    }
+                }
             }
         }
-        // Every third tick, the handover.
-        if draining || n % 3 != 2 {
-            return;
+        stops.extend(self.reload().await);
+        stops.sort();
+        stops.dedup_by(|a, b| a.0 == b.0);
+        let stops = stops.into_iter().map(|(name, why)| {
+            let fleet = self.clone();
+            async move { fleet.stop(&name, why).await }
+        });
+        futures::future::join_all(stops).await;
+    }
+
+    /// Renews the lease of `name`, running here: why it must stop, when the
+    /// lease is lost or failed to renew [`RENEW_FAILURES`] times in a row.
+    async fn renew(&self, coord: &dyn Coordinator, name: &str) -> Option<&'static str> {
+        let slot = self.slot(name);
+        if slot.stopping.load(Ordering::SeqCst) {
+            return None;
         }
-        let Ok(members) = coord.members().await else {
-            return;
+        // The epoch is read under the slot's lock, and the renewal made
+        // without it: a stop under way is never waited for.
+        let epoch = {
+            let running = slot.running.lock().await;
+            running.as_ref()?.hold.as_ref()?.0.epoch()
         };
-        for name in self.running() {
-            if let Some(p) = coord::preferred(&name, &members)
-                && p.pod != self.cfg.pod
-                && p.age >= coord::SETTLE
-            {
-                tracing::info!(instance = %name, to = %p.pod, "handing the instance over");
-                self.stop(&name, "another member is preferred").await;
+        let renewed = coord.renew(name, &self.cfg.pod, epoch).await;
+        let mut running = slot.running.lock().await;
+        let (fence, failures) = running.as_mut()?.hold.as_mut()?;
+        if fence.epoch() != epoch {
+            return None;
+        }
+        match renewed {
+            Ok(true) => {
+                *failures = 0;
+                None
+            }
+            Ok(false) => Some("its lease was lost"),
+            Err(e) => {
+                *failures += 1;
+                tracing::warn!(instance = %name, error = %e, failures = *failures, "renewing the lease failed");
+                (*failures >= RENEW_FAILURES).then_some("its lease could not be renewed")
             }
         }
     }
 
-    /// Reads the catalog again; stops each running instance it no longer
-    /// has, or whose config changed.
-    async fn reload(&self) {
-        let next = match Catalog::load(&self.cfg.catalog, self.cfg.shards) {
-            Ok(c) => c,
+    /// Reads the catalog again, and answers each running instance it no
+    /// longer has, or whose config or shard changed, with why it must stop.
+    /// It compares every tick, whether or not the catalog changed: an
+    /// instance started from the catalog a reload replaced stops too.
+    async fn reload(&self) -> Vec<(String, &'static str)> {
+        match Catalog::load(&self.cfg.catalog, self.cfg.shards) {
+            Ok(next) if *self.catalog() != next => {
+                tracing::info!(instances = next.instances.len(), "catalog reloaded");
+                *self.catalog.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(next);
+            }
+            Ok(_) => {}
             Err(e) => {
                 tracing::warn!(error = %e, "the catalog did not reload; keeping the one in effect");
-                return;
             }
-        };
-        if *self.catalog() == next {
-            return;
         }
-        let next = Arc::new(next);
-        *self.catalog.write().unwrap_or_else(|e| e.into_inner()) = next.clone();
-        tracing::info!(instances = next.instances.len(), "catalog reloaded");
+        let catalog = self.catalog();
+        let mut stops = Vec::new();
         for name in self.running() {
             let slot = self.slot(&name);
-            let changed = {
-                let running = slot.running.lock().await;
-                let config = running.as_ref().map(|r| r.config.clone());
-                match (next.get(&name), config) {
-                    (None, _) => Some("it left the catalog"),
-                    (Some(i), Some(c)) if i.config != c => Some("its config changed"),
-                    (Some(i), _) if matches!(self.cfg.placement, Placement::Shards { ordinal, .. } if i.shard != Some(ordinal)) => {
-                        Some("its shard changed")
-                    }
-                    _ => None,
+            let config = slot.running.lock().await.as_ref().map(|r| r.config.clone());
+            let why = match (catalog.get(&name), config) {
+                (None, _) => Some("it left the catalog"),
+                (Some(i), Some(c)) if i.config != c => Some("its config changed"),
+                (Some(i), _) if matches!(self.cfg.placement, Placement::Shards { ordinal, .. } if i.shard != Some(ordinal)) => {
+                    Some("its shard changed")
                 }
+                _ => None,
             };
-            if let Some(why) = changed {
-                self.stop(&name, why).await;
+            if let Some(why) = why {
+                stops.push((name, why));
             }
         }
+        stops
     }
 
     /// Starts nothing more here, and answers not ready, while still serving
@@ -638,8 +688,10 @@ impl Fleet {
         {
             tracing::warn!(error = %e, "leaving the membership failed; it lapses");
         }
-        let stops = self
-            .running()
+        // Every slot, not just the running: a start that passed the draining
+        // check before it began ends first (the stop waits for its lock).
+        let names: Vec<String> = lock(&self.slots).keys().cloned().collect();
+        let stops = names
             .into_iter()
             .map(|name| {
                 let fleet = self.clone();
@@ -701,24 +753,45 @@ fn hops(req: &Request) -> u8 {
 
 async fn dispatch(State(fleet): State<Arc<Fleet>>, mut req: Request) -> Response {
     let catalog = fleet.catalog();
-    let host = req
-        .headers()
-        .get(header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .or_else(|| req.uri().authority().map(|a| a.as_str()));
-    let Some(inst) = catalog.resolve(host) else {
-        return (
-            StatusCode::NOT_FOUND,
-            [(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("text/plain; charset=utf-8"),
-            )],
-            "no Clax instance answers at this host\n",
-        )
-            .into_response();
-    };
     let hops = hops(&req);
+    let inst = if hops > 0 {
+        // A forward names its instance; this process's catalog must have it.
+        let name = req
+            .headers()
+            .get(INSTANCE_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        match catalog.get(name) {
+            Some(i) => i,
+            None => {
+                return unavailable(&format!(
+                    "instance {name:?} is not in this process's catalog yet"
+                ));
+            }
+        }
+    } else {
+        let host = req
+            .headers()
+            .get(header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .or_else(|| req.uri().authority().map(|a| a.as_str()));
+        match catalog.resolve(host) {
+            Some(i) => i,
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    [(
+                        header::CONTENT_TYPE,
+                        HeaderValue::from_static("text/plain; charset=utf-8"),
+                    )],
+                    "no Clax instance answers at this host\n",
+                )
+                    .into_response();
+            }
+        }
+    };
     req.headers_mut().remove(HOP_HEADER);
+    req.headers_mut().remove(INSTANCE_HEADER);
     fleet.handle(inst, hops, req).await
 }
 

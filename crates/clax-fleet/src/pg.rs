@@ -143,7 +143,16 @@ impl Pool {
                                 Ok(job) => job,
                                 Err(_) => return,
                             };
-                            job(&mut client, &connector);
+                            // A job that panics drops its answer (its caller
+                            // sees the panic as an error) and the client, never
+                            // the thread.
+                            let ran =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    job(&mut client, &connector)
+                                }));
+                            if ran.is_err() {
+                                client = None;
+                            }
                         }
                     })
                     .map_err(|e| e.to_string())?,

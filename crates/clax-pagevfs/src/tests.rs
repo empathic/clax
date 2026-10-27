@@ -21,9 +21,9 @@ fn keys(db: &Connection) -> Vec<i64> {
 
 /// Handles are told apart by the address of their name's buffer, and
 /// SQLite's allocator hands a closed handle's address to a later file.
-/// Over many opens, closes and replacements, with temporary files opened
-/// and deleted in between and a stale connection always alive, each
-/// connection reaches only its own store, and the stale one none.
+/// Over many opens and closes of one name in many stores, with temporary
+/// files opened and deleted in between and an earlier connection always
+/// alive, each connection reaches only its own store.
 #[test]
 fn a_reused_name_address_never_reaches_another_file() {
     let mut seen: HashMap<usize, HashSet<String>> = HashMap::new();
@@ -44,14 +44,13 @@ fn a_reused_name_address_never_reaches_another_file() {
         names_by_address(&mut seen);
         db.execute("INSERT INTO t VALUES (?1, randomblob(100))", [i as i64])
             .unwrap();
+        // The earlier open, of another store, keeps reaching its own store
+        // alone: its write lands there, never in this open's.
         if let Some((old, old_store)) = stale.take() {
             let commits = old_store.commits();
-            assert!(
-                old.execute("INSERT INTO t VALUES (-1, 'stale')", [])
-                    .is_err(),
-                "open {i}: the replaced connection still writes"
-            );
-            assert_eq!(old_store.commits(), commits, "open {i}");
+            old.execute("INSERT INTO t VALUES (-1, 'stale')", [])
+                .unwrap();
+            assert_eq!(old_store.commits(), commits + 1, "open {i}");
         }
         let other = Arc::new(MemPages::new());
         let (conn, registered) = open(&format!("other-{}.db", i % 10), other.clone())
@@ -215,4 +214,38 @@ fn the_clax_store_migrates_on_the_vfs() {
         )
         .unwrap();
     assert!(tables > 20, "{tables} tables after the migrations");
+}
+
+/// Two stores' files of one name are two files: opening the second leaves
+/// the first's connection working, and each reads only its own rows.
+#[test]
+fn two_stores_keep_files_of_the_same_name_apart() {
+    let (one, two) = (Arc::new(MemPages::new()), Arc::new(MemPages::new()));
+    let a = open("same.db", one.clone()).unwrap();
+    a.execute_batch("CREATE TABLE t(k INTEGER PRIMARY KEY); INSERT INTO t VALUES (1);")
+        .unwrap();
+    let b = open("same.db", two.clone()).unwrap();
+    b.execute_batch("CREATE TABLE t(k INTEGER PRIMARY KEY); INSERT INTO t VALUES (2);")
+        .unwrap();
+    a.execute("INSERT INTO t VALUES (3)", []).unwrap();
+    assert_eq!(keys(&a), [1, 3]);
+    assert_eq!(keys(&b), [2]);
+    let one: Arc<dyn PageStore> = one;
+    assert!(stats(&one, "same.db").unwrap().commits >= 2);
+}
+
+/// Opening a store's file again replaces the earlier open: the earlier
+/// connection's next write fails and reaches the store not at all.
+#[test]
+fn reopening_a_stores_file_replaces_the_earlier_connection() {
+    let store = Arc::new(MemPages::new());
+    let old = open("again.db", store.clone()).unwrap();
+    old.execute_batch("CREATE TABLE t(k INTEGER PRIMARY KEY)")
+        .unwrap();
+    let new = open("again.db", store.clone()).unwrap();
+    let commits = store.commits();
+    assert!(old.execute("INSERT INTO t VALUES (1)", []).is_err());
+    assert_eq!(store.commits(), commits);
+    new.execute("INSERT INTO t VALUES (2)", []).unwrap();
+    assert_eq!(keys(&new), [2]);
 }
