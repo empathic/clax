@@ -16,8 +16,8 @@
 //! or an agent: 403 `not_for_agents` for the owner's agents and `forbidden`
 //! for a person's (`Clax-Grant`), 403 `not_for_pages` for a request with
 //! the page marker (`x-clax-via: page`), 403 `admin_only` for a caller who
-//! may not approve ([`may_approve`]: on a local daemon the owner alone, on
-//! a hosted one the page's maker), and on the two writes 403
+//! may not approve ([`may_approve`]: on a local daemon the owner alone, so
+//! the refusal says so; on a hosted one the page's maker), and on the two writes 403
 //! `forbidden_origin` for a request from another origin. 404 for an
 //! unknown artifact. An approval or a withdrawal publishes
 //! [`Event::Permissions`].
@@ -71,6 +71,15 @@ fn not_for_pages() -> ApiError {
     )
 }
 
+/// 403 `admin_only` on a local daemon, where the owner alone approves a
+/// page's capabilities ([`may_approve`]), its maker included.
+fn owner_only() -> ApiError {
+    ApiError::forbidden(
+        "admin_only",
+        "on a local Clax only the owner approves a page's capabilities",
+    )
+}
+
 /// Whether `c`, who administers the artifact or not (`administers`,
 /// [`clax_http::agent::administers`]), may approve its declaration: never
 /// an agent; on a local daemon the owner alone, since what approving
@@ -104,7 +113,7 @@ async fn approver(
         })
         .await?;
     if !may_approve(&caller, admin, hosted) {
-        return Err(admin_only());
+        return Err(if hosted { admin_only() } else { owner_only() });
     }
     Ok(caller)
 }

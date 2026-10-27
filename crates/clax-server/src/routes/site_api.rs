@@ -13,7 +13,7 @@
 //! | `assets` | `POST` (an upload), `GET` (the list) | `/api/artifacts/<id>/assets` |
 //! | `assets/<asset ID>` | `DELETE` | `/api/artifacts/<id>/assets/<asset ID>` (an asset of `<id>`'s alone) |
 //! | `room` | `GET` (a WebSocket) | `/api/artifacts/<id>/room` |
-//! | `artifact` | `GET` | `/api/artifacts/<id>`, its `capabilities` the declaration in force ([`in_force_as_declared`]) |
+//! | `artifact` | `GET`, `HEAD` | `/api/artifacts/<id>`, its `capabilities` the declaration in force ([`in_force_as_declared`]; a `HEAD` answer without the `ETag` and `Content-Length` of the full one) |
 //! | `whoami` | `GET` | `{kind, id?, name?, level, can_edit}` ([`whoami`]) |
 //! | `read/<source>/docs`, `read/<source>/docs/<path>` | `GET` | `/api/artifacts/<source>/docs…` read for this artifact (`X-Clax-Reader`, [`read_source`]) |
 //!
@@ -250,6 +250,7 @@ async fn answer(s: AppState, api: axum::Router, mut req: Request) -> Result<Resp
         .unwrap_or_default()
         .to_string();
     let get = matches!(*req.method(), Method::GET | Method::HEAD);
+    let head = *req.method() == Method::HEAD;
     if rest == "whoami" {
         if !get {
             return Err(refuse(method_not_allowed()));
@@ -357,7 +358,11 @@ async fn answer(s: AppState, api: axum::Router, mut req: Request) -> Result<Resp
     use tower::ServiceExt as _;
     let Ok(mut res) = api.oneshot(req).await;
     if get && rest == "artifact" && res.status() == axum::http::StatusCode::OK {
-        res = in_force_as_declared(res).await.map_err(refuse)?;
+        res = if head {
+            without_body_validators(res)
+        } else {
+            in_force_as_declared(res).await.map_err(refuse)?
+        };
     }
     res.headers_mut()
         .remove(header::ACCESS_CONTROL_ALLOW_ORIGIN);
@@ -570,6 +575,16 @@ async fn in_force_as_declared(res: Response) -> Result<Response, ApiError> {
     parts.headers.remove(header::CONTENT_LENGTH);
     parts.headers.remove(header::ETAG);
     Ok(Response::from_parts(parts, Body::from(v.to_string())))
+}
+
+/// `res`, a site holder's answer to `HEAD /api/artifacts/<id>`, which has
+/// no body to narrow: its `ETag` and `Content-Length` described the full
+/// declaration's body, which the narrowed `GET` does not send, so they go.
+fn without_body_validators(res: Response) -> Response {
+    let (mut parts, body) = res.into_parts();
+    parts.headers.remove(header::CONTENT_LENGTH);
+    parts.headers.remove(header::ETAG);
+    Response::from_parts(parts, body)
 }
 
 /// `artifact` for a visitor: `{artifact: {id, title, current_version,

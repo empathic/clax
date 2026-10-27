@@ -5,7 +5,7 @@
 
 use clax_testkit::{EventReader, TestServer};
 use reqwest::Method;
-use reqwest::header::{COOKIE, HOST, ORIGIN, SET_COOKIE};
+use reqwest::header::{COOKIE, ETAG, HOST, ORIGIN, SET_COOKIE};
 use serde_json::{Value, json};
 
 const HOST_NAME: &str = "api.clax.invalid";
@@ -335,13 +335,17 @@ async fn no_agent_and_no_page_approves() {
             "{m} {path}: {body}"
         );
     }
-    // A request from another origin.
+    // A request from another origin, approving or withdrawing.
     let (status, body) = send(
         approval(&ts, &aid)
             .header(ORIGIN, "http://elsewhere.example")
             .json(&shown(&pending)),
     )
     .await;
+    assert_eq!((status, code(&body)), (403, "forbidden_origin"), "{body}");
+    let (status, body) =
+        send(authed(&ts, Method::DELETE, &withdraw).header(ORIGIN, "http://elsewhere.example"))
+            .await;
     assert_eq!((status, code(&body)), (403, "forbidden_origin"), "{body}");
 
     let a = view(&ts, &aid).await;
@@ -541,6 +545,10 @@ async fn on_a_local_daemon_a_person_does_not_approve_even_their_own_page() {
     )
     .await;
     assert_eq!((status, code(&body)), (403, "admin_only"), "{body}");
+    assert_eq!(
+        body["error"]["message"],
+        "on a local Clax only the owner approves a page's capabilities"
+    );
     let a = view(&ts, &aid).await;
     assert_eq!(a["pending_capabilities"], pending, "nothing was approved");
     assert_eq!(a["capabilities_in_force"], json!({}));
@@ -627,4 +635,24 @@ async fn a_site_holder_reads_the_declaration_in_force() {
         json!({"camera": {}, "db": {}}),
         "{v}"
     );
+}
+
+#[tokio::test]
+async fn a_site_holders_head_of_the_artifact_answers_without_the_full_bodys_validators() {
+    let ts = TestServer::spawn().await;
+    let aid = app(&ts, json!({"camera": {}, "db": {}})).await;
+    let cookie = ts.site_cookie(&aid).await;
+    let site = ts.site_host(&aid);
+    let res = ts
+        .client
+        .head(format!("{}/_clax/api/artifact", ts.base))
+        .header(HOST, &site)
+        .header(ORIGIN, format!("http://{site}"))
+        .header(COOKIE, &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers().get(ETAG), None);
+    assert!(res.bytes().await.unwrap().is_empty());
 }

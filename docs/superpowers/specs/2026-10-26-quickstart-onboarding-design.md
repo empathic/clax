@@ -192,7 +192,7 @@ No existing capability sets it in v1.
 
 ## 7. D. One permissions system
 
-- **Approval per version.** Migration 57 adds `capability_approvals
+- **Approval per version.** Migration 58 adds `capability_approvals
   (artifact_id, version_n, capabilities_json, approved_at, by)`: the
   declaration the owner approved, and at which version. A version whose
   declaration adds to the last approved one (new top-level names, or new
