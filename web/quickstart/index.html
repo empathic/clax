@@ -140,7 +140,7 @@
     codex:  { label: "Codex", sub: "Plugin from the marketplace" },
     pi:     { label: "Pi", sub: "One npm package" },
     grok:   { label: "Grok Build", sub: "The clax command sets it up" },
-    all:    { label: "Several", sub: "Set up every harness at once" },
+    all:    { label: "All local agents", sub: "Set up every harness at once" },
   };
 
   const NODES = {
@@ -171,7 +171,7 @@
         ${cmds(["curl -fsSL https://github.com/empathic/clax/releases/latest/download/install.sh | bash", "clax init --agent grok"], true)}
         <p>Then start a new Grok session.</p>
         ${tip("Approvals", "Grok asks before every tool call. For headless runs, pass <code>--always-approve</code> or <code>--allow 'MCPTool(clax_grok__*)'</code>.")}` },
-    "install-all": { kind: "small", agent: "all", kicker: "Install · every harness", title: "Several", sub: "One script covers them all",
+    "install-all": { kind: "small", agent: "all", kicker: "Install · every harness", title: "All local agents", sub: "One script covers them all",
       body: `${cmds(["curl -fsSL https://github.com/empathic/clax/releases/latest/download/install.sh | bash", "clax init"], true)}
         <p><code>install.sh</code> puts <code>clax</code> in <code>~/.local/bin</code> after checking it against the release's checksums. <code>clax init</code> registers the plugin with Claude Code, Codex, Pi and Grok Build (whichever are installed) and sets up the Chrome extension. Start a new session in each harness afterwards. Run the same two commands again to upgrade.</p>
         ${tip("Platforms", "Prebuilt releases cover macOS (Apple silicon and Intel) and Linux (x86-64 and arm64).")}` },
