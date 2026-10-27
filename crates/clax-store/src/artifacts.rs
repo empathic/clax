@@ -419,6 +419,7 @@ impl Store {
             set("capabilities", patch.capabilities.clone());
             if let Some(caps) = &patch.capabilities {
                 self.drop_undeclared_grants(tx, ctx, id, caps)?;
+                super::capability_approvals::narrow_in(self, tx, ctx, id, caps)?;
             }
             if !fields.is_empty() {
                 let mut rec =
@@ -2075,6 +2076,7 @@ impl Store {
             )?;
             if let Some(caps) = &p.capabilities {
                 self.drop_undeclared_grants(tx, ctx, id, caps)?;
+                super::capability_approvals::narrow_in(self, tx, ctx, id, caps)?;
             }
             super::inbox::note_version(
                 tx,

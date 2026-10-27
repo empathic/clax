@@ -65,6 +65,13 @@ impl From<CoreError> for ApiError {
                 err.extra.insert("current".into(), json!(current));
                 err
             }
+            // An approval of a version or declaration no longer current
+            // (`Store::approve_capabilities`): review the current one.
+            e @ CoreError::StaleVersion { current } => {
+                let mut err = ApiError::new(StatusCode::CONFLICT, "stale_version", e.to_string());
+                err.extra.insert("current".into(), json!(current));
+                err
+            }
             CoreError::DocConflict { path, current } => {
                 let mut err = ApiError::new(
                     StatusCode::CONFLICT,
@@ -163,12 +170,6 @@ impl From<CoreError> for ApiError {
                 code: "question_closed",
                 message,
             } => ApiError::new(StatusCode::CONFLICT, "question_closed", message),
-            // An approval of a version that is no longer current
-            // (`Store::approve_capabilities`): review the current one.
-            CoreError::Invalid {
-                code: "stale_version",
-                message,
-            } => ApiError::new(StatusCode::CONFLICT, "stale_version", message),
             // The home's config.toml links to a file that does not exist.
             CoreError::Invalid {
                 code: "config_symlink_dangling",
@@ -333,8 +334,9 @@ mod tests {
             (e.status, e.code),
             (StatusCode::CONFLICT, "version_present")
         );
-        let e = ApiError::from(CoreError::invalid("stale_version", "review version 5"));
+        let e = ApiError::from(CoreError::StaleVersion { current: 5 });
         assert_eq!((e.status, e.code), (StatusCode::CONFLICT, "stale_version"));
+        assert_eq!(e.extra.get("current"), Some(&json!(5)));
     }
 
     #[test]

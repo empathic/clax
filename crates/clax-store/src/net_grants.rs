@@ -313,6 +313,13 @@ mod tests {
             "a host the app no longer declares reaches nothing"
         );
         set_caps(&st, &app, json!({"net": {"hosts": ["a.example.com"]}}));
+        assert!(
+            !st.net_access(&d).unwrap().allows("a.example.com"),
+            "a host the app dropped and declares again waits for the app's approval"
+        );
+        let p = st.pending_capabilities(&app).unwrap().unwrap();
+        st.approve_capabilities(DAEMON, &app, p.version, &p.declaration_sha256, "owner")
+            .unwrap();
         assert!(st.net_access(&d).unwrap().allows("a.example.com"));
 
         st.revoke_net(DAEMON, &app).unwrap();
@@ -427,7 +434,13 @@ mod tests {
         assert_eq!(rows(&st), 1, "a host waiting for approval is not granted");
 
         let v = st.pending_capabilities(&a).unwrap().unwrap().version;
-        st.approve_capabilities(DAEMON, &a, v, "owner").unwrap();
+        let sha = st
+            .pending_capabilities(&a)
+            .unwrap()
+            .unwrap()
+            .declaration_sha256;
+        st.approve_capabilities(DAEMON, &a, v, &sha, "owner")
+            .unwrap();
         assert!(
             st.net_access(&a).unwrap().allows("new.example.com"),
             "approving grants it"
@@ -458,9 +471,14 @@ mod tests {
         ));
 
         set_caps(&st, &a, json!({"net": {"hosts": ["api.example.com"]}}));
-        assert_eq!(st.revoke_net(DAEMON, &a).unwrap(), 1);
+        let acc = st.net_access(&a).unwrap();
+        assert!(
+            !acc.allows("api.example.com"),
+            "a dropped host declared again waits for approval"
+        );
+        assert_eq!(acc.waiting, hosts(&["api.example.com"]));
+        assert_eq!(rows(&st), 0, "dropping the host revoked its grant");
         assert_eq!(st.revoke_net(DAEMON, &a).unwrap(), 0);
-        assert!(!st.net_access(&a).unwrap().allows("api.example.com"));
     }
 
     #[test]

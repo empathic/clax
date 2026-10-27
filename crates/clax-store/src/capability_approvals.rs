@@ -7,7 +7,11 @@
 //! ([`clax_core::capabilities::pending`]); with no approval on record the
 //! approved declaration is `{}`, so every first declaration of a gated name
 //! waits. Until it is approved, the declaration in force is the current
-//! one without what waits ([`clax_core::capabilities::in_force`]). A hidden
+//! one without what waits ([`clax_core::capabilities::in_force`]). Every
+//! write that changes the declaration narrows the approval to what the new
+//! declaration still has ([`clax_core::capabilities::narrow`]) and revokes
+//! the grants it no longer covers, so a name or host a version drops asks
+//! again when a later version, or a restore, declares it. A hidden
 //! draft is held to its live app's approval and is never approved itself.
 //! Deleting the artifact removes its row (a trigger on the soft delete,
 //! the foreign key on a row delete); each approval and withdrawal is
@@ -17,7 +21,7 @@ use super::Store;
 use super::docs::caps_in;
 use super::drafts::is_hidden_in;
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
-use clax_core::capabilities::{Added, GATED, in_force, pending};
+use clax_core::capabilities::{Added, GATED, declaration_sha256, in_force, narrow, pending};
 use clax_core::{ArtifactId, CoreError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
@@ -41,6 +45,10 @@ pub struct Approval {
 pub struct Pending {
     /// The current version, the one an approval names.
     pub version: u32,
+    /// [`declaration_sha256`] of the declaration this was computed from,
+    /// which an approval names with the version, so a declaration changed
+    /// at the same version is never approved unseen.
+    pub declaration_sha256: String,
     #[serde(flatten)]
     pub added: Added,
 }
@@ -112,8 +120,67 @@ fn pending_in(c: &Connection, id: &ArtifactId) -> Result<Option<Pending>> {
     }
     Ok(Some(Pending {
         version: current_version_in(c, id)?,
+        declaration_sha256: declaration_sha256(&caps),
         added,
     }))
+}
+
+/// Inside a write that sets `id`'s declaration to `caps`, narrows its
+/// approval to what `caps` still declares ([`narrow`]) and removes the
+/// `net` grants for hosts and the sample grant it no longer approves. A
+/// change is recorded as one `artifact.update` under `audit`, its fields
+/// holding `capability_approval: {narrow: <approval now>}` and any
+/// `net_grants: {revoke: [hosts]}` and `sample_grant: "revoke"`.
+pub(crate) fn narrow_in(
+    st: &Store,
+    tx: &rusqlite::Transaction<'_>,
+    audit: &AuditCtx,
+    id: &ArtifactId,
+    caps: &Value,
+) -> Result<()> {
+    let Some(approval) = approval_in(tx, id)? else {
+        return Ok(());
+    };
+    let narrowed = narrow(&approval.capabilities, caps);
+    if narrowed == approval.capabilities {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE capability_approvals SET capabilities_json = ?2 WHERE artifact_id = ?1",
+        params![id.as_str(), narrowed.to_string()],
+    )?;
+    let mut fields = json!({"capability_approval": {"narrow": narrowed}});
+    let still: Vec<String> = clax_core::capabilities::net_hosts(&narrowed)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let granted: Vec<String> = {
+        let mut stmt = tx.prepare(
+            "SELECT host FROM net_grants WHERE artifact_id = ?1 ORDER BY granted_at, host",
+        )?;
+        let rows = stmt.query_map(params![id.as_str()], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let revoked: Vec<String> = granted.into_iter().filter(|h| !still.contains(h)).collect();
+    for h in &revoked {
+        tx.execute(
+            "DELETE FROM net_grants WHERE artifact_id = ?1 AND host = ?2",
+            params![id.as_str(), h],
+        )?;
+    }
+    if !revoked.is_empty() {
+        fields["net_grants"] = json!({"revoke": revoked});
+    }
+    if narrowed.get("sample").is_none()
+        && tx.execute(
+            "DELETE FROM sample_grants WHERE artifact_id = ?1",
+            params![id.as_str()],
+        )? > 0
+    {
+        fields["sample_grant"] = json!("revoke");
+    }
+    st.record_audit(tx, audit, approval_record(st.now(), id, fields))?;
+    Ok(())
 }
 
 /// Records `caps` as `id`'s approved declaration at `version`, replacing
@@ -140,6 +207,16 @@ pub(crate) fn record_in(
         approved_at: now.to_string(),
         by: by.to_string(),
     })
+}
+
+fn refuse_draft(c: &Connection, id: &ArtifactId) -> Result<()> {
+    if is_hidden_in(c, id.as_str())? {
+        return Err(CoreError::invalid(
+            "draft",
+            "a draft is held to its app's approval; approve or withdraw on the app",
+        ));
+    }
+    Ok(())
 }
 
 /// The `artifact.update` record of an approval change, with `fields`.
@@ -181,9 +258,10 @@ impl Store {
         self.with_read(|c| pending_in(c, id))
     }
 
-    /// Approves `id`'s current declaration as of `version`, which must be
-    /// the current version, so a version published since is never approved
-    /// unseen. In one transaction it records the declaration, grants the
+    /// Approves `id`'s current declaration as of `version` and
+    /// `declaration_sha256` (a [`Pending`]'s), which must be the current
+    /// version and declaration, so neither a version published since nor a
+    /// declaration changed at the same version is approved unseen. In one transaction it records the declaration, grants the
     /// `net` hosts that waited and, when `sample` waited, the sample grant,
     /// and records one `artifact.update` under `audit` whose fields hold
     /// `capability_approval` and any `net_grants` and `sample_grant` made.
@@ -191,30 +269,22 @@ impl Store {
     /// # Errors
     /// `NotFound` when the artifact is missing or deleted; `draft`
     /// (invalid) for a hidden draft, held to its app's approval;
-    /// `stale_version` (invalid) when `version` is not the current one.
+    /// [`CoreError::StaleVersion`] when `version` or `declaration_sha256`
+    /// is not the current one.
     pub fn approve_capabilities(
         &self,
         audit: &AuditCtx,
         id: &ArtifactId,
         version: u32,
+        declaration_sha256: &str,
         by: &str,
     ) -> Result<Approval> {
         self.with_tx(|tx| {
             let caps = caps_in(tx, id)?;
-            if is_hidden_in(tx, id.as_str())? {
-                return Err(CoreError::invalid(
-                    "draft",
-                    "a draft is held to its app's approval; approve the app's version",
-                ));
-            }
+            refuse_draft(tx, id)?;
             let current = current_version_in(tx, id)?;
-            if version != current {
-                return Err(CoreError::invalid(
-                    "stale_version",
-                    format!(
-                        "version {version} is not the current version; review version {current}"
-                    ),
-                ));
+            if version != current || declaration_sha256 != self::declaration_sha256(&caps) {
+                return Err(CoreError::StaleVersion { current });
             }
             let before = approval_in(tx, id)?.map(|a| a.capabilities);
             let waited = pending(before.as_ref(), &caps);
@@ -244,7 +314,7 @@ impl Store {
             {
                 fields["sample_grant"] = json!("grant");
             }
-            self.record_audit(tx, audit, approval_record(self.now(), id, fields))?;
+            self.record_audit(tx, audit, approval_record(now, id, fields))?;
             Ok(approval)
         })
     }
@@ -256,7 +326,8 @@ impl Store {
     ///
     /// # Errors
     /// `invalid_args` (invalid) when `name` is not one of [`GATED`];
-    /// `NotFound` when the artifact is missing or deleted.
+    /// `NotFound` when the artifact is missing or deleted; `draft`
+    /// (invalid) for a hidden draft, held to its app's approval.
     pub fn withdraw_capability(
         &self,
         audit: &AuditCtx,
@@ -271,6 +342,7 @@ impl Store {
         }
         self.with_tx(|tx| {
             caps_in(tx, id)?;
+            refuse_draft(tx, id)?;
             let Some(mut approval) = approval_in(tx, id)? else {
                 return Ok(false);
             };
@@ -315,6 +387,28 @@ mod tests {
             .unwrap();
     }
 
+    /// Approves what `id`'s current version has pending, as shown.
+    fn approve(st: &Store, id: &ArtifactId) -> Approval {
+        let p = st
+            .pending_capabilities(id)
+            .unwrap()
+            .expect("something pending");
+        st.approve_capabilities(DAEMON, id, p.version, &p.declaration_sha256, "owner")
+            .unwrap()
+    }
+
+    fn set_caps(st: &Store, id: &ArtifactId, caps: Value) {
+        st.update_meta(
+            DAEMON,
+            id,
+            crate::MetaPatch {
+                capabilities: Some(caps),
+                ..crate::MetaPatch::default()
+            },
+        )
+        .unwrap();
+    }
+
     fn rows(st: &Store) -> i64 {
         st.with_read(|c| {
             Ok(
@@ -335,6 +429,9 @@ mod tests {
             st.pending_capabilities(&a).unwrap(),
             Some(Pending {
                 version: 1,
+                declaration_sha256: clax_core::capabilities::declaration_sha256(
+                    &json!({"db": {}, "net": {"hosts": ["a.example.com"]}})
+                ),
                 added: Added {
                     capabilities: strings(&["net"]),
                     hosts: strings(&["a.example.com"]),
@@ -363,7 +460,7 @@ mod tests {
         let (_d, st) = store();
         let caps = json!({"net": {"hosts": ["a.example.com"]}, "sample": {}});
         let a = artifact_declaring(&st, caps.clone());
-        let approval = st.approve_capabilities(DAEMON, &a, 1, "owner").unwrap();
+        let approval = approve(&st, &a);
         assert_eq!(
             (
                 approval.version,
@@ -409,12 +506,14 @@ mod tests {
         let (_d, st) = store();
         let a = artifact_declaring(&st, json!({"sample": {}}));
         publish(&st, &a, 1, json!({"sample": {}, "shell": {}}));
+        let sha = st
+            .pending_capabilities(&a)
+            .unwrap()
+            .unwrap()
+            .declaration_sha256;
         assert!(matches!(
-            st.approve_capabilities(DAEMON, &a, 1, "owner"),
-            Err(CoreError::Invalid {
-                code: "stale_version",
-                ..
-            })
+            st.approve_capabilities(DAEMON, &a, 1, &sha, "owner"),
+            Err(CoreError::StaleVersion { current: 2 })
         ));
         assert_eq!(rows(&st), 0, "nothing recorded");
         assert!(st.sample_grant(&a).unwrap().is_none(), "nothing granted");
@@ -425,7 +524,7 @@ mod tests {
     fn a_version_that_adds_a_host_keeps_the_approved_ones() {
         let (_d, st) = store();
         let a = artifact_declaring(&st, json!({"net": {"hosts": ["a.example.com"]}}));
-        st.approve_capabilities(DAEMON, &a, 1, "owner").unwrap();
+        approve(&st, &a);
         publish(
             &st,
             &a,
@@ -444,6 +543,9 @@ mod tests {
             st.pending_capabilities(&a).unwrap(),
             Some(Pending {
                 version: 2,
+                declaration_sha256: clax_core::capabilities::declaration_sha256(
+                    &json!({"net": {"hosts": ["a.example.com", "b.example.com"]}})
+                ),
                 added: Added {
                     capabilities: vec![],
                     hosts: strings(&["b.example.com"]),
@@ -456,13 +558,17 @@ mod tests {
     fn a_restore_of_a_dropped_host_asks_again() {
         let (_d, st) = store();
         let a = artifact_declaring(&st, json!({"net": {"hosts": ["a.example.com"]}}));
-        st.approve_capabilities(DAEMON, &a, 1, "owner").unwrap();
+        approve(&st, &a);
         publish(&st, &a, 1, json!({"net": {"hosts": ["b.example.com"]}}));
-        st.approve_capabilities(DAEMON, &a, 2, "owner").unwrap();
+        approve(&st, &a);
         st.restore_version(DAEMON, &a, 1, 2, None).unwrap();
         let p = st.pending_capabilities(&a).unwrap().unwrap();
         assert_eq!((p.version, p.added.hosts), (3, strings(&["a.example.com"])));
-        assert!(p.added.capabilities.is_empty());
+        assert_eq!(
+            p.added.capabilities,
+            strings(&["net"]),
+            "the approval holds no host of v3's, so net itself asks again"
+        );
         assert_eq!(st.capabilities_in_force(&a).unwrap(), json!({}));
         assert!(!st.net_access(&a).unwrap().allows("a.example.com"));
     }
@@ -471,7 +577,7 @@ mod tests {
     fn withdrawing_a_name_narrows_the_approval() {
         let (_d, st) = store();
         let a = artifact_declaring(&st, json!({"shell": {}, "sample": {}}));
-        st.approve_capabilities(DAEMON, &a, 1, "owner").unwrap();
+        approve(&st, &a);
         assert!(st.withdraw_capability(DAEMON, &a, "shell").unwrap());
         assert_eq!(st.capabilities_in_force(&a).unwrap(), json!({"sample": {}}));
         assert_eq!(
@@ -499,6 +605,137 @@ mod tests {
         assert!(
             !st.withdraw_capability(DAEMON, &unapproved, "shell")
                 .unwrap()
+        );
+    }
+
+    /// Asserts `a` asks again for host `a.example.com`, which a version
+    /// dropped: pending, not in force, unreachable and its grant gone.
+    fn asks_again_for_a(st: &Store, a: &ArtifactId) {
+        let p = st.pending_capabilities(a).unwrap().expect("pending again");
+        assert_eq!(
+            (p.added.capabilities, p.added.hosts),
+            (strings(&["net"]), strings(&["a.example.com"]))
+        );
+        assert_eq!(st.capabilities_in_force(a).unwrap(), json!({}));
+        let acc = st.net_access(a).unwrap();
+        assert!(!acc.allows("a.example.com"));
+        assert!(acc.grants.is_empty(), "the grant went with the host");
+    }
+
+    #[test]
+    fn a_host_a_version_drops_asks_again_on_restore() {
+        let (_d, st) = store();
+        let a = artifact_declaring(&st, json!({"net": {"hosts": ["a.example.com"]}}));
+        approve(&st, &a);
+        assert!(st.net_access(&a).unwrap().allows("a.example.com"));
+        publish(&st, &a, 1, json!({}));
+        assert_eq!(st.pending_capabilities(&a).unwrap(), None);
+        assert_eq!(
+            st.capability_approval(&a).unwrap().unwrap().capabilities,
+            json!({})
+        );
+        st.restore_version(DAEMON, &a, 1, 2, None).unwrap();
+        asks_again_for_a(&st, &a);
+
+        let fields: Vec<Value> = {
+            let bodies: Vec<String> = st
+                .with_read(|c| {
+                    let mut s = c.prepare(
+                        "SELECT body FROM audit_events WHERE kind = 'artifact.update' AND artifact_id = ?1 ORDER BY seq",
+                    )?;
+                    let r = s.query_map(params![a.as_str()], |r| r.get::<_, String>(0))?;
+                    Ok(r.collect::<rusqlite::Result<_>>()?)
+                })
+                .unwrap();
+            bodies
+                .iter()
+                .map(|b| serde_json::from_str::<Value>(b).unwrap()["fields"].clone())
+                .collect()
+        };
+        assert!(
+            fields.contains(&json!({
+                "capability_approval": {"narrow": {}},
+                "net_grants": {"revoke": ["a.example.com"]}
+            })),
+            "{fields:?}"
+        );
+    }
+
+    #[test]
+    fn a_host_a_patch_drops_asks_again() {
+        let (_d, st) = store();
+        let a = artifact_declaring(&st, json!({"net": {"hosts": ["a.example.com"]}}));
+        approve(&st, &a);
+        set_caps(&st, &a, json!({}));
+        set_caps(&st, &a, json!({"net": {"hosts": ["a.example.com"]}}));
+        asks_again_for_a(&st, &a);
+    }
+
+    #[test]
+    fn a_host_a_version_drops_asks_again_when_republished() {
+        let (_d, st) = store();
+        let a = artifact_declaring(&st, json!({"net": {"hosts": ["a.example.com"]}}));
+        approve(&st, &a);
+        publish(&st, &a, 1, json!({"db": {}}));
+        publish(&st, &a, 2, json!({"net": {"hosts": ["a.example.com"]}}));
+        asks_again_for_a(&st, &a);
+    }
+
+    #[test]
+    fn a_gated_name_a_version_drops_asks_again() {
+        let (_d, st) = store();
+        let a = artifact_declaring(&st, json!({"sample": {}, "shell": {}}));
+        approve(&st, &a);
+        assert!(st.sample_grant(&a).unwrap().is_some());
+        publish(&st, &a, 1, json!({"shell": {}}));
+        assert!(
+            st.sample_grant(&a).unwrap().is_none(),
+            "the sample grant went with the name"
+        );
+        assert_eq!(st.pending_capabilities(&a).unwrap(), None);
+        publish(&st, &a, 2, json!({"sample": {}, "shell": {}}));
+        assert_eq!(
+            st.pending_capabilities(&a)
+                .unwrap()
+                .unwrap()
+                .added
+                .capabilities,
+            strings(&["sample"])
+        );
+        assert_eq!(st.capabilities_in_force(&a).unwrap(), json!({"shell": {}}));
+    }
+
+    #[test]
+    fn a_declaration_changed_at_the_same_version_is_not_approved_unseen() {
+        let (_d, st) = store();
+        let a = artifact_declaring(&st, json!({"net": {"hosts": ["a.example.com"]}}));
+        let shown = st.pending_capabilities(&a).unwrap().unwrap();
+        set_caps(
+            &st,
+            &a,
+            json!({"net": {"hosts": ["a.example.com", "b.example.com"]}}),
+        );
+        assert!(matches!(
+            st.approve_capabilities(
+                DAEMON,
+                &a,
+                shown.version,
+                &shown.declaration_sha256,
+                "owner"
+            ),
+            Err(CoreError::StaleVersion { current: 1 })
+        ));
+        assert_eq!(rows(&st), 0, "nothing recorded");
+        assert!(
+            st.net_access(&a).unwrap().grants.is_empty(),
+            "nothing granted"
+        );
+        let now = st.pending_capabilities(&a).unwrap().unwrap();
+        assert_eq!(now.version, 1);
+        assert_ne!(now.declaration_sha256, shown.declaration_sha256);
+        assert_eq!(
+            now.added.hosts,
+            strings(&["a.example.com", "b.example.com"])
         );
     }
 
@@ -535,17 +772,22 @@ mod tests {
         assert_eq!(acc.declared, strings(&["a.example.com"]));
         assert_eq!(acc.waiting, strings(&["b.example.com"]));
         let p = st.pending_capabilities(&d).unwrap().unwrap();
+        let p_sha = p.declaration_sha256.clone();
         assert_eq!(
             (p.added.capabilities, p.added.hosts),
             (strings(&["sample"]), strings(&["b.example.com"]))
         );
         let before = rows(&st);
         assert!(matches!(
-            st.approve_capabilities(DAEMON, &d, n, "owner"),
+            st.approve_capabilities(DAEMON, &d, n, &p_sha, "owner"),
             Err(CoreError::Invalid { code: "draft", .. })
         ));
         assert_eq!(rows(&st), before, "nothing recorded");
         assert!(st.sample_grant(&d).unwrap().is_none());
+        assert!(matches!(
+            st.withdraw_capability(DAEMON, &d, "net"),
+            Err(CoreError::Invalid { code: "draft", .. })
+        ));
     }
 
     #[test]
@@ -553,15 +795,16 @@ mod tests {
         let (_d, st) = store();
         let a = artifact_declaring(&st, json!({"sample": {}}));
         let kept = artifact_declaring(&st, json!({"sample": {}}));
-        st.approve_capabilities(DAEMON, &a, 1, "owner").unwrap();
-        st.approve_capabilities(DAEMON, &kept, 1, "owner").unwrap();
+        approve(&st, &a);
+        approve(&st, &kept);
         st.delete_artifact(DAEMON, &a).unwrap();
         assert_eq!(rows(&st), 1);
         for r in [
             st.capability_approval(&a).map(|_| ()),
             st.capabilities_in_force(&a).map(|_| ()),
             st.pending_capabilities(&a).map(|_| ()),
-            st.approve_capabilities(DAEMON, &a, 1, "owner").map(|_| ()),
+            st.approve_capabilities(DAEMON, &a, 1, "x", "owner")
+                .map(|_| ()),
         ] {
             assert!(matches!(r, Err(CoreError::NotFound)), "{r:?}");
         }

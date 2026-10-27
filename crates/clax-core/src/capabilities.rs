@@ -226,9 +226,46 @@ pub fn in_force(approved: Option<&Value>, next: &Value) -> Value {
     out
 }
 
+/// `approved` cut to what `next` still declares: each [`GATED`] name `next`
+/// lacks is removed and `net.hosts` is narrowed to the hosts `next` lists
+/// (`net` removed when none remain); other names are kept. A `next` that is
+/// not an object declares nothing. A name or host a version drops is so no
+/// longer approved, and asks again when a later version declares it.
+#[must_use]
+pub fn narrow(approved: &Value, next: &Value) -> Value {
+    let mut out = approved.clone();
+    let Some(map) = out.as_object_mut() else {
+        return out;
+    };
+    let declares = |k: &str| next.as_object().is_some_and(|m| m.contains_key(k));
+    map.retain(|k, _| !GATED.contains(&k.as_str()) || declares(k));
+    if let Some(net) = map.get_mut("net") {
+        let still = hosts_of(next);
+        let kept: Vec<Value> = hosts_of(approved)
+            .into_iter()
+            .filter(|h| still.contains(h))
+            .map(|h| Value::String(h.to_string()))
+            .collect();
+        if kept.is_empty() {
+            map.remove("net");
+        } else if let Some(o) = net.as_object_mut() {
+            o.insert("hosts".into(), Value::Array(kept));
+        }
+    }
+    out
+}
+
+/// The lowercase hex SHA-256 of `caps` in its JCS canonical form
+/// ([`crate::audit::args::canonical`]): what an approval names to say
+/// which declaration was shown.
+#[must_use]
+pub fn declaration_sha256(caps: &Value) -> String {
+    crate::audit::sha256_hex(crate::audit::args::canonical(caps).as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{added, in_force, net_hosts, pending, validate};
+    use super::{added, declaration_sha256, in_force, narrow, net_hosts, pending, validate};
     use serde_json::json;
 
     #[test]
@@ -373,6 +410,36 @@ mod tests {
             ),
             json!({"net": {"hosts": ["b.com"]}})
         );
+    }
+
+    #[test]
+    fn narrow_keeps_what_the_next_declaration_still_declares() {
+        let approved =
+            json!({"db": {}, "sample": {}, "shell": {}, "net": {"hosts": ["a.com", "b.com"]}});
+        assert_eq!(
+            narrow(
+                &approved,
+                &json!({"sample": {}, "net": {"hosts": ["b.com", "c.com"]}})
+            ),
+            json!({"db": {}, "sample": {}, "net": {"hosts": ["b.com"]}})
+        );
+        assert_eq!(
+            narrow(&approved, &json!({"net": {"hosts": ["c.com"]}})),
+            json!({"db": {}})
+        );
+        assert_eq!(narrow(&approved, &json!(null)), json!({"db": {}}));
+        assert_eq!(narrow(&approved, &approved), approved);
+    }
+
+    #[test]
+    fn the_declaration_hash_ignores_key_order() {
+        let a: serde_json::Value =
+            serde_json::from_str(r#"{"net":{"hosts":["a.com"]},"db":{}}"#).unwrap();
+        let b: serde_json::Value =
+            serde_json::from_str(r#"{"db":{},"net":{"hosts":["a.com"]}}"#).unwrap();
+        assert_eq!(declaration_sha256(&a), declaration_sha256(&b));
+        assert_eq!(declaration_sha256(&a).len(), 64);
+        assert_ne!(declaration_sha256(&a), declaration_sha256(&json!({})));
     }
 
     #[test]
