@@ -1,14 +1,19 @@
 // Copies the quickstart page (web/quickstart) into web/dist/quickstart, so
 // the binary embeds it: only the files in SHIPPED, never the ideas page, its
-// data, the README or the .qual records. Copies, never links; a symlinked
+// data, the README or the .qual records. The copy of index.html leaves out
+// its `<script src="ideas-data.js">` tag (IDEAS_TAG), as the file it loads
+// does not ship. Copies, never links; a symlinked
 // web/dist/quickstart is refused, as clean-dist.mjs refuses a symlinked
 // web/dist.
-import { cpSync, lstatSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { cpSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** The quickstart's shipped paths; a trailing "/" is a directory, copied whole. */
 export const SHIPPED = ["index.html", "style.css", "icon.svg", "clax.json", "logos/"];
+
+/** index.html's line loading the ideas data, which a shipped copy drops. */
+export const IDEAS_TAG = /^[ \t]*<script src="ideas-data\.js"><\/script>\r?\n/m;
 
 const stat = p => { try { return lstatSync(p); } catch (e) { if (e.code === "ENOENT") return null; throw e; } };
 
@@ -31,7 +36,8 @@ export function copyQuickstart(src, dest) {
     const s = stat(from);
     if (!s || (dir ? !statSync(from).isDirectory() : !s.isFile())) throw new Error(`build-quickstart: ${from} is missing`);
     mkdirSync(dirname(join(dest, rel)), { recursive: true });
-    cpSync(from, join(dest, rel), { recursive: dir, dereference: false });
+    if (name === "index.html") writeFileSync(join(dest, rel), readFileSync(from, "utf8").replace(IDEAS_TAG, ""));
+    else cpSync(from, join(dest, rel), { recursive: dir, dereference: false });
     if (dir) copied.push(...files(from, name));
     else copied.push(name);
   }
