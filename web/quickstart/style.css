@@ -55,10 +55,10 @@
   .edges marker path { fill: var(--edge); }
   .edges marker.m-done path { fill: var(--ok); }
   .edges text { fill: var(--muted); font-size: 11px; }
-  .row { position: relative; display: flex; justify-content: center; flex-wrap: wrap; gap: 14px; margin: 0 0 34px; }
+  .row { position: relative; display: flex; justify-content: center; flex-wrap: wrap; gap: 14px 26px; margin: 0 0 34px; }
   .row:last-child { margin-bottom: 0; }
 
-  .node { position: relative; z-index: 1; width: 260px; max-width: 100%; text-align: left; padding: 12px 14px 12px 42px; border-radius: 10px;
+  .node { position: relative; z-index: 1; width: 260px; max-width: 100%; min-height: 64px; text-align: left; padding: 12px 20px 12px 18px; border-radius: 10px;
     border: 1px solid var(--line); background: var(--surface); box-shadow: var(--shadow); transition: border-color .15s, opacity .2s, transform .15s; }
   .node:hover { border-color: var(--accent); }
   .node:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -66,22 +66,21 @@
   .node.terminal { justify-content: center; }
   .node .t { display: block; font-weight: 620; }
   .node .s { display: block; color: var(--muted); font-size: 13px; line-height: 1.4; margin-top: 2px; }
-  .node .n { position: absolute; left: 12px; top: 12px; width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid var(--edge);
-    font-size: 11px; font-weight: 700; display: grid; place-items: center; color: var(--muted); background: var(--surface); }
+  .node .n { position: absolute; left: -10px; top: 50%; transform: translateY(-50%); z-index: 3; width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid var(--edge);
+    font-size: 11px; font-weight: 700; display: grid; place-items: center; color: var(--muted); background: var(--bg); }
   .node.done .n { background: var(--ok); border-color: var(--ok); color: var(--surface); }
   .node.done .n::after { content: "✓"; font-size: 12px; }
   .node.done .n span { display: none; }
   .node.sel { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); }
   .node.dim { opacity: .45; }
-  .node.small { width: 182px; padding-left: 36px; }
+  .node.small { width: 182px; min-height: 92px; }
   .node.small.inst { width: 132px; padding-right: 10px; border-top: 3px solid var(--brand, var(--line)); }
   .node.inst:hover, .node.inst.sel { border-color: var(--brand); }
   .node.inst.sel { box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 25%, transparent), var(--shadow); }
   .node .mark { display: block; width: 26px; height: 26px; margin: 0 0 6px; color: var(--brand); }
   .node .mark svg { width: 100%; height: 100%; }
   .row:has(> .inst) { gap: 10px; }
-  .node.small .n { left: 9px; }
-  .node.terminal { border-radius: 999px; padding-left: 42px; }
+  .node.terminal { width: 280px; border-radius: 999px; padding-left: 24px; }
   .node .idea { position: absolute; right: 8px; top: 8px; font-size: 11px; color: var(--accent); }
 
   .decision { position: relative; z-index: 1; width: 280px; height: 112px; display: grid; place-items: center; text-align: center; padding: 0 64px;
@@ -140,14 +139,14 @@
   .ring-hub span:last-child { color: var(--muted); font-size: 13px; }
   .ring-spin { display: inline-block; font-size: 30px; line-height: 1; color: var(--accent); animation: ring-spin 6s linear infinite; justify-self: center; }
   @keyframes ring-spin { to { transform: rotate(360deg); } }
-  .ring-node { position: absolute; width: 190px; transform: translate(-50%, -50%); }
+  .ring-node { position: absolute; width: 200px; transform: translate(-50%, -50%); }
   .ring-0 { left: 50%; top: 12%; }
   .ring-1 { left: 84%; top: 70%; }
   .ring-2 { left: 16%; top: 70%; }
   @media (prefers-reduced-motion: reduce) { .ring-arc, .ring-spin { animation: none; } }
   @media (max-width: 900px) {
     .ring { height: 440px; }
-    .ring-node, .node.ring-node { width: 46%; max-width: 200px; padding-left: 36px; }
+    .ring-node, .node.ring-node { width: 46%; max-width: 200px; }
     .ring-0 { top: 12%; } .ring-1 { left: 75%; top: 80%; } .ring-2 { left: 25%; top: 80%; }
     .ring-hub { width: 150px; }
   }
@@ -185,7 +184,7 @@
     aside.panel.open { transform: none; }
     .panel .close { display: block; }
     .node { width: 100%; max-width: 340px; }
-    .node.small, .node.small.inst { width: calc(50% - 7px); max-width: 220px; padding-left: 38px; }
+    .node.small, .node.small.inst { width: calc(50% - 13px); max-width: 220px; }
   }
 
   /* Boxes are focusable divs, so a box can hold its own button. */
@@ -204,21 +203,19 @@
   .lane-bot { flex: 0 0 170px; display: flex; align-items: flex-start; }
   .lane-bot .node { width: 170px; }
   @media (max-width: 900px) {
-    .row.split { gap: 8px; }
+    .row.split { gap: 22px; }
     .lane-new { flex: 1 1 0; }
-    .lane-bot { flex: 0 0 31%; }
-    .lane-bot .node, .lane-bot .node.small { width: 100%; padding: 10px 6px 10px 30px; overflow-wrap: anywhere; }
-    .lane-bot .node.small .n { left: 6px; top: 10px; }
-    .lane-new .install-box { padding: 10px 8px 10px 30px; }
-    .lane-new .install-box .n { left: 6px; top: 10px; }
+    .lane-bot { flex: 0 0 30%; }
+    .lane-bot .node, .lane-bot .node.small { width: 100%; padding: 10px 14px 10px 14px; overflow-wrap: anywhere; }
+    .lane-new .install-box { padding: 10px 14px 10px 14px; }
     .lane-new .chip-agent { max-width: 100%; border-radius: 12px; line-height: 1.2; text-align: left; }
   }
   .lane-new > .row.installs { max-width: 440px; margin-left: auto; margin-right: auto; gap: 10px; }
   .node .skip { margin-top: 10px; align-self: flex-start; text-align: left; position: relative; z-index: 2; }
   .muted-note .linkbtn { font-size: inherit; }
   /* Five next steps in one row. */
-  .row.branches { gap: 10px; }
-  .row.branches .node.small { width: 148px; }
+  .row.branches { gap: 14px 24px; }
+  .row.branches .node.small { width: 140px; }
 
   /* One install box, a chip per agent. */
   .node.install-box { width: 100%; max-width: 420px; }
@@ -243,7 +240,7 @@
     50%      { box-shadow: 0 0 0 7px color-mix(in srgb, var(--ok) 0%, transparent), 0 0 14px color-mix(in srgb, var(--ok) 60%, transparent); }
   }
   @media (prefers-reduced-motion: reduce) { .fab.beckon { animation: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 35%, transparent); } }
-  @media (max-width: 900px) { .fab { right: -10px; width: 26px; height: 26px; } }
+  @media (max-width: 900px) { .fab { right: -10px; width: 26px; height: 26px; } .node .n { left: -9px; width: 18px; height: 18px; font-size: 10px; } .row.branches .node.small { width: calc(50% - 12px); } }
 
   /* What is in flight, on the ideas page. */
   .flight { border: 1px solid var(--line); background: var(--surface); border-radius: 12px; padding: 12px 16px; margin-bottom: 16px; }
