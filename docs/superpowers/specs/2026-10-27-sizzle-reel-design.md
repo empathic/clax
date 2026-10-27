@@ -1,20 +1,36 @@
 # The sizzle reel: Clax's real UI in about 70 seconds
 
-Status: draft for the owner's review (2026-10-27).
+Status: draft; the owner's decisions of 2026-10-27 on the five open
+questions (§14) are folded in.
 
 ## 1. Intent
 
 A short video of Clax's real UI: a cold open, then six to eight vignettes
 of six to eight seconds, each behind a one-line title card ("Realtime
 collaboration", …), then an end card. About 70 seconds in full, and a
-cut of about 45 seconds. It plays on the landing page (the Clax
-Quickstart, `web/quickstart/`, published on clax.dev) and is shown in the
-README.
+cut of about 45 seconds. The README shows a short animated GIF of it,
+linked to the landing page; the landing page, the Clax Quickstart, plays
+the full video once that is published (§11).
 
 The reel is a **build artifact**. Its inputs live in the repository: the
 vignette scripts, `reel.toml`, the card templates and the composer. Its
 frames, clips, MP4, GIF and poster are build outputs, never committed.
 Uploading is a separate, explicit, confirming step.
+
+It is built and shipped in three phases, in this order:
+
+1. **The README GIF.** The recorder, the deterministic mode, the three
+   vignettes the GIF draws on (`point`, `version`, `realtime`), the GIF
+   render (§9.4), its upload to the landing artifact and the README block.
+2. **The full video, as a build output.** The remaining vignettes, the
+   cards, the composition: `reel.mp4`, `reel-45.mp4` and the poster, built
+   by `bazel build //web/reel:reel` and copied to `target/reel/`. Nothing
+   is uploaded.
+3. **Publishing the video (later).** Byte ranges on assets, the player on
+   the landing page, and the upload of `reel.mp4` (the landing page's
+   player and the GitHub release asset).
+
+Phases 2 and 3 do not block phase 1, and phase 1 needs no MP4.
 
 ## 2. Owner decisions (2026-10-27, binding)
 
@@ -41,10 +57,38 @@ Uploading is a separate, explicit, confirming step.
   re-renders only what an input changed.
 - D6. `just reel-upload` shows size, duration and source commit, asks,
   then uploads, and writes a manifest (commit, date, per-vignette
-  hashes). Destinations: (b) a clax.dev artifact that plays the video,
-  updated in place so its URL is stable (primary), and (a) a GitHub
-  release asset at release time.
-- D7. Shown on the landing page and embedded in the README.
+  hashes). Destinations: the landing artifact on clax.dev, updated in
+  place so its URL is stable (primary), and a GitHub release asset at
+  release time. What it uploads is phased (§10): the GIF first; the MP4
+  (the landing page's player and the release asset) later.
+- D7. The README shows a linked animated GIF (D12); the landing page
+  plays the full video once it is published (phase 3).
+
+Decisions on the open questions (2026-10-27, binding; §14):
+
+- D8. **The landing page is the Clax Quickstart.** The repository keeps
+  one clean, canonical version of it, `web/quickstart/`: it already ships
+  in the web build, is seeded into every new gallery, and the clax.dev
+  landing artifact is published from it. `reel-upload` attaches the reel
+  to that artifact. Which clax.dev artifact it is gets fixed when it is
+  first published (§9.3, `[upload]`).
+- D9. **The encoder is x264**, through fframes' `h264` and
+  `libav-agree-gpl` features. The GPL is acceptable because the composer
+  is a developer tool that is never shipped; it does not reach Clax's
+  binaries or the video (R2).
+- D10. **Silent.** No audio track in the first version; a music bed may
+  come later.
+- D11. **Light theme only** in the first version; a dark render comes
+  later.
+- D12. **The README shows a linked animated GIF, rendered independently
+  of the video** (§9.4): its own short loop (6 to 10 seconds) of the
+  strongest beats, made from the recorded frames, not transcoded from
+  `reel.mp4`, with its own size, frame rate and palette budget.
+- D13. **The full video is a build output first.** `reel.mp4` is built
+  and kept in `target/reel/`; publishing it (landing-page player,
+  release asset) is a later phase, after the GIF and the README.
+- D14. **The Clax app is out of scope** (unreleased): no vignette shows a
+  phone or the app.
 
 ## 3. The vignettes
 
@@ -52,7 +96,8 @@ Each vignette is one script, `web/reel/vignettes/<id>.ts`, exporting a
 `Vignette` (§6.2). "Camera" is the local person's browser, the one
 recorded; the other browsers act but are not filmed. All copy on the
 seeded pages is invented for the reel (a fictional team, "Northwind",
-planning a launch); no real person or company appears.
+planning a launch); no real person or company appears. The Clax app is
+unreleased and out of scope (D14): no vignette shows it.
 
 | # | ID | Title card | In the 45 s cut | Seconds |
 |---|---|---|---|---|
@@ -141,7 +186,7 @@ wrong thing.
 
 ```
 web/reel/                      the recorder (TypeScript, the web pnpm project)
-  reel.toml                    vignettes, titles, durations, cuts, look
+  reel.toml                    vignettes, titles, durations, cuts, the GIF, the landing artifact
   config.ts                    reads and checks reel.toml
   director.ts                  the beat API a vignette uses (§6.2)
   cursor.ts                    the injected cursor (§6.3)
@@ -154,8 +199,9 @@ web/reel/                      the recorder (TypeScript, the web pnpm project)
   *.test.ts                    vitest units for config, pace, director
 tools/reel-compose/            the composer (Rust, a Cargo workspace of its own)
   Cargo.toml, Cargo.lock       fframes 1.3.0 and nothing from Clax
-  src/main.rs                  subcommands: clip, compose, loop, poster, probe
+  src/main.rs                  subcommands: gif, clip, compose, poster, probe
   src/tokens.rs                design/tokens.json → card colours, type, motion
+  src/gif.rs                   the README GIF: segments from frames (§9.4)
   src/cards.rs                 title card, end card, transitions (fframes Video)
   src/reel.rs                  the composition: scenes from reel.toml
   BUILD.bazel                  //tools/reel-compose:reel-compose
@@ -182,8 +228,9 @@ scripts/reel-upload.sh         the upload (§10), and its test
 
 ## 5. The look
 
-- **Canvas:** 1920 × 1080, 30 fps, light theme (`prefers-color-scheme:
-  light` forced in every browser context). The camera's browser
+- **Canvas:** 1920 × 1080, 30 fps, light theme only (`prefers-color-scheme:
+  light` forced in every browser context; a dark render is a later
+  addition, D11). The camera's browser
   viewport is 1280 × 800 CSS pixels at device scale 1.25, so a capture is
   1600 × 1000 pixels; the composer places it in a window frame on the
   canvas (§9.2) and never scales it up.
@@ -307,8 +354,9 @@ people's pointers are Clax's live layers, which the shell draws.
 | `<id>_fast` | the vignette in fast mode: `clip.webm`, `beats.json` |
 | `<id>_frames` | the vignette in deterministic mode: `frames/`, `beats.json` |
 | `<id>_clip` | `<id>.mp4`: the frames encoded by `reel-compose clip` |
-| `reel` | `reel.mp4`, `reel-45.mp4`, `reel.gif`, `reel-poster.png` from every `<id>_clip` and `reel.toml` |
-| `reel_fast` | the same from every `<id>_fast` |
+| `reel_gif` | `reel.gif` from the `<id>_frames` of the vignettes `[gif]` names and `reel.toml`; independent of every `<id>_clip` and of `reel` (§9.4) |
+| `reel` | `reel.mp4`, `reel-45.mp4`, `reel-poster.png` from every `<id>_clip` and `reel.toml` |
+| `reel_fast` | the same as `reel` from every `<id>_fast` |
 
 - Every target is tagged `manual`, so `//...`, `just ci` and `just
   test-affected` never build one. The recorder targets are also
@@ -334,7 +382,11 @@ people's pointers are Clax's live layers, which the shell draws.
   downloads a prebuilt static FFmpeg from that crate's GitHub releases
   (no checksum) or compiles FFmpeg from a git clone (nasm and clang
   needed), runs bindgen against libclang, and with the `h264` feature
-  links the system's x264 (Homebrew `x264`; `libx264-dev` on Linux). Its
+  links the system's x264 (Homebrew `x264`; `libx264-dev` on Linux). x264
+  was chosen over macOS's VideoToolbox encoder (D9): it is a software
+  encoder with `crf`, `preset` and `tune` controls, it runs the same on
+  macOS and on the Linux CI runner, and the GPL it carries stays in a
+  developer tool that is never shipped. Its
   build-script action is tagged `requires-network`, `no-sandbox`,
   `no-remote`, and gets `LIBCLANG_PATH` and `FFMPEG_BINARIES_CACHE`
   (under `~/.cache/clax-reel/ffmpeg`, outside every worktree). Once
@@ -353,7 +405,8 @@ people's pointers are Clax's live layers, which the shell draws.
   `codec_params` `crf`, `preset`, `tune`). No ffmpeg command line is
   needed. Its `Previewer` renders single frames to PNG (the poster) and
   `Previewer::inspect` reports missing fonts and clipped text (a test).
-- `just reel` builds `//web/reel:reel` and copies its files into
+- `just reel --gif` builds `//web/reel:reel_gif` and copies `reel.gif` and
+  `build.json` into `target/reel/` (phase 1). `just reel` builds `//web/reel:reel` and copies its files into
   `target/reel/` with `build.json` (the commit `git rev-parse HEAD`, and
   whether the reel's inputs were dirty); `just reel <id>` builds
   `<id>_clip` (and `--fast`, `<id>_fast`) and copies it; `just reel
@@ -366,7 +419,7 @@ people's pointers are Clax's live layers, which the shell draws.
 
 `reel-compose` subcommands, each a pure function of its inputs:
 
-- `clip <frames-dir> --fps 30 -o <id>.mp4`: a fframes `Video` whose
+- `clip <frames-dir> --fps 30 -o <id>.mp4` (phase 2): a fframes `Video` whose
   frame `n` is the vignette's PNG `n`, x264 at `crf 12`, `preset slow`,
   `tune animation`: near-lossless, so composition re-encodes once.
 - `compose --config reel.toml --cut full|45 --clips <dir> --tokens
@@ -374,15 +427,15 @@ people's pointers are Clax's live layers, which the shell draws.
   Final encode H.264 High, yuv420p, BT.709, `crf 20`, `preset slow`,
   `tune animation`, faststart, no audio track. Budget: under 18 MiB
   (the asset limit is 20 MiB, `asset_too_large`).
-- `loop --clip <clips>/realtime.mp4 --from <beat> --seconds 8 -o reel.gif`:
-  the README loop, 720 × 405, 12 fps, a caption bar, palette quantised
-  by the `gif` crate (NeuQuant). Budget: under 5 MiB.
+- `gif --config reel.toml --frames <dir> --tokens design/tokens.json --font-dir <dir> -o reel.gif`:
+  the README GIF, from the vignettes' PNG frames and never from an MP4
+  (§9.4). Budget: under 2 MiB.
 - `poster --config reel.toml --clips <dir> -o reel-poster.png`: the
   frame `reel.toml` names (`[poster] at`).
 - `probe <file>`: JSON `{duration_s, width, height, bytes}`, for
   `reel-upload` and tests.
 
-### 8.2 CI
+### 8.2 CI (phase 3)
 
 A workflow of its own, `.github/workflows/reel.yml`: weekly
 (`schedule`) and on demand (`workflow_dispatch`), on a Linux runner,
@@ -445,27 +498,94 @@ footer = "clax.dev"
 vignette = "realtime"
 at = 3.5
 
-[loop]
+[gif]                       # §9.4: its own render, not the video's
+fps = 15
+size = [720, 450]           # the capture's 16:10, scaled; the caption bar is added below it
+caption_px = 36
+max_mib = 2
+
+[[gif.segment]]
+vignette = "point"
+beat = "pointed"
+offset = -0.3               # seconds from the beat
+seconds = 2.5
+caption = "Point at anything"
+
+[[gif.segment]]
+vignette = "version"
+beat = "v4"
+offset = -0.3
+seconds = 2.5
+caption = "A new version, in seconds"
+
+[[gif.segment]]
 vignette = "realtime"
-from = 1.0
-seconds = 8
+beat = "tick"
+offset = -1.0
+seconds = 3
+caption = "Realtime collaboration"
 
 [upload]
-landing = ""   # the clax.dev landing page's URL (open question Q1)
+landing_artifact = ""       # the landing artifact's ID on clax.dev (D8)
+landing = ""                # its public URL
 ```
+
+`[upload]` is empty until the Quickstart is first published to clax.dev
+from `web/quickstart/`; the commit that follows that first publish sets
+both keys (the ID is the last path segment of the URL, and `config.ts`
+checks that it is). `reel-upload` and the README block refuse and wait
+while they are empty. The local artifact the landing artifact is linked
+to is per machine, in `~/.config/clax/reel/upload.toml` (§10), never in
+the repository.
 
 `config.ts` and the composer read the same file and refuse: an unknown
 key, a vignette ID with no script, a title in a vignette marked
 `cold-open`, a duration outside 3–10 s, a full reel outside 60–80 s, a
-short cut outside 40–50 s.
+short cut outside 40–50 s, a `[gif]` of fewer than two or more than four
+segments or outside 6–10 s in all, a `[gif]` segment naming a vignette or
+beat that does not exist, and a `landing` that does not end in
+`landing_artifact`.
+
+### 9.4 The README GIF
+
+The GIF is **its own short render**, not a transcode of `reel.mp4`. It
+reads the same deterministic frames the video's clips are made from
+(`<id>_frames`, `beats.json`) and nothing else of the video: no cards, no
+window frame, no transitions, no H.264 generation loss before the
+palette. That lets it be sized and paced for a README, and be built in
+phase 1 with no MP4 at all.
+
+- **Cut list.** `[gif.segment]` tables (§9.3) name a vignette, a beat in
+  its `beats.json`, an offset and a length: the strongest beats, 6 to 10
+  seconds in all, three segments in the draft (a comment pinned to a
+  chart, the new version swapping in, three people on one page, 8 s).
+  Segments join with hard cuts; the loop restarts at the first.
+- **Size and pace.** 720 px wide (a README column, shown at `width=720`),
+  the capture's 16:10 scaled to 720 × 450 plus a 36 px caption bar in
+  `card` with the segment's caption in Inter at `fg`; 15 fps, from every
+  second source frame, with delays of 7, 7 and 6 centiseconds in turn
+  (the GIF format counts in hundredths of a second).
+- **Palette and encoding.** One global palette of 256 colours, quantised
+  by the `gif` crate's NeuQuant over a sample of every segment's frames,
+  no dithering (the UI is flat colour); each frame after a segment's
+  first stores only the rectangle that changed, unchanged pixels
+  transparent. Budget: under 2 MiB (`max_mib`); the composer fails above
+  it and prints the frame that grew most, so the cut list or the size is
+  tuned, never the palette quietly cut.
+- **Deterministic.** The same frames and `reel.toml` give the same GIF,
+  byte for byte, on one machine.
 
 ## 10. Uploading
 
-`just reel-upload [--release vX.Y.Z]` runs `scripts/reel-upload.sh`:
+`just reel-upload [--video] [--release vX.Y.Z]` runs
+`scripts/reel-upload.sh`. Phase 1 builds the GIF part; the `--video` part
+and the release's MP4 are phase 3 and do not exist before it.
 
 1. Reads `target/reel/build.json`. Refuses when the build's inputs were
-   dirty, or `HEAD` is not the build's commit (rebuild with `just reel`).
-2. Prints `reel.mp4`'s size in MiB, its duration (`reel-compose probe`),
+   dirty, or `HEAD` is not the build's commit (rebuild with `just reel
+   --gif`, or `just reel` for the video).
+2. Prints what it will upload with its size in MiB (`reel.gif`; with
+   `--video`, `reel.mp4` too, and its duration by `reel-compose probe`),
    the source commit and its subject, and each destination; asks
    `Upload? [y/N]`; anything but `y` stops with nothing changed. There is
    no flag that skips the question.
@@ -475,20 +595,28 @@ short cut outside 40–50 s.
    one in `~/.config/clax/reel/upload.toml` (`artifact = "<ID>"`); the
    script checks with `GET /api/artifacts/<ID>/remotes` that its link's
    `url` is `reel.toml`'s `[upload] landing`, and refuses otherwise.
-   Then: `clax asset upload <ID> reel.mp4 reel-poster.png --json`;
-   publish a version carrying `reel.json` (below), `reel.gif` and
-   `reel-manifest.json`, labelled `Reel <short commit>`; `clax push
-   <ID>`, which uploads the assets the version names to the public copy
-   once and rewrites their addresses (`docs/contract.md`, "Pushing").
-   The public artifact, and so its URL, stays the same.
+   It stages a scratch directory (copies, never links) holding the
+   Quickstart's files exactly as `web/quickstart/` publishes them
+   (`clax publish index.html --dir web/quickstart`) plus `reel.gif` and
+   `reel-manifest.json`, and publishes that as a version labelled `Reel
+   <short commit>`. The landing artifact is published only this way,
+   because a publish carries exactly the files it names and the push
+   removes any file the release lacks: publishing `web/quickstart/` alone
+   would take `reel.gif` out from under the README (R8). Then `clax push
+   <ID>`. The public artifact, and so its URL, stays the same.
+   With `--video` (phase 3): `clax asset upload <ID> reel.mp4
+   reel-poster.png --json` first, and the version also carries
+   `reel.json` (below), so `push` uploads the assets the version names
+   to the public copy once and rewrites their addresses
+   (`docs/contract.md`, "Pushing").
 4. **The release (with `--release`).** `gh release upload vX.Y.Z
-   clax-reel.mp4 clax-reel.gif clax-reel-manifest.json`, after asking
-   again; refuses a release that already has those assets (no
-   `--clobber`). `scripts/release.sh`'s last step ("what is left by
-   hand") names this command.
+   clax-reel.gif clax-reel-manifest.json`, and with `--video`
+   `clax-reel.mp4`, after asking again; refuses a release that already
+   has those assets (no `--clobber`). `scripts/release.sh`'s last step
+   ("what is left by hand") names this command.
 5. Writes `target/reel/manifest.json` and prints the landing URL.
 
-`reel.json`, the page's pointer to its video:
+`reel.json` (phase 3), the page's pointer to its video:
 
 ```json
 {"video": "/_clax/blob/<asset ID>", "poster": "/_clax/blob/<asset ID>",
@@ -496,12 +624,20 @@ short cut outside 40–50 s.
 ```
 
 The manifest: `{commit, date, macos, chromium, mode: {<id>:
-"deterministic"|"fast"}, clips: {<id>: "<sha256>"}, outputs: {"reel.mp4":
-"<sha256>", …}}`.
+"deterministic"|"fast"}, clips: {<id>: "<sha256>"}, outputs: {"reel.gif":
+"<sha256>", …}}`; `clips` holds the hash of each vignette's frame set the
+GIF (and, later, the video) was made from.
 
 ## 11. Where it is shown
 
-### 11.1 The landing page
+### 11.1 The landing page (phase 3: the video)
+
+`web/quickstart/` is the canonical Quickstart (D8): one clean version in
+the repository, which the web build embeds in the binary, which is seeded
+into new galleries, and from which the clax.dev landing artifact is
+published (§10). Phase 1 changes nothing on the page itself: the reel
+reaches it as a file, `reel.gif`, that the README links to. The player
+below is phase 3.
 
 The page contract keeps a page to its own files and assets
 (`docs/contract.md`, "Page contract"; the site's lockdown policy,
@@ -536,32 +672,29 @@ blob:`), so the video is an **asset of the landing artifact**, served at
   existing concern (record `a7ee35dc`), which a video's many range
   requests make more frequent.
 
-### 11.2 The README
+### 11.2 The README (phase 1)
 
 GitHub plays inline video only for attachments uploaded through its own
 editor; an `.mp4` linked from anywhere else is a link. The README shows
-a **linked animated GIF**:
+a **linked animated GIF** (D12), the independent render of §9.4:
 
 ```html
 <p align="center">
   <a href="<landing URL>"><img src="<landing site>/reel.gif" width="720"
-     alt="Clax in 70 seconds: an agent publishes a page, a person points
-     at a chart and comments, the agent ships a new version, and three
-     people work on one page at once"></a>
+     alt="Clax: a person points at a chart and comments, the agent ships
+     a new version, and three people work on one page at once"></a>
 </p>
 ```
 
 below the opening paragraph. `reel.gif` is a **published file** of the
 landing artifact, not an asset, so its address
-(`https://<landing ID>.<site domain>/reel.gif`, the current version's
-file) never changes: each `reel-upload` replaces the GIF behind the same
-URL, and the README is edited once, when the landing URL is known, never
-per upload. GitHub's image proxy caches it; a new GIF can take hours to
-show there. The release's `clax-reel.gif` is the copy that lasts with a
-version. A GitHub user-attachment MP4 would play inline, but it is
-uploaded only by hand in GitHub's editor, has no API, and its URL changes
-with each upload, so the README would change each time (an alternative
-the owner may still prefer, Q5).
+(`https://<landing artifact ID>.<site domain>/reel.gif`, the current
+version's file) never changes: each `reel-upload` replaces the GIF behind
+the same URL, and the README is edited once, when `[upload]` is set,
+never per upload. GitHub's image proxy caches it; a new GIF can take
+hours to show there. The release's `clax-reel.gif` is the copy that lasts
+with a version. The full video is reached from the GIF's link, the
+landing page, once phase 3 publishes it.
 
 ## 12. Risks
 
@@ -576,7 +709,8 @@ the owner may still prefer, Q5).
   x264 is GPL (`libav-agree-gpl`); a first build compiles FFmpeg when no
   prebuilt archive matches. The composer is a developer tool never
   shipped with Clax, so the GPL does not reach Clax's binaries or the
-  video; the owner decides (Q2).
+  video; the owner accepted this (D9, Q2). The GIF step needs fframes
+  only for its caption, so phase 1 still builds FFmpeg.
 - R3. **Every UI change re-renders every vignette** under Bazel. A final
   render is minutes of Chromium per vignette; only `just reel` pays it,
   on demand.
@@ -590,6 +724,12 @@ the owner may still prefer, Q5).
   `reel.gif` from the landing artifact's site without a cookie; a public
   page's files are served to anyone, but this is checked on the first
   upload, before the README links it.
+- R8. **Republishing the Quickstart drops the reel's files.** A publish
+  of `web/quickstart/` alone carries neither `reel.gif` nor `reel.json`,
+  and the push removes what the release lacks. The landing artifact is
+  therefore published only by `reel-upload`, which stages the
+  Quickstart's files with the reel's (§10); a publish by hand breaks the
+  README's image until the next `reel-upload`.
 
 ## 13. Review Focus
 
@@ -597,26 +737,50 @@ the owner may still prefer, Q5).
   render naming the locator, rather than filming a wrong screen.
 - Two renders of one vignette in deterministic mode on one machine give
   byte-identical frames; the first divergence is the bug to find.
+- The GIF is made from frames, never from `reel.mp4`: it builds, and is
+  under 2 MiB, with no MP4 present; it loops through its 6 to 10 seconds
+  of segments; two builds from the same frames are byte-identical.
+- The landing artifact is never published without `reel.gif`: a
+  `reel-upload` stages the Quickstart's files and the reel's together.
 - `reel-upload` never reaches clax.dev without the person's `y`, never
   runs a worktree's `clax`, and never pushes to an artifact whose link
-  is not the landing URL.
-- A seeded quickstart never shows a broken video: no `reel.json`, a
+  is not the landing URL. Without `--video` it uploads no MP4.
+- (Phase 3.) A seeded quickstart never shows a broken video: no `reel.json`, a
   `reel.json` naming a missing asset, and a `reel.json` that does not
   parse all end in the link card or nothing.
-- A Safari viewer of the landing page can play and seek the video
-  (ranges, §11.1).
+- (Phase 3.) A Safari viewer of the landing page can play and seek the
+  video (ranges, §11.1).
 
 ## 14. Open questions for the owner
 
-- Q1. The landing page: which clax.dev artifact (its URL), and which
-  local artifact of yours is linked to it? `reel-upload` and the README
-  need both; until then `[upload] landing` is empty and `reel-upload`
-  refuses.
-- Q2. x264 (GPL, system library) in a composer that is never shipped,
-  or macOS's VideoToolbox encoder (no GPL, macOS only, output not
-  bit-identical across machines)?
-- Q3. Silent, or a music bed? fframes mixes audio (`AudioMap`), but a
-  track needs a licence; the draft is silent.
-- Q4. Light theme only, or a dark-theme render too?
-- Q5. README: the linked GIF (§11.2), or a GitHub user-attachment MP4
-  uploaded by hand at each release?
+Decided by the owner on 2026-10-27; the decisions are D8 to D14 (§2).
+
+- Q1. The landing page: **decided 2026-10-27.** The Clax Quickstart is
+  the landing page; `web/quickstart/` is its canonical, clean version and
+  the clax.dev landing artifact is published from it. `reel-upload`
+  attaches the reel to that artifact. The clax.dev artifact's ID is fixed
+  when the Quickstart is first published and then set in `web/reel/reel.toml`
+  `[upload] landing_artifact` and `landing` (§9.3); the per-machine local
+  artifact stays in `~/.config/clax/reel/upload.toml` (§10).
+- Q2. x264 or VideoToolbox: **decided 2026-10-27, x264.** The GPL is
+  acceptable: the composer is a developer tool that never ships (R2). It
+  also keeps `crf`, `preset` and `tune` control and the same output on
+  macOS and the Linux CI runner.
+- Q3. Silent or a music bed: **decided 2026-10-27, silent for now**; a
+  music bed may come later (it needs a licence for the landing page and
+  the README).
+- Q4. Light only or dark too: **decided 2026-10-27, light only** in the
+  first version; dark later (a second render of every vignette and a
+  second asset chosen by `prefers-color-scheme`).
+- Q5. README GIF or user-attachment MP4: **decided 2026-10-27, a linked
+  animated GIF, rendered independently of the video** (§9.4, §11.2). The
+  full video is a build output now, and its publication is phase 3.
+- Also decided 2026-10-27: the Clax app is out of scope (D14).
+
+Proposed here, for the owner to confirm or change:
+
+- Q6. The GIF's cut list (§9.3 `[gif]`): `point`, `version`, `realtime`,
+  8 s in all, 720 px wide, 15 fps, under 2 MiB.
+- Q7. The landing artifact is published only by `reel-upload`, which
+  stages the Quickstart's files with the reel's (§10, R8), so the
+  Quickstart has one publishing path.
