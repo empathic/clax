@@ -112,7 +112,7 @@
     try {
       if (btn.dataset.comment !== undefined) {
         // Both calls start inside the click, so comment mode has the viewer's gesture.
-        const ring = shell.highlight("comment"), on = shell.commentMode(true);
+        const on = shell.commentMode(true), ring = shell.highlight("comment");
         ring.catch(() => {});
         ok = await on;
         say(ok ? "Comment mode is on. Press Escape to leave it." : "Comment mode did not turn on.");
