@@ -704,6 +704,7 @@ dependencies = [
  "tower-service",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams 0.7.0",
  "worker",
 ]
 

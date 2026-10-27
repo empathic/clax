@@ -957,6 +957,13 @@ fn declared_body(req: &Request) -> Result<Option<(usize, Option<u64>)>> {
     Ok(Some((limit, declared)))
 }
 
+/// Whether `req` has a body that declares no length (chunked): one the
+/// Worker relays to the object itself (`forward_undeclared` in the crate
+/// root), which then refuses it past its limit as it reads.
+pub(crate) fn undeclared_body(req: &Request) -> Result<bool> {
+    Ok(matches!(declared_body(req)?, Some((_, None))) && req.inner().body().is_some())
+}
+
 /// 413 for a request whose declared body is over its limit, which the
 /// Worker answers before handing it to the object (an object's answer to a
 /// body it never read breaks the next request on that connection under
