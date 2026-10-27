@@ -286,7 +286,7 @@ hosted-demo *ARGS:
 hosted-deploy *ARGS:
     cd crates/clax-worker && node deploy.mjs "$@"
 
-# Deploy clax.dev, Empathic's hosted Clax, with the settings saved in ~/.config/clax/deploy/setup.env and the bundled Terms of Service and Privacy Policy (scripts/cloudflare-setup.sh --legal bundled). A dry run that changes nothing on the account unless given --i-know-what-i-am-doing; --smoke smoke-tests the deployment too
+# Deploy clax.dev, Empathic's hosted Clax, with the settings saved in ~/.config/clax/deploy/setup.env and the bundled Terms of Service and Privacy Policy (scripts/cloudflare-setup.sh --legal bundled). A dry run that changes nothing on the account unless given --i-know-what-i-am-doing; --smoke smoke-tests the deployment too. Production (PRODUCTION=1 in setup.env) deploys from GitHub Actions on pushes to prod (docs/prod.md); from a laptop only at a clean checkout of origin's prod tip and with --from-laptop
 clax-dev-deploy *ARGS:
     ./scripts/cloudflare-setup.sh --legal bundled "$@"
 

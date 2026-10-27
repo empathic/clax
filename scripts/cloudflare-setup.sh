@@ -10,6 +10,8 @@
 #   scripts/cloudflare-setup.sh --i-know-what-i-am-doing   # deploy
 #   scripts/cloudflare-setup.sh --smoke --i-know-what-i-am-doing  # deploy, then smoke it
 #   scripts/cloudflare-setup.sh --login                    # only sign in to Cloudflare
+#   scripts/cloudflare-setup.sh --ci --public … --site-domain … --store … --legal bundled \
+#     --account … [--production] --smoke --i-know-what-i-am-doing   # from a CI runner
 #
 # The first run asks, on a terminal, for the public hostname, the site
 # domain (a zone of its own on the account: each artifact is served at
@@ -23,6 +25,20 @@
 # only), --store artifacts|memory, --github-client-id <ID>, --owner-github
 # <login>; or edit or delete setup.env. --content is gone: a setup.env's
 # CONTENT_HOST is ignored, and the site domain asked for once.
+#
+# --production marks the instance as the production one: setup.env keeps
+# PRODUCTION=1, and every later run passes --production to deploy.mjs, which
+# then deploys only a clean checkout of origin's prod tip, and only from
+# GitHub Actions unless given --from-laptop (production deploys run from
+# GitHub Actions on pushes to prod: docs/prod.md). Delete the line from
+# setup.env to undo it.
+#
+# --ci runs headless, as the deploy workflow does: it neither reads nor
+# writes setup.env and asks nothing (settings come from the flags alone;
+# deploy.mjs fails naming any it needs), never starts `wrangler login` (the
+# login is CLOUDFLARE_API_TOKEN), prints no first-time setup text, and keeps
+# the deploy record in $CLAX_DEPLOY_HOME. Its smoke runs as the agent token
+# in CLAX_SMOKE_TOKEN.
 #
 # Every other option is passed to crates/clax-worker/deploy.mjs (see the top of
 # that file), e.g. --store memory, --account <ID>, --rotate-secrets, --yes,
@@ -44,7 +60,10 @@
 #    Queue, the Artifacts namespace), keeps the secrets it made before,
 #    builds, deploys and waits for /healthz;
 # 5. with --smoke, runs smoke-remote.mjs against the deployment, and then
-#    deploys again without its diagnostics routes (not in a dry run).
+#    deploys again without its diagnostics routes (not in a dry run). With
+#    CLAX_SMOKE_TOKEN set (always with --ci) the smoke runs as that agent
+#    token, which the diagnostics routes do not take: no diagnostics deploy,
+#    and the smoke runs once against what was deployed.
 
 set -euo pipefail
 
@@ -62,12 +81,16 @@ fail() { printf 'cloudflare-setup: %s\n' "$*" >&2; exit 1; }
 smoke=0
 dry=1
 login_only=0
+ci=0
+set_production=0
 args=()
 set_public="" set_site="" set_store="" set_gh_id="" set_owner=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --smoke) smoke=1 ;;
     --login) login_only=1 ;;
+    --ci) ci=1; args+=("$1") ;;
+    --production) set_production=1 ;;
     --i-know-what-i-am-doing) dry=0 ;;
     --dry-run) ;;
     --public) set_public="$2"; shift ;;
@@ -77,19 +100,24 @@ while [ $# -gt 0 ]; do
     --github-client-id) set_gh_id="$2"; shift ;;
     --owner-github) set_owner="$2"; shift ;;
     --zone) set_public="$2"; shift ;;
-    -h|--help) sed -n '2,48p' "$0"; exit 0 ;;
+    -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
     *) args+=("$1") ;;
   esac
   shift
 done
 
+# Before anything is deployed: a CI smoke has nothing but an agent token.
+if [ "$ci" = 1 ] && [ "$smoke" = 1 ] && [ -z "${CLAX_SMOKE_TOKEN:-}" ]; then
+  fail "--ci --smoke runs as an agent token: set CLAX_SMOKE_TOKEN"
+fi
+
 # The settings this script keeps between runs, in a git-ignored file only you
 # can read. A flag given on the command line replaces its saved value.
-PUBLIC_HOST="" SITE_DOMAIN="" STORE="" GITHUB_CLIENT_ID="" OWNER_GITHUB="" GITHUB_CLIENT_SECRET="${GITHUB_CLIENT_SECRET:-}"
-if [ -f "$settings" ]; then
+PUBLIC_HOST="" SITE_DOMAIN="" STORE="" GITHUB_CLIENT_ID="" OWNER_GITHUB="" PRODUCTION="" GITHUB_CLIENT_SECRET="${GITHUB_CLIENT_SECRET:-}"
+if [ -f "$settings" ] && [ "$ci" = 0 ]; then
   while IFS='=' read -r k v; do
     case "$k" in
-      PUBLIC_HOST|SITE_DOMAIN|STORE|GITHUB_CLIENT_ID|OWNER_GITHUB) printf -v "$k" '%s' "$v" ;;
+      PUBLIC_HOST|SITE_DOMAIN|STORE|GITHUB_CLIENT_ID|OWNER_GITHUB|PRODUCTION) printf -v "$k" '%s' "$v" ;;
       GITHUB_CLIENT_SECRET) [ -n "$GITHUB_CLIENT_SECRET" ] || GITHUB_CLIENT_SECRET="$v" ;;
     esac
   done < "$settings"
@@ -99,6 +127,7 @@ fi
 [ -n "$set_store" ] && STORE="$set_store"
 [ -n "$set_gh_id" ] && GITHUB_CLIENT_ID="$set_gh_id"
 [ -n "$set_owner" ] && OWNER_GITHUB="$set_owner"
+[ "$set_production" = 1 ] && PRODUCTION=1
 
 # Asks on a terminal for a value not saved yet; `$3` is the default.
 ask() {
@@ -112,7 +141,17 @@ ask() {
   fi
   printf -v "$var" '%s' "${answer:-$default}"
 }
-if [ "$login_only" = 0 ]; then
+if [ "$login_only" = 0 ] && [ "$ci" = 1 ]; then
+  # Headless: the flags alone, checked by deploy.mjs --ci.
+  [ -n "$PUBLIC_HOST" ] && args+=(--public "$PUBLIC_HOST")
+  [ -n "$SITE_DOMAIN" ] && args+=(--site-domain "$SITE_DOMAIN")
+  [ -n "$STORE" ] && args+=(--store "$STORE")
+  [ -n "$GITHUB_CLIENT_ID" ] && args+=(--github-client-id "$GITHUB_CLIENT_ID")
+  [ -n "$OWNER_GITHUB" ] && args+=(--owner-github "$OWNER_GITHUB")
+  [ "$PRODUCTION" = 1 ] && args+=(--production)
+  export GITHUB_CLIENT_SECRET
+  echo "Settings (--ci, from the flags): https://${PUBLIC_HOST:-?}, sites https://<ID>.${SITE_DOMAIN:-?}, store ${STORE:-?}, GitHub sign-in ${GITHUB_CLIENT_ID:+on (owner @$OWNER_GITHUB)}${GITHUB_CLIENT_ID:-off}${PRODUCTION:+, production}"
+elif [ "$login_only" = 0 ]; then
   ask PUBLIC_HOST "Public hostname (where people reach Clax)"
   [ -n "$PUBLIC_HOST" ] || fail "no public hostname: run on a terminal, or pass --public <host> once"
   ask SITE_DOMAIN "Site domain (a zone of its own on the account; each artifact is served at <ID>.<site domain>), e.g. example.run"
@@ -127,14 +166,16 @@ if [ "$login_only" = 0 ]; then
   ( umask 077
     { echo "PUBLIC_HOST=$PUBLIC_HOST"; echo "SITE_DOMAIN=$SITE_DOMAIN"; echo "STORE=$STORE"
       echo "GITHUB_CLIENT_ID=$GITHUB_CLIENT_ID"; echo "OWNER_GITHUB=$OWNER_GITHUB"
-      echo "GITHUB_CLIENT_SECRET=$GITHUB_CLIENT_SECRET"; } > "$settings" )
+      echo "GITHUB_CLIENT_SECRET=$GITHUB_CLIENT_SECRET"
+      if [ "$PRODUCTION" = 1 ]; then echo "PRODUCTION=1"; fi; } > "$settings" )
   args+=(--public "$PUBLIC_HOST" --site-domain "$SITE_DOMAIN" --store "${STORE:-artifacts}")
   if [ -n "$GITHUB_CLIENT_ID" ]; then
     args+=(--github-client-id "$GITHUB_CLIENT_ID")
     [ -n "$OWNER_GITHUB" ] && args+=(--owner-github "$OWNER_GITHUB")
     export GITHUB_CLIENT_SECRET
   fi
-  echo "Settings: https://$PUBLIC_HOST, sites https://<ID>.$SITE_DOMAIN, store ${STORE:-artifacts}, GitHub sign-in ${GITHUB_CLIENT_ID:+on (owner @$OWNER_GITHUB)}${GITHUB_CLIENT_ID:-off} (saved in $settings)"
+  [ "$PRODUCTION" = 1 ] && args+=(--production)
+  echo "Settings: https://$PUBLIC_HOST, sites https://<ID>.$SITE_DOMAIN, store ${STORE:-artifacts}, GitHub sign-in ${GITHUB_CLIENT_ID:+on (owner @$OWNER_GITHUB)}${GITHUB_CLIENT_ID:-off}${PRODUCTION:+, production (from GitHub Actions; --from-laptop to deploy from here)} (saved in $settings)"
 fi
 
 [ "$dry" = 1 ] && [ "$login_only" = 0 ] && args+=("--dry-run")
@@ -171,11 +212,12 @@ if signed_in; then
   echo "signed in"
 elif [ "$dry" = 1 ] && [ "$login_only" = 0 ]; then
   echo "not signed in; a dry run goes on without account calls"
-elif [ -t 0 ] && [ -t 1 ]; then
+elif [ "$ci" = 0 ] && [ -t 0 ] && [ -t 1 ]; then
   echo "not signed in: starting wrangler login; finish it in your browser"
   wrangler login
   signed_in || fail "still not signed in to Cloudflare"
 else
+  [ "$ci" = 1 ] && fail "not signed in to Cloudflare: --ci signs in with CLOUDFLARE_API_TOKEN"
   fail "not signed in to Cloudflare, and not on a terminal to sign in. Run: $0 --login"
 fi
 [ "$login_only" = 1 ] && { say "Done"; exit 0; }
@@ -186,18 +228,25 @@ say "Deploying"
 if [ "$smoke" = 1 ] && [ "$dry" = 0 ]; then
   record="$records/$PUBLIC_HOST.json"
   [ -f "$record" ] || fail "no deploy record $record to smoke"
-  say "Smoking the deployment (diagnostics routes on for the probe)"
-  (cd "$worker" && node deploy.mjs ${args[@]+"${args[@]}"} --diag --no-build --yes)
   smoke_status=0
-  (cd "$worker" && node smoke-remote.mjs --deploy "$record") || smoke_status=$?
-  say "Deploying again without the diagnostics routes"
-  (cd "$worker" && node deploy.mjs ${args[@]+"${args[@]}"} --no-diag --no-build --yes)
+  if [ -n "${CLAX_SMOKE_TOKEN:-}" ]; then
+    # An agent token takes no diagnostics: the smoke runs on what was deployed.
+    say "Smoking the deployment as the agent token in CLAX_SMOKE_TOKEN"
+    (cd "$worker" && node smoke-remote.mjs --deploy "$record") || smoke_status=$?
+  else
+    say "Smoking the deployment (diagnostics routes on for the probe)"
+    (cd "$worker" && node deploy.mjs ${args[@]+"${args[@]}"} --diag --no-build --yes)
+    (cd "$worker" && node smoke-remote.mjs --deploy "$record") || smoke_status=$?
+    say "Deploying again without the diagnostics routes"
+    (cd "$worker" && node deploy.mjs ${args[@]+"${args[@]}"} --no-diag --no-build --yes)
+  fi
   [ "$smoke_status" = 0 ] || fail "the smoke failed (exit $smoke_status); see its output above"
 fi
 
 say "Done"
 if [ "$dry" = 1 ]; then
   echo "That was a dry run. To deploy: $0 --i-know-what-i-am-doing"
-else
+elif [ "$ci" = 0 ] && grep -q '"setup_done": false' "$records/$PUBLIC_HOST.json" 2>/dev/null; then
+  # Only while this instance's first deploy left setup open.
   echo "If this instance has no owner yet, open the setup page deploy.mjs printed, or the sign-in link the smoke printed when it did the setup, to make your browser the owner."
 fi

@@ -92,6 +92,12 @@ provider listens on 127.0.0.1, which the test vars
 
 ## Deploy to Cloudflare
 
+clax.dev, Empathic's instance, is deployed from GitHub Actions on every
+push to `prod`, never from a laptop: [docs/prod.md](../../docs/prod.md) has
+the workflow and its GitHub setup. What follows sets up an instance (its
+first deploy, which generates its secrets, always runs from a laptop) and
+deploys any other.
+
 ### In one command
 
 On an account with Workers Paid (and the Artifacts beta, for
@@ -111,6 +117,44 @@ scripts/cloudflare-setup.sh --zone example.com --site-domain example.run        
 scripts/cloudflare-setup.sh --smoke --i-know-what-i-am-doing                     # sign in if needed, deploy, smoke it, redeploy without diagnostics
 scripts/cloudflare-setup.sh --login                                              # only sign in
 ```
+
+`--production` marks the instance as the production one: `setup.env` keeps
+`PRODUCTION=1`, and from then on every run passes `--production` to
+`deploy.mjs`, which deploys only a clean checkout whose `HEAD` is origin's
+`prod` tip (`git ls-remote origin refs/heads/prod`, checked again just
+before the upload), and only in GitHub Actions. To deploy production from a
+laptop anyway (say, while Actions is down), check out `origin/prod`'s tip
+and add `--from-laptop`, which lifts only the Actions condition:
+
+```sh
+git fetch origin prod && git switch --detach origin/prod && git status --short   # clean, at prod's tip
+just clax-dev-deploy --from-laptop --smoke --i-know-what-i-am-doing
+```
+
+A dry run (the default) never refuses; it says what a deploy would refuse.
+
+The deploy workflow runs the same script headless:
+
+```sh
+scripts/cloudflare-setup.sh --legal bundled --public clax.dev --site-domain clax.run --store artifacts \
+  --github-client-id … --owner-github … --account … --ci --production --smoke --i-know-what-i-am-doing
+```
+
+`--ci` neither reads nor writes `setup.env`, asks nothing (`deploy.mjs`
+fails naming each setting it needs that no flag gives: the public host, the
+site domain, `--store`, the legal documents, the account, and
+`--owner-github` with `--github-client-id`; `--retired-content-origin
+<https origin>` keeps an instance's retired content host), signs in with
+`CLOUDFLARE_API_TOKEN` and never starts `wrangler login`, and keeps the
+deploy record in `$CLAX_DEPLOY_HOME`. It changes no secret but the GitHub
+client secret it is given (`GITHUB_CLIENT_SECRET`): it refuses a Worker
+without `SETUP_SECRET`, `CLAX_TOKEN` or `CLAX_KEK` (a first deploy), one
+whose GitHub sign-in it would turn off or leave without its secret,
+`--rotate-secrets` and `--diag`; that it keeps no `CLAX_KEK` backup is a
+notice. It prints no first-time setup text, and exits 0 only when the
+deploy, the health wait, the site host check and the smoke all pass. Its
+smoke runs as the agent token in `CLAX_SMOKE_TOKEN`, with no diagnostics
+deploy.
 
 Or step by step, in this directory:
 
@@ -133,7 +177,8 @@ namespace, which also proves the account has Artifacts), generates
 `SETUP_SECRET` and `CLAX_TOKEN` when the Worker has neither and uploads
 them with the first version (printed once, and kept with the origins in
 `~/.config/clax/deploy/<public host>.json`, 0600, outside the
-repository), writes `target/deploy/wrangler.deploy.jsonc` (or `--out
+repository; the secrets, the setup URL and the next steps are printed only
+by the deploy that generated them), writes `target/deploy/wrangler.deploy.jsonc` (or `--out
 <path>`: this file's config with `HOSTED=1`, the public origin,
 `SITE_DOMAIN`, the store, the public host as a custom domain and the route
 `*.<site domain>/*` on the site domain's zone, `workers_dev` and preview
@@ -169,10 +214,12 @@ missing object answer, a token's format, the remote's advertisements under
 three ways of presenting the token, what a fork answers while it is
 copied), each checked against what `src/repos/js.rs` expects; setup with
 the secret while setup is open, `--session` for an existing owner's
-browser, else the owner token from the deploy record (every deploy after
-the first: the agent-token step, which only a signed-in browser can take,
-skips and says so, and the MCP and owner steps use the owner token; with
-no credential at all the smoke fails); an agent token; two
+browser, an agent token (`CLAX_SMOKE_TOKEN` or `--agent-token`, as the
+deploy workflow runs it), else the owner token from the deploy record
+(every deploy after the first: the agent-token step, which only a
+signed-in browser can take, skips and says so, and the MCP and owner steps
+use the owner token; with no credential at all the smoke fails); an agent
+token; two
 versions published over `/mcp` and read back; a fork; a git token, `git
 clone`, the clone's trees against the binding's; `git push` and the push
 becoming a version (through the queue's `pushed` event, for which it
@@ -189,6 +236,18 @@ skips them all. When it made the owner it
 prints a sign-in link for the owner's browser. The diagnostics routes
 (`/_diag/`, `CLAX_DIAG_ROUTES=1` and the owner token) give it the probe,
 the git token and the reconcile.
+
+As an agent token the smoke takes every step an agent can: `/mcp`, the
+publishes and reads, a fork and a git token through the MCP tools (`fork`,
+`git_remote`), the clone and the push becoming a version, a site host's
+health and a private site refused. It skips, naming each with why, the
+steps only the token's person can take: the diagnostics (the owner
+token's), the shell's pages, minting an agent token, a site's sign-ins and
+the two db artifacts behind them, opening a site to the world (which waits
+on the person's approval) and the live WebSocket stream
+(`deploy-lib.mjs`, `SMOKE_CANNOT`). `node smoke-remote.mjs --local
+--as-agent` runs it so against a local Worker whose owner minted the
+token beforehand.
 
 ### What the Worker binds
 
