@@ -156,6 +156,14 @@ sh_test(
     data = [":all"] + RELEASE_FILES,
 )
 
+# scripts/setup-prod-github.sh against a fake gh: its dry run, its writes
+# when told to act, and a second run over what the first made.
+sh_test(
+    name = "setup_prod_github",
+    srcs = ["test-setup-prod-github.sh"],
+    data = [":all"],
+)
+
 sh_test(
     name = "installer",
     srcs = ["test-install.sh"],
