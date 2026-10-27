@@ -130,8 +130,9 @@ describe("the shell capability", () => {
   });
 
   it("address_is_null_off_the_web", async () => {
-    // The Clax app's shell document is on its own scheme, which no agent can open.
-    for (const o of ["clax://app", "null", "", "file://"]) expect(shellAddress(o, "abcd1234efgh"), o).toBeNull();
+    // The Clax app's shell document is on its own scheme (Apple) or the reserved
+    // `.invalid` domain (Android), which no agent can open.
+    for (const o of ["clax://app", "https://app.clax.invalid", "https://app.clax.INVALID:443", "null", "", "file://"]) expect(shellAddress(o, "abcd1234efgh"), o).toBeNull();
     const { h } = setup({}, on => on, "clax://app");
     await expect(h.call("address", [])).resolves.toBeNull();
   });

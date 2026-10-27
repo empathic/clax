@@ -15,8 +15,9 @@
 //   where the view cannot comment.
 // - `address()` resolves `{origin, url}`: the shell's own origin and the
 //   artifact's unpinned address in it (`<origin>/a/<aid>`), or `null` where
-//   the shell is not on an `http`/`https` origin (the Clax app's
-//   `clax://app`). A framed page cannot read either itself: the site's
+//   no agent could open it: an origin that is not `http`/`https` (the Clax
+//   app's `clax://app` on Apple) or one on the reserved `.invalid` domain
+//   (its `https://app.clax.invalid` on Android). A framed page cannot read either itself: the site's
 //   `Referrer-Policy: no-referrer` leaves its `document.referrer` empty.
 // This module is a lazy chunk (registry.ts), loaded on the page's first call.
 import { shellPath } from "../route";
@@ -31,9 +32,11 @@ import type { HandlerFactory } from "./host";
 export type ShellDeps = { find(c: ShellControl): HTMLElement | null; mark(el: HTMLElement): (() => void) | null; origin(): string };
 
 /** What `address()` resolves: the shell's origin and the artifact's address
- * in it, or `null` on an origin that is not `http`/`https`. */
+ * in it, or `null` on an origin no agent can open (not `http`/`https`, or on
+ * the reserved `.invalid` domain, as the Clax app's shells are). */
 export function shellAddress(origin: string, aid: string): { origin: string; url: string } | null {
   if (!/^https?:\/\/[^/]+$/.test(origin)) return null;
+  if (/\.invalid(:\d+)?$/i.test(origin)) return null;
   return { origin, url: origin + shellPath(aid, null, "index.html") };
 }
 
