@@ -429,7 +429,7 @@
       el.classList.toggle("done", isDone(id) && !NODES[id].kind?.startsWith("dec"));
       el.classList.toggle("dim", nodeDim(id));
       el.classList.toggle("sel", id === selected);
-      el.querySelectorAll(":scope > .fab").forEach((f) => { const on = !!state.done[f.dataset.toggle]; f.classList.toggle("on", on); f.setAttribute("aria-pressed", String(on)); });
+      el.querySelectorAll(":scope > .fab").forEach((f) => { const on = !!state.done[f.dataset.toggle]; f.classList.toggle("on", on); f.setAttribute("aria-pressed", String(on)); f.classList.toggle("beckon", f.dataset.toggle === "signin" && !Object.keys(state.done).length); });
       el.querySelectorAll("[data-pick]").forEach((c) => c.classList.toggle("on", c.dataset.pick === state.agent));
       const bulb = el.querySelector(".idea");
       if (bulb) { const n = ideasFor(id).length; bulb.hidden = !n; bulb.title = `${n} idea${n === 1 ? "" : "s"} to make this step better`; }
