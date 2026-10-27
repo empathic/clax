@@ -635,6 +635,12 @@ impl Store {
                  VALUES (?1, ?2, ?3, ?4, 'open', 0, 0, ?5)",
                 params![tid, link.artifact_id, version_n, anchor_json, now],
             )?;
+            // A comment on a seeded quickstart stops Clax's updates to it for
+            // good, even if the thread is deleted later.
+            tx.execute(
+                "UPDATE quickstarts SET stopped_at = ?2 WHERE artifact_id = ?1 AND stopped_at IS NULL",
+                params![link.artifact_id, now],
+            )?;
             tx.execute(
                 &format!(
                     "INSERT INTO linked_threads ({LT_COLS}, created_at)
@@ -1654,6 +1660,36 @@ mod tests {
 
     fn whole() -> Anchor {
         serde_json::from_value(serde_json::json!({"kind": "artifact"})).unwrap()
+    }
+
+    #[test]
+    fn a_mirrored_thread_on_a_seeded_quickstart_stops_updates_for_good() {
+        let w = world();
+        let l = link(&w, (1, 1));
+        w.st.with_tx(|tx| {
+            tx.execute(
+                "INSERT INTO quickstarts (person, artifact_id, release, version_n, seeded_at)
+                 VALUES ('*owner', ?1, 'a', 1, '2026-10-15T10:00:00Z')",
+                [&w.aid],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let stopped = || w.st.quickstart_of(None).unwrap().unwrap().stopped_at;
+        assert!(stopped().is_none());
+        let mt = MirrorThread {
+            remote_thread_id: "rt1".into(),
+            remote_version: 1,
+            anchor: whole(),
+            first: mirror("make it bluer", "rc1"),
+        };
+        let remote = ("clax.example", "https://clax.example");
+        let t =
+            w.st.mirror_thread(&AuditCtx::DAEMON, &l, remote, 1, true, mt)
+                .unwrap();
+        assert!(stopped().is_some(), "the mirrored thread stopped updates");
+        w.st.delete_thread(&AuditCtx::DAEMON, &t.id).unwrap();
+        assert!(stopped().is_some(), "deleting it leaves updates stopped");
     }
 
     #[test]
