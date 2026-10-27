@@ -196,26 +196,29 @@
   .btn.invite { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); padding: 6px 12px; font-size: 14px; }
   nav.tabs a[aria-current="page"] .count { background: var(--accent-soft); }
 
-  /* New users (left) and people already set up (right), side by side. */
+  /* Bring your own agent (left: install, then the deck) and ClaxBot (right), side by side. */
   .row.split { flex-wrap: nowrap; align-items: stretch; gap: 28px; justify-content: center; }
   .lane-new { flex: 1 1 auto; min-width: 0; }
   .lane-new > .row { margin-bottom: 34px; }
-  .lane-new > .row.installs { margin-bottom: 0; }
-  .lane-existing { flex: 0 0 170px; display: flex; align-items: center; padding-top: 40px; }
-  .lane-existing .node { width: 170px; border-style: dashed; }
-  /* Three routes side by side: the install lane, then the two that skip it.
-     Edges follow the boxes' positions, so the columns stay in one row. */
+  .lane-new > .row:last-child { margin-bottom: 0; }
+  .lane-bot { flex: 0 0 170px; display: flex; align-items: flex-start; }
+  .lane-bot .node { width: 170px; }
   @media (max-width: 900px) {
-    .row.split { gap: 6px; }
+    .row.split { gap: 8px; }
     .lane-new { flex: 1 1 0; }
-    .lane-existing { flex: 0 0 27%; }
-    .lane-existing .node, .lane-existing .node.small { width: 100%; padding: 10px 6px 10px 30px; overflow-wrap: anywhere; }
-    .lane-existing .node.small .n { left: 6px; top: 10px; }
+    .lane-bot { flex: 0 0 31%; }
+    .lane-bot .node, .lane-bot .node.small { width: 100%; padding: 10px 6px 10px 30px; overflow-wrap: anywhere; }
+    .lane-bot .node.small .n { left: 6px; top: 10px; }
     .lane-new .install-box { padding: 10px 8px 10px 30px; }
     .lane-new .install-box .n { left: 6px; top: 10px; }
     .lane-new .chip-agent { max-width: 100%; border-radius: 12px; line-height: 1.2; text-align: left; }
   }
   .lane-new > .row.installs { max-width: 440px; margin-left: auto; margin-right: auto; gap: 10px; }
+  .node .skip { margin-top: 10px; align-self: flex-start; text-align: left; position: relative; z-index: 2; }
+  .muted-note .linkbtn { font-size: inherit; }
+  /* Five next steps in one row. */
+  .row.branches { gap: 10px; }
+  .row.branches .node.small { width: 148px; }
 
   /* One install box, a chip per agent. */
   .node.install-box { width: 100%; max-width: 420px; }
@@ -225,13 +228,12 @@
   .chip-agent .mark svg { width: 100%; height: 100%; display: block; }
   .chip-agent:hover { border-color: var(--brand); }
   .chip-agent.on { border-color: var(--brand); background: color-mix(in srgb, var(--brand) 16%, var(--surface)); }
-  .lane-existing { padding-top: 0; }
 
   /* Steps 3 to 5: a small slide deck, one constant height. */
   .deck { position: relative; z-index: 1; width: 100%; max-width: 560px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); overflow: visible; outline: none; display: flex; flex-direction: column; }
   .deck:focus-visible, .deck.sel { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); }
   .deck.done { border-color: var(--ok); }
-  .deck-tabs { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid var(--line); border-radius: 14px 14px 0 0; overflow: hidden; }
+  .deck-tabs { display: grid; grid-template-columns: repeat(2, 1fr); border-bottom: 1px solid var(--line); border-radius: 14px 14px 0 0; overflow: hidden; }
   .tab-cell { position: relative; display: flex; }
   .tab-cell + .tab-cell { border-left: 1px solid var(--line); }
   .tab-cell > button[role="tab"] { flex: 1; }
@@ -255,7 +257,7 @@
   .deck-nav:hover:not([disabled]) { border-color: var(--accent); }
   .deck-nav[disabled] { opacity: .3; cursor: default; }
   @media (max-width: 900px) {
-    .deck-slide { height: 158px; padding: 12px 16px 2px; }
+    .deck-slide { height: 200px; padding: 12px 12px 2px; }
     .deck-tabs button[role="tab"] { padding-right: 24px; gap: 5px; font-size: 13px; }
     .deck-tabs .fab { right: 4px; width: 18px; height: 18px; font-size: 10px; }
   }
@@ -347,6 +349,6 @@
   /* Progress stays in view while the chart scrolls under it. */
   .progress { position: sticky; top: 0; z-index: 6; background: var(--bg); padding: 10px 0; margin-bottom: 6px; box-shadow: 0 8px 8px -8px rgba(0, 0, 0, .35); }
 
-  /* A step this route does not need, such as Attach with ClaxBot. */
-  .deck-tabs button[role="tab"].na { opacity: .5; text-decoration: line-through; }
-  .deck.na .deck-slide { opacity: .7; }
+  /* The deck on the ClaxBot route, which skips it. */
+  .deck { transition: opacity .2s; }
+  .deck.dim { opacity: .45; }
