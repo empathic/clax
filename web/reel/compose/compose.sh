@@ -117,8 +117,11 @@ segs = []
 if "ask" in at and "reveal" in at and at["reveal"] > at["ask"]:
     ask, rev = at["ask"], at["reveal"]
     segs.append((0, ask, 1.5))
-    if ask + s(0.6) < rev:
-        segs.append((ask + s(0.6), rev, 5.0))
+    # The ask plays at 2x so the request reads; only the agent's working stretch races.
+    work = at.get("working", rev)
+    work = min(max(work, ask), rev)
+    segs.append((ask, work, 2.0))
+    segs.append((work, rev, 5.0))
     hold_end = rev + s(1.5)
     segs.append((rev, hold_end, 1.0))
     if "touch" in at and at["touch"] >= rev:
