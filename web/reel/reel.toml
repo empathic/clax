@@ -15,6 +15,12 @@ title = "Realtime collaboration"
 seconds = 7
 in_short = true
 
+[[vignette]]
+id = "globe"
+title = "Ask for anything"
+seconds = 7.5
+in_short = true
+
 [end]
 seconds = 4
 headline = "Your agents build pages. Clax gives them a home."

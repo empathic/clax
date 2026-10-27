@@ -22,6 +22,7 @@ exports_files(
 # The vignettes, one script each (vignettes/<id>.ts), in no particular
 # order: reel.toml orders the reel.
 VIGNETTES = [
+    "globe",
     "realtime",
 ]
 
@@ -122,6 +123,41 @@ npm_script_test(
     no_copy_to_bin = ["@chromium//:browsers"],
     project = "web",
     script = "reel:determinism",
+    skips = ["crates/clax-cli/clax"],
+    tags = [
+        "cpu:4",
+        "exclusive",
+        "manual",
+        "no-remote",
+        "no-sandbox",
+    ],
+)
+
+# As realtime_determinism, for the globe: `bazelisk test
+# //web/reel:globe_determinism`.
+npm_script_test(
+    name = "globe_determinism",
+    data = [
+        ":determinism",
+        ":globe_script",
+        ":recorder",
+        "//crates/clax-cli:clax",
+        "//crates/clax-cli:clax_warm",
+        "//web:dist_e2e",
+        "//web:files",
+        "//web:node_modules",
+        "@chromium//:browsers",
+    ],
+    env = {
+        "CLAX_E2E_BIN": "$(rootpath //crates/clax-cli:clax)",
+        "CLAX_E2E_WEB_DIST": "$(rootpath //web:dist_e2e)",
+        "CLAX_GALLERY__QUICKSTART": "false",
+        "PLAYWRIGHT_BROWSERS_PATH": "$(rootpath @chromium//:browsers)",
+    },
+    no_copy_to_bin = ["@chromium//:browsers"],
+    project = "web",
+    script = "reel:determinism",
+    args = ["globe"],
     skips = ["crates/clax-cli/clax"],
     tags = [
         "cpu:4",
