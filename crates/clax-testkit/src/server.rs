@@ -419,7 +419,27 @@ impl TestServer {
         secret: Option<&str>,
         f: impl FnOnce(&mut AppState),
     ) -> TestServer {
-        let dir = tempfile::tempdir().unwrap();
+        Self::hosted_on(tempfile::tempdir().unwrap().into(), clock, secret, f).await
+    }
+
+    /// [`TestServer::reopened`] as a hosted daemon on `clock`, `f` changing
+    /// the state before it serves: the people and artifacts are this
+    /// one's, as after a restart. Both serve until dropped.
+    pub async fn reopened_hosted_with(
+        &self,
+        clock: Arc<ManualClock>,
+        secret: Option<&str>,
+        f: impl FnOnce(&mut AppState),
+    ) -> TestServer {
+        Self::hosted_on(self._dir.clone(), clock, secret, f).await
+    }
+
+    async fn hosted_on(
+        dir: Arc<tempfile::TempDir>,
+        clock: Arc<ManualClock>,
+        secret: Option<&str>,
+        f: impl FnOnce(&mut AppState),
+    ) -> TestServer {
         let secret = secret.map(str::to_string);
         let limits_clock: Arc<dyn clax_core::working::Clock> = clock.clone();
         let hosted = move |s: &mut AppState| {

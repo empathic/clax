@@ -46,6 +46,20 @@ impl Site {
         Site { ts, clock, origin }
     }
 
+    /// [`Site::new`] whose web build carries the quickstart release `mark`.
+    async fn with_quickstart(mark: &str) -> Site {
+        let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+        let release =
+            clax_core::quickstart::Release::from_tree(&clax_testkit::quickstart_tree(mark))
+                .map(Arc::new);
+        let ts = TestServer::spawn_hosted_with(clock.clone(), Some(SECRET), |s| {
+            s.quickstart = release;
+        })
+        .await;
+        let origin = format!("http://localhost:{}", ts.addr.port());
+        Site { ts, clock, origin }
+    }
+
     /// [`Site::new`] with the public gallery on.
     async fn with_public_gallery() -> Site {
         let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
@@ -452,6 +466,31 @@ async fn every_browser_change_must_come_from_the_public_origin() {
     }
     let (s, v) = site.thread(&owner, &aid, "hello").await;
     assert_eq!(s, 201, "{v}");
+}
+
+#[tokio::test]
+async fn an_invited_person_starts_with_the_quickstart() {
+    let site = Site::with_quickstart("a").await;
+    let owner = site.owner().await;
+    let sam = site.member(&owner, "Sam").await;
+    let (s, me) = site.get(&sam, "/api/people/me").await;
+    assert_eq!(s, 200, "{me}");
+    let pid = me["person"]["public_id"].as_str().unwrap();
+    let (s, list) = site.get(&sam, "/api/artifacts").await;
+    assert_eq!(s, 200, "{list}");
+    let list = list["artifacts"].as_array().unwrap();
+    assert_eq!(list.len(), 1, "{list:?}");
+    assert_eq!(list[0]["title"], "Clax Quickstart");
+    assert_eq!(list[0]["pinned"], true);
+    // The listing names no maker: the person's quickstart row holds it.
+    let held = site.ts.store.quickstart_of(Some(pid)).unwrap().unwrap();
+    assert_eq!(
+        held.artifact_id.map(|a| a.to_string()).as_deref(),
+        list[0]["id"].as_str()
+    );
+    // The owner's own sign-in at setup seeded nothing on a hosted daemon.
+    let (_, mine) = site.get(&owner, "/api/artifacts").await;
+    assert!(mine["artifacts"].as_array().unwrap().is_empty(), "{mine}");
 }
 
 #[tokio::test]

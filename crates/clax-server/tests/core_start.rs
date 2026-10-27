@@ -191,3 +191,17 @@ async fn a_web_ui_without_the_quickstart_seeds_nothing() {
     assert_eq!(artifacts(&core).await.len(), 1);
     core.stop().await;
 }
+
+#[tokio::test]
+async fn a_hosted_start_seeds_no_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = cfg(dir.path(), tree("a"), true);
+    c.hosted = clax_http::hosted::Hosted::new("http://localhost:1", Some("the setup secret"))
+        .map(std::sync::Arc::new);
+    assert!(c.hosted.is_some());
+    let core = Core::start(c, &mut |_| {}).await.unwrap();
+    let store = &core.state().store;
+    assert!(store.list_artifacts().unwrap().is_empty());
+    assert!(store.quickstart_of(None).unwrap().is_none());
+    core.stop().await;
+}

@@ -654,6 +654,10 @@ impl Instance {
         app.app_data = app_data;
         erase_deleted(&app);
         app.clax_app = Arc::new(clax_app(env)?);
+        // Each person new to the instance is seeded with the web build's
+        // quickstart, when the build carries one (no Worker setting turns
+        // it off).
+        app.quickstart = clax_core::quickstart::Release::from_tree(&*app.web).map(Arc::new);
         // A test's scripted provider listens on a loopback http port; only
         // the test vars, never a setting an admin reaches, let the key go
         // there (the Worker otherwise sends it to public https hosts alone).

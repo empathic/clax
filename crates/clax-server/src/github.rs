@@ -241,6 +241,17 @@ pub async fn callback(
             serde_json::json!({"what": "person_joined", "person": signed.who.viewer.public_id}),
         );
     }
+    // A person's quickstart: made at their first sign-in, moved to a newer
+    // release at a later one. Neither can fail the sign-in.
+    match outcome {
+        GitHubOutcome::New => {
+            crate::quickstart::seed(&s, Some(&signed.who.viewer.public_id)).await;
+        }
+        GitHubOutcome::Returning => {
+            crate::quickstart::update(&s, Some(&signed.who.viewer.public_id)).await;
+        }
+        _ => {}
+    }
     let mut res = (StatusCode::SEE_OTHER, [(header::LOCATION, next)]).into_response();
     let hs = res.headers_mut();
     hs.append(header::SET_COOKIE, h.session_cookie(&signed.session));

@@ -75,6 +75,30 @@ struct Site {
 
 impl Site {
     async fn new(max_artifacts: u64) -> Site {
+        Site::build(max_artifacts, None, None).await
+    }
+
+    /// [`Site::new`] whose web build carries the quickstart release `mark`.
+    async fn with_quickstart(mark: &str) -> Site {
+        Site::build(2, Some(mark), None).await
+    }
+
+    /// This site restarted on the same home with release `mark`: its people
+    /// and artifacts stay, and a later hour is its clock's.
+    async fn restarted_with_quickstart(&self, mark: &str) -> Site {
+        Site::build(2, Some(mark), Some(&self.ts)).await
+    }
+
+    async fn build(
+        max_artifacts: u64,
+        quickstart: Option<&str>,
+        before: Option<&TestServer>,
+    ) -> Site {
+        let release = quickstart
+            .and_then(|m| {
+                clax_core::quickstart::Release::from_tree(&clax_testkit::quickstart_tree(m))
+            })
+            .map(Arc::new);
         let fake = Fake::default();
         let app = axum::Router::new()
             .route("/login/oauth/access_token", post(access_token))
@@ -83,9 +107,15 @@ impl Site {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let gh = format!("http://{}", listener.local_addr().unwrap());
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let clock = Arc::new(ManualClock::at("2026-10-14T10:00:00Z"));
+        let at = if before.is_some() {
+            "2026-10-14T14:00:00Z"
+        } else {
+            "2026-10-14T10:00:00Z"
+        };
+        let clock = Arc::new(ManualClock::at(at));
         let limits: Arc<dyn clax_core::working::Clock> = clock.clone();
-        let ts = TestServer::spawn_hosted_with(clock.clone(), Some(SECRET), move |s| {
+        let setup = move |s: &mut clax_http::state::AppState| {
+            s.quickstart = release;
             let origin = format!("http://localhost:{}", s.port);
             let github = clax_http::github::GitHub::new(
                 "the-client",
@@ -100,8 +130,14 @@ impl Site {
                 .with_github(github, max_artifacts);
             s.store.set_member_caps(Some(h.member_caps));
             s.hosted = Some(Arc::new(h));
-        })
-        .await;
+        };
+        let ts = match before {
+            Some(b) => {
+                b.reopened_hosted_with(clock.clone(), Some(SECRET), setup)
+                    .await
+            }
+            None => TestServer::spawn_hosted_with(clock.clone(), Some(SECRET), setup).await,
+        };
         let host = format!("localhost:{}", ts.addr.port());
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -268,6 +304,81 @@ fn cookie_of(res: &reqwest::Response, name: &str) -> Option<String> {
         .find_map(|c| c.strip_prefix(&format!("{name}=")))
         .map(|c| c.split(';').next().unwrap().to_string())
         .filter(|c| !c.is_empty())
+}
+
+impl Site {
+    /// The titles, pinned flags, people and latest version numbers of the
+    /// artifacts `session` lists.
+    async fn listing(&self, session: &str) -> Vec<Value> {
+        let v: Value = self
+            .get("/api/artifacts", Some(session))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        v["artifacts"].as_array().unwrap().clone()
+    }
+}
+
+#[tokio::test]
+async fn a_new_github_person_starts_with_the_quickstart() {
+    let site = Site::with_quickstart("a").await;
+    site.account(1, "theowner", None);
+    let owner = site.sign_in(1).await.unwrap();
+    assert!(site.listing(&owner).await.is_empty());
+    site.account(2, "grace", Some("Grace Hopper"));
+    let grace = site.sign_in(2).await.unwrap();
+    let pid = pid_of(&site, &grace).await;
+    let list = site.listing(&grace).await;
+    assert_eq!(list.len(), 1, "{list:?}");
+    assert_eq!(list[0]["title"], "Clax Quickstart");
+    assert_eq!(list[0]["pinned"], true);
+    // The listing names no maker: the person's quickstart row holds it.
+    let held = site.ts.store.quickstart_of(Some(&pid)).unwrap().unwrap();
+    assert_eq!(
+        held.artifact_id.map(|a| a.to_string()).as_deref(),
+        list[0]["id"].as_str()
+    );
+    // Another sign-in of the same member makes no second one, and the
+    // owner's own listing and sign-in are untouched.
+    let again = site.sign_in(2).await.unwrap();
+    assert_eq!(site.listing(&again).await.len(), 1);
+    let owner = site.sign_in(1).await.unwrap();
+    assert!(site.listing(&owner).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_returning_person_gets_the_new_release() {
+    let site = Site::with_quickstart("a").await;
+    site.account(2, "grace", None);
+    let grace = site.sign_in(2).await.unwrap();
+    let pid = pid_of(&site, &grace).await;
+    let list = site.listing(&grace).await;
+    assert_eq!(list.len(), 1, "{list:?}");
+    let id = list[0]["id"].as_str().unwrap().to_string();
+    let before = site.ts.store.quickstart_of(Some(&pid)).unwrap().unwrap();
+    assert_eq!(before.version_n, Some(1));
+
+    // The daemon restarts carrying release b; her next sign-in moves it.
+    let site = site.restarted_with_quickstart("b").await;
+    site.account(2, "grace", None);
+    let grace = site.sign_in(2).await.unwrap();
+    let after = site.ts.store.quickstart_of(Some(&pid)).unwrap().unwrap();
+    assert_eq!(after.artifact_id.map(|a| a.to_string()), Some(id.clone()));
+    assert_eq!(after.version_n, Some(2));
+    assert_ne!(after.release, before.release);
+    let list = site.listing(&grace).await;
+    assert_eq!(list.len(), 1, "{list:?}");
+    assert_eq!(list[0]["id"], id);
+}
+
+async fn pid_of(site: &Site, session: &str) -> String {
+    site.me(session).await["person"]["public_id"]
+        .as_str()
+        .unwrap()
+        .to_string()
 }
 
 #[tokio::test]
