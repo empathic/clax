@@ -125,9 +125,109 @@ pub fn net_hosts(caps: &Value) -> Result<Option<Vec<String>>> {
     Ok(Some(out))
 }
 
+/// The capabilities that reach past the page, and so need the owner's
+/// approval before a version's declaration of them takes effect. The rest
+/// (`db`, `comments`, `user`, `room`, `artifact/self`, `assets`,
+/// `downloads`, `home`) act only inside the artifact and its own account's
+/// view of it.
+pub const GATED: &[&str] = &[
+    "net", "sample", "account", "shell", "notify", "share", "file", "camera", "location",
+];
+
+/// What one declaration adds over another: new top-level capability names
+/// and new `net` hosts.
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Added {
+    /// New top-level capability names, in the order `next` lists them (`net`
+    /// among them only when the earlier declaration had none).
+    pub capabilities: Vec<String>,
+    /// `net` hosts the earlier declaration did not list.
+    pub hosts: Vec<String>,
+}
+
+impl Added {
+    /// Whether nothing is added.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.capabilities.is_empty() && self.hosts.is_empty()
+    }
+}
+
+/// The string entries of `caps.net.hosts`; anything else is skipped, so a
+/// malformed declaration yields no hosts rather than an error.
+fn hosts_of(caps: &Value) -> Vec<&str> {
+    caps.get("net")
+        .and_then(|n| n.get("hosts"))
+        .and_then(Value::as_array)
+        .map(|h| h.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default()
+}
+
+/// What `next` declares beyond `live`: the Clax app's `addedCapabilities`
+/// (`apps/clax_app/lib/bundle/updater.dart`).
+#[must_use]
+pub fn added(live: &Value, next: &Value) -> Added {
+    let had = hosts_of(live);
+    Added {
+        capabilities: next
+            .as_object()
+            .into_iter()
+            .flat_map(|m| m.keys())
+            .filter(|k| live.get(k.as_str()).is_none())
+            .cloned()
+            .collect(),
+        hosts: hosts_of(next)
+            .into_iter()
+            .filter(|h| !had.contains(h))
+            .map(str::to_string)
+            .collect(),
+    }
+}
+
+/// What `next` declares that needs approval beyond what `approved` covers:
+/// [`added`] over the approved declaration (`{}` when none is on record),
+/// with `capabilities` kept to the [`GATED`] names.
+#[must_use]
+pub fn pending(approved: Option<&Value>, next: &Value) -> Added {
+    let empty = Value::Object(serde_json::Map::new());
+    let mut out = added(approved.unwrap_or(&empty), next);
+    out.capabilities.retain(|c| GATED.contains(&c.as_str()));
+    out
+}
+
+/// The declaration of `next` that is in force given what `approved`
+/// covers: `next` without the pending gated names, `net.hosts` narrowed to
+/// the approved hosts, and `net` dropped when none remain.
+#[must_use]
+pub fn in_force(approved: Option<&Value>, next: &Value) -> Value {
+    let empty = Value::Object(serde_json::Map::new());
+    let approved = approved.unwrap_or(&empty);
+    let mut out = next.clone();
+    let Some(map) = out.as_object_mut() else {
+        return out;
+    };
+    for name in pending(Some(approved), next).capabilities {
+        map.remove(&name);
+    }
+    if let Some(net) = map.get_mut("net") {
+        let ok = hosts_of(approved);
+        let kept: Vec<Value> = hosts_of(next)
+            .into_iter()
+            .filter(|h| ok.contains(h))
+            .map(|h| Value::String(h.to_string()))
+            .collect();
+        if kept.is_empty() {
+            map.remove("net");
+        } else if let Some(o) = net.as_object_mut() {
+            o.insert("hosts".into(), Value::Array(kept));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{net_hosts, validate};
+    use super::{added, in_force, net_hosts, pending, validate};
     use serde_json::json;
 
     #[test]
@@ -218,5 +318,53 @@ mod tests {
             .map(|i| format!("h{i}.example.com"))
             .collect();
         assert!(net_hosts(&json!({"net": {"hosts": many}})).is_err());
+    }
+
+    #[test]
+    fn added_is_the_clax_apps_rule() {
+        // apps/clax_app/test/bundle/updater_test.dart 'addedCapabilities lists new capabilities and hosts'
+        let d = added(
+            &json!({"db": {}, "net": {"hosts": ["a.com"]}}),
+            &json!({"db": {}, "notify": {}, "net": {"hosts": ["a.com", "b.com"]}}),
+        );
+        assert_eq!(d.capabilities, vec!["notify"]);
+        assert_eq!(d.hosts, vec!["b.com"]);
+        let first = added(&json!({}), &json!({"net": {"hosts": ["a.com"]}}));
+        assert_eq!(
+            (first.capabilities, first.hosts),
+            (vec!["net".to_string()], vec!["a.com".to_string()])
+        );
+    }
+
+    #[test]
+    fn pending_keeps_what_reaches_past_the_page() {
+        let p = pending(
+            None,
+            &json!({"db": {}, "comments": {}, "user": {}, "sample": {}, "shell": {}}),
+        );
+        assert_eq!(p.capabilities, vec!["sample", "shell"]);
+        assert!(pending(Some(&json!({"sample": {}})), &json!({"sample": {}, "db": {}})).is_empty());
+    }
+
+    #[test]
+    fn in_force_is_the_approved_declaration_on_gated_names() {
+        let approved = json!({"net": {"hosts": ["a.com"]}});
+        let next = json!({"db": {}, "sample": {}, "net": {"hosts": ["a.com", "b.com"]}});
+        assert_eq!(
+            in_force(Some(&approved), &next),
+            json!({"db": {}, "net": {"hosts": ["a.com"]}})
+        );
+        assert_eq!(
+            in_force(None, &json!({"net": {"hosts": ["a.com"]}, "db": {}})),
+            json!({"db": {}})
+        );
+        // A host the next version drops is not in force, whatever was approved.
+        assert_eq!(
+            in_force(
+                Some(&json!({"net": {"hosts": ["a.com", "b.com"]}})),
+                &json!({"net": {"hosts": ["b.com"]}})
+            ),
+            json!({"net": {"hosts": ["b.com"]}})
+        );
     }
 }
