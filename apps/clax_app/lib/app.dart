@@ -1754,6 +1754,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       api: _api,
       store: _lineages,
       key: homeInstallKey(),
+      log: (l) => debugPrint('clax home: $l'),
     );
     var updated = false;
     final keeper = _homeKeeper = HomeKeeper(
@@ -1991,6 +1992,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
               api: _api,
               store: _lineages,
               key: homeInstallKey(),
+              log: (l) => debugPrint('clax home: $l'),
             ),
             settings: _homeHost!.settings,
             shipped: _s.shippedHome,

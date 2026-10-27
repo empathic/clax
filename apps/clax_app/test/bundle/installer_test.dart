@@ -177,6 +177,13 @@ void main() {
     expect(me.api.approved, [(aid, 1, FakeClaxApi.pendingSha256(aid, 1))]);
   });
 
+  test('an install does not approve what its sheet did not list', () async {
+    me.api.unseenPending = ['notify'];
+    final w = await makeBundle(lineage: lineageA);
+    await me.installer.install(await me.installer.open(w.bytes));
+    expect(me.api.approved, isEmpty);
+  });
+
   test('an install with nothing pending approves nothing', () async {
     me.api.pendsApproval = false;
     final w = await makeBundle(lineage: lineageA);

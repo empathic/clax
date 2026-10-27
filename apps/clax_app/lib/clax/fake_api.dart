@@ -790,6 +790,20 @@ class FakeClaxApi implements ClaxApi {
   /// (`pending_capabilities`); its hash is [pendingSha256].
   bool pendsApproval = true;
 
+  /// Capability names a version's `pending_capabilities` names beyond what
+  /// it declares, as a daemon's pending set against the last approved
+  /// declaration can.
+  List<String> unseenPending = const [];
+
+  /// Per artifact, the capability names and `net` hosts approved so far.
+  final Map<String, Set<String>> _approvedCaps = {};
+  final Map<String, Set<String>> _approvedHosts = {};
+
+  static List<String> _hostsOf(Map<String, Object?> c) => switch (c['net']) {
+    {'hosts': final List<Object?> h} => [for (final x in h) '$x'],
+    _ => const [],
+  };
+
   static String pendingSha256(String aid, int n) => 'sha-$aid-$n';
 
   @override
@@ -803,8 +817,10 @@ class FakeClaxApi implements ClaxApi {
       'version': version,
       'declaration_sha256': declarationSha256,
     });
-    _artifact(aid);
+    final a = _artifact(aid);
     approved.add((aid, version, declarationSha256));
+    _approvedCaps[aid] = a.capabilities.keys.toSet();
+    _approvedHosts[aid] = _hostsOf(a.capabilities).toSet();
   }
 
   @override
@@ -2399,8 +2415,16 @@ class FakeClaxApi implements ClaxApi {
     final pending = pendsApproval
         ? PendingCapabilities(
             version: v.n,
-            capabilities: a.capabilities.keys.toList(),
-            hosts: const [],
+            capabilities: [
+              ...a.capabilities.keys.where(
+                (k) => !(_approvedCaps[a.id]?.contains(k) ?? false),
+              ),
+              ...unseenPending,
+            ],
+            hosts: [
+              for (final h in _hostsOf(a.capabilities))
+                if (!(_approvedHosts[a.id]?.contains(h) ?? false)) h,
+            ],
             declarationSha256: pendingSha256(a.id, v.n),
           )
         : null;

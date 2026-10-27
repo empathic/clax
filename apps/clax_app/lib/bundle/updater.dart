@@ -499,14 +499,6 @@ class Updater {
       );
     }
     final landed = published;
-    if (landed != null && confirm != null) {
-      await approveCapabilities(
-        api,
-        aid,
-        landed.pendingCapabilities,
-        _log,
-      );
-    }
     if (landed == null) {
       snapshots.discard(aid);
       _dropPending(aid);
@@ -533,6 +525,20 @@ class Updater {
       // The snapshot goes first: a crash after it finishes from the
       // pending release, never rolls a passed update back.
       snapshots.discard(aid);
+    }
+
+    // The update stood: what the person accepted is approved. A rolled-back
+    // update returned above, leaving no approval.
+    if (confirm != null) {
+      final shown = addedCapabilities(live.artifact.capabilities, capabilities);
+      await approveCapabilities(
+        api,
+        aid,
+        landed.pendingCapabilities,
+        shownCapabilities: shown.capabilities,
+        shownHosts: shown.hosts,
+        log: _log,
+      );
     }
 
     // 8: the lineage.
@@ -1016,7 +1022,15 @@ class Updater {
         ),
       );
       if (confirm != null) {
-        await approveCapabilities(api, aid, r.pendingCapabilities, _log);
+        final shown = addedCapabilities(live.artifact.capabilities, capabilities);
+        await approveCapabilities(
+          api,
+          aid,
+          r.pendingCapabilities,
+          shownCapabilities: shown.capabilities,
+          shownHosts: shown.hosts,
+          log: _log,
+        );
       }
       return FilesTaken(
         r.version.n,

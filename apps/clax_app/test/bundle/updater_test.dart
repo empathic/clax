@@ -92,6 +92,31 @@ void main() {
     expect(me.api.approved, [(aid, 2, FakeClaxApi.pendingSha256(aid, 2))]);
   });
 
+  test('an accepted update does not approve what its sheet did not list',
+      () async {
+    me.api.unseenPending = ['notify'];
+    final out = await me.updater.update(
+      aid,
+      await v2(),
+      confirm: () async => true,
+    );
+    expect(out, isA<UpdateLanded>());
+    expect(me.api.approved, isEmpty);
+  });
+
+  test('an accepted update approves a pending set narrower than its sheet',
+      () async {
+    // v2 adds net; a v1 already declaring db leaves only net pending, and
+    // the sheet lists net and its host.
+    final out = await me.updater.update(
+      aid,
+      await v2(),
+      confirm: () async => true,
+    );
+    expect(out, isA<UpdateLanded>());
+    expect(me.api.approved, hasLength(1));
+  });
+
   test('an automatic update approves nothing', () async {
     final out = await me.updater.update(aid, await v2());
     expect(out, isA<UpdateLanded>());
@@ -598,10 +623,11 @@ void main() {
         baseUrl: () => Uri.parse('http://127.0.0.1:9/'),
         snapshots: me.snapshots,
       );
-      final out = await updater.update(aid, b);
+      final out = await updater.update(aid, b, confirm: () async => true);
       expect(out, isA<UpdateRolledBack>());
       expect((out as UpdateRolledBack).backOn, 1);
       expect(out.restored, isTrue);
+      expect(me.api.approved, isEmpty, reason: 'a rolled-back update');
       expect(await docs(), {
         'plants/p1': {'name': 'fern'},
         'plants/p2': {'name': 'moss'},
