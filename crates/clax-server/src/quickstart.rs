@@ -1,9 +1,16 @@
-//! The Clax Quickstart at the start of a local core (spec
-//! 2026-10-26-quickstart-onboarding-design §9): the store's seed and update
+//! The Clax Quickstart in each gallery (spec
+//! 2026-10-26-quickstart-onboarding-design §9), for every host: a local
+//! core's owner at start, and on a hosted site a person at their first
+//! sign-in or invite accept and again at every later sign-in (GitHub or a
+//! sign-in link). The store's seed and update
 //! ([`clax_store::Store::seed_quickstart`],
 //! [`clax_store::Store::update_quickstart`]) run for a person with the
-//! release the web UI carries ([`AppState::quickstart`]), and a version they
-//! make is told to the event streams as a publish tells it.
+//! release the web UI carries ([`AppState::quickstart`]); a state with no
+//! release does nothing. A seed is once per person and only for a gallery
+//! that never held an artifact, so repeating it at each sign-in retries one
+//! that failed and is otherwise a no-op; an update moves an untouched copy
+//! to the current release. Failures are logged and never fail the caller,
+//! and a version made is told to the event streams as a publish tells it.
 
 use clax_core::Event;
 use clax_core::audit::AuditCtx;
@@ -56,6 +63,13 @@ pub(crate) async fn update(s: &AppState, person: Option<&str>) {
         Ok(Updated::Current | Updated::Stopped) => {}
         Err(e) => tracing::warn!(error = ?e, "could not update the quickstart"),
     }
+}
+
+/// A person's sign-in: [`seed`], then [`update`]. Not for the owner or a
+/// guest.
+pub(crate) async fn sign_in(s: &AppState, person: &str) {
+    seed(s, Some(person)).await;
+    update(s, Some(person)).await;
 }
 
 fn told(s: &AppState, artifact: &Artifact, version: &Version) {

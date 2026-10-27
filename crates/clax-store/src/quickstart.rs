@@ -48,8 +48,8 @@ pub enum Seeded {
     /// The person has a row already (seeded, skipped or deleted): nothing
     /// was made.
     Already,
-    /// The owner's home already held an artifact: the row is written with
-    /// no artifact, so it is never seeded.
+    /// The person's gallery (the owner's: the home) already held an
+    /// artifact: the row is written with no artifact, so it is never seeded.
     Skipped,
 }
 
@@ -88,10 +88,10 @@ impl Store {
     /// comments on, through the publish checks
     /// ([`clax_core::publish::validate`]); its row is written in version
     /// 1's transaction under `ctx`. A person is seeded once: a second seed,
-    /// or one racing it, makes nothing. The owner's gallery is seeded only
-    /// in a home that has never held an artifact with a version (deleted
-    /// ones and drafts count); otherwise the row is written with no
-    /// artifact and [`Seeded::Skipped`] returned.
+    /// or one racing it, makes nothing. A gallery is seeded only when its
+    /// person (the owner: the home) has never held an artifact with a
+    /// version (deleted ones and drafts count); otherwise the row is
+    /// written with no artifact and [`Seeded::Skipped`] returned.
     ///
     /// # Errors
     /// The release's request ([`Release::request`]), the publish checks, or
@@ -108,7 +108,7 @@ impl Store {
             if row_exists(tx, &key)? {
                 return Ok(Some(Seeded::Already));
             }
-            if person.is_none() && held_an_artifact(tx)? {
+            if held_an_artifact(tx, person)? {
                 tx.execute(
                     "INSERT INTO quickstarts (person, seeded_at) VALUES (?1, ?2)",
                     params![key, now],
@@ -146,7 +146,11 @@ impl Store {
                 artifact: Box::new(artifact),
                 version: Box::new(version),
             }),
-            Err(CoreError::Conflict { .. }) => Ok(Seeded::Already),
+            // A `Conflict` is another seed's only when its row is there now;
+            // any other one is the create's own and surfaces.
+            Err(CoreError::Conflict { .. }) if self.with_tx(|tx| row_exists(tx, &key))? => {
+                Ok(Seeded::Already)
+            }
             Err(e) => Err(e),
         }
     }
@@ -295,15 +299,22 @@ fn row_exists(tx: &Transaction<'_>, key: &str) -> Result<bool> {
     )?)
 }
 
-/// Whether the home has ever held an artifact with a version, deleted ones
-/// and drafts included. A zero-version row is a create under way (another
+/// Whether the home (for the owner) or `person` has ever held an artifact
+/// with a version, deleted ones and drafts included. A zero-version row is a create under way (another
 /// seed's among them) or one a dead process left, never a page the owner had.
-fn held_an_artifact(tx: &Transaction<'_>) -> Result<bool> {
-    Ok(tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM artifacts WHERE current_version > 0)",
-        [],
-        |r| r.get(0),
-    )?)
+fn held_an_artifact(tx: &Transaction<'_>, person: Option<&str>) -> Result<bool> {
+    Ok(match person {
+        None => tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM artifacts WHERE current_version > 0)",
+            [],
+            |r| r.get(0),
+        )?,
+        Some(p) => tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM artifacts WHERE current_version > 0 AND person = ?1)",
+            [p],
+            |r| r.get(0),
+        )?,
+    })
 }
 
 /// A `quickstarts` row's `artifact_id`, `release`, `version_n` and `stopped_at`.
@@ -549,6 +560,26 @@ mod tests {
         // A person's gallery is theirs alone: the owner's pages do not count.
         made(st.seed_quickstart(DAEMON, Some("p7k2"), &a).await.unwrap());
         assert_eq!(st.list_artifacts().unwrap().len(), 2);
+
+        // A person who held an artifact of their own is skipped the same way.
+        let mine = st.insert_artifact_for_test("Mine", "2026-10-01T00:00:00Z");
+        st.with_tx(|tx| {
+            tx.execute(
+                "UPDATE artifacts SET person = 'q9m3' WHERE id = ?1",
+                [mine.as_str()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(matches!(
+            st.seed_quickstart(DAEMON, Some("q9m3"), &a).await.unwrap(),
+            Seeded::Skipped
+        ));
+        assert_eq!(st.list_artifacts().unwrap().len(), 3);
+        assert_eq!(
+            st.quickstart_of(Some("q9m3")).unwrap().unwrap().artifact_id,
+            None
+        );
     }
 
     #[tokio::test]

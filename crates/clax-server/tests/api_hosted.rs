@@ -60,6 +60,41 @@ impl Site {
         Site { ts, clock, origin }
     }
 
+    /// This site restarted on the same home carrying the quickstart release
+    /// `mark`: its people and artifacts stay.
+    async fn restarted_with_quickstart(&self, mark: &str) -> Site {
+        let release =
+            clax_core::quickstart::Release::from_tree(&clax_testkit::quickstart_tree(mark))
+                .map(Arc::new);
+        let ts = self
+            .ts
+            .reopened_hosted_with(self.clock.clone(), Some(SECRET), |s| {
+                s.quickstart = release;
+            })
+            .await;
+        let origin = format!("http://localhost:{}", ts.addr.port());
+        Site {
+            ts,
+            clock: self.clock.clone(),
+            origin,
+        }
+    }
+
+    /// A browser signed in as `of` through a sign-in link `of` made.
+    async fn linked(&self, of: &Browser) -> Browser {
+        let (s, v) = self.post(of, "/api/hosted/signin-links", json!({})).await;
+        assert_eq!(s, 200, "{v}");
+        let code = v["url"].as_str().unwrap().rsplit('/').next().unwrap();
+        let mut b = Browser::default();
+        self.sign_in(
+            &mut b,
+            &format!("/api/hosted/signin-links/{code}/accept"),
+            json!({}),
+        )
+        .await;
+        b
+    }
+
     /// [`Site::new`] with the public gallery on.
     async fn with_public_gallery() -> Site {
         let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
@@ -489,6 +524,50 @@ async fn an_invited_person_starts_with_the_quickstart() {
         list[0]["id"].as_str()
     );
     // The owner's own sign-in at setup seeded nothing on a hosted daemon.
+    let (_, mine) = site.get(&owner, "/api/artifacts").await;
+    assert!(mine["artifacts"].as_array().unwrap().is_empty(), "{mine}");
+}
+
+#[tokio::test]
+async fn an_invited_person_gets_the_new_release_at_a_later_sign_in_link() {
+    let site = Site::with_quickstart("a").await;
+    let owner = site.owner().await;
+    let sam = site.member(&owner, "Sam").await;
+    let (_, me) = site.get(&sam, "/api/people/me").await;
+    let pid = me["person"]["public_id"].as_str().unwrap().to_string();
+    let before = site.ts.store.quickstart_of(Some(&pid)).unwrap().unwrap();
+    assert_eq!(before.version_n, Some(1));
+
+    let site = site.restarted_with_quickstart("b").await;
+    let phone = site.linked(&sam).await;
+    let after = site.ts.store.quickstart_of(Some(&pid)).unwrap().unwrap();
+    assert_eq!(after.artifact_id, before.artifact_id);
+    assert_eq!(after.version_n, Some(2));
+    assert_ne!(after.release, before.release);
+    let (_, list) = site.get(&phone, "/api/artifacts").await;
+    assert_eq!(list["artifacts"].as_array().unwrap().len(), 1, "{list}");
+}
+
+#[tokio::test]
+async fn a_member_without_a_quickstart_gets_it_at_the_next_sign_in_link() {
+    // No release at the first start: the invite seeded nothing.
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sam = site.member(&owner, "Sam").await;
+    let (_, list) = site.get(&sam, "/api/artifacts").await;
+    assert!(list["artifacts"].as_array().unwrap().is_empty(), "{list}");
+
+    let site = site.restarted_with_quickstart("a").await;
+    let phone = site.linked(&sam).await;
+    let (_, list) = site.get(&phone, "/api/artifacts").await;
+    let list = list["artifacts"].as_array().unwrap();
+    assert_eq!(list.len(), 1, "{list:?}");
+    assert_eq!(list[0]["title"], "Clax Quickstart");
+    // A second sign-in makes no second copy.
+    let again = site.linked(&sam).await;
+    let (_, list) = site.get(&again, "/api/artifacts").await;
+    assert_eq!(list["artifacts"].as_array().unwrap().len(), 1, "{list}");
+    // The owner's own link seeds nothing.
     let (_, mine) = site.get(&owner, "/api/artifacts").await;
     assert!(mine["artifacts"].as_array().unwrap().is_empty(), "{mine}");
 }

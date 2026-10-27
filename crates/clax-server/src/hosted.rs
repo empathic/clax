@@ -496,6 +496,11 @@ async fn accept_signin_link(
     if replaced {
         access_changed(&s, None);
     }
+    // A person's quickstart moves to the current release (a seed that
+    // failed is retried); the owner's and a guest's gallery is not seeded.
+    if !signed.who.owner && !signed.who.guest {
+        crate::quickstart::sign_in(&s, &signed.who.viewer.public_id).await;
+    }
     Ok(signed_in_response(&h, signed, json!({}), "person"))
 }
 
