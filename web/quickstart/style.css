@@ -387,3 +387,6 @@
   .tk-str { color: var(--med); }
   .tk-env, .tk-ph { color: var(--med); }
   .tk-op { color: var(--muted); }
+  /* A step's ideas show their stage; built ones read as done. */
+  .ideas-here li .tag { font-size: 11px; padding: 1px 6px; margin-left: 4px; vertical-align: 1px; }
+  .ideas-here li.made a { color: var(--muted); text-decoration-color: var(--ok); }

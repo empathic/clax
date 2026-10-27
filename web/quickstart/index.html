@@ -300,6 +300,8 @@
     || (!claxbotRoute() && id === "claxbot")
     || (INSTALLS.includes(id) && state.agent && NODES[id].agent !== state.agent);
   const ideasFor = (id) => ideas.filter((i) => i.step === (id.startsWith("install") ? "install" : id));
+  /** Stages that mean the idea is built: the step no longer waits on it. */
+  const DONE_STATUS = new Set(["implemented", "shipped"]);
 
   /** The fork after sign-in: bring your own agent (install, then attach)
    * on the left, ClaxBot on the right. Both rejoin at the core loop. */
@@ -464,7 +466,7 @@
       el.querySelectorAll(":scope > .fab").forEach((f) => { const on = !!state.done[f.dataset.toggle]; f.classList.toggle("on", on); f.setAttribute("aria-pressed", String(on)); f.classList.toggle("beckon", f.dataset.toggle === "signin" && !Object.keys(state.done).length); });
       el.querySelectorAll("[data-pick]").forEach((c) => c.classList.toggle("on", c.dataset.pick === state.agent));
       const bulb = el.querySelector(".idea");
-      if (bulb) { const n = ideasFor(id).length; bulb.hidden = !n; bulb.title = `${n} idea${n === 1 ? "" : "s"} to make this step better`; }
+      if (bulb) { const n = ideasFor(id).filter((i) => i.status !== "declined" && !DONE_STATUS.has(i.status || "proposed")).length; bulb.hidden = !n; bulb.title = `${n} idea${n === 1 ? "" : "s"} to make this step better`; }
     }
     const CORE = core();
     const n = CORE.filter((c) => state.done[c]).length;
@@ -572,7 +574,10 @@
     if (SHOWME[id]) html += `<div class="showme-wrap">${showMe(id)}</div>`;
     const here = ideasFor(id);
     if (here.length) {
-      html += `<div class="ideas-here"><b>💡 This step could be better</b><ul>${here.map((i) => `<li><a href="ideas.html#${encodeURIComponent(i.id)}">${esc(i.title)}</a></li>`).join("")}</ul></div>`;
+      const rank = { building: 0, planned: 1, proposed: 2, implemented: 3, shipped: 4 };
+      const shown = here.filter((i) => i.status !== "declined").sort((a, b) => (rank[a.status || "proposed"] ?? 9) - (rank[b.status || "proposed"] ?? 9));
+      const open = shown.filter((i) => !DONE_STATUS.has(i.status || "proposed")).length;
+      if (shown.length) html += `<div class="ideas-here"><b>💡 ${open ? "This step could be better" : "Made better"}</b><ul>${shown.map((i) => { const st = i.status || "proposed"; return `<li class="${DONE_STATUS.has(st) ? "made" : ""}"><a href="ideas.html#${encodeURIComponent(i.id)}">${esc(i.title)}</a> <span class="tag st st-${esc(st)}">${esc(st)}</span></li>`; }).join("")}</ul></div>`;
     }
     const nx = nextOf(id);
     let actions = "";
