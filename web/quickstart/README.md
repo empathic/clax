@@ -9,7 +9,9 @@ comment round trip (`index.html`), and the ideas that would make it better
 (`web/scripts/build-quickstart.mjs`) copies `index.html`, `style.css`,
 `icon.svg`, `clax.json` and `logos/` to `web/dist/quickstart`, which the
 binary embeds; `ideas.html`, `ideas-data.js` and this README do not ship,
-and a copy without ideas hides the "Make it better" tab. The page can also
+and a copy without ideas hides the "Make it better" tab. The page ships with
+Clax and is seeded into new galleries without the ideas page; the
+repository's published copy is the one with ideas. The page can also
 be published as an artifact (`clax publish index.html --dir web/quickstart`);
 `docs/superpowers/specs/2026-10-26-quickstart-onboarding-design.md` §9
 describes shipping it with Clax.
