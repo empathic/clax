@@ -428,10 +428,11 @@ async fn load_150_people_on_100_seats() {
     // At most IN_FLIGHT requests at once: each needs a fresh connection
     // (the streams hold the pooled ones), and macOS refuses connections
     // beyond its listen backlog (kern.ipc.somaxconn, 128).
-    let outcomes: Vec<_> = futures::stream::iter(streams.iter().map(|s| change(&ts, s, &topic, &[])))
-        .buffered(IN_FLIGHT)
-        .collect()
-        .await;
+    let outcomes: Vec<_> =
+        futures::stream::iter(streams.iter().map(|s| change(&ts, s, &topic, &[])))
+            .buffered(IN_FLIGHT)
+            .collect()
+            .await;
     let seated: Vec<usize> = (0..PEOPLE).filter(|i| outcomes[*i].0 == 200).collect();
     let refused: Vec<usize> = (0..PEOPLE)
         .filter(|i| outcomes[*i] == (429, "no_live_seat".to_string()))
