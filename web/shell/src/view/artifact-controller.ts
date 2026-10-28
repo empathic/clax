@@ -13,7 +13,7 @@ import { REQUEST_STUCK, connTrouble } from "../conn-notice";
 import { Lifecycle, onPageCache, retrying } from "../lifecycle";
 import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
-import { type SiteHosts, artifactOrigin, pageSrc, startSrc } from "../origin";
+import { type SiteHosts, artifactOrigin, frameOrigin, isPathFrame, pageSrc, startSrc } from "../origin";
 import { appQuery, parseShellPath, shellPath } from "../route";
 import { type Thread, type Viewer, addComment, createThread, currentViewer, fetchThread, getViewer, listThreads, onViewer, reopenThread, resolveThread, seedViewer, sendBatch, sendToAgent, upsert } from "../threads";
 import { after } from "../clock";
@@ -680,7 +680,7 @@ export class ArtifactController {
   /** Posts `m` to the frame, at the site origin only.
    * @internal */
   send(m: ShellToBridge): void {
-    if (this.s.origin) sendToFrame(this.frameWin(), this.s.origin, m);
+    if (this.s.origin) sendToFrame(this.frameWin(), frameOrigin(this.s.origin), m);
   }
 
   /** Runs when the artifact and its site become known, before the frame
@@ -755,7 +755,8 @@ export class ArtifactController {
     if (!draft) this.frame.show(startSrc(s.origin, this.pageAt(this.startFile)), `${this.shown()}`);
     const el = this.frame.el;
     if (!el || el === before) return;
-    this.hs = { el, phase: "start", tries: 0, page: !draft };
+    // A frame on a path has no handshake: it opens on the page itself.
+    this.hs = { el, phase: isPathFrame(s.origin) ? "code" : "start", tries: 0, page: !draft };
     if (!draft && this.startHash) this.pendingFragment = this.startHash;
   }
 
@@ -936,7 +937,7 @@ export class ArtifactController {
     // serves them on this host's name under `localhost`.
     if (this.s.origin === undefined) {
       const site = d.site ?? this.init.boot?.site ?? localSite();
-      this.set({ origin: artifactOrigin(this.id, site), elsewhere: site.domain === "localhost" && !/^(localhost|127\.0\.0\.1)$/.test(location.hostname) });
+      this.set({ origin: artifactOrigin(this.id, site), elsewhere: !site.path && site.domain === "localhost" && !/^(localhost|127\.0\.0\.1)$/.test(location.hostname) });
     }
     this.latestKnown = Math.max(this.latestKnown, d.artifact.current_version);
     // The stream opens after the load starts: a working delta already heard is newer.
@@ -1279,7 +1280,7 @@ export class ArtifactController {
    * release attestation (see `clax:pick-start`). */
   private onMessage(e: MessageEvent, waited = false): void {
     if (this.disposed) return;
-    const origin = this.s.origin ?? "";
+    const origin = frameOrigin(this.s.origin ?? "");
     const hs = this.hs;
     if (hs?.phase === "start" && hs.el === this.frame?.el) {
       const st = acceptSiteState(e, this.frameWin(), origin);

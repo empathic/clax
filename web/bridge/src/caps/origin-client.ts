@@ -120,8 +120,9 @@ async function relayed(relay: SiteRelay, url: string, init: RequestInit): Promis
 }
 
 /** The client of the site at `base` (its origin; the path is ignored);
- * with `relay`, its writes go by the framing shell. */
-export function originClient(base: URL, relay?: SiteRelay): OriginClient {
+ * with `relay`, its writes go by the framing shell, and with `relayAll`
+ * its reads too (a frame whose opaque origin keeps no site cookie). */
+export function originClient(base: URL, relay?: SiteRelay, relayAll = false): OriginClient {
   const at = (path: string) => new URL(API + path, base).href;
 
   /** The docs reads' last answers by URL, with their `ETag`: sent again as
@@ -139,7 +140,7 @@ export function originClient(base: URL, relay?: SiteRelay): OriginClient {
     let res: Response;
     try {
       const go: RequestInit = { credentials: "same-origin", cache: "no-store", ...init, headers };
-      res = relay && !["GET", "HEAD"].includes((init.method ?? "GET").toUpperCase()) ? await relayed(relay, url, go) : await fetch(url, go);
+      res = relay && (relayAll || !["GET", "HEAD"].includes((init.method ?? "GET").toUpperCase())) ? await relayed(relay, url, go) : await fetch(url, go);
     } catch {
       throw fail(0, {});
     }

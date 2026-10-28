@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CapEnv } from "./host";
 import { siteHandler } from "./site";
 import { isAvailable } from "./availability";
+import { artifactOrigin } from "../origin";
 
 const AID = "7q3k9mzx2b4t";
 const env = { aid: AID } as unknown as CapEnv;
@@ -54,5 +55,22 @@ describe("site", () => {
     vi.stubGlobal("fetch", f);
     await expect(handler().call("fetch", [req({})])).rejects.toMatchObject({ code: "capability_removed" });
     expect(f).not.toHaveBeenCalled();
+  });
+});
+
+describe("site on a path (a trusted host's sandboxed frame)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it("relays every call, reads included, to the artifact's path on the shell's own host", async () => {
+    // The daemon's `site.path`: this shell frames on a path from here on.
+    artifactOrigin(AID, { domain: "localhost", scheme: "http", port: null, path: "/_clax/frame/" });
+    const f = vi.fn(async (_u: string, _i: RequestInit) => new Response('{"docs":[]}', { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", f);
+    const r = (await handler().call("fetch", [req({ method: "GET", path: "/_clax/api/docs?collection=fold", body: null })])) as { status: number; body: ArrayBuffer };
+    const [url, init] = f.mock.calls[0];
+    expect(url).toBe(`/_clax/frame/${AID}/_clax/api/docs?collection=fold`);
+    expect(init.method).toBe("GET");
+    expect(init.body).toBeNull();
+    expect(r.status).toBe(200);
+    await expect(handler().call("fetch", [req({ path: "/api/token" })])).rejects.toMatchObject({ code: "invalid_argument" });
   });
 });

@@ -3,16 +3,19 @@
 
 import { SHELL_TYPES, type ShellToBridge } from "./protocol";
 
-/** The origins the shell can have, from the origin the bridge tag names
- * (`data-origin`, the daemon's public origin): that origin, and for a
- * local daemon's (`localhost` or `127.0.0.1`) each of those names
+/** The origins the shell can have, from the origins the bridge tag names
+ * (`data-origin`, the daemon's public origin; a trusted host's frame names
+ * that host on `https` and `http`, separated by a space): each origin, and
+ * for a local daemon's (`localhost` or `127.0.0.1`) each of those names
  * at its port, as the shell may be reached by any. None without one, or
- * for one that does not parse: the bridge then takes orders from no one. */
+ * for one that does not parse: the bridge then takes no orders from it. */
 export function shellOrigins(origin: string | undefined): string[] {
-  try {
-    const u = new URL(origin!), loopback = ["localhost", "127.0.0.1"];
-    return loopback.includes(u.hostname) ? loopback.map(h => `${u.protocol}//${h}${u.port && ":" + u.port}`) : [u.origin];
-  } catch { return []; }
+  return (origin ?? "").split(" ").filter(Boolean).flatMap(o => {
+    try {
+      const u = new URL(o), loopback = ["localhost", "127.0.0.1"];
+      return loopback.includes(u.hostname) ? loopback.map(h => `${u.protocol}//${h}${u.port && ":" + u.port}`) : [u.origin];
+    } catch { return []; }
+  });
 }
 
 /** The keys the shell forwards to comment mode (`clax:key`). */

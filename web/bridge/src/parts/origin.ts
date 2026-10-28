@@ -13,8 +13,9 @@ let relayed: Site | null = null;
 /** The page's site, its writes relayed by the framing shell (`site.fetch`):
  * what a page the Clax app serves uses (its bridge tag says
  * `data-api="shell"`), as the app's WebViews give their scheme no request
- * body. One per page. */
-export function relayedSite(rpc: Pick<Rpc, "call">, noCookie: () => void): Site {
+ * body; with `all` (a trusted host's sandboxed frame, `data-api="frame"`)
+ * its reads too. One per page. */
+export function relayedSite(rpc: Pick<Rpc, "call">, noCookie: () => void, all = false): Site {
   const relay: SiteRelay = r => rpc.call("site", "fetch", [r]) as ReturnType<SiteRelay>;
-  return relayed ??= siteOf(originClient(new URL(location.origin), relay), noCookie);
+  return relayed ??= siteOf(originClient(new URL(location.origin), relay, all), noCookie);
 }

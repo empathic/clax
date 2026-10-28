@@ -170,10 +170,14 @@ type PartName = keyof Parts;
   // shell's load the `caps` part, framed only: unframed they are null at once.
   // A page the Clax app serves sends its site API writes by the shell
   // (`data-api="shell"`, read now, before any page script runs).
-  const relay = framed && script?.dataset.api === "shell";
+  // A trusted host's frame (`data-api="frame"`: sandboxed on a path of the
+  // shell's host, its origin opaque, so it keeps no site cookie) sends
+  // every site API call by the shell, reads included.
+  const relayAll = framed && script?.dataset.api === "frame";
+  const relay = framed && (script?.dataset.api === "shell" || relayAll);
   const noCookie = () => post({ type: "clax:no-cookie" });
   const resolveUse = (name: string) => ORIGIN_CAPABILITIES.includes(name)
-    ? parts.origin().then(o => o.originUse(name, framed && rpc, parts.room, relay ? o.relayedSite(rpc, noCookie) : undefined, noCookie))
+    ? parts.origin().then(o => o.originUse(name, framed && rpc, parts.room, relay ? o.relayedSite(rpc, noCookie, relayAll) : undefined, noCookie))
     : framed ? parts.caps().then(c => c.resolveUse(name, { rpc, sample: parts.sample, env: { ctx: commentsContext, clip: clips } })) : null;
   // The page's claude.use() calls not yet answered: the inspect view's tests
   // start once they have (`usesSettled`), as a page that wires its controls

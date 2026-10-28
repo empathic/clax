@@ -816,6 +816,13 @@ pub async fn site_access_layer(
     let Some(site) = req.extensions().get::<SiteRequest>().cloned() else {
         return next.run(req).await;
     };
+    if req
+        .extensions()
+        .get::<crate::host::TrustedFrame>()
+        .is_some()
+    {
+        return trusted_frame_access(&s, req, next).await;
+    }
     let holder = match caller_holder(&s, req.headers(), &site.artifact).await {
         Ok(h) => h,
         Err(e) => return e.into_response(),
@@ -885,6 +892,46 @@ pub async fn site_access_layer(
     let mut res = next.run(req).await;
     res.extensions_mut().insert(SiteAnswer {
         world,
+        public: false,
+    });
+    res
+}
+
+/// The access check of a trusted-host frame's request
+/// ([`crate::host::TrustedFrame`]): no site cookie (the frame's origin is
+/// opaque, and keeps none), so the caller is the request's own identity,
+/// and only the owner reads (a local daemon makes a site session for the
+/// owner alone, [`request_holder`]). A call of the runtime's backend
+/// (`/_clax/api/…`) is the owner's only as any API request is
+/// ([`crate::identity::Identity::is_owner`]: the owner's tailnet login
+/// counts on a request of this host's own origin alone, which only the
+/// shell's relay is); any other file of the site, which the opaque frame
+/// loads as another origin, is the owner's when `tailscale serve` names the
+/// owner's tailnet login (`[serve] owner_tailscale_login`), whoever made
+/// the request: a GET of a file, which changes nothing. Anyone else gets
+/// 403 `forbidden`, as does a site open to the world: its world visitors
+/// read it on its own site host.
+async fn trusted_frame_access(s: &AppState, mut req: Request<Body>, next: Next) -> Response {
+    let api = req.uri().path().starts_with("/_clax/api/");
+    let who = crate::identity::Identity::from_parts(req.headers(), req.extensions(), &s.token);
+    let owner_login = req
+        .extensions()
+        .get::<crate::auth::TailscaleUser>()
+        .is_some_and(|u| crate::auth::tailscale_owner(u, s.owner_tailscale_login.as_deref()));
+    let get = matches!(*req.method(), Method::GET | Method::HEAD);
+    let owner = who.is_owner() || (!api && get && owner_login);
+    if !owner {
+        let mut res =
+            ApiError::forbidden("forbidden", "a trusted host's frames are the owner's alone")
+                .into_response();
+        res.extensions_mut().insert(SiteAnswer::default());
+        return res;
+    }
+    req.extensions_mut()
+        .insert(SiteCaller::Holder(Holder::Owner));
+    let mut res = next.run(req).await;
+    res.extensions_mut().insert(SiteAnswer {
+        world: false,
         public: false,
     });
     res

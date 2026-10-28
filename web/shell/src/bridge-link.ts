@@ -33,9 +33,10 @@ export function acceptSiteState(e: MessageEvent, frame: Window | null, frameOrig
   return { state: d.state, next: d.next };
 }
 
-/** Posts to the frame, at its origin only. */
+/** Posts to the frame, at its origin only; to a sandboxed frame's opaque
+ * origin (`"null"`, which no target can name) by its window alone. */
 export function sendToFrame(frame: Window | null, frameOrigin: string, m: ShellToBridge): void {
-  frame?.postMessage(m, frameOrigin);
+  frame?.postMessage(m, frameOrigin === "null" ? "*" : frameOrigin);
 }
 
 /** Whether a hello comes from the artifact and version the shell is showing;
