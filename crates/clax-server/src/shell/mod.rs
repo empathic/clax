@@ -229,6 +229,48 @@ async fn within(
     }
 }
 
+/// Where the web UI keeps the shell's service worker, which `/sw.js` serves.
+const SERVICE_WORKER: &str = "_clax/sw.js";
+
+/// `/sw.js`: the shell's service worker (`web/shell/public/_clax/sw.js`),
+/// at the root so its scope is the whole shell and Clax installs as a web
+/// app. It holds no data; it is revalidated on each use, as browsers check
+/// a worker for updates, and is JavaScript by its type alone (`nosniff`).
+/// 404 when the web UI is not built.
+pub async fn service_worker(
+    axum::extract::State(s): axum::extract::State<clax_http::state::AppState>,
+    _d: clax_http::agent::DeniedToGrants,
+    req: HeaderMap,
+) -> Result<Response, ApiError> {
+    let f = s.web.get(SERVICE_WORKER).ok_or_else(ApiError::not_found)?;
+    let mut res = http_cache::tagged(&req, &f.data, REVALIDATE, || {
+        (
+            [(header::CONTENT_TYPE, "text/javascript")],
+            f.data.clone().into_owned(),
+        )
+            .into_response()
+    });
+    res.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    Ok(res)
+}
+
+/// The type of a file under `/_clax/`: JavaScript for `.js`, the web app
+/// manifest's own type for `.webmanifest`, else by its extension.
+fn static_type(path: &str) -> String {
+    if path.ends_with(".js") {
+        "text/javascript".to_string()
+    } else if path.ends_with(".webmanifest") {
+        "application/manifest+json".to_string()
+    } else {
+        mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .to_string()
+    }
+}
+
 /// The artifact page's `Cache-Control`: it carries one viewer's data, so no
 /// shared cache may store it, and the browser asks before every use.
 pub const PRIVATE_REVALIDATE: &str = "private, no-cache";
@@ -415,13 +457,7 @@ pub async fn static_file(
     let Some(f) = (!hidden).then(|| s.web.get(&file)).flatten() else {
         return Ok(ApiError::not_found().into_response());
     };
-    let ct = if path.ends_with(".js") {
-        "text/javascript".to_string()
-    } else {
-        mime_guess::from_path(&path)
-            .first_or_octet_stream()
-            .to_string()
-    };
+    let ct = static_type(&path);
     if file == BRIDGE || file == TRANSPORT {
         let cc = versioned_cache_control(query.as_deref(), &short_hash(&f.sha256));
         return Ok(http_cache::tagged(&req, &f.data, cc, || {

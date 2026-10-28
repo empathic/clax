@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 import type { OutputAsset } from "rollup";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { appIcons } from "./scripts/extension-icons.mjs";
 // The root is shell/, so the plugin would not find svelte.config.js (runes mode) by itself.
 const SVELTE_CONFIG = fileURLToPath(new URL("svelte.config.js", import.meta.url));
 
@@ -68,12 +69,24 @@ export function inlineCss(): Plugin {
   };
 }
 
+/** Emits the installed web app's PNG icons (scripts/extension-icons.mjs)
+ * under `_clax/app/`, where the manifest and the entries' heads name them. */
+export function appIconFiles(): Plugin {
+  return {
+    name: "clax-app-icons",
+    apply: "build",
+    generateBundle() {
+      for (const [name, source] of Object.entries(appIcons())) this.emitFile({ type: "asset", fileName: `_clax/app/${name}`, source });
+    },
+  };
+}
+
 // CLAX_TEST_CLOCK=1 builds the browser tests' shell, whose clock a test can
 // advance (shell/src/clock.ts); every other build leaves the hook out.
 export const TEST_CLOCK = process.env.CLAX_TEST_CLOCK === "1";
 
 export default defineConfig({
-  root: "shell", base: "/", plugins: [svelte({ configFile: SVELTE_CONFIG }), inlineCss()],
+  root: "shell", base: "/", plugins: [svelte({ configFile: SVELTE_CONFIG }), inlineCss(), appIconFiles()],
   define: { __CLAX_TEST_CLOCK__: JSON.stringify(TEST_CLOCK) },
   build: {
     outDir: "../dist", emptyOutDir: false, assetsDir: "_clax/shell", manifest: true,

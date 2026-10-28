@@ -1,6 +1,8 @@
 // Draws the Echo mark (two half-discs facing an ink dot; red-orange people
-// on the left, green agents on the right) as the extension's PNG icons, so
-// no binary image lives in the repository. 4×4 supersampling per pixel.
+// on the left, green agents on the right) as PNG icons, so no binary image
+// lives in the repository: the extension's (transparent) and the installed
+// web app's (opaque, on the shell's background). 4×4 supersampling per
+// pixel.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { deflateSync } from "node:zlib";
 
@@ -38,20 +40,48 @@ function colourAt(x, y) {
   if (Math.hypot(x - 20, y - 12) <= 2.8) return INK;
   return null;
 }
+
+/** The light shell's `--bg` (web/shell/src/theme.css), behind the app icons. */
+export const APP_BACKGROUND = [0xf7, 0xf7, 0xf5];
+
+/**
+ * The mark as a `size`×`size` PNG. `fill` is the part of the side the
+ * mark's 42-unit square spans, centred; `background` (RGB) makes every
+ * pixel opaque, else the mark stands on transparency.
+ */
+export function drawMark(size, { fill = 1, background = null } = {}) {
+  const rgba = Buffer.alloc(size * size * 4);
+  const scale = 42 / (size * fill);
+  const off = (size * (1 - fill)) / 2;
+  for (let py = 0; py < size; py++) for (let px = 0; px < size; px++) {
+    const sum = [0, 0, 0, 0];
+    for (let sy = 0; sy < 4; sy++) for (let sx = 0; sx < 4; sx++) {
+      const c = colourAt((px - off + (sx + 0.5) / 4) * scale - 1, (py - off + (sy + 0.5) / 4) * scale - 9);
+      if (c) { sum[0] += c[0]; sum[1] += c[1]; sum[2] += c[2]; sum[3] += 1; }
+    }
+    const i = (py * size + px) * 4;
+    if (background) {
+      // The covered share of the mark's colour over the background.
+      const a = sum[3] / 16;
+      for (let k = 0; k < 3; k++) rgba[i + k] = Math.round((sum[3] ? (sum[k] / sum[3]) * a : 0) + background[k] * (1 - a));
+      rgba[i + 3] = 255;
+    } else if (sum[3]) { rgba[i] = sum[0] / sum[3]; rgba[i + 1] = sum[1] / sum[3]; rgba[i + 2] = sum[2] / sum[3]; rgba[i + 3] = Math.round((sum[3] / 16) * 255); }
+  }
+  return png(size, rgba);
+}
+
 export function drawIcons(dir) {
   mkdirSync(dir, { recursive: true });
-  for (const size of [16, 32, 48, 128]) {
-    const rgba = Buffer.alloc(size * size * 4);
-    const scale = 42 / size;
-    for (let py = 0; py < size; py++) for (let px = 0; px < size; px++) {
-      const sum = [0, 0, 0, 0];
-      for (let sy = 0; sy < 4; sy++) for (let sx = 0; sx < 4; sx++) {
-        const c = colourAt((px + (sx + 0.5) / 4) * scale - 1, (py + (sy + 0.5) / 4) * scale - 9);
-        if (c) { sum[0] += c[0]; sum[1] += c[1]; sum[2] += c[2]; sum[3] += 1; }
-      }
-      const i = (py * size + px) * 4;
-      if (sum[3]) { rgba[i] = sum[0] / sum[3]; rgba[i + 1] = sum[1] / sum[3]; rgba[i + 2] = sum[2] / sum[3]; rgba[i + 3] = Math.round((sum[3] / 16) * 255); }
-    }
-    writeFileSync(`${dir}/${size}.png`, png(size, rgba));
-  }
+  for (const size of [16, 32, 48, 128]) writeFileSync(`${dir}/${size}.png`, drawMark(size));
+}
+
+/**
+ * The installed web app's icons (web/shell/public/_clax/app.webmanifest and
+ * the shell's `apple-touch-icon`), by file name: opaque, since iOS fills a
+ * transparent home-screen icon with black, and the mark within the middle
+ * 60%, inside a maskable icon's safe zone (the middle 80%).
+ */
+export function appIcons() {
+  const icon = size => drawMark(size, { fill: 0.6, background: APP_BACKGROUND });
+  return { "apple-touch-icon.png": icon(180), "icon-192.png": icon(192), "icon-512.png": icon(512) };
 }

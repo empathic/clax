@@ -233,6 +233,7 @@ mod l10 {
         ("inbox::unread_one", Person),
         ("shell::gallery_page", NoArtifact),
         ("shell::static_file", NoArtifact),
+        ("shell::service_worker", NoArtifact),
         ("health::healthz", NoArtifact),
         ("assets::blob", SeesLive),
         ("site_signin::page", SeesLive),
