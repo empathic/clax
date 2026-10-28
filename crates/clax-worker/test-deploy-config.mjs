@@ -72,6 +72,14 @@ try {
     assert.equal("CONTENT_ORIGIN" in r.config.vars, false, JSON.stringify(r.config.vars));
   });
 
+  check("CLAX_BUILD_COMMIT names the checked-out commit, or is absent without one", () => {
+    const r = deploy(["--public", "clax.example.com", "--site-domain", "example.run"]);
+    assert.equal(r.status, 0, r.text);
+    const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: HERE, encoding: "utf8" });
+    if (head.status === 0) assert.equal(r.config.vars.CLAX_BUILD_COMMIT, head.stdout.trim());
+    else assert.equal("CLAX_BUILD_COMMIT" in r.config.vars, false, JSON.stringify(r.config.vars));
+  });
+
   check("--content is refused, naming --site-domain", () => refused(["--public", "example.com", "--content", "content.example.com"], /--site-domain/));
   check("a wildcard site domain is refused", () => refused(["--public", "example.com", "--site-domain", "*.example.run"], /not a wildcard/));
   check("the public host as the site domain is refused", () => refused(["--public", "example.com", "--site-domain", "example.com"], /is the public host/));

@@ -484,7 +484,7 @@ export function retiredContentOrigin(record) {
   }
 }
 
-function deployConfig(o, pub, site, account, github, legal, out, retired, build) {
+function deployConfig(o, pub, site, account, github, legal, out, retired, build, commit) {
   const c = baseConfig();
   delete c.$schema;
   // The config lives in target/deploy/, so its paths name the crate's files.
@@ -523,6 +523,9 @@ function deployConfig(o, pub, site, account, github, legal, out, retired, build)
     REPO_DEV_ROUTES: "0",
     CLAX_DIAG_ROUTES: o.diag ? "1" : "0",
     CLAX_BUILD: build,
+    // The commit /healthz reports (src/instance.rs build_commit): a var, so
+    // one build of the Worker deploys at any commit it was built from.
+    ...(commit ? { CLAX_BUILD_COMMIT: commit } : {}),
     ...(github.client_id ? { GITHUB_CLIENT_ID: github.client_id } : {}),
     ...(github.owner ? { OWNER_GITHUB: github.owner } : {}),
     ...(legal.legal ? { LEGAL: legal.legal } : {}),
@@ -728,7 +731,7 @@ async function writeDeployConfig(o, account) {
   const configPath = o.out ? resolve(o.out) : DEPLOY_CONFIG;
   const commit = await sourceCommit();
   const build = buildId(commit, new Date(), randomBytes(4).toString("hex"));
-  const config = deployConfig(o, pub, site, account, github, legal, configPath, retired, build);
+  const config = deployConfig(o, pub, site, account, github, legal, configPath, retired, build, commit);
   info(`wrote ${configPath} (worker ${config.name}, REPO_STORE=${o.store}, SITE_DOMAIN=${site}, diagnostics ${o.diag ? "on" : "off"}, build ${build})`);
   return { pub, site, github, legal, config, configPath, retired, commit, build };
 }
