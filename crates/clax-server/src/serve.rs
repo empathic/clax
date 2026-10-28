@@ -224,6 +224,10 @@ pub struct ServeConfig {
     /// `trusted_hosts`, is the owner's (`clax serve` reads the home's
     /// `[serve] owner_tailscale_login`); `None` for none.
     pub owner_tailscale_login: Option<String>,
+    /// Whether a shell on one of `trusted_hosts` frames each artifact from
+    /// a path of that host, sandboxed (`clax serve` reads the home's
+    /// `[serve] trusted_host_frames`).
+    pub trusted_host_frames: bool,
     /// Serve nothing but `/healthz`, static files and content by ID without
     /// a credential ([`clax_http::state::AppState::require_credential`]).
     pub require_credential: bool,
@@ -379,6 +383,7 @@ pub async fn serve(
             trusted_hosts: cfg.trusted_hosts,
             tailscale_identity: cfg.tailscale_identity,
             owner_tailscale_login: cfg.owner_tailscale_login,
+            trusted_host_frames: cfg.trusted_host_frames,
             require_credential: cfg.require_credential,
             bind: cfg.bind,
             port,
@@ -647,6 +652,7 @@ mod tests {
             trusted_hosts: Vec::new(),
             tailscale_identity: false,
             owner_tailscale_login: None,
+            trusted_host_frames: false,
             require_credential: false,
             embed: None,
             quickstart: false,

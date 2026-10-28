@@ -28,7 +28,9 @@
 //! `tailscale serve` by its tailnet login
 //! ([`HomeConfig::serve_tailscale_identity`]), and `[serve]
 //! owner_tailscale_login` names the one tailnet login whose browser is the
-//! owner's ([`HomeConfig::serve_owner_tailscale_login`]). Any other key in `[serve]`
+//! owner's ([`HomeConfig::serve_owner_tailscale_login`]), and `[serve]
+//! trusted_host_frames` frames artifacts from a path of a trusted host
+//! ([`HomeConfig::serve_trusted_host_frames`]). Any other key in `[serve]`
 //! is logged and ignored. `[sample]`
 //! configures the
 //! `sample` capability ([`HomeConfig::sample`]); a daemon whose `[sample]` is
@@ -684,6 +686,48 @@ impl HomeConfig {
         Ok(Some(login))
     }
 
+    /// `[serve] trusted_host_frames`: whether a shell on one of
+    /// [`HomeConfig::serve_trusted_hosts`] frames each artifact from a path
+    /// of that same host (`/_clax/frame/<id>/…`) in a sandbox without
+    /// `allow-same-origin` (an opaque origin), its runtime calls relayed by
+    /// the shell, rather than from the artifact's `<id>.localhost` site,
+    /// which a browser on another machine cannot open; `false` when absent.
+    ///
+    /// # Errors
+    /// `Invalid { code: "bad_config" }` naming the file (or the variable)
+    /// and the key when `[serve]` is not a table, the key is not a boolean,
+    /// or it is `true` with no `trusted_hosts`;
+    /// [`HomeConfig::serve_trusted_hosts`]'s errors when it is `true`. The
+    /// daemon does not start on it.
+    pub fn serve_trusted_host_frames(&self) -> Result<bool> {
+        if let Some(serve) = self.value("serve")
+            && serve.as_dict().is_none()
+        {
+            return Err(self.bad(
+                "serve",
+                "[serve]",
+                format!("must be a table, not {}", kind_of(&serve)),
+            ));
+        }
+        let Some(v) = self.value("serve.trusted_host_frames") else {
+            return Ok(false);
+        };
+        let bad = |what: String| self.bad("serve.trusted_host_frames", "[serve]", what);
+        let Some(on) = v.to_bool() else {
+            return Err(bad(format!(
+                "trusted_host_frames must be true or false, not {}",
+                shown(&v)
+            )));
+        };
+        if on && self.serve_trusted_hosts()?.is_empty() {
+            return Err(bad(
+                "trusted_host_frames = true needs trusted_hosts to name the host the shell is served on"
+                    .to_string(),
+            ));
+        }
+        Ok(on)
+    }
+
     /// `[sample]`: the default when absent.
     ///
     /// # Errors
@@ -1011,6 +1055,7 @@ const SERVE_KEYS: &[&str] = &[
     "trusted_hosts",
     "tailscale_identity",
     "owner_tailscale_login",
+    "trusted_host_frames",
 ];
 
 /// `[sample]`: the `sample` capability's provider, key variable, models, and cap.
@@ -2539,6 +2584,33 @@ mod tests {
         ] {
             let e = with(&t).serve_owner_tailscale_login().unwrap_err().to_string();
             assert!(e.contains("config.toml") && e.contains("[serve]"), "{t}: {e}");
+        }
+    }
+
+    #[test]
+    fn trusted_host_frames_are_off_by_default_and_need_trusted_hosts() {
+        for t in [
+            "",
+            "[serve]\nport = 7481\n",
+            "[serve]\ntrusted_host_frames = false\n",
+        ] {
+            assert!(!with(t).serve_trusted_host_frames().unwrap(), "{t}");
+        }
+        assert!(
+            with("[serve]\ntrusted_hosts = [\"phobos.tail556f5b.ts.net\"]\ntrusted_host_frames = true\n")
+                .serve_trusted_host_frames()
+                .unwrap()
+        );
+        for t in [
+            "[serve]\ntrusted_host_frames = true\n",
+            "[serve]\ntrusted_hosts = []\ntrusted_host_frames = true\n",
+            "[serve]\ntrusted_hosts = [\"phobos.tail556f5b.ts.net\"]\ntrusted_host_frames = \"yes\"\n",
+        ] {
+            let e = with(t).serve_trusted_host_frames().unwrap_err().to_string();
+            assert!(
+                e.contains("config.toml") && e.contains("[serve]"),
+                "{t}: {e}"
+            );
         }
     }
 

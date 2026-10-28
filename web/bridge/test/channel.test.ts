@@ -12,6 +12,10 @@ describe("shellOrigins", () => {
     expect(shellOrigins("https://clax.example")).toEqual(["https://clax.example"]);
     expect(shellOrigins("http://192.168.1.5:7480")).toEqual(["http://192.168.1.5:7480"]);
   });
+  it("allows each origin of a space-separated list (a trusted host's frame names its host on https and http)", () => {
+    expect(shellOrigins("https://phobos.example.ts.net http://phobos.example.ts.net")).toEqual(["https://phobos.example.ts.net", "http://phobos.example.ts.net"]);
+    expect(shellOrigins("https://phobos.example.ts.net nonsense")).toEqual(["https://phobos.example.ts.net"]);
+  });
   it("allows no one without an origin, or with one that does not parse", () => {
     expect(shellOrigins(undefined)).toEqual([]);
     expect(shellOrigins("not an origin")).toEqual([]);

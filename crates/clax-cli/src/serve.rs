@@ -48,6 +48,7 @@ pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
             .unwrap_or(true),
         stop: clax_server::serve::StopOn::Signals,
         owner_tailscale_login: owner_tailscale_login(home)?,
+        trusted_host_frames: trusted_host_frames(home)?,
     };
     let r = rt.block_on(serve(cfg, None));
     // Dropping the runtime would wait without limit for its blocking tasks:
@@ -105,6 +106,16 @@ fn owner_tailscale_login(home: &Home) -> anyhow::Result<Option<String>> {
         tracing::info!(login = %l, "the tailnet login's browser through [serve] trusted_hosts is the owner's");
     }
     Ok(login)
+}
+
+/// The home's `[serve] trusted_host_frames`. A bad value, or `true` with
+/// no trusted hosts, stops the daemon.
+fn trusted_host_frames(home: &Home) -> anyhow::Result<bool> {
+    let on = clax_core::config::HomeConfig::load(home.root())?.serve_trusted_host_frames()?;
+    if on {
+        tracing::info!("artifacts are framed from a path of [serve] trusted_hosts, sandboxed");
+    }
+    Ok(on)
 }
 
 /// The daemon outlives whoever started it, so any descriptor it inherits stays

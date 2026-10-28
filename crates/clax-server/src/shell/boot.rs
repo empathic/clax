@@ -91,7 +91,12 @@ pub fn page_src(site: &str, n: u64, file: &str) -> String {
 /// The handshake that opens `target` (an address on the site origin `site`)
 /// in the frame, as `startSrc` in `web/shell/src/origin.ts`: the site's
 /// `/_clax/session/start`, with `target`'s path as `next`.
+/// A frame on a path ([`clax_http::host::FRAME_PATH`]) has no handshake:
+/// it opens on `target` itself.
 pub fn start_src(site: &str, target: &str) -> String {
+    if site.starts_with(clax_http::host::FRAME_PATH) {
+        return target.to_string();
+    }
     let next = target
         .strip_prefix(site)
         .filter(|n| n.starts_with('/'))
@@ -145,13 +150,20 @@ pub fn frame_name(query: Option<&str>) -> Option<&'static str> {
 /// `web/shell/src/view/frame-host.ts` gives it, named `name`
 /// ([`frame_name`]), so the shell adopts it in the inspect and migration
 /// views too.
+/// A frame on a path ([`clax_http::host::FRAME_PATH`]) is sandboxed
+/// ([`clax_http::host::FRAME_SANDBOX`]: no `allow-same-origin`).
 pub fn frame_html(src: &str, name: Option<&str>) -> String {
     let name = match name {
         Some(n) => format!(" name=\"{}\"", html_escape(n)),
         None => String::new(),
     };
+    let sandbox = if src.starts_with(clax_http::host::FRAME_PATH) {
+        format!(" sandbox=\"{}\"", clax_http::host::FRAME_SANDBOX)
+    } else {
+        String::new()
+    };
     format!(
-        "<iframe class=\"frame\"{name} title=\"artifact content\" src=\"{}\" allow=\"{FRAME_ALLOW}\"></iframe>",
+        "<iframe class=\"frame\"{name} title=\"artifact content\" src=\"{}\" allow=\"{FRAME_ALLOW}\"{sandbox}></iframe>",
         html_escape(src)
     )
 }
@@ -184,11 +196,23 @@ pub fn site_of(s: &AppState, headers: &HeaderMap) -> Value {
         .1
         .and_then(|p| p.parse::<u16>().ok())
         .filter(|p| *p != default);
-    json!({"domain": s.sites().domain(), "scheme": scheme, "port": port})
+    let mut site = json!({"domain": s.sites().domain(), "scheme": scheme, "port": port});
+    // On a trusted host with `[serve] trusted_host_frames`, each artifact
+    // is framed from a path of this same host, sandboxed
+    // (`clax_http::host::FRAME_PATH`).
+    if s.trusted_host_frames && clax_http::auth::trusted_host(host, &s.trusted_hosts) {
+        site["path"] = json!(clax_http::host::FRAME_PATH);
+    }
+    site
 }
 
-/// Artifact `id`'s site origin under [`site_of`]'s `site`.
+/// Artifact `id`'s site origin under [`site_of`]'s `site`; for a site
+/// framed on a path (`site.path`), that path on the shell's own host,
+/// `<path><id>`, as `artifactOrigin` in `web/shell/src/origin.ts`.
 fn site_origin(site: &Value, id: &str) -> String {
+    if let Some(path) = site["path"].as_str() {
+        return format!("{path}{id}");
+    }
     let scheme = site["scheme"].as_str().unwrap_or("http");
     let domain = site["domain"].as_str().unwrap_or("localhost");
     match site["port"].as_u64() {
@@ -513,15 +537,44 @@ mod tests {
         ] {
             assert!(host.contains(attr), "frame-host.ts no longer sets: {attr}");
         }
-        assert!(
-            !host.contains("setAttribute(\"sandbox\""),
-            "frame-host.ts sandboxes a frame"
+        // Only a frame on a path is sandboxed, with the sandbox the daemon
+        // gives it (origin.ts names the same as host.rs).
+        assert_eq!(
+            host.matches("setAttribute(\"sandbox\"").count(),
+            1,
+            "frame-host.ts sandboxes a frame other than one on a path"
         );
+        assert!(
+            host.contains("if (isPathFrame(src)) el.setAttribute(\"sandbox\", FRAME_SANDBOX);")
+        );
+        let origin = include_str!("../../../../web/shell/src/origin.ts");
+        assert!(origin.contains(&format!(
+            "export const FRAME_SANDBOX = \"{}\";",
+            clax_http::host::FRAME_SANDBOX
+        )));
+        assert!(origin.contains(&format!(
+            "export const FRAME_PATH = \"{}\";",
+            clax_http::host::FRAME_PATH
+        )));
         assert_eq!(
             frame_html("http://x.localhost:1/_clax/v/1/\"><b>", None),
             format!(
                 "<iframe class=\"frame\" title=\"artifact content\" src=\"http://x.localhost:1/_clax/v/1/&quot;&gt;&lt;b&gt;\" allow=\"{FRAME_ALLOW}\"></iframe>"
             )
+        );
+        assert_eq!(
+            frame_html("/_clax/frame/7q3k9mzx2b4t/_clax/v/1/", None),
+            format!(
+                "<iframe class=\"frame\" title=\"artifact content\" src=\"/_clax/frame/7q3k9mzx2b4t/_clax/v/1/\" allow=\"{FRAME_ALLOW}\" sandbox=\"{}\"></iframe>",
+                clax_http::host::FRAME_SANDBOX
+            )
+        );
+        assert_eq!(
+            start_src(
+                "/_clax/frame/7q3k9mzx2b4t",
+                "/_clax/frame/7q3k9mzx2b4t/_clax/v/1/"
+            ),
+            "/_clax/frame/7q3k9mzx2b4t/_clax/v/1/"
         );
     }
 

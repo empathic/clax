@@ -211,6 +211,25 @@ owner_tailscale_login = "bdelanghe@github"   # exact; no wildcard
 
 A request that came through `tailscale serve` (a loopback peer naming a trusted host) whose `Tailscale-User-Login` is exactly that login is then the owner's browser, as one on this machine is: it is served the token and the owner's cookies. Any other login, a request on any other host, a request from any other peer, and a request the browser marks as made by another site (`Sec-Fetch-Site: cross-site` or `same-site`: `tailscale serve` adds the login to every request of your device, another site's too) are never the owner, whatever headers they carry. It is off unless set; set without `tailscale_identity = true`, or to a value that is not one login, it stops the daemon from starting; `clax doctor` shows it on its `config` line. Anyone who can sign in to the tailnet as that login can do whatever the owner can, so name only a login only you hold.
 
+Through a trusted host, the shell loads but its artifact frames do not: each artifact's page lives on its own site, `<id>.localhost:<port>`, which only a browser on this machine can open. To see artifacts from your other devices through `tailscale serve`, turn on path frames:
+
+```toml
+[serve]
+trusted_hosts = ["phobos.tail556f5b.ts.net"]
+tailscale_identity = true
+owner_tailscale_login = "bdelanghe@github"
+trusted_host_frames = true   # off by default; needs trusted_hosts
+```
+
+A shell on a trusted host then frames artifact `<id>` from `/_clax/frame/<id>/…` of that same host (`/_clax/frame/<id>/_clax/v/<n>/` for version `n`) instead of from its site, and every other host, `localhost` among them, frames as before. Off (the default), the path is the public host's 404 and nothing changes.
+
+How it stays isolated, without a site origin of its own:
+
+- **An opaque origin.** The frame is `<iframe sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals">`, with no `allow-same-origin`, and every response under the path carries the same `sandbox` in its `Content-Security-Policy`, so the page is sandboxed even when opened in a tab. Its origin is opaque (`null`): it shares no cookie, storage or DOM with the shell or with any other artifact, although all of them are on one host name. Its responses carry `Cross-Origin-Resource-Policy: cross-origin` (the frame is another origin than the host), and the bridge's lazy parts under `/_clax/bridge/` carry `Access-Control-Allow-Origin: *` there (they are the UI's own public files).
+- **The runtime goes through the shell.** The page's bridge names the shell on the trusted host as the one origin it takes orders from (`https://<host>` or `http://<host>`, as the proxy terminates TLS) and sends every call of its `db`, `user` and `artifact` capabilities, reads included, to the shell by `postMessage` (`data-api="frame"`). The shell accepts messages only from its frame's window (its origin is `null`, so the window is the check) and relays each, under `/_clax/api/` of that artifact alone, as a same-origin request to `/_clax/frame/<id>/_clax/api/…` (`site.fetch`). `db.onSnapshot` and the shell's change notices work as in any frame; the `room` capability (a WebSocket of the site's own) does not.
+- **Owner only.** A local daemon's sites are the owner's alone, and so are path frames: the site API under the path answers only a request that is the owner's as any API request is (the token, the owner cookie, or `owner_tailscale_login` on a request the browser marks as same-origin, which only the shell's relay is: the opaque page's own requests are `cross-site` and get 403). The page's other files, which the opaque frame loads as another origin, are answered when `tailscale serve` names the owner's login, whatever made the request: a `GET` of a file changes nothing. Another login, or no login, gets 403.
+- **What it trades.** Every artifact's files share the host's name, so a page another site shows you can still include one of your artifacts' scripts or images by URL (it cannot read a page, a document or the API). An artifact page that navigates its frame elsewhere takes its sandbox with it, and the shell keeps answering a document in that frame with the artifact's own capabilities: what the page could already do. A draft's page shows, but its runtime is not relayed.
+
 To serve the internet (hosted mode), put the daemon behind a proxy that terminates TLS and keeps the `Host` header, and name its public origin in `config.toml`:
 
 ```toml

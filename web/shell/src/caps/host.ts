@@ -13,6 +13,7 @@ import { CapError } from "./errors";
 import type { ArrivalGesture } from "./gesture";
 import { Grants, type PermissionState, type Prompt, type PromptAnswer, grantsKey } from "./grants";
 import { REGISTRY } from "./registry";
+import { onPathFrames } from "../origin";
 import { onHost } from "../transport";
 
 /** The shell's comment UI as the `comments` capability drives it. */
@@ -165,7 +166,7 @@ export class CapabilityHost {
     if (this.dead) return;
     const named = m.type === "clax:use" ? m.name : m.ns;
     this.served.device = deviceLink.call !== null;
-    this.served.site = onHost();
+    this.served.site = onHost() || onPathFrames();
     this.served.edits = env.mayEdit === true;
     // Only a request about sample (or permissions, which lists it) waits for the daemon's answer.
     if (named === "sample" || named === "permissions") await this.checkServed(env);

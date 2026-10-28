@@ -142,6 +142,9 @@ pub async fn site_layer(State(s): State<AppState>, mut req: Request<Body>, next:
         .and_then(|h| h.to_str().ok())
         .unwrap_or("")
         .to_string();
+    if s.trusted_host_frames && crate::auth::trusted_host(&host, &s.trusted_hosts) {
+        return trusted_frame_layer(s, host, req, next).await;
+    }
     let secure = s.hosted.as_ref().is_some_and(|h| h.secure);
     let Some(mut site) = site_request(s.sites(), secure, &host) else {
         return next.run(req).await;
@@ -171,9 +174,134 @@ pub async fn site_layer(State(s): State<AppState>, mut req: Request<Body>, next:
     res
 }
 
+/// Where a shell on a `[serve] trusted_hosts` name frames artifact `<id>`
+/// when `[serve] trusted_host_frames` is on: `/_clax/frame/<id>/…` of that
+/// same host, `…` being the path the artifact's site would serve
+/// (`/_clax/v/<n>/…`, `/_clax/api/…`, …).
+pub const FRAME_PATH: &str = "/_clax/frame/";
+
+/// The sandbox a trusted-host frame's documents get, by the shell's
+/// `<iframe sandbox>` and by the `sandbox` directive of their
+/// `Content-Security-Policy` alike (so one opened in a tab is sandboxed
+/// too): no `allow-same-origin`, so each document's origin is opaque and
+/// it shares no storage, cookie or DOM with the shell or another artifact
+/// on the same host. As `FRAME_SANDBOX` in `web/shell/src/origin.ts`.
+pub const FRAME_SANDBOX: &str = "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals";
+
+/// Request extension: a site request that came as a trusted-host frame's
+/// (`/_clax/frame/<id>/…` on a `[serve] trusted_hosts` name with `[serve]
+/// trusted_host_frames` on; [`trusted_frame_layer`]). The site's access
+/// check takes its caller from the request's own identity, not a site
+/// cookie (`crate::site_access::site_access_layer`), and its pages' bridge
+/// tag names the trusted host as its shell and relays every runtime call
+/// through it (`data-api="frame"`).
+#[derive(Clone, Debug)]
+pub struct TrustedFrame {
+    /// The origins the shell on this host can have: `https://<Host>` and
+    /// `http://<Host>` (a proxy such as `tailscale serve` terminates TLS,
+    /// so the daemon cannot tell which the browser used).
+    pub shell_origins: [String; 2],
+}
+
+/// `path` as `(<id>, <rest>)` when it is under [`FRAME_PATH`]: `<rest>` is
+/// the path after the ID, `/` when there is none; `None` for a path that
+/// is not, or names no well-formed artifact ID.
+pub fn frame_target(path: &str) -> Option<(ArtifactId, String)> {
+    let tail = path.strip_prefix(FRAME_PATH)?;
+    let (id, rest) = match tail.find('/') {
+        Some(i) => (&tail[..i], &tail[i..]),
+        None => (tail, "/"),
+    };
+    Some((ArtifactId::parse(id).ok()?, rest.to_string()))
+}
+
+/// [`site_layer`] for a request on a `[serve] trusted_hosts` name with
+/// `[serve] trusted_host_frames` on. A path under [`FRAME_PATH`] is a site
+/// request ([`SiteRequest`]) of the artifact it names, with the path that
+/// follows the ID, marked [`TrustedFrame`]; its origin, which the site API
+/// compares a write's `Origin` with, is the shell's (`Origin` when it names
+/// this host on `https` or `http`, else `https://<Host>`), as only the
+/// shell's relay reaches the site API here. Its response carries the
+/// site's isolation headers, the `sandbox` policy ([`FRAME_SANDBOX`]) and
+/// `Cross-Origin-Resource-Policy: cross-origin` (the frame's opaque origin
+/// is another origin than this host). The bridge's lazy parts
+/// (`/_clax/bridge/…`), which the opaque frame imports, are answered with
+/// `Access-Control-Allow-Origin: *`: they are the UI's own public files.
+/// Anything else on the host is the public host's, untouched.
+async fn trusted_frame_layer(
+    s: AppState,
+    host: String,
+    mut req: Request<Body>,
+    next: Next,
+) -> Response {
+    use axum::http::{HeaderValue, header};
+    let path = req.uri().path().to_string();
+    let Some((artifact, rest)) = frame_target(&path) else {
+        let parts = path.starts_with("/_clax/bridge/");
+        let mut res = next.run(req).await;
+        if parts {
+            res.headers_mut().insert(
+                header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                HeaderValue::from_static("*"),
+            );
+        }
+        return res;
+    };
+    let shell_origins = [format!("https://{host}"), format!("http://{host}")];
+    let origin = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|o| o.to_str().ok())
+        .filter(|o| shell_origins.iter().any(|s| s == o))
+        .map_or_else(|| shell_origins[0].clone(), str::to_string);
+    let pq = match req.uri().query() {
+        Some(q) => format!("{rest}?{q}"),
+        None => rest,
+    };
+    let Ok(uri) = pq.parse::<axum::http::Uri>() else {
+        use axum::response::IntoResponse;
+        return crate::error::ApiError::not_found().into_response();
+    };
+    *req.uri_mut() = uri;
+    req.extensions_mut()
+        .insert(SiteRequest { artifact, origin });
+    req.extensions_mut().insert(TrustedFrame { shell_origins });
+    let mut res = next.run(req).await;
+    crate::site_access::site_response_headers(&s, &host, &mut res);
+    let h = res.headers_mut();
+    h.insert(
+        crate::site_access::CORP,
+        HeaderValue::from_static("cross-origin"),
+    );
+    if let Ok(v) = HeaderValue::from_str(&format!("sandbox {FRAME_SANDBOX}")) {
+        h.append(header::CONTENT_SECURITY_POLICY, v);
+    }
+    res
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{SiteHosts, artifact_host, site_request};
+    use super::{SiteHosts, artifact_host, frame_target, site_request};
+
+    #[test]
+    fn a_frame_path_names_an_artifact_and_the_path_its_site_serves() {
+        let (id, rest) = frame_target("/_clax/frame/abcdefghjkmn/_clax/v/3/").unwrap();
+        assert_eq!(
+            (id.as_str(), rest.as_str()),
+            ("abcdefghjkmn", "/_clax/v/3/")
+        );
+        let (_, rest) = frame_target("/_clax/frame/abcdefghjkmn").unwrap();
+        assert_eq!(rest, "/");
+        for p in [
+            "/_clax/frame/",
+            "/_clax/frame/../api/token",
+            "/_clax/frame/NOTANID/x",
+            "/a/abcdefghjkmn",
+            "/_clax/framex/abcdefghjkmn/",
+        ] {
+            assert!(frame_target(p).is_none(), "{p}");
+        }
+    }
 
     #[test]
     fn a_site_request_takes_its_scheme_from_hosted_mode_and_its_port_from_the_host() {

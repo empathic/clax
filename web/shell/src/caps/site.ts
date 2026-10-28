@@ -12,6 +12,7 @@
 // whose frame alone the shell takes messages from), only under
 // `/_clax/api/`, with only the request's `Content-Type` and `Accept`: the
 // page names no other site, and the shell adds nothing of its own.
+import { FRAME_PATH, onPathFrames } from "../origin";
 import { hostEmbed } from "../transport";
 import { CapError } from "./errors";
 import type { HandlerFactory } from "./host";
@@ -46,9 +47,13 @@ export const siteHandler: HandlerFactory = env => ({
   async call(method, args) {
     if (method !== "fetch") throw new CapError("capability_removed", `site.${String(method)} is not part of this runtime`);
     const embed = hostEmbed();
-    if (!embed) throw new CapError("capability_removed", "only the Clax app relays a page's site calls");
+    const onPath = !embed && onPathFrames();
+    if (!embed && !onPath) throw new CapError("capability_removed", "only the Clax app, or a shell framing on a path, relays a page's site calls");
     const r = siteFetch(args[0]);
-    const url = embed.content.replace("{id}", env.aid) + r.path;
+    // A frame on a path (`[serve] trusted_host_frames`): its site is a path
+    // of this shell's own host, which the shell asks as itself
+    // (same-origin), its credentials the shell's.
+    const url = embed ? embed.content.replace("{id}", env.aid) + r.path : `${FRAME_PATH}${encodeURIComponent(env.aid)}${r.path}`;
     let res: Response;
     try {
       res = await fetch(url, { method: r.method, headers: r.headers, body: r.method === "GET" || r.method === "HEAD" ? null : r.body });

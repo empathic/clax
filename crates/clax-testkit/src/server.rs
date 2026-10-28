@@ -713,6 +713,7 @@ impl TestServer {
             trusted_hosts: Arc::default(),
             tailscale_identity: false,
             owner_tailscale_login: None,
+            trusted_host_frames: false,
             grant_auth,
             agent_gate: Arc::new(clax_http::agent::Gate::new(Arc::new(
                 clax_http::agent::TokioTimer::default(),

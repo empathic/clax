@@ -662,6 +662,7 @@ impl Instance {
             trusted_hosts: Vec::new(),
             tailscale_identity: false,
             owner_tailscale_login: None,
+            trusted_host_frames: false,
             hosted,
             web: Arc::new(crate::web::WebUi),
             embed: None,

@@ -7925,7 +7925,15 @@ login, host or peer, and a request whose `Sec-Fetch-Site` is `same-site` or
 `cross-site`, is never the owner. Set without `tailscale_identity =
 true`, or to anything but one login with no whitespace, control character
 or `*`, it is `bad_config` and the daemon does not start; `clax doctor`'s
-`config` line shows it. Other keys in `[serve]` are logged and ignored. `just watch` and `just dev` write
+`config` line shows it. `trusted_host_frames = true` (default `false`;
+`true` without `trusted_hosts` is `bad_config`) frames each artifact, for a
+shell on a trusted host, from `/_clax/frame/<id>/…` of that host (a site
+request of `<id>` with the path that follows), in a sandbox without
+`allow-same-origin` (the `<iframe>`'s, and a `sandbox` policy on every
+response there), its bridge relaying every site API call through the
+shell (`data-api="frame"`, `site.fetch`); the bootstrap's and `GET
+/api/artifacts/<id>`'s `site` then carry `path: "/_clax/frame/"`. Only the
+owner reads there (see docs/usage.md). Other keys in `[serve]` are logged and ignored. `just watch` and `just dev` write
 `port = 7481` (or `CLAX_DEV_PORT`'s value) into `~/.clax-dev/config.toml`
 when it has no `[serve]` table, so every daemon for that home, whoever
 starts it, listens there. Outside `--shared`, both first stop a daemon of

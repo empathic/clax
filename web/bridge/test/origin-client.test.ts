@@ -49,6 +49,19 @@ describe("the origin client", () => {
     expect(sent.map(x => [x.method, x.url])).toEqual([["GET", `${SITE}/_clax/api/docs/notes/n1`]]);
   });
 
+  it("relaying all (a trusted host's sandboxed frame) sends reads by the shell too, and never fetches itself", async () => {
+    const sent = stub(() => json({}));
+    const relayed: [string, string][] = [];
+    const c = originClient(new URL(`${SITE}/x`), async r => {
+      relayed.push([r.method, r.path]);
+      return { status: 200, headers: [["content-type", "application/json"]], body: new TextEncoder().encode(JSON.stringify({ doc: doc("fold/f1", 1) })).buffer as ArrayBuffer };
+    }, true);
+    expect(await c.call("db", "get", ["fold/f1"])).toMatchObject({ path: "fold/f1", version: 1 });
+    await c.call("db", "set", ["fold/f1", { t: 1 }]);
+    expect(relayed).toEqual([["GET", "/_clax/api/docs/fold/f1"], ["PUT", "/_clax/api/docs/fold/f1"]]);
+    expect(sent).toEqual([]);
+  });
+
   it("with a relay maps a refused write as a fetched one, and an unreachable shell as no answer", async () => {
     stub(() => json({}));
     const refusing = originClient(new URL(SITE), async () => ({ status: 403, headers: [["content-type", "application/json"]], body: new TextEncoder().encode(JSON.stringify({ error: { code: "forbidden", message: "no" } })).buffer as ArrayBuffer }));

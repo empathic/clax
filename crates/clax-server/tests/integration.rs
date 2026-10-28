@@ -161,6 +161,7 @@ mod api_timeout;
 mod api_tool_call_ids;
 #[cfg(any(not(clax_split), clax_split = "api_toolpath"))]
 mod api_toolpath;
+mod api_trusted_frames;
 #[cfg(any(not(clax_split), clax_split = "api_viewers"))]
 mod api_viewers;
 #[cfg(any(not(clax_split), clax_split = "api_visibility"))]

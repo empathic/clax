@@ -1,4 +1,5 @@
 import { INSPECT_FRAME, MIGRATE_FRAME } from "../../../bridge/src/protocol";
+import { FRAME_SANDBOX, isPathFrame } from "../origin";
 import { inspectQuery, migrateQuery } from "../route";
 
 /** The permissions every content frame delegates: storage access lets a
@@ -21,7 +22,7 @@ const frameName = (): string | null => (migrateQuery(location.search) ? MIGRATE_
  * `frame_name` in `crates/clax-server/src/shell/boot.rs`). */
 function servedAs(el: HTMLIFrameElement, src: string): boolean {
   return el.getAttribute("name") === frameName() && el.getAttribute("src") === src
-    && !el.hasAttribute("sandbox")
+    && el.getAttribute("sandbox") === (isPathFrame(src) ? FRAME_SANDBOX : null)
     && el.getAttribute("allow") === FRAME_ALLOW
     && el.getAttribute("title") === FRAME_TITLE
     && el.className === "frame";
@@ -30,7 +31,8 @@ function servedAs(el: HTMLIFrameElement, src: string): boolean {
 /** The content `<iframe>`, first in the stage. The shell never re-creates it
  * on a render: it is replaced only when `key` (version, or draft) changes,
  * and one the daemon already put in the stage is adopted when its `src` and
- * attributes are what the shell would have made. Any other frame in the
+ * attributes are what the shell would have made. A frame on a path
+ * (`isPathFrame`) is sandboxed (`FRAME_SANDBOX`), as the daemon makes it. Any other frame in the
  * stage is removed. Adopting a frame opens nothing: the gate opens only on
  * a hello.
  * `onLoad` runs on every load of a document in it, navigations inside the
@@ -66,6 +68,9 @@ export class FrameHost {
     if (name) el.name = name;
     el.title = FRAME_TITLE;
     el.setAttribute("allow", FRAME_ALLOW);
+    // A frame on a path shares the shell's host: its sandbox (no
+    // `allow-same-origin`) gives its page an opaque origin of its own.
+    if (isPathFrame(src)) el.setAttribute("sandbox", FRAME_SANDBOX);
     el.src = src;
     this.take(el, key, src);
     this.stage.prepend(el);

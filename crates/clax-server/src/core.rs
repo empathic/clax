@@ -67,6 +67,10 @@ pub struct CoreConfig {
     /// `trusted_hosts`, is the owner's (the home's `[serve]
     /// owner_tailscale_login`); `None` for none.
     pub owner_tailscale_login: Option<String>,
+    /// Whether a shell on one of `trusted_hosts` frames each artifact from
+    /// a path of that host, sandboxed (the home's `[serve]
+    /// trusted_host_frames`).
+    pub trusted_host_frames: bool,
     /// Serve nothing but `/healthz`, static files and content by ID without
     /// a credential ([`AppState::require_credential`]).
     pub require_credential: bool,
@@ -164,6 +168,7 @@ impl Core {
             trusted_hosts: cfg.trusted_hosts,
             tailscale_identity: cfg.tailscale_identity,
             owner_tailscale_login: cfg.owner_tailscale_login,
+            trusted_host_frames: cfg.trusted_host_frames,
             hosted: cfg.hosted,
             web: cfg.web,
             embed: cfg.embed,

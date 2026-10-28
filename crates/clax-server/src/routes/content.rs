@@ -207,6 +207,33 @@ async fn lookup(
     .await
 }
 
+/// `html` (a page as [`lookup`] wrapped it, its bridge tag naming
+/// [`clax_http::site_access::bridge_shell`]) as a trusted-host frame serves
+/// it (`[serve] trusted_host_frames`, a request on a `[serve] trusted_hosts`
+/// name, which reaches the site routes only through
+/// [`clax_http::host::FRAME_PATH`]): the tag names the shell on this host,
+/// on `https` and `http` (`data-origin`, which the bridge reads as a list),
+/// and says `data-api="frame"`, so the bridge sends every call of its
+/// site's API through the shell (`site.fetch`), as its opaque origin keeps
+/// no site cookie. Anything else: `html` as it is.
+fn trusted_frame_page(s: &AppState, req: &HeaderMap, html: Arc<String>) -> Arc<String> {
+    let host = req
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    if !s.trusted_host_frames || !clax_http::auth::trusted_host(host, &s.trusted_hosts) {
+        return html;
+    }
+    // The host is a trusted name, which `trusted_host_ok` keeps to letters,
+    // digits, `.` and `-`, with a numeric port: nothing to escape.
+    let from = format!(
+        " data-origin=\"{}\"",
+        clax_http::site_access::bridge_shell(s)
+    );
+    let to = format!(" data-origin=\"https://{host} http://{host}\" data-api=\"frame\"");
+    Arc::new(html.replacen(&from, &to, 1))
+}
+
 /// The error a wrap answers when the page it expected cached has gone.
 const EVICTED: &str = "evicted while being read";
 
@@ -246,6 +273,7 @@ pub(crate) async fn serve_version(
     let index = rel == INDEX;
     let (bytes, meta) = match lookup(s, id, n, rel, index).await? {
         Served::Page(html) => {
+            let html = trusted_frame_page(s, req, html);
             return Ok(framed_by_shell(s, http_cache::html(req, &html), req, live));
         }
         Served::Raw(..) if index => {

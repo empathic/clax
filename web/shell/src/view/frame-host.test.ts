@@ -133,3 +133,22 @@ describe("FrameHost", () => {
     host.again();
   });
 });
+
+describe("FrameHost on a path", () => {
+  it("sandboxes a frame on a path without allow-same-origin, and adopts a served one only with that sandbox", () => {
+    const src = "/_clax/frame/7q3k9mzx2b4t/_clax/v/1/";
+    const sandbox = "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals";
+    const s = stage();
+    const el = new FrameHost(s, () => {}).show(src, "1");
+    expect(el.getAttribute("sandbox")).toBe(sandbox);
+    expect(el.getAttribute("sandbox")).not.toContain("allow-same-origin");
+    const t = stage();
+    t.insertAdjacentHTML("afterbegin", `<iframe class="frame" title="artifact content" src="${src}" allow="${ALLOW}" sandbox="${sandbox}"></iframe>`);
+    const served = t.querySelector("iframe")!;
+    expect(new FrameHost(t, () => {}).show(src, "1")).toBe(served);
+    const u = stage();
+    u.insertAdjacentHTML("afterbegin", `<iframe class="frame" title="artifact content" src="${src}" allow="${ALLOW}"></iframe>`);
+    const bare = u.querySelector("iframe")!;
+    expect(new FrameHost(u, () => {}).show(src, "1")).not.toBe(bare);
+  });
+});

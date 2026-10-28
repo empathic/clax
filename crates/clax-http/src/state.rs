@@ -217,6 +217,10 @@ pub struct AppState {
     /// [`crate::auth::TailscaleUser`] trusts, is the owner's browser
     /// ([`crate::auth::TailscaleOwner`]); `None` for none.
     pub owner_tailscale_login: Option<Arc<str>>,
+    /// `[serve] trusted_host_frames`: on a request on one of
+    /// `trusted_hosts`, artifacts are framed from `/_clax/frame/<id>/…` of
+    /// that host, sandboxed ([`crate::host::FRAME_PATH`]).
+    pub trusted_host_frames: bool,
     /// The grant flow's token index and nonce caches (spec §6.4, §6.6).
     pub grant_auth: Arc<crate::grant_auth::GrantAuth>,
     /// The bounds on agents' unverified request bodies (spec §6.6).
@@ -351,6 +355,8 @@ pub struct StateParts {
     pub tailscale_identity: bool,
     /// `[serve] owner_tailscale_login`; `None` for none.
     pub owner_tailscale_login: Option<String>,
+    /// `[serve] trusted_host_frames`; `false` for off.
+    pub trusted_host_frames: bool,
     /// Hosted mode ([`crate::hosted`]); `None` for the local daemon.
     pub hosted: Option<Arc<crate::hosted::Hosted>>,
     /// The web UI the daemon serves.
@@ -441,6 +447,7 @@ impl AppState {
             trusted_hosts: p.trusted_hosts.into(),
             tailscale_identity: p.tailscale_identity,
             owner_tailscale_login: p.owner_tailscale_login.map(Arc::from),
+            trusted_host_frames: p.trusted_host_frames,
             grant_auth,
             agent_gate: Arc::new(crate::agent::Gate::new(p.agent_timer)),
             vis_gen,
