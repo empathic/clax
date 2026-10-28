@@ -31,9 +31,19 @@ const shellAt = (address: unknown) => ({
   address: async () => { if (address instanceof Error) throw address; return address; },
 });
 
+// The window listeners each load of the page adds (its hashchange), taken
+// off after the test: the window outlives the page's body, and a listener
+// left on it would run an earlier load's code on a later test's events.
+const listeners: [string, EventListenerOrEventListenerObject][] = [];
+const listen = window.addEventListener.bind(window);
+
 /** Runs the page for a viewer `user` names, with `shell` (null: not served) and `referrer`. */
 function load(shell: unknown, user = userOf(false), referrer = "") {
   document.body.innerHTML = body;
+  vi.stubGlobal("addEventListener", (type: string, fn: EventListenerOrEventListenerObject, opts?: boolean | AddEventListenerOptions) => {
+    listeners.push([type, fn]);
+    listen(type, fn, opts);
+  });
   // The site's no-referrer policy: a page that read the referrer would find nothing, or a spoof.
   Object.defineProperty(document, "referrer", { value: referrer, configurable: true });
   vi.stubGlobal("claude", {
@@ -53,19 +63,30 @@ const saved = () => JSON.parse(localStorage.getItem("clax-quickstart") ?? "null"
 /** Lets the page's capability calls settle: they are promises alone, no timers. */
 const settle = async () => { for (let i = 0; i < 100; i++) await Promise.resolve(); };
 
+// The page draws its edges on an animation frame. jsdom runs frames from an
+// interval while one is pending, which a test that ends first would leave
+// running; here a frame is a timeout, and the test's end clears those left.
+const frames: ReturnType<typeof setTimeout>[] = [];
+
 beforeEach(() => {
+  vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+    const id = setTimeout(() => cb(performance.now()), 16);
+    frames.push(id);
+    return id;
+  });
   localStorage.clear();
   sessionStorage.clear();
   vi.stubGlobal("matchMedia", () => ({ matches: true }));
   vi.stubGlobal("ResizeObserver", class { observe() {} });
   Element.prototype.scrollIntoView = () => {};
 });
-afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); history.replaceState(null, "", location.pathname); });
-// The page draws its edges on an animation frame, which jsdom runs from an
-// interval while one is pending; a test that ends before a frame would leave
-// that interval running. This hook, declared later, runs first: the frame
-// fires while the page is still there.
-afterEach(() => new Promise<void>((done) => { requestAnimationFrame(() => done()); }));
+afterEach(() => {
+  vi.unstubAllGlobals();
+  for (const [type, fn] of listeners.splice(0)) window.removeEventListener(type, fn);
+  for (const id of frames.splice(0)) clearTimeout(id);
+  document.body.replaceChildren();
+  history.replaceState(null, "", location.pathname);
+});
 
 describe("the quickstart notices a sign-in", () => {
   it("ticks_sign_in_and_says_so_for_a_person_on_clax_dev", async () => {
@@ -123,7 +144,7 @@ describe("the attach step names the page's address", () => {
   const prompt = () => [...document.querySelectorAll(".cmd pre")].map((p) => p.textContent).find((t) => t?.startsWith("Watch ")) ?? null;
 
   it("gives_the_address_the_shell_says", async () => {
-    location.hash = "#attach";
+    history.replaceState(null, "", "#attach");
     // A guest: a person's sign-in would move the open step on to the next.
     load(at("https://clax.dev"), userOf(true));
     await settle();
@@ -131,7 +152,7 @@ describe("the attach step names the page's address", () => {
   });
 
   it("names_the_page_by_its_title_without_an_address", async () => {
-    location.hash = "#attach";
+    history.replaceState(null, "", "#attach");
     load(null);
     await settle();
     // jsdom's host is no artifact's site, so the page has neither address nor ID.
