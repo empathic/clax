@@ -16,7 +16,7 @@
   "extWorker": 24832,
   "extComposer": 28672,
   "extPanel": 66560,
-  "people": 16896,
+  "people": 1048576,
   "queues": 7680,
   "partLive": 4616
 }
