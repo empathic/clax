@@ -476,6 +476,33 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(ofType("history").at(-1)).toEqual({ type: "history", back: true });
   });
 
+  for (const at of ["before the page greets", "before the page reports where it loaded"] as const) {
+    it(`history: a back() made ${at} after back() to another page is one move, not an entry`, async () => {
+      const { frame, host } = await appView();
+      const win = frame.contentWindow!;
+      hello(frame, 1);
+      for (const hash of ["", "#/item/3", ""]) fromFrame(win, { type: "clax:hash", hash });
+      fromFrame(win, { type: "clax:navigate", file: "other.html", hash: "" });
+      hello(frame, 1, "other.html");
+      fromFrame(win, { type: "clax:hash", hash: "" });
+      await settle();
+      // Back to index.html: a new document, which greets and then reports
+      // the fragment it loaded at.
+      host.back();
+      if (at === "before the page greets") host.back();
+      hello(frame, 1, "index.html");
+      if (at === "before the page reports where it loaded") host.back();
+      fromFrame(win, { type: "clax:hash", hash: "" });
+      fromFrame(win, { type: "clax:hash", hash: "#/item/3" });
+      await settle();
+      expect(ofType("history").at(-1)).toEqual({ type: "history", back: true });
+      host.back();
+      fromFrame(win, { type: "clax:hash", hash: "" });
+      await settle();
+      expect(ofType("history").at(-1)).toEqual({ type: "history", back: false });
+    });
+  }
+
   it("history: the page's pushState routes are the app's own history too, and back() returns the page to the route before in place", async () => {
     const { frame, host } = await appView();
     hello(frame, 1);
