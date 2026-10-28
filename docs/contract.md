@@ -5516,15 +5516,15 @@ router), and a test fails when it differs:
 | `POST /api/questions/{qid}/decline` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/questions/{qid}/pull` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/questions/{qid}/release` | Denied | yes: 403 `not_for_agents` |
-| `POST /api/queues` | Denied | no |
-| `DELETE /api/queues/{qid}` | Denied | no |
-| `PATCH /api/queues/{qid}` | Denied | no |
-| `GET /api/queues/{qid}/members` | Denied | no |
-| `DELETE /api/queues/{qid}/members/{public_id}` | Denied | no |
-| `PUT /api/queues/{qid}/members/{public_id}` | Denied | no |
-| `GET /api/queues/{qid}/service-grants` | Denied | no |
-| `POST /api/queues/{qid}/service-grants` | Denied | no |
-| `DELETE /api/queues/{qid}/service-grants/{gid}` | Denied | no |
+| `POST /api/queues` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/queues/{qid}` | Denied | yes: 403 `not_for_agents` |
+| `PATCH /api/queues/{qid}` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/queues/{qid}/members` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/queues/{qid}/members/{public_id}` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/queues/{qid}/members/{public_id}` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/queues/{qid}/service-grants` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/queues/{qid}/service-grants` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/queues/{qid}/service-grants/{gid}` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/remotes` | Denied | no |
 | `POST /api/remotes` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/remotes/{id}` | Denied | yes: 403 `not_for_agents` |
