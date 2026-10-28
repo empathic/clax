@@ -603,7 +603,11 @@ impl Store {
     /// Sets `person`'s role on queue `qid` (`None` removes them), recorded
     /// as `queue.update {queue_id, op: "member", member, role}` (`role`
     /// null for a removal); a change to nothing records nothing. The
-    /// queue's maker is its admin whatever this says.
+    /// queue's maker is its admin whatever this says. A removal releases
+    /// every live lease the person's sessions hold on the queue's reports,
+    /// each recorded as `queue.release {queue_id, thread_id, session,
+    /// lease_id, reason: "member_removed"}`, and clears those threads'
+    /// owner.
     ///
     /// # Errors
     /// [`CoreError::NotAMember`] for no such queue.
@@ -616,7 +620,7 @@ impl Store {
     ) -> Result<()> {
         let now = self.now();
         self.with_tx(|tx| {
-            queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+            let q = queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
             let before: Option<String> = tx
                 .query_row(
                     "SELECT role FROM queue_members WHERE queue_id = ?1 AND person = ?2",
@@ -644,8 +648,58 @@ impl Store {
                 .with("member", person)
                 .with("role", role.map(Role::as_str));
             self.record_audit(tx, ctx, rec)?;
+            if role.is_none() && q.person.as_deref() != Some(person) {
+                self.release_person_in(tx, ctx, qid, person, &now)?;
+            }
             Ok(())
         })
+    }
+
+    /// Releases every unreleased lease the sessions of `person` hold on
+    /// queue `qid`'s reports, clearing the owner of each thread they own.
+    fn release_person_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        qid: &str,
+        person: &str,
+        now: &str,
+    ) -> Result<()> {
+        let held: Vec<(String, String, String, String)> = tx
+            .prepare(
+                "SELECT c.thread_id, c.session_id, c.lease_id, t.artifact_id
+                 FROM queue_claims c JOIN sessions s ON s.id = c.session_id
+                 JOIN threads t ON t.id = c.thread_id
+                 WHERE c.queue_id = ?1 AND s.person = ?2 AND NOT c.released
+                 ORDER BY c.thread_id, c.session_id",
+            )?
+            .query_map(params![qid, person], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        for (tid, sid, lease_id, aid) in &held {
+            tx.execute(
+                "UPDATE queue_claims SET released = 1 WHERE thread_id = ?1 AND session_id = ?2",
+                params![tid, sid],
+            )?;
+            tx.execute(
+                "UPDATE threads SET target_session_id = NULL WHERE id = ?1 AND target_session_id = ?2",
+                params![tid, sid],
+            )?;
+            let mut rec = queue_record(AuditKind::QueueRelease, now, qid)
+                .with("thread_id", tid.as_str())
+                .with("session", sid.as_str())
+                .with("lease_id", lease_id.as_str())
+                .with("reason", "member_removed");
+            rec.ids.artifact = Some(aid.clone());
+            rec.ids.thread = Some(tid.clone());
+            rec.ids.session = Some(sid.clone());
+            self.record_audit(tx, ctx, rec)?;
+        }
+        if !held.is_empty() {
+            self.agents_pinged();
+        }
+        Ok(())
     }
 
     /// Queue `qid`'s members other than its maker, by public ID, with
@@ -1181,8 +1235,9 @@ impl Store {
 
     /// Extends session `sid`'s live leases on the reports of `thread_ids`
     /// to [`LEASE_SECS`] from now (an agent's `working` on them renews
-    /// them, spec §7.4); others are left as they are. Answers how many it
-    /// extended; records nothing.
+    /// them, spec §7.4), where the session's person (`None`: the owner)
+    /// still has a role on the lease's queue; others are left as they are.
+    /// Answers how many it extended; records nothing.
     ///
     /// # Errors
     /// Database errors.
@@ -1199,7 +1254,12 @@ impl Store {
                 "UPDATE queue_claims SET expires_at = ?3
                  WHERE session_id = ?1 AND expires_at > ?4 AND NOT released
                    AND thread_id IN (SELECT value FROM json_each(?2))
-                   AND fence = (SELECT MAX(fence) FROM queue_claims m WHERE m.thread_id = queue_claims.thread_id)",
+                   AND fence = (SELECT MAX(fence) FROM queue_claims m WHERE m.thread_id = queue_claims.thread_id)
+                   AND EXISTS (SELECT 1 FROM sessions s JOIN queues q ON q.id = queue_claims.queue_id
+                     WHERE s.id = ?1 AND q.deleted_at IS NULL
+                       AND (q.person IS s.person
+                            OR EXISTS (SELECT 1 FROM queue_members qm
+                                       WHERE qm.queue_id = q.id AND qm.person = s.person)))",
                 params![sid, ids, expires_at, now],
             )?)
         })

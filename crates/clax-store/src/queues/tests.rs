@@ -593,3 +593,52 @@ fn a_report_is_in_no_thread_listing() {
     let t = st.get_thread(&tid).unwrap().unwrap();
     assert_eq!(t.queue_id.as_deref(), Some(qid.as_str()));
 }
+
+#[test]
+fn a_removed_members_sessions_lose_their_leases_and_renew_none() {
+    let (_d, st, clock) = clocked();
+    let qid = queue(&st, ReportersSee::Own);
+    let t1 = file(&st, &qid, Some("emp-1"), Some("invoice:1"));
+    let t2 = file(&st, &qid, Some("emp-1"), Some("invoice:2"));
+    st.set_member(DAEMON, &qid, "u_t", Some(Role::Triage))
+        .unwrap();
+    let a = session(&st, "claude", "a");
+    st.with_tx(|tx| {
+        tx.execute("UPDATE sessions SET person = 'u_t' WHERE id = ?1", [&a])?;
+        Ok(())
+    })
+    .unwrap();
+    st.claim(DAEMON, &qid, &t1, &a).unwrap();
+    st.claim(DAEMON, &qid, &t2, &a).unwrap();
+    // While a member, working renews the leases.
+    clock.advance(100);
+    assert_eq!(st.renew_session_leases(&a, &[t1.clone()]).unwrap(), 1);
+
+    st.set_member(DAEMON, &qid, "u_t", None).unwrap();
+    for tid in [&t1, &t2] {
+        let r = st.report(&qid, tid, Visibility::All).unwrap().unwrap();
+        assert_eq!(r.state, State::Open, "{tid}");
+        assert!(st.thread_owner(tid).unwrap().is_none(), "{tid}");
+        assert!(matches!(
+            st.check_lease(&qid, tid, &a),
+            Err(CoreError::ClaimRequired)
+        ));
+    }
+    let released = audit(&st, "queue.release");
+    assert_eq!(released.len(), 2, "{released:?}");
+    assert!(released.iter().all(|r| r["reason"] == "member_removed"));
+    // A lease the person's session claims while no member is never renewed.
+    st.with_tx(|tx| {
+        tx.execute(
+            "UPDATE queue_claims SET released = 0 WHERE thread_id = ?1",
+            [&t1],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(st.renew_session_leases(&a, &[t1.clone(), t2.clone()]).unwrap(), 0);
+    // The owner's session on the owner's queue still renews.
+    let o = session(&st, "codex", "o");
+    st.claim(DAEMON, &qid, &t2, &o).unwrap();
+    assert_eq!(st.renew_session_leases(&o, &[t2.clone()]).unwrap(), 1);
+}
