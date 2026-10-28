@@ -4,21 +4,25 @@
 // link (crates/clax-server/src/hosted.rs), as in hosted.spec.ts.
 import { createServer } from "node:net";
 import type { Browser, Frame, Page } from "@playwright/test";
-import { type Daemon, NO_KEY_CONFIG, contentFrame, expect, startDaemon, test } from "./fixtures";
+import { type Daemon, NO_KEY_CONFIG, contentFrame, expect, startDaemon, test, v6Taken } from "./fixtures";
 
 /** The setup secret the hosted daemons here are started with. */
 export const SECRET = "e2e setup secret";
 
-/** A port nothing listens on now. */
-export function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const s = createServer();
-    s.once("error", reject);
-    s.listen(0, "127.0.0.1", () => {
-      const a = s.address();
-      s.close(() => (typeof a === "object" && a ? resolve(a.port) : reject(new Error("no port"))));
+/** A port nothing listens on now, on 127.0.0.1 and on `[::1]` (where
+ * `localhost` goes first; see `startDaemon`). */
+export async function freePort(): Promise<number> {
+  for (;;) {
+    const port = await new Promise<number>((resolve, reject) => {
+      const s = createServer();
+      s.once("error", reject);
+      s.listen(0, "127.0.0.1", () => {
+        const a = s.address();
+        s.close(() => (typeof a === "object" && a ? resolve(a.port) : reject(new Error("no port"))));
+      });
     });
-  });
+    if (!(await v6Taken(port))) return port;
+  }
 }
 
 /** A hosted daemon on `http://localhost:<port>`, with `extra` in its

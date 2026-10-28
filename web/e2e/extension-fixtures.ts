@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer, type ViteDevServer } from "vite";
-import { type Daemon, NO_KEY_CONFIG, startDaemon } from "./fixtures";
+import { type Daemon, NO_KEY_CONFIG, startDaemon, v6Taken } from "./fixtures";
 
 const web = fileURLToPath(new URL("..", import.meta.url));
 export const EXT_DIR = join(web, "dist-extension-test");
@@ -39,13 +39,16 @@ export type Live = {
   iconClick(url: string): Promise<void>;
 };
 
-/** A loopback port free a moment ago. */
+/** A loopback port free a moment ago, on 127.0.0.1 and on `[::1]` (where
+ * `localhost` goes first; see `startDaemon`). */
 export async function freePort(): Promise<number> {
-  const srv = createNetServer();
-  await new Promise<void>(r => srv.listen(0, "127.0.0.1", r));
-  const { port } = srv.address() as AddressInfo;
-  await new Promise(r => srv.close(r));
-  return port;
+  for (;;) {
+    const srv = createNetServer();
+    await new Promise<void>(r => srv.listen(0, "127.0.0.1", r));
+    const { port } = srv.address() as AddressInfo;
+    await new Promise(r => srv.close(r));
+    if (!(await v6Taken(port))) return port;
+  }
 }
 
 /** Chromium's flags for `Extensions.triggerAction` (a real toolbar click
