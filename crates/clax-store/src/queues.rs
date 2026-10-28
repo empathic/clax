@@ -19,14 +19,17 @@
 
 use super::Store;
 use super::external::{EXTERNAL_SELECT, NewExternal, row_to_external};
-use super::threads::{NewComment, NewThread, check_not_taken_in, clip_problem};
+use super::threads::{
+    AUTHOR_AGENT, AUTHOR_VIEWER, NewComment, NewThread, check_not_taken_in, clip_problem,
+};
 use clax_core::anchor::Anchor;
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
+use clax_core::model::{Comment, Session, Thread};
 use clax_core::queue::{
-    AUTHOR_REPORTER, Claim, LEASE_SECS, Lease, MAX_THREAD_METADATA_BYTES, Queue, REPORT_PAGE,
-    REPORTER_TOKEN_PREFIX, REPORTER_TOKEN_SECS, Report, ReportComment, ReportersSee, Role,
-    SERVICE_TOKEN_PREFIX, State, check_queue_name, check_reporter_id, metadata_json,
-    metadata_sha256, normalize_origin,
+    AUTHOR_REPORTER, Claim, LEASE_SECS, Lease, MAX_ARTIFACT_METADATA_BYTES,
+    MAX_THREAD_METADATA_BYTES, Queue, REPORT_PAGE, REPORTER_TOKEN_PREFIX, REPORTER_TOKEN_SECS,
+    Report, ReportComment, ReportersSee, Role, SERVICE_TOKEN_PREFIX, State, check_queue_name,
+    check_reporter_id, metadata_json, metadata_sha256, normalize_origin,
 };
 use clax_core::secret::Secret;
 use clax_core::sig::KeyPair;
@@ -132,6 +135,30 @@ pub enum Visibility<'a> {
     /// A reporter token's: its reporter's own under `reporters_see: own`,
     /// every report under `all`.
     Reporter(&'a str),
+}
+
+/// Who writes to a report ([`Store::report_reply`], [`Store::resolve_report`]).
+#[derive(Clone, Debug)]
+pub enum ReportWriter<'a> {
+    /// An agent's session: it writes only under its own live lease.
+    Agent(&'a Session),
+    /// A triage member themself (in a browser, or the owner by hand): no
+    /// claim is needed. `public_id` is their viewer's; `None` writes as
+    /// anonymous.
+    Person {
+        name: String,
+        public_id: Option<String>,
+    },
+}
+
+impl ReportWriter<'_> {
+    /// The agent's session; `None` for a person.
+    pub fn session(&self) -> Option<&str> {
+        match self {
+            ReportWriter::Agent(s) => Some(&s.id),
+            ReportWriter::Person { .. } => None,
+        }
+    }
 }
 
 /// The reports of `?1` with their external artifact; callers append `AND ...`.
@@ -284,7 +311,7 @@ fn check_lease_in(c: &Connection, tid: &str, sid: &str, now: &str) -> Result<()>
         Some(cur) if cur.live => Err(CoreError::ThreadTaken {
             name: cur.holder_name,
         }),
-        _ => Ok(()),
+        _ => Err(CoreError::ClaimRequired),
     }
 }
 
@@ -1183,15 +1210,17 @@ impl Store {
     }
 
     /// `Ok` when session `sid` may write to report `tid` of queue `qid`
-    /// (reply, resolve, metadata): it holds the report's live lease, or no
-    /// session holds one and `sid` never held one it has not released.
-    /// A lapsed lease's owner is cleared first.
+    /// (reply, resolve, metadata): it holds the report's live lease. An
+    /// agent writes to a report only under its own claim; a person writes
+    /// without one, and this check is not theirs. A lapsed lease's owner is
+    /// cleared first.
     ///
     /// # Errors
     /// [`CoreError::LeaseLost`] when `sid` held a lease that expired or a
     /// later lease superseded; [`CoreError::ThreadTaken`] naming the holder
-    /// when another session holds a live lease; `NotFound` for no such
-    /// report of the queue.
+    /// when another session holds a live lease; [`CoreError::ClaimRequired`]
+    /// when no session holds one and `sid` never claimed the report, or
+    /// released its claim; `NotFound` for no such report of the queue.
     pub fn check_lease(&self, qid: &str, tid: &str, sid: &str) -> Result<()> {
         let now = self.now();
         // The settle commits whatever the check answers.
@@ -1222,9 +1251,35 @@ impl Store {
         value: serde_json::Value,
         if_version: u64,
     ) -> Result<u64> {
+        self.set_thread_metadata_as(ctx, qid, tid, None, value, if_version)
+    }
+
+    /// [`Store::set_thread_metadata`] by `agent`'s session (`None`: a
+    /// person), which must hold the report's live lease, checked in the
+    /// write's transaction ([`Store::check_lease`]).
+    ///
+    /// # Errors
+    /// [`Store::set_thread_metadata`]'s, and [`Store::check_lease`]'s for an
+    /// agent.
+    pub fn set_thread_metadata_as(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        tid: &str,
+        agent: Option<&str>,
+        value: serde_json::Value,
+        if_version: u64,
+    ) -> Result<u64> {
         let json = metadata_json(&value, MAX_THREAD_METADATA_BYTES)?;
+        if let Some(sid) = agent {
+            self.check_lease(qid, tid, sid)?;
+        }
+        let now = self.now();
         self.with_tx(|tx| {
             let aid = report_artifact_in(tx, qid, tid)?;
+            if let Some(sid) = agent {
+                check_lease_in(tx, tid, sid, &now)?;
+            }
             let (before, version): (Option<String>, u64) = tx.query_row(
                 "SELECT metadata_json, metadata_version FROM threads WHERE id = ?1",
                 params![tid],
@@ -1254,6 +1309,150 @@ impl Store {
             self.record_audit(tx, ctx, rec)?;
             Ok(version + 1)
         })
+    }
+
+    /// Writes `value` as the metadata of report `tid`'s external artifact
+    /// (queue `qid`) as [`Store::set_artifact_metadata`] does, by `agent`'s
+    /// session (`None`: a person), which must hold the report's live lease,
+    /// checked in the write's transaction.
+    ///
+    /// # Errors
+    /// [`Store::set_artifact_metadata`]'s; `NotFound` for no such report of
+    /// the queue; [`Store::check_lease`]'s for an agent.
+    pub fn set_report_artifact_metadata(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        tid: &str,
+        agent: Option<&str>,
+        value: serde_json::Value,
+        if_version: u64,
+    ) -> Result<u64> {
+        let json = metadata_json(&value, MAX_ARTIFACT_METADATA_BYTES)?;
+        if let Some(sid) = agent {
+            self.check_lease(qid, tid, sid)?;
+        }
+        let now = self.now();
+        self.with_tx(|tx| {
+            let aid = ArtifactId::parse(&report_artifact_in(tx, qid, tid)?)?;
+            if let Some(sid) = agent {
+                check_lease_in(tx, tid, sid, &now)?;
+            }
+            self.set_artifact_metadata_in(tx, ctx, &aid, &json, value, if_version)
+        })
+    }
+
+    /// `by`'s reply `body` on report `tid` of queue `qid`, and the report
+    /// after it. An agent's reply needs its session's live lease on the
+    /// report, checked in the reply's transaction; it never reopens a
+    /// resolved report. A person's needs no claim, and reopens one.
+    ///
+    /// # Errors
+    /// [`CoreError::NotAMember`] for no such queue, `NotFound` for no such
+    /// report of it; [`Store::check_lease`]'s for an agent;
+    /// `invalid_comment` for a bad body.
+    pub fn report_reply(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        tid: &str,
+        by: &ReportWriter<'_>,
+        body: &str,
+    ) -> Result<(Comment, Report)> {
+        let comment = match by {
+            ReportWriter::Agent(sess) => {
+                // A lapsed lease's owner is cleared whatever this answers.
+                self.check_lease(qid, tid, &sess.id)?;
+                NewComment {
+                    author_kind: AUTHOR_AGENT,
+                    author_name: sess.harness.clone(),
+                    author_public_id: None,
+                    via_session_id: Some(sess.id.clone()),
+                    body: body.to_string(),
+                    via_page: false,
+                }
+            }
+            ReportWriter::Person { name, public_id } => {
+                self.report(qid, tid, Visibility::All)?
+                    .ok_or(CoreError::NotFound)?;
+                NewComment {
+                    author_kind: AUTHOR_VIEWER,
+                    author_name: name.clone(),
+                    author_public_id: public_id.clone(),
+                    via_session_id: None,
+                    body: body.to_string(),
+                    via_page: false,
+                }
+            }
+        };
+        let agent = by.session();
+        let now = self.now();
+        let c = self.add_comment_then(ctx, tid, comment, |tx, _, _| {
+            report_artifact_in(tx, qid, tid)?;
+            if let Some(sid) = agent {
+                check_lease_in(tx, tid, sid, &now)?;
+                check_not_taken_in(tx, tid, sid)?;
+            }
+            Ok(())
+        })?;
+        let report = self
+            .report(qid, tid, Visibility::All)?
+            .ok_or(CoreError::NotFound)?;
+        Ok((c, report))
+    }
+
+    /// `by` resolves report `tid` of queue `qid` as
+    /// [`Store::resolve_thread_touched`] does (`resolved_by`
+    /// `agent:<harness>` with its session's person, or `viewer:<public ID>`),
+    /// and answers the thread, what the resolve changed, and the report. An
+    /// agent's resolve needs its session's live lease, checked in the
+    /// resolve's transaction; a person's needs no claim.
+    ///
+    /// # Errors
+    /// [`CoreError::NotAMember`] for no such queue, `NotFound` for no such
+    /// report of it; [`Store::check_lease`]'s for an agent.
+    pub fn resolve_report(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        tid: &str,
+        by: &ReportWriter<'_>,
+    ) -> Result<(Thread, clax_core::feedback::Touched, Report)> {
+        let (resolved_by, person) = match by {
+            ReportWriter::Agent(sess) => {
+                self.check_lease(qid, tid, &sess.id)?;
+                (
+                    format!("agent:{}", sess.harness),
+                    Some(
+                        sess.person
+                            .clone()
+                            .unwrap_or_else(|| clax_core::visibility::OWNER.to_string()),
+                    ),
+                )
+            }
+            ReportWriter::Person { public_id, .. } => (
+                format!("viewer:{}", public_id.as_deref().unwrap_or("anonymous")),
+                None,
+            ),
+        };
+        let agent = by.session();
+        let now = self.now();
+        let touched = self.with_tx(|tx| {
+            queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+            report_artifact_in(tx, qid, tid)?;
+            if let Some(sid) = agent {
+                check_lease_in(tx, tid, sid, &now)?;
+                check_not_taken_in(tx, tid, sid)?;
+            }
+            self.resolve_thread_in(tx, ctx, tid, &resolved_by, person.as_deref(), |_, _| {
+                Ok(None)
+            })
+        })?;
+        let thread = self.get_thread(tid)?.ok_or(CoreError::NotFound)?;
+        let report = self
+            .report(qid, tid, Visibility::All)?
+            .ok_or(CoreError::NotFound)?;
+        Ok((thread, touched, report))
     }
 
     /// Adds reporter `reporter_id`'s comment `body` to report `tid` of

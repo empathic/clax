@@ -507,3 +507,64 @@ fn members_and_roles() {
         Err(CoreError::NotAMember)
     ));
 }
+
+#[test]
+fn an_agent_writes_only_under_its_own_lease_and_a_person_needs_none() {
+    use super::ReportWriter;
+    let (_d, st, clock) = clocked();
+    let qid = queue(&st, ReportersSee::Own);
+    let tid = file(&st, &qid, None, None);
+    let a = session(&st, "claude", "a");
+    let sa = st.get_session(&a).unwrap().unwrap();
+    let agent = ReportWriter::Agent(&sa);
+    let replies = |st: &Store| {
+        st.report(&qid, &tid, Visibility::All)
+            .unwrap()
+            .unwrap()
+            .comments
+            .len()
+    };
+
+    // Never claimed: refused, and nothing is written.
+    assert!(matches!(
+        st.report_reply(DAEMON, &qid, &tid, &agent, "on it"),
+        Err(CoreError::ClaimRequired)
+    ));
+    assert!(matches!(
+        st.set_thread_metadata_as(DAEMON, &qid, &tid, Some(&a), json!({"x": 1}), 1),
+        Err(CoreError::ClaimRequired)
+    ));
+    assert_eq!(replies(&st), 1);
+
+    st.claim(DAEMON, &qid, &tid, &a).unwrap();
+    let (c, r) = st
+        .report_reply(DAEMON, &qid, &tid, &agent, "on it")
+        .unwrap();
+    assert_eq!(c.author_kind, "agent");
+    assert_eq!(r.comments.len(), 2);
+
+    // Lapsed: lease_lost; released: claim_required again.
+    clock.advance(LEASE_SECS + 1);
+    assert!(matches!(
+        st.resolve_report(DAEMON, &qid, &tid, &agent),
+        Err(CoreError::LeaseLost)
+    ));
+    st.claim(DAEMON, &qid, &tid, &a).unwrap();
+    st.release(DAEMON, &qid, &tid, &a).unwrap();
+    assert!(matches!(
+        st.report_reply(DAEMON, &qid, &tid, &agent, "late"),
+        Err(CoreError::ClaimRequired)
+    ));
+
+    // A person replies and resolves without a claim.
+    let person = ReportWriter::Person {
+        name: "Ana".into(),
+        public_id: Some("u_ana".into()),
+    };
+    st.report_reply(DAEMON, &qid, &tid, &person, "thanks")
+        .unwrap();
+    let (t, _, r) = st.resolve_report(DAEMON, &qid, &tid, &person).unwrap();
+    assert_eq!(t.resolved_by.as_deref(), Some("viewer:u_ana"));
+    assert_eq!(r.state, State::Resolved);
+    assert_eq!(replies(&st), 3);
+}

@@ -58,6 +58,11 @@ pub enum CoreError {
     /// it (spec 2026-10-27-clax-sdk-design §7.4).
     #[error("your claim on this report has lapsed; claim it again to act on it")]
     LeaseLost,
+    /// An agent's write to a report (reply, resolve, metadata) from a
+    /// session that holds no lease on it: it never claimed the report, or
+    /// released its claim (spec 2026-10-27-clax-sdk-design §7.4).
+    #[error("claim this report before you act on it")]
+    ClaimRequired,
     /// A content-only operation (publish, fork, a git remote, a version's
     /// files) on an external artifact, whose content Clax never stores
     /// (spec 2026-10-27-clax-sdk-design §6.2).

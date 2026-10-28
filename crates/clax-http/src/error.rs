@@ -233,6 +233,9 @@ impl From<CoreError> for ApiError {
             e @ CoreError::LeaseLost => {
                 ApiError::new(StatusCode::CONFLICT, "lease_lost", e.to_string())
             }
+            e @ CoreError::ClaimRequired => {
+                ApiError::new(StatusCode::CONFLICT, "claim_required", e.to_string())
+            }
             e @ CoreError::ExternalArtifact => {
                 ApiError::bad_request("external_artifact", e.to_string())
             }
@@ -332,6 +335,11 @@ mod tests {
     fn queue_errors_answer_their_codes() {
         for (e, status, code) in [
             (CoreError::LeaseLost, StatusCode::CONFLICT, "lease_lost"),
+            (
+                CoreError::ClaimRequired,
+                StatusCode::CONFLICT,
+                "claim_required",
+            ),
             (
                 CoreError::ExternalArtifact,
                 StatusCode::BAD_REQUEST,

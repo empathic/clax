@@ -256,7 +256,21 @@ impl Store {
         if_version: u64,
     ) -> Result<u64> {
         let json = metadata_json(&value, MAX_ARTIFACT_METADATA_BYTES)?;
-        self.with_tx(|tx| {
+        self.with_tx(|tx| self.set_artifact_metadata_in(tx, ctx, aid, &json, value, if_version))
+    }
+
+    /// [`Store::set_artifact_metadata`] inside the caller's transaction,
+    /// `json` being `value` as [`metadata_json`] stores it.
+    pub(crate) fn set_artifact_metadata_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        ctx: &AuditCtx,
+        aid: &ArtifactId,
+        json: &str,
+        value: serde_json::Value,
+        if_version: u64,
+    ) -> Result<u64> {
+        {
             let row: Option<(Option<String>, u64)> = tx
                 .query_row(
                     "SELECT x.metadata_json, x.metadata_version FROM external_artifacts x
@@ -284,13 +298,13 @@ impl Store {
                 params![aid.as_str(), json, version + 1],
             )?;
             let mut r = AuditRecord::new(AuditKind::ExternalUpdate, self.now())
-                .with("metadata", value.clone())
-                .with("metadata_sha256", metadata_sha256(&json))
+                .with("metadata", value)
+                .with("metadata_sha256", metadata_sha256(json))
                 .with("previous_sha256", sha_of(before.as_deref()));
             r.ids.artifact = Some(aid.as_str().to_string());
             self.record_audit(tx, ctx, r)?;
             Ok(version + 1)
-        })
+        }
     }
 }
 
