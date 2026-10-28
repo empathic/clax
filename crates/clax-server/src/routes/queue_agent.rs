@@ -350,7 +350,8 @@ pub struct MetadataBody {
 
 /// `PATCH /api/queues/<qid>/reports/<tid> {metadata, if_version}` →
 /// `{metadata_version, report}`: the report's own metadata; 409
-/// `doc_conflict` (path `metadata`) when `if_version` is not its version.
+/// `conflict` (`path` `metadata`, `current` its version) when `if_version`
+/// is not its version.
 pub async fn patch(
     State(s): State<AppState>,
     a: Agent<QueueReportPatch>,

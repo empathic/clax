@@ -3679,7 +3679,9 @@ report or released it, 409 `lease_lost` when its lease expired or another
 lease superseded it, 409 `thread_taken` when another session holds it. A
 `working` call naming a claimed report in `thread_ids` renews the session's
 lease on it. A person in their browser replies to and resolves reports
-without a claim.
+without a claim. A write is checked against the lease by the writing
+session: the `fence` a claim answers is informational in this version, and
+no write takes it.
 
 A report is read and written through its queue alone. The thread listings
 (`GET /api/artifacts/<id>/threads`, `GET /api/threads`, `comments_read`
