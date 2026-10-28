@@ -1,5 +1,6 @@
 import "./e2e/bazel-env";
 import { cpus } from "node:os";
+import { join } from "node:path";
 import { defineConfig } from "@playwright/test";
 
 // Every test runs in parallel with the others: each worker has its own daemon
@@ -13,6 +14,9 @@ import { defineConfig } from "@playwright/test";
 // expectation fails in 5 s; a test that hangs stops at 30 s (90 s for the
 // gesture tests).
 const workers = Number(process.env.CLAX_E2E_WORKERS) || cpus().length + 4;
+// Under Bazel a failed test's page (its error context and a screenshot) is
+// kept with the test's outputs, which CI uploads with the logs of a failed run.
+const outputs = process.env.TEST_UNDECLARED_OUTPUTS_DIR;
 
 export default defineConfig({
   testDir: "e2e",
@@ -21,7 +25,8 @@ export default defineConfig({
   workers,
   timeout: 30_000,
   expect: { timeout: 5_000 },
-  use: { browserName: "chromium" },
+  use: { browserName: "chromium", screenshot: "only-on-failure" },
+  ...(outputs ? { outputDir: join(outputs, "test-results") } : {}),
   // Projects schedule the work: the gesture tests take up to five eighths of
   // the workers. Several wait out Chromium's 5 s user activation, which no
   // clock can shorten, so they run beside the busier tests rather than all
