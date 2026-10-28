@@ -65,6 +65,8 @@ describe("C pressed in the page", { timeout: MOUNT_TIMEOUT_MS }, () => {
     fromFrame(win, C);
     expect(commenting()).toBe(false);
     const h1 = await waitFor(() => view.root.querySelector<HTMLElement>(".topbar h1"), "the title");
+    // The pointer moves from the frame onto the title, then presses it.
+    gesture!.notePointerOver(h1, 900, 10);
     dispatchTrusted(h1, new MouseEvent("pointerdown", { bubbles: true, clientX: 900, clientY: 10 }));
     gestureIn(frame);
     expect(gesture!.frameGesture()).toBe(true);
