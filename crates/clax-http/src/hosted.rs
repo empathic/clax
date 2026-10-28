@@ -1288,6 +1288,7 @@ pub fn guest_need(method: &Method, path: &str, query: Option<&str>) -> GuestNeed
         | ["inbox"]
         | ["people"]
         | ["tags"]
+        | ["queues"]
         | ["admin"]
         | ["settings"]
         | ["me"]
@@ -2246,6 +2247,7 @@ mod tests {
             (Method::GET, "/people", None, Gallery),
             (Method::GET, "/inbox", None, Gallery),
             (Method::GET, "/tags", None, Gallery),
+            (Method::GET, "/queues", None, Gallery),
             (Method::GET, "/admin", None, Gallery),
             (Method::GET, "/settings", None, Gallery),
             (Method::GET, "/me", None, Gallery),
