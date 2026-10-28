@@ -8442,6 +8442,8 @@ taken from the request's identity and session:
 | the owner | `human:clax-owner` | `name` "Clax owner"; identity `{system: "clax", id: "<install ID>/<public ID>"}` |
 | a LAN viewer | `human:clax-viewer/<public ID>` | `name` the display name (none under `--no-names`); identity `{system: "clax", id: "<install ID>/<public ID>"}` |
 | an anonymous viewer | `human:clax-anonymous` | `name` "Anonymous viewer" |
+| a report queue's reporter (a reporter token's requests) | `human:clax-reporter/<queue ID>.<reporter ID>` | `name` the reporter ID (none under `--no-names`); identity `{system: "clax-reporter", id: "<install ID>/<queue ID>/<reporter ID>"}`; the actor is `{"type": "reporter", "queue_id", "reporter_id"}` |
+| a report queue's service grant (the deployer's backend; minting a reporter token records nothing) | `tool:clax-service/<grant ID>` | `name` "Report queue service"; identities `{system: "clax-queue-grant", id: <grant ID>}` and `{system: "clax-queue", id: "<install ID>/<queue ID>"}`; the actor is `{"type": "service", "queue_id", "grant_id"}` |
 | ClaxBot acting for a person | `agent:claxbot/<person>` (`agent:claxbot/owner` for the owner) | `name` "ClaxBot"; identity `{system: "clax-person", id: "<install ID>/<person key>"}`; the actor is `{"type": "bot", "on_behalf_of": "<public ID>\|*owner"}` |
 | Clax itself | `tool:clax/<recording version>` | `name` "Clax"; identity `{system: "clax-build", id: <commit>}`; the reason (`ttl`, `rule`, `backfill`, `daemon`) is `meta.clax.system_reason` |
 

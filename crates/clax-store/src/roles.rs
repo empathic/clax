@@ -84,7 +84,11 @@ pub fn actor_person(actor: &Actor) -> Option<String> {
         Actor::Viewer { public_id, .. } => Some(public_id.clone()),
         Actor::Agent(a) => Some(person_key(a.person.as_deref())),
         Actor::Bot { on_behalf_of } => Some(on_behalf_of.clone()),
-        Actor::Client { .. } | Actor::Anonymous | Actor::System { .. } => None,
+        Actor::Client { .. }
+        | Actor::Anonymous
+        | Actor::System { .. }
+        | Actor::Reporter { .. }
+        | Actor::Service { .. } => None,
     }
 }
 

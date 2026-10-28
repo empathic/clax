@@ -375,6 +375,17 @@ async fn a_reporter_files_with_a_clip_and_reads_it_back() {
     assert_eq!(report["reporter_id"], "emp-1");
     assert_eq!(report["has_clip"], true);
     assert_eq!(report["metadata"], json!({"order": 7}));
+    // The filing is journaled as the queue's reporter.
+    let rows = s.ts.store.events_after(0, 1000).unwrap();
+    let opened = rows
+        .iter()
+        .find(|e| e.kind == "thread.open" && e.ids.thread.as_deref() == Some(tid.as_str()))
+        .expect("a thread.open");
+    let actor: Value = serde_json::from_str(&opened.actor).unwrap();
+    assert_eq!(
+        actor,
+        json!({"type": "reporter", "queue_id": s.qid, "reporter_id": "emp-1"})
+    );
     assert!(
         report["artifact"]["url"]
             .as_str()

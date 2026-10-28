@@ -219,6 +219,17 @@ pub fn actor_string(actor: &Actor, clax_version: &str) -> String {
             format!("tool:clax-client/{}", actor_segment(grant_id))
         }
         Actor::Anonymous => "human:clax-anonymous".into(),
+        Actor::Reporter {
+            queue_id,
+            reporter_id,
+        } => format!(
+            "human:clax-reporter/{}.{}",
+            actor_segment(queue_id),
+            actor_segment(reporter_id)
+        ),
+        Actor::Service { grant_id, .. } => {
+            format!("tool:clax-service/{}", actor_segment(grant_id))
+        }
         Actor::System { .. } => format!("tool:clax/{}", actor_segment(clax_version)),
         Actor::Bot { on_behalf_of } => format!(
             "agent:claxbot/{}",
@@ -331,6 +342,26 @@ pub fn actor_def(actor: &Actor, install: &str, clax_commit: &str, opts: &Redacti
             def
         }
         Actor::Anonymous => json!({"name": "Anonymous viewer"}),
+        Actor::Reporter {
+            queue_id,
+            reporter_id,
+        } => {
+            let mut def = json!({"identities": [identity(
+                "clax-reporter",
+                &format!("{install}/{queue_id}/{reporter_id}"),
+            )]});
+            if !opts.no_names {
+                def["name"] = reporter_id.as_str().into();
+            }
+            def
+        }
+        Actor::Service { queue_id, grant_id } => json!({
+            "name": "Report queue service",
+            "identities": [
+                identity("clax-queue-grant", grant_id),
+                identity("clax-queue", &format!("{install}/{queue_id}")),
+            ],
+        }),
         Actor::System { .. } => json!({
             "name": "Clax",
             "identities": [identity("clax-build", clax_commit)],

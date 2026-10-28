@@ -239,6 +239,15 @@ pub enum Actor {
     Bot {
         on_behalf_of: String,
     },
+    /// A reporter of a report queue, through its reporter token (spec
+    /// 2026-10-27-clax-sdk-design §5.3): the queue and the reporter ID the
+    /// deployer's app gave. No person of this instance.
+    Reporter {
+        queue_id: String,
+        reporter_id: String,
+    },
+    /// A deployer's backend, through a queue's service grant (§5.3).
+    Service { queue_id: String, grant_id: String },
 }
 
 /// The kind groups the audit view filters by (spec

@@ -67,10 +67,14 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Who a reporter's change is recorded as: no person of this instance.
-fn reporter_ctx() -> AuditCtx {
+/// Who a reporter's change is recorded as: reporter `reporter_id` of queue
+/// `queue_id`, no person of this instance, from the network.
+fn reporter_ctx(queue_id: &str, reporter_id: &str) -> AuditCtx {
     AuditCtx {
-        actor: Actor::Anonymous,
+        actor: Actor::Reporter {
+            queue_id: queue_id.to_string(),
+            reporter_id: reporter_id.to_string(),
+        },
         via: Via::Lan,
         git: GitField::Absent,
         call: None,
@@ -244,7 +248,7 @@ pub async fn file_report(
     let new = new_report(read_fields(mp).await?, &rid)?;
     let report = s
         .store_call_async(move |st| async move {
-            st.file_report_async(&reporter_ctx(), &qid, Some(&rid), new)
+            st.file_report_async(&reporter_ctx(&qid, &rid), &qid, Some(&rid), new)
                 .await
         })
         .await?;
@@ -302,7 +306,9 @@ pub async fn comment(
     let rid = r.token.reporter_id;
     let t = tid.clone();
     let report = s
-        .store_call(move |st| st.reporter_comment(&reporter_ctx(), &qid, &t, &rid, &b.body))
+        .store_call(move |st| {
+            st.reporter_comment(&reporter_ctx(&qid, &rid), &qid, &t, &rid, &b.body)
+        })
         .await?;
     announce(&s, tid).await;
     Ok(Json(json!({ "report": report })))
