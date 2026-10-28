@@ -332,7 +332,11 @@ mod tests {
             .unwrap();
         assert_eq!(c.revision.as_deref(), Some("r1"));
         assert_eq!(
-            st.external_artifact("", "invoice:4821").unwrap().unwrap().revision.as_deref(),
+            st.external_artifact("", "invoice:4821")
+                .unwrap()
+                .unwrap()
+                .revision
+                .as_deref(),
             Some("r1")
         );
         let art = st
@@ -365,7 +369,10 @@ mod tests {
         let aid = ArtifactId::parse(&a.artifact_id).unwrap();
         st.set_artifact_metadata(DAEMON, &aid, json!({"plan": "team"}), 1)
             .unwrap();
-        let theirs = st.external_artifact("u_b", "invoice:4821").unwrap().unwrap();
+        let theirs = st
+            .external_artifact("u_b", "invoice:4821")
+            .unwrap()
+            .unwrap();
         assert_eq!(theirs.metadata, serde_json::Value::Null);
         assert!(st.external_artifact("", "invoice:4821").unwrap().is_none());
     }
@@ -382,9 +389,11 @@ mod tests {
         st.delete_artifact(DAEMON, &aid).unwrap();
         let rows: Vec<(String, Option<String>)> = st
             .with_read(|c| {
-                Ok(c.prepare("SELECT body, artifact_id FROM audit_events WHERE kind = 'external.delete'")?
-                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-                    .collect::<rusqlite::Result<_>>()?)
+                Ok(c.prepare(
+                    "SELECT body, artifact_id FROM audit_events WHERE kind = 'external.delete'",
+                )?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?)
             })
             .unwrap();
         assert_eq!(rows.len(), 1);

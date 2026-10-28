@@ -1127,7 +1127,12 @@ mod tests {
         );
         assert!(!text.contains("comments_reply"), "{text}");
         assert_eq!(serde_json::to_value(&i).unwrap()["queue_id"], "01JQ");
-        assert!(serde_json::to_value(item()).unwrap().get("queue_id").is_none());
+        assert!(
+            serde_json::to_value(item())
+                .unwrap()
+                .get("queue_id")
+                .is_none()
+        );
         let n = Notice {
             feedback_id: "f".into(),
             comment_id: "c".into(),

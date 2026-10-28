@@ -102,7 +102,7 @@ fn no_session() -> CoreError {
 /// Who a write to a report is by: the agent's session for an agent
 /// caller, else the person themself, named as their comments are.
 enum Writer {
-    Agent(Session),
+    Agent(Box<Session>),
     Person {
         name: String,
         public_id: Option<String>,
@@ -112,7 +112,7 @@ enum Writer {
 impl Writer {
     fn of(st: &Store, c: &Caller, who: &Identity) -> clax_core::Result<Writer> {
         if c.is_agent() {
-            return Ok(Writer::Agent(agent_session(st, c)?));
+            return Ok(Writer::Agent(Box::new(agent_session(st, c)?)));
         }
         let (name, public_id) = author(st, who)?;
         Ok(Writer::Person { name, public_id })

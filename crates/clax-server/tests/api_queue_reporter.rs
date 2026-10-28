@@ -537,7 +537,10 @@ async fn a_report_s_fields_are_checked() {
         .await;
     assert_eq!(res.status(), 201);
     let v: Value = res.json().await.unwrap();
-    assert_eq!(v["report"]["metadata"]["x"].as_str().map(str::len), Some(1024));
+    assert_eq!(
+        v["report"]["metadata"]["x"].as_str().map(str::len),
+        Some(1024)
+    );
 }
 
 #[tokio::test]

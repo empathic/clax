@@ -277,10 +277,18 @@ async fn another_persons_queue_is_not_found() {
     let (_, v) = browser(&w.ts, &w.owner, Method::GET, "/api/queues", None).await;
     assert_eq!(v["queues"], json!([]));
     for (m, path, body) in [
-        (Method::PATCH, format!("/api/queues/{qid}"), Some(json!({"name": "x"}))),
+        (
+            Method::PATCH,
+            format!("/api/queues/{qid}"),
+            Some(json!({"name": "x"})),
+        ),
         (Method::DELETE, format!("/api/queues/{qid}"), None),
         (Method::GET, format!("/api/queues/{qid}/members"), None),
-        (Method::GET, format!("/api/queues/{qid}/service-grants"), None),
+        (
+            Method::GET,
+            format!("/api/queues/{qid}/service-grants"),
+            None,
+        ),
         (
             Method::POST,
             format!("/api/queues/{qid}/service-grants"),
@@ -376,12 +384,11 @@ async fn a_service_grant_is_shown_once_and_its_revocation_ends_its_reporter_toke
     let key = clax_core::sig::KeyPair::from_pkcs8(&pkcs8).unwrap();
 
     // The grant is its token's, with the key's public half alone.
-    let grant = w
-        .ts
-        .store
-        .service_grant_by_token(&clax_core::secret::sha256_hex(&token))
-        .unwrap()
-        .expect("the token names the grant");
+    let grant =
+        w.ts.store
+            .service_grant_by_token(&clax_core::secret::sha256_hex(&token))
+            .unwrap()
+            .expect("the token names the grant");
     assert_eq!(grant.id, gid);
     assert_eq!(
         grant.public_key,
@@ -400,16 +407,15 @@ async fn a_service_grant_is_shown_once_and_its_revocation_ends_its_reporter_toke
 
     // It mints a reporter token, which its revocation ends.
     let reporter_key = clax_core::sig::KeyPair::generate();
-    let (rtoken, _) = w
-        .ts
-        .store
-        .mint_reporter_token(
-            &grant,
-            "user-1",
-            "https://app.example.com",
-            &clax_core::sig::encode_public(&reporter_key.public()),
-        )
-        .unwrap();
+    let (rtoken, _) =
+        w.ts.store
+            .mint_reporter_token(
+                &grant,
+                "user-1",
+                "https://app.example.com",
+                &clax_core::sig::encode_public(&reporter_key.public()),
+            )
+            .unwrap();
     assert!(
         w.ts.store
             .reporter_by_token(&rtoken.sha256_hex())
@@ -454,7 +460,12 @@ fn assert_discovery(v: &Value, kind: &str) {
     let sign_in = v["sign_in"].as_array().unwrap();
     assert!(sign_in.contains(&json!("invite")), "{v}");
     assert!(sign_in.contains(&json!("reporter_token")), "{v}");
-    assert!(v["capabilities"].as_array().unwrap().contains(&json!("queues")));
+    assert!(
+        v["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("queues"))
+    );
 }
 
 #[tokio::test]
@@ -484,5 +495,10 @@ async fn discovery_says_what_this_clax_is_without_a_credential() {
     .await;
     assert_eq!(s, 200, "{v}");
     assert_discovery(&v, "hosted");
-    assert!(v["sign_in"].as_array().unwrap().contains(&json!("sign_in_link")));
+    assert!(
+        v["sign_in"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("sign_in_link"))
+    );
 }

@@ -637,7 +637,15 @@ fn people_and_their_agents_render_with_grant_and_person() {
         serde_json::to_value(&reporter).unwrap(),
         json!({"type": "reporter", "queue_id": "01JBQQ", "reporter_id": "emp 1@acme"})
     );
-    for a in [&agent, &sessionless, &cli, &person, &client, &reporter, &service] {
+    for a in [
+        &agent,
+        &sessionless,
+        &cli,
+        &person,
+        &client,
+        &reporter,
+        &service,
+    ] {
         assert!(is_actor_ref(&actor_string(a, "0.3.1")));
     }
 }

@@ -22,9 +22,9 @@
 
 use super::artifacts::{body, path};
 use axum::Json;
+use axum::extract::Path;
 use axum::extract::State;
 use axum::extract::rejection::{JsonRejection, PathRejection};
-use axum::extract::Path;
 use axum::http::StatusCode;
 use base64::Engine as _;
 use clax_core::CoreError;
@@ -38,15 +38,6 @@ use clax_http::viewer::SameOrigin;
 use clax_store::queues::{NewQueue, QueuePatch};
 use serde::Deserialize;
 use serde_json::{Value, json};
-
-/// 501 `not_yet`: the route is declared and not yet built.
-pub(crate) fn not_yet() -> ApiError {
-    ApiError::new(
-        StatusCode::NOT_IMPLEMENTED,
-        "not_yet",
-        "this queue route is not built yet",
-    )
-}
 
 /// The person an administering caller acts as: `None` for the owner (their
 /// browser or by hand), a connected person's public ID.
@@ -103,7 +94,10 @@ async fn admin_of(s: &AppState, qid: &str, person: Option<String>) -> Result<(),
 /// created_at, role}`. The owner and the owner's agents read the owner's;
 /// a connected person and their agents read theirs; a viewer who is no
 /// connected person reads none. 401 without a credential.
-pub async fn list(State(s): State<AppState>, a: Agent<QueuesList>) -> Result<Json<Value>, ApiError> {
+pub async fn list(
+    State(s): State<AppState>,
+    a: Agent<QueuesList>,
+) -> Result<Json<Value>, ApiError> {
     let person = match &a.caller {
         Caller::Owner { .. }
         | Caller::OwnerAgent { .. }
@@ -362,8 +356,7 @@ pub async fn create_grant(
     let (grant, token, key) = s
         .store_call(move |st| st.create_service_grant(&ctx, &qid, &b.name))
         .await?;
-    let private_key =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.pkcs8().expose());
+    let private_key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.pkcs8().expose());
     Ok((
         StatusCode::CREATED,
         Json(json!({

@@ -454,12 +454,11 @@ async fn the_generic_thread_routes_refuse_a_report_and_leave_it_out_of_listings(
 async fn a_persons_agent_triages_as_its_person_and_loses_its_lease_with_its_membership() {
     let q = setup_on("0.0.0.0".parse().unwrap()).await;
     let sam = q.ts.connect_person("Sam", "clax:collaborator").await;
-    let public_id = q
-        .ts
-        .store
-        .viewer_of_grant(&sam.grant_id())
-        .unwrap()
-        .public_id;
+    let public_id =
+        q.ts.store
+            .viewer_of_grant(&sam.grant_id())
+            .unwrap()
+            .public_id;
     let sid = sam.register("claude", "sam-h1").await["id"]
         .as_str()
         .unwrap()
@@ -484,7 +483,11 @@ async fn a_persons_agent_triages_as_its_person_and_loses_its_lease_with_its_memb
         .set_member(&AuditCtx::DAEMON, &q.qid, &public_id, Some(Role::Triage))
         .unwrap();
     let (s, v) = call("GET", format!("/api/queues/{}/reports", q.qid), None).await;
-    assert_eq!((s, v["reports"].as_array().map(Vec::len)), (200, Some(1)), "{v}");
+    assert_eq!(
+        (s, v["reports"].as_array().map(Vec::len)),
+        (200, Some(1)),
+        "{v}"
+    );
     let (s, v) = call("POST", q.report("/claim"), Some(json!({}))).await;
     assert_eq!((s, &v["report"]["state"]), (200, &json!("claimed")), "{v}");
     let (s, v) = call(
@@ -507,12 +510,11 @@ async fn a_persons_agent_triages_as_its_person_and_loses_its_lease_with_its_memb
         let (s, v) = call(m, path.clone(), body).await;
         assert_eq!((s, code(&v)), (404, "not_a_member"), "{path}: {v}");
     }
-    let r = q
-        .ts
-        .store
-        .report(&q.qid, &q.tid, clax_store::queues::Visibility::All)
-        .unwrap()
-        .unwrap();
+    let r =
+        q.ts.store
+            .report(&q.qid, &q.tid, clax_store::queues::Visibility::All)
+            .unwrap()
+            .unwrap();
     assert_eq!(r.state, clax_core::queue::State::Open);
     assert!(q.ts.store.thread_owner(&q.tid).unwrap().is_none());
 }

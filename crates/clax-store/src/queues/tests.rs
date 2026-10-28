@@ -381,7 +381,11 @@ fn metadata_write_records_audit_with_value_and_hashes() {
     st.set_thread_metadata(DAEMON, &qid, &tid, json!({"ticket": "A-1"}), 2)
         .unwrap();
     let rows = audit(&st, "thread.metadata");
-    assert_eq!(rows.len(), 2, "the filing's metadata and the write: {rows:?}");
+    assert_eq!(
+        rows.len(),
+        2,
+        "the filing's metadata and the write: {rows:?}"
+    );
     // The filing journals the metadata the report was filed with.
     assert_eq!(rows[0]["thread_id"], json!(tid));
     assert_eq!(rows[0]["metadata"], json!({"build": "2026.10.27"}));
@@ -400,7 +404,8 @@ fn metadata_write_records_audit_with_value_and_hashes() {
     // A report filed without metadata journals none.
     let mut bare = report(None, "No metadata");
     bare.metadata = serde_json::Value::Null;
-    st.file_report(DAEMON, &qid, None, ExternalScope::Instance, bare).unwrap();
+    st.file_report(DAEMON, &qid, None, ExternalScope::Instance, bare)
+        .unwrap();
     assert_eq!(audit(&st, "thread.metadata").len(), 2);
     let made = audit(&st, "external.create");
     assert_eq!(made.len(), 1);
@@ -622,7 +627,7 @@ fn a_removed_members_sessions_lose_their_leases_and_renew_none() {
     st.claim(DAEMON, &qid, &t2, &a).unwrap();
     // While a member, working renews the leases.
     clock.advance(100);
-    assert_eq!(st.renew_session_leases(&a, &[t1.clone()]).unwrap(), 1);
+    assert_eq!(st.renew_session_leases(&a, std::slice::from_ref(&t1)).unwrap(), 1);
 
     st.set_member(DAEMON, &qid, "u_t", None).unwrap();
     for tid in [&t1, &t2] {
@@ -646,9 +651,13 @@ fn a_removed_members_sessions_lose_their_leases_and_renew_none() {
         Ok(())
     })
     .unwrap();
-    assert_eq!(st.renew_session_leases(&a, &[t1.clone(), t2.clone()]).unwrap(), 0);
+    assert_eq!(
+        st.renew_session_leases(&a, &[t1.clone(), t2.clone()])
+            .unwrap(),
+        0
+    );
     // The owner's session on the owner's queue still renews.
     let o = session(&st, "codex", "o");
     st.claim(DAEMON, &qid, &t2, &o).unwrap();
-    assert_eq!(st.renew_session_leases(&o, &[t2.clone()]).unwrap(), 1);
+    assert_eq!(st.renew_session_leases(&o, std::slice::from_ref(&t2)).unwrap(), 1);
 }
