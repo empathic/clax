@@ -11,14 +11,8 @@ card_seconds = { full = 1.2, short = 1.0 }
 
 [[vignette]]
 id = "coldopen"
-title = "Your agents build pages. Clax gives them a home."
+title = "Ask for a page"
 seconds = 8.5
-in_short = true
-
-[[vignette]]
-id = "realtime"
-title = "Realtime collaboration"
-seconds = 7
 in_short = true
 
 [[vignette]]
@@ -28,10 +22,10 @@ seconds = 12
 in_short = true
 
 [[vignette]]
-id = "game"
-title = "Build things together"
-seconds = 8
-in_short = false
+id = "dash"
+title = "From raw data to answers"
+seconds = 7.5
+in_short = true
 
 [[vignette]]
 id = "globe"
@@ -40,15 +34,15 @@ seconds = 7.5
 in_short = true
 
 [[vignette]]
-id = "claxbot"
-title = "No agent? Use ClaxBot"
-seconds = 10
+id = "game"
+title = "Build things together"
+seconds = 8
 in_short = false
 
 [[vignette]]
-id = "dash"
-title = "From raw data to answers"
-seconds = 7.5
+id = "realtime"
+title = "Work together, live"
+seconds = 7
 in_short = true
 
 [[vignette]]
@@ -56,6 +50,12 @@ id = "history"
 title = "Every version, kept"
 seconds = 9
 in_short = true
+
+[[vignette]]
+id = "claxbot"
+title = "No agent? Use ClaxBot"
+seconds = 10
+in_short = false
 
 [[vignette]]
 id = "share"
