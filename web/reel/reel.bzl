@@ -49,7 +49,7 @@ def reel_vignette(name):
     """
     copy_to_bin(
         name = name + "_script",
-        srcs = ["vignettes/%s.ts" % name],
+        srcs = ["vignettes/%s.ts" % name] + native.glob(["vignettes/%s.focus.json" % name], allow_empty = True),
     )
     srcs = [
         ":recorder",
