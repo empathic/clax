@@ -63,6 +63,12 @@ title = "Share it"
 seconds = 9
 in_short = true
 
+[[vignette]]
+id = "more"
+title = "Pages that do more"
+seconds = 8
+in_short = false
+
 [end]
 seconds = 4
 headline = "Your agents build pages. Clax gives them a home."

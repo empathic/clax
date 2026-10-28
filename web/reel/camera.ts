@@ -92,14 +92,20 @@ const NO_CARET = `(() => {
 // to itself (no clock involved) comes back after them.
 const DRAINED = `new Promise(r => { const c = new MessageChannel(); c.port1.onmessage = () => r(0); c.port2.postMessage(0); })`;
 
-/** The path of the shell's shared worker script, whose request a page that
- * loads anew never hears end. */
-const SHARED_WORKER = /^\/_clax\/shell\/stream-worker-[^/]*\.js$/;
-
 /** How long a frame waits for the page's requests to finish before the
  * recording fails, naming them: a guard against a request that never ends,
  * not a pace. */
 export const QUIET_MS = 10_000;
+
+/** The shell's SharedWorker script (web/shell/src/stream.ts): Chromium
+ * reports its load to the page that started the worker but never its end,
+ * so a shell that loads during the film (a reload after an approval) is not
+ * waited on for it. */
+const SHARED_WORKER = /\/_clax\/shell\/stream-worker-[^/]*\.js$/;
+
+/** What the DevTools protocol and `reach` say of a frame or node whose
+ * document a navigation replaced (or is replacing) as it was asked. */
+const BETWEEN_DOCUMENTS = /^no frame |context|node|navigated|closed/i;
 
 type Reach = { session: CDPSession; contextId?: number };
 const sessions = new WeakMap<Page, { cdp: Promise<CDPSession>; frames: Map<Frame, Promise<Reach>> }>();
@@ -131,7 +137,12 @@ function cached(page: Page) {
 /** How `quietIn` reaches `frame` of `page`, made once per frame document. */
 async function reachOf(page: Page, frame: Frame): Promise<Reach> {
   const s = cached(page);
-  if (!s.frames.has(frame)) s.frames.set(frame, s.cdp.then(cdp => reach(page, frame, cdp)));
+  if (!s.frames.has(frame)) {
+    // A frame not reached (one between documents) is tried again next time.
+    const reached = s.cdp.then(cdp => reach(page, frame, cdp));
+    reached.catch(() => s.frames.delete(frame));
+    s.frames.set(frame, reached);
+  }
   return s.frames.get(frame)!;
 }
 
@@ -147,11 +158,7 @@ async function reachOf(page: Page, frame: Frame): Promise<Reach> {
 export async function quietIn<T = unknown>(page: Page, frame: Frame, expression: string): Promise<T> {
   const s = cached(page);
   for (let attempt = 0; ; attempt++) {
-    // A frame not found (it was navigating, or is gone) is looked up afresh next time.
-    const { session, contextId } = await reachOf(page, frame).catch(e => {
-      s.frames.delete(frame);
-      throw e;
-    });
+    const { session, contextId } = await reachOf(page, frame);
     try {
       const r = await session.send("Runtime.evaluate", { expression, contextId, awaitPromise: true, userGesture: false, returnByValue: true });
       if (r.exceptionDetails) throw new Error(`${frame.url()}: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
@@ -223,12 +230,30 @@ export async function deterministicCamera(page: Page, out: string, fps = FPS, on
   };
   page.on("requestfinished", done);
   page.on("requestfailed", done);
+  // A document that navigates away (a reload of the shell after an approval,
+  // say) leaves its requests in flight unheard of: they go with it.
+  page.on("framenavigated", f => {
+    for (const r of [...pending]) {
+      let of: Frame | null = null;
+      try {
+        of = r.frame();
+      } catch {
+        // A worker's request: its document's own.
+      }
+      if (!r.isNavigationRequest() && (of === null || of === f || of.isDetached())) done(r);
+    }
+  });
 
   /** Pauses and sets the animations of every shadow tree `session` reaches
    * (closed ones too, which no script of the page can reach), as FREEZE does
    * a document's. */
   async function freezeShadows(session: CDPSession, t: number): Promise<void> {
-    const { root } = await session.send("DOM.getDocument", { depth: -1, pierce: true });
+    const got = await session.send("DOM.getDocument", { depth: -1, pierce: true }).catch((e: unknown) => {
+      if (BETWEEN_DOCUMENTS.test(e instanceof Error ? e.message : String(e))) return null;
+      throw e;
+    });
+    if (!got) return;
+    const { root } = got;
     type Node = typeof root;
     const shadows: number[] = [];
     const walk = (n: Node): void => {
@@ -247,8 +272,8 @@ export async function deterministicCamera(page: Page, out: string, fps = FPS, on
         await session.send("Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: FREEZE_IN, arguments: [{ value: t }], userGesture: false, returnByValue: true });
         await session.send("Runtime.releaseObject", { objectId: object.objectId });
       } catch (e) {
-        // A document the page navigated away from has no animations left to set.
-        if (!/Cannot find context|No node with given id|Could not find node|does not belong to the document/.test(e instanceof Error ? e.message : String(e))) throw e;
+        // A shadow root of a document a reload just replaced: gone with it.
+        if (!BETWEEN_DOCUMENTS.test(e instanceof Error ? e.message : String(e))) throw e;
       }
     }
   }
@@ -275,7 +300,7 @@ export async function deterministicCamera(page: Page, out: string, fps = FPS, on
         await quietIn(page, frame, expression);
         reached.add((await reachOf(page, frame)).session);
       } catch (e) {
-        if (!frame.isDetached() && !/^Error: no frame /.test(String(e))) throw e;
+        if (!frame.isDetached() && !BETWEEN_DOCUMENTS.test(e instanceof Error ? e.message : String(e))) throw e;
       }
     }
     return reached;
