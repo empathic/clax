@@ -457,6 +457,25 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(posted.length).toBe(sent);
   });
 
+  it("history: the page's reports of back()'s moves are no entries when a later back() overtakes them", async () => {
+    const { frame, host } = await appView();
+    hello(frame, 1);
+    for (const hash of ["", "#/item/3", "#/item/4"]) fromFrame(frame.contentWindow!, { type: "clax:hash", hash });
+    await settle();
+    host.back();
+    host.back();
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: false });
+    // The page's reports of both moves come after the second back().
+    fromFrame(frame.contentWindow!, { type: "clax:hash", hash: "#/item/3" });
+    fromFrame(frame.contentWindow!, { type: "clax:hash", hash: "" });
+    await settle();
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: false });
+    // A move of the page's own is an entry again.
+    fromFrame(frame.contentWindow!, { type: "clax:hash", hash: "#/item/5" });
+    await settle();
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: true });
+  });
+
   it("history: the page's pushState routes are the app's own history too, and back() returns the page to the route before in place", async () => {
     const { frame, host } = await appView();
     hello(frame, 1);

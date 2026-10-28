@@ -494,6 +494,10 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   let trail: { file: string; hash: string; route: number }[] = [];
   let depth = 0;
   let toldBack: boolean | null = null;
+  // The fragments `back()` moved the page to in place, oldest first, whose
+  // `clax:hash` has not come back yet: each is the page reporting that move,
+  // not a new entry, even after a later `back()` left it.
+  let echoes: string[] = [];
   const postHistory = () => {
     const back = trail.length > 1;
     if (nonce === null || back === toldBack) return;
@@ -513,6 +517,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
    * to, so they leave the trail. */
   const newDocument = () => {
     depth = 0;
+    echoes = [];
     trail = trail.filter(e => e.route === 0);
   };
   /** The page moved to its route at `to` (a push, or its own back or
@@ -538,7 +543,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     if (from.route > to.route) {
       depth = to.route;
       if (ctl.gate.open) ctl.send({ type: "clax:back", depth: to.route });
-    }
+    } else if (from.route === to.route && from.file === to.file && from.hash !== to.hash) echoes.push(to.hash);
     setUrl(shellPath(ctl.id, s().pinnedVersion, to.file, ctl.shown()) + appQuery(location.search) + to.hash);
     win.dispatchEvent(new PopStateEvent("popstate"));
   };
@@ -766,8 +771,15 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     if ((m?.type === "clax:hash" || m?.type === "clax:route") && typeof m.hash === "string" && validHash(m.hash)) {
       const file = s().file;
       if (file === null) return;
-      if (m.type === "clax:hash") visit(file, m.hash);
-      else if (Number.isInteger(m.depth) && m.depth >= 0) route(file, m.depth, m.hash);
+      if (m.type === "clax:hash") {
+        // Messages come in order: one that is not the next echo is the page
+        // moving itself, and the echoes it overtook are not coming.
+        if (echoes[0] === m.hash) echoes.shift();
+        else {
+          echoes = [];
+          visit(file, m.hash);
+        }
+      } else if (Number.isInteger(m.depth) && m.depth >= 0) route(file, m.depth, m.hash);
       return;
     }
     if (m?.type === "clax:chrome") {
