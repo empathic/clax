@@ -278,7 +278,10 @@ sh_test(
 sh_test(
     name = "no_unsafe",
     srcs = ["check-no-unsafe.sh"],
-    data = RUST_SOURCES + CRATE_MANIFESTS + ["//:Cargo.toml"],
+    data = RUST_SOURCES + CRATE_MANIFESTS + [
+        "check-no-unsafe.py",
+        "//:Cargo.toml",
+    ],
 )
 
 sh_test(
@@ -307,7 +310,10 @@ sh_test(
 sh_test(
     name = "ios_spawns",
     srcs = ["check-ios-spawns.sh"],
-    data = RUST_SOURCES + ["ios-spawns.allow"],
+    data = RUST_SOURCES + [
+        "check-ios-spawns.py",
+        "ios-spawns.allow",
+    ],
 )
 
 sh_test(

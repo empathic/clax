@@ -23,8 +23,8 @@ export HOME="$T/fakehome" CLAX_HOME="$T/home" CALLS="$T/calls"
 STAMPS="$CLAX_HOME/run/tool-hook"
 calls() { if [ -f "$CALLS" ]; then wc -l < "$CALLS" | tr -d ' '; else echo 0; fi; }
 gate() { printf '%s' "$2" | "$T/bin/tool-hook.sh" "$1" 2>"$T/err"; }
-# Sets a file's mtime $2 seconds from now (perl: no interpreter shim to start).
-age() { perl -e '$t = time + $ARGV[1]; utime $t, $t, $ARGV[0] or die' "$1" "$2"; }
+# Sets a file's mtime $2 seconds from now.
+age() { python3 -c 'import os, sys, time; t = time.time() + int(sys.argv[2]); os.utime(sys.argv[1], (t, t))' "$1" "$2"; }
 IN='{"session_id":"cc-1","hook_event_name":"PostToolUse","tool_name":"Edit"}'
 
 out="$(gate claude "$IN")"; code=$?
