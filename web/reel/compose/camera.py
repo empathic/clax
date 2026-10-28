@@ -847,6 +847,28 @@ def _box_at(changes, f):
     return box
 
 
+MERGE_GAP_PX = 24        # lit regions that overlap or come this close merge into one, with one ring
+
+
+def _merge_near(regions, gap):
+    """Regions merged until no two overlap or sit within gap px: one ring each."""
+    rs = list(regions)
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(rs)):
+            for j in range(i + 1, len(rs)):
+                a, b = rs[i], rs[j]
+                if a[0] - gap < b[2] and b[0] - gap < a[2] and a[1] - gap < b[3] and b[1] - gap < a[3]:
+                    rs[i] = _union([a, b])
+                    del rs[j]
+                    merged = True
+                    break
+            if merged:
+                break
+    return rs
+
+
 def script_path(script, where, frames_dir, segs, beats, amount, nframes, size):
     """Rows for a focus script. Each shot lights its targets: each target's region
     is the union of its recorded boxes over the shot (or its override), plus
@@ -910,6 +932,7 @@ def script_path(script, where, frames_dir, segs, beats, amount, nframes, size):
                 box = _union(seen)
             p = TARGET_PAD_PX
             regions.append((max(0.0, box[0] - p), max(0.0, box[1] - p), min(float(W), box[2] + p), min(float(H), box[3] + p)))
+        regions = _merge_near(regions, MERGE_GAP_PX)
         on = out(a)
         off = None if "until" not in sh and k + 1 == len(shots) else out(b)
         if off is not None and off <= on:
