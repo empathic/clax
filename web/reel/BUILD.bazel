@@ -28,6 +28,7 @@ VIGNETTES = [
     "dash",
     "game",
     "globe",
+    "history",
     "realtime",
 ]
 
