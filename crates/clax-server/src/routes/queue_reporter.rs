@@ -29,7 +29,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use clax_core::audit::{Actor, AuditCtx, Via};
 use clax_core::gitctx::GitField;
-use clax_core::{Anchor, ArtifactId, CoreError};
+use clax_core::{Anchor, CoreError};
 use clax_http::error::ApiError;
 use clax_http::reporter::{self, REPORT_BODY_LIMIT, ReporterCaller, ServiceCaller};
 use clax_http::state::AppState;
@@ -331,13 +331,7 @@ pub async fn clip(
     let rid = r.token.reporter_id;
     let bytes = s
         .store_call_async(move |st| async move {
-            let st = &*st;
-            let report = st
-                .report(&qid, &tid, Visibility::Reporter(&rid))?
-                .filter(|r| r.has_clip)
-                .ok_or(CoreError::NotFound)?;
-            let aid = ArtifactId::parse(&report.artifact.id)?;
-            st.read_clip_async(&aid, &tid)
+            st.report_clip_async(&qid, &tid, Visibility::Reporter(&rid))
                 .await?
                 .ok_or(CoreError::NotFound)
         })

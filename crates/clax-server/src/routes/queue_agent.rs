@@ -37,7 +37,7 @@ use clax_core::audit::AuditCtx;
 use clax_core::model::Session;
 use clax_core::queue::State as ReportState;
 use clax_core::working::StopReason;
-use clax_core::{ArtifactId, CoreError, Event};
+use clax_core::{CoreError, Event};
 use clax_http::agent::{
     Agent, Need, QueueArtifactPatch, QueueClaim, QueueClip, QueueRelease, QueueRenew, QueueReply,
     QueueReportGet, QueueReportPatch, QueueReportsList, QueueResolve,
@@ -426,14 +426,7 @@ pub async fn clip(
     member(&s, &a, &qid).await?;
     let bytes = s
         .store_call_async(move |st| async move {
-            let r = st
-                .report(&qid, &tid, Visibility::All)?
-                .ok_or(CoreError::NotFound)?;
-            if !r.has_clip {
-                return Err(CoreError::NotFound);
-            }
-            let aid = ArtifactId::parse(&r.artifact.id)?;
-            st.read_clip_async(&aid, &tid)
+            st.report_clip_async(&qid, &tid, Visibility::All)
                 .await?
                 .ok_or(CoreError::NotFound)
         })

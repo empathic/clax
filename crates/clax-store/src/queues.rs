@@ -1024,6 +1024,23 @@ impl Store {
     ///
     /// # Errors
     /// [`CoreError::NotAMember`] for no such queue.
+    /// The PNG clip of report `tid` in queue `qid`, as `vis` may see it:
+    /// `None` when the report has no clip; `NotFound` when `vis` does not
+    /// see the report.
+    pub async fn report_clip_async(
+        &self,
+        qid: &str,
+        tid: &str,
+        vis: Visibility<'_>,
+    ) -> Result<Option<Vec<u8>>> {
+        let r = self.report(qid, tid, vis)?.ok_or(CoreError::NotFound)?;
+        if !r.has_clip {
+            return Ok(None);
+        }
+        let aid = ArtifactId::parse(&r.artifact.id)?;
+        self.read_clip_async(&aid, tid).await
+    }
+
     pub fn report(&self, qid: &str, tid: &str, vis: Visibility<'_>) -> Result<Option<Report>> {
         let now = self.now();
         self.with_read(|c| {
