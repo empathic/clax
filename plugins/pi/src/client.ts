@@ -562,6 +562,25 @@ export class DaemonClient {
     return this.json("/api/tags", { method: "GET" });
   }
 
+  /** `GET /api/queues`: `{queues}`, the queues the caller's person is a member of. */
+  queues(): Promise<any> {
+    return this.json("/api/queues", { method: "GET" });
+  }
+
+  /** `GET /api/queues/<qid>/reports?state=&cursor=`: `{reports, next}`. */
+  queueReports(qid: string, state?: string, cursor?: string): Promise<any> {
+    const q = new URLSearchParams();
+    if (state !== undefined) q.set("state", state);
+    if (cursor !== undefined) q.set("cursor", cursor);
+    const qs = q.toString();
+    return this.json(`/api/queues/${encodeURIComponent(qid)}/reports${qs ? `?${qs}` : ""}`, { method: "GET" });
+  }
+
+  /** `POST /api/queues/<qid>/reports/<tid>/<action>` (`claim`, `renew`, `release`, `resolve`, `comments`): the route's answer. */
+  queueReportAction(qid: string, tid: string, action: string, body: unknown): Promise<any> {
+    return this.json(`/api/queues/${encodeURIComponent(qid)}/reports/${encodeURIComponent(tid)}/${action}`, this.jsonBody("POST", body));
+  }
+
   /** `PATCH /api/artifacts/<id>/tags` (`{add, remove}`): changes the tags it carries; `{artifact_id, tags, changed}`. */
   editTags(id: string, body: unknown): Promise<any> {
     return this.json(`/api/artifacts/${id}/tags`, this.jsonBody("PATCH", body));

@@ -78,13 +78,14 @@ binary differ.
 
 ## What it adds
 
-- The `clax` MCP server (`clax mcp --agent codex`): thirty-two tools,
+- The `clax` MCP server (`clax mcp --agent codex`): thirty-eight tools,
   `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `tag`, `tags`, `fork`,
   `asset_upload`, `status`, `comments_read`, `comments_reply`,
   `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `publish_public`,
   and the data tools
   `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`,
-  `db_str_replace`, `db_batch`, which Codex names `mcp__clax__<tool>`. The first
+  `db_str_replace`, `db_batch`, and the report queue tools
+  `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`, `queue_resolve`, which Codex names `mcp__clax__<tool>`. The first
   tool call starts the daemon when none is running.
 - The `clax` skill: when to publish, the page contract, and the comment
   loop.

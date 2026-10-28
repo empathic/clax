@@ -32,7 +32,7 @@ package, its skill, and the daemon's Pi sessions.
 
 ## What it adds
 
-- Thirty-two tools: `clax_publish`, `clax_read`, `clax_list`,
+- Thirty-eight tools: `clax_publish`, `clax_read`, `clax_list`,
   `clax_delete`, `clax_open`, `clax_pin`, `clax_unpin`, `clax_tag`,
   `clax_tags`, `clax_fork`,
   `clax_asset_upload`, `clax_status`, `clax_comments_read`,
@@ -41,7 +41,8 @@ package, its skill, and the daemon's Pi sessions.
   `clax_wait_for_feedback`, `clax_working`, `clax_draft`, `clax_git_remote`, `clax_ask`, `clax_where_to_ask`, `clax_publish_public`, and the data tools `clax_db_get`,
   `clax_db_list`, `clax_db_query`, `clax_db_set`,
   `clax_db_update`, `clax_db_delete`, `clax_db_str_replace`,
-  `clax_db_batch`. Pi keeps every tool in one namespace, hence the
+  `clax_db_batch`, and the report queue tools
+  `clax_queue_list`, `clax_queue_claim`, `clax_queue_renew`, `clax_queue_release`, `clax_queue_reply`, `clax_queue_resolve`. Pi keeps every tool in one namespace, hence the
   prefix. Relative file paths resolve against the Pi session's working
   directory.
 - On session start, the extension finds the daemon for `$CLAX_HOME` (default
