@@ -4,9 +4,13 @@
   // Send and Cancel) and "Your reports" with their replies, polled every
   // POLL_MS only while it is open. A clip that cannot be drawn leaves the
   // report without one; the send waits for a clip still being taken.
+  // "Your reports" opened over a draft hides the composer and keeps the
+  // draft, which comes back when the panel closes. The composer or the
+  // panel, the notice and the launcher stack up from the bottom right corner,
+  // none over another; closing the composer gives focus back to Report.
   import { onDestroy, untrack } from "svelte";
   import type { Report } from "../../sdk/src/types";
-  import { type Clip, type Draft, POLL_MS, Poll, type ReporterApi, type Timers, canSend, clipStatus, failureText, newDraft, quoteOf, realTimers, reportOf, takeClip } from "./model";
+  import { type Clip, type Draft, POLL_MS, Poll, type ReporterApi, type Timers, canSend, clipStatus, failureText, newDraft, pageUrl, quoteOf, realTimers, reportOf, takeClip } from "./model";
   import type { Picked, Picker } from "./picker";
   import Reports from "./Reports.svelte";
 
@@ -31,6 +35,7 @@
   let open = $state(false);
   let reports = $state<Report[] | null>(null);
   let loadError = $state<string | null>(null);
+  let reportBtn = $state<HTMLButtonElement | null>(null);
 
   /** The draft's clip, for a send to wait on; keyed by the draft it is for. */
   let clipFor: { of: Draft; clip: Promise<Clip> } | null = null;
@@ -98,10 +103,12 @@
     clipUrl = null;
   }
 
+  /** Drops the draft and gives focus back to the Report button. */
   function cancel(): void {
     draft = null;
     clipFor = null;
     revokeClip();
+    reportBtn?.focus();
   }
 
   let noticeTimer: unknown = null;
@@ -118,8 +125,7 @@
     d.error = null;
     try {
       if (clipFor?.of === d) d.clip = await clipFor.clip;
-      const win = doc.defaultView;
-      const report = await client.fileReport(reportOf(d, { url: win?.location.href ?? doc.URL, title: doc.title }, { externalId, metadata }));
+      const report = await client.fileReport(reportOf(d, { url: pageUrl(doc), title: doc.title }, { externalId, metadata }));
       if (draft !== d) return;
       cancel();
       if (reports) reports = [report, ...reports.filter(r => r.id !== report.id)];
@@ -160,15 +166,19 @@
     </div>
   {/if}
 
-  {#if draft}
+  <div class="dock">
+  {#if draft && !open}
     <form class="composer" aria-label="New report" onsubmit={e => { e.preventDefault(); void send(); }}>
       <p class="quote">{quoteOf(draft.anchor)}</p>
       {#if clipUrl}
-        <img class="clip" src={clipUrl} alt="Screenshot of what the report is about" />
+        <figure class="clip">
+          <img src={clipUrl} alt="Screenshot of the picked part of the page" />
+          <figcaption class="small muted">Screenshot</figcaption>
+        </figure>
       {:else if status}
         <p class="muted small" role="status">{status}</p>
       {/if}
-      <textarea rows={3} placeholder="What should change here?" {@attach el => el.focus()} bind:value={draft.body}
+      <textarea rows={3} aria-label="Report" placeholder="What should change here?" {@attach el => el.focus()} bind:value={draft.body}
         onkeydown={e => {
           if (e.key === "Escape") { e.preventDefault(); cancel(); }
           else if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); void send(); }
@@ -189,29 +199,34 @@
 
   <div class="launcher">
     <button type="button" class="reports-btn" aria-expanded={open} onclick={toggleReports}>Your reports</button>
-    <button type="button" class="primary report-btn" aria-pressed={picking} onclick={() => (picking ? stopPicking() : startPicking())}>
+    <button type="button" class="primary report-btn" bind:this={reportBtn} aria-pressed={picking} onclick={() => (picking ? stopPicking() : startPicking())}>
       <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2.5h10a1.5 1.5 0 0 1 1.5 1.5v6A1.5 1.5 0 0 1 13 11.5H7l-3.5 2.5v-2.5H3A1.5 1.5 0 0 1 1.5 10V4A1.5 1.5 0 0 1 3 2.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
       {picking ? "Picking…" : "Report"}
     </button>
+  </div>
   </div>
 </div>
 
 <style>
   .cx { pointer-events: auto; }
-  .launcher { position: fixed; right: 16px; bottom: 16px; display: flex; gap: 6px; z-index: 3; }
+  .dock { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; max-height: calc(100vh - 32px); pointer-events: none; }
+  .dock > :global(*) { flex: 0 1 auto; min-height: 0; pointer-events: auto; }
+  .launcher { display: flex; flex: none; gap: 6px; }
   .launcher button { box-shadow: var(--elev-lg); border-radius: 999px; padding: 7px 14px; }
   .launcher .reports-btn { background: var(--raised); border-color: var(--border-hover); }
   .launcher .reports-btn[aria-expanded="true"] { background: var(--hover); }
   .launcher .report-btn[aria-pressed="true"] { background: var(--you); color: var(--on-you); border-color: var(--you); }
   .hint { position: fixed; left: 50%; top: 12px; transform: translateX(-50%); max-width: calc(100vw - 32px); display: flex; gap: 10px; align-items: center; padding: 6px 6px 6px 14px; background: var(--raised); border: 1px solid var(--border-hover); border-top: 3px solid var(--you); border-radius: var(--radius); box-shadow: var(--elev-lg); font-size: 13px; z-index: 3; }
-  .composer { position: fixed; right: 16px; bottom: 64px; width: min(360px, calc(100vw - 32px)); max-height: calc(100vh - 80px); overflow: auto; background: var(--raised); border: 1px solid var(--border-hover); border-top: 3px solid var(--you); border-radius: var(--radius); padding: 12px; box-shadow: var(--elev-lg); z-index: 2; }
+  .composer { width: min(360px, calc(100vw - 32px)); overflow: auto; background: var(--raised); border: 1px solid var(--border-hover); border-top: 3px solid var(--you); border-radius: var(--radius); padding: 12px; box-shadow: var(--elev-lg); z-index: 2; }
   .quote { margin: 0 0 8px; padding: 4px 8px; font-size: 13px; color: var(--muted); background: var(--comment-hl); border-left: 2px solid var(--you); border-radius: 0 var(--radius-xs) var(--radius-xs) 0; overflow-wrap: anywhere; }
-  .clip { display: block; max-width: 100%; min-height: 24px; max-height: 160px; margin-bottom: 8px; object-fit: cover; object-position: left top; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg); }
+  .clip { margin: 0 0 8px; padding: 4px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); background: var(--bg); }
+  .clip img { display: block; max-width: 100%; min-height: 24px; max-height: 160px; object-fit: cover; object-position: left top; }
+  .clip figcaption { margin-top: 2px; }
   .composer > p[role="status"] { margin-bottom: 8px; }
   .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }
   .error { margin-top: 6px; color: var(--danger); }
-  .notice { position: fixed; right: 16px; bottom: 64px; max-width: min(360px, calc(100vw - 32px)); padding: 8px 12px; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius-sm); box-shadow: var(--elev-lg); font-size: 13px; z-index: 1; }
+  .notice { flex: none; margin: 0; max-width: min(360px, calc(100vw - 32px)); padding: 8px 12px; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius-sm); box-shadow: var(--elev-lg); font-size: 13px; }
   @media (max-width: 480px) {
-    .composer { left: 0; right: 0; bottom: 0; width: auto; max-height: 70vh; border-width: 3px 0 0; border-radius: var(--radius) var(--radius) 0 0; z-index: 4; }
+    .composer { position: fixed; left: 0; right: 0; bottom: 0; width: auto; max-height: 70vh; border-width: 3px 0 0; border-radius: var(--radius) var(--radius) 0 0; z-index: 4; }
   }
 </style>

@@ -12,7 +12,8 @@ export const MAX_TITLE = 300;
 /** The `<meta name>` a page names its artifact's external ID with. */
 export const ARTIFACT_META = "clax-artifact";
 
-/** `Clax.overlay`'s options. */
+/** `Clax.overlay`'s options. Every report carries the page's URL with its
+ * query and without its fragment, and the page's title. */
 export interface OverlayOptions {
   /** The instance's base URL, such as `https://clax.corp.example`. */
   instance: string;
@@ -90,6 +91,14 @@ export function externalIdOf(doc: Document, given?: string): string | undefined 
   if (given !== undefined && given !== "") return given;
   const meta = doc.querySelector<HTMLMetaElement>(`meta[name="${ARTIFACT_META}"]`)?.content.trim();
   return meta ? meta : undefined;
+}
+
+/** The URL a report from `doc` carries: the page's, with its query and
+ * without its fragment. */
+export function pageUrl(doc: Document): string {
+  const u = new URL(doc.defaultView?.location.href ?? doc.URL);
+  u.hash = "";
+  return u.href;
 }
 
 /** What sending `d` files, on the page at `url` titled `title`: the clip

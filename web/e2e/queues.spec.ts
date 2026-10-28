@@ -8,7 +8,7 @@
 // routes) lists, claims, replies to and resolves it; the reporter reads the
 // reply in the overlay, and another reporter of the queue does not see it.
 //
-// Screenshots of the composer, "Your reports" and the Queues page go to
+// Screenshots of the composer (light and dark), "Your reports" and the Queues page go to
 // $CLAX_QUEUES_SHOTS_DIR when it is set (under Bazel:
 // `--test_env=CLAX_QUEUES_SHOTS_DIR=$PWD/target/e2e-queues`), else to the
 // test's output directory.
@@ -63,13 +63,14 @@ async function agentOf(origin: string, token: string) {
 
 /** A user `user` of the deployer's site, signed in to the site (not to
  * Clax) in a browser of their own, on its page with the overlay loaded.
- * Every CSP violation the page reports is kept in `window.cspViolations`. */
+ * Every CSP violation the page reports is kept in `window.cspViolations`
+ * as its directive, blocked URI and sample (JSON). */
 async function reporterOn(browser: Browser, site: DeployerSite, user: string): Promise<Page> {
   const page = await (await browser.newContext()).newPage();
   await page.addInitScript(() => {
     (window as unknown as { cspViolations: string[] }).cspViolations = [];
     document.addEventListener("securitypolicyviolation", e => {
-      (window as unknown as { cspViolations: string[] }).cspViolations.push(`${e.violatedDirective} ${e.blockedURI}`);
+      (window as unknown as { cspViolations: string[] }).cspViolations.push(`${e.violatedDirective} ${e.blockedURI} ${JSON.stringify(e.sample)}`);
     });
   });
   await page.goto(`${site.origin}/login?user=${user}`);
@@ -140,13 +141,24 @@ test("a site's user files a report through the overlay; an agent claims, replies
     await emp1.locator("#req-1 h2").click();
     const composer = emp1.getByRole("form", { name: "New report" });
     await expect(composer).toBeVisible();
-    await expect(composer.getByRole("img", { name: "Screenshot of what the report is about" })).toBeVisible();
+    // The overlay's own styles apply under the policy (no inline style).
+    await expect(emp1.locator(".launcher")).toHaveCSS("display", "flex");
+    await expect(composer).toHaveCSS("border-top-width", "3px");
+    await expect(composer.getByRole("img", { name: "Screenshot of the picked part of the page" })).toBeVisible();
     const body = "The dates read 3 to 7 November but the request was for 4 days: which is right?";
-    await composer.getByRole("textbox").fill(body);
+    await composer.getByRole("textbox", { name: "Report" }).fill(body);
     await emp1.screenshot({ path: shotPath(info, "overlay-composer") });
+    // The buttons' colours ease (tokens.css --t): each shot waits for Send's to settle.
+    const send = composer.getByRole("button", { name: "Send" });
+    await emp1.emulateMedia({ colorScheme: "dark" });
+    await expect(send).toHaveCSS("background-color", "rgb(236, 235, 231)");
+    await emp1.screenshot({ path: shotPath(info, "overlay-composer-dark") });
+    await emp1.emulateMedia({ colorScheme: "light" });
+    await expect(send).toHaveCSS("background-color", "rgb(28, 27, 25)");
     await composer.getByRole("button", { name: "Send" }).click();
     await expect(emp1.getByText("Report sent.")).toBeVisible();
     await expect(composer).toHaveCount(0);
+    await expect(emp1.locator(".report-btn")).toBeFocused();
     expect(site.minted).toContain("emp-1");
 
     // The owner's agent, with an agent token made in the owner's browser.
@@ -194,7 +206,7 @@ test("a site's user files a report through the overlay; an agent claims, replies
     await row.getByRole("button", { name: /The dates read/ }).click();
     await expect(row.locator(".c[data-kind=agent] .body")).toHaveText(reply);
     await emp1.screenshot({ path: shotPath(info, "overlay-your-reports") });
-    await row.getByRole("textbox").fill("Thanks, 3 to 6 is right.");
+    await row.getByRole("textbox", { name: "Reply" }).fill("Thanks, 3 to 6 is right.");
     await row.getByRole("button", { name: "Reply", exact: true }).click();
     await expect(row.locator(".c[data-kind=reporter] .body").last()).toHaveText("Thanks, 3 to 6 is right.");
     const read = await agent.ok<{ report: Report }>("GET", `/api/queues/${qid}/reports/${report.id}`);
@@ -223,8 +235,11 @@ test("a site's user files a report through the overlay; an agent claims, replies
     await expect(counted.locator(".counts")).toHaveText("0 open · 0 claimed · 1 resolved");
     await owner.screenshot({ path: shotPath(info, "queues-page"), fullPage: true });
 
-    // The overlay ran under the site's policy without tripping it.
-    expect(await cspViolations(emp1)).toEqual([]);
+    // The overlay ran under the site's policy without tripping it, but for
+    // the one empty <style> the first clip's renderer (modern-screenshot)
+    // reads web fonts through, which the policy refuses; that page's clips
+    // are then rendered without web fonts (web/bridge/src/clip.ts).
+    expect(await cspViolations(emp1)).toEqual(['style-src-elem inline ""']);
     expect(await cspViolations(emp2)).toEqual([]);
   } finally {
     await site.stop();

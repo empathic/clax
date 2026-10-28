@@ -65,7 +65,7 @@
               {/each}
               {#if r.status === "open"}
                 <form onsubmit={e => { e.preventDefault(); void reply(r.id); }}>
-                  <textarea rows={2} placeholder="Reply…" bind:value={text}
+                  <textarea rows={2} aria-label="Reply" placeholder="Reply…" bind:value={text}
                     onkeydown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); void reply(r.id); } }}></textarea>
                   {#if replyError}<p class="error small" role="alert">Not sent: {replyError}</p>{/if}
                   <div class="actions"><button type="submit" class="primary" disabled={sending || !text.trim()}>{sending ? "Sending…" : "Reply"}</button></div>
@@ -80,7 +80,8 @@
 </section>
 
 <style>
-  .panel { position: fixed; right: 16px; bottom: 64px; width: min(380px, calc(100vw - 32px)); max-height: min(560px, calc(100vh - 80px)); overflow: auto; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius); box-shadow: var(--elev-lg); z-index: 1; }
+  /* Placed by the overlay's dock, above its notice and launcher. */
+  .panel { width: min(380px, calc(100vw - 32px)); max-height: 560px; overflow: auto; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius); box-shadow: var(--elev-lg); }
   header { position: sticky; top: 0; display: flex; align-items: center; justify-content: space-between; padding: 6px 6px 6px 14px; background: var(--raised); border-bottom: 1px solid var(--border); }
   h2 { margin: 0; font: 600 15px/1.3 var(--font); }
   .empty { padding: 16px 14px; }

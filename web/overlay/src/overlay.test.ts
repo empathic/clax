@@ -108,7 +108,11 @@ describe("the overlay", () => {
     rendered(new Uint8Array([137, 80, 78, 71]).buffer);
     await settle();
     expect(done).toBe(1);
-    expect(q<HTMLImageElement>(".composer img.clip")?.getAttribute("src")).toBe("blob:clip");
+    const img = q<HTMLImageElement>(".composer figure.clip img");
+    expect(img?.getAttribute("src")).toBe("blob:clip");
+    expect(img?.alt).toBe("Screenshot of the picked part of the page");
+    expect(q(".composer figure.clip figcaption")?.textContent).toBe("Screenshot");
+    expect(q(".composer textarea")?.getAttribute("aria-label")).toBe("Report");
     expect(button("Send")?.disabled).toBe(true);
     type("The total should include tax");
     click(button("Send"));
@@ -118,6 +122,55 @@ describe("the overlay", () => {
     expect(filed[0].clip).toBeInstanceOf(Blob);
     expect(q(".composer")).toBeNull();
     expect(q(".notice")?.textContent).toMatch(/Report sent/);
+    expect(document.activeElement).toBe(q(".report-btn"));
+  });
+
+  it("files the page's URL with its query and without its fragment", async () => {
+    const was = location.href;
+    history.replaceState(null, "", "/leave?team=7#req-2");
+    try {
+      click(button("Report"));
+      onPick({ anchor, render: async () => new ArrayBuffer(0) });
+      await settle();
+      type("Wrong date");
+      click(button("Send"));
+      await settle();
+      expect(filed[0].url).toBe(`${location.origin}/leave?team=7`);
+    } finally {
+      history.replaceState(null, "", was);
+    }
+  });
+
+  it("Your reports opened over a draft hides the composer and keeps the draft for when it closes", async () => {
+    click(button("Report"));
+    onPick({ anchor, render: async () => new Uint8Array([1]).buffer });
+    await settle();
+    type("Half written");
+    click(button("Your reports"));
+    await settle();
+    expect(q(".composer")).toBeNull();
+    expect(q(".panel")).not.toBeNull();
+    click(q('[aria-label="Close your reports"]'));
+    expect(q(".panel")).toBeNull();
+    expect(q<HTMLTextAreaElement>(".composer textarea")?.value).toBe("Half written");
+    expect(q<HTMLImageElement>(".composer figure.clip img")?.getAttribute("src")).toBe("blob:clip");
+    type("Half written, now done");
+    click(button("Send"));
+    await settle();
+    expect(filed.map(r => r.body)).toEqual(["Half written, now done"]);
+  });
+
+  it("stacks the panel and the notice above the launcher, apart", async () => {
+    click(button("Report"));
+    onPick({ anchor, render: async () => new ArrayBuffer(0) });
+    await settle();
+    type("Sent");
+    click(button("Send"));
+    await settle();
+    click(button("Your reports"));
+    await settle();
+    const dock = [...q(".dock")!.children].map(c => c.className.split(" ")[0]);
+    expect(dock).toEqual(["panel", "notice", "launcher"]);
   });
 
   it("sends without a clip when the clip cannot be drawn", async () => {
@@ -169,6 +222,19 @@ describe("the overlay", () => {
     await settle();
     click(button("Cancel"));
     expect(q(".composer")).toBeNull();
+    expect(document.activeElement).toBe(q(".report-btn"));
+  });
+
+  it("Escape in the composer drops the draft and gives focus back to Report", async () => {
+    click(button("Report"));
+    onPick({ anchor, render: async () => new ArrayBuffer(0) });
+    await settle();
+    const t = q<HTMLTextAreaElement>(".composer textarea")!;
+    expect(document.activeElement).toBe(t);
+    t.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    flushSync();
+    expect(q(".composer")).toBeNull();
+    expect(document.activeElement).toBe(q(".report-btn"));
   });
 
   it("polls Your reports every POLL_MS only while it is open, and shows replies", async () => {
@@ -202,6 +268,7 @@ describe("the overlay", () => {
     await settle();
     click(q(".panel .row"));
     const t = q<HTMLTextAreaElement>(".panel textarea")!;
+    expect(t.getAttribute("aria-label")).toBe("Reply");
     t.value = "Still there";
     t.dispatchEvent(new Event("input", { bubbles: true }));
     flushSync();
