@@ -343,5 +343,8 @@ def _test(name, **kwargs):
         # Bazel's default is five minutes; a loaded developer machine needs
         # more for the largest suites. CI sets its own (.bazelrc, ci).
         timeout = "long",
+        # libtest runs four tests at a time (RUST_TEST_THREADS, .bazelrc):
+        # Bazel books the four cores, as the browser tests book their eight.
+        tags = ["cpu:4"],
         **kwargs
     )

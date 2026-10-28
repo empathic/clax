@@ -653,8 +653,9 @@ link; the source and rule scans (`scripts/check-no-hard-links.sh`) stay.
 ## CPU and memory
 
 Bazel runs as many actions as there are cores. Rust tests run four libtest
-threads each (`RUST_TEST_THREADS=4`); the browser projects take eight
-workers each and declare it (`cpu:8`). The perf benchmarks are `exclusive`:
+threads each (`RUST_TEST_THREADS=4`) and declare it (`cpu:4`, in
+`bazel/cargo.bzl`); the browser projects take eight workers each and
+declare it (`cpu:8`). The perf benchmarks are `exclusive`:
 Bazel runs them one at a time with nothing beside them. To hold builds
 back on a shared machine, copy `user.bazelrc.example` to `user.bazelrc`.
 

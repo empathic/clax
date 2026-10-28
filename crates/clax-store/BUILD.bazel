@@ -24,6 +24,8 @@ native_test(
         "--exact",
         "tests::the_store_tests_pass_on_one_connection",
     ],
+    # Four libtest threads, as every Rust test (bazel/cargo.bzl).
+    tags = ["cpu:4"],
 )
 
 # The older builds' migrations (tests/fixtures/old-migrations), which the
