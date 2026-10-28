@@ -106,6 +106,8 @@ async function reopen(page: Page, id: string) {
   await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
 }
 const ticks = async (id: string) => ((await api(d.base, d.token, `/api/artifacts/${id}/docs/ticks/t`)) as { doc: { data: { i: number }; version: number } }).doc;
+/** `ticks`, or null before the migration's first write. */
+const ticksOrNull = (id: string) => ticks(id).catch((e: Error) => { if (e.message.includes(": 404 ")) return null; throw e; });
 
 async function runTests(page: Page, id: string, mode: "subdomain" | "sandbox", call: string, answer = "tests", query = "?app=1&inspect=1"): Promise<Tests> {
   if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
@@ -145,9 +147,14 @@ for (const mode of ["subdomain", "sandbox"] as const) {
 
   test(`${mode}: a migration over its time is reported, and stops writing once its view is loaded again`, async ({ page }) => {
     const id = await draft({ "index.html": PAGE, "migrate.js": TICKS });
-    const r = await runTests(page, id, mode, `runMigration({ file: "migrate.js", from: 1, to: 2, totalMs: 300 })`, "migration", MIGRATE_VIEW);
-    expect(r).toEqual({ type: "migration", ok: false, error: "it took longer than 300 ms" });
-    // Past its time it still writes: the bridge cannot stop it.
+    // The time covers loading migrate.js and the page's db too, so it is long
+    // enough for both on a loaded machine; the migration never ends, so it
+    // always runs over.
+    const r = await runTests(page, id, mode, `runMigration({ file: "migrate.js", from: 1, to: 2, totalMs: 3000 })`, "migration", MIGRATE_VIEW);
+    expect(r).toEqual({ type: "migration", ok: false, error: "it took longer than 3000 ms" });
+    // Past its time it still writes: the bridge cannot stop it. Its first
+    // write can land after the answer.
+    await expect.poll(async () => (await ticksOrNull(id))?.version ?? 0).toBeGreaterThan(0);
     const late = (await ticks(id)).version;
     await expect.poll(async () => (await ticks(id)).version).toBeGreaterThan(late);
     // The app loads the view again, as WebViewInspector.runMigration does.
