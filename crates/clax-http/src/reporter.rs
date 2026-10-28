@@ -119,25 +119,26 @@ async fn qid_of(parts: &mut Parts) -> Result<String, Refusal> {
 }
 
 /// The header checks that spend nothing: `t` within the skew and the
-/// nonce unspent for `key`.
-fn fresh(s: &AppState, head: &grant_auth::Head, key: &[u8; 32]) -> Result<(), Refusal> {
+/// nonce unspent for `key` of queue `qid`.
+fn fresh(s: &AppState, qid: &str, head: &grant_auth::Head, key: &[u8; 32]) -> Result<(), Refusal> {
     let st = &s.store;
     let now = st.now_utc().timestamp();
     if head.header.t.abs_diff(now) > sig::MAX_SKEW_S.unsigned_abs() {
         return Err(grant_auth::refuse(SigError::Stale, st));
     }
     s.grant_auth
-        .check_queue_nonce(key, &head.header.nonce, head.header.t, now)
+        .check_queue_nonce(qid, key, &head.header.nonce, head.header.t, now)
         .map_err(|e| grant_auth::refuse(e, st))
 }
 
 /// Reads the body (at most `limit` bytes, within the agent gate's bounds),
 /// verifies the signature over it with `key` and `token`, and records the
-/// nonce.
+/// nonce under queue `qid`.
 async fn signed_body(
     s: &AppState,
     parts: &Parts,
     body: Body,
+    qid: &str,
     head: &grant_auth::Head,
     key: [u8; 32],
     token: &Secret,
@@ -156,7 +157,7 @@ async fn signed_body(
     }
     let now = st.now_utc().timestamp();
     s.grant_auth
-        .record_queue_nonce(&key, &head.header.nonce, head.header.t, now)
+        .record_queue_nonce(qid, &key, &head.header.nonce, head.header.t, now)
         .map_err(|e| grant_auth::refuse(e, st))?;
     Ok(body)
 }
@@ -192,8 +193,18 @@ impl FromRequest<AppState> for ServiceCaller {
         let key =
             sig::decode_public(&grant.public_key).map_err(|e| grant_auth::refuse(e, &s.store))?;
         let head = grant_auth::head(&parts, &s.store)?;
-        fresh(s, &head, &key)?;
-        let body = signed_body(s, &parts, body, &head, key, &token, SMALL_BODY_LIMIT).await?;
+        fresh(s, &grant.queue_id, &head, &key)?;
+        let body = signed_body(
+            s,
+            &parts,
+            body,
+            &grant.queue_id,
+            &head,
+            key,
+            &token,
+            SMALL_BODY_LIMIT,
+        )
+        .await?;
         Ok(ServiceCaller { grant, body })
     }
 }
@@ -262,9 +273,9 @@ impl<const LIMIT: usize> FromRequest<AppState> for ReporterCaller<LIMIT> {
         }
         let key = sig::decode_public(&t.public_key).map_err(|e| grant_auth::refuse(e, &s.store))?;
         let head = grant_auth::head(&parts, &s.store)?;
-        fresh(s, &head, &key)?;
+        fresh(s, &t.queue_id, &head, &key)?;
         let content_type = parts.headers.get(header::CONTENT_TYPE).cloned();
-        let body = signed_body(s, &parts, body, &head, key, &token, LIMIT).await?;
+        let body = signed_body(s, &parts, body, &t.queue_id, &head, key, &token, LIMIT).await?;
         Ok(ReporterCaller {
             token: t,
             body,

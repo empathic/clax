@@ -433,8 +433,9 @@ pub struct GrantAuth {
     nonces: Mutex<NonceCache>,
     /// Nonces of the keys of a report queue's service grants and reporter
     /// tokens ([`crate::reporter`]), apart from the grants' so a queue's
-    /// reporters never use up the room of this machine's agents.
-    queue: Mutex<NonceCache>,
+    /// reporters never use up the room of this machine's agents, and kept
+    /// per queue so one queue's reporters never use up another's.
+    queue: Mutex<QueueNonces>,
     /// When each grant's use was last written.
     noted: Mutex<HashMap<String, i64>>,
 }
@@ -450,7 +451,7 @@ impl GrantAuth {
             requests: Mutex::new(RequestNonces::new()),
             pending: Mutex::new(pending_cache()),
             nonces: Mutex::new(NonceCache::new(sig::NONCE_WINDOW_S, sig::NONCES_PER_KEY)),
-            queue: Mutex::new(queue_cache()),
+            queue: Mutex::new(QueueNonces::new(QueueCaps::DEFAULT)),
             noted: Mutex::new(HashMap::new()),
         })
     }
@@ -480,43 +481,150 @@ fn pending_cache() -> NonceCache {
 /// deployer's backend makes a few calls a minute; past this the key is
 /// refused with 429 `limit_reached` until its nonces age out.
 pub const QUEUE_NONCES_PER_KEY: usize = 1024;
-/// Queue keys the queue cache holds at once: reporter keys live
+/// Keys one queue's cache holds at once: reporter keys live
 /// [`clax_core::queue::REPORTER_TOKEN_SECS`], one per reporter's page.
-pub const QUEUE_KEYS: usize = 16 * 1024;
+/// A queue past them is refused alone.
+pub const QUEUE_KEYS_PER_QUEUE: usize = 4 * 1024;
+/// Nonces one queue's cache holds at once.
+pub const QUEUE_NONCES_PER_QUEUE: usize = 1 << 18;
+/// Queue keys held at once over every queue: room for sixteen queues at
+/// their cap.
+pub const QUEUE_KEYS: usize = 16 * QUEUE_KEYS_PER_QUEUE;
+/// Queue nonces held at once over every queue.
+pub const QUEUE_NONCES: usize = 1 << 21;
 
-fn queue_cache() -> NonceCache {
-    NonceCache::new(sig::NONCE_WINDOW_S, QUEUE_NONCES_PER_KEY)
-        .with_caps(QUEUE_KEYS, sig::MAX_NONCES)
+/// The bounds of a [`QueueNonces`].
+#[derive(Clone, Copy, Debug)]
+pub struct QueueCaps {
+    pub nonces_per_key: usize,
+    pub keys_per_queue: usize,
+    pub nonces_per_queue: usize,
+    pub keys: usize,
+    pub nonces: usize,
+}
+
+impl QueueCaps {
+    pub const DEFAULT: QueueCaps = QueueCaps {
+        nonces_per_key: QUEUE_NONCES_PER_KEY,
+        keys_per_queue: QUEUE_KEYS_PER_QUEUE,
+        nonces_per_queue: QUEUE_NONCES_PER_QUEUE,
+        keys: QUEUE_KEYS,
+        nonces: QUEUE_NONCES,
+    };
+}
+
+/// The nonces of report queues' keys, one [`NonceCache`] per queue: a
+/// queue whose reporters fill its cache (its keys or nonces) is refused
+/// [`SigError::Full`] alone, while other queues keep their room. The
+/// overall caps bound memory across queues; a queue's empty cache is
+/// dropped on [`QueueNonces::sweep`].
+#[derive(Debug)]
+pub struct QueueNonces {
+    caps: QueueCaps,
+    by_queue: HashMap<String, NonceCache>,
+}
+
+impl QueueNonces {
+    /// Empty caches within `caps`.
+    pub fn new(caps: QueueCaps) -> QueueNonces {
+        QueueNonces {
+            caps,
+            by_queue: HashMap::new(),
+        }
+    }
+
+    /// `Full` when the overall caps leave no room for `key` of `queue`.
+    fn room(&self, queue: &str, key: &[u8; 32]) -> Result<(), SigError> {
+        let known = self.by_queue.get(queue).is_some_and(|c| c.has_key(key));
+        let keys: usize = self.by_queue.values().map(NonceCache::keys).sum();
+        let nonces: usize = self.by_queue.values().map(NonceCache::len).sum();
+        if (!known && keys >= self.caps.keys) || nonces >= self.caps.nonces {
+            return Err(SigError::Full);
+        }
+        Ok(())
+    }
+
+    fn cache(&mut self, queue: &str) -> &mut NonceCache {
+        let caps = self.caps;
+        self.by_queue.entry(queue.to_string()).or_insert_with(|| {
+            NonceCache::new(sig::NONCE_WINDOW_S, caps.nonces_per_key)
+                .with_caps(caps.keys_per_queue, caps.nonces_per_queue)
+        })
+    }
+
+    /// [`NonceCache::check`] in `queue`'s cache.
+    ///
+    /// # Errors
+    /// As [`NonceCache::check`].
+    pub fn check(
+        &mut self,
+        queue: &str,
+        key: &[u8; 32],
+        nonce: &str,
+        t: i64,
+        now: i64,
+    ) -> Result<(), SigError> {
+        self.room(queue, key)?;
+        self.cache(queue).check(key, nonce, t, now)
+    }
+
+    /// [`NonceCache::record`] in `queue`'s cache.
+    ///
+    /// # Errors
+    /// As [`NonceCache::record`].
+    pub fn record(
+        &mut self,
+        queue: &str,
+        key: &[u8; 32],
+        nonce: &str,
+        t: i64,
+        now: i64,
+    ) -> Result<(), SigError> {
+        self.room(queue, key)?;
+        self.cache(queue).record(key, nonce, t, now)
+    }
+
+    /// Forgets every nonce older than the window, and every queue's cache
+    /// left empty.
+    pub fn sweep(&mut self, now: i64) {
+        self.by_queue.retain(|_, c| {
+            c.sweep(now);
+            !c.is_empty()
+        });
+    }
 }
 
 impl GrantAuth {
-    /// [`GrantAuth::check_nonce`] for a queue key ([`crate::reporter`]).
+    /// [`GrantAuth::check_nonce`] for a key of report queue `queue`
+    /// ([`crate::reporter`]).
     ///
     /// # Errors
     /// As [`NonceCache::check`].
     pub fn check_queue_nonce(
         &self,
+        queue: &str,
         key: &[u8; 32],
         nonce: &str,
         t: i64,
         now: i64,
     ) -> Result<(), SigError> {
-        lock(&self.queue).check(key, nonce, t, now)
+        lock(&self.queue).check(queue, key, nonce, t, now)
     }
 
-    /// [`GrantAuth::record_nonce`] for a queue key, once its signature
-    /// verified.
+    /// [`GrantAuth::record_nonce`] for a key of report queue `queue`, once
+    /// its signature verified.
     ///
     /// # Errors
     /// As [`NonceCache::record`].
     pub fn record_queue_nonce(
         &self,
+        queue: &str,
         key: &[u8; 32],
         nonce: &str,
         t: i64,
         now: i64,
     ) -> Result<(), SigError> {
-        lock(&self.queue).record(key, nonce, t, now)
+        lock(&self.queue).record(queue, key, nonce, t, now)
     }
 }
 
@@ -908,6 +1016,40 @@ fn gnap_token(headers: &HeaderMap) -> Option<Secret> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_queue_at_its_cap_is_refused_alone() {
+        let mut q = QueueNonces::new(QueueCaps {
+            nonces_per_key: 4,
+            keys_per_queue: 2,
+            nonces_per_queue: 8,
+            keys: 5,
+            nonces: 100,
+        });
+        let now = 1_000_000;
+        let spend = |q: &mut QueueNonces, queue: &str, key: u8| {
+            let n = sig::new_nonce();
+            q.check(queue, &[key; 32], &n, now, now)
+                .and_then(|()| q.record(queue, &[key; 32], &n, now, now))
+        };
+        spend(&mut q, "a", 1).unwrap();
+        spend(&mut q, "a", 2).unwrap();
+        // Queue a holds its two keys: a third is refused there.
+        assert_eq!(spend(&mut q, "a", 3), Err(SigError::Full));
+        // Another queue still has its room, for new keys and old ones.
+        spend(&mut q, "b", 3).unwrap();
+        spend(&mut q, "b", 1).unwrap();
+        spend(&mut q, "a", 1).unwrap();
+        // The overall cap holds across queues.
+        spend(&mut q, "c", 4).unwrap();
+        assert_eq!(spend(&mut q, "d", 5), Err(SigError::Full));
+        // A window later every nonce and empty cache is gone.
+        q.sweep(now + 2 * sig::NONCE_WINDOW_S);
+        assert!(q.by_queue.is_empty());
+        let later = now + 2 * sig::NONCE_WINDOW_S;
+        let n = sig::new_nonce();
+        q.check("a", &[3; 32], &n, later, later).unwrap();
+    }
 
     fn secret(s: &str) -> Secret {
         Secret::new(s.to_string())
