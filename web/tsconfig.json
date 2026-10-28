@@ -5,5 +5,5 @@
     "noEmit": true, "allowImportingTsExtensions": true, "skipLibCheck": true, "types": ["vite/client", "node", "chrome"],
     "baseUrl": ".", "paths": { "clax-bridge-parts": ["bridge/src/parts-url.ts"] }
   },
-  "include": ["shell/src", "shell/test-setup.ts", "bridge/src", "bridge/test", "extension", "sdk", "e2e", "perf", "reel", "scripts"]
+  "include": ["shell/src", "shell/test-setup.ts", "bridge/src", "bridge/test", "extension", "sdk", "overlay", "e2e", "perf", "reel", "scripts"]
 }
