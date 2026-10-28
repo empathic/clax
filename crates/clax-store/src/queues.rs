@@ -889,7 +889,8 @@ impl Store {
     /// when it names none ([`Store::ensure_external_async`], as the queue's
     /// maker's), then makes the thread on its current version with the
     /// queue, the reporter and the metadata in the thread's transaction
-    /// (`thread.open`, `comment.add`). The anchor's file is the artifact's
+    /// (`thread.open`, `comment.add`, and `thread.metadata` for metadata
+    /// that is not null). The anchor's file is the artifact's
     /// one page, and a route it names is dropped: an external artifact is
     /// no live page.
     ///
@@ -954,6 +955,9 @@ impl Store {
         };
         let qid_owned = qid.to_string();
         let reporter_owned = reporter.map(str::to_string);
+        let metadata = r.metadata;
+        let now = self.now();
+        let artifact_id = x.artifact_id.clone();
         let thread = self
             .create_thread_then_async(ctx, &aid, t, move |tx, tid| {
                 tx.execute(
@@ -967,7 +971,23 @@ impl Store {
                         params![tid, reporter_owned],
                     )?;
                 }
-                Ok((None, Vec::new()))
+                // The metadata it is filed with is journaled as its first
+                // write (spec §6.6), so a later write's `previous_sha256`
+                // names it.
+                let records = match &meta {
+                    None => Vec::new(),
+                    Some(json) => {
+                        let mut rec = AuditRecord::new(AuditKind::ThreadMetadata, now)
+                            .with("thread_id", tid)
+                            .with("metadata", metadata)
+                            .with("metadata_sha256", metadata_sha256(json))
+                            .with("previous_sha256", metadata_sha256("null"));
+                        rec.ids.artifact = Some(artifact_id);
+                        rec.ids.thread = Some(tid.to_string());
+                        vec![rec]
+                    }
+                };
+                Ok((None, records))
             })
             .await?;
         self.report(qid, &thread.id, Visibility::All)?

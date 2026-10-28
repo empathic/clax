@@ -371,14 +371,27 @@ fn metadata_write_records_audit_with_value_and_hashes() {
     st.set_thread_metadata(DAEMON, &qid, &tid, json!({"ticket": "A-1"}), 2)
         .unwrap();
     let rows = audit(&st, "thread.metadata");
-    assert_eq!(rows.len(), 1);
+    assert_eq!(rows.len(), 2, "the filing's metadata and the write: {rows:?}");
+    // The filing journals the metadata the report was filed with.
     assert_eq!(rows[0]["thread_id"], json!(tid));
-    assert_eq!(rows[0]["metadata"], json!({"ticket": "A-1"}));
+    assert_eq!(rows[0]["metadata"], json!({"build": "2026.10.27"}));
+    assert_eq!(rows[0]["metadata_sha256"], json!(before));
     assert_eq!(
-        rows[0]["metadata_sha256"],
+        rows[0]["previous_sha256"],
+        json!(clax_core::queue::metadata_sha256("null"))
+    );
+    assert_eq!(rows[1]["thread_id"], json!(tid));
+    assert_eq!(rows[1]["metadata"], json!({"ticket": "A-1"}));
+    assert_eq!(
+        rows[1]["metadata_sha256"],
         json!(clax_core::queue::metadata_sha256("{\"ticket\":\"A-1\"}"))
     );
-    assert_eq!(rows[0]["previous_sha256"], json!(before));
+    assert_eq!(rows[1]["previous_sha256"], rows[0]["metadata_sha256"]);
+    // A report filed without metadata journals none.
+    let mut bare = report(None, "No metadata");
+    bare.metadata = serde_json::Value::Null;
+    st.file_report(DAEMON, &qid, None, bare).unwrap();
+    assert_eq!(audit(&st, "thread.metadata").len(), 2);
     let made = audit(&st, "external.create");
     assert_eq!(made.len(), 1);
     assert_eq!(
