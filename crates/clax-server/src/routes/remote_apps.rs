@@ -729,6 +729,62 @@ pub async fn unpublish(
     Ok(Json(json!({"deleted": deleted, "unlinked": unlinked})).into_response())
 }
 
+/// `POST /api/remotes/<rid>/artifacts/<raid>/git-token` (the owner, by
+/// hand) → the remote's answer to a git READ token for public copy `raid`:
+/// `{remote, token, expires_at, …}`, minted in a session of this machine
+/// there (`POST /api/sessions/<sid>/git-token/<raid> {scope: read}`). The
+/// remote revokes a session's tokens when the session ends, so the session
+/// is ended when the token expires (at most [`GIT_READ_HOLD`]), not now.
+/// For archiving a public copy before it is deleted (`clax remote delete`).
+/// The token is the remote's short-lived git token, not this core's token
+/// there, which no answer carries.
+pub async fn git_token(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    who: Identity,
+    _o: SameOrigin,
+    p: Result<Path<(String, String)>, PathRejection>,
+) -> Result<Response, ApiError> {
+    super::remotes::local_only(&s)?;
+    d.refuse_agents()?;
+    who.require_owner("reaches a public Clax")?;
+    let (rid, raid) = path(p)?;
+    let (remote, token) = owners_remote(&s, &d, rid).await?;
+    let raid = remote_artifact(&raid)?;
+    let mut c = public::Client::new(&remote.origin, Some(token));
+    let f = clax_rt::sendable(async {
+        c.by_hand().await?;
+        let sid = c.session().map(|x| x.0.clone()).unwrap_or_default();
+        let f = c
+            .forward(
+                Method::POST,
+                &["api", "sessions", &sid, "git-token", &raid],
+                &[],
+                vec![("content-type", "application/json".to_string())],
+                Some(br#"{"scope":"read"}"#.to_vec()),
+                public::MAX_ANSWER_BYTES,
+            )
+            .await;
+        if !matches!(&f, Ok(f) if (200..300).contains(&f.status)) {
+            c.end_session().await;
+        }
+        f
+    })
+    .await
+    .map_err(ApiError::from)?;
+    if c.session().is_some() {
+        clax_rt::spawn(clax_rt::sendable(async move {
+            clax_rt::time::sleep(GIT_READ_HOLD).await;
+            c.end_session().await;
+        }));
+    }
+    Ok(answer(&remote.origin, f))
+}
+
+/// How long [`git_token`] keeps its remote session (and so the token) open:
+/// the remote's agent token lifetime (`AGENT_TTL_S`, 900 s).
+const GIT_READ_HOLD: clax_rt::wall::Duration = clax_rt::wall::Duration::from_secs(900);
+
 #[derive(Deserialize)]
 pub struct CommentBody {
     /// The comment's text.

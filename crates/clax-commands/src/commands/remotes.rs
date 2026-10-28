@@ -1,4 +1,4 @@
-//! `clax remote add|list|remove|comments|unlink`: the public Clax instances this Clax
+//! `clax remote add|list|remove|comments|unlink|delete`: the public Clax instances this Clax
 //! publishes to (the daemon's `/api/remotes`). Adding one signs this Clax
 //! in there by device code: the command opens the public instance's
 //! approval page, the person signed in there approves this machine, and
@@ -34,6 +34,26 @@ pub enum Cmd {
     /// End a pushed artifact's link to its public copy. The public copy
     /// stays; its threads stay here as read-only history.
     Unlink(UnlinkArgs),
+    /// Delete a public copy there, after keeping its git history here.
+    ///
+    /// For a copy whose page here is retired: refused while a page here
+    /// (not deleted) is linked to it. Its git repository (every version, a
+    /// commit tagged vN) is mirrored into `<archive>/<id>.git` first, with a
+    /// short-lived read token the daemon mints there; nothing is deleted
+    /// unless that mirror holds the copy's main branch.
+    Delete(DeleteArgs),
+}
+
+#[derive(clap::Args)]
+pub struct DeleteArgs {
+    /// The public copy (its ID, or its URL there).
+    pub target: String,
+    /// The directory to keep its git mirror in (`<archive>/<id>.git`).
+    #[arg(long)]
+    pub archive: std::path::PathBuf,
+    /// The public Clax (name, origin or ID); the only one when there is one.
+    #[arg(long)]
+    pub remote: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -137,6 +157,7 @@ pub fn run(cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Add(a) => add(cli, &c, a),
+        Cmd::Delete(a) => delete(cli, &c, a),
         Cmd::List => {
             let v = c.get("/api/remotes")?;
             super::print(cli, v, |j| {
@@ -240,4 +261,130 @@ fn add(cli: &crate::Cli, c: &Client, a: &AddArgs) -> anyhow::Result<()> {
             _ => anyhow::bail!("expired_token: the sign-in expired: add the remote again"),
         }
     }
+}
+
+/// The connected remote `named` names (name, origin or ID), or the only one.
+fn remote_id(c: &Client, named: Option<&str>) -> anyhow::Result<String> {
+    let v = c.get("/api/remotes")?;
+    let rs: Vec<Value> = v["remotes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| r["status"] == "connected")
+        .collect();
+    let hit: Vec<&Value> = match named {
+        Some(n) => rs
+            .iter()
+            .filter(|r| {
+                [&r["name"], &r["origin"], &r["id"]]
+                    .iter()
+                    .any(|x| x.as_str() == Some(n))
+            })
+            .collect(),
+        None => rs.iter().collect(),
+    };
+    match hit.as_slice() {
+        [one] => Ok(one["id"].as_str().unwrap_or_default().to_string()),
+        [] => anyhow::bail!("no_remote: no connected public Clax by that name"),
+        _ => anyhow::bail!("remote_required: several public Clax: name one with --remote"),
+    }
+}
+
+fn git(dir: Option<&std::path::Path>, token: &str) -> std::process::Command {
+    let mut g = std::process::Command::new("git");
+    if let Some(d) = dir {
+        g.arg("-C").arg(d);
+    }
+    // The token goes to git in its environment only: never argv, never a config file.
+    g.env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "http.extraHeader")
+        .env(
+            "GIT_CONFIG_VALUE_0",
+            format!("Authorization: Bearer {token}"),
+        );
+    g
+}
+
+fn delete(cli: &crate::Cli, c: &Client, a: &DeleteArgs) -> anyhow::Result<()> {
+    let raid = super::open::id_from(&a.target)?;
+    let rid = remote_id(c, a.remote.as_deref())?;
+    // Refused while a page here is linked to it: deleting a live page's copy is unpublishing, not pruning.
+    let list = c.get("/api/artifacts")?;
+    for art in list["artifacts"].as_array().cloned().unwrap_or_default() {
+        let Some(id) = art["id"].as_str() else {
+            continue;
+        };
+        let links = c.get(&format!("/api/artifacts/{id}/remotes"))?;
+        let live = links["links"].as_array().is_some_and(|ls| {
+            ls.iter()
+                .any(|l| l["remote_id"] == rid.as_str() && l["remote_artifact_id"] == raid.as_str())
+        });
+        if live {
+            anyhow::bail!(
+                "linked: page {id} here is linked to {raid}: delete or unlink it here first"
+            );
+        }
+    }
+    let t = c.post(
+        &format!("/api/remotes/{}/artifacts/{raid}/git-token", encode(&rid)),
+        &json!({}),
+    )?;
+    let (url, token) = (
+        t["remote"].as_str().unwrap_or_default().to_string(),
+        t["token"].as_str().unwrap_or_default().to_string(),
+    );
+    anyhow::ensure!(
+        !url.is_empty() && !token.is_empty(),
+        "no_token: the public Clax gave no git read token"
+    );
+    std::fs::create_dir_all(&a.archive)?;
+    let dest = a.archive.join(format!("{raid}.git"));
+    let status = if dest.exists() {
+        git(Some(&dest), &token)
+            .args(["fetch", "-q", "--prune", &url, "+refs/*:refs/*"])
+            .status()?
+    } else {
+        git(None, &token)
+            .args(["clone", "-q", "--mirror", &url])
+            .arg(&dest)
+            .status()?
+    };
+    anyhow::ensure!(
+        status.success(),
+        "archive_failed: git could not mirror {raid}: nothing was deleted"
+    );
+    let main = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&dest)
+        .args(["rev-parse", "-q", "--verify", "refs/heads/main"])
+        .output()?;
+    anyhow::ensure!(
+        main.status.success(),
+        "archive_failed: the mirror of {raid} has no main branch: nothing was deleted"
+    );
+    let v = c.send(
+        reqwest::Method::DELETE,
+        &format!("/api/remotes/{}/artifacts/{raid}", encode(&rid)),
+        None,
+    )?;
+    let out = json!({
+        "deleted": v["deleted"], "unlinked": v["unlinked"],
+        "archive": dest.to_string_lossy(), "main": String::from_utf8_lossy(&main.stdout).trim(),
+    });
+    super::print(cli, out, |j| {
+        if j["deleted"] == true {
+            format!(
+                "deleted {raid} there; its history is in {}",
+                j["archive"].as_str().unwrap_or_default()
+            )
+        } else {
+            format!(
+                "{raid} was already gone there; its history is in {}",
+                j["archive"].as_str().unwrap_or_default()
+            )
+        }
+    });
+    Ok(())
 }
