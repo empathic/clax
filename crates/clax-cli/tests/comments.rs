@@ -502,6 +502,55 @@ fn a_reply_with_a_session_is_that_agents_reply() {
 }
 
 #[test]
+fn a_reply_with_an_agent_name_is_that_named_agents_reply() {
+    let w = world();
+    let d = &w.d;
+    let t = d.thread(
+        &w.review,
+        "index.html",
+        "body > main > h2",
+        "goals",
+        "@agent Is this current?",
+    );
+    let v = d.json(&["comments", "reply", "--agent", "page-seat", &t, "Yes"]);
+    assert_eq!(v["replied"], true);
+    assert_eq!(v["author_kind"], "agent");
+    assert!(
+        v["author_name"]
+            .as_str()
+            .unwrap_or("")
+            .contains("page-seat"),
+        "{v}"
+    );
+    // A second reply is the same agent's: its session is renewed, not doubled.
+    d.json(&["comments", "reply", "--agent", "page-seat", &t, "Still yes"]);
+    let a = d.api(
+        reqwest::Method::GET,
+        &format!("/api/artifacts/{}", w.review),
+        None,
+    );
+    let named: Vec<_> = a["artifact"]["participants"]["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|g| g["name"] == "page-seat")
+        .collect();
+    assert_eq!(named.len(), 1, "{a}");
+    // Never the owner's: the owner's name is not on either reply.
+    let th = d.api(
+        reqwest::Method::GET,
+        &format!("/api/artifacts/{}/threads/{t}", w.review),
+        None,
+    );
+    for c in th["thread"]["comments"].as_array().unwrap().iter().skip(1) {
+        assert_eq!(c["author_kind"], "agent", "{c}");
+        assert!(c["author_public_id"].is_null(), "{c}");
+    }
+    let e = d.fails(&["comments", "reply", "--agent", " ", &t, "Hi"]);
+    assert!(e.contains("needs a name"), "{e}");
+}
+
+#[test]
 fn acting_on_threads_is_acting_as_the_owner_in_the_browser() {
     let w = world();
     let d = &w.d;
