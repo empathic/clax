@@ -9809,25 +9809,32 @@ async fn an_admins_export_holds_their_own_search_words_alone() {
         assert_eq!(s, 200, "{v}");
     }
     // The owner exports with the token, Ana, an admin, from her browser.
-    let ana = site
-        .req(
+    // One export runs at a time, holding its turn until its body is read,
+    // so each is read through before the next is asked for.
+    let read = |r: reqwest::Response| async move { (r.status(), r.text().await.unwrap()) };
+    let ana = read(
+        site.req(
             &w.ana,
             reqwest::Method::GET,
             "/api/toolpath/export?shape=journal",
         )
         .send()
         .await
-        .unwrap();
-    let owner = daemon_token_get(site, "/api/toolpath/export?shape=journal")
-        .send()
-        .await
-        .unwrap();
-    for (who, r, own, others) in [
+        .unwrap(),
+    )
+    .await;
+    let owner = read(
+        daemon_token_get(site, "/api/toolpath/export?shape=journal")
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    for (who, (status, body), own, others) in [
         ("owner", owner, "ownerwords", ["quokkaterms", "anawords"]),
         ("Ana", ana, "anawords", ["quokkaterms", "ownerwords"]),
     ] {
-        assert_eq!(r.status(), 200, "{who}");
-        let body = r.text().await.unwrap();
+        assert_eq!(status, 200, "{who}: {body}");
         // Every view is there, with the other filters it was given.
         assert_eq!(body.matches("group=changes").count(), 3, "{who}: {body}");
         assert!(body.contains(own), "{who}: {body}");
