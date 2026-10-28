@@ -5,8 +5,9 @@
 #
 #   third_party/clax-rquickjs-sys    rquickjs-sys, with
 #                                    third_party/rquickjs-sys.patch applied,
-#                                    cut to what a native build of the four
-#                                    supported platforms reads
+#                                    cut to what a native build of the
+#                                    platforms the release builds reads
+#                                    (.github/workflows/release.yml)
 #   third_party/clax-rquickjs-core   rquickjs-core, unchanged but for its
 #                                    manifest: it depends on
 #                                    clax-rquickjs-sys, and has no optional
@@ -166,7 +167,8 @@ exports_files(["Cargo.toml"])
 EOF
 cp "$src/src/lib.rs" "$out/src/"
 cp "$src"/src/inlines/*.rs "$out/src/inlines/"
-for target in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
+for target in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu \
+  aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
   cp "$src/src/bindings/$target.rs" "$out/src/bindings/"
 done
 for f in libregexp.c libunicode.c quickjs.c dtoa.c \
