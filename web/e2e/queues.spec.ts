@@ -29,26 +29,33 @@ function shotPath(info: TestInfo, name: string): string {
 }
 
 /** The owner's agent: an agent token (`Bearer cxa_…`) on the triage routes,
- * from no browser (no `Origin`, no cookie). Each call answers its status
- * and its JSON (or its bytes, for `bytes`). */
-function agentOf(origin: string, token: string) {
-  const call = async (method: string, path: string, body?: unknown) => {
-    const headers: Record<string, string> = { authorization: `Bearer ${token}` };
-    if (body !== undefined) headers["content-type"] = "application/json";
-    const r = await fetch(`${origin}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
-    const text = await r.text();
-    let json: unknown = null;
-    try { json = text ? JSON.parse(text) : null; } catch { json = text; }
-    return { status: r.status, json };
-  };
+ * from no browser (no `Origin`, no cookie), in a session it registers
+ * (`POST /api/sessions`) and names on every call (`X-Clax-Session` and the
+ * session's secret): a claim's lease is its session's. `ok` answers a
+ * call's JSON and fails the test on any status from 300 up; `bytes`
+ * answers a GET's status, type and body. */
+async function agentOf(origin: string, token: string) {
+  const reg = await fetch(`${origin}/api/sessions`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ harness: "claude", harness_session_id: `e2e-queues-${Math.random().toString(36).slice(2)}`, cwd: "/tmp" }),
+  });
+  const regText = await reg.text();
+  expect(reg.status, `POST /api/sessions: ${regText}`).toBe(201);
+  const { session, session_secret: secret } = JSON.parse(regText) as { session: { id: string }; session_secret?: string };
+  const auth: Record<string, string> = { authorization: `Bearer ${token}`, "x-clax-session": session.id };
+  if (secret) auth["x-clax-session-secret"] = secret;
   return {
+    sessionId: session.id,
     async ok<T>(method: string, path: string, body?: unknown): Promise<T> {
-      const { status, json } = await call(method, path, body);
-      expect(status, `${method} ${path}: ${JSON.stringify(json)}`).toBeLessThan(300);
-      return json as T;
+      const headers = { ...auth, ...(body === undefined ? {} : { "content-type": "application/json" }) };
+      const r = await fetch(`${origin}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+      const text = await r.text();
+      expect(r.status, `${method} ${path}: ${text}`).toBeLessThan(300);
+      return (text ? JSON.parse(text) : null) as T;
     },
     async bytes(path: string): Promise<{ status: number; type: string | null; bytes: Uint8Array }> {
-      const r = await fetch(`${origin}${path}`, { headers: { authorization: `Bearer ${token}` } });
+      const r = await fetch(`${origin}${path}`, { headers: auth });
       return { status: r.status, type: r.headers.get("content-type"), bytes: new Uint8Array(await r.arrayBuffer()) };
     },
   };
@@ -148,7 +155,7 @@ test("a site's user files a report through the overlay; an agent claims, replies
       if (!r.ok) throw new Error(`agent token: ${r.status} ${await r.text()}`);
       return (await r.json()).token as string;
     });
-    const agent = agentOf(origin, agentToken);
+    const agent = await agentOf(origin, agentToken);
     const listed = await agent.ok<ReportPage>("GET", `/api/queues/${qid}/reports`);
     expect(listed.reports).toHaveLength(1);
     const report = listed.reports[0];
