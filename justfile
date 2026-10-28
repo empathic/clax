@@ -135,6 +135,11 @@ app-iphone-testflight:
 home-bundle:
     ./scripts/run.sh home-bundle
 
+# Record a vignette of the sizzle reel into target/reel/<id>/ with Bazel (--fast <id>: //web/reel:<id>_fast, clip.webm and beats.json); there is no native twin
+[positional-arguments]
+reel *ARGS:
+    ./scripts/run.sh reel "$@"
+
 # Pack the home app's bundle natively (dart run) into apps/clax_app/assets/home
 home-bundle-native:
     CLAX_BUILD=native ./scripts/run.sh home-bundle

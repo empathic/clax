@@ -9,6 +9,9 @@ import 'package:cryptography/dart.dart' show DartSha256;
 import 'package:flutter_test/flutter_test.dart';
 import '../support/real_core.dart';
 
+/// The `clax.json` the daemon writes for the declaration `{db: {}}`.
+const dbManifest = '{\n  "capabilities": {\n    "db": {}\n  }\n}\n';
+
 /// [HttpClaxApi] against the real embedded core (the library
 /// `CLAX_EMBED_LIB` names), opened by the app's core host on a scratch home
 /// and closed in a tear-down, which runs on a failure or a timeout too.
@@ -58,7 +61,7 @@ void main() {
         ),
       );
       expect(v2.version.n, 2);
-      expect(v2.version.files.keys, ['index.html']);
+      expect(v2.version.files.keys, ['clax.json', 'index.html']);
       final e = await version;
       expect((e.topic, e.data['n']), ('artifact:$aid', 2));
       await stream.close();
@@ -80,8 +83,12 @@ void main() {
       expect(await api.readFiles(aid, 1), {
         'index.html': '<p>one</p>',
         'app.js': 'x()',
+        'clax.json': dbManifest,
       });
-      expect(await api.readFiles(aid, 2), {'index.html': '<p>two</p>'});
+      expect(await api.readFiles(aid, 2), {
+        'index.html': '<p>two</p>',
+        'clax.json': dbManifest,
+      });
       expect((await api.listArtifacts()).map((a) => a.id), contains(aid));
 
       // The person comments and sends it, as the shell does.
@@ -166,10 +173,15 @@ void main() {
       final restored = await api.restoreVersion(aid, 1, ifVersion: 2);
       expect(restored.version.n, 3);
       expect(restored.version.label, 'Restored v1');
-      expect(restored.version.files.keys.toSet(), {'index.html', 'app.js'});
+      expect(restored.version.files.keys.toSet(), {
+        'index.html',
+        'app.js',
+        'clax.json',
+      });
       expect(await api.readFiles(aid, 3), {
         'index.html': '<p>one</p>',
         'app.js': 'x()',
+        'clax.json': dbManifest,
       });
       expect((await api.getDoc(aid, 'runs/r1'))!.data, {'km': 5, 'unit': 'km'});
       expect((await api.getArtifact(aid)).artifact.capabilities, {

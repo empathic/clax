@@ -19,7 +19,7 @@ import '../remote/models.dart'
 import 'bundle_reader.dart';
 import 'content_hash.dart';
 import 'doc_snapshot.dart';
-import 'installer.dart' show PublishedFiles;
+import 'installer.dart' show PublishedFiles, approveCapabilities;
 import 'lineage_store.dart';
 
 /// What an update's capabilities add over the live app's (§8.2): new
@@ -356,10 +356,12 @@ class Updater {
     }
     final base = live.artifact.currentVersion;
     final files = PublishedFiles.of(bundle);
+    // Never clax.json: `capabilities` declares, and the daemon writes it.
     final entries = merged == null
         ? files.entries
         : {
-            for (final MapEntry(:key, :value) in merged.files.entries)
+            for (final MapEntry(:key, :value)
+                in withoutManifest(merged.files).entries)
               key: FileEntry.bytes(value, type: m.files[key]?.type),
           };
     final title = merged?.title ?? m.title;
@@ -523,6 +525,20 @@ class Updater {
       // The snapshot goes first: a crash after it finishes from the
       // pending release, never rolls a passed update back.
       snapshots.discard(aid);
+    }
+
+    // The update stood: what the person accepted is approved. A rolled-back
+    // update returned above, leaving no approval.
+    if (confirm != null) {
+      final shown = addedCapabilities(live.artifact.capabilities, capabilities);
+      await approveCapabilities(
+        api,
+        aid,
+        landed.pendingCapabilities,
+        shownCapabilities: shown.capabilities,
+        shownHosts: shown.hosts,
+        log: _log,
+      );
     }
 
     // 8: the lineage.
@@ -935,8 +951,10 @@ class Updater {
     }
     final base = live.artifact.currentVersion;
     final version = (await store.entry(aid))?.version ?? 0;
+    // Never clax.json: `capabilities` declares, and the daemon writes it.
+    final sent = withoutManifest(entries);
     final kept = {
-      for (final MapEntry(:key, :value) in entries.entries) key: ?value,
+      for (final MapEntry(:key, :value) in sent.entries) key: ?value,
     };
     if (stop) return const UpdateCancelled();
     onStep?.call(UpdateStep.data);
@@ -997,12 +1015,23 @@ class Updater {
           label: label,
           note: note,
           entries: {
-            ...entries,
+            ...sent,
             for (final p in live.current?.files.keys ?? const <String>[])
-              if (!entries.containsKey(p)) p: null,
+              if (!sent.containsKey(p)) p: null,
           },
         ),
       );
+      if (confirm != null) {
+        final shown = addedCapabilities(live.artifact.capabilities, capabilities);
+        await approveCapabilities(
+          api,
+          aid,
+          r.pendingCapabilities,
+          shownCapabilities: shown.capabilities,
+          shownHosts: shown.hosts,
+          log: _log,
+        );
+      }
       return FilesTaken(
         r.version.n,
         r.version.contentSha256 ??

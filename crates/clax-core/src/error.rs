@@ -8,6 +8,10 @@ pub enum CoreError {
     NotFound,
     #[error("version conflict: current version is {current}")]
     Conflict { current: u32 },
+    /// An approval of an artifact's declaration that names a version or
+    /// a declaration no longer current: `current` is the current version.
+    #[error("the declaration to approve changed: the current version is {current}")]
+    StaleVersion { current: u32 },
     /// A document write pinned to a version the document no longer has (or,
     /// with `current: None`, pinned to a document that does not exist).
     #[error("document {path} changed: current version is {current:?}")]

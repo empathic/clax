@@ -345,6 +345,7 @@ mod l10 {
             "agent" => include_str!("../../../clax-http/src/agent.rs"),
             "mcp" => include_str!("mcp.rs"),
             "people" => include_str!("people.rs"),
+            "permissions" => include_str!("permissions.rs"),
             _ => return None,
         })
     }

@@ -191,7 +191,9 @@ test("Escape in the shell cancels comment mode", async ({ page }) => {
 
 test("thread cards are reachable and selectable from the keyboard", async ({ page }) => {
   const { artifact } = await publish(d.base, d.token, "Keyboard", { "index.html": PAGE });
-  for (const [selector, quote, body] of [["body > main > h2", "Quarterly goals", "first"], ["body > main > p", "Grow revenue", "second"]]) {
+  // Made last, the "first" thread is listed first: the cards put the
+  // thread that changed last on top.
+  for (const [selector, quote, body] of [["body > main > p", "Grow revenue", "second"], ["body > main > h2", "Quarterly goals", "first"]]) {
     const form = new FormData();
     form.set("anchor", JSON.stringify({ kind: "element", selector, quote, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null }));
     form.set("body", body);

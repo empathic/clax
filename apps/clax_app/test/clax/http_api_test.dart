@@ -986,6 +986,16 @@ void main() {
       },
     );
 
+    test('approveCapabilities sends PUT with the version and the '
+        'declaration hash, naming no session', () async {
+      api.sessionId = sid;
+      server.json('PUT', '/api/artifacts/a1/capability-approval', 200, {});
+      await api.approveCapabilities('a1', 3, 'abc123');
+      final r = only('PUT', '/api/artifacts/a1/capability-approval');
+      expect(r.json, {'version': 3, 'declaration_sha256': 'abc123'});
+      expectOwnerCall(r);
+    });
+
     test('setWorking on an unknown artifact stays not_found', () async {
       api.sessionId = sid;
       server.json('PUT', '/api/sessions/$sid/working/gonegonegone', 404, {

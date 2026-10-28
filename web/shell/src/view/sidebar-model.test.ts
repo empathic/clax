@@ -14,13 +14,26 @@ describe("sidebarSections", () => {
     expect(s.resolved.map(x => x.id)).toEqual(["e"]);
     expect([...s.numbers]).toEqual([["a", 1]]);
   });
-  it("leads Open with threads about the whole artifact, unnumbered and never Detached", () => {
+  it("keeps threads about the whole artifact in Open, unnumbered and never Detached, ahead of those that changed at the same time", () => {
     const whole = (id: string) => ({ ...t(id, ""), anchor: { kind: "artifact", file: "" } }) as unknown as Thread;
     const s = sidebarSections([t("a"), whole("w"), t("c", "about.html")], { w: lost }, "index.html", f => f === "index.html" || f === "about.html");
     expect(s.open.map(x => x.id)).toEqual(["w", "a", "c"]);
     expect(s.detached).toEqual([]);
     expect([...s.numbers]).toEqual([["a", 1]]);
     expect(sidebarSections([whole("w")], {}, "about.html").open.map(x => x.id)).toEqual(["w"]);
+  });
+  it("puts the thread with the latest activity first in each section, and keeps the pins numbered in page order", () => {
+    const at = (created_at: string, ...replies: string[]) => ({ created_at, comments: replies.map(r => ({ created_at: r })) }) as Partial<Thread>;
+    const s = sidebarSections([
+      t("a", "index.html", at("2026-10-01T00:00:00Z", "2026-10-01T00:00:00Z")),
+      t("b", "index.html", at("2026-10-02T00:00:00Z", "2026-10-02T00:00:00Z", "2026-10-09T00:00:00Z")),
+      t("c", "about.html", at("2026-10-05T00:00:00Z", "2026-10-05T00:00:00Z")),
+      t("d", "index.html", { ...at("2026-10-03T00:00:00Z"), status: "resolved", resolved_at: "2026-10-04T00:00:00Z" } as Partial<Thread>),
+      t("e", "index.html", { ...at("2026-10-06T00:00:00Z"), status: "resolved", resolved_at: "2026-10-07T00:00:00Z" } as Partial<Thread>),
+    ], {}, "index.html");
+    expect(s.open.map(x => x.id)).toEqual(["b", "c", "a"]);
+    expect(s.resolved.map(x => x.id)).toEqual(["e", "d"]);
+    expect([...s.numbers]).toEqual([["a", 1], ["b", 2]]);
   });
   it("defaults the page to the index when none is given", () => {
     expect(sidebarSections([t("a")], {}, undefined).file).toBe("index.html");

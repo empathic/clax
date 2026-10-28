@@ -1,0 +1,21 @@
+{
+  "targets": {
+    "drawn": "frame:clax-overlay .a, clax-overlay .f",
+    "composer": ".composer",
+    "strip": ".strip.ag",
+    "thread": ".thread-card[data-thread]",
+    "pill": "button.who",
+    "chart": "frame:section.card.panel:has(#chart)",
+    "filters": "frame:#chips"
+  },
+  "shots": [
+    { "at": "@drawn-0.2", "targets": ["drawn"], "label": "the rows Alex draws over" },
+    { "at": "@composer-0.2", "targets": ["composer"], "label": "the request, typed" },
+    { "at": "@thread-0.2", "until": "reveal-0.3", "targets": ["strip", "thread", "pill"], "label": "the agent working on it" },
+    { "at": "reveal+1.1", "targets": ["chart"], "label": "the forecast chart, hovered" },
+    { "at": "touch+0.17", "targets": ["filters", "chart"], "label": "a region filter, and the chart it narrows" }
+  ],
+  "clean": [
+    { "at": "reveal-0.3", "until": "reveal+0.73", "label": "the orders grid becomes a dashboard" }
+  ]
+}

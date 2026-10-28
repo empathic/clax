@@ -174,6 +174,7 @@ fn defaults() -> Dict {
         serve: Serve,
         sample: SampleConfig,
         toolpath: ToolpathConfig,
+        gallery: GalleryConfig,
         questions: Questions,
         bot: BotConfig,
     }
@@ -181,6 +182,7 @@ fn defaults() -> Dict {
         serve: Serve { port: DEFAULT_PORT },
         sample: SampleConfig::default(),
         toolpath: ToolpathConfig::default(),
+        gallery: GalleryConfig::default(),
         questions: Questions {
             terminal_after_s: TERMINAL_AFTER_S,
         },
@@ -792,6 +794,30 @@ impl HomeConfig {
         }))
     }
 
+    /// `[gallery]`: the default when absent.
+    ///
+    /// # Errors
+    /// `Invalid { code: "bad_config" }` naming the file and `[gallery]`
+    /// when it is not a table, has an unknown key or a mistyped value.
+    pub fn gallery(&self) -> Result<GalleryConfig> {
+        self.table("gallery")
+    }
+
+    /// `[gallery] quickstart`: whether a hosted site seeds a new person's
+    /// gallery with the Clax Quickstart page, and whether a quickstart is
+    /// moved to newer releases (a local home is never seeded). Default
+    /// true; a `[gallery]` that does not check is logged and leaves it
+    /// true.
+    pub fn gallery_quickstart(&self) -> bool {
+        match self.gallery() {
+            Ok(g) => g.quickstart,
+            Err(e) => {
+                warn_once(format!("{e}; [gallery] quickstart stays on"));
+                GalleryConfig::default().quickstart
+            }
+        }
+    }
+
     /// `[toolpath]`: the default when absent.
     ///
     /// # Errors
@@ -898,6 +924,21 @@ impl Default for SampleModels {
             default: "claude-sonnet-5-5".into(),
             complex: "claude-opus-5-5".into(),
         }
+    }
+}
+
+/// `[gallery]`: what a gallery starts with.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct GalleryConfig {
+    /// `quickstart`: seed each new hosted gallery with the Clax Quickstart
+    /// page, and move an untouched one to newer releases (default true).
+    pub quickstart: bool,
+}
+
+impl Default for GalleryConfig {
+    fn default() -> Self {
+        GalleryConfig { quickstart: true }
     }
 }
 
@@ -2429,6 +2470,26 @@ mod tests {
                 .sample()
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn gallery_quickstart_defaults_on_and_reads_env() {
+        let dir = tempfile::tempdir().unwrap();
+        // The process environment is not read: the test runs under
+        // CLAX_GALLERY__QUICKSTART=false.
+        assert!(
+            HomeConfig::load_with_env(dir.path(), [])
+                .unwrap()
+                .gallery_quickstart()
+        );
+        assert!(!with("[gallery]\nquickstart = false\n").gallery_quickstart());
+        assert!(with("[gallery]\nquickstart = \"no\"\n").gallery_quickstart());
+        let c = HomeConfig::load_with_env(
+            dir.path(),
+            [("CLAX_GALLERY__QUICKSTART".to_string(), "false".to_string())],
+        )
+        .unwrap();
+        assert!(!c.gallery_quickstart());
     }
 
     #[test]

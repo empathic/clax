@@ -237,6 +237,13 @@ pub enum Event {
         artifact_id: String,
         comments: bool,
     },
+    /// The artifact's approved declaration changed: an approval or a
+    /// withdrawal (`PUT` or `DELETE /api/artifacts/<id>/capability-approval`),
+    /// so open views refetch the artifact and its declaration in force. The
+    /// artifact's stream topic and `/api/events` carry it.
+    Permissions {
+        artifact_id: String,
+    },
     /// Tags changed (`crate::tags`): the tags artifact `artifact_id` carries
     /// (`Some`), or the list itself (`None`: a tag made, renamed,
     /// recoloured or deleted, which every artifact carrying it shows).
@@ -269,6 +276,7 @@ impl Event {
             | Event::Drafts { artifact_id, .. }
             | Event::Presence { artifact_id, .. }
             | Event::Comments { artifact_id, .. }
+            | Event::Permissions { artifact_id }
             | Event::Doc { artifact_id, .. } => artifact_id,
             Event::Site { .. } => "",
             // Owner-only; it belongs to no artifact's routing.
@@ -314,6 +322,7 @@ impl Event {
             Event::Job { .. } => "job",
             Event::JobsOwner { .. } => "jobs_owner",
             Event::Comments { .. } => "comments",
+            Event::Permissions { .. } => "permissions",
             Event::Tags { .. } => "tags",
         }
     }
@@ -597,6 +606,9 @@ mod tests {
             Event::Comments {
                 artifact_id: "a".into(),
                 comments: false,
+            },
+            Event::Permissions {
+                artifact_id: "a".into(),
             },
         ] {
             assert_eq!(serde_json::to_value(&ev).unwrap()["type"], ev.name());

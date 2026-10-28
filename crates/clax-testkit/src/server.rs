@@ -419,7 +419,27 @@ impl TestServer {
         secret: Option<&str>,
         f: impl FnOnce(&mut AppState),
     ) -> TestServer {
-        let dir = tempfile::tempdir().unwrap();
+        Self::hosted_on(tempfile::tempdir().unwrap().into(), clock, secret, f).await
+    }
+
+    /// [`TestServer::reopened`] as a hosted daemon on `clock`, `f` changing
+    /// the state before it serves: the people and artifacts are this
+    /// one's, as after a restart. Both serve until dropped.
+    pub async fn reopened_hosted_with(
+        &self,
+        clock: Arc<ManualClock>,
+        secret: Option<&str>,
+        f: impl FnOnce(&mut AppState),
+    ) -> TestServer {
+        Self::hosted_on(self._dir.clone(), clock, secret, f).await
+    }
+
+    async fn hosted_on(
+        dir: Arc<tempfile::TempDir>,
+        clock: Arc<ManualClock>,
+        secret: Option<&str>,
+        f: impl FnOnce(&mut AppState),
+    ) -> TestServer {
         let secret = secret.map(str::to_string);
         let limits_clock: Arc<dyn clax_core::working::Clock> = clock.clone();
         let hosted = move |s: &mut AppState| {
@@ -699,6 +719,7 @@ impl TestServer {
             // The checkout's web UI; tests of the shell serve their own
             // with `spawn_with_web`.
             web: web_ui(),
+            quickstart: None,
             hosted: None,
             // No app links or store pages; tests of them set their own.
             clax_app: Arc::default(),
@@ -1051,6 +1072,41 @@ impl TestServer {
             .await;
         assert_eq!(res.status(), 201, "{}", res.text().await.unwrap());
         res.json().await.unwrap()
+    }
+
+    /// Approves, as the owner by hand (the token, no session), what
+    /// artifact `aid`'s current version declares that waits for approval:
+    /// reads its `pending_capabilities` (`GET /api/artifacts/<aid>`) and
+    /// sends their `version` and `declaration_sha256` to `PUT
+    /// /api/artifacts/<aid>/capability-approval`. Returns the answer, or
+    /// `None` when nothing waits.
+    pub async fn approve(&self, aid: &str) -> Option<serde_json::Value> {
+        let res = self.get_authed(&format!("/api/artifacts/{aid}")).await;
+        assert_eq!(res.status(), 200, "GET /api/artifacts/{aid}");
+        let v: serde_json::Value = res.json().await.unwrap();
+        let pending = &v["artifact"]["pending_capabilities"];
+        if pending.is_null() {
+            return None;
+        }
+        let res = self
+            .authed(
+                self.client
+                    .put(format!(
+                        "{}/api/artifacts/{aid}/capability-approval",
+                        self.base
+                    ))
+                    .json(&serde_json::json!({
+                        "version": pending["version"],
+                        "declaration_sha256": pending["declaration_sha256"],
+                    })),
+            )
+            .send()
+            .await
+            .unwrap();
+        let status = res.status();
+        let body: serde_json::Value = res.json().await.unwrap_or_default();
+        assert_eq!(status, 200, "approve {aid}: {body}");
+        Some(body)
     }
 }
 
@@ -1830,4 +1886,26 @@ impl TestServer {
             .unwrap()
             .to_string()
     }
+}
+
+/// A web tree holding only a quickstart release that `mark` tells apart: two
+/// marks give two releases ([`clax_core::quickstart::Release::id`]).
+pub fn quickstart_tree(mark: &str) -> clax_core::embedded::MemTree {
+    let files = [
+        (
+            "quickstart/index.html",
+            format!("<!doctype html><title>Clax Quickstart</title><p>{mark}</p>"),
+        ),
+        (
+            "quickstart/clax.json",
+            r#"{"capabilities":{"db":{}}}"#.to_string(),
+        ),
+        ("quickstart/style.css", mark.to_string()),
+    ];
+    clax_core::embedded::MemTree(
+        files
+            .into_iter()
+            .map(|(p, c)| (p.to_string(), c.into_bytes()))
+            .collect(),
+    )
 }

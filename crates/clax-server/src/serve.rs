@@ -221,6 +221,9 @@ pub struct ServeConfig {
     /// `None` for `clax serve`, but for the browser tests of the app's
     /// transport (`clax serve --embed-origins`, debug builds only).
     pub embed: Option<clax_http::state::EmbedOrigins>,
+    /// Seed and update the Clax Quickstart ([`CoreConfig::quickstart`]);
+    /// `clax serve` passes the home's `[gallery] quickstart`.
+    pub quickstart: bool,
     /// How the daemon is asked to stop. `Signals` is `clax serve`'s: SIGTERM,
     /// Ctrl-C and the shutdown route. `Embedded` is a daemon inside another
     /// app's process: only its control and the shutdown route, and no signal
@@ -366,6 +369,7 @@ pub async fn serve(
             bind: cfg.bind,
             port,
             embed: cfg.embed,
+            quickstart: cfg.quickstart,
         },
         &mut |p| starting.progress(p),
     )
@@ -628,6 +632,7 @@ mod tests {
             hosted: None,
             require_credential: false,
             embed: None,
+            quickstart: false,
             stop: StopOn::Embedded(EmbeddedControl {
                 stop: stop_rx,
                 trim: trim_rx,

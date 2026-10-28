@@ -498,6 +498,7 @@ List<(IconData, String)> _capabilityRows(Map<String, Object?> capabilities) {
     'file': (Icons.folder_open_rounded, 'Opens and saves files you choose'),
     'camera': (Icons.photo_camera_outlined, 'Uses the camera'),
     'location': (Icons.place_outlined, 'Sees where your device is'),
+    'shell': (Icons.touch_app_outlined, 'Points at Clax’s own buttons'),
   };
   return [
     if (capabilities.containsKey('db')) words['db']!,

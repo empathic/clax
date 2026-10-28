@@ -24,14 +24,29 @@ async fn app(ts: &TestServer, title: &str, caps: Value) -> String {
         .to_string()
 }
 
+/// Declares `caps` for `aid` in a new version: its clax.json owns the
+/// declaration, so a PATCH would be `manifest_owned`.
 async fn patch_caps(ts: &TestServer, aid: &str, caps: Value) {
+    let a: Value = ts
+        .authed(ts.client.get(format!("{}/api/artifacts/{aid}", ts.base)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let n = a["artifact"]["current_version"].as_u64().unwrap();
     let res = ts
-        .authed(ts.client.patch(format!("{}/api/artifacts/{aid}", ts.base)))
-        .json(&json!({"capabilities": caps}))
+        .authed(
+            ts.client
+                .post(format!("{}/api/artifacts/{aid}/versions", ts.base)),
+        )
+        .json(&json!({"if_version": n, "capabilities": caps,
+                      "files": {"index.html": {"content": "<p>x</p>"}}}))
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 200);
+    assert_eq!(res.status(), 201);
 }
 
 async fn send(r: reqwest::RequestBuilder) -> (u16, Value) {

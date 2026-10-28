@@ -4,8 +4,9 @@
 //!
 //! - The fork's version 1 holds the source version's files, each with the
 //!   authors it had there (spec 2026-10-08-multi-agent-multi-person §8.2),
-//!   and its title, description, icon and capabilities are the source's,
-//!   with their authors. Its creator, and version 1's publisher, is the
+//!   and its title, description and icon are the source's, with their
+//!   authors; its capabilities are the declaration the source version was
+//!   published under ([`Store::version_capabilities`]). Its creator, and version 1's publisher, is the
 //!   forking person (`artifacts.person`, `versions.person`), and version 1
 //!   is the forking session's when an agent forks.
 //! - Its content comes from [`ContentStore::fork`]: a backend that keeps
@@ -161,6 +162,8 @@ impl Store {
                 return Err(e);
             }
         };
+        // The declaration the source version was published under.
+        let caps = self.version_capabilities(from.as_str(), n)?;
         let now = self.now();
         let files_json = serde_json::to_string(&files).expect("serialisable map");
         let content_sha256 = content_manifest_sha256(&files);
@@ -215,7 +218,7 @@ impl Store {
                     src.description,
                     src.icon,
                     now,
-                    src.capabilities.to_string(),
+                    caps.to_string(),
                     src.contract_version,
                     session_id,
                     creator,
@@ -227,8 +230,8 @@ impl Store {
             )?;
             tx.execute(
                 "INSERT INTO versions (artifact_id, n, label, created_at, session_id, files_json, note,
-                    content_sha256, person, by_page, file_authors_json)
-                 VALUES (?1, 1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8)",
+                    content_sha256, person, by_page, file_authors_json, capabilities_json)
+                 VALUES (?1, 1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9)",
                 params![
                     id.as_str(),
                     now,
@@ -238,6 +241,7 @@ impl Store {
                     content_sha256,
                     creator,
                     stored_authors(&file_map, creator.as_deref()),
+                    caps.to_string(),
                 ],
             )?;
             super::inbox::note_version(tx, id.as_str(), 1, session_id, Some(&note), &now)?;

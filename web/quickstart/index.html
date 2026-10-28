@@ -1,0 +1,772 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Start here: Clax in five minutes</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1 class="sr-only">Start here: Clax in five minutes</h1>
+  <figure class="reel" id="reel" hidden>
+    <figcaption class="reel-bar">
+      <span class="reel-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="reel-title">Clax in a minute</span>
+      <button class="reel-hide" id="reel-hide" type="button" aria-label="Hide video" title="Hide video">Hide<span aria-hidden="true">✕</span></button>
+    </figcaption>
+    <video src="reel.mp4" poster="reel-poster.jpg" muted loop playsinline controls preload="metadata" aria-label="Clax in about a minute: people ask an agent for pages, it builds them, and they shape them together"></video>
+  </figure>
+  <button class="reel-show" id="reel-show" type="button" hidden><span class="play" aria-hidden="true"></span>Watch Clax in a minute</button>
+  <nav class="tabs" aria-label="Sections">
+    <a href="index.html" id="tab-start" aria-current="page">Quickstart</a>
+    <a href="ideas.html" id="tab-ideas" hidden>Make it better<span class="count" id="idea-count"></span></a>
+  </nav>
+</header>
+
+<main>
+  <section id="view-start" aria-label="Quickstart">
+    <div class="qs">
+      <div>
+        <div class="qs-head">
+          <h2>Your first round trip</h2>
+          <div class="progress">
+            <div class="bar" role="progressbar" aria-label="Quickstart progress" aria-valuemin="0" aria-valuemax="8" aria-valuenow="0"><i id="bar"></i></div>
+            <span id="progress-text">0 of 8 steps</span>
+            <button class="linkbtn" id="reset" type="button">Start over</button>
+          </div>
+        </div>
+        <div class="chart" id="chart">
+          <svg class="edges" id="edges" aria-hidden="true"></svg>
+        </div>
+      </div>
+      <aside class="panel" id="panel" aria-live="polite">
+        <div class="ph">
+          <div class="kicker" id="p-kicker"></div>
+          <h2 id="p-title"></h2>
+          <button class="close" id="p-close" type="button" aria-label="Close">✕</button>
+        </div>
+        <div class="pb" id="p-body"></div>
+      </aside>
+    </div>
+  </section>
+
+</main>
+
+<div class="toast" id="toast" role="status" hidden></div>
+<script src="ideas-data.js"></script>
+<script>
+(() => {
+  "use strict";
+
+  // ---------- The reel ----------
+  // reel.mp4 is a build artifact published beside the page, not part of the
+  // repository: the figure shows once the video loads, and nothing shows
+  // where it is absent. It plays by itself unless the viewer asks for
+  // reduced motion. A viewer who hides it keeps it hidden on later visits
+  // (REEL_HIDDEN in localStorage, where storage works) and can bring it back.
+  {
+    const REEL_HIDDEN = "clax-quickstart-reel-hidden";
+    const reel = document.getElementById("reel"), video = reel.querySelector("video");
+    const show = document.getElementById("reel-show");
+    let loaded = false, hidden = false;
+    try { hidden = localStorage.getItem(REEL_HIDDEN) === "1"; } catch (_) {}
+    const play = () => {
+      let still = false;
+      try { still = matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (_) {}
+      if (!still) Promise.resolve().then(() => video.play()).catch(() => {});
+    };
+    const draw = () => { reel.hidden = !loaded || hidden; show.hidden = !loaded || !hidden; };
+    const keep = (h) => {
+      hidden = h;
+      try { if (h) localStorage.setItem(REEL_HIDDEN, "1"); else localStorage.removeItem(REEL_HIDDEN); } catch (_) {}
+      draw();
+    };
+    video.addEventListener("loadedmetadata", () => { loaded = true; draw(); if (!hidden) play(); }, { once: true });
+    document.getElementById("reel-hide").addEventListener("click", () => { try { video.pause(); } catch (_) {} keep(true); });
+    show.addEventListener("click", () => { keep(false); play(); });
+  }
+
+  // ---------- Content ----------
+  /** Colours the parts of one shell or slash command. The text is unchanged, so the
+   * block's textContent, which Copy reads, is exactly the command. */
+  function hl(line) {
+    let prog = false, subs = 0;
+    const span = (c, t) => `<span class="tk-${c}">${t}</span>`;
+    return line.replace(/(&lt;.*?&gt;)|("[^"]*"|'[^']*')|(\S+)/g, (m, ph, q, w) => {
+      if (ph) return span("ph", ph);
+      if (q) return span("str", q);
+      if (w === "|") { prog = false; subs = 0; return span("op", w); }
+      const env = /^([A-Z_][A-Z0-9_]*=)(.*)$/.exec(w);
+      if (env && !prog) return span("env", env[1]) + env[2];
+      if (!prog) { prog = true; return span("prog", w); }
+      const fl = /^(--?[A-Za-z][\w-]*)(=.*)?$/.exec(w);
+      if (fl) { subs = 9; return span("flag", fl[1]) + (fl[2] || ""); }
+      if (/^https?:\/\//.test(w)) { subs = 9; return span("url", w); }
+      if (/@|^[\w.-]+\/[\w.-]+$/.test(w)) { subs = 9; return span("arg", w); }
+      if (subs < 3 && /^[a-z][a-z-]*$/.test(w)) { subs++; return span("sub", w); }
+      subs = 9;
+      return w;
+    });
+  }
+  /** One command in its own block with its own Copy. `plain` leaves a prompt in words uncoloured, `n` numbers a step, `note` is a caption that is not copied. */
+  const cmd = (s, o = {}) => `<div class="cmd${o.n ? " numbered" : ""}">${o.n ? `<span class="cmd-n" aria-hidden="true">${o.n}</span>` : ""}<pre>${o.plain ? s : hl(s)}</pre><button type="button" data-copy>Copy</button>${o.note ? `<span class="cmd-note">${o.note}</span>` : ""}</div>`;
+  /** Several commands, one block each; numbered when the order matters. */
+  const cmds = (list, numbered) => list.map((c, i) => (Array.isArray(c) ? cmd(c[0], { note: c[1] }) : cmd(c, { n: numbered ? i + 1 : 0 }))).join("");
+  // The shell capability: "Show me" rings one of Clax's own controls. It is
+  // null on a Clax without the `shell` capability and for viewers who cannot
+  // edit, and then the buttons stay hidden.
+  let shell = null;
+  const canCache = {};
+  const SHOWME = {
+    send: ["send", "Show me Send to agent"],
+    change: ["versions", "Show me Versions"], fork: ["fork", "Show me Fork"],
+  };
+  const showOk = (name) => !!shell && (name === "send" || !!canCache[name]);
+  function showMe(id) {
+    const [name, label] = SHOWME[id];
+    return `<span class="showme-row"><button type="button" class="btn showme" data-show="${name}"${showOk(name) ? "" : " hidden"}>${label}</button><span class="muted-note showme-hint" role="status" hidden></span></span>`;
+  }
+  /** The comment step's one button, a small copy of Clax's own Comment control: it rings the real one and turns comment mode on from the same click. */
+  const commentButton = () => `<span class="showme-row"><button type="button" class="btn showme commentbtn" data-comment${shell ? "" : " hidden"}><span class="keycap" aria-hidden="true">C</span>Comment</button><span class="muted-note comment-or"${shell ? "" : " hidden"}>or press C</span><span class="muted-note showme-hint" role="status" hidden></span></span>`;
+  /** Shows each "Show me" under `root` whose control is on screen now (Send always, with a hint when it is not). */
+  async function syncShow(root) {
+    if (!shell) return;
+    for (const b of root.querySelectorAll("[data-show]")) {
+      const name = b.dataset.show;
+      try { canCache[name] = await shell.can(name); } catch (_) { canCache[name] = false; }
+      b.hidden = !showOk(name);
+    }
+    root.querySelectorAll("[data-comment], .comment-or").forEach((b) => { b.hidden = false; });
+  }
+  async function shellClick(btn) {
+    const hint = btn.parentElement.querySelector(".showme-hint");
+    const say = (t) => { hint.textContent = t; hint.hidden = false; clearTimeout(hint._t); hint._t = setTimeout(() => { hint.hidden = true; }, 5000); };
+    hint.hidden = true;
+    let ok = false;
+    try {
+      if (btn.dataset.comment !== undefined) {
+        // Both calls start inside the click, so comment mode has the viewer's gesture.
+        const on = shell.commentMode(true), ring = shell.highlight("comment");
+        ring.catch(() => {});
+        ok = await on;
+        say(ok ? "Comment mode is on. Press Escape to leave it." : "Comment mode did not turn on.");
+        return;
+      }
+      ok = await shell.highlight(btn.dataset.show);
+    } catch (_) { ok = false; if (btn.dataset.comment !== undefined) return say("Comment mode is not available here."); }
+    if (!ok) say(btn.dataset.show === "send" ? "Open Threads first." : "Not on screen right now.");
+  }
+  const tip = (h, s) => `<div class="tip"><b>${h}</b>${s}</div>`;
+
+  const CLAXDEV = "https://clax.dev";
+  // The README's local setup: install.sh, then clax init.
+  const README_LOCAL = "https://github.com/empathic/clax#pi-grok-build-or-every-harness-at-once";
+  // This page's artifact ID: the first label of its own <ID>.localhost site.
+  const ARTIFACT = (/^([a-z0-9]{8,})\./.exec(location.hostname) || [])[1] || "this page";
+  /** The page's name in prompts: its <title>, else its heading. */
+  const PAGE_NAME = document.title.trim() || (document.querySelector("h1")?.textContent || "").trim() || "Start here";
+  /** The origin of the Clax shell that frames this page, or null while unknown: the `shell` capability's
+   * `address()` says it (see the boot below). The page cannot read it itself, since its site sends no
+   * referrer, so it stays null for a viewer without `shell` (one who cannot edit) and in the Clax app. */
+  let SHELL = null;
+  /** The page's own address in Clax, for an agent to watch: `<shell>/a/<ID>` from `address()`; until then,
+   * on a local Clax's `<ID>.localhost` site, from that host's port; else null. */
+  let PAGE_URL = ARTIFACT !== "this page" && /\.localhost$/.test(location.hostname)
+    ? `${location.protocol}//localhost${location.port ? ":" + location.port : ""}/a/${ARTIFACT}` : null;
+  /** Takes `address()`'s answer, `{origin, url}` or null; anything else is ignored. */
+  function placed(a) {
+    if (!a || typeof a.origin !== "string" || typeof a.url !== "string") return;
+    SHELL = a.origin; PAGE_URL = a.url;
+  }
+  const GH = '<svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>';
+
+  // Each harness's colour and its own logo (web/quickstart/logos, inlined;
+  // see logos/NOTICE.md), shown on its install chip.
+  const BRAND = {
+    claude: { color: "#d97757", mark: `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z" fill="#D97757" fill-rule="nonzero"></path></svg>` },
+    codex:  { color: "#6366f1", mark: `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M19.503 0H4.496A4.496 4.496 0 000 4.496v15.007A4.496 4.496 0 004.496 24h15.007A4.496 4.496 0 0024 19.503V4.496A4.496 4.496 0 0019.503 0z" fill="#fff"></path><path d="M9.064 3.344a4.578 4.578 0 012.285-.312c1 .115 1.891.54 2.673 1.275.01.01.024.017.037.021a.09.09 0 00.043 0 4.55 4.55 0 013.046.275l.047.022.116.057a4.581 4.581 0 012.188 2.399c.209.51.313 1.041.315 1.595a4.24 4.24 0 01-.134 1.223.123.123 0 00.03.115c.594.607.988 1.33 1.183 2.17.289 1.425-.007 2.71-.887 3.854l-.136.166a4.548 4.548 0 01-2.201 1.388.123.123 0 00-.081.076c-.191.551-.383 1.023-.74 1.494-.9 1.187-2.222 1.846-3.711 1.838-1.187-.006-2.239-.44-3.157-1.302a.107.107 0 00-.105-.024c-.388.125-.78.143-1.204.138a4.441 4.441 0 01-1.945-.466 4.544 4.544 0 01-1.61-1.335c-.152-.202-.303-.392-.414-.617a5.81 5.81 0 01-.37-.961 4.582 4.582 0 01-.014-2.298.124.124 0 00.006-.056.085.085 0 00-.027-.048 4.467 4.467 0 01-1.034-1.651 3.896 3.896 0 01-.251-1.192 5.189 5.189 0 01.141-1.6c.337-1.112.982-1.985 1.933-2.618.212-.141.413-.251.601-.33.215-.089.43-.164.646-.227a.098.098 0 00.065-.066 4.51 4.51 0 01.829-1.615 4.535 4.535 0 011.837-1.388zm3.482 10.565a.637.637 0 000 1.272h3.636a.637.637 0 100-1.272h-3.636zM8.462 9.23a.637.637 0 00-1.106.631l1.272 2.224-1.266 2.136a.636.636 0 101.095.649l1.454-2.455a.636.636 0 00.005-.64L8.462 9.23z" fill="url(#lobe-icons-codex-_R_0_)"></path><defs><linearGradient gradientUnits="userSpaceOnUse" id="lobe-icons-codex-_R_0_" x1="12" x2="12" y1="3" y2="21"><stop stop-color="#B1A7FF"></stop><stop offset=".5" stop-color="#7A9DFF"></stop><stop offset="1" stop-color="#3941FF"></stop></linearGradient></defs></svg>` },
+    pi:     { color: "#4d9abf", mark: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800"> <path fill="#F09082" d="M165.29 165.29H517.36V400H400V282.65H165.29Z"/> <path fill="#4D9ABF" d="M165.29 282.65H282.65V400H400V517.36H282.65V634.72H165.29Z"/> <path fill="#F1BE58" d="M517.36 400H634.72V634.72H517.36Z"/> </svg>` },
+    grok:   { color: "var(--fg)", mark: `<svg fill="currentColor" fill-rule="evenodd" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815"></path></svg>` },
+    all:    { color: "#c2410c", mark: `<svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="2" fill="currentColor"/><rect x="13" y="3" width="8" height="8" rx="2" fill="currentColor" opacity=".7"/><rect x="3" y="13" width="8" height="8" rx="2" fill="currentColor" opacity=".7"/><rect x="13" y="13" width="8" height="8" rx="2" fill="currentColor" opacity=".45"/></svg>` },
+  };
+
+  const AGENTS = {
+    claude: { label: "Claude Code", sub: "An agent token and one command" },
+    codex:  { label: "Codex", sub: "An agent token and a few lines of config" },
+    grok:   { label: "Grok Build", sub: "An agent token and one command" },
+    pi:     { label: "Pi", sub: "With a Clax on your machine" },
+    all:    { label: "All local agents / CLI", sub: "Running Clax yourself" },
+  };
+
+  const NODES = {
+    signin: { kind: "terminal", kicker: "Start", title: "Sign in to clax.dev", sub: "Your account, with GitHub",
+      cta: `<a class="gh" href="${CLAXDEV}/auth/github" target="_blank" rel="noopener">${GH}Sign in with GitHub</a>`,
+      body: `<p>Start with your clax.dev account. It's where your pages get public links, where you share them, and where comments come back from.</p>
+        <a class="gh wide" href="${CLAXDEV}/auth/github" target="_blank" rel="noopener">${GH}Sign in with GitHub</a>
+        <p class="muted-note">Sign-in opens in a new tab; this one stays here. Come back when you're done.</p>
+        <p class="muted-note">Already signed in? Press its ✓ to mark it done.</p>` },
+    install: { kicker: "Bring your own agent", title: "Bring your own agent", sub: "Make a token, pick yours",
+      body: `<p>On clax.dev, Claude Code, Codex and Grok Build connect with an agent token from your People page. Pi works with a Clax on your own machine. Pick yours:</p>` },
+    agent: { kind: "decision", kicker: "Decision", title: "Which agent do you use?",
+      body: `<p>On clax.dev, Claude Code, Codex and Grok Build connect with an agent token from your People page. Pi works with a Clax on your own machine. Pick yours:</p>` },
+    "install-claude": { kind: "small", agent: "claude", kicker: "Connect · Claude Code", title: "Claude Code", sub: "A token, one command",
+      body: `<p>Claude Code reaches clax.dev through an agent token. The agent acts as you, with your rights, and you can revoke it on People.</p>
+        <ol><li>Open <a href="${CLAXDEV}/people" target="_blank" rel="noopener">People</a>, find <b>Agent tokens</b>, name this machine and press <b>Create token</b>.</li>
+        <li>Copy the <code>claude mcp add</code> command it shows and run it in your terminal. The token is shown only once.</li>
+        <li>Start a new Claude Code session: the Clax tools are there.</li></ol>
+        ${tip("Fewer prompts", `Claude Code asks before each tool call. To allow Clax's, add <code>"mcp__clax__*"</code> to <code>permissions.allow</code> in <code>~/.claude/settings.json</code>.`)}` },
+    "install-codex": { kind: "small", agent: "codex", kicker: "Connect · Codex", title: "Codex", sub: "A token, a few lines of config",
+      body: `<p>Codex reaches clax.dev through an agent token. The agent acts as you, with your rights, and you can revoke it on People.</p>
+        <ol><li>Open <a href="${CLAXDEV}/people" target="_blank" rel="noopener">People</a>, find <b>Agent tokens</b>, name this machine and press <b>Create token</b>.</li>
+        <li>Copy the Codex config it shows into <code>~/.codex/config.toml</code>. The token is shown only once.</li>
+        <li>Start a new Codex session: the Clax tools are there.</li></ol>` },
+    "install-grok": { kind: "small", agent: "grok", kicker: "Connect · Grok Build", title: "Grok Build", sub: "A token, one command",
+      body: `<p>Grok Build reaches clax.dev through an agent token. The agent acts as you, with your rights, and you can revoke it on People.</p>
+        <ol><li>Open <a href="${CLAXDEV}/people" target="_blank" rel="noopener">People</a>, find <b>Agent tokens</b>, name this machine and press <b>Create token</b>.</li>
+        <li>Copy the <code>grok mcp add</code> command it shows and run it in your terminal. The token is shown only once.</li>
+        <li>Start a new Grok session: the Clax tools are there, under <code>clax_hosted</code>.</li></ol>
+        ${tip("Approvals", "Grok asks before every tool call. For headless runs, pass <code>--always-approve</code>.")}` },
+    "install-pi": { kind: "small", agent: "pi", kicker: "Connect · Pi", title: "Pi", sub: "With a Clax on your machine",
+      body: `<p class="muted-note"><b>Not yet on clax.dev.</b> Pi has no built-in MCP support, so it cannot take an agent token: its Clax package talks to a Clax on your own machine, or to one that machine is connected to with <code>clax connect</code>. Use it with a local Clax, as the <a href="${README_LOCAL}" target="_blank" rel="noopener">README</a> covers.</p>
+        ${cmds(["curl -fsSL https://github.com/empathic/clax/releases/latest/download/install.sh | bash", "clax init"], true)}
+        <p>Then start a new Pi session. To give a page a public link here, press <b>Publish to clax.dev</b> on it in your local Clax, or ask Pi to publish it to clax.dev; comments people leave here come back to Pi.</p>` },
+    "install-all": { kind: "small", agent: "all", kicker: "Your own Clax", title: "All local agents / CLI", sub: "Running Clax yourself",
+      body: `<p><b>Running Clax yourself?</b> The <code>clax</code> command and every harness's plugin are one install on your own machine: the <a href="${README_LOCAL}" target="_blank" rel="noopener">README</a> has the two commands (<code>install.sh</code>, then <code>clax init</code>).</p>` },
+    claxbot: { kind: "small", kicker: "ClaxBot", title: "Use ClaxBot", sub: "Instead of Bringing Your Own Bot (BYOB)",
+      body: `<p>ClaxBot is Clax's own agent. It runs on clax.dev, so there's nothing to install and it works from your browser. Use it instead of Bringing Your Own Bot (BYOB).</p>
+        <p>It runs on your account's credits.</p>
+        <p>Press <b>New</b> in your gallery and pick ClaxBot to build a page, or send any comment thread to ClaxBot.</p>` },
+    attach: { kicker: "Step", title: "Attach your agent", sub: "So your comments here reach it",
+      // A getter: PAGE_URL is known only once the shell answers.
+      get body() { return `<p>Ask your agent, in its chat, to watch this page:</p>
+        ${cmd(PAGE_URL ? `Watch ${PAGE_URL} for my comments.` : `Watch the page "${PAGE_NAME}" (${ARTIFACT}) for my comments.`, { plain: true })}
+        <p>Your agent shows up in this page's agent list, and a comment you send it here reaches it. To check, leave a comment here, write <code>@agent hello</code>, and send it: your agent should reply.</p>`; } },
+    fork: { kind: "small", kicker: "Next", title: "Make it yours", sub: "Fork any page into your own copy", starter: `Fork the page "${PAGE_NAME}" (${ARTIFACT}) into a page of my own, open it, and watch it.`,
+      body: `<p>Fork any page into your own copy that you can change however you like. Press <b>Fork</b> in its top bar (on a phone, it's in the ⋯ menu). Or ask your agent or ClaxBot, as below.</p>
+        <p>This Quickstart is a good first page to fork: comment on your copy and watch it change.</p>` },
+    comment: { kicker: "Step", title: "Comment on a page", sub: "Point at what you want changed",
+      body: `<p>On this page or any page of yours, turn on comment mode, then do one of these:</p>
+        <ul><li><b>Point</b> at an element</li><li><b>Select</b> some text</li><li><b>Drag</b> over part of an image or an area</li><li>Comment on the <b>whole page</b></li></ul>
+        <p>Ask for anything: "make the boxes blue", "add a step for our team's setup", "cut the parts I've done". A comment stays between people until you send it to an agent or ClaxBot.</p>` },
+    send: { kicker: "Step", title: "Send it to the agent", sub: "To your agent or ClaxBot",
+      body: `<p>Press <b>Send to agent</b> on the thread, or write <code>@agent</code> in it. When several agents are watching, pick which one gets it, or write <code>@&lt;agent name&gt;</code>. To use ClaxBot, pick ClaxBot.</p>
+        <h3>How the agent hears about it</h3>
+        <ul><li><b>ClaxBot</b> runs inside Clax, so it answers at once.</li>
+        <li><b>Your agent</b> gets a sent comment with its next Clax tool call. To hear it right away, ask it to wait for feedback.</li></ul>` },
+    change: { kicker: "Step", title: "Watch it change", sub: "A new version, and a reply in the thread",
+      body: `<p>Your agent (or ClaxBot) picks up the comment, publishes a new version of the page and replies in the thread. Earlier versions stay one click away under <b>Versions</b>.</p>
+        <p>That's the whole loop. Comment again whenever you want another change.</p>` },
+    next: { kind: "decision", kicker: "Decision", title: "Where next?",
+      body: `<p>You've done the core loop. Pick whatever's useful. You can come back for the others:</p>` },
+    ask: { kind: "small", kicker: "Next", title: "A page from scratch", sub: "Ask your agent for anything", starter: "Make me a page that tracks …",
+      body: `<p>Ask for anything you'd rather look at than read:</p>
+        <ul><li>"Make me a dashboard of this week's test failures"</li><li>"Sketch three layouts for the settings screen"</li><li>"Chart the benchmark results"</li></ul>
+        <p>The agent publishes the page to Clax and gives you a link. Every page lands in the gallery.</p>
+        ${tip("Or start in the browser", "Press <b>New</b> in the gallery, give the page a title and a brief, and pick a connected agent to build it.")}` },
+    data: { kind: "small", kicker: "Next", title: "Pages that do more", sub: "Data, live rooms, questions", starter: "Add a shared to-do list to this page.",
+      body: `<p>Pages can do more than display. Ask your agent for:</p>
+        <ul><li><b>Shared data</b>: a tracker or a sign-up sheet that keeps what people enter.</li><li><b>Live updates</b> while others view the page.</li><li><b>Questions</b> the agent asks you and you answer in the browser.</li>        <li><b>A tour of Clax</b> that points at its own buttons, as this page does.</li></ul>
+        <p class="muted-note">A page declares what it uses in <code>clax.json</code>. One that uses more than the basics (the network, Claude, the shell) asks its owner once per artifact, and again when a version asks for more, in a bar in Clax.</p>
+        ${tip("Try", `"Turn this into a checklist my team can tick off."`)}` },
+  };
+
+  // The last step, below Where next?: bringing someone in. Its panel holds the clax.dev way.
+  NODES.done = { kind: "terminal", kicker: "Next", title: "Clax is fun with friends", sub: "Anyone you want to collaborate with?",
+    cta: `<button type="button" class="btn invite" data-go="done">Invite someone →</button>`, starter: "Help me share this page with a teammate so they can comment on it.",
+    body: `<p>Clax pages are better with two people pointing at them. Bring a teammate in to comment on your page; their agents can pick up threads too.</p>
+      <ol><li>Open your page on clax.dev and press <b>Share</b>.</li><li>Add people by GitHub login as Can view, Can comment or Can edit, or copy the link.</li><li>Comments they leave come back to your page, and your agent answers them.</li></ol>` };
+
+  const LAYOUT = [
+    ["signin"], ["@split"], ["@loop"], ["next"],
+    ["fork", "ask", "data"], ["done"],
+  ];
+  const INSTALLS = Object.keys(AGENTS).map((k) => `install-${k}`);
+  const BRANCHES = ["fork", "ask", "data"];
+  const EDGES = [
+    ["signin", "install"], ["signin", "claxbot"], ["install", "attach"], ["attach", "comment"], ["claxbot", "comment"],
+    ["change", "next"],
+    ...BRANCHES.map((b) => ["next", b]), ...BRANCHES.map((b) => [b, "done"]),
+  ];
+  // Two routes after sign-in: bring your own agent (install, then attach), or
+  // ClaxBot, which needs none of them. Saved "new" and null are the first.
+  const claxbotRoute = () => state.have === "claxbot";
+  const core = () => claxbotRoute()
+    ? ["signin", "claxbot", "comment", "send", "change"]
+    : ["signin", "install", "attach", "comment", "send", "change"];
+  /** The number a step wears on this route: its place in the route, or null off it. */
+  const numOf = (id) => { const i = core().indexOf(id.startsWith("install") ? "install" : id); return i < 0 ? null : i + 1; };
+
+  const SEED = window.CLAX_IDEAS_SEED || [];
+
+  // ---------- Storage ----------
+  let db = null, user = null, uid = null;
+  const state = { have: null, agent: null, done: {} };
+  const LS = "clax-quickstart";
+  try { const s = JSON.parse(localStorage.getItem(LS) || "null"); if (s) Object.assign(state, s); } catch (_) {}
+  // A saved "already set up" is the bring-your-own route with the install done.
+  // Link and Attach were two steps: either one done is the one Attach step done.
+  const normalize = () => {
+    if (state.have === "existing") state.done.install = true;
+    if (state.done.link) { state.done.attach = true; delete state.done.link; }
+  };
+  normalize();
+  function save() {
+    try { localStorage.setItem(LS, JSON.stringify(state)); } catch (_) {}
+    if (db && uid) db.doc(`data/users/${uid}/progress`).set({ have: state.have, agent: state.agent, done: state.done }).catch(() => {});
+  }
+
+  // A saved agent this version no longer offers (an earlier "other") is forgotten.
+  const knownAgent = () => { if (state.agent && !AGENTS[state.agent]) state.agent = null; };
+  knownAgent();
+
+  // ---------- Quickstart rendering ----------
+  const chart = document.getElementById("chart");
+  const svg = document.getElementById("edges");
+  const els = {};
+  let selected = null;
+
+  const isDone = (id) => !!state.done[id.startsWith("install-") ? "install" : id];
+  const nodeDim = (id) => (claxbotRoute() && (id === "install" || id === "agent" || id === "attach" || INSTALLS.includes(id)))
+    || (!claxbotRoute() && id === "claxbot")
+    || (INSTALLS.includes(id) && state.agent && NODES[id].agent !== state.agent);
+  const ideasFor = (id) => ideas.filter((i) => i.step === (id.startsWith("install") ? "install" : id));
+  /** Stages that mean the idea is built: the step no longer waits on it. */
+  const DONE_STATUS = new Set(["implemented", "shipped"]);
+
+  /** The fork after sign-in: bring your own agent (install, then attach)
+   * on the left, ClaxBot on the right. Both rejoin at the core loop. */
+  function buildSplit(row) {
+    row.classList.add("split");
+    const left = document.createElement("div"); left.className = "lane lane-new";
+    const right = document.createElement("div"); right.className = "lane lane-bot";
+    const top = document.createElement("div"); top.className = "row";
+    const b = makeBox("install");
+    b.classList.add("install-box");
+    b.insertAdjacentHTML("beforeend", `<span class="chips">${Object.keys(AGENTS).map((k) => `<button type="button" class="chip-agent" data-go="install-${k}" data-pick="${k}" style="--brand:${BRAND[k].color}" title="${AGENTS[k].label}"><span class="mark">${BRAND[k].mark}</span><span>${AGENTS[k].label}</span></button>`).join("")}</span><button type="button" class="linkbtn skip" data-go="attach" data-skip>Already connected? Skip to Attach</button>`);
+    top.appendChild(b);
+    const at = document.createElement("div"); at.className = "row";
+    const ab = makeBox("attach");
+    ab.classList.add("install-box");
+    at.appendChild(ab);
+    left.append(top, at);
+    right.appendChild(makeBox("claxbot"));
+    row.append(left, right);
+  }
+
+  /** The ✓ that marks a step done, sitting on the edge of its box. */
+  const keyOf = (id) => (id.startsWith("install") ? "install" : id);
+  const fab = (id) => `<button type="button" class="fab" data-toggle="${keyOf(id)}" title="Mark done" aria-label="Mark “${NODES[id].title}” done" aria-pressed="false">✓</button>`;
+  /** Marks step `key` (the box `from`) done or not done; marking it done moves on to the next step and its focus. */
+  function toggleDone(key, from = key) {
+    const doneNow = !state.done[key];
+    if (doneNow) state.done[key] = true; else delete state.done[key];
+    save();
+    const nx = doneNow ? nextOf(from) : null;
+    if (!nx) { select(selected, { quiet: true }); return; }
+    select(nx);
+    focusStep(nx);
+  }
+  /** Puts keyboard focus on step `id`'s box. */
+  function focusStep(id) {
+    const el = els[id];
+    if (!el) return;
+    el.focus({ preventScroll: true });
+    el.scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    // A ring travels out from the step focus lands on, so the eye follows it.
+    el.classList.remove("arrive"); void el.offsetWidth; el.classList.add("arrive");
+    el.addEventListener("animationend", () => el.classList.remove("arrive"), { once: true });
+  }
+
+  /** A box: a focusable element that selects its step, and may hold a link or button of its own. */
+  function box(id) {
+    const b = document.createElement("div");
+    b.dataset.id = id; b.tabIndex = 0; b.setAttribute("role", "button");
+    b.addEventListener("click", (e) => {
+      const inner = e.target.closest("a, button");
+      if (inner && inner !== b) { if (inner.dataset.toggle) toggleDone(inner.dataset.toggle, id); else if (inner.dataset.show !== undefined || inner.dataset.comment !== undefined) shellClick(inner); else if (inner.dataset.go) select(inner.dataset.go); return; }
+      select(id);
+    });
+    b.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target === b) { e.preventDefault(); select(id); } });
+    return b;
+  }
+
+  // The core loop: comment, send and change on a ring, arrows going round.
+  const RING = ["comment", "send", "change"];
+  let ring = null;
+  function buildRing(row) {
+    row.classList.add("ring-row");
+    ring = document.createElement("div");
+    ring.className = "ring";
+    ring.innerHTML = `<svg class="ring-svg" aria-hidden="true"></svg>
+      <div class="ring-hub"><span class="ring-spin">↻</span><b>The core loop</b><span>Comment, send, change. Repeat.</span></div>`;
+    RING.forEach((id, i) => {
+      const n = NODES[id];
+      const b = box(id);
+      b.className = `node ring-node ring-${i}`;
+      b.innerHTML = `<span class="n"><span>${numOf(id) ?? ""}</span></span><span class="t">${n.title}</span><span class="s">${n.sub || ""}</span>${fab(id)}`;
+      els[id] = b;
+      ring.appendChild(b);
+    });
+    row.appendChild(ring);
+  }
+  function drawRing() {
+    if (!ring) return;
+    const box = ring.getBoundingClientRect();
+    const c = (el) => { const r = el.getBoundingClientRect(); return { x: r.left - box.left + r.width / 2, y: r.top - box.top + r.height / 2, l: r.left - box.left, t: r.top - box.top, r: r.right - box.left, b: r.bottom - box.top }; };
+    const P = RING.map((id) => c(els[id]));
+    const cx = box.width / 2, cy = box.height / 2;
+    const rx = Math.max(...P.map((p) => Math.abs(p.x - cx))), ry = Math.max(...P.map((p) => Math.abs(p.y - cy)));
+    const allDone = RING.every((id) => isDone(id));
+    let out = `<defs><marker id="rm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>
+      <ellipse class="ring-track" cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}"/>`;
+    // An arc from each step to the next, starting and ending exactly where
+    // the ring crosses each box's edge.
+    const angle = (p) => Math.atan2((p.y - cy) / ry, (p.x - cx) / rx);
+    const at = (t) => [cx + rx * Math.cos(t), cy + ry * Math.sin(t)];
+    const inside = (p, [x, y], pad) => x >= p.l - pad && x <= p.r + pad && y >= p.t - pad && y <= p.b + pad;
+    const leave = (p, t, dir, pad) => { let s = t; for (let i = 0; i < 2000 && inside(p, at(s), pad); i++) s += dir * 0.002; return s; };
+    for (let i = 0; i < 3; i++) {
+      const a = P[i], z = P[(i + 1) % 3];
+      let t0 = angle(a), t1 = angle(z);
+      if (t1 <= t0) t1 += Math.PI * 2;
+      const s0 = leave(a, t0, 1, 1), s1 = leave(z, t1, -1, 3);
+      if (s1 <= s0) continue;
+      const [x0, y0] = at(s0), [x1, y1] = at(s1);
+      const large = s1 - s0 > Math.PI ? 1 : 0;
+      out += `<path class="ring-arc${allDone || isDone(RING[i]) || (i < 2 && isDone(RING[i + 1])) ? " done" : ""}" marker-end="url(#rm)" d="M${x0},${y0} A${rx},${ry} 0 ${large} 1 ${x1},${y1}"/>`;
+    }
+    ring.querySelector(".ring-svg").innerHTML = out;
+  }
+
+  function makeBox(id) {
+      const n = NODES[id];
+      const b = box(id);
+      if (n.kind === "decision") {
+        b.className = "decision";
+        b.innerHTML = `<span>${n.title}</span>`;
+      } else {
+        const label = id === "done" ? "★" : numOf(id) ?? "";
+        b.className = "node" + (n.kind === "small" ? " small" : "") + (INSTALLS.includes(id) ? " inst" : "") + (n.kind === "terminal" ? " terminal" : "");
+        const brand = n.agent && BRAND[n.agent];
+        if (brand) b.style.setProperty("--brand", brand.color);
+        b.innerHTML = `<span class="n"><span>${label}</span></span>${brand ? `<span class="mark">${brand.mark}</span>` : ""}<span class="t">${n.title}</span><span class="s">${n.sub || ""}</span>${fab(id)}`;
+      }
+      if (n.cta) { b.insertAdjacentHTML("beforeend", `<span class="cta">${n.cta}</span>`); b.classList.add("has-cta"); }
+      els[id] = b;
+      return b;
+  }
+
+  function buildChart() {
+    LAYOUT.forEach((row) => {
+      const r = document.createElement("div");
+      r.className = "row";
+      if (row[0] === "@loop") { buildRing(r); chart.appendChild(r); return; }
+      if (row[0] === "@split") { buildSplit(r); chart.appendChild(r); return; }
+      if (row.length > 4) r.classList.add("branches");
+      row.forEach((id) => r.appendChild(makeBox(id)));
+      chart.appendChild(r);
+    });
+    const c = document.createElement("p");
+    c.id = "celebrate"; c.className = "celebrate"; c.hidden = true; c.setAttribute("role", "status");
+    c.textContent = "Your first round trip — nice. Pick what's next:";
+    els.next.parentElement.appendChild(c);
+  }
+
+  // The first round trip: a line above "Where next?" the moment the core route
+  // completes in this visit. A route already complete on load is not celebrated.
+  let wasComplete = null;
+  function celebrate(complete) {
+    const el = document.getElementById("celebrate");
+    if (wasComplete === false && complete && el) {
+      el.hidden = false;
+      if (!matchMedia("(prefers-reduced-motion: reduce)").matches) { el.classList.remove("pop"); void el.offsetWidth; el.classList.add("pop"); }
+    }
+    if (!complete && el) el.hidden = true;
+    wasComplete = complete;
+  }
+  function refreshNodes() {
+    for (const id in els) {
+      const el = els[id];
+      el.classList.toggle("done", isDone(id) && !NODES[id].kind?.startsWith("dec"));
+      el.classList.toggle("dim", nodeDim(id));
+      el.classList.toggle("sel", id === selected);
+      const num = el.querySelector(":scope > .n > span");
+      if (num && id !== "done") num.textContent = numOf(id) ?? "";
+      el.querySelectorAll(":scope > .fab").forEach((f) => { const on = !!state.done[f.dataset.toggle]; f.classList.toggle("on", on); f.setAttribute("aria-pressed", String(on)); f.classList.toggle("beckon", f.dataset.toggle === "signin" && !Object.keys(state.done).length); });
+      el.querySelectorAll("[data-pick]").forEach((c) => c.classList.toggle("on", c.dataset.pick === state.agent));
+    }
+    const CORE = core();
+    const n = CORE.filter((c) => state.done[c]).length;
+    document.getElementById("bar").style.width = `${(n / CORE.length) * 100}%`;
+    document.querySelector(".bar").setAttribute("aria-valuemax", String(CORE.length));
+    document.querySelector(".bar").setAttribute("aria-valuenow", String(n));
+    document.getElementById("progress-text").textContent = n === CORE.length ? "Done — keep going" : `${n} of ${CORE.length} steps`;
+    celebrate(n === CORE.length);
+    drawEdges();
+  }
+
+  /** Right-angled connectors. One box splitting into several draws one
+   * trunk to a bar and a drop into each; several joining into one draw a
+   * drop from each to a bar and one trunk down. */
+  /** The box before `id` on the person's route: the one whose connector into it turns green when `id` is checked. */
+  function prevOf(id) {
+    if (id === "next") return "change";
+    if (BRANCHES.includes(id)) return "next";
+    const c = core(), i = c.indexOf(id);
+    return i > 0 ? c[i - 1] : null;
+  }
+  let pulse = null; // {a, b}: the edge to draw on at the next redraw
+  function drawEdges() {
+    const box = chart.getBoundingClientRect();
+    const pt = (id) => { const r = els[id].getBoundingClientRect(); return { x: r.left - box.left + r.width / 2, top: r.top - box.top, bot: r.bottom - box.top }; };
+    const out = [`<defs>
+      <marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker>
+      <marker id="md" class="m-done" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>`];
+    // `delay` (seconds) draws the line on, for the path a just-noticed sign-in turns green.
+    const line = (pts, cls, arrow, delay) => out.push(`<path class="e${cls}${delay === undefined ? "" : " draw"}"${delay === undefined ? "" : ` pathLength="1" style="animation-delay:${delay}s"`}${arrow ? ` marker-end="url(#${cls.includes("done") ? "md" : "m"})"` : ""} d="M${pts.map((p) => p.join(",")).join(" L")}"/>`);
+    // An edge is green on the way out of a done box, and on the way into one from
+    // the box before it on this route; it is dimmed when either end is off the route.
+    const prev = prevOf;
+    const onpath = (a, b) => !nodeDim(a) && !nodeDim(b) && (isDone(a) || (isDone(b) && prev(b) === a));
+    const cls = (a, b) => (onpath(a, b) ? " done" : "") + (nodeDim(a) || nodeDim(b) ? " dim" : "");
+    // Which side of the trunk at `x0` a box at `x` hangs on.
+    const side = (x, x0) => (x < x0 - 1 ? "L" : x > x0 + 1 ? "R" : "C");
+    /** A bus bar as two pieces either side of its trunk, each coloured by the edges that use it. */
+    const bar = (x0, y, xs, green, dimmed, delayOf = () => undefined) => {
+      for (const sd of ["L", "R"]) {
+        const on = xs.filter((x) => side(x, x0) === sd);
+        if (!on.length) continue;
+        const end = sd === "L" ? Math.min(...on) : Math.max(...on);
+        line([[x0, y], [end, y]], (green(sd) ? " done" : dimmed(sd) ? " dim" : ""), false, delayOf(sd));
+      }
+    };
+    const from = {}, to = {};
+    for (const [a, b] of EDGES) { (from[a] ||= []).push(b); (to[b] ||= []).push(a); }
+    const drawn = new Set();
+    // Splits: a trunk, a bar, a drop into each.
+    for (const a in from) {
+      if (from[a].length < 2) continue;
+      const A = pt(a), T = from[a].map((b) => [b, pt(b)]);
+      const bus = A.bot + (Math.min(...T.map(([, B]) => B.top)) - A.bot) / 2;
+      line([[A.x, A.bot], [A.x, bus]], (T.some(([b]) => onpath(a, b)) ? " done" : "") + (nodeDim(a) ? " dim" : ""), false, pulse && pulse.a === a ? 0 : undefined);
+      bar(A.x, bus, T.map(([, B]) => B.x), (sd) => T.some(([b, B]) => side(B.x, A.x) === sd && onpath(a, b)), (sd) => T.filter(([, B]) => side(B.x, A.x) === sd).every(([b]) => nodeDim(a) || nodeDim(b)), (sd) => (pulse && pulse.a === a && side(pt(pulse.b).x, A.x) === sd ? 0.15 : undefined));
+      for (const [b, B] of T) { line([[B.x, bus], [B.x, B.top - 2]], cls(a, b), true, pulse && pulse.a === a && pulse.b === b ? 0.3 : undefined); drawn.add(a + ">" + b); }
+    }
+    // Joins: a drop from each, a bar, one trunk.
+    for (const b in to) {
+      const S = to[b].filter((a) => !drawn.has(a + ">" + b));
+      if (S.length < 2) continue;
+      const B = pt(b), P = S.map((a) => [a, pt(a)]);
+      const bus = B.top - (B.top - Math.max(...P.map(([, A]) => A.bot))) / 2;
+      for (const [a, A] of P) { line([[A.x, A.bot], [A.x, bus]], cls(a, b), false); drawn.add(a + ">" + b); }
+      const anyDone = S.some((a) => onpath(a, b));
+      bar(B.x, bus, P.map(([, A]) => A.x), (sd) => P.some(([a, A]) => side(A.x, B.x) === sd && onpath(a, b)), () => false);
+      line([[B.x, bus], [B.x, B.top - 2]], anyDone ? " done" : "", true);
+    }
+    // The rest: straight down, or down, across and down.
+    for (const [a, b] of EDGES) {
+      if (drawn.has(a + ">" + b)) continue;
+      const A = pt(a), B = pt(b);
+      if (Math.abs(A.x - B.x) < 2) line([[A.x, A.bot], [A.x, B.top - 2]], cls(a, b), true);
+      else { const mid = A.bot + (B.top - A.bot) / 2; line([[A.x, A.bot], [A.x, mid], [B.x, mid], [B.x, B.top - 2]], cls(a, b), true); }
+    }
+    svg.innerHTML = out.join("");
+    drawRing();
+  }
+
+
+  // ---------- Panel ----------
+  const panel = document.getElementById("panel");
+  function select(id, opts = {}) {
+    selected = id;
+    const n = NODES[id];
+    document.getElementById("p-kicker").textContent = n.kicker;
+    document.getElementById("p-title").textContent = n.kind === "small" && n.agent ? `Install for ${n.title}` : n.title;
+    let html = n.body;
+    if (id === "agent" || id === "install") {
+      html += `<div class="choices">${Object.entries(AGENTS).map(([k, a]) => `<button type="button" data-agent="${k}" class="brandchoice${state.agent === k ? " on" : ""}" style="--brand:${BRAND[k].color}"><span class="mark">${BRAND[k].mark}</span><span><b>${a.label}</b><span>${a.sub}</span></span></button>`).join("")}</div><p class="muted-note">Already connected? <button type="button" class="linkbtn" data-go="attach" data-skip>Skip to Attach</button></p>`;
+    }
+    if (id === "next") {
+      html += `<div class="choices">${BRANCHES.map((b) => `<button type="button" data-go="${b}"><b>${NODES[b].title}</b><span>${NODES[b].sub}</span></button>`).join("")}</div>`;
+      html += `<p class="muted-note">Running Clax on your own machine, or hosting it yourself? That has its own guide in the <a href="https://github.com/empathic/clax#readme" target="_blank" rel="noopener">README</a>.</p>`;
+    }
+    if (n.starter) html = `<h3>Try this</h3><p>Paste it to your agent, or send it to ClaxBot:</p>${cmd(n.starter, { plain: true })}` + html;
+    if (id === "comment") html += `<div class="showme-wrap">${commentButton()}</div>`;
+    else if (SHOWME[id]) html += `<div class="showme-wrap">${showMe(id)}</div>`;
+    const here = ideasFor(id);
+    if (here.length) {
+      const rank = { building: 0, planned: 1, proposed: 2, implemented: 3, shipped: 4 };
+      const shown = here.filter((i) => i.status !== "declined").sort((a, b) => (rank[a.status || "proposed"] ?? 9) - (rank[b.status || "proposed"] ?? 9));
+      const open = shown.filter((i) => !DONE_STATUS.has(i.status || "proposed")).length;
+      if (shown.length) html += `<div class="ideas-here"><b>💡 ${open ? "This step could be better" : "Made better"}</b><ul>${shown.map((i) => { const st = i.status || "proposed"; return `<li class="${DONE_STATUS.has(st) ? "made" : ""}"><a href="ideas.html#${encodeURIComponent(i.id)}">${esc(i.title)}</a> <span class="tag st st-${esc(st)}">${esc(st)}</span></li>`; }).join("")}</ul></div>`;
+    }
+    const nx = nextOf(id);
+    let actions = "";
+    if (nx) actions += `<button type="button" class="btn" data-go="${nx}">Next: ${NODES[nx].title} →</button>`;
+    if (actions) html += `<div class="actions">${actions}</div>`;
+    document.getElementById("p-body").innerHTML = html;
+    syncShow(panel); syncShow(chart);
+    panel.querySelector(".pb").scrollTop = 0;
+    panel.scrollTop = 0;
+    if (!opts.quiet) panel.classList.add("open");
+    refreshNodes();
+    // An install-<agent> panel has no box of its own: only a step with one is scrolled to.
+    if (!opts.quiet && els[id] && matchMedia("(min-width: 901px)").matches) {
+      const r = els[id].getBoundingClientRect();
+      if (r.top < 0 || r.bottom > innerHeight) els[id].scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }
+  function nextOf(id) {
+    if (BRANCHES.includes(id)) return "done";
+    if (id === "install" || id === "agent") return state.agent ? `install-${state.agent}` : null;
+    if (id.startsWith("install-")) return "attach";
+    const c = [...core(), "next"], i = c.indexOf(id);
+    return i < 0 || i === c.length - 1 ? null : c[i + 1];
+  }
+
+
+  panel.addEventListener("click", (e) => {
+    const t = e.target.closest("button, a");
+    if (!t) return;
+    if (t.dataset.copy !== undefined) return copy(t);
+    if (t.dataset.show !== undefined || t.dataset.comment !== undefined) return shellClick(t);
+    if (t.dataset.skip) { skipInstall(); return select("attach"); }
+    if (t.dataset.agent) { state.agent = t.dataset.agent; state.have = "new"; save(); return select(`install-${state.agent}`); }
+    if (t.dataset.done) {
+      state.done[t.dataset.done] = true; save();
+      const nx = nextOf(selected);
+      return nx ? select(nx) : select(selected);
+    }
+    if (t.dataset.undone) { delete state.done[t.dataset.undone]; save(); return select(selected); }
+    if (t.dataset.go) return select(t.dataset.go);
+  });
+  document.getElementById("p-close").addEventListener("click", () => panel.classList.remove("open"));
+  document.getElementById("reset").addEventListener("click", () => { state.have = null; state.agent = null; state.done = {}; save(); select("signin"); });
+
+  /** "Already installed": the bring-your-own route with the install done. */
+  function skipInstall() { state.have = "existing"; state.done.install = true; save(); }
+
+  // Clicking a route's box chooses that route; an unchosen install box switches the agent.
+  chart.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-id]");
+    if (e.target.closest("[data-skip]")) skipInstall();
+    if (b && b.dataset.id === "claxbot" && !e.target.closest("a, button")) { state.have = "claxbot"; save(); refreshNodes(); }
+    if (b && b.dataset.id === "install" && claxbotRoute() && !e.target.closest("a, button")) { state.have = "new"; save(); refreshNodes(); }
+    const pick = e.target.closest("[data-pick]");
+    if (pick) { state.agent = pick.dataset.pick; state.have = "new"; save(); refreshNodes(); }
+    if (b && INSTALLS.includes(b.dataset.id) && !e.target.closest("a, button")) { state.agent = NODES[b.dataset.id].agent; state.have = "new"; save(); refreshNodes(); }
+  }, true);
+
+  async function copy(btn) {
+    const text = btn.parentElement.querySelector("pre").textContent;
+    try { await navigator.clipboard.writeText(text); btn.textContent = "Copied"; }
+    catch (_) {
+      const r = document.createRange(); r.selectNodeContents(btn.parentElement.querySelector("pre"));
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r); btn.textContent = "Selected";
+    }
+    setTimeout(() => (btn.textContent = "Copy"), 1400);
+  }
+
+  // ---------- Noticing a sign-in ----------
+  // On clax.dev a viewer who is a signed-in person has done step 1. The page
+  // itself runs on its own site's domain, so clax.dev is known from the
+  // shell's origin ({@link SHELL}), as the shell itself says it. A local
+  // Clax cannot say whether it is linked to clax.dev, so it never decides.
+  const hosted = () => { try { return !!SHELL && /(^|\.)clax\.dev$/.test(new URL(SHELL).hostname); } catch (_) { return false; } };
+  const toast = document.getElementById("toast");
+  function say(text) {
+    toast.textContent = text; toast.hidden = false;
+    clearTimeout(say.t); say.t = setTimeout(() => { toast.hidden = true; }, 4500);
+  }
+  async function noticeSignIn() {
+    if (!hosted() || !user || state.done.signin) return;
+    try {
+      const m = await user.me();
+      if (!m || !m.id) return;
+      const mine = ((await user.profiles(m.id)) || {})[m.id];
+      if (!mine || mine.guest !== false) return;
+      if (state.done.signin) return;
+      const nx = nextOf("signin"), reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      state.done.signin = true; save();
+      // Redraws in the next moments (a resize, a refresh) keep the draw-on rather than snapping it off.
+      if (!reduce && nx) { pulse = { a: "signin", b: nx }; setTimeout(() => { pulse = null; }, 900); }
+      select(nx || "signin", { quiet: true });
+      if (nx) focusStep(nx);
+      const fab = els.signin && els.signin.querySelector(".fab");
+      if (fab && !reduce) { fab.classList.add("pop"); fab.addEventListener("animationend", () => fab.classList.remove("pop"), { once: true }); }
+      say(`Signed in as ${mine.name || m.name || "you"} — on to step ${numOf(nx) ?? 2}`);
+    } catch (_) {}
+  }
+
+  // ---------- Ideas ----------
+  // The full list is ideas.html; this page shows which steps have some.
+  let ideas = SEED.slice();
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  // The shipped copy has no tabs and no ideas page (web/scripts/build-quickstart.mjs
+  // drops both), so it neither loads ideas nor links to them.
+  const IDEAS_PAGE = !!document.getElementById("tab-ideas");
+  const countIdeas = () => {
+    if (!IDEAS_PAGE) return;
+    // The tab is for a page that has ideas.
+    document.getElementById("tab-ideas").hidden = !ideas.length;
+    document.getElementById("idea-count").textContent = String(ideas.filter((i) => i.status !== "shipped" && i.status !== "declined").length);
+  };
+
+  // ---------- Deep links ----------
+  // index.html#<step> opens that step (ideas.html links here so).
+  function route() {
+    const id = decodeURIComponent(location.hash.slice(1)).replace(/^start\//, "");
+    // Links from the ideas page and older links name steps this chart has folded together.
+    const to = NODES[id] ? id : { invite: "done", share: "done", devserver: "next", link: "attach", have: "install" }[id];
+    if (to) select(to);
+    requestAnimationFrame(drawEdges);
+  }
+  addEventListener("hashchange", route);
+
+  // ---------- Boot ----------
+  buildChart();
+  // Open on the first step not done yet, along the reader's own path.
+  const path = () => core().map((k) => (k !== "install" ? k : state.agent ? `install-${state.agent}` : "install"));
+  const first = path().find((k) => !isDone(k)) || "next";
+  select(first, { quiet: true });
+  route();
+  new ResizeObserver(() => drawEdges()).observe(chart);
+  countIdeas();
+
+  (async () => {
+    const c = window.claude;
+    if (!c || typeof c.use !== "function") return;
+    try { user = await c.use("user"); } catch (_) {}
+    try { db = await c.use("db"); } catch (_) {}
+    try { shell = (await c.use("shell")) || null; } catch (_) { shell = null; }
+    if (shell) {
+      syncShow(panel); syncShow(chart);
+      try { placed(await shell.address()); } catch (_) {}
+      // The open panel names PAGE_URL: draw it again with the shell's answer, keeping its scroll.
+      if (selected === "attach") { const pb = panel.querySelector(".pb"), top = pb.scrollTop; select(selected, { quiet: true }); pb.scrollTop = top; }
+    }
+    try { uid = user ? await user.id() : null; } catch (_) {}
+    if (!db) { await noticeSignIn(); return; }
+    if (uid) {
+      try {
+        const snap = await db.doc(`data/users/${uid}/progress`).get();
+        if (snap.exists) { const d = snap.data(); state.agent = d.agent ?? state.agent; state.have = d.have ?? state.have; state.done = Object.assign({}, state.done, d.done || {}); knownAgent(); normalize(); wasComplete = null; }
+        else save();
+      } catch (_) {}
+      refreshNodes();
+    }
+    noticeSignIn();
+    if (IDEAS_PAGE) db.collection("extensions").onSnapshot((snap) => {
+      const list = snap.docs.map((d) => Object.assign({ id: d.id || (d.ref && d.ref.id) }, d.data())).filter((i) => i.title);
+      if (list.length) ideas = list;
+      // The open panel lists its step's ideas: draw it again from the loaded list, keeping its scroll.
+      if (selected) { const pb = panel.querySelector(".pb"), top = pb.scrollTop; select(selected, { quiet: true }); pb.scrollTop = top; }
+      refreshNodes();
+      countIdeas();
+    }, () => {});
+  })();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clax Quickstart Ideas</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="5" fill="var(--accent)"/><path d="M8 7h8M12 7v4M8 15h8M12 11v4" stroke="var(--bg)" stroke-width="2" stroke-linecap="round"/></svg>
+    Clax
+  </div>
+  <h1>Make the quickstart better</h1>
+  <p class="lede">What Clax would need for its quickstart to be better. Each idea was found while building the quickstart, and names the step where a new user would feel it. Vote ideas up or down to reorder the list; agents add new ones as they find them.</p>
+  <nav class="tabs" aria-label="Sections">
+    <a href="index.html" id="tab-start">Quickstart</a>
+    <a href="ideas.html" id="tab-ideas" aria-current="page">Make it better<span class="count" id="idea-count"></span></a>
+  </nav>
+</header>
+
+<main>
+  <section class="roadmap" id="roadmap" hidden aria-labelledby="roadmap-h">
+    <h2 id="roadmap-h">Roadmap</h2>
+    <p class="roadmap-sub">The accepted ideas, in the order they're being built on the <code>quickstart</code> branch. Pick a step for its details.</p>
+    <div class="road" id="road"></div>
+  </section>
+  <section class="flight" id="flight" hidden aria-label="In flight"></section>
+  <p class="notice" id="ideas-notice" hidden></p>
+  <div class="stages" id="stages" role="group" aria-label="Show ideas by stage"></div>
+  <div class="filters" id="filters"></div>
+  <div class="cards" id="cards"></div>
+</main>
+
+<script src="ideas-data.js"></script>
+<script>
+(() => {
+  "use strict";
+
+  // The quickstart's steps, for each idea's "Felt at" link back to it.
+  const STEPS = {
+    signin: "Sign in to clax.dev", install: "Connect your agent", link: "Link Clax to your account", attach: "Attach your agent",
+    fork: "Make it yours", comment: "Comment on your copy", send: "Send it to the agent", change: "Watch it change",
+    ask: "A page from scratch", devserver: "Your dev server", data: "Pages that do more", share: "Clax is fun with friends", invite: "Clax is fun with friends",
+  };
+  const STATUSES = ["proposed", "planned", "building", "implemented", "shipped", "declined"];
+  const PRI = { high: 0, medium: 1, low: 2 };
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+  let ideas = (window.CLAX_IDEAS_SEED || []).slice();
+  let votes = {};      // idea ID -> score: up votes less down votes
+  let myVotes = {};    // idea ID -> 1 (up) or -1 (down); an older `true` is up
+  const weight = (v) => (v === true ? 1 : v === 1 || v === -1 ? v : 0);
+  let filter = "all";
+  // Stages shown: by default all but shipped and declined. Kept per viewer in localStorage.
+  const SKEY = "clax-quickstart-idea-stages";
+  const OPEN = ["proposed", "planned", "building"], DEFAULT = [...OPEN, "implemented"];
+  let stages = new Set(DEFAULT);
+  try {
+    const saved = JSON.parse(localStorage.getItem(SKEY) || "null");
+    if (Array.isArray(saved)) stages = new Set(saved.filter((x) => STATUSES.includes(x)));
+  } catch (_) {}
+  const saveStages = () => { try { localStorage.setItem(SKEY, JSON.stringify([...stages])); } catch (_) {} };
+  const stageOf = (i) => (STATUSES.includes(i.status) ? i.status : "proposed");
+  const sameSet = (list) => list.length === stages.size && list.every((x) => stages.has(x));
+  let db = null, uid = null, isOwner = false;
+
+  // Landing on an idea a link names: scroll, highlight and focus it, on every render
+  // until the viewer scrolls or presses something themselves.
+  let userMoved = false;
+  for (const ev of ["wheel", "touchstart", "keydown", "pointerdown"]) addEventListener(ev, () => { userMoved = true; }, { capture: true, passive: true });
+  const reduceMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function render(opts = {}) {
+    document.getElementById("idea-count").textContent = String(ideas.filter((i) => i.status !== "shipped" && i.status !== "declined").length);
+    const count = (st) => ideas.filter((i) => stageOf(i) === st).length;
+    document.getElementById("stages").innerHTML = `<span class="stage-lbl">Stage</span>`
+      + STATUSES.map((st) => `<button type="button" class="chip stage st-${st}${stages.has(st) ? " on" : ""}" data-s="${st}" aria-pressed="${stages.has(st)}">${st}<span class="ct">${count(st)}</span></button>`).join("")
+      + `<button type="button" class="chip preset${sameSet(OPEN) ? " on" : ""}" data-p="open" aria-pressed="${sameSet(OPEN)}">Open</button>`
+      + `<button type="button" class="chip preset${sameSet(STATUSES) ? " on" : ""}" data-p="all" aria-pressed="${sameSet(STATUSES)}">All</button>`;
+    const areas = [...new Set(ideas.map((i) => i.area))].sort();
+    document.getElementById("filters").innerHTML = ["all", "high", ...areas].map((f) => `<button type="button" class="chip${f === filter ? " on" : ""}" data-f="${esc(f)}">${f === "all" ? "All" : f === "high" ? "High priority" : esc(f)}</button>`).join("");
+    const flash = decodeURIComponent(location.hash.slice(1));
+    const visible = (i) => stages.has(stageOf(i)) && (filter === "all" || (filter === "high" ? i.priority === "high" : i.area === filter));
+    const linked = flash ? ideas.find((i) => i.id === flash) : null;
+    // A followed link shows its idea even when the stage or area filter hides it (the saved filter is untouched).
+    const forced = !!linked && !visible(linked);
+    const shown = ideas
+      .filter((i) => visible(i) || i === linked)
+      // Votes first, so a down vote pushes an idea below the ones nobody voted on; then priority.
+      .sort((a, b) => (votes[b.id] || 0) - (votes[a.id] || 0) || (PRI[a.priority] ?? 3) - (PRI[b.priority] ?? 3) || (a.order ?? 99) - (b.order ?? 99));
+    renderFlight();
+    const cards = document.getElementById("cards");
+    cards.innerHTML = shown.length ? "" : `<p class="empty">${ideas.length ? "Nothing in these stages." : "No ideas here yet."}</p>`;
+    for (const i of shown) {
+      const c = document.createElement("article");
+      c.className = "card" + (i.id === flash ? " flash" : "") + (i.id === flash && opts.land && !userMoved ? " landed" : "");
+      c.tabIndex = -1;
+      c.id = i.id;
+      const step = STEPS[i.step] ? `<a href="index.html#${esc(i.step === "install" ? "agent" : i.step)}">${esc(STEPS[i.step])}</a>` : esc(i.step || "");
+      const statusCtl = isOwner && db
+        ? `<select data-status="${esc(i.id)}" aria-label="Status">${STATUSES.map((s) => `<option${s === i.status ? " selected" : ""}>${s}</option>`).join("")}</select>`
+        : `<span class="tag st st-${esc(i.status || "proposed")}">${esc(i.status || "proposed")}</span>`;
+      const mine = weight(myVotes[i.id]), score = votes[i.id] || 0;
+      const vote = db && uid
+        ? `<span class="votes"><button type="button" class="vote${mine === 1 ? " on" : ""}" data-vote="${esc(i.id)}" data-dir="1" aria-pressed="${mine === 1}" aria-label="Vote up">▲</button><span class="score" aria-label="Score">${score}</span><button type="button" class="vote down${mine === -1 ? " on" : ""}" data-vote="${esc(i.id)}" data-dir="-1" aria-pressed="${mine === -1}" aria-label="Vote down">▼</button></span>`
+        : (score ? `<span class="tag">${score > 0 ? "▲" : "▼"} ${Math.abs(score)}</span>` : "");
+      c.innerHTML = `${i === linked && forced ? `<p class="linked-note">Shown because you followed a link · <button type="button" class="linkbtn" data-unlink>show the filtered list</button></p>` : ""}<h3>${esc(i.title)}</h3>
+        <div class="meta"><span class="tag p-${esc(i.priority)}">${esc(i.priority)}</span><span class="tag">${esc(i.area)}</span>${statusCtl}</div>
+        <p><span class="lbl">The gap</span>${esc(i.problem)}</p>
+        <p><span class="lbl">Proposal</span>${esc(i.proposal)}</p>
+        ${tracking(i)}
+        <div class="foot"><span>Felt at: ${step}</span>${vote}</div>`;
+      cards.appendChild(c);
+    }
+    if (linked && opts.land && !userMoved) {
+      const el = document.getElementById(flash);
+      if (el) { el.focus({ preventScroll: true }); el.scrollIntoView({ block: "center", behavior: reduceMotion() ? "auto" : "smooth" }); }
+    }
+  }
+  // What is in flight: each idea's work, as agents record it in the db
+  // (`work`: {branch, commit, spec}, `log`: [{at, text}], newest last).
+  const ago = (at) => {
+    const s = Math.max(0, (Date.now() - Date.parse(at)) / 1000);
+    return s < 60 ? "just now" : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`;
+  };
+  function tracking(i) {
+    const w = i.work || {}, log = Array.isArray(i.log) ? i.log.slice(-3).reverse() : [];
+    if (!w.branch && !log.length) return "";
+    return `<div class="track st-${esc(i.status || "proposed")}">
+      <div class="track-head">${w.spec ? `<span class="tag">${esc(w.spec)}</span>` : ""}${w.branch ? `<span class="tag mono">⎇ ${esc(w.branch)}</span>` : ""}${w.commit ? `<span class="tag mono">${esc(w.commit)}</span>` : ""}</div>
+      ${log.length ? `<ul class="track-log">${log.map((e) => `<li><time datetime="${esc(e.at)}" title="${esc(e.at)}">${esc(ago(e.at))}</time> ${esc(e.text)}</li>`).join("")}</ul>` : ""}
+    </div>`;
+  }
+  function renderFlight() {
+    const f = document.getElementById("flight");
+    const moving = ideas.filter((i) => i.status === "building" || i.status === "planned" || i.status === "implemented");
+    if (!moving.length) { f.hidden = true; return; }
+    const by = (st) => ideas.filter((i) => i.status === st).length;
+    const last = ideas.flatMap((i) => (Array.isArray(i.log) ? i.log.map((e) => ({ ...e, title: i.title, id: i.id })) : [])).sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0];
+    f.hidden = false;
+    f.innerHTML = `<div class="flight-counts"><b>In flight</b>
+        <span class="tag st-building">building ${by("building")}</span><span class="tag st-implemented">implemented ${by("implemented")}</span><span class="tag st-planned">planned ${by("planned")}</span><span class="tag st-shipped">shipped ${by("shipped")}</span><span class="tag">proposed ${by("proposed")}</span></div>
+      ${last ? `<p class="flight-last">Latest: <a href="#${esc(last.id)}">${esc(last.title)}</a>: ${esc(last.text)} <time>${esc(ago(last.at))}</time></p>` : ""}`;
+  }
+
+  // The roadmap: the plan's steps in order (db `roadmap`, each {order,
+  // title, what, state, ideas, commit, waits}), kept by the agents doing them.
+  let road = [];
+  const STATE = { done: "Implemented", shipped: "Shipped", review: "In review", running: "Running now", next: "Next", queued: "Queued", waiting: "Waiting on a decision" };
+  let picked = null;
+  function renderRoad() {
+    const sec = document.getElementById("roadmap");
+    if (!road.length) { sec.hidden = true; return; }
+    sec.hidden = false;
+    const steps = road.slice().sort((a, b) => a.order - b.order);
+    const now = steps.find((r) => r.state === "running" || r.state === "review") || steps.find((r) => r.state !== "done") || steps[steps.length - 1];
+    const shown = steps.find((r) => r.id === picked) || now;
+    const titleOf = (id) => (ideas.find((i) => i.id === id) || {}).title || id;
+    const done = steps.filter((r) => r.state === "done").length;
+    document.getElementById("road").innerHTML = `
+      <div class="stepper" role="tablist" aria-label="Steps">${steps.map((r) => `<button type="button" role="tab" class="sp st-${esc(r.state)}" data-step="${esc(r.id)}" aria-selected="${r === shown}" title="${esc(r.title)}: ${esc(STATE[r.state] || r.state)}"><span class="dot">${r.state === "done" ? "✓" : esc(r.order)}</span><span class="sp-t">${esc(r.title)}</span></button>`).join("")}</div>
+      <div class="step-detail st-${esc(shown.state)}" role="tabpanel">
+        <div class="step-head"><b>${esc(shown.order)}. ${esc(shown.title)}</b><span class="tag st-${esc(shown.state)}">${esc(STATE[shown.state] || shown.state)}</span>${shown.commit ? `<span class="tag mono">${esc(shown.commit)}</span>` : ""}<span class="road-count">${done} of ${steps.length} done</span></div>
+        <p>${esc(shown.what)}${shown.waits ? ` <span class="waits">Waits on: ${esc(shown.waits)}</span>` : ""}</p>
+        ${Array.isArray(shown.ideas) && shown.ideas.length ? `<p class="for">For: ${shown.ideas.map((id) => `<a href="#${esc(id)}">${esc(titleOf(id))}</a>`).join(", ")}</p>` : ""}
+      </div>`;
+    // On a narrow screen the row scrolls: keep the step shown in view.
+    const row = document.querySelector(".stepper"), sel = row.querySelector('[aria-selected="true"]');
+    if (sel) row.scrollLeft = sel.offsetLeft - (row.clientWidth - sel.offsetWidth) / 2;
+  }
+
+
+  function notice(text) { const n = document.getElementById("ideas-notice"); n.textContent = text; n.hidden = !text; }
+
+  document.getElementById("stages").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-s], [data-p]"); if (!b) return;
+    if (b.dataset.s) { if (stages.has(b.dataset.s)) stages.delete(b.dataset.s); else stages.add(b.dataset.s); }
+    else stages = new Set(b.dataset.p === "open" ? OPEN : STATUSES);
+    saveStages(); render();
+    // The bar is redrawn: put keyboard focus back on the button pressed.
+    document.querySelector(b.dataset.s ? `#stages [data-s="${b.dataset.s}"]` : `#stages [data-p="${b.dataset.p}"]`)?.focus();
+  });
+  document.getElementById("filters").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-f]"); if (!b) return; filter = b.dataset.f; render();
+  });
+  document.getElementById("cards").addEventListener("click", (e) => {
+    if (e.target.closest("[data-unlink]")) { history.replaceState(null, "", location.pathname + location.search); render(); return; }
+    const b = e.target.closest("[data-vote]"); if (!b || !db || !uid) return;
+    const id = b.dataset.vote, dir = Number(b.dataset.dir);
+    // Pressing the vote you already gave takes it back.
+    if (weight(myVotes[id]) === dir) delete myVotes[id]; else myVotes[id] = dir;
+    db.doc(`votes/${uid}`).set({ ideas: myVotes }).catch(() => notice("Your vote wasn't saved. Enter a name in Clax to vote, then try again."));
+    render();
+  });
+  document.getElementById("cards").addEventListener("change", (e) => {
+    const s = e.target.closest("[data-status]"); if (!s || !db) return;
+    db.doc(`extensions/${s.dataset.status}`).update({ status: s.value }).catch(() => notice("The status wasn't saved."));
+  });
+  addEventListener("hashchange", () => { userMoved = false; render({ land: true }); });
+  // A link to the idea already named in the address does not change it: land on it again.
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest('a[href^="#"]');
+    if (a && a.getAttribute("href") === location.hash) { e.preventDefault(); userMoved = false; render({ land: true }); }
+  });
+  document.getElementById("road").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-step]"); if (!b) return; picked = b.dataset.step; renderRoad();
+  });
+  render({ land: true });
+
+  (async () => {
+    const c = window.claude;
+    if (!c || typeof c.use !== "function") return;
+    let user = null;
+    try { user = await c.use("user"); } catch (_) {}
+    try { db = await c.use("db"); } catch (_) {}
+    try { uid = user ? await user.id() : null; } catch (_) {}
+    try { isOwner = user ? await user.isOwner() : false; } catch (_) {}
+    if (!db) return;
+    db.collection("extensions").onSnapshot((snap) => {
+      const list = snap.docs.map((d) => Object.assign({ id: d.id }, d.data())).filter((i) => i.title);
+      if (list.length) ideas = list;
+      render({ land: true });
+    }, () => {});
+    db.collection("roadmap").onSnapshot((snap) => {
+      road = snap.docs.map((d) => Object.assign({ id: d.id }, d.data())).filter((r) => r.title);
+      renderRoad();
+    }, () => {});
+    db.collection("votes").onSnapshot((snap) => {
+      votes = {};
+      for (const d of snap.docs) {
+        const v = (d.data() || {}).ideas || {};
+        for (const k in v) if (weight(v[k])) votes[k] = (votes[k] || 0) + weight(v[k]);
+        if (uid && d.id === uid) myVotes = Object.assign({}, v);
+      }
+      render({ land: true });
+    }, () => {});
+    render({ land: true });
+  })();
+})();
+</script>
+</body>
+</html>

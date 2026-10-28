@@ -732,8 +732,12 @@ impl Client {
 /// Starts a device sign-in at `origin` for this machine, named `name`, of
 /// client kind `kind` when given (`clax-app`, the Clax app: the remote
 /// marks the token it issues as the person's own device, which may manage
-/// the sharing of their artifacts there). Without a kind the body names
-/// none, as a remote that knows no kinds expects.
+/// the sharing of their artifacts there), naming `return_to` when given (a
+/// loopback page its approval page sends the person back to once they
+/// decide). Without a kind the body names none, as a remote that knows no
+/// kinds expects. The sign-in, and whether the remote took `return_to`: a
+/// remote that refuses it as a field it does not know is asked again
+/// without it.
 ///
 /// # Errors
 /// The remote's ([`RemoteFail`]); 502 `remote_refused` with `not_found`
@@ -744,22 +748,35 @@ pub async fn start_sign_in(
     origin: &str,
     name: &str,
     kind: Option<&str>,
-) -> Result<PendingSignIn, ApiError> {
+    return_to: Option<&str>,
+) -> Result<(PendingSignIn, bool), ApiError> {
     let c = Client::new(origin, None);
     let mut body = json!({"client_name": name});
     if let Some(k) = kind {
         body["client_kind"] = json!(k);
     }
-    let v = match c.post("/api/hosted/device/code", &body).await {
+    if let Some(to) = return_to {
+        body["return_to"] = json!(to);
+    }
+    let unknown = |f: &RemoteFail, field: &str| {
+        f.status == Some(400) && f.code == "invalid_json" && f.message.contains(field)
+    };
+    let mut kept = return_to.is_some();
+    let mut out = c.post("/api/hosted/device/code", &body).await;
+    // A public Clax from before return addresses refuses the field as
+    // unknown: its approval page sends no one back.
+    if kept && matches!(&out, Err(f) if unknown(f, "return_to")) {
+        if let Some(o) = body.as_object_mut() {
+            o.remove("return_to");
+        }
+        kept = false;
+        out = c.post("/api/hosted/device/code", &body).await;
+    }
+    let v = match out {
         Ok(v) => v,
         // A public Clax from before client kinds refuses the field as
         // unknown.
-        Err(f)
-            if kind.is_some()
-                && f.status == Some(400)
-                && f.code == "invalid_json"
-                && f.message.contains("client_kind") =>
-        {
+        Err(f) if kind.is_some() && unknown(&f, "client_kind") => {
             return Err(too_old(origin, "sign in the Clax app"));
         }
         Err(f) => return Err(f.into()),
@@ -777,13 +794,16 @@ pub async fn start_sign_in(
             format!("{origin} answered no device sign-in of its own"),
         ));
     }
-    Ok(PendingSignIn {
-        device_code: Secret::new(field("device_code")),
-        user_code: field("user_code"),
-        verification_url: field("verification_uri_complete"),
-        expires_at: field("expires_at"),
-        interval_s: v["interval"].as_i64().unwrap_or(5),
-    })
+    Ok((
+        PendingSignIn {
+            device_code: Secret::new(field("device_code")),
+            user_code: field("user_code"),
+            verification_url: field("verification_uri_complete"),
+            expires_at: field("expires_at"),
+            interval_s: v["interval"].as_i64().unwrap_or(5),
+        },
+        kept,
+    ))
 }
 
 /// What one poll of a sign-in found.

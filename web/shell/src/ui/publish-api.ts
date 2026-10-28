@@ -3,8 +3,12 @@
 // after the first paint. A hosted daemon answers none of them (404).
 import { ApiError, getToken } from "../api";
 
-/** A public Clax this Clax is signed in to (never its token). */
-export type Remote = { id: string; origin: string; name: string; status: string; person_name: string | null };
+/** A public Clax this Clax is signed in to (never its token); while its
+ * sign-in waits, the code, the approval page and the seconds between polls. */
+export type Remote = {
+  id: string; origin: string; name: string; status: string; person_name: string | null;
+  user_code?: string | null; verification_url?: string | null; poll_interval_s?: number | null;
+};
 
 /** How a link's threads' sync stands. */
 export type Sync = { unreachable_since: string | null; last_error: string | null; synced_at: string | null };
@@ -66,6 +70,29 @@ export async function push(id: string, remote: string, mode: Mode, auto?: boolea
   return answer<Pushed>(await fetch(`/api/artifacts/${id}/push`, {
     method: "POST", headers: await headers(true), body: JSON.stringify({ remote, mode, auto }),
   }));
+}
+
+/** The public Clax the Publish button signs in to when this Clax is signed in to none. */
+export const DEFAULT_ORIGIN = "https://clax.dev";
+
+/** `POST /api/remotes`'s answer: a device sign-in waiting for the person's
+ * approval there; `return_to_kept`, whether its approval page sends them back. */
+export type SignIn = { remote: Remote; user_code: string; verification_url: string; expires_at: string; interval: number; return_to_kept: boolean };
+
+/** Starts signing this Clax in to the public Clax at `url`; `returnTo`, a
+ * path here, is the page its approval page sends the person back to. */
+export function startSignIn(url: string, returnTo?: string): Promise<SignIn> {
+  return send("POST", "/api/remotes", returnTo === undefined ? { url } : { url, return_to: returnTo });
+}
+
+/** `GET /api/remotes`: the public Clax instances this Clax is signed in to, or signing in to. */
+export async function listRemotes(): Promise<Remote[]> {
+  return (await answer<{ remotes: Remote[] }>(await fetch("/api/remotes", { headers: await headers(false), cache: "no-store" }))).remotes;
+}
+
+/** Asks whether remote `id`'s sign-in was approved there. */
+export function pollSignIn(id: string): Promise<{ remote: Remote; status: "pending" | "connected" | "denied" | "expired" }> {
+  return send("POST", `/api/remotes/${encodeURIComponent(id)}/poll`, {});
 }
 
 /** A remote's short label: its host. */

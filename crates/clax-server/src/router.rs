@@ -6,9 +6,9 @@
 use crate::routes::{
     admin, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot, client_imports,
     connect, content, docs, drafts, extension, feedback, git_token, grants, health, inbox, jobs,
-    live, live_layers, mcp_http, people, perf, questions, remote_apps, remotes, room, sample,
-    sessions, settings, site_signin, sites, snapshot, stream, surface, tags, threads, token,
-    toolpath, viewers, watches, working,
+    live, live_layers, mcp_http, people, perf, permissions, questions, remote_apps, remotes, room,
+    sample, sessions, settings, site_signin, sites, snapshot, stream, surface, tags, threads,
+    token, toolpath, viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::routes::{events, mcp, net};
@@ -325,6 +325,18 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             get(sample::grant_status)
                 .put(sample::grant)
                 .delete(sample::revoke),
+        )
+        .route(
+            "/api/artifacts/{aid}/permissions",
+            get(permissions::permissions),
+        )
+        .route(
+            "/api/artifacts/{aid}/capability-approval",
+            put(permissions::approve),
+        )
+        .route(
+            "/api/artifacts/{aid}/capability-approval/{name}",
+            delete(permissions::withdraw),
         )
         .route("/api/artifacts/{aid}/working", get(working::for_artifact))
         .route("/api/artifacts/{aid}/presence", get(artifacts::presence))

@@ -12,7 +12,8 @@
   // browser is signed in as, or how to get in; `/device[?code=]` approves
   // another machine's Clax signing in as this browser's person (a device
   // code it showed), naming the machine and the address it asked from, or
-  // denies it; when the sign-in names itself the Clax app (`client_kind`
+  // denies it (signed out, it offers GitHub sign-in where the instance has
+  // it, returning to `/device?code=<code>`); when the sign-in names itself the Clax app (`client_kind`
   // `clax-app`), it says the app may also manage the sharing of their apps. A code is redeemed only by
   // the button, never by loading the page, so a link preview spends
   // nothing. Where the instance shows Terms of Service and a Privacy
@@ -35,7 +36,8 @@
   import ThemeSwitch from "../ui/ThemeSwitch.svelte";
   import * as api from "./api";
   import { refusal } from "../people/refusal";
-  import { nextOfPage } from "./next";
+  import { nextOfPage, loopbackReturn } from "./next";
+  import { nav } from "../nav";
 
   type Page = { kind: "setup" } | { kind: "join"; code: string } | { kind: "signin"; code: string } | { kind: "device" } | { kind: "status" };
   const page: Page = (() => {
@@ -68,6 +70,12 @@
   let device = $state<api.DeviceRequest | null | false>(null);
   let decided = $state<"approved" | "denied" | null>(null);
   const isApp = $derived(device ? device.client_kind === "clax-app" : false);
+  // Where the machine's Clax asked to be sent back to: its own loopback page.
+  const back = $derived(device ? loopbackReturn(device.return_to) : null);
+  // GitHub sign-in from the device page returns to it with its code
+  // (`/device?code=<code>`, a path `safeNext` and the server's `safe_next`
+  // take), so a person new here signs in and comes back to approve.
+  const deviceGithub = $derived(`/auth/github?next=${encodeURIComponent(deviceCode.trim() ? `/device?code=${encodeURIComponent(deviceCode.trim())}` : "/device")}`);
   async function lookUp(e?: Event) {
     e?.preventDefault();
     if (busy || !deviceCode.trim()) return;
@@ -80,6 +88,11 @@
     try {
       await (approve ? api.approveDevice(deviceCode.trim()) : api.denyDevice(deviceCode.trim()));
       decided = approve ? "approved" : "denied";
+      if (back) {
+        const u = new URL(back);
+        u.searchParams.set("clax_signin", decided);
+        nav.assign(u.href);
+      }
     } catch (x) { err = msg(x); } finally { busy = false; }
   }
 
@@ -177,17 +190,25 @@
       {#if me === null}
         <p class="muted">Reading your sign-in…</p>
       {:else if !me.person || me.person.guest}
-        <p>Another Clax asks to publish here as you. Sign in first: open a sign-in link from a device that is signed in, then come back to this page.</p>
+        {#if me.github}
+          <p>Another Clax asks to publish here as you. Sign in first, and this page comes back to approve it.</p>
+          {@render githubButton(deviceGithub)}
+          {@render agree("signing in")}
+          <p class="hint">Or open a sign-in link from a device that is signed in, then come back to this page.</p>
+        {:else}
+          <p>Another Clax asks to publish here as you. Sign in first: open a sign-in link from a device that is signed in, then come back to this page.</p>
+        {/if}
       {:else if decided === "approved"}
-        <p><strong>{device ? device.client_name : "That Clax"}</strong> is signed in as you. It shows on People among your {isApp ? "devices" : "agent tokens"}, where you can revoke it. You can close this tab.</p>
+        <p><strong>{device ? device.client_name : "That Clax"}</strong> is signed in as you. It shows on People among your {isApp ? "devices" : "agent tokens"}, where you can revoke it.{back ? " Going back to it…" : " You can close this tab."}</p>
         <div class="acts"><a class="go" href="/people">Open People</a></div>
       {:else if decided === "denied"}
-        <p>Denied: that Clax is not signed in. You can close this tab.</p>
+        <p>Denied: that Clax is not signed in.{back ? " Going back to it…" : " You can close this tab."}</p>
       {:else if device}
         <p><strong>{device.client_name}</strong>{isApp ? ", the Clax app," : ","} from {device.peer_ip || "an unknown address"}, asks to publish here as you, <strong>{me.person.display_name ?? "you"}</strong>. Check that it shows the code <code>{deviceCode.trim().toUpperCase()}</code>.</p>
         {#if !device.same_address}<p class="now" data-testid="other-address">It asked from another address than this browser's. Approve only if you started this sign-in yourself, just now, on that machine: anyone who sent you this link would publish as you.</p>{/if}
         <p class="hint" data-testid={isApp ? "device-app" : undefined}>It gets an agent token of yours: {isApp ? "what it publishes is yours, within your rights, and an app it publishes stays private until you share it." : "what it publishes is public as yours, within your rights."}{#if isApp}{" "}As the Clax app, it may also change who can see or edit the pages you made{me.person.owner ? " and, as the owner, any page on this site" : ""}, and whether anyone may comment on them.{/if} It shows on People{isApp ? " among your devices" : ""}, where you can revoke it.{#if legal}{" "}<span class="legal">What it does here is yours under the <a href={legal.terms_url} target="_blank" rel="noopener">Terms of Service</a>.</span>{/if}</p>
         <div class="acts"><button class="primary" type="button" disabled={busy} onclick={() => decide(true)}>Approve</button><button type="button" disabled={busy} onclick={() => decide(false)}>Deny</button></div>
+        {#if back}<p class="hint" data-testid="device-return">Approve, then go back to {new URL(back).host}.</p>{/if}
       {:else}
         <form onsubmit={lookUp}>
           {#if device === false}<p>No Clax is waiting with that code. It may have expired (codes last ten minutes) or been used: start again on that machine.</p>{/if}
@@ -204,7 +225,7 @@
     {:else}
       {#if me?.github}
         <p>Sign in with your GitHub account. New here? Signing in makes your own space: publish your pages, connect your agents, and see what others share with you.</p>
-        <a class="gh primary" href={github} data-testid="github-signin"><svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>Sign in with GitHub</a>
+        {@render githubButton(github)}
         {@render agree("signing in")}
         <p class="hint">Or ask someone here for an invite, or, on a device that is signed in, make a sign-in link on People.</p>
       {:else}
@@ -214,6 +235,9 @@
     {/if}
     {#if err}<p class="err" role="alert">{err}</p>{/if}
   </section>
+  {#snippet githubButton(href: string)}
+    <a class="gh primary" href={href} data-testid="github-signin"><svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>Sign in with GitHub</a>
+  {/snippet}
   {#snippet agree(doing: string)}
     {#if legal}<p class="hint legal" data-testid="legal-notice">By {doing}, you agree to the <a href={legal.terms_url} target="_blank" rel="noopener">Terms of Service</a> and the <a href={legal.privacy_url} target="_blank" rel="noopener">Privacy Policy</a>.</p>{/if}
   {/snippet}

@@ -1704,6 +1704,60 @@ pub const MIGRATIONS: &[&str] = &[
         AND NOT EXISTS (SELECT 1 FROM assets a WHERE a.id = page_authors.id);
     UPDATE page_authors SET id = (SELECT a.artifact_id FROM assets a WHERE a.id = page_authors.id) || '/' || id
         WHERE kind = 'asset';",
+    // 55: the page a device sign-in returns its person to once it is
+    // decided. `device_codes.return_to` is a loopback address the machine
+    // named (`clax_http::loopback::loopback_return`), or NULL.
+    "ALTER TABLE device_codes ADD COLUMN return_to TEXT;",
+    // 56: the capability declaration each version was published under.
+    // `versions.capabilities_json` is that version's declaration, or NULL
+    // when it is not known: every version before this migration but each
+    // artifact's current one, which takes the artifact's declaration.
+    "ALTER TABLE versions ADD COLUMN capabilities_json TEXT;
+    UPDATE versions SET capabilities_json = (
+            SELECT a.capabilities_json FROM artifacts a WHERE a.id = versions.artifact_id)
+        WHERE n = (SELECT a.current_version FROM artifacts a WHERE a.id = versions.artifact_id);",
+    // 57: the Clax Quickstart seeded into each person's gallery
+    // (`crate::quickstart`). One row per person, keyed by public ID or
+    // `*owner`, written when the gallery is seeded: `artifact_id` is the
+    // artifact made, or NULL when none was (a home that already held
+    // artifacts); `release` and `version_n` are the release and version
+    // Clax last wrote to it; `seeded_at` is when the row was written; and
+    // `stopped_at` is when updates stopped for good (the person touched or
+    // deleted it), NULL while Clax still moves it to each release.
+    "CREATE TABLE quickstarts (
+        person TEXT PRIMARY KEY,
+        artifact_id TEXT,
+        release TEXT,
+        version_n INTEGER,
+        seeded_at TEXT NOT NULL,
+        stopped_at TEXT
+    );",
+    // 58: each artifact's approved capability declaration
+    // (`crate::capability_approvals`): the last declaration its
+    // administrator approved, the version it was approved at, when and by
+    // whom (`owner`, `person:<ID>`, `migration`, or `clax` for a quickstart
+    // version Clax wrote). Every live artifact but
+    // a hidden draft has its current declaration approved here (`by =
+    // 'migration'`), since it is in force today. Deleting the artifact
+    // removes its row (the foreign key on a row delete, the trigger on the
+    // soft delete).
+    "CREATE TABLE capability_approvals (
+        artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id) ON DELETE CASCADE,
+        version_n INTEGER NOT NULL,
+        capabilities_json TEXT NOT NULL,
+        approved_at TEXT NOT NULL,
+        by TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TRIGGER capability_approvals_on_delete AFTER UPDATE OF deleted_at ON artifacts
+    WHEN NEW.deleted_at IS NOT NULL
+    BEGIN
+        DELETE FROM capability_approvals WHERE artifact_id = NEW.id;
+    END;
+    INSERT INTO capability_approvals (artifact_id, version_n, capabilities_json, approved_at, by)
+        SELECT id, current_version, capabilities_json, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'migration'
+        FROM artifacts
+        WHERE deleted_at IS NULL AND current_version > 0 AND hidden = 0
+            AND capabilities_json NOT IN ('{}', '');",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -1725,8 +1779,24 @@ pub const APP_DATA_MIGRATION: u32 = LEGACY_PATHS_MIGRATION + 1;
 pub const SITE_SESSIONS_MIGRATION: u32 = APP_DATA_MIGRATION + 1;
 
 /// The migration that keys assets by artifact and asset ID, as a schema
-/// version, and this build's last.
+/// version.
 pub const ASSET_KEYS_MIGRATION: u32 = SITE_SESSIONS_MIGRATION + 1;
+
+/// The migration that adds `device_codes.return_to`, as a schema version.
+pub const RETURN_TO_MIGRATION: u32 = ASSET_KEYS_MIGRATION + 1;
+
+/// The migration that adds `versions.capabilities_json`, as a schema
+/// version.
+pub const VERSION_CAPABILITIES_MIGRATION: u32 = RETURN_TO_MIGRATION + 1;
+
+/// The migration that adds `quickstarts`, each person's seeded Clax
+/// Quickstart, as a schema version.
+pub const QUICKSTART_MIGRATION: u32 = VERSION_CAPABILITIES_MIGRATION + 1;
+
+/// The migration that adds `capability_approvals` and approves each live
+/// artifact's current declaration, as a schema version, and this build's
+/// last.
+pub const CAPABILITY_APPROVALS_MIGRATION: u32 = QUICKSTART_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -1886,16 +1956,20 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`ASSET_KEYS_MIGRATION`]. They follow the app's in every
+/// [`CAPABILITY_APPROVALS_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 5] = [
+const MARKS_AFTER_APP: [Mark<'static>; 9] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
     Mark::Table("site_codes"),
     Mark::Index("assets_by_id"),
+    Mark::Column("device_codes", "return_to"),
+    Mark::Column("versions", "capabilities_json"),
+    Mark::Table("quickstarts"),
+    Mark::Table("capability_approvals"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -4823,11 +4897,118 @@ mod tests {
         assert!(MIGRATIONS[first + 10].contains("CREATE TABLE app_data_moved ("));
         assert!(MIGRATIONS[first + 11].contains("CREATE TABLE site_codes ("));
         assert!(MIGRATIONS[first + 12].contains("CREATE INDEX assets_by_id"));
-        assert_eq!(MIGRATIONS.len() as u32, ASSET_KEYS_MIGRATION);
+        assert_eq!(super::RETURN_TO_MIGRATION, super::ASSET_KEYS_MIGRATION + 1);
+        assert!(MIGRATIONS[first + 13].contains("ADD COLUMN return_to"));
+        assert_eq!(
+            super::VERSION_CAPABILITIES_MIGRATION,
+            super::RETURN_TO_MIGRATION + 1
+        );
+        assert!(
+            MIGRATIONS[first + 14].contains("ALTER TABLE versions ADD COLUMN capabilities_json")
+        );
+        assert_eq!(
+            super::QUICKSTART_MIGRATION,
+            super::VERSION_CAPABILITIES_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 15].contains("CREATE TABLE quickstarts ("));
+        assert_eq!(
+            super::CAPABILITY_APPROVALS_MIGRATION,
+            super::QUICKSTART_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 16].contains("CREATE TABLE capability_approvals ("));
+        assert_eq!(
+            MIGRATIONS.len() as u32,
+            super::CAPABILITY_APPROVALS_MIGRATION
+        );
     }
 
     #[test]
-    fn a_fresh_database_reaches_54() {
+    fn migration_56_gives_each_artifacts_current_version_its_declaration() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        drop(Store::open(&home).unwrap());
+        let c = Connection::open(home.db_path()).unwrap();
+        // The schema as it was before 56, with versions of two artifacts.
+        c.execute_batch("ALTER TABLE versions DROP COLUMN capabilities_json;")
+            .unwrap();
+        c.execute_batch(
+            "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version, capabilities_json)
+                VALUES ('7q3k9mzx2b4t', 'A', 'x', 'x', 2, '0', '{\"db\":{}}'),
+                       ('8r4m2nzy3c5v', 'B', 'x', 'x', 1, '0', '{}');
+             INSERT INTO versions (artifact_id, n, created_at, files_json) VALUES
+                ('7q3k9mzx2b4t', 1, 'x', '{}'), ('7q3k9mzx2b4t', 2, 'x', '{}'),
+                ('8r4m2nzy3c5v', 1, 'x', '{}');",
+        )
+        .unwrap();
+        c.execute_batch(MIGRATIONS[super::VERSION_CAPABILITIES_MIGRATION as usize - 1])
+            .unwrap();
+        let rows: Vec<(String, u32, Option<String>)> = c
+            .prepare(
+                "SELECT artifact_id, n, capabilities_json FROM versions ORDER BY artifact_id, n",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("7q3k9mzx2b4t".to_string(), 1, None),
+                (
+                    "7q3k9mzx2b4t".to_string(),
+                    2,
+                    Some("{\"db\":{}}".to_string())
+                ),
+                ("8r4m2nzy3c5v".to_string(), 1, Some("{}".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn migration_58_approves_every_declaration_in_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        drop(Store::open(&home).unwrap());
+        let c = Connection::open(home.db_path()).unwrap();
+        // The schema as it was before 58, with an artifact declaring `net`,
+        // one declaring nothing, a deleted one and a hidden draft.
+        c.execute_batch(
+            "DROP TRIGGER capability_approvals_on_delete; DROP TABLE capability_approvals;",
+        )
+        .unwrap();
+        c.execute_batch(
+            "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version, capabilities_json, deleted_at, hidden)
+                VALUES ('7q3k9mzx2b4t', 'A', 'x', 'x', 2, '0', '{\"net\":{\"hosts\":[\"a.example.com\"]}}', NULL, 0),
+                       ('8r4m2nzy3c5v', 'B', 'x', 'x', 1, '0', '{}', NULL, 0),
+                       ('9s5n3pa04d6w', 'C', 'x', 'x', 1, '0', '{\"sample\":{}}', 'x', 0),
+                       ('2t6p4qb15e7x', 'D', 'x', 'x', 1, '0', '{\"sample\":{}}', NULL, 1);",
+        )
+        .unwrap();
+        c.execute_batch(MIGRATIONS[super::CAPABILITY_APPROVALS_MIGRATION as usize - 1])
+            .unwrap();
+        let rows: Vec<(String, u32, String, String)> = c
+            .prepare(
+                "SELECT artifact_id, version_n, capabilities_json, by FROM capability_approvals ORDER BY artifact_id",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![(
+                "7q3k9mzx2b4t".to_string(),
+                2,
+                "{\"net\":{\"hosts\":[\"a.example.com\"]}}".to_string(),
+                "migration".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_fresh_database_reaches_58() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -4840,7 +5021,11 @@ mod tests {
         assert_eq!(super::APP_DATA_MIGRATION, 52);
         assert_eq!(super::SITE_SESSIONS_MIGRATION, 53);
         assert_eq!(ASSET_KEYS_MIGRATION, 54);
-        assert_eq!(user_version(&c), ASSET_KEYS_MIGRATION);
+        assert_eq!(super::RETURN_TO_MIGRATION, 55);
+        assert_eq!(super::VERSION_CAPABILITIES_MIGRATION, 56);
+        assert_eq!(super::QUICKSTART_MIGRATION, 57);
+        assert_eq!(super::CAPABILITY_APPROVALS_MIGRATION, 58);
+        assert_eq!(user_version(&c), super::CAPABILITY_APPROVALS_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -5582,7 +5767,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), ASSET_KEYS_MIGRATION);
+        assert_eq!(user_version(&c), super::CAPABILITY_APPROVALS_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -6073,15 +6258,17 @@ mod tests {
 
         // The owner's home after this build's first open: 43 adopted to 46,
         // then the jobs migration to 47, the app push migration to 48, the
-        // remote kind migration to 49, ClaxBot's to 50, and the site
-        // migrations to 54.
+        // remote kind migration to 49, ClaxBot's to 50, the site
+        // migrations to 54, the return-to migration to 55, the version
+        // declarations' to 56, the quickstart's to 57 and the capability
+        // approvals' to 58.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), ASSET_KEYS_MIGRATION);
+            assert_eq!(user_version(&c), super::CAPABILITY_APPROVALS_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -6089,8 +6276,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            ASSET_KEYS_MIGRATION + 1,
-            "ClaxBot's 50 and the site migrations' 51 to 54 are one later now"
+            super::CAPABILITY_APPROVALS_MIGRATION + 1,
+            "ClaxBot's 50 and the migrations 51 to 58 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -6109,7 +6296,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), ASSET_KEYS_MIGRATION);
+        assert_eq!(user_version(&copied), super::CAPABILITY_APPROVALS_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -6123,7 +6310,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (ASSET_KEYS_MIGRATION + 1, schema, rows)
+            (super::CAPABILITY_APPROVALS_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -6397,7 +6584,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, ASSET_KEYS_MIGRATION);
+        assert_eq!(last, super::CAPABILITY_APPROVALS_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));

@@ -424,8 +424,13 @@ async fn patch(ts: &TestServer, aid: &str, body: serde_json::Value) -> reqwest::
 #[tokio::test]
 async fn patch_replaces_the_capabilities_declaration() {
     let ts = TestServer::spawn().await;
+    // Published without clax.json, so PATCH declares (see
+    // patch_cannot_change_a_declaration_clax_json_owns).
     let res = ts
-        .post_json("/api/artifacts", json!({"title": "T", "capabilities": {"db": {}, "user": {}}, "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}}))
+        .post_json(
+            "/api/artifacts",
+            json!({"title": "T", "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}}),
+        )
         .await;
     let aid = res.json::<serde_json::Value>().await.unwrap()["artifact"]["id"]
         .as_str()
@@ -580,4 +585,333 @@ async fn a_read_declaration_naming_its_own_artifact_is_refused() {
     assert_eq!(got["artifact"]["capabilities"], json!({}), "{got}");
     let res = patch(&ts, &aid, json!({"capabilities": {"db": {"read": [bid]}}})).await;
     assert_eq!(res.status(), 200, "naming another artifact is accepted");
+}
+
+/// A publish's status and body: a new artifact at `aid: None`, else a
+/// version of `aid` on `if_version`.
+async fn publish_body(
+    ts: &TestServer,
+    aid: Option<&str>,
+    if_version: u32,
+    mut body: serde_json::Value,
+) -> (u16, serde_json::Value) {
+    let url = match aid {
+        None => {
+            body["title"] = json!("T");
+            "/api/artifacts".to_string()
+        }
+        Some(aid) => {
+            body["if_version"] = json!(if_version);
+            format!("/api/artifacts/{aid}/versions")
+        }
+    };
+    let res = ts.post_json(&url, body).await;
+    (res.status().as_u16(), res.json().await.unwrap())
+}
+
+async fn version_file(ts: &TestServer, aid: &str, n: u32, path: &str) -> reqwest::Response {
+    ts.get(&format!("/api/artifacts/{aid}/versions/{n}/files/{path}"))
+        .await
+}
+
+fn file_paths(v: &serde_json::Value) -> Vec<String> {
+    v["version"]["files"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect()
+}
+
+#[tokio::test]
+async fn a_publish_with_clax_json_declares_from_it() {
+    let ts = TestServer::spawn().await;
+    let manifest = "{\"capabilities\": {\"db\": {}}}";
+    let (s, v) = publish_body(
+        &ts,
+        None,
+        0,
+        json!({"files": {"index.html": {"content": "<p>"}, "clax.json": {"content": manifest}}}),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["artifact"]["capabilities"], json!({"db": {}}), "{v}");
+    let aid = v["artifact"]["id"].as_str().unwrap().to_string();
+    // The file is kept as it was sent, not rewritten.
+    assert_eq!(
+        version_file(&ts, &aid, 1, "clax.json")
+            .await
+            .text()
+            .await
+            .unwrap(),
+        manifest
+    );
+    // A file that is not a manifest, or declares what does not validate,
+    // publishes nothing.
+    for (content, want) in [
+        (
+            "{\"capabilities\": {}, \"title\": \"x\"}",
+            "invalid_manifest",
+        ),
+        ("[]", "invalid_manifest"),
+        ("{\"capabilities\": ", "invalid_manifest"),
+        (
+            "{\"capabilities\": {\"comments\": {\"composer_only\": 1}}}",
+            "invalid_capabilities",
+        ),
+    ] {
+        let (s, v) = publish_body(
+            &ts,
+            Some(&aid),
+            1,
+            json!({"files": {"index.html": {"content": "<p>2"}, "clax.json": {"content": content}}}),
+        )
+        .await;
+        assert_eq!((s, v["error"]["code"].as_str()), (400, Some(want)), "{v}");
+    }
+    let got: serde_json::Value = ts
+        .get(&format!("/api/artifacts/{aid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(got["artifact"]["current_version"], 1, "{got}");
+    assert_eq!(got["artifact"]["capabilities"], json!({"db": {}}), "{got}");
+}
+
+#[tokio::test]
+async fn a_capabilities_argument_that_differs_from_clax_json_is_refused() {
+    let ts = TestServer::spawn().await;
+    let files = || {
+        json!({"index.html": {"content": "<p>"},
+               "clax.json": {"content": "{\"capabilities\": {\"db\": {}}}"}})
+    };
+    let (s, v) = publish_body(
+        &ts,
+        None,
+        0,
+        json!({"capabilities": {"user": {}}, "files": files()}),
+    )
+    .await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (400, Some("manifest_mismatch")),
+        "{v}"
+    );
+    let list: serde_json::Value = ts.get("/api/artifacts").await.json().await.unwrap();
+    assert_eq!(list["artifacts"], json!([]), "nothing is published");
+    // The same declaration, or none (null is none), agrees with the file.
+    let (s, v) = publish_body(
+        &ts,
+        None,
+        0,
+        json!({"capabilities": {"db": {}}, "files": files()}),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let aid = v["artifact"]["id"].as_str().unwrap().to_string();
+    let (s, v) = publish_body(
+        &ts,
+        Some(&aid),
+        1,
+        json!({"capabilities": null, "files": files()}),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["artifact"]["capabilities"], json!({"db": {}}), "{v}");
+}
+
+#[tokio::test]
+async fn a_capabilities_argument_alone_writes_clax_json() {
+    let ts = TestServer::spawn().await;
+    let caps = json!({"db": {}, "user": {"scopes": ["profile"]}});
+    let (s, v) = publish_body(
+        &ts,
+        None,
+        0,
+        json!({"capabilities": caps, "files": {"index.html": {"content": "<p>"}}}),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(file_paths(&v), ["clax.json", "index.html"]);
+    let aid = v["artifact"]["id"].as_str().unwrap().to_string();
+    let res = version_file(&ts, &aid, 1, "clax.json").await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(
+        res.bytes().await.unwrap().to_vec(),
+        clax_core::manifest::render(&caps)
+    );
+    // A new argument rewrites it.
+    let (s, v) = publish_body(
+        &ts,
+        Some(&aid),
+        1,
+        json!({"capabilities": {}, "files": {"index.html": {"content": "<p>2"}}}),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["artifact"]["capabilities"], json!({}), "{v}");
+    assert_eq!(
+        version_file(&ts, &aid, 2, "clax.json")
+            .await
+            .bytes()
+            .await
+            .unwrap()
+            .to_vec(),
+        clax_core::manifest::render(&json!({}))
+    );
+}
+
+#[tokio::test]
+async fn clax_json_carries_forward_when_a_publish_names_neither() {
+    let ts = TestServer::spawn().await;
+    let (_, v) = publish_body(
+        &ts,
+        None,
+        0,
+        json!({"capabilities": {"db": {}}, "files": {"index.html": {"content": "<p>"}}}),
+    )
+    .await;
+    let aid = v["artifact"]["id"].as_str().unwrap().to_string();
+    let (s, v) = publish_body(
+        &ts,
+        Some(&aid),
+        1,
+        json!({"files": {"index.html": {"content": "<p>2"}}}),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(file_paths(&v), ["clax.json", "index.html"]);
+    assert_eq!(v["artifact"]["capabilities"], json!({"db": {}}), "{v}");
+    assert_eq!(
+        version_file(&ts, &aid, 2, "clax.json")
+            .await
+            .bytes()
+            .await
+            .unwrap()
+            .to_vec(),
+        clax_core::manifest::render(&json!({"db": {}}))
+    );
+    // Removing the file clears the declaration.
+    let (s, v) = publish_body(
+        &ts,
+        Some(&aid),
+        2,
+        json!({"files": {"index.html": {"content": "<p>3"}, "clax.json": null}}),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(file_paths(&v), ["index.html"]);
+    assert_eq!(v["artifact"]["capabilities"], json!({}), "{v}");
+    // A page without one keeps its declaration and gains no file.
+    let res = patch(&ts, &aid, json!({"capabilities": {"user": {}}})).await;
+    assert_eq!(res.status(), 200);
+    let (s, v) = publish_body(
+        &ts,
+        Some(&aid),
+        3,
+        json!({"files": {"index.html": {"content": "<p>4"}}}),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(file_paths(&v), ["index.html"]);
+    assert_eq!(v["artifact"]["capabilities"], json!({"user": {}}), "{v}");
+}
+
+#[tokio::test]
+async fn patch_cannot_change_a_declaration_clax_json_owns() {
+    let ts = TestServer::spawn().await;
+    let (_, v) = publish_body(
+        &ts,
+        None,
+        0,
+        json!({"capabilities": {"db": {}}, "files": {"index.html": {"content": "<p>"}}}),
+    )
+    .await;
+    let aid = v["artifact"]["id"].as_str().unwrap().to_string();
+    let res = patch(&ts, &aid, json!({"capabilities": {"user": {}}})).await;
+    assert_eq!(res.status(), 400);
+    let v: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(v["error"]["code"], "manifest_owned", "{v}");
+    // The declaration in force is no change.
+    let res = patch(&ts, &aid, json!({"capabilities": {"db": {}}})).await;
+    assert_eq!(res.status(), 200);
+    // Without clax.json, PATCH declares as before.
+    let (s, _) = publish_body(
+        &ts,
+        Some(&aid),
+        1,
+        json!({"files": {"index.html": {"content": "<p>2"}, "clax.json": null}}),
+    )
+    .await;
+    assert_eq!(s, 201);
+    let res = patch(&ts, &aid, json!({"capabilities": {"user": {}}})).await;
+    assert_eq!(res.status(), 200);
+    let v: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(v["artifact"]["capabilities"], json!({"user": {}}), "{v}");
+}
+
+#[tokio::test]
+async fn a_clax_json_from_before_manifests_owns_nothing() {
+    use clax_core::publish::{DecodedFile, FileChange, PublishRequest, validate};
+    let ts = TestServer::spawn().await;
+    // A page's own clax.json, published before clax.json meant anything.
+    let req: PublishRequest = serde_json::from_value(json!({
+        "title": "Old",
+        "files": {"index.html": {"content": "<p>1</p>"}},
+    }))
+    .unwrap();
+    let mut v1 = validate(req).unwrap();
+    v1.files.insert(
+        "clax.json".into(),
+        FileChange::Put(DecodedFile {
+            bytes: br#"{"theme": "dark"}"#.to_vec(),
+            content_type: "application/json".into(),
+        }),
+    );
+    let (a, _) = ts
+        .store
+        .create_artifact_async(&clax_core::audit::AuditCtx::DAEMON, v1, None)
+        .await
+        .unwrap();
+    let aid = a.id;
+    // PATCH declares as for a page without one.
+    let res = patch(&ts, &aid, json!({"capabilities": {"db": {}}})).await;
+    assert_eq!(res.status(), 200);
+    // A publish naming neither carries it, unread, and keeps the declaration.
+    let (s, v) = publish_body(
+        &ts,
+        Some(&aid),
+        1,
+        json!({"files": {"index.html": {"content": "<p>2</p>"}}}),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["artifact"]["capabilities"], json!({"db": {}}), "{v}");
+    assert_eq!(
+        version_file(&ts, &aid, 2, "clax.json")
+            .await
+            .text()
+            .await
+            .unwrap(),
+        r#"{"theme": "dark"}"#
+    );
+    // Declaring writes over it.
+    let (s, _) = publish_body(
+        &ts,
+        Some(&aid),
+        2,
+        json!({"capabilities": {"db": {}}, "files": {"index.html": {"content": "<p>3</p>"}}}),
+    )
+    .await;
+    assert_eq!(s, 201);
+    assert_eq!(
+        version_file(&ts, &aid, 3, "clax.json")
+            .await
+            .bytes()
+            .await
+            .unwrap()
+            .to_vec(),
+        clax_core::manifest::render(&json!({"db": {}}))
+    );
 }

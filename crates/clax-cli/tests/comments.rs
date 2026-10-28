@@ -611,7 +611,7 @@ fn versions_name_their_publisher_and_the_threads_they_addressed() {
         vs[0]["addressed"],
         json!([{"thread_id": w.t[0], "ref": format!("{}#1", w.review)}])
     );
-    assert_eq!(vs[0]["files"], json!(["index.html"]));
+    assert_eq!(vs[0]["files"], json!(["clax.json", "index.html"]));
     assert_eq!(vs[1]["publisher"]["harness"], "claude");
     assert!(
         vs[1]["publisher"]["agent"]

@@ -34,7 +34,7 @@ export async function startDaemon(): Promise<TestDaemon> {
   const serve = ["serve", "--foreground", "--bind", "127.0.0.1", "--port", "0"];
   const args = prebuilt ? serve : ["run", "-q", "-p", "clax-cli", "--", ...serve];
   const child: ChildProcess = spawn(prebuilt || "cargo", args,
-    { cwd: repoRoot, env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "" }, stdio: ["ignore", "ignore", "inherit"] });
+    { cwd: repoRoot, env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "", CLAX_GALLERY__QUICKSTART: "false" }, stdio: ["ignore", "ignore", "inherit"] });
   const infoPath = join(home, "daemon.json");
   let base = "";
   let token = "";

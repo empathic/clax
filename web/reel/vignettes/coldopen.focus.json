@@ -1,0 +1,19 @@
+{
+  "targets": {
+    "dialog": ".na-panel",
+    "who_builds": ".na-panel .groups",
+    "strip": ".strip.ag",
+    "thread": ".thread-card[data-thread]",
+    "pill": "button.who",
+    "chart": "frame:.card.panel:has(#chart)"
+  },
+  "shots": [
+    { "at": "@dialog-0.2", "targets": ["dialog"], "label": "the new-artifact dialog, as the request is typed" },
+    { "at": "@who_builds-0.2", "targets": ["who_builds"], "label": "who builds it: an agent is picked" },
+    { "at": "working-0.3", "until": "reveal-0.3", "targets": ["strip", "thread", "pill"], "label": "the agent working on it" },
+    { "at": "touch-0.07", "targets": ["chart"], "label": "the chart, hovered" }
+  ],
+  "clean": [
+    { "at": "reveal-0.3", "until": "reveal+0.25", "label": "the placeholder becomes the page (short: the hover follows at once)" }
+  ]
+}

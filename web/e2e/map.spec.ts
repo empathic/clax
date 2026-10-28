@@ -9,7 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { crc32, deflateSync } from "node:zlib";
 import type { Frame, Page } from "@playwright/test";
 import { host, hostChannel, initHost, ofType, type HostMessage } from "./app-host";
-import { test, expect, type Daemon, api, contentFrame, reach } from "./fixtures";
+import { test, expect, type Daemon, api, approve, contentFrame, reach } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -83,6 +83,9 @@ async function fakeTiles(page: Page, failFirst = false, failed: string[] = []): 
 
 async function openMap(page: Page, title: string, props: string, capabilities: object, { query = "app=1", extraMarkers = "" } = {}): Promise<Frame> {
   const { artifact } = await api(d.base, d.token, "/api/artifacts", { method: "POST", body: JSON.stringify({ title, capabilities, files: { "index.html": { content: PAGE(props, extraMarkers), encoding: "utf8" }, ...kitFiles } }) }) as { artifact: { id: string } };
+  // Approved, then the grant approving made revoked: the map asks for its host.
+  await approve(d.base, d.token, artifact.id);
+  await api(d.base, d.token, `/api/artifacts/${artifact.id}/net-grants`, { method: "DELETE" });
   await hostChannel(page);
   await page.goto(`${d.base}/a/${artifact.id}?${query}`);
   const frame = await contentFrame(page, artifact.id, 1);

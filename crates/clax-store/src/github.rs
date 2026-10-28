@@ -306,10 +306,10 @@ impl Store {
     }
 
     /// Refuses one more artifact for person `person` (a public ID) when it
-    /// would take their account past its cap. Only a GitHub member is
-    /// capped, and only while the store has caps. A read before the work
-    /// of making the artifact starts; the transaction that inserts it
-    /// checks again ([`Store::check_quota_in`]).
+    /// would take their account past its cap. The quickstart seeded for
+    /// them is not counted. Only a GitHub member is capped, and only while the
+    /// store has caps. A read before the work of making the artifact starts;
+    /// the transaction that inserts it checks again ([`Store::check_quota_in`]).
     ///
     /// # Errors
     /// `quota_exceeded`, naming the cap.
@@ -345,7 +345,9 @@ impl Store {
         }
         let made: i64 = c.query_row(
             "SELECT COUNT(*) FROM artifacts WHERE person = ?1 AND deleted_at IS NULL
-               AND current_version > 0",
+               AND current_version > 0
+               AND id NOT IN (SELECT artifact_id FROM quickstarts
+                               WHERE person = ?1 AND artifact_id IS NOT NULL)",
             params![person],
             |r| r.get(0),
         )?;
@@ -499,5 +501,43 @@ mod tests {
             "quota_exceeded"
         );
         assert_eq!(live_made_by(&st, &sam), 1);
+    }
+
+    #[test]
+    fn a_seeded_quickstart_is_made_past_a_zero_cap_and_counts_toward_none() {
+        let (_d, st, sam) = capped();
+        st.set_member_caps(Some(MemberCaps { max_artifacts: 0 }));
+        let release = clax_core::quickstart::Release::from_tree(&clax_core::embedded::MemTree(
+            [
+                (
+                    "quickstart/index.html".to_string(),
+                    b"<!doctype html><title>Clax Quickstart</title><p>a</p>".to_vec(),
+                ),
+                (
+                    "quickstart/clax.json".to_string(),
+                    br#"{"capabilities":{"db":{}}}"#.to_vec(),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        ))
+        .unwrap();
+        let seeded = st
+            .block_on(st.seed_quickstart(DAEMON, Some(&sam), &release))
+            .unwrap();
+        assert!(matches!(seeded, crate::quickstart::Seeded::Made { .. }));
+        assert_eq!(
+            quota_code(st.create_artifact(DAEMON, by(&sam), None)),
+            "quota_exceeded"
+        );
+        // At a cap of two, the member still makes two of their own.
+        st.set_member_caps(Some(MemberCaps { max_artifacts: 2 }));
+        st.create_artifact(DAEMON, by(&sam), None).unwrap();
+        st.create_artifact(DAEMON, by(&sam), None).unwrap();
+        assert_eq!(
+            quota_code(st.create_artifact(DAEMON, by(&sam), None)),
+            "quota_exceeded"
+        );
+        assert_eq!(live_made_by(&st, &sam), 3);
     }
 }

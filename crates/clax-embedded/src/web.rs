@@ -74,6 +74,17 @@ mod tests {
         assert_eq!(web_ui_dir(), None);
     }
 
+    /// A build that embeds its web UI carries the quickstart page and its
+    /// capability declaration, and none of the files that stay in the
+    /// source tree.
+    #[test]
+    fn an_embedded_build_carries_the_quickstart() {
+        assert!(web_ui("quickstart/index.html").is_some());
+        assert!(web_ui("quickstart/clax.json").is_some());
+        assert!(web_ui("quickstart/README.md").is_none());
+        assert!(web_ui("quickstart/ideas.html").is_none());
+    }
+
     /// No embedded file carries its file's times, which a rebuild of the
     /// web UI changes without changing its content: the crate compiles to
     /// the same metadata from the same inputs, so its `.rmeta` and its

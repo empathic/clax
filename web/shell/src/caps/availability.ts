@@ -1,22 +1,25 @@
 // Which capabilities a view serves (the Availability table of the phase 4 plan,
-// spec §9): declared ones, `permissions` and `user` always (user.d.ts: its
-// universal members need no declaration), `assets` only to the owner shell;
+// spec §9): the declared ones, where `declared` is the declaration in force
+// (the daemon's `capabilities_in_force`: a name awaiting approval is absent),
+// `permissions` and `user` always (user.d.ts: its universal members need no
+// declaration), `assets` only to the owner shell;
 // `room` when declared; `sample` to the owner shell, when declared and the
 // daemon has a provider; the device capabilities (`notify`, `share`, `file`,
 // `camera`, `location`) when declared and the Clax app hosts the view
 // (device-link.ts); `home` when declared, the Clax app hosts the view and
 // the app says this view is its home app (`home.available`); `net` to the
-// owner shell when declared; `site` (no capability a page declares: the
-// relay of a page's own site API calls) where the Clax app hosts the view;
-// claude.ai's
-// `files` and `mcp` never.
+// owner shell when declared; `shell` to the owner shell and editors (the
+// viewer's `may_edit`) when declared; `site` (no
+// capability a page declares: the relay of a page's own site API calls)
+// where the Clax app hosts the view; claude.ai's `files` and `mcp` never.
 
 export type Declared = Record<string, Record<string, unknown> | undefined>;
 
 /** The declarable capabilities this runtime serves, in the order `permissions.state()` lists them. */
 /** What this daemon serves beyond the declaration: `sample` needs a provider
- * (`GET /api/artifacts/<aid>/sample`), asked when the page names it. */
-export type Served = { sample?: boolean; device?: boolean; home?: boolean; site?: boolean };
+ * (`GET /api/artifacts/<aid>/sample`), asked when the page names it.
+ * `edits`: the viewer may edit the artifact (the daemon's `may_edit`). */
+export type Served = { sample?: boolean; device?: boolean; home?: boolean; site?: boolean; edits?: boolean };
 
 export const CAPABILITIES = ["artifact", "db", "downloads", "user", "comments", "assets", "room", "sample"] as const;
 
@@ -38,6 +41,8 @@ export function isAvailable(name: string, declared: Declared, owner: boolean, se
     case "home": return declares(name, declared) && served.home === true;
     // The owner's views only: the fetch route takes the token (net.ts).
     case "net": return owner && declares(name, declared);
+    // The owner's and editors' views: a reader's tour has no Fork or Publish to point at.
+    case "shell": return (owner || served.edits === true) && declares(name, declared);
     // Not a capability a page declares: the relay of its own site's API
     // calls, which the Clax app's shell alone makes (site.ts).
     case "site": return served.site === true;

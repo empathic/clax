@@ -30,7 +30,7 @@
 <svelte:window onpointerdown={outside} />
 
 <span class="send" bind:this={root}>
-  <button type="button" class="primary" {disabled} aria-haspopup={pick ? "menu" : undefined} onclick={e => { if (pick) open = !open; else onSend(e); }}>{label}</button>
+  <button type="button" class="primary" data-shell-control="send" {disabled} aria-haspopup={pick ? "menu" : undefined} onclick={e => { if (pick) open = !open; else onSend(e); }}>{label}</button>
   {#if live.length > 1 || others || agents.some(a => a.builtin)}
     <button type="button" class="primary caret" aria-label="Choose the agent" aria-haspopup="menu" aria-expanded={open} onclick={() => { open = !open; }}>▾</button>
     {#if open}

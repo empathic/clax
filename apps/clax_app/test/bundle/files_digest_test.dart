@@ -25,4 +25,16 @@ void main() {
     };
     expect(contentHash(hashed), digest);
   });
+
+  test('contentHash leaves clax.json out, as the daemon content_sha256 does', () {
+    const manifest = '{\n  "capabilities": {}\n}\n';
+    final hashed = {
+      for (final e in {...files, 'clax.json': manifest}.entries)
+        e.key: (
+          sha256: sha256Hex(utf8.encode(e.value)),
+          size: utf8.encode(e.value).length,
+        ),
+    };
+    expect(contentHash(hashed), digest);
+  });
 }

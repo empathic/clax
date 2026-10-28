@@ -1,0 +1,54 @@
+{
+  "metric": "signups",
+  "source": "Northwind metrics, updated hourly",
+  "weeks": [
+    {
+      "week": "Aug 10",
+      "value": 1840
+    },
+    {
+      "week": "Aug 17",
+      "value": 1975
+    },
+    {
+      "week": "Aug 24",
+      "value": 1910
+    },
+    {
+      "week": "Aug 31",
+      "value": 2260
+    },
+    {
+      "week": "Sep 7",
+      "value": 2410
+    },
+    {
+      "week": "Sep 14",
+      "value": 2335
+    },
+    {
+      "week": "Sep 21",
+      "value": 2690
+    },
+    {
+      "week": "Sep 28",
+      "value": 2870
+    },
+    {
+      "week": "Oct 5",
+      "value": 3020
+    },
+    {
+      "week": "Oct 12",
+      "value": 3195
+    },
+    {
+      "week": "Oct 19",
+      "value": 3570
+    },
+    {
+      "week": "Oct 26",
+      "value": 4212
+    }
+  ]
+}

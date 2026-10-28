@@ -2,7 +2,8 @@
 // `state` and call the intent methods; the frame is a FrameHost the mount
 // gives it.
 import { type Anchor, type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../../bridge/src/protocol";
-import { ApiError, type Artifact, type Attention, type SampleStatus, type TagRef, type Version, getArtifact, getToken } from "../api";
+import { approveCapabilities } from "../caps/approval";
+import { ApiError, type Artifact, type Attention, type PendingCapabilities, type SampleStatus, type TagRef, type Version, getArtifact, getToken } from "../api";
 import { getDrafts, getSampleStatus, putLooked, putSeen } from "./view-api";
 import { acceptByeFromFrame, acceptFromFrame, acceptSiteState, helloMatches, sendToFrame } from "../bridge-link";
 import type { Declared } from "../caps/availability";
@@ -11,10 +12,10 @@ import { HINT_MS, PICK_ATTEST_WAIT_MS, afterHostAttestation, frameGesture, hostA
 import { CapabilityHost, type CommentsUi, type DbJournal } from "../caps/host";
 import { REQUEST_STUCK, connTrouble } from "../conn-notice";
 import { Lifecycle, onPageCache, retrying } from "../lifecycle";
-import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, report, scopedNotice } from "../failure";
+import { APPROVE_FAILED, LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, failureText, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
 import { type SiteHosts, artifactOrigin, pageSrc, startSrc } from "../origin";
-import { appQuery, parseShellPath, shellPath } from "../route";
+import { appQuery, inspectQuery, parseShellPath, shellPath } from "../route";
 import { type Thread, type Viewer, addComment, createThread, currentViewer, fetchThread, getViewer, listThreads, onViewer, reopenThread, resolveThread, seedViewer, sendBatch, sendToAgent, upsert } from "../threads";
 import { after } from "../clock";
 import { afterPaint, nextFrame } from "./after-paint";
@@ -29,7 +30,7 @@ import { FrameGate } from "./frame-gate";
 import type { PresenceView } from "./presence-model";
 import type { Presence, PresenceReporter } from "./presence-reporter";
 import type { FrameHost } from "./frame-host";
-import { type KeyAction, holdKeysAcrossLoad, keyAction, keysHeldAtLoad } from "./keys";
+import { type KeyAction, holdKeysAcrossLoad, keyAction, keysHeldAtLoad, pageKeyAction } from "./keys";
 import { keyboardTrail } from "./trail";
 import { type Ask, promptQueue } from "./prompt-queue";
 import { defaultTarget, rememberTarget } from "./send-target";
@@ -56,6 +57,12 @@ export type ViewState = {
   startFile: string;
   data: Loaded | null;
   error: string | null;
+  /** The digest of the pending declaration whose bar "Not now" hid for this view; a new declaration shows its bar again. */
+  approvalHidden: string | null;
+  /** An approval is in flight. */
+  approving: boolean;
+  /** The declaration in force gained something since the frame was served: the top bar offers Reload. */
+  declarationStale: boolean;
   /** The artifact's site origin, undefined until the artifact is known. */
   origin: string | undefined;
   /** The page's own address on its site, when the frame could not open it
@@ -169,6 +176,16 @@ export function commentsOff(s: ViewState): boolean {
 }
 
 /** The artifact and its site are known: the islands show. */
+/** How the declaration in force `next` differs from `served`, the one a
+ * frame was served: "removed" when a name or a `net` host it had is gone,
+ * "added" when it only gained, else "same". */
+export function declarationMoved(served: Declared, next: Declared): "same" | "added" | "removed" {
+  const hosts = (d: Declared): string[] => (Array.isArray(d.net?.hosts) ? (d.net.hosts as string[]) : []);
+  const nextHosts = hosts(next);
+  if (Object.keys(served).some(k => !Object.hasOwn(next, k)) || hosts(served).some(h => !nextHosts.includes(h))) return "removed";
+  return JSON.stringify(served) === JSON.stringify(next) ? "same" : "added";
+}
+
 export function viewReady(s: ViewState): s is ViewState & { data: Loaded } {
   return !s.error && !!s.data && s.origin !== undefined;
 }
@@ -244,6 +261,10 @@ export class ArtifactController {
   latestKnown = 0;
   /** The last ticket taken for the artifact's tags, and the one whose answer is shown. */
   private tagsAsked = 0;
+  private approvalAsked = 0;
+  private servedFor: string | null = null;
+  /** The declaration in force the capability host of the shown frame was built with. */
+  private served: Declared = {};
   private tagsShown = 0;
   /** A ticket for a request whose answer carries the artifact's tags (a
    * refetch, the tag editor's change), taken as it starts. */
@@ -364,6 +385,13 @@ export class ArtifactController {
    * control: it neither sets this nor reaches the shell's buttons, where a
    * Space would press them natively. */
   private keysOwned = !this.heldAtLoad;
+  /** Whether C pressed in the page (`clax:shortcut`) is held: the viewer may
+   * still be typing for the page, and focus the shell gave back to the frame
+   * (`listen`) took their keys there. It starts set on a load the page caused
+   * (`holdKeysAcrossLoad`), is set when a prompt the page raised opens or
+   * closes, and is cleared where `keysOwned` is set again: a trusted press in
+   * the shell, or focus landing on a specific shell control. */
+  private pageKeysHeld = this.heldAtLoad;
   // A prompt closes the keys sheet, so nothing covers or disables the prompt.
   private readonly prompt = promptQueue(ask => this.set(ask ? { ask, sheet: null } : { ask }));
   /** The frame's handshake with its site (`showFrame`): `el` opened on the
@@ -386,7 +414,7 @@ export class ArtifactController {
     this.frameHash = this.startHash;
     this.state = new Store<ViewState>({
       pinnedVersion, startFile,
-      data: null, error: null, origin: undefined, openInTab: null, elsewhere: false, newer: null, deleted: false, commenting: false,
+      data: null, error: null, approvalHidden: null, approving: false, declarationStale: false, origin: undefined, openInTab: null, elsewhere: false, newer: null, deleted: false, commenting: false,
       panel: media("(min-width: 900px)"), narrow: media("(max-width: 480px)"),
       threads: [], resolved: {}, draft: null, selected: null, hovered: null, busy: 0,
       notice: null, hint: null, me: null, ask: null, file: startFile, sheet: null, working: [], attention: null,
@@ -538,6 +566,7 @@ export class ArtifactController {
     // came before the close, so the viewer's next keys may still be meant for
     // the page (`keysOwned`).
     if (!!prev.ask !== !!this.s.ask || !!prev.draft !== !!this.s.draft) this.keysOwned = false;
+    if (!!prev.ask !== !!this.s.ask) this.pageKeysHeld = true;
     // Comment mode cannot come on in a page whose comment part did not load,
     // however it was asked for: the viewer is told again instead.
     if (this.s.commenting && this.failedParts.has("comment")) this.state.set({ commenting: false, notice: `${PART_FAILED.comment}.` });
@@ -707,6 +736,10 @@ export class ArtifactController {
       if (this.host) this.prompt.cancel();
       this.host?.dispose();
       const data = s.data;
+      // The declaration the page is served for as long as this frame lives:
+      // a refetch of the artifact does not change it (`declarationMoved`).
+      if (this.servedFor !== key) { this.servedFor = key; this.served = (data.artifact.capabilities_in_force ?? {}) as Declared; }
+      const declared = this.served;
       this.host = new CapabilityHost(getToken().then(token => {
         let status: Promise<SampleStatus | null> | null = null;
         return {
@@ -714,14 +747,16 @@ export class ArtifactController {
           version: shown,
           pinned: this.pinnedVersion !== null,
           token,
+          mayEdit: data.artifact.may_edit === true,
           viewer: currentViewer,
-          declared: (data.artifact.capabilities ?? {}) as Declared,
+          declared,
           prompt: this.prompt,
           post: m => { if (this.gate.open) this.send(m); },
           reload: () => { holdKeysAcrossLoad(); nav.assign(this.here(null)); },
           ownPublish: this.ownPublish,
           page: () => this.s.file,
           comments: this.commentsUi,
+          commentMode: (on: boolean) => this.pageCommenting(on),
           working: () => this.s.working,
           files: data.versions.find(v => v.n === shown)?.files,
           sampleStatus: token === null ? undefined : () => status ??= getSampleStatus(this.id, token),
@@ -1163,6 +1198,7 @@ export class ArtifactController {
     const onPress = (e: PointerEvent) => {
       if (!e.isTrusted) return;
       this.keysOwned = true;
+      this.pageKeysHeld = false;
       giveBackTo = null;
       restoreTo = null;
       const target = e.target instanceof Element ? e.target : null;
@@ -1185,6 +1221,7 @@ export class ArtifactController {
       if (!restored && !pressing && (e.relatedTarget === null || (e.relatedTarget instanceof Element && e.relatedTarget.localName === "iframe"))) keyboardTrail.taint();
       if (!t.closest("[role=dialog], [aria-modal=true], .composer")) {
         this.keysOwned = true;
+        this.pageKeysHeld = false;
         giveBackTo = null;
       }
     };
@@ -1433,6 +1470,12 @@ export class ArtifactController {
         break;
       }
       case "clax:cancel": this.set({ commenting: false }); break;
+      // C pressed in the page: the shell's own C, from the frame.
+      case "clax:shortcut": {
+        const a = pageKeyAction(m.key);
+        if (a && this.gate.open) this.shortcut(a, "page");
+        break;
+      }
       case "clax:hash":
         // The page's fragment moved (a link, a script): the address bar
         // follows in place, once per animation frame (or `nextFrame`'s
@@ -1559,7 +1602,7 @@ export class ArtifactController {
 
   /** The `docs` topic, once the stream is open, for a page that declares `db`. */
   private watchDocs(): void {
-    if (this.s.data?.artifact.capabilities?.db) this.stream?.watchDocs();
+    if (this.s.data?.artifact.capabilities_in_force?.db) this.stream?.watchDocs();
   }
 
   /** Takes the artifact's agents as listed now: the Send target stays while
@@ -1652,8 +1695,23 @@ export class ArtifactController {
 
   // ---- intents ----
 
-  /** The Comment button and C; nothing on a live page, whose comments come from Chrome with the Clax extension. */
-  toggleComment(): void { if (!this.s.data?.artifact.live && !this.s.spectator && !commentsOff(this.s) && this.s.showDraft === null) { this.resumeAfter = null; this.set(s => ({ commenting: !s.commenting })); } }
+  /** Whether the view can enter comment mode: not on a live page (its
+   * comments come from Chrome with the Clax extension), for a spectator,
+   * with Comments off, or while an agent's draft is shown. */
+  mayComment(s: ViewState = this.s): boolean { return !s.data?.artifact.live && !s.spectator && !commentsOff(s) && s.showDraft === null; }
+
+  /** The Comment button and C; nothing where `mayComment` is false. */
+  toggleComment(): void { if (this.mayComment()) { this.resumeAfter = null; this.set(s => ({ commenting: !s.commenting })); } }
+
+  /** A page's `shell.commentMode(on)`: enters comment mode, or leaves it
+   * unless the composer holds typed text, and says whether comment mode is
+   * on afterwards; `null`, changing nothing, where `mayComment` is false and
+   * in the app's inspect view. */
+  pageCommenting(on: boolean): boolean | null {
+    if (!this.mayComment() || inspectQuery(location.search)) return null;
+    if (on !== this.s.commenting && (on || !this.composerText.trim())) { this.resumeAfter = null; this.set({ commenting: on }); }
+    return this.s.commenting;
+  }
 
   // ---- agents' drafts (hosted spec §16.4) ----
 
@@ -1698,14 +1756,19 @@ export class ArtifactController {
   /** The sheet's code did not load: close it, so the keys act again, and say so. */
   sheetFailed(): void { this.set({ sheet: null, notice: `${SHEET_FAILED}.` }); }
 
-  /** A shell key (spec §8, "Keys"); `keyAction` decided it applies. Returns
-   * whether it acted, so a key that does nothing is left to the browser.
-   * Nothing acts while the sheet, a page's prompt or the composer is open,
-   * or while the keys are held (`keysOwned`): Escape (handled in `listen`)
-   * is their only shell key. */
-  shortcut(a: KeyAction): boolean {
+  /** A shell key (spec §8, "Keys"); `keyAction` decided it applies, or, for
+   * one pressed in the `page`, `pageKeyAction`. Returns whether it acted, so
+   * a key that does nothing is left to the browser. Nothing acts while the
+   * sheet, a page's prompt or the composer is open, or while the keys are
+   * held: a shell key while they are not the shell's (`keysOwned`), Escape
+   * (handled in `listen`) being their only shell key; a page's while they
+   * are held for it (`pageKeysHeld`), or while the frame does not hold the
+   * viewer's gesture (`frameGesture`: the page can post `clax:shortcut`
+   * itself, so it counts only as a pick's start does). */
+  shortcut(a: KeyAction, from: "shell" | "page" = "shell"): boolean {
     const s = this.s;
-    if (!viewReady(s) || s.deleted || s.sheet || s.ask || s.draft || !this.keysOwned) return false;
+    const owned = from === "shell" ? this.keysOwned : !this.pageKeysHeld && frameGesture();
+    if (!viewReady(s) || s.deleted || s.sheet || s.ask || s.draft || !owned) return false;
     if (a === "help") this.set({ sheet: "keys" }); else this.toggleComment();
     return true;
   }
@@ -1736,6 +1799,76 @@ export class ArtifactController {
   copyLink(): void { navigator.clipboard.writeText(location.origin + this.here(this.pinnedVersion) + location.hash).catch(() => {}); }
   reloadLatest(): void { nav.assign(this.here(null)); }
   dismissNotice(): void { this.set({ notice: null }); }
+
+  /** The declaration the approval bar shows: what the current version asks
+   * for, once the daemon says this viewer may approve it and "Not now" has
+   * not hidden this declaration. */
+  pending(s: ViewState = this.s): PendingCapabilities | null {
+    const a = s.data?.artifact;
+    const p = a?.may_approve === true ? a.pending_capabilities ?? null : null;
+    return p && p.declaration_sha256 !== s.approvalHidden ? p : null;
+  }
+  /** Hides the bar for the declaration it shows, for this view only. */
+  notNow(): void {
+    const p = this.pending();
+    if (p) this.set({ approvalHidden: p.declaration_sha256 });
+  }
+  /** Shows the bar again for a declaration "Not now" hid, so Approve acts on it (the Permissions panel's Review). */
+  showApproval(): void { this.set({ approvalHidden: null }); }
+  /** Approves the declaration the bar shows, then reloads the frame once so
+   * the page asks again and is served what is now in force. A 409 means the
+   * declaration changed under the bar: the artifact is refetched and the
+   * bar shows the new one, with no retry. */
+  async approve(): Promise<void> {
+    const p = this.pending();
+    if (!p || this.s.approving) return;
+    this.set({ approving: true });
+    try {
+      await approveCapabilities(this.id, p.version, p.declaration_sha256);
+    } catch (e) {
+      if (this.disposed) return;
+      if (e instanceof ApiError && e.status === 409) await this.refetchArtifact();
+      else this.setNotice(failureText(APPROVE_FAILED, e));
+      this.set({ approving: false });
+      return;
+    }
+    if (this.disposed) return;
+    this.set({ approving: false });
+    holdKeysAcrossLoad();
+    nav.assign(this.here(this.pinnedVersion));
+  }
+  /** Another view, or an agent's publish, changed what is approved: refetch
+   * the artifact and judge the declaration in force against the one the
+   * frame was served (`takeApproval`). */
+  permissionsChanged(): void { void this.refetchArtifact(); }
+  /** Reloads the shown version, so the page is served the declaration now in force. */
+  reloadHere(): void { holdKeysAcrossLoad(); nav.assign(this.here(this.pinnedVersion)); }
+  /** A ticket for one fetch of the artifact's approval fields; an answer older than the latest ticket is dropped (`takeApproval`). */
+  approvalTicket(): number { return ++this.approvalAsked; }
+  /** Takes the fields about approval from a fresh answer `a` for the artifact
+   * (ticket `t`): who may approve depends on the caller, and the owner's
+   * browser is the owner only once its token request has set the owner
+   * cookie, after the document that carried the first answer. Then the
+   * declaration in force is judged against the one the frame was served:
+   * a name or host gone from it reloads at once (the page must not keep what
+   * is withdrawn), and one only gained shows Reload in the top bar. */
+  takeApproval(t: number, a: Artifact): void {
+    const fields = (x: Artifact) => JSON.stringify([x.capabilities, x.capabilities_in_force ?? null, x.may_approve === true, x.pending_capabilities ?? null]);
+    const cur = this.s.data?.artifact;
+    if (this.disposed || t !== this.approvalAsked || !cur) return;
+    if (fields(cur) !== fields(a)) {
+      this.set(s => s.data ? { data: { ...s.data, artifact: { ...s.data.artifact, capabilities: a.capabilities, capabilities_in_force: a.capabilities_in_force, may_approve: a.may_approve, pending_capabilities: a.pending_capabilities } } } : {});
+    }
+    const moved = declarationMoved(this.served, (a.capabilities_in_force ?? {}) as Declared);
+    if (moved === "removed") this.reloadHere();
+    else if (moved === "added" && !this.s.declarationStale) this.set({ declarationStale: true });
+    else if (moved === "same" && this.s.declarationStale) this.set({ declarationStale: false });
+  }
+  /** Refetches the artifact and takes the fields about approval from the answer. */
+  private async refetchArtifact(): Promise<void> {
+    const t = this.approvalTicket();
+    try { this.takeApproval(t, (await getArtifact(this.id)).artifact); } catch { /* the next event or reload shows it */ }
+  }
   setMe(v: Viewer): void {
     this.set({ me: v });
     const r = this.reopenAfterName;

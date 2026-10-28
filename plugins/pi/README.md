@@ -67,6 +67,18 @@ package, its skill, and the daemon's Pi sessions.
   artifact, `/clax list` lists artifacts, `/clax status` shows the daemon
   and session.
 
+## clax.dev and other hosted Clax instances
+
+Not directly, yet. Pi has no built-in MCP support, and this extension talks
+to a daemon by its REST API with a local daemon's token or a `clax connect`
+machine key, so it cannot use a hosted Clax's agent token. Use it with a
+Clax on your machine and publish from there: sign that Clax in to clax.dev
+(`clax remote add https://clax.dev`, or press Publish to clax.dev on any
+artifact), then publish a page with Publish to clax.dev in the browser,
+`clax push <ID>`, or the `clax_publish_public` tool, which asks you first.
+Comments people leave on the public copy come back to the local page and
+reach Pi as any local comment does.
+
 ## The comment loop
 
 People comment on a page in the browser and send a thread to the agent with

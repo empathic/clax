@@ -42,7 +42,8 @@ const panel = async (page: import("@playwright/test").Page) => {
     await bar.getByLabel("Note for the agent (optional)").press("ControlOrMeta+Enter");
     await expect(bar).toHaveCount(0);
     const got = await api(d.base, d.token, `/api/sessions/${sid}/feedback?tier=piggyback`);
-    expect(got.feedback.map((f: { thread_id: string }) => f.thread_id)).toEqual(ids.slice(0, 3));
+    // In the cards' order, the thread that changed last first.
+    expect(got.feedback.map((f: { thread_id: string }) => f.thread_id)).toEqual(ids.slice(0, 3).reverse());
     expect(got.text.split("\n")[1]).toBe(`[clax] 3 comments on "Batch", sent together by Viewer. Note: "Before the demo"`);
     await expect(page.locator(`.thread-card[data-thread="${ids[1]}"] .hist`)).toContainText("sent it with 2 others · “Before the demo”");
     await page.getByRole("button", { name: "Send 1 unsent to claude" }).click();

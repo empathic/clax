@@ -4,8 +4,8 @@
 //! `grant_auth`, `db_caller`, `viewer`, `extension`), the middleware
 //! (`host`, `http_cache`, `live_access`, the audit context and journal),
 //! the body limits and shared headers, the listener's socket options
-//! (`conn`), the suggestion of where a session asks its person
-//! (`surface`), and the JSON views of threads, questions, inbox items,
+//! (`conn`), the addresses that name this machine (`loopback`), the
+//! suggestion of where a session asks its person (`surface`), and the JSON views of threads, questions, inbox items,
 //! approvals, grants and artifacts (`views`). The routes themselves, the
 //! router and `serve` are `clax-server`'s.
 
@@ -33,6 +33,7 @@ pub mod identity;
 pub mod jobs_owner;
 pub mod limits;
 pub mod live_access;
+pub mod loopback;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod net;
 #[cfg(not(target_arch = "wasm32"))]

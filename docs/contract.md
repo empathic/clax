@@ -220,7 +220,7 @@ Arguments:
 | `label` | string | no | Short name for this version, at most 60 characters. |
 | `note` | string | no | This version's change note for the person, at most 280 characters (longer is cut, with `note_truncated: true`). |
 | `addresses` | array of thread IDs | no | Threads of this artifact this version addresses (at most 50). Linking does not resolve them. |
-| `capabilities` | object | no | The page's runtime capabilities declaration, as a full set (below). |
+| `capabilities` | object | no | The page's runtime capabilities declaration, as a full set (below). Clax writes it as the version's `clax.json`; with a `clax.json` in `files`, it must equal that file's. |
 | `tags` | array of strings | no | Existing tags (names or IDs, see "Tags") to add to the artifact once published. |
 
 On an update, an omitted `title`, `description`, `icon` or `capabilities`
@@ -228,11 +228,48 @@ keeps the artifact's current value, and so does `capabilities: null`. A
 given `capabilities` object is the full declaration: it replaces the stored
 one rather than merging with it, and `{}` clears it.
 
+The declaration is also a file: `clax.json` at the artifact's root,
+`{"capabilities": {...}}`, versioned, read, forked and pushed like any
+other. A publish whose `files` carry `clax.json` declares what it says;
+other top-level keys, or a file that is not such an object, are 400
+`invalid_manifest`, and a `capabilities` argument that differs from it is
+400 `manifest_mismatch` (equal, omitted or `null` agree). A publish with
+`capabilities` and no `clax.json` gets one, written by the daemon
+(two-space indented JSON with a trailing newline). Naming neither carries the
+previous version's `clax.json` forward with its declaration, and
+`"clax.json": null` without `capabilities` clears the declaration to `{}`.
+A page published before `clax.json` has none until a publish declares.
+A `clax.json` such a page held of its own, which is not a manifest, declares
+nothing while it is carried forward: a publish naming neither keeps the
+stored declaration and the file as they are, and `PATCH` still declares.
+A publish that sends that file again is 400 `invalid_manifest`, and one
+with `capabilities` writes the manifest over it.
+On either refusal nothing is published. A declaration that
+changes the page's needs the publisher to administer it (403
+`admin_only`, below). A commit pushed to the artifact's repository
+declares the same way: one that adds or changes `clax.json` declares what
+it says, and one that removes it clears the declaration. A commit whose
+`clax.json` is not a manifest or does not validate, or that changes the
+declaration when its pusher does not administer the page, is no version
+(`version.push_refused`, reason `invalid_manifest`,
+`invalid_capabilities` or `admin_only`) and stays in git. A restore's
+`capabilities` is written as the restored version's `clax.json`.
+`clax.json` is in no content hash (`content_sha256`), so a version the
+daemon writes it into keeps the hash of the files it was sent.
+
 The result also carries `note` and `addressed` (every thread linked to the
 new version: those named, plus those this session was marked working on for
 the artifact). `addresses` may name resolved threads. A thread ID in
 `addresses` that is not a thread of the artifact fails the call with
 `unknown_thread`, and nothing is published.
+
+When the version declares a capability that waits for approval (see
+"Approving capabilities"), the HTTP answer's `pending_capabilities` is set
+and the tool result carries `waiting`, one line such as `Waiting for
+approval in Clax: the internet (api.example.com), Claude.` (the
+labels are the Clax shell's approval bar's: the internet, Claude, sign-in,
+Clax's controls, notifications, sharing, files, the camera, your
+location). A version that needs no approval carries no `waiting`.
 
 With `tags`, the tool first reads the tags there are (`GET /api/tags`): a
 name that is none fails the call with `unknown_tag`, naming the tags there
@@ -259,9 +296,10 @@ title, description, icon and capabilities stay as they are, and documents
 are not touched. The body may also carry `title`, `icon`, `capabilities`
 (a full set), `label` and `note`, set in the same version as a publish
 sets them and checked as a publish's (400 `invalid_capabilities`,
-`label_too_long`; a longer note is cut, with `note_truncated: true`): the
-Clax app rolls an update back to the version before it this way, with
-that version's declaration. An `X-Clax-Session`, when given, must
+`label_too_long`; a longer note is cut, with `note_truncated: true`).
+A `capabilities` given is written as the new version's `clax.json`, in
+place of `n`'s. The Clax app rolls an update back to the version before it
+this way, with that version's declaration. An `X-Clax-Session`, when given, must
 name a live session (400 `unknown_session` otherwise), which the version
 records. It
 answers as a publish does (201 `{artifact, version, url, note_truncated}`),
@@ -280,7 +318,12 @@ The declaration can also be changed without publishing a version:
 `PATCH /api/artifacts/<id>` (token required) with `{"capabilities": {...}}`
 replaces it the same way (omitted or `null` keeps, `{}` clears) and returns
 `{"artifact": ...}`; a declaration that does not validate is 400
-`invalid_capabilities` (checked before the artifact is looked up). The daemon
+`invalid_capabilities` (checked before the artifact is looked up). When the
+current version holds a `clax.json` that is a manifest, the file owns
+the declaration: a
+`capabilities` that differs from it is 400 `manifest_owned` (publish a
+version that changes `clax.json` instead), and one equal to it is no
+change. The daemon
 reads the declaration on every call, so a change applies to `db` rules from
 the next call, and to what `use()` resolves in views loaded afterwards. A view
 already open keeps the declaration it loaded, including for other pages of the
@@ -1010,13 +1053,30 @@ A local Clax publishes artifacts to a public one (a hosted daemon, or the
 Cloudflare Worker in hosted mode) as a person signed in there. Nothing
 here changes a local daemon or the plugins until a remote is added.
 
-**Signing in, by device code.** `clax remote add <url>` (or `POST
-/api/remotes {url, name?, machine?, kind?}` with the daemon token, the
-owner's alone: 403 `not_for_agents` for an agent) asks the public Clax for
+**Signing in, by device code.** `clax remote add <url>`, the shell's
+Publish button on a Clax signed in to none (it signs in to
+`https://clax.dev` and sends its tab to the approval page, which sends it
+back to the artifact's page with `publish=1&clax_signin=approved` or
+`denied`; there the shell drops both from the address, polls the pending
+sign-in once and reopens its dialog, or says it was declined; when the
+daemon could not pass the page on, the dialog shows the code and a link to
+the approval page and polls at the remote's interval while it is open), or
+`POST /api/remotes {url, name?, machine?, kind?, return_to?}` with the
+daemon token, the
+owner's alone (403 `not_for_agents` for an agent), asks the public Clax for
 a device sign-in naming this machine (`Clax on <host name>`, or
 `machine`), and its kind (`kind`: `clax-app` for the Clax app, which
 passes it on as `client_kind`; absent for a daemon; any other is 400
-`invalid_args`), prints the user code and opens the approval page; the person,
+`invalid_args`), and the page to send the person back to once they decide
+(`return_to`: a path on this daemon, `/a/<id>?publish=1`, which must
+start with one `/` and hold no backslash or control character, else 400
+`invalid_args`; the daemon makes it absolute against the shell origin the
+request came to, `http://localhost:<port>` or `http://127.0.0.1:<port>`,
+and passes it on as `return_to`, or drops it when the request came to any
+other host; a public Clax that refuses the field as unknown is asked again
+without it). The answer, 201 `{remote, user_code, verification_url,
+expires_at, interval, return_to_kept}`, says with `return_to_kept` whether
+the approval page will send the person back. The CLI prints the user code and opens the approval page; the person,
 signed in there, checks the code and approves; the CLI polls (`POST
 /api/remotes/<id or name>/poll` → `{remote, status}`, status `pending`,
 `connected`, `denied` or `expired`; a denied or expired sign-in forgets the
@@ -1245,7 +1305,10 @@ app's versions with the bundle each carries.
   carry `comments`, and each change is a `comments` event on the
   artifact's stream topic. `GET /api/artifacts/<id>` and the page's
   bootstrap also carry `may_resolve`: whether the caller may resolve the
-  artifact's threads (below). While it
+  artifact's threads (below), and `may_edit`: whether the caller may edit
+  it (the owner, on a hosted daemon when the owner's rights `update` it,
+  and a signed-in person whose rights `update` it; never a guest or a
+  person's agent). While it
   is off, a new thread or comment is refused 403 `comments_off` to
   everyone, the owner included (read in the write's own transaction; a
   keyed resend still answers what it made), so Can comment acts as Can
@@ -1925,6 +1988,22 @@ Option returns to the usual target, and a click, or a drag selection, while
 widened picks that element (a drag selection is widened at least to its
 block); Option never starts an area drag. Option, Up, Down, and Escape work
 with focus in the page or in the shell while the pointer is over the page.
+C, the Comment button's key, which turns comment mode on or off, works with
+focus in the page too: the bridge tells the shell of a C the viewer pressed
+there (`clax:shortcut`) when the browser delivered it, with no modifier (not
+Shift either; Caps Lock does not matter), not repeated or composing, not
+typed into an input, textarea, select, editable content, or an element with
+the role `textbox` or `combobox` (or inside one), and not cancelled by the
+page: a page that uses C itself calls `preventDefault()` on its `keydown`,
+in any listener, and keeps it. The shell then acts as on its own C, under
+the same rules (nothing while the Comment button is off or disabled, or
+while a dialog, the keys sheet or a composer is open), and only while the
+frame holds the viewer's gesture (the check `compose` uses), since the page
+can post that message itself; after a load the page caused, or once a
+prompt the page raised opens or closes, the viewer's C in the page does
+nothing until they press in the shell, as they may still be typing for the
+page. No other key leaves the page: `?` stays the page's, and Escape in the
+page ends comment mode there itself.
 Only the viewer's own input counts: the bridge ignores events the page
 dispatched, and the shell takes a pick only from its start
 (`clax:pick-start`, sent by the bridge at the viewer's click or release with
@@ -2366,8 +2445,8 @@ artifact's threads, or watch, else its registration). Each version view
 carries `agent` (its publishing session's handle) and `agent_harness`, both
 `null` for a version published without a session. It also carries
 `content_sha256`, `sha256:` and the hex SHA-256 of the version's file
-manifest (one `<path>\0<sha256 hex>\0<size>\n` line per file, in path
-order), and each file's `sha256` (lowercase hex). On versions written
+manifest (one `<path>\0<sha256 hex>\0<size>\n` line per file but
+`clax.json`, in path order), and each file's `sha256` (lowercase hex). On versions written
 before content hashes, `content_sha256` is `null` and `sha256` is absent. A moved copy of such a version records both.
 
 With a viewer cookie, `GET /api/artifacts/<aid>` also carries `attention`,
@@ -3011,7 +3090,7 @@ need the token:
 - `POST /api/drafts/<id>/renders` with `{digest, errors, failed_tests}`
   records the app's render of the draft's files (403 `not_for_agents` to
   the owner's agents): `digest` is `sha256:` and the hex SHA-256 of one
-  line `<path>\0<sha256 hex>\0<size>\n` per file but `icon.svg`, in byte
+  line `<path>\0<sha256 hex>\0<size>\n` per file but `icon.svg` and `clax.json`, in byte
   order of path (a version's `content_sha256` for the same files), and
   the render is clean when `errors` (a list) is empty and `failed_tests`
   is 0. A later render of the same digest replaces it. Answers `{render:
@@ -3241,7 +3320,11 @@ characters.
 
 `content_sha256` is the version's content hash as the daemon reports it
 ("Versions, seen marks and attention"): `sha256:` and the hex SHA-256 of
-one line `<path>\0<sha256 hex>\0<size>\n` per file in byte order of path.
+one line `<path>\0<sha256 hex>\0<size>\n` per file but `clax.json` in byte
+order of path (the declaration travels as the manifest's `capabilities`).
+A bundle holds no `clax.json`: the app leaves it out when it exports, and
+when it installs, updates or takes files it sends none and passes the
+manifest's (or its own) `capabilities`, so the daemon writes the file.
 The signature is Ed25519 (RFC 8032, pure) by the author key over the 14
 bytes `clax-bundle/1\n` followed by the exact bytes of the `manifest.json`
 entry; the manifest holds every file's hash and the seed's, so it covers
@@ -5310,6 +5393,8 @@ router), and a test fails when it differs:
 | `POST /api/approvals/requests/{rid}/decide` | Denied | yes: 403 `browser_required` |
 | `DELETE /api/approvals/{id}` | Denied | yes: 403 `browser_required` |
 | `GET /api/artifacts/{aid}/approves-first` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/artifacts/{aid}/capability-approval` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/artifacts/{aid}/capability-approval/{name}` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/artifacts/{aid}/db-grants` | Denied | no |
 | `DELETE /api/artifacts/{aid}/db-grants/{source}` | Denied | no |
 | `PUT /api/artifacts/{aid}/db-grants/{source}` | Denied | no |
@@ -5322,6 +5407,7 @@ router), and a test fails when it differs:
 | `GET /api/artifacts/{aid}/net-grants` | Denied | no |
 | `PUT /api/artifacts/{aid}/net-grants` | Denied | no |
 | `POST /api/artifacts/{aid}/net:fetch` | Denied | no |
+| `GET /api/artifacts/{aid}/permissions` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/artifacts/{aid}/push` | Denied | no |
 | `GET /api/artifacts/{aid}/remotes` | Denied | no |
 | `DELETE /api/artifacts/{aid}/remotes/{rid}` | Denied | no |
@@ -6256,14 +6342,19 @@ before writing a page, fetch the one you use from your daemon,
 comes from the `status` tool (names: `claude`, `permissions`, `artifact`,
 `db`, `downloads`, `user`, `comments`, `assets`, `room`, `sample`).
 
-Declare what the page uses in `capabilities` on `publish`, for example
-`{"db": {}, "user": {"scopes": ["profile"]}}`. The object is the full set:
-passing it replaces the stored one, omitting it keeps it, and `{}` clears it.
+Declare what the page uses in `clax.json` at its root,
+`{"capabilities": {"db": {}, "user": {"scopes": ["profile"]}}}`, or pass the
+inner object as `capabilities` on `publish` and Clax writes the file. The
+object is the full set: passing it replaces the stored one, omitting it (and
+any `clax.json`) keeps it, and `{}` clears it. A `capabilities` argument that
+differs from the `clax.json` sent with it is refused (`manifest_mismatch`).
 `use()` never rejects: it resolves `null` for a name the page did not declare,
 for `files` and `mcp`, and outside the Clax viewer (on the artifact's own site
 opened directly, `db`, `assets`, `user` and `room` still resolve), so render without the
 capability first and light features up when it resolves.
 `permissions` and `user` need no declaration.
+
+A capability that reaches past the page (`net`, `sample`, `shell`, `notify`, `share`, `file`, `camera`, `location`) is in force only once the person who answers for the artifact approves (on your own Clax, its owner; on a hosted Clax, the page's maker) the version that first declares it, or a new `net` host, in Clax. Until then `use()` resolves `null` for it, and the version before keeps what was approved. Publishing never approves, whoever publishes; the publish result says what waits. Tell the person to approve it in Clax.
 
 - `artifact` (alias `self`): `publish(html)` saves a complete document
   (starting `<!doctype html>`) as a new version, and every open view reloads
@@ -6316,6 +6407,13 @@ capability first and light features up when it resolves.
   once per app for its host list. Only the person's own views get it:
   elsewhere `use("net")` resolves `null`. Types:
   `ClaxExtensions.Net` in `clax-extensions.d.ts`.
+- `shell` (Clax's own): `highlight(control)` rings one of Clax's controls,
+  `"comment"`, `"threads"`, `"versions"`, `"publish"`, `"fork"` or
+  `"send"`, for 6 s or until the viewer presses anywhere in Clax's own bar or panels or presses Escape there (a press in the page does not reach Clax: call `highlight` again to move the ring, or let it lapse), and resolves `false` when that control is not shown to them now
+  (on a phone, versions, publish and fork are in a menu); `can(control)`
+  answers the same without drawing; `commentMode(on)` turns comment mode on or off, only from a click or key press in the page (while comment mode is on, a click in the page picks what to comment on and never reaches the page, so leave it from a key press; the viewer's Escape or Comment button also leaves it); `address()` resolves `{origin, url}`, the Clax that frames the page and the page's address there (`<origin>/a/<ID>`), or `null` in the Clax app: a page's site sends no referrer, so this is how a page learns them. Declare `{"shell": {}}`.
+  Only the owner and editors get it: elsewhere `use("shell")` resolves
+  `null`. Types: `ClaxExtensions.Shell` in `clax-extensions.d.ts`.
 - `notify`, `share`, `file`, `camera`, `location`: Clax's device
   capabilities, served only in the Clax app and `null` everywhere else;
   their types are `ClaxExtensions.Device` in `clax-extensions.d.ts`. Call
@@ -6693,6 +6791,69 @@ the page runs, a live listener stops receiving that app's changes at once;
 its error callback gets `not_granted` at its next refresh (after a reconnect
 of the event stream), and any later `get()` rejects `not_granted`.
 
+### Approving capabilities
+
+The gated capabilities are `net`, `sample`, `shell`, `notify`, `share`,
+`file`, `camera` and `location`; the rest act only inside the artifact.
+`account` is reserved: it is gated too, but no runtime serves it yet, so
+`use("account")` resolves `null` even once approved, and a page should not
+declare it. A gated name takes effect only once it is approved, and the
+declaration in force is the declaration without what waits: `net.hosts`
+cut to the approved hosts, and `net` gone when none is approved.
+
+**Who approves.** Only the person who answers for the artifact, in Clax
+itself: on a local Clax its owner alone (a maker who is not the owner gets
+403 `admin_only`, saying so); on a hosted Clax the page's maker (anyone
+else gets 403 `admin_only`). Never an
+agent (403 `not_for_agents`, and `forbidden` for a person's agent), and
+never a page (403 `not_for_pages`, for a request carrying
+`x-clax-via: page`). Publishing, creating a version and restoring never
+approve, whoever does it. Declarations in force before approvals existed
+count as approved (by `migration`), and versions Clax itself seeds or
+updates for its quickstart are approved by `clax`.
+
+**What waits.** The artifact view (`GET /api/artifacts/<id>`) always
+carries `capabilities_in_force`; for a caller who may approve it also
+carries `may_approve: true` and `pending_capabilities`, `{version,
+capabilities, hosts, declaration_sha256}` (`null` when nothing waits):
+the gated names the current version declares that the approval does not
+cover and the `net` hosts it does not list, with the SHA-256 of the
+declaration they come from. A publish, new-version or restore answer
+carries `pending_capabilities` the same way. Every artifact read by a
+site's page (a caller of the artifact's own site) serves the declaration in
+force as its `capabilities`. The artifact's event topic carries
+`{"type": "permissions", "artifact_id"}` when an approval changes.
+
+- `PUT /api/artifacts/<id>/capability-approval`, body `{version,
+  declaration_sha256}` (both required: 400 `invalid_args`), the
+  `pending_capabilities` the person was shown: approves the current
+  version's declaration, recorded by `owner` or `person:<ID>`; answers
+  `{approval, in_force}`. 409 `stale_version` with `current` when a
+  version was published, or the declaration changed, since what was shown;
+  403 `draft` for a draft, which is held to its app's approval. Same
+  origin only (403 `forbidden_origin`). The owner's approval also grants the
+  `net` hosts and the `sample` that waited; a hosted maker's approval puts
+  the declaration in force and leaves those grants to the owner's answer on
+  the page's first use.
+- `DELETE /api/artifacts/<id>/capability-approval/<name>`: takes one gated
+  name out of the approval, so the current declaration of it waits again;
+  `{withdrawn, in_force}`, `withdrawn` false when it was not approved.
+  Grants stay until revoked on their own routes. 400 `invalid_args` for a
+  name that needs no approval; 403 `draft`; same origin only.
+- `GET /api/artifacts/<id>/permissions`: `{version, declared, in_force,
+  approved, pending, net: {declared, waiting, grants, granted}, sample:
+  {granted, granted_at}, db_read: [{source_id, title, granted_at}]}`: what
+  the Permissions panel shows (`pending` as `pending_capabilities`; `net`
+  as `GET …/net-grants` with `waiting`, the hosts that wait for approval).
+
+All three are 404 for an unknown artifact. A change to the declaration
+narrows the approval to what is still declared and revokes the `net` and
+`sample` grants it no longer covers; a name or host a later version
+declares again asks again. A declared but unapproved capability answers
+403 `not_approved` on `net:fetch`, `sample` and the `sample-grant` write,
+where an undeclared one answers `not_declared`. The `net-grants` write
+grants only the hosts in force and answers 400 `not_declared` when none is.
+
 ### Fetching from the network (`net`)
 
 An app page cannot connect anywhere itself, nor load anything from another
@@ -6711,9 +6872,10 @@ and `PATCH`. Declaring grants nothing alone.
 26), with the token:
 
 - `PUT /api/artifacts/<id>/net-grants`, body `{hosts: [host]}` (the hosts
-  the owner was shown): grants each of them the live version declares,
-  ignoring the rest; hosts already granted keep their time. 400
-  `not_declared` when it declares none, `invalid_argument` without `hosts`.
+  the owner was shown): grants each of them in force (declared by the live
+  version and approved), ignoring the rest, those that wait for approval
+  included; hosts already granted keep their time. 400 `not_declared` when
+  none is in force, `invalid_argument` without `hosts`.
 - `DELETE /api/artifacts/<id>/net-grants`: `{revoked}`, how many grants
   there were.
 - `GET /api/artifacts/<id>/net-grants`: `{declared: [host], grants:
@@ -6752,7 +6914,7 @@ revalidates it when stale (at most 100 MiB under `CLAX_HOME/net-cache`).
 The daemon, for the first request and each redirect:
 
 - takes only `https` URLs without a user name or password;
-- takes only a host the live version declares and the owner granted;
+- takes only a host the live version declares, the approval covers (403 `not_approved` for one that waits for approval, see "Approving capabilities") and the owner granted;
 - resolves the host and refuses it if any address is not public unicast
   (loopback, private, shared, link-local, multicast, unspecified,
   documentation, benchmarking or reserved, IPv4 inside IPv6 judged as
@@ -6791,6 +6953,68 @@ the grant stands in later views. The app's inspect view never asks: there
 a refusal stands. Other codes reach the page as the daemon answers them;
 the shell adds `unavailable` (the daemon could not be reached) and
 `session_expired`.
+
+### Pointing at Clax's controls (`shell`)
+
+A page that walks its viewer through Clax (a tour) points at Clax's own
+controls around it. It declares `{"shell": {}}`, which takes no options
+(any key in it is 400 `invalid_capabilities` on publish and `PATCH`), and
+`const shell = await window.claude.use("shell")` resolves the namespace in
+the owner's views and an editor's (a viewer whose artifact answers
+`may_edit: true`), and `null` for every other viewer and when undeclared.
+The types are `ClaxExtensions.Shell` in `clax-extensions.d.ts`.
+
+The controls a page names:
+
+| Name | Wider than 700 px | 700 px or narrower |
+|---|---|---|
+| `comment` | the top bar's Comment button | the same |
+| `threads` | the top bar's Threads button | the Threads tab |
+| `versions` | the version menu's button | not shown (in the more menu) |
+| `publish` | Publish, or the linked site's button on the owner's local daemon | not shown |
+| `fork` | the top bar's Fork button | not shown |
+| `send` | the first Send to agent in the threads sidebar (a thread card's, the unsent bar's, the selection bar's) | the same, while the Threads tab shows the sidebar |
+
+A control is shown when it is laid out with a box, visible (opacity and
+visibility included), not disabled, and under nothing inert or hidden from
+assistive technology. A disabled Comment (a live page, a crowd's
+spectator, Comments off, an agent's draft shown) is not shown, and in the
+Clax app, which hides Clax's own bar, none is. Clax never opens a menu, a
+panel or a tab to reach a control.
+
+- `highlight(control)` draws a ring around the control and resolves
+  `true`, or resolves `false`, drawing nothing, when it is not shown. One
+  ring shows at a time in the Clax window: the next `highlight` moves it.
+  The ring goes after 6 s, when the viewer presses anywhere in Clax's own bar or panels or presses Escape there (a press on the control acts as usual; a press in the page does not reach Clax: call `highlight` again to move the ring, or let it lapse), when
+  its control stops being shown, and when the page's document leaves. It
+  follows the control as the window resizes; a `send` control is first
+  scrolled into the sidebar's view. No gesture is needed.
+- `can(control)` resolves what `highlight` would, drawing nothing.
+- `commentMode(on)` enters (`true`) or leaves (`false`) comment mode, as
+  the Comment button does, and resolves whether comment mode is on
+  afterwards: leaving keeps it on while the viewer's comment holds typed
+  text. It needs the viewer's click or key press in the page, as `openComposer` does (see the viewer's gesture under "Runtime capabilities"); while comment mode is on, a click in the page picks what to comment on and never reaches the page, so leave it from a key press; the viewer's Escape or Comment button also leaves it.
+- `address()` resolves `{origin, url}`: `origin` is the origin of the Clax
+  shell that frames the page (`https://clax.dev`, `http://localhost:7480`),
+  and `url` the artifact's address there, `<origin>/a/<ID>`, which shows
+  its latest version (whatever version the frame shows) and is the address
+  to give an agent to watch. It resolves `null` where the shell is not on an
+  `http` or `https` origin (the Clax app). The page cannot learn either
+  itself: its site answers every request, redirects included, with
+  `Referrer-Policy: no-referrer`, so its `document.referrer` is empty, and
+  `location.ancestorOrigins` is not in every browser. No gesture is needed.
+  It tells the page only the Clax it is already shown in and its own
+  artifact ID: no credential, no viewer, and nothing of the shell's
+  address beyond its origin (not the version, query or hash in view).
+
+Rejections: `invalid_argument` (a control name outside the six, or `on`
+not a boolean); `no_gesture` (`commentMode` without the viewer's recent
+input in the page; nothing changes); `unavailable` (`commentMode` where
+this view cannot comment: a live page, a crowd's spectator, Comments off,
+an agent's draft shown, the Clax app's inspector); `capability_removed`
+for any other member. The namespace says only whether a named control is
+shown now and where the page is shown; it names no agent, harness, session
+or person.
 
 ## Room protocol
 
@@ -7617,6 +7841,23 @@ When the variable is unset, sample is off and `use("sample")` resolves `null`.
 The `[questions]` table sets how long a mirrored `AskUserQuestion` waits in
 Clax (see "Agent questions").
 
+The `[gallery]` table sets what a gallery starts with:
+
+```toml
+[gallery]
+quickstart = true   # the default
+```
+
+With `quickstart` true, a hosted daemon seeds the Clax Quickstart into a
+person's gallery at their first sign-in or invite accept, when the gallery
+never held an artifact, and moves an untouched quickstart (one with no
+comment thread, no version but Clax's, no capabilities change by a
+metadata patch and no approval change by a person) to the release the web
+UI carries, at each later sign-in, and on a local daemon at start; a local
+home is never seeded. `false` (`CLAX_GALLERY__QUICKSTART=false`) does
+neither. A `[gallery]` table that does not check is logged and leaves it
+on. The Worker has no such setting: it carries its build's release.
+
 The `[bot]` table configures ClaxBot, Clax's own agent (spec
 `docs/superpowers/specs/2026-10-21-claxbot-design.md` §8). Every key is
 optional; the defaults are:
@@ -8037,7 +8278,7 @@ the body below.
 |---|---|---|
 | `artifact.create` | `title, kind (html\|live), icon, capabilities, contract_version`; `forked_from{artifact_id, n}` on a fork | first publish, a fork, or a live page's creation |
 | `version.publish` | `n, label, note, title, files{path:{sha256,size,content_type}}, content_sha256, carried[paths], addresses[thread IDs], by_page`; `source{artifact_id, n}` on a fork's version 1; `restored_from` (the version restored) for a restore | every version write, a restore (`versions:restore`) included; for a restore, `carried` names only the files (other than `index.html`) whose bytes equal the previous version's |
-| `version.push_refused` | `commit, person, session, reason (unknown_person\|person_revoked\|not_a_person\|no_right\|session_ended\|foreign_session\|grant_ended)` (`system:daemon`) | a commit pushed to an artifact's repository left unrecorded because its pusher may not publish the artifact, once per commit |
+| `version.push_refused` | `commit, person, session, reason (unknown_person\|person_revoked\|not_a_person\|no_right\|session_ended\|foreign_session\|grant_ended\|push_too_large\|invalid_manifest\|invalid_capabilities\|admin_only)` (`system:daemon`) | a commit pushed to an artifact's repository left unrecorded because its pusher may not publish the artifact, its trees are too large, or its `clax.json` is not a valid manifest or changes the declaration its pusher does not administer; once per commit |
 | `artifact.update` | `fields{title?, description?, icon?, pinned?, capabilities?, db_read_grants?, tags?, share?{op (set\|remove), id, person, github_login, access?, reason? (owner)}}`; `db_read_grants` is `{"grant": <source ID>}` or `{"revoke": <source ID>}`, with the source as `artifact2_id` | pin, unpin, metadata edits, the owner's cross-app read grants (see "Reading another app's documents"); a change to its tags (`tags`: the names it carries after); a share set or removed (`reason: owner` when a share is dropped because it reached the owner, at the owner's GitHub sign-in or a viewer folded into the owner) |
 | `artifact.delete` | `title, current_version` | delete |
 | `asset.upload` | `asset_id, path, sha256, size, content_type`; `forked_from{artifact_id, asset_id}` on a fork's copy | asset store writes, and each asset a fork copies |
@@ -8701,6 +8942,11 @@ it starts, the runs a previous process left. A build without the
 
 ## Security model
 
+- A page's gated capabilities (`net`, `sample`, `shell`, `notify`,
+  `share`, `file`, `camera`, `location`, and the reserved `account`) take
+  effect only once the person who answers for it approves them in Clax: on
+  a local Clax its owner alone, on a hosted Clax the page's maker, never an agent or the
+  page itself (see "Approving capabilities").
 - The daemon binds `127.0.0.1` by default. `clax serve --bind 0.0.0.0` (or
   another address) serves on the LAN.
 - Every `/api/**` route answers only when the `Host` header is literally
@@ -9361,7 +9607,9 @@ it starts, the runs a previous process left. A build without the
   selection and gives C and `?` back.
 - A page shares its realm with the bridge, so while the viewer has comment
   mode on it can report a pick the viewer did not make; the composer that
-  opens holds only what the viewer types into it.
+  opens holds only what the viewer types into it. For the same reason, while
+  the frame holds the viewer's gesture, it can turn comment mode on or off
+  as their C in the page does (`clax:shortcut`).
 - Over the LAN, anyone who reaches the daemon can make viewers, threads,
   comments, sends to the agent and `db` documents at their level, with no
   rate limit; the LAN bind is for a network the person trusts. Room sockets

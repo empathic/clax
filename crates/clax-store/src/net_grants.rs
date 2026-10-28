@@ -3,13 +3,16 @@
 //! hosts its `capabilities.net.hosts` declares.
 //!
 //! A grant row names one host. A fetch may reach a host only while the
-//! artifact's current declaration lists it and a row grants it, so a host a
-//! later version adds is not reachable until the owner allows it, and a
-//! host a version drops is unreachable whatever its row says. Deleting the
+//! artifact's declaration in force lists it
+//! ([`Store::capabilities_in_force`]) and a row grants it, so a host a
+//! later version adds is not reachable until its declaration is approved
+//! and the owner allows it, and a host a version drops is unreachable
+//! whatever its row says. Deleting the
 //! artifact removes its rows (a trigger on the soft delete, the foreign key
 //! on a row delete).
 
 use super::Store;
+use super::capability_approvals::in_force_in;
 use super::docs::caps_in;
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
 use clax_core::capabilities::net_hosts;
@@ -27,16 +30,19 @@ pub struct NetGrant {
 /// An artifact's network declaration and the owner's grants.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct NetAccess {
-    /// The hosts the current version declares, in declaration order (empty
-    /// when it declares no `net`, or a declaration that does not parse).
+    /// The hosts the declaration in force lists, in declaration order (empty
+    /// when it lists no `net`, or a declaration that does not parse).
     pub declared: Vec<String>,
-    /// The owner's grants, oldest first, including hosts the current
-    /// version no longer declares (they reach nothing).
+    /// The owner's grants, oldest first, including hosts the declaration
+    /// in force no longer lists (they reach nothing).
     pub grants: Vec<NetGrant>,
+    /// The hosts the current version declares that wait for its
+    /// declaration's approval, in declaration order.
+    pub waiting: Vec<String>,
 }
 
 impl NetAccess {
-    /// Whether a fetch may reach `host`: declared now and granted.
+    /// Whether a fetch may reach `host`: in force and granted.
     #[must_use]
     pub fn allows(&self, host: &str) -> bool {
         self.declared.iter().any(|h| h == host) && self.grants.iter().any(|g| g.host == host)
@@ -60,7 +66,7 @@ fn grant_record(now: String, id: &ArtifactId, op: &str, hosts: &[String]) -> Aud
 
 /// The app whose grants the draft `id` uses: the one it is a draft of,
 /// unless it was made offline (a new app's draft is of nothing).
-fn live_app_in(c: &Connection, id: &ArtifactId) -> Result<Option<ArtifactId>> {
+pub(crate) fn live_app_in(c: &Connection, id: &ArtifactId) -> Result<Option<ArtifactId>> {
     let of: Option<String> = c
         .query_row(
             "SELECT draft_of FROM artifacts WHERE id = ?1 AND hidden = 1 AND draft_inherit_net = 1",
@@ -72,19 +78,26 @@ fn live_app_in(c: &Connection, id: &ArtifactId) -> Result<Option<ArtifactId>> {
     Ok(of.and_then(|s| ArtifactId::parse(&s).ok()))
 }
 
+/// The hosts `id` declares in force, and those its current version declares
+/// that wait for approval.
+fn hosts_in(c: &Connection, id: &ArtifactId) -> Result<(Vec<String>, Vec<String>)> {
+    let hosts = |caps: &serde_json::Value| net_hosts(caps).ok().flatten().unwrap_or_default();
+    let all = hosts(&caps_in(c, id)?);
+    let declared = hosts(&in_force_in(c, id)?);
+    let waiting = all.into_iter().filter(|h| !declared.contains(h)).collect();
+    Ok((declared, waiting))
+}
+
 /// The artifact's access. A draft has no grants of its own: its `grants` are
-/// its live app's grants for the hosts that app's current version declares, so
-/// a host is allowed only while the draft declares it and the owner's grant to
-/// the app stands. A new app's draft, a draft made offline
+/// its live app's grants for the hosts that app has in force, so a host is
+/// allowed only while the draft has it in force (held to the app's
+/// approval) and the owner's grant to the app stands. A new app's draft, a draft made offline
 /// ([`Store::create_draft_with`]), or a draft whose app is gone, has none.
 fn access_in(c: &Connection, id: &ArtifactId) -> Result<NetAccess> {
     if !super::drafts::is_hidden_in(c, id.as_str())? {
         return own_access_in(c, id);
     }
-    let declared = net_hosts(&caps_in(c, id)?)
-        .ok()
-        .flatten()
-        .unwrap_or_default();
+    let (declared, waiting) = hosts_in(c, id)?;
     let grants = match live_app_in(c, id)? {
         Some(app) => match own_access_in(c, &app) {
             Ok(live) => live
@@ -98,7 +111,11 @@ fn access_in(c: &Connection, id: &ArtifactId) -> Result<NetAccess> {
         },
         None => Vec::new(),
     };
-    Ok(NetAccess { declared, grants })
+    Ok(NetAccess {
+        declared,
+        grants,
+        waiting,
+    })
 }
 
 fn refuse_draft(c: &Connection, id: &ArtifactId) -> Result<()> {
@@ -111,10 +128,9 @@ fn refuse_draft(c: &Connection, id: &ArtifactId) -> Result<()> {
     Ok(())
 }
 
-/// `id`'s own declaration and grant rows.
+/// `id`'s own hosts in force and waiting, and its grant rows.
 fn own_access_in(c: &Connection, id: &ArtifactId) -> Result<NetAccess> {
-    let caps = caps_in(c, id)?;
-    let declared = net_hosts(&caps).ok().flatten().unwrap_or_default();
+    let (declared, waiting) = hosts_in(c, id)?;
     let mut stmt = c.prepare(
         "SELECT host, granted_at FROM net_grants WHERE artifact_id = ?1 ORDER BY granted_at, host",
     )?;
@@ -126,19 +142,23 @@ fn own_access_in(c: &Connection, id: &ArtifactId) -> Result<NetAccess> {
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
-    Ok(NetAccess { declared, grants })
+    Ok(NetAccess {
+        declared,
+        grants,
+        waiting,
+    })
 }
 
 impl Store {
     /// Grants each host of `hosts` (the list the owner was shown) that the
-    /// artifact's current version declares in `capabilities.net.hosts`;
-    /// other hosts are ignored, so a host the owner did not see is never
-    /// granted. Hosts already granted keep their time. The new grants are
+    /// artifact's declaration in force lists in `capabilities.net.hosts`;
+    /// other hosts, those waiting for approval among them, are ignored, so
+    /// a host the owner did not see is never granted. Hosts already granted keep their time. The new grants are
     /// recorded as one `artifact.update` under `audit`.
     ///
     /// # Errors
     /// `NotFound` when the artifact is missing or deleted; `not_declared`
-    /// (invalid) when it declares no `net`; `draft` (invalid) for a draft,
+    /// (invalid) when no `net` is in force; `draft` (invalid) for a draft,
     /// which uses its app's grants and is never granted itself.
     pub fn grant_net(
         &self,
@@ -152,7 +172,7 @@ impl Store {
             if before.declared.is_empty() {
                 return Err(CoreError::invalid(
                     "not_declared",
-                    "this artifact declares no network hosts (capabilities.net.hosts)",
+                    "this artifact has no network hosts in force (capabilities.net.hosts, approved)",
                 ));
             }
             let now = self.now();
@@ -196,8 +216,9 @@ impl Store {
         })
     }
 
-    /// The artifact's declared hosts and the owner's network grants (for a
-    /// draft, its live app's grants on hosts that app declares).
+    /// The artifact's hosts in force and waiting, and the owner's network
+    /// grants (for a draft, its live app's grants on hosts that app has in
+    /// force).
     ///
     /// # Errors
     /// `NotFound` when the artifact is missing or deleted.
@@ -292,6 +313,20 @@ mod tests {
             "a host the app no longer declares reaches nothing"
         );
         set_caps(&st, &app, json!({"net": {"hosts": ["a.example.com"]}}));
+        assert!(
+            !st.net_access(&d).unwrap().allows("a.example.com"),
+            "a host the app dropped and declares again waits for the app's approval"
+        );
+        let p = st.pending_capabilities(&app).unwrap().unwrap();
+        st.approve_capabilities(
+            DAEMON,
+            &app,
+            p.version,
+            &p.declaration_sha256,
+            "owner",
+            true,
+        )
+        .unwrap();
         assert!(st.net_access(&d).unwrap().allows("a.example.com"));
 
         st.revoke_net(DAEMON, &app).unwrap();
@@ -398,7 +433,33 @@ mod tests {
         assert!(acc.allows("api.example.com"));
         assert!(
             !acc.allows("new.example.com"),
-            "a newly declared host waits for consent"
+            "a newly declared host waits for approval"
+        );
+        assert_eq!(acc.waiting, hosts(&["new.example.com"]));
+        st.grant_net(DAEMON, &a, &hosts(&["new.example.com"]))
+            .unwrap();
+        assert_eq!(rows(&st), 1, "a host waiting for approval is not granted");
+
+        let v = st.pending_capabilities(&a).unwrap().unwrap().version;
+        let sha = st
+            .pending_capabilities(&a)
+            .unwrap()
+            .unwrap()
+            .declaration_sha256;
+        st.approve_capabilities(DAEMON, &a, v, &sha, "owner", true)
+            .unwrap();
+        assert!(
+            st.net_access(&a).unwrap().allows("new.example.com"),
+            "approving grants it"
+        );
+        st.revoke_net(DAEMON, &a).unwrap();
+        let acc = st
+            .grant_net(DAEMON, &a, &hosts(&["api.example.com"]))
+            .unwrap();
+        assert!(acc.allows("api.example.com") && acc.waiting.is_empty());
+        assert!(
+            !acc.allows("new.example.com"),
+            "an approved host waits for consent after a revoke"
         );
         assert!(!acc.all_granted());
 
@@ -417,9 +478,14 @@ mod tests {
         ));
 
         set_caps(&st, &a, json!({"net": {"hosts": ["api.example.com"]}}));
-        assert_eq!(st.revoke_net(DAEMON, &a).unwrap(), 1);
+        let acc = st.net_access(&a).unwrap();
+        assert!(
+            !acc.allows("api.example.com"),
+            "a dropped host declared again waits for approval"
+        );
+        assert_eq!(acc.waiting, hosts(&["api.example.com"]));
+        assert_eq!(rows(&st), 0, "dropping the host revoked its grant");
         assert_eq!(st.revoke_net(DAEMON, &a).unwrap(), 0);
-        assert!(!st.net_access(&a).unwrap().allows("api.example.com"));
     }
 
     #[test]

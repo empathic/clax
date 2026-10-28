@@ -459,6 +459,7 @@ fn the_installed_launcher_pairs_as_the_owner_under_a_harness_environment() {
         .env_clear()
         .env("HOME", e.dir.path())
         .env("CLAX_BIN", crate::common::clax())
+        .env("CLAX_GALLERY__QUICKSTART", "false")
         .env("CLAX_NO_OPEN", "1")
         .env("CLAUDECODE", "1")
         .env("CLAX_CHANNEL", "agent")

@@ -199,6 +199,9 @@ void main() {
       }),
       ['Uses the internet', 'Uses AI'],
     );
+    expect(capabilityLines({'shell': <String, Object?>{}}), [
+      'Points at Clax’s own buttons',
+    ]);
   });
 
   testWidgets('Overview shows the facts and copies the ID', (tester) async {

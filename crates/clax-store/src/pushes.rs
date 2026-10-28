@@ -47,7 +47,16 @@
 //! them. An `icon.svg` the commit leaves as it was is kept unchecked, as
 //! history holds it. A commit whose trees hold
 //! more than [`clax_core::content::MAX_PUSHED_ENTRIES`] is refused as a commit
-//! whose pusher may not publish is (`push_too_large`). The note is the commit's message,
+//! whose pusher may not publish is (`push_too_large`).
+//!
+//! A commit that adds or changes `clax.json` ([`clax_core::manifest`])
+//! declares the version's capabilities from it, as a publish carrying it
+//! does, and one that removes it clears the declaration; a commit leaving
+//! it as it was keeps the declaration. A `clax.json` that is not a manifest
+//! or does not validate refuses the commit (`invalid_manifest`,
+//! `invalid_capabilities`), and so does a change of the declaration by a
+//! pusher who does not administer the artifact (`admin_only`): its maker,
+//! and on a local Clax the owner ([`Store::set_hosted`]). The note is the commit's message,
 //! after a line saying so when the commit does not simply follow the
 //! version below it.
 
@@ -98,9 +107,32 @@ enum Standing {
 
 impl Store {
     /// Installs `f`, called with each version recorded from a pushed
-    /// commit, after its transaction commits. Replaces any earlier one.
-    pub fn set_pushed_listener(&self, f: impl Fn(&Artifact, &Version) + Send + Sync + 'static) {
+    /// commit, after its transaction commits, and whether the version
+    /// changed the artifact's capability approval (a pushed declaration
+    /// narrowed it, [`crate::capability_approvals`]). Replaces any earlier
+    /// one.
+    pub fn set_pushed_listener(
+        &self,
+        f: impl Fn(&Artifact, &Version, bool) + Send + Sync + 'static,
+    ) {
         *self.pushed_listener.write().unwrap() = Some(std::sync::Arc::new(f));
+    }
+
+    /// Makes this store a hosted daemon's: the owner then administers only
+    /// the artifacts the owner made, as for the HTTP routes, when a pushed
+    /// commit changes a declaration (see the [module docs](self)).
+    pub fn set_hosted(&self, hosted: bool) {
+        self.hosted
+            .store(hosted, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether `person` (`None`: the owner) administers `id`: its maker,
+    /// and on a local Clax the owner.
+    fn push_administers(&self, id: &ArtifactId, person: Option<&str>) -> Result<bool> {
+        if person.is_none() && !self.hosted.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(true);
+        }
+        self.artifact_created_by(id.as_str(), person)
     }
 
     /// Records the commits pushed to `id`'s repository past its current
@@ -165,19 +197,25 @@ impl Store {
                     continue;
                 }
             };
+            let approved = self.capability_approval(id).ok();
             match self
                 .record_push(ctx, id, current, c, person, session.as_deref(), &refused)
                 .await
             {
-                // Its trees are past what is read of one commit: refused,
-                // as a commit whose pusher may not publish is.
+                // Its trees are past what is read of one commit, or its
+                // clax.json declares what it may not: refused, as a commit
+                // whose pusher may not publish is.
                 Err(CoreError::Invalid {
-                    code: "push_too_large",
+                    code:
+                        code @ ("push_too_large"
+                        | "invalid_manifest"
+                        | "invalid_capabilities"
+                        | "admin_only"),
                     ..
                 }) => {
                     let by = [Author::of_token(pusher.person.as_deref())];
                     self.revoke_blind_tokens(id, &by).await?;
-                    self.record_push_refused(ctx, id, &c.commit, pusher, "push_too_large")?;
+                    self.record_push_refused(ctx, id, &c.commit, pusher, code)?;
                     refused.push(c.commit.clone());
                 }
                 Ok((a, v)) => {
@@ -185,7 +223,13 @@ impl Store {
                     refused.clear();
                     let listen = self.pushed_listener.read().unwrap().clone();
                     if let Some(listen) = listen {
-                        listen(&a, &v);
+                        // A failed read counts as a change: a view's
+                        // refetch costs less than a stale approval bar.
+                        let changed = match (&approved, self.capability_approval(id)) {
+                            (Some(before), Ok(now)) => &now != before,
+                            _ => true,
+                        };
+                        listen(&a, &v, changed);
                     }
                     out.recorded.push((a, v));
                 }
@@ -340,6 +384,41 @@ impl Store {
         Ok(())
     }
 
+    /// The declaration pushed `changes` make through `clax.json` (see the
+    /// [module docs](self)), by `person` (`None`: the owner): the file's
+    /// `capabilities` when the commit changes it, `{}` when it removes it,
+    /// `None` when it leaves it as it was.
+    ///
+    /// # Errors
+    /// `invalid_manifest` or `invalid_capabilities` for a file that is not
+    /// a valid manifest; `admin_only` for a change of `id`'s declaration by
+    /// a person who does not administer it.
+    fn pushed_declaration(
+        &self,
+        id: &ArtifactId,
+        changes: &BTreeMap<String, FileChange>,
+        person: Option<&str>,
+    ) -> Result<Option<serde_json::Value>> {
+        let caps = match changes.get(clax_core::manifest::MANIFEST_PATH) {
+            None => return Ok(None),
+            Some(FileChange::Remove) => serde_json::json!({}),
+            Some(FileChange::Put(f)) => {
+                let caps = clax_core::manifest::parse(&f.bytes)?;
+                clax_core::capabilities::validate(&caps)?;
+                clax_core::db::ReadDecl::from_capabilities(&caps, id.as_str())?;
+                caps
+            }
+        };
+        let current = self.get_artifact(id)?.ok_or(CoreError::NotFound)?;
+        if caps != current.capabilities && !self.push_administers(id, person)? {
+            return Err(CoreError::invalid(
+                "admin_only",
+                "only the page's maker (on a local Clax, the owner too) changes its capabilities",
+            ));
+        }
+        Ok(Some(caps))
+    }
+
     /// Records pushed commit `c` as version `current + 1`; `refused` are
     /// the commits pushed after `current` and before `c` that were left out.
     #[allow(clippy::too_many_arguments)]
@@ -409,6 +488,7 @@ impl Store {
                 changes.insert(path.clone(), FileChange::Remove);
             }
         }
+        let capabilities = self.pushed_declaration(id, &changes, person.as_deref())?;
         // The new version's authors: its publisher, and whoever wrote the
         // files it carries unchanged.
         let mut authors = vec![Author::of_token(person.as_deref())];
@@ -432,7 +512,7 @@ impl Store {
             icon: None,
             label: None,
             if_version: Some(current),
-            capabilities: None,
+            capabilities,
             files: changes,
             note,
             note_truncated,

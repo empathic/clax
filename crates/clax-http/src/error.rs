@@ -65,6 +65,13 @@ impl From<CoreError> for ApiError {
                 err.extra.insert("current".into(), json!(current));
                 err
             }
+            // An approval of a version or declaration no longer current
+            // (`Store::approve_capabilities`): review the current one.
+            e @ CoreError::StaleVersion { current } => {
+                let mut err = ApiError::new(StatusCode::CONFLICT, "stale_version", e.to_string());
+                err.extra.insert("current".into(), json!(current));
+                err
+            }
             CoreError::DocConflict { path, current } => {
                 let mut err = ApiError::new(
                     StatusCode::CONFLICT,
@@ -327,6 +334,9 @@ mod tests {
             (e.status, e.code),
             (StatusCode::CONFLICT, "version_present")
         );
+        let e = ApiError::from(CoreError::StaleVersion { current: 5 });
+        assert_eq!((e.status, e.code), (StatusCode::CONFLICT, "stale_version"));
+        assert_eq!(e.extra.get("current"), Some(&json!(5)));
     }
 
     #[test]

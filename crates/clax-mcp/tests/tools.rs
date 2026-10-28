@@ -116,6 +116,110 @@ async fn publish_then_read_round_trips_the_page_and_files() {
 }
 
 #[tokio::test]
+async fn publish_declares_through_clax_json_and_writes_it_from_capabilities() {
+    let ts = TestServer::spawn().await;
+    let t = tools_for(&ts);
+    let file = |content: &str| {
+        let mut files = BTreeMap::new();
+        files.insert(
+            "clax.json".to_string(),
+            Some(FileArg {
+                content: Some(content.into()),
+                ..Default::default()
+            }),
+        );
+        Some(files)
+    };
+    let caps = serde_json::json!({"db": {}});
+    let pub1 = ok(t
+        .publish(Parameters(PublishArgs {
+            capabilities: Some(caps.clone()),
+            ..html("Manifest", "<p>1")
+        }))
+        .await);
+    assert_eq!(
+        pub1["files"],
+        serde_json::json!(["clax.json", "index.html"])
+    );
+    let id = pub1["artifact_id"].as_str().unwrap().to_string();
+    let read = ok(t
+        .read(Parameters(ReadArgs {
+            url_or_id: id.clone(),
+            path: Some("clax.json".into()),
+            ..Default::default()
+        }))
+        .await);
+    assert_eq!(
+        read["content"].as_str().unwrap().as_bytes(),
+        clax_core::manifest::render(&caps)
+    );
+    let e = err(t
+        .publish(Parameters(PublishArgs {
+            id: Some(id.clone()),
+            if_version: Some(1),
+            capabilities: Some(serde_json::json!({})),
+            files: file(r#"{"capabilities": {"db": {}}}"#),
+            ..html("Manifest", "<p>2")
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "manifest_mismatch", "{e}");
+    let e = err(t
+        .publish(Parameters(PublishArgs {
+            id: Some(id.clone()),
+            if_version: Some(1),
+            files: file(r#"{"capabilities": {}, "db": {}}"#),
+            ..html("Manifest", "<p>2")
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "invalid_manifest", "{e}");
+    ok(t.publish(Parameters(PublishArgs {
+        id: Some(id.clone()),
+        if_version: Some(1),
+        files: file(r#"{"capabilities": {}}"#),
+        ..html("Manifest", "<p>2")
+    }))
+    .await);
+    let got: Value = ts
+        .get(&format!("/api/artifacts/{id}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        got["artifact"]["capabilities"],
+        serde_json::json!({}),
+        "{got}"
+    );
+}
+
+#[tokio::test]
+async fn publish_says_what_waits_for_approval() {
+    let ts = TestServer::spawn().await;
+    let t = tools_for(&ts);
+    let waits = ok(t
+        .publish(Parameters(PublishArgs {
+            capabilities: Some(serde_json::json!({"net": {"hosts": ["api.clax.invalid"]}})),
+            ..html("Waits", "<p>1")
+        }))
+        .await);
+    assert_eq!(
+        waits["waiting"], "Waiting for approval in Clax: the internet (api.clax.invalid).",
+        "{waits}"
+    );
+    let plain = ok(t
+        .publish(Parameters(PublishArgs {
+            capabilities: Some(serde_json::json!({"db": {}})),
+            ..html("Plain", "<p>1")
+        }))
+        .await);
+    assert!(plain.get("waiting").is_none(), "{plain}");
+    assert!(
+        !plain.to_string().contains("Waiting for approval"),
+        "{plain}"
+    );
+}
+
+#[tokio::test]
 async fn stale_if_version_is_an_error_result_naming_current() {
     let ts = TestServer::spawn().await;
     let t = tools_for(&ts);

@@ -106,6 +106,7 @@ pub mod batches;
 pub mod bot_runs;
 pub mod bot_settings;
 pub mod briefs;
+pub mod capability_approvals;
 pub mod changelog;
 pub mod credits;
 pub mod device;
@@ -135,6 +136,7 @@ pub mod people;
 mod plans;
 pub mod pushes;
 pub mod questions;
+pub mod quickstart;
 pub mod reach;
 pub mod remotes;
 pub mod roles;
@@ -157,6 +159,7 @@ pub use attention::{AgentPerson, AgentView, Attention, AttentionSummary, Partici
 pub use audit::AuditRow;
 pub use bot_runs::{CallEntry, Guard, Journaled, Tx};
 pub use feedback::{Delivery, DeliveryViewer, SendTarget, TakeFeedback, Taken};
+pub use quickstart::{Quickstart, Seeded, Updated};
 pub use sessions::{
     EndReason, EndedSession, JoinSession, NameSource, Proved, Reaped, RegisterSession, Registered,
     Restored, RosterAgent,
@@ -199,7 +202,7 @@ type AgentsListener = Arc<dyn Fn(Vec<String>) + Send + Sync>;
 
 /// The installed pushed versions listener, cloned out of its lock.
 pub(crate) type PushedListener =
-    Arc<dyn Fn(&clax_core::model::Artifact, &clax_core::model::Version) + Send + Sync>;
+    Arc<dyn Fn(&clax_core::model::Artifact, &clax_core::model::Version, bool) + Send + Sync>;
 
 pub struct Store {
     home: Home,
@@ -239,6 +242,10 @@ pub struct Store {
     /// Told of each version recorded from a pushed commit
     /// ([`Store::set_pushed_listener`]).
     pushed_listener: RwLock<Option<PushedListener>>,
+    /// Whether this store is a hosted daemon's, which decides who
+    /// administers an artifact for a pushed declaration
+    /// ([`Store::set_hosted`]).
+    hosted: AtomicBool,
     /// Where every time the store writes or compares is read
     /// ([`Store::now`]). IDs are minted from the system clock.
     clock: Arc<dyn Clock>,
@@ -422,6 +429,7 @@ impl Store {
             publish_key_locks: ArtifactLocks::default(),
             brief_key_locks: ArtifactLocks::default(),
             shut_down: AtomicBool::new(false),
+            hosted: AtomicBool::new(false),
             inbox_changes,
             inbox_listener: RwLock::new(None),
             request_changes,
@@ -1030,8 +1038,22 @@ pub(crate) mod test_util {
         ArtifactId::parse(&a.id).unwrap()
     }
 
-    /// A one-version artifact declaring `caps`.
+    /// A one-version artifact declaring `caps`, its declaration approved
+    /// (recorded as approved by `owner`, with no grant made), so all of it
+    /// is in force: a test of grants starts from what an approved app has.
     pub fn artifact_with_caps(store: &Store, caps: serde_json::Value) -> ArtifactId {
+        let id = artifact_declaring(store, caps.clone());
+        store
+            .with_tx(|tx| {
+                crate::capability_approvals::record_in(tx, &id, 1, &caps, "owner", &store.now())
+            })
+            .unwrap();
+        id
+    }
+
+    /// A one-version artifact declaring `caps`, nothing of it approved, so
+    /// its gated names wait for approval.
+    pub fn artifact_declaring(store: &Store, caps: serde_json::Value) -> ArtifactId {
         let req: PublishRequest = serde_json::from_value(serde_json::json!({
             "title": "Tracker",
             "capabilities": caps,

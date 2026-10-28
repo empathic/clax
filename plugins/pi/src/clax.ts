@@ -65,7 +65,7 @@ const PublishArgs = Type.Object({
   description: opt(str("One-line description.")),
   icon: opt(str("One generic word for the icon, such as chart or map.")),
   label: opt(str("Short label for this version.")),
-  capabilities: opt(Type.Record(Type.String(), Type.Unknown(), { description: "Runtime capabilities the page declares." })),
+  capabilities: opt(Type.Record(Type.String(), Type.Unknown(), { description: "Runtime capabilities the page declares, written as the version's `clax.json`; with a `clax.json` in `files`, it must equal that file's." })),
   note: opt(str("A short change note for the person, at most 280 characters.")),
   addresses: opt(Type.Array(Type.String(), { description: "IDs of the comment threads this version addresses." })),
   tags: opt(Type.Array(Type.String(), { description: "Existing tags (names, from `tags`) to add to the artifact once published. Only the owner makes tags: an unknown one fails before anything is published, listing the tags there are." })),
@@ -97,6 +97,42 @@ const TagsArgs = Type.Object({}, strict);
 /** The names of an artifact's `tags` (`[{id, name, colour}]`), in order. */
 const tagNames = (tags: unknown): string[] =>
   Array.isArray(tags) ? tags.map((t: Json) => t?.name).filter((n: unknown): n is string => typeof n === "string") : [];
+
+/** How a gated capability is named to a person, as `label` in
+ * `crates/clax-core/src/capabilities.rs` names it. */
+const CAPABILITY_LABELS: Record<string, string> = {
+  net: "the internet",
+  sample: "Claude",
+  account: "sign-in",
+  shell: "Clax's controls",
+  notify: "notifications",
+  share: "sharing",
+  file: "files",
+  camera: "the camera",
+  location: "your location",
+};
+
+/** The publish answer's `waiting` line for its `pending_capabilities`
+ * (`Waiting for approval in Clax: the internet (api.example.com), Claude.`),
+ * worded as `clax_core::capabilities::describe` words it: names in the
+ * order listed, `net` first when only new hosts wait, `net` carrying its new
+ * hosts. `null` when nothing waits. */
+export function waitingLine(pending: unknown): string | null {
+  if (pending === null || typeof pending !== "object" || Array.isArray(pending)) return null;
+  const strings = (k: string): string[] => {
+    const v = (pending as Record<string, unknown>)[k];
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  };
+  const names = strings("capabilities");
+  const hosts = strings("hosts");
+  if (names.length === 0 && hosts.length === 0) return null;
+  if (hosts.length > 0 && !names.includes("net")) names.unshift("net");
+  const words = names.map((n) => {
+    const label = CAPABILITY_LABELS[n] ?? n;
+    return n === "net" && hosts.length > 0 ? `${label} (${hosts.join(", ")})` : label;
+  });
+  return `Waiting for approval in Clax: ${words.join(", ")}.`;
+}
 
 /** Names compared as Clax compares them: lowercased. */
 const foldTag = (name: string) => name.trim().toLowerCase();
@@ -1153,6 +1189,8 @@ class Tools {
       addressed: res.version?.addresses ?? [],
       tags: tagNames(res.artifact?.tags),
     };
+    const waiting = waitingLine(res.pending_capabilities);
+    if (waiting !== null) out.waiting = waiting;
     // The version is published whatever the tags' fate: a refusal is
     // reported beside it, never as the publish's failure.
     if (tags.length > 0) {
@@ -2174,7 +2212,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
     };
 
     define("publish", "Clax publish",
-      "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, and the new version number. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on are added for you. The person sees both as the version's changelog; nothing is resolved by it. Pass `tags` to add existing tags (see `tags`).",
+      "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, the new version number, and `waiting` when a declared capability awaits approval in Clax. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on are added for you. The person sees both as the version's changelog; nothing is resolved by it. Pass `tags` to add existing tags (see `tags`).",
       "Publish an HTML page (artifact) to the local Clax server, or a new version of one",
       PublishArgs, (ctx, a) => tools.publish(ctx, a));
     define("read", "Clax read",

@@ -55,11 +55,13 @@ const PAGE = "<main><h2>Quarterly goals</h2></main>";
     await expect(line1).toHaveText(`${n}: Two columns`);
     const gallery = await page.context().newPage();
     await gallery.goto(`${d.base}/`);
-    await expect(gallery.locator(".card-wrap", { hasText: `Working` }).locator(".chip.ag")).toHaveText(`${n} working on 1`);
+    // Other tests' artifacts on this daemon share the title text, so the card is the one linking to this artifact.
+    const galleryCard = gallery.locator(".card-wrap").filter({ has: gallery.locator(`a.card[href="/a/${artifact.id}"]`) });
+    await expect(galleryCard.locator(".chip.ag")).toHaveText(`${n} working on 1`);
     await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads/${t.id}/comments`, { method: "POST", session: s.id, body: JSON.stringify({ body: "Done.", author_kind: "agent" }) });
     await expect(card.locator(".st.ag")).toHaveCount(0);
     await expect(line1).toHaveText("Nobody working");
-    await expect(gallery.locator(".card-wrap", { hasText: `Working` }).locator(".chip.ag")).toHaveCount(0, { timeout: 10_000 });
+    await expect(galleryCard.locator(".chip.ag")).toHaveCount(0, { timeout: 10_000 });
   });
 
   test(`a record lapses 2 minutes after its last renewal`, async ({ page }) => {

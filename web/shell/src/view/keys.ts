@@ -3,7 +3,8 @@
 // focus is in the shell, outside a text field and outside any dialog, with no
 // modifier but Shift, and not while an input method composes. C acts whatever
 // its case (Caps Lock). Keys pressed inside the artifact's frame belong to the
-// page and never reach here.
+// page and never reach here, but for C, which the bridge tells the shell of
+// (`clax:shortcut`, `pageKeyAction`).
 export type KeyAction = "help" | "comment";
 export type KeyLike = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "isComposing" | "repeat" | "target">;
 export type KeyRow = { keys: string[]; what: string };
@@ -29,6 +30,12 @@ export function keyAction(e: KeyLike): KeyAction | null {
   // the viewer may still be typing for the page.
   if (e.target instanceof Element && e.target.closest("[role=dialog], [aria-modal=true]")) return null;
   return MAP[e.key.length === 1 ? e.key.toLowerCase() : e.key] ?? null;
+}
+
+/** The shell key a page's `clax:shortcut` names, or null: only C, so the
+ * page can ask for nothing else. */
+export function pageKeyAction(key: unknown): KeyAction | null {
+  return key === "c" ? "comment" : null;
 }
 
 const HELD_KEY = "clax.keys-held";

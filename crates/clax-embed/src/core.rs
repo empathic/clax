@@ -640,6 +640,7 @@ async fn opening(sh: Arc<Shared>, opts: OpenOptions) {
         bind: Ipv4Addr::LOCALHOST.into(),
         port: 0,
         embed: Some(opts.origins),
+        quickstart: false,
     };
     // One event per phase, and per migration.
     let mut last = None;

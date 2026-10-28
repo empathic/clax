@@ -1,6 +1,7 @@
 import { test as playwrightTest, expect as playwrightExpect, type Frame, type Locator, type Page, type Response } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
 import { request as httpRequest } from "node:http";
+import { createServer } from "node:net";
 import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -61,8 +62,32 @@ const tick = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
  * `stop({ keepHome: true })` leaves the home; `ended()` says whether the daemon has exited.
  * It runs the binary daemon-setup.ts built, on a port the system picks, and
  * waits up to `opts.startMs` (20 s by default) for its daemon.json and its
- * health check; a start that fails says so with the end of the daemon's stderr. */
-export async function startDaemon(opts: { config?: string; home?: string; port?: number; startMs?: number; bind?: string; env?: Record<string, string>; args?: string[] } = {}) {
+ * health check; a start that fails says so with the end of the daemon's stderr.
+ * `localhost` resolves to `::1` first, and another process (a Bazel server)
+ * may listen on `[::1]` at the port the system gave the daemon on
+ * `127.0.0.1`, where every request to `http://localhost:<port>` would reach
+ * it: a daemon on such a port is stopped and another started. */
+export async function startDaemon(opts: StartOpts = {}) {
+  for (let tries = 1; ; tries++) {
+    const d = await startOnce(opts);
+    if (d) return d;
+    if (tries === 10) throw new Error("ten ports the system gave the daemon were each taken on [::1]");
+  }
+}
+
+type StartOpts = { config?: string; home?: string; port?: number; startMs?: number; bind?: string; env?: Record<string, string>; args?: string[] };
+
+/** Whether another process listens on `[::1]` at `port` (false on a machine without IPv6). */
+export function v6Taken(port: number): Promise<boolean> {
+  return new Promise(resolve => {
+    const s = createServer();
+    s.once("error", (e: NodeJS.ErrnoException) => resolve(e.code === "EADDRINUSE"));
+    s.listen({ host: "::1", port, exclusive: true }, () => s.close(() => resolve(false)));
+  });
+}
+
+/** One start of `startDaemon`'s daemon; null (the daemon stopped) when its port is taken on `[::1]`. */
+async function startOnce(opts: StartOpts) {
   const bin = process.env.CLAX_E2E_BIN;
   if (!bin) throw new Error("CLAX_E2E_BIN is unset: run the tests through a Playwright config whose global setup builds the daemon (e2e/daemon-setup.ts)");
   // The browser tests' build of the web UI, when the global setup made one;
@@ -72,7 +97,7 @@ export async function startDaemon(opts: { config?: string; home?: string; port?:
   writeFileSync(join(home, "config.toml"), opts.config ?? NO_KEY_CONFIG);
   rmSync(join(home, "daemon.json"), { force: true });
   const child: ChildProcess = spawn(bin, ["serve", "--foreground", "--bind", opts.bind ?? "127.0.0.1", "--port", String(opts.port ?? 0), ...(dist ? ["--web-dist", dist] : []), ...(opts.args ?? [])],
-    { cwd: repoRoot, env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "", CLAX_E2E_UNSET_KEY: "", ...opts.env }, stdio: ["ignore", "inherit", "pipe"] });
+    { cwd: repoRoot, env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "", CLAX_E2E_UNSET_KEY: "", CLAX_GALLERY__QUICKSTART: "false", ...opts.env }, stdio: ["ignore", "inherit", "pipe"] });
   // The daemon's stderr goes on to the test's, and its end is kept for a failed start.
   let stderr = "";
   child.stderr?.on("data", (b: Buffer) => { process.stderr.write(b); stderr = (stderr + b.toString()).slice(-4000); });
@@ -112,6 +137,9 @@ export async function startDaemon(opts: { config?: string; home?: string; port?:
     }
     token = info.token as string;
     port = info.port as number;
+    // Stopped there, the daemon is told to shut down on 127.0.0.1, which only it holds.
+    base = `http://127.0.0.1:${info.port}`;
+    if (!opts.port && await v6Taken(port)) { await stop({ keepHome: !!opts.home }); return null; }
     base = `http://localhost:${info.port}`;
     for (;;) {
       try { if ((await fetch(`${base}/healthz`)).ok) break; } catch { /* retry */ }
@@ -173,6 +201,19 @@ export async function api(base: string, token: string, path: string, init: Reque
   const res = await fetch(`${base}${path}`, { ...init, headers });
   if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`);
   return res.status === 204 ? {} : res.json();
+}
+
+/** Approves, as the owner by hand (the token, no session), what artifact
+ * `id`'s current version declares that waits for approval: the
+ * `pending_capabilities` of `GET /api/artifacts/<id>`, by their version and
+ * declaration hash (`PUT /api/artifacts/<id>/capability-approval`).
+ * Approving grants the `net` hosts and the `sample` that waited. Sends
+ * nothing, and answers null, when nothing waits. */
+export async function approve(base: string, token: string, id: string) {
+  const { artifact } = await api(base, token, `/api/artifacts/${id}`) as { artifact: { pending_capabilities?: { version: number; declaration_sha256: string } | null } };
+  const p = artifact.pending_capabilities;
+  if (!p) return null;
+  return api(base, token, `/api/artifacts/${id}/capability-approval`, { method: "PUT", body: JSON.stringify({ version: p.version, declaration_sha256: p.declaration_sha256 }) });
 }
 
 /** Sets session `sid`'s working record on artifact `aid` (`PUT /api/sessions/<sid>/working/<aid>`). */

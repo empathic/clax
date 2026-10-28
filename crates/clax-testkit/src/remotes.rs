@@ -156,7 +156,7 @@ pub async fn post(ts: &TestServer, path: &str, body: Value) -> (u16, Value) {
 /// Signs `local` in to `public` by device code, the public owner
 /// approving; the remote's view.
 pub async fn connect(local: &TestServer, public: &Public) -> Value {
-    connect_with(local, public, json!({"url": public.origin})).await
+    connect_with(local, public, json!({"url": public.origin}), None).await
 }
 
 /// [`connect`] as the Clax app signs in: its sign-in names the kind
@@ -167,14 +167,34 @@ pub async fn connect_app(local: &TestServer, public: &Public) -> Value {
         local,
         public,
         json!({"url": public.origin, "kind": "clax-app", "machine": "Clax on phone"}),
+        None,
     )
     .await
 }
 
-/// [`connect`] with `body` as `POST /api/remotes`'s.
-pub async fn connect_with(local: &TestServer, public: &Public, body: Value) -> Value {
-    let (s, v) = post(local, "/api/remotes", body).await;
+/// [`connect`] with `body` as `POST /api/remotes`'s. With `return_to`, the
+/// absolute address a `return_to` path in `body` is to become: the request
+/// comes to that address's host, and the approval page names the address
+/// as the one to send the person back to.
+pub async fn connect_with(
+    local: &TestServer,
+    public: &Public,
+    body: Value,
+    return_to: Option<&str>,
+) -> Value {
+    let mut req = local
+        .authed(local.client.post(format!("{}/api/remotes", local.base)))
+        .json(&body);
+    if let Some(to) = return_to {
+        let host = to
+            .strip_prefix("http://")
+            .and_then(|r| r.split('/').next())
+            .expect("an http address");
+        req = req.header(HOST, host);
+    }
+    let (s, v) = json_of(req.send().await.unwrap()).await;
     assert_eq!(s, 201, "{v}");
+    assert_eq!(v["return_to_kept"], json!(return_to.is_some()), "{v}");
     let uc = v["user_code"].as_str().unwrap().to_string();
     let id = v["remote"]["id"].as_str().unwrap().to_string();
     assert_eq!(v["remote"]["status"], "pending");
@@ -203,6 +223,7 @@ pub async fn connect_with(local: &TestServer, public: &Public, body: Value) -> V
             .starts_with("Clax on "),
         "{peek}"
     );
+    assert_eq!(peek["return_to"], json!(return_to), "{peek}");
     let (s, v) = public
         .browser(
             reqwest::Method::POST,

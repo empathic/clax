@@ -11,7 +11,7 @@ import { type Declared, type Served, declaredConfig, isAvailable } from "./avail
 import { deviceLink } from "./device-link";
 import { CapError } from "./errors";
 import type { ArrivalGesture } from "./gesture";
-import { Grants, type Prompt, type PromptAnswer, grantsKey } from "./grants";
+import { Grants, type PermissionState, type Prompt, type PromptAnswer, grantsKey } from "./grants";
 import { REGISTRY } from "./registry";
 import { onHost } from "../transport";
 
@@ -55,6 +55,9 @@ export interface CapEnv {
   /** The shell is pinned to `/a/<aid>/v/<n>`. */
   pinned: boolean;
   token: string | null;
+  /** The viewer may edit the artifact (the daemon's `may_edit`): the owner
+   * and editors. */
+  mayEdit?: boolean;
   viewer(): Promise<ViewerInfo>;
   declared: Declared;
   prompt(p: Prompt): Promise<PromptAnswer>;
@@ -75,6 +78,11 @@ export interface CapEnv {
   page?(): string | null;
   /** The shell's comment UI, when this view has one. */
   comments?: CommentsUi;
+  /** Enters (`on`) or leaves comment mode for the page, as the Comment
+   * button does, and says whether comment mode is on afterwards; leaving
+   * keeps it while the composer holds typed text. `null` where this view
+   * cannot comment (nothing changes). */
+  commentMode?(on: boolean): boolean | null;
   /** Who is working on the artifact now (the view's latest working list). */
   working?(): Working[];
   /** `GET /api/artifacts/<aid>/sample` with the token: set only for the owner
@@ -158,6 +166,7 @@ export class CapabilityHost {
     const named = m.type === "clax:use" ? m.name : m.ns;
     this.served.device = deviceLink.call !== null;
     this.served.site = onHost();
+    this.served.edits = env.mayEdit === true;
     // Only a request about sample (or permissions, which lists it) waits for the daemon's answer.
     if (named === "sample" || named === "permissions") await this.checkServed(env);
     if (named === "home") this.served.home = await deviceLink.home?.();
@@ -178,6 +187,19 @@ export class CapabilityHost {
         : { code: "upstream_error", message: e instanceof Error ? e.message : String(e) };
       env.post({ type: "clax:call-result", id: m.id, ok: false, error });
     }
+  }
+
+  /** This viewer's state of capability `name` (`comments`), or null when the page cannot use it. */
+  async grantState(name: string): Promise<PermissionState | null> {
+    const { grants } = await this.ready;
+    const st = grants.state(name);
+    return st === "unavailable" ? null : st;
+  }
+
+  /** Takes back this viewer's grant of `name`, so the page's next use asks again. */
+  async revoke(name: string): Promise<void> {
+    const { grants } = await this.ready;
+    grants.revoke(name);
   }
 
   /** Asks the daemon once whether it samples for this view, only for the

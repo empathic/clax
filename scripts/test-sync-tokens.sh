@@ -11,8 +11,9 @@
 # path with a command other than M or A fails; a kit token the source maps
 # that kit.css declares again outside its generated region fails (but not
 # inside @supports); a color-mix() outside @supports in the home app's
-# home.css or the map's stylesheet in map.js fails; and a contrast pair
-# below its minimum in a more-contrast palette fails.
+# home.css or the map's stylesheet in map.js fails; a contrast pair
+# below its minimum in a more-contrast palette fails; and a reel curve in
+# web/reel/pace.ts that is not the motion curve fails.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 d="$(mktemp -d)"
@@ -25,6 +26,7 @@ INPUTS=(
     design/mark.json
     design/tokens.json
     scripts/sync-tokens.py
+    web/reel/pace.ts
     web/shell/src/view/haiku.json
     web/shell/src/theme.css
 )
@@ -215,5 +217,11 @@ open(f, "w").write(json.dumps(t, indent=2) + "\n")
 EOF
 _run --check
 { [ "$st" = 1 ] && _has "contrast: muted on bg (light, more contrast) is"; } || _fail "a more-contrast pair below its minimum fails: $out"
+
+# 17. A reel curve that is not design/tokens.json's motion curve fails, naming both.
+_copy
+_sub "$d/w/web/reel/pace.ts" 'standard: [0.4, 0, 0.2, 1]' 'standard: [0.4, 0, 0.3, 1]'
+_run --check
+{ [ "$st" = 1 ] && _has "web/reel/pace.ts: CURVES is" && _has "motion.curves are"; } || _fail "a drifted reel curve fails: $out"
 
 if [ "$fails" = 0 ]; then echo "sync tokens tests: all passed"; else echo "sync tokens tests: $fails failed"; exit 1; fi

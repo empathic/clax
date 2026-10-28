@@ -939,6 +939,37 @@ impl BotHost for ServerHost {
         }))
         .map_err(|e| HostError::new("invalid_args", e.to_string()))?;
         let p = clax_core::publish::validate(req).map_err(|e| host_error(&e))?;
+        // A clax.json the draft changes or removes declares, and a change of
+        // the declaration is its maker's, as a publish's (`admin_change`).
+        if let Some(caps) = p.capabilities.clone() {
+            let (aid, person) = (run.artifact_id.clone(), run.person.clone());
+            let hosted = self.state.hosted.is_some();
+            self.on_store(move |st| {
+                let id = ArtifactId::parse(&aid).map_err(|e| host_error(&e))?;
+                let Some(cur) = st.get_artifact(&id).map_err(|e| host_error(&e))? else {
+                    return Ok(());
+                };
+                if caps == cur.capabilities {
+                    return Ok(());
+                }
+                let administers = if person == OWNER {
+                    !hosted || st.artifact_created_by(&aid, None)
+                        .map_err(|e| host_error(&e))?
+                } else {
+                    st.artifact_created_by(&aid, Some(&person))
+                        .map_err(|e| host_error(&e))?
+                };
+                if administers {
+                    Ok(())
+                } else {
+                    Err(HostError::new(
+                        "admin_only",
+                        "only the page's maker (on a local Clax, the owner too) changes its capabilities: leave clax.json as it is",
+                    ))
+                }
+            })
+            .await?;
+        }
         let (state, ctx) = (self.state.clone(), cx.audit.clone());
         Ok(Box::new(move |entry: CallEntry| {
             Box::pin(async move {

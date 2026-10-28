@@ -66,6 +66,10 @@ pub struct CoreConfig {
     /// The origins of an app that embeds the core
     /// ([`AppState::embed`]); `None` for `clax serve`.
     pub embed: Option<clax_http::state::EmbedOrigins>,
+    /// Seed the Clax Quickstart into a new local home and move an untouched
+    /// one to the web UI's release at start (`[gallery] quickstart`); a
+    /// hosted core never does.
+    pub quickstart: bool,
 }
 
 /// A started core: its state, its router, and the tasks it runs until
@@ -150,6 +154,9 @@ impl Core {
             embed: cfg.embed,
         })?;
         state.clax_app = Arc::new(clax_app);
+        if cfg.quickstart {
+            state.quickstart = clax_core::quickstart::Release::from_tree(&*state.web).map(Arc::new);
+        }
         // The core's `net` keeps a shared disk cache in the home.
         state.net = Arc::new(clax_http::net_cache::daemon_net(cfg.home.root()));
         state.bot = Arc::new(local_bot(&state));
@@ -200,6 +207,13 @@ impl Core {
             tasks.push(tokio::spawn(async move {
                 clax_http::app_data_host::move_pending(&store, &*host).await;
             }));
+        }
+        // A local home is not seeded with the quickstart (only a hosted
+        // site's galleries are, at sign-in and invite accept); a quickstart
+        // a local home already holds still follows each release until
+        // someone touches it.
+        if state.hosted.is_none() {
+            crate::quickstart::update(&state, None).await;
         }
         let router = crate::router::build_router_with_shutdown(state.clone(), shutdown.clone());
         Ok(Core {

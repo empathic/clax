@@ -3,26 +3,33 @@
 use clax_server::core::{Core, CoreConfig};
 use tower::ServiceExt;
 
-fn cfg(home: &std::path::Path) -> CoreConfig {
+fn cfg(
+    home: &std::path::Path,
+    web: std::sync::Arc<dyn clax_core::embedded::FileTree>,
+    quickstart: bool,
+) -> CoreConfig {
     CoreConfig {
         home: clax_core::Home::at(home.to_path_buf()),
         version: "test",
         reap_interval: std::time::Duration::from_secs(60),
         codex: clax_realtime::push::CodexPush::default(),
         sample: std::sync::Arc::new(clax_sample::Sampler::disabled()),
-        web: clax_testkit::web_ui(),
+        web,
         hosted: None,
         require_credential: true,
         bind: std::net::Ipv4Addr::LOCALHOST.into(),
         port: 0,
         embed: None,
+        quickstart,
     }
 }
 
 #[tokio::test]
 async fn a_core_answers_its_router_with_no_listener_and_writes_no_daemon_json() {
     let dir = tempfile::tempdir().unwrap();
-    let core = Core::start(cfg(dir.path()), &mut |_| {}).await.unwrap();
+    let core = Core::start(cfg(dir.path(), clax_testkit::web_ui(), false), &mut |_| {})
+        .await
+        .unwrap();
     let req = axum::http::Request::get("/healthz")
         .header("host", "localhost")
         .body(axum::body::Body::empty())
@@ -44,7 +51,9 @@ async fn a_core_answers_its_router_with_no_listener_and_writes_no_daemon_json() 
 #[tokio::test]
 async fn stopping_a_core_closes_its_store_and_ends_its_streams() {
     let dir = tempfile::tempdir().unwrap();
-    let core = Core::start(cfg(dir.path()), &mut |_| {}).await.unwrap();
+    let core = Core::start(cfg(dir.path(), clax_testkit::web_ui(), false), &mut |_| {})
+        .await
+        .unwrap();
     let store = core.state().store.clone();
     let mut shutdown = core.shutdown_requested();
     assert!(store.call(|_| Ok(())).await.is_ok(), "the store answers");
@@ -57,7 +66,9 @@ async fn stopping_a_core_closes_its_store_and_ends_its_streams() {
         *shutdown.borrow_and_update(),
         "its streams were told to end"
     );
-    let again = Core::start(cfg(dir.path()), &mut |_| {}).await.unwrap();
+    let again = Core::start(cfg(dir.path(), clax_testkit::web_ui(), false), &mut |_| {})
+        .await
+        .unwrap();
     again.stop().await;
 }
 
@@ -66,4 +77,156 @@ async fn a_daemon_has_no_trim_route() {
     let ts = clax_testkit::TestServer::spawn().await;
     let res = ts.post_json("/api/core/trim", serde_json::json!({})).await;
     assert_eq!(res.status(), 404);
+}
+
+fn tree(mark: &str) -> std::sync::Arc<dyn clax_core::embedded::FileTree> {
+    std::sync::Arc::new(clax_testkit::quickstart_tree(mark))
+}
+
+async fn get(core: &Core, path: &str) -> serde_json::Value {
+    let req = axum::http::Request::get(path)
+        .header("host", "localhost")
+        .header("authorization", format!("Bearer {}", core.state().token))
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let res = core.router().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), 200, "{path}");
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&body).unwrap()
+}
+
+async fn artifacts(core: &Core) -> Vec<serde_json::Value> {
+    let list = get(core, "/api/artifacts").await;
+    list.get("artifacts")
+        .unwrap_or(&list)
+        .as_array()
+        .unwrap_or_else(|| panic!("{list}"))
+        .clone()
+}
+
+#[tokio::test]
+async fn a_fresh_local_home_starts_with_an_empty_gallery() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::start(cfg(dir.path(), tree("a"), true), &mut |_| {})
+        .await
+        .unwrap();
+    assert!(artifacts(&core).await.is_empty());
+    assert!(core.state().store.quickstart_of(None).unwrap().is_none());
+    core.stop().await;
+}
+
+/// A home whose owner holds the quickstart of `mark`'s release, as one
+/// seeded before local homes stopped being seeded: the store's seed, run
+/// under a core with the switch off, so the core itself writes nothing.
+async fn home_with_a_quickstart(dir: &std::path::Path, mark: &str) {
+    let core = Core::start(cfg(dir, tree(mark), false), &mut |_| {})
+        .await
+        .unwrap();
+    let release =
+        clax_core::quickstart::Release::from_tree(&clax_testkit::quickstart_tree(mark)).unwrap();
+    let seeded = core
+        .state()
+        .store
+        .seed_quickstart(&clax_core::audit::AuditCtx::DAEMON, None, &release)
+        .await
+        .unwrap();
+    assert!(
+        matches!(seeded, clax_store::quickstart::Seeded::Made { .. }),
+        "{seeded:?}"
+    );
+    core.stop().await;
+}
+
+/// The owner's quickstart: its view and its approval, `(version, by)`.
+async fn quickstart_approval(core: &Core) -> (serde_json::Value, (u32, String)) {
+    let list = artifacts(core).await;
+    assert_eq!(list.len(), 1, "{list:?}");
+    let id = list[0]["id"].as_str().unwrap();
+    let view = get(core, &format!("/api/artifacts/{id}")).await["artifact"].clone();
+    let approval = core
+        .state()
+        .store
+        .capability_approval(&clax_core::ArtifactId::parse(id).unwrap())
+        .unwrap()
+        .expect("Clax approved what it seeded");
+    (view, (approval.version, approval.by))
+}
+
+#[tokio::test]
+async fn a_local_quickstart_keeps_its_declaration_in_force_and_is_not_seeded_again() {
+    let dir = tempfile::tempdir().unwrap();
+    home_with_a_quickstart(dir.path(), "a").await;
+    let core = Core::start(cfg(dir.path(), tree("a"), true), &mut |_| {})
+        .await
+        .unwrap();
+    let (view, approval) = quickstart_approval(&core).await;
+    assert_eq!(approval, (1, "clax".to_string()));
+    assert_eq!(view["may_approve"], true, "{view}");
+    assert_eq!(
+        view.get("pending_capabilities"),
+        Some(&serde_json::Value::Null),
+        "{view}"
+    );
+    assert!(view["capabilities"].is_object(), "{view}");
+    assert_eq!(view["capabilities_in_force"], view["capabilities"]);
+    core.stop().await;
+}
+
+#[tokio::test]
+async fn a_new_release_reaches_an_untouched_local_quickstart_at_start() {
+    let dir = tempfile::tempdir().unwrap();
+    home_with_a_quickstart(dir.path(), "a").await;
+    let b = clax_core::quickstart::Release::from_tree(&clax_testkit::quickstart_tree("b")).unwrap();
+    let core = Core::start(cfg(dir.path(), tree("b"), true), &mut |_| {})
+        .await
+        .unwrap();
+    let list = artifacts(&core).await;
+    assert_eq!(list.len(), 1);
+    let id = list[0]["id"].as_str().unwrap();
+    let versions = get(&core, &format!("/api/artifacts/{id}/versions")).await;
+    let versions = versions.get("versions").unwrap_or(&versions);
+    let versions = versions.as_array().unwrap_or_else(|| panic!("{versions}"));
+    assert_eq!(versions.len(), 2, "{versions:?}");
+    let labels: Vec<_> = versions.iter().map(|v| v["label"].clone()).collect();
+    assert!(
+        labels.contains(&serde_json::json!(format!("Quickstart {}", b.id))),
+        "{labels:?}"
+    );
+    let (view, approval) = quickstart_approval(&core).await;
+    assert_eq!(approval, (2, "clax".to_string()), "the update is approved");
+    assert_eq!(
+        view.get("pending_capabilities"),
+        Some(&serde_json::Value::Null),
+        "{view}"
+    );
+    core.stop().await;
+}
+
+#[tokio::test]
+async fn the_switch_off_updates_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    home_with_a_quickstart(dir.path(), "a").await;
+    let core = Core::start(cfg(dir.path(), tree("b"), false), &mut |_| {})
+        .await
+        .unwrap();
+    let list = artifacts(&core).await;
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["current_version"], 1, "{list:?}");
+    core.stop().await;
+}
+
+#[tokio::test]
+async fn a_hosted_start_seeds_no_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = cfg(dir.path(), tree("a"), true);
+    c.hosted = clax_http::hosted::Hosted::new("http://localhost:1", Some("the setup secret"))
+        .map(std::sync::Arc::new);
+    assert!(c.hosted.is_some());
+    let core = Core::start(c, &mut |_| {}).await.unwrap();
+    let store = &core.state().store;
+    assert!(store.list_artifacts().unwrap().is_empty());
+    assert!(store.quickstart_of(None).unwrap().is_none());
+    core.stop().await;
 }

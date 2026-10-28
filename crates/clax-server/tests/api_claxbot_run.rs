@@ -1016,3 +1016,85 @@ async fn a_follow_up_is_never_stranded_by_a_run_ending_meanwhile_or_a_crash() {
     assert!(ts.store.follow_ups(&t3).unwrap().is_empty());
     assert_eq!(ts.store.runs_for_thread(&t3, 10).unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn a_runs_clax_json_that_changes_the_declaration_is_its_makers() {
+    use clax_bot::BotHost;
+    use clax_store::bot_runs::{NewRun, RequestKind};
+    use clax_store::credits::KeySource;
+    use clax_store::flags::Flag;
+    let ts = TestServer::spawn().await;
+    let id_of = |v: &Value| v["id"].as_str().unwrap().to_string();
+    let aid = id_of(&ts.publish("Owner's", &[("index.html", "<p>hi</p>")]).await["artifact"]);
+    let tid = id_of(&ts.thread(&aid, 1, "Store the runs.").await);
+    let vic = ts.person("Vic").await.public_id;
+    let st = ts.store.clone();
+    let (a, t, v) = (aid.clone(), tid.clone(), vic.clone());
+    let run = tokio::task::spawn_blocking(move || {
+        let edits = clax_core::rights::Rights::parse(&json!([
+            {"type": "clax-artifacts", "actions": ["read", "update"], "locations": ["*"]},
+            {"type": "clax-comments", "actions": ["read", "reply"], "locations": ["*"]},
+        ]))
+        .unwrap();
+        st.set_person_rights(&AuditCtx::DAEMON, &v, Some(edits))
+            .unwrap();
+        st.set_flags(&AuditCtx::DAEMON, &v, &[(Flag::Claxbot, true)])
+            .unwrap();
+        st.create_run(
+            &clax_bot::run::bot_ctx(&v),
+            NewRun {
+                artifact_id: a,
+                person: v.clone(),
+                request: RequestKind::Thread,
+                thread_ids: vec![t],
+                model: "claude-sonnet-5-5".into(),
+                key_source: KeySource::Instance,
+                base_version: 1,
+                agent_grant: None,
+            },
+        )
+        .unwrap()
+    })
+    .await
+    .unwrap();
+    let host = clax_server::bot::ServerHost::new(ts.state.clone());
+    let audit = clax_bot::run::bot_ctx(&vic);
+    let cx = clax_bot::OpCtx::new(&run, &audit, 900_000, 1, 0);
+    let draft = |manifest: &str| clax_bot::host::PublishDraft {
+        files: vec![
+            clax_bot::host::PublishFile {
+                path: "index.html".into(),
+                content: b"<p>runs</p>".to_vec(),
+                content_type: "text/html".into(),
+            },
+            clax_bot::host::PublishFile {
+                path: "clax.json".into(),
+                content: manifest.as_bytes().to_vec(),
+                content_type: "application/json".into(),
+            },
+        ],
+        if_version: 1,
+        note: None,
+        addresses: vec![],
+    };
+    let code = |r: Result<clax_bot::host::WritePlan<'_>, clax_bot_sandbox::HostError>| match r {
+        Ok(_) => "planned".to_string(),
+        Err(e) => e.code,
+    };
+    // Vic edits the owner's page; declaring db there is the owner's.
+    assert_eq!(
+        code(
+            host.plan_publish(&cx, draft(r#"{"capabilities": {"db": {}}}"#))
+                .await
+        ),
+        "admin_only"
+    );
+    // The declaration in force, as the file, is an edit like any other.
+    assert_eq!(
+        code(
+            host.plan_publish(&cx, draft(r#"{"capabilities": {}}"#))
+                .await
+        ),
+        "planned"
+    );
+}

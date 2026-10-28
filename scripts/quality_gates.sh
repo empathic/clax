@@ -45,6 +45,9 @@ export PLAYWRIGHT_INSTALL
 # it when it is made, never inside a gate's time limit (scripts/fake-exe.sh
 # does the same for the gates' fakes).
 export CLAX_TEST_BIN="$GATES_TMP/debug/clax"
+# The daemons the tests start keep their homes unseeded (the Clax Quickstart
+# is off: [gallery] quickstart).
+export CLAX_GALLERY__QUICKSTART=false
 
 # --- lanes ------------------------------------------------------------------
 

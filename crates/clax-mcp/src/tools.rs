@@ -102,7 +102,8 @@ pub struct PublishArgs {
     pub icon: Option<String>,
     /// Short label for this version.
     pub label: Option<String>,
-    /// Runtime capabilities the page declares.
+    /// Runtime capabilities the page declares, written as the version's
+    /// `clax.json`; with a `clax.json` in `files`, it must equal that file's.
     pub capabilities: Option<Value>,
     /// A short change note for the person, at most 280 characters.
     pub note: Option<String>,
@@ -609,6 +610,33 @@ pub struct DbBatchArgs {
 
 /// A tool's outcome before rendering: the success object, or a finished error result.
 type Outcome = Result<Value, CallToolResult>;
+
+/// The line a publish result carries when the answer's
+/// `pending_capabilities` says what waits for approval, `None` when
+/// nothing does.
+fn waiting_line(pending: &Value) -> Option<String> {
+    let strings = |k: &str| -> Vec<String> {
+        pending[k]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let added = clax_core::capabilities::Added {
+        capabilities: strings("capabilities"),
+        hosts: strings("hosts"),
+    };
+    if !pending.is_object() || added.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Waiting for approval in Clax: {}.",
+        clax_core::capabilities::describe(&added)
+    ))
+}
 
 /// The `timeout` message of a publish that creates an artifact.
 const CREATE_TIMEOUT: &str = "the daemon did not respond in time, and the artifact may have been created: call list (newest first, after pinned artifacts) and look for it by title before publishing it again";
@@ -1510,6 +1538,9 @@ impl ClaxTools {
             "addressed": res["version"]["addresses"],
             "tags": tag_names(&res["artifact"]["tags"]),
         });
+        if let Some(waiting) = waiting_line(&res["pending_capabilities"]) {
+            out["waiting"] = json!(waiting);
+        }
         // The version is published whatever the tags' fate: a refusal is
         // reported beside it, never as the publish's failure.
         if !tags.is_empty() {
@@ -3280,7 +3311,7 @@ direct_tools!(
 #[tool_router]
 impl ClaxTools {
     #[tool(
-        description = "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, and the new version number. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on are added for you. The person sees both as the version's changelog; nothing is resolved by it. Pass `tags` to add existing tags (see `tags`).",
+        description = "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, the new version number, and `waiting` when a declared capability awaits approval in Clax. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on are added for you. The person sees both as the version's changelog; nothing is resolved by it. Pass `tags` to add existing tags (see `tags`).",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

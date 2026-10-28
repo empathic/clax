@@ -241,6 +241,13 @@ pub async fn callback(
             serde_json::json!({"what": "person_joined", "person": signed.who.viewer.public_id}),
         );
     }
+    // A person's quickstart: made at their first sign-in, moved to a newer
+    // release at each later one (a seed that failed is retried, and is a
+    // no-op otherwise). Awaited before the redirect so the first page load
+    // sees it; errors are logged only, never failing the sign-in.
+    if outcome != GitHubOutcome::Owner {
+        crate::quickstart::sign_in(&s, &signed.who.viewer.public_id).await;
+    }
     let mut res = (StatusCode::SEE_OTHER, [(header::LOCATION, next)]).into_response();
     let hs = res.headers_mut();
     hs.append(header::SET_COOKIE, h.session_cookie(&signed.session));

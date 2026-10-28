@@ -1,0 +1,14 @@
+{
+  "targets": {
+    "dialog": ".na-panel",
+    "panel": "aside.runp",
+    "pill": "button.botbtn"
+  },
+  "shots": [
+    { "at": "building-1.2", "until": "building-0.43", "targets": ["dialog"], "label": "the brief" },
+    { "at": "building-0.33", "until": "done-0.4", "targets": ["panel", "pill"], "label": "ClaxBot at work" }
+  ],
+  "clean": [
+    { "at": "done-0.4", "until": "done+1.5", "label": "the launch tracker ClaxBot published" }
+  ]
+}

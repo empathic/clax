@@ -1,0 +1,11 @@
+{
+  "targets": {
+    "dialog": ".share-panel",
+    "anchor": "frame:.kpi .v",
+    "draft": ".new-writers .live-writers"
+  },
+  "shots": [
+    { "at": "@dialog-0.2", "until": "arrive-1.37", "targets": ["dialog"], "label": "the invite" },
+    { "at": "comment-0.07", "targets": ["anchor", "draft"], "label": "Priya's comment: what she points at, and her live draft" }
+  ]
+}

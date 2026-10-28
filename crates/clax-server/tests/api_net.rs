@@ -67,13 +67,26 @@ fn authed(ts: &TestServer, m: Method, path: &str) -> reqwest::RequestBuilder {
     ts.authed(ts.client.request(m, format!("{}{path}", ts.base)))
 }
 
+/// A new artifact declaring `caps`, its declaration approved and no host
+/// granted (the grants approving made are revoked), as before the owner's
+/// first answer to its ask.
 async fn app(ts: &TestServer, caps: Value) -> String {
     let (status, body) = send(authed(ts, Method::POST, "/api/artifacts").json(
         &json!({"title": "Weather", "capabilities": caps, "files": {"index.html": {"content": "<p>x</p>"}}}),
     ))
     .await;
     assert_eq!(status, 201, "{body}");
-    body["artifact"]["id"].as_str().unwrap().to_string()
+    let aid = body["artifact"]["id"].as_str().unwrap().to_string();
+    if ts.approve(&aid).await.is_some() {
+        let (status, _) = send(authed(
+            ts,
+            Method::DELETE,
+            &format!("/api/artifacts/{aid}/net-grants"),
+        ))
+        .await;
+        assert_eq!(status, 200);
+    }
+    aid
 }
 
 async fn fetch(ts: &TestServer, aid: &str, body: Value) -> (u16, Value) {
@@ -332,13 +345,13 @@ async fn a_draft_fetches_under_its_live_apps_grants() {
     );
     assert_eq!(
         code(fetch(&ts, &did, get("new.example.com")).await),
-        (403, "not_granted".into()),
-        "the app has no grant for it"
+        (403, "not_approved".into()),
+        "the app has not approved it"
     );
     assert_eq!(
         code(fetch(&ts, &fresh, get("api.example.com")).await),
-        (403, "not_granted".into()),
-        "a new app's draft has no live app"
+        (403, "not_approved".into()),
+        "a new app's draft has no live app to hold it to an approval"
     );
 
     // A draft never takes a grant of its own.
@@ -380,8 +393,52 @@ async fn a_draft_fetches_under_its_live_apps_grants() {
     let offline = body["draft"]["id"].as_str().unwrap().to_string();
     assert_eq!(
         code(fetch(&ts, &offline, get("api.example.com")).await),
-        (403, "not_granted".into())
+        (403, "not_approved".into()),
+        "held to no app's approval"
     );
     let (status, _) = fetch(&ts, &did, get("api.example.com")).await;
     assert_eq!(status, 200, "the agent's draft still inherits");
+}
+
+#[tokio::test]
+async fn a_host_a_new_version_adds_waits_for_approval_while_the_approved_one_fetches() {
+    let (ts, echo) = spawn().await;
+    let aid = app(&ts, json!({"net": {"hosts": ["api.example.com"]}})).await;
+    let grants = format!("/api/artifacts/{aid}/net-grants");
+    let (status, _) =
+        send(authed(&ts, Method::PUT, &grants).json(&json!({"hosts": ["api.example.com"]}))).await;
+    assert_eq!(status, 200);
+    let (status, body) = send(
+        authed(&ts, Method::POST, &format!("/api/artifacts/{aid}/versions")).json(&json!({
+            "if_version": 1,
+            "capabilities": {"net": {"hosts": ["api.example.com", "tiles.example.com"]}},
+            "files": {"index.html": {"content": "<p>2</p>"}},
+        })),
+    )
+    .await;
+    assert_eq!(status, 201, "{body}");
+    assert_eq!(
+        body["pending_capabilities"]["hosts"],
+        json!(["tiles.example.com"])
+    );
+    let (status, body) = fetch(&ts, &aid, json!({"url": "https://tiles.example.com/1"})).await;
+    assert_eq!(
+        (status, body["error"]["code"].as_str()),
+        (403, Some("not_approved")),
+        "{body}"
+    );
+    // Granting what waits grants nothing: the host is not in force.
+    let (status, body) =
+        send(authed(&ts, Method::PUT, &grants).json(&json!({"hosts": ["tiles.example.com"]})))
+            .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["declared"], json!(["api.example.com"]));
+    assert_eq!(body["grants"].as_array().unwrap().len(), 1, "{body}");
+    let (status, body) = fetch(&ts, &aid, json!({"url": "https://api.example.com/1"})).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(echo.0.lock().unwrap().len(), 1);
+    // Approving grants the host that waited.
+    ts.approve(&aid).await.expect("the host waited");
+    let (status, body) = fetch(&ts, &aid, json!({"url": "https://tiles.example.com/1"})).await;
+    assert_eq!(status, 200, "{body}");
 }

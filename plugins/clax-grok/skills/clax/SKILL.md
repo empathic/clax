@@ -151,11 +151,12 @@ Arguments:
   version addresses. Threads you were marked working on are added for you.
   Listing a thread does not resolve it.
 - `capabilities` (object, optional): the page's runtime capabilities
-  declaration, as a full set (see "Runtime capabilities").
+  declaration, as a full set, written as the version's `clax.json` (see
+  "Runtime capabilities").
 
 Returns `artifact_id`, `url` (for the person), `version` (the new version
 number), `title`, `files` (the published paths), `note`, `note_truncated`, and
-`addressed` (the thread IDs linked to the new version).
+`addressed` (the thread IDs linked to the new version), and `waiting` when a declared capability awaits approval in Clax.
 
 Update workflow: the `version` from the last `publish` or `read` of that artifact
 is the `if_version` for the next update. Pass it whenever you might not be the
@@ -538,14 +539,19 @@ before writing a page, fetch the one you use from your daemon,
 comes from the `status` tool (names: `claude`, `permissions`, `artifact`,
 `db`, `downloads`, `user`, `comments`, `assets`, `room`, `sample`).
 
-Declare what the page uses in `capabilities` on `publish`, for example
-`{"db": {}, "user": {"scopes": ["profile"]}}`. The object is the full set:
-passing it replaces the stored one, omitting it keeps it, and `{}` clears it.
+Declare what the page uses in `clax.json` at its root,
+`{"capabilities": {"db": {}, "user": {"scopes": ["profile"]}}}`, or pass the
+inner object as `capabilities` on `publish` and Clax writes the file. The
+object is the full set: passing it replaces the stored one, omitting it (and
+any `clax.json`) keeps it, and `{}` clears it. A `capabilities` argument that
+differs from the `clax.json` sent with it is refused (`manifest_mismatch`).
 `use()` never rejects: it resolves `null` for a name the page did not declare,
 for `files` and `mcp`, and outside the Clax viewer (on the artifact's own site
 opened directly, `db`, `assets`, `user` and `room` still resolve), so render without the
 capability first and light features up when it resolves.
 `permissions` and `user` need no declaration.
+
+A capability that reaches past the page (`net`, `sample`, `shell`, `notify`, `share`, `file`, `camera`, `location`) is in force only once the person who answers for the artifact approves (on your own Clax, its owner; on a hosted Clax, the page's maker) the version that first declares it, or a new `net` host, in Clax. Until then `use()` resolves `null` for it, and the version before keeps what was approved. Publishing never approves, whoever publishes; the publish result says what waits. Tell the person to approve it in Clax.
 
 - `artifact` (alias `self`): `publish(html)` saves a complete document
   (starting `<!doctype html>`) as a new version, and every open view reloads
@@ -598,6 +604,13 @@ capability first and light features up when it resolves.
   once per app for its host list. Only the person's own views get it:
   elsewhere `use("net")` resolves `null`. Types:
   `ClaxExtensions.Net` in `clax-extensions.d.ts`.
+- `shell` (Clax's own): `highlight(control)` rings one of Clax's controls,
+  `"comment"`, `"threads"`, `"versions"`, `"publish"`, `"fork"` or
+  `"send"`, for 6 s or until the viewer presses anywhere in Clax's own bar or panels or presses Escape there (a press in the page does not reach Clax: call `highlight` again to move the ring, or let it lapse), and resolves `false` when that control is not shown to them now
+  (on a phone, versions, publish and fork are in a menu); `can(control)`
+  answers the same without drawing; `commentMode(on)` turns comment mode on or off, only from a click or key press in the page (while comment mode is on, a click in the page picks what to comment on and never reaches the page, so leave it from a key press; the viewer's Escape or Comment button also leaves it); `address()` resolves `{origin, url}`, the Clax that frames the page and the page's address there (`<origin>/a/<ID>`), or `null` in the Clax app: a page's site sends no referrer, so this is how a page learns them. Declare `{"shell": {}}`.
+  Only the owner and editors get it: elsewhere `use("shell")` resolves
+  `null`. Types: `ClaxExtensions.Shell` in `clax-extensions.d.ts`.
 - `notify`, `share`, `file`, `camera`, `location`: Clax's device
   capabilities, served only in the Clax app and `null` everywhere else;
   their types are `ClaxExtensions.Device` in `clax-extensions.d.ts`. Call

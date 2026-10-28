@@ -859,8 +859,11 @@ fn routes_loud(ev: &Event) -> Vec<(Chan, Gate)> {
             v
         }
         Event::People { .. } => vec![(Chan::People, Gate::Any)],
-        // The switch is shown to everyone who may open the artifact.
-        Event::Comments { .. } => vec![(Chan::Artifact(a), Gate::Any)],
+        // The switch, and what of the declaration is in force, are shown
+        // to everyone who may open the artifact.
+        Event::Comments { .. } | Event::Permissions { .. } => {
+            vec![(Chan::Artifact(a), Gate::Any)]
+        }
         Event::Job { .. } | Event::JobsOwner { .. } => vec![(Chan::Jobs, Gate::Any)],
         // Tag names are the owner's, shown with every artifact anyone sees;
         // the event carries no name, only what to refetch.
@@ -3469,6 +3472,29 @@ mod tests {
         assert_eq!(got.len(), 1, "{got:?}");
         assert!(got[0].1.contains(r#""artifact_id":null"#), "{}", got[0].1);
         assert!(drain(&mut other).is_empty());
+    }
+
+    #[test]
+    fn a_permissions_change_reaches_the_artifacts_topic_alone() {
+        let hub = Hub::new(Default::default());
+        let c = viewer(Level::View, Some("u_sam"));
+        let mut g = hub.open_for(c.clone(), true, None, None, Some("u_sam".into()));
+        let mut a = hub.open_for(c.clone(), true, None, None, Some("u_sam".into()));
+        hub.update(&g.id, &c, &[Topic::Gallery], &[]).unwrap();
+        hub.update(&a.id, &c, &[Topic::Artifact(A.into())], &[])
+            .unwrap();
+        hub.dispatch(&Event::Permissions {
+            artifact_id: A.into(),
+        });
+        let got = drain(&mut a);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(got[0].1.starts_with("event: permissions\n"), "{}", got[0].1);
+        assert!(
+            got[0].1.contains(&format!(r#""artifact_id":"{A}""#)),
+            "{}",
+            got[0].1
+        );
+        assert!(drain(&mut g).is_empty(), "the gallery shows no approval");
     }
 
     #[test]

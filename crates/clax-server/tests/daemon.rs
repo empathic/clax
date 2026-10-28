@@ -132,6 +132,7 @@ async fn serve_picks_a_free_port_writes_info_and_shuts_down_on_request() {
         require_credential: false,
         stop: StopOn::Signals,
         embed: None,
+        quickstart: false,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -177,6 +178,7 @@ fn config_on(home: &Home, port: u16) -> ServeConfig {
         require_credential: false,
         stop: StopOn::Signals,
         embed: None,
+        quickstart: false,
     }
 }
 
@@ -278,6 +280,7 @@ async fn shutdown_completes_while_an_sse_client_stays_connected() {
         require_credential: false,
         stop: StopOn::Signals,
         embed: None,
+        quickstart: false,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -325,6 +328,7 @@ async fn serve_exits_when_daemon_json_is_deleted() {
         require_credential: false,
         stop: StopOn::Signals,
         embed: None,
+        quickstart: false,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     rx.await.unwrap();
@@ -357,6 +361,7 @@ async fn reaper_ends_idle_sessions_whose_process_is_gone() {
         require_credential: false,
         stop: StopOn::Signals,
         embed: None,
+        quickstart: false,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -602,6 +607,7 @@ async fn a_serve_that_fails_after_its_core_started_stops_the_core() {
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 0,
             embed: None,
+            quickstart: false,
         },
         &mut |_| {},
     )
@@ -678,6 +684,7 @@ async fn a_stopped_core_leaves_no_task_of_its_linked_sync() {
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 0,
             embed: None,
+            quickstart: false,
         },
         &mut |_| {},
     )

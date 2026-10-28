@@ -200,6 +200,7 @@ impl Run {
             .env("TERM", "xterm")
             .env("LANG", "en_US.UTF-8")
             .env("CLAX_BIN", self.wrapper())
+            .env("CLAX_GALLERY__QUICKSTART", "false")
             .env(
                 "PATH",
                 format!(

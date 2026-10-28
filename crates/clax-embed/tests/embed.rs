@@ -1143,6 +1143,19 @@ async fn the_apps_shell_samples_as_the_owners_browser() {
     .await;
     assert_eq!(status, 201, "{v}");
     let aid = v["artifact"]["id"].as_str().unwrap().to_string();
+    // The owner approves the declaration the publish answer says waits.
+    let pending = &v["pending_capabilities"];
+    let (status, v) = call_json(
+        &embed,
+        head(
+            "PUT",
+            &format!("/api/artifacts/{aid}/capability-approval"),
+            As::Owner,
+        ),
+        Some(json!({"version": pending["version"], "declaration_sha256": pending["declaration_sha256"]})),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
     let (status, v) = call_json(&embed, head("GET", "/api/token", As::Owner), None).await;
     assert_eq!(status, 200, "{v}");
     let bearer = format!("Bearer {}", v["token"].as_str().unwrap());

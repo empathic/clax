@@ -28,8 +28,8 @@ async fn stub_server_with(
     (ts, stub, sampler)
 }
 
-/// A new artifact declaring `caps`; one that declares `sample` has the
-/// owner's grant ([`grant`]).
+/// A new artifact declaring `caps`, its declaration approved; one that
+/// declares `sample` has the owner's grant ([`grant`]).
 async fn artifact(ts: &TestServer, caps: Value) -> String {
     let aid = ungranted(ts, caps.clone()).await;
     if caps.get("sample").is_some() {
@@ -38,16 +38,33 @@ async fn artifact(ts: &TestServer, caps: Value) -> String {
     aid
 }
 
-/// A new artifact declaring `caps`, without the owner's sample grant.
+/// A new artifact declaring `caps`, its declaration approved, without the
+/// owner's sample grant (the one approving made is revoked).
 async fn ungranted(ts: &TestServer, caps: Value) -> String {
     let res = ts
         .post_json("/api/artifacts", json!({"title": "Ask", "capabilities": caps, "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}}))
         .await;
     assert_eq!(res.status(), 201);
-    res.json::<Value>().await.unwrap()["artifact"]["id"]
+    let aid = res.json::<Value>().await.unwrap()["artifact"]["id"]
         .as_str()
         .unwrap()
-        .to_string()
+        .to_string();
+    if ts.approve(&aid).await.is_some() && caps.get("sample").is_some() {
+        assert_eq!(grant(ts, &aid, reqwest::Method::DELETE).await.0, 200);
+    }
+    aid
+}
+
+/// Publishes the next version of `aid` (after `if_version`) declaring
+/// `caps`, approving nothing.
+async fn republish(ts: &TestServer, aid: &str, if_version: u32, caps: Value) {
+    let res = ts
+        .post_json(
+            &format!("/api/artifacts/{aid}/versions"),
+            json!({"if_version": if_version, "capabilities": caps, "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}}),
+        )
+        .await;
+    assert_eq!(res.status(), 201, "{}", res.text().await.unwrap());
 }
 
 /// `method` on `/api/artifacts/{aid}/sample-grant` with the token: the status and body.
@@ -939,6 +956,43 @@ async fn an_app_calls_only_with_the_owners_grant_kept_until_revoked() {
         .await
         .unwrap();
     assert_eq!(res.status(), 401);
+}
+
+#[tokio::test]
+async fn sample_declared_again_waits_for_approval_whatever_grant_stands() {
+    let (ts, stub, _) = stub_server(false, SampleSettings::default()).await;
+    let aid = artifact(&ts, json!({"sample": {}})).await;
+    let (_, frames) = done_of(&ts, &aid, json!({"input": "hi"}), None).await;
+    assert_eq!(text_of(&frames), "echo: hi");
+    let asked = stub.requests().len();
+    // A version without sample, then one declaring it again, unapproved.
+    republish(&ts, &aid, 1, json!({})).await;
+    republish(&ts, &aid, 2, json!({"sample": {}})).await;
+    // A grant on record (as one kept from before) reaches nothing.
+    let id = clax_core::ArtifactId::parse(&aid).unwrap();
+    ts.store
+        .grant_sample(&clax_core::audit::AuditCtx::DAEMON, &id)
+        .unwrap();
+    let (_, g) = grant(&ts, &aid, reqwest::Method::GET).await;
+    assert_eq!(g["granted"], json!(true), "{g}");
+    let (status, e) = start(&ts, &aid, json!({"input": "again", "cache": false}), None)
+        .await
+        .err()
+        .expect("not approved");
+    assert_eq!(
+        (status, e["error"]["code"].as_str().unwrap()),
+        (403, "not_approved")
+    );
+    let (status, e) = grant(&ts, &aid, reqwest::Method::PUT).await;
+    assert_eq!(
+        (status, e["error"]["code"].as_str().unwrap()),
+        (403, "not_approved")
+    );
+    assert_eq!(stub.requests().len(), asked);
+    // Once approved again, it calls.
+    ts.approve(&aid).await.expect("sample waited");
+    let (_, frames) = done_of(&ts, &aid, json!({"input": "again"}), None).await;
+    assert_eq!(text_of(&frames), "echo: again");
 }
 
 #[tokio::test]

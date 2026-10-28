@@ -107,6 +107,8 @@ mod api_owner;
 mod api_people;
 #[cfg(any(not(clax_split), clax_split = "api_perf"))]
 mod api_perf;
+#[cfg(any(not(clax_split), clax_split = "api_permissions"))]
+mod api_permissions;
 #[cfg(any(not(clax_split), clax_split = "api_presence"))]
 mod api_presence;
 #[cfg(any(not(clax_split), clax_split = "api_push"))]
@@ -115,6 +117,8 @@ mod api_push;
 mod api_pushes;
 #[cfg(any(not(clax_split), clax_split = "api_questions"))]
 mod api_questions;
+#[cfg(any(not(clax_split), clax_split = "api_quickstart"))]
+mod api_quickstart;
 #[cfg(any(not(clax_split), clax_split = "api_remotes"))]
 mod api_remotes;
 #[cfg(any(not(clax_split), clax_split = "api_remotes_app"))]

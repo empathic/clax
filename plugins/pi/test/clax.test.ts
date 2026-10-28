@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { artifactRef, claxExtension, handedOver, handoverOf, htmlTitle, INJECT_RETRY_MS, isText, RENEW_EVERY_MS, START_BUDGET_MS, target, textPrefix, ToolError } from "../src/clax.ts";
+import { artifactRef, claxExtension, handedOver, handoverOf, htmlTitle, INJECT_RETRY_MS, isText, RENEW_EVERY_MS, START_BUDGET_MS, target, textPrefix, ToolError, waitingLine } from "../src/clax.ts";
 import { ClientError, DaemonClient, END_TIMEOUT_MS, MAX_ACK_IDS } from "../src/client.ts";
 import { discover, endpointOf, ensure } from "../src/daemon.ts";
 
@@ -249,6 +249,15 @@ describe("clax Pi extension", () => {
       artifact_id: p.artifact_id, version: 1, path: "index.html", content_type: expect.stringMatching(/^text\/html/),
       truncated: false, size: Buffer.byteLength(html), content: html, feedback: [],
     });
+  });
+
+  it("says what waits for approval in Clax when a publish declares a gated capability", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-waiting");
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const waits = json(await pi.callTool("clax_publish", { html: "<title>Waits</title>", capabilities: { net: { hosts: ["api.clax.invalid"] } } }, ctx));
+    expect(waits.waiting).toBe("Waiting for approval in Clax: the internet (api.clax.invalid).");
+    const plain = json(await pi.callTool("clax_publish", { html: "<title>Plain</title>", capabilities: { db: {} } }, ctx));
+    expect(plain).not.toHaveProperty("waiting");
   });
 
   it("forks the version a URL names into a new artifact", async () => {
@@ -1810,6 +1819,19 @@ describe("handover", () => {
     expect(h.notes).toEqual([note]);
     expect(handedOver(h)).toBe(true);
     expect(handedOver(handoverOf({ feedback: [], answers: [], text: null }))).toBe(false);
+  });
+});
+
+describe("waitingLine", () => {
+  it("words pending capabilities as clax_core::capabilities::describe does", () => {
+    expect(waitingLine(null)).toBeNull();
+    expect(waitingLine({ version: 1, capabilities: [], hosts: [] })).toBeNull();
+    expect(waitingLine({ capabilities: ["sample", "shell"], hosts: [] })).toBe("Waiting for approval in Clax: Claude, Clax's controls.");
+    expect(waitingLine({ capabilities: ["shell", "net"], hosts: ["a.example.com", "b.example.com"] }))
+      .toBe("Waiting for approval in Clax: Clax's controls, the internet (a.example.com, b.example.com).");
+    // Only new hosts: `net` comes first, carrying them.
+    expect(waitingLine({ capabilities: ["sample"], hosts: ["a.example.com"] })).toBe("Waiting for approval in Clax: the internet (a.example.com), Claude.");
+    expect(waitingLine({ capabilities: ["net"], hosts: [] })).toBe("Waiting for approval in Clax: the internet.");
   });
 });
 

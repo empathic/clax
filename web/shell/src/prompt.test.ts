@@ -189,7 +189,7 @@ describe("PromptDialog", () => {
       deleted: false, threads: [], resolved: {}, draft: null, hint: null, notice: null, file: null,
       working: [], decided: null, looked: {}, sheet: null, busy: 0, ask, drafts: [], spectator: null,
     } as unknown as ViewState);
-    const ctl = { id: "7q3k9mzx2b4t", state, shown: () => 1, missing: () => null } as unknown as ArtifactController;
+    const ctl = { id: "7q3k9mzx2b4t", state, shown: () => 1, missing: () => null, pending: () => null } as unknown as ArtifactController;
     const { root } = mount(StageIsland, { ctl });
     arm();
     const allow = button(root, "Allow");

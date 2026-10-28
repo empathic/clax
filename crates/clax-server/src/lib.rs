@@ -150,6 +150,7 @@ pub mod hosted;
 pub mod linked;
 pub mod loopback;
 pub mod public;
+mod quickstart;
 pub mod router;
 pub mod routes;
 #[cfg(not(target_arch = "wasm32"))]

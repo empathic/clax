@@ -950,7 +950,22 @@ async fn document_404s_name_the_path_and_artifact_404s_do_not() {
 #[tokio::test]
 async fn rules_changed_by_patch_apply_to_the_next_call() {
     let ts = TestServer::spawn().await;
-    let aid = artifact(&ts, json!({"db": {}})).await;
+    // Declared by PATCH, so no clax.json owns the declaration.
+    let aid = artifact(&ts, json!({})).await;
+    let removed = ts
+        .post_json(
+            &format!("/api/artifacts/{aid}/versions"),
+            json!({"if_version": 1, "files": {"index.html": {"content": "<main></main>"}, "clax.json": null}}),
+        )
+        .await;
+    assert_eq!(removed.status(), 201);
+    let res = ts
+        .authed(ts.client.patch(format!("{}/api/artifacts/{aid}", ts.base)))
+        .json(&json!({"capabilities": {"db": {}}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
     let named = ts.viewer(Some("Sam")).await;
     let put = || {
         req(
