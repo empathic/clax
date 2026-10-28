@@ -142,7 +142,7 @@ lane_lint() {
 # (e2e.mjs), then as a hosted Clax with its site hosts (e2e-hosted.mjs),
 # after the other browser suites.
 lane_worker() {
-    run "worker npm ci"         scripts/npm-ci-stamped.sh crates/clax-worker --silent &&
+    run "worker pnpm install"   scripts/pnpm-install-stamped.sh crates/clax-worker --silent &&
     run "worker deploy config"  bash -c 'cd crates/clax-worker && node test-deploy-config.mjs' &&
     run "worker wasm"           bash -c 'cd crates/clax-worker && node test-wasm.mjs' &&
     mark worker-built
