@@ -9,6 +9,7 @@ use clax_core::seats::SeatLimits;
 use clax_core::working::ManualClock;
 use clax_testkit::TestServer;
 use clax_testkit::{EventReader, element_anchor};
+use futures::StreamExt;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -85,6 +86,10 @@ async fn change(ts: &TestServer, s: &Stream, add: &[String], remove: &[String]) 
         v["error"]["code"].as_str().unwrap_or("").to_string(),
     )
 }
+
+/// Requests a load test has in flight at once, below the smallest listen
+/// backlog a test machine has (macOS: 128).
+const IN_FLIGHT: usize = 64;
 
 fn viewer_cookie(c: &str) -> Option<String> {
     Some(format!("clax_viewer={c}"))
@@ -420,8 +425,13 @@ async fn load_150_people_on_100_seats() {
     for p in &people {
         streams.push(open(&ts, viewer_cookie(&p.cookie)).await);
     }
-    let outcomes =
-        futures::future::join_all(streams.iter().map(|s| change(&ts, s, &topic, &[]))).await;
+    // At most IN_FLIGHT requests at once: each needs a fresh connection
+    // (the streams hold the pooled ones), and macOS refuses connections
+    // beyond its listen backlog (kern.ipc.somaxconn, 128).
+    let outcomes: Vec<_> = futures::stream::iter(streams.iter().map(|s| change(&ts, s, &topic, &[])))
+        .buffered(IN_FLIGHT)
+        .collect()
+        .await;
     let seated: Vec<usize> = (0..PEOPLE).filter(|i| outcomes[*i].0 == 200).collect();
     let refused: Vec<usize> = (0..PEOPLE)
         .filter(|i| outcomes[*i] == (429, "no_live_seat".to_string()))
