@@ -627,7 +627,11 @@ fn a_removed_members_sessions_lose_their_leases_and_renew_none() {
     st.claim(DAEMON, &qid, &t2, &a).unwrap();
     // While a member, working renews the leases.
     clock.advance(100);
-    assert_eq!(st.renew_session_leases(&a, std::slice::from_ref(&t1)).unwrap(), 1);
+    assert_eq!(
+        st.renew_session_leases(&a, std::slice::from_ref(&t1))
+            .unwrap(),
+        1
+    );
 
     st.set_member(DAEMON, &qid, "u_t", None).unwrap();
     for tid in [&t1, &t2] {
@@ -659,5 +663,9 @@ fn a_removed_members_sessions_lose_their_leases_and_renew_none() {
     // The owner's session on the owner's queue still renews.
     let o = session(&st, "codex", "o");
     st.claim(DAEMON, &qid, &t2, &o).unwrap();
-    assert_eq!(st.renew_session_leases(&o, std::slice::from_ref(&t2)).unwrap(), 1);
+    assert_eq!(
+        st.renew_session_leases(&o, std::slice::from_ref(&t2))
+            .unwrap(),
+        1
+    );
 }
