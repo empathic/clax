@@ -86,6 +86,7 @@ mod l10 {
         ("remote_apps::link", Owner),
         ("remote_apps::apps", Owner),
         ("remote_apps::unpublish", Owner),
+        ("remote_apps::git_token", Owner),
         ("remote_apps::head", Owner),
         ("remote_apps::bundle", Owner),
         ("remote_apps::version_files", Owner),
@@ -599,6 +600,10 @@ mod l10 {
         (
             "remote_apps::unpublish",
             "deletes a public copy there, which audits it, and ends links here as unlink does",
+        ),
+        (
+            "remote_apps::git_token",
+            "asks a public Clax for a read token, which it records; nothing here changes",
         ),
         (
             "remote_apps::put_link",

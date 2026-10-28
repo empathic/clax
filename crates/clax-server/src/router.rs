@@ -604,6 +604,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             delete(remote_apps::unpublish),
         )
         .route(
+            "/api/remotes/{id}/artifacts/{raid}/git-token",
+            post(remote_apps::git_token),
+        )
+        .route(
             "/api/remotes/{id}/artifacts/{raid}/head",
             get(remote_apps::head),
         )

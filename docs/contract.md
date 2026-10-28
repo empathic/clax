@@ -5651,6 +5651,7 @@ router), and a test fails when it differs:
 | `GET /api/remotes/{id}/apps` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/remotes/{id}/artifacts/{raid}` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/remotes/{id}/artifacts/{raid}/comments` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/remotes/{id}/artifacts/{raid}/git-token` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/remotes/{id}/artifacts/{raid}/head` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/remotes/{id}/artifacts/{raid}/installs` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/remotes/{id}/artifacts/{raid}/sharing` | Denied | yes: 403 `not_for_agents` |

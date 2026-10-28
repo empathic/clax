@@ -865,6 +865,43 @@ async fn editor_pull_then_push_publishes_as_editor() {
 }
 
 #[tokio::test]
+async fn git_token_asks_the_remote_by_hand_and_refuses_agents() {
+    let public = Public::new().await;
+    let local = TestServer::spawn().await;
+    let rid = connect_app(&local, &public).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let aid = app(&local, "Tips", &[("index.html", "<h1>v1</h1>")]).await;
+    let (s, v) = publish(&local, &aid, 1).await;
+    assert_eq!(s, 200, "{v}");
+    let raid = raid_of(&v);
+    let path = format!("/api/remotes/{rid}/artifacts/{raid}/git-token");
+    // The owner by hand: the remote's own answer to a session's read token,
+    // passed on. This hosted test Clax keeps no git remotes, so it refuses,
+    // and the answer is its refusal, not a token of this core's.
+    let (s, v) = post(&local, &path, json!({})).await;
+    assert_ne!(s, 401, "{v}");
+    assert!(!(200..300).contains(&s), "no git remotes there: {v}");
+    assert!(v["error"]["code"].is_string(), "{v}");
+    // An agent of the owner's is refused here, before the remote is asked.
+    let sid = local.register_session("claude", "h-1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = local_req(&local, reqwest::Method::POST, &path, json!({}), Some(&sid)).await;
+    assert_eq!(s, 403, "{v}");
+    // A remote this core is not signed in to.
+    let (s, v) = post(
+        &local,
+        &format!("/api/remotes/r_missing/artifacts/{raid}/git-token"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(s, 404, "{v}");
+}
+
+#[tokio::test]
 async fn unpublish_deletes_remote_and_unlinks() {
     let public = Public::new().await;
     let local = TestServer::spawn().await;
