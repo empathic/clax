@@ -52,6 +52,7 @@ pub mod text;
 pub mod time;
 pub mod visibility;
 pub mod wake;
+pub mod webpush;
 pub mod working;
 pub mod wrap;
 

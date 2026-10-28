@@ -11,7 +11,7 @@ use crate::routes::{
     toolpath, viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use crate::routes::{events, mcp, net};
+use crate::routes::{events, mcp, net, web_push};
 use crate::shell;
 use crate::shell::get_page;
 #[cfg(not(target_arch = "wasm32"))]
@@ -714,6 +714,13 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             .route("/api/artifacts/{aid}/live", get(live_layers::live))
             .merge(mcp)
     };
+    // The owner's devices' push subscriptions: a daemon sends pushes, a
+    // Worker none.
+    #[cfg(not(target_arch = "wasm32"))]
+    let r = r.route("/api/web-push", get(web_push::status)).route(
+        "/api/web-push/subscriptions",
+        post(web_push::subscribe).delete(web_push::unsubscribe),
+    );
     // The stream's, the room's and the live layers' WebSockets, which the
     // Durable Object upgrades and holds.
     #[cfg(target_arch = "wasm32")]
