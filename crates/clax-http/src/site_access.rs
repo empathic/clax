@@ -907,7 +907,8 @@ pub async fn site_access_layer(
 /// counts on a request of this host's own origin alone, which only the
 /// shell's relay is); any other file of the site, which the opaque frame
 /// loads as another origin, is the owner's when `tailscale serve` names the
-/// owner's tailnet login (`[serve] owner_tailscale_login`), whoever made
+/// owner's tailnet login (`[serve] owner_tailscale_login`) on one of the
+/// owner's devices ([`crate::auth::TailscaleOwnerDevice`]), whoever made
 /// the request: a GET of a file, which changes nothing. Anyone else gets
 /// 403 `forbidden`, as does a site open to the world: its world visitors
 /// read it on its own site host.
@@ -916,8 +917,8 @@ async fn trusted_frame_access(s: &AppState, mut req: Request<Body>, next: Next) 
     let who = crate::identity::Identity::from_parts(req.headers(), req.extensions(), &s.token);
     let owner_login = req
         .extensions()
-        .get::<crate::auth::TailscaleUser>()
-        .is_some_and(|u| crate::auth::tailscale_owner(u, s.owner_tailscale_login.as_deref()));
+        .get::<crate::auth::TailscaleOwnerDevice>()
+        .is_some();
     let get = matches!(*req.method(), Method::GET | Method::HEAD);
     let owner = who.is_owner() || (!api && get && owner_login);
     if !owner {

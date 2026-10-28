@@ -390,3 +390,96 @@ async fn the_owners_login_on_a_request_another_origin_made_is_not_the_owner() {
     // The same request from the shell's own origin is the owner's.
     assert!(is_owner(&ts, &ts.base, TRUSTED, "bdelanghe@github").await);
 }
+
+/// `tailscale whois --json` on phobos, 2026-10-28 (tailscale 1.102.2), for
+/// Bobby's phone (100.98.28.5) and orthrus (100.114.177.2), both his login,
+/// with `jq 'del(.Node.Endpoints, .Node.Key, .Node.DiscoKey, .Node.Hostinfo,
+/// .Node.KeyExpiry, .Node.HomeDERP, .Node.AllowedIPs,
+/// .UserProfile.ProfilePicURL)'`; the rest as recorded.
+const WHOIS: [(&str, &str); 2] = [
+    (
+        "100.98.28.5",
+        r#"{"Node":{"ID":8197052596022907,"StableID":"nikWRyfT1721CNTRL","Name":"iphone171.tail556f5b.ts.net.","User":7959848025173258,"Addresses":["100.98.28.5/32","fd7a:115c:a1e0::430:1c06/128"],"Created":"2026-09-17T19:20:26.96117238Z","Cap":148,"LastSeen":"2026-10-28T17:10:00.1Z","Online":true,"ComputedName":"iphone171","ComputedNameWithHost":"iphone171 (localhost)"},"UserProfile":{"ID":7959848025173258,"LoginName":"bdelanghe@github","DisplayName":"Robert DeLanghe"},"CapMap":null}"#,
+    ),
+    (
+        "100.114.177.2",
+        r#"{"Node":{"ID":672457026483707,"StableID":"nCd9ijJZF611CNTRL","Name":"orthrus.tail556f5b.ts.net.","User":7959848025173258,"Addresses":["100.114.177.2/32","fd7a:115c:a1e0::cd30:b103/128"],"Created":"2026-10-13T15:44:18.754969961Z","Cap":115,"Online":true,"ComputedName":"orthrus","ComputedNameWithHost":"orthrus"},"UserProfile":{"ID":7959848025173258,"LoginName":"bdelanghe@github","DisplayName":"Robert DeLanghe"},"CapMap":null}"#,
+    ),
+];
+
+/// `tailscale whois` answering [`WHOIS`]'s recordings, and nothing else.
+struct Recorded;
+
+#[async_trait::async_trait]
+impl clax_http::tailnet::Whois for Recorded {
+    async fn whois(&self, ip: IpAddr) -> Result<clax_http::tailnet::WhoisNode, String> {
+        let (_, json) = WHOIS
+            .iter()
+            .find(|(a, _)| a.parse::<IpAddr>().ok() == Some(ip))
+            .ok_or("no node at that address")?;
+        clax_http::tailnet::parse_whois(json.as_bytes())
+    }
+}
+
+/// `GET path` through [`TRUSTED`] as the owner's login, from the tailnet
+/// address `from` (`X-Forwarded-For`, as `tailscale serve` sends it), or
+/// with none: its status and body.
+async fn get_from(ts: &TestServer, path: &str, from: Option<&str>) -> (u16, Value) {
+    let mut req = ts
+        .client
+        .get(format!("{}{path}", ts.base))
+        .header("host", TRUSTED)
+        .header("tailscale-user-login", "bdelanghe@github")
+        .header("sec-fetch-site", "same-origin");
+    if let Some(ip) = from {
+        req = req.header("x-forwarded-for", ip);
+    }
+    let res = req.send().await.unwrap();
+    (
+        res.status().as_u16(),
+        res.json().await.unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn with_owner_nodes_the_owners_login_is_the_owner_only_from_a_listed_device() {
+    let ts = TestServer::spawn_with(|s| {
+        s.trusted_hosts = vec![TRUSTED.to_string()].into();
+        s.tailscale_identity = true;
+        s.owner_tailscale_login = Some(std::sync::Arc::from("bdelanghe@github"));
+        s.owner_devices = Some(std::sync::Arc::new(clax_http::tailnet::OwnerDevices::new(
+            vec!["nikWRyfT1721CNTRL".to_string()],
+            std::sync::Arc::new(Recorded),
+            std::sync::Arc::new(clax_core::working::SystemClock),
+        )));
+    })
+    .await;
+    // The phone is listed: the owner, as without the list.
+    let (token, body) = get_from(&ts, "/api/token", Some("100.98.28.5")).await;
+    assert_eq!(
+        (token, body["token"].as_str()),
+        (200, Some(ts.token.as_str()))
+    );
+    assert_eq!(
+        get_from(&ts, "/api/inbox", Some("100.98.28.5")).await.0,
+        200
+    );
+    // orthrus is the owner's login too, but not listed; an address whois
+    // does not know, a list, and no address are not the owner's device.
+    for from in [
+        Some("100.114.177.2"),
+        Some("100.64.0.9"),
+        Some("100.98.28.5, 100.98.28.5"),
+        None,
+    ] {
+        let (token, _) = get_from(&ts, "/api/token", from).await;
+        assert_ne!(token, 200, "{from:?}");
+        assert_ne!(get_from(&ts, "/api/inbox", from).await.0, 200, "{from:?}");
+        // It is the tailnet viewer its login names instead.
+        let (_, me) = get_from(&ts, "/api/viewers/me", from).await;
+        assert_eq!(
+            me["viewer"]["tailscale_login"], "bdelanghe@github",
+            "{from:?}: {me}"
+        );
+    }
+}

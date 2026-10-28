@@ -177,6 +177,7 @@ impl Core {
         if cfg.quickstart {
             state.quickstart = clax_core::quickstart::Release::from_tree(&*state.web).map(Arc::new);
         }
+        state.owner_devices = owner_devices(&state.owner_tailscale_login, &config)?;
         // The core's `net` keeps a shared disk cache in the home.
         state.net = Arc::new(clax_http::net_cache::daemon_net(cfg.home.root()));
         state.bot = Arc::new(local_bot(&state));
@@ -491,4 +492,33 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
     });
 
     vec![reaper, grant_sweeper, optimizer, drafts_sweeper, sweeper]
+}
+
+/// The owner's tailnet devices (`[serve] owner_tailscale_nodes`), named by
+/// the home's `tailscale` CLI, when the home has an owner tailnet login and
+/// lists them; `None` otherwise (an embedded core has no login, and a home
+/// whose config does not load keeps the login on any device, as `clax serve`
+/// refuses to start on one).
+///
+/// # Errors
+/// When the list or the CLI is invalid: the daemon does not start.
+fn owner_devices(
+    login: &Option<Arc<str>>,
+    config: &clax_core::Result<clax_core::config::HomeConfig>,
+) -> anyhow::Result<Option<Arc<clax_http::tailnet::OwnerDevices>>> {
+    let (Some(login), Ok(config)) = (login, config) else {
+        return Ok(None);
+    };
+    let Some(d) = config.serve_owner_tailscale_devices()? else {
+        return Ok(None);
+    };
+    tracing::info!(login = %login, nodes = ?d.nodes, tailscale = %d.tailscale, "the owner's tailnet login is the owner only from these devices");
+    Ok(Some(Arc::new(clax_http::tailnet::OwnerDevices::new(
+        d.nodes,
+        Arc::new(clax_http::tailnet::CliWhois {
+            tailscale: d.tailscale.into(),
+            timeout: Duration::from_secs(2),
+        }),
+        Arc::new(clax_core::working::SystemClock),
+    ))))
 }

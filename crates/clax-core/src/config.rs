@@ -28,7 +28,9 @@
 //! `tailscale serve` by its tailnet login
 //! ([`HomeConfig::serve_tailscale_identity`]), and `[serve]
 //! owner_tailscale_login` names the one tailnet login whose browser is the
-//! owner's ([`HomeConfig::serve_owner_tailscale_login`]), and `[serve]
+//! owner's ([`HomeConfig::serve_owner_tailscale_login`]), on the devices
+//! `[serve] owner_tailscale_nodes` names when it is set
+//! ([`HomeConfig::serve_owner_tailscale_devices`]), and `[serve]
 //! trusted_host_frames` frames artifacts from a path of a trusted host
 //! ([`HomeConfig::serve_trusted_host_frames`]). Any other key in `[serve]`
 //! is logged and ignored. `[sample]`
@@ -686,6 +688,81 @@ impl HomeConfig {
         Ok(Some(login))
     }
 
+    /// `[serve] owner_tailscale_nodes` and `[serve] tailscale_cli`: the
+    /// owner's devices, and the `tailscale` CLI that names a request's
+    /// device. With nodes, a request of the owner's tailnet login
+    /// ([`HomeConfig::serve_owner_tailscale_login`]) is the owner's only from
+    /// one of them: the address `tailscale serve` puts in `X-Forwarded-For`
+    /// is resolved with `<tailscale_cli> whois --json <ip>`, and its node
+    /// (`Node.StableID`, such as `nikWRyfT1721CNTRL`, or `Node.Name`, its
+    /// MagicDNS name, case and trailing dot ignored) must be listed and its
+    /// user the owner's login. `None` when `owner_tailscale_nodes` is absent
+    /// (the login alone is the owner's, on any device of it); `tailscale_cli`
+    /// is `tailscale` (found on `PATH`) when absent.
+    ///
+    /// # Errors
+    /// `Invalid { code: "bad_config" }` naming the file (or the variable)
+    /// and the key when `[serve]` is not a table, `owner_tailscale_nodes` is
+    /// not a list of 1 to 64 node stable IDs or MagicDNS names, it is set
+    /// without `owner_tailscale_login` (whose errors it also returns), or
+    /// `tailscale_cli` is not a non-empty string. The daemon does not start
+    /// on it.
+    pub fn serve_owner_tailscale_devices(&self) -> Result<Option<OwnerTailnetDevices>> {
+        if let Some(serve) = self.value("serve")
+            && serve.as_dict().is_none()
+        {
+            return Err(self.bad(
+                "serve",
+                "[serve]",
+                format!("must be a table, not {}", kind_of(&serve)),
+            ));
+        }
+        let Some(v) = self.value("serve.owner_tailscale_nodes") else {
+            return Ok(None);
+        };
+        let bad = |key: &str, what: String| self.bad(key, "[serve]", what);
+        let nodes: Option<Vec<String>> = v.as_array().and_then(|l| {
+            l.iter()
+                .map(|n| {
+                    n.as_str()
+                        .filter(|n| valid_tailnet_node(n))
+                        .map(str::to_string)
+                })
+                .collect()
+        });
+        let Some(nodes) = nodes.filter(|n| (1..=64).contains(&n.len())) else {
+            return Err(bad(
+                "serve.owner_tailscale_nodes",
+                format!(
+                    "owner_tailscale_nodes must list 1 to 64 node stable IDs or MagicDNS names such as \"nikWRyfT1721CNTRL\" or \"phone.example.ts.net\", not {}",
+                    shown(&v)
+                ),
+            ));
+        };
+        if self.serve_owner_tailscale_login()?.is_none() {
+            return Err(bad(
+                "serve.owner_tailscale_nodes",
+                "owner_tailscale_nodes needs owner_tailscale_login".to_string(),
+            ));
+        }
+        let tailscale = match self.value("serve.tailscale_cli") {
+            None => "tailscale".to_string(),
+            Some(c) => match c.as_str().filter(|c| !c.is_empty() && !c.contains('\0')) {
+                Some(c) => c.to_string(),
+                None => {
+                    return Err(bad(
+                        "serve.tailscale_cli",
+                        format!(
+                            "tailscale_cli must be a path to the tailscale CLI, not {}",
+                            shown(&c)
+                        ),
+                    ));
+                }
+            },
+        };
+        Ok(Some(OwnerTailnetDevices { nodes, tailscale }))
+    }
+
     /// `[serve] trusted_host_frames`: whether a shell on one of
     /// [`HomeConfig::serve_trusted_hosts`] frames each artifact from a path
     /// of that same host (`/_clax/frame/<id>/…`) in a sandbox without
@@ -1055,8 +1132,32 @@ const SERVE_KEYS: &[&str] = &[
     "trusted_hosts",
     "tailscale_identity",
     "owner_tailscale_login",
+    "owner_tailscale_nodes",
+    "tailscale_cli",
     "trusted_host_frames",
 ];
+
+/// The owner's tailnet devices (`[serve] owner_tailscale_nodes`) and the
+/// CLI that names a request's device (`[serve] tailscale_cli`), from
+/// [`HomeConfig::serve_owner_tailscale_devices`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnerTailnetDevices {
+    /// Node stable IDs or MagicDNS names, as written.
+    pub nodes: Vec<String>,
+    /// The `tailscale` CLI, a path or a name found on `PATH`.
+    pub tailscale: String,
+}
+
+/// A tailnet node stable ID (`nikWRyfT1721CNTRL`) or MagicDNS name
+/// (`phone.example.ts.net`, a trailing dot allowed).
+pub fn valid_tailnet_node(n: &str) -> bool {
+    let n = n.strip_suffix('.').unwrap_or(n);
+    !n.is_empty()
+        && n.len() <= 253
+        && n.as_bytes()[0].is_ascii_alphanumeric()
+        && n.bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-')
+}
 
 /// `[sample]`: the `sample` capability's provider, key variable, models, and cap.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -2607,6 +2708,56 @@ mod tests {
             "[serve]\ntrusted_hosts = [\"phobos.tail556f5b.ts.net\"]\ntrusted_host_frames = \"yes\"\n",
         ] {
             let e = with(t).serve_trusted_host_frames().unwrap_err().to_string();
+            assert!(
+                e.contains("config.toml") && e.contains("[serve]"),
+                "{t}: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_owner_tailscale_nodes_need_the_owner_login_and_name_nodes() {
+        const OWNER: &str = "[serve]\ntrusted_hosts = [\"phobos.tail556f5b.ts.net\"]\ntailscale_identity = true\nowner_tailscale_login = \"bdelanghe@github\"\n";
+        assert_eq!(with(OWNER).serve_owner_tailscale_devices().unwrap(), None);
+        assert_eq!(
+            with(&format!(
+                "{OWNER}owner_tailscale_nodes = [\"nikWRyfT1721CNTRL\", \"orthrus.tail556f5b.ts.net.\"]\n"
+            ))
+            .serve_owner_tailscale_devices()
+            .unwrap(),
+            Some(OwnerTailnetDevices {
+                nodes: vec![
+                    "nikWRyfT1721CNTRL".to_string(),
+                    "orthrus.tail556f5b.ts.net.".to_string()
+                ],
+                tailscale: "tailscale".to_string(),
+            })
+        );
+        assert_eq!(
+            with(&format!(
+                "{OWNER}owner_tailscale_nodes = [\"n2iLEJE4NG11CNTRL\"]\ntailscale_cli = \"/run/current-system/sw/bin/tailscale\"\n"
+            ))
+            .serve_owner_tailscale_devices()
+            .unwrap()
+            .map(|d| d.tailscale),
+            Some("/run/current-system/sw/bin/tailscale".to_string())
+        );
+        for t in [
+            "[serve]\nowner_tailscale_nodes = [\"nikWRyfT1721CNTRL\"]\n".to_string(),
+            format!("{OWNER}owner_tailscale_nodes = []\n"),
+            format!("{OWNER}owner_tailscale_nodes = \"nikWRyfT1721CNTRL\"\n"),
+            format!("{OWNER}owner_tailscale_nodes = [\"*\"]\n"),
+            format!("{OWNER}owner_tailscale_nodes = [\"a b\"]\n"),
+            format!("{OWNER}owner_tailscale_nodes = [\".phone\"]\n"),
+            format!("{OWNER}owner_tailscale_nodes = [1]\n"),
+            format!(
+                "{OWNER}owner_tailscale_nodes = [\"nikWRyfT1721CNTRL\"]\ntailscale_cli = \"\"\n"
+            ),
+        ] {
+            let e = with(&t)
+                .serve_owner_tailscale_devices()
+                .unwrap_err()
+                .to_string();
             assert!(
                 e.contains("config.toml") && e.contains("[serve]"),
                 "{t}: {e}"

@@ -217,6 +217,11 @@ pub struct AppState {
     /// [`crate::auth::TailscaleUser`] trusts, is the owner's browser
     /// ([`crate::auth::TailscaleOwner`]); `None` for none.
     pub owner_tailscale_login: Option<Arc<str>>,
+    /// `[serve] owner_tailscale_nodes`: with a list, the owner's tailnet login
+    /// is the owner only from one of these devices
+    /// ([`crate::tailnet::OwnerDevices`]); `None` for the login on any device.
+    /// The host sets it after [`AppState::assemble`].
+    pub owner_devices: Option<Arc<crate::tailnet::OwnerDevices>>,
     /// `[serve] trusted_host_frames`: on a request on one of
     /// `trusted_hosts`, artifacts are framed from `/_clax/frame/<id>/…` of
     /// that host, sandboxed ([`crate::host::FRAME_PATH`]).
@@ -447,6 +452,7 @@ impl AppState {
             trusted_hosts: p.trusted_hosts.into(),
             tailscale_identity: p.tailscale_identity,
             owner_tailscale_login: p.owner_tailscale_login.map(Arc::from),
+            owner_devices: None,
             trusted_host_frames: p.trusted_host_frames,
             grant_auth,
             agent_gate: Arc::new(crate::agent::Gate::new(p.agent_timer)),

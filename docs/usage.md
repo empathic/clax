@@ -211,6 +211,17 @@ owner_tailscale_login = "bdelanghe@github"   # exact; no wildcard
 
 A request that came through `tailscale serve` (a loopback peer naming a trusted host) whose `Tailscale-User-Login` is exactly that login is then the owner's browser, as one on this machine is: it is served the token and the owner's cookies. Any other login, a request on any other host, a request from any other peer, and a request the browser marks as made by another site (`Sec-Fetch-Site: cross-site` or `same-site`: `tailscale serve` adds the login to every request of your device, another site's too) are never the owner, whatever headers they carry. It is off unless set; set without `tailscale_identity = true`, or to a value that is not one login, it stops the daemon from starting; `clax doctor` shows it on its `config` line. Anyone who can sign in to the tailnet as that login can do whatever the owner can, so name only a login only you hold.
 
+To be the owner only from your own devices, name them too:
+
+```toml
+[serve]
+owner_tailscale_login = "bdelanghe@github"
+owner_tailscale_nodes = ["nikWRyfT1721CNTRL", "orthrus.tail556f5b.ts.net"]   # node stable IDs or MagicDNS names
+tailscale_cli = "/run/current-system/sw/bin/tailscale"                     # default: tailscale on PATH
+```
+
+The login's request is then the owner's only when the one address `tailscale serve` puts in `X-Forwarded-For` belongs, by `tailscale whois --json <ip>` (at most 2 s, its answer kept a minute), to a listed node whose user is that login. From any other device, with no `X-Forwarded-For`, a repeated one, or an address `whois` does not name in time, the login is the tailnet viewer it names. `tailscale status` lists the node names; `tailscale whois --json <ip>` shows a node's `StableID`. Set without `owner_tailscale_login`, empty, or naming something that is neither, it stops the daemon from starting.
+
 Through a trusted host, the shell loads but its artifact frames do not: each artifact's page lives on its own site, `<id>.localhost:<port>`, which only a browser on this machine can open. To see artifacts from your other devices through `tailscale serve`, turn on path frames:
 
 ```toml

@@ -7973,7 +7973,13 @@ login, host or peer, and a request whose `Sec-Fetch-Site` is `same-site` or
 `cross-site`, is never the owner. Set without `tailscale_identity =
 true`, or to anything but one login with no whitespace, control character
 or `*`, it is `bad_config` and the daemon does not start; `clax doctor`'s
-`config` line shows it. `trusted_host_frames = true` (default `false`;
+`config` line shows it. `owner_tailscale_nodes` (a list of 1 to 64 node
+stable IDs or MagicDNS names, unset by default; needs
+`owner_tailscale_login`) keeps that login the owner only on a request whose
+one `X-Forwarded-For` address `tailscale_cli` (default `tailscale`) `whois
+--json` names as a listed node (`Node.StableID`, or `Node.Name` without case
+or trailing dot) of that login; any other request of the login is the
+tailnet viewer it names. `trusted_host_frames = true` (default `false`;
 `true` without `trusted_hosts` is `bad_config`) frames each artifact, for a
 shell on a trusted host, from `/_clax/frame/<id>/…` of that host (a site
 request of `<id>` with the path that follows), in a sandbox without

@@ -547,13 +547,40 @@ pub struct TailscaleUser {
 /// ([`TailscaleUser::of_request`]), and only on a request the browser does
 /// not mark as made by another origin (`Sec-Fetch-Site` `same-site` or
 /// `cross-site`, [`crate::viewer::fetched_from_elsewhere`]); never otherwise.
+/// With the home's `[serve] owner_tailscale_nodes`, also only from one of
+/// the owner's devices ([`TailscaleOwnerDevice`]).
 #[derive(Clone, Copy, Debug)]
 pub struct TailscaleOwner;
+
+/// Marker request extension: the request's [`TailscaleUser`] is the owner's
+/// login on one of the owner's devices (any device of it without `[serve]
+/// owner_tailscale_nodes`), whichever origin made the request. Set by
+/// [`require_api_host`] beside every [`TailscaleOwner`], and also on a
+/// request another origin made, which only a GET of a trusted-host frame's
+/// file counts it on (`crate::site_access`).
+#[derive(Clone, Copy, Debug)]
+pub struct TailscaleOwnerDevice;
 
 /// Whether `user` is the owner's tailnet login `owner` (`[serve]
 /// owner_tailscale_login`): equal, byte for byte; never without one.
 pub fn tailscale_owner(user: &TailscaleUser, owner: Option<&str>) -> bool {
     owner.is_some_and(|o| !o.is_empty() && o == user.login)
+}
+
+/// Whether a request of the owner's tailnet `login` came from one of the
+/// owner's devices (`[serve] owner_tailscale_nodes`,
+/// [`crate::tailnet::OwnerDevices`]); `true` without that list.
+async fn owner_device(s: &AppState, headers: &axum::http::HeaderMap, login: &str) -> bool {
+    let Some(devices) = &s.owner_devices else {
+        return true;
+    };
+    match devices.device_of(headers, login).await {
+        Ok(_) => true,
+        Err(why) => {
+            tracing::info!(login, %why, "the owner's tailnet login, not from one of the owner's devices: a tailnet viewer");
+            false
+        }
+    }
 }
 
 /// Login header `tailscale serve` sets for a tailnet user.
@@ -685,14 +712,17 @@ pub async fn require_api_host(
         req.uri(),
         req.extensions(),
     ) {
-        // Never for a request the browser says another origin made: the
-        // proxy adds the login to every request of the owner's device, a
-        // cross-site one too, as a browser sends a cookie (the owner
-        // cookie's own rule, `crate::identity`).
         if tailscale_owner(&u, s.owner_tailscale_login.as_deref())
-            && !crate::viewer::fetched_from_elsewhere(req.headers())
+            && owner_device(&s, req.headers(), &u.login).await
         {
-            req.extensions_mut().insert(TailscaleOwner);
+            req.extensions_mut().insert(TailscaleOwnerDevice);
+            // Never for a request the browser says another origin made: the
+            // proxy adds the login to every request of the owner's device, a
+            // cross-site one too, as a browser sends a cookie (the owner
+            // cookie's own rule, `crate::identity`).
+            if !crate::viewer::fetched_from_elsewhere(req.headers()) {
+                req.extensions_mut().insert(TailscaleOwner);
+            }
         }
         req.extensions_mut().insert(u);
     }

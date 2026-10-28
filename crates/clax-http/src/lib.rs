@@ -47,6 +47,7 @@ pub mod site_access;
 pub mod socket_caps;
 pub mod state;
 pub mod surface;
+pub mod tailnet;
 pub mod viewer;
 pub mod views;
 /// Pushes to the owner's devices go out over the network: the daemon's.
