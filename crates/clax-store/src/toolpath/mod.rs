@@ -29,6 +29,7 @@
 //! clax://<install>/backfill/<table>/<row ID>         a history row the backfill skipped
 //! clax://<install>/run/<run ID>                      a ClaxBot run
 //! clax://<install>/cost_line/<line ID>               a credits cost line (`*instance`: the price and free tier)
+//! clax://<install>/queue/<queue ID>                  a report queue
 //! ```
 //!
 //! Every segment is percent-encoded down to RFC 3986's unreserved
@@ -482,6 +483,8 @@ pub enum Obj<'a> {
     Run(&'a str),
     /// A credits cost line, by its ID.
     CostLine(&'a str),
+    /// A report queue, by its ID.
+    Queue(&'a str),
 }
 
 /// The opaque, install-scoped URI of `obj` (spec §10.2).
@@ -513,6 +516,7 @@ pub fn clax_uri(install: &str, obj: Obj<'_>) -> String {
         Obj::BackfillRow(t, r) => format!("{base}/backfill/{}/{}", seg(t), seg(r)),
         Obj::Run(r) => format!("{base}/run/{}", seg(r)),
         Obj::CostLine(l) => format!("{base}/cost_line/{}", seg(l)),
+        Obj::Queue(q) => format!("{base}/queue/{}", seg(q)),
     }
 }
 
@@ -746,6 +750,7 @@ impl Event<'_> {
             }
             Some(K::AdminKey) => Some(self.str("person").map_or(Obj::Install, Obj::Person)),
             Some(K::AdminCostLine) => self.str("line").map(Obj::CostLine),
+            Some(K::QueueCreate | K::QueueUpdate) => self.str("queue_id").map(Obj::Queue),
             _ => None,
         };
         let generic = || match (a, t) {
@@ -765,7 +770,9 @@ impl Event<'_> {
                 | K::ArtifactDelete
                 | K::LivePage
                 | K::LivePageRekey
-                | K::LivePageMerge,
+                | K::LivePageMerge
+                | K::ExternalCreate
+                | K::ExternalUpdate,
             ) => a.map(Obj::Artifact),
             _ => specific,
         };
@@ -1504,6 +1511,34 @@ impl Event<'_> {
                     self.show("line")
                 )
             }
+            Some(K::ExternalCreate) => match self.str("external_id") {
+                Some(x) => format!("Created external artifact {x}"),
+                None => format!("Created external {}", art()),
+            },
+            Some(K::ExternalUpdate) => {
+                let fields: Vec<&str> = ["title", "url", "revision", "metadata"]
+                    .into_iter()
+                    .filter(|f| self.body.contains_key(*f))
+                    .collect();
+                format!("Changed the {} of external {}", and_list(&fields), art())
+            }
+            Some(K::ThreadMetadata) => format!("Set the metadata of thread {}", thread()),
+            Some(K::QueueCreate) => format!("Created queue {}", self.show("queue_id")),
+            Some(K::QueueUpdate) => format!(
+                "Changed queue {} ({})",
+                self.show("queue_id"),
+                self.show("op")
+            ),
+            Some(K::QueueClaim) => format!(
+                "Claimed report {} until {}",
+                thread(),
+                self.show("expires_at")
+            ),
+            Some(K::QueueRelease) => format!(
+                "Released the claim on report {} ({})",
+                thread(),
+                self.show("reason")
+            ),
             Some(K::BackfillSkip) => {
                 return format!(
                     "Skipped {} row {} while recording earlier history",

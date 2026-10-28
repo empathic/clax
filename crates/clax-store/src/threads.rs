@@ -1366,7 +1366,7 @@ impl Store {
 
     /// [`Store::add_comment`], running `then` with the thread in the
     /// comment's transaction; an error from `then` writes nothing.
-    fn add_comment_then(
+    pub(crate) fn add_comment_then(
         &self,
         ctx: &AuditCtx,
         thread_id: &str,

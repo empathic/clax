@@ -211,9 +211,13 @@ fn skip_corrupt<T>(rows: Vec<Result<T>>) -> Result<Vec<T>> {
     Ok(out)
 }
 
+/// An artifact's columns, `kind` served as `external` for an external
+/// artifact (`crate::external`), whose row keeps `html`.
 pub(super) const SELECT: &str =
     "SELECT id, title, description, icon, created_at, updated_at, current_version,
-    owner_session_id, pinned, capabilities_json, contract_version, kind, person,
+    owner_session_id, pinned, capabilities_json, contract_version,
+    CASE WHEN EXISTS (SELECT 1 FROM external_artifacts x WHERE x.artifact_id = artifacts.id)
+         THEN 'external' ELSE kind END AS kind, person,
     text_authors_json, forked_from_id, forked_from_version, legacy_paths,
     (SELECT json_group_array(json_array(g.id, g.name, g.colour))
        FROM artifact_tags x JOIN tags g ON g.id = x.tag_id

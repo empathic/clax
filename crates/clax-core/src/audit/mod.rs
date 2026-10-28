@@ -130,6 +130,13 @@ kinds! {
     AdminKey = "admin.key",
     AdminCostLine = "admin.cost_line",
     AdminSettings = "admin.settings",
+    ExternalCreate = "external.create",
+    ExternalUpdate = "external.update",
+    ThreadMetadata = "thread.metadata",
+    QueueCreate = "queue.create",
+    QueueUpdate = "queue.update",
+    QueueClaim = "queue.claim",
+    QueueRelease = "queue.release",
 }
 
 impl std::fmt::Display for AuditKind {
@@ -817,6 +824,13 @@ mod tests {
             "admin.key",
             "admin.cost_line",
             "admin.settings",
+            "external.create",
+            "external.update",
+            "thread.metadata",
+            "queue.create",
+            "queue.update",
+            "queue.claim",
+            "queue.release",
         ];
         let names: Vec<&str> = AuditKind::ALL.iter().map(|k| k.as_str()).collect();
         assert_eq!(names, spec);

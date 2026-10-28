@@ -1758,6 +1758,86 @@ pub const MIGRATIONS: &[&str] = &[
         FROM artifacts
         WHERE deleted_at IS NULL AND current_version > 0 AND hidden = 0
             AND capabilities_json NOT IN ('{}', '');",
+    // 59: report queues and external artifacts (`crate::queues`,
+    // `crate::external`; spec 2026-10-27-clax-sdk-design §6, §7). A queue
+    // is made by `person` (NULL: the owner) and lists the origins of the
+    // deployer's app; its members are people by public ID. A service grant
+    // and a reporter token are kept by their SHA-256 alone. An external
+    // artifact is an `html` artifact with a row here naming its app's
+    // `external_id`, unique on the instance; its soft delete drops the row,
+    // so the ID can name a new artifact. A report is a thread with a
+    // `queue_id`; a claim is one row per session that held a lease on it,
+    // the thread's current lease being the one with the largest `fence`
+    // (a released one is kept, so a fence is never reused).
+    // A reporter's comment carries its `reporter_id`.
+    "CREATE TABLE queues (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        person TEXT,
+        origins_json TEXT NOT NULL CHECK (json_valid(origins_json)),
+        reporters_see TEXT NOT NULL DEFAULT 'own' CHECK (reporters_see IN ('own', 'all')),
+        created_at TEXT NOT NULL,
+        deleted_at TEXT
+    );
+    CREATE INDEX queues_by_person ON queues(person) WHERE deleted_at IS NULL;
+    CREATE TABLE queue_members (
+        queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
+        person TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('admin', 'triage')),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (queue_id, person)
+    ) WITHOUT ROWID;
+    CREATE INDEX queue_members_by_person ON queue_members(person);
+    CREATE TABLE queue_service_grants (
+        id TEXT PRIMARY KEY,
+        queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        token_sha256 TEXT NOT NULL UNIQUE,
+        public_key TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        revoked_at TEXT
+    );
+    CREATE INDEX queue_service_grants_by_queue ON queue_service_grants(queue_id);
+    CREATE TABLE queue_reporter_tokens (
+        token_sha256 TEXT PRIMARY KEY,
+        queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
+        service_grant_id TEXT NOT NULL REFERENCES queue_service_grants(id) ON DELETE CASCADE,
+        reporter_id TEXT NOT NULL,
+        origin TEXT NOT NULL,
+        public_key TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE INDEX queue_reporter_tokens_by_expiry ON queue_reporter_tokens(expires_at);
+    CREATE TABLE external_artifacts (
+        artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id) ON DELETE CASCADE,
+        external_id TEXT NOT NULL UNIQUE,
+        url TEXT NOT NULL,
+        metadata_json TEXT CHECK (json_valid(metadata_json)),
+        metadata_version INTEGER NOT NULL DEFAULT 1,
+        revision TEXT
+    );
+    CREATE TRIGGER external_artifacts_on_delete AFTER UPDATE OF deleted_at ON artifacts
+    WHEN NEW.deleted_at IS NOT NULL
+    BEGIN
+        DELETE FROM external_artifacts WHERE artifact_id = NEW.id;
+    END;
+    ALTER TABLE threads ADD COLUMN queue_id TEXT;
+    ALTER TABLE threads ADD COLUMN reporter_id TEXT;
+    ALTER TABLE threads ADD COLUMN metadata_json TEXT;
+    ALTER TABLE threads ADD COLUMN metadata_version INTEGER NOT NULL DEFAULT 1;
+    CREATE INDEX threads_by_queue ON threads(queue_id, created_at, id) WHERE queue_id IS NOT NULL;
+    ALTER TABLE comments ADD COLUMN reporter_id TEXT;
+    CREATE TABLE queue_claims (
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        session_id TEXT NOT NULL,
+        queue_id TEXT NOT NULL,
+        lease_id TEXT NOT NULL,
+        fence INTEGER NOT NULL,
+        expires_at TEXT NOT NULL,
+        released INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (thread_id, session_id)
+    ) WITHOUT ROWID;
+    CREATE INDEX queue_claims_by_session ON queue_claims(session_id);",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -1794,9 +1874,13 @@ pub const VERSION_CAPABILITIES_MIGRATION: u32 = RETURN_TO_MIGRATION + 1;
 pub const QUICKSTART_MIGRATION: u32 = VERSION_CAPABILITIES_MIGRATION + 1;
 
 /// The migration that adds `capability_approvals` and approves each live
-/// artifact's current declaration, as a schema version, and this build's
-/// last.
+/// artifact's current declaration, as a schema version.
 pub const CAPABILITY_APPROVALS_MIGRATION: u32 = QUICKSTART_MIGRATION + 1;
+
+/// The migration that adds report queues and external artifacts
+/// (`queues`, `external_artifacts`, `queue_claims`, and the queue columns
+/// of threads and comments), as a schema version, and this build's last.
+pub const QUEUES_MIGRATION: u32 = CAPABILITY_APPROVALS_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -1956,11 +2040,11 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`CAPABILITY_APPROVALS_MIGRATION`]. They follow the app's in every
+/// [`QUEUES_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 9] = [
+const MARKS_AFTER_APP: [Mark<'static>; 10] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -1970,6 +2054,7 @@ const MARKS_AFTER_APP: [Mark<'static>; 9] = [
     Mark::Column("versions", "capabilities_json"),
     Mark::Table("quickstarts"),
     Mark::Table("capability_approvals"),
+    Mark::Table("queues"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -4917,9 +5002,11 @@ mod tests {
         );
         assert!(MIGRATIONS[first + 16].contains("CREATE TABLE capability_approvals ("));
         assert_eq!(
-            MIGRATIONS.len() as u32,
-            super::CAPABILITY_APPROVALS_MIGRATION
+            super::QUEUES_MIGRATION,
+            super::CAPABILITY_APPROVALS_MIGRATION + 1
         );
+        assert!(MIGRATIONS[first + 17].contains("CREATE TABLE queues ("));
+        assert_eq!(MIGRATIONS.len() as u32, super::QUEUES_MIGRATION);
     }
 
     #[test]
@@ -5008,7 +5095,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_database_reaches_58() {
+    fn a_fresh_database_reaches_59() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -5025,7 +5112,8 @@ mod tests {
         assert_eq!(super::VERSION_CAPABILITIES_MIGRATION, 56);
         assert_eq!(super::QUICKSTART_MIGRATION, 57);
         assert_eq!(super::CAPABILITY_APPROVALS_MIGRATION, 58);
-        assert_eq!(user_version(&c), super::CAPABILITY_APPROVALS_MIGRATION);
+        assert_eq!(super::QUEUES_MIGRATION, 59);
+        assert_eq!(user_version(&c), super::QUEUES_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -5767,7 +5855,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::CAPABILITY_APPROVALS_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUES_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -6261,14 +6349,14 @@ mod tests {
         // remote kind migration to 49, ClaxBot's to 50, the site
         // migrations to 54, the return-to migration to 55, the version
         // declarations' to 56, the quickstart's to 57 and the capability
-        // approvals' to 58.
+        // approvals' to 58 and the queues' to 59.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::CAPABILITY_APPROVALS_MIGRATION);
+            assert_eq!(user_version(&c), super::QUEUES_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -6276,8 +6364,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            super::CAPABILITY_APPROVALS_MIGRATION + 1,
-            "ClaxBot's 50 and the migrations 51 to 58 after it are one later now"
+            super::QUEUES_MIGRATION + 1,
+            "ClaxBot's 50 and the migrations 51 to 59 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -6296,7 +6384,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), super::CAPABILITY_APPROVALS_MIGRATION);
+        assert_eq!(user_version(&copied), super::QUEUES_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -6310,7 +6398,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (super::CAPABILITY_APPROVALS_MIGRATION + 1, schema, rows)
+            (super::QUEUES_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -6584,7 +6672,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, super::CAPABILITY_APPROVALS_MIGRATION);
+        assert_eq!(last, super::QUEUES_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
