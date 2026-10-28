@@ -279,6 +279,20 @@ need!(ApprovalRequestsList, None, Own, DEFAULT_LIMIT);
 need!(AgentsList, None, Own, DEFAULT_LIMIT);
 need!(ToolCallReport, None, Own, DEFAULT_LIMIT);
 need!(ToolCallIdReport, None, Own, DEFAULT_LIMIT);
+// Report queues (spec 2026-10-27-clax-sdk-design §7): the queue's own
+// rights decide each (its triage members and their agents); the right
+// below is held somewhere, as a path without an artifact asks.
+need!(QueuesList, None, Own, DEFAULT_LIMIT);
+need!(QueueReportsList, Comments, "read", Own, DEFAULT_LIMIT);
+need!(QueueReportGet, Comments, "read", Own, DEFAULT_LIMIT);
+need!(QueueClip, Comments, "read", Own, DEFAULT_LIMIT);
+need!(QueueClaim, Comments, "reply", Own, DEFAULT_LIMIT);
+need!(QueueRenew, Comments, "reply", Own, DEFAULT_LIMIT);
+need!(QueueRelease, Comments, "reply", Own, DEFAULT_LIMIT);
+need!(QueueReply, Comments, "reply", Own, DEFAULT_LIMIT);
+need!(QueueResolve, Comments, "resolve", Own, DEFAULT_LIMIT);
+need!(QueueReportPatch, Comments, "reply", Own, DEFAULT_LIMIT);
+need!(QueueArtifactPatch, Artifacts, "update", Own, DEFAULT_LIMIT);
 
 /// Every route an agent of another machine may reach, by method and the
 /// path it is routed at (`MatchedPath`), with its need: [`verify_layer`]
@@ -498,6 +512,53 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
         SessionWhereToAsk::INFO,
     ),
     ("POST", "/api/sessions/{id}/terminal", SessionTerminal::INFO),
+    ("GET", "/api/queues", QueuesList::INFO),
+    ("GET", "/api/queues/{qid}/reports", QueueReportsList::INFO),
+    (
+        "GET",
+        "/api/queues/{qid}/reports/{tid}",
+        QueueReportGet::INFO,
+    ),
+    (
+        "PATCH",
+        "/api/queues/{qid}/reports/{tid}",
+        QueueReportPatch::INFO,
+    ),
+    (
+        "GET",
+        "/api/queues/{qid}/reports/{tid}/clip",
+        QueueClip::INFO,
+    ),
+    (
+        "POST",
+        "/api/queues/{qid}/reports/{tid}/claim",
+        QueueClaim::INFO,
+    ),
+    (
+        "POST",
+        "/api/queues/{qid}/reports/{tid}/renew",
+        QueueRenew::INFO,
+    ),
+    (
+        "POST",
+        "/api/queues/{qid}/reports/{tid}/release",
+        QueueRelease::INFO,
+    ),
+    (
+        "POST",
+        "/api/queues/{qid}/reports/{tid}/comments",
+        QueueReply::INFO,
+    ),
+    (
+        "POST",
+        "/api/queues/{qid}/reports/{tid}/resolve",
+        QueueResolve::INFO,
+    ),
+    (
+        "PATCH",
+        "/api/queues/{qid}/reports/{tid}/artifact",
+        QueueArtifactPatch::INFO,
+    ),
 ];
 
 /// A [`ROUTE_NEEDS`] entry: handler, right (type and action), class.
@@ -589,6 +650,17 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("sessions::tool_call_ids", ToolCallIdReport),
     route_need!("surface::where_to_ask", SessionWhereToAsk),
     route_need!("surface::terminal", SessionTerminal),
+    route_need!("queues::list", QueuesList),
+    route_need!("queue_agent::list", QueueReportsList),
+    route_need!("queue_agent::get", QueueReportGet),
+    route_need!("queue_agent::clip", QueueClip),
+    route_need!("queue_agent::claim", QueueClaim),
+    route_need!("queue_agent::renew", QueueRenew),
+    route_need!("queue_agent::release", QueueRelease),
+    route_need!("queue_agent::reply", QueueReply),
+    route_need!("queue_agent::resolve", QueueResolve),
+    route_need!("queue_agent::patch", QueueReportPatch),
+    route_need!("queue_agent::patch_artifact", QueueArtifactPatch),
 ];
 
 /// The `Filtered` needs whose filter is live: a person's agent reaches

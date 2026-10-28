@@ -1588,6 +1588,8 @@ pub const OWN_PAGES: &[&str] = &[
     // each handler answers only on the public host.
     "/.well-known/apple-app-site-association",
     "/.well-known/assetlinks.json",
+    // What this Clax is (`GET /.well-known/clax`), for any caller.
+    "/.well-known/clax",
 ];
 
 /// The bundled legal documents' pages ([`Hosted::serves_legal`]).

@@ -13,6 +13,7 @@ pub mod bot;
 pub mod client_imports;
 pub mod connect;
 pub mod content;
+pub mod discovery;
 pub mod docs;
 pub mod drafts;
 #[cfg(not(target_arch = "wasm32"))]
@@ -35,6 +36,9 @@ pub mod people;
 pub mod perf;
 pub mod permissions;
 pub mod questions;
+pub mod queue_agent;
+pub mod queue_reporter;
+pub mod queues;
 pub mod remote_apps;
 pub mod remotes;
 pub mod room;

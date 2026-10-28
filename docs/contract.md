@@ -5348,12 +5348,24 @@ router), and a test fails when it differs:
 | `POST /api/sessions/{id}/tool-call-ids` | Own | none | 2 MiB | yes |
 | `GET /api/sessions/{id}/where-to-ask` | Own | `clax-ask` `ask` | 2 MiB | yes |
 | `POST /api/sessions/{id}/terminal` | Own | none | 2 MiB | yes |
+| `GET /api/queues` | Own | none | 2 MiB | yes |
+| `GET /api/queues/{qid}/reports` | Own | `clax-comments` `read` | 2 MiB | yes |
+| `GET /api/queues/{qid}/reports/{tid}` | Own | `clax-comments` `read` | 2 MiB | yes |
+| `GET /api/queues/{qid}/reports/{tid}/clip` | Own | `clax-comments` `read` | 2 MiB | yes |
+| `POST /api/queues/{qid}/reports/{tid}/claim` | Own | `clax-comments` `reply` | 2 MiB | yes |
+| `POST /api/queues/{qid}/reports/{tid}/renew` | Own | `clax-comments` `reply` | 2 MiB | yes |
+| `POST /api/queues/{qid}/reports/{tid}/release` | Own | `clax-comments` `reply` | 2 MiB | yes |
+| `POST /api/queues/{qid}/reports/{tid}/comments` | Own | `clax-comments` `reply` | 2 MiB | yes |
+| `POST /api/queues/{qid}/reports/{tid}/resolve` | Own | `clax-comments` `resolve` | 2 MiB | yes |
+| `PATCH /api/queues/{qid}/reports/{tid}` | Own | `clax-comments` `reply` | 2 MiB | yes |
+| `PATCH /api/queues/{qid}/reports/{tid}/artifact` | Own | `clax-artifacts` `update` | 2 MiB | yes |
 
 | Route | Class | Refuses the owner's agents |
 |---|---|---|
 | `GET /` | Denied | no |
 | `GET /.well-known/apple-app-site-association` | Denied | no |
 | `GET /.well-known/assetlinks.json` | Denied | no |
+| `GET /.well-known/clax` | Denied | no |
 | `GET /_blob/{aid}/{asset_id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /_blob/{asset_id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /_clax/blob/{asset_id}` | Denied | yes: 403 `not_for_agents` |
@@ -5504,6 +5516,15 @@ router), and a test fails when it differs:
 | `POST /api/questions/{qid}/decline` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/questions/{qid}/pull` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/questions/{qid}/release` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/queues` | Denied | no |
+| `DELETE /api/queues/{qid}` | Denied | no |
+| `PATCH /api/queues/{qid}` | Denied | no |
+| `GET /api/queues/{qid}/members` | Denied | no |
+| `DELETE /api/queues/{qid}/members/{public_id}` | Denied | no |
+| `PUT /api/queues/{qid}/members/{public_id}` | Denied | no |
+| `GET /api/queues/{qid}/service-grants` | Denied | no |
+| `POST /api/queues/{qid}/service-grants` | Denied | no |
+| `DELETE /api/queues/{qid}/service-grants/{gid}` | Denied | no |
 | `GET /api/remotes` | Denied | no |
 | `POST /api/remotes` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/remotes/{id}` | Denied | yes: 403 `not_for_agents` |
@@ -5550,6 +5571,7 @@ router), and a test fails when it differs:
 | `POST /mcp/json` | Denied | no |
 | `GET /me` | Denied | no |
 | `GET /people` | Denied | no |
+| `GET /queues` | Denied | no |
 | `GET /settings` | Denied | no |
 | `GET /site-signin` | Denied | yes: 403 `not_for_agents` |
 | `GET /tags` | Denied | no |
