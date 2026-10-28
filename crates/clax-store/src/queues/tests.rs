@@ -1,4 +1,4 @@
-use super::{NewQueue, NewReport, Visibility};
+use super::{ExternalScope, NewQueue, NewReport, Visibility};
 use crate::Store;
 use crate::test_util::{DAEMON, anchor, session, store, store_with_clock};
 use clax_core::CoreError;
@@ -42,6 +42,7 @@ fn file(st: &Store, qid: &str, reporter: Option<&str>, external_id: Option<&str>
         DAEMON,
         qid,
         reporter,
+        ExternalScope::Instance,
         report(external_id, "The total is wrong"),
     )
     .unwrap()
@@ -399,7 +400,7 @@ fn metadata_write_records_audit_with_value_and_hashes() {
     // A report filed without metadata journals none.
     let mut bare = report(None, "No metadata");
     bare.metadata = serde_json::Value::Null;
-    st.file_report(DAEMON, &qid, None, bare).unwrap();
+    st.file_report(DAEMON, &qid, None, ExternalScope::Instance, bare).unwrap();
     assert_eq!(audit(&st, "thread.metadata").len(), 2);
     let made = audit(&st, "external.create");
     assert_eq!(made.len(), 1);

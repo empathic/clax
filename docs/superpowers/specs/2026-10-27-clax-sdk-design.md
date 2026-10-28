@@ -58,6 +58,11 @@ queue, claim reports, act on them and answer the reporters.
 - D17. An `external_id` names one artifact on an instance: two apps that
   send the same ID mean the same artifact. Integrators choose IDs unique
   for the objects they name; Clax does not namespace them (§6.1).
+- D18. The scope of D17 is the deployer, who owns the accounts and the
+  external IDs of its Clax. On a local or self-hosted Clax that is the
+  whole instance. On clax.dev each account is its own deployer: one
+  account's IDs never name another account's artifact, so D17 does not
+  break the hosted privacy rules (`2026-10-22-no-god-account-design.md`).
 
 ## 3. What exists
 
@@ -257,8 +262,10 @@ An artifact of a new kind, `external`, beside `html` and `live`
 - `external_id`: an opaque string, at most 512 bytes, compared byte for
   byte, never parsed. Clax looks artifacts up by it and returns it on
   every read, so an app maps a Clax artifact back to its own record. It
-  is unique per instance, and the same ID from any app, queue or person
-  is the same artifact (D17).
+  is unique per deployer, and the same ID from any of the deployer's
+  apps, queues or people is the same artifact (D17, D18): on a local or
+  self-hosted Clax, per instance; on a hosted one, per account (the
+  account that made the queue a report is filed through).
 - `metadata`: an opaque JSON value, at most 64 KiB, stored and returned as
   written; never interpreted, indexed or searched. Written with
   `if_version`, as db writes are, by anyone who may edit the artifact
@@ -341,7 +348,8 @@ A queue is an object of its own, made by a person in a browser session:
   the queue, not to the owner, so that it is in reach on a hosted Clax
   (`2026-10-22-no-god-account-design.md` §3) for the queue's members.
 
-One external artifact can hold reports of several queues (D17). Each
+One external artifact can hold reports of several queues of one deployer
+(D17, D18). Each
 thread records the queue it was filed through, and a queue's rights reach
 its own threads: reporters and triage members of queue A never see queue
 B's reports on the same artifact. The artifact's own fields (title, URL,

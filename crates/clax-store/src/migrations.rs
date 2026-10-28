@@ -1764,7 +1764,8 @@ pub const MIGRATIONS: &[&str] = &[
     // deployer's app; its members are people by public ID. A service grant
     // and a reporter token are kept by their SHA-256 alone. An external
     // artifact is an `html` artifact with a row here naming its app's
-    // `external_id`, unique on the instance; its soft delete drops the row,
+    // `external_id`, unique in its `namespace` (`''`: the whole instance;
+    // on a hosted Clax, the queue maker's account); its soft delete drops the row,
     // so the ID can name a new artifact. A report is a thread with a
     // `queue_id`; a claim is one row per session that held a lease on it,
     // the thread's current lease being the one with the largest `fence`
@@ -1810,11 +1811,13 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX queue_reporter_tokens_by_expiry ON queue_reporter_tokens(expires_at);
     CREATE TABLE external_artifacts (
         artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id) ON DELETE CASCADE,
-        external_id TEXT NOT NULL UNIQUE,
+        namespace TEXT NOT NULL,
+        external_id TEXT NOT NULL,
         url TEXT NOT NULL,
         metadata_json TEXT CHECK (json_valid(metadata_json)),
         metadata_version INTEGER NOT NULL DEFAULT 1,
-        revision TEXT
+        revision TEXT,
+        UNIQUE (namespace, external_id)
     );
     CREATE TRIGGER external_artifacts_on_delete AFTER UPDATE OF deleted_at ON artifacts
     WHEN NEW.deleted_at IS NOT NULL

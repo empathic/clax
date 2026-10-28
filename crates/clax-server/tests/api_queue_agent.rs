@@ -5,7 +5,7 @@
 use clax_core::audit::AuditCtx;
 use clax_core::queue::{LEASE_SECS, ReportersSee, Role};
 use clax_core::working::ManualClock;
-use clax_store::queues::{NewQueue, NewReport};
+use clax_store::queues::{ExternalScope, NewQueue, NewReport};
 use clax_testkit::{FAKE_PNG, TestServer, element_anchor};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -45,6 +45,7 @@ async fn setup_on(bind: std::net::IpAddr) -> Q {
             &AuditCtx::DAEMON,
             &qid,
             Some("emp-1"),
+            ExternalScope::Instance,
             NewReport {
                 external_id: Some("invoice:4821".into()),
                 url: "https://app.example.com/invoices/4821".into(),

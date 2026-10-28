@@ -41,7 +41,13 @@ impl Setup {
     async fn new() -> Setup {
         let clock = Arc::new(ManualClock::at("2026-10-27T10:00:00Z"));
         let ts = TestServer::spawn_with_clock(clock.clone()).await;
-        let qid = queue(&ts, ReportersSee::Own);
+        Setup::on(ts, clock, None)
+    }
+
+    /// [`Setup::new`] on `ts`, the queue made by `maker` (`None`: the
+    /// owner).
+    fn on(ts: TestServer, clock: Arc<ManualClock>, maker: Option<&str>) -> Setup {
+        let qid = queue_of(&ts, maker, ReportersSee::Own);
         let (_, token, key) = ts
             .store
             .create_service_grant(&AuditCtx::DAEMON, &qid, "app backend")
@@ -53,6 +59,11 @@ impl Setup {
             service_token: token.expose().to_string(),
             service_key: key,
         }
+    }
+
+    /// `self`'s daemon with a new queue made by `maker`, and its grant.
+    fn on_existing(self, maker: Option<&str>) -> Setup {
+        Setup::on(self.ts, self.clock, maker)
     }
 
     fn host(&self) -> String {
@@ -176,10 +187,15 @@ struct Reporter {
 }
 
 fn queue(ts: &TestServer, see: ReportersSee) -> String {
+    queue_of(ts, None, see)
+}
+
+/// A queue for [`ORIGIN`] made by `maker` (`None`: the owner).
+fn queue_of(ts: &TestServer, maker: Option<&str>, see: ReportersSee) -> String {
     ts.store
         .create_queue(
             &AuditCtx::DAEMON,
-            None,
+            maker,
             NewQueue {
                 name: "Orders".into(),
                 origins: vec![ORIGIN.into()],
@@ -934,4 +950,35 @@ async fn under_all_a_reporter_reads_and_comments_on_anothers_report() {
     assert_eq!(cs[1]["author_name"], "emp-b");
     assert_eq!(cs[1]["author_kind"], "reporter");
     assert_eq!(v["report"]["reporter_id"], "emp-a");
+}
+
+/// The artifact a report filed by a new reporter of `s`'s queue is on.
+async fn filed_artifact(s: &Setup) -> String {
+    let r = s.reporter("emp-1").await;
+    let res = s.file(&r, "The total is wrong").await;
+    assert_eq!(res.status(), 201);
+    let v: Value = res.json().await.unwrap();
+    v["report"]["artifact"]["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn on_a_hosted_clax_each_account_has_its_own_external_ids() {
+    let clock = Arc::new(ManualClock::at("2026-10-27T10:00:00Z"));
+    let ts = TestServer::spawn_hosted(clock.clone(), Some("the setup secret")).await;
+    let a = Setup::on(ts, clock, Some("u_a"));
+    let mine = filed_artifact(&a).await;
+    // Another queue of the same account files onto the same artifact.
+    let same = Setup::on_existing(a, Some("u_a"));
+    assert_eq!(filed_artifact(&same).await, mine);
+    // Another account's queue, filing the same page, gets its own.
+    let b = Setup::on_existing(same, Some("u_b"));
+    assert_ne!(filed_artifact(&b).await, mine);
+}
+
+#[tokio::test]
+async fn on_a_local_clax_one_external_id_is_one_artifact() {
+    let a = Setup::new().await;
+    let mine = filed_artifact(&a).await;
+    let b = Setup::on_existing(a, Some("u_b"));
+    assert_eq!(filed_artifact(&b).await, mine);
 }

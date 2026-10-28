@@ -2592,6 +2592,7 @@ mod tests {
                 DAEMON,
                 &qid,
                 Some("emp-1"),
+                crate::queues::ExternalScope::Instance,
                 crate::queues::NewReport {
                     external_id: Some("invoice:4821".into()),
                     url: "https://app.example.com/invoices/4821".into(),

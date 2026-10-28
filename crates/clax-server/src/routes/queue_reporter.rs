@@ -33,7 +33,7 @@ use clax_core::{Anchor, CoreError};
 use clax_http::error::ApiError;
 use clax_http::reporter::{self, REPORT_BODY_LIMIT, ReporterCaller, ServiceCaller};
 use clax_http::state::AppState;
-use clax_store::queues::{NewReport, Visibility};
+use clax_store::queues::{ExternalScope, NewReport, Visibility};
 use clax_store::threads::clip_problem;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -246,9 +246,15 @@ pub async fn file_report(
         .map_err(|e| multipart_error(e.status(), e.body_text()))?;
     let rid = r.token.reporter_id.clone();
     let new = new_report(read_fields(mp).await?, &rid)?;
+    // Each account of a hosted Clax is its own deployer, with its own
+    // external IDs (spec §6.1).
+    let scope = match s.hosted {
+        Some(_) => ExternalScope::Maker,
+        None => ExternalScope::Instance,
+    };
     let report = s
         .store_call_async(move |st| async move {
-            st.file_report_async(&reporter_ctx(&qid, &rid), &qid, Some(&rid), new)
+            st.file_report_async(&reporter_ctx(&qid, &rid), &qid, Some(&rid), scope, new)
                 .await
         })
         .await?;

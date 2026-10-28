@@ -49,6 +49,10 @@ impl ExternalArtifact {
 /// An external artifact to find or make ([`Store::ensure_external_async`]).
 #[derive(Clone, Debug)]
 pub struct NewExternal {
+    /// Whose external IDs `external_id` is among: `""` for the whole
+    /// instance, or one account's public ID on a hosted Clax, where each
+    /// account is its own deployer (spec §6.1).
+    pub namespace: String,
     pub external_id: String,
     pub title: String,
     /// The record's page in the app (`http` or `https`).
@@ -76,15 +80,16 @@ pub(crate) fn row_to_external(r: &Row<'_>) -> rusqlite::Result<ExternalArtifact>
     })
 }
 
-/// The live external artifact named `external_id`, on `c`.
+/// The live external artifact named `external_id` in `namespace`, on `c`.
 pub(crate) fn by_external_id_in(
     c: &Connection,
+    namespace: &str,
     external_id: &str,
 ) -> Result<Option<ExternalArtifact>> {
     Ok(c.prepare_cached(&format!(
-        "{EXTERNAL_SELECT} WHERE x.external_id = ?1 AND a.deleted_at IS NULL"
+        "{EXTERNAL_SELECT} WHERE x.namespace = ?1 AND x.external_id = ?2 AND a.deleted_at IS NULL"
     ))?
-    .query_row(params![external_id], row_to_external)
+    .query_row(params![namespace, external_id], row_to_external)
     .optional()?)
 }
 
@@ -118,12 +123,17 @@ fn create_record(at: &str, x: &ExternalArtifact) -> AuditRecord {
 }
 
 impl Store {
-    /// The live external artifact named `external_id`, when there is one.
+    /// The live external artifact named `external_id` in `namespace`
+    /// ([`NewExternal::namespace`]), when there is one.
     ///
     /// # Errors
     /// Database errors.
-    pub fn external_artifact(&self, external_id: &str) -> Result<Option<ExternalArtifact>> {
-        self.with_read(|c| by_external_id_in(c, external_id))
+    pub fn external_artifact(
+        &self,
+        namespace: &str,
+        external_id: &str,
+    ) -> Result<Option<ExternalArtifact>> {
+        self.with_read(|c| by_external_id_in(c, namespace, external_id))
     }
 
     /// The external fields of artifact `aid`, when it is a live external
@@ -135,7 +145,7 @@ impl Store {
         self.with_read(|c| by_artifact_in(c, aid.as_str()))
     }
 
-    /// The external artifact `x.external_id` names, made when there is
+    /// The external artifact `x.external_id` names in `x.namespace`, made when there is
     /// none: an artifact of `person` (`None`: the owner) titled `x.title`,
     /// whose version 1 links to `x.url`, and its row, written with version
     /// 1 and recorded as `external.create` under `ctx` beside the
@@ -166,7 +176,7 @@ impl Store {
         // A concurrent maker's row wins the unique ID: this one's artifact
         // is then removed, and the found one answered.
         for _ in 0..2 {
-            if let Some(found) = self.external_artifact(&x.external_id)? {
+            if let Some(found) = self.external_artifact(&x.namespace, &x.external_id)? {
                 return Ok((found, false));
             }
             let html = external_placeholder_html(&title, &x.url);
@@ -188,9 +198,9 @@ impl Store {
             let made = self
                 .create_artifact_then_async(ctx, &id, p, None, |tx, _| {
                     tx.execute(
-                        "INSERT INTO external_artifacts (artifact_id, external_id, url, metadata_json,
-                            metadata_version, revision) VALUES (?1, ?2, ?3, NULL, 1, ?4)",
-                        params![id.as_str(), x.external_id, x.url, x.revision],
+                        "INSERT INTO external_artifacts (artifact_id, namespace, external_id, url,
+                            metadata_json, metadata_version, revision) VALUES (?1, ?2, ?3, ?4, NULL, 1, ?5)",
+                        params![id.as_str(), x.namespace, x.external_id, x.url, x.revision],
                     )?;
                     let made = by_artifact_in(tx, id.as_str())?.ok_or(CoreError::NotFound)?;
                     self.record_audit(tx, ctx, create_record(&self.now(), &made))?;
@@ -204,7 +214,7 @@ impl Store {
                 Err(e) => return Err(e),
             }
         }
-        self.external_artifact(&x.external_id)?
+        self.external_artifact(&x.namespace, &x.external_id)?
             .map(|f| (f, false))
             .ok_or(CoreError::NotFound)
     }
@@ -289,6 +299,7 @@ mod tests {
 
     fn new(id: &str) -> NewExternal {
         NewExternal {
+            namespace: String::new(),
             external_id: id.into(),
             title: "Invoice 4821".into(),
             url: "https://app.example.com/invoices/4821".into(),
@@ -321,7 +332,7 @@ mod tests {
             .unwrap();
         assert_eq!(c.revision.as_deref(), Some("r1"));
         assert_eq!(
-            st.external_artifact("invoice:4821").unwrap().unwrap().revision.as_deref(),
+            st.external_artifact("", "invoice:4821").unwrap().unwrap().revision.as_deref(),
             Some("r1")
         );
         let art = st
@@ -331,9 +342,32 @@ mod tests {
         assert_eq!(art.kind, clax_core::live::KIND_EXTERNAL);
         assert_eq!(art.current_version, 1);
         assert!(
-            st.external_artifact("invoice:4822").unwrap().is_none(),
+            st.external_artifact("", "invoice:4822").unwrap().is_none(),
             "IDs compare byte for byte"
         );
+    }
+
+    #[test]
+    fn one_external_id_in_two_namespaces_is_two_artifacts() {
+        let (_d, st) = store();
+        let in_ns = |ns: &str| NewExternal {
+            namespace: ns.into(),
+            ..new("invoice:4821")
+        };
+        let (a, _) = st
+            .block_on(st.ensure_external_async(DAEMON, Some("u_a"), in_ns("u_a")))
+            .unwrap();
+        let (b, made) = st
+            .block_on(st.ensure_external_async(DAEMON, Some("u_b"), in_ns("u_b")))
+            .unwrap();
+        assert!(made);
+        assert_ne!(a.artifact_id, b.artifact_id);
+        let aid = ArtifactId::parse(&a.artifact_id).unwrap();
+        st.set_artifact_metadata(DAEMON, &aid, json!({"plan": "team"}), 1)
+            .unwrap();
+        let theirs = st.external_artifact("u_b", "invoice:4821").unwrap().unwrap();
+        assert_eq!(theirs.metadata, serde_json::Value::Null);
+        assert!(st.external_artifact("", "invoice:4821").unwrap().is_none());
     }
 
     #[test]

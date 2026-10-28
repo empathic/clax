@@ -127,6 +127,18 @@ pub struct NewReport {
     pub clip: Option<Vec<u8>>,
 }
 
+/// Whose external IDs a filed report's ID is among (spec §6.1): one
+/// deployer's. On a local or self-hosted Clax the deployer is the
+/// instance; on a hosted one each account is its own deployer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalScope {
+    /// The whole instance: one ID is one artifact for every queue.
+    Instance,
+    /// The queue maker's account: queues of one account share an ID's
+    /// artifact, and another account's same ID names another artifact.
+    Maker,
+}
+
 /// Whose reports a read sees.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Visibility<'a> {
@@ -932,16 +944,17 @@ impl Store {
         ctx: &AuditCtx,
         qid: &str,
         reporter: Option<&str>,
+        scope: ExternalScope,
         r: NewReport,
     ) -> Result<Report> {
-        self.block_on(self.file_report_async(ctx, qid, reporter, r))
+        self.block_on(self.file_report_async(ctx, qid, reporter, scope, r))
     }
 
     /// Files report `r` to queue `qid` by `reporter` (a reporter token's
     /// reporter ID; `None` otherwise). Finds or makes the external
     /// artifact `r.external_id` names, or the page URL without its route
-    /// when it names none ([`Store::ensure_external_async`], as the queue's
-    /// maker's), then makes the thread on its current version with the
+    /// when it names none, among the external IDs of `scope`
+    /// ([`Store::ensure_external_async`], as the queue's maker's), then makes the thread on its current version with the
     /// queue, the reporter and the metadata in the thread's transaction
     /// (`thread.open`, `comment.add`, and `thread.metadata` for metadata
     /// that is not null). The anchor's file is the artifact's
@@ -958,6 +971,7 @@ impl Store {
         ctx: &AuditCtx,
         qid: &str,
         reporter: Option<&str>,
+        scope: ExternalScope,
         r: NewReport,
     ) -> Result<Report> {
         let q = self.queue(qid)?.ok_or(CoreError::NotAMember)?;
@@ -981,6 +995,10 @@ impl Store {
                 ctx,
                 q.person.as_deref(),
                 NewExternal {
+                    namespace: match scope {
+                        ExternalScope::Instance => String::new(),
+                        ExternalScope::Maker => q.person.clone().unwrap_or_default(),
+                    },
                     external_id,
                     title: r.title.clone(),
                     url: page.key.page_url(),
