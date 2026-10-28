@@ -259,6 +259,15 @@ fn reports_list_by_state_and_page() {
     assert_eq!(end, None);
     let all: Vec<String> = first.iter().chain(&rest).map(|r| r.id.clone()).collect();
     assert_eq!(all, ids, "in order of arrival");
+    for bad in ["01J0000000000000000000000Z", "nope"] {
+        assert!(matches!(
+            st.reports(&qid, Visibility::All, None, Some(bad)),
+            Err(CoreError::Invalid {
+                code: "invalid_cursor",
+                ..
+            })
+        ));
+    }
 
     let a = session(&st, "claude", "a");
     st.claim(DAEMON, &qid, &ids[0], &a).unwrap();

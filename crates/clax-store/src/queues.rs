@@ -1054,7 +1054,8 @@ impl Store {
     /// there is one.
     ///
     /// # Errors
-    /// [`CoreError::NotAMember`] for no such queue.
+    /// [`CoreError::NotAMember`] for no such queue; `invalid_cursor` when
+    /// `cursor` is no report of the queue.
     pub fn reports(
         &self,
         qid: &str,
@@ -1065,6 +1066,19 @@ impl Store {
         let now = self.now();
         self.with_read(|c| {
             let q = queue_in(c, qid)?.ok_or(CoreError::NotAMember)?;
+            if let Some(cur) = cursor {
+                let known: bool = c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM threads WHERE id = ?1 AND queue_id = ?2)",
+                    params![cur, qid],
+                    |r| r.get(0),
+                )?;
+                if !known {
+                    return Err(CoreError::invalid(
+                        "invalid_cursor",
+                        format!("{cur} is not a report of queue {qid}"),
+                    ));
+                }
+            }
             let (filter, reporter) = reporter_filter(&q, vis);
             let state_sql = match state {
                 None => String::new(),
