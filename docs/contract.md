@@ -5651,6 +5651,7 @@ router), and a test fails when it differs:
 | `GET /queues` | Denied | no |
 | `GET /settings` | Denied | no |
 | `GET /site-signin` | Denied | yes: 403 `not_for_agents` |
+| `GET /sw.js` | Denied | no |
 | `GET /tags` | Denied | no |
 <!-- route-table:end -->
 
@@ -9660,6 +9661,18 @@ it starts, the runs a previous process left. A build without the
   `web/contract/clax-extensions.d.ts`), are served as
   `text/plain; charset=utf-8` with `Cache-Control: no-cache`; any other name
   under that path is a 404.
+- The shell installs as a web app (Add to Home Screen opens it
+  standalone). Both shell entries link `/_clax/app.webmanifest`
+  (`application/manifest+json`: name Clax, `start_url` and `scope` `/`,
+  `display: standalone`, the light theme's background as its colours) and
+  `/_clax/app/apple-touch-icon.png` (180×180); the manifest lists
+  `/_clax/app/icon-192.png` and `/_clax/app/icon-512.png`. The icons are
+  the Clax mark on an opaque background, drawn by the web build. The
+  shell registers its service worker, `GET /sw.js` (`text/javascript`,
+  `no-cache` with an `ETag`, `nosniff`), at scope `/`. The worker caches
+  nothing and handles no fetch. None of these files needs a credential or
+  carries any data, and they are served on a `[serve] trusted_hosts` name
+  as on this machine's.
 
 ## Known limitations
 

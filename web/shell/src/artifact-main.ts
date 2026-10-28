@@ -1,4 +1,5 @@
 import { mountArtifactView } from "./artifact";
+import { registerServiceWorker } from "./pwa";
 import { appQuery, inspectQuery, parseShellPath } from "./route";
 import { loadMoreMenu } from "./ui/more-menu.svelte";
 import { allowSidebarPrefetch } from "./ui/sidebar-chunk";
@@ -20,6 +21,7 @@ if (r.kind === "artifact") {
   // with its styles, loads only here, so a browser's view carries none of it.
   if (appQuery(location.search)) void import("./app/host").then(m => m.installHost(window, mount.controller()));
   if (!inspecting) afterPaint(loadMoreMenu);
+  if (!inspecting) afterPaint(() => registerServiceWorker());
   // The view ended as the page was hidden (`ArtifactController`): a page the
   // back/forward cache restores loads again, live.
   addEventListener("pageshow", e => { if (e.persisted) location.reload(); });

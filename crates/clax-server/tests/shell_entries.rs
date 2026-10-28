@@ -82,3 +82,66 @@ async fn each_route_gets_its_own_entry() {
     assert_eq!(res.status(), 404);
     assert!(!res.headers().contains_key("access-control-allow-origin"));
 }
+
+/// The installed web app: the manifest and its icons under `/_clax/`, and
+/// the service worker at `/sw.js` (scope `/`), each with its type, from
+/// this machine and through a `[serve] trusted_hosts` name (`tailscale
+/// serve`). The worker is revalidated on each use; none of them needs a
+/// credential.
+#[tokio::test]
+async fn the_web_app_manifest_icons_and_service_worker_are_served() {
+    const TRUSTED: &str = "phobos.tail556f5b.ts.net";
+    let dist = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dist.path().join("_clax/app")).unwrap();
+    std::fs::write(
+        dist.path().join("_clax/app.webmanifest"),
+        r#"{"name":"Clax","start_url":"/","display":"standalone"}"#,
+    )
+    .unwrap();
+    std::fs::write(dist.path().join("_clax/sw.js"), "self.x = 1;").unwrap();
+    std::fs::write(
+        dist.path().join("_clax/app/apple-touch-icon.png"),
+        b"\x89PNG\r\n\x1a\n",
+    )
+    .unwrap();
+    let web = std::sync::Arc::new(clax_core::embedded::DiskTree::new(dist.path()));
+    let ts = TestServer::spawn_with(move |s| {
+        s.web = web;
+        s.trusted_hosts = vec![TRUSTED.to_string()].into();
+    })
+    .await;
+    for host in [None, Some(TRUSTED)] {
+        let get = |p: &str| {
+            let r = ts.client.get(format!("{}{p}", ts.base));
+            match host {
+                Some(h) => r.header("host", h),
+                None => r,
+            }
+            .send()
+        };
+        let res = get("/_clax/app.webmanifest").await.unwrap();
+        assert_eq!(res.status(), 200, "{host:?}");
+        assert_eq!(
+            res.headers()["content-type"],
+            "application/manifest+json",
+            "{host:?}"
+        );
+        let m: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(m["display"], "standalone");
+
+        let res = get("/sw.js").await.unwrap();
+        assert_eq!(res.status(), 200, "{host:?}");
+        assert_eq!(res.headers()["content-type"], "text/javascript");
+        assert_eq!(res.headers()["cache-control"], "no-cache");
+        assert_eq!(res.headers()["x-content-type-options"], "nosniff");
+        assert!(res.headers().contains_key("etag"));
+        assert_eq!(res.text().await.unwrap(), "self.x = 1;");
+
+        let res = get("/_clax/app/apple-touch-icon.png").await.unwrap();
+        assert_eq!(res.status(), 200, "{host:?}");
+        assert_eq!(res.headers()["content-type"], "image/png");
+    }
+    // Not built: 404, never another file.
+    std::fs::remove_file(dist.path().join("_clax/sw.js")).unwrap();
+    assert_eq!(ts.get("/sw.js").await.status(), 404);
+}

@@ -6,6 +6,8 @@
 <script id="clax-theme">try{var t=localStorage.getItem("clax.theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
 <script id="clax-drawer">try{var r=document.documentElement,d=JSON.parse(localStorage.getItem("clax.drawer"));r.dataset.drawer=d.layout||"";for(var k of["w","h"])Number.isFinite(d[k])&&r.style.setProperty("--drawer-"+k,d[k]+"px")}catch(e){}</script>
 <link rel="icon" type="image/svg+xml" href="/_clax/mark.svg">
+<link rel="manifest" href="/_clax/app.webmanifest">
+<link rel="apple-touch-icon" href="/_clax/app/apple-touch-icon.png">
 <title>Clax</title>
 <link rel="stylesheet" href="./src/theme.css">
 <script id="clax-early">(function(){var q=[],d=document;function keep(e){if(q){q.push(e);if(q.length>256)q=null}}function load(e){if(e.target&&e.target.localName==="iframe")keep(e)}function msg(e){var f=d.querySelector(".stage>iframe.frame");if(f&&e.source&&e.source===f.contentWindow)keep(e)}addEventListener("message",msg);d.addEventListener("load",load,true);window.__claxEarly={take:function(){removeEventListener("message",msg);d.removeEventListener("load",load,true);var r=q||[];q=[];return r}}})();</script>
