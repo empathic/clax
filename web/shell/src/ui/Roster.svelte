@@ -40,24 +40,24 @@
     {#each ordered.slice(0, p.max) as v (v.public_id)}
       {@const at = p.presence?.get(v.public_id)}
       {#if v.public_id === p.me}
-        {#if at === "here"}<span class="tok p me here" title={v.display_name ?? "Viewer"}>{initials(v.display_name)}</span>
-        {:else if at}<span class="tok p me away" title={v.display_name ?? "Viewer"}>{initials(v.display_name)}</span>
-        {:else}<span class="tok p me" title={v.display_name ?? "Viewer"}>{initials(v.display_name)}</span>{/if}
-      {:else if at === "here"}<span class="tok p here" title={v.display_name ?? "Viewer"}>{initials(v.display_name)}</span>
-      {:else if at}<span class="tok p away" title={v.display_name ?? "Viewer"}>{initials(v.display_name)}</span>
-      {:else}<span class="tok p" title={v.display_name ?? "Viewer"}>{initials(v.display_name)}</span>{/if}
+        {#if at === "here"}<span class="tok p me here" role="img" title={v.display_name ?? "Viewer"} aria-label={v.display_name ?? "Viewer"}>{initials(v.display_name)}</span>
+        {:else if at}<span class="tok p me away" role="img" title={v.display_name ?? "Viewer"} aria-label={v.display_name ?? "Viewer"}>{initials(v.display_name)}</span>
+        {:else}<span class="tok p me" role="img" title={v.display_name ?? "Viewer"} aria-label={v.display_name ?? "Viewer"}>{initials(v.display_name)}</span>{/if}
+      {:else if at === "here"}<span class="tok p here" role="img" title={v.display_name ?? "Viewer"} aria-label={v.display_name ?? "Viewer"}>{initials(v.display_name)}</span>
+      {:else if at}<span class="tok p away" role="img" title={v.display_name ?? "Viewer"} aria-label={v.display_name ?? "Viewer"}>{initials(v.display_name)}</span>
+      {:else}<span class="tok p" role="img" title={v.display_name ?? "Viewer"} aria-label={v.display_name ?? "Viewer"}>{initials(v.display_name)}</span>{/if}
     {/each}
-    {#if ordered.length > p.max}<span class="tok more">+{ordered.length - p.max}</span>{/if}
+    {#if ordered.length > p.max}<span class="tok more" role="img" aria-label={`${ordered.length - p.max} more`}>+{ordered.length - p.max}</span>{/if}
   </span>
   <span class="hub" aria-hidden="true"></span>
   <span class="side agt">
     {#each p.agents.slice(0, p.max) as a (a.handle)}
-      {#if busy.has(a.handle)}<span class="tok a work" title={named(a)}>{mark(a)}</span>
-      {:else if asleep(a)}<span class="tok a nowake" title={named(a) + NOWAKE}>{mark(a)}</span>
-      {:else if unsure(a)}<span class="tok a maywake" title={named(a) + MAYWAKE}>{mark(a)}</span>
-      {:else}<span class="tok a" title={named(a)}>{mark(a)}</span>{/if}
+      {#if busy.has(a.handle)}<span class="tok a work" role="img" title={named(a)} aria-label={named(a)}>{mark(a)}</span>
+      {:else if asleep(a)}<span class="tok a nowake" role="img" title={named(a) + NOWAKE} aria-label={named(a) + NOWAKE}>{mark(a)}</span>
+      {:else if unsure(a)}<span class="tok a maywake" role="img" title={named(a) + MAYWAKE} aria-label={named(a) + MAYWAKE}>{mark(a)}</span>
+      {:else}<span class="tok a" role="img" title={named(a)} aria-label={named(a)}>{mark(a)}</span>{/if}
     {/each}
-    {#if p.agents.length > p.max}<span class="tok more">+{p.agents.length - p.max}</span>{/if}
+    {#if p.agents.length > p.max}<span class="tok more" role="img" aria-label={`${p.agents.length - p.max} more agents`}>+{p.agents.length - p.max}</span>{/if}
   </span>
 {/snippet}
 
