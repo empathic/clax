@@ -68,6 +68,13 @@ pub struct ReplyArgs {
     /// to the agent; on another, nothing is written and the command fails.
     #[arg(long)]
     pub session: Option<String>,
+    /// Reply as the agent named NAME, for a headless agent that has no
+    /// harness session of its own (one turn per wake): registers, or renews,
+    /// its session under the calling process, named NAME, and replies as
+    /// it, as `--session` does. The session ends when the calling process
+    /// does.
+    #[arg(long, value_name = "NAME", conflicts_with = "session")]
+    pub agent: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -710,6 +717,10 @@ fn reply(cli: &crate::Cli, home: &Home, r: &ReplyArgs) -> anyhow::Result<()> {
     if let Some(sid) = &r.session {
         return reply_as_agent(cli, &c, &g, i, sid, &text);
     }
+    if let Some(name) = &r.agent {
+        let sid = named_agent_session(&c, name)?;
+        return reply_as_agent(cli, &c, &g, i, &sid, &text);
+    }
     // A remote person writes in their browser; their replies here are
     // refused for want of a session (spec §6.7), and they have no owner
     // identity to read.
@@ -747,6 +758,43 @@ fn reply(cli: &crate::Cli, home: &Home, r: &ReplyArgs) -> anyhow::Result<()> {
         eprintln!("hint: set the name your replies carry with `clax comments name <name>`");
     }
     Ok(())
+}
+
+/// The live session of the agent `name` (`--agent`): registered, or renewed
+/// while live, under harness session ID `clax-agent:<name>` and the calling
+/// process (so the daemon ends it when that process exits), then named
+/// `name` if it is not already.
+///
+/// # Errors
+/// The daemon's: `name_taken` when another live agent has the name.
+fn named_agent_session(c: &Client, name: &str) -> anyhow::Result<String> {
+    if name.trim().is_empty() {
+        anyhow::bail!("--agent needs a name");
+    }
+    let cwd = std::env::current_dir()
+        .map(|d| d.display().to_string())
+        .unwrap_or_default();
+    let res = c.send(
+        Method::POST,
+        "/api/sessions",
+        Some(&json!({
+            "harness": "claude",
+            "harness_session_id": format!("clax-agent:{name}"),
+            "cwd": cwd,
+            "pid": std::os::unix::process::parent_id(),
+        })),
+    )?;
+    let Some(sid) = res["session"]["id"].as_str().map(str::to_string) else {
+        anyhow::bail!("the daemon answered no session");
+    };
+    if res["session"]["name"].as_str() != Some(name) {
+        c.send(
+            Method::PATCH,
+            &format!("/api/sessions/{sid}"),
+            Some(&json!({"name": name})),
+        )?;
+    }
+    Ok(sid)
 }
 
 /// [`reply`] as agent session `sid`: `author_kind: "agent"` with
