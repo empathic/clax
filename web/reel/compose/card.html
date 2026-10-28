@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Reel card</title>
+<!-- Interim card template for web/reel/compose/compose.sh. Colours and the
+     font stack are design/tokens.json (light theme); the mark is
+     design/mark.json. Query: ?title=...  or  ?end=1&title=...&footer=...
+     or ?intro=1&title=... (a centred title card)
+     Optional: p=0..1 (slide/scale-in progress of the contents; default 1) and
+     lower=1 (a transparent lower-third for overlaying on a vignette). -->
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --fg: #1c1b19;
+    --muted: #5f5d58;
+    --agent: #2f6f2a;
+    --you: #e0532f;
+    --border: #e6e5e1;
+    --sans: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  html, body { margin: 0; width: 1600px; height: 1000px; overflow: hidden; background: var(--bg); color: var(--fg); font-family: var(--sans); }
+  main { box-sizing: border-box; width: 1600px; height: 1000px; padding: 0 160px; display: flex; flex-direction: column; justify-content: center; }
+  svg.mark { width: 132px; height: auto; margin-bottom: 56px; }
+  svg.mark path { fill: none; stroke-width: 2.6; stroke-linecap: round; }
+  svg.mark .you { stroke: var(--you); }
+  svg.mark .agent { stroke: var(--agent); }
+  svg.mark circle { fill: var(--fg); }
+  h1 { margin: 0; font-size: 128px; line-height: 1.08; font-weight: 700; letter-spacing: -0.02em; max-width: 1280px; }
+  .rule { width: 96px; height: 8px; border-radius: 4px; background: var(--agent); margin-top: 56px; }
+  .footer { margin-top: 48px; font-size: 56px; font-weight: 600; color: var(--agent); }
+  body.end main { align-items: center; text-align: center; }
+  body.end h1 { font-size: 104px; }
+  body.end svg.mark { width: 176px; }
+  body.end .rule { display: none; }
+  body.intro main { align-items: center; text-align: center; padding: 0 200px; }
+  body.intro h1 { font-size: 112px; max-width: 1200px; text-wrap: balance; }
+  main { transform-origin: 50% 50%; }
+  body.lower, body.lower html { background: transparent; }
+  body.lower main { padding: 0; justify-content: flex-end; align-items: flex-start; }
+  body.lower svg.mark, body.lower .rule, body.lower .footer { display: none; }
+  .sub { display: none; }
+  body.lower .sub:not(:empty) { display: block; margin: -72px 0 72px 72px; padding: 0 36px 22px 48px; font-size: 34px; color: var(--muted); background: var(--bg); border-left: 12px solid var(--agent); border-radius: 0 0 8px 8px; max-width: 1100px; }
+  body.lower h1 { font-size: 64px; line-height: 1.1; margin: 0 0 72px 72px; padding: 22px 36px; background: var(--bg); border-left: 12px solid var(--agent); border-radius: 8px; max-width: 1100px; }
+</style>
+</head>
+<body>
+<main>
+  <svg class="mark" viewBox="-1 -1 24 18" aria-hidden="true">
+    <path class="you" d="M1.5 2.5a5.5 5.5 0 0 1 0 11"/>
+    <path class="agent" d="M20.5 2.5a5.5 5.5 0 0 0 0 11"/>
+    <circle cx="11" cy="8" r="1.7"/>
+  </svg>
+  <h1 id="title"></h1>
+  <div class="rule"></div>
+  <div class="footer" id="footer"></div>
+  <div class="sub" id="sub"></div>
+</main>
+<script>
+  const q = new URLSearchParams(location.search);
+  document.getElementById('title').textContent = q.get('title') || '';
+  document.getElementById('footer').textContent = q.get('footer') || '';
+  document.getElementById('sub').textContent = q.get('sub') || '';
+  if (q.get('end')) document.body.classList.add('end');
+  if (q.get('intro')) document.body.classList.add('intro');
+  if (q.get('lower')) { document.body.classList.add('lower'); document.documentElement.style.background = 'transparent'; }
+  const p = q.has('p') ? Math.min(1, Math.max(0, parseFloat(q.get('p')))) : 1;
+  const main = document.querySelector('main');
+  main.style.opacity = Math.min(1, p * 2.5);
+  main.style.transform = `translateX(${(1 - p) * -140}px) scale(${1 + (1 - p) * 0.12})`;
+</script>
+</body>
+</html>

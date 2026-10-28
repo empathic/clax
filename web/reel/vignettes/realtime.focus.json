@@ -1,0 +1,41 @@
+{
+  "note": "TEMPORARY: this recording predates focus targets, so `overrides` (pixel boxes measured on its frames, before padding) stand in for every target. Re-record with this script beside the vignette's .ts and delete `overrides`; the selectors are then what places the light.",
+  "targets": {},
+  "overrides": {
+    "row": [
+      180,
+      392,
+      746,
+      58
+    ],
+    "draft": [
+      1130,
+      210,
+      451,
+      72
+    ],
+    "checklist": [
+      176,
+      252,
+      758,
+      425
+    ]
+  },
+  "shots": [
+    {
+      "at": 74,
+      "targets": [
+        "row",
+        "draft"
+      ],
+      "label": "Mia's draft: the row she picked and her typing"
+    },
+    {
+      "at": 136,
+      "targets": [
+        "checklist"
+      ],
+      "label": "Sam ticks a task off"
+    }
+  ]
+}
