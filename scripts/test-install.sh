@@ -62,7 +62,8 @@ fake_uname() { # os arch [hw.optional.arm64, default 0]
     printf '#!/bin/sh\necho %s\n' "${3:-0}" | fake_exe "$SANDBOX/bin/sysctl"
 }
 # Prints a directory holding links to the tools install.sh uses, minus those
-# named, for a PATH of "$SANDBOX/bin:<that directory>".
+# named, for a PATH of "$SANDBOX/bin:<that directory>". perl is there because
+# macOS's /usr/bin/shasum is a Perl script.
 only_tools() {
     local dir="$SANDBOX/tools" c skip
     mkdir -p "$dir"

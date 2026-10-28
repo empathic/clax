@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Checks scripts/check-no-unsafe.sh on a copy of itself beside a minimal
-# workspace (two crates that take the workspace's lints, the separate
-# clax-worker workspace, and crates/clax-embed): the tree passes, from any
+# Checks scripts/check-no-unsafe.sh on a copy of it and of the
+# check-no-unsafe.py it runs, beside a minimal workspace (two crates that
+# take the workspace's lints, the separate clax-worker workspace, and
+# crates/clax-embed): the tree passes, from any
 # directory and with or without a root given; clax-embed not denying the
 # lint, the workspace not forbidding it, and another crate with lints of
 # its own (clax-ios's former exception among them) each fail, naming the
@@ -38,7 +39,7 @@ EOF
 
 _copy() {
     rm -rf "$d/w" && mkdir -p "$d/w/scripts"
-    cp scripts/check-no-unsafe.sh "$d/w/scripts/"
+    cp scripts/check-no-unsafe.sh scripts/check-no-unsafe.py "$d/w/scripts/"
     cat > "$d/w/Cargo.toml" <<'EOF'
 [workspace]
 members = ["crates/*"]

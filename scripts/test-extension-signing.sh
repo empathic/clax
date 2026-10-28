@@ -279,11 +279,10 @@ interrupt() {
     local name="$1" hang_on="$2"
     shift 2
     set -m
-    # shellcheck disable=SC2016 # perl's own variables
     env -u CI PATH="$ROOT/hang:$BIN:$PATH" TMPDIR="$SCRIPT_TMP" CLAX_EXTENSION_KEY_REF="$REF" \
         FAKE_OP_LOG="$LOG" FAKE_OP_REF="$REF" FAKE_OP_KEY="$VAULT/key.pem" FAKE_ZIP_FIFO="$FIFO" \
         FAKE_REAL_ZIP="$REAL_ZIP" FAKE_ZIP_HANG_ON="$hang_on" \
-        perl -e '$SIG{INT} = "DEFAULT"; exec @ARGV or die "exec: $!\n"' \
+        python3 -c 'import os, signal, sys; signal.signal(signal.SIGINT, signal.SIG_DFL); os.execvp(sys.argv[1], sys.argv[1:])' \
         "$REPO/scripts/pack-extension.sh" "$@" > "$OUT/$name.out" 2> "$OUT/$name.err" &
     BGPID=$!
     set +m

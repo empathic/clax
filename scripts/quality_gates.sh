@@ -208,7 +208,7 @@ echo "all gates passed"
 # --- helpers (defined before main runs; see the note at the top) -------------
 
 # Seconds since the epoch, to the millisecond.
-now() { perl -MTime::HiRes=time -e 'printf "%.3f\n", time'; }
+now() { python3 -c 'import time; print("%.3f" % time.time())'; }
 
 # run NAME CMD...: runs one gate, records its time and prints its verdict.
 # Its output goes to a log, printed in full when it fails.
@@ -229,7 +229,7 @@ run() {
         set -e
     fi
     local dt
-    dt="$(perl -e 'printf "%.1f", $ARGV[1] - $ARGV[0]' "$t0" "$(now)")"
+    dt="$(awk -v t0="$t0" -v t1="$(now)" 'BEGIN { printf "%.1f", t1 - t0 }')"
     printf '%s\t%s\t%s\n' "$name" "$dt" "$rc" >> "$GATES_TMP/times"
     if [ "$rc" = 0 ]; then
         # A gate that passed without judging (no budgets on this platform,
@@ -246,7 +246,7 @@ run() {
 
 # Writes stdin to stdout in one write where it fits, so concurrent lanes'
 # verdicts do not interleave mid-line.
-flush() { perl -e 'local $/; my $s = <STDIN>; syswrite STDOUT, $s if defined $s'; }
+flush() { python3 -c 'import os, sys; os.write(1, sys.stdin.buffer.read())'; }
 
 # lane NAME FUNCTION: runs FUNCTION in the background; NAME.done marks its end.
 lane() {
@@ -291,7 +291,7 @@ finish() {
         echo
         echo "gate times (reported only; a slow gate never fails the run):"
         awk -F'\t' '{ printf "  %-30s %7ss%s\n", $1, $2, ($3 == 0 ? "" : "  (failed)") }' "$GATES_TMP/times"
-        perl -e 'printf "  %-30s %7.1fs\n", "total (wall clock)", $ARGV[1] - $ARGV[0]' "$START" "$(now)"
+        awk -v t0="$START" -v t1="$(now)" 'BEGIN { printf "  %-30s %7.1fs\n", "total (wall clock)", t1 - t0 }'
     fi
     rm -rf "$GATES_TMP"
     exit "$rc"

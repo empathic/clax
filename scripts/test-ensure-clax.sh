@@ -65,7 +65,8 @@ pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILED=1; }
 
 # The tools the wrapper may call, linked into an otherwise empty directory
-# (never a clax).
+# (never a clax). perl is there because macOS's /usr/bin/shasum is a Perl
+# script.
 TOOLS="$ROOT/tools"
 mkdir -p "$TOOLS"
 for t in bash sh env awk head tail grep sed tr cat mktemp mv mkdir rm chmod date wc cp sleep ls \
