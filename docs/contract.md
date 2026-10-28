@@ -4939,6 +4939,49 @@ cursor or body) and 404 `not_found`.
 
 `/inbox` serves the gallery page, which shows the inbox.
 
+### Web Push
+
+A local daemon pushes what waits on the owner to the owner's subscribed
+devices, Clax open or not: an item made in the owner's inbox for an
+agent's question, an approval request, an agent's reply on a thread, or a
+machine asking to connect (not one that connected with an invite). Each
+device gets one Web Push message (RFC 8030) per item, its payload
+encrypted for that device (RFC 8291, `aes128gcm`) and signed with the
+daemon's VAPID key (RFC 8292): `{title, url, tag}`, a one-line title
+naming the agent and what it wants (`clax-claude asked you a question`),
+the item's shell path (its `url`), and `clax-inbox-<question, else page,
+else item ID>`, the tag the in-tab notifications use. No page, comment or
+question text is sent. A push service answering 404 or 410 has the device
+forgotten. The key is `push/vapid.key` (PKCS#8) and the subscriptions
+`push/subscriptions.json` under the home, each 0600 in a 0700 directory;
+at most 20 devices are kept, the oldest dropped. A hosted daemon sends
+none and has none of these routes.
+
+Only the owner's browser reaches the routes (one holding the owner
+cookie, or the extension): 403 `forbidden` for anyone else (a tailnet or
+LAN viewer, a connected person), 403 `browser_required` for the owner's token
+alone, 403 `not_for_agents` for agents.
+
+- **`GET /api/web-push`** → `{public_key, devices}`: the VAPID public key
+  (base64url, uncompressed P-256; made on first use), which a browser
+  subscribes with as `applicationServerKey`, and the number of devices.
+- **`POST /api/web-push/subscriptions`** `{endpoint, keys: {p256dh,
+  auth}}` (a `PushSubscription.toJSON()`) → 201 `{devices}`. The endpoint
+  must be `https` (or `http` to a loopback host) with no credentials, and
+  the keys a P-256 point and a 16-byte secret, else 400
+  `invalid_subscription`. The device is sent "Clax notifications are on for
+  this device" at once.
+- **`DELETE /api/web-push/subscriptions`** `{endpoint}` → `{removed,
+  devices}`.
+
+The inbox's **Notify me on this device** (the owner's browser, where the
+browser has Web Push) asks for permission from that click, subscribes the
+shell's service worker and posts the subscription; **Turn off
+notifications** deletes it. An iPhone or iPad gets Web Push only in the
+Home Screen app (iOS 16.4 and later); in a Safari tab the inbox says to
+add Clax to the Home Screen. The service worker shows each push and opens
+its `url` on a tap, in an open Clax window or a new one.
+
 ### The `inbox` topic
 
 `inbox` is a topic of `GET /api/stream`. A stream carries the `inbox` and
@@ -5640,6 +5683,9 @@ router), and a test fails when it differs:
 | `PUT /api/viewers/me/presence` | Denied | no |
 | `GET /api/viewers/me/seen` | Denied | no |
 | `PUT /api/viewers/me/seen` | Denied | no |
+| `GET /api/web-push` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/web-push/subscriptions` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/web-push/subscriptions` | Denied | yes: 403 `not_for_agents` |
 | `GET /audit` | Denied | no |
 | `GET /connect/b/{code}` | Denied | no |
 | `GET /healthz` | Denied | no |

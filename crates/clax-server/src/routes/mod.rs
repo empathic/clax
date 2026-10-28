@@ -58,6 +58,9 @@ pub mod token;
 pub mod toolpath;
 pub mod viewers;
 pub mod watches;
+/// Web Push subscriptions: the daemon's alone.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod web_push;
 pub mod working;
 pub mod world;
 

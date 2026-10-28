@@ -49,6 +49,9 @@ pub mod state;
 pub mod surface;
 pub mod viewer;
 pub mod views;
+/// Pushes to the owner's devices go out over the network: the daemon's.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod web_push;
 pub mod wrap_cache;
 
 pub use state::AppState;

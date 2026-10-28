@@ -121,6 +121,22 @@ impl Home {
         self.root.join("secrets").join("kek")
     }
 
+    /// `push/` (0700): Web Push to the owner's devices
+    /// ([`crate::webpush`]).
+    pub fn push_dir(&self) -> PathBuf {
+        self.root.join("push")
+    }
+    /// `push/vapid.key` (0600): the daemon's VAPID key, PKCS#8, made on
+    /// first use.
+    pub fn push_vapid_key(&self) -> PathBuf {
+        self.push_dir().join("vapid.key")
+    }
+    /// `push/subscriptions.json` (0600): the owner's devices' push
+    /// subscriptions.
+    pub fn push_subscriptions(&self) -> PathBuf {
+        self.push_dir().join("subscriptions.json")
+    }
+
     /// Makes the root (mode 0700 on unix), `logs/` and `artifacts/`.
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         let mut root = std::fs::DirBuilder::new();

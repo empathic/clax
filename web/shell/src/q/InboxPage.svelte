@@ -27,8 +27,11 @@
   // shows as a card in its group. A machine that connected with an invite
   // and an agent that ended are rows.
   // Only the owner's browser offers the Connections filter. At phone width
-  // the filters sit behind **Filters**. The agent strip (§13) opens the
-  // page, under its header: a chip filters the inbox by its agent; it is
+  // the filters sit behind **Filters**. In the owner's browser, where the
+  // browser has Web Push, **Notify me on this device** turns on pushes to
+  // the device (./push.ts) in place of **Notify me**; on an iPhone outside
+  // the Home Screen app a line says how to get them. The agent strip (§13)
+  // opens the page, under its header: a chip filters the inbox by its agent; it is
   // fetched again with the list. Tags, beside Page, picks tags (a list with
   // a search, `ui/TagPicker.svelte`): the items about artifacts carrying
   // every one picked.
@@ -54,6 +57,7 @@
   import { openItem } from "./open";
   import QuestionList from "./QuestionList.svelte";
   import { shared } from "./shared";
+  import { type PushEnv, type PushState, pushState, turnOff, turnOn } from "./push";
 
   type Props = {
     inbox?: InboxFeed;
@@ -63,6 +67,8 @@
     /** The page's stream, whose `tags` events refresh the Tags filter's list. */
     stream?: EventStream;
     now?: Date;
+    /** What the push controls use of the browser (default: the real one). */
+    pushEnv?: PushEnv;
   };
   const p: Props = $props();
   const inbox = $derived(p.inbox ?? shared().inbox);
@@ -109,6 +115,10 @@
   const loadStrip = () => inboxAgents().then(b => { if (b !== "forbidden" && Array.isArray(b.agents)) strip = b.agents; }, () => {});
   const N = typeof Notification === "undefined" ? undefined : Notification;
   let perm = $state(N?.permission);
+  // This device's Web Push, in the owner's browser (null until known, or for anyone else).
+  let push = $state<PushState | null>(null);
+  let pushBusy = $state(false);
+  let pushError = $state<string | null>(null);
 
   const filtered = $derived([filter.q, filter.kind?.length, filter.artifact, filter.agent, filter.since, filter.until, filter.tag?.length].some(Boolean));
   // Every tag, for the Tags filter, and whether its list is open.
@@ -345,6 +355,15 @@
   const toggle = (i: InboxItem) => void inbox.mark(i.id, !i.read).catch(oops("mark it"));
   // Asked only from this click (spec §9.7).
   const askNotify = () => void N?.requestPermission().then(r => { perm = r; }, () => {});
+  /** Turns this device's pushes on or off, from a click (the permission prompt needs one). */
+  function setPush(on: boolean): void {
+    pushBusy = true;
+    pushError = null;
+    (on ? turnOn(p.pushEnv) : turnOff(p.pushEnv)).then(
+      s => { push = s; perm = N?.permission; },
+      e => { pushError = `Could not turn notifications ${on ? "on" : "off"}: ${e instanceof Error ? e.message : String(e)}`; },
+    ).finally(() => { pushBusy = false; });
+  }
 
   // An item as it is now: replaced where it shows; for a new unread one the
   // list is fetched again (debounced, so a burst is one fetch).
@@ -369,7 +388,10 @@
 
   onMount(() => {
     document.title = "Inbox · Clax";
-    void getToken().then(t => { owner = !!t; });
+    void getToken().then(t => {
+      owner = !!t;
+      if (owner) void pushState(p.pushEnv).then(s => { push = s; }, () => { push = "unsupported"; });
+    });
     void listArtifacts().then(a => { artifacts = a.map(x => [x.id, x.title]); }, () => {});
     void loadTags();
     // The tags themselves changed (made, renamed, recoloured, deleted).
@@ -405,10 +427,14 @@
     <h2>Inbox</h2>
     <span class="icnt">{inbox.unread.toLocaleString("en-US")} unread</span>
     <span class="sp"></span>
-    {#if perm === "default"}<button type="button" onclick={askNotify}>Notify me</button>{/if}
+    {#if push === "off"}<button type="button" class="pushon" disabled={pushBusy} onclick={() => setPush(true)}>Notify me on this device</button>
+    {:else if push === "on"}<span class="icnt">Notifications on</span><button type="button" disabled={pushBusy} onclick={() => setPush(false)}>Turn off notifications</button>
+    {:else if perm === "default" && push !== "install"}<button type="button" onclick={askNotify}>Notify me</button>{/if}
     <button type="button" class="primary" disabled={busy || !markable} onclick={markAll}>Mark all read</button>
   </header>
   {#if perm === "denied"}<p class="quiet">Notifications are blocked for this site. The unread count shows in the tab's title.</p>{/if}
+  {#if push === "install"}<p class="quiet">To get notifications on this device, add Clax to the Home Screen (Share, then Add to Home Screen) and open it from there.</p>{/if}
+  {#if pushError}<p class="err" role="alert">{pushError}</p>{/if}
   <AgentStrip agents={strip} now={clock.now} selected={filter.agent ?? null} onPick={h => apply({ ...filter, agent: h ?? undefined })} />
 
   <div class="find">

@@ -587,10 +587,29 @@ fn announcement(
 /// It also ends a person's streams once the person is no longer connected
 /// (revoked), at the visibility generation's bump that the revocation makes
 /// (spec M17): their browser is then no one's inbox (§6.4). Returns the
-/// two tasks' handles.
+/// tasks' handles.
+///
+/// On a local daemon the same changes go to [`crate::web_push::announce`],
+/// which pushes what waits on the owner to the owner's subscribed devices,
+/// whether or not a stream holds the topic.
 pub fn listen(s: &AppState) -> Vec<clax_rt::JoinHandle<()>> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<InboxChange>>();
+    #[cfg(not(target_arch = "wasm32"))]
+    let (push_tx, pusher) = {
+        let (push_tx, mut push_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<InboxChange>>();
+        let st = s.clone();
+        let pusher = clax_rt::spawn(async move {
+            while let Some(changes) = push_rx.recv().await {
+                crate::web_push::announce(&st, changes).await;
+            }
+        });
+        (push_tx, pusher)
+    };
     s.store.set_inbox_listener(Box::new(move |c| {
+        #[cfg(not(target_arch = "wasm32"))]
+        if c.iter().any(|x| x.made) {
+            let _ = push_tx.send(c.clone());
+        }
         let _ = tx.send(c);
     }));
     let st = s.clone();
@@ -653,6 +672,9 @@ pub fn listen(s: &AppState) -> Vec<clax_rt::JoinHandle<()>> {
             }
         }
     });
+    #[cfg(not(target_arch = "wasm32"))]
+    return vec![announcer, revoker, pusher];
+    #[cfg(target_arch = "wasm32")]
     vec![announcer, revoker]
 }
 

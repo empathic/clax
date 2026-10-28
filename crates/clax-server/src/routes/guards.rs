@@ -234,6 +234,9 @@ mod l10 {
         ("shell::gallery_page", NoArtifact),
         ("shell::static_file", NoArtifact),
         ("shell::service_worker", NoArtifact),
+        ("web_push::status", Owner),
+        ("web_push::subscribe", Owner),
+        ("web_push::unsubscribe", Owner),
         ("health::healthz", NoArtifact),
         ("assets::blob", SeesLive),
         ("site_signin::page", SeesLive),
@@ -364,6 +367,7 @@ mod l10 {
             "toolpath" => include_str!("toolpath.rs"),
             "viewers" => include_str!("viewers.rs"),
             "watches" => include_str!("watches.rs"),
+            "web_push" => include_str!("web_push.rs"),
             "working" => include_str!("working.rs"),
             "tags" => include_str!("tags.rs"),
             "queues" => include_str!("queues.rs"),
@@ -551,6 +555,14 @@ mod l10 {
         (
             "settings::put",
             "writes the home's config.toml, not the store; its changes are recorded as admin.settings by the SettingsAudit hook (clax_http::bot::SettingsRecorded)",
+        ),
+        (
+            "web_push::subscribe",
+            "a device's push subscription, kept in the home's files, not the store",
+        ),
+        (
+            "web_push::unsubscribe",
+            "forgets a device's push subscription in the home's files",
         ),
         (
             "remotes::add",

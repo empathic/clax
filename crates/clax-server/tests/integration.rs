@@ -168,6 +168,8 @@ mod api_viewers;
 mod api_visibility;
 #[cfg(any(not(clax_split), clax_split = "api_watches"))]
 mod api_watches;
+#[cfg(any(not(clax_split), clax_split = "api_web_push"))]
+mod api_web_push;
 #[cfg(any(not(clax_split), clax_split = "api_where_to_ask"))]
 mod api_where_to_ask;
 #[cfg(any(not(clax_split), clax_split = "api_working"))]
