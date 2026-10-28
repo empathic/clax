@@ -568,3 +568,15 @@ fn an_agent_writes_only_under_its_own_lease_and_a_person_needs_none() {
     assert_eq!(r.state, State::Resolved);
     assert_eq!(replies(&st), 3);
 }
+
+#[test]
+fn a_report_is_in_no_thread_listing() {
+    let (_d, st) = store();
+    let qid = queue(&st, ReportersSee::Own);
+    let tid = file(&st, &qid, Some("emp-1"), Some("invoice:4821"));
+    let r = st.report(&qid, &tid, Visibility::All).unwrap().unwrap();
+    let aid = clax_core::ArtifactId::parse(&r.artifact.id).unwrap();
+    assert!(st.list_threads(&aid, true, None, 50).unwrap().0.is_empty());
+    let t = st.get_thread(&tid).unwrap().unwrap();
+    assert_eq!(t.queue_id.as_deref(), Some(qid.as_str()));
+}

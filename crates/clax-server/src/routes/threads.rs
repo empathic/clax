@@ -226,10 +226,19 @@ fn refuse_send_comments_off(st: &Store, id: &ArtifactId, resolves: bool) -> clax
     Ok(())
 }
 
-/// The thread `tid` if it belongs to the live artifact `id`.
+/// The thread `tid` if it belongs to the live artifact `id`. Every route
+/// here reads or writes a thread through it, so a queue's report, which
+/// only its queue's routes read and write, is refused at every one.
+///
+/// # Errors
+/// `NotFound`; [`CoreError::QueueReport`] (409 `queue_report`, naming the
+/// queue) for a report.
 fn thread_of(st: &Store, id: &ArtifactId, tid: &str) -> clax_core::Result<Thread> {
     match st.get_thread(tid)? {
-        Some(t) if t.artifact_id == id.as_str() => Ok(t),
+        Some(t) if t.artifact_id == id.as_str() => match t.queue_id {
+            Some(queue_id) => Err(CoreError::QueueReport { queue_id }),
+            None => Ok(t),
+        },
         _ => Err(CoreError::NotFound),
     }
 }

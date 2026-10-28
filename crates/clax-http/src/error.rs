@@ -243,6 +243,15 @@ impl From<CoreError> for ApiError {
             e @ CoreError::TokenExpired => {
                 ApiError::new(StatusCode::UNAUTHORIZED, "token_expired", e.to_string())
             }
+            CoreError::QueueReport { queue_id } => {
+                let message = CoreError::QueueReport {
+                    queue_id: queue_id.clone(),
+                }
+                .to_string();
+                let mut err = ApiError::new(StatusCode::CONFLICT, "queue_report", message);
+                err.extra.insert("queue_id".into(), json!(queue_id));
+                err
+            }
             e @ CoreError::NotAMember => {
                 ApiError::new(StatusCode::NOT_FOUND, "not_a_member", e.to_string())
             }
@@ -356,6 +365,13 @@ mod tests {
                 "token_expired",
             ),
             (CoreError::NotAMember, StatusCode::NOT_FOUND, "not_a_member"),
+            (
+                CoreError::QueueReport {
+                    queue_id: "q1".into(),
+                },
+                StatusCode::CONFLICT,
+                "queue_report",
+            ),
         ] {
             let e = ApiError::from(e);
             assert_eq!((e.status, e.code), (status, code));

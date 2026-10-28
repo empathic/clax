@@ -75,6 +75,11 @@ pub enum CoreError {
     /// A reporter token past its expiry (§5.3).
     #[error("the reporter token has expired; ask the app for a new one")]
     TokenExpired,
+    /// A generic thread route's read or write of a queue's report, which is
+    /// read and written through its queue's routes alone (spec
+    /// 2026-10-27-clax-sdk-design §7.3).
+    #[error("this thread is a queue report: use the queue routes (queue_reply, queue_resolve)")]
+    QueueReport { queue_id: String },
     /// A queue that does not exist, or of which the caller is not a member:
     /// the two are indistinguishable by design.
     #[error("no such queue")]

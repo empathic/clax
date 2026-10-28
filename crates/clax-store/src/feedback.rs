@@ -409,6 +409,8 @@ struct Pending {
     /// agent's comment, [`Author::System`] (an agent's name is never
     /// marked).
     writer: Author,
+    /// The report queue of the comment's thread, when it is a report.
+    queue_id: Option<String>,
 }
 
 /// What [`Store::take_feedback`] handed over (spec 2026-10-08 §8.4, M16):
@@ -1281,6 +1283,7 @@ impl Store {
                             },
                             told: r.get(18)?,
                             gone_told: r.get(21)?,
+                            queue_id: r.get(22)?,
                             writer: if r.get::<_, String>(19)? == AUTHOR_AGENT {
                                 Author::System
                             } else {
@@ -1503,6 +1506,7 @@ impl Store {
                 batch: p.batch,
                 live,
                 withheld,
+                queue_id: p.queue_id,
             });
         }
         Ok(Taken {
@@ -1838,7 +1842,7 @@ impl Store {
             }
             let rows = {
                 let mut stmt = tx.prepare(
-                    "SELECT f.id, f.comment_id, f.thread_id, t.artifact_id, a.title
+                    "SELECT f.id, f.comment_id, f.thread_id, t.artifact_id, a.title, t.queue_id
                      FROM feedback f
                      JOIN threads t ON t.id = f.thread_id
                      JOIN artifacts a ON a.id = t.artifact_id
@@ -1856,13 +1860,14 @@ impl Store {
                         r.get::<_, String>(2)?,
                         r.get::<_, String>(3)?,
                         r.get::<_, String>(4)?,
+                        r.get::<_, Option<String>>(5)?,
                     ))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?
             };
             let mut sight = Sight::new(tx, vis);
             let mut out = Vec::new();
-            for (feedback_id, comment_id, thread_id, artifact_id, mut title) in rows {
+            for (feedback_id, comment_id, thread_id, artifact_id, mut title, queue_id) in rows {
                 if let Some(may) = readable {
                     match sight.artifact(&artifact_id)? {
                         Some(a) if may(&a) => {}
@@ -1907,6 +1912,7 @@ impl Store {
                         artifact_id,
                         title,
                         url,
+                        queue_id,
                     });
                 }
             }
@@ -1990,7 +1996,7 @@ pub(crate) const TAKE_FEEDBACK: &str = "SELECT f.id, f.thread_id, f.comment_id, 
                         t.artifact_id, a.title, t.version_n, t.anchor_json, t.has_clip,
                         c.author_name, c.body, c.created_at, c.via_page,
                         f.batch_id, b.size, b.note, b.sent_by, b.sender, f.placeholder_at IS NOT NULL,
-                        c.author_kind, c.author_public_id, f.no_access_at IS NOT NULL
+                        c.author_kind, c.author_public_id, f.no_access_at IS NOT NULL, t.queue_id
                  FROM feedback f
                  LEFT JOIN send_batches b ON b.id = f.batch_id
                  JOIN threads t ON t.id = f.thread_id
@@ -2564,6 +2570,49 @@ mod tests {
         )
         .unwrap()
         .id
+    }
+
+    #[test]
+    fn a_reports_delivery_names_its_queue() {
+        let (_d, st) = store();
+        let qid = st
+            .create_queue(
+                DAEMON,
+                None,
+                crate::queues::NewQueue {
+                    name: "App reports".into(),
+                    origins: vec!["https://app.example.com".into()],
+                    reporters_see: clax_core::queue::ReportersSee::Own,
+                },
+            )
+            .unwrap()
+            .id;
+        let r = st
+            .file_report(
+                DAEMON,
+                &qid,
+                Some("emp-1"),
+                crate::queues::NewReport {
+                    external_id: Some("invoice:4821".into()),
+                    url: "https://app.example.com/invoices/4821".into(),
+                    title: "Invoice 4821".into(),
+                    anchor: anchor(),
+                    body: "The total is wrong".into(),
+                    author_name: "emp-1".into(),
+                    metadata: serde_json::Value::Null,
+                    revision: None,
+                    clip: None,
+                },
+            )
+            .unwrap();
+        let aid = ArtifactId::parse(&r.artifact.id).unwrap();
+        let a = session(&st, "claude", "a");
+        st.watch(DAEMON, &a, &aid, true).unwrap();
+        st.claim(DAEMON, &qid, &r.id, &a).unwrap();
+        st.send_to(DAEMON, &r.id, SendTarget::Thread).unwrap();
+        let items = take(&st, &a, Tier::Wait);
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0].queue_id.as_deref(), Some(qid.as_str()));
     }
 
     fn take(st: &Store, sid: &str, tier: Tier) -> Vec<FeedbackItem> {

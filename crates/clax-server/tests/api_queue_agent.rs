@@ -376,3 +376,70 @@ async fn a_stale_if_version_is_a_conflict() {
         .await;
     assert_eq!((s, code(&v)), (409, "conflict"), "{v}");
 }
+
+#[tokio::test]
+async fn the_generic_thread_routes_refuse_a_report_and_leave_it_out_of_listings() {
+    let q = setup().await;
+    let a = q.session("a").await;
+    let thread = |tail: &str| format!("/api/artifacts/{}/threads/{}{tail}", q.aid, q.tid);
+    for (m, path, body) in [
+        (
+            "POST",
+            thread("/comments"),
+            json!({"body": "on it", "author_kind": "agent"}),
+        ),
+        ("POST", thread("/resolve"), json!({"as": "agent"})),
+        ("GET", thread(""), json!(null)),
+        ("GET", thread("/clip"), json!(null)),
+        ("DELETE", thread("?as=agent"), json!(null)),
+    ] {
+        let (s, v) = q.agent(Some(&a), m, &path, body).await;
+        assert_eq!((s, code(&v)), (409, "queue_report"), "{m} {path}: {v}");
+        assert_eq!(v["error"]["queue_id"], json!(q.qid), "{v}");
+        assert_eq!(
+            v["error"]["message"],
+            "this thread is a queue report: use the queue routes (queue_reply, queue_resolve)"
+        );
+    }
+    // Claimed, it is still the queue's alone.
+    let (s, _) = q
+        .agent(Some(&a), "POST", &q.report("/claim"), json!({}))
+        .await;
+    assert_eq!(s, 200);
+    let (s, v) = q
+        .agent(
+            Some(&a),
+            "POST",
+            &thread("/comments"),
+            json!({"body": "on it", "author_kind": "agent"}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (409, "queue_report"), "{v}");
+    let (_, v) = q.agent(Some(&a), "GET", &q.report(""), json!(null)).await;
+    assert_eq!(v["report"]["comments"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["report"]["status"], "open");
+
+    let (s, v) = q
+        .agent(
+            Some(&a),
+            "GET",
+            &format!("/api/artifacts/{}/threads?include_resolved=true", q.aid),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["threads"], json!([]), "{v}");
+    let (s, v) = q
+        .agent(
+            Some(&a),
+            "GET",
+            "/api/threads?include_resolved=true",
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert!(
+        !v.to_string().contains(&q.tid),
+        "the report is in no listing: {v}"
+    );
+}

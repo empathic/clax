@@ -3681,6 +3681,16 @@ lease superseded it, 409 `thread_taken` when another session holds it. A
 lease on it. A person in their browser replies to and resolves reports
 without a claim.
 
+A report is read and written through its queue alone. The thread listings
+(`GET /api/artifacts/<id>/threads`, `GET /api/threads`, `comments_read`
+without `thread_id`) leave reports out, and every route of one thread
+(`GET`, `DELETE`, `/clip`, `/comments`, `/resolve`, `/reopen`, `/send`,
+`/handoff`, and so `comments_read` with its `thread_id`, `comments_reply`
+and `comments_resolve`) answers 409 `queue_report` for a report, its `error`
+naming the report's `queue_id`. A comment on a report that is delivered to
+an agent (`wait_for_feedback`, a notice) carries `queue_id`, and its text
+names the queue tools to answer it with.
+
 `comments_read` returns the open threads (and resolved ones with
 `include_resolved`) oldest first, 50 per page, with `next_cursor` naming the
 next page (`null` on the last); `thread_id` returns that one thread whatever

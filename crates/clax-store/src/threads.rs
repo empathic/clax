@@ -399,7 +399,8 @@ pub(crate) fn take_in(
 /// Threads of live artifacts; callers append `AND ...` conditions.
 pub(crate) const THREAD_SELECT: &str =
     "SELECT t.id, t.artifact_id, t.version_n, t.anchor_json, t.status,
-    t.sent_to_agent, t.has_clip, t.created_at, t.resolved_at, t.resolved_by, t.resolved_by_person
+    t.sent_to_agent, t.has_clip, t.created_at, t.resolved_at, t.resolved_by, t.resolved_by_person,
+    t.queue_id
     FROM threads t JOIN artifacts a ON a.id = t.artifact_id WHERE a.deleted_at IS NULL";
 
 /// The status of each thread of `?2` (a JSON array of thread IDs) that
@@ -459,10 +460,11 @@ pub struct ThreadMove {
 }
 
 /// A page of threads of artifact `?1` (resolved ones too when `?2`) after
-/// the thread `?3` (`NULL`: from the start), at most `?4`.
+/// the thread `?3` (`NULL`: from the start), at most `?4`. A queue's
+/// reports are left out: they are listed through their queue alone.
 pub(crate) fn list_threads_sql() -> String {
     format!(
-        "{THREAD_SELECT} AND t.artifact_id = ?1 AND (?2 OR t.status = 'open')
+        "{THREAD_SELECT} AND t.artifact_id = ?1 AND t.queue_id IS NULL AND (?2 OR t.status = 'open')
          AND (?3 IS NULL OR (t.created_at, t.id) > (SELECT created_at, id FROM threads WHERE id = ?3))
          ORDER BY t.created_at, t.id LIMIT ?4"
     )
@@ -503,6 +505,7 @@ struct ThreadRow {
     resolved_at: Option<String>,
     resolved_by: Option<String>,
     resolved_by_person: Option<String>,
+    queue_id: Option<String>,
 }
 
 fn row_to_thread_row(r: &Row<'_>) -> rusqlite::Result<ThreadRow> {
@@ -518,6 +521,7 @@ fn row_to_thread_row(r: &Row<'_>) -> rusqlite::Result<ThreadRow> {
         resolved_at: r.get("resolved_at")?,
         resolved_by: r.get("resolved_by")?,
         resolved_by_person: r.get("resolved_by_person")?,
+        queue_id: r.get("queue_id")?,
     })
 }
 
@@ -542,6 +546,7 @@ impl ThreadRow {
             resolved_by: self.resolved_by,
             comments,
             resolved_by_person: self.resolved_by_person,
+            queue_id: self.queue_id,
         })
     }
 }
@@ -659,10 +664,10 @@ fn load_comments_many(
 }
 
 /// Every thread of the artifacts of `?1` (a JSON array of IDs), resolved
-/// ones too, oldest first.
+/// ones too, oldest first, but for a queue's reports.
 pub(crate) fn threads_of_many_sql() -> String {
     format!(
-        "{THREAD_SELECT} AND t.artifact_id IN (SELECT value FROM json_each(?1))
+        "{THREAD_SELECT} AND t.artifact_id IN (SELECT value FROM json_each(?1)) AND t.queue_id IS NULL
          ORDER BY t.created_at, t.id"
     )
 }
