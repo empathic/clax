@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Checks that every place a Clax version is written agrees: the manifests,
-# both Cargo.lock files, the copies of ensure-clax.sh and the skills' tool
-# blocks.
+# both Cargo.lock files, the copies of ensure-clax.sh, the skills' tool
+# blocks, and the clax-fleet image the Kubernetes overlays and
+# docs/kubernetes.md name.
 #   check-version.sh           exit 0 when they agree; print each one when not
 #   check-version.sh v1.2.3    also require the tag to be v<version>
 #   check-version.sh --print   print the version (after checking)
@@ -33,6 +34,11 @@ versions = {
 }
 for path in ("scripts/ensure-clax.sh", "plugins/claude-code/scripts/ensure-clax.sh", "plugins/clax/scripts/ensure-clax.sh", "plugins/clax-grok/scripts/ensure-clax.sh", "plugins/pi/scripts/ensure-clax.sh"):
     versions[f"{path} CLAX_VERSION"] = first(r'^CLAX_VERSION="([^"]+)"', open(path).read())
+for path in ("deploy/k8s/sqlite/kustomization.yaml", "deploy/k8s/postgres/kustomization.yaml"):
+    versions[f"{path} newTag"] = first(r'^    newTag: "([^"]+)"', open(path).read())
+kubernetes = open("docs/kubernetes.md").read()
+versions["docs/kubernetes.md ?ref"] = first(r'/deploy/k8s/postgres\?ref=v([0-9][0-9A-Za-z.-]*)', kubernetes)
+versions["docs/kubernetes.md image"] = first(r'ghcr\.io/empathic/clax-fleet:([0-9][0-9A-Za-z.-]*)', kubernetes)
 for path in ("plugins/claude-code/skills/clax/SKILL.md", "plugins/clax/skills/clax/SKILL.md", "plugins/pi/skills/clax/SKILL.md", "plugins/clax-grok/skills/clax/SKILL.md"):
     versions[f"{path} tool block"] = first(r'^This is Clax plugin (\S+?)\.(?:\s|$)', open(path).read())
 # Every member that takes the workspace version, in Cargo.lock.

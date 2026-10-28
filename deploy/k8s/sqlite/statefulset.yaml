@@ -71,14 +71,14 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
-          # CLAX_FLEET_PEER_KEY (every shard the same), each instance's setup
-          # secret (its [hosted] setup_secret_env), and CLAX_KEK if every
-          # shard should seal secrets under one key: set it before an
-          # instance first starts, as a home's own key is never replaced.
+          # CLAX_FLEET_PEER_KEY (required, every shard the same), each
+          # instance's setup secret (its [hosted] setup_secret_env), and
+          # CLAX_KEK if every shard should seal secrets under one key: set it
+          # before an instance first starts, as a home's own key is never
+          # replaced. A pod does not start without the Secret.
           envFrom:
             - secretRef:
                 name: clax-secrets
-                optional: true
           startupProbe:
             httpGet:
               path: /healthz

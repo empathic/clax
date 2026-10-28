@@ -249,3 +249,120 @@ fn reopening_a_stores_file_replaces_the_earlier_connection() {
     new.execute("INSERT INTO t VALUES (2)", []).unwrap();
     assert_eq!(keys(&new), [2]);
 }
+
+/// Pages in memory that fail on demand: a commit that applies and then
+/// reports an error (as a lost reply would), a size read that fails, and a
+/// size read that tells the test it has begun and waits to go on. Each
+/// commit's `stored_size` is recorded.
+#[derive(Default)]
+struct Faulty {
+    pages: MemPages,
+    fail_after_commit: AtomicBool,
+    fail_size: AtomicBool,
+    size_gate: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    stored_sizes: Mutex<Vec<Option<u64>>>,
+}
+
+impl PageStore for Faulty {
+    fn size(&self, file: &str) -> Result<Option<u64>, StoreError> {
+        if let Some((began, go)) = lock(&self.size_gate).take() {
+            began.send(()).unwrap();
+            go.recv().unwrap();
+        }
+        if self.fail_size.swap(false, Ordering::SeqCst) {
+            return Err("the size read failed".into());
+        }
+        self.pages.size(file)
+    }
+    fn read_chunk(&self, file: &str, index: u64) -> Result<Option<Vec<u8>>, StoreError> {
+        self.pages.read_chunk(file, index)
+    }
+    fn commit(&self, file: &str, commit: &Commit) -> Result<(), StoreError> {
+        lock(&self.stored_sizes).push(commit.stored_size);
+        self.pages.commit(file, commit)?;
+        if self.fail_after_commit.swap(false, Ordering::SeqCst) {
+            return Err("the reply to the commit was lost".into());
+        }
+        Ok(())
+    }
+    fn delete(&self, file: &str) -> Result<(), StoreError> {
+        self.pages.delete(file)
+    }
+}
+
+/// A commit that applied but reported an error leaves the stored size
+/// unknown: the next commit (the rollback's) says so (`stored_size` is
+/// `None`), so a store writes its size and drops the chunks past its end,
+/// and the one after knows it again.
+#[test]
+fn a_commit_that_failed_leaves_the_stored_size_unknown() {
+    let store = Arc::new(Faulty::default());
+    let db = open("unsure.db", store.clone()).unwrap();
+    db.execute_batch("CREATE TABLE t(k INTEGER PRIMARY KEY, v BLOB)")
+        .unwrap();
+    store.fail_after_commit.store(true, Ordering::SeqCst);
+    let failed = lock(&store.stored_sizes).len();
+    assert!(
+        db.execute("INSERT INTO t VALUES (1, randomblob(50000))", [])
+            .is_err()
+    );
+    db.execute("INSERT INTO t VALUES (2, 'two')", []).unwrap();
+    let sizes = lock(&store.stored_sizes).clone();
+    assert!(sizes[failed].is_some(), "{sizes:?}");
+    assert_eq!(sizes[failed + 1], None, "{sizes:?}");
+    assert!(sizes.last().unwrap().is_some(), "{sizes:?}");
+    db.execute("INSERT INTO t VALUES (3, 'three')", []).unwrap();
+    assert_eq!(keys(&db), [2, 3]);
+    drop(db);
+    let db = open("unsure.db", store).unwrap();
+    assert_eq!(keys(&db), [2, 3]);
+    let check: String = db
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(check, "ok");
+}
+
+/// A reopen cuts the earlier connection off before it reads the store's
+/// size: a write the earlier connection makes while the reopen reads
+/// fails, and reaches the store not at all.
+#[test]
+fn a_reopen_stops_the_earlier_connection_before_it_reads_the_size() {
+    let store = Arc::new(Faulty::default());
+    let old = open("reading.db", store.clone()).unwrap();
+    old.execute_batch("CREATE TABLE t(k INTEGER PRIMARY KEY); INSERT INTO t VALUES (1);")
+        .unwrap();
+    let (began_tx, began) = std::sync::mpsc::channel();
+    let (go, go_rx) = std::sync::mpsc::channel();
+    *lock(&store.size_gate) = Some((began_tx, go_rx));
+    let reopen = std::thread::spawn({
+        let store: Arc<dyn PageStore> = store.clone();
+        move || open("reading.db", store).map(|db| db.into_parts())
+    });
+    began.recv().unwrap();
+    let commits = store.pages.commits();
+    assert!(old.execute("INSERT INTO t VALUES (2)", []).is_err());
+    assert_eq!(store.pages.commits(), commits);
+    go.send(()).unwrap();
+    let (new, _registered) = reopen.join().unwrap().unwrap();
+    assert_eq!(keys(&new), [1]);
+    new.execute("INSERT INTO t VALUES (3)", []).unwrap();
+    assert_eq!(keys(&new), [1, 3]);
+}
+
+/// A reopen that fails leaves the earlier connection working.
+#[test]
+fn a_failed_reopen_leaves_the_earlier_connection_working() {
+    let store = Arc::new(Faulty::default());
+    let old = open("kept.db", store.clone()).unwrap();
+    old.execute_batch("CREATE TABLE t(k INTEGER PRIMARY KEY); INSERT INTO t VALUES (1);")
+        .unwrap();
+    store.fail_size.store(true, Ordering::SeqCst);
+    assert!(open("kept.db", store.clone()).is_err());
+    old.execute("INSERT INTO t VALUES (2)", []).unwrap();
+    assert_eq!(keys(&old), [1, 2]);
+    let dyn_store: Arc<dyn PageStore> = store.clone();
+    assert!(stats(&dyn_store, "kept.db").is_some());
+    drop(old);
+    let db = open("kept.db", store).unwrap();
+    assert_eq!(keys(&db), [1, 2]);
+}

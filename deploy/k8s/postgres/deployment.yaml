@@ -72,8 +72,8 @@ spec:
             # text). postgres-dev turns it off for its in-cluster database.
             - name: CLAX_POSTGRES_TLS
               value: "on"
-            # A managed database's own CA, when the public roots do not
-            # cover it: mount it from a Secret (the commented volume below).
+            # A managed database's own CA, trusted in place of the public
+            # roots: mount it from a Secret (the commented volume below).
             # - name: CLAX_POSTGRES_CA
             #   value: /etc/clax/postgres-ca/ca.pem
           # CLAX_POSTGRES_URL, CLAX_KEK and each instance's setup secret
@@ -99,12 +99,17 @@ spec:
               path: /readyz
               port: admin
             periodSeconds: 5
+          # Memory: 1 Gi reserved (a pod and about three busy instances), up
+          # to 2 Gi (about seven); docs/kubernetes.md, Sizing. Ephemeral
+          # storage covers the data and tmp volumes below.
           resources:
             requests:
               cpu: 250m
-              memory: 512Mi
+              memory: 1Gi
+              ephemeral-storage: 1Gi
             limits:
               memory: 2Gi
+              ephemeral-storage: 6Gi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -127,10 +132,14 @@ spec:
         # - name: postgres-ca
         #   secret:
         #     secretName: clax-postgres-ca
+        # On the node's disk, bounded so that a pod that fills one is
+        # evicted alone, before the node comes under disk pressure.
         - name: data
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 4Gi
         - name: catalog
           configMap:
             name: clax-fleet-catalog
         - name: tmp
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 1Gi

@@ -100,18 +100,29 @@ impl Core {
     ) -> anyhow::Result<Core> {
         cfg.home.ensure_dirs()?;
         let store = Arc::new(Store::open_reporting(&cfg.home, progress)?);
-        Core::start_on(cfg, store, None).await
+        Core::start_with(cfg, store, None).await
     }
 
     /// [`Core::start`] on `store`, which its host opened (a fleet
     /// instance's, on a connection of its own VFS), keeping each artifact's
-    /// app data where `app_data` keeps it (the host wraps its own in
-    /// [`clax_http::app_data_host::MovingAppData`]), or, with `None`, in
-    /// the home as [`Core::start`] does.
+    /// app data where `app_data` keeps it. The core moves into it the
+    /// documents `store` still holds itself, through
+    /// [`clax_http::app_data_host::MovingAppData`] over `store`.
     ///
     /// # Errors
     /// When the state cannot be assembled.
-    pub async fn start_on(
+    pub async fn start_on<H: clax_http::app_data_host::AppDataHost + 'static>(
+        cfg: CoreConfig,
+        store: Arc<Store>,
+        app_data: H,
+    ) -> anyhow::Result<Core> {
+        let moving = clax_http::app_data_host::MovingAppData::new(app_data, store.clone());
+        Core::start_with(cfg, store, Some(Arc::new(moving))).await
+    }
+
+    /// The start of [`Core::start`] and [`Core::start_on`]: `app_data` is
+    /// the host in place of the home's, already moving `store`'s documents.
+    async fn start_with(
         cfg: CoreConfig,
         store: Arc<Store>,
         app_data: Option<Arc<dyn clax_http::app_data_host::AppDataHost>>,
@@ -169,13 +180,11 @@ impl Core {
             hosted: cfg.hosted,
             web: cfg.web,
             embed: cfg.embed,
+            app_data,
         })?;
         state.clax_app = Arc::new(clax_app);
         if cfg.quickstart {
             state.quickstart = clax_core::quickstart::Release::from_tree(&*state.web).map(Arc::new);
-        }
-        if let Some(app_data) = app_data {
-            state.app_data = app_data;
         }
         // The core's `net` keeps a shared disk cache in the home.
         state.net = Arc::new(clax_http::net_cache::daemon_net(cfg.home.root()));

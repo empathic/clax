@@ -18,9 +18,12 @@
 //! transaction. Version files never change once written, so what is read
 //! (and what a write puts) is kept in a cache of at most [`CACHE_BYTES`],
 //! the oldest dropped first; a removal, a deletion or an asset written
-//! again forgets its artifact's entries. The methods block the calling
-//! thread on the database (their futures do their work when first polled,
-//! as the filesystem's do), so the store's synchronous methods drive them.
+//! again forgets its artifact's entries. Reads take no lock, so a read
+//! keeps what it found only when nothing was forgotten since it missed:
+//! a read in flight across a write never caches the bytes the write
+//! replaced. The methods block the calling thread on the database (their
+//! futures do their work when first polled, as the filesystem's do), so
+//! the store's synchronous methods drive them.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -59,11 +62,30 @@ struct Cache {
     bytes: HashMap<Key, Arc<Vec<u8>>>,
     order: VecDeque<Key>,
     held: usize,
+    /// Forgets so far: a read that missed puts what it read only if none
+    /// came between ([`Cache::put_read`]).
+    forgets: u64,
 }
 
+/// A read's miss: the forget count when it missed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Miss(u64);
+
 impl Cache {
-    fn get(&self, k: &Key) -> Option<Vec<u8>> {
-        self.bytes.get(k).map(|b| b.as_ref().clone())
+    /// The cached bytes of `k`, or the [`Miss`] to put a read of them with.
+    fn get(&self, k: &Key) -> std::result::Result<Vec<u8>, Miss> {
+        self.bytes
+            .get(k)
+            .map(|b| b.as_ref().clone())
+            .ok_or(Miss(self.forgets))
+    }
+
+    /// Puts what a read that missed at `miss` found, unless something was
+    /// forgotten since: that read may have found what a write replaced.
+    fn put_read(&mut self, miss: Miss, k: Key, b: Arc<Vec<u8>>) {
+        if miss.0 == self.forgets {
+            self.put(k, b);
+        }
     }
 
     fn put(&mut self, k: Key, b: Arc<Vec<u8>>) {
@@ -87,6 +109,7 @@ impl Cache {
     }
 
     fn forget(&mut self, artifact: &str, which: impl Fn(&Key) -> bool) {
+        self.forgets += 1;
         let mut freed = 0;
         self.bytes.retain(|k, b| {
             let gone = k.artifact() == artifact && which(k);
@@ -340,9 +363,10 @@ fn copy_files(
 impl ContentStore for PgContent {
     async fn read_file(&self, id: &ArtifactId, n: u32, path: &str) -> Result<Option<Vec<u8>>> {
         let key = Key::File(id.as_str().to_string(), n, path.to_string());
-        if let Some(b) = self.cache().get(&key) {
-            return Ok(Some(b));
-        }
+        let miss = match self.cache().get(&key) {
+            Ok(b) => return Ok(Some(b)),
+            Err(miss) => miss,
+        };
         let (artifact, path) = (id.as_str().to_string(), path.to_string());
         let got: Option<Vec<u8>> = self.read(move |c, instance| {
             let row = c.query_typed_opt(
@@ -360,7 +384,7 @@ impl ContentStore for PgContent {
             Ok(row.map(|r| r.get(0)))
         })?;
         if let Some(b) = &got {
-            self.cache().put(key, Arc::new(b.clone()));
+            self.cache().put_read(miss, key, Arc::new(b.clone()));
         }
         Ok(got)
     }
@@ -533,9 +557,10 @@ impl ContentStore for PgContent {
 
     async fn read_asset(&self, key: &AssetKey) -> Result<Option<Vec<u8>>> {
         let ck = Key::Asset(key.clone());
-        if let Some(b) = self.cache().get(&ck) {
-            return Ok(Some(b));
-        }
+        let miss = match self.cache().get(&ck) {
+            Ok(b) => return Ok(Some(b)),
+            Err(miss) => miss,
+        };
         let k = key.clone();
         let got: Option<Vec<u8>> = self.read(move |c, instance| {
             let row = c.query_typed_opt(
@@ -551,7 +576,7 @@ impl ContentStore for PgContent {
             Ok(row.map(|r| r.get(0)))
         })?;
         if let Some(b) = &got {
-            self.cache().put(ck, Arc::new(b.clone()));
+            self.cache().put_read(miss, ck, Arc::new(b.clone()));
         }
         Ok(got)
     }
@@ -590,7 +615,7 @@ mod tests {
         }
         assert!(c.held <= CACHE_BYTES);
         assert_eq!(c.bytes.len(), 64);
-        assert!(c.get(&Key::File("a".into(), 0, "f".into())).is_none());
+        assert!(c.get(&Key::File("a".into(), 0, "f".into())).is_err());
         c.put(Key::File("b".into(), 1, "f".into()), mb());
         c.put(Key::File("a".into(), 79, "f".into()), mb());
         assert_eq!(c.held, 64 << 20, "a key put again is counted once");
@@ -604,5 +629,21 @@ mod tests {
             Arc::new(vec![0; CACHE_FILE_BYTES + 1]),
         );
         assert_eq!(c.bytes.len(), 1);
+    }
+
+    /// A read that missed before a write's forget, and puts after it, keeps
+    /// nothing: it may have read the bytes the write replaced. A read that
+    /// missed after the forget is kept.
+    #[test]
+    fn a_read_across_a_forget_is_not_cached() {
+        let mut c = Cache::default();
+        let k = Key::File("a".into(), 1, "f".into());
+        let stale = c.get(&k).unwrap_err();
+        c.forget("b", |_| true);
+        c.put_read(stale, k.clone(), Arc::new(b"old".to_vec()));
+        assert!(c.get(&k).is_err());
+        let fresh = c.get(&k).unwrap_err();
+        c.put_read(fresh, k.clone(), Arc::new(b"new".to_vec()));
+        assert_eq!(c.get(&k).unwrap(), b"new");
     }
 }

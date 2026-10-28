@@ -661,10 +661,10 @@ impl Instance {
             hosted,
             web: Arc::new(crate::web::WebUi),
             embed: None,
+            // Each artifact's object, not the default (no stores on wasm32).
+            app_data: Some(app_data),
         })
         .map_err(rust_err)?;
-        // Each artifact's object, not the default (no stores on wasm32).
-        app.app_data = app_data;
         erase_deleted(&app);
         app.clax_app = Arc::new(clax_app(env)?);
         // Each person new to the instance is seeded with the web build's

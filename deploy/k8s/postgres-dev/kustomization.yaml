@@ -12,6 +12,14 @@ kind: Kustomization
 resources:
   - ../postgres
   - postgres.yaml
+# The database's role, password and database (postgres.yaml), which
+# clax-secrets' CLAX_POSTGRES_URL above names.
+secretGenerator:
+  - name: clax-postgres-dev
+    literals:
+      - POSTGRES_USER=clax
+      - POSTGRES_PASSWORD=clax-dev
+      - POSTGRES_DB=clax
 patches:
   # The in-cluster database speaks plain text inside the cluster; an image
   # built and loaded locally (kind load docker-image) is used as it is.

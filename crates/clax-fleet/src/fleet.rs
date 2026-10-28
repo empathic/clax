@@ -38,10 +38,11 @@
 //! [`Fleet::tick`], every [`coord::HEARTBEAT_EVERY`]: on leases it
 //! heartbeats and renews every held lease in one call (an instance whose
 //! lease is lost, or not renewed for [`RENEW_FAILURES`] ticks in a row, is
-//! stopped), and hands over every instance rendezvous hashing now prefers
-//! another member for, once that member has been alive for
-//! [`coord::SETTLE`]: the instance stops here and its lease is released,
-//! and its next request starts it there. Then it reloads the catalog: an
+//! stopped), and every third tick hands over the instances rendezvous
+//! hashing now prefers another member for, once that member has been alive
+//! for [`coord::SETTLE`], at most [`HANDOVERS_PER_TICK`] at a time: the
+//! instance stops here and its lease is released, and its next request
+//! starts it there. Then it reloads the catalog: an
 //! instance gone, paused, or whose config or shard changed is stopped; its
 //! next request starts it as the catalog says.
 //!
@@ -54,14 +55,14 @@
 //! running is never opened twice.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::extract::{ConnectInfo, Request, State};
+use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::Home;
@@ -86,6 +87,21 @@ pub const RENEW_FAILURES: u32 = 4;
 /// lookup per request. A target that no longer serves the instance looks
 /// it up again itself, and one that fails to answer is forgotten at once.
 pub const ROUTE_CACHE: Duration = Duration::from_secs(10);
+
+/// The most instances one handover tick hands over (every third tick): a
+/// member that joins takes its share a few at a time, so their clients do
+/// not all reconnect, nor their instances all start, at once.
+pub const HANDOVERS_PER_TICK: usize = 4;
+
+/// How long after an instance's start failed its next start may be tried;
+/// doubled for each failure in a row, up to [`START_BACKOFF_MAX`].
+/// Requests meanwhile are answered 503 without a start, so a persistent
+/// fault (a failing migration, a wrong `CLAX_KEK`, a missing home) costs
+/// one attempt per backoff, not one per request.
+pub const START_BACKOFF: Duration = Duration::from_secs(2);
+
+/// The longest wait between two starts of an instance that keeps failing.
+pub const START_BACKOFF_MAX: Duration = Duration::from_secs(60);
 
 /// How long [`Fleet::stop`] waits for an instance to stop.
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -160,6 +176,8 @@ pub struct FleetConfig {
     pub db_limits: clax_pagevfs::Limits,
     /// The port the instances are told they serve on.
     pub port: u16,
+    /// The clock a failed start's backoff is timed by.
+    pub clock: Arc<dyn clax_core::working::Clock>,
 }
 
 /// An instance running here.
@@ -186,6 +204,36 @@ struct Slot {
     stopping: AtomicBool,
     /// One lease lookup at a time for this instance.
     lookup: tokio::sync::Mutex<()>,
+    /// Its last start failed, and no start since succeeded.
+    failed: Mutex<Option<Failed>>,
+}
+
+/// A start that failed: the next is not tried before its backoff ends.
+struct Failed {
+    /// The catalog entry it failed with: another entry is tried at once.
+    instance: Instance,
+    /// When it failed, in milliseconds on [`FleetConfig::clock`].
+    at_ms: i64,
+    /// Starts that failed in a row.
+    failures: u32,
+    error: String,
+}
+
+impl Failed {
+    /// How long after it the next start waits: [`START_BACKOFF`], doubled
+    /// for each failure in a row after the first, at most
+    /// [`START_BACKOFF_MAX`].
+    fn backoff(&self) -> Duration {
+        START_BACKOFF
+            .saturating_mul(1 << self.failures.saturating_sub(1).min(16))
+            .min(START_BACKOFF_MAX)
+    }
+
+    /// The milliseconds left of its backoff at `now_ms`.
+    fn left_ms(&self, now_ms: i64) -> i64 {
+        let wait = i64::try_from(self.backoff().as_millis()).unwrap_or(i64::MAX);
+        (self.at_ms.saturating_add(wait) - now_ms).max(0)
+    }
 }
 
 /// Where a request goes.
@@ -209,6 +257,7 @@ struct Metrics {
     leases_lost: AtomicU64,
     renew_failures: AtomicU64,
     handovers: AtomicU64,
+    handovers_deferred: AtomicU64,
     catalog_errors: AtomicU64,
     heartbeat_failures: AtomicU64,
 }
@@ -234,6 +283,9 @@ pub struct Fleet {
     healthy: AtomicBool,
     ticks: AtomicU32,
     metrics: Metrics,
+    /// This run's ID, in every heartbeat: a restart under the same pod name
+    /// joins the membership afresh.
+    run: String,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -280,6 +332,7 @@ impl Fleet {
             healthy: AtomicBool::new(true),
             ticks: AtomicU32::new(0),
             metrics: Metrics::default(),
+            run: clax_core::new_ulid(),
         });
         fleet.check_ordinal();
         Ok(fleet)
@@ -505,9 +558,21 @@ impl Fleet {
             Ok(m) if draining => m.into_iter().filter(|m| m.pod != self.cfg.pod).collect(),
             Ok(m) => m,
         };
+        // Only a member whose build opens the instance's data may start it.
+        let need = match coord.store_schema(&inst.name).await {
+            Err(e) => return Route::Unavailable(format!("the fleet's database: {e}")),
+            Ok(n) => n,
+        };
+        if need > coord::STORE_SCHEMA && coord::preferred(&inst.name, need, &members).is_none() {
+            return Route::Unavailable(format!(
+                "instance {}'s data is at store schema {need}, newer than this build's {} and every member's: it starts once a newer clax-fleet runs",
+                inst.name,
+                coord::STORE_SCHEMA
+            ));
+        }
         // Started only where it is preferred: a request out of hops never
         // places it elsewhere.
-        if let Some(p) = coord::preferred(&inst.name, &members)
+        if let Some(p) = coord::preferred(&inst.name, need, &members)
             && p.pod != self.cfg.pod
         {
             if can_forward {
@@ -555,11 +620,19 @@ impl Fleet {
             return Route::Unavailable(format!("instance {} is paused", inst.name));
         }
         let inst = &inst;
+        if let Some(why) = self.backing_off(&slot, inst) {
+            return Route::Unavailable(why);
+        }
         let fence = match &self.cfg.placement {
             Placement::Shards { .. } => None,
             Placement::Leases(coord) => {
                 match coord
-                    .acquire(&inst.name, &self.cfg.pod, &self.cfg.advertise)
+                    .acquire(
+                        &inst.name,
+                        &self.cfg.pod,
+                        &self.cfg.advertise,
+                        coord::STORE_SCHEMA,
+                    )
                     .await
                 {
                     Ok(Some(epoch)) => Some(Fence::new(&inst.name, &self.cfg.pod, epoch)),
@@ -579,6 +652,7 @@ impl Fleet {
                 let router = r.core.as_ref().expect("just started").router();
                 *slot.router.write().unwrap_or_else(|e| e.into_inner()) = Some(router.clone());
                 *running = Some(r);
+                *lock(&slot.failed) = None;
                 self.forget_route(&inst.name);
                 self.metrics.starts.fetch_add(1, Ordering::Relaxed);
                 tracing::info!(
@@ -591,7 +665,30 @@ impl Fleet {
             }
             Err(e) => {
                 self.metrics.start_failures.fetch_add(1, Ordering::Relaxed);
-                tracing::error!(instance = %inst.name, error = %format!("{e:#}"), "instance did not start");
+                let error = format!("{e:#}");
+                let (failures, backoff) = {
+                    let mut failed = lock(&slot.failed);
+                    let failures = failed
+                        .as_ref()
+                        .filter(|f| f.instance == *inst)
+                        .map_or(1, |f| f.failures.saturating_add(1));
+                    let f = Failed {
+                        instance: inst.clone(),
+                        at_ms: self.now_ms(),
+                        failures,
+                        error: error.clone(),
+                    };
+                    let backoff = f.backoff();
+                    *failed = Some(f);
+                    (failures, backoff)
+                };
+                tracing::error!(
+                    instance = %inst.name,
+                    error = %error,
+                    failures,
+                    retry_in_secs = backoff.as_secs(),
+                    "instance did not start"
+                );
                 if let (Some(f), Placement::Leases(coord)) = (&fence, &self.cfg.placement) {
                     let epoch = f.epoch();
                     f.lose();
@@ -600,6 +697,54 @@ impl Fleet {
                 Route::Unavailable(format!("instance {} did not start", inst.name))
             }
         }
+    }
+
+    fn now_ms(&self) -> i64 {
+        self.cfg.clock.now().timestamp_millis()
+    }
+
+    /// Why `inst` is not started now, when its last start failed with the
+    /// same catalog entry and the failure's backoff has not ended. A failure
+    /// under another entry is forgotten: the catalog's change is tried at
+    /// once.
+    fn backing_off(&self, slot: &Slot, inst: &Instance) -> Option<String> {
+        let mut failed = lock(&slot.failed);
+        let f = failed.as_ref()?;
+        if f.instance != *inst {
+            *failed = None;
+            return None;
+        }
+        let left = f.left_ms(self.now_ms());
+        (left > 0).then(|| {
+            format!(
+                "instance {} failed to start ({} in a row; next try in {} ms): {}",
+                inst.name, f.failures, left, f.error
+            )
+        })
+    }
+
+    /// The instances whose last start failed, with why and when the next
+    /// start may be tried, for `/status`.
+    fn failing(&self) -> serde_json::Value {
+        let now = self.now_ms();
+        let slots: Vec<(String, Arc<Slot>)> = lock(&self.slots)
+            .iter()
+            .map(|(n, s)| (n.clone(), s.clone()))
+            .collect();
+        let mut out = serde_json::Map::new();
+        for (name, slot) in slots {
+            if let Some(f) = &*lock(&slot.failed) {
+                out.insert(
+                    name,
+                    serde_json::json!({
+                        "error": f.error,
+                        "failures": f.failures,
+                        "retry_in_ms": f.left_ms(now),
+                    }),
+                );
+            }
+        }
+        serde_json::Value::Object(out)
     }
 
     /// Prepares `inst`'s home (its config, its origin, the key-encryption
@@ -697,10 +842,7 @@ impl Fleet {
                 })
                 .await??;
                 let app_data = crate::app_data::PgAppData::new(pages, store.clock());
-                let app_data: Arc<dyn clax_http::app_data_host::AppDataHost> = Arc::new(
-                    clax_http::app_data_host::MovingAppData::new(app_data, store.clone()),
-                );
-                let core = Core::start_on(core_cfg, store, Some(app_data)).await?;
+                let core = Core::start_on(core_cfg, store, app_data).await?;
                 Ok(Running {
                     core: Some(core),
                     hold: Some((fence, 0)),
@@ -765,7 +907,15 @@ impl Fleet {
         if let Placement::Leases(coord) = &self.cfg.placement {
             let draining = self.draining.load(Ordering::SeqCst);
             if !draining {
-                match coord.heartbeat(&self.cfg.pod, &self.cfg.advertise).await {
+                match coord
+                    .heartbeat(
+                        &self.cfg.pod,
+                        &self.cfg.advertise,
+                        &self.run,
+                        coord::STORE_SCHEMA,
+                    )
+                    .await
+                {
                     Ok(()) => self.healthy.store(true, Ordering::SeqCst),
                     Err(e) => {
                         self.healthy.store(false, Ordering::SeqCst);
@@ -781,16 +931,27 @@ impl Fleet {
             if let Ok(m) = &members {
                 *lock(&self.members) = Some((Instant::now(), m.clone()));
             }
-            // Every third tick, the handover.
+            // Every third tick, the handover: at most HANDOVERS_PER_TICK,
+            // the rest at the next.
             if !draining
                 && n % 3 == 2
                 && let Ok(members) = members
             {
+                let mut handed = 0;
                 for name in self.running() {
-                    if let Some(p) = coord::preferred(&name, &members)
+                    // It runs here, so its data is at this build's schema.
+                    if let Some(p) = coord::preferred(&name, coord::STORE_SCHEMA, &members)
                         && p.pod != self.cfg.pod
                         && p.age >= coord::SETTLE
+                        && !stops.iter().any(|(n, _)| *n == name)
                     {
+                        if handed == HANDOVERS_PER_TICK {
+                            self.metrics
+                                .handovers_deferred
+                                .fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                        handed += 1;
                         tracing::info!(instance = %name, to = %p.pod, "handing the instance over");
                         self.metrics.handovers.fetch_add(1, Ordering::Relaxed);
                         stops.push((name, "another member is preferred"));
@@ -989,6 +1150,7 @@ impl Fleet {
                 "error": state.error,
             },
             "running": self.running(),
+            "failing": self.failing(),
         })
     }
 
@@ -1049,6 +1211,11 @@ impl Fleet {
             &m.handovers,
         );
         counter(
+            "handovers_deferred_total",
+            "Handovers left for a later tick, past the most one tick makes.",
+            &m.handovers_deferred,
+        );
+        counter(
             "catalog_reload_failures_total",
             "Catalog reloads that failed.",
             &m.catalog_errors,
@@ -1070,21 +1237,42 @@ impl Fleet {
             u8::from(failing),
             u8::from(self.ready()),
         ));
+        let mut pools: Vec<&Pool> = Vec::new();
+        if let Storage::Postgres(pool) = &self.cfg.storage {
+            pools.push(pool);
+        }
+        if let Placement::Leases(coord) = &self.cfg.placement
+            && let Some(pool) = coord.pool()
+        {
+            pools.push(pool);
+        }
+        if !pools.is_empty() {
+            out.push_str(&crate::pg::metrics(&pools));
+        }
         out
     }
 
-    /// The admin port's routes: `/healthz` (alive), `/readyz` (taking
+    /// The admin port's routes: `/healthz` (alive) and `/readyz` (taking
     /// requests: 503 while draining or, on leases, cut off from the
-    /// database) for the kubelet, and, to a caller on this pod's loopback
-    /// (`kubectl exec`, `kubectl port-forward`) or one with the peer key
-    /// (another process, `clax-fleet status`), `/status` (this process, its
-    /// catalog and its instances, as JSON) and `/metrics` (Prometheus).
-    /// Serve it with `ConnectInfo<SocketAddr>`.
+    /// database) for the kubelet, `/metrics` (Prometheus: counters and
+    /// gauges, no instance's name or data) for whoever the NetworkPolicy
+    /// lets reach the port, and `/status` (this process, its catalog and
+    /// its instances, as JSON) only to a caller with the peer key (another
+    /// process, `clax-fleet status`). No caller is trusted by its address:
+    /// under a sidecar mesh every connection comes from loopback.
     pub fn admin_router(self: &Arc<Self>) -> axum::Router {
+        self.admin_routes(true)
+    }
+
+    /// The admin routes for a listener on this pod's loopback alone
+    /// (`kubectl port-forward`, `kubectl exec`): [`Fleet::admin_router`]'s,
+    /// with `/status` asking for no key.
+    pub fn local_admin_router(self: &Arc<Self>) -> axum::Router {
+        self.admin_routes(false)
+    }
+
+    fn admin_routes(self: &Arc<Self>, status_needs_key: bool) -> axum::Router {
         use axum::routing::get;
-        fn allowed(f: &Fleet, peer: SocketAddr, headers: &HeaderMap) -> bool {
-            peer.ip().to_canonical().is_loopback() || f.is_peer(headers)
-        }
         axum::Router::new()
             .route("/healthz", get(|| async { "ok\n" }))
             .route(
@@ -1100,10 +1288,8 @@ impl Fleet {
             .route(
                 "/status",
                 get(
-                    |State(f): State<Arc<Fleet>>,
-                     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-                     headers: HeaderMap| async move {
-                        if !allowed(&f, peer, &headers) {
+                    move |State(f): State<Arc<Fleet>>, headers: HeaderMap| async move {
+                        if status_needs_key && !f.is_peer(&headers) {
                             return StatusCode::FORBIDDEN.into_response();
                         }
                         axum::Json(f.status()).into_response()
@@ -1112,20 +1298,13 @@ impl Fleet {
             )
             .route(
                 "/metrics",
-                get(
-                    |State(f): State<Arc<Fleet>>,
-                     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-                     headers: HeaderMap| async move {
-                        if !allowed(&f, peer, &headers) {
-                            return StatusCode::FORBIDDEN.into_response();
-                        }
-                        (
-                            [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
-                            f.metrics(),
-                        )
-                            .into_response()
-                    },
-                ),
+                get(|State(f): State<Arc<Fleet>>| async move {
+                    (
+                        [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+                        f.metrics(),
+                    )
+                        .into_response()
+                }),
             )
             .with_state(self.clone())
     }

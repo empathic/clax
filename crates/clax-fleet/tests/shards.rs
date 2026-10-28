@@ -187,3 +187,124 @@ async fn a_shard_without_the_home_does_not_start_an_empty_instance() {
     assert!(p0.fleet.running().is_empty());
     assert!(!dir.path().join("instances/acme/clax.db").exists());
 }
+
+/// The value of counter `name` in a fleet's `/metrics` text.
+fn counter(fleet: &clax_fleet::fleet::Fleet, name: &str) -> u64 {
+    let metrics = fleet.metrics();
+    metrics
+        .lines()
+        .find_map(|l| l.strip_prefix(&format!("clax_fleet_{name} ")))
+        .unwrap_or_else(|| panic!("no {name} in {metrics}"))
+        .parse()
+        .unwrap()
+}
+
+/// `GET <path>` on `router`, with the peer key when `key`: its status and
+/// body.
+async fn admin_get(router: axum::Router, path: &str, key: bool) -> (u16, String) {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let mut req = axum::http::Request::get(path);
+    if key {
+        req = req.header(clax_fleet::proxy::KEY_HEADER, crate::common::PEER_KEY);
+    }
+    let resp = router
+        .oneshot(req.body(axum::body::Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
+/// A start that failed is not tried again for every request: the requests
+/// within its backoff are refused without one, the backoff grows with each
+/// failure in a row, `/status` shows it, and a change to the instance's
+/// catalog entry is tried at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_start_is_retried_after_a_backoff_not_per_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = catalog(&[("acme", Some(0))]).replace("create = true\n", "");
+    let cat = write_catalog(dir.path(), &missing);
+    let l0 = listener().await;
+    let peers = vec![l0.1.to_string()];
+    let p0 = process(
+        "clax-0",
+        l0,
+        dir.path(),
+        &cat,
+        Placement::Shards {
+            ordinal: 0,
+            peers: Peers::List(peers),
+        },
+    )
+    .await;
+    let failures = || counter(&p0.fleet, "instance_start_failures_total");
+    for _ in 0..3 {
+        assert_eq!(healthz(p0.addr, "acme.test").await.0, 503);
+    }
+    assert_eq!(failures(), 1);
+    let (status, body) = admin_get(p0.fleet.admin_router(), "/status", true).await;
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["failing"]["acme"]["failures"], 1, "{v}");
+    assert!(
+        v["failing"]["acme"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("no home on this shard"),
+        "{v}"
+    );
+
+    // Past the first backoff, one more try; the next backoff is longer.
+    let first = clax_fleet::fleet::START_BACKOFF.as_secs() as i64;
+    p0.clock.advance(first + 1);
+    assert_eq!(healthz(p0.addr, "acme.test").await.0, 503);
+    assert_eq!(healthz(p0.addr, "acme.test").await.0, 503);
+    assert_eq!(failures(), 2);
+    p0.clock.advance(first + 1);
+    assert_eq!(healthz(p0.addr, "acme.test").await.0, 503);
+    assert_eq!(failures(), 2);
+
+    // The entry changes (it may now make its home): tried at once, and it
+    // starts.
+    write_catalog(dir.path(), &catalog(&[("acme", Some(0))]));
+    p0.fleet.tick().await;
+    assert_eq!(healthz(p0.addr, "acme.test").await.0, 200);
+    assert_eq!(failures(), 2);
+    let (_, body) = admin_get(p0.fleet.admin_router(), "/status", true).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["failing"], serde_json::json!({}), "{v}");
+}
+
+/// The admin port trusts no caller by its address, loopback included (a
+/// sidecar mesh's every connection is): `/status` asks for the peer key,
+/// `/metrics` for none. The loopback-only listener's `/status` asks for
+/// none.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_admin_port_asks_for_the_key_for_status_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let cat = write_catalog(dir.path(), &catalog(&[("acme", Some(0))]));
+    let l0 = listener().await;
+    let peers = vec![l0.1.to_string()];
+    let p0 = process(
+        "clax-0",
+        l0,
+        dir.path(),
+        &cat,
+        Placement::Shards {
+            ordinal: 0,
+            peers: Peers::List(peers),
+        },
+    )
+    .await;
+    let admin = p0.fleet.admin_router();
+    assert_eq!(admin_get(admin.clone(), "/status", false).await.0, 403);
+    assert_eq!(admin_get(admin.clone(), "/status", true).await.0, 200);
+    let (status, metrics) = admin_get(admin.clone(), "/metrics", false).await;
+    assert_eq!(status, 200);
+    assert!(metrics.contains("clax_fleet_ready 1"), "{metrics}");
+    assert_eq!(admin_get(admin, "/readyz", false).await.0, 200);
+    let local = p0.fleet.local_admin_router();
+    assert_eq!(admin_get(local, "/status", false).await.0, 200);
+}

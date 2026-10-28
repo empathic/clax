@@ -180,7 +180,7 @@ impl PageStore for PgPages {
         let name = file.to_string();
         let chunks = commit.chunks.clone();
         let size = commit.size as i64;
-        let resize = commit.size != commit.stored_size || commit.stored_size == 0;
+        let resize = commit.resizes();
         let truncate = commit.truncates().then_some(commit.keep_below as i64);
         self.pool.run(move |c| {
             let mut tx = c.transaction().map_err(err)?;

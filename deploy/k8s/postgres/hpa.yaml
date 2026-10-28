@@ -11,7 +11,12 @@ spec:
     kind: Deployment
     name: clax
   minReplicas: 2
-  maxReplicas: 10
+  # Each pod holds CLAX_POSTGRES_POOL + 2 connections (10 by default), so 8
+  # pods and a rollout's surge take 90, under the 97 a default PostgreSQL
+  # gives roles that are not superusers (max_connections 100, 3 reserved).
+  # Raise it with the server's max_connections (docs/kubernetes.md,
+  # Connections).
+  maxReplicas: 8
   metrics:
     - type: Resource
       resource:
@@ -20,13 +25,16 @@ spec:
           type: Utilization
           averageUtilization: 70
     # Each running instance holds its caches (docs/kubernetes.md, Sizing):
-    # memory grows with the instances a pod runs.
+    # memory grows with the instances a pod runs. An average of 1.5 Gi a
+    # pod (about five busy instances on 200 Mi of its own) adds pods well
+    # before one nears its 2 Gi limit. An absolute value, not a share of the
+    # request: the request is what a pod reserves, not what it may use.
     - type: Resource
       resource:
         name: memory
         target:
-          type: Utilization
-          averageUtilization: 75
+          type: AverageValue
+          averageValue: 1536Mi
   behavior:
     # Every scale-down moves instances (their streams reconnect): slowly.
     scaleDown:

@@ -303,7 +303,7 @@ CRATES = {
         "dev_deps": [],
         "edition": "2024",
         "features": [],
-        "has_build_script": False,
+        "has_build_script": True,
         "lib": "clax_fleet",
         "lib_root": "src/lib.rs",
         "name": "clax-fleet",

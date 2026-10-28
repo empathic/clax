@@ -52,7 +52,8 @@ spec:
         - name: postgres
           image: postgres:17
           # Every fleet pod holds CLAX_POSTGRES_POOL + 2 connections: room
-          # for the autoscaler's 10 pods and a rollout's surge.
+          # for the autoscaler's 8 pods and a rollout's surge, or for a
+          # maxReplicas (postgres/hpa.yaml) raised to 18.
           args: ["-c", "max_connections=200"]
           ports:
             - name: postgres

@@ -12,6 +12,15 @@
 //! third, so no client can pass for another process. Hop-by-hop headers
 //! are dropped both ways, but for an upgrade's `Connection` and `Upgrade`.
 //!
+//! An owner whose node is lost (no reset, no close) is found out by the
+//! connections themselves: TCP keepalive probes an idle or waiting
+//! connection ([`KEEPALIVE`]), and on Linux unacknowledged writes give up
+//! after [`TCP_USER_TIMEOUT`], so a forward fails with 502 (and its route is
+//! forgotten) in about half a minute rather than the kernel's quarter of an
+//! hour. The owner's response headers are awaited at most
+//! [`RESPONSE_TIMEOUT`], past Clax's longest long poll; a response's body
+//! (an event stream) and an upgraded connection are not timed.
+//!
 //! Forwards travel the pod network as they arrived, in plain HTTP with the
 //! client's cookies and tokens: run the fleet on an encrypted pod network
 //! or a mesh with mTLS (docs/kubernetes.md, Security).
@@ -37,6 +46,25 @@ pub const KEY_HEADER: &str = "x-clax-fleet-key";
 
 /// How long connecting to the owner may take.
 pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long a connection to an owner sits quiet before TCP keepalive
+/// probes it, and between probes; [`KEEPALIVE_RETRIES`] unanswered probes
+/// end it.
+pub const KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Unanswered keepalive probes that end a connection to an owner.
+pub const KEEPALIVE_RETRIES: u32 = 3;
+
+/// On Linux, how long data written to an owner may go unacknowledged
+/// before the connection fails.
+pub const TCP_USER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long a forward waits for the owner's response headers: past the
+/// longest wait of a Clax long poll (a question's,
+/// `clax_server::routes::questions::MAX_WAIT_SECS`), so only an owner that
+/// is hung, not one that is waiting, meets it.
+pub const RESPONSE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(clax_server::routes::questions::MAX_WAIT_SECS + 60);
 
 /// Headers that describe one connection, not the request (RFC 9110 §7.6.1).
 const HOP_BY_HOP: [&str; 8] = [
@@ -112,7 +140,10 @@ pub fn key_matches(key: &str, given: &str) -> bool {
 /// Forwards requests to their owners (see the [module docs](self)).
 pub struct Proxy {
     key: HeaderValue,
+    /// Makes an upgrade's connection of its own, set up as the pool's are.
+    connector: HttpConnector,
     pool: Client<HttpConnector, Body>,
+    response_timeout: std::time::Duration,
 }
 
 impl Proxy {
@@ -124,14 +155,28 @@ impl Proxy {
         let mut connector = HttpConnector::new();
         connector.set_connect_timeout(Some(CONNECT_TIMEOUT));
         connector.set_nodelay(true);
+        connector.set_keepalive(Some(KEEPALIVE));
+        connector.set_keepalive_interval(Some(KEEPALIVE));
+        connector.set_keepalive_retries(Some(KEEPALIVE_RETRIES));
+        #[cfg(target_os = "linux")]
+        connector.set_tcp_user_timeout(Some(TCP_USER_TIMEOUT));
         let pool = Client::builder(TokioExecutor::new())
             .pool_idle_timeout(IDLE_TIMEOUT)
             .pool_max_idle_per_host(64)
-            .build(connector);
+            .build(connector.clone());
         Proxy {
             key: HeaderValue::from_str(key).expect("the peer key is a header value"),
+            connector,
             pool,
+            response_timeout: RESPONSE_TIMEOUT,
         }
+    }
+
+    /// This proxy, waiting at most `d` for an owner's response headers
+    /// rather than [`RESPONSE_TIMEOUT`].
+    pub fn with_response_timeout(mut self, d: std::time::Duration) -> Proxy {
+        self.response_timeout = d;
+        self
     }
 
     /// Forwards `req`, a request for `instance`, to the process at `addr`
@@ -187,9 +232,11 @@ async fn forward(
             Ok(u) => u,
             Err(e) => return bad_gateway(addr, e),
         };
-        let resp = match proxy.pool.request(Request::from_parts(parts, body)).await {
-            Ok(r) => r,
-            Err(e) => return bad_gateway(addr, e),
+        let sent = proxy.pool.request(Request::from_parts(parts, body));
+        let resp = match tokio::time::timeout(proxy.response_timeout, sent).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => return bad_gateway(addr, e),
+            Err(_) => return bad_gateway(addr, "no response headers in time"),
         };
         let (mut parts, body) = resp.into_parts();
         strip_hop_by_hop(&mut parts.headers, false);
@@ -199,27 +246,30 @@ async fn forward(
         Ok(u) => u,
         Err(e) => return bad_gateway(addr, e),
     };
-    let stream =
-        match tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr)).await {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => return bad_gateway(addr, e),
-            Err(_) => return bad_gateway(addr, "connect timed out"),
-        };
-    let _ = stream.set_nodelay(true);
-    let (mut sender, conn) = match hyper::client::conn::http1::handshake(TokioIo::new(stream)).await
-    {
-        Ok(h) => h,
+    let target: axum::http::Uri = match format!("http://{addr}").parse() {
+        Ok(u) => u,
+        Err(e) => return bad_gateway(addr, e),
+    };
+    // The connector's timeout bounds the connect, and its keepalive the
+    // joined connection's life once the owner is gone.
+    let stream = match tower::ServiceExt::oneshot(proxy.connector.clone(), target).await {
+        Ok(s) => s,
         Err(e) => return bad_gateway(addr, e),
     };
     let label = addr.to_string();
-    tokio::spawn(async move {
-        if let Err(e) = conn.with_upgrades().await {
-            tracing::debug!(addr = %label, error = %e, "forwarded connection ended");
-        }
-    });
-    let mut resp = match sender.send_request(Request::from_parts(parts, body)).await {
-        Ok(r) => r,
-        Err(e) => return bad_gateway(addr, e),
+    let switched = async move {
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(stream).await?;
+        tokio::spawn(async move {
+            if let Err(e) = conn.with_upgrades().await {
+                tracing::debug!(addr = %label, error = %e, "forwarded connection ended");
+            }
+        });
+        sender.send_request(Request::from_parts(parts, body)).await
+    };
+    let mut resp = match tokio::time::timeout(proxy.response_timeout, switched).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return bad_gateway(addr, e),
+        Err(_) => return bad_gateway(addr, "no response headers in time"),
     };
     if resp.status() == StatusCode::SWITCHING_PROTOCOLS
         && let Some(client_upgrade) = client_upgrade

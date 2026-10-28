@@ -14,7 +14,8 @@
 //! config = '''
 //! [hosted]
 //! public_origin = "https://acme.clax.example.com"
-//! site_domain = "acme-sites.example.com"
+//! site_domain = "acme-sites.example.net"
+//! setup_secret_env = "CLAX_SETUP_SECRET_ACME"
 //! '''
 //! ```
 //!
@@ -25,8 +26,18 @@
 //! site domain it is a site host under (`<artifact ID>.<site_domain>`);
 //! else to the default instance, when there is one. No two instances share
 //! an origin, and no instance's site domain is, is under or is above
-//! another instance's site domain or public host: each tenant's pages stay
-//! cross-site from every other tenant.
+//! another instance's site domain or public host, so no tenant's site host
+//! is another tenant's host. That is not what makes them separate *sites*
+//! to a browser, which goes by registrable domain (the Public Suffix List):
+//! two tenants' hosts under one registrable domain are same-site, whatever
+//! the nesting, so the operator gives each tenant's site domain a
+//! registrable domain of its own (or one on the list), as the example's is
+//! (`docs/kubernetes.md`, The catalog).
+//!
+//! Each instance reads its setup secret from the variable its
+//! `setup_secret_env` names, in the one environment every instance of a
+//! process shares: no two instances name the same one (nor leave it to the
+//! same default), and none names a variable of the fleet's own.
 //!
 //! A paused instance keeps its hosts: they answer 503 while it is moved or
 //! restored, never the default instance in its place.
@@ -137,6 +148,10 @@ fn normalize_host(host: &str) -> String {
     h
 }
 
+/// The fleet's own variables, which no instance's `setup_secret_env` may
+/// name: its setup secret would be the fleet's key or database URL.
+const FLEET_VARIABLES: [&str; 3] = ["CLAX_KEK", "CLAX_FLEET_PEER_KEY", "CLAX_POSTGRES_URL"];
+
 /// Whether host name `a` is `b` or under it, label by label.
 fn at_or_under(a: &str, b: &str) -> bool {
     a == b || a.ends_with(&format!(".{b}"))
@@ -150,7 +165,8 @@ impl Catalog {
     /// A message naming `path` and what is wrong: TOML that does not parse,
     /// an unknown key, a bad name, a name or origin used twice, a site
     /// domain at, under or above another instance's site domain or public
-    /// host, two defaults, an instance with no usable `[hosted]`, or, on
+    /// host, two instances reading one setup secret variable or one reading
+    /// the fleet's own, two defaults, an instance with no usable `[hosted]`, or, on
     /// SQLite, no `shards`, an instance with no `shard` or one past them.
     pub fn parse(path: &Path, text: &str, sqlite: bool) -> Result<Catalog, String> {
         let at = path.display();
@@ -166,6 +182,8 @@ impl Catalog {
         };
         let mut names = HashSet::new();
         let mut authorities = HashSet::new();
+        // Each setup secret variable, by the instance that reads it.
+        let mut setup_secrets: HashMap<String, String> = HashMap::new();
         // Each instance's public host (no port) and site domain, by name.
         let mut hosts: Vec<(String, String, Option<String>)> = Vec::new();
         let mut defaults = 0;
@@ -207,6 +225,17 @@ impl Catalog {
                         "{at}: instance {name} has no [hosted] public_origin; a fleet serves hosted instances only"
                     )
                 })?;
+            let env = hosted.setup_secret_env.clone();
+            if FLEET_VARIABLES.contains(&env.as_str()) {
+                return Err(format!(
+                    "{at}: instance {name}'s setup_secret_env is {env}, a variable of the fleet's own; name one for its setup secret alone"
+                ));
+            }
+            if let Some(other) = setup_secrets.insert(env.clone(), name.clone()) {
+                return Err(format!(
+                    "{at}: instances {other} and {name} both read their setup secret from {env}, so either's would open the other's /setup; give each a setup_secret_env of its own (CLAX_SETUP_SECRET_<NAME>)"
+                ));
+            }
             let url = url::Url::parse(&hosted.public_origin)
                 .map_err(|err| format!("{at}: instance {name}'s public_origin: {err}"))?;
             let Some(host) = url.host_str().map(str::to_ascii_lowercase) else {
@@ -235,7 +264,7 @@ impl Catalog {
                     let clash = |b: &str| at_or_under(d, b) || at_or_under(b, d);
                     if clash(other_host) || other_domain.as_deref().is_some_and(clash) {
                         return Err(format!(
-                            "{at}: instance {name}'s site domain {d} is, is under or is above a host of instance {other}: each tenant's sites must be cross-site from every other tenant's"
+                            "{at}: instance {name}'s site domain {d} is, is under or is above a host of instance {other}: no tenant's sites may be at another tenant's hosts"
                         ));
                     }
                 }
@@ -350,6 +379,7 @@ config = '''
 [hosted]
 public_origin = "https://acme.example.com"
 site_domain = "acme-sites.example.com"
+setup_secret_env = "CLAX_SETUP_SECRET_ACME"
 '''
 
 [[instance]]
@@ -358,6 +388,7 @@ shard = 1
 config = '''
 [hosted]
 public_origin = "https://clax.globex.test:8443"
+setup_secret_env = "CLAX_SETUP_SECRET_GLOBEX"
 '''
 "#;
 
@@ -411,7 +442,7 @@ public_origin = "https://clax.globex.test:8443"
             (TWO.replace("shards = 2\n", ""), "no shards"),
             (
                 TWO.replace(
-                    "config = '''\n[hosted]\npublic_origin = \"https://clax.globex.test:8443\"",
+                    "config = '''\n[hosted]\npublic_origin = \"https://clax.globex.test:8443\"\nsetup_secret_env = \"CLAX_SETUP_SECRET_GLOBEX\"",
                     "config = '''\n[serve]\nport = 1",
                 ),
                 "no [hosted]",
@@ -421,6 +452,24 @@ public_origin = "https://clax.globex.test:8443"
                 "more than one",
             ),
             (format!("{TWO}\nextra = 1\n"), "unknown field"),
+            (
+                TWO.replace("CLAX_SETUP_SECRET_GLOBEX", "CLAX_SETUP_SECRET_ACME"),
+                "instances acme and globex both read their setup secret from CLAX_SETUP_SECRET_ACME",
+            ),
+            // Both left to the default variable.
+            (
+                TWO.replace("setup_secret_env = \"CLAX_SETUP_SECRET_ACME\"\n", "")
+                    .replace("setup_secret_env = \"CLAX_SETUP_SECRET_GLOBEX\"\n", ""),
+                "both read their setup secret from CLAX_SETUP_SECRET",
+            ),
+            (
+                TWO.replace("CLAX_SETUP_SECRET_GLOBEX", "CLAX_FLEET_PEER_KEY"),
+                "a variable of the fleet's own",
+            ),
+            (
+                TWO.replace("CLAX_SETUP_SECRET_GLOBEX", "CLAX_KEK"),
+                "a variable of the fleet's own",
+            ),
         ];
         for (text, want) in cases {
             let err = parse(&text, true).unwrap_err();
@@ -435,13 +484,13 @@ public_origin = "https://clax.globex.test:8443"
     /// No tenant's site domain may be at, under or above another tenant's
     /// public host or site domain, either way round.
     #[test]
-    fn site_domains_stay_cross_site_from_other_tenants() {
+    fn no_site_domain_is_at_another_tenants_hosts() {
         let two = |a_origin: &str, a_sites: &str, b_origin: &str, b_sites: Option<&str>| {
             let b_sites = b_sites
                 .map(|d| format!("site_domain = \"{d}\"\n"))
                 .unwrap_or_default();
             format!(
-                "[[instance]]\nname = \"a\"\nconfig = '''\n[hosted]\npublic_origin = \"{a_origin}\"\nsite_domain = \"{a_sites}\"\n'''\n\n[[instance]]\nname = \"b\"\nconfig = '''\n[hosted]\npublic_origin = \"{b_origin}\"\n{b_sites}'''\n"
+                "[[instance]]\nname = \"a\"\nconfig = '''\n[hosted]\npublic_origin = \"{a_origin}\"\nsite_domain = \"{a_sites}\"\nsetup_secret_env = \"CLAX_SETUP_SECRET_A\"\n'''\n\n[[instance]]\nname = \"b\"\nconfig = '''\n[hosted]\npublic_origin = \"{b_origin}\"\nsetup_secret_env = \"CLAX_SETUP_SECRET_B\"\n{b_sites}'''\n"
             )
         };
         let refused = [
@@ -472,10 +521,7 @@ public_origin = "https://clax.globex.test:8443"
         ];
         for text in refused {
             let err = parse(&text, false).unwrap_err();
-            assert!(
-                err.contains("cross-site") || err.contains("site domain"),
-                "{err}"
-            );
+            assert!(err.contains("site domain"), "{err}");
         }
         assert!(
             parse(

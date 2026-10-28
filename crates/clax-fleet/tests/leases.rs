@@ -16,6 +16,7 @@ fn member(pod: &str) -> Member {
         pod: pod.into(),
         addr: String::new(),
         age: Duration::ZERO,
+        store_schema: coord::STORE_SCHEMA,
     }
 }
 
@@ -24,7 +25,7 @@ fn preferring(want: &str) -> String {
     let both = [member("a"), member("b")];
     (0..)
         .map(|i| format!("inst{i}"))
-        .find(|n| coord::preferred(n, &both).unwrap().pod == want)
+        .find(|n| coord::preferred(n, 0, &both).unwrap().pod == want)
         .unwrap()
 }
 
@@ -144,7 +145,12 @@ async fn a_lost_lease_stops_the_instance() {
     assert_eq!(healthz(a.addr, &host).await.0, 200);
 
     c.advance(coord::LEASE_TTL + Duration::from_secs(1));
-    assert_eq!(c.acquire(&name, "z", "z:1").await.unwrap(), Some(2));
+    assert_eq!(
+        c.acquire(&name, "z", "z:1", coord::STORE_SCHEMA)
+            .await
+            .unwrap(),
+        Some(2)
+    );
     a.fleet.tick().await;
     assert!(a.fleet.running().is_empty());
     assert_eq!(c.lease(&name).await.unwrap().unwrap().holder, "z");
@@ -248,4 +254,101 @@ async fn a_paused_instance_answers_503_and_stops() {
     assert!(a.fleet.running().is_empty());
     assert_eq!(healthz(a.addr, &host).await.0, 503);
     assert_eq!(healthz(b.addr, &host).await.0, 503);
+}
+
+/// A member that settles in takes its share a few instances per handover
+/// tick, never all at once: their clients do not all reconnect, nor their
+/// instances all start, in one tick.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_handover_moves_a_few_instances_per_tick() {
+    let dir = tempfile::tempdir().unwrap();
+    let per_tick = clax_fleet::fleet::HANDOVERS_PER_TICK;
+    let both = [member("a"), member("b")];
+    let names: Vec<String> = (0..)
+        .map(|i| format!("inst{i}"))
+        .filter(|n| coord::preferred(n, 0, &both).unwrap().pod == "b")
+        .take(per_tick + 2)
+        .collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let (c, a, b) = pair(dir.path(), &refs).await;
+    a.fleet.tick().await;
+    for n in &names {
+        assert_eq!(healthz(a.addr, &format!("{n}.test")).await.0, 200, "{n}");
+    }
+    assert_eq!(a.fleet.running().len(), names.len());
+    b.fleet.tick().await;
+
+    let mut counts = Vec::new();
+    for _ in 0..12 {
+        c.advance(Duration::from_secs(10));
+        a.fleet.tick().await;
+        b.fleet.tick().await;
+        let n = a.fleet.running().len();
+        if counts.last() != Some(&n) {
+            counts.push(n);
+        }
+    }
+    assert_eq!(
+        counts,
+        [names.len(), names.len() - per_tick, 0],
+        "{counts:?}"
+    );
+    assert!(
+        a.fleet
+            .metrics()
+            .contains("clax_fleet_handovers_deferred_total 2\n"),
+        "{}",
+        a.fleet.metrics()
+    );
+}
+
+/// An instance this build opened never goes to a member of an older build,
+/// which would refuse its data, even where hashing prefers that member: not
+/// on a request, nor at a handover once it has settled. One a newer build
+/// opened starts nowhere until a member of that build runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_instance_never_goes_to_a_member_whose_build_cannot_open_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let all = [member("a"), member("b"), member("z")];
+    let name = (0..)
+        .map(|i| format!("inst{i}"))
+        .find(|n| {
+            coord::preferred(n, 0, &all).unwrap().pod == "z"
+                && coord::preferred(n, 0, &all[..2]).unwrap().pod == "a"
+        })
+        .unwrap();
+    let newer = "newer";
+    let (c, a, b) = pair(dir.path(), &[&name, newer]).await;
+    // z, an older build's member, never answers at its address.
+    let old = coord::STORE_SCHEMA - 1;
+    c.heartbeat("z", "127.0.0.1:1", "z-run", old).await.unwrap();
+    a.fleet.tick().await;
+    b.fleet.tick().await;
+    // This build opened the one, a newer build the other.
+    for (inst, schema) in [
+        (name.as_str(), coord::STORE_SCHEMA),
+        (newer, coord::STORE_SCHEMA + 1),
+    ] {
+        let e = c.acquire(inst, "x", "x:1", schema).await.unwrap().unwrap();
+        c.release(inst, "x", e).await.unwrap();
+    }
+
+    // Asked at b, it goes to a, which hashing prefers among the members
+    // that can open it.
+    assert_eq!(healthz(b.addr, &format!("{name}.test")).await.0, 200);
+    assert_eq!(a.fleet.running(), std::slice::from_ref(&name));
+    // z settles, and a keeps the instance through every handover.
+    for _ in 0..6 {
+        c.advance(Duration::from_secs(10));
+        c.heartbeat("z", "127.0.0.1:1", "z-run", old).await.unwrap();
+        a.fleet.tick().await;
+        b.fleet.tick().await;
+    }
+    assert_eq!(a.fleet.running(), std::slice::from_ref(&name));
+
+    assert_eq!(healthz(a.addr, &format!("{newer}.test")).await.0, 503);
+    assert_eq!(healthz(b.addr, &format!("{newer}.test")).await.0, 503);
+    assert_eq!(a.fleet.running(), std::slice::from_ref(&name));
+    assert!(b.fleet.running().is_empty());
+    assert!(c.lease(newer).await.unwrap().is_none());
 }

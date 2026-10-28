@@ -7,14 +7,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clax_core::embedded::MemTree;
+use clax_core::working::ManualClock;
 use clax_fleet::fleet::{Fleet, FleetConfig, Placement, Storage};
 
 /// The peer key every process of a test fleet shares.
 pub const PEER_KEY: &str = "test-peer-key";
 
 /// A catalog of the named instances, each at `https://<name>.test` with its
-/// sites under `<name>-sites.test`, on the shard its entry gives (two
-/// shards, and each instance may make its home, when any names one).
+/// sites under `<name>-sites.test` and its setup secret in
+/// `CLAX_SETUP_SECRET_<NAME>`, on the shard its entry gives (two shards,
+/// and each instance may make its home, when any names one).
 pub fn catalog(instances: &[(&str, Option<u32>)]) -> String {
     let mut out = String::new();
     if instances.iter().any(|(_, s)| s.is_some()) {
@@ -24,18 +26,23 @@ pub fn catalog(instances: &[(&str, Option<u32>)]) -> String {
         let shard = shard
             .map(|s| format!("shard = {s}\ncreate = true\n"))
             .unwrap_or_default();
+        let env = format!(
+            "CLAX_SETUP_SECRET_{}",
+            name.to_uppercase().replace('-', "_")
+        );
         out.push_str(&format!(
-            "[[instance]]\nname = \"{name}\"\n{shard}config = '''\n[hosted]\npublic_origin = \"https://{name}.test\"\nsite_domain = \"{name}-sites.test\"\n'''\n\n"
+            "[[instance]]\nname = \"{name}\"\n{shard}config = '''\n[hosted]\npublic_origin = \"https://{name}.test\"\nsite_domain = \"{name}-sites.test\"\nsetup_secret_env = \"{env}\"\n'''\n\n"
         ));
     }
     out
 }
 
-/// One process of a test fleet: its fleet, where it listens, and the task
-/// serving it.
+/// One process of a test fleet: its fleet, where it listens, the clock its
+/// start backoff is timed by, and the task serving it.
 pub struct Process {
     pub fleet: Arc<Fleet>,
     pub addr: SocketAddr,
+    pub clock: Arc<ManualClock>,
     server: tokio::task::JoinHandle<()>,
 }
 
@@ -61,6 +68,7 @@ pub async fn process(
     catalog: &Path,
     placement: Placement,
 ) -> Process {
+    let clock = Arc::new(ManualClock::at("2026-01-01T00:00:00Z"));
     let fleet = Fleet::new(FleetConfig {
         pod: pod.to_string(),
         advertise: addr.to_string(),
@@ -74,6 +82,7 @@ pub async fn process(
         peer_key: PEER_KEY.to_string(),
         db_limits: clax_pagevfs::Limits::default(),
         port: addr.port(),
+        clock: clock.clone(),
     })
     .unwrap();
     let app = fleet
@@ -85,6 +94,7 @@ pub async fn process(
     Process {
         fleet,
         addr,
+        clock,
         server,
     }
 }

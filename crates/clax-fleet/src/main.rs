@@ -3,7 +3,7 @@
 //!
 //! - `clax-fleet serve`: serves the catalog's instances until SIGTERM, then
 //!   drains: stops taking new work at once (`/readyz` answers 503), keeps
-//!   serving for `--drain-delay` while the Service stops sending requests
+//!   serving for `--drain-delay-secs` while the Service stops sending requests
 //!   here, then stops every instance (releasing its lease) and ends the
 //!   connections left within [`CONNECTIONS_DRAIN`].
 //! - `clax-fleet check-catalog <file> [--sqlite]`: validates a catalog and
@@ -92,8 +92,9 @@ struct Pg {
     /// to plain text); a URL whose `sslmode` says otherwise is refused.
     #[arg(long, env = "CLAX_POSTGRES_TLS", value_enum, default_value = "off")]
     postgres_tls: PgTls,
-    /// PostgreSQL: a PEM file of certificates to trust beside the public
-    /// roots (a managed database's own CA).
+    /// PostgreSQL: a PEM file of the CA certificates to trust in place of
+    /// the public roots (a managed database's own CA), as libpq's
+    /// `sslrootcert`.
     #[arg(long, env = "CLAX_POSTGRES_CA")]
     postgres_ca: Option<PathBuf>,
 }
@@ -108,13 +109,20 @@ impl Pg {
         }
     }
 
-    /// A pool of `size` connections named `name`.
-    fn pool(&self, name: &str, size: usize) -> anyhow::Result<Arc<clax_fleet::pg::Pool>> {
+    /// A pool of `size` connections named `name`, its sessions named
+    /// `session` on the server unless the URL names them.
+    fn pool(
+        &self,
+        name: &str,
+        session: &str,
+        size: usize,
+    ) -> anyhow::Result<Arc<clax_fleet::pg::Pool>> {
         let url = self.postgres_url.as_deref().ok_or_else(|| {
             anyhow::anyhow!("the PostgreSQL backend needs --postgres-url (CLAX_POSTGRES_URL)")
         })?;
         let tls = self.tls();
-        let config = clax_fleet::pg::config(url, &tls).map_err(anyhow::Error::msg)?;
+        let mut config = clax_fleet::pg::config(url, &tls).map_err(anyhow::Error::msg)?;
+        clax_fleet::pg::name_sessions(&mut config, session);
         clax_fleet::pg::Pool::connect(name, config, &tls, size)
             .map_err(|e| anyhow::anyhow!("PostgreSQL: {e}"))
     }
@@ -139,9 +147,18 @@ struct Serve {
     /// processes.
     #[arg(long, env = "CLAX_FLEET_LISTEN", default_value = "0.0.0.0:7480")]
     listen: SocketAddr,
-    /// Where `/healthz`, `/readyz`, `/status` and `/metrics` are served.
+    /// Where `/healthz`, `/readyz`, `/metrics` and, to a caller with the
+    /// peer key, `/status` are served.
     #[arg(long, env = "CLAX_FLEET_ADMIN_LISTEN", default_value = "0.0.0.0:7481")]
     admin_listen: SocketAddr,
+    /// Where the admin routes are served to this pod alone, `/status`
+    /// without the peer key (`kubectl port-forward`): a loopback address.
+    #[arg(
+        long,
+        env = "CLAX_FLEET_LOCAL_ADMIN_LISTEN",
+        default_value = "127.0.0.1:7482"
+    )]
+    local_admin_listen: SocketAddr,
     /// This process's name in the fleet (the pod's).
     #[arg(long, env = "POD_NAME")]
     pod: Option<String>,
@@ -219,6 +236,7 @@ struct Status {
 }
 
 fn main() -> std::process::ExitCode {
+    clax_core::set_build_commit(env!("CLAX_BUILD_COMMIT"));
     let cli = Cli::parse();
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
@@ -230,6 +248,7 @@ fn main() -> std::process::ExitCode {
             .with_env_filter(filter)
             .init(),
     }
+    let logged = fatal_is_logged(&cli.cmd, cli.log_format);
     let r = match cli.cmd {
         Cmd::CheckCatalog { file, sqlite } => check_catalog(&file, sqlite),
         Cmd::Serve(s) => serve(*s),
@@ -237,11 +256,23 @@ fn main() -> std::process::ExitCode {
     };
     match r {
         Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) if logged => {
+            tracing::error!(error = %format!("{e:#}"), "clax-fleet failed");
+            std::process::ExitCode::FAILURE
+        }
         Err(e) => {
             eprintln!("clax-fleet: {e:#}");
             std::process::ExitCode::FAILURE
         }
     }
+}
+
+/// Whether the error `cmd` ends with goes to the log rather than to stderr
+/// as text: for `serve` logging JSON lines, whose log pipeline must read
+/// the one line that says why a pod crash-loops. The other commands'
+/// errors are a person's to read.
+fn fatal_is_logged(cmd: &Cmd, format: LogFormat) -> bool {
+    matches!(cmd, Cmd::Serve(_)) && format == LogFormat::Json
 }
 
 fn check_catalog(file: &std::path::Path, sqlite: bool) -> anyhow::Result<()> {
@@ -280,11 +311,15 @@ fn kek_from_env() -> anyhow::Result<Option<[u8; 32]>> {
     Ok(Some(bytes.try_into().expect("32 bytes")))
 }
 
-fn random_key() -> String {
-    clax_core::secret::random_bytes::<32>()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+/// The SQLite backend's peer key, which every shard must be given alike:
+/// one a shard made up for itself would be no other shard's, so none would
+/// believe another's forwards.
+fn sqlite_peer_key(given: Option<String>) -> anyhow::Result<String> {
+    given.filter(|k| !k.trim().is_empty()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "the SQLite backend needs CLAX_FLEET_PEER_KEY, the same on every shard (the clax-secrets Secret; docs/kubernetes.md, Deploying on SQLite)"
+        )
+    })
 }
 
 fn serve(a: Serve) -> anyhow::Result<()> {
@@ -298,6 +333,11 @@ fn serve(a: Serve) -> anyhow::Result<()> {
         (None, Some(ip)) => format!("{ip}:{}", a.listen.port()),
         (None, None) => format!("{pod}:{}", a.listen.port()),
     };
+    anyhow::ensure!(
+        a.local_admin_listen.ip().is_loopback(),
+        "--local-admin-listen (CLAX_FLEET_LOCAL_ADMIN_LISTEN) {} is not a loopback address: what it serves asks for no key",
+        a.local_admin_listen
+    );
     let kek = kek_from_env()?;
     if a.sqlite_heap_mib > 0 {
         // Process-wide: one bound for every instance's caches together.
@@ -313,15 +353,7 @@ fn serve(a: Serve) -> anyhow::Result<()> {
             let ordinal = a.ordinal.or_else(|| ordinal_of(&pod)).ok_or_else(|| {
                 anyhow::anyhow!("no --ordinal, and the pod name {pod} does not end in one")
             })?;
-            let key = match a.peer_key {
-                Some(k) => k,
-                None => {
-                    tracing::warn!(
-                        "no CLAX_FLEET_PEER_KEY: forwards between shards are not told from a client's request (their instance is found by Host alone); give every shard the same key"
-                    );
-                    random_key()
-                }
-            };
+            let key = sqlite_peer_key(a.peer_key)?;
             (
                 Placement::Shards {
                     ordinal,
@@ -336,11 +368,13 @@ fn serve(a: Serve) -> anyhow::Result<()> {
                 kek.is_some(),
                 "the PostgreSQL backend needs CLAX_KEK (64 hex digits): instances move between processes, and every one must open the secrets the others sealed"
             );
-            let pool = a.pg.pool("data", a.postgres_pool)?;
+            let pool =
+                a.pg.pool("data", &format!("clax-fleet/{pod}/data"), a.postgres_pool)?;
             clax_fleet::pg::migrate(&pool).map_err(|e| anyhow::anyhow!("PostgreSQL: {e}"))?;
             let key = clax_fleet::pg::peer_key(&pool, a.peer_key.as_deref())
                 .map_err(|e| anyhow::anyhow!("PostgreSQL: {e}"))?;
-            let coord_pool = a.pg.pool("coord", COORD_POOL)?;
+            let coord_pool =
+                a.pg.pool("coord", &format!("clax-fleet/{pod}/coord"), COORD_POOL)?;
             let coord = Arc::new(clax_fleet::coord::PgCoordinator::new(coord_pool));
             (Placement::Leases(coord), Storage::Postgres(pool), key)
         }
@@ -361,20 +395,33 @@ fn serve(a: Serve) -> anyhow::Result<()> {
             max_transaction_bytes: a.db_max_transaction_mib << 20,
         },
         port: a.listen.port(),
+        clock: Arc::new(clax_core::working::SystemClock),
     })?;
     let drain_delay = Duration::from_secs(a.drain_delay_secs);
-    let r = rt.block_on(run(fleet, a.listen, a.admin_listen, drain_delay));
+    let listens = Listens {
+        instances: a.listen,
+        admin: a.admin_listen,
+        local_admin: a.local_admin_listen,
+    };
+    let r = rt.block_on(run(fleet, listens, drain_delay));
     tracing::info!(%pod, "stopped");
     rt.shutdown_background();
     r
 }
 
-async fn run(
-    fleet: Arc<Fleet>,
-    listen: SocketAddr,
-    admin_listen: SocketAddr,
-    drain_delay: Duration,
-) -> anyhow::Result<()> {
+/// Where `serve` listens.
+struct Listens {
+    instances: SocketAddr,
+    admin: SocketAddr,
+    local_admin: SocketAddr,
+}
+
+async fn run(fleet: Arc<Fleet>, listens: Listens, drain_delay: Duration) -> anyhow::Result<()> {
+    let Listens {
+        instances: listen,
+        admin: admin_listen,
+        local_admin: local_admin_listen,
+    } = listens;
     use tokio::signal::unix::{SignalKind, signal};
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sigint = signal(SignalKind::interrupt())?;
@@ -384,7 +431,8 @@ async fn run(
     fleet.tick().await;
     let listener = tokio::net::TcpListener::bind(listen).await?;
     let admin = tokio::net::TcpListener::bind(admin_listen).await?;
-    tracing::info!(%listen, %admin_listen, instances = fleet.catalog().instances.len(), "clax-fleet serving");
+    let local_admin = tokio::net::TcpListener::bind(local_admin_listen).await?;
+    tracing::info!(%listen, %admin_listen, %local_admin_listen, instances = fleet.catalog().instances.len(), "clax-fleet serving");
     let ticker = {
         let fleet = fleet.clone();
         tokio::spawn(async move {
@@ -398,10 +446,14 @@ async fn run(
         })
     };
     let admin_server = {
-        let app = fleet
-            .admin_router()
-            .into_make_service_with_connect_info::<SocketAddr>();
-        tokio::spawn(async move { axum::serve(admin, app).await })
+        let (app, local) = (fleet.admin_router(), fleet.local_admin_router());
+        tokio::spawn(async move {
+            use std::future::IntoFuture;
+            tokio::try_join!(
+                axum::serve(admin, app).into_future(),
+                axum::serve(local_admin, local).into_future()
+            )
+        })
     };
     let (stopping_tx, stopping_rx) = tokio::sync::oneshot::channel::<()>();
     let server = axum::serve(
@@ -441,9 +493,11 @@ async fn run(
 fn status(a: Status) -> anyhow::Result<()> {
     match a.backend {
         Backend::Postgres => {
-            let pool = a.pg.pool("status", 1)?;
+            let pool = a.pg.pool("status", "clax-fleet/status", 1)?;
+            // A holder counts as seen as the coordinator counts members.
+            let member_ttl = clax_fleet::coord::MEMBER_TTL.as_secs_f64();
             let rows = pool
-                .run(|c| {
+                .run(move |c| {
                     let rows = c
                         .query(
                             "SELECT l.instance, l.holder, l.addr, l.epoch,
@@ -451,9 +505,9 @@ fn status(a: Status) -> anyhow::Result<()> {
                                     m.pod IS NOT NULL
                              FROM clax_fleet_leases l
                              LEFT JOIN clax_fleet_members m
-                               ON m.pod = l.holder AND m.seen >= now() - interval '20 seconds'
+                               ON m.pod = l.holder AND m.seen >= now() - make_interval(secs => $1)
                              ORDER BY l.instance",
-                            &[],
+                            &[&member_ttl],
                         )
                         .map_err(clax_fleet::pg::err)?;
                     Ok(rows
@@ -498,35 +552,78 @@ fn status(a: Status) -> anyhow::Result<()> {
             })?;
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async {
-                let client: hyper_util::client::legacy::Client<_, axum::body::Body> =
-                    hyper_util::client::legacy::Client::builder(
-                        hyper_util::rt::TokioExecutor::new(),
-                    )
-                    .build_http();
-                for shard in 0..catalog.shards.unwrap_or(0) {
+                let client = status_client();
+                let shards = (0..catalog.shards.unwrap_or(0)).map(|shard| {
                     let addr = a.admin_peer.replace("{shard}", &shard.to_string());
-                    let req = axum::http::Request::get(format!("http://{addr}/status"))
-                        .header(clax_fleet::proxy::KEY_HEADER, &key)
-                        .body(axum::body::Body::empty())?;
-                    match client.request(req).await {
-                        Ok(resp) => {
-                            use http_body_util::BodyExt;
-                            let body = resp.into_body().collect().await?.to_bytes();
-                            let v: serde_json::Value =
-                                serde_json::from_slice(&body).unwrap_or_default();
-                            println!(
-                                "shard {shard} ({}): ready {}, running {}",
-                                v["pod"].as_str().unwrap_or("?"),
-                                v["ready"],
-                                v["running"]
-                            );
-                        }
-                        Err(e) => println!("shard {shard} ({addr}): did not answer: {e}"),
+                    let (client, key) = (&client, &key);
+                    async move {
+                        let line = shard_status(client, &addr, key, STATUS_TIMEOUT).await;
+                        format!("shard {shard} {line}")
                     }
+                });
+                for line in futures::future::join_all(shards).await {
+                    println!("{line}");
                 }
                 anyhow::Ok(())
             })
         }
+    }
+}
+
+/// How long `clax-fleet status` waits for each shard's `/status`.
+const STATUS_TIMEOUT: Duration = Duration::from_secs(5);
+
+type StatusClient = hyper_util::client::legacy::Client<
+    hyper_util::client::legacy::connect::HttpConnector,
+    axum::body::Body,
+>;
+
+fn status_client() -> StatusClient {
+    let mut connector = hyper_util::client::legacy::connect::HttpConnector::new();
+    connector.set_connect_timeout(Some(clax_fleet::proxy::CONNECT_TIMEOUT));
+    hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+        .build(connector)
+}
+
+/// One shard's line of `clax-fleet status`, from its `/status` at `addr`
+/// asked with the peer key `key`: its pod, readiness and running
+/// instances, or why there are none (refused, another status, no answer
+/// within `timeout`).
+async fn shard_status(client: &StatusClient, addr: &str, key: &str, timeout: Duration) -> String {
+    use http_body_util::BodyExt;
+    let ask = async {
+        let req = axum::http::Request::get(format!("http://{addr}/status"))
+            .header(clax_fleet::proxy::KEY_HEADER, key)
+            .body(axum::body::Body::empty())
+            .map_err(|e| e.to_string())?;
+        let resp = client.request(req).await.map_err(|e| e.to_string())?;
+        let status = resp.status();
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| e.to_string())?
+            .to_bytes();
+        Ok::<_, String>((status, body))
+    };
+    match tokio::time::timeout(timeout, ask).await {
+        Err(_) => format!("({addr}): did not answer within {timeout:?}"),
+        Ok(Err(e)) => format!("({addr}): did not answer: {e}"),
+        Ok(Ok((status, _))) if status == axum::http::StatusCode::FORBIDDEN => {
+            format!("({addr}): refused: 403, check CLAX_FLEET_PEER_KEY")
+        }
+        Ok(Ok((status, _))) if status != axum::http::StatusCode::OK => {
+            format!("({addr}): answered {status}")
+        }
+        Ok(Ok((_, body))) => match serde_json::from_slice::<serde_json::Value>(&body) {
+            Ok(v) => format!(
+                "({}): ready {}, running {}",
+                v["pod"].as_str().unwrap_or("?"),
+                v["ready"],
+                v["running"]
+            ),
+            Err(e) => format!("({addr}): its /status is not JSON: {e}"),
+        },
     }
 }
 
@@ -573,6 +670,73 @@ mod tests {
         assert_eq!(ordinal_of("clax-fleet-12"), Some(12));
         assert_eq!(ordinal_of("clax"), None);
         assert_eq!(ordinal_of("clax-abc12"), None);
+    }
+
+    #[test]
+    fn only_serve_logging_json_logs_its_fatal_error() {
+        let serve = Cli::parse_from(["clax-fleet", "serve", "--backend", "sqlite"]).cmd;
+        let check = Cli::parse_from(["clax-fleet", "check-catalog", "f.toml"]).cmd;
+        assert!(fatal_is_logged(&serve, LogFormat::Json));
+        assert!(!fatal_is_logged(&serve, LogFormat::Text));
+        assert!(!fatal_is_logged(&check, LogFormat::Json));
+    }
+
+    #[test]
+    fn the_sqlite_backend_needs_the_peer_key() {
+        assert_eq!(sqlite_peer_key(Some("k".into())).unwrap(), "k");
+        for missing in [None, Some(String::new()), Some(" ".into())] {
+            let err = sqlite_peer_key(missing).unwrap_err().to_string();
+            assert!(err.contains("needs CLAX_FLEET_PEER_KEY"), "{err}");
+        }
+    }
+
+    /// A shard's line says when it refused the key, answered otherwise, or
+    /// did not answer in time, never a live-looking `ready null`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_shard_that_refuses_or_does_not_answer_says_so() {
+        use axum::routing::get;
+        let app = axum::Router::new().route(
+            "/status",
+            get(|| async { axum::http::StatusCode::FORBIDDEN }),
+        );
+        let refusing = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let refusing_addr = refusing.local_addr().unwrap().to_string();
+        tokio::spawn(async move { axum::serve(refusing, app).await });
+        let app = axum::Router::new().route(
+            "/status",
+            get(|| async {
+                axum::Json(serde_json::json!({"pod": "clax-1", "ready": true, "running": ["acme"]}))
+            }),
+        );
+        let answering = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let answering_addr = answering.local_addr().unwrap().to_string();
+        tokio::spawn(async move { axum::serve(answering, app).await });
+        // Takes the connection and never answers.
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let silent_addr = silent.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((c, _)) = silent.accept().await {
+                held.push(c);
+            }
+        });
+
+        let client = status_client();
+        let line = |addr: String| {
+            let client = &client;
+            async move { shard_status(client, &addr, "k", Duration::from_millis(100)).await }
+        };
+        let refused = line(refusing_addr).await;
+        assert!(
+            refused.ends_with("refused: 403, check CLAX_FLEET_PEER_KEY"),
+            "{refused}"
+        );
+        assert_eq!(
+            line(answering_addr).await,
+            r#"(clax-1): ready true, running ["acme"]"#
+        );
+        let silent = line(silent_addr).await;
+        assert!(silent.contains("did not answer within"), "{silent}");
     }
 
     /// `deploy/k8s`, from the repository root.
@@ -659,5 +823,59 @@ mod tests {
                 "{env} is not in the Secret's example"
             );
         }
+    }
+
+    /// Every Secret a container reads (`envFrom: secretRef`) is
+    /// `clax-secrets`, which the overlays' comments say to create, or one a
+    /// kustomization's `secretGenerator` makes.
+    #[test]
+    fn every_secret_the_manifests_read_is_created_or_documented() {
+        let mut yamls = Vec::new();
+        files(&manifests(), "yaml", &mut yamls);
+        let uncommented = |path: &std::path::Path| -> Vec<String> {
+            std::fs::read_to_string(path)
+                .unwrap()
+                .lines()
+                .filter(|l| !l.trim_start().starts_with('#'))
+                .map(str::to_owned)
+                .collect()
+        };
+        let mut known = vec!["clax-secrets".to_owned()];
+        for path in &yamls {
+            let lines = uncommented(path);
+            let Some(start) = lines.iter().position(|l| l == "secretGenerator:") else {
+                continue;
+            };
+            known.extend(
+                lines[start + 1..]
+                    .iter()
+                    .take_while(|l| l.starts_with(' '))
+                    .filter_map(|l| l.strip_prefix("  - name: "))
+                    .map(|n| n.trim().to_owned()),
+            );
+        }
+        let mut seen = 0;
+        for path in &yamls {
+            let lines = uncommented(path);
+            for (i, line) in lines.iter().enumerate() {
+                if !line.trim_end().ends_with("secretRef:") {
+                    continue;
+                }
+                let name = lines[i + 1..]
+                    .iter()
+                    .find_map(|l| l.trim().strip_prefix("name: "))
+                    .unwrap_or_else(|| panic!("{}: a secretRef without a name", path.display()));
+                assert!(
+                    known.iter().any(|k| k == name),
+                    "{} reads Secret {name}, which nothing creates (known: {known:?})",
+                    path.display()
+                );
+                seen += 1;
+            }
+        }
+        assert!(
+            seen >= 3,
+            "only {seen} secretRefs found: the scan missed them"
+        );
     }
 }

@@ -9,7 +9,11 @@
 # images are pinned by digest (the tag beside each says which); the web
 # dependencies install in a layer of their own, and cargo's registry and
 # target directory, and pnpm's store, are cache mounts, so a source edit
-# rebuilds only what it changes.
+# rebuilds only what it changes. The cargo mounts are keyed by the target
+# platform, so a multi-platform build never mixes the architectures'
+# artifacts. `--build-arg CLAX_BUILD_COMMIT=<sha>` records the commit the
+# fleet's /status reports (the context leaves out .git, so without it the
+# commit is `unknown`).
 
 # The web UI, with the Node and pnpm the repository pins (MODULE.bazel's
 # node toolchain, web/package.json's packageManager).
@@ -20,17 +24,22 @@ COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml web/
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     cd web && pnpm install --frozen-lockfile
 COPY . .
-RUN scripts/build-web.sh
+# `pnpm run build` rather than scripts/build-web.sh: the script keeps
+# unchanged files' modification times for incremental cargo builds, which a
+# fresh layer has no use for, and needs Perl modules this image lacks.
+RUN cd web && pnpm run build
 
 # The binary, on the toolchain rust-toolchain.toml pins.
 FROM rust:1.94.0-bookworm@sha256:365468470075493dc4583f47387001854321c5a8583ea9604b297e67f01c5a4f AS build
 WORKDIR /src
+ARG TARGETPLATFORM
+ARG CLAX_BUILD_COMMIT
 COPY . .
 COPY --from=web /src/web/dist web/dist
 COPY --from=web /src/web/dist-extension web/dist-extension
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p clax-fleet \
+RUN --mount=type=cache,id=cargo-registry-$TARGETPLATFORM,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=cargo-target-$TARGETPLATFORM,target=/src/target,sharing=locked \
+    CLAX_BUILD_COMMIT="$CLAX_BUILD_COMMIT" cargo build --release --locked -p clax-fleet \
     && install -m 0755 target/release/clax-fleet /clax-fleet
 
 # bookworm-slim

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Writes a new Clax version into every place scripts/check-version.sh reads,
-# regenerates the skills' tool blocks (which name the plugin version), then
-# runs check-version.sh. Usage: bump-version.sh X.Y.Z
+# Writes a new Clax version into every place scripts/check-version.sh reads
+# (the Kubernetes overlays' image tag included), regenerates the skills'
+# tool blocks (which name the plugin version), then runs check-version.sh.
+# Usage: bump-version.sh X.Y.Z
 #
 # Cargo.lock names the workspace crates' versions. It is rewritten here,
 # offline, for every member whose manifest takes `version.workspace`, so a
@@ -48,6 +49,12 @@ for f in ("plugins/claude-code/.claude-plugin/plugin.json", "plugins/clax/.codex
 sub(".claude-plugin/marketplace.json", r'("version": ")([^"]+)(")', count=2)
 for f in ("scripts/ensure-clax.sh", "plugins/claude-code/scripts/ensure-clax.sh", "plugins/clax/scripts/ensure-clax.sh", "plugins/clax-grok/scripts/ensure-clax.sh", "plugins/pi/scripts/ensure-clax.sh"):
     sub(f, r'(^CLAX_VERSION=")([^"]+)(")')
+# The clax-fleet image the Kubernetes overlays run, which the release tag's
+# fleet-image workflow publishes, and the docs' examples of it.
+for f in ("deploy/k8s/sqlite/kustomization.yaml", "deploy/k8s/postgres/kustomization.yaml"):
+    sub(f, r'(^    newTag: ")([^"]+)(")')
+sub("docs/kubernetes.md", r'(/deploy/k8s/postgres\?ref=v)([0-9][0-9A-Za-z.-]*)()')
+sub("docs/kubernetes.md", r'(ghcr\.io/empathic/clax-fleet:)([0-9][0-9A-Za-z.-]*)()')
 for path, text in pending.items():
     pathlib.Path(path).write_text(text)
 PY

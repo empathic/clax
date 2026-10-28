@@ -15,7 +15,10 @@ resources:
   - ../base
   - deployment.yaml
   - hpa.yaml
-# The image every pod runs: a release's version, or your own build
+# The image every pod runs: this checkout's release version, which
+# scripts/bump-version.sh writes and the release tag's fleet-image workflow
+# publishes (from the first release after 0.6.0; before it, build the image,
+# docs/kubernetes.md, The image), or your own build
 # (`kustomize edit set image clax-fleet=<registry>/clax-fleet:<tag>`).
 images:
   - name: clax-fleet

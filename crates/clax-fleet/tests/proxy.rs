@@ -1,7 +1,7 @@
 //! Forwarding between processes: a WebSocket joined end to end, a streamed
 //! response passed on as it is written, the hop count and the `Host` kept,
-//! hop-by-hop headers dropped, and an owner that cannot be reached
-//! answered 502.
+//! hop-by-hop headers dropped, and an owner that cannot be reached, or
+//! never answers, answered 502.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -160,4 +160,40 @@ async fn an_owner_that_cannot_be_reached_is_502() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 502);
     assert_eq!(resp.headers()["retry-after"], "1");
+}
+
+/// An owner that takes the connection and never answers: the forward
+/// gives up once its wait for the response headers ends, plain request
+/// and upgrade alike.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_owner_that_never_answers_is_502() {
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let to = silent.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((conn, _)) = silent.accept().await {
+            held.push(conn);
+        }
+    });
+    let proxy =
+        Arc::new(Proxy::new("k").with_response_timeout(std::time::Duration::from_millis(100)));
+    let app = Router::new().fallback(move |req: Request| {
+        let (to, proxy) = (to.clone(), proxy.clone());
+        async move { proxy.forward(&to, 1, "acme", req).await }
+    });
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let front = l.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(l, app).await });
+
+    let resp = reqwest::get(format!("http://{front}/anything"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 502);
+    let ws = tokio_tungstenite::connect_async(format!("ws://{front}/ws")).await;
+    match ws {
+        Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
+            assert_eq!(resp.status().as_u16(), 502);
+        }
+        other => panic!("{other:?}"),
+    }
 }

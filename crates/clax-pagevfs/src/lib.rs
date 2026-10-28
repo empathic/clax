@@ -83,8 +83,12 @@ pub trait PageStore: Send + Sync {
     /// One chunk of the file, or `None` when it was never written.
     fn read_chunk(&self, file: &str, index: u64) -> Result<Option<Vec<u8>>, StoreError>;
 
-    /// Applies one committed transaction atomically (see [`Commit`]). On an
-    /// error, none of it applies.
+    /// Applies one committed transaction atomically (see [`Commit`]): all
+    /// of it or none. An error may still mean it applied, as when a
+    /// networked store loses the reply to its commit; the VFS then knows
+    /// the stored size no longer, and its next commit, which carries the
+    /// state SQLite holds after the failure, says so
+    /// ([`Commit::stored_size`] is `None`).
     fn commit(&self, file: &str, commit: &Commit) -> Result<(), StoreError>;
 
     /// Deletes the file and its chunks.
@@ -98,22 +102,31 @@ pub trait PageStore: Send + Sync {
 /// `stored_size` is the size the store held before (0 for a file it did
 /// not have), so a store can skip what did not change: the size when it
 /// is the same, the deletion when no stored chunk is at `keep_below` or
-/// above. The chunks are shared, not copied: a store may keep a clone of
-/// the [`Arc`] while it commits (to hand them to another thread), and
-/// drops every clone before it returns, when the VFS takes them back.
+/// above. It is `None` when the VFS does not know it, after a commit that
+/// failed and may have applied: the store then writes both. The chunks
+/// are shared, not copied: a store may keep a clone of the [`Arc`] while
+/// it commits (to hand them to another thread), and drops every clone
+/// before it returns, when the VFS takes them back.
 #[derive(Debug)]
 pub struct Commit {
     pub size: u64,
-    pub stored_size: u64,
+    pub stored_size: Option<u64>,
     pub chunks: Arc<Chunks>,
     pub keep_below: u64,
 }
 
 impl Commit {
-    /// Whether the commit deletes stored chunks: some stored chunk is at
-    /// `keep_below` or above.
+    /// Whether the commit deletes stored chunks: some stored chunk is, or
+    /// may be, at `keep_below` or above.
     pub fn truncates(&self) -> bool {
-        self.stored_size.div_ceil(CHUNK_SIZE as u64) > self.keep_below
+        self.stored_size
+            .is_none_or(|s| s.div_ceil(CHUNK_SIZE as u64) > self.keep_below)
+    }
+
+    /// Whether the commit sets the file's size: it differs from the stored
+    /// size, or the store may not have the file (or its size) yet.
+    pub fn resizes(&self) -> bool {
+        self.stored_size.is_none_or(|s| s != self.size || s == 0)
     }
 }
 
@@ -179,8 +192,11 @@ struct StoredFile {
     store: Arc<dyn PageStore>,
     /// The size with uncommitted writes applied.
     size: u64,
-    /// The size the store holds.
+    /// The size the store holds, as of the last commit that succeeded.
     stored_size: u64,
+    /// After a commit failed: the largest size the store may hold, since a
+    /// failed commit may have applied. `None` while `stored_size` is known.
+    unsure: Option<u64>,
     /// Chunks written since the last commit, whole. Every index is below the
     /// size's chunk count.
     dirty: Chunks,
@@ -214,6 +230,7 @@ impl StoredFile {
             store,
             size,
             stored_size: size,
+            unsure: None,
             dirty: Chunks::new(),
             truncated_to: None,
             max_dirty_chunks: (limits.max_transaction_bytes / CHUNK_SIZE as u64) as usize,
@@ -355,7 +372,10 @@ impl VfsFile for StoredFile {
         // Chunks a truncation dropped and the file then grew back over read
         // as zeros; the store still holds their old bytes, so overwrite them.
         if let Some(t) = self.truncated_to {
-            let stored_chunks = self.stored_size.div_ceil(CHUNK_SIZE as u64);
+            let stored = self
+                .unsure
+                .map_or(self.stored_size, |u| u.max(self.stored_size));
+            let stored_chunks = stored.div_ceil(CHUNK_SIZE as u64);
             for i in t..keep_below.min(stored_chunks) {
                 self.dirty.entry(i).or_insert_with(|| vec![0; CHUNK_SIZE]);
             }
@@ -364,7 +384,7 @@ impl VfsFile for StoredFile {
         // The store reads the chunks in place, and hands them back.
         let commit = Commit {
             size: self.size,
-            stored_size: self.stored_size,
+            stored_size: self.unsure.is_none().then_some(self.stored_size),
             chunks: Arc::new(std::mem::take(&mut self.dirty)),
             keep_below,
         };
@@ -372,6 +392,10 @@ impl VfsFile for StoredFile {
         let written = commit.chunks.len() as u64;
         if let Err(e) = result {
             self.dirty = Arc::try_unwrap(commit.chunks).unwrap_or_else(|kept| (*kept).clone());
+            let may_hold = self
+                .unsure
+                .map_or(self.stored_size, |u| u.max(self.stored_size));
+            self.unsure = Some(may_hold.max(commit.size));
             return Err(io_err(SQLITE_IOERR_FSYNC, e));
         }
         self.count(|s| {
@@ -380,6 +404,7 @@ impl VfsFile for StoredFile {
         });
         self.truncated_to = None;
         self.stored_size = self.size;
+        self.unsure = None;
         self.refused_at_cap = false;
         Ok(())
     }
@@ -394,6 +419,13 @@ impl VfsFile for StoredFile {
 enum PageFile {
     Stored(StoredFile),
     Memory(MemChunksFile),
+    /// A database file a later [`open_with`] of it replaced: every read or
+    /// write of it fails.
+    Replaced,
+}
+
+fn replaced() -> VfsError {
+    not_open(SQLITE_IOERR, "the database file")
 }
 
 impl VfsFile for PageFile {
@@ -401,30 +433,35 @@ impl VfsFile for PageFile {
         match self {
             PageFile::Stored(f) => f.read(buf, offset),
             PageFile::Memory(f) => f.read(buf, offset),
+            PageFile::Replaced => Err(replaced()),
         }
     }
     fn write(&mut self, buf: &[u8], offset: usize) -> VfsResult<()> {
         match self {
             PageFile::Stored(f) => f.write(buf, offset),
             PageFile::Memory(f) => f.write(buf, offset),
+            PageFile::Replaced => Err(replaced()),
         }
     }
     fn truncate(&mut self, size: usize) -> VfsResult<()> {
         match self {
             PageFile::Stored(f) => f.truncate(size),
             PageFile::Memory(f) => f.truncate(size),
+            PageFile::Replaced => Err(replaced()),
         }
     }
     fn flush(&mut self) -> VfsResult<()> {
         match self {
             PageFile::Stored(f) => f.flush(),
             PageFile::Memory(f) => f.flush(),
+            PageFile::Replaced => Err(replaced()),
         }
     }
     fn size(&self) -> VfsResult<usize> {
         match self {
             PageFile::Stored(f) => f.size(),
             PageFile::Memory(f) => f.size(),
+            PageFile::Replaced => Err(replaced()),
         }
     }
 }
@@ -814,7 +851,10 @@ pub fn open(name: &str, store: Arc<dyn PageStore>) -> rusqlite::Result<Database>
 /// opening the same `name` of the same store again replaces the earlier
 /// open, whose connection's next read or write of the file fails, so a
 /// connection left over from an earlier start cannot write into the later
-/// one's.
+/// one's. The earlier connection's I/O stops before the store's size is
+/// read (one in progress first ends), so the later open reads the file as
+/// the earlier one left it; if the later open fails, the earlier
+/// connection works again, unless yet another open replaced it.
 pub fn open_with(
     name: &str,
     store: Arc<dyn PageStore>,
@@ -822,26 +862,72 @@ pub fn open_with(
 ) -> rusqlite::Result<Database> {
     register()?;
     let key = (store_key(&store), name.to_owned());
-    // The store's first read, before the registry is locked: another
-    // database's I/O never waits on this one's store.
+    let (file, earlier) = {
+        let mut r = registry();
+        r.opens += 1;
+        let sqlite_name = format!("{}/{name}", r.opens);
+        let earlier = r
+            .latest
+            .insert(key.clone(), sqlite_name.clone())
+            .and_then(|earlier| {
+                r.pending.remove(&earlier);
+                r.files.remove(&earlier).map(|f| (earlier, f))
+            });
+        (OpenFile { key, sqlite_name }, earlier)
+    };
+    // Held until the open ends: an earlier I/O call that took the file
+    // before it left the registry waits here, and then fails.
+    let mut held = earlier.as_ref().map(|(_, f)| lock(f));
+    match connect(name, store, limits, &file) {
+        Ok(conn) => {
+            if let Some(f) = held.as_deref_mut() {
+                *f = PageFile::Replaced;
+            }
+            Ok(Database { conn, file })
+        }
+        Err(e) => {
+            if let Some((earlier, f)) = &earlier {
+                let mut r = registry();
+                if r.latest.get(&file.key) == Some(&file.sqlite_name) {
+                    r.latest.insert(file.key.clone(), earlier.clone());
+                    r.files.insert(earlier.clone(), f.clone());
+                }
+            }
+            drop(held);
+            Err(e)
+        }
+    }
+}
+
+/// Reads the store's size for `file`, registers it and opens SQLite's
+/// connection on it, with the settings [`open_with`] lists. The store's
+/// read is made outside the registry's lock: another database's I/O never
+/// waits on this one's store.
+fn connect(
+    name: &str,
+    store: Arc<dyn PageStore>,
+    limits: Limits,
+    file: &OpenFile,
+) -> rusqlite::Result<Connection> {
     let stored = StoredFile::open(name, store, limits).map_err(|e| {
         rusqlite::Error::SqliteFailure(
             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
             Some(format!("{name}: {e:?}")),
         )
     })?;
-    let file = {
+    {
         let mut r = registry();
-        r.opens += 1;
-        let sqlite_name = format!("{}/{name}", r.opens);
-        if let Some(earlier) = r.latest.insert(key.clone(), sqlite_name.clone()) {
-            r.pending.remove(&earlier);
-            r.files.remove(&earlier);
+        if r.latest.get(&file.key) != Some(&file.sqlite_name) {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                Some(format!(
+                    "{name}: a later open of the file replaced this one"
+                )),
+            ));
         }
         r.pending
-            .insert(sqlite_name.clone(), Pending { file: stored });
-        OpenFile { key, sqlite_name }
-    };
+            .insert(file.sqlite_name.clone(), Pending { file: stored });
+    }
     let conn = Connection::open_with_flags_and_vfs(
         &file.sqlite_name,
         OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -865,7 +951,7 @@ pub fn open_with(
         limits.cache_bytes / 1024
     ))?;
     conn.authorizer(Some(authorize))?;
-    Ok(Database { conn, file })
+    Ok(conn)
 }
 
 /// The counters for the latest open of the database file `name` of
@@ -879,7 +965,7 @@ pub fn stats(store: &Arc<dyn PageStore>, name: &str) -> Option<FileStats> {
     };
     match &*lock(&file) {
         PageFile::Stored(f) => Some(f.stats.get()),
-        PageFile::Memory(_) => None,
+        PageFile::Memory(_) | PageFile::Replaced => None,
     }
 }
 

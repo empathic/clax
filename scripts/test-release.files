@@ -56,3 +56,6 @@ plugins/clax-grok/skills/clax/SKILL.md
 plugins/clax-grok/README.md
 plugins/pi/scripts/ensure-clax.sh
 scripts/pin-release.sh
+deploy/k8s/sqlite/kustomization.yaml
+deploy/k8s/postgres/kustomization.yaml
+docs/kubernetes.md
