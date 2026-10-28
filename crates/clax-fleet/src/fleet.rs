@@ -807,6 +807,9 @@ impl Fleet {
             bind: IpAddr::from([0, 0, 0, 0]),
             port: self.cfg.port,
             embed: None,
+            // Each person new to the instance is seeded with the web build's
+            // quickstart, as on the Worker.
+            quickstart: true,
         };
         match &self.cfg.storage {
             Storage::Disk => Ok(Running {
