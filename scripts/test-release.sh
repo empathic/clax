@@ -43,26 +43,15 @@ if (cd "$T" && scripts/bump-version.sh 9.8.7 >/dev/null) && [ "$(cd "$T" && scri
     && grep -A1 '^name = "clax-fake-exe"$' "$T/Cargo.lock" | grep '^version = "9.8.7"$' >/dev/null; then
     pass "bump-version writes every version, the launcher copies and skill blocks included"
 else fail "bump-version writes every version"; fi
-# The Worker's lock: every Clax crate it names by path at the new version,
-# its own two crates (0.0.0), and every registry package and the vendored
-# QuickJS crates (third_party/clax-rquickjs-*, at their upstream version)
-# as they were.
-lock_diff="$(diff "$HERE/crates/clax-worker/Cargo.lock" "$T/crates/clax-worker/Cargo.lock" | grep '^[<>]' | sort | uniq -c)"
-crates="$(awk '/^name = "clax-/ && !/^name = "clax-rquickjs-/ {n=$3} /^version = / && n {print n, $3; n=""}' "$T/crates/clax-worker/Cargo.lock")"
-if echo "$crates" | grep -v '"0.0.0"' | grep -v '"9.8.7"' | grep . >/dev/null || ! echo "$crates" | grep '"9.8.7"' >/dev/null \
-    || echo "$lock_diff" | grep -v 'version = "' | grep . >/dev/null; then
-    fail "bump-version writes the Worker's Cargo.lock ($crates; $lock_diff)"
-else pass "bump-version writes the Worker's Cargo.lock, and only its Clax crates' versions"; fi
+# The Worker's two crates keep their own version (0.0.0) in Cargo.lock.
+if grep -A1 -E '^name = "(clax-worker|clax-do-vfs)"$' "$T/Cargo.lock" | grep '^version = ' | grep -v '"0.0.0"' | grep . >/dev/null; then
+    fail "bump-version leaves the Worker's crates at 0.0.0"
+else pass "bump-version leaves the Worker's crates at 0.0.0"; fi
 
 sed -i.bak 's/"version": "9.8.7"/"version": "9.8.6"/' "$T/plugins/clax/.codex-plugin/plugin.json"
 out="$(cd "$T" && scripts/check-version.sh 2>&1)"; rc=$?
 if [ "$rc" = 1 ] && echo "$out" | grep "plugins/clax/.codex-plugin/plugin.json: 9.8.6" >/dev/null; then pass "a stray version is named"
 else fail "a stray version is named ($out)"; fi
-
-sed -i.bak '/^name = "clax-core"$/{n;s/9.8.7/9.8.6/;}' "$T/crates/clax-worker/Cargo.lock"
-out="$(cd "$T" && scripts/check-version.sh 2>&1)"; rc=$?
-if [ "$rc" = 1 ] && echo "$out" | grep "crates/clax-worker/Cargo.lock clax-core: 9.8.6" >/dev/null; then pass "a stray Worker lock version is named"
-else fail "a stray Worker lock version is named ($out)"; fi
 
 # A fresh copy of the version files, for the cases below that need one.
 fresh() {

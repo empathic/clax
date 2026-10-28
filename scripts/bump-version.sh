@@ -3,11 +3,9 @@
 # regenerates the skills' tool blocks (which name the plugin version), then
 # runs check-version.sh. Usage: bump-version.sh X.Y.Z
 #
-# Both lockfiles name the workspace crates' versions: Cargo.lock, and
-# crates/clax-worker/Cargo.lock (the Worker's own workspace uses them by
-# path). Each is rewritten here, offline, for every member whose manifest
-# takes `version.workspace`, so a `--locked` build passes without a
-# `cargo update`.
+# Cargo.lock names the workspace crates' versions. It is rewritten here,
+# offline, for every member whose manifest takes `version.workspace`, so a
+# `--locked` build passes without a `cargo update`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [ $# = 1 ] || { echo "usage: bump-version.sh X.Y.Z" >&2; exit 2; }
@@ -43,16 +41,8 @@ def workspace_versioned():
 
 sub("Cargo.toml", r'(\[workspace\.package\]\s*\nversion\s*=\s*")([^"]+)(")')
 crates = workspace_versioned()
-worker_lock = "crates/clax-worker/Cargo.lock"
-worker_text = pathlib.Path(worker_lock).read_text()
 for crate in crates:
-    pattern = r'(^name = "%s"\nversion = ")([^"]+)(")' % re.escape(crate)
-    sub("Cargo.lock", pattern)
-    # The Worker's lock holds the crates it builds, and no other.
-    if re.search(pattern, worker_text, re.M):
-        sub(worker_lock, pattern)
-if worker_lock not in pending:
-    sys.exit(f"{worker_lock}: names no workspace crate; no file was changed")
+    sub("Cargo.lock", r'(^name = "%s"\nversion = ")([^"]+)(")' % re.escape(crate))
 for f in ("plugins/claude-code/.claude-plugin/plugin.json", "plugins/clax/.codex-plugin/plugin.json", "plugins/clax-grok/.grok-plugin/plugin.json", "plugins/pi/package.json"):
     sub(f, r'(^  "version": ")([^"]+)(")')
 sub(".claude-plugin/marketplace.json", r'("version": ")([^"]+)(")', count=2)

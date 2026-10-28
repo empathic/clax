@@ -428,6 +428,54 @@ CRATES = {
         "tests": {},
         "version": "0.6.0"
     },
+    "crates/clax-worker": {
+        "bins": {},
+        "default_features": [],
+        "deps": [
+            "//crates/clax-bot-sandbox:clax_bot_sandbox",
+            "//crates/clax-bot:clax_bot",
+            "//crates/clax-content-git:clax_content_git",
+            "//crates/clax-core:clax_core",
+            "//crates/clax-git:clax_git",
+            "//crates/clax-http:clax_http",
+            "//crates/clax-realtime:clax_realtime",
+            "//crates/clax-rt:clax_rt",
+            "//crates/clax-sample:clax_sample",
+            "//crates/clax-server:clax_server",
+            "//crates/clax-store:clax_store",
+            "//crates/clax-worker/vfs:clax_do_vfs"
+        ],
+        "dev_deps": [
+            "//crates/clax-testkit:clax_testkit"
+        ],
+        "edition": "2024",
+        "features": [],
+        "has_build_script": True,
+        "lib": "clax_worker",
+        "lib_root": "src/lib.rs",
+        "name": "clax-worker",
+        "tests": {
+            "store_on_vfs": "tests/store_on_vfs.rs"
+        },
+        "version": "0.0.0"
+    },
+    "crates/clax-worker/vfs": {
+        "bins": {},
+        "default_features": [],
+        "deps": [],
+        "dev_deps": [],
+        "edition": "2024",
+        "features": [],
+        "has_build_script": False,
+        "lib": "clax_do_vfs",
+        "lib_root": "src/lib.rs",
+        "name": "clax-do-vfs",
+        "tests": {
+            "adversarial": "tests/adversarial.rs",
+            "vfs": "tests/vfs.rs"
+        },
+        "version": "0.0.0"
+    },
     "third_party/clax-rquickjs-core": {
         "bins": {},
         "default_features": [

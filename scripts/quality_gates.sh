@@ -134,20 +134,15 @@ lane_lint() {
     run "cargo clippy"          cargo clippy --workspace --all-targets -- -D warnings &&
     mark linted
 }
-# crates/clax-worker is a workspace of its own (the Worker builds for wasm32
-# only, and its rusqlite cannot share the root's lockfile): its fmt (its own
-# members only: `--all` would format the Clax crates it uses by path too,
-# which `cargo fmt --check` above covers), its
-# tests and clippy natively (the SQLite VFS's tests among them), the config
-# deploy.mjs generates (test-deploy-config.mjs), then the wasm build under `wrangler dev --local` across a restart (test-wasm.mjs).
+# crates/clax-worker, whose format check, tests and clippy (the SQLite
+# VFS's among them) the workspace's lanes above run: the config deploy.mjs
+# generates (test-deploy-config.mjs), then the wasm build under `wrangler
+# dev --local` across a restart (test-wasm.mjs).
 # The e2e lane then runs the Clax instance in two browsers on that build
 # (e2e.mjs), then as a hosted Clax with its site hosts (e2e-hosted.mjs),
 # after the other browser suites.
 lane_worker() {
     run "worker npm ci"         scripts/npm-ci-stamped.sh crates/clax-worker --silent &&
-    run "worker cargo fmt"      bash -c 'cd crates/clax-worker && cargo fmt -- --check' &&
-    run "worker cargo test"     bash -c 'cd crates/clax-worker && cargo test -q --workspace' &&
-    run "worker cargo clippy"   bash -c 'cd crates/clax-worker && cargo clippy -q --workspace --all-targets -- -D warnings' &&
     run "worker deploy config"  bash -c 'cd crates/clax-worker && node test-deploy-config.mjs' &&
     run "worker wasm"           bash -c 'cd crates/clax-worker && node test-wasm.mjs' &&
     mark worker-built

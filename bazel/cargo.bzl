@@ -32,6 +32,7 @@ def cargo_package(
         cdylib = False,
         disable_pipelining = False,
         deps_not_on = {},
+        lib_test_uses_testkit = False,
         visibility = ["//visibility:public"]):
     """Declares the library, binaries, build script and tests of the Cargo
     package here.
@@ -90,6 +91,9 @@ def cargo_package(
         dependency left out on those platforms, as a Cargo
         `[target.'cfg(...)'.dependencies]` table leaves it out
         (crates/clax-server's QuickJS sandbox on Android and iOS).
+      lib_test_uses_testkit: link crates/clax-testkit into the library's
+        unit tests too, for a crate the testkit does not depend on
+        (crates/clax-worker, whose unit tests drive the daemon in process).
       visibility: the library's and binaries' visibility.
     """
     package = native.package_name()
@@ -180,7 +184,7 @@ def cargo_package(
     # The testkit serves integration tests only: it depends on the crates it
     # tests, so a unit test that linked it would wait for its crate's own
     # library to compile first.
-    unit_dev_deps = [d for d in dev_deps if d != _TESTKIT]
+    unit_dev_deps = dev_deps if lib_test_uses_testkit else [d for d in dev_deps if d != _TESTKIT]
     macros = all_crate_deps(proc_macro = True)
     dev_macros = all_crate_deps(proc_macro_dev = True)
     srcs = native.glob(["src/**/*.rs"])

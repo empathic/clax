@@ -104,6 +104,8 @@ RUST_SOURCES = [
     "//crates/clax-server:rust_sources",
     "//crates/clax-store:rust_sources",
     "//crates/clax-testkit:rust_sources",
+    "//crates/clax-worker:rust_sources",
+    "//crates/clax-worker/vfs:rust_sources",
 ]
 
 # Every crate's manifest, which the layering check reads.
@@ -128,6 +130,8 @@ CRATE_MANIFESTS = [
     "//crates/clax-server:manifest",
     "//crates/clax-store:manifest",
     "//crates/clax-testkit:manifest",
+    "//crates/clax-worker:manifest",
+    "//crates/clax-worker/vfs:manifest",
     "//third_party/clax-rquickjs-core:manifest",
     "//third_party/clax-rquickjs-sys:manifest",
 ]

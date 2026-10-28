@@ -11,9 +11,8 @@
 #   scripts/run.sh web-e2e           the browser tests
 #   scripts/run.sh perf              the perf benchmarks, on demand (they gate nothing; on a
 #                                    Mac also the Clax app's launch, scripts/perf-app-launch.sh)
-#   scripts/run.sh worker-test       crates/clax-worker's checks: its format check (Bazel's
-#                                    rustfmt, or cargo fmt), then scripts/worker-checks.sh,
-#                                    natively either way (its own Cargo workspace)
+#   scripts/run.sh worker-test       crates/clax-worker's checks: its and its VFS's format
+#                                    check, tests and clippy, then scripts/worker-checks.sh
 #   scripts/run.sh build             the clax binary
 #   scripts/run.sh web               web/dist and web/dist-extension, built
 #   scripts/run.sh clax [args]       build the debug clax and run it (serve, stop, doctor, …)
@@ -244,9 +243,10 @@ _bazel() {
         pi-test) _run "${b[@]}" test --lockfile_mode=error //plugins/pi:typecheck //plugins/pi:test "$@" ;;
         web-e2e) _run "${b[@]}" test --lockfile_mode=error //web:e2e_gesture //web:e2e_chrome_overlay //web:e2e_rest "$@" ;;
         worker-test)
-            # Only the format check is Bazel's; the rest is Cargo and npm.
-            _run "${b[@]}" test --lockfile_mode=error //crates/clax-worker:rustfmt &&
-                echo "── the Worker's tests, clippy and wasm build run natively (its own Cargo workspace) ──" &&
+            _run "${b[@]}" build --lockfile_mode=error --config=fmt //crates/clax-worker/... &&
+                _run "${b[@]}" build --lockfile_mode=error --config=clippy //crates/clax-worker/... &&
+                _run "${b[@]}" test --lockfile_mode=error //crates/clax-worker/... &&
+                echo "── the Worker's wasm build and wrangler checks run natively ──" &&
                 _run "${awake[@]+"${awake[@]}"}" ./scripts/worker-checks.sh
             ;;
         perf)
@@ -318,9 +318,9 @@ _native() {
                 _run bash -c 'cd web && pnpm exec playwright install --with-deps chromium && pnpm run e2e'
             ;;
         worker-test)
-            # The workspace's own members only: `--all` would also format the
-            # Clax crates it uses by path.
-            _run bash -c 'cd crates/clax-worker && cargo fmt -- --check' &&
+            _run cargo fmt -p clax-worker -p clax-do-vfs -- --check &&
+                _run cargo test -q -p clax-worker -p clax-do-vfs &&
+                _run cargo clippy -q -p clax-worker -p clax-do-vfs --all-targets -- -D warnings &&
                 _run "${awake[@]+"${awake[@]}"}" ./scripts/worker-checks.sh
             ;;
         perf)

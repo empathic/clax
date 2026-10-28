@@ -34,11 +34,11 @@ plugin-test:
 check-wasm *ARGS:
     ./scripts/check-wasm.sh "$@"
 
-# Run crates/clax-worker's checks: its format check with Bazel's rustfmt (//crates/clax-worker:rustfmt), then natively (its own Cargo workspace) npm ci, its tests, clippy, test-deploy-config.mjs (deploy.mjs's generated config), and test-wasm.mjs and test-sandbox.mjs under `wrangler dev --local` (scripts/worker-checks.sh)
+# Run crates/clax-worker's checks: its and its VFS's format check, tests and clippy, then npm ci, test-deploy-config.mjs (deploy.mjs's generated config), and test-wasm.mjs and test-sandbox.mjs under `wrangler dev --local` (scripts/worker-checks.sh)
 worker-test:
     ./scripts/run.sh worker-test
 
-# Run crates/clax-worker's checks natively, its format check with cargo fmt
+# Run crates/clax-worker's checks natively, with Cargo
 worker-test-native:
     CLAX_BUILD=native ./scripts/run.sh worker-test
 

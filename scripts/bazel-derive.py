@@ -81,7 +81,9 @@ def workspace():
     packages = {p["name"]: p for p in meta["packages"]}
 
     def lib_of(p):
-        libs = [t for t in p["targets"] if "lib" in t["kind"] or "rlib" in t["kind"]]
+        # A cdylib-only library (crates/clax-worker) is a library to Bazel
+        # too: its unit tests and its dependents' builds link it as an rlib.
+        libs = [t for t in p["targets"] if {"lib", "rlib", "cdylib"} & set(t["kind"])]
         if len(libs) > 1:
             sys.exit("error: scripts/bazel-derive.py: %s has more than one library target" % p["name"])
         return libs[0] if libs else None
