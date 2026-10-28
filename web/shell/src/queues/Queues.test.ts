@@ -7,7 +7,7 @@ const QUEUE = { id: "q1", name: "Bugs", origins: ["https://app.example"], report
 const routes = (o: Record<string, unknown> = {}) => ({
   "GET /api/queues": { queues: [QUEUE] },
   "GET /api/queues/q1/reports": { reports: [{ state: "open" }, { state: "open" }, { state: "claimed" }], next: null },
-  "GET /api/queues/q1/members": { members: [{ public_id: "p2", display_name: "Mia", role: "triage" }] },
+  "GET /api/queues/q1/members": { members: [{ public_id: "p2", name: "Mia", role: "triage" }] },
   "GET /api/queues/q1/service-grants": { grants: [] },
   ...o,
 });

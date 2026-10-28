@@ -43,7 +43,7 @@
     await loadMembers();
   }
   async function removeMember(m: api.QueueMember) {
-    if (!confirm(`Remove ${m.display_name ?? m.public_id} from ${p.queue.name}?`)) return;
+    if (!confirm(`Remove ${m.name ?? m.public_id} from ${p.queue.name}?`)) return;
     memberErr = null;
     try { await api.removeMember(qid, m.public_id); } catch (x) { memberErr = refusal(x); }
     await loadMembers();
@@ -76,8 +76,8 @@
       <ul class="lines">
         {#each members as m (m.public_id)}
           <li class="line" data-member={m.public_id}>
-            <span class="who">{m.display_name ?? m.public_id}{#if m.display_name}<span class="key">{m.public_id}</span>{/if}</span>
-            <select aria-label={`Role of ${m.display_name ?? m.public_id}`} value={m.role} onchange={e => void changeRole(m, e.currentTarget.value as api.QueueRole)}>
+            <span class="who">{m.name ?? m.public_id}{#if m.name}<span class="key">{m.public_id}</span>{/if}</span>
+            <select aria-label={`Role of ${m.name ?? m.public_id}`} value={m.role} onchange={e => void changeRole(m, e.currentTarget.value as api.QueueRole)}>
               <option value="triage">Triage</option><option value="admin">Admin</option>
             </select>
             <button type="button" class="ghost danger" onclick={() => void removeMember(m)}>Remove</button>
