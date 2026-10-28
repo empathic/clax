@@ -99,6 +99,44 @@ describe("Director", () => {
     expect(calls.filter(c => !c.startsWith("move "))).toEqual(["down", "up", "type H", "type i"]);
   });
 
+  it("drag presses at one point of the target, eases there with the button held, and releases", async () => {
+    const { camera } = fakeCamera();
+    const { page, calls } = fakePage();
+    await new Director(page, camera, "agent").drag(fakeLocator("Board", { x: 100, y: 100, width: 400, height: 200 }), { x: 0.1, y: 0.2 }, { x: 0.9, y: 0.8 });
+    const down = calls.indexOf("down");
+    const up = calls.indexOf("up");
+    expect(calls[down - 1]).toBe("move 140,140");
+    expect(calls[up - 1]).toBe("move 460,260");
+    expect(calls.slice(down + 1, up).every(c => c.startsWith("move "))).toBe(true);
+    expect(up - down).toBeGreaterThan(2);
+  });
+
+  it("click waits for what it landed, stilled, before the frame after it", async () => {
+    const { camera, calls: rolls } = fakeCamera();
+    const { page, calls } = fakePage();
+    const d = new Director(page, camera, "agent");
+    await d.click(fakeLocator("Reload"), { landed: async () => { calls.push("landed"); } });
+    expect(calls.slice(calls.indexOf("up"))).toEqual(["up", "landed"]);
+    expect(rolls.slice(-3)).toEqual(["roll 70", "still", "roll 150"]);
+  });
+
+  it("keys types into what has focus, with no click", async () => {
+    const { camera, calls: rolls } = fakeCamera();
+    const { page, calls } = fakePage();
+    await new Director(page, camera, "agent").keys("Hi");
+    expect(calls).toEqual(["type H", "type i"]);
+    expect(rolls).toHaveLength(2);
+  });
+
+  it("keys at twice the rate rolls half as long", async () => {
+    const slow = fakeCamera();
+    const fast = fakeCamera();
+    await new Director(fakePage().page, slow.camera, "agent").keys("Hello");
+    await new Director(fakePage().page, fast.camera, "agent").keys("Hello", { cps: 28 });
+    const total = (c: string[]) => c.reduce((n, r) => n + Number(r.split(" ")[1]), 0);
+    expect(Math.abs(total(fast.calls) * 2 - total(slow.calls))).toBeLessThanOrEqual(5);
+  });
+
   it("beat marks the camera's frame", async () => {
     const { camera } = fakeCamera();
     const d = new Director(fakePage().page, camera, "realtime");

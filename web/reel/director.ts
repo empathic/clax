@@ -9,7 +9,7 @@ import type { Browser, BrowserContextOptions, Locator, Page } from "@playwright/
 import type { hostedDaemon } from "../e2e/hosted-helpers.ts";
 import type { startDaemon } from "../e2e/fixtures.ts";
 import { cursorPress, cursorTo } from "./cursor.ts";
-import { CURVES, ease, travelMs, typingDelays } from "./pace.ts";
+import { CURVES, TYPING_CPS, ease, travelMs, typingDelays } from "./pace.ts";
 
 /** What films the camera's page. `frame()` is the frame the next roll
  * starts on; `beats` collects the director's beats with their first frames. */
@@ -117,13 +117,36 @@ export class Director {
     return { x: Math.round(v.width * 0.62), y: Math.round(v.height * 0.86) };
   }
 
-  /** Moves to `target` and clicks it: the press ring, a real press and release. */
-  async click(target: Locator): Promise<void> {
+  /** Moves to `target` and clicks it: the press ring, a real press and
+   * release. `opts.landed` waits, with the camera stilled, for what the
+   * click starts (a page that loads anew) before the next frame is taken,
+   * so that frame shows it done however long it took. */
+  async click(target: Locator, opts: { landed?: () => Promise<void> } = {}): Promise<void> {
     await this.move(target);
     await cursorPress(this.page);
     await this.page.mouse.down();
     await this.camera.roll(PRESS_HOLD_MS);
     await this.page.mouse.up();
+    if (opts.landed) await this.offstage(opts.landed);
+    await this.camera.roll(AFTER_CLICK_MS);
+  }
+
+  /** Draws a box over `target`, as a person drags out an area: the cursor
+   * travels to the point `from` (fractions of the target's box, 0 to 1 from
+   * its top left), presses, travels to `to` with the button held as real
+   * mouse moves follow it, and releases; `opts.landed` as `click`'s. */
+  async drag(target: Locator, from: { x: number; y: number }, to: { x: number; y: number }, opts: { landed?: () => Promise<void> } = {}): Promise<void> {
+    await this.visible(target);
+    const box = await target.boundingBox();
+    if (!box) throw new Error(`${String(target)} has no box on screen`);
+    const at = (f: { x: number; y: number }) => ({ x: Math.round(box.x + box.width * f.x), y: Math.round(box.y + box.height * f.y) });
+    await this.travel(at(from));
+    await cursorPress(this.page);
+    await this.page.mouse.down();
+    await this.camera.roll(PRESS_HOLD_MS);
+    await this.travel(at(to));
+    await this.page.mouse.up();
+    if (opts.landed) await this.offstage(opts.landed);
     await this.camera.roll(AFTER_CLICK_MS);
   }
 
@@ -131,10 +154,18 @@ export class Director {
    * characters a second with a jitter seeded by the vignette. */
   async type(target: Locator, text: string): Promise<void> {
     await this.click(target);
+    await this.keys(text);
+  }
+
+  /** Types `text` a key at a time into what has focus (a composer that
+   * focused its own field as it opened), at the rhythm of `type`, or at
+   * `opts.cps` characters a second with the same jitter. */
+  async keys(text: string, opts: { cps?: number } = {}): Promise<void> {
+    const scale = opts.cps ? TYPING_CPS / opts.cps : 1;
     const delays = typingDelays(text, this.seed);
     for (const [i, ch] of Array.from(text).entries()) {
       await this.page.keyboard.type(ch);
-      await this.camera.roll(delays[i]!);
+      await this.camera.roll(Math.round(delays[i]! * scale));
     }
   }
 

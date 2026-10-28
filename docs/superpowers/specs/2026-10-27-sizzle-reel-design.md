@@ -105,6 +105,7 @@ unreleased and out of scope (D14): no vignette shows it.
 | 1 | `point` | Point at anything | yes | 6.5 |
 | 2 | `version` | A new version, in seconds | yes | 6.5 |
 | 3 | `realtime` | Realtime collaboration | yes | 7 |
+| 3a | `agent` | Ask your agent | yes | 12 |
 | 4 | `history` | Every version kept | yes | 6 |
 | 5 | `devserver` | Comment on your dev server | no | 6.5 |
 | 6 | `more` | Pages that do more | no | 6.5 |
@@ -142,6 +143,23 @@ is the starting point.
   Mia starts a comment and her draft shows typing in Alex's view; Sam
   ticks "Book the venue", and the tick appears in Alex's list. Payoff:
   several people on one page, live.
+- **`agent`** (hosted, as `realtime`, so a teammate can watch). People:
+  Alex (camera, the owner) and Mia (a member, teal). Seed: an agent
+  session (`registerSession`, harness `claude`) publishes "Northwind Ops"
+  (`seed/ops-v1.html`), a launch-ops console declaring `db`: a sidebar,
+  a metrics strip with a small SVG chart, and a board of the launch's
+  tasks kept in the page's documents. Beat: Alex turns on comment mode,
+  draws an area over the board and writes "@claude Timeline with
+  dependencies + burndown"; the agent takes the thread (the working
+  strip and the card's "working on it"), publishes v2
+  (`seed/ops-v2.html`: the same tasks as a timeline with their
+  dependencies drawn, a burndown, the critical path and a new theme)
+  addressing the thread, and replies; Alex clicks Reload and v2 lands,
+  the version button reading v2; Mia, on the same page, loads it too,
+  points at the timeline and replies, which the agent sees. Payoff: an
+  agent makes a major change to a real application while people watch
+  and answer. Beats `ask`, `working`, `reveal`, `touch`: the composer
+  runs fast through `working` and at real speed from `reveal`.
 - **`history`** (local). Seed: "Launch plan" with six versions, each with
   a label and a note. Beat: the cursor opens Versions, scrubs back
   through v6 → v2 (the page changes under the scrubber), restores v2 as
@@ -321,13 +339,15 @@ people's pointers are Clax's live layers, which the shell draws.
   has the viewport, scale and colour scheme of §5, `reducedMotion:
   "no-preference"`, locale `en-US`, timezone `UTC`.
 - Wall time in the camera's pages starts at `REEL_EPOCH =
-  2026-11-03T09:41:00Z`: Playwright's `clock.install({ time: REEL_EPOCH })`
+  2025-11-03T09:41:00Z`: Playwright's `clock.install({ time: REEL_EPOCH })`
   on the camera's context. It flows while the vignette sets up; a
   deterministic camera then pauses it on the next whole 2 s of that time
   (a jump of under 2.25 s, well inside every staleness rule of the
   shell's, such as the stream's 35 s), so dates on screen read the same
   each run (to within the setup's few seconds). Times the daemon stamps
-  are real ones, not the page's.
+  are real ones, not the page's; the epoch is in the past so a page
+  behind the daemons reads what they stamp as "just now" and a working
+  clock as 0:00 on any day.
 - The shell's own timers (consent arming, the hint, presence reports)
   run on its test clock; the director advances it with `advance()` from
   `web/e2e/time.ts` where an e2e test would, never for pacing.
@@ -552,7 +572,7 @@ the repository.
 
 `config.ts` and the composer read the same file and refuse: an unknown
 key, a vignette ID with no script, a title in a vignette marked
-`cold-open`, a duration outside 3–10 s, a full reel outside 60–80 s, a
+`cold-open`, a duration outside 3–12 s, a full reel outside 60–80 s, a
 short cut outside 40–50 s, a `[gif]` of fewer than two or more than four
 segments or outside 6–10 s in all, a `[gif]` segment naming a vignette or
 beat that does not exist, and a `landing` that does not end in
