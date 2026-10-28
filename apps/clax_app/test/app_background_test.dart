@@ -202,6 +202,40 @@ class _Work implements BackgroundWork {
   Future<void> clearPaused() async => calls.add('clearPaused');
 }
 
+/// [PendingMake] with its calls in flight known, so a test waits for its
+/// real file writes themselves rather than for a stretch of time.
+class _TrackedPendingMake extends PendingMake {
+  _TrackedPendingMake(super.file);
+
+  final Set<Future<void>> _inFlight = {};
+
+  /// Whether a call has not finished.
+  bool get busy => _inFlight.isNotEmpty;
+
+  Future<T> _track<T>(Future<T> call) {
+    late final Future<void> done;
+    done = call.then<void>((_) {}, onError: (Object _) {}).whenComplete(
+      () => _inFlight.remove(done),
+    );
+    _inFlight.add(done);
+    return call;
+  }
+
+  @override
+  Future<void> save(String request) => _track(super.save(request));
+
+  @override
+  Future<void> waiting(String request, bool waiting) =>
+      _track(super.waiting(request, waiting));
+
+  @override
+  Future<void> clear([String? request]) => _track(super.clear(request));
+
+  @override
+  Future<List<({String request, bool waiting})>> takeEach() =>
+      _track(super.takeEach());
+}
+
 void main() {
   late Directory dir;
   late FakeCoreHost coreHost;
@@ -212,12 +246,14 @@ void main() {
   _Turns? turns;
   late StepClock clock;
   late bool reachable;
+  late _TrackedPendingMake pendingMake;
 
   setUp(() {
     turns = null;
     clock = StepClock();
     reachable = true;
     dir = Directory.systemTemp.createTempSync('app-bg-test-');
+    pendingMake = _TrackedPendingMake(File('${dir.path}/pending-make.json'));
     coreHost = FakeCoreHost();
     api = FakeClaxApi();
     agent = _Agent();
@@ -252,7 +288,7 @@ void main() {
           supportDir: dir.path,
           prompts: PromptBuilder(rootBundle),
           background: work,
-          pendingMake: PendingMake(File('${dir.path}/pending-make.json')),
+          pendingMake: pendingMake,
           pid: 42,
           inspector: turns == null && startQueue == null
               ? null
@@ -288,26 +324,31 @@ void main() {
   }
 
   /// Pumps until [text] shows, letting the app's real file reads finish
-  /// (they do not settle in fake time).
+  /// (they do not settle in fake time). Turns while the pending make has a
+  /// call in flight do not count, so its file's speed fails nothing.
   Future<void> pumpUntilShown(WidgetTester tester, String text) async {
-    for (var i = 0; i < 200; i++) {
+    for (var i = 0; i < 200;) {
       if (find.text(text).evaluate().isNotEmpty) return;
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 10)),
       );
       await tester.pump(const Duration(milliseconds: 10));
+      if (!pendingMake.busy) i++;
     }
     fail('"$text" never showed');
   }
 
-  /// Lets the app's queued file writes finish in real time.
+  /// Lets the app's file writes finish: turns the real event loop, where
+  /// the pending make's file calls run, and the test's frames, where their
+  /// answers land, until no call is in flight, however long that takes.
+  /// (The consent memory writes synchronously.)
   Future<void> settleFiles(WidgetTester tester) async {
-    for (var i = 0; i < 60; i++) {
+    do {
       await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        () => Future<void>.delayed(const Duration(milliseconds: 1)),
       );
       await tester.pump();
-    }
+    } while (pendingMake.busy);
   }
 
   Future<void> pumpRoute(WidgetTester tester) async {
