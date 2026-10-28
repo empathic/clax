@@ -66,7 +66,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SMOKE_CANNOT, smokeCannot, smokeCredential } from "./deploy-lib.mjs";
-import { HERE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HERE, STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
 
 const args = process.argv.slice(2);
 const flag = (n) => args.includes(n);
@@ -852,7 +852,7 @@ async function smoke(c, o) {
 
 async function local(o) {
   await build();
-  const root = join(HERE, "target/smoke-remote");
+  const root = join(STATE, "smoke-remote");
   pruneRuns(root, 3);
   const dir = join(root, `run-${Date.now()}-${process.pid}`);
   mkdirSync(dir, { recursive: true });
@@ -963,7 +963,7 @@ async function main() {
   }
   if (!base) throw new Error("give --deploy <record>, --url <public origin> or --local (see the top of smoke-remote.mjs)");
   if (!o.work) {
-    o.work = join(HERE, "target/smoke-remote");
+    o.work = join(STATE, "smoke-remote");
     mkdirSync(o.work, { recursive: true });
   }
   const c = new Client(base);

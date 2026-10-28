@@ -41,10 +41,10 @@ import { mkdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { HERE, build, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HERE, STATE, build, pruneRuns, start, writeConfig } from "./harness.mjs";
 import { kekPath, kekPlan } from "./deploy.mjs";
 
-const ROOT = join(HERE, "target/bot-test");
+const ROOT = join(STATE, "bot-test");
 const KEEP_RUNS = 3;
 const TOKEN = "bot-test-token-0123456789abcdef0123456789abcdef";
 const KEK = randomBytes(32).toString("hex");

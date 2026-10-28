@@ -1,6 +1,4 @@
-build/
 .wrangler/
 node_modules/
-target/
 wrangler.deploy.jsonc
 .deploy/

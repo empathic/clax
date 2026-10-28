@@ -1,7 +1,7 @@
 // The Worker as a hosted Clax (HOSTED=1), end to end under `wrangler dev
 // --local`, in four browsers and an agent: builds the Worker (./build.sh;
 // the web UI must be built, scripts/build-web.sh), starts wrangler with
-// fresh state under target/e2e-hosted/, `http://localhost:<port>` as the
+// fresh state under target/clax-worker/e2e-hosted/, `http://localhost:<port>` as the
 // public origin and `localhost` as the site domain (each artifact's site at
 // `http://<ID>.localhost:<port>`), and one people seat. It checks that
 //
@@ -52,12 +52,12 @@ import { mkdirSync } from "node:fs";
 import { request } from "node:http";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { HERE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HERE, STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
 
 const require = createRequire(join(HERE, "../../web/package.json"));
 const { chromium } = require("@playwright/test");
 
-const ROOT = join(HERE, "target/e2e-hosted");
+const ROOT = join(STATE, "e2e-hosted");
 const TOKEN = "e2e-owner-token-" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 const SECRET = "e2e setup secret " + Math.random().toString(36).slice(2);
 const LIMIT = 20_000;

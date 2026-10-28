@@ -26,7 +26,26 @@ CRATES = {
         "tests": {
             "integration": "tests/integration.rs"
         },
-        "version": "0.6.0"
+        "version": "0.6.0",
+        "wasm_deps": [
+            "@crates_wasm//:chrono-0.4.45",
+            "@crates_wasm//:futures-0.3.34",
+            "@crates_wasm//:html5ever-0.40.1",
+            "@crates_wasm//:serde-1.0.229",
+            "@crates_wasm//:serde_json-1.0.151",
+            "@crates_wasm//:tokio-1.53.1",
+            "@crates_wasm//:tracing-0.1.44"
+        ],
+        "wasm_path_deps": [
+            "//crates/clax-bot-sandbox:clax_bot_sandbox",
+            "//crates/clax-core:clax_core",
+            "//crates/clax-rt:clax_rt",
+            "//crates/clax-sample:clax_sample",
+            "//crates/clax-store:clax_store"
+        ],
+        "wasm_proc_macro_deps": [
+            "@crates_wasm//:async-trait-0.1.92"
+        ]
     },
     "crates/clax-bot-js": {
         "bins": {},
@@ -59,7 +78,19 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-bot-sandbox",
         "tests": {},
-        "version": "0.6.0"
+        "version": "0.6.0",
+        "wasm_deps": [
+            "@crates_wasm//:oxc_allocator-0.139.0",
+            "@crates_wasm//:oxc_ast-0.139.0",
+            "@crates_wasm//:oxc_parser-0.139.0",
+            "@crates_wasm//:oxc_span-0.139.0",
+            "@crates_wasm//:serde-1.0.229",
+            "@crates_wasm//:serde_json-1.0.151"
+        ],
+        "wasm_path_deps": [],
+        "wasm_proc_macro_deps": [
+            "@crates_wasm//:async-trait-0.1.92"
+        ]
     },
     "crates/clax-cli": {
         "bins": {
@@ -132,7 +163,15 @@ CRATES = {
         "tests": {
             "integration": "tests/integration.rs"
         },
-        "version": "0.6.0"
+        "version": "0.6.0",
+        "wasm_deps": [],
+        "wasm_path_deps": [
+            "//crates/clax-core:clax_core",
+            "//crates/clax-git:clax_git"
+        ],
+        "wasm_proc_macro_deps": [
+            "@crates_wasm//:async-trait-0.1.92"
+        ]
     },
     "crates/clax-core": {
         "bins": {},
@@ -148,7 +187,40 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-core",
         "tests": {},
-        "version": "0.6.0"
+        "version": "0.6.0",
+        "wasm_deps": [
+            "@crates_wasm//:base64-0.22.1",
+            "@crates_wasm//:chrono-0.4.45",
+            "@crates_wasm//:figment-0.10.19",
+            "@crates_wasm//:futures-util-0.3.34",
+            "@crates_wasm//:getrandom-0.3.4",
+            "@crates_wasm//:http-1.5.0",
+            "@crates_wasm//:icu_normalizer-2.3.0",
+            "@crates_wasm//:icu_properties-2.3.0",
+            "@crates_wasm//:mime_guess-2.0.5",
+            "@crates_wasm//:rand-0.9.5",
+            "@crates_wasm//:ring-0.17.14",
+            "@crates_wasm//:roxmltree-0.20.0",
+            "@crates_wasm//:rusqlite-0.40.2",
+            "@crates_wasm//:ryu-js-1.0.3",
+            "@crates_wasm//:schemars-1.2.2",
+            "@crates_wasm//:serde-1.0.229",
+            "@crates_wasm//:serde_json-1.0.151",
+            "@crates_wasm//:sha2-0.11.0",
+            "@crates_wasm//:thiserror-2.0.21",
+            "@crates_wasm//:tokio-1.53.1",
+            "@crates_wasm//:toml-0.9.12+spec-1.1.0",
+            "@crates_wasm//:toml_edit-0.25.15+spec-1.1.0",
+            "@crates_wasm//:tracing-0.1.44",
+            "@crates_wasm//:ulid-1.2.1",
+            "@crates_wasm//:unicode-security-0.1.2",
+            "@crates_wasm//:url-2.5.8",
+            "@crates_wasm//:web-time-1.1.0"
+        ],
+        "wasm_path_deps": [],
+        "wasm_proc_macro_deps": [
+            "@crates_wasm//:async-trait-0.1.92"
+        ]
     },
     "crates/clax-embed": {
         "bins": {},
@@ -227,7 +299,15 @@ CRATES = {
         "tests": {
             "integration": "tests/integration.rs"
         },
-        "version": "0.6.0"
+        "version": "0.6.0",
+        "wasm_deps": [
+            "@crates_wasm//:miniz_oxide-0.9.1",
+            "@crates_wasm//:serde_json-1.0.151",
+            "@crates_wasm//:sha1-0.10.7",
+            "@crates_wasm//:thiserror-2.0.21"
+        ],
+        "wasm_path_deps": [],
+        "wasm_proc_macro_deps": []
     },
     "crates/clax-hooks": {
         "bins": {},
@@ -269,7 +349,38 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-http",
         "tests": {},
-        "version": "0.6.0"
+        "version": "0.6.0",
+        "wasm_deps": [
+            "@crates_wasm//:axum-0.8.9",
+            "@crates_wasm//:base64-0.22.1",
+            "@crates_wasm//:chrono-0.4.45",
+            "@crates_wasm//:futures-0.3.34",
+            "@crates_wasm//:http-1.5.0",
+            "@crates_wasm//:rand-0.9.5",
+            "@crates_wasm//:reqwest-0.12.28",
+            "@crates_wasm//:send_wrapper-0.6.0",
+            "@crates_wasm//:serde-1.0.229",
+            "@crates_wasm//:serde_json-1.0.151",
+            "@crates_wasm//:sha2-0.11.0",
+            "@crates_wasm//:tokio-1.53.1",
+            "@crates_wasm//:tower-0.5.3",
+            "@crates_wasm//:tower-http-0.6.11",
+            "@crates_wasm//:tracing-0.1.44",
+            "@crates_wasm//:url-2.5.8",
+            "@crates_wasm//:web-time-1.1.0"
+        ],
+        "wasm_path_deps": [
+            "//crates/clax-bot-sandbox:clax_bot_sandbox",
+            "//crates/clax-bot:clax_bot",
+            "//crates/clax-core:clax_core",
+            "//crates/clax-realtime:clax_realtime",
+            "//crates/clax-rt:clax_rt",
+            "//crates/clax-sample:clax_sample",
+            "//crates/clax-store:clax_store"
+        ],
+        "wasm_proc_macro_deps": [
+            "@crates_wasm//:async-trait-0.1.92"
+        ]
     },
     "crates/clax-mcp": {
         "bins": {},
@@ -293,7 +404,28 @@ CRATES = {
         "tests": {
             "integration": "tests/integration.rs"
         },
-        "version": "0.6.0"
+        "version": "0.6.0",
+        "wasm_deps": [
+            "@crates_wasm//:anyhow-1.0.104",
+            "@crates_wasm//:base64-0.22.1",
+            "@crates_wasm//:bytes-1.12.1",
+            "@crates_wasm//:getrandom-0.4.3",
+            "@crates_wasm//:http-1.5.0",
+            "@crates_wasm//:reqwest-0.12.28",
+            "@crates_wasm//:rmcp-3.5.0",
+            "@crates_wasm//:schemars-1.2.2",
+            "@crates_wasm//:serde-1.0.229",
+            "@crates_wasm//:serde_json-1.0.151",
+            "@crates_wasm//:tokio-1.53.1",
+            "@crates_wasm//:tracing-0.1.44",
+            "@crates_wasm//:url-2.5.8",
+            "@crates_wasm//:uuid-1.26.1"
+        ],
+        "wasm_path_deps": [
+            "//crates/clax-core:clax_core",
+            "//crates/clax-rt:clax_rt"
+        ],
+        "wasm_proc_macro_deps": []
     },
     "crates/clax-realtime": {
         "bins": {},
@@ -313,7 +445,23 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-realtime",
         "tests": {},
-        "version": "0.6.0"
+        "version": "0.6.0",
+        "wasm_deps": [
+            "@crates_wasm//:bytes-1.12.1",
+            "@crates_wasm//:chrono-0.4.45",
+            "@crates_wasm//:futures-0.3.34",
+            "@crates_wasm//:rand-0.9.5",
+            "@crates_wasm//:serde-1.0.229",
+            "@crates_wasm//:serde_json-1.0.151",
+            "@crates_wasm//:tokio-1.53.1",
+            "@crates_wasm//:tracing-0.1.44"
+        ],
+        "wasm_path_deps": [
+            "//crates/clax-core:clax_core",
+            "//crates/clax-rt:clax_rt",
+            "//crates/clax-store:clax_store"
+        ],
+        "wasm_proc_macro_deps": []
     },
     "crates/clax-rt": {
         "bins": {},
@@ -327,7 +475,17 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-rt",
         "tests": {},
-        "version": "0.6.0"
+        "version": "0.6.0",
+        "wasm_deps": [
+            "@crates_wasm//:futures-channel-0.3.34",
+            "@crates_wasm//:futures-util-0.3.34",
+            "@crates_wasm//:gloo-timers-0.3.0",
+            "@crates_wasm//:send_wrapper-0.6.0",
+            "@crates_wasm//:wasm-bindgen-futures-0.4.79",
+            "@crates_wasm//:web-time-1.1.0"
+        ],
+        "wasm_path_deps": [],
+        "wasm_proc_macro_deps": []
     },
     "crates/clax-sample": {
         "bins": {},
@@ -344,7 +502,27 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-sample",
         "tests": {},
-        "version": "0.6.0"
+        "version": "0.6.0",
+        "wasm_deps": [
+            "@crates_wasm//:base64-0.22.1",
+            "@crates_wasm//:chrono-0.4.45",
+            "@crates_wasm//:futures-0.3.34",
+            "@crates_wasm//:js-sys-0.3.106",
+            "@crates_wasm//:serde-1.0.229",
+            "@crates_wasm//:serde_json-1.0.151",
+            "@crates_wasm//:tokio-1.53.1",
+            "@crates_wasm//:tokio-stream-0.1.19",
+            "@crates_wasm//:tracing-0.1.44",
+            "@crates_wasm//:wasm-bindgen-0.2.129",
+            "@crates_wasm//:wasm-bindgen-futures-0.4.79",
+            "@crates_wasm//:wasm-streams-0.4.2",
+            "@crates_wasm//:web-sys-0.3.106"
+        ],
+        "wasm_path_deps": [
+            "//crates/clax-core:clax_core",
+            "//crates/clax-rt:clax_rt"
+        ],
+        "wasm_proc_macro_deps": []
     },
     "crates/clax-server": {
         "bins": {},
@@ -383,7 +561,45 @@ CRATES = {
         "tests": {
             "integration": "tests/integration.rs"
         },
-        "version": "0.6.0"
+        "version": "0.6.0",
+        "wasm_deps": [
+            "@crates_wasm//:anyhow-1.0.104",
+            "@crates_wasm//:axum-0.8.9",
+            "@crates_wasm//:base64-0.22.1",
+            "@crates_wasm//:chrono-0.4.45",
+            "@crates_wasm//:futures-0.3.34",
+            "@crates_wasm//:mime_guess-2.0.5",
+            "@crates_wasm//:qrcode-0.14.1",
+            "@crates_wasm//:rand-0.9.5",
+            "@crates_wasm//:reqwest-0.12.28",
+            "@crates_wasm//:send_wrapper-0.6.0",
+            "@crates_wasm//:serde-1.0.229",
+            "@crates_wasm//:serde_json-1.0.151",
+            "@crates_wasm//:sha2-0.11.0",
+            "@crates_wasm//:thiserror-2.0.21",
+            "@crates_wasm//:tokio-1.53.1",
+            "@crates_wasm//:tokio-stream-0.1.19",
+            "@crates_wasm//:tokio-util-0.7.19",
+            "@crates_wasm//:tower-0.5.3",
+            "@crates_wasm//:tower-http-0.6.11",
+            "@crates_wasm//:tracing-0.1.44",
+            "@crates_wasm//:url-2.5.8",
+            "@crates_wasm//:web-time-1.1.0"
+        ],
+        "wasm_path_deps": [
+            "//crates/clax-bot-sandbox:clax_bot_sandbox",
+            "//crates/clax-bot:clax_bot",
+            "//crates/clax-core:clax_core",
+            "//crates/clax-http:clax_http",
+            "//crates/clax-mcp:clax_mcp",
+            "//crates/clax-realtime:clax_realtime",
+            "//crates/clax-rt:clax_rt",
+            "//crates/clax-sample:clax_sample",
+            "//crates/clax-store:clax_store"
+        ],
+        "wasm_proc_macro_deps": [
+            "@crates_wasm//:async-trait-0.1.92"
+        ]
     },
     "crates/clax-store": {
         "bins": {},
@@ -403,7 +619,31 @@ CRATES = {
         "tests": {
             "app_bundles": "tests/app_bundles.rs"
         },
-        "version": "0.6.0"
+        "version": "0.6.0",
+        "wasm_deps": [
+            "@crates_wasm//:base64-0.22.1",
+            "@crates_wasm//:chacha20poly1305-0.10.1",
+            "@crates_wasm//:chrono-0.4.45",
+            "@crates_wasm//:futures-util-0.3.34",
+            "@crates_wasm//:mime_guess-2.0.5",
+            "@crates_wasm//:rand-0.9.5",
+            "@crates_wasm//:rusqlite-0.40.2",
+            "@crates_wasm//:serde-1.0.229",
+            "@crates_wasm//:serde_json-1.0.151",
+            "@crates_wasm//:sha2-0.11.0",
+            "@crates_wasm//:tokio-1.53.1",
+            "@crates_wasm//:tracing-0.1.44",
+            "@crates_wasm//:unicode-security-0.1.2",
+            "@crates_wasm//:url-2.5.8",
+            "@crates_wasm//:web-time-1.1.0",
+            "@crates_wasm//:zeroize-1.9.0"
+        ],
+        "wasm_path_deps": [
+            "//crates/clax-core:clax_core"
+        ],
+        "wasm_proc_macro_deps": [
+            "@crates_wasm//:async-trait-0.1.92"
+        ]
     },
     "crates/clax-testkit": {
         "bins": {},
@@ -457,7 +697,44 @@ CRATES = {
         "tests": {
             "store_on_vfs": "tests/store_on_vfs.rs"
         },
-        "version": "0.0.0"
+        "version": "0.0.0",
+        "wasm_deps": [
+            "@crates_wasm//:axum-0.8.9",
+            "@crates_wasm//:base64-0.22.1",
+            "@crates_wasm//:chrono-0.4.45",
+            "@crates_wasm//:console_error_panic_hook-0.1.7",
+            "@crates_wasm//:futures-util-0.3.34",
+            "@crates_wasm//:getrandom-0.3.4",
+            "@crates_wasm//:js-sys-0.3.106",
+            "@crates_wasm//:rusqlite-0.40.2",
+            "@crates_wasm//:rust-embed-8.12.0",
+            "@crates_wasm//:serde-1.0.229",
+            "@crates_wasm//:serde_json-1.0.151",
+            "@crates_wasm//:sha2-0.11.0",
+            "@crates_wasm//:tokio-1.53.1",
+            "@crates_wasm//:tower-service-0.3.3",
+            "@crates_wasm//:wasm-bindgen-0.2.129",
+            "@crates_wasm//:wasm-bindgen-futures-0.4.79",
+            "@crates_wasm//:wasm-streams-0.7.0",
+            "@crates_wasm//:worker-0.8.7"
+        ],
+        "wasm_path_deps": [
+            "//crates/clax-bot-sandbox:clax_bot_sandbox",
+            "//crates/clax-bot:clax_bot",
+            "//crates/clax-content-git:clax_content_git",
+            "//crates/clax-core:clax_core",
+            "//crates/clax-git:clax_git",
+            "//crates/clax-http:clax_http",
+            "//crates/clax-realtime:clax_realtime",
+            "//crates/clax-rt:clax_rt",
+            "//crates/clax-sample:clax_sample",
+            "//crates/clax-server:clax_server",
+            "//crates/clax-store:clax_store",
+            "//crates/clax-worker/vfs:clax_do_vfs"
+        ],
+        "wasm_proc_macro_deps": [
+            "@crates_wasm//:async-trait-0.1.92"
+        ]
     },
     "crates/clax-worker/vfs": {
         "bins": {},
@@ -474,7 +751,14 @@ CRATES = {
             "adversarial": "tests/adversarial.rs",
             "vfs": "tests/vfs.rs"
         },
-        "version": "0.0.0"
+        "version": "0.0.0",
+        "wasm_deps": [
+            "@crates_wasm//:rsqlite-vfs-0.1.1",
+            "@crates_wasm//:rusqlite-0.40.2",
+            "@crates_wasm//:sqlite-wasm-rs-0.5.5"
+        ],
+        "wasm_path_deps": [],
+        "wasm_proc_macro_deps": []
     },
     "third_party/clax-rquickjs-core": {
         "bins": {},

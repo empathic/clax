@@ -1,15 +1,26 @@
 load("@aspect_rules_js//js:defs.bzl", "js_test")
 load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
 load("//bazel:cargo.bzl", "cargo_package")
+load("//bazel/wasm:worker.bzl", "worker_bundle")
+
+# The web UI the Worker embeds (src/web.rs); on wasm32 the host's build of
+# it (bazel/wasm/host_files.bzl).
+alias(
+    name = "web_dist",
+    actual = select({
+        "//bazel/wasm:is_wasm32": "//bazel/wasm:web_dist",
+        "//conditions:default": "//web:dist",
+    }),
+)
 
 cargo_package(
-    # The web UI the Worker embeds (src/web.rs): the build script names it,
-    # and rust-embed reads its files at compile time.
-    build_script_data = ["//web:dist"],
-    build_script_env = {"CLAX_WEB_DIST_DIR": "$(execpath //web:dist)"},
+    # The build script names the web UI, and rust-embed reads its files at
+    # compile time.
+    build_script_data = [":web_dist"],
+    build_script_env = {"CLAX_WEB_DIST_DIR": "$(execpath :web_dist)"},
     # The Worker's wasm module (bazel/wasm/worker.bzl).
     cdylib = True,
-    compile_data = ["//web:dist"],
+    compile_data = [":web_dist"],
     # rust-embed reads the web UI by the absolute path the build script
     # names, which differs in each action's sandbox, so the metadata and
     # the rlib are made in one action (crates/clax-embedded's BUILD.bazel).
@@ -18,6 +29,19 @@ cargo_package(
     lib_test_uses_testkit = True,
     # The older builds' migrations tests/store_on_vfs.rs includes.
     test_compile_data = ["//crates/clax-store:old_migrations"],
+)
+
+# The Worker as wrangler deploys it: the wasm module built for wasm32 with
+# the worker-release profile, through worker-build's steps
+# (bazel/wasm/worker.bzl). build.sh links target/clax-worker/build to it.
+worker_bundle(
+    name = "bundle",
+    description = "A Cloudflare Worker that runs the Clax server in a Durable Object per instance, its database in the object's own storage",
+    license = "AGPL-3.0-only",
+    package_name = "clax-worker",
+    sdk_version = "0.8.7",
+    version = "0.0.0",
+    wasm = ":clax_worker_wasm_shared",
 )
 
 # What deploy.mjs decides from what it reads (deploy-lib.mjs):

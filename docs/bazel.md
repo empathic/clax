@@ -105,6 +105,9 @@ a new use of a crate already in a `Cargo.toml`. A change to any
   script, and the workspace lints as rustc flags (a dev-dependency that
   turns a workspace crate's features on is refused, not derived);
 - `bazel/release_files.bzl`: `scripts/test-release.files` as labels;
+- `bazel/wasm/crates.MODULE.bazel` and `bazel/wasm/Cargo.lock`: the specs
+  and lockfile of `@crates_wasm`, the hosted Worker's wasm32 crates
+  (`bazel/wasm/README.md`);
 - `bazel/playwright/browsers.bzl`: the Chromium the locked Playwright runs,
   with checksums (rewritten only when the locked version moves);
 - `MODULE.bazel.lock`.
@@ -115,7 +118,9 @@ stale. It also fails when `MODULE.bazel`'s Rust version differs from
 `rust-toolchain.toml`, a workspace crate has no `BUILD.bazel`, `.bazelrc`
 limits jobs or cores, or a third-party crate's features under Bazel differ
 from `cargo tree --workspace`'s beyond `NATIVE_EXTRA` in
-`scripts/bazel-derive.py`. A merge conflict in a derived file is resolved
+`scripts/bazel-derive.py`, or one of `@crates_wasm`'s from `cargo tree -p
+clax-worker -p clax-do-vfs --target wasm32-unknown-unknown`'s beyond
+`WASM_EXTRA`. A merge conflict in a derived file is resolved
 by running the sync on the merged manifests. `scripts/bazel-sync.test.sh`
 tests the check.
 
@@ -195,6 +200,9 @@ which declares, with `<lib>` the library's crate name:
   each module with `#[cfg(any(not(clax_split), clax_split = "<module>"))]`;
   Cargo sets no `clax_split` and builds them all into one binary, as before;
 - `build_script` when the crate has one;
+- for a crate the hosted Worker builds, `<lib>_wasm` (and, with `cdylib`,
+  `<lib>_wasm_shared`): the library for wasm32, its third-party
+  dependencies from `@crates_wasm` (`bazel/wasm/README.md`);
 - `rust_sources`, for source scans, and `manifest`, the crate's
   `Cargo.toml`, for the layering check.
 
@@ -206,12 +214,10 @@ checks build the release binary. `//web:dist` (with `dist_extension`,
 `dist_extension_test`, `dist_e2e`) is the web build; `//web:lint`,
 `//web:typecheck`, `//web:unit`, `//web:bundle_size`,
 `//plugins/pi:typecheck` and `//plugins/pi:test` the web and Pi checks;
-`//scripts:*` the script gates. `crates/clax-worker` is a Cargo workspace
-of its own, with its own `Cargo.lock`, and no `cargo_package()`: its one
-target is `//crates/clax-worker:rustfmt`, the format check of its and its
-VFS's sources, with the rustfmt, configuration and flags of
-`--config=fmt` (`bazel/rustfmt_check.sh`), and only those sources: the
-Clax crates it uses by path are checked as the root workspace's. The perf benchmarks
+`//scripts:*` the script gates. `//crates/clax-worker:bundle` is the
+Worker as wrangler deploys it, and `//bazel/wasm:check` builds the crates a
+hosted Worker runs for wasm32 with warnings denied (`bazel/wasm/README.md`).
+The perf benchmarks
 (`//scripts:perf_daemon_full`, `//scripts:perf_clients_full`,
 `//web:perf_usable_full`) are `manual`: performance is measured on demand
 (`just perf`, which reruns them and prints their numbers) and gates nothing.
@@ -852,7 +858,8 @@ tests that serve it; it recompiles no daemon crate.
   it to a child.
 - **`CARGO`** names nothing under Bazel; a test fallback that would run it
   fails loudly. Tests get `clax` through `CLAX_TEST_BIN`.
-- **`CLAX_BUILD_COMMIT`** is `unknown` in every Bazel build.
+- **`CLAX_BUILD_COMMIT`** is `unknown` in every Bazel build. A deployed
+  Worker names its commit by the `CLAX_BUILD_COMMIT` var deploy.mjs sets.
 - **Embedded files in debug builds.** Bazel's debug `clax` embeds the web
   UI, the extension and the plugins (`--cfg clax_embedded`, rust-embed's
   `debug-embed`); Cargo's reads them from the checkout. The one test of
@@ -866,7 +873,9 @@ tests that serve it; it recompiles no daemon crate.
   features only, as the native gates' `CLAX_TEST_BIN` is.
 - **The testkit in unit tests.** Bazel builds a crate's unit tests
   (`<lib>_lib_test`) without `clax-testkit`, which is for integration
-  tests only (`unit_dev_deps` in `bazel/cargo.bzl`); Cargo gives every test
+  tests only (`unit_dev_deps` in `bazel/cargo.bzl`), but for a crate the
+  testkit does not reach that asks for it (`lib_test_uses_testkit`:
+  `crates/clax-worker`); Cargo gives every test
   target all dev-dependencies, so `cargo test -p clax-server --lib` builds
   the testkit and the server under it first, and a unit test that names
   `clax_testkit` compiles under Cargo and fails to under Bazel.

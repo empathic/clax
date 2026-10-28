@@ -110,7 +110,7 @@ import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { dirname, join, resolve } from "node:path";
 import { buildId, builtFromRefusal, checkCiOptions, ciSecretsRefusal, doneText, healthOf, partialTriggerUpdate, prodTipOf, productionGate, versionIdOf } from "./deploy-lib.mjs";
-import { HERE, baseConfig, embedsWebUi } from "./harness.mjs";
+import { BUILD, HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
 // Nothing generated lives under crates/: the deploy config goes in the
@@ -860,11 +860,15 @@ async function main() {
   // embeds another web UI serves "ui_not_built" or stale pages for /setup
   // and every other shell page, so the upload is checked, not assumed.
   if (!embedsWebUi()) {
-    if (!o.build) throw new Error(`build/index_bg.wasm does not embed web/dist/index.html: drop --no-build`);
+    const wasm = join(BUILD, "index_bg.wasm");
+    if (!o.build) throw new Error(`${wasm} does not embed web/dist/index.html: drop --no-build`);
+    // Bazel rebuilds the Worker whenever web/dist changes; Cargo, through
+    // rust-embed, may not (crates/clax-worker/build.rs), so a native build
+    // is cleaned once.
     step("Build: the Worker embedded an older web UI; rebuilding clax-worker");
-    await run("cargo", ["clean", "-q", "--release", "--target", "wasm32-unknown-unknown", "-p", "clax-worker"]);
+    await run("cargo", ["clean", "-q", "--profile", "worker-release", "--target", "wasm32-unknown-unknown", "-p", "clax-worker"]);
     await buildWorker();
-    if (!embedsWebUi()) throw new Error("build/index_bg.wasm still does not embed web/dist/index.html");
+    if (!embedsWebUi()) throw new Error(`${wasm} still does not embed web/dist/index.html`);
   }
   info("the Worker embeds the web UI in web/dist");
 

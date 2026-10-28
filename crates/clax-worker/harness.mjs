@@ -56,7 +56,7 @@ export function writeConfig(dir, vars = {}) {
   const config = baseConfig();
   delete config.$schema;
   delete config.build;
-  config.main = join(HERE, config.main);
+  config.main = join(BUILD, "index.js");
   if (config.assets) config.assets.directory = resolve(HERE, config.assets.directory);
   config.vars = { ...config.vars, ...vars };
   const path = join(dir, "wrangler.json");
@@ -122,10 +122,23 @@ export async function start(dir, config, n, port) {
   return { base, port, stop, log };
 }
 
+/** Where the tests and e2e runs keep their state: the test runner's
+ * TEST_TMPDIR (Bazel's), else target/clax-worker at the repository root,
+ * never this source directory. */
+export const STATE = process.env.TEST_TMPDIR || join(HERE, "../../target/clax-worker");
+
+/** The built Worker: CLAX_WORKER_BUNDLE when set (a Bazel test's
+ * //crates/clax-worker:bundle), else the directory ./build.sh builds it
+ * into, wrangler.jsonc's `main`'s: target/clax-worker/build at the
+ * repository root. */
+export const BUILD = process.env.CLAX_WORKER_BUNDLE
+  ? resolve(process.env.CLAX_WORKER_BUNDLE)
+  : dirname(join(HERE, baseConfig().main));
+
 /** Whether the built Worker carries web/dist's current index.html. */
 export function embedsWebUi() {
   try {
-    const wasm = readFileSync(join(HERE, "build/index_bg.wasm"));
+    const wasm = readFileSync(join(BUILD, "index_bg.wasm"));
     return wasm.indexOf(readFileSync(join(HERE, "../../web/dist/index.html"))) >= 0;
   } catch {
     return false;
@@ -144,6 +157,6 @@ export async function build() {
   }
   if (!embedsWebUi()) {
     const fix = skip ? "build the web UI (scripts/build-web.sh), then rebuild the Worker (drop --no-build)" : "build the web UI (scripts/build-web.sh)";
-    throw new Error(`build/index_bg.wasm does not embed web/dist/index.html: ${fix}`);
+    throw new Error(`${join(BUILD, "index_bg.wasm")} does not embed web/dist/index.html: ${fix}`);
   }
 }

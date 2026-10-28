@@ -1,7 +1,7 @@
 // The Clax server in its Durable Object, end to end under `wrangler dev
 // --local`, in two browsers: builds the Worker (./build.sh; the web UI must
 // be built, scripts/build-web.sh), starts wrangler with fresh state under
-// target/e2e/ and an owner token, publishes an artifact through the API,
+// target/clax-worker/e2e/ and an owner token, publishes an artifact through the API,
 // and checks that the gallery shows it, that it opens with its content on
 // its own origin, that a comment one browser posts reaches the other live
 // over the stream's WebSocket, that a rebuilt server (as after hibernation:
@@ -18,12 +18,12 @@
 import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { HERE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HERE, STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
 
 const require = createRequire(join(HERE, "../../web/package.json"));
 const { chromium } = require("@playwright/test");
 
-const ROOT = join(HERE, "target/e2e");
+const ROOT = join(STATE, "e2e");
 const TOKEN = "e2e-owner-token-" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 const LIMIT = 15_000;
 const SHOTS = process.env.CLAX_E2E_SHOTS ?? "";

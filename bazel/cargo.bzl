@@ -50,6 +50,10 @@ def cargo_package(
                             dependency in one archive)
       <lib>_shared          with `cdylib`: the library as a C shared
                             library (lib<lib>.so or .dylib)
+      <lib>_wasm            for a crate the hosted Worker builds (bazel/
+                            wasm/README.md): the library for wasm32, its
+                            third-party dependencies from @crates_wasm
+      <lib>_wasm_shared     the same, with `cdylib`, as a wasm module
 
     Args:
       compile_data: files outside `src/` that the library and binaries read
@@ -179,13 +183,13 @@ def cargo_package(
         normal_deps = normal_deps + select(
             {p: [] for p in platforms} | {"//conditions:default": [dep]},
         )
+    macros = all_crate_deps(proc_macro = True)
     dev_deps = crate["dev_deps"] + all_crate_deps(normal_dev = True)
 
     # The testkit serves integration tests only: it depends on the crates it
     # tests, so a unit test that linked it would wait for its crate's own
     # library to compile first.
     unit_dev_deps = dev_deps if lib_test_uses_testkit else [d for d in dev_deps if d != _TESTKIT]
-    macros = all_crate_deps(proc_macro = True)
     dev_macros = all_crate_deps(proc_macro_dev = True)
     srcs = native.glob(["src/**/*.rs"])
     src_data = native.glob(
@@ -267,6 +271,25 @@ def cargo_package(
                 deps = normal_deps,
                 **common
             )
+        if "wasm_deps" in crate:
+            # The same sources for wasm32, with the dependencies Cargo
+            # resolves for the Worker alone (MODULE.bazel's @crates_wasm).
+            wasm = dict(
+                common,
+                aliases = {},
+                compile_data = src_data,
+                crate_features = features,
+                crate_name = lib,
+                crate_root = crate["lib_root"],
+                proc_macro_deps = crate["wasm_proc_macro_deps"],
+                srcs = srcs,
+                target_compatible_with = ["@platforms//cpu:wasm32"],
+                visibility = visibility,
+                deps = [d + "_wasm" for d in crate["wasm_path_deps"]] + crate["wasm_deps"] + build_deps,
+            )
+            rust_library(name = lib + "_wasm", disable_pipelining = disable_pipelining, **wasm)
+            if cdylib:
+                rust_shared_library(name = lib + "_wasm_shared", **wasm)
         _test(
             name = lib + "_lib_test",
             crate = ":" + lib,

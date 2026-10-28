@@ -5,7 +5,7 @@
   "scripts": {
     "build": "./build.sh",
     "dev": "wrangler dev --local --persist-to .wrangler/state",
-    "size": "wrangler deploy --dry-run --outdir build/dry-run",
+    "size": "wrangler deploy --dry-run --outdir ../../target/clax-worker/dry-run",
     "test:wasm": "node test-wasm.mjs",
     "test:bot": "node test-bot.mjs",
     "e2e": "node e2e.mjs",
