@@ -24,6 +24,7 @@ exports_files(
 VIGNETTES = [
     "agent",
     "coldopen",
+    "game",
     "realtime",
 ]
 

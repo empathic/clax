@@ -27,6 +27,12 @@ title = "Ask your agent"
 seconds = 12
 in_short = true
 
+[[vignette]]
+id = "game"
+title = "Build things together"
+seconds = 8
+in_short = false
+
 [end]
 seconds = 4
 headline = "Your agents build pages. Clax gives them a home."
