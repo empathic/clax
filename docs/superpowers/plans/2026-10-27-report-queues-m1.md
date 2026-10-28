@@ -64,11 +64,11 @@ Report  {id, queue_id, artifact: {id, external_id, title, url, metadata, metadat
 Lease   {lease_id, expires_at, fence: number, report: Report}
 ```
 
-Routes (all JSON unless noted; errors `{error, message}` as `ApiError`):
+Routes (all JSON unless noted; errors `{error: {code, message}}` as `ApiError` answers them):
 
 | Who | Route |
 |---|---|
-| admin, browser session (`SameOrigin`) | `POST /api/queues {name, origins, reporters_see}` → `{queue}`; `GET /api/queues` → `{queues}`; `PATCH`/`DELETE /api/queues/{qid}`; `PUT /api/queues/{qid}/members/{public_id} {role}`, `DELETE` same; `POST /api/queues/{qid}/service-grants {name}` → `{grant: {id, name, created_at}, token: "cxq_…", private_key: "<PKCS#8, base64url>"}` (shown once); `DELETE /api/queues/{qid}/service-grants/{gid}` |
+| admin, browser session (`SameOrigin`) | `POST /api/queues {name, origins, reporters_see}` → `{queue}`; `GET /api/queues` → `{queues}`; `PATCH`/`DELETE /api/queues/{qid}`; `GET /api/queues/{qid}/members` → `{members: [{public_id, name, role}]}`; `GET /api/queues/{qid}/service-grants` → `{grants: [{id, name, created_at}]}`; `PUT /api/queues/{qid}/members/{public_id} {role}`, `DELETE` same; `POST /api/queues/{qid}/service-grants {name}` → `{grant: {id, name, created_at}, token: "cxq_…", private_key: "<PKCS#8, base64url>"}` (shown once); `DELETE /api/queues/{qid}/service-grants/{gid}` |
 | service (`Authorization: Clax-Queue <token>` + `Clax-Signature` v2) | `POST /api/queues/{qid}/reporter-tokens {reporter_id, origin, public_key}` → `{token: "cxr_…", expires_at}` |
 | reporter (`Authorization: Clax-Reporter <token>` + `Clax-Signature` v2; `Origin` equal to the token's) | `POST /api/queues/{qid}/reporter/reports` (multipart: `external_id?`, `url`, `title`, `anchor`, `body`, `metadata?`, `revision?`, `clip?` PNG) → `{report}`; `GET /api/queues/{qid}/reporter/reports?cursor=` → `{reports, next}`; `POST …/reporter/reports/{tid}/comments {body}` → `{report}`; `GET …/reporter/reports/{tid}/clip`; `OPTIONS` on each |
 | triage person or their agent (`Agent<N>`) | `GET /api/queues/{qid}/reports?state=&cursor=` → `{reports, next}`; `GET …/reports/{tid}`; `POST …/reports/{tid}/claim` → `Lease`; `…/renew` → `Lease`; `…/release`; `POST …/reports/{tid}/comments {body}`; `POST …/reports/{tid}/resolve`; `PATCH …/reports/{tid} {metadata, if_version}`; `PATCH …/reports/{tid}/artifact {metadata, if_version}`; `GET …/reports/{tid}/clip` |

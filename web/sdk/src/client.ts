@@ -4,7 +4,7 @@ import type { ApiErrorBody } from "./types";
 import { newNonce, signature, type Signer } from "./sign";
 
 /** A failed call: the error code the instance answered (`ApiError`'s
- * `error`), its message and the HTTP status; `network` with status 0 when
+ * `error.code`), its message and the HTTP status; `network` with status 0 when
  * no answer came, `bad_response` for an answer that is not the JSON
  * expected. */
 export class ClaxError extends Error {
@@ -88,7 +88,7 @@ export async function failure(res: Response): Promise<ClaxError> {
   } catch {
     // An answer without the error shape keeps its status alone.
   }
-  return new ClaxError(body.error ?? `http_${res.status}`, body.message ?? res.statusText, res.status);
+  return new ClaxError(body.error?.code ?? `http_${res.status}`, body.error?.message ?? res.statusText, res.status);
 }
 
 const utf8 = new TextEncoder();

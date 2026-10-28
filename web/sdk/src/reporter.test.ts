@@ -93,7 +93,7 @@ describe("ReporterClient", () => {
 
   it("on a 401 renews once and retries once", async () => {
     let failures = 1;
-    const s = setup(() => (failures-- > 0 ? json(401, { error: "token_expired", message: "expired" }) : json(200, { reports: [], next: null })));
+    const s = setup(() => (failures-- > 0 ? json(401, { error: { code: "token_expired", message: "expired" } }) : json(200, { reports: [], next: null })));
     const { signer, client } = await s.make();
     expect(await client.myReports()).toEqual({ reports: [], next: null });
     expect(s.auths).toHaveLength(2);
@@ -102,7 +102,7 @@ describe("ReporterClient", () => {
   });
 
   it("gives up after the one retry with the instance's error", async () => {
-    const s = setup(() => json(401, { error: "token_expired", message: "expired" }));
+    const s = setup(() => json(401, { error: { code: "token_expired", message: "expired" } }));
     const { client } = await s.make();
     await expect(client.myReports()).rejects.toMatchObject({ code: "token_expired", status: 401 });
     expect(s.inst.sent).toHaveLength(2);

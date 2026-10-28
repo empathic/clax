@@ -112,8 +112,7 @@ export interface Discovery {
 
 /** Every error answer's body (`ApiError`). */
 export interface ApiErrorBody {
-  error: string;
-  message: string;
+  error: { code: string; message: string };
 }
 
 /** Error codes the queue routes answer. */

@@ -38,7 +38,7 @@ describe("ServiceClient", () => {
   it("gives the instance's error", async () => {
     const client = new ServiceClient({
       instance: "https://clax.example", queue: "q1", token: "cxq_grant", privateKey: PKCS8,
-      fetch: async () => new Response(JSON.stringify({ error: "wrong_origin", message: "not a queue origin" }), { status: 403 }),
+      fetch: async () => new Response(JSON.stringify({ error: { code: "wrong_origin", message: "not a queue origin" } }), { status: 403 }),
     });
     await expect(client.mintReporterToken({ reporter_id: "r", origin: "https://evil.example", public_key: "AAAA" }))
       .rejects.toMatchObject({ code: "wrong_origin", status: 403 });
