@@ -1107,18 +1107,36 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
     // A queue's reporter and service routes carry their own credentials
     // and answer other origins: on the instance's host they are matched in
     // front of the layers above, and every other request goes through them.
-    let reporter = queue_reporter::router(state.clone()).fallback_service(r.clone());
+    // A queue credential stands for no one anywhere else: on any other
+    // route, or on a site's host, it is 401 `invalid_token`.
+    let elsewhere = r.clone();
+    let reporter =
+        queue_reporter::router(state.clone()).fallback(move |req: axum::extract::Request| {
+            let to = elsewhere.clone();
+            async move {
+                if clax_http::reporter::carries_queue_credential(req.headers()) {
+                    return axum::response::IntoResponse::into_response(
+                        clax_http::reporter::refused_elsewhere(),
+                    );
+                }
+                use tower::ServiceExt as _;
+                let Ok(res) = to.oneshot(req).await;
+                res
+            }
+        });
     let r = axum::Router::new().fallback(move |req: axum::extract::Request| {
-        let to = if req
+        let site = req
             .extensions()
             .get::<clax_http::host::SiteRequest>()
-            .is_some()
-        {
-            r.clone()
-        } else {
-            reporter.clone()
-        };
+            .is_some();
+        let refused = site && clax_http::reporter::carries_queue_credential(req.headers());
+        let to = if site { r.clone() } else { reporter.clone() };
         async move {
+            if refused {
+                return axum::response::IntoResponse::into_response(
+                    clax_http::reporter::refused_elsewhere(),
+                );
+            }
             use tower::ServiceExt as _;
             let Ok(res) = to.oneshot(req).await;
             res

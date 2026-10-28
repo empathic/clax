@@ -2024,7 +2024,7 @@ async fn bearer_head(s: &AppState, headers: &HeaderMap) -> Result<BearerGrant, R
 
 /// Whether a request has no body: no or a zero `Content-Length`, and no
 /// `Transfer-Encoding`.
-fn bodyless(headers: &HeaderMap) -> bool {
+pub(crate) fn bodyless(headers: &HeaderMap) -> bool {
     !headers.contains_key(header::TRANSFER_ENCODING)
         && headers
             .get(header::CONTENT_LENGTH)
@@ -2036,7 +2036,7 @@ fn bodyless(headers: &HeaderMap) -> bool {
 /// a small one, the budget for every byte, the minimum rate after the
 /// grace, and the absolute deadline ([`read_deadline`]). Permit, allowance
 /// and budget are released when it returns.
-async fn read_unverified(
+pub(crate) async fn read_unverified(
     gate: &Arc<Gate>,
     key: [u8; 32],
     headers: &HeaderMap,

@@ -431,6 +431,10 @@ pub struct GrantAuth {
     pending: Mutex<NonceCache>,
     /// Nonces of keys known through [`GrantAuth::index`].
     nonces: Mutex<NonceCache>,
+    /// Nonces of the keys of a report queue's service grants and reporter
+    /// tokens ([`crate::reporter`]), apart from the grants' so a queue's
+    /// reporters never use up the room of this machine's agents.
+    queue: Mutex<NonceCache>,
     /// When each grant's use was last written.
     noted: Mutex<HashMap<String, i64>>,
 }
@@ -446,6 +450,7 @@ impl GrantAuth {
             requests: Mutex::new(RequestNonces::new()),
             pending: Mutex::new(pending_cache()),
             nonces: Mutex::new(NonceCache::new(sig::NONCE_WINDOW_S, sig::NONCES_PER_KEY)),
+            queue: Mutex::new(queue_cache()),
             noted: Mutex::new(HashMap::new()),
         })
     }
@@ -455,6 +460,7 @@ impl GrantAuth {
         lock(&self.requests).sweep(now);
         lock(&self.pending).sweep(now);
         lock(&self.nonces).sweep(now);
+        lock(&self.queue).sweep(now);
     }
 
     /// Keys with nonces remembered: (grant requests, the rest).
@@ -468,6 +474,50 @@ impl GrantAuth {
 fn pending_cache() -> NonceCache {
     NonceCache::new(sig::NONCE_WINDOW_S, PENDING_NONCES_PER_KEY)
         .with_caps(PENDING_KEYS, PENDING_KEYS * PENDING_NONCES_PER_KEY)
+}
+
+/// Nonces one queue key may spend in a window: a reporter's page or a
+/// deployer's backend makes a few calls a minute; past this the key is
+/// refused with 429 `limit_reached` until its nonces age out.
+pub const QUEUE_NONCES_PER_KEY: usize = 1024;
+/// Queue keys the queue cache holds at once: reporter keys live
+/// [`clax_core::queue::REPORTER_TOKEN_SECS`], one per reporter's page.
+pub const QUEUE_KEYS: usize = 16 * 1024;
+
+fn queue_cache() -> NonceCache {
+    NonceCache::new(sig::NONCE_WINDOW_S, QUEUE_NONCES_PER_KEY)
+        .with_caps(QUEUE_KEYS, sig::MAX_NONCES)
+}
+
+impl GrantAuth {
+    /// [`GrantAuth::check_nonce`] for a queue key ([`crate::reporter`]).
+    ///
+    /// # Errors
+    /// As [`NonceCache::check`].
+    pub fn check_queue_nonce(
+        &self,
+        key: &[u8; 32],
+        nonce: &str,
+        t: i64,
+        now: i64,
+    ) -> Result<(), SigError> {
+        lock(&self.queue).check(key, nonce, t, now)
+    }
+
+    /// [`GrantAuth::record_nonce`] for a queue key, once its signature
+    /// verified.
+    ///
+    /// # Errors
+    /// As [`NonceCache::record`].
+    pub fn record_queue_nonce(
+        &self,
+        key: &[u8; 32],
+        nonce: &str,
+        t: i64,
+        now: i64,
+    ) -> Result<(), SigError> {
+        lock(&self.queue).record(key, nonce, t, now)
+    }
 }
 
 impl GrantAuth {

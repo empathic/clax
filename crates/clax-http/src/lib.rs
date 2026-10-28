@@ -40,6 +40,7 @@ pub mod net;
 pub mod net_cache;
 pub mod perf;
 pub mod pushes;
+pub mod reporter;
 pub mod seats;
 pub mod settings;
 pub mod site_access;
