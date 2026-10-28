@@ -196,7 +196,11 @@ export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean
     const siteDir = realpathSync(mkdtempSync(join(tmpdir(), "clax-live-site-")));
     cpSync(join(web, "e2e/live-site"), siteDir, { recursive: true });
     // A port the system picks: Vite reads 0 as its default, 5173, where a person's own dev server may run.
-    const site = await createServer({ root: siteDir, configFile: false, logLevel: "silent", server: { port: await freePort(), host: "127.0.0.1", strictPort: true } });
+    // The tests edit main.js only. macOS may report the copy's own writes
+    // late, after the watcher's first scan, as changes, and a page's change
+    // is a full reload that a test following a hot update would see: the
+    // pages are not watched.
+    const site = await createServer({ root: siteDir, configFile: false, logLevel: "silent", server: { port: await freePort(), host: "127.0.0.1", strictPort: true, watch: { ignored: ["**/*.html"] } } });
     await site.listen();
     // A file written before the watcher's first scan ends is not reported:
     // wait for it (chokidar has no public flag for a scan already done).
