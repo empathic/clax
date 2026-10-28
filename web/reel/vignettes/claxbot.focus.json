@@ -1,0 +1,54 @@
+{
+  "note": "TEMPORARY: this recording predates focus targets, so `overrides` (pixel boxes measured on its frames, before padding) stand in for every target. Re-record with this script beside the vignette's .ts and delete `overrides`; the selectors are then what places the light.",
+  "targets": {
+    "dialog": ".na-panel",
+    "panel": "aside.runp",
+    "pill": "button.who"
+  },
+  "overrides": {
+    "dialog": [
+      451,
+      166,
+      698,
+      668
+    ],
+    "panel": [
+      1075,
+      77,
+      525,
+      536
+    ],
+    "pill": [
+      595,
+      22,
+      109,
+      30
+    ]
+  },
+  "shots": [
+    {
+      "at": 166,
+      "until": 189,
+      "targets": [
+        "dialog"
+      ],
+      "label": "the brief"
+    },
+    {
+      "at": 192,
+      "until": 240,
+      "targets": [
+        "panel",
+        "pill"
+      ],
+      "label": "ClaxBot at work"
+    }
+  ],
+  "clean": [
+    {
+      "at": 240,
+      "until": 297,
+      "label": "the tracker it built"
+    }
+  ]
+}

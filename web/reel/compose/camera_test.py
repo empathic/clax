@@ -197,7 +197,7 @@ class FocusPathTest(unittest.TestCase):
         self.assertEqual(self.text(self.rows), self.text(again))
 
     def test_focus_is_the_card_not_the_pointer(self):
-        regions = {r for _s, _a, live in self.rows for r, _al in live}
+        regions = {r for _s, _a, live in self.rows for rects, _al in live for r in rects}
         self.assertTrue(regions)
         for x0, y0, x1, y1 in regions:
             self.assertTrue(x0 <= 440 and y0 <= 300 and 760 <= x1 and 470 <= y1, (x0, y0, x1, y1))
@@ -232,6 +232,31 @@ class FocusPathTest(unittest.TestCase):
         finally:
             os.unlink(f.name)
         self.assertEqual(len(out), 3 * W * H * 3)
+
+
+class ScriptPathTest(unittest.TestCase):
+    """A focus script: named targets, boxes from focus-rects.json or overrides."""
+
+    def test_shots_light_their_targets_on_time(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = tmp + "/demo_frames"
+            make_frames(d, 120, lambda i: None)
+            beats = {"fps": 30, "frames": 120, "beats": [{"name": "ask", "frame": 10}, {"name": "touch", "frame": 90}]}
+            json.dump(beats, open(d + "/beats.json", "w"))
+            json.dump({"fps": 30, "scale": 1, "targets": {"card": [[0, None], [40, [100, 100, 200, 80]]]}},
+                      open(d + "/focus-rects.json", "w"))
+            json.dump({"targets": {"card": ".card"}, "overrides": {"pill": [10, 5, 50, 20]},
+                       "shots": [{"at": "@card", "targets": ["card", "pill"], "label": "card"},
+                                 {"at": "touch", "targets": ["pill"], "label": "pill"}]},
+                      open(d + "/focus.json", "w"))
+            segs = [(0, 120, 1.0, 120)]
+            rows = camera.focus_path(d, segs, beats, (W, H))
+            self.assertEqual(rows[29][2], [])  # the fade starts 0.35 s before the card shows
+            on = rows[40][2]
+            self.assertEqual(on[0][1], 1.0)
+            pad = camera.TARGET_PAD_PX
+            self.assertIn((100.0 - pad, 100.0 - pad, 300.0 + pad, 180.0 + pad), on[0][0])
+            self.assertEqual(rows[119][2], [(((0.0, 0.0, 60.0 + pad, 25.0 + pad),), 1.0)])
 
 
 @unittest.skipUnless(os.environ.get("REEL_FRAMES"), "REEL_FRAMES names no recording")

@@ -7,6 +7,7 @@ composer (compose.sh).
   camera.py path FRAMES_DIR PLAN [--insert] [--camera-motion | --no-camera]
                                                -> the per-output-frame treatment (or crop) TSV
   camera.py render FRAMES_DIR PATH             -> rgb24 frames on stdout, for ffmpeg
+  camera.py poster FRAMES_DIR AT OUT.jpg WIDTH  -> one source frame as a JPEG poster
   camera.py focus-report FRAMES_DIR PLAN       -> each focus region: fully on vs its first
                                                   change, fade-out vs its last (seconds)
 
@@ -115,16 +116,16 @@ REVEAL_CHANGE = 0.05     # the reveal is the first frame, from 0.3 s before its 
                          # share of the page changes from the frame before (the beat can be off)
 PRE_REVEAL_SECONDS = 0.3  # the treatment is gone this long before that frame ...
 REVEAL_CLEAN_SECONDS = 1.2  # ... stays off this long after it, and takes no action until the touch
-TREAT_DIM = 0.35         # outside the focus: this much toward NEUTRAL (inserts: INSERT_DIM)
+TREAT_DIM = 0.30         # outside the focus: this much toward NEUTRAL (inserts: INSERT_DIM)
 INSERT_DIM = 0.2
-TREAT_DESAT = 0.85       # and this much of its colour gone (inserts: 0.6)
+TREAT_DESAT = 0.78       # and this much of its colour gone (inserts: 0.6)
 INSERT_DESAT = 0.6
 NEUTRAL = (96, 96, 100)  # the grey it fades toward
 FEATHER_PX = 28          # the soft edge of the focus, outside its rectangle
-CORNER_PX = 14           # its rounded corners
-RING_RGB = (240, 112, 64)  # the highlight ring: the accent, 2-3 px, just outside the region
-RING_ALPHA = 0.75
-RING_WIDTH_PX = 1.3
+CORNER_PX = 12           # its rounded corners, as the UI's cards round theirs
+RING_RGB = (240, 112, 64)  # the highlight ring: the accent, about 2.5 px, centred on the edge
+RING_ALPHA = 0.8
+RING_HALF_PX = 1.25
 GLOW_ALPHA = 0.16        # and a low outer glow, falling off over GLOW_PX
 GLOW_PX = 9.0
 SPOT_DIM = 0.25          # spotlight: outside the focus box is this much darker
@@ -776,12 +777,16 @@ def focus_plan(frames_dir, segs, beats, size):
     return intervals, clean
 
 
-def focus_path(frames_dir, segs, beats, size, insert=False):
+def focus_path(frames_dir, segs, beats, size, insert=False, focus_dirs=None):
     """Rows (src, amount, [(region, alpha), ...]) per output frame: the frame never
     moves; the regions of focus_plan fade in ahead of their action and out after it."""
     src, _ = source_frames(segs)
-    intervals, _clean = focus_plan(frames_dir, segs, beats, size)
     amount = (INSERT_DIM, INSERT_DESAT) if insert else (TREAT_DIM, TREAT_DESAT)
+    found = load_script(frames_dir, focus_dirs)
+    if found is not None:
+        nframes = len([f for f in os.listdir(frames_dir + "/frames") if f.endswith(".png")])
+        return script_path(found[0], found[1], frames_dir, segs, beats, amount, nframes, size)
+    intervals, _clean = focus_plan(frames_dir, segs, beats, size)
     rows = []
     for j in range(len(src)):
         alpha = {}
@@ -794,7 +799,140 @@ def focus_path(frames_dir, segs, beats, size, insert=False):
             a = min(up, down if j >= iv["off_start"] else 1.0)
             if a > 1e-3:
                 alpha[iv["region"]] = max(alpha.get(iv["region"], 0.0), a)
-        rows.append((src[j], amount, sorted(alpha.items())))
+        rows.append((src[j], amount, [((r,), a) for r, a in sorted(alpha.items())]))
+    return rows
+
+
+# --- Focus scripts: what is lit, and when, as named targets ---
+CROSS_SECONDS = 0.35     # a scripted shot fades (or cross-fades) in over this long, ending at its at
+TARGET_PAD_PX = 12       # a lit target's region: its box plus this much each way
+FOCUS_DIRS = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "vignettes")]
+
+
+def vignette_id(frames_dir):
+    b = os.path.basename(os.path.normpath(frames_dir))
+    return b[:-len("_frames")] if b.endswith("_frames") else b
+
+
+def load_script(frames_dir, dirs=None):
+    """The vignette's focus script (web/reel/focus.ts documents it): the copy its
+    recording carries (focus.json), else <id>.focus.json in one of dirs (by
+    default web/reel/vignettes/ beside this composer); None without one."""
+    own = os.path.join(frames_dir, "focus.json")
+    paths = [own] + [os.path.join(d, vignette_id(frames_dir) + ".focus.json") for d in (dirs or FOCUS_DIRS)]
+    for path in paths:
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                return json.load(f), path
+    return None
+
+
+def load_rects(frames_dir):
+    """{target: [(frame, box or None), ...]} from the recording's focus-rects.json."""
+    path = os.path.join(frames_dir, "focus-rects.json")
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    return {k: [(int(fr), tuple(b) if b else None) for fr, b in v] for k, v in data["targets"].items()}
+
+
+def _box_at(changes, f):
+    """The box a change list gives at frame f."""
+    box = None
+    for fr, b in changes:
+        if fr > f:
+            break
+        box = b
+    return box
+
+
+def script_path(script, where, frames_dir, segs, beats, amount, nframes, size):
+    """Rows for a focus script. Each shot lights its targets: each target's region
+    is the union of its recorded boxes over the shot (or its override), plus
+    TARGET_PAD_PX, inside the frame. A shot is fully on from its at (after a
+    CROSS_SECONDS fade or cross-fade ending there) until its until (default:
+    the next shot's at; the last one holds to the clip's end), and fades over
+    the CROSS_SECONDS before that. A shot at the clip's start is on from its
+    first frame, so no clip opens or ends on a fade. A clean span holds no shot."""
+    W, H = size
+    src, _ = source_frames(segs)
+    m = len(src)
+    out_of = _out_of(segs)
+    fade = max(1, secs(CROSS_SECONDS))
+    rects = load_rects(frames_dir)
+    overrides = {k: tuple(v) for k, v in (script.get("overrides") or {}).items()}
+    import re
+
+    def when(spec, after):
+        """A time spec as a source frame (see web/reel/focus.ts)."""
+        if isinstance(spec, int):
+            return spec
+        mt = re.fullmatch(r"(@?)([a-z][a-z0-9_]*)([+-][0-9.]+)?", spec)
+        if not mt:
+            raise SystemExit("%s: bad time %r" % (where, spec))
+        off = secs(float(mt.group(3) or 0))
+        if not mt.group(1):
+            return max(0, beat_frame(beats, mt.group(2)) + off)
+        changes = rects.get(mt.group(2))
+        if not changes:
+            raise SystemExit("%s: %r waits for target %s, which the recording has no boxes of"
+                             % (where, spec, mt.group(2)))
+        f = next((fr for fr in range(after, nframes) if _box_at(changes, fr) is not None), None)
+        if f is None:
+            raise SystemExit("%s: target %s never shows from frame %d" % (where, mt.group(2), after))
+        return max(0, f + off)
+
+    def out(f):
+        return min(m, out_of(f)) if f >= segs[0][0] else 0
+
+    shots = script["shots"]
+    starts, prev = [], 0
+    for sh in shots:
+        prev = when(sh["at"], prev)
+        starts.append(prev)
+    timed = []
+    for k, sh in enumerate(shots):
+        a = starts[k]
+        b = when(sh["until"], a) if "until" in sh else (starts[k + 1] if k + 1 < len(shots) else nframes)
+        regions = []
+        for name in sh["targets"]:
+            if name in overrides:
+                x, y, w, h = overrides[name]
+                box = (x, y, x + w, y + h)
+            else:
+                seen = [_box_at(rects.get(name, []), f) for f in range(a, max(a + 1, b))]
+                seen = [(x, y, x + w, y + h) for x, y, w, h in (s_ for s_ in seen if s_)]
+                if not seen:
+                    sys.stderr.write("camera.py: %s: shot %r: target %s is not on screen in it\n"
+                                     % (where, sh.get("label"), name))
+                    continue
+                box = _union(seen)
+            p = TARGET_PAD_PX
+            regions.append((max(0.0, box[0] - p), max(0.0, box[1] - p), min(float(W), box[2] + p), min(float(H), box[3] + p)))
+        on = out(a)
+        off = None if "until" not in sh and k + 1 == len(shots) else out(b)
+        if off is not None and off <= on:
+            raise SystemExit("%s: shot %r ends before it starts" % (where, sh.get("label")))
+        if regions:
+            timed.append((tuple(regions), on, off, sh))
+    for c in script.get("clean") or []:
+        a, b = out(when(c["at"], 0)), out(when(c["until"], 0))
+        for regions, on, off, sh in timed:
+            if on - fade < b and (off is None or off > a):
+                raise SystemExit("%s: shot %r overlaps the clean span %r" % (where, sh.get("label"), c.get("label")))
+    rows = []
+    for j in range(m):
+        live = []
+        for regions, on, off, _sh in timed:
+            if j < on - fade or (off is not None and j >= off):
+                continue
+            up = 1.0 if on - fade <= 0 else _smooth((j - (on - fade) + 1) / fade)
+            down = 1.0 if off is None or off >= m else _smooth((off - j) / fade)
+            a = min(up, down)
+            if a > 1e-3:
+                live.append((regions, round(a, 4)))
+        rows.append((src[j], amount, live))
     return rows
 
 
@@ -816,10 +954,10 @@ def focus_report(frames_dir, segs, beats, size):
 
 def write_focus(rows, size, f):
     W, H = size
-    f.write("# treatment: out src dim desat [x0,y0,x1,y1,alpha]... (source pixels; %dx%d)\n" % (W, H))
+    f.write("# treatment: out src dim desat [x0,y0,x1,y1;...|alpha]... (source pixels; %dx%d)\n" % (W, H))
     for j, (s, (dim, desat), live) in enumerate(rows):
         cells = ["%d" % j, "%d" % s, "%.3f" % dim, "%.3f" % desat]
-        cells += ["%.1f,%.1f,%.1f,%.1f,%.4f" % (r[0], r[1], r[2], r[3], a) for r, a in live]
+        cells += [";".join("%.1f,%.1f,%.1f,%.1f" % tuple(q) for q in rects) + "|%.4f" % a for rects, a in live]
         f.write("\t".join(cells) + "\n")
 
 
@@ -847,7 +985,10 @@ def render_focus(frames_dir, rows):
     ring_rgb = np.array(RING_RGB, np.float32)
     for r in rows:
         src, dim, desat = int(r[1]), float(r[2]), float(r[3])
-        live = [tuple(float(v) for v in c.split(",")) for c in r[4:]]
+        live = []
+        for c in r[4:]:
+            rects, alpha = c.split("|")
+            live.append((tuple(tuple(float(v) for v in q.split(",")) for q in rects.split(";")), float(alpha)))
         im = Image.open(frame_path(frames_dir, src)).convert("RGB")
         if not live:
             outp.write(im.tobytes())
@@ -856,21 +997,26 @@ def render_focus(frames_dir, rows):
         a = np.asarray(im, dtype=np.float32)
         t = np.zeros((H, W), np.float32)
         ring = np.zeros((H, W), np.float32)
-        for x0, y0, x1, y1, alpha in live:
-            key = (x0, y0, x1, y1)
-            if key not in cache:
-                d = _sdf(key, W, H)
-                u = np.clip(d / FEATHER_PX, 0, 1)
-                outside = u * u * (3 - 2 * u)  # 0 inside, 1 a feather beyond the edge
-                rg = RING_ALPHA * np.exp(-((d - 2.0) / RING_WIDTH_PX) ** 2)
-                rg += GLOW_ALPHA * np.exp(-np.maximum(d, 0) / GLOW_PX) * (d > 0)
-                cache = {k: v for k, v in cache.items() if k in [tuple(l[:4]) for l in live]}
-                cache[key] = (outside.astype(np.float32), np.clip(rg, 0, 1).astype(np.float32))
-            outside, rg = cache[key]
-            t += alpha * outside
-            ring = np.maximum(ring, alpha * rg)
+        keep = {q for rects, _a in live for q in rects}
+        cache = {k: v for k, v in cache.items() if k in keep}
+        for rects, alpha in live:
+            outside_all, ring_all = None, None
+            for key in rects:
+                if key not in cache:
+                    d = _sdf(key, W, H)
+                    u = np.clip(d / FEATHER_PX, 0, 1)
+                    outside = u * u * (3 - 2 * u)  # 0 inside, 1 a feather beyond the edge
+                    rg = RING_ALPHA * np.clip(RING_HALF_PX + 0.5 - np.abs(d), 0, 1)  # anti-aliased line
+                    rg = np.maximum(rg, GLOW_ALPHA * np.exp(-np.maximum(d, 0) / GLOW_PX) * (d > 0))
+                    cache[key] = (outside.astype(np.float32), np.clip(rg, 0, 1).astype(np.float32))
+                outside, rg = cache[key]
+                # Several rects light together: clear inside any of them.
+                outside_all = outside if outside_all is None else np.minimum(outside_all, outside)
+                ring_all = rg if ring_all is None else np.maximum(ring_all, rg)
+            t += alpha * outside_all
+            ring = np.maximum(ring, alpha * ring_all)
         t = np.clip(t, 0, 1)
-        lum = a @ np.array([0.299, 0.587, 0.114], np.float32)
+        lum = a[:, :, 0] * 0.299 + a[:, :, 1] * 0.587 + a[:, :, 2] * 0.114  # (matmul warns spuriously on Accelerate)
         treated = a + (lum[:, :, None] - a) * desat
         treated = treated * (1 - dim) + neutral * dim
         out = a + (treated - a) * t[:, :, None]
@@ -939,8 +1085,19 @@ def main(argv):
                         insert="--insert" in argv)
             write_path(rows, size, sys.stdout)
         else:
-            write_focus(focus_path(frames_dir, segs, beats, size, insert="--insert" in argv),
+            dirs = [x.split("=", 1)[1] for x in argv if x.startswith("--focus-dir=")]
+            write_focus(focus_path(frames_dir, segs, beats, size, insert="--insert" in argv
+                                   or any(x.startswith("--insert-from=") for x in argv), focus_dirs=dirs or None),
                         size, sys.stdout)
+    elif cmd == "poster":
+        # poster FRAMES_DIR AT OUT.jpg WIDTH: that source frame, full colour, as a JPEG.
+        from PIL import Image
+        frames_dir = argv[2]
+        f = beat_frame(json.load(open(frames_dir + "/beats.json")), argv[3])
+        im = Image.open(frame_path(frames_dir, f)).convert("RGB")
+        w = int(argv[5])
+        im.resize((w, round(im.size[1] * w / im.size[0])), Image.LANCZOS).save(
+            argv[4], "JPEG", quality=90, optimize=True, progressive=True)
     elif cmd == "focus-report":
         from PIL import Image
         frames_dir = argv[2]

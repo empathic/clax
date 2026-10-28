@@ -6,6 +6,7 @@
 #   web/reel/compose/compose.sh -o OUT [--order ID,ID,...] [--titles FILE]
 #                               [--cards] [--title-seconds S] [--no-camera | --camera-motion]
 #                               [--teaser ID@AT,...] [--intro TEXT] [--inserts ID[@AT],...]
+#                               [--poster ID@AT] [--focus-dir DIR]
 #                               FRAMES_DIR [FRAMES_DIR...]
 #
 # Each FRAMES_DIR holds frames/NNNNNN.png and beats.json (30 fps, 1600x1000);
@@ -23,14 +24,20 @@
 # (reel.toml's [end] headline and footer, END_SECONDS). Vignettes named by
 # --inserts are quick "and also" shots: their last two beats only (camera.py
 # plan --insert), or from AT when named as ID@AT; their treatment is lighter.
+# --poster writes reel-poster.jpg (POSTER_WIDTH px) from that source frame.
 # Pace and camera: camera.py (its constants document both). From beats.json
 # (beats ask, working, reveal, touch; frames are 30 fps): start..ask and
 # ask..working at 1.25x, working..reveal in 1.2 s, reveal at 1x for 2.5 s,
 # touch at 1x for up to 2.5 s; other vignettes play their beats' span at
 # 1.0-1.2x (ClaxBot's brief, building, done count as ask, working, reveal).
-# The frame never moves: the eye is drawn by a treatment. Outside a focus region
-# the page is greyed and dimmed, inside it keeps its colour with a thin accent
-# ring; the region comes from where the page is about to change (not the
+# The frame never moves: the eye is drawn by a treatment. Outside the focus
+# the page is greyed and dimmed; inside it keeps its colour with a thin accent
+# ring. A vignette's focus script says what is lit and when, as named targets
+# (web/reel/focus.ts documents it): the copy its recording carries
+# (FRAMES_DIR/focus.json, with the targets' boxes in focus-rects.json), else
+# <id>.focus.json in --focus-dir (default web/reel/vignettes). Without one the
+# region comes from
+# where the page is about to change (not the
 # pointer), snaps to the UI block around it, is fully on just before that
 # change and fades soon after it, changes rarely and cross-fades when it does;
 # it is off for each reveal. --camera-motion instead crops and eases toward the
@@ -63,6 +70,7 @@ END_SECONDS=3.5
 MP4_CRF="${MP4_CRF:-24}"
 MP4_MAX_BYTES="${MP4_MAX_BYTES:-16000000}"
 TEASER_SECONDS=0.5
+POSTER_WIDTH=1280
 INTRO_SECONDS=1.8
 FPS=30
 FFPROBE="${FFPROBE:-$(dirname "$FFMPEG")/ffprobe}"
@@ -70,7 +78,7 @@ FFPROBE="${FFPROBE:-$(dirname "$FFMPEG")/ffprobe}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 toml="$here/../reel.toml"
 out=""; order=""; titles_file=""; overlay=1; tsec=2.5; camera=1; motion=0
-teaser=""; intro=""; inserts=""
+teaser=""; intro=""; inserts=""; poster=""; focus_dir=""
 dirs=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -85,11 +93,13 @@ while [ $# -gt 0 ]; do
     --teaser) teaser="$2"; shift 2 ;;
     --intro) intro="$2"; shift 2 ;;
     --inserts) inserts="$2"; shift 2 ;;
-    -h|--help) sed -n 2,54p "$0"; exit 0 ;;
+    --poster) poster="$2"; shift 2 ;;
+    --focus-dir) focus_dir="$(cd "$2" && pwd)"; shift 2 ;;
+    -h|--help) sed -n 2,61p "$0"; exit 0 ;;
     *) dirs+=("$1"); shift ;;
   esac
 done
-[ -n "$out" ] && [ ${#dirs[@]} -gt 0 ] || { echo "usage: compose.sh -o OUT_DIR [--order IDS] [--titles FILE] [--cards] [--title-seconds S] [--no-camera | --camera-motion] [--teaser ID@AT,...] [--intro TEXT] [--inserts ID[@AT],...] FRAMES_DIR..." >&2; exit 2; }
+[ -n "$out" ] && [ ${#dirs[@]} -gt 0 ] || { echo "usage: compose.sh -o OUT_DIR [--order IDS] [--titles FILE] [--cards] [--title-seconds S] [--no-camera | --camera-motion] [--teaser ID@AT,...] [--intro TEXT] [--inserts ID[@AT],...] [--poster ID@AT] [--focus-dir DIR] FRAMES_DIR..." >&2; exit 2; }
 mkdir -p "$out/cards" "$out/clips" "$out/camera"
 rm -f "$out/cards/cut.tsv"
 out="$(cd "$out" && pwd)"
@@ -213,7 +223,7 @@ if [ -n "$teaser" ]; then
   log "clip teaser"
 fi
 if [ -n "$intro" ]; then
-  card_clip "$out/clips/00-intro.mp4" "title=$(urlenc "$intro")" "$INTRO_SECONDS"
+  card_clip "$out/clips/00-intro.mp4" "intro=1&title=$(urlenc "$intro")" "$INTRO_SECONDS"
   mv "$out/clips/00-intro.png" "$out/cards/intro.png"
   prelude+=("$out/clips/00-intro.mp4")
 fi
@@ -222,7 +232,7 @@ for ((k = 0; k < n; k++)); do
   case "$title" in *"|"*) sub="${title#*|}"; title="${title%%|*}" ;; esac
   ins="$(insert_flag "${ids[k]}")"
   plan "$d" "$ins" > "$out/cards/$tag.plan"
-  cam path "$d" "$out/cards/$tag.plan" $([ "$camera" = 1 ] || echo --no-camera) $([ "$motion" = 0 ] || echo --camera-motion) ${ins:+--insert} > "$out/camera/$tag.tsv"
+  cam path "$d" "$out/cards/$tag.plan" $([ "$camera" = 1 ] || echo --no-camera) $([ "$motion" = 0 ] || echo --camera-motion) ${ins:+--insert} ${focus_dir:+"--focus-dir=$focus_dir"} > "$out/camera/$tag.tsv"
   read -r w h < <(head -1 "$out/camera/$tag.tsv" | sed -E 's/.*; ([0-9]+)x([0-9]+).*/\1 \2/')
   printf '%s\t%s\t%s\t%s\n' "$tag" "${ids[k]}" "$title" "$sub" >> "$out/cards/cut.tsv"
   raw=(-f rawvideo -pix_fmt rgb24 -s "${w}x$h" -framerate $FPS -i -)
@@ -341,6 +351,13 @@ done
 mv "$best" "$out/clax-reel.gif"
 rm -f "$out"/clax-reel.*.gif "$pal"
 
+if [ -n "$poster" ]; then
+  pid="${poster%%@*}"; pd=""
+  for d in "${all_dirs[@]}"; do [ "$(basename "${d%/}")" = "${pid}_frames" ] && pd="$(cd "$d" && pwd)"; done
+  [ -n "$pd" ] || { echo "compose: --poster names $pid but no ${pid}_frames directory was given" >&2; exit 1; }
+  cam poster "$pd" "${poster#*@}" "$out/reel-poster.jpg" "$POSTER_WIDTH"
+  echo "poster: $out/reel-poster.jpg"
+fi
 echo "mp4: $(du -h "$out/clax-reel.mp4" | cut -f1)  $out/clax-reel.mp4 (hq: $(du -h "$out/clax-reel-hq.mp4" | cut -f1))"
 echo "gif: $(du -h "$out/clax-reel.gif" | cut -f1)  $out/clax-reel.gif"
 echo "clips: $out/clips/"

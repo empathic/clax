@@ -1,0 +1,45 @@
+{
+  "note": "TEMPORARY: this recording predates focus targets, so `overrides` (pixel boxes measured on its frames, before padding) stand in for every target. Re-record with this script beside the vignette's .ts and delete `overrides`; the selectors are then what places the light.",
+  "targets": {
+    "dialog": ".share-panel",
+    "thread": ".thread-card[data-thread]"
+  },
+  "overrides": {
+    "dialog": [
+      451,
+      194,
+      698,
+      611
+    ],
+    "anchor": [
+      320,
+      341,
+      139,
+      43
+    ],
+    "thread": [
+      1128,
+      224,
+      452,
+      472
+    ]
+  },
+  "shots": [
+    {
+      "at": 84,
+      "until": 130,
+      "targets": [
+        "dialog"
+      ],
+      "label": "the invite"
+    },
+    {
+      "at": 186,
+      "targets": [
+        "anchor",
+        "thread"
+      ],
+      "label": "Priya's comment: what she points at, and her thread"
+    }
+  ]
+}
