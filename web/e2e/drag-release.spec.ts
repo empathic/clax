@@ -28,6 +28,26 @@ const host = (page: Page, call: string) => page.evaluate(`window.claxHost.${call
 /** How comment mode's drawing `cls` (`o` outline, `a` area, `f` focus) shows. */
 const drawn = (frame: Frame, cls: string) => frame.evaluate(c => (document.querySelector("clax-overlay")!.shadowRoot!.querySelector(`.${c}`) as HTMLElement).style.display || "none", cls);
 
+/** Moves the mouse onto the frame at `at` from a shell element, so the shell
+ * counts the viewer's arrival. A mouse that is over the frame only by the
+ * layout (Linux Chromium's rests at (0, 0) from the start, and the frame
+ * fills the app's view) sends the shell nothing as it moves within the
+ * frame, and its picks are refused. */
+async function arrive(page: Page, at: { x: number; y: number }) {
+  const from = { x: VIEWPORT.width - 30, y: VIEWPORT.height - 30 };
+  await page.evaluate(({ x, y }) => {
+    const el = document.createElement("div");
+    el.id = "launch";
+    Object.assign(el.style, { position: "fixed", left: `${x - 20}px`, top: `${y - 20}px`, width: "40px", height: "40px", zIndex: "50" });
+    document.getElementById("app")!.append(el);
+  }, from);
+  await page.mouse.move(from.x, from.y);
+  await expect.poll(() => page.evaluate(() => document.querySelector("#launch:hover") !== null)).toBe(true);
+  await page.mouse.move(at.x, at.y);
+  await expect.poll(() => page.evaluate(() => document.querySelector("iframe.frame:hover") !== null)).toBe(true);
+  await page.evaluate(() => document.getElementById("launch")!.remove());
+}
+
 /** Runs `body` with a page of `engine` showing a new artifact in app mode,
  * in comment mode. */
 async function inApp(engine: BrowserType, title: string, body: (page: Page, frame: Frame) => Promise<void>) {
@@ -55,7 +75,7 @@ for (const engine of [chromium, webkit]) {
   test(`${engine.name()}: a drag released outside the page picks its rectangle; after Send no area stays outlined, and an opened thread's area flashes, then goes`, async () => {
     await inApp(engine, `Drag out ${engine.name()}`, async (page, frame) => {
       const pic = (await frame.locator("#pic").boundingBox())!;
-      await page.mouse.move(pic.x + 20, pic.y + 20);
+      await arrive(page, { x: pic.x + 20, y: pic.y + 20 });
       await page.mouse.down();
       await page.mouse.move(pic.x + 150, pic.y + 150, { steps: 4 });
       await page.mouse.move(pic.x + 200, VIEWPORT.height - 2, { steps: 4 });
