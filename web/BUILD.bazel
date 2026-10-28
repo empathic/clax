@@ -253,6 +253,8 @@ npm_script_test(
 # the browsers are read where Bazel put them, not copied
 # (web/e2e/bazel-env.ts). `e2e_shots` renders the app's web pieces into
 # CLAX_SHOTS_DIR (e2e/app-shots.spec.ts) and is run on demand only.
+# `e2e_queues` saves its screenshots to CLAX_QUEUES_SHOTS_DIR when set
+# (e2e/queues.spec.ts).
 E2E_DATA = [
     "//apps/clax_app:home",
     "//apps/clax_app:kit",
@@ -299,6 +301,7 @@ E2E_SKIPS = ["crates/clax-cli/clax"]
 ) for project in [
     "gesture",
     "chrome-overlay",
+    "queues",
     "rest",
     "shots",
 ]]
