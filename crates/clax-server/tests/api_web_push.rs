@@ -402,3 +402,246 @@ async fn an_agents_reply_on_the_owners_thread_is_pushed_with_its_threads_url() {
         "no reply text"
     );
 }
+
+/// A daemon trusting [`TRUSTED`] that names tailnet viewers when
+/// `identity`, whose `[serve] owner_tailscale_login` is `owner`.
+async fn tailnet_owned_by(identity: bool, owner: Option<&str>) -> TestServer {
+    let owner = owner.map(str::to_string);
+    TestServer::spawn_with(move |s| {
+        s.trusted_hosts = vec![TRUSTED.to_string()].into();
+        s.tailscale_identity = identity;
+        s.owner_tailscale_login = owner.map(Arc::from);
+    })
+    .await
+}
+
+/// `req` as `tailscale serve` passes on a request of tailnet user `login`
+/// through `host`, which the browser says `site` made, from `origin`.
+fn through_serve(
+    req: reqwest::RequestBuilder,
+    host: &str,
+    login: &str,
+    site: &str,
+    origin: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let req = req
+        .header("host", host)
+        .header("tailscale-user-login", login)
+        .header("tailscale-user-name", "Robert DeLanghe")
+        .header("sec-fetch-site", site);
+    match origin {
+        Some(o) => req.header("origin", o),
+        None => req,
+    }
+}
+
+/// The statuses and error codes of GET /api/web-push, POST and DELETE
+/// /api/web-push/subscriptions (`body`'s endpoint) made with `with`.
+async fn web_push_calls(
+    ts: &TestServer,
+    body: &Value,
+    with: &dyn Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
+) -> Vec<(&'static str, u16, Value)> {
+    let calls = [
+        ("GET", ts.client.get(format!("{}/api/web-push", ts.base))),
+        (
+            "POST",
+            ts.client
+                .post(format!("{}/api/web-push/subscriptions", ts.base))
+                .json(body),
+        ),
+        (
+            "DELETE",
+            ts.client
+                .delete(format!("{}/api/web-push/subscriptions", ts.base))
+                .json(&json!({"endpoint": body["endpoint"]})),
+        ),
+    ];
+    let mut out = Vec::new();
+    for (method, req) in calls {
+        let res = with(req).send().await.unwrap();
+        let status = res.status().as_u16();
+        out.push((method, status, res.json().await.unwrap_or(Value::Null)));
+    }
+    out
+}
+
+#[tokio::test]
+async fn the_owners_tailnet_login_through_serve_subscribes_a_device() {
+    let ts = tailnet_owned_by(true, Some("bdelanghe@github")).await;
+    let (base, mut rx, _) = push_service().await;
+    let device = Receiver::new();
+    let endpoint = format!("{base}/push/phone");
+    let body = subscription(&endpoint, &device);
+    let origin = format!("https://{TRUSTED}");
+    let owner = |r| {
+        through_serve(
+            r,
+            TRUSTED,
+            "bdelanghe@github",
+            "same-origin",
+            Some(origin.as_str()),
+        )
+    };
+
+    // The key, from the shell's own origin through the trusted host.
+    let res = owner(ts.client.get(format!("{}/api/web-push", ts.base)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["public_key"].as_str().unwrap().len(), 87, "{v}");
+    assert_eq!(v["devices"], 0);
+    // The same with the port, and a GET without Origin (as fetch sends one).
+    let res = through_serve(
+        ts.client.get(format!("{}/api/web-push", ts.base)),
+        &format!("{TRUSTED}:443"),
+        "bdelanghe@github",
+        "same-origin",
+        None,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+
+    // Subscribing: 201, and the device hears at once.
+    let res = owner(
+        ts.client
+            .post(format!("{}/api/web-push/subscriptions", ts.base))
+            .json(&body),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 201);
+    assert_eq!(res.json::<Value>().await.unwrap()["devices"], 1);
+    let p = next(&mut rx).await;
+    let m: Message = serde_json::from_slice(&device.open(&p.body).unwrap()).unwrap();
+    assert_eq!(m.title, "Clax notifications are on for this device");
+
+    // Anyone else is refused all three routes, and the device stays.
+    let port = ts.addr.port();
+    let localhost = format!("localhost:{port}");
+    let local_origin = format!("http://localhost:{port}");
+    type With<'a> = Box<dyn Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder + 'a>;
+    let refused: Vec<(&str, With<'_>, &str)> = vec![
+        (
+            "another tailnet login",
+            Box::new(|r| through_serve(r, TRUSTED, "eve@github", "same-origin", Some(&origin))),
+            "forbidden",
+        ),
+        (
+            "the owner's login in another case",
+            Box::new(|r| {
+                through_serve(r, TRUSTED, "BDELANGHE@github", "same-origin", Some(&origin))
+            }),
+            "forbidden",
+        ),
+        (
+            "a host the daemon does not trust",
+            Box::new(|r| {
+                through_serve(
+                    r,
+                    "evil.example",
+                    "bdelanghe@github",
+                    "same-origin",
+                    Some("https://evil.example"),
+                )
+            }),
+            "forbidden_host",
+        ),
+        (
+            "the owner's login sent to localhost by a local process",
+            Box::new(|r| {
+                through_serve(
+                    r,
+                    &localhost,
+                    "bdelanghe@github",
+                    "same-origin",
+                    Some(&local_origin),
+                )
+            }),
+            "forbidden",
+        ),
+        (
+            "a cross-site request of the owner's device",
+            Box::new(|r| through_serve(r, TRUSTED, "bdelanghe@github", "cross-site", None)),
+            "forbidden_origin",
+        ),
+        (
+            "a same-site request of the owner's device",
+            Box::new(|r| through_serve(r, TRUSTED, "bdelanghe@github", "same-site", None)),
+            "forbidden_origin",
+        ),
+        (
+            "a cross-site page's request with its own Origin",
+            Box::new(|r| {
+                through_serve(
+                    r,
+                    TRUSTED,
+                    "bdelanghe@github",
+                    "cross-site",
+                    Some("https://evil.example"),
+                )
+            }),
+            "forbidden_origin",
+        ),
+    ];
+    for (who, with, code) in &refused {
+        for (method, status, v) in web_push_calls(&ts, &body, with.as_ref()).await {
+            assert_eq!(status, 403, "{who}: {method}: {v}");
+            assert_eq!(v["error"]["code"], *code, "{who}: {method}: {v}");
+        }
+    }
+    let res = owner(ts.client.get(format!("{}/api/web-push", ts.base)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.json::<Value>().await.unwrap()["devices"], 1);
+
+    // Forgotten on the owner's request.
+    let res = owner(
+        ts.client
+            .delete(format!("{}/api/web-push/subscriptions", ts.base))
+            .json(&json!({"endpoint": endpoint})),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(
+        res.json::<Value>().await.unwrap(),
+        json!({"removed": true, "devices": 0})
+    );
+}
+
+#[tokio::test]
+async fn without_the_setting_the_owners_tailnet_login_reaches_no_push_route() {
+    let body = subscription("https://web.push.apple.com/abc", &Receiver::new());
+    let origin = format!("https://{TRUSTED}");
+    for (identity, owner) in [
+        (true, None),
+        (true, Some("someone-else@github")),
+        (false, Some("bdelanghe@github")),
+    ] {
+        let ts = tailnet_owned_by(identity, owner).await;
+        let with = |r| through_serve(r, TRUSTED, "bdelanghe@github", "same-origin", Some(&origin));
+        for (method, status, v) in web_push_calls(&ts, &body, &with).await {
+            assert_eq!(status, 403, "{identity} {owner:?}: {method}: {v}");
+            assert_eq!(
+                v["error"]["code"], "forbidden",
+                "{identity} {owner:?}: {method}: {v}"
+            );
+        }
+        assert!(
+            ts.home.push_subscriptions().metadata().is_err(),
+            "{identity} {owner:?}: nothing kept"
+        );
+        assert!(
+            ts.home.push_vapid_key().metadata().is_err(),
+            "{identity} {owner:?}: no key made"
+        );
+    }
+}
