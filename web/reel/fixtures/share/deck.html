@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northwind Board Deck</title>
+<style>
+  /* Northwind's Q3 board deck: a seeded page for the reel's share vignette
+     (web/reel/vignettes/share.ts). The company, its numbers and its people
+     are invented. Light only, as the reel is filmed. */
+  :root {
+    --bg: #eef0f4;
+    --card: #ffffff;
+    --fg: #14171f;
+    --muted: #646b7a;
+    --faint: #9aa1ae;
+    --line: #e3e6ec;
+    --ink: #1b2a4a;
+    --accent: #2b59c3;
+    --accent-soft: #dfe7f8;
+    --plan: #c9853a;
+    --up: #1d8a4e;
+    --up-soft: #e2f3e9;
+    --down: #b8432f;
+    --down-soft: #f8e6e2;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .app { display: grid; grid-template-columns: 188px 1fr; min-height: 100vh; }
+  nav.rail { background: var(--ink); color: #c9d3ea; padding: 22px 12px; display: flex; flex-direction: column; gap: 2px; }
+  .brand { display: flex; align-items: center; gap: 9px; padding: 0 8px 18px; color: #fff; font-weight: 650; letter-spacing: .01em; }
+  .brand i { width: 22px; height: 22px; border-radius: 6px; background: linear-gradient(135deg, #6f95f2, #2b59c3); display: inline-block; }
+  .rail button { all: unset; display: flex; gap: 10px; align-items: baseline; padding: 7px 8px; border-radius: 7px; font-size: 13.5px; cursor: pointer; }
+  .rail button span { color: #7d8bab; font-variant-numeric: tabular-nums; font-size: 12px; width: 16px; }
+  .rail button:hover { background: rgb(255 255 255 / .06); }
+  .rail button[aria-current="true"] { background: rgb(255 255 255 / .12); color: #fff; }
+  .rail .foot { margin-top: auto; padding: 14px 8px 0; font-size: 11.5px; color: #7d8bab; line-height: 1.5; }
+  main { padding: 22px 26px 18px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  .top { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 13px; }
+  .top b { color: var(--fg); font-weight: 600; }
+  .top .sp { flex: 1; }
+  .pill { border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: 3px 10px; font-size: 12px; }
+  .pager { display: flex; align-items: center; gap: 4px; }
+  .pager button { all: unset; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 7px; border: 1px solid var(--line); background: var(--card); cursor: pointer; color: var(--fg); }
+  .pager output { min-width: 52px; text-align: center; font-variant-numeric: tabular-nums; }
+  .slide { background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 1px 2px rgb(20 23 31 / .04), 0 8px 24px rgb(20 23 31 / .06); padding: 26px 28px 22px; display: flex; flex-direction: column; gap: 18px; }
+  .kicker { margin: 0; color: var(--accent); font-size: 12px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
+  h1 { margin: 4px 0 0; font-size: 25px; line-height: 1.2; letter-spacing: -.012em; }
+  .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  .kpi { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px 10px; }
+  .kpi .l { color: var(--muted); font-size: 12px; }
+  .kpi .v { font-size: 24px; font-weight: 680; letter-spacing: -.02em; margin: 2px 0 4px; font-variant-numeric: tabular-nums; }
+  .chip { display: inline-block; border-radius: 999px; padding: 1px 8px; font-size: 11.5px; font-weight: 600; }
+  .chip.up { color: var(--up); background: var(--up-soft); }
+  .chip.down { color: var(--down); background: var(--down-soft); }
+  .kpi svg { display: block; width: 100%; height: 26px; margin-top: 6px; }
+  .body { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 18px; }
+  figure { margin: 0; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px 8px; }
+  figcaption { display: flex; align-items: baseline; gap: 10px; font-size: 13px; font-weight: 600; }
+  figcaption .key { margin-left: auto; display: flex; gap: 12px; font-weight: 400; color: var(--muted); font-size: 12px; }
+  .key i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  #arr { display: block; width: 100%; height: auto; }
+  .notes h2 { margin: 0 0 8px; font-size: 13px; }
+  .notes ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 9px; }
+  .notes li { display: grid; grid-template-columns: 8px 1fr; gap: 10px; font-size: 13.5px; }
+  .notes li::before { content: ""; width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; background: var(--accent); }
+  .notes li.warn::before { background: var(--plan); }
+  .notes small { display: block; color: var(--muted); font-size: 12px; }
+  .bullets { margin: 0; padding-left: 20px; font-size: 17px; display: grid; gap: 10px; }
+  footer { display: flex; color: var(--faint); font-size: 11.5px; }
+  footer .sp { flex: 1; }
+  @media (max-width: 860px) {
+    .app { grid-template-columns: 1fr; }
+    nav.rail { display: none; }
+    .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .body { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="rail" aria-label="Slides">
+    <div class="brand"><i aria-hidden="true"></i>Northwind</div>
+    <div id="toc"></div>
+    <div class="foot">Board of Directors<br>November 12, 2026<br>Confidential</div>
+  </nav>
+  <main>
+    <div class="top">
+      <b>Q3 2026 Board Update</b><span class="pill">Draft 3</span>
+      <span class="sp"></span>
+      <div class="pager">
+        <button type="button" id="prev" aria-label="Previous slide">‹</button>
+        <output id="pos"></output>
+        <button type="button" id="next" aria-label="Next slide">›</button>
+      </div>
+    </div>
+    <section class="slide" id="slide" aria-live="polite"></section>
+    <footer><span>Northwind, Inc. · Board materials</span><span class="sp"></span><span>All figures unaudited</span></footer>
+  </main>
+</div>
+<script>
+// Six quarters of ARR ($M) against plan.
+const QUARTERS = ["Q2 ’25", "Q3 ’25", "Q4 ’25", "Q1 ’26", "Q2 ’26", "Q3 ’26"];
+const ARR = [24.1, 27.6, 31.4, 35.0, 40.9, 48.2];
+const PLAN = [25.0, 28.5, 32.0, 36.0, 41.0, 45.5];
+const KPIS = [
+  { label: "Annual recurring revenue", value: "$48.2M", chip: "+75% YoY", up: true, spark: ARR },
+  { label: "Net revenue retention", value: "124%", chip: "+6 pts", up: true, spark: [112, 115, 117, 118, 121, 124] },
+  { label: "Gross margin", value: "78.4%", chip: "+2.1 pts", up: true, spark: [73.9, 74.8, 75.6, 76.3, 77.0, 78.4] },
+  { label: "Hiring vs plan", value: "41 / 52", chip: "−11 roles", up: false, spark: [12, 19, 25, 31, 36, 41] },
+];
+const SLIDES = [
+  { title: "Q3 2026 Board Update", kind: "text", points: ["Ahead of plan on revenue for the third quarter running", "EU region live; first Frankfurt customers onboarded", "Two asks of the board: the Series C timing and the Lisbon office"] },
+  { title: "Q3 at a glance", kind: "glance" },
+  { title: "Revenue", kind: "text", points: ["New logos: 64 (plan 55)", "Expansion carried 58% of net new ARR", "Enterprise mix up to 41% of ARR"] },
+  { title: "Customers", kind: "text", points: ["Acme Freight expanded to 1,400 seats", "Logo churn 1.8%, the lowest on record", "NPS 61 across 212 responses"] },
+  { title: "Product", kind: "text", points: ["Routing v4 shipped to every customer", "Carrier API at 99.97% availability", "Mobile driver app in beta with 30 fleets"] },
+  { title: "People", kind: "text", points: ["41 of 52 planned roles filled", "Engineering hiring paced by two staff roles", "Lisbon office proposal on slide 8"] },
+  { title: "Cash & runway", kind: "text", points: ["$61.3M in the bank", "Burn multiple 0.9, down from 1.3", "31 months of runway at the current plan"] },
+  { title: "Asks of the board", kind: "text", points: ["Series C: open conversations in Q1", "Approve the Lisbon office lease", "Two independent director candidates"] },
+];
+let at = 1;
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const NS = "http://www.w3.org/2000/svg";
+const svg = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; };
+
+function spark(values, up) {
+  const s = svg("svg", { viewBox: "0 0 120 26", preserveAspectRatio: "none", "aria-hidden": "true" });
+  const lo = Math.min(...values), hi = Math.max(...values);
+  const pts = values.map((v, i) => `${(i / (values.length - 1)) * 118 + 1},${24 - ((v - lo) / (hi - lo || 1)) * 20}`).join(" ");
+  s.append(svg("polyline", { points: pts, fill: "none", stroke: up ? "#1d8a4e" : "#b8432f", "stroke-width": "2", "stroke-linejoin": "round", "vector-effect": "non-scaling-stroke" }));
+  return s;
+}
+
+function arrChart() {
+  const W = 520, H = 230, L = 40, B = 26, T = 14, R = 8;
+  const s = svg("svg", { id: "arr", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "ARR by quarter against plan" });
+  const max = 50, y = v => T + (H - T - B) * (1 - v / max);
+  for (const g of [0, 10, 20, 30, 40, 50]) {
+    s.append(svg("line", { x1: L, x2: W - R, y1: y(g), y2: y(g), stroke: "#e3e6ec" }));
+    const t = svg("text", { x: L - 8, y: y(g) + 4, "text-anchor": "end", "font-size": "11", fill: "#9aa1ae" }); t.textContent = `$${g}M`; s.append(t);
+  }
+  const slot = (W - L - R) / ARR.length, bw = slot * 0.52;
+  ARR.forEach((v, i) => {
+    const x = L + slot * i + (slot - bw) / 2, last = i === ARR.length - 1;
+    s.append(svg("rect", { x, y: y(v), width: bw, height: y(0) - y(v), rx: 4, fill: last ? "#2b59c3" : "#a9bde9", "data-quarter": QUARTERS[i] }));
+    const q = svg("text", { x: x + bw / 2, y: H - 8, "text-anchor": "middle", "font-size": "11", fill: "#646b7a" }); q.textContent = QUARTERS[i]; s.append(q);
+    if (last) { const l = svg("text", { x: x + bw / 2, y: y(v) - 7, "text-anchor": "middle", "font-size": "12", "font-weight": "700", fill: "#14171f" }); l.textContent = `$${v}M`; s.append(l); }
+  });
+  const plan = PLAN.map((v, i) => `${L + slot * i + slot / 2},${y(v)}`).join(" ");
+  s.append(svg("polyline", { points: plan, fill: "none", stroke: "#c9853a", "stroke-width": "2", "stroke-dasharray": "5 4" }));
+  PLAN.forEach((v, i) => s.append(svg("circle", { cx: L + slot * i + slot / 2, cy: y(v), r: 3, fill: "#fff", stroke: "#c9853a", "stroke-width": "2" })));
+  return s;
+}
+
+function render() {
+  const slide = SLIDES[at];
+  const root = document.getElementById("slide");
+  const head = el("header");
+  head.append(el("p", "kicker", `${String(at + 1).padStart(2, "0")} · ${slide.title}`));
+  if (slide.kind === "glance") {
+    head.append(el("h1", null, "Ahead of plan on revenue, behind on hiring"));
+    const kpis = el("div", "kpis");
+    for (const k of KPIS) {
+      const c = el("div", "kpi");
+      c.append(el("div", "l", k.label), el("div", "v", k.value), el("span", `chip ${k.up ? "up" : "down"}`, k.chip), spark(k.spark, k.up));
+      kpis.append(c);
+    }
+    const fig = el("figure");
+    const cap = el("figcaption", null, "ARR by quarter");
+    const key = el("span", "key");
+    key.innerHTML = `<span><i style="background:#2b59c3"></i>Actual</span><span><i style="background:#c9853a"></i>Plan</span>`;
+    cap.append(key);
+    fig.append(cap, arrChart());
+    const notes = el("div", "notes");
+    notes.innerHTML = `<h2>What moved</h2><ul>
+      <li><span>Acme Freight expanded to 1,400 seats<small>+$2.6M ARR, the largest expansion to date</small></span></li>
+      <li><span>EU region live in Frankfurt, Sept 14<small>9 customers migrated, 3 new logos</small></span></li>
+      <li><span>Net revenue retention at 124%<small>Expansion from routing v4 add-ons</small></span></li>
+      <li class="warn"><span>Hiring 11 roles behind plan<small>Two staff engineering roles open since May</small></span></li>
+    </ul>`;
+    const body = el("div", "body");
+    body.append(fig, notes);
+    root.replaceChildren(head, kpis, body);
+  } else {
+    head.append(el("h1", null, slide.title));
+    const ul = el("ul", "bullets");
+    for (const p of slide.points) ul.append(el("li", null, p));
+    root.replaceChildren(head, ul);
+  }
+  document.getElementById("pos").textContent = `${at + 1} / ${SLIDES.length}`;
+  document.querySelectorAll("#toc button").forEach((b, i) => b.setAttribute("aria-current", String(i === at)));
+}
+
+const toc = document.getElementById("toc");
+SLIDES.forEach((s, i) => {
+  const b = el("button");
+  b.type = "button";
+  b.append(el("span", null, String(i + 1)), document.createTextNode(s.title));
+  b.addEventListener("click", () => { at = i; render(); });
+  toc.append(b);
+});
+const go = d => { at = Math.max(0, Math.min(SLIDES.length - 1, at + d)); render(); };
+document.getElementById("prev").addEventListener("click", () => go(-1));
+document.getElementById("next").addEventListener("click", () => go(1));
+addEventListener("keydown", e => { if (e.key === "ArrowRight") go(1); if (e.key === "ArrowLeft") go(-1); });
+render();
+</script>
+</body>
+</html>

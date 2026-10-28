@@ -30,6 +30,7 @@ VIGNETTES = [
     "globe",
     "history",
     "realtime",
+    "share",
 ]
 
 # A vignette script with no target here would be linted but never recorded.
@@ -143,6 +144,41 @@ copy_to_bin(
     )
     for v in VIGNETTES
 ]
+
+# Two deterministic recordings of share are the same, as realtime's are:
+# `bazelisk test //web/reel:share_determinism`.
+npm_script_test(
+    name = "share_determinism",
+    args = ["share"],
+    data = [
+        ":determinism",
+        ":recorder",
+        ":share_script",
+        "//crates/clax-cli:clax",
+        "//crates/clax-cli:clax_warm",
+        "//web:dist_e2e",
+        "//web:files",
+        "//web:node_modules",
+        "@chromium//:browsers",
+    ],
+    env = {
+        "CLAX_E2E_BIN": "$(rootpath //crates/clax-cli:clax)",
+        "CLAX_E2E_WEB_DIST": "$(rootpath //web:dist_e2e)",
+        "CLAX_GALLERY__QUICKSTART": "false",
+        "PLAYWRIGHT_BROWSERS_PATH": "$(rootpath @chromium//:browsers)",
+    },
+    no_copy_to_bin = ["@chromium//:browsers"],
+    project = "web",
+    script = "reel:determinism",
+    skips = ["crates/clax-cli/clax"],
+    tags = [
+        "cpu:4",
+        "exclusive",
+        "manual",
+        "no-remote",
+        "no-sandbox",
+    ],
+)
 
 [reel_vignette(name = v) for v in VIGNETTES]
 

@@ -57,6 +57,12 @@ title = "Every version, kept"
 seconds = 9
 in_short = true
 
+[[vignette]]
+id = "share"
+title = "Share it"
+seconds = 9
+in_short = true
+
 [end]
 seconds = 4
 headline = "Your agents build pages. Clax gives them a home."
