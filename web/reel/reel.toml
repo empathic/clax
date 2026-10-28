@@ -45,6 +45,12 @@ title = "No agent? Use ClaxBot"
 seconds = 10
 in_short = false
 
+[[vignette]]
+id = "dash"
+title = "From raw data to answers"
+seconds = 7.5
+in_short = true
+
 [end]
 seconds = 4
 headline = "Your agents build pages. Clax gives them a home."

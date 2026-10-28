@@ -25,6 +25,7 @@ VIGNETTES = [
     "agent",
     "claxbot",
     "coldopen",
+    "dash",
     "game",
     "globe",
     "realtime",
