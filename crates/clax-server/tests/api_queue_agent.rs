@@ -19,8 +19,13 @@ struct Q {
 }
 
 async fn setup() -> Q {
+    setup_on(std::net::Ipv4Addr::LOCALHOST.into()).await
+}
+
+/// [`setup`] on a daemon bound to `bind` (every interface, to invite people).
+async fn setup_on(bind: std::net::IpAddr) -> Q {
     let clock = Arc::new(ManualClock::at("2026-10-27T12:00:00Z"));
-    let ts = TestServer::spawn_with_clock(clock.clone()).await;
+    let ts = TestServer::spawn_on_with_clock(bind, clock.clone()).await;
     let qid = ts
         .store
         .create_queue(
@@ -442,4 +447,117 @@ async fn the_generic_thread_routes_refuse_a_report_and_leave_it_out_of_listings(
         !v.to_string().contains(&q.tid),
         "the report is in no listing: {v}"
     );
+}
+
+#[tokio::test]
+async fn a_persons_agent_triages_as_its_person_and_loses_its_lease_with_its_membership() {
+    let q = setup_on("0.0.0.0".parse().unwrap()).await;
+    let sam = q.ts.connect_person("Sam", "clax:collaborator").await;
+    let public_id = q
+        .ts
+        .store
+        .viewer_of_grant(&sam.grant_id())
+        .unwrap()
+        .public_id;
+    let sid = sam.register("claude", "sam-h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let call = |m: &'static str, path: String, body: Option<Value>| {
+        let sam = &sam;
+        let sid = sid.clone();
+        async move {
+            let r = sam.agent(m, &path, Some(&sid), body).await;
+            let s = r.status().as_u16();
+            (s, r.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    // Not a member: the queue is not there.
+    let (s, v) = call("GET", format!("/api/queues/{}/reports", q.qid), None).await;
+    assert_eq!((s, code(&v)), (404, "not_a_member"), "{v}");
+    let (s, v) = call("POST", q.report("/claim"), Some(json!({}))).await;
+    assert_eq!((s, code(&v)), (404, "not_a_member"), "{v}");
+
+    // A triage member's agent claims and replies.
+    q.ts.store
+        .set_member(&AuditCtx::DAEMON, &q.qid, &public_id, Some(Role::Triage))
+        .unwrap();
+    let (s, v) = call("GET", format!("/api/queues/{}/reports", q.qid), None).await;
+    assert_eq!((s, v["reports"].as_array().map(Vec::len)), (200, Some(1)), "{v}");
+    let (s, v) = call("POST", q.report("/claim"), Some(json!({}))).await;
+    assert_eq!((s, &v["report"]["state"]), (200, &json!("claimed")), "{v}");
+    let (s, v) = call(
+        "POST",
+        q.report("/comments"),
+        Some(json!({"body": "Looking"})),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+
+    // Removed, it is a stranger again, and its lease is gone.
+    q.ts.store
+        .set_member(&AuditCtx::DAEMON, &q.qid, &public_id, None)
+        .unwrap();
+    for (m, path, body) in [
+        ("GET", q.report(""), None),
+        ("POST", q.report("/comments"), Some(json!({"body": "late"}))),
+        ("POST", q.report("/renew"), Some(json!({}))),
+    ] {
+        let (s, v) = call(m, path.clone(), body).await;
+        assert_eq!((s, code(&v)), (404, "not_a_member"), "{path}: {v}");
+    }
+    let r = q
+        .ts
+        .store
+        .report(&q.qid, &q.tid, clax_store::queues::Visibility::All)
+        .unwrap()
+        .unwrap();
+    assert_eq!(r.state, clax_core::queue::State::Open);
+    assert!(q.ts.store.thread_owner(&q.tid).unwrap().is_none());
+}
+
+#[tokio::test]
+async fn the_queue_tools_list_claim_reply_and_resolve_against_a_daemon() {
+    let q = setup().await;
+    let sid = q.session("mcp-1").await;
+    let log = tempfile::tempdir().unwrap();
+    let tools = clax_mcp::tools::ClaxTools::new(
+        clax_mcp::client::DaemonClient::new(q.ts.base.clone(), q.ts.token.clone(), Some(sid)),
+        q.ts.base.clone(),
+        None,
+        log.path().join("mcp.log"),
+    );
+    let call = |name: &'static str, args: Value| {
+        let tools = tools.clone();
+        async move {
+            let r = tools
+                .call_direct(
+                    rmcp::model::CallToolRequestParams::new(name)
+                        .with_arguments(args.as_object().unwrap().clone()),
+                )
+                .await
+                .unwrap();
+            let rmcp::model::CallToolResponse::Complete(r) = r else {
+                panic!("{name} completes")
+            };
+            let r = serde_json::to_value(r).unwrap();
+            assert_eq!(r["isError"], false, "{name}: {r}");
+            let text = r["content"][0]["text"].as_str().unwrap().to_string();
+            serde_json::from_str::<Value>(&text).unwrap()
+        }
+    };
+    let v = call("queue_list", json!({})).await;
+    assert_eq!(v["queues"][0]["id"], json!(q.qid), "{v}");
+    let v = call("queue_list", json!({"queue": q.qid, "state": "open"})).await;
+    assert_eq!(v["reports"][0]["id"], json!(q.tid), "{v}");
+    let v = call("queue_claim", json!({"queue": q.qid, "report_id": q.tid})).await;
+    assert_eq!(v["report"]["state"], "claimed", "{v}");
+    let v = call(
+        "queue_reply",
+        json!({"queue": q.qid, "report_id": q.tid, "body": "Fixed in 4.2"}),
+    )
+    .await;
+    assert_eq!(v["comment"]["body"], "Fixed in 4.2", "{v}");
+    let v = call("queue_resolve", json!({"queue": q.qid, "report_id": q.tid})).await;
+    assert_eq!(v["report"]["state"], "resolved", "{v}");
 }

@@ -884,3 +884,54 @@ async fn a_request_signed_by_the_sdk_vector_verifies() {
     let res = send(pinned.to_string()).await.unwrap();
     assert_eq!(status_code(res).await, (400, "invalid_multipart".into()));
 }
+
+#[tokio::test]
+async fn under_all_a_reporter_reads_and_comments_on_anothers_report() {
+    let s = Setup::new().await;
+    s.ts.store
+        .update_queue(
+            &AuditCtx::DAEMON,
+            &s.qid,
+            clax_store::queues::QueuePatch {
+                reporters_see: Some(ReportersSee::All),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let a = s.reporter("emp-a").await;
+    let b = s.reporter("emp-b").await;
+    let v: Value = s.file(&a, "theirs").await.json().await.unwrap();
+    let tid = v["report"]["id"].as_str().unwrap().to_string();
+
+    let v: Value = s
+        .as_reporter(&b, Some(ORIGIN), "GET", &s.reports(), None, vec![])
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["reports"][0]["id"], json!(tid), "{v}");
+    let clip = format!("{}/{tid}/clip", s.reports());
+    let res = s
+        .as_reporter(&b, Some(ORIGIN), "GET", &clip, None, vec![])
+        .await;
+    assert_eq!(res.status(), 200);
+    let comments = format!("{}/{tid}/comments", s.reports());
+    let body = serde_json::to_vec(&json!({"body": "me too"})).unwrap();
+    let res = s
+        .as_reporter(
+            &b,
+            Some(ORIGIN),
+            "POST",
+            &comments,
+            Some("application/json"),
+            body,
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    let cs = v["report"]["comments"].as_array().unwrap();
+    assert_eq!(cs.len(), 2, "{v}");
+    assert_eq!(cs[1]["author_name"], "emp-b");
+    assert_eq!(cs[1]["author_kind"], "reporter");
+    assert_eq!(v["report"]["reporter_id"], "emp-a");
+}
