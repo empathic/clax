@@ -492,6 +492,25 @@ async fn a_report_s_fields_are_checked() {
             .await;
         assert_eq!(status_code(res).await, (400, want.to_string()));
     }
+    // Metadata is measured as compact JSON, not as sent.
+    let spaced = format!(
+        "{{{}\"x\": \"{}\"}}",
+        " ".repeat(20 * 1024),
+        "a".repeat(1024)
+    );
+    let (mp, ct) = multipart(&[
+        ("url", Part::Text("https://app.example/")),
+        ("title", Part::Text("t")),
+        ("anchor", Part::Text(&anchor)),
+        ("body", Part::Text("b")),
+        ("metadata", Part::Text(&spaced)),
+    ]);
+    let res = s
+        .as_reporter(&r, Some(ORIGIN), "POST", &s.reports(), Some(&ct), mp)
+        .await;
+    assert_eq!(res.status(), 201);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["report"]["metadata"]["x"].as_str().map(str::len), Some(1024));
 }
 
 #[tokio::test]

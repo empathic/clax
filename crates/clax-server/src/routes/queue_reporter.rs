@@ -152,18 +152,8 @@ async fn read_fields(mut mp: Multipart) -> Result<Fields, ApiError> {
             "title" => f.title.replace(text()?).is_some(),
             "anchor" => f.anchor.replace(text()?).is_some(),
             "body" => f.body.replace(text()?).is_some(),
-            "metadata" => {
-                if bytes.len() > clax_core::queue::MAX_THREAD_METADATA_BYTES {
-                    return Err(ApiError::bad_request(
-                        "metadata_too_large",
-                        format!(
-                            "a report's metadata is at most {} bytes",
-                            clax_core::queue::MAX_THREAD_METADATA_BYTES
-                        ),
-                    ));
-                }
-                f.metadata.replace(text()?).is_some()
-            }
+            // Its size is the store's to check, as compact JSON.
+            "metadata" => f.metadata.replace(text()?).is_some(),
             "revision" => f.revision.replace(text()?).is_some(),
             "clip" => f.clip.replace(bytes.to_vec()).is_some(),
             _ => {
@@ -233,7 +223,8 @@ async fn announce(s: &AppState, tid: String) {
 
 /// `POST /api/queues/<qid>/reporter/reports` (multipart `external_id?`,
 /// `url`, `title`, `anchor` (JSON), `body`, `metadata?` (JSON, at most
-/// [`clax_core::queue::MAX_THREAD_METADATA_BYTES`] bytes), `revision?`,
+/// [`clax_core::queue::MAX_THREAD_METADATA_BYTES`] bytes written compact),
+/// `revision?`,
 /// `clip?` (PNG)): files a report as the token's reporter. Answers `201
 /// {report}`.
 ///
