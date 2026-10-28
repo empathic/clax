@@ -6,7 +6,8 @@
 //
 // The site serves every page with a Content-Security-Policy whose
 // `connect-src` allows only the site itself and the instance, and whose
-// `script-src` allows no inline script. Its users sign in at
+// `script-src` allows no inline script and whose `style-src` no inline
+// style. Its users sign in at
 // `/login?user=<id>`, which sets a cookie; `POST /clax-token` mints a token
 // for the cookie's user, bound to the key the overlay sends and to the
 // site's own origin. Until `grant` hands it the service grant, the backend
@@ -36,17 +37,18 @@ export interface DeployerSite {
 
 const page = readFileSync(new URL("index.html", import.meta.url), "utf8");
 const app = readFileSync(new URL("app.js", import.meta.url), "utf8");
+const css = readFileSync(new URL("site.css", import.meta.url), "utf8");
 
 /** The page's policy: scripts from the site and the instance only (no
- * inline script), requests to the site and the instance only. The overlay's
- * own stylesheet goes into its shadow root as a `<style>`, and its clip
- * preview is a `blob:` image. */
+ * inline script), requests to the site and the instance only, styles from
+ * the site only (no <style> element or style attribute: the overlay styles
+ * itself through the CSSOM). The overlay's clip preview is a `blob:` image. */
 export function policyFor(instance: string): string {
   return [
     "default-src 'self'",
     `script-src 'self' ${instance}`,
     `connect-src 'self' ${instance}`,
-    "style-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'report-sample'",
     "img-src 'self' data: blob:",
     "frame-ancestors 'none'",
   ].join("; ");
@@ -95,6 +97,10 @@ export async function startDeployerSite(instance: string): Promise<DeployerSite>
       if (req.method === "GET" && url.pathname === "/app.js") {
         res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
         return res.end(app);
+      }
+      if (req.method === "GET" && url.pathname === "/site.css") {
+        res.writeHead(200, { "content-type": "text/css; charset=utf-8", "cache-control": "no-store" });
+        return res.end(css);
       }
       if (req.method === "POST" && url.pathname === "/clax-token") {
         const user = cookieUser(req);

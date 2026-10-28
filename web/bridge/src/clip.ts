@@ -149,6 +149,17 @@ export interface ClipOptions {
   style?: Partial<CSSStyleDeclaration>;
 }
 
+/** Documents whose policy refused the <style> modern-screenshot reads web
+ * fonts' @import rules into (a CSP `style-src` without 'unsafe-inline'): their
+ * clips are rendered without web fonts, in the fonts the browser falls back to. */
+const fontsRefused = new WeakSet<Document>();
+
+/** Whether `e` is modern-screenshot failing on that refused <style>, whose
+ * `sheet` is null (each engine's message names the `cssRules` it read). */
+function fontSheetRefused(e: unknown): boolean {
+  return e instanceof TypeError && e.message.includes("cssRules");
+}
+
 /** The largest clip the daemon keeps, in bytes (its `MAX_CLIP_BYTES`). */
 export const MAX_CLIP_BYTES = 5 * 1024 * 1024;
 /** How many times a clip over `MAX_CLIP_BYTES` is rendered again at half the scale. */
@@ -168,8 +179,10 @@ export async function renderClip(el: Element, win: Window = window, timeoutMs = 
   const cropStyle: Partial<CSSStyleDeclaration> = crop
     ? { width: `${r.width}px`, height: `${r.height}px`, transform: `translate(${-crop.x}px, ${-crop.y}px)`, transformOrigin: "0 0" }
     : {};
+  const doc = el.ownerDocument;
   const once = async (scale: number) => {
     const ctx = await createContext(el, {
+      ...(fontsRefused.has(doc) ? { font: false as const } : {}),
       scale,
       filter: n => !crossOriginImage(n, origin),
       fetch: { placeholderImage: TRANSPARENT },
@@ -188,7 +201,14 @@ export async function renderClip(el: Element, win: Window = window, timeoutMs = 
   const png = (async () => {
     let scale = clipScale(crop?.w ?? r.width, crop?.h ?? r.height, win.devicePixelRatio || 1);
     for (let shrinks = 0; ; shrinks++) {
-      const buf = await once(scale);
+      let buf: ArrayBuffer;
+      try {
+        buf = await once(scale);
+      } catch (e) {
+        if (fontsRefused.has(doc) || !fontSheetRefused(e)) throw e;
+        fontsRefused.add(doc);
+        buf = await once(scale);
+      }
       if (buf.byteLength <= MAX_CLIP_BYTES) return buf;
       if (shrinks >= CLIP_SHRINKS) throw new Error("the screenshot is too large to keep, even scaled down");
       scale /= 2;
