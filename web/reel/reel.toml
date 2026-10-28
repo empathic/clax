@@ -39,6 +39,12 @@ title = "Ask for anything"
 seconds = 7.5
 in_short = true
 
+[[vignette]]
+id = "claxbot"
+title = "No agent? Use ClaxBot"
+seconds = 10
+in_short = false
+
 [end]
 seconds = 4
 headline = "Your agents build pages. Clax gives them a home."

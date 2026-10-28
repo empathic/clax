@@ -23,6 +23,7 @@ exports_files(
 # order: reel.toml orders the reel.
 VIGNETTES = [
     "agent",
+    "claxbot",
     "coldopen",
     "game",
     "globe",
