@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ReporterClient, RENEW_BEFORE_S } from "./reporter";
 import { canonical, fromBase64url, generateSigner, type KeyedSigner } from "./sign";
 import type { ReporterToken } from "./types";
@@ -155,5 +155,17 @@ describe("ReporterClient", () => {
     await client.myReports();
     expect(s.auths).toEqual([await client.publicKey()]);
     expect(fromBase64url(s.auths[0])).toHaveLength(32);
+  });
+
+  it("fails every call with unsupported_browser where WebCrypto lacks Ed25519", async () => {
+    const gen = vi.spyOn(crypto.subtle, "generateKey").mockRejectedValue(new DOMException("Unrecognized name.", "NotSupportedError"));
+    try {
+      const inst = instance(() => json(200, { reports: [], next: null }));
+      const client = new ReporterClient({ instance: "https://clax.example", queue: "q1", auth: async () => ({ token: "cxr_1", expires_at: new Date(T0 + 900_000).toISOString() }), fetch: inst.fetch, now: () => T0 });
+      for (let i = 0; i < 2; i++) await expect(client.myReports()).rejects.toMatchObject({ name: "ClaxError", code: "unsupported_browser" });
+      expect(inst.sent).toHaveLength(0);
+    } finally {
+      gen.mockRestore();
+    }
   });
 });

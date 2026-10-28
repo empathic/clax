@@ -108,6 +108,7 @@ export function failureText(e: unknown): string {
   if (code === "network") return "Clax could not be reached. Try again.";
   if (code === "wrong_origin") return "This page may not report into this queue.";
   if (code === "not_a_member") return "The queue was not found.";
+  if (code === "unsupported_browser") return "This browser can't send reports (it lacks Ed25519 signing). Use a current Chrome, Firefox or Safari.";
   const m = e instanceof Error ? e.message : String(e);
   return m || "Something went wrong. Try again.";
 }

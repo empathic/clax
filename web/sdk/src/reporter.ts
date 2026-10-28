@@ -2,7 +2,7 @@
 // reports into a queue and reads the replies, with a reporter token its own
 // backend mints for a key that never leaves the page.
 import type { Report, ReportPage, ReporterToken } from "./types";
-import { failure, multipart, queuePath, readJson, signedFetch, type Fetch, type Part } from "./client";
+import { ClaxError, failure, multipart, queuePath, readJson, signedFetch, type Fetch, type Part } from "./client";
 import { base64url, generateSigner, type KeyedSigner } from "./sign";
 
 /** Seconds before a token's `expires_at` that the client asks for a new one. */
@@ -24,7 +24,9 @@ export interface ReporterOptions {
   fetch?: Fetch;
   /** Milliseconds since the Unix epoch. Default: `Date.now`. */
   now?: () => number;
-  /** The reporter's key. Default: a new non-extractable one, made on first use. */
+  /** The reporter's key. Default: a new non-extractable one, made on first
+   * use; a browser without WebCrypto Ed25519 fails every call with
+   * `ClaxError` code `unsupported_browser`. */
   signer?: KeyedSigner;
 }
 
@@ -113,7 +115,12 @@ export class ReporterClient {
   }
 
   private key(): Promise<KeyedSigner> {
-    this.signer ??= generateSigner();
+    this.signer ??= generateSigner().catch((e: unknown) => {
+      if ((e as { name?: unknown } | null)?.name === "NotSupportedError") {
+        throw new ClaxError("unsupported_browser", "this browser lacks WebCrypto Ed25519 signing", 0);
+      }
+      throw e;
+    });
     return this.signer;
   }
 

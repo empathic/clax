@@ -99,6 +99,7 @@ describe("failures", () => {
     expect(failureText({ code: "network", message: "x" })).toMatch(/could not be reached/);
     expect(failureText({ code: "wrong_origin" })).toMatch(/may not report/);
     expect(failureText(new Error("too big"))).toBe("too big");
+    expect(failureText({ code: "unsupported_browser" })).toBe("This browser can't send reports (it lacks Ed25519 signing). Use a current Chrome, Firefox or Safari.");
   });
 });
 
