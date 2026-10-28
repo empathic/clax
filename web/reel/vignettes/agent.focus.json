@@ -1,0 +1,19 @@
+{
+  "targets": {
+    "drawn": "frame:clax-overlay .a, clax-overlay .f",
+    "composer": ".stage .composer",
+    "thread": ".thread-card[data-thread]",
+    "strip": ".strip.ag",
+    "pill": "button.who",
+    "timeline": "frame:section.card:has(#gantt)"
+  },
+  "shots": [
+    { "at": "@drawn-0.2", "targets": ["drawn"], "label": "the area Alex draws on the board" },
+    { "at": "@composer-0.2", "targets": ["composer"], "label": "the request, typed" },
+    { "at": "@thread-0.2", "until": "reveal-0.3", "targets": ["thread", "strip", "pill"], "label": "the agent working on it" },
+    { "at": "touch-0.2", "targets": ["timeline"], "label": "the timeline Mia points at" }
+  ],
+  "clean": [
+    { "at": "reveal-0.3", "until": "reveal+1.1", "label": "the board becomes a timeline" }
+  ]
+}
