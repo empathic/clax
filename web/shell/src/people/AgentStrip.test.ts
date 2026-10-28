@@ -86,4 +86,32 @@ describe("AgentStrip", () => {
     click(c[0]);
     expect(onPick).toHaveBeenLastCalledWith(null);
   });
+
+  it("at phone width, folds the chips behind one Filter by agent button that says what it holds", () => {
+    const onPick = vi.fn();
+    const m = mount(AgentStrip, { agents: AGENTS, now, selected: null as string | null, onPick });
+    const toggle = m.root.querySelector<HTMLButtonElement>("button.astrip-toggle")!;
+    const group = m.root.querySelector(".astrip")!;
+    // A real button that names what it opens, before the chips.
+    expect(toggle.textContent!.replace(/\s+/g, " ").trim()).toBe("Filter by agent (4 agents · 2 waiting on you)");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.getAttribute("aria-controls")).toBe(group.id);
+    expect(group.id).not.toBe("");
+    expect(toggle.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(group.hasAttribute("data-open")).toBe(false);
+    click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(group.hasAttribute("data-open")).toBe(true);
+    // Picking an agent filters and folds the chips again; the button names the agent.
+    click(chips(m.root)[2]);
+    expect(onPick).toHaveBeenLastCalledWith("a_web");
+    expect(group.hasAttribute("data-open")).toBe(false);
+    m.update({ agents: AGENTS, now, selected: "a_web", onPick });
+    expect(toggle.textContent!.replace(/\s+/g, " ").trim()).toBe("Agent: web (4 agents · 2 waiting on you)");
+    // The phone's rules: the button shows and the chips hide until it opens them; elsewhere the button is hidden.
+    const css = document.head.textContent!;
+    expect(css).toMatch(/\.astrip-toggle\s*\{\s*display:\s*none;?\s*\}/);
+    expect(css).toMatch(/@media \(max-width: 700px\)[^@]*\.astrip-toggle\s*\{\s*display:\s*inline-flex/);
+    expect(css).toMatch(/@media \(max-width: 700px\)[^@]*\.astrip:not\(\[data-open\]\)\s*\{\s*display:\s*none;?\s*\}/);
+  });
 });
