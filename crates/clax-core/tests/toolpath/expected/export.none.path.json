@@ -3279,13 +3279,53 @@
             ],
             "timestamp": "2026-10-06T14:09:26.113Z"
           }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab": {
+              "structural": {
+                "external_id": "invoice:4821",
+                "metadata_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "type": "clax.external.delete"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "external.delete",
+              "seq": 114,
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Deleted external artifact invoice:4821",
+            "refs": [
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000114",
+            "parents": [
+              "e000000000113"
+            ],
+            "timestamp": "2026-10-06T14:09:27.114Z"
+          }
         }
       ],
       "path": {
         "base": {
           "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab"
         },
-        "head": "e000000000113",
+        "head": "e000000000114",
         "id": "clax-artifact-k3m9q2w8x1ab"
       },
       "meta": {
@@ -6406,7 +6446,7 @@
       "clax_version": "0.3.1",
       "first_seq": 1,
       "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-      "last_seq": 113,
+      "last_seq": 114,
       "redaction": [],
       "selection": {
         "artifacts": [],

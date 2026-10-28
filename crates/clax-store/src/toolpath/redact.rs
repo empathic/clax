@@ -377,6 +377,8 @@ fn body_class(kind: &str, field: &str) -> Class {
         ) => Text,
         ("external.create" | "external.update", "url") => Path,
         ("external.create" | "external.update", "metadata_sha256" | "previous_sha256") => Safe,
+        ("external.delete", "external_id") => Text,
+        ("external.delete", "metadata_sha256") => Safe,
         ("thread.metadata", "metadata") => Text,
         ("thread.metadata", "thread_id" | "metadata_sha256" | "previous_sha256") => Safe,
         ("queue.create" | "queue.update", "name" | "grant_name") => Text,

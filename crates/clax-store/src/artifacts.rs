@@ -465,6 +465,15 @@ impl Store {
         let _lock = self.lock_content(id).await?;
         self.with_tx(|tx| {
             let now = self.now();
+            // An external artifact's row goes with the mark (a trigger
+            // drops it): what it was is journaled first.
+            let external: Option<(String, Option<String>)> = tx
+                .query_row(
+                    "SELECT external_id, metadata_json FROM external_artifacts WHERE artifact_id = ?1",
+                    params![id.as_str()],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
             let Some((title, current)) = tx
                 .query_row(
                     "UPDATE artifacts SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL
@@ -477,6 +486,16 @@ impl Store {
                 return Err(CoreError::NotFound);
             };
             self.record_audit(tx, ctx, delete_record(&now, id.as_str(), &title, current))?;
+            if let Some((external_id, meta)) = external {
+                let mut r = AuditRecord::new(AuditKind::ExternalDelete, now.as_str())
+                    .with("external_id", external_id)
+                    .with(
+                        "metadata_sha256",
+                        clax_core::queue::metadata_sha256(meta.as_deref().unwrap_or("null")),
+                    );
+                r.ids.artifact = Some(id.as_str().to_string());
+                self.record_audit(tx, ctx, r)?;
+            }
             self.artifact_going_tx(tx, id.as_str())?;
             super::approvals::withdraw_artifact_in(self, tx, ctx, id.as_str(), &now)?;
             super::elevations::drop_artifact_in(self, tx, ctx, id.as_str())?;

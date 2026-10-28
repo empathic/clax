@@ -772,7 +772,8 @@ impl Event<'_> {
                 | K::LivePageRekey
                 | K::LivePageMerge
                 | K::ExternalCreate
-                | K::ExternalUpdate,
+                | K::ExternalUpdate
+                | K::ExternalDelete,
             ) => a.map(Obj::Artifact),
             _ => specific,
         };
@@ -1522,6 +1523,10 @@ impl Event<'_> {
                     .collect();
                 format!("Changed the {} of external {}", and_list(&fields), art())
             }
+            Some(K::ExternalDelete) => match self.str("external_id") {
+                Some(x) => format!("Deleted external artifact {x}"),
+                None => format!("Deleted external {}", art()),
+            },
             Some(K::ThreadMetadata) => format!("Set the metadata of thread {}", thread()),
             Some(K::QueueCreate) => format!("Created queue {}", self.show("queue_id")),
             Some(K::QueueUpdate) => format!(

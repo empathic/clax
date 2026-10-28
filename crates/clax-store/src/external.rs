@@ -140,8 +140,8 @@ impl Store {
     /// whose version 1 links to `x.url`, and its row, written with version
     /// 1 and recorded as `external.create` under `ctx` beside the
     /// artifact's own `artifact.create` and `version.publish`. A found
-    /// artifact keeps its title and URL; a `revision` that differs from its
-    /// own is written as `external.update`. Two callers making one ID at
+    /// artifact keeps its title, URL and revision: `revision` is written
+    /// only when this call makes the artifact. Two callers making one ID at
     /// once settle on one artifact. Answers the artifact and whether this
     /// call made it.
     ///
@@ -167,7 +167,6 @@ impl Store {
         // is then removed, and the found one answered.
         for _ in 0..2 {
             if let Some(found) = self.external_artifact(&x.external_id)? {
-                let found = self.note_revision(ctx, found, x.revision.as_deref())?;
                 return Ok((found, false));
             }
             let html = external_placeholder_html(&title, &x.url);
@@ -208,33 +207,6 @@ impl Store {
         self.external_artifact(&x.external_id)?
             .map(|f| (f, false))
             .ok_or(CoreError::NotFound)
-    }
-
-    /// `found` with `revision` as its revision when it differs, written and
-    /// recorded as `external.update {revision}`.
-    fn note_revision(
-        &self,
-        ctx: &AuditCtx,
-        found: ExternalArtifact,
-        revision: Option<&str>,
-    ) -> Result<ExternalArtifact> {
-        let Some(rev) = revision else {
-            return Ok(found);
-        };
-        if found.revision.as_deref() == Some(rev) {
-            return Ok(found);
-        }
-        self.with_tx(|tx| {
-            tx.execute(
-                "UPDATE external_artifacts SET revision = ?2 WHERE artifact_id = ?1",
-                params![found.artifact_id, rev],
-            )?;
-            let mut r =
-                AuditRecord::new(AuditKind::ExternalUpdate, self.now()).with("revision", rev);
-            r.ids.artifact = Some(found.artifact_id.clone());
-            self.record_audit(tx, ctx, r)?;
-            by_artifact_in(tx, &found.artifact_id)?.ok_or(CoreError::NotFound)
-        })
     }
 
     /// Writes `value` as external artifact `aid`'s metadata when its
@@ -336,6 +308,22 @@ mod tests {
             .unwrap();
         assert!(!made);
         assert_eq!(a.artifact_id, b.artifact_id);
+        // A later caller's revision does not overwrite the maker's.
+        let (c, _) = st
+            .block_on(st.ensure_external_async(
+                DAEMON,
+                None,
+                NewExternal {
+                    revision: Some("r2".into()),
+                    ..new("invoice:4821")
+                },
+            ))
+            .unwrap();
+        assert_eq!(c.revision.as_deref(), Some("r1"));
+        assert_eq!(
+            st.external_artifact("invoice:4821").unwrap().unwrap().revision.as_deref(),
+            Some("r1")
+        );
         let art = st
             .get_artifact(&ArtifactId::parse(&a.artifact_id).unwrap())
             .unwrap()
@@ -354,8 +342,25 @@ mod tests {
         let (a, _) = st
             .block_on(st.ensure_external_async(DAEMON, None, new("x")))
             .unwrap();
-        st.delete_artifact(DAEMON, &ArtifactId::parse(&a.artifact_id).unwrap())
+        let aid = ArtifactId::parse(&a.artifact_id).unwrap();
+        st.set_artifact_metadata(DAEMON, &aid, json!({"plan": "team"}), 1)
             .unwrap();
+        st.delete_artifact(DAEMON, &aid).unwrap();
+        let rows: Vec<(String, Option<String>)> = st
+            .with_read(|c| {
+                Ok(c.prepare("SELECT body, artifact_id FROM audit_events WHERE kind = 'external.delete'")?
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<rusqlite::Result<_>>()?)
+            })
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        let body: serde_json::Value = serde_json::from_str(&rows[0].0).unwrap();
+        assert_eq!(body["external_id"], "x");
+        assert_eq!(
+            body["metadata_sha256"],
+            json!(clax_core::queue::metadata_sha256("{\"plan\":\"team\"}"))
+        );
+        assert_eq!(rows[0].1.as_deref(), Some(a.artifact_id.as_str()));
         let (b, made) = st
             .block_on(st.ensure_external_async(DAEMON, None, new("x")))
             .unwrap();

@@ -3905,6 +3905,33 @@
     "reason": "explicit"
    },
    "backfilled": false
+  },
+  {
+   "seq": 114,
+   "at": "2026-10-06T14:09:27.114Z",
+   "kind": "external.delete",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": "k3m9q2w8x1ab",
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "shell",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "external_id": "invoice:4821",
+    "metadata_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+   },
+   "backfilled": false
   }
  ]
 }
