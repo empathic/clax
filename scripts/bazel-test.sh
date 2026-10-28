@@ -196,7 +196,7 @@ _run_keyed() {
 if [ "$ci" = 1 ]; then
     # What `pnpm install --frozen-lockfile` refuses: Bazel builds from the
     # lockfile alone, so a dependency missing from it must fail here.
-    _run "package.json and pnpm-lock.yaml agree" ./scripts/pnpm-lock-check.py web plugins/pi
+    _run "package.json and pnpm-lock.yaml agree" ./scripts/pnpm-lock-check.py web plugins/pi crates/clax-worker
     # The quick checks first, so a broken format, lint or script fails in
     # minutes rather than after every test: the format check, clippy (each
     # crate with its own clippy.toml too), the web lint, the script gates
@@ -213,7 +213,9 @@ if [ "$ci" = 1 ]; then
         _build "rust clippy ($crate)" --keep_going --config=clippy --output_groups=clippy_checks \
             "--@rules_rust//rust/settings:clippy.toml=//$crate:clippy.toml" "//$crate/..."
     done
-    quick='//scripts/... + //bazel/... + //crates/clax-worker/...'
+    # Not the hosted Worker's builds (//bazel/wasm/...): a wasm32 build of
+    # every crate it runs is no quick check; the pass after this one runs it.
+    quick='//scripts/... + //bazel/... - //bazel/wasm/...'
     _pass "quick checks" \
         "//web:lint + tests($quick) except rdeps($quick, //crates/clax-cli:clax) except attr(tags, \"\\b(manual|exclusive)\\b\", //...)" "$@"
     _run "justfile" ./scripts/test-justfile.sh

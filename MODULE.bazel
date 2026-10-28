@@ -201,7 +201,8 @@ crate.annotation(
 )
 use_repo(crate, "crates", "crates_wasm")
 
-# The web UI and the Pi extension (docs/bazel.md, "The web side and Pi"):
+# The web UI, the Pi extension and the Worker's checks (docs/bazel.md, "The
+# web side and Pi"):
 # Node, and each pnpm project's packages from its own lockfile. Nothing is
 # listed here by hand.
 bazel_dep(name = "aspect_rules_js", version = "3.5.1")
@@ -222,7 +223,12 @@ npm.npm_translate_lock(
     name = "npm_pi",
     pnpm_lock = "//plugins/pi:pnpm-lock.yaml",
 )
-use_repo(npm, "npm_pi", "npm_web")
+# wrangler, which runs the hosted Worker's checks (crates/clax-worker).
+npm.npm_translate_lock(
+    name = "npm_worker",
+    pnpm_lock = "//crates/clax-worker:pnpm-lock.yaml",
+)
+use_repo(npm, "npm_pi", "npm_web", "npm_worker")
 
 # The Chromium the browser tests run, pinned by checksum
 # (bazel/playwright/repo.bzl).

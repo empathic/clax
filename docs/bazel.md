@@ -587,11 +587,7 @@ checkout, or runs Bazel itself: `scripts/test-plugins.sh` (git tags),
 `scripts/test-extension-signing.sh` (writes `web/dist-extension`),
 `scripts/check-no-hard-links.sh` and `scripts/check-pipefail-pipes.sh` over
 the tracked files (their own tests are Bazel tests),
-`scripts/bazel-sync.test.sh` and `scripts/bazel-web.test.sh`. CI's
-`worker` job runs the rest of `crates/clax-worker`'s checks natively
-(`scripts/worker-checks.sh`: its tests, clippy, `test-wasm.mjs`, then
-`e2e.mjs`), and `scripts/check-wasm.sh`: Bazel resolves only the root's
-`Cargo.lock`, and builds nothing for wasm32. The slow
+`scripts/bazel-sync.test.sh` and `scripts/bazel-web.test.sh`. The slow
 ones are skipped when they passed last time on the same files, as Bazel
 caches a passed test: the plugin and dev-script checks are keyed on the
 whole working tree and the `v*` tags, the two Bazel-setup tests on the
@@ -638,9 +634,12 @@ Performance gates nothing in either (`just perf` measures on demand).
 | plugins | `scripts/test-plugins.sh`, outside Bazel |
 | plugin wrapper | `//scripts:plugin_wrapper` |
 | comment loop | `//scripts:comment_loop` |
-| worker cargo fmt | `//crates/clax-worker:rustfmt` |
-| worker npm ci, worker cargo test, worker cargo clippy, worker wasm, worker e2e | CI's `worker` job, natively (`scripts/worker-checks.sh`, then `e2e.mjs`): `crates/clax-worker` is a workspace of its own, with a lockfile Bazel does not resolve |
-| wasm32 check | CI's `worker` job, natively (`scripts/check-wasm.sh`, `just check-wasm`) |
+| worker cargo fmt, worker cargo test, worker cargo clippy | the workspace's format check, clippy and `//crates/clax-worker/...`'s Rust tests |
+| worker pnpm install | `@npm_worker`, from `crates/clax-worker/pnpm-lock.yaml` |
+| worker deploy config | `//crates/clax-worker:deploy_config_test` |
+| worker wasm | `//crates/clax-worker:bundle` and, under `wrangler dev --local`, `:wasm_test`, `:sandbox_test` and `:bot_test` |
+| worker e2e, worker hosted e2e | `//crates/clax-worker:e2e`, `:e2e_hosted` |
+| wasm32 check | `//bazel/wasm:check` (`just check-wasm`; `just check-wasm-native` runs `scripts/check-wasm.sh`) |
 | no unsafe code | `//scripts:no_unsafe` |
 | no process launch on iOS | `//scripts:ios_spawns` (`scripts/check-ios-spawns.sh` against `scripts/ios-spawns.allow`), and the check's own test `//scripts:ios_spawns_test` |
 | crate layers | `//scripts:crate_layers` |
@@ -680,12 +679,8 @@ and provenance accept only GitHub-hosted runners) and `release.yml`'s
 format check, clippy, the web lint, the script gates that need no `clax`,
 the justfile, hard-link and pipefail checks), which stop the run on a
 failure, so a broken script or lint fails in minutes; then every test, then
-the slower checks outside Bazel. The `worker` job (4 cores) runs beside it
-what Bazel does not build, natively: `scripts/check-wasm.sh` over the crates
-a hosted Worker runs, and `crates/clax-worker` (a workspace of its own, for
-wasm32 only): `scripts/worker-checks.sh`, then its browser e2e (`e2e.mjs`)
-on a web UI built with pnpm. The Worker's format check is the `bazel` job's
-(`//crates/clax-worker:rustfmt`). `perf-log` runs the perf benchmarks after
+the slower checks outside Bazel: the hosted Worker's builds and checks
+among them (`bazel/wasm/README.md`). `perf-log` runs the perf benchmarks after
 every green push to main and appends a record to the `perf-log` branch
 (`docs/usage.md`, "Developing Clax"); it gates nothing. It runs what the
 sticky disk holds, so it has no write token: `perf-log-publish`, the only

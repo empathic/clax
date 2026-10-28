@@ -108,55 +108,6 @@ jobs:
         if: ${{ always() }}
         run: bazelisk shutdown || true
 
-  # What Bazel does not build: crates/clax-worker, a workspace of its own
-  # with its own Cargo.lock that builds for wasm32 only, and the wasm32 check
-  # of the crates a hosted Worker runs (scripts/check-wasm.sh). Natively, as
-  # scripts/quality_gates.sh runs them in its worker and wasm32 lanes; the
-  # runner's clang and llvm-ar target wasm32. The Worker's format check is
-  # the bazel job's (//crates/clax-worker:rustfmt), with the rustfmt the
-  # rest of the repository is checked with. A job beside the bazel job
-  # rather than steps in it: it shares nothing with Bazel's cache, and in
-  # parallel it adds nothing to the run's time.
-  worker:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { persist-credentials: false }
-      # rust-toolchain.toml's version, with the wasm32-unknown-unknown target.
-      - name: Install Rust toolchain
-        run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with: { workspaces: ". -> target\ncrates/clax-worker -> target" }
-      # pnpm for the web UI the Worker's e2e serves and drives Playwright from.
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with: { package_json_file: web/package.json }
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-      - name: Check the Worker's crates for wasm32
-        run: scripts/check-wasm.sh
-      # Before the Worker builds: it embeds web/dist (crates/clax-worker/
-      # build.rs refuses a wasm32 build without it).
-      - name: Build the web UI
-        run: scripts/pnpm-install-stamped.sh web --silent && scripts/build-web.sh
-      # Its tests, clippy, the wasm build under wrangler (test-wasm.mjs) and
-      # the sandbox conformance suite on it (test-sandbox.mjs).
-      - name: Run the Worker's checks (scripts/worker-checks.sh)
-        run: scripts/worker-checks.sh
-      - name: Install Chromium
-        run: cd web && pnpm exec playwright install --with-deps chromium
-      # The Clax server in its Durable Object under wrangler dev --local, in
-      # two browsers, on the build test-wasm.mjs made.
-      - name: Run the Worker's e2e
-        run: cd crates/clax-worker && node e2e.mjs --no-build
-      # The instance as a hosted Clax, with each artifact's site on its own
-      # host and its app data in its own object, on the same build.
-      - name: Run the Worker's hosted e2e
-        run: cd crates/clax-worker && node e2e-hosted.mjs --no-build
-
   # On a pull request into prod: the head's version is X.Y.Z, every version
   # file agrees, and it is greater than prod's (scripts/check-version-bump.sh).
   # The full fetch brings origin/prod.

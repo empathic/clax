@@ -1,5 +1,6 @@
 load("@aspect_rules_js//js:defs.bzl", "js_test")
 load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
+load("@npm_worker//:defs.bzl", "npm_link_all_packages")
 load("//bazel:cargo.bzl", "cargo_package")
 load("//bazel/wasm:worker.bzl", "worker_bundle")
 
@@ -46,15 +47,105 @@ worker_bundle(
 
 # What deploy.mjs decides from what it reads (deploy-lib.mjs):
 # node --test crates/clax-worker/deploy-lib.test.mjs, as a Bazel test.
-copy_to_bin(
-    name = "deploy_lib",
-    srcs = ["deploy-lib.mjs"],
-)
-
 js_test(
     name = "deploy_lib_test",
-    data = [":deploy_lib"],
+    data = [":scripts"],
     entry_point = "deploy-lib.test.mjs",
     node_options = ["--test"],
     patch_node_fs = False,
 )
+
+# wrangler, from pnpm-lock.yaml.
+npm_link_all_packages(name = "node_modules")
+
+# What the checks run under `wrangler dev --local` read: the scripts, the
+# harness and wrangler.jsonc, beside the Worker as Bazel built it
+# (CLAX_WORKER_BUNDLE) and the web UI it serves (web/dist, which
+# harness.mjs finds from here).
+copy_to_bin(
+    name = "scripts",
+    srcs = glob(
+        ["*.mjs"],
+        # The tests' entry points, which js_test places itself.
+        exclude = [
+            "deploy-lib.test.mjs",
+            "e2e.mjs",
+            "e2e-hosted.mjs",
+            "test-bot.mjs",
+            "test-deploy-config.mjs",
+            "test-sandbox.mjs",
+            "test-wasm.mjs",
+        ],
+    ) + ["wrangler.jsonc"],
+)
+
+# Each under `wrangler dev --local` on the Worker Bazel built: the wasm
+# Worker's database across a restart (test-wasm.mjs), ClaxBot's sandbox
+# conformance suite on the Worker Loader sandbox (test-sandbox.mjs), and a
+# ClaxBot run driven by the instance's alarm, across a restart
+# (test-bot.mjs).
+[js_test(
+    name = name + "_test",
+    args = ["--no-build"],
+    data = [
+        ":bundle",
+        ":node_modules",
+        ":scripts",
+        "//web:dist",
+    ],
+    entry_point = "test-%s.mjs" % name,
+    env = {"CLAX_WORKER_BUNDLE": "$(rootpath :bundle)"},
+    patch_node_fs = False,
+    # Each starts wrangler and workerd, more than once across a restart.
+    tags = ["cpu:2"],
+    timeout = "long",
+) for name in [
+    "wasm",
+    "sandbox",
+    "bot",
+]]
+
+# The Clax server in its Durable Object under `wrangler dev --local`, in
+# two browsers (e2e.mjs), and as a hosted Clax with each artifact's site on
+# its own host (e2e-hosted.mjs): Playwright from the web UI's packages,
+# found through web/package.json, and the pinned Chromium.
+[js_test(
+    name = name,
+    args = ["--no-build"],
+    data = [
+        ":bundle",
+        ":node_modules",
+        ":scripts",
+        "//web:dist",
+        "//web:files_app",
+        "//web:node_modules/@playwright/test",
+        "@chromium//:browsers",
+    ],
+    entry_point = entry,
+    env = {
+        "CLAX_WORKER_BUNDLE": "$(rootpath :bundle)",
+        "PLAYWRIGHT_BROWSERS_PATH": "$(rootpath @chromium//:browsers)",
+    },
+    # The pinned browsers stay where their repository put them.
+    no_copy_to_bin = ["@chromium//:browsers"],
+    patch_node_fs = False,
+    # Chromium runs outside Bazel's sandbox, as the web UI's browser tests
+    # do (docs/bazel.md, "Browser tests").
+    tags = [
+        "cpu:4",
+        "no-sandbox",
+    ],
+    timeout = "long",
+) for name, entry in [
+    ("e2e", "e2e.mjs"),
+    ("e2e_hosted", "e2e-hosted.mjs"),
+]]
+
+# The config deploy.mjs generates, without wrangler.
+js_test(
+    name = "deploy_config_test",
+    data = [":scripts"],
+    entry_point = "test-deploy-config.mjs",
+    patch_node_fs = False,
+)
+

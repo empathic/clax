@@ -72,9 +72,12 @@ export async function start(dir, config, n, port) {
   const inspector = await freePort();
   const log = join(dir, `wrangler-${n}.log`);
   const out = openSync(log, "a");
+  // wrangler's own entry, run by this Node: pnpm's node_modules/.bin has
+  // it, Bazel's linked packages (crates/clax-worker/BUILD.bazel) have no .bin.
   const child = spawn(
-    join(HERE, "node_modules/.bin/wrangler"),
+    process.execPath,
     [
+      join(HERE, "node_modules/wrangler/bin/wrangler.js"),
       "dev",
       "--local",
       "--config", config,
