@@ -1826,6 +1826,8 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE threads ADD COLUMN metadata_json TEXT;
     ALTER TABLE threads ADD COLUMN metadata_version INTEGER NOT NULL DEFAULT 1;
     CREATE INDEX threads_by_queue ON threads(queue_id, created_at, id) WHERE queue_id IS NOT NULL;
+    CREATE INDEX threads_by_queue_reporter ON threads(queue_id, reporter_id, created_at, id)
+        WHERE queue_id IS NOT NULL;
     ALTER TABLE comments ADD COLUMN reporter_id TEXT;
     CREATE TABLE queue_claims (
         thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
