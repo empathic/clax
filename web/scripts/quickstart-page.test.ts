@@ -61,6 +61,11 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = () => {};
 });
 afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); history.replaceState(null, "", location.pathname); });
+// The page draws its edges on an animation frame, which jsdom runs from an
+// interval while one is pending; a test that ends before a frame would leave
+// that interval running. This hook, declared later, runs first: the frame
+// fires while the page is still there.
+afterEach(() => new Promise<void>((done) => { requestAnimationFrame(() => done()); }));
 
 describe("the quickstart notices a sign-in", () => {
   it("ticks_sign_in_and_says_so_for_a_person_on_clax_dev", async () => {
@@ -130,6 +135,49 @@ describe("the attach step names the page's address", () => {
     load(null);
     await settle();
     // jsdom's host is no artifact's site, so the page has neither address nor ID.
-    expect(prompt()).toBe("Watch the Clax Quickstart page (this page) for my comments.");
+    expect(prompt()).toBe('Watch the page "Start here: Clax in five minutes" (this page) for my comments.');
+  });
+});
+
+describe("the reel", () => {
+  const fig = () => document.getElementById("reel")!;
+  const watch = () => document.getElementById("reel-show")!;
+  const loaded = () => fig().querySelector("video")!.dispatchEvent(new Event("loadedmetadata"));
+
+  it("shows_only_once_the_video_loads", () => {
+    load(null);
+    expect(fig().hidden).toBe(true);
+    expect(watch().hidden).toBe(true);
+    loaded();
+    expect(fig().hidden).toBe(false);
+    expect(watch().hidden).toBe(true);
+  });
+
+  it("stays_hidden_once_hidden_and_comes_back_on_request", () => {
+    load(null);
+    loaded();
+    (document.getElementById("reel-hide") as HTMLButtonElement).click();
+    expect(fig().hidden).toBe(true);
+    expect(watch().hidden).toBe(false);
+    // A later visit keeps it hidden, offering it back.
+    load(null);
+    loaded();
+    expect(fig().hidden).toBe(true);
+    expect(watch().hidden).toBe(false);
+    watch().click();
+    expect(fig().hidden).toBe(false);
+    expect(localStorage.getItem("clax-quickstart-reel-hidden")).toBeNull();
+  });
+
+  it("works_without_storage", () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("blocked"); });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("blocked"); });
+    try {
+      load(null);
+      loaded();
+      expect(fig().hidden).toBe(false);
+      (document.getElementById("reel-hide") as HTMLButtonElement).click();
+      expect(fig().hidden).toBe(true);
+    } finally { vi.restoreAllMocks(); }
   });
 });

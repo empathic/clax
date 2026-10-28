@@ -15,6 +15,10 @@ export const SHIPPED = ["index.html", "style.css", "icon.svg", "clax.json", "log
 /** index.html's line loading the ideas data, which a shipped copy drops. */
 export const IDEAS_TAG = /^[ \t]*<script src="ideas-data\.js"><\/script>\r?\n/m;
 
+/** index.html's tab bar, which a shipped copy drops: its only other tab is
+ * the ideas page, which does not ship. */
+export const TABS = /^[ \t]*<nav class="tabs"[^>]*>[\s\S]*?<\/nav>\r?\n/m;
+
 const stat = p => { try { return lstatSync(p); } catch (e) { if (e.code === "ENOENT") return null; throw e; } };
 
 function* files(dir, prefix) {
@@ -36,7 +40,7 @@ export function copyQuickstart(src, dest) {
     const s = stat(from);
     if (!s || (dir ? !statSync(from).isDirectory() : !s.isFile())) throw new Error(`build-quickstart: ${from} is missing`);
     mkdirSync(dirname(join(dest, rel)), { recursive: true });
-    if (name === "index.html") writeFileSync(join(dest, rel), readFileSync(from, "utf8").replace(IDEAS_TAG, ""));
+    if (name === "index.html") writeFileSync(join(dest, rel), readFileSync(from, "utf8").replace(IDEAS_TAG, "").replace(TABS, ""));
     else cpSync(from, join(dest, rel), { recursive: dir, dereference: false });
     if (dir) copied.push(...files(from, name));
     else copied.push(name);

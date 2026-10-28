@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error plain .mjs without declarations
-import { copyQuickstart, IDEAS_TAG, SHIPPED } from "./build-quickstart.mjs";
+import { copyQuickstart, IDEAS_TAG, SHIPPED, TABS } from "./build-quickstart.mjs";
 
 let root = "";
 afterEach(() => { if (root) rmSync(root, { recursive: true, force: true }); root = ""; });
@@ -47,6 +47,21 @@ describe("build-quickstart.mjs", () => {
     const real = readFileSync(join(__dirname, "../quickstart/index.html"), "utf8");
     expect(IDEAS_TAG.test(real)).toBe(true);
     expect(real.replace(IDEAS_TAG, "")).not.toContain("ideas-data.js");
+  });
+
+  it("drops the tab bar from the shipped index.html", () => {
+    const { src, dest } = source();
+    writeFileSync(join(src, "index.html"), '<h1>Q</h1>\n  <nav class="tabs" aria-label="Sections">\n    <a href="index.html">Quickstart</a>\n    <a href="ideas.html">Ideas</a>\n  </nav>\n</header>\n');
+    copyQuickstart(src, dest);
+    expect(readFileSync(join(dest, "index.html"), "utf8")).toBe("<h1>Q</h1>\n</header>\n");
+  });
+
+  it("the real index.html has one tab bar, which the build drops whole", () => {
+    const real = readFileSync(join(__dirname, "../quickstart/index.html"), "utf8");
+    const shipped = real.replace(TABS, "");
+    expect(shipped).not.toContain('class="tabs"');
+    expect(shipped).not.toContain("ideas.html\" id=\"tab-ideas");
+    expect(shipped).toContain('id="view-start"');
   });
 
   it("throws when a shipped file is missing", () => {

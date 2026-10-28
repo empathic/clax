@@ -15,3 +15,10 @@ repository's published copy is the one with ideas. The page can also
 be published as an artifact (`clax publish index.html --dir web/quickstart`);
 `docs/superpowers/specs/2026-10-26-quickstart-onboarding-design.md` §9
 describes shipping it with Clax.
+
+The page shows the reel, `reel.mp4` with `reel-poster.jpg` as its poster,
+at the top when those files are published beside it. They are build
+artifacts of `web/reel` (its composer writes `clax-reel.mp4`), kept out of
+the repository and out of the shipped copy, so a copy without them shows no
+video. A viewer can hide the video; the page remembers that in
+`localStorage` (`clax-quickstart-reel-hidden`) and offers it back.

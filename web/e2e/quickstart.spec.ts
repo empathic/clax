@@ -46,14 +46,14 @@ test("an invited person's hosted gallery shows the quickstart, pinned", async ({
     await mia.waitForURL(`${origin}/`);
     const card = mia.locator("a.card");
     await expect(card).toHaveCount(1);
-    await expect(card).toContainText("Clax Quickstart");
+    await expect(card).toContainText("Start here: Clax in five minutes");
     // Pinned shows as the Unpin button once the token is known, else as the star.
     await expect(mia.locator('.card-tools button[title="Unpin"], .card .pin')).not.toHaveCount(0);
     await expect(mia.locator(".empty-gallery")).toHaveCount(0);
 
     await card.click();
     const frame = mia.frameLocator("iframe").first();
-    await expect(frame.locator("h1")).toHaveText("Your agents build pages. Clax gives them a home.");
+    await expect(frame.locator("h1")).toHaveText("Start here: Clax in five minutes");
     // A seeded copy ships without the ideas page, so its tab stays hidden.
     await expect(frame.locator("#tab-ideas")).toBeHidden();
 

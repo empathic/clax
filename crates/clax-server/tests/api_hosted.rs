@@ -515,7 +515,7 @@ async fn an_invited_person_starts_with_the_quickstart() {
     assert_eq!(s, 200, "{list}");
     let list = list["artifacts"].as_array().unwrap();
     assert_eq!(list.len(), 1, "{list:?}");
-    assert_eq!(list[0]["title"], "Clax Quickstart");
+    assert_eq!(list[0]["title"], clax_core::quickstart::TITLE);
     assert_eq!(list[0]["pinned"], true);
     // The listing names no maker: the person's quickstart row holds it.
     let held = site.ts.store.quickstart_of(Some(pid)).unwrap().unwrap();
@@ -562,7 +562,7 @@ async fn a_member_without_a_quickstart_gets_it_at_the_next_sign_in_link() {
     let (_, list) = site.get(&phone, "/api/artifacts").await;
     let list = list["artifacts"].as_array().unwrap();
     assert_eq!(list.len(), 1, "{list:?}");
-    assert_eq!(list[0]["title"], "Clax Quickstart");
+    assert_eq!(list[0]["title"], clax_core::quickstart::TITLE);
     // A second sign-in makes no second copy.
     let again = site.linked(&sam).await;
     let (_, list) = site.get(&again, "/api/artifacts").await;

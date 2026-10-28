@@ -333,7 +333,7 @@ async fn a_new_github_person_starts_with_the_quickstart() {
     let pid = pid_of(&site, &grace).await;
     let list = site.listing(&grace).await;
     assert_eq!(list.len(), 1, "{list:?}");
-    assert_eq!(list[0]["title"], "Clax Quickstart");
+    assert_eq!(list[0]["title"], clax_core::quickstart::TITLE);
     assert_eq!(list[0]["pinned"], true);
     // The listing names no maker: the person's quickstart row holds it.
     let held = site.ts.store.quickstart_of(Some(&pid)).unwrap().unwrap();
@@ -364,7 +364,7 @@ async fn a_quickstart_is_made_for_a_member_at_a_cap_of_zero_and_counts_toward_it
     let grace = site.sign_in(2).await.unwrap();
     let list = site.listing(&grace).await;
     assert_eq!(list.len(), 1, "{list:?}");
-    assert_eq!(list[0]["title"], "Clax Quickstart");
+    assert_eq!(list[0]["title"], clax_core::quickstart::TITLE);
     let token = site.token(&grace).await;
     assert_eq!(
         site.publish(&token, "Mine").await,
