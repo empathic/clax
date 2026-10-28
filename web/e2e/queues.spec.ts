@@ -195,7 +195,7 @@ test("a site's user files a report through the overlay; an agent claims, replies
     await expect(row.locator(".c[data-kind=agent] .body")).toHaveText(reply);
     await emp1.screenshot({ path: shotPath(info, "overlay-your-reports") });
     await row.getByRole("textbox").fill("Thanks, 3 to 6 is right.");
-    await row.getByRole("button", { name: "Reply" }).click();
+    await row.getByRole("button", { name: "Reply", exact: true }).click();
     await expect(row.locator(".c[data-kind=reporter] .body").last()).toHaveText("Thanks, 3 to 6 is right.");
     const read = await agent.ok<{ report: Report }>("GET", `/api/queues/${qid}/reports/${report.id}`);
     expect(read.report.comments.map(c => [c.author_kind, c.body])).toEqual([["reporter", body], ["agent", reply], ["reporter", "Thanks, 3 to 6 is right."]]);
@@ -215,7 +215,7 @@ test("a site's user files a report through the overlay; an agent claims, replies
     const resolvedRow = again.getByRole("listitem").filter({ hasText: "The dates read 3 to 7 November" });
     await expect(resolvedRow.locator(".state")).toHaveText("Resolved");
     await resolvedRow.getByRole("button", { name: /The dates read/ }).click();
-    await expect(resolvedRow.getByRole("button", { name: "Reply" })).toHaveCount(0);
+    await expect(resolvedRow.getByRole("button", { name: "Reply", exact: true })).toHaveCount(0);
 
     // The Queues page counts it resolved.
     await owner.reload();
