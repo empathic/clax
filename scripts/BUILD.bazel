@@ -244,6 +244,7 @@ sh_test(
         "//apps/clax_app:token_outputs",
         "//design:tokens",
         "//web:token_inputs",
+        "//web/reel:pace.ts",
     ],
 )
 

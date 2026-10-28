@@ -28,6 +28,8 @@
 #   scripts/run.sh app-apk           the Clax app's release APK, and print its path
 #   scripts/run.sh app-macos         the Clax app's macOS app, and print its path
 #   scripts/run.sh home-bundle       the home app's bundle, as the app builds pack it, and print its path
+#   scripts/run.sh reel --fast <id>  record the sizzle reel's vignette <id> in fast mode
+#                                    (//web/reel:<id>_fast) into target/reel/<id>/; Bazel only
 #   scripts/run.sh which             say which build system would run, and why
 #   scripts/run.sh --dry-run <task>  say what would run, and run nothing
 #
@@ -77,6 +79,7 @@ case "$task" in
     worker-test) needs=(rust) ;;
     app-test|app-integration|app-apk|app-macos) needs=(rust web flutter) ;;
     home-bundle) needs=(flutter) ;;
+    reel) needs=(rust web) ;;
     *) usage ;;
 esac
 
@@ -93,6 +96,13 @@ if [ "$task" = which ]; then
 fi
 
 build_system_choose "${needs[@]}" || exit 2
+
+# The reel is recorded by Bazel targets alone: natively its recorder would
+# need a `pnpm install` in the worktree.
+if [ "$task" = reel ] && [ "$BUILD_SYSTEM" != bazel ]; then
+    echo "error: \`reel\` runs only with Bazel: the reel's recordings are Bazel targets (//web/reel). Install Bazelisk: $(build_system_install_hint)" >&2
+    exit 2
+fi
 
 # _run <command...>: runs it, or with --dry-run says what it would run.
 _run() {
@@ -120,6 +130,38 @@ _copy_dist() {
     find "web/$dir" -mindepth 1 -maxdepth 1 ! -name .gitkeep -exec rm -rf {} +
     cp -R "$from/." "web/$dir/"
     chmod -R u+w "web/$dir"
+}
+
+# _reel <args>: `--fast <id>` builds //web/reel:<id>_fast and copies its
+# files (clip.webm, beats.json) into target/reel/<id>/ as writable regular
+# files, never links.
+_reel() {
+    local id from dest="target/reel"
+    case "${1:-}" in
+        --fast)
+            id="${2:-}"
+            [ -n "$id" ] && [ "$#" -eq 2 ] || { echo "usage: just reel --fast <vignette>" >&2; return 2; }
+            ;;
+        *)
+            echo "usage: just reel --fast <vignette>" >&2
+            return 2
+            ;;
+    esac
+    case "$id" in *[!a-z0-9-]* | -*) echo "error: not a vignette ID: $id" >&2; return 2 ;; esac
+    _run "${awake[@]+"${awake[@]}"}" "$BAZEL" build --lockfile_mode=error "//web/reel:${id}_fast" || return $?
+    dest="$dest/$id"
+    if [ "$dry" = 1 ]; then
+        echo "would run: copy the files of //web/reel:${id}_fast to $dest/"
+        return 0
+    fi
+    from="$("$BAZEL" cquery --lockfile_mode=error --output=files "//web/reel:${id}_fast" 2>/dev/null | sed -n 1p)"
+    [ -n "$from" ] && [ -d "$from" ] || { echo "error: no output directory for //web/reel:${id}_fast" >&2; return 1; }
+    rm -rf "$dest"
+    mkdir -p "$dest"
+    cp -R "$from/." "$dest/"
+    chmod -R u+w "$dest"
+    find "$dest" -type f -exec chmod a-x {} +
+    echo "reel: $id (fast) in $PWD/$dest: $(cd "$dest" && ls | tr '\n' ' ')"
 }
 
 # _bazel_bin <label>: builds a binary and prints its absolute path; Bazel's
@@ -255,6 +297,7 @@ _bazel() {
         app-apk) _bazel_out //apps/clax_app:apk ;;
         app-macos) _bazel_out //apps/clax_app:macos_app ;;
         home-bundle) _bazel_out //apps/clax_app:home_bundle ;;
+        reel) _reel "$@" ;;
     esac
 }
 

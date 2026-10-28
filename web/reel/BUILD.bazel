@@ -1,0 +1,147 @@
+load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
+load("//bazel/js:defs.bzl", "npm_script_test")
+load(":reel.bzl", "reel_vignette")
+
+# The sizzle reel's recorder
+# (docs/superpowers/specs/2026-10-27-sizzle-reel-design.md): a package of
+# its own, so nothing here is an input of //web:dist. Every target that
+# records is tagged manual (reel.bzl): no `//...`, `just ci` or `just
+# test-affected` builds one; `just reel` does, on demand.
+
+# The reel's pacing, for scripts/sync-tokens.py's check that its curves are
+# design/tokens.json's motion curves (//design:tokens_sync, and its own
+# tests, //scripts:sync_tokens).
+exports_files(
+    ["pace.ts"],
+    visibility = [
+        "//design:__pkg__",
+        "//scripts:__pkg__",
+    ],
+)
+
+# The vignettes, one script each (vignettes/<id>.ts), in no particular
+# order: reel.toml orders the reel.
+VIGNETTES = [
+    "realtime",
+]
+
+# A vignette script with no target here would be linted but never recorded.
+[
+    fail("web/reel/%s has no reel_vignette: add \"%s\" to VIGNETTES" % (f, f[len("vignettes/"):-len(".ts")]))
+    for f in glob(
+        ["vignettes/*.ts"],
+        allow_empty = True,
+    )
+    if f[len("vignettes/"):-len(".ts")] not in VIGNETTES
+]
+
+# What every recording reads of this package: the recorder, the seeded
+# pages and reel.toml, but no vignette and no test. reel_vignette adds the
+# vignette's own script (:<id>_script), so an edit to one vignette
+# re-records that one alone.
+copy_to_bin(
+    name = "recorder",
+    srcs = glob(
+        ["**"],
+        exclude = [
+            "**/.qual",
+            "**/*.test.ts",
+            "**/*.spec.ts",
+            "BUILD.bazel",
+            "determinism.sh",
+            "playwright.config.ts",
+            "reel.bzl",
+            "vignettes/**",
+        ],
+    ),
+)
+
+copy_to_bin(
+    name = "tests",
+    srcs = glob(["**/*.test.ts"]),
+)
+
+# The recorder's browser tests (pnpm run reel:test) and their config.
+copy_to_bin(
+    name = "browser_tests",
+    srcs = glob(["**/*.spec.ts"]) + ["playwright.config.ts"],
+)
+
+# The cameras on the pinned Chromium (camera.spec.ts), on demand: `bazelisk
+# test //web/reel:camera_test`. Outside Bazel's sandbox, as the browser
+# tests run Chromium (docs/bazel.md, "Browser tests").
+npm_script_test(
+    name = "camera_test",
+    data = [
+        ":browser_tests",
+        ":recorder",
+        "//web:files",
+        "//web:node_modules",
+        "@chromium//:browsers",
+    ],
+    env = {"PLAYWRIGHT_BROWSERS_PATH": "$(rootpath @chromium//:browsers)"},
+    # The pinned browsers stay where their repository put them.
+    no_copy_to_bin = ["@chromium//:browsers"],
+    project = "web",
+    script = "reel:test",
+    tags = [
+        "manual",
+        "no-sandbox",
+    ],
+)
+
+# The script that records a vignette twice and compares the frames.
+copy_to_bin(
+    name = "determinism",
+    srcs = ["determinism.sh"],
+)
+
+# Two deterministic recordings of realtime are the same, frame for frame
+# (determinism.sh), on demand and alone: `bazelisk test
+# //web/reel:realtime_determinism`. It reads what a recording reads
+# (reel.bzl), the binary and the browsers where Bazel put them.
+npm_script_test(
+    name = "realtime_determinism",
+    data = [
+        ":determinism",
+        ":realtime_script",
+        ":recorder",
+        "//crates/clax-cli:clax",
+        "//crates/clax-cli:clax_warm",
+        "//web:dist_e2e",
+        "//web:files",
+        "//web:node_modules",
+        "@chromium//:browsers",
+    ],
+    env = {
+        "CLAX_E2E_BIN": "$(rootpath //crates/clax-cli:clax)",
+        "CLAX_E2E_WEB_DIST": "$(rootpath //web:dist_e2e)",
+        "CLAX_GALLERY__QUICKSTART": "false",
+        "PLAYWRIGHT_BROWSERS_PATH": "$(rootpath @chromium//:browsers)",
+    },
+    no_copy_to_bin = ["@chromium//:browsers"],
+    project = "web",
+    script = "reel:determinism",
+    skips = ["crates/clax-cli/clax"],
+    tags = [
+        "cpu:4",
+        "exclusive",
+        "manual",
+        "no-remote",
+        "no-sandbox",
+    ],
+)
+
+[reel_vignette(name = v) for v in VIGNETTES]
+
+# Every file, for the web project's lint, type check and unit tests
+# (//web:lint, //web:typecheck, //web:unit).
+filegroup(
+    name = "files",
+    srcs = [
+        ":browser_tests",
+        ":recorder",
+        ":tests",
+    ] + [":%s_script" % v for v in VIGNETTES],
+    visibility = ["//web:__pkg__"],
+)

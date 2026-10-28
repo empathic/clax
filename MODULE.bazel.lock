@@ -399,7 +399,7 @@
     },
     "//bazel/playwright:repo.bzl%playwright": {
       "general": {
-        "bzlTransitiveDigest": "2weRmhqQEQzClQqyTZh/4eKB7K5ulmysaUZnDknEFaI=",
+        "bzlTransitiveDigest": "zBXJ4JvqMcIk+NvVLHdPkx/7ywwKyo1aXvNJDMJ7eow=",
         "usagesDigest": "5T+uIbGuA8jtIb0caxUReMFMggtAvTuAWbMBnM0pv58=",
         "recordedInputs": [],
         "generatedRepoSpecs": {
