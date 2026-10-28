@@ -144,6 +144,30 @@ fn count(db: &Connection, sql: &str) -> i64 {
     db.query_row(sql, [], |r| r.get(0)).unwrap()
 }
 
+/// Reads each document of the old home at `before` through the core, as
+/// the owner, and checks its version. An artifact's first call moves its
+/// documents to its own store, waiting out a move the core's start began,
+/// so once this returns every artifact holding documents has moved.
+async fn read_old_docs(embed: &Embed, before: &Path) {
+    let old = Connection::open(before).unwrap();
+    let rows: Vec<(String, String, i64)> = old
+        .prepare("SELECT artifact_id, path, version FROM docs ORDER BY artifact_id, path")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(!rows.is_empty(), "the old home holds documents");
+    for (aid, path, version) in rows {
+        let doc = get_json(embed, &format!("/api/artifacts/{aid}/docs/{path}")).await;
+        assert_eq!(
+            doc["doc"]["version"].as_i64(),
+            Some(version),
+            "{aid} {path}: {doc}"
+        );
+    }
+}
+
 /// Each row of the old home's `table` (`docs` or `doc_authors`) is in its
 /// artifact's own store in `home`.
 fn assert_moved(old: &Connection, home: &clax_core::Home, table: &str) {
@@ -310,6 +334,7 @@ async fn the_installed_flutter_app_home_backs_up_and_is_adopted() {
             "{threads}"
         );
     }
+    read_old_docs(&embed, &before).await;
     close(embed, &rx);
 
     // One copy made before anything was written, at the old version, with
@@ -496,6 +521,7 @@ async fn the_perf_home_opens_through_the_core() {
         Some(8),
         "{threads}"
     );
+    read_old_docs(&embed, &before).await;
     close(embed, &rx);
 
     assert_eq!(
