@@ -51,20 +51,42 @@
 //
 // A counted arrival. The shell sees the pointer arrive on the frame as a
 // `mouseover` on the iframe element (also sent before a touch tap's press).
-// Chromium also sends that `mouseover`, with unchanged coordinates, whenever
-// the layout changes under a resting pointer: a shell control over the frame
-// vanishing (the composer on Cancel or Post, the consent dialog, a banner's
-// Dismiss), or an element the page moves (a pin) coming and going. So the
-// shell records the pointer's position from every trusted pointer event it
-// gets (moves, presses, and the boundary events `mouseover` and a `mouseout`
-// leaving the window), and an arrival counts when one of these holds:
-// - a `mouseover` of the frame whose coordinates differ from those of the
-//   previous boundary event, when that was the latest pointer event (a
-//   boundary event at the same spot is a layout change, never a move), and
-//   lie more than 2 px from where the pointer was at the viewer's latest
-//   shell input (for key presses too). After a key press with no known
-//   position, such an arrival counts only after a trusted move since that
-//   key. Before any shell input every such arrival counts;
+// Only the viewer's own movement arrives or leaves; two kinds of boundary
+// event (`mouseover`, and a `mouseout` leaving the window) are not that:
+// - Layout under a resting mouse. Chromium sends boundary events, with no
+//   movement and the coordinates of the latest pointer event, whenever the
+//   layout changes under the mouse: a shell control over the frame vanishing
+//   (the composer on Cancel or Post, the consent dialog, a banner's
+//   Dismiss), an element the page moves (a pin) coming and going, the top
+//   bar hiding as app mode starts, or the page loading under a mouse that
+//   never moved. A real move's boundary events carry the new position, the
+//   move's own `mousemove` coming after them. So a mouse boundary event
+//   within a pixel of the latest pointer event's position, with no
+//   movement, neither arrives nor leaves: it only records what is under the
+//   pointer now. Before the shell has seen any pointer event (the pointer
+//   rested where it is since before the shell's script ran) its position
+//   is unknown; then a mouse boundary event coming from a shell element (its
+//   `relatedTarget`) that has gone or still lies under the pointer is the
+//   layout moving too (the top bar under Linux Chromium's mouse at (0, 0) as
+//   app mode hides it). One coming from a shell element the pointer is now
+//   outside of, or from outside the window, still arrives.
+// - A resting mouse after a touch. Chromium sends a touch's boundary events
+//   with `sourceCapabilities.firesTouchEvents`, and afterwards may hit-test
+//   the mouse again where it last rested (the top bar, or (0, 0) on Linux
+//   where no mouse ever moved), sending boundary events there that took the
+//   finger's arrival away. So once a touch is seen (a touch pointer event,
+//   or a mouse event a touch fired), mouse boundary events are ignored
+//   until the mouse really moves: a mouse `mousemove` or `pointermove` with
+//   non-zero `movementX`/`movementY`, or screen coordinates changed since
+//   the previous mouse event, or a mouse press.
+// The shell records the pointer's position from every other trusted pointer
+// event it gets (moves, presses and boundary events), and an arrival counts
+// when one of these holds:
+// - a `mouseover` of the frame, by the viewer's movement as above, whose
+//   coordinates lie more than 2 px from where the pointer was at the
+//   viewer's latest shell input (for key presses too). After a key press
+//   with no known position, such an arrival counts only after a trusted move
+//   since that key. Before any shell input every such arrival counts;
 // - a trusted move over one of the shield's bands (below) with real
 //   movement, however small: non-zero `movementX`/`movementY`, or screen
 //   coordinates changed since the previous pointer event. Chromium's
@@ -209,11 +231,13 @@ let tabAt = -1;
 type Pos = { x: number; y: number };
 /** Where the pointer last was, from any trusted pointer event in the shell. */
 let lastPos: Pos | null = null;
-/** The same, in screen coordinates, when the event gave them. */
+/** Where the mouse last was in screen coordinates, from a mouse event (not
+ * one a touch fired) that gave them. */
 let lastScreen: Pos | null = null;
-/** Whether `lastPos` came from a boundary event (`mouseover`, `mouseout`). */
-let lastWasBoundary = false;
 let lastPointerType = "";
+/** A touch was seen and the mouse has not really moved since: mouse
+ * boundary events are a resting mouse's, and ignored (see the header). */
+let touchSince = false;
 /** When the latest trusted move was. */
 let lastMoveAt = -1;
 /** Where the pointer was at the latest shell input. */
@@ -282,35 +306,54 @@ function arriveOnFrame(): void {
 }
 
 /** Records a trusted pointer move or press at (x, y) in the shell (the watcher
- * does this; tests call it). `band`: the move is over one of the shield's
- * bands; `moved`: it shows real movement (non-zero `movementX`/`movementY`,
- * or screen coordinates changed since the previous pointer event). A band
- * move with real movement is the pointer's arrival on the frame, and lowers
- * the shield; one without leaves the shield up. */
+ * does this; tests call it). `pointerType`: "touch" for a touch's events
+ * (and the mouse events a touch fires); `band`: the move is over one of the
+ * shield's bands; `moved`: it shows real movement (non-zero
+ * `movementX`/`movementY`, or screen coordinates changed since the previous
+ * mouse event; a press always does). A band move with real movement is the
+ * pointer's arrival on the frame, and lowers the shield; one without leaves
+ * the shield up. A touch starts ignoring mouse boundary events, and a mouse
+ * event with real movement ends it. */
 export function notePointerAt(x: number, y: number, pointerType = "mouse", band = false, moved = true): void {
+  if (pointerType === "touch") touchSince = true;
+  else if (moved) touchSince = false;
   lastPos = { x, y };
-  lastWasBoundary = false;
   lastPointerType = pointerType;
   lastMoveAt = ++seq;
   if (band && holeAt && moved) arriveOnFrame();
 }
 
+/** How a boundary event came (`notePointerOver`): `touch`, a touch fired it
+ * (`sourceCapabilities.firesTouchEvents`); `moved`, it has non-zero
+ * `movementX`/`movementY`; `fromUnder`, the pointer came from an element of
+ * the shell's document (its `relatedTarget`) that has gone or still lies
+ * under the pointer. */
+export type Boundary = { touch?: boolean; moved?: boolean; fromUnder?: boolean };
+
 /** Records the pointer moving onto `target` at (x, y) (the watcher does this
  * for trusted `mouseover`s, and for a `mouseout` leaving the window with a
- * null target; tests call it). An arrival on the frame counts only after a
- * real move (see the header). */
-export function notePointerOver(target: EventTarget | null, x = NaN, y = NaN): void {
+ * null target; tests call it). A mouse event is ignored after a touch until
+ * the mouse really moves, and one that shows no movement (at the latest
+ * pointer event's position, or, before any pointer event, from a shell
+ * element that has gone or lies under it) neither arrives nor leaves; an
+ * arrival on the frame counts only after a real move (see the header). */
+export function notePointerOver(target: EventTarget | null, x = NaN, y = NaN, { touch = false, moved = false, fromUnder = false }: Boundary = {}): void {
+  if (touch) touchSince = true;
+  else if (touchSince) return;
   const known = Number.isFinite(x) && Number.isFinite(y);
   // Within a pixel: a press's pointer coordinates are fractional, a
   // boundary event's whole.
-  const layout = known && lastWasBoundary && !!lastPos && Math.abs(lastPos.x - x) < 1 && Math.abs(lastPos.y - y) < 1;
-  if (known) { lastPos = { x, y }; lastWasBoundary = true; }
+  const layout = !touch && !moved && (lastPos
+    ? known && Math.abs(lastPos.x - x) < 1 && Math.abs(lastPos.y - y) < 1
+    : fromUnder);
+  if (known) lastPos = { x, y };
   overFrame = isFrame(target);
   overShield = isShield(target);
+  if (layout) return;
   if (!overFrame) { pointerOnFrameSince = -1; return; }
   if (pointerOnFrameSince >= 0 || !known) return;
-  const moved = lastShellInput < 0 || (!layout && (inputPos ? far(inputPos, x, y) : lastMoveAt > lastShellInput));
-  if (moved) pointerOnFrameSince = ++seq;
+  const arrived = lastShellInput < 0 || (inputPos ? far(inputPos, x, y) : lastMoveAt > lastShellInput);
+  if (arrived) pointerOnFrameSince = ++seq;
 }
 
 /** The element whose four children are the shield's bands (see the header);
@@ -421,8 +464,8 @@ export function noteShellKey(e: KeyboardEvent): boolean {
  *   reaches the page and counts. */
 export function noteShieldPress(x: number, y: number, pointerType = "mouse"): void {
   lastPos = { x, y };
-  lastWasBoundary = true;
   lastPointerType = pointerType;
+  touchSince = pointerType === "touch";
   noteShellInput();
   touchOnBand = pointerType === "touch";
   if (touchOnBand) { arriveOnFrame(); return; }
@@ -484,7 +527,7 @@ export function watchGestures(doc: Document = document): () => void {
       // press leaves the press's click to its control.
       const p = e as PointerEvent;
       notePointerAt(p.clientX, p.clientY, p.pointerType);
-      noteScreen(p);
+      if (p.pointerType !== "touch") noteScreen(p);
       noteShellInput();
       raiseShieldIfOverFrame(doc, true);
       return;
@@ -492,13 +535,16 @@ export function watchGestures(doc: Document = document): () => void {
     noteShellInput();
   };
   const noteScreen = (e: MouseEvent) => { if (Number.isFinite(e.screenX) && Number.isFinite(e.screenY)) lastScreen = { x: e.screenX, y: e.screenY }; };
+  /** Whether a touch fired `e` (a touch's compatibility mouse events). */
+  const byTouch = (e: MouseEvent) => (e as MouseEvent & { sourceCapabilities?: { firesTouchEvents?: boolean } | null }).sourceCapabilities?.firesTouchEvents === true;
   const onMove = (e: MouseEvent) => {
     if (!e.isTrusted) return;
+    const type = e instanceof PointerEvent ? e.pointerType : byTouch(e) ? "touch" : "mouse";
     // Real movement: Chromium's layout re-hit-tests send boundary events, and
     // any move they send has no movement and the same screen position.
     const moved = e.movementX !== 0 || e.movementY !== 0 || (!!lastScreen && (e.screenX !== lastScreen.x || e.screenY !== lastScreen.y));
-    noteScreen(e);
-    notePointerAt(e.clientX, e.clientY, e instanceof PointerEvent ? e.pointerType : lastPointerType || "mouse", isShield(e.target), moved);
+    if (type !== "touch") noteScreen(e);
+    notePointerAt(e.clientX, e.clientY, type, isShield(e.target), moved);
   };
   // The pointer leaving something foreign (`isForeign`) while the shell is
   // active: the viewer may have clicked or typed in it, which the shell
@@ -507,8 +553,22 @@ export function watchGestures(doc: Document = document): () => void {
     if (overForeign && activeNow()) noteShellInput();
     overForeign = isForeign(to);
   };
-  const onOver = (e: MouseEvent) => { if (!e.isTrusted) return; noteScreen(e); leaveForeign(e.target); notePointerOver(e.target, e.clientX, e.clientY); };
-  const onOut = (e: MouseEvent) => { if (!e.isTrusted || e.relatedTarget !== null) return; noteScreen(e); leaveForeign(null); notePointerOver(null, e.clientX, e.clientY); };
+  const onBoundary = (e: MouseEvent, to: EventTarget | null) => {
+    const touch = byTouch(e);
+    if (!touch && !touchSince) noteScreen(e);
+    leaveForeign(to);
+    notePointerOver(to, e.clientX, e.clientY, { touch, moved: e.movementX !== 0 || e.movementY !== 0, fromUnder: under(e.relatedTarget, e.clientX, e.clientY) });
+  };
+  /** Whether `el`, a shell element a boundary event came from, has gone
+   * (no box) or still lies under (x, y). */
+  const under = (el: EventTarget | null, x: number, y: number) => {
+    if (!(el instanceof Element) || el.ownerDocument !== doc) return false;
+    if (!el.isConnected) return true;
+    const r = el.getBoundingClientRect();
+    return r.width === 0 || r.height === 0 || (x >= r.left && x < r.right && y >= r.top && y < r.bottom);
+  };
+  const onOver = (e: MouseEvent) => { if (e.isTrusted) onBoundary(e, e.target); };
+  const onOut = (e: MouseEvent) => { if (e.isTrusted && e.relatedTarget === null) onBoundary(e, null); };
   // Focus on something foreign is shell input for as long as it stays there:
   // focus moving there from the content frame fires nothing in the shell.
   const focusPoll = win.setInterval(() => { if (isForeign(doc.activeElement)) noteShellInput(); }, FOCUS_POLL_MS);
@@ -612,8 +672,8 @@ export function forgetGestures(): void {
   tabAt = -1;
   lastPos = null;
   lastScreen = null;
-  lastWasBoundary = false;
   lastPointerType = "";
+  touchSince = false;
   lastMoveAt = -1;
   inputPos = null;
   forwarded = () => false;

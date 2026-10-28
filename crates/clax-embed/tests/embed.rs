@@ -1058,13 +1058,15 @@ async fn claim(embed: &Embed, stream: &str) -> (u16, Value) {
 async fn the_queue_owner_is_released_when_its_subscriber_goes() {
     let dir = tempfile::tempdir().unwrap();
     let (embed, _rx) = open(dir.path());
-    // A: the queue's owner, whose reader stops taking blocks.
+    // A: the queue's owner, whose reader stops taking blocks. Whether it
+    // takes a block is settled before the block reaches `a_blocks`.
     let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let (a_tx, a_blocks) = mpsc::channel();
     let a_alive = alive.clone();
     embed.subscribe(Box::new(move |b| {
+        let taken = a_alive.load(std::sync::atomic::Ordering::SeqCst);
         let _ = a_tx.send(String::from_utf8_lossy(&b).into_owned());
-        a_alive.load(std::sync::atomic::Ordering::SeqCst)
+        taken
     }));
     let a = stream_of(&a_blocks.recv().unwrap());
     let (status, v) = claim(&embed, &a).await;
@@ -1085,6 +1087,15 @@ async fn the_queue_owner_is_released_when_its_subscriber_goes() {
         (409, Some("owner_held")),
         "{v}"
     );
+    // That claim nudged A, whose reader still takes blocks: the nudge's
+    // keep-alive reaches it on the subscription's own task, so it is
+    // waited for, or it could reach A only after the reader goes, and end
+    // A's subscription before the claim below.
+    while !a_blocks
+        .recv()
+        .expect("A's subscription lives")
+        .contains(": keep-alive\n")
+    {}
     // A's reader goes: the next claim's nudge reaches it, and its
     // subscription ends.
     alive.store(false, std::sync::atomic::Ordering::SeqCst);

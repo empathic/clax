@@ -174,7 +174,8 @@ export class InboxFeed {
   declare private listeners: Set<(c: InboxChange) => void>;
   declare private later: (() => void) | null;
   declare private readonly after: After;
-
+  // How many events carrying the unread count have been heard.
+  declare private heard: number;
 
   constructor(opts: { after?: After } = {}) {
     this.s = reactive({ unread: 0, latest: [], owner: false });
@@ -184,9 +185,15 @@ export class InboxFeed {
     this.later = null;
     this.waiting = false;
     this.after = opts.after ?? after;
+    this.heard = 0;
   }
 
-  /** Unread items, as the daemon last counted them. */
+  /** Unread items, as the daemon last counted them. A count the daemon
+   * answers a request with is taken only when no event's count was heard
+   * since the request was sent: the answer may have been read before that
+   * event's change, and every change sends the topic an event with the
+   * count after it, so the events' latest count is never older than one
+   * read before it was heard. */
   get unread(): number { return this.s.unread; }
   set unread(n: number) {
     if (n === this.s.unread) return;
@@ -232,19 +239,21 @@ export class InboxFeed {
 
   /** Fetches the summary: the count and `latest`, and whether the caller has an inbox. */
   async summary(): Promise<void> {
+    const count = this.counter();
     const r = await inboxSummary().catch(() => null);
     if (!r) return;
     this.s.owner = r !== "forbidden";
     if (r === "forbidden") return;
-    this.unread = r.unread ?? 0;
+    count(r.unread ?? 0);
     this.latest = r.latest ?? [];
   }
 
   /** One page of items matching `filter`, newest first, after cursor `before`. */
   async page(filter: InboxFilter, before?: string | null, limit?: number) {
+    const count = this.counter();
     const r = await listInbox(filter, before, limit);
     if (r === "forbidden") throw forbidden();
-    this.unread = r.unread;
+    count(r.unread);
     return r;
   }
 
@@ -252,17 +261,19 @@ export class InboxFeed {
    * group first, `limit` of them after cursor `before`, each with its first
    * `rows` items. */
   async groups(filter: InboxFilter, before?: string | null, rows?: number, limit?: number) {
+    const count = this.counter();
     const r = await listInboxGroups(filter, before, rows, limit);
     if (r === "forbidden") throw forbidden();
-    this.unread = r.unread;
+    count(r.unread);
     return r;
   }
 
   /** Marks item `id` read or unread; resolves to the item as it is now. */
   async mark(id: string, read: boolean): Promise<InboxItem> {
+    const count = this.counter();
     const r = await markInbox(id, read);
     if (r === "forbidden") throw forbidden();
-    this.unread = r.unread;
+    count(r.unread);
     this.take(r.item);
     return r.item;
   }
@@ -270,9 +281,10 @@ export class InboxFeed {
   /** Marks every unread item read, or every one matching `filter`, up to
    * `upto` (the newest `seq` shown) when given, but the item IDs `except`. */
   async markAll(filter?: InboxFilter, upto?: number, except?: string[]): Promise<number> {
+    const count = this.counter();
     const r = await markInboxMany({ all: true, filter, upto, except });
     if (r === "forbidden") throw forbidden();
-    this.unread = r.unread;
+    count(r.unread);
     return r.marked;
   }
 
@@ -289,8 +301,15 @@ export class InboxFeed {
     for (const f of [...this.listeners]) f(c);
   }
 
+  /** Called as a request is sent: takes the count it is answered with,
+   * unless an event's count was heard since (see `unread`). */
+  private counter(): (n: number) => void {
+    const at = this.heard;
+    return n => { if (this.heard === at) this.unread = n; };
+  }
+
   private on(e: StreamEvent): void {
-    if (typeof e.unread === "number") this.unread = e.unread;
+    if (typeof e.unread === "number") { this.heard++; this.unread = e.unread; }
     if (e.type === "inbox_item") {
       const item = e.item as InboxItem | undefined;
       if (item?.id) this.take(item);

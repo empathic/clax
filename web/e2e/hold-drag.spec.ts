@@ -230,6 +230,30 @@ test.describe("app mode", () => {
     await expect.poll(async () => (await ofType(page, "state")).at(-1)?.draft).toMatchObject({ kind: "area", label: "Area on the page", quote: null });
   });
 
+  test("a mouse the layout puts over the frame, not moved there, takes no unattested pick", async ({ page }) => {
+    const { frame, cdp } = await appView(page, "App drag parked");
+    // The mouse rests on a shell element over the frame, which then goes:
+    // Chromium sends the frame's mouseover at the unchanged spot.
+    const fb = (await page.locator("iframe.frame").boundingBox())!;
+    const at = { x: fb.x + fb.width / 2, y: fb.y + fb.height - 60 };
+    await page.evaluate(({ x, y }) => {
+      const el = document.createElement("div");
+      el.id = "cover";
+      Object.assign(el.style, { position: "fixed", left: `${x - 30}px`, top: `${y - 30}px`, width: "60px", height: "60px", zIndex: "50" });
+      document.getElementById("app")!.append(el);
+    }, at);
+    await page.mouse.move(at.x, at.y);
+    await expect.poll(() => page.evaluate(() => document.querySelector("#cover:hover") !== null)).toBe(true);
+    await page.evaluate(() => document.getElementById("cover")!.remove());
+    await expect.poll(() => page.evaluate(() => document.querySelector("iframe.frame:hover") !== null)).toBe(true);
+    const p = (await frame.locator("#p").boundingBox())!;
+    const from = { x: p.x + 2, y: p.y + 14 };
+    await holdDrag(cdp, from, { x: from.x + 160, y: from.y }, 600);
+    const pick = await last(page, "clax:pick");
+    expect(pick.clipError).toBe("it was not taken");
+    expect(await page.evaluate(() => !!document.querySelector(".composer"))).toBe(false);
+  });
+
   test("a drag with no attested press is refused", async ({ page }) => {
     const { frame, cdp } = await appView(page, "App drag unattested");
     const p = (await frame.locator("#p").boundingBox())!;

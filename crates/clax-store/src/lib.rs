@@ -944,6 +944,11 @@ pub(crate) mod test_util {
     /// ([`super::tests::the_store_tests_pass_on_one_connection`]).
     pub const STORE_MODE_VAR: &str = "CLAX_TEST_STORE";
 
+    /// Set to `apart` where that run is a test target of its own
+    /// (`//crates/clax-store:clax_store_one_connection_test`, which runs
+    /// that test alone), so the target of every other test leaves it out.
+    pub const ONE_CONNECTION_RUN_VAR: &str = "CLAX_TEST_STORE_ONE_CONNECTION";
+
     /// Whether this run's [`store`]s are on one connection.
     pub fn on_one_connection() -> bool {
         std::env::var(STORE_MODE_VAR).as_deref() == Ok("single")
@@ -1210,10 +1215,14 @@ mod tests {
     /// this test binary runs them again with
     /// [`STORE_MODE_VAR`](super::test_util::STORE_MODE_VAR) set. The pool's
     /// own tests (`exec::tests`) are left out; they open the pool whichever
-    /// the mode, and its one-connection tests are run here.
+    /// the mode, and its one-connection tests are run here. Under Bazel this
+    /// test runs in a target of its own, beside the others rather than after
+    /// them ([`ONE_CONNECTION_RUN_VAR`](super::test_util::ONE_CONNECTION_RUN_VAR)).
     #[test]
     fn the_store_tests_pass_on_one_connection() {
-        if super::test_util::on_one_connection() {
+        if super::test_util::on_one_connection()
+            || std::env::var(super::test_util::ONE_CONNECTION_RUN_VAR).as_deref() == Ok("apart")
+        {
             return;
         }
         let out = std::process::Command::new(std::env::current_exe().unwrap())

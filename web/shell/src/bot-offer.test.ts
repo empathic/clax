@@ -49,6 +49,10 @@ describe("ClaxBot's offer on a thread no agent takes", () => {
     // Nothing is sent before the person says so.
     expect(runs).toEqual([]);
     click([...offer.querySelectorAll("button")].find(b => b.textContent === "Send to ClaxBot")!);
+    // The send loads ClaxBot's API module first (a dynamic import, whose time
+    // the machine's load decides): waited for by the call it makes, not by
+    // turns of the event loop.
+    await vi.waitFor(() => expect(runs).toHaveLength(1));
     await settle();
     expect(runs).toEqual([{ thread_ids: ["t1"], artifact_id: AID }]);
     expect(m.root.querySelector(".bot-offer")).toBeNull();
@@ -67,6 +71,7 @@ describe("ClaxBot's offer on a thread no agent takes", () => {
     const { m, runs } = shell([thread("t1", "2026-10-09T10:00:00.000Z")]);
     await settle();
     click([...m.root.querySelectorAll(".bot-offer button")].find(b => b.textContent === "Always here")!);
+    await vi.waitFor(() => expect(runs).toHaveLength(1));
     await settle();
     expect(runs).toEqual([{ thread_ids: ["t1"], artifact_id: AID }]);
     expect([botView.chosen, localStorage.getItem(`clax.sendTo.${AID}`)]).toEqual([true, BOT]);
@@ -75,6 +80,7 @@ describe("ClaxBot's offer on a thread no agent takes", () => {
     // without asking, a teammate's and older ones keep the offer.
     const later = new Date(Date.now() + 60_000).toISOString();
     const { m: m2, runs: runs2 } = shell([thread("t2", later), thread("t3", later, "u_sam"), thread("t4", "2026-10-09T10:00:00.000Z")]);
+    await vi.waitFor(() => expect(runs2).toHaveLength(1));
     await settle();
     expect(runs2).toEqual([{ thread_ids: ["t2"], artifact_id: AID }]);
     expect(m2.root.querySelectorAll(".bot-offer").length).toBe(2);

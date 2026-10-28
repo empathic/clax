@@ -39,14 +39,18 @@ async function openApp(page: Page, title: string, mode: "subdomain" | "sandbox",
 const hovers = (page: Page) => quietEval<string[]>(page, "window.claxMsgs.filter(m => m.type === 'clax:hover').map(m => m.selector)");
 
 /** Holds one finger on `target` until the bridge's hold arms (it outlines
- * what is under the finger, `selector`), then lifts it. */
+ * what is under the finger, `selector`), then lifts it; the app's host
+ * attests the press and the release, as it does for every finger on the
+ * WebView. */
 async function holdOn(page: Page, cdp: CDPSession, target: Locator, selector: string) {
   const b = (await target.boundingBox())!;
   const at = { x: b.x + Math.min(40, b.width / 2), y: b.y + b.height / 2 };
   const seen = (await hovers(page)).length;
+  await host(page, `attestPointer({ pointer: 1, phase: "down", x: ${at.x}, y: ${at.y} })`);
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [at] });
   await expect.poll(async () => (await hovers(page)).slice(seen)).toContain(selector);
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await host(page, `attestPointer({ pointer: 1, phase: "up", x: ${at.x}, y: ${at.y} })`);
 }
 
 /** The last scroll position the page reported to the shell. */
@@ -294,7 +298,12 @@ test.describe("a short view", () => {
     expect(await framed()).toBe(false);
     await host(page, "enterCommentMode()");
     await expect.poll(framed).toBe(true);
-    await frame.locator("#t").tap();
+    // The app's host attests the finger's press and release.
+    const b = (await frame.locator("#t").boundingBox())!;
+    const at = { x: b.x + Math.min(40, b.width / 2), y: b.y + b.height / 2 };
+    await host(page, `attestPointer({ pointer: 1, phase: "down", x: ${at.x}, y: ${at.y} })`);
+    await page.touchscreen.tap(at.x, at.y);
+    await host(page, `attestPointer({ pointer: 1, phase: "up", x: ${at.x}, y: ${at.y} })`);
     await expect.poll(async () => (await ofType(page, "state")).at(-1)?.draft ?? null).toMatchObject({ label: "“Quarterly goals”" });
     await expect(page.locator(".composer")).toBeHidden();
     await expect(page.getByRole("button", { name: "Send", exact: true })).toHaveCount(0);

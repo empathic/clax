@@ -219,12 +219,70 @@ async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response
     to_instance(&env, req).await
 }
 
-/// `req` for the instance's object, unless its declared body is too large.
+/// `req` for the instance's object, unless its declared body is too large;
+/// a body of no declared length goes through [`forward_undeclared`].
 async fn to_instance(env: &Env, req: Request) -> Result<Response> {
     if let Some(res) = instance::refuse_declared(&req)? {
         return Ok(res);
     }
+    if instance::undeclared_body(&req)? {
+        return forward_undeclared(env, req).await;
+    }
     instance_stub(env)?.fetch_with_request(req).await
+}
+
+/// `req`, whose body declares no length, for the instance's object, its
+/// body relayed by the Worker ([`Relay`]) rather than handed on whole. The
+/// object may answer before it has read the whole body (413 past its
+/// limit, or 429), and the runtime fails any read of the Worker's request
+/// stream once the Worker's response is sent, dropping the connection: a
+/// body handed on whole is still being copied then. So once the object
+/// answers, the Worker lets go of the request stream (which cancels it)
+/// before it returns, and the relay ends.
+async fn forward_undeclared(env: &Env, mut req: Request) -> Result<Response> {
+    let held = Rc::new(std::cell::RefCell::new(Some(Box::pin(req.stream()?))));
+    let body = wasm_streams::ReadableStream::from_stream(Relay(held.clone()));
+    let mut init = worker::RequestInit::new();
+    init.with_method(req.method())
+        .with_headers(req.headers().clone())
+        .with_body(Some(body.into_raw().into()));
+    let relayed = Request::new_with_init(req.url()?.as_str(), &init)?;
+    let res = instance_stub(env)?.fetch_with_request(relayed).await;
+    drop(held.borrow_mut().take());
+    res
+}
+
+/// The body [`forward_undeclared`] relays: the request stream's chunks
+/// while the Worker holds it, then its end.
+struct Relay(Rc<std::cell::RefCell<Option<std::pin::Pin<Box<worker::ByteStream>>>>>);
+
+impl futures_util::Stream for Relay {
+    type Item = std::result::Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        use std::task::Poll;
+        let mut held = self.0.borrow_mut();
+        let Some(stream) = held.as_mut() else {
+            return Poll::Ready(None);
+        };
+        match stream.as_mut().poll_next(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Some(Ok(bytes))) => {
+                Poll::Ready(Some(Ok(js_sys::Uint8Array::from(bytes.as_slice()).into())))
+            }
+            Poll::Ready(Some(Err(e))) => {
+                *held = None;
+                Poll::Ready(Some(Err(js_sys::Error::new(&e.to_string()).into())))
+            }
+            Poll::Ready(None) => {
+                *held = None;
+                Poll::Ready(None)
+            }
+        }
+    }
 }
 
 /// Where the Worker sends a request (see the crate docs).

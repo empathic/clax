@@ -1,3 +1,4 @@
+load("@bazel_skylib//rules:native_binary.bzl", "native_test")
 load("//bazel:cargo.bzl", "cargo_package")
 
 cargo_package(
@@ -7,6 +8,22 @@ cargo_package(
     # (src/migrations.rs).
     test_compile_data = glob(["tests/fixtures/**"]) + ["//crates/clax-core:toolpath_vectors"],
     test_data = ["//crates/clax-core:toolpath_vectors"],
+    # The rerun of the store's tests on one connection is the target below.
+    test_env = {"CLAX_TEST_STORE_ONE_CONNECTION": "apart"},
+)
+
+# The store's tests again, on one connection
+# (tests::the_store_tests_pass_on_one_connection, alone): a target of its
+# own, so the two runs of the suite go side by side, each within a test
+# target's time, rather than one after the other in clax_store_lib_test.
+native_test(
+    name = "clax_store_one_connection_test",
+    src = ":clax_store_lib_test",
+    out = "clax_store_one_connection_test",
+    args = [
+        "--exact",
+        "tests::the_store_tests_pass_on_one_connection",
+    ],
 )
 
 # The older builds' migrations (tests/fixtures/old-migrations), which the
