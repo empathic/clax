@@ -9,8 +9,11 @@
 // mode) or <dir>/frames/NNNNNN.png (deterministic mode, from 000000, one PNG
 // of the capture's device pixels per frame), and <dir>/beats.json: {"fps":
 // 30, "frames": <n>, "beats": [{"name", "frame"}]}, each beat with its first
-// frame. Every daemon it started is stopped by its handle, and the browser
-// closed, however the run ends.
+// frame. A vignette with a focus script (vignettes/<id>.focus.json, focus.ts)
+// also gets, in deterministic mode, <dir>/focus.json (the script) and
+// <dir>/focus-rects.json (its targets' boxes, frame by frame). Every daemon it
+// started is stopped by its handle, and the browser closed, however the run
+// ends.
 //
 // It needs CLAX_E2E_BIN (the clax binary), CLAX_E2E_WEB_DIST (the web UI
 // built with the test clock, //web:dist_e2e) and PLAYWRIGHT_BROWSERS_PATH,
@@ -78,6 +81,7 @@ const { parse } = await import("smol-toml");
 const { parseReel } = await import("./config.ts");
 const { deterministicCamera, fastCamera, FPS, REEL_EPOCH } = await import("./camera.ts");
 const { installCursor } = await import("./cursor.ts");
+const { FocusLog, parseFocus, targetBoxes } = await import("./focus.ts");
 const { Director } = await import("./director.ts");
 const { NO_KEY_CONFIG, startDaemon } = await import("../e2e/fixtures.ts");
 const { SECRET, freePort } = await import("../e2e/hosted-helpers.ts");
@@ -92,6 +96,10 @@ const listed = ((parse(toml) as { vignette?: { id?: unknown }[] }).vignette ?? [
 const cfg = parseReel(toml, listed);
 const vcfg = cfg.vignettes.find(v => v.id === id) ?? fail(`reel.toml lists no vignette ${id}`);
 const vignette = ((await import(`./vignettes/${id}.ts`)) as { default: Vignette }).default;
+// The vignette's focus script, when it has one: its targets are filmed too.
+const focusUrl = new URL(`./vignettes/${id}.focus.json`, import.meta.url);
+const focusJson = existsSync(focusUrl) ? readFileSync(focusUrl, "utf8") : null;
+const focus = focusJson === null ? null : parseFocus(focusJson, `vignettes/${id}.focus.json`);
 if (vignette.id !== id) fail(`vignettes/${id}.ts is vignette ${vignette.id}`);
 
 const stops: (() => Promise<void> | void)[] = [];
@@ -169,10 +177,18 @@ try {
     console.log(`recorded ${id} (fast, ${seconds} s, ${vcfg.seconds} s in the reel) to ${out}: clip.webm, beats.json (${beats(cam)})`);
   } else {
     // The page's time stops here and moves only as the director rolls.
-    const cam = await deterministicCamera(page, out, FPS);
+    // With a focus script, each frame's target boxes are logged as it is filmed.
+    const log = new FocusLog();
+    const scale = cfg.capture.scale;
+    const onFrame = focus ? async (n: number) => log.record(n, await targetBoxes(page, focus.targets, scale)) : undefined;
+    const cam = await deterministicCamera(page, out, FPS, onFrame);
     await vignette.play(new Director(page, cam, id), cast);
     const frames = cam.frame();
     writeFileSync(join(out, "beats.json"), `${JSON.stringify({ fps: FPS, frames, beats: cam.beats }, null, 2)}\n`);
+    if (focusJson !== null) {
+      writeFileSync(join(out, "focus.json"), focusJson);
+      writeFileSync(join(out, "focus-rects.json"), log.json(FPS, scale));
+    }
     const seconds = (frames / FPS).toFixed(1);
     console.log(`recorded ${id} (deterministic, ${frames} frames, ${seconds} s, ${vcfg.seconds} s in the reel) to ${out}: frames/, beats.json (${beats(cam)})`);
   }

@@ -169,9 +169,10 @@ export async function quietIn<T = unknown>(page: Page, frame: Frame, expression:
  * waited out and its answer handled (so what a timer fetched shows on the
  * frame the timer ran in, however long the network took), its animations
  * are set to their ages, and a PNG screenshot is taken of the viewport.
- * `still()` does nothing: between rolls the clock stands.
+ * `still()` does nothing: between rolls the clock stands. `onFrame(n)`, when
+ * given, runs after frame n is written, on the page as that frame shows it.
  */
-export async function deterministicCamera(page: Page, out: string, fps = FPS): Promise<Camera> {
+export async function deterministicCamera(page: Page, out: string, fps = FPS, onFrame?: (frame: number) => Promise<void>): Promise<Camera> {
   const frameMs = 1000 / fps;
   const cdp = await page.context().newCDPSession(page);
   const start = await quietIn<number>(page, page.mainFrame(), "Date.now()");
@@ -288,6 +289,7 @@ export async function deterministicCamera(page: Page, out: string, fps = FPS): P
         await freeze(now);
         const shot = await cdp.send("Page.captureScreenshot", { format: "png", clip, captureBeyondViewport: false });
         writeFileSync(framePath(out, frames), Buffer.from(shot.data, "base64"));
+        if (onFrame) await onFrame(frames);
         frames += 1;
       }
     },
