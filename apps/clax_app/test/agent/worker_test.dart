@@ -1334,11 +1334,12 @@ void main() {
       );
       api.releasePolls();
 
-      asked = FileAskedQuestions(file);
+      final files = TrackedAsked(FileAskedQuestions(file));
+      asked = files;
       workerWith([
         changeCalls(reply: 'Kilometres.', edits: [('Save', 'km')]),
       ]).start();
-      await until(() => api.currentVersion(aid) == 2);
+      await files.until(() => api.currentVersion(aid) == 2);
       await idle();
       expect(runner.seen, hasLength(1));
       expect(runner.text(0), contains('The person answered your question'));
@@ -1998,4 +1999,46 @@ class DyingApi extends FakeClaxApi {
     await _maybeHang();
     return super.deleteDraft(draftId);
   }
+}
+
+/// An [AskedQuestions] whose every call is followed: [until] waits out the
+/// calls in flight (real file I/O, which no count of event-loop turns
+/// covers) before each turn it counts.
+class TrackedAsked implements AskedQuestions {
+  TrackedAsked(this.inner);
+
+  final AskedQuestions inner;
+  final _pending = <Future<void>>{};
+
+  Future<T> _track<T>(Future<T> f) {
+    final done = f.then<void>((_) {}, onError: (_) {});
+    _pending.add(done);
+    done.whenComplete(() => _pending.remove(done));
+    return f;
+  }
+
+  /// [until] from loop_support.dart, with the calls in flight waited out
+  /// before each turn.
+  Future<void> until(bool Function() condition, {int turns = 2000}) async {
+    for (var i = 0; i < turns; i++) {
+      if (condition()) return;
+      while (_pending.isNotEmpty) {
+        await Future.wait(_pending.toList());
+      }
+      await Future<void>.delayed(Duration.zero);
+    }
+    throw StateError('condition not reached: $condition');
+  }
+
+  @override
+  Future<void> put(AskedEntry e) => _track(inner.put(e));
+  @override
+  Future<AskedEntry?> take(String questionId) => _track(inner.take(questionId));
+  @override
+  Future<List<AskedEntry>> all() => _track(inner.all());
+  @override
+  Future<AskedEntry?> answer(String questionId, String text) =>
+      _track(inner.answer(questionId, text));
+  @override
+  Future<void> drop(String questionId) => _track(inner.drop(questionId));
 }
