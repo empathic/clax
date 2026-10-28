@@ -24,7 +24,7 @@
 import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 import { api, contentFrame, registerSession, streamLive } from "../../e2e/fixtures.ts";
-import { quietIn, REEL_EPOCH, ROLL_AT_MS } from "../camera.ts";
+import { quietIn, REEL_EPOCH } from "../camera.ts";
 import { cursorPress, cursorTo } from "../cursor.ts";
 import type { Director, Stage, Vignette } from "../director.ts";
 
@@ -38,8 +38,10 @@ const VERSIONS = [
   { label: "Planning board", note: "Launch countdown, numbers and a timeline", ago: 40 * 60_000 },
 ];
 const RESTORED = { label: "Restored v2", note: "Back to the week-by-week checklist, as Alex asked" };
-/** The camera's time while it films. */
-const ROLL = REEL_EPOCH.getTime() + ROLL_AT_MS;
+/** The camera's time while it films, near enough: it rolls a few seconds
+ * after REEL_EPOCH (on the next ROLL_GRID_MS step of its clock, camera.ts),
+ * which no "ago" the menu shows tells apart. */
+const ROLL = REEL_EPOCH.getTime();
 
 type Cast = { page: Page; base: string; token: string; sid: string; aid: string; staged: Map<string, string> };
 
