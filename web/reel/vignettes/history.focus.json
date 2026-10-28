@@ -1,38 +1,10 @@
 {
-  "note": "TEMPORARY: this recording predates focus targets, so `overrides` (pixel boxes measured on its frames, before padding) stand in for every target. Re-record with this script beside the vignette's .ts and delete `overrides`; the selectors are then what places the light.",
   "targets": {
     "menu": ".vmenu",
     "chip": "button.vbtn"
   },
-  "overrides": {
-    "menu": [
-      563,
-      22,
-      547,
-      434
-    ],
-    "chip": [
-      1108,
-      20,
-      84,
-      32
-    ]
-  },
   "shots": [
-    {
-      "at": 18,
-      "until": 57,
-      "targets": [
-        "menu"
-      ],
-      "label": "the version menu"
-    },
-    {
-      "at": 174,
-      "targets": [
-        "chip"
-      ],
-      "label": "restored, as a new version"
-    }
+    { "at": "@menu-0.2", "until": "scrub+0.1", "targets": ["menu"], "label": "the version menu" },
+    { "at": "restore-0.2", "targets": ["chip"], "label": "restored, as a new version" }
   ]
 }

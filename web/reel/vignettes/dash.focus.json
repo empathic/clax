@@ -1,95 +1,21 @@
 {
-  "note": "TEMPORARY: this recording predates focus targets, so `overrides` (pixel boxes measured on its frames, before padding) stand in for every target. Re-record with this script beside the vignette's .ts and delete `overrides`; the selectors are then what places the light.",
   "targets": {
     "drawn": "frame:clax-overlay .a, clax-overlay .f",
     "composer": ".composer",
-    "thread": ".thread-card[data-thread]",
     "strip": ".strip.ag",
-    "pill": "button.who"
-  },
-  "overrides": {
-    "drawn": [
-      429,
-      168,
-      544,
-      381
-    ],
-    "composer": [
-      627,
-      541,
-      445,
-      427
-    ],
-    "thread": [
-      1123,
-      218,
-      448,
-      622
-    ],
-    "pill": [
-      524,
-      20,
-      262,
-      30
-    ],
-    "chart": [
-      16,
-      293,
-      1053,
-      419
-    ],
-    "filters": [
-      608,
-      109,
-      474,
-      35
-    ]
+    "thread": ".thread-card[data-thread]",
+    "pill": "button.who",
+    "chart": "frame:section.card.panel:has(#chart)",
+    "filters": "frame:#chips"
   },
   "shots": [
-    {
-      "at": 26,
-      "targets": [
-        "drawn"
-      ],
-      "label": "the rows Alex draws over"
-    },
-    {
-      "at": 56,
-      "targets": [
-        "composer"
-      ],
-      "label": "the request, typed"
-    },
-    {
-      "at": 140,
-      "until": 228,
-      "targets": [
-        "thread",
-        "pill"
-      ],
-      "label": "the agent working on it"
-    },
-    {
-      "at": 270,
-      "targets": [
-        "chart"
-      ],
-      "label": "the forecast chart, hovered"
-    },
-    {
-      "at": 306,
-      "targets": [
-        "filters",
-        "chart"
-      ],
-      "label": "a region filter, and the chart it narrows"
-    }
+    { "at": "@drawn-0.2", "targets": ["drawn"], "label": "the rows Alex draws over" },
+    { "at": "@composer-0.2", "targets": ["composer"], "label": "the request, typed" },
+    { "at": "@thread-0.2", "until": "reveal-0.3", "targets": ["strip", "thread", "pill"], "label": "the agent working on it" },
+    { "at": "reveal+1.1", "targets": ["chart"], "label": "the forecast chart, hovered" },
+    { "at": "touch+0.17", "targets": ["filters", "chart"], "label": "a region filter, and the chart it narrows" }
   ],
   "clean": [
-    {
-      "at": 228,
-      "until": 259,
-      "label": "the spreadsheet becomes a dashboard"
-    }
+    { "at": "reveal-0.3", "until": "reveal+0.73", "label": "the orders grid becomes a dashboard" }
   ]
 }

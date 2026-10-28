@@ -1,79 +1,19 @@
 {
-  "note": "TEMPORARY: this recording predates focus targets, so `overrides` (pixel boxes measured on its frames, before padding) stand in for every target. Re-record with this script beside the vignette's .ts and delete `overrides`; the selectors are then what places the light.",
   "targets": {
     "dialog": ".na-panel",
+    "who_builds": ".na-panel .groups",
+    "strip": ".strip.ag",
+    "thread": ".thread-card[data-thread]",
     "pill": "button.who",
-    "thread": ".thread-card[data-thread]"
-  },
-  "overrides": {
-    "dialog": [
-      451,
-      232,
-      698,
-      536
-    ],
-    "who_builds": [
-      451,
-      307,
-      698,
-      384
-    ],
-    "thread": [
-      1130,
-      224,
-      451,
-      488
-    ],
-    "pill": [
-      636,
-      20,
-      240,
-      30
-    ],
-    "chart": [
-      35,
-      333,
-      637,
-      467
-    ]
+    "chart": "frame:.card.panel:has(#chart)"
   },
   "shots": [
-    {
-      "at": 32,
-      "targets": [
-        "dialog"
-      ],
-      "label": "the new-artifact dialog, as the request is typed"
-    },
-    {
-      "at": 103,
-      "targets": [
-        "who_builds"
-      ],
-      "label": "who builds it: an agent is picked"
-    },
-    {
-      "at": "working-0.3",
-      "until": "reveal-0.3",
-      "targets": [
-        "thread",
-        "pill"
-      ],
-      "label": "the agent working on it"
-    },
-    {
-      "at": "touch-0.07",
-      "targets": [
-        "chart"
-      ],
-      "label": "the chart, hovered"
-    }
+    { "at": "@dialog-0.2", "targets": ["dialog"], "label": "the new-artifact dialog, as the request is typed" },
+    { "at": "@who_builds-0.2", "targets": ["who_builds"], "label": "who builds it: an agent is picked" },
+    { "at": "working-0.3", "until": "reveal-0.3", "targets": ["strip", "thread", "pill"], "label": "the agent working on it" },
+    { "at": "touch-0.07", "targets": ["chart"], "label": "the chart, hovered" }
   ],
   "clean": [
-    {
-      "at": "reveal-0.3",
-      "until": "reveal+0.25",
-      "label": "the placeholder becomes the page (short: the hover follows at once)"
-    }
+    { "at": "reveal-0.3", "until": "reveal+0.25", "label": "the placeholder becomes the page (short: the hover follows at once)" }
   ]
 }

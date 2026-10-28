@@ -1,80 +1,19 @@
 {
-  "note": "TEMPORARY: this recording predates focus targets, so `overrides` (pixel boxes measured on its frames, before padding) stand in for every target. Re-record with this script beside the vignette's .ts and delete `overrides`; the selectors are then what places the light.",
   "targets": {
-    "drawn": "frame:clax-overlay .a, clax-overlay .f",
+    "pad": "frame:#pad",
     "composer": ".composer",
+    "strip": ".strip.ag",
     "thread": ".thread-card[data-thread]",
-    "pill": "button.who"
-  },
-  "overrides": {
-    "drawn": [
-      35,
-      262,
-      1040,
-      583
-    ],
-    "composer": [
-      643,
-      544,
-      445,
-      432
-    ],
-    "thread": [
-      1130,
-      224,
-      454,
-      629
-    ],
-    "pill": [
-      564,
-      20,
-      222,
-      30
-    ],
-    "game": [
-      35,
-      197,
-      1037,
-      582
-    ]
+    "pill": "button.who",
+    "game": "frame:#arena"
   },
   "shots": [
-    {
-      "at": 26,
-      "targets": [
-        "drawn"
-      ],
-      "label": "the sketch pad Alex picks"
-    },
-    {
-      "at": 47,
-      "targets": [
-        "composer"
-      ],
-      "label": "the request, typed"
-    },
-    {
-      "at": 146,
-      "until": 233,
-      "targets": [
-        "thread",
-        "pill"
-      ],
-      "label": "the agent working on it"
-    },
-    {
-      "at": 266,
-      "targets": [
-        "game"
-      ],
-      "label": "Star Chase, two players scoring"
-    }
+    { "at": "ask+0.57", "targets": ["pad"], "label": "the sketch pad Alex picks" },
+    { "at": "@composer-0.2", "targets": ["composer"], "label": "the request, typed" },
+    { "at": "@thread-0.2", "until": "reveal+0.5", "targets": ["strip", "thread", "pill"], "label": "the agent working on it" },
+    { "at": "reveal+1.6", "targets": ["game"], "label": "Star Chase, two players scoring" }
   ],
   "clean": [
-    {
-      "at": 233,
-      "until": 255,
-      "label": "the sketch becomes a game (the page flips 0.8 s after the reveal beat)"
-    }
+    { "at": "reveal+0.5", "until": "reveal+1.23", "label": "the sketch pad becomes a game" }
   ]
 }
