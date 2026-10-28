@@ -229,6 +229,20 @@ impl From<CoreError> for ApiError {
                 err.extra.insert("taken_by".into(), json!(name));
                 err
             }
+            // Report queues (spec 2026-10-27-clax-sdk-design §5.3, §6.2, §7.4).
+            e @ CoreError::LeaseLost => {
+                ApiError::new(StatusCode::CONFLICT, "lease_lost", e.to_string())
+            }
+            e @ CoreError::ExternalArtifact => {
+                ApiError::bad_request("external_artifact", e.to_string())
+            }
+            e @ CoreError::WrongOrigin => ApiError::forbidden("wrong_origin", e.to_string()),
+            e @ CoreError::TokenExpired => {
+                ApiError::new(StatusCode::UNAUTHORIZED, "token_expired", e.to_string())
+            }
+            e @ CoreError::NotAMember => {
+                ApiError::new(StatusCode::NOT_FOUND, "not_a_member", e.to_string())
+            }
             e @ CoreError::NotDeclared { .. } => ApiError::forbidden("not_declared", e.to_string()),
             e @ CoreError::Corrupt { .. } => {
                 tracing::error!(error = %e, "corrupt row");
@@ -313,6 +327,32 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queue_errors_answer_their_codes() {
+        for (e, status, code) in [
+            (CoreError::LeaseLost, StatusCode::CONFLICT, "lease_lost"),
+            (
+                CoreError::ExternalArtifact,
+                StatusCode::BAD_REQUEST,
+                "external_artifact",
+            ),
+            (
+                CoreError::WrongOrigin,
+                StatusCode::FORBIDDEN,
+                "wrong_origin",
+            ),
+            (
+                CoreError::TokenExpired,
+                StatusCode::UNAUTHORIZED,
+                "token_expired",
+            ),
+            (CoreError::NotAMember, StatusCode::NOT_FOUND, "not_a_member"),
+        ] {
+            let e = ApiError::from(e);
+            assert_eq!((e.status, e.code), (status, code));
+        }
+    }
 
     #[test]
     fn closed_questions_conflict_and_limits_are_too_many() {

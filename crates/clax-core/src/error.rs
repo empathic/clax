@@ -53,6 +53,27 @@ pub enum CoreError {
         "this thread is taken by {name}; only its owner agent may reply to, resolve or hand it off"
     )]
     ThreadTaken { name: String },
+    /// An agent's write as a report's claimant (reply, resolve, metadata)
+    /// after its lease on the report expired or another lease superseded
+    /// it (spec 2026-10-27-clax-sdk-design §7.4).
+    #[error("your claim on this report has lapsed; claim it again to act on it")]
+    LeaseLost,
+    /// A content-only operation (publish, fork, a git remote, a version's
+    /// files) on an external artifact, whose content Clax never stores
+    /// (spec 2026-10-27-clax-sdk-design §6.2).
+    #[error("this is an external artifact: Clax keeps no content of it")]
+    ExternalArtifact,
+    /// A reporter token minted for, or used from, an origin the queue does
+    /// not list or the token was not minted for (§5.3).
+    #[error("this origin may not file reports to this queue")]
+    WrongOrigin,
+    /// A reporter token past its expiry (§5.3).
+    #[error("the reporter token has expired; ask the app for a new one")]
+    TokenExpired,
+    /// A queue that does not exist, or of which the caller is not a member:
+    /// the two are indistinguishable by design.
+    #[error("no such queue")]
+    NotAMember,
     /// The artifact's current declaration does not include `capability`, which
     /// the request needs.
     #[error("this artifact does not declare the {capability} capability")]
