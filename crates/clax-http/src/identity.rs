@@ -31,8 +31,10 @@
 //! the viewer that user's login names ([`crate::auth::TailscaleUser`]): a
 //! viewer like any other, never the owner, whatever its login, except the
 //! one login the home's `[serve] owner_tailscale_login` names, matched
-//! exactly ([`crate::auth::TailscaleOwner`]): that request is a browser of
-//! the owner's ([`Identity::tailnet_owner`]), as one on this machine is.
+//! exactly ([`crate::auth::TailscaleOwner`]), and, with `[serve]
+//! owner_tailscale_nodes`, only from one of the devices it lists
+//! ([`crate::tailnet`]): that request is a browser of the owner's
+//! ([`Identity::tailnet_owner`]), as one on this machine is.
 //!
 //! A hosted daemon ([`crate::hosted`]) serves the internet, so no request is
 //! from this machine: the owner and events cookies and the `clax_viewer`
