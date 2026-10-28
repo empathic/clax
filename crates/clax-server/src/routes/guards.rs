@@ -238,6 +238,9 @@ mod l10 {
         ("web_push::status", Owner),
         ("web_push::subscribe", Owner),
         ("web_push::unsubscribe", Owner),
+        ("sign::page", Owner),
+        ("sign::pending", Owner),
+        ("sign::queue", Owner),
         ("health::healthz", NoArtifact),
         ("assets::blob", SeesLive),
         ("site_signin::page", SeesLive),
@@ -369,6 +372,7 @@ mod l10 {
             "viewers" => include_str!("viewers.rs"),
             "watches" => include_str!("watches.rs"),
             "web_push" => include_str!("web_push.rs"),
+            "sign" => include_str!("sign.rs"),
             "working" => include_str!("working.rs"),
             "tags" => include_str!("tags.rs"),
             "queues" => include_str!("queues.rs"),
@@ -564,6 +568,10 @@ mod l10 {
         (
             "web_push::unsubscribe",
             "forgets a device's push subscription in the home's files",
+        ),
+        (
+            "sign::queue",
+            "queues an unsigned chitin message through the chitin CLI, not the store",
         ),
         (
             "remotes::add",

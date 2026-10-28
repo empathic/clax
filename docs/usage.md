@@ -222,6 +222,17 @@ tailscale_cli = "/run/current-system/sw/bin/tailscale"                     # def
 
 The login's request is then the owner's only when the one address `tailscale serve` puts in `X-Forwarded-For` belongs, by `tailscale whois --json <ip>` (at most 2 s, its answer kept a minute), to a listed node whose user is that login. From any other device, with no `X-Forwarded-For`, a repeated one, or an address `whois` does not name in time, the login is the tailnet viewer it names. `tailscale status` lists the node names; `tailscale whois --json <ip>` shows a node's `StableID`. Set without `owner_tailscale_login`, empty, or naming something that is neither, it stops the daemon from starting.
 
+To sign chitin messages as yourself from a browser of yours, with a passkey, point Clax at chitin:
+
+```toml
+[sign]
+chitin = "/path/to/chitin"
+as = "bobby"                               # the chitin title; default bobby
+state_dir = "/Users/you/.local/state/chitin"   # CHITIN_STATE_DIR; default chitin's own
+```
+
+`/sign` (`?to=<seat>&text=<text>` fills it in) then lets the owner's browser write a message, an approval of a pull request (`approve <repo>#<n> at <sha>`) or of a contract change, or pick one a seat queued, and approve it with a passkey. Clax queues it unsigned (`chitin say --as <title> --queue <to> <text>`) and the page approves it through chitin's passkey gateway on the same origin (`/approve/v1/challenge/<id>` and `/approve/v1/assertion/<id>`, chitin's `chitin-approve`); every seat that receives it verifies the passkey's signature itself. Clax holds no key and signs nothing. The page and its routes (`GET /api/sign`, `POST /api/sign/queue`) answer only the owner's browser, and 404 without `[sign]`.
+
 Through a trusted host, the shell loads but its artifact frames do not: each artifact's page lives on its own site, `<id>.localhost:<port>`, which only a browser on this machine can open. To see artifacts from your other devices through `tailscale serve`, turn on path frames:
 
 ```toml

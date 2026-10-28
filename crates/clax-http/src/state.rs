@@ -222,6 +222,10 @@ pub struct AppState {
     /// ([`crate::tailnet::OwnerDevices`]); `None` for the login on any device.
     /// The host sets it after [`AppState::assemble`].
     pub owner_devices: Option<Arc<crate::tailnet::OwnerDevices>>,
+    /// `[sign]`: the chitin CLI the owner signs messages through with a
+    /// passkey (`clax_server::routes::sign`); `None` for none. The host sets
+    /// it after [`AppState::assemble`].
+    pub sign: Option<Arc<clax_core::config::SignConfig>>,
     /// `[serve] trusted_host_frames`: on a request on one of
     /// `trusted_hosts`, artifacts are framed from `/_clax/frame/<id>/…` of
     /// that host, sandboxed ([`crate::host::FRAME_PATH`]).
@@ -453,6 +457,7 @@ impl AppState {
             tailscale_identity: p.tailscale_identity,
             owner_tailscale_login: p.owner_tailscale_login.map(Arc::from),
             owner_devices: None,
+            sign: None,
             trusted_host_frames: p.trusted_host_frames,
             grant_auth,
             agent_gate: Arc::new(crate::agent::Gate::new(p.agent_timer)),

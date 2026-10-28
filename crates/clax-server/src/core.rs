@@ -178,6 +178,11 @@ impl Core {
             state.quickstart = clax_core::quickstart::Release::from_tree(&*state.web).map(Arc::new);
         }
         state.owner_devices = owner_devices(&state.owner_tailscale_login, &config)?;
+        // `[sign]`: a bad table stops the daemon, as `[serve]`'s owner keys do.
+        state.sign = match (&state.hosted, &config) {
+            (None, Ok(c)) => c.sign()?.map(Arc::new),
+            _ => None,
+        };
         // The core's `net` keeps a shared disk cache in the home.
         state.net = Arc::new(clax_http::net_cache::daemon_net(cfg.home.root()));
         state.bot = Arc::new(local_bot(&state));

@@ -5670,6 +5670,8 @@ router), and a test fails when it differs:
 | `PUT /api/sessions/{id}/live-watches` | Denied | no |
 | `GET /api/settings` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/settings` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/sign` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/sign/queue` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/stream` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/stream/{id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/token` | Denied | no |
@@ -5697,6 +5699,7 @@ router), and a test fails when it differs:
 | `GET /people` | Denied | no |
 | `GET /queues` | Denied | no |
 | `GET /settings` | Denied | no |
+| `GET /sign` | Denied | no |
 | `GET /site-signin` | Denied | yes: 403 `not_for_agents` |
 | `GET /sw.js` | Denied | no |
 | `GET /tags` | Denied | no |

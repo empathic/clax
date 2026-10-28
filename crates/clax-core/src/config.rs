@@ -933,6 +933,86 @@ impl HomeConfig {
         Ok(b)
     }
 
+    /// `[sign]`: the chitin CLI the owner signs messages through, with a
+    /// passkey, from the `/sign` page (`clax_server::routes::sign`):
+    /// `chitin` (required: the CLI's path), `as` (the chitin title the
+    /// messages are queued as and approved for, default `bobby`) and
+    /// `state_dir` (passed to chitin as `CHITIN_STATE_DIR`; unset leaves
+    /// chitin's own default). `None` without a `[sign]` table: the page and
+    /// its routes answer 404.
+    ///
+    /// # Errors
+    /// `Invalid { code: "bad_config" }` naming the file (or the variable)
+    /// and the key when `[sign]` is not a table, `chitin` is missing or not
+    /// a non-empty string, `as` is not a chitin title (1 to 128 of letters,
+    /// digits, `.`, `_` and `-`, starting with a letter or digit), `state_dir`
+    /// is not a non-empty string, or any other key is set. The daemon does
+    /// not start on it.
+    pub fn sign(&self) -> Result<Option<SignConfig>> {
+        let Some(table) = self.value("sign") else {
+            return Ok(None);
+        };
+        let Some(dict) = table.as_dict() else {
+            return Err(self.bad(
+                "sign",
+                "[sign]",
+                format!("must be a table, not {}", kind_of(&table)),
+            ));
+        };
+        if let Some(k) = dict
+            .keys()
+            .find(|k| !["chitin", "as", "state_dir"].contains(&k.as_str()))
+        {
+            return Err(self.bad(
+                "sign",
+                "[sign]",
+                format!("has no key {k:?} (chitin, as, state_dir)"),
+            ));
+        }
+        let path = |key: &str| -> Result<Option<String>> {
+            match self.value(&format!("sign.{key}")) {
+                None => Ok(None),
+                Some(v) => match v.as_str().filter(|p| !p.is_empty() && !p.contains('\0')) {
+                    Some(p) => Ok(Some(p.to_string())),
+                    None => Err(self.bad(
+                        &format!("sign.{key}"),
+                        "[sign]",
+                        format!("{key} must be a path, not {}", shown(&v)),
+                    )),
+                },
+            }
+        };
+        let Some(chitin) = path("chitin")? else {
+            return Err(self.bad(
+                "sign",
+                "[sign]",
+                "needs chitin, the path of the chitin CLI".to_string(),
+            ));
+        };
+        let state_dir = path("state_dir")?;
+        let as_title = match self.value("sign.as") {
+            None => "bobby".to_string(),
+            Some(v) => match v.as_str().filter(|t| valid_chitin_title(t)) {
+                Some(t) => t.to_string(),
+                None => {
+                    return Err(self.bad(
+                        "sign.as",
+                        "[sign]",
+                        format!(
+                            "as must be a chitin title such as \"bobby\", not {}",
+                            shown(&v)
+                        ),
+                    ));
+                }
+            },
+        };
+        Ok(Some(SignConfig {
+            chitin,
+            as_title,
+            state_dir,
+        }))
+    }
+
     /// `[questions] terminal_after_s` (spec 2026-10-06-agent-questions-and-inbox
     /// §6.7): how many seconds a mirrored AskUserQuestion waits in Clax
     /// before the terminal dialog appears; 0 never holds it. Default
@@ -1146,6 +1226,28 @@ pub struct OwnerTailnetDevices {
     pub nodes: Vec<String>,
     /// The `tailscale` CLI, a path or a name found on `PATH`.
     pub tailscale: String,
+}
+
+/// `[sign]`, from [`HomeConfig::sign`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignConfig {
+    /// The chitin CLI's path.
+    pub chitin: String,
+    /// The chitin title messages are queued as and approved for.
+    pub as_title: String,
+    /// `CHITIN_STATE_DIR` for chitin; `None` for chitin's default.
+    pub state_dir: Option<String>,
+}
+
+/// A chitin title: 1 to 128 of ASCII letters, digits, `.`, `_` and `-`,
+/// starting with a letter or digit (chitin's own rule).
+pub fn valid_chitin_title(t: &str) -> bool {
+    let b = t.as_bytes();
+    !b.is_empty()
+        && b.len() <= 128
+        && b[0].is_ascii_alphanumeric()
+        && b.iter()
+            .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(c))
 }
 
 /// A tailnet node stable ID (`nikWRyfT1721CNTRL`) or MagicDNS name
@@ -2710,6 +2812,43 @@ mod tests {
             let e = with(t).serve_trusted_host_frames().unwrap_err().to_string();
             assert!(
                 e.contains("config.toml") && e.contains("[serve]"),
+                "{t}: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn sign_needs_the_chitin_cli_and_a_title() {
+        assert_eq!(with("").sign().unwrap(), None);
+        assert_eq!(
+            with("[sign]\nchitin = \"/nix/store/x-chitin/bin/chitin\"\n")
+                .sign()
+                .unwrap(),
+            Some(SignConfig {
+                chitin: "/nix/store/x-chitin/bin/chitin".into(),
+                as_title: "bobby".into(),
+                state_dir: None,
+            })
+        );
+        assert_eq!(
+            with("[sign]\nchitin = \"chitin\"\nas = \"alex\"\nstate_dir = \"/Users/bobby/.local/state/chitin\"\n")
+                .sign()
+                .unwrap()
+                .map(|s| (s.as_title, s.state_dir)),
+            Some(("alex".into(), Some("/Users/bobby/.local/state/chitin".into())))
+        );
+        for t in [
+            "sign = 1\n",
+            "[sign]\nas = \"bobby\"\n",
+            "[sign]\nchitin = \"\"\n",
+            "[sign]\nchitin = \"chitin\"\nas = \"-x\"\n",
+            "[sign]\nchitin = \"chitin\"\nas = \"a b\"\n",
+            "[sign]\nchitin = \"chitin\"\nstate_dir = 1\n",
+            "[sign]\nchitin = \"chitin\"\ntitle = \"bobby\"\n",
+        ] {
+            let e = with(t).sign().unwrap_err().to_string();
+            assert!(
+                e.contains("config.toml") && e.contains("[sign]"),
                 "{t}: {e}"
             );
         }

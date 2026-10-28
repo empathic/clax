@@ -45,6 +45,8 @@ pub mod room;
 pub mod sample;
 pub mod sessions;
 pub mod settings;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod sign;
 pub mod site;
 pub mod site_api;
 pub mod site_signin;
