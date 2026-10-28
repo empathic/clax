@@ -1,0 +1,19 @@
+{
+  "targets": {
+    "drawn": "frame:clax-overlay .a, clax-overlay .f",
+    "composer": ".composer",
+    "thread": ".thread-card:has-text(\"Show these on a spinning 3D globe\")",
+    "strip": ".strip.ag",
+    "pill": "button.who",
+    "globe": "frame:canvas#globe"
+  },
+  "shots": [
+    { "at": "@drawn-0.2", "targets": ["drawn"], "label": "the area Alex draws" },
+    { "at": "@composer-0.2", "targets": ["composer"], "label": "the request, typed" },
+    { "at": "@thread-0.2", "until": "reveal-0.3", "targets": ["thread", "strip", "pill"], "label": "the agent working on it" },
+    { "at": "touch-0.2", "targets": ["globe"], "label": "the globe, dragged and hovered" }
+  ],
+  "clean": [
+    { "at": "reveal-0.3", "until": "reveal+1.6", "label": "the table becomes a globe" }
+  ]
+}

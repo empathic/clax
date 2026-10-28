@@ -33,6 +33,12 @@ title = "Build things together"
 seconds = 8
 in_short = false
 
+[[vignette]]
+id = "globe"
+title = "Ask for anything"
+seconds = 7.5
+in_short = true
+
 [end]
 seconds = 4
 headline = "Your agents build pages. Clax gives them a home."

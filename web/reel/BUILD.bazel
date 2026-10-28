@@ -25,6 +25,7 @@ VIGNETTES = [
     "agent",
     "coldopen",
     "game",
+    "globe",
     "realtime",
 ]
 

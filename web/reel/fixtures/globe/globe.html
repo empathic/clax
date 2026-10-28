@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northwind Customers</title>
+<style>
+  /* Northwind's customer accounts on a globe: the second version of the
+     page in the reel's globe vignette (web/reel/vignettes/globe.ts), what
+     the agent builds from the plain table. The company, its customers and
+     every number are invented; the cities are real places. The land is
+     Natural Earth's 1:110m outline (public domain), simplified. Drawn on
+     a canvas by the page itself, in an orthographic projection; every
+     motion reads the page's clock, in whole 30 fps frames (tick()), so a
+     recording that steps that clock films the same frames each run. */
+  :root {
+    color-scheme: dark;
+    --bg: #060a16;
+    --panel: rgba(18, 27, 52, 0.72);
+    --fg: #eef2ff;
+    --fg2: #a9b4d6;
+    --muted: #6f7ba3;
+    --line: rgba(140, 160, 230, 0.16);
+    --arc: #3fd0ff;
+    --gold: #ffc35c;
+    --hq: #ff7a59;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: radial-gradient(120% 90% at 30% 20%, #0d1736 0%, var(--bg) 60%); color: var(--fg); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+  main { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); padding: 18px 20px 16px; gap: 10px; }
+  header { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .eyebrow { margin: 0 0 2px; color: var(--arc); font-size: 11.5px; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 600; }
+  h1 { margin: 0; font-size: 24px; letter-spacing: -0.015em; font-weight: 650; }
+  .stats { display: flex; gap: 8px; flex-wrap: wrap; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px; font-variant-numeric: tabular-nums; }
+  .stat b { display: block; font-size: 17px; letter-spacing: -0.01em; }
+  .stat span { color: var(--fg2); font-size: 11.5px; }
+  .body { display: grid; grid-template-columns: minmax(0, 1fr) 236px; gap: 14px; min-height: 0; }
+  .stage { position: relative; min-height: 0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+  canvas.dragging { cursor: grabbing; }
+  .hint { position: absolute; left: 6px; bottom: 4px; color: var(--muted); font-size: 12px; pointer-events: none; }
+  .tip { position: absolute; left: 0; top: 0; pointer-events: none; background: rgba(9, 14, 32, 0.94); border: 1px solid rgba(255, 195, 92, 0.55); border-radius: 10px; padding: 8px 11px; min-width: 180px; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5), 0 0 24px rgba(255, 195, 92, 0.18); opacity: 0; transform: translate(-50%, calc(-100% - 16px)); white-space: nowrap; }
+  .tip.on { opacity: 1; }
+  .tip .t1 { font-weight: 650; font-size: 14px; }
+  .tip .t2 { color: var(--fg2); font-size: 12px; margin-top: 1px; }
+  .tip .t3 { display: flex; justify-content: space-between; gap: 14px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .tip .t3 b { color: var(--gold); font-size: 15px; }
+  .tip .t3 span { color: var(--fg2); font-size: 12px; align-self: flex-end; }
+  aside { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+  .card h2 { margin: 0 0 8px; font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg2); font-weight: 600; }
+  .legend { display: grid; gap: 7px; font-size: 12.5px; color: var(--fg2); }
+  .legend .row { display: flex; align-items: center; gap: 10px; }
+  .sizes { display: flex; align-items: flex-end; gap: 10px; }
+  .sizes i { display: inline-block; border-radius: 50%; background: radial-gradient(circle, #fff3d6 0%, var(--gold) 45%, rgba(255, 195, 92, 0.15) 100%); }
+  .sizes small { color: var(--muted); font-size: 11px; display: block; text-align: center; margin-top: 2px; }
+  .swatch-arc { width: 34px; height: 3px; border-radius: 2px; background: linear-gradient(90deg, var(--hq), var(--arc)); }
+  .swatch-hq { width: 10px; height: 10px; border-radius: 50%; background: var(--hq); box-shadow: 0 0 0 3px rgba(255, 122, 89, 0.3); margin: 0 12px 0 12px; }
+  ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; counter-reset: r; }
+  li { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; column-gap: 8px; align-items: center; padding: 3px 6px; border-radius: 7px; font-size: 12.5px; transition: background 160ms; }
+  li::before { counter-increment: r; content: counter(r); color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  li .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  li .v { color: var(--gold); font-variant-numeric: tabular-nums; font-weight: 600; }
+  li .bar { grid-column: 2 / 4; height: 3px; border-radius: 2px; background: rgba(140, 160, 230, 0.12); margin-top: 3px; overflow: hidden; }
+  li .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--arc), var(--gold)); border-radius: 2px; }
+  li.on { background: rgba(255, 195, 92, 0.14); }
+  @media (max-width: 640px) {
+    body { overflow: auto; }
+    main { height: auto; padding: 14px 16px; }
+    .body { grid-template-columns: minmax(0, 1fr); }
+    .stage { height: 360px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <p class="eyebrow">Global footprint</p>
+      <h1>Northwind Customers</h1>
+    </div>
+    <div class="stats">
+      <div class="stat"><b id="s-accounts"></b><span>accounts</span></div>
+      <div class="stat"><b id="s-arr"></b><span>total ARR</span></div>
+      <div class="stat"><b id="s-countries"></b><span>countries</span></div>
+    </div>
+  </header>
+  <div class="body">
+    <div class="stage" id="stage">
+      <canvas id="globe" aria-label="Globe of Northwind's customer accounts, with arcs from Portland"></canvas>
+      <div class="tip" id="tip" role="status"></div>
+      <div class="hint">Drag to spin &middot; hover a city</div>
+    </div>
+    <aside>
+      <section class="card">
+        <h2>Legend</h2>
+        <div class="legend">
+          <div class="row sizes">
+            <div><i style="width:8px;height:8px"></i><small>$100k</small></div>
+            <div><i style="width:14px;height:14px"></i><small>$500k</small></div>
+            <div><i style="width:19px;height:19px"></i><small>$1M+</small></div>
+            <span style="margin-left:4px">point size is ARR</span>
+          </div>
+          <div class="row"><span class="swatch-arc"></span>arc from HQ, width is ARR</div>
+          <div class="row"><span class="swatch-hq"></span>HQ, Portland</div>
+        </div>
+      </section>
+      <section class="card">
+        <h2>Top 10 by ARR</h2>
+        <ol id="top"></ol>
+      </section>
+    </aside>
+  </div>
+</main>
+<script>
+"use strict";
+// [name, city, country, lat, lon, ARR in $k]
+const ACCOUNTS = [
+  ["Halvorsen Freight", "Oslo", "Norway", 59.91, 10.75, 412],
+  ["Kestrel Analytics", "London", "United Kingdom", 51.51, -0.13, 1180],
+  ["Brightwater Foods", "Dublin", "Ireland", 53.35, -6.26, 236],
+  ["Maison Ardent", "Paris", "France", 48.86, 2.35, 684],
+  ["Tiergarten Labs", "Berlin", "Germany", 52.52, 13.4, 905],
+  ["Zuidas Capital", "Amsterdam", "Netherlands", 52.37, 4.9, 318],
+  ["Vela Robotics", "Milan", "Italy", 45.46, 9.19, 274],
+  ["Solano Energía", "Madrid", "Spain", 40.42, -3.7, 357],
+  ["Fjordline Media", "Stockholm", "Sweden", 59.33, 18.07, 149],
+  ["Kraków Data Works", "Kraków", "Poland", 50.06, 19.94, 98],
+  ["Bosphorus Trade", "Istanbul", "Türkiye", 41.01, 28.98, 212],
+  ["Dune Logistics", "Dubai", "UAE", 25.2, 55.27, 540],
+  ["Indus Health", "Mumbai", "India", 19.08, 72.88, 466],
+  ["Koramangala Soft", "Bengaluru", "India", 12.97, 77.59, 731],
+  ["Lion City Pay", "Singapore", "Singapore", 1.35, 103.82, 962],
+  ["Selat Ventures", "Jakarta", "Indonesia", -6.21, 106.85, 133],
+  ["Harbour Line", "Hong Kong", "China", 22.32, 114.17, 588],
+  ["Pudong Mobility", "Shanghai", "China", 31.23, 121.47, 402],
+  ["Hanriver Games", "Seoul", "South Korea", 37.57, 126.98, 623],
+  ["Kumo Systems", "Tokyo", "Japan", 35.68, 139.69, 1094],
+  ["Taipei Circuit", "Taipei", "Taiwan", 25.03, 121.57, 287],
+  ["Coral Coast Bank", "Sydney", "Australia", -33.87, 151.21, 815],
+  ["Yarra Studio", "Melbourne", "Australia", -37.81, 144.96, 264],
+  ["Waitematā Health", "Auckland", "New Zealand", -36.85, 174.76, 121],
+  ["Kopje Mining", "Johannesburg", "South Africa", -26.2, 28.05, 355],
+  ["Table Bay Wines", "Cape Town", "South Africa", -33.92, 18.42, 87],
+  ["Savanna Telecom", "Nairobi", "Kenya", -1.29, 36.82, 176],
+  ["Eko Fintech", "Lagos", "Nigeria", 6.52, 3.38, 248],
+  ["Nilo Agritech", "Cairo", "Egypt", 30.04, 31.24, 109],
+  ["Paulista Retail", "São Paulo", "Brazil", -23.55, -46.63, 742],
+  ["Pampa Foods", "Buenos Aires", "Argentina", -34.6, -58.38, 301],
+  ["Andes Copper", "Santiago", "Chile", -33.45, -70.67, 226],
+  ["Lima Cloud", "Lima", "Peru", -12.05, -77.04, 92],
+  ["Reforma Media", "Mexico City", "Mexico", 19.43, -99.13, 455],
+  ["Mile High Outdoor", "Denver", "United States", 39.74, -104.99, 198],
+  ["Lakeshore Insurance", "Chicago", "United States", 41.88, -87.63, 867],
+  ["Hudson Yard Capital", "New York", "United States", 40.71, -74.01, 1215],
+  ["Peachtree Health", "Atlanta", "United States", 33.75, -84.39, 342],
+  ["Bayline Software", "San Francisco", "United States", 37.77, -122.42, 976],
+  ["Maple North", "Toronto", "Canada", 43.65, -79.38, 509]
+];
+// Land outlines: rings of [dLon, dLat, ...] in quarter degrees, each pair a delta from the last.
+const LAND = [[-271,-215,11,-4,-2,-2,-6,1,-5,-2,-4,0,-12,4,-10,7,15,-5,7,6,2,-1,4,-4],[-234,-204,3,-2,-1,-2,-11,-1,-2,2,11,3],[582,-163,11,0,-1,-10,-8,-1,-5,9,0,2,3,0],[692,-164,5,-1,-6,-8,1,-2,-6,-2,-4,-7,-5,-3,-10,2,1,5,14,8,6,8,3,2,1,-2],[698,-145,3,-4,0,3,6,-6,7,1,-2,-6,-3,0,-5,-8,-3,-2,-2,2,2,3,-1,2,-5,2,3,3,1,5,-8,12,6,-3,1,-4],[668,-89,-6,2,-6,7,12,-9],[200,-54,2,-9,-3,0,0,-4,-11,-33,-6,-2,-6,2,-3,12,5,8,-2,10,2,5,7,2,6,5,6,10,3,-6],[574,-55,2,-3,2,1,3,-3,5,-16,9,-6,4,-7,4,-1,1,-4,9,-10,1,-8,-2,-12,-11,-19,-1,-7,-15,-6,-5,2,0,2,-6,-3,-11,3,-5,7,-6,3,1,4,-6,-3,5,6,-1,3,-7,-8,-3,2,-4,8,-12,4,-20,-3,-8,-3,-2,-4,-15,0,-8,-4,-6,0,-6,3,3,4,0,7,-10,22,2,-2,-1,4,3,-3,-3,7,3,11,0,-3,10,7,16,4,9,13,2,-3,1,1,-1,2,1,2,2,-1,6,8,5,2,5,-4,5,-1,0,2,4,8,8,2,-3,3,2,0,12,-4,5,2,2,-2,-4,-4,-2,-7,19,-11,2,2,4,9,2,16,1,1,1,-2,3,-10],[498,-41,-4,0,2,4,13,3,-11,-7],[434,-27,8,-1,1,2,20,-7,-5,-2,-25,4,-12,4,3,3,10,-3],[608,-22,-7,-3,-8,2,6,1,2,2,0,-2,2,0,4,3,-1,2,3,0,-1,-5],[537,-5,1,-6,4,-2,3,4,8,2,25,-8,6,-7,7,-2,1,-2,-4,-1,1,-3,14,-12,-11,1,-8,9,-5,1,-6,-2,1,-3,-3,-1,-14,5,-7,-2,5,5,-3,7,-17,8,-3,-2,-4,5,7,2,-6,0,-7,5,8,3,7,-4],[501,6,-6,-5,-14,0,-1,-3,4,-4,9,4,-7,-6,7,-13,-4,0,2,3,-5,0,-2,7,-3,-1,1,-10,-5,0,1,8,-3,3,5,13,4,3,8,-1,9,2],[515,5,-3,-9,-2,11,2,2,3,-4],[423,-23,-4,0,-9,6,-16,24,-13,15,9,-1,13,-13,4,0,8,-8,-1,-3,10,-9,-1,-11],[471,7,5,-3,-5,-1,-1,-6,-4,-3,-1,-10,-1,1,-5,-1,-6,4,-5,-2,-1,2,-6,0,-1,6,-4,4,0,7,3,3,6,-1,0,4,7,1,15,16,10,-6,-8,-9,2,-6],[506,34,0,-5,-1,-4,-2,4,-2,-2,1,-5,-5,3,0,4,-3,2,-6,-2,6,6,1,-2,7,3,0,3,3,-2,1,-3],[325,25,-4,-1,-2,3,2,12,6,-9,-2,-5],[496,41,-4,-5,-2,3,2,5,2,0,-1,-3,3,4,0,-4],[502,49,1,-5,-3,1,1,-4,-2,0,-2,5,3,1,-3,3,5,-1],[485,74,4,0,1,-6,-3,-4,0,-7,9,-2,0,-5,-4,4,-1,-1,-3,2,-5,0,1,3,-4,2,0,5,1,-1,2,10,2,0],[-290,79,10,0,7,-5,-2,-1,-8,1,-3,-4,-3,3,-7,-1,-1,3,8,0,-5,4,4,0],[441,75,-3,-2,-3,1,0,3,8,3,-2,-5],[-319,91,22,-10,-14,-2,3,3,-5,1,-2,3,-12,3,-2,1,2,1,-13,-3,11,5,10,-2],[485,91,-2,-3,-3,6,6,7,2,-1,-3,-9],[539,137,-2,-4,-2,1,-3,-3,-3,1,3,4,7,1],[62,153,-2,-7,-10,4,0,3,12,0],[37,165,2,-3,0,-5,-4,-1,-2,8,4,1],[564,149,-3,-8,-12,-3,-6,-4,-3,1,0,3,-16,-2,4,-3,-3,-7,-2,-2,-2,2,1,3,-4,4,12,9,13,0,4,7,3,-2,8,6,3,12,4,1,3,-6,-4,-11],[576,177,5,1,1,-5,-6,-1,-3,-4,-7,3,-2,-5,-4,0,-1,4,2,3,5,1,2,8,8,-5],[-494,194,-9,1,-9,5,-1,3,10,-2,9,-7],[-225,203,-2,-4,2,2,3,-1,-1,-2,9,-1,-1,-3,3,1,1,-5,-1,-3,-5,0,0,4,-5,-3,-2,0,3,2,-4,1,-12,-1,2,3,-2,1,8,9,6,4,1,-1,-3,-3],[-531,216,4,0,-1,-4,3,-3,-7,5,-1,3,2,-1],[575,203,4,-7,-6,1,-3,-6,4,-4,0,-2,-3,2,-3,-3,1,20,-3,4,1,5,3,2,-1,2,2,0,4,-14],[-27,209,-13,-2,3,4,-2,5,12,5,4,-3,-4,-9],[-612,228,-4,-1,-3,3,9,2,1,-2,-3,-2],[-12,235,-4,-5,8,1,-4,-7,4,0,10,-12,5,-1,-3,-4,2,-2,-27,-5,-2,1,9,5,-7,2,4,1,-2,2,1,3,6,0,0,2,-7,3,-1,4,-2,-2,-3,6,5,8,8,0],[-341,263,21,-8,-4,-1,-8,2,-10,-4,-1,3,-6,-1,4,2,1,7,3,0],[-58,266,-1,-3,5,-2,-21,-7,-16,2,4,2,-9,2,7,2,-8,0,2,3,6,1,7,-3,6,2,18,1],[-303,269,-5,-1,-1,2,5,3,4,-1,-3,-3],[-720,276,20,-7,0,-3,3,-1,-1,3,11,0,7,-4,-10,-2,-2,-5,-13,4,-8,1,-2,2,-5,-1,2,-1,-2,-2,-10,-2,7,-6,0,-3,-8,1,-14,-3,-14,-7,-5,2,-11,-3,-2,2,-9,-2,-6,-6,5,-3,-1,-5,-3,-1,-2,-3,1,-2,-7,-2,-1,-4,-6,-1,-1,-4,-6,-4,-5,18,2,5,3,4,6,1,22,13,3,5,-5,0,-2,-3,-11,-5,-3,5,-10,-1,-10,-7,3,-2,-15,-2,0,3,-6,1,-5,-2,-25,-1,-28,-17,6,-1,6,-3,7,2,5,-5,1,-3,-4,-4,-2,-11,-7,-9,-14,-11,-5,-3,-5,2,-9,-5,-1,-4,-9,-5,0,-2,8,-10,-2,-7,-10,-2,-2,9,3,1,-2,3,-6,1,2,6,-4,2,-13,-4,5,6,-2,2,-11,-7,-4,0,-2,-2,6,-5,3,-1,4,2,6,-1,1,-2,-6,-1,-7,-7,4,-3,7,-10,0,-3,-3,-1,3,-4,-1,-6,-2,0,-10,-15,-11,-7,-21,-5,-1,-5,-2,0,-1,5,-5,1,-10,-8,-1,-3,13,-15,1,-7,0,-7,-16,-13,-1,6,-6,3,-4,6,-7,2,1,3,-4,0,-3,-17,2,0,3,-7,10,-8,5,-17,-3,0,-8,6,-6,15,-6,8,-1,-3,2,15,-6,22,-8,-5,-4,1,0,9,-11,18,-4,0,-1,-4,-13,-1,-2,-5,-6,-3,-11,-12,-8,-2,-2,-23,-9,-9,-4,4,-12,28,-3,21,-9,-1,-5,4,2,2,-2,1,-7,5,-5,6,-19,-2,-16,3,-4,6,-7,-3,-13,5,-6,10,-8,-1,3,-9,6,-4,2,-8,1,5,2,-1,1,-7,9,0,9,10,2,-9,8,-3,4,-5,-8,-8,0,-5,-10,-7,-11,-3,-1,-4,-14,-6,-21,-5,-4,10,1,6,-14,18,-3,10,-4,2,-9,15,-2,0,1,6,-4,-7,-6,8,13,-23,-1,-4,5,-4,3,-14,4,-2,3,-8,16,-14,-2,-3,7,-5,26,6,0,-5,-13,-26,-30,-27,-4,-9,-2,-5,3,-3,-1,-7,5,-9,1,-16,-3,-5,-21,-15,3,-9,0,-8,-12,-7,2,-2,-2,-8,-10,-12,-7,-6,-10,-5,-13,1,-12,-4,-4,2,-2,7,1,3,-12,19,-4,20,-10,16,0,5,3,13,5,6,0,5,-3,6,1,3,-5,14,-13,16,4,16,-5,7,-10,-2,-7,8,-6,0,-19,-6,-11,2,-13,-4,-20,14,-7,13,-7,5,-1,5,-3,5,3,3,2,7,0,11,-3,4,4,11,11,16,6,2,9,7,-1,5,2,5,9,6,4,7,15,-2,15,5,32,3,3,0,0,-2,3,1,-2,-2,2,-3,-3,-8,20,-6,2,-3,13,-5,4,3,1,5,5,2,30,-8,8,3,4,-2,7,0,3,2,6,13,1,8,-6,0,-9,-3,-3,3,-8,-2,-8,2,-6,6,2,3,-2,2,4,4,6,0,2,3,8,-1,9,4,7,0,12,-4,13,2,0,5,-19,10,6,4,-2,2,5,2,-16,-4,0,-2,6,-1,-1,-2,-9,-3,-3,1,1,2,-4,1,4,2,-1,1,-10,2,-4,-6,-4,0,-4,-10,4,-6,-5,0,-5,-3,-1,2,-4,1,-5,-1,3,-3,-2,0,-5,1,5,-10,-4,1,2,-2,-3,-1,2,-3,-3,0,-3,1,-3,6,-6,8,0,6,-14,7,-4,6,-4,-1,0,3,-3,1,-4,-1,1,-6,11,-8,3,0,0,-2,10,-5,-1,-2,-6,3,-1,-3,3,-1,-1,-2,-4,-4,-1,0,1,4,-2,4,-14,7,-6,5,-1,4,-5,1,-10,-4,-14,-1,0,-4,-9,-4,-4,-7,1,-2,-9,-8,-8,0,-5,-3,-4,4,-10,-1,1,6,-3,2,3,8,-3,9,6,3,24,-1,2,2,1,8,-7,6,-6,2,0,3,12,0,-2,4,4,-2,9,4,2,3,8,2,4,6,13,2,3,2,-3,6,2,6,8,3,-1,-3,3,-2,-5,-4,1,-4,4,-2,6,2,6,-3,14,4,9,-1,6,3,-1,6,2,3,4,1,3,-3,3,0,2,6,-4,0,-1,3,19,1,4,2,-4,2,-21,-3,-6,4,1,4,-2,3,2,3,16,7,-6,4,-7,-1,-4,-3,0,-2,-14,-7,-3,-6,7,-5,-4,-4,-4,-1,-3,-11,-5,1,-3,-3,-4,-1,-11,17,-7,-5,-6,-1,-5,2,-3,14,22,10,17,13,18,8,15,2,6,3,15,1,12,-3,-5,-1,4,-3,5,2,32,-8,4,-5,-5,-2,-6,-1,-21,3,6,-3,1,-6,8,-3,-2,4,3,2,9,-3,4,1,-3,3,9,4,8,-2,2,3,-3,2,2,3,-3,2,11,-1,2,-2,-5,-1,0,-2,3,-1,30,8,3,0,-4,-2,21,3,5,-3,4,3,-4,2,2,1,32,-7,3,2,-9,4,1,2,-2,4,13,8,10,-1,1,-2,-4,-3,4,-4,-1,-6,5,-2,-10,-9,5,0,10,6,-2,2,2,3,-5,0,-1,3,4,4,-6,3,8,2,-1,3,4,-2,-2,-4,4,0,-1,2,6,2,16,-2,-4,3,0,5,25,1,-3,2,5,2,54,6,5,3,9,2,7,-2,-5,0,9,-1,1,-2,15,1,13,-4,-1,-2,-18,-4,14,-1,2,-3,8,2,31,-3,0,3,15,-1,6,-2,2,-2,-2,-2,11,-5,4,4,6,-1,24,0,-2,4,5,1,36,-2,14,-6,24,0,3,-1,0,-3,5,-1,27,0,7,-3,5,1,-3,3,2,1,21,0,17,-4],[-383,276,-2,-1,-14,3,6,3,10,-5],[-362,278,0,-4,5,3,5,-3,-1,-3,4,-2,7,6,0,5,12,-1,5,-2,-3,-4,3,-3,-1,-2,-7,-2,-10,0,-6,-7,-11,-3,-3,-2,0,-2,-10,-4,-4,-4,-2,-8,6,-1,4,-7,5,1,24,-8,11,0,0,-8,9,-8,6,5,-5,9,6,2,7,5,-3,6,-5,3,5,4,-3,10,17,1,10,-5,7,-1,1,-8,6,-3,6,2,7,6,12,-13,-1,-3,18,-6,1,-4,5,-2,0,-4,-17,-8,-26,0,-18,-14,9,6,15,4,3,-2,-3,-3,2,-7,12,-1,4,4,3,-4,-22,-10,-3,0,-1,4,7,3,-11,0,1,-2,-15,-7,0,-3,3,-2,-15,-3,7,0,-8,-1,-4,-7,-2,2,2,-4,-4,-5,1,3,-2,5,0,-5,-3,1,3,-1,2,-10,-22,-16,0,-6,5,-12,-2,-7,-3,0,-2,2,-4,9,-1,4,-4,4,-4,-1,-6,3,-11,-1,-1,0,1,-4,-4,-1,-14,3,-11,-6,-3,-3,0,-7,-2,-13,6,-13,7,-4,10,2,5,2,2,7,13,2,1,-3,-4,-10,-2,1,0,-8,-3,-2,16,0,6,-3,-1,-17,6,-8,3,-1,8,3,11,-3,4,3,3,6,6,1,7,5,2,-2,-3,-2,1,-10,3,3,-2,5,5,2,1,3,7,-7,8,1,5,-3,3,3,9,0,-3,-1,1,-2,7,-2,0,-4,7,-2,7,-8,13,-1,11,-6,3,-9,2,-1,-3,-6,1,-1,8,-1,0,-4,3,3,11,-4,2,-5,4,1,14,-1,11,-8,7,-2,3,-8,-2,-7,-14,-16,-2,-19,-7,-17,-4,-4,-11,-1,-12,-7,-3,-4,-2,-11,-19,-23,-10,-1,-9,3,0,-2,5,-3,2,-7,-4,-5,-6,-2,-12,0,0,-8,-2,-1,-9,0,0,-4,5,0,1,-2,-7,-4,-1,-6,-7,-2,-1,-3,7,-4,-1,-4,-13,-10,4,-6,-10,-3,-1,-3,-16,6,-2,14,5,7,-6,1,4,4,2,7,4,-2,2,8,-3,2,-1,-5,-2,0,4,16,-1,8,1,1,7,18,0,15,2,4,3,32,0,6,-5,4,-18,10,-15,30,-6,4,1,2,-2,4,7,8,-5,2,0,5,4,7,5,3,1,5,5,4,-4,18,-5,3,-4,-4,2,-2,-4,-1,0,2,-10,3,-6,6,0,-2,-3,2,0,4,-8,8,1,1,-15,3,-14,9,-7,-2,-28,10,-8,7,1,6,-3,5,-13,11,0,4,-12,10,-4,9,-2,1,-4,1,0,-6,13,-14,3,-10,5,-4,-2,-2,-9,8,0,5,-11,7,3,3,-5,4,-7,14,-5,4,-8,2,-16,23,0,10,2,11,-3,11,7,-1,2,-4,-1,8,-19,7,-1,6,-6,2,0,3,-11,8,-8,10,-11,1,-12,5,-29,6,-5,-1,1,-3,-15,-3,1,6,5,1,-1,1,-14,-8,3,-2,-4,-2,-17,-9,-25,-6,28,12,3,6,-8,-2,-5,2,-7,-1,1,4,-8,0,-9,7,6,7,15,2,-3,3,3,1,-17,-1,-12,5,14,3,3,0,0,-2,8,0,-20,9,2,3,12,1,5,4,22,4,9,-2,43,-2,28,-5,27,5,3,-2,3,3,10,-4,5,3,1,-3,11,1,25,-3,5,-2,-5,-2,21,0,4,-2,5,2,-4,1,2,2,8,0,19,-4,12,0,0,3,3,0,7,-1,-1,-4,3,3,3,0,2,4,-9,4,0,5,5,3,9,-3,6,-4,-4,-2,8,-1],[-457,292,-2,-1,9,1,6,-2,4,2,7,-5,2,1,-3,4,8,0,4,-1,4,-7,14,-4,0,-2,-7,0,3,-2,-2,-1,-14,2,-29,-3,-11,3,-5,3,19,1,-22,1,-2,2,10,1,-14,1,7,5,14,1],[-305,292,-13,-1,-6,2,3,2,9,0,7,-3],[-346,293,3,-3,4,3,10,2,7,-4,-1,-3,12,3,14,-4,1,-2,7,1,17,-6,4,-3,-7,-2,28,-8,-9,-7,-11,6,-5,-1,-1,-2,12,-5,2,-4,-1,-3,-15,4,10,-7,-19,4,-15,7,-12,-2,-3,1,2,3,16,1,-1,1,6,6,-1,2,-15,5,2,1,-11,4,-9,-2,-30,3,-3,1,4,2,-6,0,-1,4,7,5,11,1,-3,-2],[-401,295,11,0,2,-1,-4,-2,6,-2,-1,-3,-10,-2,-13,5,8,1,-4,2,5,2],[574,293,-15,0,9,2,6,-2],[-373,291,-4,-3,-5,0,-2,6,6,3,16,-2,-11,-4],[-482,286,-10,-2,-12,3,8,8,-4,2,30,0,8,-3,-15,-4,-5,-4],[603,300,-5,-1,-14,2,19,-1],[-374,300,-3,-2,-10,2,8,3,5,-3],[580,302,-3,-3,-21,-1,-8,3,2,3,5,1,25,-3],[-394,307,3,-2,-2,-5,-17,2,0,3,16,2],[-433,305,9,-1,1,-2,-2,-2,-30,-2,0,1,8,2,-24,0,9,5,26,-4,-6,4,4,1,5,-2],[230,283,-15,0,-9,3,0,2,4,1,0,2,8,4,-4,0,10,4,-1,1,42,7,10,-1,-41,-9,-12,-8,0,-3,8,-3],[-379,308,13,-1,3,-1,-1,-2,7,-2,32,1,6,-3,-34,-2,-17,1,-2,5,-4,1,-12,2,1,2,8,-1],[-465,311,0,-3,-3,-2,-23,-2,15,6,11,1],[-441,311,-13,0,9,2,6,-1,-2,-1],[99,311,-16,0,3,1,-3,1,9,1,7,-3],[-383,312,-9,0,-3,3,13,-1,-1,-2],[-400,313,1,-1,-22,2,4,1,-5,2,22,-4],[420,313,-22,-1,10,5,13,-2,-1,-2],[73,319,13,-3,-10,-2,-8,-7,-4,0,-9,3,4,1,-14,4,-3,4,26,1,5,-1],[102,322,8,-2,-18,-2,-23,3,33,1],[205,322,-15,-2,-4,1,2,1,-9,0,21,2,5,-2],[400,316,-20,0,-15,5,19,4,17,-6,-1,-3],[-348,319,5,-2,-20,-4,-9,0,-4,2,3,3,-7,-1,-7,4,10,3,-2,1,9,0,19,-4,3,-2],[-274,332,26,-3,-23,-3,9,0,-23,-7,-23,-2,6,0,-3,-1,3,-2,-17,-5,7,-2,-10,-2,-36,1,0,2,7,1,-2,3,13,-2,-12,3,12,4,-8,4,21,1,-23,0,-16,6,24,3,9,-2,3,2,13,2,43,-1],[-108,334,25,-3,-43,-3,34,0,4,-1,-5,-2,30,3,14,-3,-31,-4,9,0,-8,-6,0,-4,5,-3,-13,-1,8,-3,1,-3,-5,0,6,-4,-9,0,4,-2,-1,-1,-11,-1,5,-4,-10,0,10,-3,2,-3,-7,-1,-8,4,1,-3,-4,-2,16,0,-22,-7,-16,-2,-10,-5,-22,-5,-6,-8,-6,-3,1,-3,-4,-8,-19,3,-14,12,-2,6,-6,3,2,3,-3,2,4,4,6,2,3,5,-11,-3,-5,1,2,5,11,-1,-17,5,4,3,-15,12,-11,2,-29,0,-12,4,19,2,-26,2,0,2,30,4,2,1,-11,1,23,5,-2,2,22,2,17,-1,10,2,24,-3,-10,2,1,2,13,2,66,1]];
+const HQ = { name: "Northwind HQ", city: "Portland", lat: 45.52, lon: -122.68 };
+
+const D = Math.PI / 180;
+const fmt = k => k >= 1000 ? `$${(k / 1000).toFixed(2)}M` : `$${k}k`;
+const vec = (lat, lon) => [Math.cos(lat * D) * Math.cos(lon * D), Math.cos(lat * D) * Math.sin(lon * D), Math.sin(lat * D)];
+
+// The header's figures and the top 10.
+const total = ACCOUNTS.reduce((n, a) => n + a[5], 0);
+document.getElementById("s-accounts").textContent = String(ACCOUNTS.length);
+document.getElementById("s-arr").textContent = `$${(total / 1000).toFixed(1)}M`;
+document.getElementById("s-countries").textContent = String(new Set(ACCOUNTS.map(a => a[2])).size);
+const ranked = ACCOUNTS.map((a, i) => ({ a, i })).sort((x, y) => y.a[5] - x.a[5]);
+const topList = document.getElementById("top");
+const rowOf = new Map();
+for (const { a, i } of ranked.slice(0, 10)) {
+  const li = document.createElement("li");
+  li.innerHTML = `<span class="nm"></span><span class="v"></span><span class="bar"><i></i></span>`;
+  li.querySelector(".nm").textContent = `${a[0]} · ${a[1]}`;
+  li.querySelector(".v").textContent = fmt(a[5]);
+  li.querySelector(".bar i").style.width = `${(a[5] / ranked[0].a[5]) * 100}%`;
+  topList.appendChild(li);
+  rowOf.set(i, li);
+}
+
+// The land, as rings of unit vectors (coast lines) and a grid of dots inside them.
+const rings = LAND.map(flat => {
+  const out = [];
+  let x = 0, y = 0;
+  for (let k = 0; k < flat.length; k += 2) {
+    x += flat[k]; y += flat[k + 1];
+    out.push([x / 4, y / 4]);
+  }
+  return out;
+});
+const boxes = rings.map(r => {
+  let a = 180, b = -180, c = 90, d = -90;
+  for (const [x, y] of r) { a = Math.min(a, x); b = Math.max(b, x); c = Math.min(c, y); d = Math.max(d, y); }
+  return [a, b, c, d];
+});
+function onLand(lon, lat) {
+  let inside = false;
+  for (let k = 0; k < rings.length; k++) {
+    const bx = boxes[k];
+    if (lon < bx[0] || lon > bx[1] || lat < bx[2] || lat > bx[3]) continue;
+    const r = rings[k];
+    for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+      const [xi, yi] = r[i], [xj, yj] = r[j];
+      if ((yi > lat) !== (yj > lat) && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+  }
+  return inside;
+}
+const dots = [];
+for (let lat = -58; lat <= 84; lat += 1.6) {
+  const step = 1.6 / Math.max(0.2, Math.cos(lat * D));
+  for (let lon = -180; lon < 180; lon += step) if (onLand(lon, lat) || onLand(lon - 360, lat) || onLand(lon + 360, lat)) dots.push(vec(lat, lon));
+}
+const coasts = rings.filter(r => r.some(p => p[1] > -60)).map(r => r.map(([x, y]) => vec(y, x)));
+const graticule = [];
+for (let lon = -180; lon < 180; lon += 20) { const l = []; for (let lat = -80; lat <= 80; lat += 4) l.push(vec(lat, lon)); graticule.push(l); }
+for (let lat = -60; lat <= 60; lat += 20) { const l = []; for (let lon = -180; lon <= 180; lon += 4) l.push(vec(lat, lon)); graticule.push(l); }
+
+// The accounts, and an arc from HQ to each, lifted by its length.
+const hq = vec(HQ.lat, HQ.lon);
+const pts = ACCOUNTS.map((a, i) => ({ i, a, v: vec(a[3], a[4]), r: 2.2 + Math.sqrt(a[5]) * 0.2 }));
+function slerp(p, q, t) {
+  const dot = Math.max(-1, Math.min(1, p[0] * q[0] + p[1] * q[1] + p[2] * q[2]));
+  const w = Math.acos(dot), s = Math.sin(w);
+  if (s < 1e-6) return p;
+  const a = Math.sin((1 - t) * w) / s, b = Math.sin(t * w) / s;
+  return [a * p[0] + b * q[0], a * p[1] + b * q[1], a * p[2] + b * q[2]];
+}
+const arcs = pts.map(p => {
+  const w = Math.acos(Math.max(-1, Math.min(1, hq[0] * p.v[0] + hq[1] * p.v[1] + hq[2] * p.v[2])));
+  const lift = 0.05 + 0.2 * (w / Math.PI);
+  const n = 48, path = [];
+  for (let k = 0; k <= n; k++) {
+    const t = k / n, s = 1 + lift * Math.sin(Math.PI * t), u = slerp(hq, p.v, t);
+    path.push([u[0] * s, u[1] * s, u[2] * s]);
+  }
+  return { p, path, ang: w, w: 0.7 + Math.sqrt(p.a[5]) * 0.075 };
+});
+// Sorted by distance: the near ones launch first.
+const launch = arcs.map(a => a).sort((x, y) => x.ang - y.ang);
+launch.forEach((a, order) => { a.order = order; });
+
+// A seeded star field.
+let seed = 0x9e3779b9;
+const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+const stars = Array.from({ length: 170 }, () => ({ x: rnd(), y: rnd(), r: rnd() * 1.1 + 0.25, a: rnd() * 0.6 + 0.15, p: rnd() * 6.28 }));
+
+const canvas = document.getElementById("globe");
+const ctx = canvas.getContext("2d");
+const tip = document.getElementById("tip");
+let W = 0, H = 0, dpr = 1;
+function size() {
+  dpr = window.devicePixelRatio || 1;
+  W = canvas.clientWidth; H = canvas.clientHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+}
+new ResizeObserver(size).observe(canvas);
+size();
+
+// The view: the longitude and latitude at the globe's centre. It spins
+// west to east, slows to a stop while the pointer is over it, and turns as
+// the pointer drags it.
+let lon0 = -38, lat0 = 24, spin = 1, over = false, drag = null, hover = -1, mouse = null;
+const SPIN = 7; // degrees a second
+let last = null, born = null;
+
+function proj(v, R, cx, cy) {
+  const c = Math.cos(lon0 * D), s = Math.sin(lon0 * D), ct = Math.cos(lat0 * D), st = Math.sin(lat0 * D);
+  const x1 = v[0] * c + v[1] * s, y1 = -v[0] * s + v[1] * c, z1 = v[2];
+  const d = x1 * ct + z1 * st, u = -x1 * st + z1 * ct;
+  return { x: cx + R * y1, y: cy - R * u, d, off: y1 * y1 + u * u };
+}
+const shows = q => q.d > 0 || q.off > 1;
+
+canvas.addEventListener("pointerenter", () => { over = true; });
+canvas.addEventListener("pointerleave", () => { over = false; mouse = null; });
+canvas.addEventListener("pointerdown", e => { drag = { x: e.clientX, y: e.clientY, lon: lon0, lat: lat0 }; canvas.setPointerCapture(e.pointerId); canvas.classList.add("dragging"); });
+canvas.addEventListener("pointerup", e => { drag = null; canvas.releasePointerCapture(e.pointerId); canvas.classList.remove("dragging"); });
+canvas.addEventListener("pointermove", e => {
+  const b = canvas.getBoundingClientRect();
+  mouse = { x: e.clientX - b.left, y: e.clientY - b.top };
+  if (drag) {
+    const R = Math.min(W, H) * 0.44;
+    lon0 = drag.lon - ((e.clientX - drag.x) / R) * 57;
+    lat0 = Math.max(-20, Math.min(60, drag.lat + ((e.clientY - drag.y) / R) * 57));
+  }
+});
+
+// The globe moves at 30 frames a second, on frames that start at
+// whole-millisecond marks of each two-second span of the wall clock: a
+// frame's picture depends only on which of those frames the time is in,
+// so two draws within one frame draw the same picture.
+function tick() {
+  const t = Date.now(), m = ((t % 2000) + 2000) % 2000;
+  let k = Math.ceil((m * 30) / 1000);
+  while (k > 0 && Math.round(((k - 1) * 1000) / 30) >= m) k--;
+  while (Math.round((k * 1000) / 30) < m) k++;
+  return t - m + Math.round((k * 1000) / 30);
+}
+
+function frame() {
+  const now = tick();
+  if (born === null) born = now;
+  const dt = last === null ? 0 : Math.min(0.1, (now - last) / 1000);
+  last = now;
+  const age = (now - born) / 1000;
+  // The spin slows to a stop within 0.3 s under the pointer (a full stop,
+  // so the globe holds still to be hovered or dragged) and picks up after.
+  spin = over || drag ? Math.max(0, spin - dt / 0.3) : Math.min(1, spin + dt / 0.6);
+  if (!drag) lon0 -= SPIN * spin * dt;
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const intro = Math.min(1, age / 1.1), ease = 1 - Math.pow(1 - intro, 3);
+  const R = Math.min(W, H) * 0.44 * (0.86 + 0.14 * ease), cx = W / 2, cy = H / 2 + 4;
+  ctx.globalAlpha = 1;
+
+  for (const s of stars) {
+    ctx.fillStyle = `rgba(200,215,255,${s.a * (0.7 + 0.3 * Math.sin(age * 1.3 + s.p))})`;
+    ctx.fillRect(s.x * W, s.y * H, s.r, s.r);
+  }
+  ctx.globalAlpha = ease;
+
+  // Atmosphere and ocean.
+  let g = ctx.createRadialGradient(cx, cy, R * 0.92, cx, cy, R * 1.28);
+  g.addColorStop(0, "rgba(63,160,255,0.42)"); g.addColorStop(0.35, "rgba(63,140,255,0.14)"); g.addColorStop(1, "rgba(63,140,255,0)");
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, R * 1.28, 0, 7); ctx.fill();
+  g = ctx.createRadialGradient(cx - R * 0.35, cy - R * 0.4, R * 0.1, cx, cy, R);
+  g.addColorStop(0, "#1c3a78"); g.addColorStop(0.55, "#0e1f48"); g.addColorStop(1, "#081330");
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.fill();
+
+  // Graticule.
+  ctx.lineWidth = 0.6; ctx.strokeStyle = "rgba(130,170,255,0.10)";
+  ctx.beginPath();
+  for (const l of graticule) {
+    let pen = false;
+    for (const v of l) { const q = proj(v, R, cx, cy); if (q.d > 0) { pen ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); pen = true; } else pen = false; }
+  }
+  ctx.stroke();
+
+  // Land dots, dimmer toward the limb.
+  for (const v of dots) {
+    const q = proj(v, R, cx, cy);
+    if (q.d <= 0.02) continue;
+    ctx.fillStyle = `rgba(110,160,255,${0.22 + 0.6 * q.d})`;
+    const z = 1.05 + q.d * 0.75;
+    ctx.fillRect(q.x - z / 2, q.y - z / 2, z, z);
+  }
+  // Coasts.
+  ctx.lineWidth = 0.9; ctx.strokeStyle = "rgba(150,195,255,0.55)";
+  ctx.beginPath();
+  for (const r of coasts) {
+    let pen = false;
+    for (let k = 0; k <= r.length; k++) { const q = proj(r[k % r.length], R, cx, cy); if (q.d > 0) { pen ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); pen = true; } else pen = false; }
+  }
+  ctx.stroke();
+
+  // Arcs: each grows out from HQ in turn, then a pulse runs along it on a loop.
+  ctx.lineCap = "round";
+  const hp = proj(hq, R, cx, cy);
+  for (const a of arcs) {
+    const start = 0.35 + a.order * 0.045;
+    const grow = Math.max(0, Math.min(1, (age - start) / 0.9));
+    if (grow <= 0) continue;
+    const n = a.path.length - 1, upto = Math.round(n * (1 - Math.pow(1 - grow, 2)));
+    const q = a.path.map(v => proj(v, R, cx, cy));
+    const end = q[n];
+    const grad = ctx.createLinearGradient(hp.x, hp.y, end.x, end.y);
+    grad.addColorStop(0, "rgba(255,122,89,0.75)"); grad.addColorStop(1, "rgba(63,208,255,0.85)");
+    ctx.strokeStyle = grad; ctx.lineWidth = a.w; ctx.globalAlpha = ease * (hover === -1 || hover === a.p.i ? 0.55 : 0.2);
+    ctx.beginPath();
+    let pen = false;
+    for (let k = 0; k <= upto; k++) { if (shows(q[k])) { pen ? ctx.lineTo(q[k].x, q[k].y) : ctx.moveTo(q[k].x, q[k].y); pen = true; } else pen = false; }
+    ctx.stroke();
+    if (grow >= 1) {
+      // The pulse: a bright head with a short fading tail.
+      const t = ((age - start - 0.9) / 2.6 + a.order * 0.37) % 1, head = Math.round(t * n);
+      for (let k = Math.max(1, head - 9); k <= head; k++) {
+        if (!shows(q[k]) || !shows(q[k - 1])) continue;
+        ctx.globalAlpha = ease * ((k - head + 10) / 10) * 0.95;
+        ctx.strokeStyle = "#e9fbff"; ctx.lineWidth = a.w + 0.9;
+        ctx.beginPath(); ctx.moveTo(q[k - 1].x, q[k - 1].y); ctx.lineTo(q[k].x, q[k].y); ctx.stroke();
+      }
+    }
+  }
+  ctx.globalAlpha = ease;
+
+  // The accounts' points: a glow sized by ARR, popping in as their arc lands.
+  const spots = [];
+  let near = -1, nearD = 1e9;
+  for (const p of pts) {
+    const q = proj(p.v, R, cx, cy);
+    if (q.d <= 0.05) continue;
+    const a = arcs[p.i], landed = Math.max(0, Math.min(1, (age - (0.35 + a.order * 0.045) - 0.75) / 0.35));
+    if (landed <= 0) continue;
+    const r = p.r * (0.6 + 0.4 * landed) * (hover === p.i ? 1.45 : 1);
+    const glow = ctx.createRadialGradient(q.x, q.y, 0, q.x, q.y, r * 3.2);
+    glow.addColorStop(0, "rgba(255,214,130,0.85)"); glow.addColorStop(0.35, "rgba(255,180,70,0.32)"); glow.addColorStop(1, "rgba(255,170,60,0)");
+    ctx.globalAlpha = ease * landed * (0.45 + 0.55 * q.d);
+    ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(q.x, q.y, r * 3.2, 0, 7); ctx.fill();
+    ctx.fillStyle = "#fff4d8"; ctx.beginPath(); ctx.arc(q.x, q.y, r * 0.55, 0, 7); ctx.fill();
+    if (hover === p.i) { ctx.strokeStyle = "rgba(255,214,130,0.9)"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(q.x, q.y, r * 1.6, 0, 7); ctx.stroke(); }
+    spots.push([p.a[0], Math.round(q.x), Math.round(q.y)]);
+    if (mouse && !drag) { const dd = Math.hypot(mouse.x - q.x, mouse.y - q.y); if (dd < Math.max(10, r * 1.6) && dd < nearD) { near = p.i; nearD = dd; } }
+  }
+  ctx.globalAlpha = 1;
+  canvas.dataset.spots = JSON.stringify(spots);
+
+  // HQ: a beacon pulsing outward.
+  if (hp.d > 0) {
+    for (let k = 0; k < 2; k++) {
+      const t = (age * 0.8 + k * 0.5) % 1;
+      ctx.globalAlpha = ease * (1 - t) * 0.8;
+      ctx.strokeStyle = "#ff7a59"; ctx.lineWidth = 1.6;
+      ctx.beginPath(); ctx.arc(hp.x, hp.y, 4 + t * 18, 0, 7); ctx.stroke();
+    }
+    ctx.globalAlpha = ease;
+    ctx.fillStyle = "#ff7a59"; ctx.beginPath(); ctx.arc(hp.x, hp.y, 4.5, 0, 7); ctx.fill();
+    ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(hp.x, hp.y, 1.8, 0, 7); ctx.fill();
+    ctx.font = "600 12px system-ui, -apple-system, 'Segoe UI', sans-serif";
+    ctx.fillStyle = "rgba(255,200,180,0.95)"; ctx.fillText("Portland HQ", hp.x + 9, hp.y - 7);
+  }
+  ctx.globalAlpha = 1;
+
+  // The hovered account: its tooltip, and its row in the top 10.
+  if (near !== hover) {
+    if (rowOf.has(hover)) rowOf.get(hover).classList.remove("on");
+    hover = near;
+    if (hover >= 0) {
+      const a = ACCOUNTS[hover];
+      const km = Math.round(6371 * Math.acos(Math.max(-1, Math.min(1, hq[0] * pts[hover].v[0] + hq[1] * pts[hover].v[1] + hq[2] * pts[hover].v[2]))));
+      tip.innerHTML = `<div class="t1"></div><div class="t2"></div><div class="t3"><b></b><span></span></div>`;
+      tip.querySelector(".t1").textContent = a[0];
+      tip.querySelector(".t2").textContent = `${a[1]}, ${a[2]}`;
+      tip.querySelector(".t3 b").textContent = `${fmt(a[5])} ARR`;
+      tip.querySelector(".t3 span").textContent = `${km.toLocaleString("en-US")} km from HQ`;
+      if (rowOf.has(hover)) rowOf.get(hover).classList.add("on");
+    }
+    tip.classList.toggle("on", hover >= 0);
+  }
+  if (hover >= 0) {
+    const q = proj(pts[hover].v, R, cx, cy);
+    tip.style.left = `${q.x}px`; tip.style.top = `${q.y}px`;
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
