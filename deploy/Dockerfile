@@ -19,14 +19,17 @@
 # node toolchain, web/package.json's packageManager).
 FROM node:22.22.0-bookworm-slim@sha256:dd9d21971ec4395903fa6143c2b9267d048ae01ca6d3ea96f16cb30df6187d94 AS web
 WORKDIR /src
-RUN corepack enable
 COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml web/
+# pnpm at packageManager's version, from npm: the Corepack this Node bundles
+# cannot start pnpm 12 (it looks for the bin/pnpm.cjs pnpm 12 no longer has).
+RUN npm install --global --no-fund --no-audit \
+    "$(node -p 'require("./web/package.json").packageManager')"
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     cd web && pnpm install --frozen-lockfile
 COPY . .
 # `pnpm run build` rather than scripts/build-web.sh: the script keeps
 # unchanged files' modification times for incremental cargo builds, which a
-# fresh layer has no use for, and needs Perl modules this image lacks.
+# fresh layer has no use for.
 RUN cd web && pnpm run build
 
 # The binary, on the toolchain rust-toolchain.toml pins.
