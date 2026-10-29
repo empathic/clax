@@ -601,6 +601,30 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     ctl.dispose();
   });
 
+  it("takes the full version list on ready when the bootstrap carried only the newest", async () => {
+    vi.stubGlobal("SharedWorker", FakeWorker);
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(
+      url.includes("/threads") ? { threads: [], next_cursor: null }
+      : url.startsWith("/api/viewers") ? { viewer: { public_id: "u_1", display_name: null, created_at: "x" } }
+      : url === "/api/token" ? { token: "tk" }
+      : { ...loaded, versions: seed.versions }))));
+    const { ArtifactController } = await import("./artifact-controller");
+    const { FrameHost } = await import("./frame-host");
+    const stage = document.createElement("div");
+    document.body.append(stage);
+    const boot = { v: 1 as const, artifact: loaded, threads: [], viewer: null, site: { domain: "localhost", scheme: location.protocol.slice(0, -1), port: Number(location.port) || undefined }, versions_complete: false };
+    const ctl = new ArtifactController({ id: ID, pinnedVersion: null }, { boot: boot as unknown as import("./boot").Boot });
+    controllers.push(ctl);
+    ctl.frame = new FrameHost(stage, () => ctl.frameLoaded());
+    ctl.start();
+    expect(ctl.state.get().data?.versions.map(v => v.n)).toEqual([2]);
+    await vi.waitFor(() => expect(stage.querySelector("iframe")).not.toBeNull());
+    const es = await streamOf(stage.querySelector("iframe")!);
+    es.emit("ready", {});
+    await vi.waitFor(() => expect(ctl.state.get().data?.versions.map(v => v.n)).toEqual([1, 2]));
+    expect(ctl.versionsPartial).toBe(false);
+  });
+
   it("reports presence with where this viewer looks, takes presence events, and keeps the location private when sharing is off", async () => {
     const quoted = thread("t1", { anchor: { ...thread("t1").anchor, quote: "Quarterly goals" } });
     const { ctl, frame } = await started({ threads: [quoted], routes: url => (url === "/api/viewers/me/presence" ? { people: [] } : undefined) });
