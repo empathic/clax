@@ -34,7 +34,8 @@ export default defineConfig({
   // with the extension in a fresh profile (e2e/extension-fixtures.ts).
   // `shots` renders the app's web pieces for a person to look at, on
   // demand only (//web:e2e_shots, e2e/app-shots.spec.ts). `queues` is the
-  // report queues' end to end test (//web:e2e_queues).
+  // report queues' and the feedback loop's end to end tests
+  // (//web:e2e_queues).
   projects: [
     // A gesture test waits out Chromium's real 5 s activation, some twice,
     // so one counts as hung only after 90 s.
@@ -42,10 +43,12 @@ export default defineConfig({
     { name: "chrome-overlay", testMatch: /chrome-overlay\.spec\.ts$/ },
     { name: "shots", testMatch: /app-shots\.spec\.ts$/ },
     // Report queues end to end: a hosted daemon, a deployer's site on
-    // another origin and the overlay it embeds (e2e/queues.spec.ts), and the
-    // shell reporting problems with Clax into its own queue (e2e/feedback.spec.ts).
-    { name: "queues", testMatch: /(queues|feedback)\.spec\.ts$/ },
-    { name: "rest", testIgnore: /(gesture|chrome-overlay|app-shots|queues|feedback)\.spec\.ts$/ },
+    // another origin and the overlay it embeds (e2e/queues.spec.ts), the
+    // feedback loop from capture to verified (e2e/feedback-loop.spec.ts),
+    // and the shell reporting problems with Clax into its own queue
+    // (e2e/feedback.spec.ts).
+    { name: "queues", testMatch: /(queues|feedback-loop|feedback)\.spec\.ts$/ },
+    { name: "rest", testIgnore: /(gesture|chrome-overlay|app-shots|queues|feedback-loop|feedback)\.spec\.ts$/ },
   ],
   reporter: "list",
 });
