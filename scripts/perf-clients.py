@@ -102,17 +102,27 @@ def expect(cond, what):
 COOKIE_RE = r"clax_viewer=([0-9A-Za-z_-]+)"
 
 
+_HOMES = {}
+
+
 def viewer_cookie(c, what):
-    """A new LAN viewer's cookie from `GET /api/viewers/me`, checked to name
-    that viewer: the same viewer again and no new cookie when presented. A
-    cookie read short (a `cxv_` secret cut at its `_`) names no one, and the
-    daemon would answer it with a new viewer; the seed then fails here
-    instead of measuring an anonymous caller."""
-    st, d, _, r = c.req("GET", "/api/viewers/me", auth=False)
-    m = re.search(COOKIE_RE, r.getheader("Set-Cookie") or "")
-    expect(st == 200 and m, f"{what}: no viewer cookie from /api/viewers/me ({st})")
-    cookie = m.group(1)
-    public = json.loads(d)["viewer"]["public_id"]
+    """A new viewer's cookie, minted as the daemon mints one for a browser of
+    this machine: a row and its cookie's SHA-256 in the scratch home's store
+    (`crates/clax-store/src/viewers.rs` mint_viewer), since reaching the port
+    alone mints no viewer. Checked to name that viewer: the same viewer and
+    no new cookie when presented."""
+    import hashlib, secrets, sqlite3
+    cookie = "cxv_" + secrets.token_urlsafe(32)
+    now = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+    alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+    vid = "".join(secrets.choice(alphabet) for _ in range(26))
+    public = "u_" + secrets.token_hex(11)
+    db = sqlite3.connect(os.path.join(_HOMES[c.port], "clax.db"), timeout=30)
+    with db:
+        db.execute("INSERT INTO viewers (id, public_id, created_at, minted_local) VALUES (?, ?, ?, 1)", (vid, public, now))
+        db.execute("INSERT INTO viewer_cookies (sha256, viewer_id, created_at, legacy) VALUES (?, ?, ?, 0)",
+                   (hashlib.sha256(cookie.encode()).hexdigest(), vid, now))
+    db.close()
     st, d2, _, r2 = c.req("GET", "/api/viewers/me", None, {"Cookie": "clax_viewer=" + cookie}, auth=False)
     expect(st == 200 and not r2.getheader("Set-Cookie") and json.loads(d2)["viewer"]["public_id"] == public,
            f"{what}: the viewer cookie {cookie[:8]}... does not name its viewer ({st})")
@@ -203,6 +213,7 @@ class Daemon:
                 try:
                     d = json.load(open(info))
                     self.port, self.token = int(d["port"]), d["token"]
+                    _HOMES[self.port] = self.home
                     break
                 except (ValueError, KeyError):
                     pass

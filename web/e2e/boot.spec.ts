@@ -71,8 +71,9 @@ test("a page reached under a rebound host name gets no bootstrap and no frame, a
   const rebound = await playwright.request.newContext({ extraHTTPHeaders: { host: `rebind.example:${port}` } });
   try {
     expect((await rebound.get(`${d.base}/api/artifacts/${artifact.id}`)).status()).toBe(403);
+    // A request with no credential: refused, as the API is.
     const res = await rebound.get(`${d.base}/a/${artifact.id}`);
-    expect(res.status()).toBe(200);
+    expect(res.status()).toBe(401);
     const html = await res.text();
     expect(html).not.toContain(`id="clax-boot"`);
     expect(html).not.toContain("<iframe");

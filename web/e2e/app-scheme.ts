@@ -100,9 +100,9 @@
 // previous load's streams and drops its unanswered calls; what is queued
 // already still runs, under the previous load's nonce.
 import http from "node:http";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type { CDPSession, Page, Request, Route } from "@playwright/test";
-import { expect, startDaemon, type Daemon } from "./fixtures";
+import { expect, ownerSessionOf, startDaemon, type Daemon } from "./fixtures";
 
 /** The app's shell origin (Android's), and an artifact's content origin. */
 export const SHELL = "https://app.clax.invalid";
@@ -133,11 +133,13 @@ export type HostMessage = { type: string; nonce?: unknown; id?: number; [k: stri
 /** A message the host dropped, and why. */
 export type Dropped = { why: "frame" | "nonce" | "malformed"; message: unknown };
 
-/** The owner cookie the core adds to the shell document's frame
- * (`clax_http::identity::owner_cookie_*` for `Host: localhost`). */
-function ownerCookie(token: string): string {
-  const v = createHash("sha256").update("clax owner cookie\n").update(token).digest("hex");
-  return `clax_owner_80=${v}`;
+/** The owner browser credential the core gives the shell document's frame
+ * (it marks the request as an owner browser session in process,
+ * `clax_http::local_trust::OwnerSession`): here, over HTTP, the owner
+ * cookie of the session the worker's browsers hold on `d`, named for
+ * `Host: localhost`. */
+function ownerCookie(d: Daemon): string {
+  return `clax_owner_80=${ownerSessionOf(d.base)}`;
 }
 
 export type Answer = { status: number; headers: [string, string][]; body: Buffer };
@@ -454,7 +456,7 @@ export class AppHost {
     // The core adds the owner cookie for the shell document's path alone,
     // and a site's own cookies to its requests.
     const asked = (target: URL): [string, string][] => {
-      if (target.pathname.startsWith("/a/") && shell) return [...headers, ["cookie", ownerCookie(this.d.token)]];
+      if (target.pathname.startsWith("/a/") && shell) return [...headers, ["cookie", ownerCookie(this.d)]];
       const kept = id === null ? undefined : this.jar.get(id);
       return kept?.size ? [...headers, ["cookie", [...kept].map(([k, v]) => `${k}=${v}`).join("; ")]] : headers;
     };

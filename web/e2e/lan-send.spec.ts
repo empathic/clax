@@ -4,7 +4,7 @@
 // the viewer's browser reaches it at the machine's LAN address; a machine
 // with none skips.
 import { networkInterfaces } from "node:os";
-import { expect, publishAs, registerSession, startDaemon, test } from "./fixtures";
+import { asLocalViewer, expect, publishAs, registerSession, startDaemon, test } from "./fixtures";
 import { threadFrom } from "./people-helpers";
 
 const PAGE = { "index.html": "<main><h1>Quarterly Review</h1><h2>Quarterly goals</h2></main>" };
@@ -17,6 +17,9 @@ test("a LAN viewer of a single-owner install sends to the owner's agent in one p
   const ctx = await browser.newContext();
   try {
     const lan = `http://${ip}:${new URL(d.base).port}`;
+    // The machine's own LAN address is this machine: its browser holds a
+    // viewer cookie there, as a browser of this machine's does.
+    await asLocalViewer(ctx, d, ip!);
     const agent = await registerSession(d.base, d.token, "claude");
     const aid = (await publishAs(d.base, d.token, agent.id, "Quarterly Review", PAGE)).artifact.id;
     const page = await ctx.newPage();

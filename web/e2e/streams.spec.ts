@@ -1,5 +1,5 @@
 import { type Browser, type BrowserContext, type CDPSession, type Page } from "@playwright/test";
-import { test, expect, type Daemon, publish, setName, startDaemon } from "./fixtures";
+import { asLocalViewer, test, expect, type Daemon, publish, setName, signInTo, startDaemon } from "./fixtures";
 import { advance, settle } from "./time";
 
 // As in Chrome: the new headless mode, with the back/forward cache on
@@ -159,8 +159,10 @@ test("the stream carries no token in its URL, and a token that arrives late give
   const a = (await publish(d.base, d.token, "Cookie", { "index.html": "<h1>C</h1>" })).artifact.id;
   const reqs = await workerRequests(browser);
   const ctx = await browser.newContext();
-  // The page's token requests fail until the test lets them through: the
-  // stream opens without the events cookie, as an unnamed viewer's.
+  // A browser of this machine with no session yet, whose token requests
+  // fail until the test lets them through: the stream opens without the
+  // events cookie, as an unnamed viewer's.
+  await asLocalViewer(ctx, d);
   let failToken = true;
   await ctx.route("**/api/token", r => (failToken ? r.fulfill({ status: 500, body: "{}" }) : r.continue()));
   const page = await ctx.newPage();
@@ -175,6 +177,8 @@ test("the stream carries no token in its URL, and a token that arrives late give
   const opens = () => reqs.urls.filter(u => u.startsWith("GET ") && new URL(u.slice(4)).pathname === "/api/stream").length;
   const before = opens();
   const opened = (await streams()).opened;
+  // The browser logs in, and its token requests answer.
+  await signInTo(ctx, d.base);
   failToken = false;
   await setName(page, "Wren");
   await expect.poll(opens).toBeGreaterThan(before);
@@ -184,7 +188,7 @@ test("the stream carries no token in its URL, and a token that arrives late give
   // owner's browser's (`admin`, named or not).
   await expect.poll(async () => (await streams()).levels).toEqual(["admin"]);
   expect((await streams()).opened - opened, "streams opened for the token").toBe(1);
-  const ev = (await ctx.cookies()).filter(c => c.name === `clax_events_${new URL(d.base).port}`);
+  const ev = (await ctx.cookies()).filter(c => c.name === `clax_events_${new URL(d.base).port}` && c.domain === new URL(d.base).hostname);
   expect(ev.map(c => c.path).sort()).toEqual(["/api/events", "/api/stream"]);
   for (const c of ev) {
     expect(c.httpOnly).toBe(true);
@@ -207,6 +211,7 @@ for (const who of ["owner", "LAN viewer"] as const) {
     test(`a ${who}'s rename with ${n} tab${n > 1 ? "s" : ""} on the artifact opens ${want} stream${want === 1 ? "" : "s"}`, async ({ browser }) => {
       const a = (await publish(d.base, d.token, "Rename", { "index.html": "<h1>R</h1>" })).artifact.id;
       const ctx = await browser.newContext();
+      if (who !== "owner") await asLocalViewer(ctx, d);
       if (who !== "owner") await ctx.route("**/api/token", r => r.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: { code: "forbidden" } }) }));
       const tabs = await openTabs(ctx, Array.from({ length: n }, () => `${d.base}/a/${a}`), async p => {
         await expect(p.locator(".topbar h1")).toHaveText("Rename", { timeout: 20_000 });
