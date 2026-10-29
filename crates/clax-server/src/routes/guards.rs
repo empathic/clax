@@ -265,6 +265,11 @@ mod l10 {
         ("queue_agent::resolve", NoArtifact),
         ("queue_agent::patch_artifact", NoArtifact),
         ("queue_agent::clip", NoArtifact),
+        ("queue_agent::fix", NoArtifact),
+        ("queue_agent::verify", NoArtifact),
+        ("queue_agent::reopen", NoArtifact),
+        ("queue_agent::diagnostics", NoArtifact),
+        ("queue_agent::comment_clip", NoArtifact),
         ("discovery::get", NoArtifact),
         ("grants::revoke", NoArtifact),
         ("grants::poll", NoArtifact),
@@ -1641,6 +1646,24 @@ mod agents {
                 "/api/queues/{qid}/reports/{tid}/artifact",
                 Own,
                 Some((Artifacts, "update")),
+            ),
+            (
+                "POST",
+                "/api/queues/{qid}/reports/{tid}/fix",
+                Own,
+                Some((Comments, "reply")),
+            ),
+            (
+                "GET",
+                "/api/queues/{qid}/reports/{tid}/diagnostics",
+                Own,
+                Some((Comments, "read")),
+            ),
+            (
+                "GET",
+                "/api/queues/{qid}/reports/{tid}/comments/{cid}/clip",
+                Own,
+                Some((Comments, "read")),
             ),
         ]
     };

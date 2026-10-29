@@ -204,6 +204,26 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/queues/{qid}/reports/{tid}/clip",
             get(queue_agent::clip),
         )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/fix",
+            post(queue_agent::fix),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/verify",
+            post(queue_agent::verify),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/reopen",
+            post(queue_agent::reopen),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/diagnostics",
+            get(queue_agent::diagnostics),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/comments/{cid}/clip",
+            get(queue_agent::comment_clip),
+        )
         .route("/api/artifacts/{aid}/assets", get(assets::list))
         .route(
             "/api/artifacts/{aid}/assets/{asset_id}",

@@ -1965,7 +1965,7 @@ impl Store {
     /// and answers the thread, what the resolve changed, and the report:
     /// `resolved` with its reason, kept with the thread and named by its
     /// `thread.resolve`. A fix waiting for a verdict waits no more (its
-    /// attempt stays `pending`). Resolving a closed report changes nothing.
+    /// attempt is `closed`). Resolving a closed report changes nothing.
     /// An agent's resolve needs its session's live lease, checked in the
     /// resolve's transaction; a person's needs no claim.
     ///
@@ -2090,6 +2090,26 @@ impl Store {
         by: &ReportWriter<'_>,
         fix: NewFix,
     ) -> Result<Report> {
+        self.propose_fix_fenced(ctx, qid, tid, by, fix, None)
+    }
+
+    /// [`Store::propose_fix`], and for an agent given `fence` (the one its
+    /// claim answered), checked in the fix's transaction against its
+    /// session's lease: a lease of another fence, its session's earlier
+    /// one, is [`CoreError::LeaseLost`]. A person's fix holds no lease,
+    /// and its `fence` is not read.
+    ///
+    /// # Errors
+    /// [`Store::propose_fix`]'s, and [`CoreError::LeaseLost`] as above.
+    pub fn propose_fix_fenced(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        tid: &str,
+        by: &ReportWriter<'_>,
+        fix: NewFix,
+        fence: Option<u64>,
+    ) -> Result<Report> {
         fix.check()?;
         let comment = match by {
             ReportWriter::Agent(sess) => {
@@ -2123,6 +2143,11 @@ impl Store {
             if let Some(sid) = agent {
                 check_lease_in(tx, tid, sid, &now)?;
                 check_not_taken_in(tx, tid, sid)?;
+                if let Some(f) = fence
+                    && current_in(tx, tid, &now)?.is_none_or(|cur| cur.fence != f)
+                {
+                    return Err(CoreError::LeaseLost);
+                }
             }
             // `t` is the thread as it was before the summary: a person's
             // comment would have reopened a closed one.

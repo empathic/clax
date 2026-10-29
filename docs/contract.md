@@ -3680,8 +3680,105 @@ lease superseded it, 409 `thread_taken` when another session holds it. A
 `working` call naming a claimed report in `thread_ids` renews the session's
 lease on it. A person in their browser replies to and resolves reports
 without a claim. A write is checked against the lease by the writing
-session: the `fence` a claim answers is informational in this version, and
-no write takes it.
+session; a fix (`POST …/fix`) may also send the `fence` its claim answered,
+and is then refused 409 `lease_lost` under any other lease of the session.
+No other write takes the fence.
+
+#### Report queue routes
+
+A deployer's app files reports into a queue and its reporters give their
+verdict on fixes through the reporter routes; the queue's triage members
+and their agents work them through the triage routes.
+
+**States.** A report is `open` (waiting for someone: filed, released, its
+lease lapsed, or reopened), `claimed` (an agent's session holds its
+lease), `fix_proposed` (a fix waits for the reporter's verdict; the thread
+stays open and nobody can claim it), `verified` (the reporter, or triage on
+their behalf, says the fix works; the thread is resolved for reason
+`fixed`) or `resolved` (closed by triage, with a `resolve_reason`:
+`fixed`, `duplicate`, `wontfix`, `cannot_reproduce` or `other`). A comment
+never changes a report's state; only a reopen opens a closed one.
+
+**The report.** Beside the milestone-1 fields (`id, queue_id, artifact,
+anchor, status, state, reporter_id, metadata, metadata_version, has_clip,
+comments, claim, created_at`), a report carries, when they apply:
+`context` (what the reporter's browser said at capture, below), `server`
+(`{version, commit?, build?, received_at}`: the receiving server's
+version, the commit and build `/healthz` reports, and when it received
+the report), `reporter_profile` (triage members only), `resolve_reason`,
+`fixes` (`[{n, summary, url?, commit?, release?, verify_url?,
+verify_after?, proposer_name, created_at, outcome, verdict_note?,
+verdict_context?, verdict_at?}]`, oldest first; `outcome` is `pending`,
+`verified`, `rejected`, `superseded` (a person's next fix replaced it) or
+`closed` (the report was resolved without a verdict)), `reopen_count` and
+`diagnostics_lines` (the latest capture that has any). A reopen's comment
+carries `capture` (the reopen's number, the filing being capture 0),
+`has_clip` and `diagnostics_lines`.
+
+**Context.** A JSON object, at most 16 KiB written compact: `v` (1),
+`captured_at` (RFC 3339), `release?` (`{id?, version?, commit?,
+channel?}`, strings), `flags?` (values booleans, numbers or strings),
+`environment?` (`{url?, route?, title?, viewport?: {w, h, dpr}, scroll?:
+{x, y}, user_agent?, platform?, locale?, time_zone?, color_scheme?}`),
+`capture?` (`{mode: element|range|area|screen, method: dom|display,
+omitted?: [{kind, rect: {x, y, w, h}}]}`) and `app?` (the host's own JSON). A top-level key
+outside these, a wrong type, another `v` or a bad `captured_at` is 400
+`invalid_context`. The server scrubs it again (`environment.url`'s query
+values, `route`, `title` and every string in `app`): bearer and basic
+credentials, `cx?_` tokens, JWT-shaped strings, query values,
+`password=`/`token=`/`secret=`/`key=` values, email addresses and long hex
+or base64 runs become `‹redacted›`. It is stored as filed and never
+changes.
+
+**Diagnostics.** JSON lines `{at, level (debug|info|warn|error), kind
+(console|error|rejection|request), text}`, at most 200 lines and 256 KiB;
+each `text` is scrubbed again. Anything else is 400
+`invalid_diagnostics`. Each capture keeps its own: the filing's (capture
+0) and each reopen's.
+
+**Profile.** `{name?, email?, github?, avatar_url?}`, each a string of at
+most 256 bytes, `avatar_url` an http(s) URL; any other key or type is 400
+`invalid_profile`. It is the minting backend's assertion, kept with each
+report filed under the token, and shown to triage members, never to
+reporters.
+
+Reporter routes (`Authorization: Clax-Reporter <token>`, a
+`Clax-Signature` by the reporter's key, the token's `Origin`; each answers
+CORS for the queue's origins and its `OPTIONS` preflight). A reporter
+reads the reports `reporters_see` shows it and gives verdicts on the ones
+it filed; any other is 404 `not_found`.
+
+| Route | Body | Answer |
+|---|---|---|
+| `POST /api/queues/<qid>/reporter-tokens` (`Clax-Queue`, the service grant's signature, no `Origin`) | `{reporter_id, origin, public_key, profile?}` | `{token, expires_at}` |
+| `POST /api/queues/<qid>/reporter/reports` | multipart `external_id?`, `url`, `title`, `anchor` (JSON), `body`, `metadata?` (JSON), `revision?`, `clip?` (PNG), `context?` (JSON), `diagnostics?` (JSON lines, `diagnostics.jsonl`) | 201 `{report}`, with `server` |
+| `GET /api/queues/<qid>/reporter/reports?cursor=` | | `{reports, next}` |
+| `POST …/reporter/reports/<tid>/comments` | `{body}` | `{report}` |
+| `GET …/reporter/reports/<tid>/clip` | | the filing's PNG |
+| `GET …/reporter/reports/<tid>/comments/<cid>/clip` | | a reopen's PNG |
+| `POST …/reporter/reports/<tid>/verify` | `{note?, context?}` | `{report}`, `verified`; 409 `not_fix_proposed` when no fix waits |
+| `POST …/reporter/reports/<tid>/reopen` | multipart `body`, `clip?`, `diagnostics?`, `context?` | `{report}`, `open` with `reopen_count` one more and a waiting fix `rejected`; 409 `not_fix_proposed` for an `open` or `claimed` report |
+| `GET …/reporter/reports/<tid>/diagnostics?capture=` | | `{lines}`: capture `capture`'s, else the latest capture's that has any; `[]` for none |
+| `POST …/reporter/reports/<tid>/seen` | | 204: comments before now leave the badge |
+| `GET /api/queues/<qid>/reporter/badge` | | `{waiting, report_ids}`: its reports with a fix waiting for its verdict or a comment not its own since it last read them, oldest first |
+
+Triage routes (a queue member, or a member's agent as "Report queue
+tools" says; 404 `not_a_member` otherwise):
+
+| Route | Body | Answer |
+|---|---|---|
+| `GET /api/queues/<qid>/reports?state=&cursor=` | | `{reports, next}`; `state` one of the five states or `active`; 400 `invalid_state` for another |
+| `POST …/reports/<tid>/fix` | `{summary, url?, commit?, release?, verify_url?, verify_after?, fence?}` | `{report}`, `fix_proposed`: the summary is posted as the writer's comment, the lease ends (`queue.release`, reason `fix_proposed`); an agent needs its live lease, a person none; 400 `invalid_fix` (blank summary, summary over 4 KiB, a `url` or `verify_url` not http(s) or over 2048 bytes, `commit`, `release` or `verify_after` over 256 bytes); 409 `not_claimable` for a `verified` or `resolved` report |
+| `POST …/reports/<tid>/verify` | `{note?}` | `{report}`, `verified`, on the reporter's behalf and recorded as the person's; a person's alone (403 `not_for_agents`); 409 `not_fix_proposed` |
+| `POST …/reports/<tid>/reopen` | `{body}` | `{report}`, `open`, as the reporter's reopen; a person's alone (403 `not_for_agents`); 409 `not_fix_proposed` |
+| `POST …/reports/<tid>/resolve` | `{reason?}` (default `other`) | `{report}`, `resolved` with `resolve_reason`; 400 `invalid_args` for another reason |
+| `GET …/reports/<tid>/diagnostics?capture=` | | `{lines}`, as the reporter's |
+| `GET …/reports/<tid>/comments/<cid>/clip` | | a reopen's PNG |
+| `POST …/reports/<tid>/claim` | | the lease; 409 `not_claimable` for a `fix_proposed` report |
+
+Error codes besides the common ones: `invalid_context`,
+`invalid_diagnostics`, `invalid_profile`, `invalid_fix` (400);
+`not_fix_proposed`, `not_claimable`, `lease_lost` (409).
 
 A report is read and written through its queue alone. The thread listings
 (`GET /api/artifacts/<id>/threads`, `GET /api/threads`, `comments_read`
@@ -5395,6 +5492,9 @@ router), and a test fails when it differs:
 | `POST /api/queues/{qid}/reports/{tid}/resolve` | Own | `clax-comments` `resolve` | 2 MiB | yes |
 | `PATCH /api/queues/{qid}/reports/{tid}` | Own | `clax-comments` `reply` | 2 MiB | yes |
 | `PATCH /api/queues/{qid}/reports/{tid}/artifact` | Own | `clax-artifacts` `update` | 2 MiB | yes |
+| `POST /api/queues/{qid}/reports/{tid}/fix` | Own | `clax-comments` `reply` | 2 MiB | yes |
+| `GET /api/queues/{qid}/reports/{tid}/diagnostics` | Own | `clax-comments` `read` | 2 MiB | yes |
+| `GET /api/queues/{qid}/reports/{tid}/comments/{cid}/clip` | Own | `clax-comments` `read` | 2 MiB | yes |
 
 | Route | Class | Refuses the owner's agents |
 |---|---|---|
@@ -5558,6 +5658,8 @@ router), and a test fails when it differs:
 | `GET /api/queues/{qid}/members` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/queues/{qid}/members/{public_id}` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/queues/{qid}/members/{public_id}` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/queues/{qid}/reports/{tid}/reopen` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/queues/{qid}/reports/{tid}/verify` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/queues/{qid}/service-grants` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/queues/{qid}/service-grants` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/queues/{qid}/service-grants/{gid}` | Denied | yes: 403 `not_for_agents` |
@@ -8348,6 +8450,11 @@ the body below.
 | `comment.add` | `comment_id, body, author_kind, author_name, via_harness, via_page` | every comment; a viewer comment that reopens a resolved thread records `comment.add` then `thread.reopen` (a comment never reopens a queue's report: its reopen does, recording `comment.add`, `thread.reopen` and `queue.reopen`) |
 | `thread.resolve` | `resolved_by, addressed_version (n\|null)`, and for a queue's report `reason` (`fixed\|duplicate\|wontfix\|cannot_reproduce\|other`) | a resolve of an open thread |
 | `thread.reopen` | none | a reopen of a resolved thread |
+| `queue.claim` | `queue_id, thread_id, session, lease_id, fence, expires_at` | a claim of a report that makes a new lease |
+| `queue.release` | `queue_id, thread_id, session, lease_id, reason (explicit\|member_removed\|fix_proposed)` | a lease ended by its session, by its person's removal from the queue, or by a fix |
+| `queue.fix` | `queue_id, thread_id, n, url?, commit?` | a fix proposed on a report, after its summary's `comment.add` |
+| `queue.verify` | `queue_id, thread_id, n` | a verdict that a report's fix works, after its `thread.resolve` (`reason: fixed`) |
+| `queue.reopen` | `queue_id, thread_id, n?, reopen_count` (`n` the latest fix's, when there is one) | a report said still broken, after its `comment.add` and `thread.reopen` |
 | `thread.delete` | `moved` | delete |
 | `thread.send` | `target ("watchers" \| {session_id, agent_handle}), feedback_ids[], batch_id?, thread_ids[]` | a send that changes something, automatic forwards included |
 | `feedback.delivered` | `feedback_id, tier` | a feedback row's first hand-over; `session_id` is the receiving session |

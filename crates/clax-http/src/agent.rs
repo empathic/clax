@@ -293,6 +293,9 @@ need!(QueueReply, Comments, "reply", Own, DEFAULT_LIMIT);
 need!(QueueResolve, Comments, "resolve", Own, DEFAULT_LIMIT);
 need!(QueueReportPatch, Comments, "reply", Own, DEFAULT_LIMIT);
 need!(QueueArtifactPatch, Artifacts, "update", Own, DEFAULT_LIMIT);
+need!(QueueFix, Comments, "reply", Own, DEFAULT_LIMIT);
+need!(QueueDiagnostics, Comments, "read", Own, DEFAULT_LIMIT);
+need!(QueueCommentClip, Comments, "read", Own, DEFAULT_LIMIT);
 
 /// Every route an agent of another machine may reach, by method and the
 /// path it is routed at (`MatchedPath`), with its need: [`verify_layer`]
@@ -559,6 +562,21 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
         "/api/queues/{qid}/reports/{tid}/artifact",
         QueueArtifactPatch::INFO,
     ),
+    (
+        "POST",
+        "/api/queues/{qid}/reports/{tid}/fix",
+        QueueFix::INFO,
+    ),
+    (
+        "GET",
+        "/api/queues/{qid}/reports/{tid}/diagnostics",
+        QueueDiagnostics::INFO,
+    ),
+    (
+        "GET",
+        "/api/queues/{qid}/reports/{tid}/comments/{cid}/clip",
+        QueueCommentClip::INFO,
+    ),
 ];
 
 /// A [`ROUTE_NEEDS`] entry: handler, right (type and action), class.
@@ -661,6 +679,9 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("queue_agent::resolve", QueueResolve),
     route_need!("queue_agent::patch", QueueReportPatch),
     route_need!("queue_agent::patch_artifact", QueueArtifactPatch),
+    route_need!("queue_agent::fix", QueueFix),
+    route_need!("queue_agent::diagnostics", QueueDiagnostics),
+    route_need!("queue_agent::comment_clip", QueueCommentClip),
 ];
 
 /// The `Filtered` needs whose filter is live: a person's agent reaches
