@@ -93,6 +93,8 @@ pub struct Invalid {
     pub message: &'static str,
 }
 
+impl std::error::Error for Invalid {}
+
 impl std::fmt::Display for Invalid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.message)
