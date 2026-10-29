@@ -209,8 +209,8 @@ pub fn mint_request(
 ```
 
 `integration(queue_id, instance, origin, grant_json)` in the same file
-reads the grant (`{token, private_key_pkcs8}`, the key as the Queues page
-shows it) and checks it once at start. `FeedbackIntegration` keeps the
+reads the grant (`{token, private_key}`, the service-grant route's answer as
+it is, the key as the Queues page shows it) and checks it once at start. `FeedbackIntegration` keeps the
 queue ID, the grant, `instance` and `origin`. `host_of` is the URL's host
 with its port, and `MintBody` is `{reporter_id, origin, public_key,
 profile?}`.
@@ -229,7 +229,7 @@ async fn mint_over_http(
     instance: &str,         // https://clax.dev
     queue_id: &str,
     page_origin: &str,      // https://app.example.com
-    grant_json: &str,       // {"token": "cxq_…", "private_key_pkcs8": "…"}
+    grant_json: &str,       // {"token": "cxq_…", "private_key": "…"}
     reporter_id: &str,
     public_key: &str,
     now_unix_seconds: i64,

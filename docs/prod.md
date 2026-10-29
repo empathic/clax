@@ -158,7 +158,7 @@ with `CLAX_TOKEN` the owner's bearer token:
 
    ```
    printf %s "<queue ID>" | npx wrangler secret put CLAX_FEEDBACK_QUEUE --name clax
-   printf '{"token":"%s","private_key_pkcs8":"%s"}' "<token>" "<private_key>" \
+   printf '{"token":"%s","private_key":"%s"}' "<token>" "<private_key>" \
      | npx wrangler secret put CLAX_FEEDBACK_SERVICE_GRANT --name clax
    ```
 
@@ -190,7 +190,7 @@ old one (`DELETE /api/queues/<qid>/service-grants/<gid>`), which ends
 every reporter token it minted.
 
 A daemon takes the same from `[feedback]` in its home's `config.toml`:
-`queue`, `service_grant_file` (a JSON file `{token, private_key_pkcs8}`,
+`queue`, `service_grant_file` (a JSON file `{token, private_key}`,
 relative to the home; keep it 0600, as the daemon warns at start when
 its group or others may read it) and, optionally, `origin` (by default a hosted
 daemon's public origin, else its browser address). `just dev-feedback`

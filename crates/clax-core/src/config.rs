@@ -902,7 +902,7 @@ struct FeedbackTable {
 pub struct FeedbackConfig {
     /// `queue`: the queue's ID.
     pub queue: String,
-    /// `service_grant_file`: a JSON file `{token, private_key_pkcs8}` (the
+    /// `service_grant_file`: a JSON file `{token, private_key}` (the
     /// service grant's token and its key's PKCS#8, unpadded base64url, as
     /// `POST /api/queues/<qid>/service-grants` answers them), resolved
     /// against the home.

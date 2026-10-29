@@ -77,7 +77,7 @@ import json, os, sys
 g = json.load(sys.stdin)
 fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 with os.fdopen(fd, "w") as f:
-    json.dump({"token": g["token"], "private_key_pkcs8": g["private_key"]}, f)
+    json.dump({"token": g["token"], "private_key": g["private_key"]}, f)
 ' "$tmp") || { rm -f "$tmp"; die "the service grant was not made"; }
     mv -f "$tmp" "$GRANT_FILE"
     echo "made a service grant: $GRANT_FILE"

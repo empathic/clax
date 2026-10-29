@@ -515,7 +515,7 @@ fn sites_of(
 /// The instance's own feedback integration
 /// (`clax_server::integrations::feedback`): the queue `CLAX_FEEDBACK_QUEUE`
 /// names and the service grant in `CLAX_FEEDBACK_SERVICE_GRANT` (JSON
-/// `{token, private_key_pkcs8}`), minting for the hosted public origin.
+/// `{token, private_key}`), minting for the hosted public origin.
 /// Each is read as a secret, else a var of the name (a deploy rewrites the
 /// Worker's vars from its config, and keeps its secrets). With either
 /// empty, or on an instance that is not hosted, the integration is off;

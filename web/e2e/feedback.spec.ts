@@ -53,7 +53,7 @@ test("a person with the feedback flag files a report about Clax from its shell; 
     expect(agentToken.status).toBeLessThan(300);
 
     // The daemon reads [feedback] at start: it restarts on the same home and port.
-    writeFileSync(join(first.d.home, "feedback-grant.json"), JSON.stringify({ token: g.json.token, private_key_pkcs8: g.json.private_key }), { mode: 0o600 });
+    writeFileSync(join(first.d.home, "feedback-grant.json"), JSON.stringify(g.json), { mode: 0o600 });
     await first.d.stop({ keepHome: true });
     const config = `${NO_KEY_CONFIG}[hosted]\npublic_origin = "${origin}"\nsetup_secret_env = "CLAX_E2E_SETUP_SECRET"\n[feedback]\nqueue = "${qid}"\nservice_grant_file = "feedback-grant.json"\n`;
     d = await startDaemon({ config, home: first.d.home, port: first.d.port, env: { CLAX_E2E_SETUP_SECRET: SECRET } });
