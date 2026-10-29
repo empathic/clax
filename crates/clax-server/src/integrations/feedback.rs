@@ -66,14 +66,16 @@ use tower::ServiceExt as _;
 const ANSWER_LIMIT: usize = 64 * 1024;
 
 /// A queue service grant's credential as the integration keeps it (a
-/// file, or a secret): `POST /api/queues/<qid>/service-grants`'s `token`
-/// and `private_key`.
+/// file, or a secret): `POST /api/queues/<qid>/service-grants`'s answer
+/// as it is, of which its `token` and `private_key` are read (`grant` and
+/// any other key are passed over). The key is read under its earlier name,
+/// `private_key_pkcs8`, too.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct GrantFile {
     token: String,
     /// The key's PKCS#8 v2, unpadded base64url.
-    private_key_pkcs8: String,
+    #[serde(alias = "private_key_pkcs8")]
+    private_key: String,
 }
 
 /// Which input of [`integration`] is wrong.
@@ -103,7 +105,7 @@ impl std::fmt::Display for Invalid {
 
 /// The integration that files into queue `queue_id` on the instance at
 /// `instance` (its base URL) with the service grant in `grant_json`
-/// (`{token, private_key_pkcs8}`), minting reporter tokens for pages of
+/// (`{token, private_key}`, the service-grant route's answer), minting reporter tokens for pages of
 /// `origin`. For clax.dev's own shell the two are the same; an outside
 /// product's pages have an origin of their own.
 ///
@@ -129,7 +131,7 @@ pub fn integration(
     let g: GrantFile = serde_json::from_str(grant_json).map_err(|_| {
         bad(
             Input::Grant,
-            "the service grant is not the JSON {token, private_key_pkcs8}",
+            "the service grant is not the JSON {token, private_key}",
         )
     })?;
     let token = g.token.trim();
@@ -137,17 +139,17 @@ pub fn integration(
         return Err(bad(Input::Grant, "the service grant's token is empty"));
     }
     let key = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(g.private_key_pkcs8.trim().trim_end_matches('='))
+        .decode(g.private_key.trim().trim_end_matches('='))
         .map_err(|_| {
             bad(
                 Input::Grant,
-                "the service grant's private_key_pkcs8 is not base64url",
+                "the service grant's private_key is not base64url",
             )
         })?;
     KeyPair::from_pkcs8(&key).map_err(|_| {
         bad(
             Input::Grant,
-            "the service grant's private_key_pkcs8 is not an Ed25519 PKCS#8 key",
+            "the service grant's private_key is not an Ed25519 PKCS#8 key",
         )
     })?;
     Ok(FeedbackIntegration {
@@ -530,7 +532,28 @@ mod tests {
 
     fn grant_json(key: &KeyPair) -> String {
         let k = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.pkcs8().expose());
-        json!({"token": "cxq_t", "private_key_pkcs8": k}).to_string()
+        json!({"token": "cxq_t", "private_key": k}).to_string()
+    }
+
+    /// The route's answer (`{grant, token, private_key}`) is a grant as it
+    /// is, and a grant written with the key's earlier name,
+    /// `private_key_pkcs8`, still reads.
+    #[test]
+    fn a_grant_is_the_routes_answer_as_it_is_or_under_the_earlier_name() {
+        let key = KeyPair::generate();
+        let k = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.pkcs8().expose());
+        for g in [
+            json!({"grant": {"id": "g1", "name": "clax.dev"}, "token": "cxq_t", "private_key": k}),
+            json!({"token": "cxq_t", "private_key_pkcs8": k}),
+        ] {
+            let i = integration("q1", "https://clax.dev", "https://clax.dev", &g.to_string())
+                .unwrap();
+            assert_eq!(&i.grant_key_pkcs8[..], key.pkcs8().expose(), "{g}");
+        }
+        let both = json!({"token": "cxq_t", "private_key": k, "private_key_pkcs8": k});
+        let e = integration("q1", "https://clax.dev", "https://clax.dev", &both.to_string())
+            .unwrap_err();
+        assert_eq!(e.input, Input::Grant);
     }
 
     #[test]
@@ -560,17 +583,17 @@ mod tests {
             ("q1", "{}".into(), Input::Grant),
             (
                 "q1",
-                json!({"token": "", "private_key_pkcs8": "AA"}).to_string(),
+                json!({"token": "", "private_key": "AA"}).to_string(),
                 Input::Grant,
             ),
             (
                 "q1",
-                json!({"token": "t", "private_key_pkcs8": "AA"}).to_string(),
+                json!({"token": "t", "private_key": "AA"}).to_string(),
                 Input::Grant,
             ),
             (
                 "q1",
-                json!({"token": "t", "private_key_pkcs8": "!"}).to_string(),
+                json!({"token": "t", "private_key": "!"}).to_string(),
                 Input::Grant,
             ),
         ] {
@@ -583,9 +606,9 @@ mod tests {
     fn a_refused_grant_is_never_repeated_in_the_message() {
         let secret = "cxq_SECRET_TOKEN_VALUE";
         for g in [
-            json!({"token": secret, "private_key_pkcs8": 7}).to_string(),
-            json!({"token": secret, "private_key_pkcs8": secret, "x": secret}).to_string(),
-            json!({"token": secret, "private_key_pkcs8": secret}).to_string(),
+            json!({"token": secret, "private_key": 7}).to_string(),
+            json!({"token": secret, "private_key": secret, "x": secret}).to_string(),
+            json!({"token": secret, "private_key": secret}).to_string(),
             format!("{{\"token\": \"{secret}\""),
         ] {
             let e = integration("q1", "https://clax.dev", "https://clax.dev", &g).unwrap_err();

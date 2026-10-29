@@ -130,7 +130,7 @@
   // a secret the same way, made once by deploy.mjs and never rotated. Unset
   // or malformed, no key is stored and ClaxBot answers not_configured.
   // CLAX_FEEDBACK_QUEUE (a queue ID) and CLAX_FEEDBACK_SERVICE_GRANT (JSON
-  // {token, private_key_pkcs8} of that queue's service grant) turn on a
+  // {token, private_key} of that queue's service grant) turn on a
   // hosted instance's own feedback integration (src/instance.rs
   // feedback_of, docs/prod.md); each is read as a secret, else a --var of
   // the name, and with either unset the integration is off. Neither is a

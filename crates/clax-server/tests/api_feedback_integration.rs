@@ -61,7 +61,7 @@ impl Setup {
                 .unwrap();
             let grant = json!({
                 "token": token.expose(),
-                "private_key_pkcs8": base64::engine::general_purpose::URL_SAFE_NO_PAD
+                "private_key": base64::engine::general_purpose::URL_SAFE_NO_PAD
                     .encode(key.pkcs8().expose()),
             });
             let i = clax_server::integrations::feedback::integration(
@@ -612,7 +612,7 @@ async fn the_guides_rust_backend_mints_over_http() {
     let s = Setup::new().await;
     let grant = json!({
         "token": s.grant_token,
-        "private_key_pkcs8": base64::engine::general_purpose::URL_SAFE_NO_PAD
+        "private_key": base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(s.grant_key.pkcs8().expose()),
     });
     let browser = KeyPair::generate();
