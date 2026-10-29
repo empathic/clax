@@ -169,6 +169,24 @@ describe("QueueView", () => {
     expect(urls.slice(2)).toEqual([`${LIST}?state=active&order=newest`, `${LIST}?state=active&order=newest&cursor=t2`]);
   });
 
+  it("says the same change twice when it happens twice", async () => {
+    let page = { reports: [report(1)], next: null as string | null };
+    stubFetch({ [`GET ${LIST}?state=active&order=newest`]: () => page });
+    const handlers: ((e: { type: string; topic?: string; [k: string]: unknown }) => void)[] = [];
+    const stream = { watch: (_t: string[], f: (typeof handlers)[number]) => { handlers.push(f); return () => {}; } };
+    const m = mount(QueueView, { qid: "q1", queue: QUEUE, nav: () => {}, stream: stream as never });
+    await settle();
+    const live = m.root.querySelector('[aria-live="polite"].sr')!;
+    const said: string[] = [];
+    new MutationObserver(() => said.push(live.textContent ?? "")).observe(live, { childList: true, characterData: true, subtree: true });
+    for (const n of [2, 3]) {
+      page = { reports: [report(n), ...page.reports], next: null };
+      flush(() => { for (const h of handlers) h({ type: "report", topic: "queue:q1", report_id: `t${n}`, state: "open" }); });
+      await settle();
+    }
+    expect(said.filter(s => s === "1 new report.").length).toBe(2);
+  });
+
   it("opens on the tab the address names", async () => {
     history.replaceState(null, "", "/queues/q1?state=resolved");
     stubFetch({ [`GET ${LIST}?state=resolved&order=newest`]: { reports: [], next: null } });

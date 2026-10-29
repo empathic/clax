@@ -359,6 +359,33 @@ describe("ReportView", () => {
     expect(m.root.querySelector<HTMLTextAreaElement>('textarea[name="summary"]')!.value).toBe("Rounds the total");
   });
 
+  it("does not announce the person's own action as someone else's change", async () => {
+    let current: Report = report(1, { state: "claimed", claim: CLAIM });
+    let answer!: () => void;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "POST") {
+        await new Promise<void>(r => { answer = r; });
+        return new Response(JSON.stringify({ report: report(1), released: true }));
+      }
+      return new Response(JSON.stringify({ report: current }));
+    }));
+    const s = fakeStream();
+    const m = mount(ReportView, { qid: "q1", tid: "t1", queue: QUEUE, nav: () => {}, zone: "UTC", locale: "en-US", stream: s.stream as never });
+    await settle();
+    click(button(m.root, "Release claim"));
+    submit(m.root);
+    await settle();
+    // The release's own event refetches before its answer comes.
+    current = report(1);
+    s.send({ type: "report", topic: "queue:q1", report_id: "t1", state: "open" });
+    await settle();
+    answer();
+    await settle();
+    expect(m.root.querySelector(".rh .state")!.textContent).toBe("Open");
+    expect(m.root.querySelector(".acts .stat")!.textContent).toBe("Released the claim: the report is open again.");
+    expect(m.root.querySelector('[aria-live="polite"].sr')!.textContent).toBe("");
+  });
+
   it("keeps the latest load when an earlier one answers after it", async () => {
     let answer!: (r: Response) => void;
     let n = 0;

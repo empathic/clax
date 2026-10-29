@@ -81,7 +81,11 @@
       return;
     }
     const said = changed(reports ?? [], got);
-    if (said) notice = said;
+    if (said) {
+      // Emptied first, so a repeat of the same sentence is said again.
+      notice = "";
+      queueMicrotask(() => { notice = said; });
+    }
     reports = got;
     next = cursor;
     err = null;

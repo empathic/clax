@@ -85,6 +85,11 @@
     return "";
   }
 
+  /** Says `text` in the live region, emptied first so a repeat is said again. */
+  function say(text: string) {
+    notice = "";
+    queueMicrotask(() => { notice = text; });
+  }
   // Each fetch's turn: a load answered after a later load or action is dropped.
   let turn = 0;
   async function load() {
@@ -94,7 +99,9 @@
       if (mine !== turn) return;
       const was = report;
       report = got;
-      if (was) { const said = changed(was, got); if (said) notice = said; }
+      // While this person's own action is out, a change may be theirs:
+      // nothing is said of it (the action's answer says what it did).
+      if (was && !busy) { const said = changed(was, got); if (said) say(said); }
       loadErr = null;
       document.title = `${(noteOf(got).split("\n")[0] || "Report").slice(0, 60)} · ${p.queue?.name ?? "Queues"} · Clax`;
     } catch (x) {
