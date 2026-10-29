@@ -68,6 +68,7 @@ check "rewrite is stable" "$before" "$(cat "$d/c.toml")"
 # The file's mode is kept.
 chmod 600 "$d/c.toml"
 py write "$d/c.toml" q3 http://localhost:7481
-check "mode kept" 600 "$(stat -f %Lp "$d/c.toml" 2>/dev/null || stat -c %a "$d/c.toml")"
+# GNU stat first: on Linux `stat -f` is the filesystem's status, and succeeds.
+check "mode kept" 600 "$(stat -c %a "$d/c.toml" 2>/dev/null || stat -f %Lp "$d/c.toml")"
 
 exit "$fails"
