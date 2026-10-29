@@ -133,7 +133,7 @@ export class ReporterClient {
   async fileReport(r: NewReport): Promise<Report> {
     const parts: [string, Part][] = [];
     if (r.externalId !== undefined) parts.push(["external_id", r.externalId]);
-    parts.push(["url", r.url], ["title", r.title], ["anchor", JSON.stringify(wellFormedDeep(r.anchor ?? null))], ["body", r.body]);
+    parts.push(["url", wellFormed(r.url)], ["title", wellFormed(r.title)], ["anchor", JSON.stringify(wellFormedDeep(r.anchor ?? null))], ["body", wellFormed(r.body)]);
     if (r.metadata !== undefined) parts.push(["metadata", JSON.stringify(wellFormedDeep(r.metadata))]);
     if (r.revision !== undefined) parts.push(["revision", r.revision]);
     parts.push(...await captureParts(r));
@@ -158,7 +158,7 @@ export class ReporterClient {
    * waiting is `rejected` and the report is `open` again; 409
    * `not_fix_proposed` for an `open` or `claimed` report. */
   async reopen(reportId: string, r: Reopening): Promise<Report> {
-    const parts: [string, Part][] = [["body", r.body], ...await captureParts(r)];
+    const parts: [string, Part][] = [["body", wellFormed(r.body)], ...await captureParts(r)];
     return this.sendMultipart(queuePath(this.opts.queue, "reporter", "reports", reportId, "reopen"), parts);
   }
 
@@ -190,9 +190,9 @@ export class ReporterClient {
     return readJson<ReportPage>(await this.send("GET", queuePath(this.opts.queue, "reporter", "reports") + q));
   }
 
-  /** Comments `body` on report `reportId` as this reporter. */
+  /** Comments `body` (made well-formed, `wellFormed`) on report `reportId` as this reporter. */
   async comment(reportId: string, body: string): Promise<Report> {
-    const bytes = new TextEncoder().encode(JSON.stringify({ body }));
+    const bytes = new TextEncoder().encode(JSON.stringify({ body: wellFormed(body) }));
     const { report } = await readJson<{ report: Report }>(
       await this.send("POST", queuePath(this.opts.queue, "reporter", "reports", reportId, "comments"), bytes, "application/json"));
     return report;
