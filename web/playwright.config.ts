@@ -43,10 +43,12 @@ export default defineConfig({
     { name: "chrome-overlay", testMatch: /chrome-overlay\.spec\.ts$/ },
     { name: "shots", testMatch: /app-shots\.spec\.ts$/ },
     // Report queues end to end: a hosted daemon, a deployer's site on
-    // another origin and the overlay it embeds (e2e/queues.spec.ts), and
-    // the feedback loop from capture to verified (e2e/feedback-loop.spec.ts).
-    { name: "queues", testMatch: /(queues|feedback-loop)\.spec\.ts$/ },
-    { name: "rest", testIgnore: /(gesture|chrome-overlay|app-shots|queues|feedback-loop)\.spec\.ts$/ },
+    // another origin and the overlay it embeds (e2e/queues.spec.ts), the
+    // feedback loop from capture to verified (e2e/feedback-loop.spec.ts),
+    // and the shell reporting problems with Clax into its own queue
+    // (e2e/feedback.spec.ts).
+    { name: "queues", testMatch: /(queues|feedback-loop|feedback)\.spec\.ts$/ },
+    { name: "rest", testIgnore: /(gesture|chrome-overlay|app-shots|queues|feedback-loop|feedback)\.spec\.ts$/ },
   ],
   reporter: "list",
 });

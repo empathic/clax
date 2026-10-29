@@ -30,6 +30,7 @@ import { FrameGate } from "./frame-gate";
 import type { PresenceView } from "./presence-model";
 import type { Presence, PresenceReporter } from "./presence-reporter";
 import type { FrameHost } from "./frame-host";
+import { reportKey } from "../feedback/slot.svelte";
 import { type KeyAction, holdKeysAcrossLoad, keyAction, keysHeldAtLoad, pageKeyAction } from "./keys";
 import { keyboardTrail } from "./trail";
 import { type Ask, promptQueue } from "./prompt-queue";
@@ -1769,7 +1770,12 @@ export class ArtifactController {
     const s = this.s;
     const owned = from === "shell" ? this.keysOwned : !this.pageKeysHeld && frameGesture();
     if (!viewReady(s) || s.deleted || s.sheet || s.ask || s.draft || !owned) return false;
-    if (a === "help") this.set({ sheet: "keys" }); else this.toggleComment();
+    if (a === "report") {
+      // Only where the feedback integration runs (`feedback/slot.svelte.ts`).
+      const r = reportKey.current;
+      if (!r) return false;
+      r();
+    } else if (a === "help") this.set({ sheet: "keys" }); else this.toggleComment();
     return true;
   }
   private readonly pendingLook = new Set<string>();

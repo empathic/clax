@@ -585,6 +585,98 @@ async fn a_reporter_token_holds_only_from_its_origin() {
     assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
 }
 
+/// A page the instance serves at the token's own origin reads with no
+/// `Origin`, as a browser sends a same-origin `GET`: taken as from that
+/// origin when the browser marks it `Sec-Fetch-Site: same-origin` and its
+/// `Host` is the origin's; refused otherwise.
+#[tokio::test]
+async fn a_same_origin_read_without_origin_holds_only_on_the_tokens_host() {
+    let s = Setup::new().await;
+    let own = s.ts.base.clone();
+    s.ts.store
+        .update_queue(
+            &AuditCtx::DAEMON,
+            &s.qid,
+            clax_store::queues::QueuePatch {
+                origins: Some(vec![ORIGIN.into(), own.clone()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    async fn mint(s: &Setup, origin: &str) -> Reporter {
+        let key = KeyPair::generate();
+        let res = s
+            .service(
+                &format!("/api/queues/{}/reporter-tokens", s.qid),
+                &json!({"reporter_id": "emp-1", "origin": origin,
+                        "public_key": sig::encode_public(&key.public())}),
+            )
+            .await;
+        assert_eq!(res.status(), 200);
+        let v: Value = res.json().await.unwrap();
+        Reporter {
+            token: v["token"].as_str().unwrap().to_string(),
+            key,
+        }
+    }
+    async fn read(s: &Setup, r: &Reporter, site: Option<&str>) -> reqwest::Response {
+        let sig = s.sign(&r.key, "GET", &s.reports(), &r.token, &[]);
+        let mut h = vec![
+            ("authorization", format!("Clax-Reporter {}", r.token)),
+            ("clax-signature", sig),
+        ];
+        if let Some(v) = site {
+            h.push(("sec-fetch-site", v.to_string()));
+        }
+        s.send("GET", &s.reports(), &h, vec![]).await
+    }
+    let here = mint(&s, &own).await;
+    assert_eq!(read(&s, &here, Some("same-origin")).await.status(), 200);
+    for site in [None, Some("same-site"), Some("cross-site"), Some("none")] {
+        assert_eq!(
+            status_code(read(&s, &here, site).await).await,
+            (403, "wrong_origin".into()),
+            "{site:?}"
+        );
+    }
+    // A write sends `Origin` from every browser: one without it is not taken
+    // as same-origin.
+    let sig = s.sign(&here.key, "POST", &s.reports(), &here.token, &[]);
+    let h = [
+        ("authorization", format!("Clax-Reporter {}", here.token)),
+        ("clax-signature", sig),
+        ("sec-fetch-site", "same-origin".to_string()),
+    ];
+    assert_eq!(
+        status_code(s.send("POST", &s.reports(), &h, vec![]).await).await,
+        (403, "wrong_origin".into())
+    );
+    // A token for this host under the other scheme is not this instance's pages'.
+    let https = format!("https://{}", s.host());
+    s.ts.store
+        .update_queue(
+            &AuditCtx::DAEMON,
+            &s.qid,
+            clax_store::queues::QueuePatch {
+                origins: Some(vec![ORIGIN.into(), s.ts.base.clone(), https.clone()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let other_scheme = mint(&s, &https).await;
+    assert_eq!(
+        status_code(read(&s, &other_scheme, Some("same-origin")).await).await,
+        (403, "wrong_origin".into())
+    );
+    // A token for another origin holds only with that `Origin`, whatever
+    // the browser says of this request.
+    let elsewhere = mint(&s, ORIGIN).await;
+    assert_eq!(
+        status_code(read(&s, &elsewhere, Some("same-origin")).await).await,
+        (403, "wrong_origin".into())
+    );
+}
+
 #[tokio::test]
 async fn a_reporter_token_expires_and_ends_with_its_grant() {
     let s = Setup::new().await;
@@ -1455,7 +1547,11 @@ async fn reporter_reopen_with_clip_counts_and_reopens() {
     assert_eq!(c["has_clip"], true, "{c}");
     assert_eq!(c["diagnostics_lines"], 2);
     assert_eq!(report["diagnostics_lines"], 2, "{v}");
-    assert_eq!(report["filing_diagnostics_lines"], Value::Null, "the filing had none: {v}");
+    assert_eq!(
+        report["filing_diagnostics_lines"],
+        Value::Null,
+        "the filing had none: {v}"
+    );
     let cid = c["id"].as_str().unwrap();
     let filing = report["comments"][0]["id"].as_str().unwrap();
 

@@ -229,10 +229,23 @@ describe("installDiagnostics", () => {
     await f.win.fetch("https://elsewhere.example/api/x", { headers: { "Clax-Signature": "t=1" } });
     // An instance named by a later install is skipped too.
     installDiagnostics(f.w, { instance: "https://second.example" });
-    await f.win.fetch("https://second.example/x");
+    await f.win.fetch("https://second.example/_clax/overlay.js");
     await f.win.fetch("/mine");
-    expect(rec.lines().map(l => l.text)).toEqual(["GET /mine → 401 in 42 ms"]);
-    expect(f.fetched).toHaveLength(4);
+    // Only the SDK's own paths are skipped: the instance's other routes are recorded.
+    await f.win.fetch("https://clax.example:8443/api/x");
+    expect(rec.lines().map(l => l.text)).toEqual(["GET /mine → 401 in 42 ms", "GET https://clax.example:8443/api/x → 401 in 42 ms"]);
+    expect(f.fetched).toHaveLength(5);
+  });
+
+  it("records a page's own requests when the instance is the page's own origin, but not the SDK's", async () => {
+    const f = fakeWindow(async () => new Response("no", { status: 500 }));
+    const rec = install(f.w, { now: f.clock, instance: "https://app.example" });
+    await f.win.fetch("/api/x");
+    await f.win.fetch("/_clax/overlay.js");
+    await f.win.fetch("/api/queues/q1/reporter/badge");
+    await f.win.fetch("https://app.example/api/queues/q1/reporter-tokens");
+    await f.win.fetch("/api/queues/q1/reports");
+    expect(rec.lines().map(l => l.text)).toEqual(["GET /api/x → 500 in 42 ms", "GET /api/queues/q1/reports → 500 in 42 ms"]);
   });
 });
 
