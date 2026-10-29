@@ -9,9 +9,8 @@ use clax_testkit::{FAKE_PNG, element_anchor};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, ChildStderr, Command, Output, Stdio};
 use std::sync::mpsc::{Receiver, channel};
-use std::time::{Duration, Instant};
 
 /// The harness environment a test inherits from the agent running it; every
 /// `clax` run here starts without it.
@@ -180,20 +179,6 @@ impl Daemon {
             .json()
             .unwrap();
         v["session"]["id"].as_str().unwrap().to_string()
-    }
-
-    /// Whether a follower of session `sid` has polled its notices.
-    fn following(&self, sid: &str) -> bool {
-        let s: Value = self
-            .http()
-            .get(format!("{}/api/sessions/{sid}", self.base()))
-            .bearer_auth(self.token())
-            .send()
-            .unwrap()
-            .json()
-            .unwrap();
-        let push = &s["push"];
-        push["tier"] == "notice" || (push["tier"] == "monitor" && push["available"] == true)
     }
 
     fn run(&self, args: &[&str]) -> Output {
@@ -433,6 +418,7 @@ fn resolve_with_reason() {
 struct Follower {
     child: Child,
     lines: Receiver<String>,
+    stderr: BufReader<ChildStderr>,
 }
 
 impl Follower {
@@ -442,10 +428,11 @@ impl Follower {
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap();
         let out = child.stdout.take().unwrap();
+        let stderr = BufReader::new(child.stderr.take().unwrap());
         let (tx, lines) = channel();
         std::thread::spawn(move || {
             for line in BufReader::new(out).lines() {
@@ -455,7 +442,27 @@ impl Follower {
                 }
             }
         });
-        Follower { child, lines }
+        Follower {
+            child,
+            lines,
+            stderr,
+        }
+    }
+
+    /// Blocks until the follower says on stderr that it watches the queue
+    /// (its first `queue_watch` answered), or panics with what it said
+    /// before it exited.
+    fn watching(&mut self) {
+        let mut said = String::new();
+        loop {
+            let mut line = String::new();
+            let n = self.stderr.read_line(&mut line).unwrap();
+            assert!(n > 0, "the follower exited before watching: {said}");
+            if line.starts_with("clax queue follow: watching queue ") {
+                return;
+            }
+            said.push_str(&line);
+        }
     }
 }
 
@@ -474,17 +481,10 @@ fn follow_prints_each_filed_report_as_a_json_line() {
         &d,
         &[&d.queue, "--session", &sid, "--once", "--poll-secs", "1"],
     );
-    // The follower watches the queue before its first poll.
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while !d.following(&sid) {
-        assert!(Instant::now() < deadline, "no follower of {sid} polled");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    // A report filed once the follower watches the queue wakes it.
+    f.watching();
     let tid = d.file("Invoice 4821", "The total is wrong");
-    let line = f
-        .lines
-        .recv_timeout(Duration::from_secs(30))
-        .expect("a line from the follower");
+    let line = f.lines.recv().expect("a line from the follower");
     let v: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(v["event"], "filed", "{v}");
     assert_eq!(v["queue"], d.queue.as_str());
