@@ -736,6 +736,11 @@ async fn fix_after_lease_lost_is_refused() {
         .await;
     assert_eq!(s, 200);
     q.clock.advance(LEASE_SECS + 1);
+    // Lapsed, and nobody claimed it since.
+    let (s, v) = q
+        .agent(Some(&a), "POST", &q.report("/fix"), fix_body())
+        .await;
+    assert_eq!((s, code(&v)), (409, "lease_lost"), "{v}");
     let (s, _) = q
         .agent(Some(&b), "POST", &q.report("/claim"), json!({}))
         .await;

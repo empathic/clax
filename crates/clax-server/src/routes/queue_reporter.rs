@@ -27,13 +27,14 @@
 //! exist.
 
 use super::assets::multipart_error;
-use super::queue_agent::{Announcer, announce_comment, announce_resolved, last_comment};
+use super::queue_agent::{
+    Announcer, CaptureQuery, announce_comment, announce_resolved, last_comment, png,
+};
 use axum::Json;
 use axum::Router;
-use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, FromRequest, Multipart, Path, Query, State};
-use axum::http::{StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::http::StatusCode;
+use axum::response::Response;
 use axum::routing::{get, post};
 use clax_core::audit::{Actor, AuditCtx, Via};
 use clax_core::gitctx::GitField;
@@ -419,14 +420,14 @@ pub struct PageQuery {
 /// next}`.
 ///
 /// # Errors
-/// [`ReporterCaller`]'s; 400 `invalid_args` for another query.
+/// [`ReporterCaller`]'s; 400 `invalid_query` for another query.
 pub async fn my_reports(
     State(s): State<AppState>,
     Path(qid): Path<String>,
     q: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
     r: ReporterCaller,
 ) -> Result<Json<Value>, ApiError> {
-    let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_args", e.body_text()))?;
+    let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let rid = r.token.reporter_id;
     let (reports, next) = s
         .store_call(move |st| {
@@ -467,19 +468,9 @@ pub async fn comment(
     Ok(Json(json!({ "report": report })))
 }
 
-/// A clip's answer to a reporter: `image/png`, sandboxed, never cached.
-fn png(bytes: Vec<u8>) -> Response {
-    (
-        [
-            (header::CONTENT_TYPE, "image/png"),
-            (header::CONTENT_SECURITY_POLICY, "sandbox"),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-            (header::CACHE_CONTROL, "private, no-store"),
-        ],
-        Body::from(bytes),
-    )
-        .into_response()
-}
+/// A reporter's page keeps no clip: its token is short-lived and its
+/// browser may be shared.
+const REPORTER_CLIP_CACHE: &str = "private, no-store";
 
 /// `GET /api/queues/<qid>/reporter/reports/<tid>/clip`: the clip of a
 /// report the token's reporter sees, as `image/png`.
@@ -500,7 +491,7 @@ pub async fn clip(
                 .ok_or(CoreError::NotFound)
         })
         .await?;
-    Ok(png(bytes))
+    Ok(png(bytes, REPORTER_CLIP_CACHE))
 }
 
 /// `GET /api/queues/<qid>/reporter/reports/<tid>/comments/<cid>/clip`: the
@@ -523,10 +514,10 @@ pub async fn comment_clip(
                 .ok_or(CoreError::NotFound)
         })
         .await?;
-    Ok(png(bytes))
+    Ok(png(bytes, REPORTER_CLIP_CACHE))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct VerifyBody {
     #[serde(default)]
@@ -536,7 +527,7 @@ struct VerifyBody {
 }
 
 /// `POST /api/queues/<qid>/reporter/reports/<tid>/verify {note?,
-/// context?}`: the token's reporter says the fix waiting on a report it
+/// context?}` (an empty body is `{}`): the token's reporter says the fix waiting on a report it
 /// filed works (spec 2026-10-29-feedback-loop-design §6.3), with its
 /// browser's `context` at verification (the filing's shape, checked and
 /// scrubbed the same way). The report is `verified`, resolved for reason
@@ -551,7 +542,12 @@ pub async fn verify(
     Path((qid, tid)): Path<(String, String)>,
     r: ReporterCaller,
 ) -> Result<Json<Value>, ApiError> {
-    let b: VerifyBody = json_body(&r.body)?;
+    // An empty body names nothing, as `{}` does.
+    let b: VerifyBody = if r.body.iter().all(u8::is_ascii_whitespace) {
+        VerifyBody::default()
+    } else {
+        json_body(&r.body)?
+    };
     let context = match b.context {
         None | Some(Value::Null) => None,
         Some(c) => Some(parse_context(&c.to_string())?),
@@ -635,29 +631,23 @@ pub async fn reopen(
     Ok(Json(json!({ "report": report })))
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CaptureQuery {
-    #[serde(default)]
-    capture: Option<u32>,
-}
-
 /// `GET /api/queues/<qid>/reporter/reports/<tid>/diagnostics?capture=`:
-/// the diagnostics of a report the token's reporter sees: capture
+/// the diagnostics of a report the token's reporter filed: capture
 /// `capture`'s (0 the filing's, `n` the `n`th reopen's), or without it the
 /// latest capture's that has any. Answers `{lines}`, `[]` when that
-/// capture has none.
+/// capture has none. Another reporter's are never served, even on a
+/// report `reporters_see: all` shows it.
 ///
 /// # Errors
-/// [`ReporterCaller`]'s; 404 `not_found` for a report the reporter does
-/// not see; 400 `invalid_args` for another query.
+/// [`ReporterCaller`]'s; 404 `not_found` for a report the reporter did
+/// not file; 400 `invalid_query` for another query.
 pub async fn diagnostics(
     State(s): State<AppState>,
     Path((qid, tid)): Path<(String, String)>,
     q: Result<Query<CaptureQuery>, axum::extract::rejection::QueryRejection>,
     r: ReporterCaller,
 ) -> Result<Json<Value>, ApiError> {
-    let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_args", e.body_text()))?;
+    let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let rid = r.token.reporter_id;
     let lines = s
         .store_call(move |st| {
