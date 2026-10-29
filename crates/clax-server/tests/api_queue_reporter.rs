@@ -585,6 +585,70 @@ async fn a_reporter_token_holds_only_from_its_origin() {
     assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
 }
 
+/// A page the instance serves at the token's own origin reads with no
+/// `Origin`, as a browser sends a same-origin `GET`: taken as from that
+/// origin when the browser marks it `Sec-Fetch-Site: same-origin` and its
+/// `Host` is the origin's; refused otherwise.
+#[tokio::test]
+async fn a_same_origin_read_without_origin_holds_only_on_the_tokens_host() {
+    let s = Setup::new().await;
+    let own = s.ts.base.clone();
+    s.ts.store
+        .update_queue(
+            &AuditCtx::DAEMON,
+            &s.qid,
+            clax_store::queues::QueuePatch {
+                origins: Some(vec![ORIGIN.into(), own.clone()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mint = |origin: String| {
+        let key = KeyPair::generate();
+        let public = sig::encode_public(&key.public());
+        let s = &s;
+        async move {
+            let res = s
+                .service(
+                    &format!("/api/queues/{}/reporter-tokens", s.qid),
+                    &json!({"reporter_id": "emp-1", "origin": origin, "public_key": public}),
+                )
+                .await;
+            assert_eq!(res.status(), 200);
+            let v: Value = res.json().await.unwrap();
+            Reporter { token: v["token"].as_str().unwrap().to_string(), key }
+        }
+    };
+    let read = |r: &Reporter, site: Option<&str>| {
+        let sig = s.sign(&r.key, "GET", &s.reports(), &r.token, &[]);
+        let mut h = vec![
+            ("authorization", format!("Clax-Reporter {}", r.token)),
+            ("clax-signature", sig),
+        ];
+        if let Some(v) = site {
+            h.push(("sec-fetch-site", v.to_string()));
+        }
+        let pq = s.reports();
+        async move { s.send("GET", &pq, &h, vec![]).await }
+    };
+    let here = mint(own).await;
+    assert_eq!(read(&here, Some("same-origin")).await.status(), 200);
+    for site in [None, Some("same-site"), Some("cross-site"), Some("none")] {
+        assert_eq!(
+            status_code(read(&here, site).await).await,
+            (403, "wrong_origin".into()),
+            "{site:?}"
+        );
+    }
+    // A token for another origin holds only with that `Origin`, whatever
+    // the browser says of this request.
+    let elsewhere = mint(ORIGIN.into()).await;
+    assert_eq!(
+        status_code(read(&elsewhere, Some("same-origin")).await).await,
+        (403, "wrong_origin".into())
+    );
+}
+
 #[tokio::test]
 async fn a_reporter_token_expires_and_ends_with_its_grant() {
     let s = Setup::new().await;
