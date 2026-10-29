@@ -175,6 +175,14 @@ filegroup(
     visibility = ["//crates:__subpackages__"],
 )
 
+# The SDK's request signing, which the Worker's feedback check signs a
+# reporter's calls with (crates/clax-worker/test-feedback.mjs).
+copy_to_bin(
+    name = "sdk_sign",
+    srcs = ["sdk/src/sign.ts"],
+    visibility = ["//crates/clax-worker:__pkg__"],
+)
+
 # The extension's manifest, which clax-core embeds.
 exports_files(
     ["extension/manifest.json"],

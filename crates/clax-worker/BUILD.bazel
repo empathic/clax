@@ -73,6 +73,7 @@ copy_to_bin(
             "e2e-hosted.mjs",
             "test-bot.mjs",
             "test-deploy-config.mjs",
+            "test-feedback.mjs",
             "test-sandbox.mjs",
             "test-wasm.mjs",
         ],
@@ -104,6 +105,26 @@ copy_to_bin(
     "sandbox",
     "bot",
 ]]
+
+# clax.dev's own feedback path over HTTP on a hosted Clax, the reporter's
+# calls signed by the SDK's own code (test-feedback.mjs).
+js_test(
+    name = "feedback_test",
+    args = ["--no-build"],
+    data = [
+        ":bundle",
+        ":node_modules",
+        ":scripts",
+        "//web:dist",
+        "//web:sdk_sign",
+    ],
+    entry_point = "test-feedback.mjs",
+    env = {"CLAX_WORKER_BUNDLE": "$(rootpath :bundle)"},
+    patch_node_fs = False,
+    # It starts wrangler and workerd twice, across a restart.
+    tags = ["cpu:2"],
+    timeout = "long",
+)
 
 # The Clax server in its Durable Object under `wrangler dev --local`, in
 # two browsers (e2e.mjs), and as a hosted Clax with each artifact's site on
