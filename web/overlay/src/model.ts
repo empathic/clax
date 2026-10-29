@@ -2,7 +2,7 @@
 // a draft's clip as it is taken, what a send files, and a poll that runs only
 // while the reports panel is open.
 import type { Anchor } from "../../bridge/src/protocol";
-import type { NewReport, ReporterAuth } from "../../sdk/src/reporter";
+import type { NewReport } from "../../sdk/src/reporter";
 import type { Report, ReportComment, ReportPage } from "../../sdk/src/types";
 
 /** How often "Your reports" asks for new replies while it is open. */
@@ -11,22 +11,6 @@ export const POLL_MS = 15_000;
 export const MAX_TITLE = 300;
 /** The `<meta name>` a page names its artifact's external ID with. */
 export const ARTIFACT_META = "clax-artifact";
-
-/** `Clax.overlay`'s options. Every report carries the page's URL with its
- * query and without its fragment, and the page's title. */
-export interface OverlayOptions {
-  /** The instance's base URL, such as `https://clax.corp.example`. */
-  instance: string;
-  /** The queue's ID. */
-  queue: string;
-  /** Gets a reporter token for the reporter's public key, from the deployer's backend. */
-  auth: ReporterAuth;
-  /** JSON the deployer attaches to every report filed from this page. */
-  metadata?: unknown;
-  /** The page's artifact. Default: `<meta name="clax-artifact">`'s content,
-   * else none, and the instance files the report on the page URL without its route. */
-  externalId?: string;
-}
 
 /** A draft's screenshot: being taken, taken, or not taken (why). */
 export type Clip =

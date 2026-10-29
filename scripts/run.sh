@@ -6,7 +6,7 @@
 #   scripts/run.sh check [args]      auto-format, then ci
 #   scripts/run.sh test [args]       the Rust tests
 #   scripts/run.sh lint              rustfmt, clippy and the web lint
-#   scripts/run.sh web-test          the web UI's lint, type checks, unit tests and bundle gate
+#   scripts/run.sh web-test          the web UI's lint, type checks, unit tests, bundle gate and SDK package test
 #   scripts/run.sh pi-test           the Pi extension's type check and tests
 #   scripts/run.sh web-e2e           the browser tests
 #   scripts/run.sh perf              the perf benchmarks, on demand (they gate nothing; on a
@@ -18,7 +18,7 @@
 #   scripts/run.sh check-wasm        the crates a hosted Worker runs, built for wasm32 with
 #                                    warnings denied (natively scripts/check-wasm.sh)
 #   scripts/run.sh build             the clax binary
-#   scripts/run.sh web               web/dist and web/dist-extension, built
+#   scripts/run.sh web               web/dist, web/dist-extension and web/dist-sdk, built
 #   scripts/run.sh clax [args]       build the debug clax and run it (serve, stop, doctor, …)
 #   scripts/run.sh bin               build the debug clax and print its path
 #   scripts/run.sh install           build the release clax and install it in $CARGO_HOME/bin
@@ -122,7 +122,8 @@ if [ "$dry" = 0 ] && command -v caffeinate >/dev/null 2>&1; then awake=(caffeina
 
 # _copy_dist <dir>: Bazel's build of web/<dir> into the checkout as writable
 # regular files (Bazel's outputs are read-only, and a later native build
-# must be able to replace them), never links; .gitkeep stays.
+# must be able to replace them), never links; .gitkeep stays, and a
+# missing web/<dir> is made.
 _copy_dist() {
     local dir="$1" from
     from="$("$BAZEL" info bazel-bin 2>/dev/null)/web/$dir"
@@ -131,6 +132,7 @@ _copy_dist() {
         return 0
     fi
     [ -d "$from" ] || { echo "error: $from is missing" >&2; return 1; }
+    mkdir -p "web/$dir"
     find "web/$dir" -mindepth 1 -maxdepth 1 ! -name .gitkeep -exec rm -rf {} +
     cp -R "$from/." "web/$dir/"
     chmod -R u+w "web/$dir"
@@ -244,7 +246,7 @@ _bazel() {
             done
             _run "${b[@]}" test --lockfile_mode=error //web:lint
             ;;
-        web-test) _run "${b[@]}" test --lockfile_mode=error //web:lint //web:typecheck //web:unit //web:bundle_size "$@" ;;
+        web-test) _run "${b[@]}" test --lockfile_mode=error //web:lint //web:typecheck //web:unit //web:bundle_size //web:sdk_package "$@" ;;
         pi-test) _run "${b[@]}" test --lockfile_mode=error //plugins/pi:typecheck //plugins/pi:test "$@" ;;
         web-e2e) _run "${b[@]}" test --lockfile_mode=error //web:e2e_gesture //web:e2e_chrome_overlay //web:e2e_rest "$@" ;;
         worker-test)
@@ -275,8 +277,8 @@ _bazel() {
             ;;
         rust-project) _run "${b[@]}" run --lockfile_mode=error @rules_rust//tools/rust_analyzer:gen_rust_project -- //crates/... ;;
         web)
-            _run "${b[@]}" build --lockfile_mode=error //web:dist //web:dist_extension "$@" || return $?
-            _copy_dist dist && _copy_dist dist-extension
+            _run "${b[@]}" build --lockfile_mode=error //web:dist //web:dist_extension //web:dist_sdk "$@" || return $?
+            _copy_dist dist && _copy_dist dist-extension && _copy_dist dist-sdk
             ;;
         app-test) _run "${b[@]}" test --lockfile_mode=error //apps/clax_app/... "$@" ;;
         app-integration)

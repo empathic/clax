@@ -186,15 +186,15 @@ build *ARGS:
 build-native *ARGS:
     CLAX_BUILD=native ./scripts/run.sh build "$@"
 
-# Build the web UI and the extension into web/dist and web/dist-extension
+# Build the web UI, the extension and the SDK package into web/dist, web/dist-extension and web/dist-sdk
 web *ARGS:
     ./scripts/run.sh web "$@"
 
-# Build the web UI and the extension with pnpm
+# Build the web UI, the extension and the SDK package with pnpm
 web-native *ARGS:
     CLAX_BUILD=native ./scripts/run.sh web "$@"
 
-# Run the web lint, typecheck, unit tests and bundle gate
+# Run the web lint, typecheck, unit tests, bundle gate and SDK package test
 web-test *ARGS:
     ./scripts/run.sh web-test "$@"
 

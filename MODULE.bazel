@@ -229,6 +229,14 @@ npm.npm_translate_lock(
     pnpm_lock = "//crates/clax-worker:pnpm-lock.yaml",
 )
 use_repo(npm, "npm_pi", "npm_web", "npm_worker")
+# Svelte's license is its LICENSE.md, which the default "basic" exclusions
+# (every `*.md`) would leave out: the SDK package, which bundles Svelte,
+# carries it (web/scripts/build-sdk.mjs).
+npm.npm_exclude_package_contents(
+    package = "svelte",
+    patterns = ["README.md"],
+    presets = [],
+)
 
 # The Chromium the browser tests run, pinned by checksum
 # (bazel/playwright/repo.bzl).

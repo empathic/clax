@@ -10,15 +10,17 @@
 // loaded by then), of the People and Queues pages (`people`, `queues`: each one's chunk, which the
 // gallery loads at `/people` and `/queues` through its lazy module, with what it imports
 // that the gallery has not loaded by then), and of app mode's host chunk (`host`:
-// what the artifact entry loads for `?app=1` beyond itself),
+// what the artifact entry loads for `?app=1` beyond itself), and of the SDK
+// package's overlay entry (`sdkOverlay`: web/dist-sdk/overlay.js with the
+// files it imports, unminified as the package ships it),
 // against web/perf/bundle-budget.json. The shell sets its type in the
 // system's faces, so the build may carry no font file and no entry may load
 // one. The extension's release manifest may grant no host and declare no
 // content script, and its build may carry no key file and no test hook.
 // --record lowers the shell's and the bridge's budgets to the measured
 // sizes plus 10%, never raising one, and adds one that is missing; the
-// extension's, the question module's and the People and Queues pages' budgets
-// are ceilings set by hand and are never recorded.
+// extension's, the question module's, the People and Queues pages' and the
+// SDK overlay's budgets are ceilings set by hand and are never recorded.
 //
 // Sizes are deflated by pako (a pinned JavaScript port of reference zlib), not
 // node:zlib: Node links whichever zlib its build chose (the official builds
@@ -177,10 +179,23 @@ for (const [key, html] of [["extComposer", "composer.html"], ["extPanel", "sidep
   const files = [...text.matchAll(/(?:src|href)="\.\/(assets\/[^"]+)"/g)].map(m => m[1]);
   sizes[key] = extGz(html) + files.reduce((n, f) => n + extGz(f), 0);
 }
-console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, questions ${sizes.questions}, people ${sizes.people}, queues ${sizes.queues}, eager bridge ${sizes.bridge}, app host ${sizes.host}, transport ${sizes.transport}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, origin ${sizes.partOrigin}, room ${sizes.partRoom}, sample ${sizes.partSample}, live ${sizes.partLive}, extension: overlay ${sizes.extOverlay}, worker ${sizes.extWorker}, composer ${sizes.extComposer}, panel ${sizes.extPanel}`);
+// The SDK package's overlay entry, with every file it imports.
+{
+  const sdk = new URL("../dist-sdk/", import.meta.url);
+  const seen = new Set();
+  const walk = f => {
+    if (seen.has(f)) return;
+    seen.add(f);
+    const text = readFileSync(new URL(f, sdk), "utf8");
+    for (const [, spec] of text.matchAll(/^(?:import|export)\b[^"']*?from\s*["'](\.[^"']+)["']/gm)) walk(new URL(spec, new URL(f, sdk)).pathname.slice(sdk.pathname.length));
+  };
+  walk("overlay.js");
+  sizes.sdkOverlay = [...seen].reduce((n, f) => n + pako.gzip(readFileSync(new URL(f, sdk)), { level: 9 }).length, 0);
+}
+console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, questions ${sizes.questions}, people ${sizes.people}, queues ${sizes.queues}, eager bridge ${sizes.bridge}, app host ${sizes.host}, transport ${sizes.transport}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, origin ${sizes.partOrigin}, room ${sizes.partRoom}, sample ${sizes.partSample}, live ${sizes.partLive}, extension: overlay ${sizes.extOverlay}, worker ${sizes.extWorker}, composer ${sizes.extComposer}, panel ${sizes.extPanel}, sdk package: overlay entry ${sizes.sdkOverlay}`);
 
 const RECORDED = ["gallery", "artifact", "host", "bridge", "transport", ...Object.values(partKeys)];
-const EXTENSION = ["extOverlay", "extWorker", "extComposer", "extPanel", "questions", "people", "queues"];
+const EXTENSION = ["extOverlay", "extWorker", "extComposer", "extPanel", "questions", "people", "queues", "sdkOverlay"];
 const MEASURED = [...RECORDED, ...EXTENSION];
 const KEYS = [...MEASURED, "bridgeBaseline"];
 const budget = existsSync(budgetFile) ? JSON.parse(readFileSync(budgetFile, "utf8")) : null;

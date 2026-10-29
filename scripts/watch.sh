@@ -12,7 +12,9 @@
 # native) ibazel rebuilds the debug clax, which embeds the web UI, and
 # restarts it on any Rust or web change: no target/, no node_modules. Without
 # it, cargo-watch restarts the daemon on Rust changes and Vite rebuilds
-# web/dist, which the debug build serves from disk.
+# web/dist, which the debug build serves from disk, and the SDK package,
+# web/dist-sdk, for an app that links it. With Bazel the SDK package is not
+# watched: `just web` builds it into web/dist-sdk.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 . scripts/dev-home.sh
@@ -76,6 +78,7 @@ if [ "$BUILD_SYSTEM" = native ]; then
     for cfg in bridge transport shell; do
         (cd web && pnpm exec vite build -c "vite.$cfg.config.ts" --watch 2>&1 | sed -u "s/^/[web:$cfg] /") &
     done
+    (cd web && node scripts/build-sdk.mjs --watch 2>&1 | sed -u "s/^/[web:sdk] /") &
     reload="backend restarts on Rust changes; reload the browser for frontend changes"
 else
     stop_bin="$(scripts/run.sh bin)"
