@@ -2540,7 +2540,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       "Release your claim on a Clax queue report",
       QueueReportArgs, (ctx, a) => tools.queueAction(ctx, a, "release"));
     define("queue_reply", "Clax queue reply",
-      "Reply to a report you claimed; the reporter reads the reply in the app. `claim_required` when you have not claimed the report, `lease_lost` when your claim lapsed. The reply renders as GitHub-flavoured Markdown, with no images and no raw HTML. Returns the comment and the report.",
+      "Reply to a report you claimed, or, while a fix you proposed waits for the reporter's verdict, to that report with no claim (the reporter's replies to it reach you); the reporter reads the reply in the app. `claim_required` when you have not claimed the report, `lease_lost` when your claim lapsed. The reply renders as GitHub-flavoured Markdown, with no images and no raw HTML. Returns the comment and the report.",
       "Reply to a Clax queue report you claimed",
       QueueReplyArgs, (ctx, a) => tools.queueReply(ctx, a));
     define("queue_resolve", "Clax queue resolve",

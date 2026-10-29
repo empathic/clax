@@ -3669,7 +3669,7 @@ the copy's remote, the link holds the copy's address alone.
 | `queue_claim` | `queue`, `report_id` | the lease `{lease_id, expires_at, fence, report}`; `thread_taken` names the holder |
 | `queue_renew` | `queue`, `report_id` | the lease, extended to 10 minutes from now; `claim_required`, `lease_lost` or `thread_taken` |
 | `queue_release` | `queue`, `report_id` | `{report}`, open again |
-| `queue_reply` | `queue`, `report_id`, `body` | `{comment, report}`; `claim_required`, `lease_lost` or `thread_taken` |
+| `queue_reply` | `queue`, `report_id`, `body` | `{comment, report}`, under the session's live lease or, while the fix it proposed waits (`fix_proposed`), without one; `claim_required`, `lease_lost` or `thread_taken` |
 | `queue_resolve` | `queue`, `report_id`, optional `reason` (`fixed`, `duplicate`, `wontfix`, `cannot_reproduce` or `other`, the default) | `{report}`, resolved with `resolve_reason`; `claim_required`, `lease_lost` or `thread_taken` |
 | `queue_fix` | `queue`, `report_id`, `summary`; optional `url`, `commit`, `release`, `verify_url`, `verify_after` | `{report}`, `fix_proposed` (`POST …/fix`, with no `fence`: the session's live lease is checked); `claim_required`, `lease_lost`, `thread_taken`, `invalid_fix` or `not_claimable` |
 | `queue_watch` | `queue`, optional `stop` | `{queue, watching: true, wake}` (`POST /api/queues/<queue>/watch`; `wake` as `watch` gives it), or with `stop: true` `{queue, watching: false}` (`DELETE`) |
@@ -3684,7 +3684,15 @@ replies, resolves and writes report metadata from its session (400
 `no_session` without one), and its replies, resolves and metadata writes need
 its own live lease: 409 `claim_required` when the session never claimed the
 report or released it, 409 `lease_lost` when its lease expired or another
-lease superseded it, 409 `thread_taken` when another session holds it. A
+lease superseded it, 409 `thread_taken` when another session holds it. One
+exception: while a report is `fix_proposed`, the session that proposed the
+fix that waits (its lease ended with the proposal) replies without a
+lease, while it has not ended and its person is a member, so it answers
+the reporter's replies that reach it (below); its resolves and metadata
+writes still need a lease, and any other session's reply is refused as
+above. Once the fix waits no more (verified, rejected by a reopen,
+superseded by a person's next fix, or closed by a resolve), the exception
+ends: after a reopen the proposer claims the report again to write. A
 `working` call naming a claimed report in `thread_ids` renews the session's
 lease on it. A person in their browser replies to and resolves reports
 without a claim. A write is checked against the lease by the writing
@@ -3737,8 +3745,11 @@ comments, claim, created_at`), a report carries, when they apply:
 version, the commit and build `/healthz` reports, and when it received
 the report), `reporter_profile` (triage members only), `resolve_reason`,
 `fixes` (`[{n, summary, url?, commit?, release?, verify_url?,
-verify_after?, proposer_name, created_at, outcome, verdict_note?,
-verdict_context?, verdict_at?}]`, oldest first; `outcome` is `pending`,
+verify_after?, proposer_name, proposer_kind, created_at, outcome, verdict_note?,
+verdict_context?, verdict_at?}]`, oldest first; `proposer_kind` is
+`agent` (proposed through an agent's session, which hears the reporter's
+replies while the fix waits) or `person` (a triage member's, whose
+replies wait for the queue's people); `outcome` is `pending`,
 `verified`, `rejected`, `superseded` (a person's next fix replaced it) or
 `closed` (the report was resolved without a verdict)), `reopen_count`,
 `diagnostics_lines` (the latest capture that has any) and `filing_diagnostics_lines`
@@ -3749,8 +3760,15 @@ carries `capture` (the reopen's number, the filing being capture 0),
 | Field | Triage | The reporter that filed it | Another reporter (`reporters_see: all`) |
 |---|---|---|---|
 | `context`, `fixes[].verdict_context` | yes | yes | absent |
+| `metadata` (the host app's) | yes | yes | `null` |
 | `reporter_profile` | yes | absent | absent |
 | diagnostics (`…/diagnostics`) | yes | yes | 404 `not_found` |
+| `anchor`, `comments`, `fixes` (but their `verdict_context`) | yes | yes | yes |
+
+The anchor stays in every view of a report: it says where on the page the
+report points, which a view of reports shared under `reporters_see: all`
+needs to show them on the page; what the filer's browser, account or app
+said (`context`, `metadata`, diagnostics) stays with the filer and triage.
 
 **Context.** A JSON object, at most 16 KiB written compact: `v` (1),
 `captured_at` (RFC 3339), `release?` (`{id?, version?, commit?,
@@ -3847,7 +3865,8 @@ tools" says; 404 `not_a_member` otherwise):
 **Queue wakes.** A report filed into a queue, and a report reopened (by
 its reporter, or by triage on their behalf), wakes every live session
 watching the queue; a reopen also wakes the session of the report's
-latest lease (whoever claimed it last, so the fix's proposer) while that
+latest lease (its previous claimant: the rejected fix's proposer when an
+agent proposed it) while that
 session has not ended, whether it watches the queue or not. Only a
 session whose person (or the owner) is still a member of the queue is
 woken; removing a member ends their sessions' watches of it. A wake is a
@@ -3866,11 +3885,14 @@ no longer a member, or the queue is gone is never handed over or
 announced. A reporter's comment on a report (`…/reporter/reports/<tid>/comments`)
 is sent the same way to the session holding the report's live lease or,
 while a fix waits (`fix_proposed`, its lease ended with the proposal), to
-the session of the report's latest lease (the fix's proposer) while that
-session has not ended, in each case while its person is a member: a
-feedback row for that comment, with no `queue_event`, delivered under
-the same rule. Any other reporter's comment reaches no session; triage
-reads it on the report. It
+the session that proposed that fix (its summary comment's session; the
+fix's `proposer_kind` is `agent`) while that session has not ended, in
+each case while its person is a member: a feedback row for that comment,
+with no `queue_event`, delivered under the same rule. That session may
+answer it with `queue_reply` without a lease ("Report queue tools").
+When a person proposed the fix that waits, the comment reaches no agent's
+session, whoever claimed the report before; nor does any other
+reporter's comment. Triage reads every one on the report. It
 never makes the session the report's owner (a claim does) and is no
 part of the report's `feedback_state`: a wake does not show the report
 as sent to or delivered to an agent. Its item carries `queue_id`,

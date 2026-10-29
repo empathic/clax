@@ -8,7 +8,8 @@ use clax_core::queue::{
     LEASE_SECS, REPORTER_TOKEN_SECS, ReportOrder, ReportersSee, Role, State, StateFilter,
 };
 use clax_core::report::{
-    DiagLine, FixOutcome, NewFix, ReportContext, ReporterProfile, ResolveReason, ServerStamp,
+    DiagLine, FixOutcome, NewFix, ProposerKind, ReportContext, ReporterProfile, ResolveReason,
+    ServerStamp,
 };
 use clax_core::working::ManualClock;
 use serde_json::json;
@@ -1125,6 +1126,135 @@ fn claim_of_fix_proposed_is_not_claimable() {
         st.propose_fix(DAEMON, &qid, &other, &ana(), fix("Again")),
         Err(CoreError::NotClaimable)
     ));
+}
+
+/// A fix's proposer replies to the reporter while its fix waits, with no
+/// lease; no other agent does, nor the proposer once the fix waits no more.
+#[test]
+fn the_proposer_replies_while_its_fix_waits_and_no_one_else_does() {
+    let (_d, st) = store();
+    let qid = queue(&st, ReportersSee::Own);
+    let (tid, a) = fixed(&st, &qid);
+    let sa = st.get_session(&a).unwrap().unwrap();
+    let proposer = ReportWriter::Agent(&sa);
+    let (c, r) = st
+        .report_reply(DAEMON, &qid, &tid, &proposer, "Check it on 0.6.1")
+        .unwrap();
+    assert_eq!(c.author_kind, "agent");
+    assert_eq!(r.state, State::FixProposed, "a reply changes no state");
+    assert!(r.claim.is_none(), "nor takes a lease");
+    let seen = st
+        .report(&qid, &tid, Visibility::Reporter("emp-1"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(seen.comments.last().unwrap().body, "Check it on 0.6.1");
+    // Its lease ended with the proposal: other writes still need one.
+    assert!(matches!(
+        st.resolve_report(DAEMON, &qid, &tid, &proposer, ResolveReason::Fixed),
+        Err(CoreError::ClaimRequired)
+    ));
+    assert!(matches!(
+        st.set_thread_metadata_as(DAEMON, &qid, &tid, Some(&a), json!({"x": 1}), 1),
+        Err(CoreError::ClaimRequired)
+    ));
+    // Another agent needs a live claim, which nobody gets while it waits.
+    let b = session(&st, "codex", "b");
+    let sb = st.get_session(&b).unwrap().unwrap();
+    assert!(matches!(
+        st.report_reply(DAEMON, &qid, &tid, &ReportWriter::Agent(&sb), "Me too"),
+        Err(CoreError::ClaimRequired)
+    ));
+    // Once verified, the fix waits no more, and nor does its proposer's reply.
+    st.verify_report(DAEMON, &qid, &tid, Verdict::Reporter("emp-1"), None, None)
+        .unwrap();
+    assert!(matches!(
+        st.report_reply(DAEMON, &qid, &tid, &proposer, "Thanks"),
+        Err(CoreError::ClaimRequired)
+    ));
+
+    // Reopened, the proposer claims again to write.
+    let (tid, a) = fixed(&st, &qid);
+    let sa = st.get_session(&a).unwrap().unwrap();
+    st.reopen_report(
+        DAEMON,
+        &qid,
+        &tid,
+        Verdict::Reporter("emp-1"),
+        "Still wrong".into(),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(matches!(
+        st.report_reply(DAEMON, &qid, &tid, &ReportWriter::Agent(&sa), "Looking"),
+        Err(CoreError::ClaimRequired)
+    ));
+
+    // A person's next fix is not the agent's to answer for.
+    let (tid, a) = fixed(&st, &qid);
+    let sa = st.get_session(&a).unwrap().unwrap();
+    st.propose_fix(DAEMON, &qid, &tid, &ana(), fix("Also the tax line"))
+        .unwrap();
+    assert!(matches!(
+        st.report_reply(DAEMON, &qid, &tid, &ReportWriter::Agent(&sa), "Mine"),
+        Err(CoreError::ClaimRequired)
+    ));
+
+    // Nor is a fix's proposer whose session ended.
+    let (tid, a) = fixed(&st, &qid);
+    let sa = st.get_session(&a).unwrap().unwrap();
+    st.end_session(DAEMON, &a).unwrap();
+    assert!(matches!(
+        st.report_reply(DAEMON, &qid, &tid, &ReportWriter::Agent(&sa), "Late"),
+        Err(CoreError::ClaimRequired)
+    ));
+}
+
+/// Each fix attempt says whether an agent's session or a person proposed
+/// it.
+#[test]
+fn a_fix_names_its_proposers_kind() {
+    let (_d, st) = store();
+    let qid = queue(&st, ReportersSee::Own);
+    let (tid, _) = fixed(&st, &qid);
+    let r = st
+        .propose_fix(DAEMON, &qid, &tid, &ana(), fix("Also the tax line"))
+        .unwrap();
+    assert_eq!(
+        r.fixes.iter().map(|f| f.proposer_kind).collect::<Vec<_>>(),
+        [ProposerKind::Agent, ProposerKind::Person]
+    );
+}
+
+/// Under `reporters_see: all`, another reporter reads a report without its
+/// metadata (the host app's, which can carry the filer's details), as
+/// without its context; its anchor (where on the page) stays.
+#[test]
+fn under_all_another_reporter_reads_no_metadata() {
+    let (_d, st) = store();
+    let qid = queue(&st, ReportersSee::All);
+    let tid = file(&st, &qid, Some("emp-1"), None);
+    let meta = json!({"build": "2026.10.27"});
+    let theirs = st
+        .report(&qid, &tid, Visibility::Reporter("emp-2"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(theirs.metadata, serde_json::Value::Null);
+    assert_eq!(theirs.anchor, anchor());
+    let (listed, _) = st
+        .reports(&qid, Visibility::Reporter("emp-2"), None, None)
+        .unwrap();
+    assert_eq!(listed[0].metadata, serde_json::Value::Null);
+    let commented = st
+        .reporter_comment(DAEMON, &qid, &tid, "emp-2", "Me too")
+        .unwrap();
+    assert_eq!(commented.metadata, serde_json::Value::Null);
+    // The filer and triage read it.
+    for vis in [Visibility::Reporter("emp-1"), Visibility::All] {
+        let r = st.report(&qid, &tid, vis).unwrap().unwrap();
+        assert_eq!(r.metadata, meta, "{vis:?}");
+    }
 }
 
 #[test]

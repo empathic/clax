@@ -4247,7 +4247,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Reply to a report you claimed; the reporter reads the reply in the app. `claim_required` when you have not claimed the report, `lease_lost` when your claim lapsed. The reply renders as GitHub-flavoured Markdown, with no images and no raw HTML. Returns the comment and the report.",
+        description = "Reply to a report you claimed, or, while a fix you proposed waits for the reporter's verdict, to that report with no claim (the reporter's replies to it reach you); the reporter reads the reply in the app. `claim_required` when you have not claimed the report, `lease_lost` when your claim lapsed. The reply renders as GitHub-flavoured Markdown, with no images and no raw HTML. Returns the comment and the report.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

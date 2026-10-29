@@ -4814,6 +4814,69 @@ mod delivery {
         assert!(touched.targets.is_empty(), "{touched:?}");
     }
 
+    /// A reporter's reply while a person's fix waits reaches no agent's
+    /// session, though an agent claimed the report before (and released
+    /// it, or its lease lapsed, or its own fix was superseded): triage
+    /// reads it.
+    #[test]
+    fn a_reporters_reply_on_a_persons_fix_reaches_no_earlier_agent() {
+        let fix = |s: &str| clax_core::report::NewFix {
+            summary: s.into(),
+            url: None,
+            commit: None,
+            release: None,
+            verify_url: None,
+            verify_after: None,
+        };
+        let mia = crate::queues::ReportWriter::Person {
+            name: "Mia".into(),
+            public_id: None,
+        };
+        let reply = |w: &Two, qid: &str, tid: &str| {
+            w.st.reporter_comment_touched(DAEMON, qid, tid, "emp-1", "Where do I check it?")
+                .unwrap()
+                .1
+        };
+
+        // Claimed, released, then a person's fix.
+        let w = two_people();
+        let (qid, tok) = sams_queue(&w);
+        let tid = file_into(&w, &qid, &tok, "Invoice 4821");
+        w.st.claim(DAEMON, &qid, &tid, &w.sid).unwrap();
+        w.st.release(DAEMON, &qid, &tid, &w.sid).unwrap();
+        w.st.propose_fix(DAEMON, &qid, &tid, &mia, fix("Rounded it"))
+            .unwrap();
+        let touched = reply(&w, &qid, &tid);
+        assert!(touched.targets.is_empty(), "{touched:?}");
+
+        // Claimed, lapsed, then a person's fix.
+        let tid = file_into(&w, &qid, &tok, "Invoice 4822");
+        w.st.claim(DAEMON, &qid, &tid, &w.sid).unwrap();
+        w.clock.advance(clax_core::queue::LEASE_SECS + 1);
+        w.st.propose_fix(DAEMON, &qid, &tid, &mia, fix("Rounded it"))
+            .unwrap();
+        let touched = reply(&w, &qid, &tid);
+        assert!(touched.targets.is_empty(), "{touched:?}");
+
+        // The agent's own fix, superseded by a person's next one.
+        let tid = file_into(&w, &qid, &tok, "Invoice 4823");
+        w.st.claim(DAEMON, &qid, &tid, &w.sid).unwrap();
+        let s = w.st.get_session(&w.sid).unwrap().unwrap();
+        w.st.propose_fix(
+            DAEMON,
+            &qid,
+            &tid,
+            &crate::queues::ReportWriter::Agent(&s),
+            fix("Rounded it"),
+        )
+        .unwrap();
+        assert!(reply(&w, &qid, &tid).targets.contains(&w.sid));
+        w.st.propose_fix(DAEMON, &qid, &tid, &mia, fix("And the tax"))
+            .unwrap();
+        let touched = reply(&w, &qid, &tid);
+        assert!(touched.targets.is_empty(), "{touched:?}");
+    }
+
     /// A reporter's reply on a report whose lease lapsed while it was
     /// `claimed` (no fix waiting) reaches no session: triage reads it.
     #[test]
