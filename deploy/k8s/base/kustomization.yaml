@@ -1,0 +1,24 @@
+# What every deployment shares: the Service clients reach, the catalog, the
+# service account and the disruption budget. The sqlite/ overlay adds the
+# workload, a StatefulSet of shards; docs/kubernetes.md walks through it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+labels:
+  - pairs:
+      app.kubernetes.io/name: clax
+      app.kubernetes.io/component: fleet
+    includeSelectors: true
+resources:
+  - serviceaccount.yaml
+  - service.yaml
+  - pdb.yaml
+  - networkpolicy.yaml
+configMapGenerator:
+  # The catalog (crates/clax-fleet/src/catalog.rs): every process reloads
+  # it as the mounted file changes, so it keeps one name, and editing it
+  # restarts nothing but the instances whose entry changed.
+  - name: clax-fleet-catalog
+    files:
+      - fleet.toml
+    options:
+      disableNameSuffixHash: true

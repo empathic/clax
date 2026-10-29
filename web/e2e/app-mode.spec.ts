@@ -372,9 +372,13 @@ test("back() moves through the app's own fragments and pages in place, and acros
   await expect.poll(async () => (await ofType(page, "landed")).length, { timeout: 10_000 }).toBe(1);
   const other = page.frames().find(f => /\/v\/2\/other\.html$/.test(f.url()))!;
   await expect(other.locator("#o")).toHaveText("Other, later");
-  // Back: the index page of version 2, then its route, then its start.
+  // Back: the index page of version 2, then its route, then its start. The
+  // next back() waits for the index page to greet: its greeting starts the
+  // trail of a new document, and drops a move a back() made before it.
+  const readies = (await ofType(page, "ready")).length;
   await host(page, "back()");
   await expect.poll(() => page.frames().some(f => /\/v\/2\/(#.*)?$/.test(f.url()))).toBe(true);
+  await expect.poll(async () => (await ofType(page, "ready")).slice(readies).some(r => r.file === "index.html")).toBe(true);
   expect(new URL(page.url()).pathname).toBe(`/a/${id}`);
   await host(page, "back()");
   const index = page.frames().find(f => /\/v\/2\/(#.*)?$/.test(f.url()))!;

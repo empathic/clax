@@ -211,6 +211,8 @@ An agent connects to a hosted Clax (clax.dev among them) as its person, with an 
 
 A new person's gallery on a hosted Clax starts with the Clax Quickstart, a pinned page of theirs that walks from sign-in to a first comment round trip. The site seeds it at the person's first sign-in (GitHub or a sign-in link) or when they accept an invite, into a gallery that never held an artifact. A local home is not seeded: its gallery starts empty, and a quickstart an earlier build seeded there stays. While nobody has touched a quickstart, each later sign-in (on a hosted Clax) and each start (for one a local home holds) moves it to the release this Clax ships, as a new version labelled `Quickstart <release>`; the first comment thread on it, a version or a change of its capabilities by anyone else, or an approval or withdrawal by a person stops its updates for good. `[gallery] quickstart = false` in `config.toml` (or `CLAX_GALLERY__QUICKSTART=false`) turns seeding and updates off.
 
+The same page is a hosted Clax's landing page: a visitor who is not signed in and opens the site's root (`https://clax.dev/`) is sent to `/start/`, where the site shows the shell's minimal chrome (its header, with Sign in, or Your gallery once signed in; no threads or comments) around the quickstart this release carries, served as it ships at `/start/index.html`. Its Sign in with GitHub signs in on that site, in the same window. The page's reel (`/start/reel.mp4` and `reel-poster.jpg`) is served from wherever the Worker's `REEL_URL` and `REEL_POSTER_URL` name: Cloudflare Stream on clax.dev, the dev server itself under `just clax-dev-local`; without them the page shows no player. The gallery's other pages (`/inbox`, `/people`, …) still send such a visitor to `/signin`. A build without the quickstart, or a daemon with `[gallery] quickstart = false`, has no landing page: the root sends a signed-out visitor to `/signin`, and `/start/` is 404.
+
 `app_links` and `stores` concern the Clax app, and every key is optional. `apple_team_id` (10 uppercase letters and digits, the team that signs the app) serves `/.well-known/apple-app-site-association` for `<team>.dev.empathic.clax`; `android_package` and `android_sha256` (the signing certificate's SHA-256 fingerprint, 32 hex bytes joined by `:`), given together, serve `/.well-known/assetlinks.json`. With them, a Get in Clax link (`/a/<id>/get`) opens in the Clax app on iPhone, iPad and Android; without them those files are 404 and the link opens the get page in the browser. `stores.ios` and `stores.android`, `https://` URLs, are offered on that page to someone without the app. App links work only for the domains the app's build declares, clax.dev alone; any other hosted Clax's get page offers Open in Clax (`clax:get?url=…`, on every platform) and Download .clax. The Cloudflare Worker reads the same settings from `APPLE_TEAM_ID`, `ANDROID_PACKAGE`, `ANDROID_SHA256`, `IOS_STORE_URL` and `ANDROID_STORE_URL` (`crates/clax-worker/README.md`).
 
 ### People
@@ -415,6 +417,8 @@ path a session uses.
 
 [docs/feedback.md](feedback.md) is the guide to report queues for a product of your own: its users report problems from inside the app with a screenshot and what their browser knew, and your agents work them through `clax queue` and the `queue_*` tools until the reporter says the fix works.
 
+[docs/kubernetes.md](kubernetes.md) deploys hosted Clax instances on Kubernetes, each on its shard pod's volume and scaled across pods (`clax-fleet`, `deploy/k8s`).
+
 ## Upgrading
 
 Pages viewed before this version may still be cached by the browser (older daemons marked supporting HTML pages immutable, and Chrome can keep serving such a copy inside the artifact frame even after "Clear site data"). After upgrading from such a daemon, clear "Cached images and files" for "All time" once, at chrome://settings/clearBrowserData. From this version on, every HTML page is revalidated on each load and the bridge URL names its version, so upgrades never need this.
@@ -467,7 +471,9 @@ it, and `clax-server` over `clax-bot-js` too, an optional dependency
 behind its default `native-sandbox` feature (without it, as in the
 crates.io package, scripts answer `unavailable`); the hosted Worker,
 `crates/clax-worker`, is a workspace of its
-own over the daemon crates. `scripts/check-crate-layers.py`, a quality
+own over the daemon crates. `clax-fleet` (Clax instances across
+processes, the server of the Kubernetes deployment, `docs/kubernetes.md`)
+sits beside `clax-cli`, over `clax-server` and `clax-embedded`. `scripts/check-crate-layers.py`, a quality
 gate, holds the rule crate by crate (its `ALLOWED` map) and fails a
 dependency out of order.
 

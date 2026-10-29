@@ -1,0 +1,18 @@
+# The headless Service that names each shard's pod
+# (clax-<shard>.clax-peers), which CLAX_FLEET_PEER forwards to. Pods are
+# published before they are ready: a shard's instances are served by that
+# pod alone, so a request for them waits on it either way.
+apiVersion: v1
+kind: Service
+metadata:
+  name: clax-peers
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: clax
+    app.kubernetes.io/component: fleet
+  ports:
+    - name: http
+      port: 7480
+      targetPort: http

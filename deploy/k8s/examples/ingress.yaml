@@ -1,0 +1,42 @@
+# An Ingress for the example catalog (base/fleet.toml): the instance's
+# public origin and its site domain's wildcard, both to the clax Service,
+# whose pods route each request to its instance by Host. TLS for the
+# wildcard needs a certificate of its own (cert-manager's DNS-01 issuer).
+# Long-lived requests (event streams, WebSockets) need the controller's
+# timeouts raised; the annotations below are ingress-nginx's.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: clax
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "64m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - clax.example.com
+        - "*.clax-sites.example.com"
+      secretName: clax-tls
+  rules:
+    - host: clax.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: clax
+                port:
+                  name: http
+    - host: "*.clax-sites.example.com"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: clax
+                port:
+                  name: http

@@ -89,6 +89,7 @@ route, and makes what is missing, so it needs:
 | Account | Queues: Edit | `wrangler queues create clax-artifacts-events`, the Worker's consumer, and the smoke's `wrangler queues subscription create/delete` |
 | Account | Artifacts (Edit) | the `clax` namespace: deploy.mjs lists namespaces and creates and deletes a probe repository |
 | Account | Account Settings: Read | wrangler reading the account |
+| Account | Stream: Edit | the landing page's reel: `scripts/reel-stream.mjs` lists, uploads and deletes the account's `clax-reel-*` videos and turns on their MP4 download (the account needs a Stream subscription; without either, the deploy goes on and the page shows no player) |
 | Zone (`clax.run`) | Workers Routes: Edit | the route `*.clax.run/*` (`POST /zones/{zone}/workers/routes` accepts Workers Routes Write) |
 | Zone (both) | Zone: Read | wrangler finding each zone by name |
 | User | User Details: Read, Memberships: Read | `wrangler whoami`, which deploy.mjs runs to see it is signed in |

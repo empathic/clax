@@ -464,10 +464,18 @@ fn hosted(env: &Env) -> Result<Option<Arc<clax_http::hosted::Hosted>>> {
         opt("LEGAL_VERSION").as_deref(),
     )
     .map_err(rust_err)?;
+    // The landing page's reel, served from elsewhere: `REEL_URL` (the
+    // video) and `REEL_POSTER_URL` (its poster frame); none serves only
+    // what the quickstart release carries.
+    let reel = opt("REEL_URL")
+        .map(|v| clax_http::hosted::Reel::new(&v, opt("REEL_POSTER_URL").as_deref()))
+        .transpose()
+        .map_err(rust_err)?;
     let h = h
         .with_github(github, max_artifacts)
         .with_public_gallery(public_gallery)
-        .with_legal(legal);
+        .with_legal(legal)
+        .with_reel(reel);
     Ok(Some(Arc::new(h)))
 }
 

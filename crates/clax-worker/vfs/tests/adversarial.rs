@@ -11,17 +11,6 @@ use clax_do_vfs::{
 use rand::{Rng, RngCore, SeedableRng};
 use rusqlite::{Connection, ErrorCode, OpenFlags, params};
 
-/// Holds the VFS for one test at a time. rsqlite-vfs keeps the registered
-/// VFS's last error in a `RefCell` that every thread's connections share
-/// (`VfsAppData::store_err`), so two tests failing VFS calls at once on the
-/// harness's threads panic there ("RefCell already borrowed") inside an
-/// `extern "C"` callback, which aborts the test binary.
-fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
-    static VFS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    VFS.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 type MemFile = (u64, BTreeMap<u64, Vec<u8>>);
 
 #[derive(Default)]
@@ -100,7 +89,6 @@ fn integrity(c: &Connection) -> String {
 /// connection stays in MEMORY mode and its commits reach the store.
 #[test]
 fn wal_mode_is_refused_so_commits_reach_the_store() {
-    let _vfs = one_at_a_time();
     let store = Rc::new(MemStore::default());
     let c = open("wal.db", store.clone()).unwrap();
     let r = c.query_row("PRAGMA journal_mode=WAL", [], |r| r.get::<_, String>(0));
@@ -121,7 +109,6 @@ fn wal_mode_is_refused_so_commits_reach_the_store() {
 /// refused, in any spelling; asking for the current mode is not.
 #[test]
 fn journal_and_locking_modes_other_than_open_s_are_refused() {
-    let _vfs = one_at_a_time();
     let store = Rc::new(MemStore::default());
     let c = open("modes.db", store.clone()).unwrap();
     for mode in [
@@ -152,7 +139,6 @@ fn journal_and_locking_modes_other_than_open_s_are_refused() {
 /// would open its WAL file; the VFS refuses to open one.
 #[test]
 fn a_stored_wal_database_is_refused() {
-    let _vfs = one_at_a_time();
     let store = Rc::new(MemStore::default());
     let c = open("walhdr.db", store.clone()).unwrap();
     c.execute_batch("CREATE TABLE t(k); INSERT INTO t VALUES (1);")
@@ -173,7 +159,6 @@ fn a_stored_wal_database_is_refused() {
 /// handle reaches its own file, and the database's commits are unaffected.
 #[test]
 fn temporary_files_open_through_the_vfs_keep_their_own_contents() {
-    let _vfs = one_at_a_time();
     let store = Rc::new(MemStore::default());
     let c = open("tempfiles.db", store.clone()).unwrap();
     c.execute_batch(&format!(
@@ -214,7 +199,6 @@ fn temporary_files_open_through_the_vfs_keep_their_own_contents() {
 /// VACUUM INTO and a second connection on an open file all fail.
 #[test]
 fn only_the_files_open_registered_can_be_opened() {
-    let _vfs = one_at_a_time();
     let store = Rc::new(MemStore::default());
     let c = open("only.db", store.clone()).unwrap();
     c.execute_batch("CREATE TABLE t(k); INSERT INTO t VALUES (1);")
@@ -255,7 +239,6 @@ fn only_the_files_open_registered_can_be_opened() {
 /// the store before COMMIT.
 #[test]
 fn a_spilling_transaction_stores_nothing_until_commit() {
-    let _vfs = one_at_a_time();
     let store = Rc::new(MemStore::default());
     let c = open("spill.db", store.clone()).unwrap();
     c.execute_batch("PRAGMA cache_size=10; CREATE TABLE t(k INTEGER PRIMARY KEY, v BLOB);")
@@ -285,7 +268,6 @@ fn a_spilling_transaction_stores_nothing_until_commit() {
 /// pages. It must hold the same bytes as before.
 #[test]
 fn a_spilled_rollback_stores_only_the_restored_state() {
-    let _vfs = one_at_a_time();
     let store = Rc::new(MemStore::default());
     let c = open("spillrb.db", store.clone()).unwrap();
     c.execute_batch(
@@ -317,7 +299,6 @@ fn a_spilled_rollback_stores_only_the_restored_state() {
 /// what it later commits is what a reopen sees.
 #[test]
 fn the_connection_recovers_after_a_refused_commit() {
-    let _vfs = one_at_a_time();
     let store = Rc::new(MemStore::default());
     let c = open("recover.db", store.clone()).unwrap();
     c.execute_batch(
@@ -356,7 +337,6 @@ fn the_connection_recovers_after_a_refused_commit() {
 /// stores the truncation.
 #[test]
 fn a_refused_truncation_is_kept_for_the_next_commit() {
-    let _vfs = one_at_a_time();
     let store = Rc::new(MemStore::default());
     let c = open("vac.db", store.clone()).unwrap();
     c.execute_batch("CREATE TABLE t(k INTEGER PRIMARY KEY, v BLOB);")
@@ -408,7 +388,6 @@ fn a_refused_truncation_is_kept_for_the_next_commit() {
 /// header's page count are never read.
 #[test]
 fn a_truncation_never_stored_leaves_a_valid_database() {
-    let _vfs = one_at_a_time();
     let store = Rc::new(MemStore::default());
     let c = open("vac2.db", store.clone()).unwrap();
     c.execute_batch(&format!(
@@ -437,7 +416,6 @@ fn a_truncation_never_stored_leaves_a_valid_database() {
 /// either store.
 #[test]
 fn a_stale_connection_cannot_write_into_a_later_open() {
-    let _vfs = one_at_a_time();
     let old_store = Rc::new(MemStore::default());
     let old = open("alias.db", old_store.clone()).unwrap();
     old.execute_batch("CREATE TABLE t(k INTEGER PRIMARY KEY); INSERT INTO t VALUES (1);")
@@ -476,7 +454,6 @@ fn a_stale_connection_cannot_write_into_a_later_open() {
 /// and reopens over several page sizes, checked against a model.
 #[test]
 fn random_workloads_match_a_model_across_reopens() {
-    let _vfs = one_at_a_time();
     for seed in 0..8u64 {
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
         let page_size = [1024, 4096, 8192, 65536][(seed % 4) as usize];
@@ -594,7 +571,6 @@ fn random_workloads_match_a_model_across_reopens() {
 /// the file, is refused in any spelling.
 #[test]
 fn each_commit_is_stored_and_synchronous_off_is_refused() {
-    let _vfs = one_at_a_time();
     let store = Rc::new(MemStore::default());
     let c = open("sync-off.db", store.clone()).unwrap();
     for off in ["OFF", "off", "0", "'off'", "no", "false"] {
@@ -636,7 +612,6 @@ fn each_commit_is_stored_and_synchronous_off_is_refused() {
 /// and the connection as they were.
 #[test]
 fn a_transaction_past_the_cap_fails_and_rolls_back() {
-    let _vfs = one_at_a_time();
     for (case, cache_bytes) in [("spilling", 64 << 10), ("at commit", 64 << 20)] {
         let name = format!("cap-{cache_bytes}.db");
         let store = Rc::new(MemStore::default());
@@ -748,7 +723,6 @@ fn rows(c: &Connection) -> BTreeMap<i64, Vec<u8>> {
 /// connection's next commit is stored whole.
 #[test]
 fn every_refused_store_commit_leaves_a_committed_state() {
-    let _vfs = one_at_a_time();
     type Setup = &'static str;
     type Op = &'static str;
     let cases: [(&str, Setup, Op); 9] = [
@@ -861,7 +835,6 @@ fn every_refused_store_commit_leaves_a_committed_state() {
 /// opened on its own, is exactly the model of committed transactions.
 #[test]
 fn the_store_holds_exactly_the_committed_transactions() {
-    let _vfs = one_at_a_time();
     for seed in 0..12u64 {
         let mut rng = rand::rngs::StdRng::seed_from_u64(1000 + seed);
         let auto_vacuum = ["NONE", "FULL", "INCREMENTAL"][(seed % 3) as usize];
@@ -976,7 +949,6 @@ fn the_store_holds_exactly_the_committed_transactions() {
 /// too: neither changes what `PRAGMA name=value` may not.
 #[test]
 fn pragma_functions_cannot_change_the_refused_settings() {
-    let _vfs = one_at_a_time();
     let store = Rc::new(MemStore::default());
     let c = open("pragma-fn.db", store.clone()).unwrap();
     for sql in [
@@ -1012,7 +984,6 @@ fn pragma_functions_cannot_change_the_refused_settings() {
 /// delegates to `authorize` keeps its refusals and adds its own.
 #[test]
 fn a_caller_authorizer_that_delegates_keeps_the_refusals() {
-    let _vfs = one_at_a_time();
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
     let store = Rc::new(MemStore::default());
     let c = open("own-auth.db", store.clone()).unwrap();

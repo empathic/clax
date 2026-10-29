@@ -1,5 +1,6 @@
 load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
 load("//bazel/js:defs.bzl", "npm_script_test")
+load("@rules_python//python:py_binary.bzl", "py_binary")
 load(":reel.bzl", "reel_vignette")
 
 # The sizzle reel's recorder
@@ -45,15 +46,17 @@ VIGNETTES = [
 ]
 
 # What every recording reads of this package: the recorder, the seeded
-# pages and reel.toml, but no vignette and no test. reel_vignette adds the
-# vignette's own script (:<id>_script), so an edit to one vignette
-# re-records that one alone.
+# pages and reel.toml, but no vignette, no test and not the composer
+# (compose/, which :reel reads). reel_vignette adds the vignette's own
+# script (:<id>_script), so an edit to one vignette re-records that one
+# alone, and an edit to the composer re-records none.
 copy_to_bin(
     name = "recorder",
     srcs = glob(
         ["**"],
         exclude = [
             "**/.qual",
+            "compose/**",
             "**/*.test.ts",
             "**/*.spec.ts",
             "BUILD.bazel",
@@ -158,4 +161,74 @@ filegroup(
         ":tests",
     ] + [":%s_script" % v for v in VIGNETTES],
     visibility = ["//web:__pkg__"],
+)
+
+# The vignettes the landing page's reel cuts together (compose/landing.sh
+# orders them).
+LANDING_CUT = [
+    "agent",
+    "claxbot",
+    "coldopen",
+    "dash",
+    "game",
+    "globe",
+    "history",
+    "realtime",
+    "share",
+]
+
+# The composer's Python: the pinned CPython 3.12 with numpy and Pillow
+# (compose/requirements.lock), taking compose.sh's python3 command lines.
+py_binary(
+    name = "reel_python",
+    srcs = ["compose/python.py"],
+    # No generated __init__.py files: nothing imports this package.
+    legacy_create_init = 0,
+    main = "compose/python.py",
+    deps = [
+        "@reel_pip//numpy",
+        "@reel_pip//pillow",
+    ],
+)
+
+# The landing page's reel, `reel.mp4` and `reel-poster.jpg`: the vignettes'
+# deterministic recordings composed by compose/landing.sh with the pinned
+# ffmpeg, Chromium (for the cards) and Python. On demand (manual): the
+# local dev server (`just clax-dev-local`) builds it in the background, and
+# the production deploy builds it and uploads it to Cloudflare Stream
+# (.github/workflows/deploy-prod.yml). Outside the sandbox, as the
+# recordings are, for Chromium.
+genrule(
+    name = "reel",
+    srcs = [":%s_frames" % v for v in LANDING_CUT] + glob(
+        ["compose/**"],
+        exclude = ["compose/.qual"],
+    ) + glob(["vignettes/*.focus.json"]) + [
+        "reel.toml",
+        "@chromium//:browsers",
+        "@reel_ffmpeg//:ffmpeg",
+        "@reel_ffmpeg//:ffprobe",
+    ],
+    outs = [
+        "reel.mp4",
+        "reel-poster.jpg",
+    ],
+    cmd = " ".join([
+        "REEL_BROWSERS=\"$$PWD/$(execpath @chromium//:browsers)\"",
+        "FFMPEG=\"$$PWD/$(execpath @reel_ffmpeg//:ffmpeg)\"",
+        "FFPROBE=\"$$PWD/$(execpath @reel_ffmpeg//:ffprobe)\"",
+        "REEL_PYTHON=\"$$PWD/$(execpath :reel_python)\"",
+        "$(execpath compose/landing.sh) \"$$PWD/$(RULEDIR)/reel_work\"",
+    ] + ["$(execpath :%s_frames)" % v for v in LANDING_CUT] + [
+        "&& mv $(RULEDIR)/reel_work/reel.mp4 $(execpath reel.mp4)",
+        "&& mv $(RULEDIR)/reel_work/reel-poster.jpg $(execpath reel-poster.jpg)",
+        "&& rm -rf $(RULEDIR)/reel_work",
+    ]),
+    tags = [
+        "cpu:4",
+        "manual",
+        "no-remote",
+        "no-sandbox",
+    ],
+    tools = [":reel_python"],
 )

@@ -96,11 +96,13 @@ describe("a lazy capability judges the viewer's gesture when the call arrives, n
       const { REGISTRY, link } = await registry();
       link.call = async (cap, method) => { sent.push(`${cap}.${method}`); return null; };
       at.verdict = arrival;
-      const calls = [REGISTRY.share(env(), null as never).call("text", ["hi"]), REGISTRY.home(env(), null as never).call("openInbox", [])];
+      // Settled from the start: a call refused at arrival rejects before
+      // the frame opens, and must not go unhandled meanwhile.
+      const calls = Promise.allSettled([REGISTRY.share(env(), null as never).call("text", ["hi"]), REGISTRY.home(env(), null as never).call("openInbox", [])]);
       await settle();
       at.verdict = loaded;
       at.open();
-      return (await Promise.allSettled(calls)).map(r => r.status === "fulfilled" ? r.value : (r.reason as { code?: string }).code);
+      return (await calls).map(r => r.status === "fulfilled" ? r.value : (r.reason as { code?: string }).code);
     };
     expect(await run("ok", "no_gesture")).toEqual([null, null]);
     expect(sent.sort()).toEqual(["home.openInbox", "share.text"]);

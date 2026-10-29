@@ -10,17 +10,6 @@ use clax_do_vfs::{CHUNK_SIZE, Chunks, PageStore, StoreError, open, stats};
 use rand::RngCore;
 use rusqlite::params;
 
-/// Holds the VFS for one test at a time. rsqlite-vfs keeps the registered
-/// VFS's last error in a `RefCell` that every thread's connections share
-/// (`VfsAppData::store_err`), so two tests failing VFS calls at once on the
-/// harness's threads panic there ("RefCell already borrowed") inside an
-/// `extern "C"` callback, which aborts the test binary.
-fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
-    static VFS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    VFS.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 /// A file's size and chunks.
 type MemFile = (u64, BTreeMap<u64, Vec<u8>>);
 
@@ -76,7 +65,6 @@ fn count(c: &rusqlite::Connection) -> i64 {
 
 #[test]
 fn committed_rows_survive_reopen_and_uncommitted_ones_do_not() {
-    let _vfs = one_at_a_time();
     let store = Rc::new(MemStore::default());
     let c = open("a.db", store.clone()).unwrap();
     c.execute_batch("CREATE TABLE t(k INTEGER PRIMARY KEY, v BLOB)")
@@ -101,7 +89,6 @@ fn committed_rows_survive_reopen_and_uncommitted_ones_do_not() {
 
 #[test]
 fn a_rolled_back_transaction_that_spilled_pages_leaves_the_store_unchanged() {
-    let _vfs = one_at_a_time();
     let store = Rc::new(MemStore::default());
     let c = open("b.db", store.clone()).unwrap();
     c.execute_batch("PRAGMA cache_size=10; CREATE TABLE t(k INTEGER PRIMARY KEY, v BLOB);")
@@ -132,7 +119,6 @@ fn a_rolled_back_transaction_that_spilled_pages_leaves_the_store_unchanged() {
 
 #[test]
 fn a_few_megabytes_round_trip_and_vacuum_truncates_the_store() {
-    let _vfs = one_at_a_time();
     let store = Rc::new(MemStore::default());
     let c = open("c.db", store.clone()).unwrap();
     c.execute_batch("CREATE TABLE t(k INTEGER PRIMARY KEY, v BLOB)")
@@ -186,7 +172,6 @@ fn a_few_megabytes_round_trip_and_vacuum_truncates_the_store() {
 
 #[test]
 fn a_failed_commit_fails_the_transaction_and_the_store_keeps_the_last_commit() {
-    let _vfs = one_at_a_time();
     let store = Rc::new(MemStore::default());
     let c = open("d.db", store.clone()).unwrap();
     c.execute_batch(
@@ -204,7 +189,6 @@ fn a_failed_commit_fails_the_transaction_and_the_store_keeps_the_last_commit() {
 
 #[test]
 fn databases_with_different_stores_are_independent() {
-    let _vfs = one_at_a_time();
     let s1 = Rc::new(MemStore::default());
     let s2 = Rc::new(MemStore::default());
     let a = open("e1.db", s1.clone()).unwrap();
@@ -217,4 +201,56 @@ fn databases_with_different_stores_are_independent() {
     assert_eq!(count(&b), 2);
     assert!(s1.files.borrow().contains_key("e1.db"));
     assert!(!s1.files.borrow().contains_key("e2.db"));
+}
+
+/// Connections on many threads fail VFS calls at the same time, each its
+/// own refused commits: every one fails alone, and the store keeps the last
+/// commit, as the VFS keeps a failed call's message per thread.
+#[test]
+fn connections_on_many_threads_fail_at_once() {
+    let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let threads: Vec<_> = (0..8)
+        .map(|t| {
+            let start = start.clone();
+            std::thread::spawn(move || {
+                let store = Rc::new(MemStore::default());
+                let c = open(&format!("threads-{t}.db"), store.clone()).unwrap();
+                c.execute_batch("CREATE TABLE t(k, v); INSERT INTO t VALUES (1, 'a');")
+                    .unwrap();
+                *store.fail_commits.borrow_mut() = true;
+                start.wait();
+                for i in 0..50 {
+                    let err = c.execute("INSERT INTO t VALUES (?1, 'b')", [i + 2]);
+                    assert!(err.is_err(), "{err:?}");
+                }
+                *store.fail_commits.borrow_mut() = false;
+                assert_eq!(count(&c), 1);
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+}
+
+/// A connection moved to another thread finds none of its files in that
+/// thread's registry: its writes there fail and reach no store.
+#[test]
+fn a_connection_moved_to_another_thread_fails_there() {
+    let store = Rc::new(MemStore::default());
+    let c = open("moved.db", store.clone()).unwrap();
+    c.execute_batch("CREATE TABLE t(k); INSERT INTO t VALUES (1);")
+        .unwrap();
+    let commits = *store.commits.borrow();
+    let (c, wrote) = std::thread::spawn(move || {
+        let wrote = c.execute("INSERT INTO t VALUES (2)", []);
+        (c, wrote.is_ok())
+    })
+    .join()
+    .unwrap();
+    assert!(!wrote, "the moved connection wrote");
+    assert_eq!(*store.commits.borrow(), commits);
+    drop(c);
+    let c = open("moved.db", store).unwrap();
+    assert_eq!(count(&c), 1);
 }

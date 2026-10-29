@@ -8,6 +8,10 @@ name: Deploy prod
 # for /healthz to report the build, checks a site host and runs the smoke
 # as an agent token. A failure fails the run, and GitHub
 # notifies the owner; nothing is rolled back (docs/prod.md, "Rollback").
+# Beside it, the reel job builds the landing page's reel from the same
+# commit; the deploy puts it on Cloudflare Stream and points the Worker's
+# REEL_URL at it (CLOUDFLARE_API_TOKEN needs Stream: Edit, and the account
+# Stream). A reel that fails to build or upload never fails the deploy.
 #
 # Hourly, the drift check compares the commit /healthz reports with prod's
 # tip and fails when they differ. It deploys nothing and holds no deploy
@@ -23,8 +27,42 @@ on:
 permissions: {}
 
 jobs:
-  deploy:
+  # The landing page's reel (//web/reel:reel), built from this commit with
+  # no secret and no environment, on a runner of CI's kind with a Bazel
+  # state of its own, so a deploy re-records only the vignettes a change
+  # touched. The deploy job puts it on Cloudflare Stream.
+  reel:
     if: ${{ github.event_name != 'schedule' && github.ref == 'refs/heads/prod' }}
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    timeout-minutes: 60
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ github.sha }}", persist-credentials: false }
+      - uses: ./.github/actions/setup-bazel
+        with:
+          name: reel
+          commit: true
+      # Chromium's system libraries, as CI's bazel job installs them.
+      - name: Install Chromium's system libraries
+        run: bazelisk run //web:playwright -- install-deps chromium
+      - name: Build the reel (bazelisk build //web/reel:reel)
+        run: |
+          set -euo pipefail
+          bazelisk build //web/reel:reel
+          mkdir -p "$RUNNER_TEMP/reel"
+          cp bazel-bin/web/reel/reel.mp4 bazel-bin/web/reel/reel-poster.jpg "$RUNNER_TEMP/reel/"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: reel, path: "${{ runner.temp }}/reel/", retention-days: 7, if-no-files-found: error }
+      - name: Stop Bazel
+        if: ${{ always() }}
+        run: bazelisk shutdown || true
+
+  deploy:
+    # After the reel job, whatever its result: a reel that did not build
+    # never holds up a deploy (the Stream step below falls back).
+    needs: reel
+    if: ${{ !cancelled() && github.event_name != 'schedule' && github.ref == 'refs/heads/prod' }}
     # GitHub's runner: the environment's secrets go to no third-party
     # runner. The tools are the ones scripts/cloudflare-setup.sh checks for.
     runs-on: ubuntu-24.04
@@ -95,6 +133,26 @@ jobs:
           fi
           scripts/cloudflare-setup.sh "${args[@]}" --account "$CLOUDFLARE_ACCOUNT_ID" --ci --production
 
+      # The reel job's video, when it built one.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ needs.reel.result == 'success' }}
+        with: { name: reel, path: "${{ runner.temp }}/reel" }
+
+      # The reel on Cloudflare Stream (scripts/reel-stream.mjs, which installs
+      # nothing): uploaded unless Stream already has it, or, when the reel
+      # job built none, the newest reel Stream has. Its addresses go to the
+      # deploy below as --reel-url and --reel-poster-url; when this step
+      # fails, the deploy goes on and the landing page shows no player.
+      - name: Put the reel on Cloudflare Stream (scripts/reel-stream.mjs)
+        id: reel
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          REEL: ${{ runner.temp }}/reel/reel.mp4
+        run: |
+          set -euo pipefail
+          if [ -f "$REEL" ]; then node scripts/reel-stream.mjs "$REEL"; else node scripts/reel-stream.mjs --latest; fi >> "$GITHUB_OUTPUT"
+
       # Deploys what the step above built (--no-build installs and builds
       # nothing, and refuses a Worker built from another commit); only this
       # step has the secrets.
@@ -105,6 +163,8 @@ jobs:
           # The deploy record (setup secrets included on a first deploy)
           # stays in the runner's temporary directory, never uploaded.
           CLAX_DEPLOY_HOME: ${{ runner.temp }}/clax-deploy
+          REEL_URL: ${{ steps.reel.outputs.reel_url }}
+          REEL_POSTER_URL: ${{ steps.reel.outputs.reel_poster_url }}
         run: |
           set -euo pipefail
           args=(--legal bundled --public "$PUBLIC_HOST" --site-domain "$SITE_DOMAIN" --store "$STORE")
@@ -113,6 +173,11 @@ jobs:
           fi
           if [ -n "$RETIRED_CONTENT_ORIGIN" ]; then
             args+=(--retired-content-origin "$RETIRED_CONTENT_ORIGIN")
+          fi
+          if [ -n "$REEL_URL" ]; then
+            args+=(--reel-url "$REEL_URL" --reel-poster-url "$REEL_POSTER_URL")
+          else
+            echo "::warning::no reel on Cloudflare Stream: the landing page shows no player (see the Stream step)"
           fi
           scripts/cloudflare-setup.sh "${args[@]}" --account "$CLOUDFLARE_ACCOUNT_ID" \
             --ci --production --no-build --smoke --i-know-what-i-am-doing

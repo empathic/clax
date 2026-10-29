@@ -285,6 +285,31 @@ CRATES = {
         "tests": {},
         "version": "0.6.0"
     },
+    "crates/clax-fleet": {
+        "bins": {
+            "clax-fleet": "src/main.rs"
+        },
+        "default_features": [],
+        "deps": [
+            "//crates/clax-core:clax_core",
+            "//crates/clax-embedded:clax_embedded",
+            "//crates/clax-http:clax_http",
+            "//crates/clax-realtime:clax_realtime",
+            "//crates/clax-sample:clax_sample",
+            "//crates/clax-server:clax_server"
+        ],
+        "dev_deps": [],
+        "edition": "2024",
+        "features": [],
+        "has_build_script": True,
+        "lib": "clax_fleet",
+        "lib_root": "src/lib.rs",
+        "name": "clax-fleet",
+        "tests": {
+            "integration": "tests/integration.rs"
+        },
+        "version": "0.6.0"
+    },
     "crates/clax-git": {
         "bins": {},
         "default_features": [],
@@ -746,6 +771,14 @@ CRATES = {
         "has_build_script": False,
         "lib": "clax_do_vfs",
         "lib_root": "src/lib.rs",
+        "lint_flags": [
+            "--check-cfg=cfg(clax_embedded)",
+            "--check-cfg=cfg(clax_split)",
+            "--check-cfg=cfg(clax_split, values(any()))",
+            "-Wunexpected_cfgs",
+            "-Dunsafe_code",
+            "-Funsafe_op_in_unsafe_fn"
+        ],
         "name": "clax-do-vfs",
         "tests": {
             "adversarial": "tests/adversarial.rs",
@@ -753,7 +786,7 @@ CRATES = {
         },
         "version": "0.0.0",
         "wasm_deps": [
-            "@crates_wasm//:rsqlite-vfs-0.1.1",
+            "@crates_wasm//:rsqlite-vfs-0.2.0",
             "@crates_wasm//:rusqlite-0.40.2",
             "@crates_wasm//:sqlite-wasm-rs-0.5.5"
         ],

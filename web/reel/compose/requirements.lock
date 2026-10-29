@@ -1,0 +1,11 @@
+# The reel composer's Python packages (camera.py), pinned by checksum for
+# the hosts that build the reel: macOS arm64 and Linux x64, CPython 3.12.
+# //web/reel:reel_python is built with them (MODULE.bazel, pip.parse).
+numpy==2.0.2 \
+    --hash=sha256:8df823f570d9adf0978347d1f926b2a867d5608f434a7cff7f7908c6570dcf5e \
+    --hash=sha256:9a92ae5c14811e390f3767053ff54eaee3bf84576d99a2456391401323f4ec2c \
+    --hash=sha256:0123ffdaa88fa4ab64835dcbde75dcdf89c453c922f18dced6e27c90d1d0ec5a
+pillow==11.3.0 \
+    --hash=sha256:921bd305b10e82b4d1f5e802b6850677f965d8394203d182f078873851dada69 \
+    --hash=sha256:67172f2944ebba3d4a7b54f2e95c786a3a50c21b88456329314caaa28cda70f6 \
+    --hash=sha256:676b2815362456b5b3216b4fd5bd89d362100dc6f4945154ff172e206a22c024

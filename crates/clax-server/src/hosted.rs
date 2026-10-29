@@ -191,6 +191,43 @@ async fn legal_page(
     crate::shell::legal_page(&s, &req, file)
 }
 
+/// `GET /start/…`: the landing page, for anyone; 404 when the build
+/// carries no quickstart release. `/start/` is the shell's minimal chrome
+/// (the gallery entry, which shows the landing view there) around the
+/// quickstart page, `/start/index.html`; every other path is a file of the
+/// quickstart release this build carries ([`LANDING`]), 404 when it has
+/// none by that name. `/start` itself redirects to the directory. The
+/// reel's files redirect to where hosted mode serves the reel from
+/// ([`Hosted::with_reel`]), when it names a place.
+///
+/// [`Hosted::with_reel`]: clax_http::hosted::Hosted::with_reel
+async fn landing(
+    State(s): State<AppState>,
+    d: clax_http::agent::DeniedToGrants,
+    uri: axum::http::Uri,
+    req: HeaderMap,
+) -> Result<Response, ApiError> {
+    let Some(release) = s.quickstart.clone() else {
+        return Err(ApiError::not_found());
+    };
+    if uri.path() == "/start" {
+        return Ok(axum::response::Redirect::to(LANDING).into_response());
+    }
+    let file = uri.path().strip_prefix(LANDING).unwrap_or("");
+    if file.is_empty() {
+        return crate::shell::gallery_page(State(s), d, req).await;
+    }
+    let elsewhere = hosted_of(&s).reel.clone().and_then(|r| match file {
+        "reel.mp4" => Some(r.video),
+        "reel-poster.jpg" => r.poster,
+        _ => None,
+    });
+    if let Some(to) = elsewhere {
+        return Ok(axum::response::Redirect::temporary(&to).into_response());
+    }
+    crate::shell::landing_file(&release, &req, file)
+}
+
 /// `GET /api/hosted/me` → `{origin, setup_open, github, signed_in, person,
 /// legal}`; `legal` is null when the instance shows no documents, else
 /// `{terms_url, privacy_url, version, agreed}`, `agreed` null for a guest
@@ -1447,6 +1484,9 @@ pub fn router() -> Router<AppState> {
         .route("/join/{code}", get(signin_page))
         .route("/terms", get(legal_page))
         .route("/privacy", get(legal_page))
+        .route("/start", get(landing))
+        .route("/start/", get(landing))
+        .route("/start/{*file}", get(landing))
         .route("/api/hosted/me", get(me))
         .route("/api/hosted/legal/agree", post(legal_agree))
         .route("/api/hosted/setup", post(setup))
