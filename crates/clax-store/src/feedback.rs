@@ -10,7 +10,7 @@ use clax_core::anchor::Anchor;
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
 use clax_core::feedback::{
     FeedbackBatch, FeedbackItem, FeedbackPhase, FeedbackState, ItemWithheld, Notice, Placeholder,
-    Tier, Touched,
+    QueueEvent, Tier, Touched,
 };
 use clax_core::model::{Artifact, Feedback, Thread, Version};
 use clax_core::visibility::{self, Author, Reader};
@@ -50,6 +50,9 @@ fn live_targets(c: &Connection, aid: &str, owner: Option<&str>) -> Result<Vec<St
 /// Releases session `sid` after it ended: drops its watches, scope watches and queue watches; each of its
 /// undelivered rows is deleted when another live session is a target of the
 /// same comment, else untargeted for the next session that publishes or watches.
+/// Its undelivered queue wakes ([`Store::notify_queue_event_in`]) are
+/// deleted: a wake is that session's alone, and the report waits in its
+/// queue for whoever lists it.
 pub(crate) fn release_session(tx: &Transaction<'_>, sid: &str, now: &str) -> Result<Touched> {
     let mut touched = Touched::default();
     tx.execute("DELETE FROM watches WHERE session_id = ?1", params![sid])?;
@@ -61,17 +64,23 @@ pub(crate) fn release_session(tx: &Transaction<'_>, sid: &str, now: &str) -> Res
         "DELETE FROM queue_watches WHERE session_id = ?1",
         params![sid],
     )?;
-    let rows: Vec<(String, String, String, String)> = {
+    let rows: Vec<(String, String, String, String, bool)> = {
         let mut stmt = tx.prepare(
-            "SELECT f.id, f.comment_id, f.thread_id, t.artifact_id FROM feedback f JOIN threads t ON t.id = f.thread_id
+            "SELECT f.id, f.comment_id, f.thread_id, t.artifact_id, f.queue_event IS NOT NULL
+             FROM feedback f JOIN threads t ON t.id = f.thread_id
              WHERE f.target_session_id = ?1 AND f.delivered_at IS NULL",
         )?;
         stmt.query_map(params![sid], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?
     };
-    for (id, comment_id, tid, aid) in rows {
+    for (id, comment_id, tid, aid, wake) in rows {
+        if wake {
+            tx.execute("DELETE FROM feedback WHERE id = ?1", params![id])?;
+            touched.threads.insert((aid, tid));
+            continue;
+        }
         let other_live: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM feedback f JOIN sessions s ON s.id = f.target_session_id
               WHERE f.comment_id = ?1 AND f.id <> ?2 AND s.ended_at IS NULL)",
@@ -415,6 +424,8 @@ struct Pending {
     writer: Author,
     /// The report queue of the comment's thread, when it is a report.
     queue_id: Option<String>,
+    /// The queue's wake the row is, when it is one.
+    queue_event: Option<QueueEvent>,
 }
 
 /// What [`Store::take_feedback`] handed over (spec 2026-10-08 §8.4, M16):
@@ -934,6 +945,76 @@ impl Store {
         Ok((thread, touched, requests))
     }
 
+    /// Wakes the sessions watching queue `qid` for `event` on its report
+    /// `tid` (spec 2026-10-29-feedback-loop-design §7.3), in the caller's
+    /// transaction: one feedback row for comment `comment_id` (the filing's
+    /// note, or the reopen's) per live session watching the queue, and
+    /// for `also_session` when it is live (the previous proposer on a
+    /// reopen) whether it watches or not. A session with a row for the
+    /// comment already gets none. The rows are the ones a send writes,
+    /// marked with `event`, so [`Store::take_feedback`],
+    /// [`Store::take_notices`] and the tiers that read them deliver them
+    /// as they deliver a comment, without a watch of the report's
+    /// artifact. Records nothing; the thread's target is unchanged.
+    /// Returns the sessions woken and the thread.
+    ///
+    /// # Errors
+    /// `NotFound` for no such thread; database errors.
+    pub(crate) fn notify_queue_event_in(
+        &self,
+        tx: &Transaction<'_>,
+        qid: &str,
+        tid: &str,
+        comment_id: &str,
+        event: QueueEvent,
+        also_session: Option<&str>,
+    ) -> Result<Touched> {
+        let now = self.now();
+        let aid: String = tx
+            .query_row(
+                "SELECT artifact_id FROM threads WHERE id = ?1",
+                params![tid],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or(CoreError::NotFound)?;
+        let mut sessions: Vec<String> = tx
+            .prepare_cached(
+                "SELECT w.session_id FROM queue_watches w JOIN sessions s ON s.id = w.session_id
+                 WHERE w.queue_id = ?1 AND s.ended_at IS NULL ORDER BY w.created_at, w.session_id",
+            )?
+            .query_map(params![qid], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        if let Some(sid) = also_session
+            && !sessions.iter().any(|s| s == sid)
+        {
+            let live: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1 AND ended_at IS NULL)",
+                params![sid],
+                |r| r.get(0),
+            )?;
+            if live {
+                sessions.push(sid.to_string());
+            }
+        }
+        let mut touched = Touched::default();
+        for sid in sessions {
+            let made = tx.execute(
+                "INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at, queue_event)
+                 SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE NOT EXISTS (
+                     SELECT 1 FROM feedback WHERE comment_id = ?3 AND target_session_id = ?4)",
+                params![new_ulid(), tid, comment_id, sid, now, event.as_str()],
+            )?;
+            if made == 1 {
+                touched.targets.insert(sid);
+            }
+        }
+        if !touched.targets.is_empty() {
+            touched.threads.insert((aid, tid.to_string()));
+        }
+        Ok(touched)
+    }
+
     /// Sends the thread to each of the live sessions `sids` (`@name`, spec
     /// §11), each of which must own or watch the artifact: the first
     /// becomes the thread's target, the thread's undelivered untargeted
@@ -1194,7 +1275,9 @@ impl Store {
     /// not yet told of is counted in one [`Placeholder`] per (authors,
     /// thread) and gets `placeholder_at`, so the session is told once;
     /// `queue` hands over visible rows only and tells of none. Rows of
-    /// deleted artifacts and resolved threads are never handed over. Items
+    /// deleted artifacts and resolved threads are never handed over. A tier
+    /// that takes only from armed watches ([`Tier::armed_only`]) also takes
+    /// a queue's wakes, which need no watch of the report's artifact. Items
     /// are oldest first. When `vis` is older than the visibility generation
     /// as its transaction reads it (an approval or revocation committed
     /// since the view was built), nothing is taken and the result is
@@ -1288,6 +1371,10 @@ impl Store {
                             told: r.get(18)?,
                             gone_told: r.get(21)?,
                             queue_id: r.get(22)?,
+                            queue_event: r
+                                .get::<_, Option<String>>(23)?
+                                .as_deref()
+                                .and_then(QueueEvent::parse),
                             writer: if r.get::<_, String>(19)? == AUTHOR_AGENT {
                                 Author::System
                             } else {
@@ -1429,11 +1516,13 @@ impl Store {
             }
             // The first delivery of an unowned thread's row makes the
             // session its owner when its person sent a comment delivered
-            // (M23, O8); a held row makes none.
+            // (M23, O8); a held row makes none, and neither does a queue's
+            // wake: a report is taken by its claim, and every session the
+            // queue woke keeps its wake.
             let mut took = Touched::default();
             let mut first: Vec<(&str, Vec<String>)> = Vec::new();
             for (p, _, _, _, _) in &good {
-                if p.delivered {
+                if p.delivered || p.queue_event.is_some() {
                     continue;
                 }
                 match first.iter_mut().find(|(t, _)| *t == p.thread_id) {
@@ -1511,6 +1600,7 @@ impl Store {
                 live,
                 withheld,
                 queue_id: p.queue_id,
+                queue_event: p.queue_event,
             });
         }
         Ok(Taken {
@@ -1815,7 +1905,8 @@ impl Store {
 
     /// Announces the session's rows that no tier has delivered and no
     /// follower has announced, on open threads of live artifacts that the
-    /// session watches with replies armed: stamps `notified_at` and returns
+    /// session watches with replies armed (a queue's wake of it, on a
+    /// report's artifact it need not watch): stamps `notified_at` and returns
     /// one notice per row, oldest first. A row is announced at most once per
     /// target; the stamp is set only where it is still unset, so concurrent
     /// followers never announce the same row twice. Delivery is unaffected:
@@ -1846,15 +1937,17 @@ impl Store {
             }
             let rows = {
                 let mut stmt = tx.prepare(
-                    "SELECT f.id, f.comment_id, f.thread_id, t.artifact_id, a.title, t.queue_id
+                    "SELECT f.id, f.comment_id, f.thread_id, t.artifact_id, a.title, t.queue_id,
+                            f.queue_event
                      FROM feedback f
                      JOIN threads t ON t.id = f.thread_id
                      JOIN artifacts a ON a.id = t.artifact_id
                      WHERE f.target_session_id = ?1
                        AND f.delivered_at IS NULL AND f.notified_at IS NULL
                        AND a.deleted_at IS NULL AND t.status = 'open'
-                       AND EXISTS (SELECT 1 FROM watches w WHERE w.session_id = f.target_session_id
-                                   AND w.artifact_id = t.artifact_id AND w.replies_armed = 1)
+                       AND (f.queue_event IS NOT NULL
+                            OR EXISTS (SELECT 1 FROM watches w WHERE w.session_id = f.target_session_id
+                                       AND w.artifact_id = t.artifact_id AND w.replies_armed = 1))
                      ORDER BY f.created_at, f.id",
                 )?;
                 stmt.query_map(params![session_id], |r| {
@@ -1865,13 +1958,16 @@ impl Store {
                         r.get::<_, String>(3)?,
                         r.get::<_, String>(4)?,
                         r.get::<_, Option<String>>(5)?,
+                        r.get::<_, Option<String>>(6)?,
                     ))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?
             };
             let mut sight = Sight::new(tx, vis);
             let mut out = Vec::new();
-            for (feedback_id, comment_id, thread_id, artifact_id, mut title, queue_id) in rows {
+            for (feedback_id, comment_id, thread_id, artifact_id, mut title, queue_id, event) in
+                rows
+            {
                 if let Some(may) = readable {
                     match sight.artifact(&artifact_id)? {
                         Some(a) if may(&a) => {}
@@ -1917,6 +2013,7 @@ impl Store {
                         title,
                         url,
                         queue_id,
+                        event: event.as_deref().and_then(QueueEvent::parse),
                     });
                 }
             }
@@ -2000,7 +2097,8 @@ pub(crate) const TAKE_FEEDBACK: &str = "SELECT f.id, f.thread_id, f.comment_id, 
                         t.artifact_id, a.title, t.version_n, t.anchor_json, t.has_clip,
                         c.author_name, c.body, c.created_at, c.via_page,
                         f.batch_id, b.size, b.note, b.sent_by, b.sender, f.placeholder_at IS NOT NULL,
-                        c.author_kind, c.author_public_id, f.no_access_at IS NOT NULL, t.queue_id
+                        c.author_kind, c.author_public_id, f.no_access_at IS NOT NULL, t.queue_id,
+                        f.queue_event
                  FROM feedback f
                  LEFT JOIN send_batches b ON b.id = f.batch_id
                  JOIN threads t ON t.id = f.thread_id
@@ -2009,8 +2107,9 @@ pub(crate) const TAKE_FEEDBACK: &str = "SELECT f.id, f.thread_id, f.comment_id, 
                  WHERE f.target_session_id = ?1
                    AND a.deleted_at IS NULL AND t.status = 'open'
                    AND (?2 IS NULL OR t.artifact_id = ?2)
-                   AND (NOT ?3 OR EXISTS (SELECT 1 FROM watches w WHERE w.session_id = f.target_session_id
-                                          AND w.artifact_id = t.artifact_id AND w.replies_armed = 1))
+                   AND (NOT ?3 OR f.queue_event IS NOT NULL
+                        OR EXISTS (SELECT 1 FROM watches w WHERE w.session_id = f.target_session_id
+                                   AND w.artifact_id = t.artifact_id AND w.replies_armed = 1))
                    AND (?7 = 0 OR f.push_failed_at IS NULL)
                    AND (f.delivered_at IS NULL
                         OR (?4 AND f.acknowledged_at IS NULL
@@ -2554,7 +2653,7 @@ mod tests {
     use crate::test_util::{anchor, artifact, session, store};
     use crate::threads::{AUTHOR_AGENT, AUTHOR_VIEWER, NewComment, NewThread};
     use clax_core::ArtifactId;
-    use clax_core::feedback::{FeedbackPhase, Tier};
+    use clax_core::feedback::{FeedbackPhase, QueueEvent, Tier};
 
     const BASE: &str = "http://localhost:7480";
 
@@ -2630,6 +2729,220 @@ mod tests {
         let items = take(&st, &a, Tier::Wait);
         assert_eq!(items.len(), 1, "{items:?}");
         assert_eq!(items[0].queue_id.as_deref(), Some(qid.as_str()));
+    }
+
+    /// A queue and a reporter token of it for `emp-1`.
+    fn report_queue(st: &Store) -> (String, crate::queues::ReporterToken) {
+        let qid = st
+            .create_queue(
+                DAEMON,
+                None,
+                crate::queues::NewQueue {
+                    name: "App reports".into(),
+                    origins: vec!["https://app.example.com".into()],
+                    reporters_see: clax_core::queue::ReportersSee::Own,
+                },
+            )
+            .unwrap()
+            .id;
+        let tok = crate::queues::ReporterToken {
+            queue_id: qid.clone(),
+            service_grant_id: "g1".into(),
+            reporter_id: "emp-1".into(),
+            origin: "https://app.example.com".into(),
+            public_key: String::new(),
+            expires_at: "2099-01-01T00:00:00.000Z".into(),
+            profile: None,
+        };
+        (qid, tok)
+    }
+
+    /// Files a report titled `title` into `qid` under `tok`; its thread ID.
+    fn file_titled(
+        st: &Store,
+        qid: &str,
+        tok: &crate::queues::ReporterToken,
+        title: &str,
+    ) -> String {
+        st.file_report(
+            DAEMON,
+            qid,
+            Some(tok),
+            crate::queues::ExternalScope::Instance,
+            crate::queues::NewReport {
+                external_id: Some(format!("page:{title}")),
+                url: "https://app.example.com/invoices/4821".into(),
+                title: title.into(),
+                anchor: anchor(),
+                body: "The total is wrong".into(),
+                author_name: "emp-1".into(),
+                metadata: serde_json::Value::Null,
+                revision: None,
+                clip: None,
+                context: None,
+                server: None,
+                diagnostics: None,
+            },
+        )
+        .unwrap()
+        .id
+    }
+
+    fn notices(st: &Store, sid: &str) -> Vec<Notice> {
+        st.take_notices(sid, BASE, &Visibility::all(), None)
+            .unwrap()
+            .notices
+    }
+
+    #[test]
+    fn filing_wakes_each_watching_session_once() {
+        let (_d, st) = store();
+        let (qid, tok) = report_queue(&st);
+        let a = session(&st, "claude", "a");
+        let b = session(&st, "codex", "b");
+        let idle = session(&st, "claude", "idle");
+        st.watch_queue(&qid, &a).unwrap();
+        st.watch_queue(&qid, &a).unwrap();
+        st.watch_queue(&qid, &b).unwrap();
+        let tid = file_titled(&st, &qid, &tok, "Invoice 4821");
+        let rows = st.feedback_rows(&tid).unwrap();
+        let mut targets: Vec<_> = rows.iter().map(|r| r.target_session_id.clone()).collect();
+        targets.sort();
+        let mut want = vec![Some(a.clone()), Some(b.clone())];
+        want.sort();
+        assert_eq!(targets, want, "one row per watching session");
+        // The follower is told without watching the report's artifact.
+        let n = notices(&st, &b);
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(
+            (
+                n[0].event,
+                n[0].queue_id.as_deref(),
+                n[0].thread_id.as_str()
+            ),
+            (Some(QueueEvent::Filed), Some(qid.as_str()), tid.as_str())
+        );
+        assert!(
+            clax_core::feedback::render_notice(&n[0]).contains("queue_get"),
+            "{n:?}"
+        );
+        assert!(notices(&st, &b).is_empty(), "announced once");
+        for sid in [&a, &b] {
+            let items = take(&st, sid, Tier::Wait);
+            assert_eq!(items.len(), 1, "{items:?}");
+            assert_eq!(items[0].queue_event, Some(QueueEvent::Filed));
+            assert_eq!(items[0].queue_id.as_deref(), Some(qid.as_str()));
+            assert_eq!(items[0].thread_id, tid);
+            assert!(take(&st, sid, Tier::Wait).is_empty());
+        }
+        assert!(take(&st, &idle, Tier::Wait).is_empty());
+        // Another queue's filing wakes no one here.
+        let (other, other_tok) = report_queue(&st);
+        file_titled(&st, &other, &other_tok, "Elsewhere");
+        assert!(take(&st, &a, Tier::Wait).is_empty());
+    }
+
+    #[test]
+    fn reopen_wakes_the_previous_proposer_even_unwatched() {
+        let (_d, st) = store();
+        let (qid, tok) = report_queue(&st);
+        let tid = file_titled(&st, &qid, &tok, "Invoice 4821");
+        let fixer = session(&st, "claude", "fixer");
+        let watcher = session(&st, "codex", "watcher");
+        st.claim(DAEMON, &qid, &tid, &fixer).unwrap();
+        let sf = st.get_session(&fixer).unwrap().unwrap();
+        st.propose_fix(
+            DAEMON,
+            &qid,
+            &tid,
+            &crate::queues::ReportWriter::Agent(&sf),
+            clax_core::report::NewFix {
+                summary: "Rounded the total".into(),
+                url: None,
+                commit: None,
+                release: None,
+                verify_url: None,
+                verify_after: None,
+            },
+        )
+        .unwrap();
+        st.watch_queue(&qid, &watcher).unwrap();
+        assert!(take(&st, &fixer, Tier::Wait).is_empty());
+        let (_, touched) = st
+            .reopen_report(
+                DAEMON,
+                &qid,
+                &tid,
+                crate::queues::Verdict::Reporter("emp-1"),
+                "Still wrong".into(),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(
+            touched.targets.contains(&fixer) && touched.targets.contains(&watcher),
+            "{touched:?}"
+        );
+        for sid in [&fixer, &watcher] {
+            let items = take(&st, sid, Tier::Wait);
+            assert_eq!(items.len(), 1, "{items:?}");
+            assert_eq!(items[0].queue_event, Some(QueueEvent::Reopened));
+            assert_eq!(items[0].body, "Still wrong");
+        }
+        // A proposer that watches the queue too is woken once.
+        st.watch_queue(&qid, &fixer).unwrap();
+        st.claim(DAEMON, &qid, &tid, &fixer).unwrap();
+        st.propose_fix(
+            DAEMON,
+            &qid,
+            &tid,
+            &crate::queues::ReportWriter::Agent(&sf),
+            clax_core::report::NewFix {
+                summary: "Rounded again".into(),
+                url: None,
+                commit: None,
+                release: None,
+                verify_url: None,
+                verify_after: None,
+            },
+        )
+        .unwrap();
+        st.reopen_report(
+            DAEMON,
+            &qid,
+            &tid,
+            crate::queues::Verdict::Reporter("emp-1"),
+            "Still wrong again".into(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let items = take(&st, &fixer, Tier::Wait);
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0].body, "Still wrong again");
+    }
+
+    #[test]
+    fn ended_session_stops_watching() {
+        let (_d, st) = store();
+        let (qid, tok) = report_queue(&st);
+        let s = session(&st, "claude", "s");
+        st.watch_queue(&qid, &s).unwrap();
+        st.end_session(DAEMON, &s).unwrap();
+        let tid = file_titled(&st, &qid, &tok, "Invoice 4821");
+        assert!(st.feedback_rows(&tid).unwrap().is_empty());
+        let watched: bool = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM queue_watches WHERE session_id = ?1)",
+                    params![s],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert!(!watched, "its watch is gone");
     }
 
     fn take(st: &Store, sid: &str, tier: Tier) -> Vec<FeedbackItem> {

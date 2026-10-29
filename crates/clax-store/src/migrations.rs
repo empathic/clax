@@ -1848,7 +1848,8 @@ pub const MIGRATIONS: &[&str] = &[
     // resolve reason, reopen count and the reporter's last read; the
     // profile a reporter token carries; a reopen comment's capture number
     // and clip; each capture's diagnostics (the filing's is capture 0); its
-    // fix attempts and their verdicts; and the sessions watching a queue.
+    // fix attempts and their verdicts; the sessions watching a queue; and
+    // which feedback rows are a queue's wake (`filed`, `reopened`).
     "ALTER TABLE threads ADD COLUMN report_context_json TEXT CHECK (report_context_json IS NULL OR json_valid(report_context_json));
     ALTER TABLE threads ADD COLUMN report_server_json TEXT;
     ALTER TABLE threads ADD COLUMN reporter_profile_json TEXT;
@@ -1870,7 +1871,8 @@ pub const MIGRATIONS: &[&str] = &[
         CHECK (outcome IN ('pending', 'verified', 'rejected', 'superseded', 'closed')),
       verdict_note TEXT, verdict_context_json TEXT, verdict_at TEXT,
       PRIMARY KEY (thread_id, n)) WITHOUT ROWID;
-    CREATE TABLE queue_watches (queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE, session_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (queue_id, session_id)) WITHOUT ROWID;",
+    CREATE TABLE queue_watches (queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE, session_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (queue_id, session_id)) WITHOUT ROWID;
+    ALTER TABLE feedback ADD COLUMN queue_event TEXT CHECK (queue_event IS NULL OR queue_event IN ('filed', 'reopened'));",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -5178,6 +5180,7 @@ mod tests {
             );
         }
         assert!(super::has_column(&c, "queue_reporter_tokens", "profile_json").unwrap());
+        assert!(super::has_column(&c, "feedback", "queue_event").unwrap());
         for column in ["report_capture", "clip_key"] {
             assert!(
                 super::has_column(&c, "comments", column).unwrap(),

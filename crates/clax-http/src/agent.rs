@@ -284,6 +284,8 @@ need!(ToolCallIdReport, None, Own, DEFAULT_LIMIT);
 // below is held somewhere, as a path without an artifact asks.
 need!(QueuesList, None, Own, DEFAULT_LIMIT);
 need!(QueueReportsList, Comments, "read", Own, DEFAULT_LIMIT);
+need!(QueueWatch, Comments, "watch", Own, DEFAULT_LIMIT);
+need!(QueueUnwatch, Comments, "watch", Own, DEFAULT_LIMIT);
 need!(QueueReportGet, Comments, "read", Own, DEFAULT_LIMIT);
 need!(QueueClip, Comments, "read", Own, DEFAULT_LIMIT);
 need!(QueueClaim, Comments, "reply", Own, DEFAULT_LIMIT);
@@ -517,6 +519,8 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
     ("POST", "/api/sessions/{id}/terminal", SessionTerminal::INFO),
     ("GET", "/api/queues", QueuesList::INFO),
     ("GET", "/api/queues/{qid}/reports", QueueReportsList::INFO),
+    ("POST", "/api/queues/{qid}/watch", QueueWatch::INFO),
+    ("DELETE", "/api/queues/{qid}/watch", QueueUnwatch::INFO),
     (
         "GET",
         "/api/queues/{qid}/reports/{tid}",
@@ -670,6 +674,8 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("surface::terminal", SessionTerminal),
     route_need!("queues::list", QueuesList),
     route_need!("queue_agent::list", QueueReportsList),
+    route_need!("queue_agent::watch", QueueWatch),
+    route_need!("queue_agent::unwatch", QueueUnwatch),
     route_need!("queue_agent::get", QueueReportGet),
     route_need!("queue_agent::clip", QueueClip),
     route_need!("queue_agent::claim", QueueClaim),

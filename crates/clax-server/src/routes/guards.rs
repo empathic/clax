@@ -256,6 +256,8 @@ mod l10 {
         ("queues::create_grant", NoArtifact),
         ("queues::revoke_grant", NoArtifact),
         ("queue_agent::list", NoArtifact),
+        ("queue_agent::watch", NoArtifact),
+        ("queue_agent::unwatch", NoArtifact),
         ("queue_agent::get", NoArtifact),
         ("queue_agent::patch", NoArtifact),
         ("queue_agent::claim", NoArtifact),
@@ -539,6 +541,14 @@ mod l10 {
         (
             "queue_agent::renew",
             "a heartbeat on the caller's own lease (spec 2026-10-27-clax-sdk-design §7.4)",
+        ),
+        (
+            "queue_agent::watch",
+            "the caller's own session's subscription to a queue's wakes, which ends with the session; it changes no content (spec 2026-10-29-feedback-loop-design §7.3)",
+        ),
+        (
+            "queue_agent::unwatch",
+            "ends the caller's own session's subscription to a queue's wakes; it changes no content",
         ),
         (
             "site_signin::site_code",
@@ -1592,6 +1602,18 @@ mod agents {
                 "/api/queues/{qid}/reports",
                 Own,
                 Some((Comments, "read")),
+            ),
+            (
+                "POST",
+                "/api/queues/{qid}/watch",
+                Own,
+                Some((Comments, "watch")),
+            ),
+            (
+                "DELETE",
+                "/api/queues/{qid}/watch",
+                Own,
+                Some((Comments, "watch")),
             ),
             (
                 "GET",

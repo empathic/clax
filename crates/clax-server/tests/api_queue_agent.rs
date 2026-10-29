@@ -1099,3 +1099,104 @@ async fn diagnostics_of_another_queue_is_not_a_member() {
         .await;
     assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
 }
+
+#[tokio::test]
+async fn watch_then_file_delivers_through_wait_for_feedback() {
+    let q = setup().await;
+    let watch = format!("/api/queues/{}/watch", q.qid);
+    let (s, v) = q.agent(None, "POST", &watch, json!(null)).await;
+    assert_eq!((s, code(&v)), (400, "no_session"), "{v}");
+    let w = q.session("w").await;
+    let (s, v) = q
+        .agent(Some(&w), "POST", "/api/queues/nope/watch", json!(null))
+        .await;
+    assert_eq!((s, code(&v)), (404, "not_a_member"), "{v}");
+    let (s, v) = q.agent(Some(&w), "POST", &watch, json!(null)).await;
+    assert_eq!(s, 204, "{v}");
+    assert_eq!(q.ts.store.queue_watchers(&q.qid).unwrap(), [w.as_str()]);
+
+    // The filing reaches the watcher's wait (the reporter route's wake is
+    // api_queue_reporter's watch_then_file_wakes_a_waiting_watcher).
+    let filed = file_into(&q.ts, &q.qid, None).await.id;
+    let (s, v) = q
+        .agent(
+            Some(&w),
+            "GET",
+            &format!("/api/sessions/{w}/feedback?tier=wait"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let items = v["feedback"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{v}");
+    assert_eq!(
+        (&items[0]["queue_event"], &items[0]["thread_id"]),
+        (&json!("filed"), &json!(filed)),
+        "{v}"
+    );
+    let text = v["text"].as_str().unwrap();
+    assert!(
+        text.contains(&format!(
+            "This is a new report in queue {q}: call queue_get with queue \"{q}\" and report_id \"{filed}\", then queue_claim",
+            q = q.qid
+        )),
+        "{text}"
+    );
+
+    // The fixer proposes a fix, then waits; the reporter (by triage) says
+    // it is still broken, which wakes the fixer and the watcher.
+    let f = q.session("f").await;
+    let (s, v) = q
+        .agent(Some(&f), "POST", &q.report("/claim"), json!(null))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = q
+        .agent(Some(&f), "POST", &q.report("/fix"), fix_body())
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let url = format!("{}/api/sessions/{f}/feedback?tier=wait&wait=600", q.ts.base);
+    let wait = q.ts.authed(q.ts.client.get(url));
+    let waiter = tokio::spawn(async move {
+        let body: Value = wait.send().await.unwrap().json().await.unwrap();
+        body
+    });
+    q.ts.wait_feedback_waiters(&f, 1).await;
+    let (s, v) = q
+        .owner(
+            "POST",
+            &q.report("/reopen"),
+            json!({"body": "emp-1 sees it again"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let got = tokio::time::timeout(clax_testkit::HANG, waiter)
+        .await
+        .expect("the reopen wakes the proposer's wait")
+        .unwrap();
+    let items = got["feedback"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{got}");
+    assert_eq!(items[0]["queue_event"], "reopened", "{got}");
+    assert_eq!(items[0]["queue_id"], q.qid.as_str(), "{got}");
+    let text = got["text"].as_str().unwrap();
+    assert!(
+        text.contains(&format!(
+            "Report {} in queue {} was reopened by its reporter: call queue_get",
+            q.tid, q.qid
+        )),
+        "{text}"
+    );
+    let (s, v) = q
+        .agent(
+            Some(&w),
+            "GET",
+            &format!("/api/sessions/{w}/feedback?tier=wait"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["feedback"][0]["queue_event"], "reopened", "{v}");
+
+    let (s, v) = q.agent(Some(&w), "DELETE", &watch, json!(null)).await;
+    assert_eq!(s, 204, "{v}");
+    assert!(q.ts.store.queue_watchers(&q.qid).unwrap().is_empty());
+}

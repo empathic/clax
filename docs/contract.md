@@ -3784,6 +3784,32 @@ tools" says; 404 `not_a_member` otherwise):
 | `GET …/reports/<tid>/diagnostics?capture=` | | `{lines}`, of any report of the queue, read as the reporter's; 400 `invalid_query` |
 | `GET …/reports/<tid>/comments/<cid>/clip` | | a reopen's PNG |
 | `POST …/reports/<tid>/claim` | | the lease; 409 `not_claimable` for a `fix_proposed` report |
+| `POST /api/queues/<qid>/watch` | | 204: the agent's session watches the queue until it unwatches it or ends (watching again changes nothing); 400 `no_session` without a session |
+| `DELETE /api/queues/<qid>/watch` | | 204: the session no longer watches it (one that did not is fine); 400 `no_session` without a session |
+
+**Queue wakes.** A report filed into a queue, and a report reopened (by
+its reporter, or by triage on their behalf), wakes every live session
+watching the queue; a reopen also wakes the session of the report's
+latest lease (whoever claimed it last, so the fix's proposer) while that
+session has not ended, whether it watches the queue or not. A wake is a
+feedback row for the filing's note or the reopen's comment, made in the
+filing's or reopen's transaction, one per session (a session with a row
+for that comment gets no second); it needs no watch of the report's
+artifact, and it reaches the session as any comment sent to it does:
+`wait_for_feedback` and the other tiers, and `clax feedback follow`. Its
+item carries `queue_id` and `queue_event` (`filed` or `reopened`), and
+its text ends, in place of the queue-tools line of a comment:
+
+    This is a new report in queue <qid>: call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
+    Report <report ID> in queue <qid> was reopened by its reporter: call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
+
+Its notice (`GET /api/sessions/<sid>/notices`, with `event`) is one of:
+
+    [clax] New report in queue <qid>: "<title>" (<url>), report <report ID>. Call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
+    [clax] Report <report ID> in queue <qid> was reopened by its reporter: "<title>" (<url>). Call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
+
+An undelivered wake of a session that ends is deleted, never handed to
+another session: the report waits in its queue.
 
 Error codes besides the common ones: `invalid_context`,
 `invalid_diagnostics`, `invalid_profile`, `invalid_fix` (400);
@@ -4240,7 +4266,8 @@ prints one line per comment sent to the session, naming the artifact and
 thread and saying to call `comments_read`. It never prints the comment.
 The daemon announces a row only when no tier has delivered it, no
 follower has announced it to this session (`notified_at` unset), and the
-session watches the artifact with replies armed, and it sets
+session watches the artifact with replies armed (or the row is a queue's
+wake, "Queue wakes" above, which needs no watch), and it sets
 `notified_at` as it announces. A notice is not a delivery: the row still
 waits for tiers 1, 2 and 4, which deliver it once under the rules above,
 so a monitor never causes a second delivery. Retargeting a row clears
@@ -5492,6 +5519,8 @@ router), and a test fails when it differs:
 | `POST /api/sessions/{id}/terminal` | Own | none | 2 MiB | yes |
 | `GET /api/queues` | Own | none | 2 MiB | yes |
 | `GET /api/queues/{qid}/reports` | Own | `clax-comments` `read` | 2 MiB | yes |
+| `POST /api/queues/{qid}/watch` | Own | `clax-comments` `watch` | 2 MiB | yes |
+| `DELETE /api/queues/{qid}/watch` | Own | `clax-comments` `watch` | 2 MiB | yes |
 | `GET /api/queues/{qid}/reports/{tid}` | Own | `clax-comments` `read` | 2 MiB | yes |
 | `GET /api/queues/{qid}/reports/{tid}/clip` | Own | `clax-comments` `read` | 2 MiB | yes |
 | `POST /api/queues/{qid}/reports/{tid}/claim` | Own | `clax-comments` `reply` | 2 MiB | yes |

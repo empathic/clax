@@ -173,6 +173,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         )
         .route("/api/queues/{qid}/reports", get(queue_agent::list))
         .route(
+            "/api/queues/{qid}/watch",
+            post(queue_agent::watch).delete(queue_agent::unwatch),
+        )
+        .route(
             "/api/queues/{qid}/reports/{tid}",
             get(queue_agent::get).patch(queue_agent::patch),
         )
