@@ -64,9 +64,13 @@ impl Setup {
                 "private_key_pkcs8": base64::engine::general_purpose::URL_SAFE_NO_PAD
                     .encode(key.pkcs8().expose()),
             });
-            let i =
-                clax_server::integrations::feedback::integration(&qid, ORIGIN, &grant.to_string())
-                    .unwrap();
+            let i = clax_server::integrations::feedback::integration(
+                &qid,
+                ORIGIN,
+                ORIGIN,
+                &grant.to_string(),
+            )
+            .unwrap();
             s.feedback = Some(Arc::new(i));
             *out.lock().unwrap() = Some((
                 qid,

@@ -99,9 +99,11 @@ impl std::fmt::Display for Invalid {
     }
 }
 
-/// The integration that files into queue `queue_id` with the service grant
-/// in `grant_json` (`{token, private_key_pkcs8}`), minting reporter tokens
-/// for `origin`.
+/// The integration that files into queue `queue_id` on the instance at
+/// `instance` (its base URL) with the service grant in `grant_json`
+/// (`{token, private_key_pkcs8}`), minting reporter tokens for pages of
+/// `origin`. For clax.dev's own shell the two are the same; an outside
+/// product's pages have an origin of their own.
 ///
 /// # Errors
 /// [`Invalid`], naming the input: a queue ID that is empty or not of
@@ -109,6 +111,7 @@ impl std::fmt::Display for Invalid {
 /// empty token, or a key that is not an Ed25519 PKCS#8 one in base64url.
 pub fn integration(
     queue_id: &str,
+    instance: &str,
     origin: &str,
     grant_json: &str,
 ) -> Result<FeedbackIntegration, Invalid> {
@@ -149,6 +152,7 @@ pub fn integration(
         queue_id: queue_id.to_string(),
         grant_token: token.to_string(),
         grant_key_pkcs8: key,
+        instance: instance.trim_end_matches('/').to_string(),
         origin: origin.trim_end_matches('/').to_string(),
     })
 }
@@ -190,8 +194,10 @@ fn host_of(origin: &str) -> Result<String, String> {
 /// `Authorization: Clax-Queue <token>` and a `Clax-Signature` by the
 /// service grant's key over the canonical lines (method, path and query,
 /// the instance's host, `now`, a fresh nonce, the body's and the token's
-/// SHA-256, no agent headers). Over HTTP the same request goes to the
-/// instance's origin; its URI here is the path alone.
+/// SHA-256, no agent headers). It is signed for the instance's host
+/// (`i.instance`), while its body names the page origin the token is for
+/// (`i.origin`). Over HTTP the same request goes to `<instance><path>`;
+/// its URI here is the path alone.
 ///
 /// # Errors
 /// An origin with no host, or a key that does not sign.
@@ -205,7 +211,7 @@ pub fn mint_request(
     let key = KeyPair::from_pkcs8(&i.grant_key_pkcs8)
         .map_err(|_| "the service grant's key is not an Ed25519 PKCS#8 key".to_string())?;
     let path = format!("/api/queues/{}/reporter-tokens", i.queue_id);
-    let host = host_of(&i.origin)?;
+    let host = host_of(&i.instance)?;
     let body = serde_json::to_vec(&MintBody {
         reporter_id,
         origin: &i.origin,
@@ -495,7 +501,7 @@ pub async fn config(
     release["channel"] = json!(channel(&i.origin));
     Ok(Json(json!({
         "enabled": true,
-        "instance": i.origin,
+        "instance": i.instance,
         "queue": i.queue_id,
         "context": {
             "release": release,
@@ -517,14 +523,21 @@ mod tests {
     #[test]
     fn an_integration_takes_the_grant_as_its_route_answers_it() {
         let key = KeyPair::generate();
-        let i = integration("q1", "https://clax.dev/", &grant_json(&key)).unwrap();
+        let i = integration(
+            "q1",
+            "https://clax.dev/",
+            "https://clax.dev/",
+            &grant_json(&key),
+        )
+        .unwrap();
         assert_eq!(
             (
                 i.queue_id.as_str(),
                 i.grant_token.as_str(),
+                i.instance.as_str(),
                 i.origin.as_str()
             ),
-            ("q1", "cxq_t", "https://clax.dev")
+            ("q1", "cxq_t", "https://clax.dev", "https://clax.dev")
         );
         assert_eq!(&i.grant_key_pkcs8[..], key.pkcs8().expose());
         assert!(!format!("{i:?}").contains("cxq_t"));
@@ -548,7 +561,7 @@ mod tests {
                 Input::Grant,
             ),
         ] {
-            let e = integration(q, "https://clax.dev", &g).unwrap_err();
+            let e = integration(q, "https://clax.dev", "https://clax.dev", &g).unwrap_err();
             assert_eq!(e.input, input, "{q} {g}");
         }
     }
@@ -562,7 +575,7 @@ mod tests {
             json!({"token": secret, "private_key_pkcs8": secret}).to_string(),
             format!("{{\"token\": \"{secret}\""),
         ] {
-            let e = integration("q1", "https://clax.dev", &g).unwrap_err();
+            let e = integration("q1", "https://clax.dev", "https://clax.dev", &g).unwrap_err();
             assert_eq!(e.input, Input::Grant);
             assert!(!e.to_string().contains("SECRET"), "{e}");
         }
@@ -585,7 +598,13 @@ mod tests {
     #[test]
     fn the_mint_request_is_the_signed_one_an_outside_backend_sends() {
         let key = KeyPair::generate();
-        let i = integration("q1", "http://localhost:7481", &grant_json(&key)).unwrap();
+        let i = integration(
+            "q1",
+            "http://localhost:7481",
+            "http://localhost:7481",
+            &grant_json(&key),
+        )
+        .unwrap();
         let p = Profile {
             name: Some("Ana".into()),
             github: Some("ana".into()),
@@ -603,5 +622,37 @@ mod tests {
         assert_eq!(channel("http://localhost:7481"), "dev");
         assert_eq!(field(Some(&"é".repeat(200))).unwrap().len(), 256);
         assert_eq!(field(Some("  ")), None);
+    }
+
+    /// An outside product's backend signs for the instance's host and asks
+    /// for a token for its own page origin: the two are kept apart.
+    #[tokio::test]
+    async fn the_mint_is_signed_for_the_instance_and_names_the_page_origin() {
+        let key = KeyPair::generate();
+        let i = integration(
+            "q1",
+            "https://clax.example:8443",
+            "https://app.example.com",
+            &grant_json(&key),
+        )
+        .unwrap();
+        let req = mint_request(&i, 1_000, "u-42", "pk", None).unwrap();
+        assert_eq!(req.headers()[header::HOST], "clax.example:8443");
+        let parsed = sig::parse_header(req.headers()["clax-signature"].as_bytes()).unwrap();
+        let body = axum::body::to_bytes(req.into_body(), 4096).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["origin"], "https://app.example.com", "{v}");
+        assert_eq!(v["reporter_id"], "u-42", "{v}");
+        let input = SignInput {
+            method: "POST",
+            path_and_query: "/api/queues/q1/reporter-tokens",
+            host: "clax.example:8443",
+            t: 1_000,
+            nonce: &parsed.nonce,
+            body_sha256: sha2::Sha256::digest(&body).into(),
+            token_sha256: Some(clax_core::secret::sha256("cxq_t")),
+            agent_headers_sha256: sig::no_agent_headers_sha256(),
+        };
+        assert!(sig::verify(&key.public(), &input, &parsed.sig));
     }
 }

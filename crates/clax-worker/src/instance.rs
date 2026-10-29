@@ -528,7 +528,7 @@ fn feedback_of(env: &Env, app: &AppState) -> Option<clax_http::state::FeedbackIn
     if queue.trim().is_empty() || grant.trim().is_empty() {
         return None;
     }
-    match clax_server::integrations::feedback::integration(&queue, &origin, &grant) {
+    match clax_server::integrations::feedback::integration(&queue, &origin, &origin, &grant) {
         Ok(i) => Some(i),
         Err(e) => {
             let name = match e.input {
