@@ -23,12 +23,14 @@
 //
 //   node scripts/build-sdk.mjs            build once
 //   node scripts/build-sdk.mjs --watch    build, then again on each change
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+//
+// Imported, it builds nothing (and loads no Vite): its tests
+// (build-sdk.test.ts) call the license guard and the notices' collection on
+// fixtures.
+import { mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
-import { svelte } from "@sveltejs/vite-plugin-svelte";
-import { build } from "vite";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { cleanOut } from "./extension-clean.mjs";
 import { componentCssIntoScript } from "./overlay-component-css.mjs";
 
@@ -46,7 +48,7 @@ export const ENTRIES = [
   { path: "./service", name: "service", src: "sdk/src/service.ts" },
 ];
 
-const web = fileURLToPath(new URL("..", import.meta.url));
+const web = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repo = resolve(web, "..");
 const out = join(web, "dist-sdk");
 const ts = createRequire(join(web, "package.json"))("typescript");
@@ -96,26 +98,34 @@ FOR A PARTICULAR PURPOSE. See the license text for details.
 `;
 }
 
-/** The npm packages the bundle took modules from, with their license
- * texts. Fails on a Clax source file outside `LICENSED_DIRS`. */
-function thirdPartyNotices(moduleIds) {
+/** Fails unless `file`, a path under `root` (web/), lies in one of
+ * `LICENSED_DIRS`. */
+function assertLicensed(file, root) {
+  if (LICENSED_DIRS.some(d => file.startsWith(join(root, d) + sep))) return;
+  throw new Error(`the package bundles ${file}, outside web/${LICENSED_DIRS.join(", web/")}, whose license LICENSE does not give the package`);
+}
+
+/** The npm packages the bundle took modules from (`moduleIds`, Rollup's),
+ * with their license texts. Fails on a Clax source file outside
+ * `LICENSED_DIRS` of `root` (web/), and on a package with no license file. */
+export function thirdPartyNotices(moduleIds, root = web) {
   const nm = `${sep}node_modules${sep}`;
   const roots = new Set();
   for (const id of moduleIds) {
     const at = id.lastIndexOf(nm);
     if (at < 0) {
       const file = id.split("?")[0];
-      if (file.startsWith("\0") || LICENSED_DIRS.some(d => file.startsWith(join(web, d) + sep))) continue;
-      throw new Error(`the package bundles ${file}, outside web/${LICENSED_DIRS.join(", web/")}, whose license LICENSE does not give the package`);
+      if (!file.startsWith("\0")) assertLicensed(file, root);
+      continue;
     }
     const rest = id.slice(at + nm.length).split(sep);
     roots.add(id.slice(0, at + nm.length) + rest.slice(0, rest[0].startsWith("@") ? 2 : 1).join(sep));
   }
-  const sections = [...roots].sort().map(root => {
-    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-    const file = readdirSync(root).find(f => /^(licen[cs]e|copying)(\.|$)/i.test(f));
+  const sections = [...roots].sort().map(dir => {
+    const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+    const file = readdirSync(dir).find(f => /^(licen[cs]e|copying)(\.|$)/i.test(f));
     if (!file) throw new Error(`${pkg.name} has no license file to carry`);
-    return `${pkg.name} ${pkg.version} (${pkg.license})\n\n${readFileSync(join(root, file), "utf8").trim()}\n`;
+    return `${pkg.name} ${pkg.version} (${pkg.license})\n\n${readFileSync(join(dir, file), "utf8").trim()}\n`;
   });
   return `The packages ${PACKAGE_NAME} bundles, and their licenses.\n\n${sections.join(`\n${"-".repeat(78)}\n\n`)}`;
 }
@@ -199,19 +209,24 @@ const packageFiles = {
   },
 };
 
-const watch = process.argv.includes("--watch");
-cleanOut(out);
-const result = await build({
-  configFile: false, logLevel: watch ? "info" : "warn", publicDir: false, root: web,
-  // No `svelte/internal/disclose-version`: importing the overlay must not
-  // write to `window`.
-  plugins: [svelte({ configFile: join(web, "svelte.config.js"), compilerOptions: { discloseVersion: false } }), componentCssIntoScript("overlay.js"), packageFiles],
-  define: { "process.env.NODE_ENV": JSON.stringify("production") },
-  build: {
-    outDir: out, emptyOutDir: false, minify: false, sourcemap: false, cssCodeSplit: false,
-    lib: { entry: Object.fromEntries(ENTRIES.map(e => [e.name, join(web, e.src)])), formats: ["es"], fileName: (_, name) => `${name}.js` },
-    rollupOptions: { output: { chunkFileNames: "chunks/[name].js" } },
-    watch: watch ? {} : null,
-  },
-});
-if (watch) result.on("event", e => { if (e.code === "ERROR") console.error(e.error); });
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+  // Vite only here: its esbuild refuses to load under a test's jsdom.
+  const { build } = await import("vite");
+  const { svelte } = await import("@sveltejs/vite-plugin-svelte");
+  const watch = process.argv.includes("--watch");
+  cleanOut(out);
+  const result = await build({
+    configFile: false, logLevel: watch ? "info" : "warn", publicDir: false, root: web,
+    // No `svelte/internal/disclose-version`: importing the overlay must not
+    // write to `window`.
+    plugins: [svelte({ configFile: join(web, "svelte.config.js"), compilerOptions: { discloseVersion: false } }), componentCssIntoScript("overlay.js"), packageFiles],
+    define: { "process.env.NODE_ENV": JSON.stringify("production") },
+    build: {
+      outDir: out, emptyOutDir: false, minify: false, sourcemap: false, cssCodeSplit: false,
+      lib: { entry: Object.fromEntries(ENTRIES.map(e => [e.name, join(web, e.src)])), formats: ["es"], fileName: (_, name) => `${name}.js` },
+      rollupOptions: { output: { chunkFileNames: "chunks/[name].js" } },
+      watch: watch ? {} : null,
+    },
+  });
+  if (watch) result.on("event", e => { if (e.code === "ERROR") console.error(e.error); });
+}
