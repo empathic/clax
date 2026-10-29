@@ -18,7 +18,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 out="$1"; shift
 if [ -n "${REEL_BROWSERS:-}" ]; then
   CHROME="$(find "$REEL_BROWSERS"/chromium-[0-9]* -type f \
-    \( -name 'Google Chrome for Testing' -o -name chrome \) -perm -u+x | head -1)"
+    \( -name 'Google Chrome for Testing' -o -name chrome \) -perm -u+x | sed -n 1p)"
   [ -n "$CHROME" ] || { echo "landing.sh: no Chromium in $REEL_BROWSERS" >&2; exit 1; }
   export CHROME
 fi

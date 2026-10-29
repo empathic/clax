@@ -158,7 +158,10 @@ pub fn landing_file(
             header::CONTENT_SECURITY_POLICY,
             HeaderValue::from_static("frame-ancestors 'self'"),
         );
-        h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("SAMEORIGIN"));
+        h.insert(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("SAMEORIGIN"),
+        );
         return Ok(res);
     }
     let ct = mime_guess::from_path(file)

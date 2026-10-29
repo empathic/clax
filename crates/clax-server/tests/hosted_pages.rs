@@ -103,19 +103,42 @@ async fn a_signed_out_visitor_lands_on_the_bundled_quickstart() {
     // may frame; the quickstart page in it may be framed by its own origin.
     let r = c.get(format!("{}/start/", ts.base)).send().await.unwrap();
     assert_eq!(r.status(), 200);
-    assert_eq!(r.headers()["content-security-policy"], "frame-ancestors 'none'");
+    assert_eq!(
+        r.headers()["content-security-policy"],
+        "frame-ancestors 'none'"
+    );
     assert!(r.text().await.unwrap().contains("<p>gallery</p>"));
-    let r = c.get(format!("{}/start/index.html", ts.base)).send().await.unwrap();
+    let r = c
+        .get(format!("{}/start/index.html", ts.base))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
     assert_eq!(r.headers()["content-type"], "text/html; charset=utf-8");
-    assert_eq!(r.headers()["content-security-policy"], "frame-ancestors 'self'");
+    assert_eq!(
+        r.headers()["content-security-policy"],
+        "frame-ancestors 'self'"
+    );
     assert_eq!(r.headers()["x-frame-options"], "SAMEORIGIN");
     assert!(r.text().await.unwrap().contains("<p>landing</p>"));
-    let r = c.get(format!("{}/start/style.css", ts.base)).send().await.unwrap();
+    let r = c
+        .get(format!("{}/start/style.css", ts.base))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
-    assert!(r.headers()["content-type"].to_str().unwrap().starts_with("text/css"));
+    assert!(
+        r.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/css")
+    );
     assert_eq!(r.text().await.unwrap(), "landing");
-    let r = c.get(format!("{}/start/missing.css", ts.base)).send().await.unwrap();
+    let r = c
+        .get(format!("{}/start/missing.css", ts.base))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 404);
 }
 
@@ -146,13 +169,31 @@ async fn the_landing_pages_reel_redirects_to_where_hosted_mode_serves_it() {
     })
     .await;
     let c = unfollowed();
-    let r = c.get(format!("{}/start/reel.mp4", ts.base)).send().await.unwrap();
+    let r = c
+        .get(format!("{}/start/reel.mp4", ts.base))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 307);
-    assert_eq!(r.headers()["location"], "https://videos.example/r/downloads/default.mp4");
-    let r = c.get(format!("{}/start/reel-poster.jpg", ts.base)).send().await.unwrap();
+    assert_eq!(
+        r.headers()["location"],
+        "https://videos.example/r/downloads/default.mp4"
+    );
+    let r = c
+        .get(format!("{}/start/reel-poster.jpg", ts.base))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 307);
-    assert_eq!(r.headers()["location"], "https://videos.example/r/thumbnails/thumbnail.jpg");
-    let r = c.get(format!("{}/start/style.css", ts.base)).send().await.unwrap();
+    assert_eq!(
+        r.headers()["location"],
+        "https://videos.example/r/thumbnails/thumbnail.jpg"
+    );
+    let r = c
+        .get(format!("{}/start/style.css", ts.base))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
 }
 
@@ -163,7 +204,11 @@ async fn without_a_reel_elsewhere_the_landing_page_serves_none() {
     let ts = spawn_with_quickstart(clock, &dist).await;
     let c = unfollowed();
     for f in ["reel.mp4", "reel-poster.jpg"] {
-        let r = c.get(format!("{}/start/{f}", ts.base)).send().await.unwrap();
+        let r = c
+            .get(format!("{}/start/{f}", ts.base))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(r.status(), 404, "{f}");
     }
 }
@@ -172,8 +217,18 @@ async fn without_a_reel_elsewhere_the_landing_page_serves_none() {
 fn a_reel_is_served_only_from_https_or_localhost() {
     use clax_http::hosted::Reel;
     assert!(Reel::new("https://videos.example/r.mp4", None).is_ok());
-    assert!(Reel::new("http://localhost:8788/reel.mp4", Some("http://127.0.0.1:1/p.jpg")).is_ok());
-    let e = Reel::new("https://videos.example/r.mp4", Some("http://videos.example/p.jpg")).unwrap_err();
+    assert!(
+        Reel::new(
+            "http://localhost:8788/reel.mp4",
+            Some("http://127.0.0.1:1/p.jpg")
+        )
+        .is_ok()
+    );
+    let e = Reel::new(
+        "https://videos.example/r.mp4",
+        Some("http://videos.example/p.jpg"),
+    )
+    .unwrap_err();
     assert!(e.contains("http://videos.example/p.jpg"), "{e}");
     assert!(Reel::new("ftp://videos.example/r.mp4", None).is_err());
 }
