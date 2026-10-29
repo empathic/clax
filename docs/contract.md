@@ -3734,7 +3734,8 @@ changes.
 (console|error|rejection|request), text}`, at most 200 lines and 256 KiB;
 each `text` is scrubbed again. Anything else is 400
 `invalid_diagnostics`. Each capture keeps its own: the filing's (capture
-0) and each reopen's.
+0) and each reopen's. They are served to triage members and to the
+reporter that filed the report, never to another reporter.
 
 **Profile.** `{name?, email?, github?, avatar_url?}`, each a string of at
 most 256 bytes, `avatar_url` an http(s) URL; any other key or type is 400
@@ -3752,13 +3753,13 @@ it filed; any other is 404 `not_found`.
 |---|---|---|
 | `POST /api/queues/<qid>/reporter-tokens` (`Clax-Queue`, the service grant's signature, no `Origin`) | `{reporter_id, origin, public_key, profile?}` | `{token, expires_at}` |
 | `POST /api/queues/<qid>/reporter/reports` | multipart `external_id?`, `url`, `title`, `anchor` (JSON), `body`, `metadata?` (JSON), `revision?`, `clip?` (PNG), `context?` (JSON), `diagnostics?` (JSON lines, `diagnostics.jsonl`) | 201 `{report}`, with `server` |
-| `GET /api/queues/<qid>/reporter/reports?cursor=` | | `{reports, next}` |
+| `GET /api/queues/<qid>/reporter/reports?cursor=` | | `{reports, next}`; 400 `invalid_query` for another query |
 | `POST …/reporter/reports/<tid>/comments` | `{body}` | `{report}` |
 | `GET …/reporter/reports/<tid>/clip` | | the filing's PNG |
 | `GET …/reporter/reports/<tid>/comments/<cid>/clip` | | a reopen's PNG |
-| `POST …/reporter/reports/<tid>/verify` | `{note?, context?}` | `{report}`, `verified`; 409 `not_fix_proposed` when no fix waits |
+| `POST …/reporter/reports/<tid>/verify` | `{note?, context?}` (an empty body is `{}`) | `{report}`, `verified`; 409 `not_fix_proposed` when no fix waits |
 | `POST …/reporter/reports/<tid>/reopen` | multipart `body`, `clip?`, `diagnostics?`, `context?` | `{report}`, `open` with `reopen_count` one more and a waiting fix `rejected`; 409 `not_fix_proposed` for an `open` or `claimed` report |
-| `GET …/reporter/reports/<tid>/diagnostics?capture=` | | `{lines}`: capture `capture`'s, else the latest capture's that has any; `[]` for none |
+| `GET …/reporter/reports/<tid>/diagnostics?capture=` | | `{lines}` of a report it filed (404 `not_found` for another reporter's, `reporters_see: all` or not): capture `capture`'s, else the latest capture's that has any; `[]` for none; 400 `invalid_query` for a `capture` that is not a number, or another query |
 | `POST …/reporter/reports/<tid>/seen` | | 204: comments before now leave the badge |
 | `GET /api/queues/<qid>/reporter/badge` | | `{waiting, report_ids}`: its reports with a fix waiting for its verdict or a comment not its own since it last read them, oldest first |
 
@@ -3772,7 +3773,7 @@ tools" says; 404 `not_a_member` otherwise):
 | `POST …/reports/<tid>/verify` | `{note?}` | `{report}`, `verified`, on the reporter's behalf and recorded as the person's; a person's alone (403 `not_for_agents`); 409 `not_fix_proposed` |
 | `POST …/reports/<tid>/reopen` | `{body}` | `{report}`, `open`, as the reporter's reopen; a person's alone (403 `not_for_agents`); 409 `not_fix_proposed` |
 | `POST …/reports/<tid>/resolve` | `{reason?}` (default `other`) | `{report}`, `resolved` with `resolve_reason`; 400 `invalid_args` for another reason |
-| `GET …/reports/<tid>/diagnostics?capture=` | | `{lines}`, as the reporter's |
+| `GET …/reports/<tid>/diagnostics?capture=` | | `{lines}`, of any report of the queue, read as the reporter's; 400 `invalid_query` |
 | `GET …/reports/<tid>/comments/<cid>/clip` | | a reopen's PNG |
 | `POST …/reports/<tid>/claim` | | the lease; 409 `not_claimable` for a `fix_proposed` report |
 

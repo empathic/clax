@@ -2538,11 +2538,13 @@ impl Store {
     /// The diagnostics of report `tid` of queue `qid` as `vis` may see
     /// them: those of capture `capture` (0 the filing's, `n` the `n`th
     /// reopen's), or with `None` the latest capture's that has any; `None`
-    /// when that capture has none.
+    /// when that capture has none. A reporter reads those of the reports it
+    /// filed alone, even where `reporters_see: all` shows it others.
     ///
     /// # Errors
     /// [`CoreError::NotAMember`] for no such queue; `NotFound` for no such
-    /// report of it, or one `vis` does not see.
+    /// report of it, one `vis` does not see, or one a reporter did not
+    /// file.
     pub fn report_diagnostics(
         &self,
         qid: &str,
@@ -2555,7 +2557,15 @@ impl Store {
             if !sees_in(c, &q, tid, vis)? {
                 return Err(CoreError::NotFound);
             }
-            let aid = standing_in(c, tid)?.artifact_id;
+            let s = standing_in(c, tid)?;
+            // A reporter's console and requests are its own, whoever else
+            // `reporters_see: all` shows the report to.
+            if let Visibility::Reporter(r) = vis
+                && s.reporter_id.as_deref() != Some(r)
+            {
+                return Err(CoreError::NotFound);
+            }
+            let aid = s.artifact_id;
             let json: Option<String> = c
                 .query_row(
                     "SELECT lines_json FROM report_diagnostics

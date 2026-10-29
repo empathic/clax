@@ -451,7 +451,7 @@ pub async fn clip(
                 .ok_or(CoreError::NotFound)
         })
         .await?;
-    Ok(png(bytes))
+    Ok(png(bytes, TRIAGE_CLIP_CACHE))
 }
 
 /// What a report route tells everyone with, made on the runtime before
@@ -724,11 +724,13 @@ pub async fn reopen(
     Ok(Json(json!({"report": report})))
 }
 
+/// A diagnostics read's query, on the triage and reporter routes alike.
+/// Public as [`ListQuery`] is: a public handler's signature names it.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct CaptureQuery {
     #[serde(default)]
-    capture: Option<u32>,
+    pub(crate) capture: Option<u32>,
 }
 
 /// `GET /api/queues/<qid>/reports/<tid>/diagnostics?capture=` →
@@ -767,17 +769,21 @@ pub async fn comment_clip(
                 .ok_or(CoreError::NotFound)
         })
         .await?;
-    Ok(png(bytes))
+    Ok(png(bytes, TRIAGE_CLIP_CACHE))
 }
 
-/// A clip's answer: `image/png`, sandboxed, cached privately.
-fn png(bytes: Vec<u8>) -> Response {
+/// How long a member's browser keeps a report's clip.
+const TRIAGE_CLIP_CACHE: &str = "private, max-age=3600";
+
+/// A report clip's answer: `image/png`, sandboxed, never sniffed, kept as
+/// `cache` (a `Cache-Control` value) says.
+pub(crate) fn png(bytes: Vec<u8>, cache: &'static str) -> Response {
     (
         [
             (header::CONTENT_TYPE, "image/png"),
             (header::CONTENT_SECURITY_POLICY, "sandbox"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-            (header::CACHE_CONTROL, "private, max-age=3600"),
+            (header::CACHE_CONTROL, cache),
         ],
         Body::from(bytes),
     )

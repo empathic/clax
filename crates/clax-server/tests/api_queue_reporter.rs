@@ -1368,7 +1368,10 @@ async fn verify_twice_is_not_fix_proposed() {
     assert_eq!(status_code(res).await, (400, "invalid_context".into()));
     let res = s.post_as(&r, &verify, &json!({"bogus": 1})).await;
     assert_eq!(status_code(res).await, (400, "invalid_args".into()));
-    let res = s.post_as(&r, &verify, &json!({})).await;
+    // An empty body is `{}`.
+    let res = s
+        .as_reporter(&r, Some(ORIGIN), "POST", &verify, None, vec![])
+        .await;
     assert_eq!(res.status(), 200);
     let res = s.post_as(&r, &verify, &json!({})).await;
     assert_eq!(status_code(res).await, (409, "not_fix_proposed".into()));
@@ -1551,4 +1554,109 @@ async fn reporter_diagnostics_only_own() {
     let c = other.reporter("emp-a").await;
     let res = other.get_as(&c, &pq).await;
     assert_eq!(status_code(res).await, (401, "invalid_token".into()));
+}
+
+#[tokio::test]
+async fn under_all_another_reporters_diagnostics_are_not_found() {
+    let s = Setup::new().await;
+    s.ts.store
+        .update_queue(
+            &AuditCtx::DAEMON,
+            &s.qid,
+            clax_store::queues::QueuePatch {
+                reporters_see: Some(ReportersSee::All),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let a = s.reporter("emp-a").await;
+    let b = s.reporter("emp-b").await;
+    let res = s.file_with(&a, &[("diagnostics", Part::Diag(DIAG))]).await;
+    assert_eq!(res.status(), 201);
+    let v: Value = res.json().await.unwrap();
+    let tid = v["report"]["id"].as_str().unwrap().to_string();
+    // B sees the report, its clip and its comments, not A's console.
+    let v: Value = s.get_as(&b, &s.reports()).await.json().await.unwrap();
+    assert_eq!(v["reports"][0]["id"], json!(tid), "{v}");
+    let pq = format!("{}/{tid}/diagnostics", s.reports());
+    for q in ["", "?capture=0"] {
+        let res = s.get_as(&b, &format!("{pq}{q}")).await;
+        assert_eq!(status_code(res).await, (404, "not_found".into()), "{q}");
+    }
+    let v: Value = s.get_as(&a, &pq).await.json().await.unwrap();
+    assert_eq!(v["lines"].as_array().unwrap().len(), 2, "{v}");
+    let res = s.get_as(&a, &format!("{pq}?capture=x")).await;
+    assert_eq!(status_code(res).await, (400, "invalid_query".into()));
+}
+
+#[tokio::test]
+async fn a_filing_at_full_size_fits_and_one_byte_more_is_too_large() {
+    use clax_core::report::{MAX_CONTEXT_BYTES, MAX_DIAG_BYTES, MAX_DIAG_LINES};
+    use clax_http::reporter::REPORT_BODY_LIMIT;
+    let s = Setup::new().await;
+    let r = s.reporter("emp-1").await;
+
+    let mut clip = png();
+    clip.resize(clax_store::threads::MAX_CLIP_BYTES, 0);
+    // The most lines, as long as the byte limit lets each be.
+    let per_line = MAX_DIAG_BYTES / MAX_DIAG_LINES;
+    let mut diag = String::new();
+    for i in 0..MAX_DIAG_LINES {
+        let head = format!(
+            r#"{{"at":"2026-10-27T09:59:57Z","level":"info","kind":"console","text":"{i:03} "#
+        );
+        let room = per_line - head.len() - "\"}\n".len();
+        diag.push_str(&head);
+        diag.push_str(&"word ".repeat(room / 5));
+        diag.push_str(&" ".repeat(room % 5));
+        diag.push_str("\"}\n");
+    }
+    assert_eq!(diag.len(), per_line * MAX_DIAG_LINES);
+    // A context at its compact limit, padded with as much whitespace as is
+    // read.
+    let mut ctx = json!({"v": 1, "captured_at": "2026-10-27T09:59:58Z", "app": {"pad": ""}});
+    let room = MAX_CONTEXT_BYTES - ctx.to_string().len();
+    ctx["app"]["pad"] = json!("word ".repeat(room / 5));
+    let mut ctx = ctx.to_string();
+    assert!(ctx.len() <= MAX_CONTEXT_BYTES && ctx.len() > MAX_CONTEXT_BYTES - 5);
+    ctx.push_str(&" ".repeat(4 * MAX_CONTEXT_BYTES - ctx.len()));
+
+    let anchor = clax_testkit::element_anchor().to_string();
+    let parts = |pad: Option<&str>| {
+        let mut parts = vec![
+            ("url", Part::Text("https://app.example/orders/7#items")),
+            ("title", Part::Text("Order 7")),
+            ("anchor", Part::Text(&anchor)),
+            ("body", Part::Text("The total is wrong")),
+            ("clip", Part::Png(clip.clone())),
+            ("diagnostics", Part::Diag(&diag)),
+            ("context", Part::Text(&ctx)),
+        ];
+        if let Some(p) = pad {
+            parts.push(("pad", Part::Text(p)));
+        }
+        multipart(&parts)
+    };
+    let (mp, ct) = parts(None);
+    assert!(
+        mp.len() <= REPORT_BODY_LIMIT,
+        "{} > {REPORT_BODY_LIMIT}",
+        mp.len()
+    );
+    let res = s
+        .as_reporter(&r, Some(ORIGIN), "POST", &s.reports(), Some(&ct), mp)
+        .await;
+    assert_eq!(res.status(), 201);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["report"]["diagnostics_lines"], MAX_DIAG_LINES, "{v}");
+
+    // A part padding the body to one byte over the limit.
+    let (probe, _) = parts(Some(""));
+    let pad = " ".repeat(REPORT_BODY_LIMIT + 1 - probe.len());
+    let (mp, ct) = parts(Some(&pad));
+    assert_eq!(mp.len(), REPORT_BODY_LIMIT + 1);
+    let res = s
+        .as_reporter(&r, Some(ORIGIN), "POST", &s.reports(), Some(&ct), mp)
+        .await;
+    assert_eq!(status_code(res).await, (413, "body_too_large".into()));
 }
