@@ -239,6 +239,7 @@ describe("ReportView", () => {
     const calls = stubFetch({ [`GET ${R}`]: () => ({ report: current }) });
     const s = fakeStream();
     const m = mount(ReportView, { qid: "q1", tid: "t1", queue: QUEUE, nav: () => {}, zone: "UTC", locale: "en-US", stream: s.stream as never });
+    s.send({ type: "ready", topic: "queue:q1" });
     await settle();
     expect(s.watching.map(w => w.topics)).toEqual([["queue:q1"]]);
     const box = m.root.querySelector<HTMLTextAreaElement>("form.reply textarea")!;
@@ -327,6 +328,35 @@ describe("ReportView", () => {
     submit(m.root);
     await settle();
     expect(calls.find(c => c.method === "POST")!.body).toEqual({});
+  });
+
+  it("fetches once on open: its topic going live does not fetch again", async () => {
+    const calls = stubFetch({ [`GET ${R}`]: { report: report(1) } });
+    const s = fakeStream();
+    const m = mount(ReportView, { qid: "q1", tid: "t1", queue: QUEUE, nav: () => {}, zone: "UTC", locale: "en-US", stream: s.stream as never });
+    s.send({ type: "ready", topic: "queue:q1" });
+    await settle();
+    expect(m.root.querySelector(".rh .state")!.textContent).toBe("Open");
+    expect(calls.filter(c => c.method === "GET" && c.url === R).length).toBe(1);
+  });
+
+  it("closes the fix form when a change elsewhere no longer allows it, keeping what was typed", async () => {
+    let current: Report = report(1);
+    stubFetch({ [`GET ${R}`]: () => ({ report: current }) });
+    const s = fakeStream();
+    const m = mount(ReportView, { qid: "q1", tid: "t1", queue: QUEUE, nav: () => {}, zone: "UTC", locale: "en-US", stream: s.stream as never });
+    await settle();
+    click(button(m.root, "Propose fix"));
+    type(m.root.querySelector('textarea[name="summary"]'), "Rounds the total");
+    current = report(1, { state: "resolved", status: "resolved" });
+    s.send({ type: "report", topic: "queue:q1", report_id: "t1", state: "resolved" });
+    await settle();
+    expect(m.root.querySelector("form.af")).toBeNull();
+    current = report(1);
+    s.send({ type: "report", topic: "queue:q1", report_id: "t1", state: "open" });
+    await settle();
+    click(button(m.root, "Propose fix"));
+    expect(m.root.querySelector<HTMLTextAreaElement>('textarea[name="summary"]')!.value).toBe("Rounds the total");
   });
 
   it("keeps the latest load when an earlier one answers after it", async () => {
