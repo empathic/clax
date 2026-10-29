@@ -104,6 +104,9 @@ mod l10 {
         ("bot::key_put", Bot),
         ("bot::key_delete", Bot),
         ("bot::usage", Bot),
+        ("bot::me_flags", Bot),
+        ("feedback_integration::token", NoArtifact),
+        ("feedback_integration::config", NoArtifact),
         ("bot::list", Bot),
         ("bot::create", Bot),
         ("bot::get", Bot),
@@ -379,6 +382,7 @@ mod l10 {
             "mcp" => include_str!("mcp.rs"),
             "people" => include_str!("people.rs"),
             "permissions" => include_str!("permissions.rs"),
+            "feedback_integration" => include_str!("../integrations/feedback.rs"),
             _ => return None,
         })
     }
@@ -565,6 +569,10 @@ mod l10 {
         (
             "settings::put",
             "writes the home's config.toml, not the store; its changes are recorded as admin.settings by the SettingsAudit hook (clax_http::bot::SettingsRecorded)",
+        ),
+        (
+            "feedback_integration::token",
+            "mints a reporter token through the public reporter-tokens route, and minting is unaudited by design: that route records nothing for any backend's mint, this one's included (spec 2026-10-29-feedback-loop-design §10.2)",
         ),
         (
             "remotes::add",

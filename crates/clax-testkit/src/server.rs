@@ -655,6 +655,7 @@ impl TestServer {
                 kek: Some(clax_store::secrets::Kek::from_bytes([7; 32])),
                 ..Default::default()
             }),
+            feedback: None,
             store,
             home: home.clone(),
             token: token.clone(),

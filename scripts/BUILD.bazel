@@ -325,6 +325,14 @@ sh_test(
     data = [":all"],
 )
 
+# scripts/lib/feedback-config.py, the [feedback] rewrite of
+# scripts/dev-feedback.sh, on fixtures.
+sh_test(
+    name = "dev_feedback_config",
+    srcs = ["test-dev-feedback-config.sh"],
+    data = [":all"],
+)
+
 # No process launch in the crates the iOS app's core links unless
 # scripts/ios-spawns.allow names it (iOS lets an app start no other
 # program), and the check's own test.

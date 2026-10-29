@@ -154,6 +154,11 @@ impl Core {
             embed: cfg.embed,
         })?;
         state.clax_app = Arc::new(clax_app);
+        state.feedback = config
+            .as_ref()
+            .ok()
+            .and_then(|c| feedback_of(c, &state))
+            .map(Arc::new);
         if cfg.quickstart {
             state.quickstart = clax_core::quickstart::Release::from_tree(&*state.web).map(Arc::new);
         }
@@ -310,6 +315,77 @@ impl Core {
             f(&home);
         }
         stopped
+    }
+}
+
+/// The instance's own feedback integration from `config`'s `[feedback]`
+/// ([`crate::integrations::feedback`]): its queue, the service grant in
+/// its `service_grant_file`, and its `origin` (by default a hosted core's
+/// public origin, else the daemon's browser address). `None`, and logged,
+/// when `[feedback]` is absent, does not check, or its grant file does not
+/// read: the integration is then off and the core serves on.
+fn feedback_of(
+    config: &clax_core::config::HomeConfig,
+    s: &AppState,
+) -> Option<clax_http::state::FeedbackIntegration> {
+    let f = match config.feedback() {
+        Ok(f) => f?,
+        Err(e) => {
+            tracing::warn!(error = %e, "[feedback] is off");
+            return None;
+        }
+    };
+    let origin = f.origin.clone().unwrap_or_else(|| {
+        s.hosted
+            .as_ref()
+            .map_or_else(|| s.browser_base.clone(), |h| h.origin.clone())
+    });
+    let grant = match std::fs::read_to_string(&f.service_grant_file) {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::warn!(file = %f.service_grant_file.display(), error = %e, "[feedback] is off: its service_grant_file does not read");
+            return None;
+        }
+    };
+    if let Some(mode) = loose_mode(&f.service_grant_file) {
+        tracing::warn!(
+            file = %f.service_grant_file.display(),
+            mode = format!("{mode:o}"),
+            "[feedback] service_grant_file is readable by others: chmod 600 it"
+        );
+    }
+    match crate::integrations::feedback::integration(&f.queue, &origin, &grant) {
+        Ok(i) => {
+            tracing::info!(queue = %i.queue_id, origin = %i.origin, "feedback integration on");
+            Some(i)
+        }
+        Err(e) => {
+            let input = match e.input {
+                crate::integrations::feedback::Input::Queue => "[feedback] queue".to_string(),
+                crate::integrations::feedback::Input::Grant => {
+                    f.service_grant_file.display().to_string()
+                }
+            };
+            tracing::warn!(input, error = %e, "[feedback] is off");
+            None
+        }
+    }
+}
+
+/// The permission bits of the file at `path` when its group or others may
+/// read or write it; `None` when they may not, or on a platform without
+/// such bits.
+fn loose_mode(path: &std::path::Path) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(path).ok()?.permissions().mode() & 0o777;
+        (mode & 0o066 != 0).then_some(mode)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
     }
 }
 
@@ -471,4 +547,27 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
     });
 
     vec![reaper, grant_sweeper, optimizer, drafts_sweeper, sweeper]
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn a_grant_file_others_may_read_is_loose() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("g.json");
+        std::fs::write(&p, "{}").unwrap();
+        for (mode, loose) in [
+            (0o600, false),
+            (0o400, false),
+            (0o640, true),
+            (0o604, true),
+            (0o620, true),
+        ] {
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(super::loose_mode(&p).is_some(), loose, "{mode:o}");
+        }
+        assert_eq!(super::loose_mode(&dir.path().join("none")), None);
+    }
 }

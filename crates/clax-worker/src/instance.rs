@@ -512,6 +512,35 @@ fn sites_of(
         .ok_or_else(|| format!("SITE_DOMAIN {domain:?} is not a site domain"))
 }
 
+/// The instance's own feedback integration
+/// (`clax_server::integrations::feedback`): the queue `CLAX_FEEDBACK_QUEUE`
+/// names and the service grant in `CLAX_FEEDBACK_SERVICE_GRANT` (JSON
+/// `{token, private_key_pkcs8}`), minting for the hosted public origin.
+/// Each is read as a secret, else a var of the name (a deploy rewrites the
+/// Worker's vars from its config, and keeps its secrets). With either
+/// empty, or on an instance that is not hosted, the integration is off;
+/// with a grant that does not check it is off and logged, and the
+/// instance serves on.
+fn feedback_of(env: &Env, app: &AppState) -> Option<clax_http::state::FeedbackIntegration> {
+    let queue = secret(env, "CLAX_FEEDBACK_QUEUE");
+    let grant = secret(env, "CLAX_FEEDBACK_SERVICE_GRANT");
+    let origin = app.hosted.as_ref()?.origin.clone();
+    if queue.trim().is_empty() || grant.trim().is_empty() {
+        return None;
+    }
+    match clax_server::integrations::feedback::integration(&queue, &origin, &grant) {
+        Ok(i) => Some(i),
+        Err(e) => {
+            let name = match e.input {
+                clax_server::integrations::feedback::Input::Queue => "CLAX_FEEDBACK_QUEUE",
+                clax_server::integrations::feedback::Input::Grant => "CLAX_FEEDBACK_SERVICE_GRANT",
+            };
+            worker::console_error!("{name}: {e}; the feedback integration is off");
+            None
+        }
+    }
+}
+
 /// What the instance says about the Clax app: its app links
 /// (`APPLE_TEAM_ID`; `ANDROID_PACKAGE` with `ANDROID_SHA256`) and store
 /// pages (`IOS_STORE_URL`, `ANDROID_STORE_URL`); none without them, and
@@ -683,6 +712,7 @@ impl Instance {
         // the deploy's build identity (the `CLAX_BUILD` var).
         clax_core::set_build_commit(build_commit(&var(env, "CLAX_BUILD_COMMIT")));
         app.build = Some(var(env, "CLAX_BUILD")).filter(|b| !b.is_empty());
+        app.feedback = feedback_of(env, &app).map(Arc::new);
         let bot = worker_bot(env, &mut app);
         app.seats
             .set_limits(clax_core::seats::SeatLimits::from_env(|k| {
