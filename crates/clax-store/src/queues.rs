@@ -35,6 +35,7 @@ use super::threads::{
 };
 use clax_core::anchor::Anchor;
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
+use clax_core::feedback::{QueueEvent, Touched};
 use clax_core::model::{Comment, Session, Thread};
 use clax_core::queue::{
     AUTHOR_REPORTER, Claim, LEASE_SECS, Lease, MAX_ARTIFACT_METADATA_BYTES,
@@ -1318,6 +1319,23 @@ impl Store {
         self.block_on(self.file_report_async(ctx, qid, reporter, scope, r))
     }
 
+    /// [`Store::file_report_touched_async`], without the sessions it woke.
+    ///
+    /// # Errors
+    /// [`Store::file_report_touched_async`]'s.
+    pub async fn file_report_async(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        reporter: Option<&ReporterToken>,
+        scope: ExternalScope,
+        r: NewReport,
+    ) -> Result<Report> {
+        self.file_report_touched_async(ctx, qid, reporter, scope, r)
+            .await
+            .map(|(report, _)| report)
+    }
+
     /// Files report `r` to queue `qid` by `reporter` (the reporter token
     /// it came with; `None` otherwise). Finds or makes the external
     /// artifact `r.external_id` names, or the page URL without its route
@@ -1331,8 +1349,11 @@ impl Store {
     /// ([`clax_core::report::parse_context`],
     /// [`clax_core::report::parse_diagnostics`]). The anchor's file is
     /// the artifact's one page, and a route it names is dropped: an
-    /// external artifact is no live page. Answers the report as its filer
-    /// reads it: a reporter's view carries no profile.
+    /// external artifact is no live page. In the same transaction every
+    /// live session watching the queue is woken for the new report
+    /// ([`Store::notify_queue_event_in`], `filed`). Answers the report as
+    /// its filer reads it (a reporter's view carries no profile), and the
+    /// sessions woken, to wake their waits with.
     ///
     /// # Errors
     /// [`CoreError::NotAMember`] for no such queue, or a token of another
@@ -1340,14 +1361,14 @@ impl Store {
     /// [`CoreError::InvalidContext`], [`CoreError::InvalidDiagnostics`]
     /// and the errors of [`Store::ensure_external_async`] and
     /// [`Store::create_thread`] for bad input.
-    pub async fn file_report_async(
+    pub async fn file_report_touched_async(
         &self,
         ctx: &AuditCtx,
         qid: &str,
         reporter: Option<&ReporterToken>,
         scope: ExternalScope,
         r: NewReport,
-    ) -> Result<Report> {
+    ) -> Result<(Report, Touched)> {
         let q = self.queue(qid)?.ok_or(CoreError::NotAMember)?;
         if let Some(tok) = reporter {
             check_reporter_id(&tok.reporter_id)?;
@@ -1420,6 +1441,8 @@ impl Store {
         let metadata = r.metadata;
         let now = self.now();
         let artifact_id = x.artifact_id.clone();
+        let mut woken = Touched::default();
+        let woken_in = &mut woken;
         let thread = self
             .create_thread_then_async(ctx, &aid, t, move |tx, tid| {
                 tx.execute(
@@ -1465,6 +1488,19 @@ impl Store {
                         vec![rec]
                     }
                 };
+                let note: String = tx.query_row(
+                    "SELECT id FROM comments WHERE thread_id = ?1 ORDER BY created_at, id LIMIT 1",
+                    params![tid],
+                    |r| r.get(0),
+                )?;
+                *woken_in = self.notify_queue_event_in(
+                    tx,
+                    &qid_owned,
+                    tid,
+                    &note,
+                    QueueEvent::Filed,
+                    None,
+                )?;
                 Ok((None, records))
             })
             .await?;
@@ -1472,8 +1508,10 @@ impl Store {
             Some(t) => Visibility::Reporter(&t.reporter_id),
             None => Visibility::All,
         };
-        self.report(qid, &thread.id, vis)?
-            .ok_or(CoreError::NotFound)
+        let report = self
+            .report(qid, &thread.id, vis)?
+            .ok_or(CoreError::NotFound)?;
+        Ok((report, woken))
     }
 
     /// A page of queue `qid`'s reports that `vis` sees, in order of arrival,
@@ -2302,7 +2340,7 @@ impl Store {
         clip: Option<Vec<u8>>,
         diagnostics: Option<Vec<DiagLine>>,
         context: Option<ReportContext>,
-    ) -> Result<(Report, Option<String>)> {
+    ) -> Result<(Report, Touched)> {
         self.block_on(self.reopen_report_async(ctx, qid, tid, by, body, clip, diagnostics, context))
     }
 
@@ -2320,9 +2358,12 @@ impl Store {
     /// thread unresolved, `thread.reopen` when it was resolved), its phase
     /// and resolve reason cleared. Recorded as `queue.reopen {queue_id,
     /// thread_id, n?, reopen_count}` (`n` the latest attempt's, when there
-    /// is one), after the comment's `comment.add`. Answers the report as
-    /// `by` reads it, and the session of its latest lease when that
-    /// session has not ended (whoever claimed it last, to be told).
+    /// is one), after the comment's `comment.add`. In the same transaction
+    /// the reopen's comment wakes every live session watching the queue
+    /// and the session of the report's latest lease when it has not ended
+    /// (whoever claimed it last, the fix's proposer), watching or not
+    /// ([`Store::notify_queue_event_in`], `reopened`). Answers the report
+    /// as `by` reads it, and the sessions woken, to wake their waits with.
     ///
     /// # Errors
     /// [`CoreError::NotAMember`] for no such queue; `NotFound` for no such
@@ -2341,7 +2382,7 @@ impl Store {
         clip: Option<Vec<u8>>,
         diagnostics: Option<Vec<DiagLine>>,
         context: Option<ReportContext>,
-    ) -> Result<(Report, Option<String>)> {
+    ) -> Result<(Report, Touched)> {
         check_body(&body)?;
         if let Some(problem) = clip.as_deref().and_then(clip_problem) {
             return Err(CoreError::invalid("invalid_clip", problem));
@@ -2474,10 +2515,17 @@ impl Store {
             rec.ids.artifact = Some(s.artifact_id);
             rec.ids.thread = Some(tid.to_string());
             self.record_audit(tx, ctx, rec)?;
-            Ok(previous)
+            self.notify_queue_event_in(
+                tx,
+                qid,
+                tid,
+                &c.id,
+                QueueEvent::Reopened,
+                previous.as_deref(),
+            )
         });
-        let previous = match done {
-            Ok(p) => p,
+        let woken = match done {
+            Ok(w) => w,
             Err(e) => {
                 if let Some(key) = &clip_key
                     && let Err(gone) = self.content.delete_clip(&aid, key).await
@@ -2495,7 +2543,7 @@ impl Store {
         let report = self
             .report(qid, tid, by.visibility())?
             .ok_or(CoreError::NotFound)?;
-        Ok((report, previous))
+        Ok((report, woken))
     }
 
     /// The PNG clip of comment `cid` of report `tid` in queue `qid` (a

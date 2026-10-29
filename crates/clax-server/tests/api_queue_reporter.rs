@@ -1685,3 +1685,48 @@ async fn a_filing_at_full_size_fits_and_one_byte_more_is_too_large() {
         .await;
     assert_eq!(status_code(res).await, (413, "body_too_large".into()));
 }
+
+/// A session waiting in `wait_for_feedback` while it watches the queue is
+/// woken by a filing through the reporter route.
+#[tokio::test]
+async fn watch_then_file_wakes_a_waiting_watcher() {
+    let s = Setup::new().await;
+    let sid = s.ts.register_session("claude", "w1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res =
+        s.ts.authed(client().post(format!("{}/api/queues/{}/watch", s.ts.base, s.qid)))
+            .header("x-clax-session", &sid)
+            .send()
+            .await
+            .unwrap();
+    assert_eq!(res.status(), 204);
+    let url = format!(
+        "{}/api/sessions/{sid}/feedback?tier=wait&wait=600",
+        s.ts.base
+    );
+    let wait = s.ts.authed(client().get(url));
+    let waiter = tokio::spawn(async move {
+        let body: Value = wait.send().await.unwrap().json().await.unwrap();
+        body
+    });
+    s.ts.wait_feedback_waiters(&sid, 1).await;
+    let r = s.reporter("emp-1").await;
+    let res = s.file(&r, "The total is wrong").await;
+    assert_eq!(res.status(), 201);
+    let v: Value = res.json().await.unwrap();
+    let tid = v["report"]["id"].as_str().unwrap().to_string();
+    let got = tokio::time::timeout(clax_testkit::HANG, waiter)
+        .await
+        .expect("the filing wakes the watcher's wait")
+        .unwrap();
+    let items = got["feedback"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{got}");
+    assert_eq!(items[0]["queue_event"], "filed", "{got}");
+    assert_eq!(items[0]["thread_id"], tid.as_str(), "{got}");
+    assert!(
+        got["text"].as_str().unwrap().contains("then queue_claim"),
+        "{got}"
+    );
+}

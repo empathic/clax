@@ -367,6 +367,25 @@ async fn announce(s: &AppState, tid: String) {
     }
 }
 
+/// Wakes the sessions a filing or reopen woke (`woken`: the queue's
+/// watchers and a reopen's previous proposer), their waits and pushes; a
+/// failure is logged, the rows being written.
+pub(crate) async fn wake_watchers(s: &AppState, woken: clax_core::feedback::Touched) {
+    if woken.is_empty() {
+        return;
+    }
+    let ctx = s.feedback_ctx();
+    let r = s
+        .store_call(move |st| {
+            clax_realtime::feedback::apply(&ctx, st, &woken);
+            Ok(())
+        })
+        .await;
+    if let Err(e) = r {
+        tracing::warn!(error = ?e, "waking a queue's watchers failed");
+    }
+}
+
 /// `POST /api/queues/<qid>/reporter/reports` (multipart `external_id?`,
 /// `url`, `title`, `anchor` (JSON), `body`, `metadata?` (JSON, at most
 /// [`clax_core::queue::MAX_THREAD_METADATA_BYTES`] bytes written compact),
@@ -375,7 +394,8 @@ async fn announce(s: &AppState, tid: String) {
 /// `diagnostics.jsonl`, §5.2)): files a report as the token's reporter.
 /// The context and diagnostics are checked and scrubbed again here, and
 /// the report carries this server's stamp (`server: {version, commit?,
-/// build?, received_at}`). Answers `201 {report}`.
+/// build?, received_at}`). Every session watching the queue is woken
+/// (`POST /api/queues/<qid>/watch`). Answers `201 {report}`.
 ///
 /// # Errors
 /// [`ReporterCaller`]'s; 400 `invalid_args`, `invalid_multipart`,
@@ -400,13 +420,14 @@ pub async fn file_report(
         Some(_) => ExternalScope::Maker,
         None => ExternalScope::Instance,
     };
-    let report = s
+    let (report, woken) = s
         .store_call_async(move |st| async move {
-            st.file_report_async(&reporter_ctx(&qid, &rid), &qid, Some(&token), scope, new)
+            st.file_report_touched_async(&reporter_ctx(&qid, &rid), &qid, Some(&token), scope, new)
                 .await
         })
         .await?;
     announce(&s, report.id.clone()).await;
+    wake_watchers(&s, woken).await;
     Ok((StatusCode::CREATED, Json(json!({ "report": report }))))
 }
 
@@ -582,7 +603,8 @@ pub async fn verify(
 /// carries the capture's number, its clip (`…/comments/<cid>/clip`) and its
 /// diagnostics (`…/diagnostics?capture=<n>`); the filing's stay as they
 /// were. A fix waiting is `rejected`, and the report is `open` again with
-/// `reopen_count` one more. Answers `{report}`.
+/// `reopen_count` one more. The queue's watching sessions and the session
+/// of the report's last lease are woken. Answers `{report}`.
 ///
 /// # Errors
 /// [`ReporterCaller`]'s; 404 `not_found` for a report the reporter did not
@@ -604,23 +626,22 @@ pub async fn reopen(
     let context = p.context()?;
     let rid = r.token.reporter_id;
     let t = tid.clone();
-    let report = s
+    let (report, woken) = s
         .store_call_async(move |st| async move {
-            let (report, _previous) = st
-                .reopen_report_async(
-                    &reporter_ctx(&qid, &rid),
-                    &qid,
-                    &t,
-                    Verdict::Reporter(&rid),
-                    body,
-                    clip,
-                    diagnostics,
-                    context,
-                )
-                .await?;
-            Ok(report)
+            st.reopen_report_async(
+                &reporter_ctx(&qid, &rid),
+                &qid,
+                &t,
+                Verdict::Reporter(&rid),
+                body,
+                clip,
+                diagnostics,
+                context,
+            )
+            .await
         })
         .await?;
+    wake_watchers(&s, woken).await;
     let cid = last_comment(&report);
     let an = Announcer::of(&s);
     let done = s

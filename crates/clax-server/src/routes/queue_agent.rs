@@ -52,7 +52,7 @@ use clax_core::{CoreError, Event};
 use clax_http::agent::{
     Agent, DeniedToGrants, Need, QueueArtifactPatch, QueueClaim, QueueClip, QueueCommentClip,
     QueueDiagnostics, QueueFix, QueueRelease, QueueRenew, QueueReply, QueueReportGet,
-    QueueReportPatch, QueueReportsList, QueueResolve,
+    QueueReportPatch, QueueReportsList, QueueResolve, QueueUnwatch, QueueWatch,
 };
 use clax_http::auth::Caller;
 use clax_http::error::ApiError;
@@ -230,6 +230,50 @@ pub async fn claim(
         })
         .await?;
     Ok(Json(json!(lease)))
+}
+
+/// `POST /api/queues/<qid>/watch` → 204: the agent's session watches the
+/// queue (spec 2026-10-29-feedback-loop-design §7.3) until it unwatches it
+/// or ends: each report filed into it, and each reopened, is then a
+/// feedback delivery to the session (`wait_for_feedback`, `clax feedback
+/// follow`) naming `queue_get` and `queue_claim`. Watching it again
+/// changes nothing. A watch is a session's alone (400 `no_session`
+/// otherwise).
+pub async fn watch(
+    State(s): State<AppState>,
+    a: Agent<QueueWatch>,
+    _o: SameOrigin,
+    p: Result<Path<String>, PathRejection>,
+) -> Result<StatusCode, ApiError> {
+    let qid = path(p)?;
+    member(&s, &a, &qid).await?;
+    let caller = a.caller.clone();
+    s.store_call(move |st| {
+        let sess = agent_session(st, &caller)?;
+        st.watch_queue(&qid, &sess.id)
+    })
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/queues/<qid>/watch` → 204: the agent's session no longer
+/// watches the queue; one that did not watch it is fine. 400 `no_session`
+/// without a session.
+pub async fn unwatch(
+    State(s): State<AppState>,
+    a: Agent<QueueUnwatch>,
+    _o: SameOrigin,
+    p: Result<Path<String>, PathRejection>,
+) -> Result<StatusCode, ApiError> {
+    let qid = path(p)?;
+    member(&s, &a, &qid).await?;
+    let caller = a.caller.clone();
+    s.store_call(move |st| {
+        let sess = agent_session(st, &caller)?;
+        st.unwatch_queue(&qid, &sess.id)
+    })
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /api/queues/<qid>/reports/<tid>/renew` → the lease, extended;
@@ -678,7 +722,9 @@ pub struct ReopenBody {
 /// `POST /api/queues/<qid>/reports/<tid>/reopen {body}` → `{report}`,
 /// `open` again: a triage person says a `fix_proposed`, `verified` or
 /// `resolved` report is still broken, on the reporter's behalf, with
-/// `body` as their comment (spec 2026-10-29-feedback-loop-design §6.3). A
+/// `body` as their comment (spec 2026-10-29-feedback-loop-design §6.3),
+/// waking the queue's watching sessions and the session of the report's
+/// last lease as the reporter's reopen does. A
 /// person's alone: 403 `not_for_agents` for an agent. 409
 /// `not_fix_proposed` for an `open` or `claimed` report.
 pub async fn reopen(
@@ -695,24 +741,23 @@ pub async fn reopen(
     let b = body(req)?;
     verdict_caller(&s, &d, &qid).await?;
     let t = tid.clone();
-    let report = s
+    let (report, woken) = s
         .store_call_async(move |st| async move {
             let (name, public_id) = author(&st, &who)?;
-            let (report, _previous) = st
-                .reopen_report_async(
-                    &ctx,
-                    &qid,
-                    &t,
-                    Verdict::Person { name, public_id },
-                    b.body,
-                    None,
-                    None,
-                    None,
-                )
-                .await?;
-            Ok(report)
+            st.reopen_report_async(
+                &ctx,
+                &qid,
+                &t,
+                Verdict::Person { name, public_id },
+                b.body,
+                None,
+                None,
+                None,
+            )
+            .await
         })
         .await?;
+    super::queue_reporter::wake_watchers(&s, woken).await;
     let cid = last_comment(&report);
     let an = Announcer::of(&s);
     let r = s

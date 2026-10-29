@@ -1142,7 +1142,7 @@ fn reopen_from_fix_proposed_rejects_attempt_and_counts() {
     let (_d, st) = store();
     let qid = queue(&st, ReportersSee::Own);
     let (tid, a) = fixed(&st, &qid);
-    let (r, previous) = st
+    let (r, woken) = st
         .reopen_report(
             DAEMON,
             &qid,
@@ -1154,7 +1154,11 @@ fn reopen_from_fix_proposed_rejects_attempt_and_counts() {
             Some(context("0.6.1")),
         )
         .unwrap();
-    assert_eq!(previous.as_deref(), Some(a.as_str()), "the fix's claimant");
+    assert_eq!(
+        woken.targets.iter().collect::<Vec<_>>(),
+        [&a],
+        "the fix's claimant is woken"
+    );
     assert_eq!(r.state, State::Open);
     assert_eq!(r.status, "open");
     assert_eq!(r.reopen_count, 1);
@@ -1203,7 +1207,7 @@ fn reopen_from_fix_proposed_rejects_attempt_and_counts() {
         )
         .unwrap();
     assert_eq!(r.fixes[1].n, 2);
-    let (_, previous) = st
+    let (_, woken) = st
         .reopen_report(
             DAEMON,
             &qid,
@@ -1215,19 +1219,19 @@ fn reopen_from_fix_proposed_rejects_attempt_and_counts() {
             None,
         )
         .unwrap();
-    assert_eq!(previous.as_deref(), Some(b.as_str()));
+    assert_eq!(woken.targets.iter().collect::<Vec<_>>(), [&b]);
     let r = st.report(&qid, &tid, Visibility::All).unwrap().unwrap();
     assert_eq!(r.reopen_count, 2);
     assert_eq!(r.diagnostics_lines, 1, "kept when none are given");
-    // An ended proposer's session is not named.
+    // An ended proposer's session is not woken.
     st.claim(DAEMON, &qid, &tid, &b).unwrap();
     st.propose_fix(DAEMON, &qid, &tid, &ReportWriter::Agent(&sb), fix("Three"))
         .unwrap();
     st.end_session(DAEMON, &b).unwrap();
-    let (_, previous) = st
+    let (_, woken) = st
         .reopen_report(DAEMON, &qid, &tid, by_ana(), "No".into(), None, None, None)
         .unwrap();
-    assert_eq!(previous, None);
+    assert!(woken.targets.is_empty(), "{woken:?}");
     // A bad clip writes nothing.
     let (other, _) = fixed(&st, &qid);
     assert!(matches!(
@@ -1283,7 +1287,7 @@ fn reopen_from_verified_reopens_thread() {
     let other = file(&st, &qid, Some("emp-1"), Some("other"));
     st.resolve_report(DAEMON, &qid, &other, &ana(), ResolveReason::CannotReproduce)
         .unwrap();
-    let (r, previous) = st
+    let (r, woken) = st
         .reopen_report(
             DAEMON,
             &qid,
@@ -1295,7 +1299,8 @@ fn reopen_from_verified_reopens_thread() {
             None,
         )
         .unwrap();
-    assert_eq!((r.state, r.reopen_count, previous), (State::Open, 1, None));
+    assert_eq!((r.state, r.reopen_count), (State::Open, 1));
+    assert!(woken.targets.is_empty(), "never claimed: no one to wake");
     assert!(r.fixes.is_empty());
     assert_eq!(
         bodies(&st, "queue.reopen").last().unwrap(),
