@@ -1760,7 +1760,9 @@ async fn under_all_another_reporters_context_is_left_out() {
     let comments = format!("{}/{tid}/comments", s.reports());
     for (who, own) in [(&a, true), (&b, false)] {
         let list: Value = s.get_as(who, &s.reports()).await.json().await.unwrap();
-        let res = s.post_as(who, &comments, &json!({"body": "Same here"})).await;
+        let res = s
+            .post_as(who, &comments, &json!({"body": "Same here"}))
+            .await;
         assert_eq!(res.status(), 200);
         let replied: Value = res.json().await.unwrap();
         for report in [&list["reports"][0], &replied["report"]] {

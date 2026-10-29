@@ -546,13 +546,18 @@ mod tests {
             json!({"grant": {"id": "g1", "name": "clax.dev"}, "token": "cxq_t", "private_key": k}),
             json!({"token": "cxq_t", "private_key_pkcs8": k}),
         ] {
-            let i = integration("q1", "https://clax.dev", "https://clax.dev", &g.to_string())
-                .unwrap();
+            let i =
+                integration("q1", "https://clax.dev", "https://clax.dev", &g.to_string()).unwrap();
             assert_eq!(&i.grant_key_pkcs8[..], key.pkcs8().expose(), "{g}");
         }
         let both = json!({"token": "cxq_t", "private_key": k, "private_key_pkcs8": k});
-        let e = integration("q1", "https://clax.dev", "https://clax.dev", &both.to_string())
-            .unwrap_err();
+        let e = integration(
+            "q1",
+            "https://clax.dev",
+            "https://clax.dev",
+            &both.to_string(),
+        )
+        .unwrap_err();
         assert_eq!(e.input, Input::Grant);
     }
 
