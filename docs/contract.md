@@ -3746,7 +3746,10 @@ channel?}`, strings), `flags?` (values booleans, numbers or strings),
 `environment?` (`{url?, route?, title?, viewport?: {w, h, dpr}, scroll?:
 {x, y}, user_agent?, platform?, locale?, time_zone?, color_scheme?}`),
 `capture?` (`{mode: element|range|area|screen, method: dom|display,
-omitted?: [{kind, rect: {x, y, w, h}}]}`) and `app?` (the host's own JSON). A top-level key
+omitted?: [{kind, rect: {x, y, w, h}}]}`) and `app?` (the host's own JSON;
+Clax reads one key of it: a string `app.repo`, an http(s) repository URL
+or `owner/name` for a GitHub repository, is where the triage views link
+`release.commit`, as `<repo>/commit/<commit>`). A top-level key
 outside these, a wrong type, another `v` or a bad `captured_at` is 400
 `invalid_context`. The server scrubs it again (`environment.url`'s query
 values, `route`, `title` and every string in `app`): bearer and basic
@@ -3801,7 +3804,7 @@ tools" says; 404 `not_a_member` otherwise):
 
 | Route | Body | Answer |
 |---|---|---|
-| `GET /api/queues/<qid>/reports?state=&cursor=` | | `{reports, next}`; `state` one of the five states or `active`; 400 `invalid_state` for another |
+| `GET /api/queues/<qid>/reports?state=&order=&cursor=` | | `{reports, next}`; `state` one of the five states or `active`; 400 `invalid_state` for another; `order` `oldest` (the default: in order of arrival) or `newest` (the latest filed first, each page after `cursor` holding the ones filed before it); 400 `invalid_query` for another |
 | `POST …/reports/<tid>/fix` | `{summary, url?, commit?, release?, verify_url?, verify_after?, fence?}` | `{report}`, `fix_proposed`: the summary is posted as the writer's comment, the lease ends (`queue.release`, reason `fix_proposed`); an agent needs its live lease, a person none; 400 `invalid_fix` (blank summary, summary over 4 KiB, a `url` or `verify_url` not http(s) or over 2048 bytes, `commit`, `release` or `verify_after` over 256 bytes); 409 `not_claimable` for a `verified` or `resolved` report |
 | `POST …/reports/<tid>/verify` | `{note?}` | `{report}`, `verified`, on the reporter's behalf and recorded as the person's; a person's alone (403 `not_for_agents`); 409 `not_fix_proposed` |
 | `POST …/reports/<tid>/reopen` | `{body}` | `{report}`, `open`, as the reporter's reopen; a person's alone (403 `not_for_agents`); 409 `not_fix_proposed` |
@@ -5781,6 +5784,8 @@ router), and a test fails when it differs:
 | `GET /me` | Denied | no |
 | `GET /people` | Denied | no |
 | `GET /queues` | Denied | no |
+| `GET /queues/{qid}` | Denied | no |
+| `GET /queues/{qid}/{tid}` | Denied | no |
 | `GET /settings` | Denied | no |
 | `GET /site-signin` | Denied | yes: 403 `not_for_agents` |
 | `GET /tags` | Denied | no |

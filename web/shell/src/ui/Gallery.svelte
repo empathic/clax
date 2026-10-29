@@ -13,8 +13,9 @@
   // wait in Clax and are answered there; anyone else at `/inbox` is told
   // the browser has no inbox, and nothing more of it is fetched. At `/people` the
   // page is People (its own chunk, through the lazy module, with the page's
-  // stream), and no artifacts are fetched; so is `/queues`, the report
-  // queues. **People** and **Queues** are in the header for the owner and
+  // stream), and no artifacts are fetched; so is `/queues`, the report queues
+  // (with a queue's view at `/queues/<qid>` and a report's at
+  // `/queues/<qid>/<tid>`). **People** and **Queues** are in the header for the owner and
   // for a connected person, once the lazy module has loaded.
   // Every one of these pages ends with a link to Clax's source on GitHub,
   // and, on a hosted Clax that shows Terms of Service and a Privacy Policy,
@@ -67,8 +68,10 @@
   let feed = $state<import("./working-feed.svelte").WorkingFeed | null>(null);
   let sync: import("./card-sync").CardSync | null = null;
   const inbox = location.pathname === "/inbox";
-  // The pages beside the gallery and the inbox, each its own chunk (`gallery-working` `page`).
-  const sub = /^\/(people|tags|queues|admin|settings|me|audit)$/.exec(location.pathname)?.[1] as import("./gallery-working").Page | undefined;
+  // The pages beside the gallery and the inbox, each its own chunk (`gallery-working` `page`);
+  // `/queues/<qid>` and `/queues/<qid>/<tid>` are views of the Queues page (the
+  // daemon serves the shell at no other page's sub-path).
+  const sub = /^\/(people|tags|queues|admin|settings|me|audit)(?:\/|$)/.exec(location.pathname)?.[1] as import("./gallery-working").Page | undefined;
   // The tag filter: the artifacts shown carry every one. It holds tag IDs
   // once the tags are known (`canonical`), and the address (`?tag=`) names
   // each tag by its name, so a rename follows in place and a deleted tag

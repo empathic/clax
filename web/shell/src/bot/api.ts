@@ -139,7 +139,8 @@ export type RunEvent =
  * artifact refused before any model call. */
 export type AdminPerson = {
   person: PersonKey; name: string | null; role: Role;
-  flags: { claxbot: boolean; claxbot_unenforced: boolean };
+  /** `feedback`: whether they may report problems with Clax itself, through the instance's feedback queue. */
+  flags: { claxbot: boolean; claxbot_unenforced: boolean; feedback: boolean };
   /** The key their next run would use (their own while set and turned on, else the instance's). */
   key_source: KeySource;
   week: { weekly_milli: number; lift_milli: number; spent_milli: number };
