@@ -15,7 +15,7 @@ vi.mock("modern-screenshot", () => ({
   destroyContext: () => {},
 }));
 
-const { captureExact, captureFor, steppingAside } = await import("./capture");
+const { captureExact, captureFor, pngSize, steppingAside } = await import("./capture");
 
 const sized = (el: Element, left: number, top: number, width: number, height: number) => {
   (el as HTMLElement).getBoundingClientRect = () => ({ left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON() {} }) as DOMRect;
@@ -109,6 +109,22 @@ describe("capture", () => {
     host.remove();
     other.remove();
     document.body.innerHTML = "";
+  });
+
+  it("measures an exact screenshot's scale from its PNG, and places both captures on the page", async () => {
+    vi.spyOn(window, "scrollY", "get").mockReturnValue(300);
+    // A 300 x 150 PNG of the 200 x 100 crop: shrunk from twice the scale to 1.5.
+    const header = new Uint8Array(24);
+    header.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]);
+    new DataView(header.buffer).setUint32(16, 300);
+    new DataView(header.buffer).setUint32(20, 150);
+    expect(pngSize(header.buffer)).toEqual({ w: 300, h: 150 });
+    expect(pngSize(png(1, 2, 3))).toBeNull();
+    const display = async (): Promise<DisplayResult> => ({ ok: true, png: header.buffer, thisTab: true });
+    const c = await captureExact("element", pick(), window, { display, painted: async () => {} });
+    expect([c.scale, c.at]).toEqual([1.5, { x: 100, y: 400, w: 200, h: 100 }]);
+    const dom = await captureFor("element", pick(), window, { supported: false });
+    expect([dom.scale, dom.at]).toEqual([1, { x: 50, y: 350, w: 400, h: 300 }]);
   });
 
   it("steps back in when the capture fails", async () => {

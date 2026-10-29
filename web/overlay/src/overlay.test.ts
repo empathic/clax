@@ -129,7 +129,9 @@ afterEach(() => {
 });
 
 const q = <E extends HTMLElement = HTMLElement>(s: string) => view.root.querySelector<E>(s);
-const button = (label: string) => [...view.root.querySelectorAll("button")].find(b => b.textContent?.trim() === label);
+/** A button's name as a screen reader hears it: its text without what is aria-hidden. */
+const nameOf = (b: Element) => { const c = b.cloneNode(true) as Element; c.querySelectorAll('[aria-hidden="true"]').forEach(n => n.remove()); return c.textContent?.trim(); };
+const button = (label: string) => [...view.root.querySelectorAll("button")].find(b => nameOf(b) === label);
 const typeIn = (sel: string, v: string) => { const t = q<HTMLTextAreaElement>(sel)!; t.value = v; t.dispatchEvent(new Event("input", { bubbles: true })); flushSync(); };
 const type = (v: string) => typeIn(".composer textarea", v);
 const click = (b: HTMLElement | undefined | null) => { if (!b) throw new Error("no such button"); b.click(); flushSync(); };
@@ -300,8 +302,9 @@ describe("the overlay", () => {
     // The overlay's host is transparent while the browser captures, and shown again after.
     expect(seenOpacity).toEqual(["0"]);
     expect(host.style.getPropertyValue("opacity")).toBe("");
-    // The exact screenshot is cropped to the pick: no outline, and no second offer.
-    expect(view.root.querySelectorAll(".annotator svg [data-kind]")).toHaveLength(0);
+    // The reporter's marks are moved onto the exact screenshot, and the composer says so.
+    expect(view.root.querySelectorAll(".annotator svg [data-kind=box]")).toHaveLength(1);
+    expect(q(".composer .marks")?.textContent).toMatch(/Your marks were moved onto the new screenshot/);
     expect(button("Use exact screenshot")).toBeUndefined();
     type("Exact");
     click(button("Send"));
@@ -316,6 +319,107 @@ describe("the overlay", () => {
     await settle();
     expect(q(".composer .warn")?.textContent).toMatch(/You cancelled screen sharing/);
     expect(view.root.querySelectorAll(".annotator svg [data-kind=box]")).toHaveLength(1);
+  });
+
+  it("draws every kind of mark from the keyboard, announced, and redacts the pick in one step", async () => {
+    click(button("Report"));
+    onPick(picked(async () => new Uint8Array([1]).buffer));
+    await settle();
+    const stage = q(".annotator .stage")!;
+    expect(stage.tabIndex).toBe(0);
+    stage.focus();
+    const said = () => q(".annotator [aria-live]")?.textContent;
+    const marks = () => [...view.root.querySelectorAll(".annotator svg [data-kind]")].map(n => n.getAttribute("data-kind"));
+    for (const [tool, kind] of [["Box", "box"], ["Arrow", "arrow"], ["Redact", "redact"]] as const) {
+      click(button(tool));
+      stage.focus();
+      key("Enter", stage);
+      expect(said()).toMatch(/first corner set/);
+      key("ArrowRight", stage);
+      key("ArrowDown", stage);
+      key("Enter", stage);
+      expect(said()).toMatch(/added\./);
+      expect(marks().at(-1)).toBe(kind);
+    }
+    // Escape drops a first corner, and leaves the draft be.
+    key("Enter", stage);
+    key("Escape", stage);
+    expect(said()).toBe("Mark cancelled.");
+    expect(q(".composer")).not.toBeNull();
+    click(button("Text"));
+    stage.focus();
+    key("Enter", stage);
+    const input = q<HTMLInputElement>('.annotator input[aria-label="Text to add"]')!;
+    input.value = "this one";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    flushSync();
+    expect(marks().at(-1)).toBe("text");
+    expect(said()).toBe("Text added.");
+    click(button("Redact the pick"));
+    const last = view.root.querySelectorAll(".annotator svg [data-kind=redact]");
+    const r = last[last.length - 1];
+    expect(["x", "y", "width", "height"].map(a => r.getAttribute(a))).toEqual(["0", "0", "100", "20"]);
+    type("Marked");
+    click(button("Send"));
+    await settle();
+    expect(drawn).toEqual([7]);
+  });
+
+  it("shows the page the report points at in What's sent, from what is sent", async () => {
+    document.title = "Cart";
+    click(button("Report"));
+    onPick(picked(async () => new Uint8Array([1]).buffer));
+    await settle();
+    const page = q(".composer details.sent dl.page")!;
+    const rows = Object.fromEntries([...page.querySelectorAll("dt")].map(dt => [dt.textContent, dt.nextElementSibling?.textContent]));
+    expect(rows).toMatchObject({ Title: "Cart", Address: location.href, Artifact: "shop-cart", Kind: "element", Selector: "#total", Text: "Total: $12" });
+  });
+
+  it("asks before a new report drops a Still broken note, and a reopen's capture can be retaken", async () => {
+    pages.push({ reports: [proposed("t1")], next: null });
+    click(button("Your reports"));
+    await settle();
+    click(q(".panel .row"));
+    click(button("Still broken"));
+    await settle();
+    click(button("Element"));
+    onPick(picked(async () => new Uint8Array([5]).buffer));
+    await settle();
+    typeIn(".composer textarea", "Still wrong");
+    click(button("Retake the screenshot"));
+    expect(q(".modebar")).not.toBeNull();
+    key("Escape");
+    expect(q(".modebar")).toBeNull();
+    await settle();
+    expect(document.activeElement).toBe(q(".composer textarea"));
+    click(button("Report"));
+    expect(q('[role="alertdialog"]')?.textContent).toMatch(/Still broken/);
+    click(button("Keep writing"));
+    expect(q('[role="alertdialog"]')).toBeNull();
+    expect(q<HTMLTextAreaElement>('.composer[aria-label="Still broken"] textarea')?.value).toBe("Still wrong");
+    click(button("Report"));
+    click(button("Drop it"));
+    expect(q('.composer[aria-label="Still broken"]')).toBeNull();
+    expect(q(".modebar")).not.toBeNull();
+    expect(modes.at(-1)).toBe(true);
+  });
+
+  it("gives focus back to Report when the mode bar closes", () => {
+    click(button("Report"));
+    key("Escape");
+    expect(document.activeElement).toBe(q(".report-btn"));
+  });
+
+  it("announces what the keyboard outlines in the mode bar", async () => {
+    view.unmount();
+    let hover: ((what: string | null) => void) | undefined;
+    const withHover = (p: (x: Picked) => void, c: () => void, h?: (what: string | null) => void): Picker => { hover = h; return pickerOf()(p, c); };
+    view = mount(Overlay as never, props({ picker: withHover }), host);
+    click(button("Report"));
+    hover?.("h2: Total");
+    flushSync();
+    expect(q(".modebar [aria-live]")?.textContent).toBe("Outlined h2: Total.");
   });
 
   it("filed event fires with the report", async () => {

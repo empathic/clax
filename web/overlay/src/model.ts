@@ -10,7 +10,7 @@ import { environment } from "../../sdk/src/environment";
 import { type NewReport, type Reopening, type ReporterAuth, type Verification, contextJson } from "../../sdk/src/reporter";
 import { scrub, wellFormed } from "../../sdk/src/scrub";
 import type { Badge, CaptureInfo, DiagLine, FixAttempt, FixOutcome, FlagValue, Release, Report, ReportComment, ReportContext, ReportPage, ResolveReason } from "../../sdk/src/types";
-import type { Shape } from "./annotate";
+import { type Placement, type Shape, remapShapes } from "./annotate";
 import type { Captured } from "./capture";
 
 /** How often "Your reports" asks for new replies while it is open. */
@@ -254,6 +254,8 @@ export interface Draft {
   capture: Captured | null;
   /** Marks on the clip, in its pixels, drawn into it when it is sent. */
   shapes: Shape[];
+  /** What became of the marks when the clip was replaced, shown by Send. */
+  marksNote: string | null;
   body: string;
   /** "Include screenshot": the clip is sent (default on). */
   includeClip: boolean;
@@ -275,7 +277,7 @@ export interface Draft {
  * report's clip is being taken; a reopen has none until one is captured. */
 export function newDraft(anchor: Anchor | null, purpose: Purpose = { kind: "new" }, includeDiagnostics = false): Draft {
   return {
-    purpose, anchor, clip: purpose.kind === "new" ? { state: "taking" } : { state: "none" }, capture: null, shapes: [], body: "",
+    purpose, anchor, clip: purpose.kind === "new" ? { state: "taking" } : { state: "none" }, capture: null, shapes: [], marksNote: null, body: "",
     includeClip: true, includeDiagnostics, diagnostics: [], context: null, metadata: undefined, sending: false, error: null,
   };
 }
@@ -295,6 +297,24 @@ export function defaultShapes(c: Captured): Shape[] {
   if (!c.pick || (c.info.mode !== "element" && c.info.mode !== "range")) return [];
   const { x, y, w, h } = c.pick;
   return [{ kind: "box", from: { x, y }, to: { x: x + w, y: y + h } }];
+}
+
+/** Where a capture's image shows the page, when it has one. */
+function placementOf(c: Captured): Placement | null {
+  return c.png && c.at ? { at: c.at, scale: c.scale, w: c.at.w * c.scale, h: c.at.h * c.scale } : null;
+}
+
+/** The reporter's `shapes` on capture `from`, moved onto capture `to` (the
+ * exact screenshot that replaces it), so each marks the same part of the
+ * page, and what to tell the reporter: that they were moved, or how many
+ * could not be and were removed. */
+export function carryShapes(shapes: readonly Shape[], from: Captured, to: Captured): { shapes: Shape[]; note: string | null } {
+  if (shapes.length === 0) return { shapes: [], note: null };
+  const a = placementOf(from), b = placementOf(to);
+  const moved = a && b ? remapShapes(shapes, a, b) : { shapes: [], dropped: shapes.length };
+  if (moved.dropped === 0) return { shapes: moved.shapes, note: "Your marks were moved onto the new screenshot. Check them before you send." };
+  const n = moved.dropped === 1 ? "1 of your marks" : `${moved.dropped} of your marks`;
+  return { shapes: moved.shapes, note: `${n} fell outside the new screenshot and ${moved.dropped === 1 ? "was" : "were"} removed. Check it before you send.` };
 }
 
 /** Whether the draft can be sent now: it has its note and no send is under

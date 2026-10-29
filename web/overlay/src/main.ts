@@ -15,15 +15,15 @@ import { mount, unmount } from "svelte";
 import { OVERLAY_TAG } from "../../bridge/src/anchor";
 import { addSheet } from "../../bridge/src/sheet";
 import { type Recorder, installDiagnostics } from "../../sdk/src/diagnostics";
-import { ReporterClient } from "../../sdk/src/reporter";
-import type { Report } from "../../sdk/src/types";
+import { ReporterClient, type ReporterAuth } from "../../sdk/src/reporter";
+import type { DiagLine, Report } from "../../sdk/src/types";
 import type { Mode } from "./capture";
-import { CONTEXT_TIMEOUT_MS, type HostContext, type OverlayOptions, Session, externalIdOf } from "./model";
+import { CONTEXT_TIMEOUT_MS, type Given, type HostContext, type OverlayOptions, Session, externalIdOf } from "./model";
 import Overlay from "./Overlay.svelte";
 import { commentPicker, type Picked } from "./picker";
 import TOKENS from "./tokens.css?inline";
 
-export type { HostContext, Mode, OverlayOptions, Report };
+export type { DiagLine, Given, HostContext, Mode, OverlayOptions, Recorder, Report, ReporterAuth };
 export { CONTEXT_TIMEOUT_MS };
 
 /** What a running overlay tells its host. */
@@ -110,7 +110,7 @@ export function overlay(opts: OverlayOptions, doc: Document = document): Overlay
     target,
     props: {
       client, doc, host, session,
-      picker: (onPick: (p: Picked) => void, onCancel: () => void) => commentPicker(doc, onPick, onCancel),
+      picker: (onPick: (p: Picked) => void, onCancel: () => void, onHover?: (what: string | null) => void) => commentPicker(doc, onPick, onCancel, onHover),
       externalId: externalIdOf(doc, opts.externalId),
       launcher: opts.launcher ?? "corner",
       canFile: opts.canFile ?? true,

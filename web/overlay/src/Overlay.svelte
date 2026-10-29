@@ -24,7 +24,7 @@
   import { type CaptureDeps, type Captured, type Mode, captureExact, captureFor } from "./capture";
   import { displayCaptureSupported } from "../../bridge/src/display-capture";
   import {
-    BadgeWatch, type Draft, POLL_MS, Poll, type ReporterApi, type Session, type Timers, canSend, clipOf, clipStatus, defaultShapes, diagnosticsSent,
+    BadgeWatch, type Draft, POLL_MS, Poll, type ReporterApi, type Session, type Timers, canSend, carryShapes, clipOf, clipStatus, defaultShapes,
     failureText, newDraft, pageUrl, quoteOf, realTimers, reopenOf, reportOf, summaryOf, withCapture,
   } from "./model";
   import ModeBar from "./ModeBar.svelte";
@@ -39,7 +39,7 @@
      * are kept from comment mode, and a click on one of its buttons is
      * passed on to that button. It is stepped aside for an exact screenshot. */
     host: Element;
-    picker: (onPick: (p: Picked) => void, onCancel: () => void) => Picker;
+    picker: (onPick: (p: Picked) => void, onCancel: () => void, onHover?: (what: string | null) => void) => Picker;
     session: Session;
     externalId?: string;
     launcher?: "corner" | false;
@@ -82,7 +82,9 @@
   let pendingFor: { of: Draft; ready: Promise<unknown> } | null = null;
   const exactSupported = untrack(() => captureDeps.supported ?? displayCaptureSupported(win));
 
-  const picker = untrack(() => makePicker(onPick, () => closeBar()));
+  /** What the keyboard has outlined, for the mode bar to announce. */
+  let outlined = $state<string | null>(null);
+  const picker = untrack(() => makePicker(onPick, () => closeBar(), what => { outlined = what; }));
   onDestroy(() => {
     picker.destroy();
     poll.stop();
@@ -94,16 +96,26 @@
 
   // ---- The mode bar ----
 
-  /** Starts a new report in `mode` (Element by default). */
+  /** Starts a new report in `mode` (Element by default). A "Still broken"
+   * note being written is not dropped unasked: the reporter is asked first. */
   export function report(opts: { mode?: Mode } = {}): void {
     if (!canFile) return;
+    if (draft?.purpose.kind === "reopen" && (draft.body.trim() !== "" || draft.clip.state !== "none")) {
+      confirmDrop = { mode: opts.mode ?? "element" };
+      return;
+    }
+    startReport(opts.mode ?? "element");
+  }
+
+  function startReport(mode: Mode): void {
+    confirmDrop = null;
     if (open) closeReports();
     draft = null;
     filed = null;
     revokeClip();
     notice = null;
     bar = { mode: null };
-    choose(opts.mode ?? "element");
+    choose(mode);
   }
 
   /** Opens "Your reports". */
@@ -128,10 +140,14 @@
     picker.set(on);
   }
 
-  /** Leaves the mode bar (a reopen's note stays). */
-  function closeBar(): void {
+  /** Leaves the mode bar (a reopen's note stays), and gives focus back:
+   * to the note being written, else to Report. */
+  function closeBar(focus = true): void {
     bar = null;
     setPicking(false);
+    if (!focus) return;
+    if (draft) queueMicrotask(() => noteEl?.focus());
+    else reportBtn?.focus();
   }
 
   // E, A and S choose a mode and Escape leaves, wherever focus is but in a
@@ -211,12 +227,27 @@
     pendingFor = { of, ready: Promise.all([context, metadata, taken]) };
   }
 
-  function applyCapture(c: Captured): void {
+  /** Puts capture `c` in the draft. Replacing the page render with the
+   * exact screenshot (`carry`) moves the reporter's marks onto it; a
+   * capture that fell back to the render it replaces keeps them as they are. */
+  function applyCapture(c: Captured, carry = false): void {
     if (!draft) return;
+    const before = draft.capture;
+    if (carry && before && c.info.method !== "display") {
+      draft.capture = c;
+      return;
+    }
     revokeClip();
+    if (carry && before) {
+      const moved = carryShapes($state.snapshot(draft.shapes) as Shape[], before, c);
+      draft.shapes = moved.shapes;
+      draft.marksNote = moved.note;
+    } else {
+      draft.shapes = defaultShapes(c);
+      draft.marksNote = null;
+    }
     draft.capture = c;
     draft.clip = clipOf(c);
-    draft.shapes = defaultShapes(c);
     if (draft.context) draft.context = withCapture(draft.context, c.info);
     if (draft.clip.state === "taken") clipUrl = URL.createObjectURL(draft.clip.png);
   }
@@ -231,7 +262,7 @@
     try {
       // The overlay steps aside with the page's data-clax-ignore elements (capture.ts).
       const c = await captureExact(from.mode, from.pick, win, { ...captureDeps, host, fallback: d.capture ?? undefined });
-      if (draft === d) applyCapture(c);
+      if (draft === d) applyCapture(c, true);
     } finally {
       exacting = false;
     }
@@ -331,7 +362,7 @@
     if (open) { closeReports(); return; }
     open = true;
     filed = null;
-    if (bar && draft?.purpose.kind !== "reopen") closeBar();
+    if (bar && draft?.purpose.kind !== "reopen") closeBar(false);
     if (waitingId) { expand(waitingId); waitingId = null; }
     poll.start();
   }
@@ -391,12 +422,16 @@
   untrack(() => badge.start());
 
   const status = $derived(draft ? clipStatus(draft.clip) : null);
+  /** What a send would carry now, as "What's sent" shows it (the marks are drawn in at Send). */
+  const outgoing = $derived(draft ? (draft.purpose.kind === "reopen" ? reopenOf(draft) : reportOf(draft, { url: pageUrl(doc), title: doc.title }, { externalId })) : null);
+  let confirmDrop = $state<{ mode: Mode } | null>(null);
+  let noteEl = $state<HTMLTextAreaElement | null>(null);
   const reopening = $derived(draft?.purpose.kind === "reopen" ? draft.purpose.report : null);
 </script>
 
 <div class="cx">
   {#if bar}
-    <ModeBar mode={bar.mode} onMode={choose} onCancel={closeBar} />
+    <ModeBar mode={bar.mode} {outlined} onMode={choose} onCancel={() => closeBar()} />
   {/if}
 
   <div class="dock">
@@ -409,7 +444,7 @@
       {/if}
       {#if clipUrl}
         <Annotator src={clipUrl} alt={draft.anchor ? "Screenshot of the picked part of the page" : "Screenshot of the page"} shapes={draft.shapes} scale={draft.capture?.scale ?? 1}
-          onChange={s => { if (draft) draft.shapes = s; }} />
+          pick={draft.capture?.pick ?? null} onChange={s => { if (draft) { draft.shapes = s; draft.marksNote = null; } }} />
       {:else if status}
         <p class="muted small" role="status">{status}</p>
       {/if}
@@ -421,10 +456,10 @@
           <button type="button" class:primary={draft.capture.suggestExact} disabled={exacting} onclick={() => void useExact()}>Use exact screenshot</button>
         </p>
       {/if}
-      {#if reopening && draft.clip.state === "none" && !bar}
-        <p class="small"><button type="button" class="ghost" onclick={() => { bar = { mode: null }; }}>Add a screenshot</button></p>
+      {#if reopening && !bar}
+        <p class="small"><button type="button" class="ghost" onclick={() => { bar = { mode: null }; }}>{draft.clip.state === "none" ? "Add a screenshot" : "Retake the screenshot"}</button></p>
       {/if}
-      <textarea rows={3} aria-label={reopening ? "What is still broken" : "Report"} placeholder={reopening ? "What is still broken?" : "What should change here?"} {@attach el => el.focus()} bind:value={draft.body}
+      <textarea rows={3} aria-label={reopening ? "What is still broken" : "Report"} placeholder={reopening ? "What is still broken?" : "What should change here?"} {@attach el => el.focus()} bind:this={noteEl} bind:value={draft.body}
         onkeydown={e => {
           if (e.key === "Escape") { e.preventDefault(); cancel(); }
           else if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); void send(); }
@@ -435,13 +470,24 @@
         {/if}
         <label><input type="checkbox" aria-label={`Include recent errors (${draft.diagnostics.length})`} disabled={draft.diagnostics.length === 0} bind:checked={draft.includeDiagnostics} /> Include recent errors ({draft.diagnostics.length})</label>
       </div>
-      <Preview context={draft.context} diagnostics={diagnosticsSent(draft)} metadata={draft.metadata} clip={draft.includeClip && draft.clip.state !== "none" && draft.clip.state !== "failed"} />
+      {#if outgoing}<Preview sent={outgoing} marked={draft.shapes.length > 0} />{/if}
+      {#if draft.marksNote}<p class="small warn marks" role="status">{draft.marksNote}</p>{/if}
       {#if draft.error}<p class="error small" role="alert">Not sent: {draft.error}</p>{/if}
       <div class="actions">
         <button type="button" onclick={cancel}>Cancel</button>
         <button type="submit" class="primary" disabled={!canSend(draft)}>{draft.sending ? "Sending…" : "Send"}</button>
       </div>
     </form>
+  {/if}
+
+  {#if confirmDrop}
+    <div class="confirm" role="alertdialog" aria-label="Drop your note?" aria-describedby="cx-drop-text">
+      <p id="cx-drop-text">Start a new report? Your "Still broken" note and its screenshot will be dropped.</p>
+      <div class="actions">
+        <button type="button" {@attach el => el.focus()} onclick={() => { confirmDrop = null; queueMicrotask(() => noteEl?.focus()); }}>Keep writing</button>
+        <button type="button" class="primary" onclick={() => { const m = confirmDrop?.mode ?? "element"; draft = null; startReport(m); }}>Drop it</button>
+      </div>
+    </div>
   {/if}
 
   {#if filed && !open && !draft}
@@ -497,6 +543,7 @@
   .toggles label { display: inline-flex; gap: 6px; align-items: center; }
   .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }
   .error { margin-top: 6px; color: var(--danger); }
+  .confirm { flex: none; max-width: min(360px, calc(100vw - 32px)); padding: 10px 12px; background: var(--raised); border: 1px solid var(--border-hover); border-top: 3px solid var(--you); border-radius: var(--radius-sm); box-shadow: var(--elev-lg); font-size: 13px; }
   .notice, .filed { flex: none; margin: 0; max-width: min(360px, calc(100vw - 32px)); padding: 8px 12px; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius-sm); box-shadow: var(--elev-lg); font-size: 13px; }
   .filed { border-top: 3px solid var(--agent-ink); }
   .filed .actions { margin-top: 6px; }

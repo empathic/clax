@@ -294,7 +294,7 @@ test("a reporter files the visible page, says a fix is still broken with a new c
     const emp1 = await reporterOn(browser, site, "emp-1");
     await emp1.locator(".report-btn").click();
     const bar = emp1.getByRole("toolbar", { name: "Capture" });
-    await expect(bar.getByRole("button", { name: "Element" })).toHaveAttribute("aria-pressed", "true");
+    await expect(bar.getByRole("button", { name: "Element", exact: true })).toHaveAttribute("aria-pressed", "true");
     await emp1.keyboard.press("s");
     await expect(bar).toHaveCount(0);
     const composer = emp1.getByRole("form", { name: "New report" });
@@ -334,7 +334,7 @@ test("a reporter files the visible page, says a fix is still broken with a new c
     await waiting.getByRole("button", { name: "Still broken" }).click();
     const reopen = emp1.getByRole("form", { name: "Still broken" });
     await expect(reopen).toBeVisible();
-    await bar.getByRole("button", { name: "Element" }).click();
+    await bar.getByRole("button", { name: "Element", exact: true }).click();
     await emp1.locator("#req-2 h2").click();
     await expect(reopen.getByRole("img", { name: "Screenshot of the page" })).toBeVisible();
     await reopen.getByRole("textbox", { name: "What is still broken" }).fill("Still no end date on this one.");
@@ -360,7 +360,91 @@ test("a reporter files the visible page, says a fix is still broken with a new c
     expect(verified.report.fixes?.[1].verdict_context).toMatchObject({ v: 1, environment: { url: `${site.origin}/` } });
 
     // Only the clip renderer's empty font <style> trips the page's policy.
-    expect((await cspViolations(emp1)).filter(v => v !== 'style-src-elem inline ""')).toEqual([]);
+    expect(await cspViolations(emp1)).toEqual(['style-src-elem inline ""']);
+  } finally {
+    await site.stop();
+    await d.stop();
+  }
+});
+
+test("a redaction drawn on a tall capture, scrolled in its stage, lands where it was drawn in the PNG sent", async ({ browser }) => {
+  test.setTimeout(90_000);
+  const { d, origin } = await hostedDaemon();
+  const site = await startDeployerSite(origin);
+  try {
+    const owner = await ownerOf(browser, origin);
+    const qid = await queueWithGrant(owner, origin, site);
+    const agentToken = await owner.evaluate(async () => {
+      const r = await fetch("/api/hosted/agent-tokens", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ label: "triage-laptop" }) });
+      if (!r.ok) throw new Error(`agent token: ${r.status} ${await r.text()}`);
+      return (await r.json()).token as string;
+    });
+    const agent = await agentOf(origin, agentToken);
+
+    // Pick the tall section from the keyboard: Down past each element (Right
+    // into the page's main), Enter on the one the mode bar announces.
+    const emp1 = await reporterOn(browser, site, "emp-1");
+    await emp1.locator(".report-btn").click();
+    const announced = emp1.locator(".modebar [aria-live]");
+    let last = "";
+    for (let i = 0; i < 20 && !last.startsWith("Outlined section: Earlier requests"); i++) {
+      await emp1.keyboard.press("ArrowDown");
+      let now = (await announced.textContent()) ?? "";
+      if (now === last) {
+        await emp1.keyboard.press("ArrowRight");
+        now = (await announced.textContent()) ?? "";
+      }
+      last = now;
+    }
+    expect(last).toMatch(/^Outlined section: Earlier requests/);
+    await emp1.keyboard.press("Enter");
+    const composer = emp1.getByRole("form", { name: "New report" });
+    const img = composer.getByRole("img", { name: "Screenshot of the picked part of the page" });
+    await expect(img).toBeVisible();
+    await expect.poll(() => img.evaluate(i => (i as HTMLImageElement).naturalHeight)).toBeGreaterThan(1000);
+
+    // Scroll the stage well down, and drag a redaction around its middle.
+    await composer.getByRole("button", { name: "Clear", exact: true }).click();
+    await composer.getByRole("button", { name: "Redact", exact: true }).click();
+    const stage = composer.locator(".annotator .stage");
+    await stage.evaluate(el => { el.scrollTop = 300; });
+    await expect.poll(() => stage.evaluate(el => el.scrollTop)).toBe(300);
+    const sb = (await stage.boundingBox())!;
+    const mid = { x: sb.x + sb.width / 2, y: sb.y + sb.height / 2 };
+    await emp1.mouse.move(mid.x - 30, mid.y - 20);
+    await emp1.mouse.down();
+    await emp1.mouse.move(mid.x + 30, mid.y + 20, { steps: 5 });
+    await emp1.mouse.up();
+    await expect(composer.locator(".annotator svg [data-kind=redact]")).toHaveCount(1);
+    // Where the middle of the drag is in the image's own pixels, read off the drawing.
+    const geo = await composer.locator(".annotator svg").evaluate(el => {
+      const r = el.getBoundingClientRect();
+      const i = el.previousElementSibling as HTMLImageElement;
+      return { x: r.x, y: r.y, w: r.width, h: r.height, nw: i.naturalWidth, nh: i.naturalHeight };
+    });
+    expect(geo.h).toBeGreaterThan(sb.height + 300);
+    const at = { x: Math.round(((mid.x - geo.x) / geo.w) * geo.nw), y: Math.round(((mid.y - geo.y) / geo.h) * geo.nh) };
+    // Where it would land were the drawing the stage's visible box, not the image's.
+    const stuck = { x: at.x, y: Math.round(((mid.y - sb.y) / geo.h) * geo.nh) };
+    expect(at.y - stuck.y).toBeGreaterThan(100);
+
+    await composer.getByRole("textbox", { name: "Report" }).fill("The history shows a name it should not.");
+    await composer.getByRole("button", { name: "Send" }).click();
+    await expect(emp1.getByRole("status", { name: "Filed" })).toBeVisible();
+    const listed = await agent.ok<ReportPage>("GET", `/api/queues/${qid}/reports`);
+    const clip = await agent.bytes(`/api/queues/${qid}/reports/${listed.reports[0].id}/clip`);
+    expect(clip.status).toBe(200);
+    const pixels = await emp1.evaluate(async ({ b64, points }) => {
+      const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+      const bmp = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+      const c = new OffscreenCanvas(bmp.width, bmp.height);
+      const g = c.getContext("2d")!;
+      g.drawImage(bmp, 0, 0);
+      return { size: [bmp.width, bmp.height], at: points.map(p => [...g.getImageData(p.x, p.y, 1, 1).data]) };
+    }, { b64: Buffer.from(clip.bytes).toString("base64"), points: [at, stuck] });
+    expect(pixels.size).toEqual([geo.nw, geo.nh]);
+    expect(pixels.at[0]).toEqual([0, 0, 0, 255]);
+    expect(pixels.at[1]).not.toEqual([0, 0, 0, 255]);
   } finally {
     await site.stop();
     await d.stop();

@@ -7,8 +7,8 @@
   // broken" note, before its new capture).
   import type { Mode } from "./capture";
 
-  type Props = { mode: Mode | null; onMode(m: Mode): void; onCancel(): void };
-  let { mode, onMode, onCancel }: Props = $props();
+  type Props = { mode: Mode | null; outlined?: string | null; onMode(m: Mode): void; onCancel(): void };
+  let { mode, outlined = null, onMode, onCancel }: Props = $props();
 
   const MODES: { mode: Mode; label: string; key: string }[] = [
     { mode: "element", label: "Element", key: "E" },
@@ -16,7 +16,7 @@
     { mode: "screen", label: "Screen", key: "S" },
   ];
   const HINT: Record<Mode, string> = {
-    element: "Click what your report is about, or select text. Esc cancels.",
+    element: "Click what your report is about, or select text; or use the arrow keys and Enter. Esc cancels.",
     area: "Drag over the part of the page your report is about. Esc cancels.",
     screen: "Taking the visible page…",
   };
@@ -25,11 +25,12 @@
 <div class="modebar" role="toolbar" aria-label="Capture">
   <div class="modes">
     {#each MODES as m (m.mode)}
-      <button type="button" aria-pressed={mode === m.mode} aria-keyshortcuts={m.key} data-key={m.key} onclick={() => onMode(m.mode)}>{m.label}</button>
+      <button type="button" aria-pressed={mode === m.mode} aria-keyshortcuts={m.key} onclick={() => onMode(m.mode)}>{m.label}<kbd aria-hidden="true">{m.key}</kbd></button>
     {/each}
   </div>
   <span class="hint" role="status">{mode ? HINT[mode] : "Add a screenshot: pick a mode, or just write your note."}</span>
   <button type="button" class="ghost" aria-keyshortcuts="Escape" onclick={onCancel}>Cancel</button>
+  <span class="outlined" aria-live="polite">{mode === "element" && outlined ? `Outlined ${outlined}.` : ""}</span>
 </div>
 
 <style>
@@ -37,7 +38,8 @@
   .modes { display: flex; gap: 4px; }
   .modes button { min-height: 30px; padding: 5px 10px; }
   .modes button[aria-pressed="true"] { background: var(--you); color: var(--on-you); border-color: var(--you); }
-  /* The key, drawn beside the label and kept out of its accessible name (aria-keyshortcuts tells it). */
-  .modes button::after { content: attr(data-key); font: 500 11px/1 var(--font); padding: 2px 4px; border: 1px solid currentColor; border-radius: var(--radius-xs); opacity: .7; }
+  /* The key, shown beside the label and kept out of its accessible name (aria-keyshortcuts tells it). */
+  kbd { font: 500 11px/1 var(--font); padding: 2px 4px; border: 1px solid currentColor; border-radius: var(--radius-xs); opacity: .7; }
+  .outlined { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .hint { flex: 1 1 180px; color: var(--muted); }
 </style>
