@@ -18,6 +18,7 @@ describe("the landing page's chrome", () => {
   it("frames the quickstart page under the shell's header, with no threads", async () => {
     const root = await landing(false);
     expect(root.querySelector("header.gbar h1")?.textContent).toBe("Clax");
+    expect(root.querySelector("header.gbar .sub")).toBeNull();
     expect(root.querySelector("iframe.lframe")?.getAttribute("src")).toBe("/start/index.html");
     expect(root.querySelector(".threads, .drawer, button.comment")).toBeNull();
   });
