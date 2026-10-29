@@ -24,6 +24,7 @@ use clax_realtime::feedback::FollowKind;
 use clax_realtime::feedback::apply;
 use clax_realtime::questions::QuestionWaiters;
 use clax_rt::time::Instant;
+use clax_store::feedback::Reach;
 use clax_store::questions::Status;
 use clax_store::visibility::Visibility;
 use clax_store::{Store, TakeFeedback};
@@ -456,8 +457,10 @@ pub async fn poll(
             .store_call(move |st| {
                 let rights = readable_rights;
                 let readable = |a: &Artifact| rights.allows(a);
-                let readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)> =
-                    rights.filters().then_some(&readable);
+                let readable = Reach {
+                    artifacts: rights.filters().then_some(&readable),
+                    reports: rights.reads_reports(),
+                };
                 let taken = st.take_feedback_readable(&audit, &t, &base, &view_now, readable)?;
                 if taken.stale {
                     return Ok((taken, Default::default()));
@@ -656,8 +659,10 @@ pub async fn notices(
                 let view = view_at(st, &who, prior, seen)?;
                 let rights = prior_rights.current(st, grant.as_deref(), &who, seen)?;
                 let readable = |a: &Artifact| rights.allows(a);
-                let readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)> =
-                    rights.filters().then_some(&readable);
+                let readable = Reach {
+                    artifacts: rights.filters().then_some(&readable),
+                    reports: rights.reads_reports(),
+                };
                 let announced = if yields {
                     None
                 } else {

@@ -2117,9 +2117,33 @@ impl Store {
         reporter_id: &str,
         body: &str,
     ) -> Result<Report> {
+        self.reporter_comment_touched(ctx, qid, tid, reporter_id, body)
+            .map(|(r, _)| r)
+    }
+
+    /// [`Store::reporter_comment`], sending the comment to the session
+    /// that holds the report's live lease (the agent working on it), when
+    /// that session's person is still a member of the queue: a feedback
+    /// row for it, made in the comment's transaction, which reaches the
+    /// session as any comment sent to it does. Answers the report and the
+    /// session woken, for the caller to wake its waits and pushes.
+    ///
+    /// # Errors
+    /// As [`Store::reporter_comment`].
+    pub fn reporter_comment_touched(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        tid: &str,
+        reporter_id: &str,
+        body: &str,
+    ) -> Result<(Report, Touched)> {
         let vis = Visibility::Reporter(reporter_id);
         self.report(qid, tid, vis)?.ok_or(CoreError::NotFound)?;
         let rid = reporter_id.to_string();
+        let now = self.now();
+        let mut touched = Touched::default();
+        let woken = &mut touched;
         self.add_comment_then(
             ctx,
             tid,
@@ -2131,15 +2155,31 @@ impl Store {
                 body: body.to_string(),
                 via_page: false,
             },
-            move |tx, _, c| {
+            move |tx, t, c| {
                 tx.execute(
                     "UPDATE comments SET reporter_id = ?2 WHERE id = ?1",
                     params![c.id, rid],
                 )?;
+                let Some(cur) = current_in(tx, tid, &now)?.filter(|cur| cur.live) else {
+                    return Ok(());
+                };
+                if !session_is_member_in(tx, qid, &cur.session_id)? {
+                    return Ok(());
+                }
+                tx.execute(
+                    "INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![new_ulid(), tid, c.id, cur.session_id, now],
+                )?;
+                woken.targets.insert(cur.session_id);
+                woken
+                    .threads
+                    .insert((t.artifact_id.clone(), tid.to_string()));
                 Ok(())
             },
         )?;
-        self.report(qid, tid, vis)?.ok_or(CoreError::NotFound)
+        let report = self.report(qid, tid, vis)?.ok_or(CoreError::NotFound)?;
+        Ok((report, touched))
     }
 
     /// `by` proposes `fix` on report `tid` of queue `qid` (spec

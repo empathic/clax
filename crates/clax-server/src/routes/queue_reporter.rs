@@ -481,12 +481,13 @@ pub async fn comment(
     let b: CommentBody = json_body(&r.body)?;
     let rid = r.token.reporter_id;
     let t = tid.clone();
-    let report = s
+    let (report, woken) = s
         .store_call(move |st| {
-            st.reporter_comment(&reporter_ctx(&qid, &rid), &qid, &t, &rid, &b.body)
+            st.reporter_comment_touched(&reporter_ctx(&qid, &rid), &qid, &t, &rid, &b.body)
         })
         .await?;
     announce(&s, tid).await;
+    wake_watchers(&s, woken).await;
     Ok(Json(json!({ "report": report })))
 }
 
