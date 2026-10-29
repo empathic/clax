@@ -2007,7 +2007,9 @@ prompt the page raised opens or closes, the viewer's C in the page does
 nothing until they press in the shell, as they may still be typing for the
 page. F, report a problem with Clax, leaves the page the same way and
 under the same rules (also by its position, `KeyF`, on a layout where it
-types another letter), and acts only for a person whose shell runs the
+types another letter), except that it is not told from inside the page's
+own dialog (`[role=dialog]` or `[aria-modal=true]`), as the shell's own F
+is not; the shell's F, like the page's, is refused with Shift. It acts only for a person whose shell runs the
 feedback integration (`docs/prod.md`). No other key leaves the page: `?` stays the page's, and Escape in the
 page ends comment mode there itself.
 Only the viewer's own input counts: the bridge ignores events the page

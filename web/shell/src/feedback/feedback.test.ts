@@ -213,7 +213,7 @@ describe("the shell's feedback", () => {
     expect(viewOf("/me")).toEqual({ view: "me", artifact: null });
   });
 
-  it("F starts a report, but not typed into a field (in a shadow root too), in a dialog, with a modifier, or repeated", async () => {
+  it("F starts a report, but not typed into a field (in a shadow root too), in a dialog, with a modifier (Shift too), or repeated", async () => {
     const { Feedback, SHORTCUT } = await import("./feedback");
     const fake = fakeClax();
     const handle = fake.Clax.overlay({} as OverlayOptions);
@@ -221,9 +221,13 @@ describe("the shell's feedback", () => {
     running.push(fb);
     expect(SHORTCUT).toEqual({ keys: ["F"], label: "F", aria: "F" });
     expect(key({ key: "f" }).defaultPrevented).toBe(true);
-    key({ key: "F", shiftKey: true });
+    // Caps Lock's F.
+    key({ key: "F" });
     // A layout whose F key types another letter.
     key({ key: "а", code: "KeyF" });
+    expect(fake.handle.report).toHaveBeenCalledTimes(3);
+    // Shift+F stays the page's, as in the frame (web/bridge/src/channel.ts).
+    expect(key({ key: "F", shiftKey: true }).defaultPrevented).toBe(false);
     expect(fake.handle.report).toHaveBeenCalledTimes(3);
     const input = document.body.appendChild(document.createElement("input"));
     const area = document.body.appendChild(document.createElement("textarea"));
