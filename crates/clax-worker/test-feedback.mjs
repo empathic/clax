@@ -14,7 +14,9 @@
 //    POST /_app/feedback/token mints a reporter token for a fresh Ed25519
 //    key;
 // 3. a report is filed with the token, signed as the SDK signs
-//    (web/sdk/src/sign.ts) and carrying the page's `Origin`;
+//    (web/sdk/src/sign.ts) and carrying the page's `Origin`; the person's
+//    event stream, subscribed to the queue's `queue:<qid>` topic as a
+//    member, hears its `report` event;
 // 4. the reporter badge and the reporter's report list, read as a
 //    browser reads them from the shell's own page (no `Origin`, one
 //    `Sec-Fetch-Site: same-origin`, the public `Host`), answer 200 with
@@ -24,8 +26,8 @@
 //    route 403 `no_flag`.
 //
 // Requests go to wrangler's 127.0.0.1 with the public `Host` set
-// explicitly (node:http), so what reaches the server is what a browser on
-// the public origin sends. Prints one line per check and a JSON summary;
+// explicitly (node:http, the event stream's WebSocket upgrade too), so
+// what reaches the server is what a browser on the public origin sends. Prints one line per check and a JSON summary;
 // exits non-zero on the first failure. `node test-feedback.mjs --no-build`
 // skips the build.
 
@@ -70,6 +72,140 @@ function send(port, method, path, headers, body) {
     if (body !== undefined) req.write(body);
     req.end();
   });
+}
+
+/** How long a stream read waits for its event before the check fails: a
+ * guard against a hang, not a budget (the event comes at once or never). */
+const STREAM_HANG_MS = 30_000;
+
+/** A WebSocket client over node:http, so the upgrade carries exactly
+ * `headers` (the public `Host` included): it dispatches `message` (a text
+ * message's `data`), `close` and `error` events as a browser's does, the
+ * error's `message` naming a refused upgrade's status. */
+function wsConnect(port, path, headers) {
+  const t = new EventTarget();
+  const fire = (type, extra) => t.dispatchEvent(Object.assign(new Event(type), extra));
+  let socket = null;
+  const req = request({
+    host: "127.0.0.1", port, method: "GET", path, setHost: false,
+    headers: { ...headers, connection: "Upgrade", upgrade: "websocket", "sec-websocket-version": "13", "sec-websocket-key": Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64") },
+  });
+  req.on("response", (res) => {
+    let text = "";
+    res.setEncoding("utf8");
+    res.on("data", (c) => (text += c));
+    res.on("end", () => fire("error", { message: `upgrade refused: ${res.statusCode} ${text.slice(0, 200)}` }));
+  });
+  req.on("upgrade", (_res, s, head) => {
+    socket = s;
+    let buf = Buffer.alloc(0);
+    let parts = [];
+    // The frames already read with the upgrade's answer, then each chunk's.
+    const pump = (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      for (;;) {
+        if (buf.length < 2) return;
+        const op = buf[0] & 0x0f;
+        const fin = (buf[0] & 0x80) !== 0;
+        let len = buf[1] & 0x7f;
+        let at = 2;
+        if (len === 126) {
+          if (buf.length < 4) return;
+          len = buf.readUInt16BE(2);
+          at = 4;
+        } else if (len === 127) {
+          if (buf.length < 10) return;
+          len = Number(buf.readBigUInt64BE(2));
+          at = 10;
+        }
+        if (buf.length < at + len) return;
+        const payload = buf.subarray(at, at + len);
+        buf = buf.subarray(at + len);
+        if (op === 8) {
+          fire("close", { code: payload.length >= 2 ? payload.readUInt16BE(0) : 1005, reason: payload.subarray(2).toString("utf8") });
+          s.end();
+          return;
+        }
+        if (op === 1 || op === 0) {
+          parts.push(payload);
+          if (fin) {
+            fire("message", { data: Buffer.concat(parts).toString("utf8") });
+            parts = [];
+          }
+        }
+      }
+    };
+    s.on("data", pump);
+    pump(head);
+    s.on("close", () => fire("close", { code: 1006, reason: "" }));
+    s.on("error", (e) => fire("error", { message: String(e) }));
+  });
+  req.on("error", (e) => fire("error", { message: String(e) }));
+  req.end();
+  t.close = () => {
+    // A client's close frame, masked with a zero key.
+    if (socket) socket.end(Buffer.from([0x88, 0x80, 0, 0, 0, 0]));
+    else req.destroy();
+  };
+  return t;
+}
+
+/** `GET /api/stream` on wrangler on `port` with `headers`, upgraded to the
+ * WebSocket the Worker serves it as (each text message one SSE block):
+ * `next(name)` answers the data of the next event named `name`, or `null`
+ * once the socket closes or past the hang guard; `close` ends it. */
+function openStream(port, headers) {
+  const ws = wsConnect(port, "/api/stream", headers);
+  const events = [];
+  const waiters = [];
+  let closed = false;
+  const settle = () => {
+    for (const w of [...waiters]) {
+      const at = events.findIndex((e) => e.name === w.name);
+      if (at < 0 && !closed) continue;
+      waiters.splice(waiters.indexOf(w), 1);
+      clearTimeout(w.timer);
+      w.ok(at < 0 ? null : events.splice(0, at + 1).at(-1).data);
+    }
+  };
+  ws.addEventListener("message", (m) => {
+    if (typeof m.data !== "string") return;
+    let name = "message";
+    let data = "";
+    for (const line of m.data.split("\n")) {
+      if (line.startsWith("event:")) name = line.slice(6).trim();
+      else if (line.startsWith("data:")) data += line.slice(5).trim();
+    }
+    let parsed = data;
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      // not JSON
+    }
+    events.push({ name, data: parsed });
+    settle();
+  });
+  const ended = {};
+  ws.addEventListener("close", (e) => {
+    Object.assign(ended, { code: e.code, reason: e.reason });
+    closed = true;
+    settle();
+  });
+  ws.addEventListener("error", (e) => {
+    ended.error = e.message;
+    closed = true;
+    settle();
+  });
+  return {
+    ended,
+    next: (name) =>
+      new Promise((resolve) => {
+        const w = { name, ok: resolve, timer: setTimeout(() => { waiters.splice(waiters.indexOf(w), 1); resolve(null); }, STREAM_HANG_MS) };
+        waiters.push(w);
+        settle();
+      }),
+    close: () => ws.close(),
+  };
 }
 
 /** The `name=value` pairs of a response's `Set-Cookie`s, as a `Cookie`. */
@@ -170,6 +306,13 @@ async function main() {
       return send(port, method, path, headers, payload ? Buffer.from(body) : undefined);
     };
 
+    // The person's shell watches the queue's topic as a member.
+    const stream = openStream(port, { host, cookie, origin });
+    const ready = await stream.next("ready");
+    check(typeof ready?.stream === "string", "the shell's session opens its event stream", { ready, ended: stream.ended });
+    const sub = await shellWrite("POST", `/api/stream/${ready.stream}`, { subscribe: [`queue:${qid}`] });
+    check(sub.status === 200, "and subscribes the queue's topic as a member of the queue", { status: sub.status, text: sub.text.slice(0, 300) });
+
     // 3. A report, filed from the page (a POST carries its `Origin`).
     const report = multipart([
       ["url", `${origin}/`],
@@ -182,6 +325,13 @@ async function main() {
     const filed = await reporter("POST", `/api/queues/${qid}/reporter/reports`, { origin, "sec-fetch-site": "same-origin" }, report);
     const rid = filed.json?.report?.id;
     check(filed.status === 201 && rid && filed.json.report.reporter_id === publicId, "the reporter files a report with the token, as the person", { status: filed.status, text: filed.text.slice(0, 300) });
+    const heard = await stream.next("report");
+    stream.close();
+    check(
+      heard?.topic === `queue:${qid}` && heard?.queue_id === qid && heard?.report_id === rid && heard?.state === "open",
+      "the queue's topic tells the member's stream of the filing: IDs and state",
+      heard,
+    );
 
     // 4. The overlay's same-origin reads: no `Origin`.
     const badgePath = `/api/queues/${qid}/reporter/badge`;
