@@ -639,6 +639,35 @@ async fn a_same_origin_read_without_origin_holds_only_on_the_tokens_host() {
             "{site:?}"
         );
     }
+    // A write sends `Origin` from every browser: one without it is not taken
+    // as same-origin.
+    let sig = s.sign(&here.key, "POST", &s.reports(), &here.token, &[]);
+    let h = [
+        ("authorization", format!("Clax-Reporter {}", here.token)),
+        ("clax-signature", sig),
+        ("sec-fetch-site", "same-origin".to_string()),
+    ];
+    assert_eq!(
+        status_code(s.send("POST", &s.reports(), &h, vec![]).await).await,
+        (403, "wrong_origin".into())
+    );
+    // A token for this host under the other scheme is not this instance's pages'.
+    let https = format!("https://{}", s.host());
+    s.ts.store
+        .update_queue(
+            &AuditCtx::DAEMON,
+            &s.qid,
+            clax_store::queues::QueuePatch {
+                origins: Some(vec![ORIGIN.into(), s.ts.base.clone(), https.clone()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let other_scheme = mint(&s, &https).await;
+    assert_eq!(
+        status_code(read(&s, &other_scheme, Some("same-origin")).await).await,
+        (403, "wrong_origin".into())
+    );
     // A token for another origin holds only with that `Origin`, whatever
     // the browser says of this request.
     let elsewhere = mint(&s, ORIGIN).await;

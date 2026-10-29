@@ -379,6 +379,46 @@ pub async fn cors(State(s): State<AppState>, req: Request, next: Next) -> Respon
 mod tests {
     use super::*;
 
+    /// Headers of a browser's same-origin request to `host`.
+    fn same_origin_to(host: &'static str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(header::HOST, HeaderValue::from_static(host));
+        h.insert("sec-fetch-site", HeaderValue::from_static("same-origin"));
+        h
+    }
+
+    #[test]
+    fn a_same_origin_read_needs_get_or_head_one_mark_one_host_and_the_scheme() {
+        let o = "https://clax.example";
+        let h = same_origin_to("clax.example");
+        assert!(same_origin_as(&Method::GET, &h, o, "https://clax.example"));
+        assert!(same_origin_as(&Method::HEAD, &h, o, "https://clax.example"));
+        // A browser sends `Origin` on every other method.
+        assert!(!same_origin_as(&Method::POST, &h, o, "https://clax.example"));
+        assert!(!same_origin_as(&Method::DELETE, &h, o, "https://clax.example"));
+        // The instance serves http: a token for https on its host is not its pages'.
+        assert!(!same_origin_as(&Method::GET, &h, o, "http://clax.example"));
+        assert!(!same_origin_as(&Method::GET, &h, "http://clax.example", "https://clax.example"));
+        // Another host or port.
+        assert!(!same_origin_as(&Method::GET, &h, "https://clax.example:8443", "https://clax.example"));
+        assert!(!same_origin_as(&Method::GET, &same_origin_to("other.example"), o, "https://clax.example"));
+        // Two marks, or two hosts, are none.
+        let mut two = h.clone();
+        two.append("sec-fetch-site", HeaderValue::from_static("same-origin"));
+        assert!(!same_origin_as(&Method::GET, &two, o, "https://clax.example"));
+        let mut hosts = h.clone();
+        hosts.append(header::HOST, HeaderValue::from_static("clax.example"));
+        assert!(!same_origin_as(&Method::GET, &hosts, o, "https://clax.example"));
+        for site in ["same-site", "cross-site", "none"] {
+            let mut other = h.clone();
+            other.insert("sec-fetch-site", HeaderValue::from_static(site));
+            assert!(!same_origin_as(&Method::GET, &other, o, "https://clax.example"), "{site}");
+        }
+        let mut unmarked = h;
+        unmarked.remove("sec-fetch-site");
+        assert!(!same_origin_as(&Method::GET, &unmarked, o, "https://clax.example"));
+    }
+
     #[test]
     fn reporter_qid_reads_only_reporter_paths() {
         assert_eq!(reporter_qid("/api/queues/q1/reporter/reports"), Some("q1"));
