@@ -623,8 +623,9 @@ struct FixRow {
 
 /// The report views of `rows` as `vis` reads them, on `c` at `now`: the
 /// reporter's profile only for a member ([`Visibility::All`]), never a
-/// reporter; the filing's context, each verdict's context and the report's
-/// metadata (the host app's, `null` when withheld) only for a member and
+/// reporter; the filing's context, each verdict's context, the report's
+/// metadata and its page artifact's (the host app's and triage's, `null`
+/// with `metadata_version` 0 when withheld) only for a member and
 /// for the reporter that filed the report, never another reporter
 /// (`reporters_see: all`), as its diagnostics are. The anchor, where on
 /// the page the report points, is everyone's who sees the report.
@@ -693,10 +694,16 @@ fn reports_of(
                 f.verdict_context = None;
             }
         }
+        let mut view = artifact.view();
+        if !own {
+            // Neither the page's metadata nor whether any was written.
+            view.metadata = serde_json::Value::Null;
+            view.metadata_version = 0;
+        }
         out.push(Report {
             id: row.id,
             queue_id: row.queue_id,
-            artifact: artifact.view(),
+            artifact: view,
             anchor,
             status: row.status,
             state,
@@ -706,7 +713,7 @@ fn reports_of(
                 .filter(|_| own)
                 .and_then(|m| serde_json::from_str(&m).ok())
                 .unwrap_or(serde_json::Value::Null),
-            metadata_version: row.metadata_version,
+            metadata_version: if own { row.metadata_version } else { 0 },
             has_clip: row.has_clip,
             comments,
             claim,
