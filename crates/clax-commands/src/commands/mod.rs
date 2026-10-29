@@ -13,6 +13,7 @@ pub mod hook;
 pub mod inbox;
 pub mod init;
 pub mod list;
+pub mod login;
 pub mod mcp;
 pub mod native_host;
 pub mod open;

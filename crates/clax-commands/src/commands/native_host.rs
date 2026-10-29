@@ -4,7 +4,10 @@
 //! first argument; it reads one length-prefixed JSON message from stdin,
 //! writes one reply to stdout, and exits. Nothing else ever goes to stdout:
 //! one line per run goes to `<home>/logs/native-host.log`, and the
-//! credential travels only in the reply.
+//! credential travels only in the reply. A `pair` message mints the
+//! extension's credential; a `login` message makes a one-use login link
+//! for a page of the daemon the extension opens, so the browser opening it
+//! is a browser of the owner's ([`answer_login`]).
 
 use crate::client::Client;
 use clax_core::Home;
@@ -79,19 +82,53 @@ pub fn error(code: &str, message: &str) -> Value {
 /// `type` other than `pair` is `bad_request`; `pair` runs `pair`, whose
 /// error, or panic, is an `error` reply.
 pub fn answer(msg: &Value, pair: impl FnOnce() -> Result<Value, HostError>) -> Value {
-    let Some(v) = msg.get("v").and_then(Value::as_u64) else {
-        return error("bad_request", "a message carries its protocol version, v");
-    };
-    if v != 1 {
-        return error(
-            "unsupported_version",
-            "this clax speaks version 1 of the pairing protocol",
-        );
+    if let Some(e) = unversioned(msg) {
+        return e;
     }
     if msg["type"] != "pair" {
         return error("bad_request", "unknown message type");
     }
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(pair)) {
+    run_guarded(pair)
+}
+
+/// The reply to a `login` message `msg` (`{type: "login", v: 1, next}`):
+/// [`answer`]'s version checks, then `bad_request` unless `next` is a path
+/// of the daemon (one leading `/`); else `login` runs on `next`, whose
+/// error, or panic, is an `error` reply. Its reply is `{type: "login", v:
+/// 1, url}`: a one-use login link that makes the browser opening it, in
+/// two minutes, a browser of the owner's, and opens `next`.
+pub fn answer_login(msg: &Value, login: impl FnOnce(&str) -> Result<Value, HostError>) -> Value {
+    if let Some(e) = unversioned(msg) {
+        return e;
+    }
+    let next = msg["next"].as_str().unwrap_or("/");
+    if !next.starts_with('/') || next.starts_with("//") || next.contains('\\') {
+        return error("bad_request", "next is a path of the daemon");
+    }
+    let next = next.to_string();
+    run_guarded(move || login(&next))
+}
+
+/// The `bad_request` or `unsupported_version` reply for a message that
+/// carries no protocol version, or one other than 1.
+fn unversioned(msg: &Value) -> Option<Value> {
+    let Some(v) = msg.get("v").and_then(Value::as_u64) else {
+        return Some(error(
+            "bad_request",
+            "a message carries its protocol version, v",
+        ));
+    };
+    (v != 1).then(|| {
+        error(
+            "unsupported_version",
+            "this clax speaks version 1 of the pairing protocol",
+        )
+    })
+}
+
+/// `f`'s reply; its error, or panic, as an `error` reply.
+fn run_guarded(f: impl FnOnce() -> Result<Value, HostError>) -> Value {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(Ok(reply)) => reply,
         Ok(Err(e)) => error(e.code, &e.message),
         Err(_) => error(
@@ -165,12 +202,39 @@ fn pair(cli: &crate::Cli, home: &Home) -> Result<Value, HostError> {
     paired(c.info.port, &mint)
 }
 
+/// A login link for `next` from the daemon of this version (started or
+/// replaced as for [`pair`]), with the token: the daemon's login path on
+/// `http://localhost:<port>`, the address the extension talks to.
+fn login(cli: &crate::Cli, home: &Home, next: &str) -> Result<Value, HostError> {
+    let unavailable = |e: anyhow::Error| HostError {
+        code: "daemon_unavailable",
+        message: format!("{e:#}; see {}", home.log_path().display()),
+    };
+    let port = cli.port_for(home).map_err(unavailable)?;
+    let c = Client::connect_matching_version(home, port).map_err(unavailable)?;
+    let v = c
+        .post("/api/browser-login", &json!({"next": next}))
+        .map_err(unavailable)?;
+    let Some(path) = v["path"].as_str().filter(|p| p.starts_with("/login?")) else {
+        return Err(HostError {
+            code: "daemon_unavailable",
+            message: "the clax daemon answered no login path".into(),
+        });
+    };
+    Ok(json!({
+        "type": "login",
+        "v": 1,
+        "url": format!("http://localhost:{}{path}", c.info.port),
+    }))
+}
+
 /// The log line for one run: the outcome's code, and an error's message.
-/// Never the credential.
+/// Never the credential, nor a login link.
 fn log_line(reply: &Value) -> String {
     let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     match reply["type"].as_str() {
         Some("paired") => format!("{at} native-host paired daemon={}", reply["daemon"]),
+        Some("login") => format!("{at} native-host login"),
         _ => format!(
             "{at} native-host error code={} message={}",
             reply["code"], reply["message"]
@@ -260,6 +324,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         anyhow::bail!("clax native-host was started for another origin");
     }
     let r = match read_message(&mut std::io::stdin().lock()) {
+        Ok(m) if m["type"] == "login" => answer_login(&m, |next| login(cli, home, next)),
         Ok(m) => answer(&m, || pair(cli, home)),
         Err(e) => error(e.code, &e.message),
     };
@@ -348,6 +413,34 @@ mod tests {
         assert_eq!(e["v"], 1);
         assert_eq!(e["code"], "daemon_unavailable");
         assert_eq!(e["message"], "no");
+    }
+
+    #[test]
+    fn a_login_message_names_a_daemon_path() {
+        let seen = std::cell::RefCell::new(None);
+        let ok = |next: &str| {
+            *seen.borrow_mut() = Some(next.to_string());
+            Ok(json!({"type": "login", "v": 1, "url": "http://localhost:1/login?code=c"}))
+        };
+        let r = answer_login(&json!({"type": "login", "v": 1, "next": "/a/x"}), ok);
+        assert_eq!(
+            (r["type"].as_str(), seen.take().as_deref()),
+            (Some("login"), Some("/a/x"))
+        );
+        for next in ["https://evil.example/", "//evil.example", "/\\evil"] {
+            let r = answer_login(
+                &json!({"type": "login", "v": 1, "next": next}),
+                |_| unreachable!(),
+            );
+            assert_eq!(r["code"], "bad_request", "{next}");
+        }
+        let r = answer_login(&json!({"type": "login", "v": 2}), |_| unreachable!());
+        assert_eq!(r["code"], "unsupported_version");
+        // Its log line never holds the link.
+        let line = log_line(
+            &json!({"type": "login", "v": 1, "url": "http://localhost:1/login?code=cxi_x"}),
+        );
+        assert!(!line.contains("cxi_"), "{line}");
     }
 
     #[test]

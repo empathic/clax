@@ -81,8 +81,12 @@ pub enum Cmd {
     /// Read and write an artifact's page database, as the db_* tools do.
     #[command(subcommand)]
     Db(commands::db::Cmd),
-    /// Open an artifact in the browser.
+    /// Open an artifact (or, with none, the gallery) in the browser, signing
+    /// the browser in first.
     Open(commands::open::Args),
+    /// Print a one-use link (two minutes) that signs a browser on this
+    /// machine in as the owner's and opens a path, the gallery by default.
+    Login(commands::login::Args),
     /// Delete an artifact.
     Delete(commands::delete::Args),
     /// Pin an artifact to the top of the gallery.
@@ -294,7 +298,8 @@ fn remote_ok(cmd: &Cmd) -> bool {
         | Cmd::Extension(_)
         | Cmd::Toolpath(_)
         | Cmd::People { .. }
-        | Cmd::NativeHost(_) => false,
+        | Cmd::NativeHost(_)
+        | Cmd::Login(_) => false,
     }
 }
 
@@ -389,6 +394,7 @@ pub(crate) fn main() {
         Cmd::Versions(a) => commands::versions::run(&cli, &home, a),
         Cmd::Db(c) => commands::db::run(&cli, &home, c),
         Cmd::Open(a) => commands::open::run(&cli, &home, a),
+        Cmd::Login(a) => commands::login::run(&cli, &home, a),
         Cmd::Delete(a) => commands::delete::run(&cli, &home, a),
         Cmd::Pin(a) => commands::pin::run(&cli, &home, a, true),
         Cmd::Unpin(a) => commands::pin::run(&cli, &home, a, false),

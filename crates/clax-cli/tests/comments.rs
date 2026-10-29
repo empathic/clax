@@ -80,22 +80,17 @@ impl Daemon {
     fn token(&self) -> String {
         self.info()["token"].as_str().unwrap().to_string()
     }
-    /// Maria's viewer cookie, as `GET /api/viewers/me` mints it.
+    /// Maria's viewer cookie: a browser of this machine's that is not the
+    /// owner's, its viewer minted in the store (reaching the daemon's port
+    /// alone mints none).
     fn maria(&self) -> &str {
         self.maria.get_or_init(|| {
-            let res = self
-                .http()
-                .get(format!("{}/api/viewers/me", self.base()))
-                .send()
-                .unwrap();
-            res.headers()["set-cookie"]
-                .to_str()
+            let cookie = clax_core::secret::viewer_cookie().expose().to_string();
+            clax_store::Store::open(&clax_core::Home::at(self.home()))
                 .unwrap()
-                .split(';')
-                .next()
-                .and_then(|kv| kv.strip_prefix("clax_viewer="))
-                .expect("a viewer cookie")
-                .to_string()
+                .mint_viewer(&cookie, true)
+                .unwrap();
+            cookie
         })
     }
 
@@ -550,14 +545,27 @@ fn the_cli_is_the_owner_the_browsers_are() {
     let w = world();
     let d = &w.d;
     let name = d.json(&["comments", "name", "Alex"]);
-    // The owner's browser (the owner cookie, as the shell's token request
-    // sets it) is the same viewer, with the same name.
+    // The owner's browser (signed in with the link `clax login` prints) is
+    // the same viewer, with the same name.
+    let link = d.json(&["login"])["url"].as_str().unwrap().to_string();
+    let signed_in = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+        .get(&link)
+        .send()
+        .unwrap();
+    assert_eq!(signed_in.status(), 303);
     let host = d.base().trim_start_matches("http://").to_string();
-    let cookie = format!(
-        "{}={}",
-        clax_http::identity::owner_cookie_name(&host),
-        clax_http::identity::owner_cookie_value(&d.token())
-    );
+    let cookie_name = clax_http::identity::owner_cookie_name(&host);
+    let cookie = signed_in
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok()?.split(';').next())
+        .find(|kv| kv.starts_with(&format!("{cookie_name}=")))
+        .expect("the owner cookie")
+        .to_string();
     let browser: Value = d
         .http()
         .get(format!("{}/api/viewers/me", d.base()))

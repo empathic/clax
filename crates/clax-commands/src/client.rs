@@ -1395,6 +1395,25 @@ impl Client {
         Ok(())
     }
 
+    /// The address a browser opens `path` (a path of this daemon) at, signed
+    /// in: on the local daemon a one-use login link, good for two minutes,
+    /// that makes the browser opening it a browser of the owner's first
+    /// (`POST /api/browser-login`); on a remote Clax, whose browsers sign in
+    /// there, [`Client::browser_url`]'s address.
+    ///
+    /// # Errors
+    /// The daemon's refusal of the login code.
+    pub fn login_url(&self, path: &str) -> anyhow::Result<String> {
+        if self.signed.is_some() {
+            return Ok(self.browser_url(path));
+        }
+        let v = self.post("/api/browser-login", &serde_json::json!({"next": path}))?;
+        let login = v["path"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("the daemon answered no login path"))?;
+        Ok(self.browser_url(login))
+    }
+
     pub fn browser_url(&self, path: &str) -> String {
         if self.signed.is_some() {
             return format!("{}{path}", self.base);

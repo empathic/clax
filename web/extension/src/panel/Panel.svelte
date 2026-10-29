@@ -180,6 +180,13 @@
   const suggestion = $derived(link.suggestion && link.suggestion.origin === tabOrigin ? link.suggestion.suggestion : null);
   const people = $derived(roster(s?.participants?.people ?? [], s?.presence ?? []));
   const viewUrl = $derived(s?.page && /^https?:\/\//.test(s.page.url) ? s.page.url : null);
+  /** "Open in Clax": the worker opens the page's view through a login link, so the tab is the owner's browser there. */
+  const openInClax = (e: MouseEvent) => {
+    if (!viewUrl) return;
+    const u = new URL(viewUrl);
+    e.preventDefault();
+    link.post({ t: "open-clax", path: u.pathname + u.search });
+  };
   /** The batch send's bound (spec §8). */
   const BATCH = 20;
   /** How the panel words a failure code: text, and a command to run with its copy button. */
@@ -365,7 +372,7 @@
     {/if}
     {#if s.enabled}
       <footer class="foot">
-        {#if viewUrl}<a href={viewUrl} target="_blank" rel="noopener noreferrer">Open in Clax</a>{/if}
+        {#if viewUrl}<a href={viewUrl} target="_blank" rel="noopener noreferrer" onclick={openInClax}>Open in Clax</a>{/if}
         {#if s.tabId !== null}
           {@const tabId = s.tabId}
           <button type="button" class="ghost" onclick={() => link.post({ t: "turn-off", tabId })}>Turn off in this tab</button>

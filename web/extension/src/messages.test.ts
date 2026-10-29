@@ -253,6 +253,8 @@ describe("messages", () => {
     for (const pageUrl of ["javascript:alert(1)", "/settings", 3]) expect(isFromPanel({ t: "open-url", url: "/a/x", pageUrl }), String(pageUrl)).toBe(false);
     expect(isFromPanel({ t: "open-url", url: "/a/x" })).toBe(false);
     expect(isFromPanel({ t: "open-url", url: "/a/x", pageUrl: null, tabId: 3 })).toBe(false);
+    expect(isFromPanel({ t: "open-clax", path: "/a/7q3k9mzx2b4t" })).toBe(true);
+    for (const path of ["https://evil.example/", "//evil.example/x", "/\\evil.example", null]) expect(isFromPanel({ t: "open-clax", path }), String(path)).toBe(false);
   });
 
   it("checks the worker's question and inbox messages to the panels", () => {

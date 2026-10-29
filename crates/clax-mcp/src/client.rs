@@ -988,6 +988,17 @@ impl DaemonClient {
             .await
     }
 
+    /// `POST /api/browser-login {next}`: a one-use login code for the
+    /// browser the `open` tool opens, `{path, url, expires_in}`, `path`
+    /// being `/login?code=…&next=…` (the local daemon's alone).
+    pub async fn browser_login(&self, next: &str) -> Result<Value> {
+        self.json(|c| {
+            c.request(reqwest::Method::POST, "/api/browser-login")
+                .json(&serde_json::json!({"next": next}))
+        })
+        .await
+    }
+
     /// `GET /api/artifacts/<id>`: `{artifact, versions}`.
     pub async fn get(&self, id: &str) -> Result<Value> {
         self.json(|c| c.request(reqwest::Method::GET, &format!("/api/artifacts/{id}")))

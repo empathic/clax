@@ -41,7 +41,7 @@ async function siteBytes(url: URL, d: TestDaemon): Promise<Buffer> {
   const { cookie } = await siteGet(new URL((await code.json()).src), { cookie: start.cookie });
   return (await siteGet(url, { cookie })).body;
 }
-import { api, claxBin, startDaemon, type TestDaemon } from "./daemon-fixture.ts";
+import { api, claxBin, startDaemon, type TestDaemon, viewerCookie } from "./daemon-fixture.ts";
 import { FakePi, fakeContext, json } from "./fake-api.ts";
 import { fakeExe } from "./fake-exe.ts";
 
@@ -472,6 +472,13 @@ describe("clax Pi extension", () => {
     };
     expect(await openWith("exit 1")).toMatchObject({ url: p.url, opened: false });
     expect(await openWith("exit 0")).toMatchObject({ url: p.url, opened: true });
+    // The browser is handed a one-use login link to the artifact, which the
+    // result never names.
+    const opened = join(scratch, `opened-${Math.random().toString(36).slice(2)}.txt`);
+    expect(await openWith('printf %s "$1" > "$OPENED_FILE"', 30_000, { OPENED_FILE: opened })).toMatchObject({ url: p.url, opened: true });
+    const link = readFileSync(opened, "utf8");
+    expect(link).toContain("/login?code=cxi_");
+    expect(link).toContain(`next=${encodeURIComponent(`/a/${p.artifact_id}`)}`);
     // This opener never exits on its own, so `opened: true` comes from giving
     // up on it. It names its PID file in the environment, so its text, and
     // the executable fakeExe makes of it, is the same on every run.
@@ -705,13 +712,21 @@ describe("clax Pi extension", () => {
   });
 });
 
-/** Creates a thread on version 1 as a browser does; `@agent` in `body` sends it. */
-async function browserThread(aid: string, body: string, base = daemon.base, anchor: object = { kind: "element", selector: "body > h2", quote: "Goals" }): Promise<string> {
+/** The cookie of a browser of this machine's with no name, one per daemon. */
+const browsers = new Map<string, Promise<string>>();
+const browserCookie = (d: { base: string; token: string } = daemon) => {
+  const c = browsers.get(d.base) ?? viewerCookie(d);
+  browsers.set(d.base, c);
+  return c;
+};
+
+/** Creates a thread on version 1 as a browser of this machine's does; `@agent` in `body` sends it. */
+async function browserThread(aid: string, body: string, d: { base: string; token: string } = daemon, anchor: object = { kind: "element", selector: "body > h2", quote: "Goals" }): Promise<string> {
   const form = new FormData();
   form.set("anchor", JSON.stringify(anchor));
   form.set("body", body);
   form.set("version", "1");
-  const res = await fetch(`${base}/api/artifacts/${aid}/threads`, { method: "POST", body: form });
+  const res = await fetch(`${d.base}/api/artifacts/${aid}/threads`, { method: "POST", headers: { cookie: await browserCookie(d) }, body: form });
   expect(res.status).toBe(201);
   return (await res.json()).thread.id;
 }
@@ -720,8 +735,7 @@ async function browserThread(aid: string, body: string, base = daemon.base, anch
  * clip, as the Chrome extension posts it; the live page's artifact ID and the
  * thread ID. */
 async function liveThread(url: string, body: string): Promise<{ aid: string; tid: string }> {
-  const me = await fetch(`${daemon.base}/api/viewers/me`);
-  const cookie = (me.headers.get("set-cookie") ?? "").split(";")[0];
+  const cookie = await viewerCookie(daemon);
   const named = await fetch(`${daemon.base}/api/viewers/me`, {
     method: "PUT", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ display_name: "Alex" }),
   });
@@ -834,13 +848,13 @@ describe("comments", () => {
     expect(read.note).toContain("people viewing the page");
     expect(read.feedback).toEqual([]);
     const area = { x: 0.1, y: 0.2, w: 0.4213, h: 0.18 };
-    await browserThread(aid, "what is this gap?", daemon.base, { kind: "area", selector: "body > h2", area, file: "index.html" });
+    await browserThread(aid, "what is this gap?", daemon, { kind: "area", selector: "body > h2", area, file: "index.html" });
     const drawn = parts(await pi.callToolAsPi("clax_comments_read", { url_or_id: aid }, ctx)).json.threads.at(-1);
     expect(drawn.anchor).toMatchObject({ kind: "area", area, summary: "area in body > h2 (42% × 18%)" });
-    await browserThread(aid, "this thin line", daemon.base, { kind: "area", selector: "body > h2", area: { x: 0, y: 0.5, w: 0.4213, h: 0.003 }, file: "index.html" });
+    await browserThread(aid, "this thin line", daemon, { kind: "area", selector: "body > h2", area: { x: 0, y: 0.5, w: 0.4213, h: 0.003 }, file: "index.html" });
     const thin = parts(await pi.callToolAsPi("clax_comments_read", { url_or_id: aid }, ctx)).json.threads.at(-1);
     expect(thin.anchor.summary).toBe("area in body > h2 (42% × <1%)");
-    await browserThread(aid, "warmer colours", daemon.base, { kind: "artifact" });
+    await browserThread(aid, "warmer colours", daemon, { kind: "artifact" });
     const whole = parts(await pi.callToolAsPi("clax_comments_read", { url_or_id: aid }, ctx)).json.threads.at(-1);
     expect(whole.anchor).toEqual({ kind: "artifact", selector: null, quote: null, custom_name: null, file: "", area: null, summary: "the whole artifact" });
     expect(parts(await pi.callToolAsPi("clax_comments_reply", { url_or_id: aid, thread_id: plain, text: "ok" }, ctx)).json).toMatchObject({ replied: false });
@@ -1446,7 +1460,7 @@ describe("comments", () => {
       const sid = (await live()).id;
       const aid = (await api(d, "/api/artifacts", { method: "POST", body: JSON.stringify({ title: "Back", files: { "index.html": { content: "<h2>Goals</h2>", encoding: "utf8" } } }) })).artifact.id;
       await api(d, `/api/sessions/${sid}/watches/${aid}`, { method: "PUT", body: JSON.stringify({ replies_armed: true }) });
-      await browserThread(aid, "@agent welcome back", d.base);
+      await browserThread(aid, "@agent welcome back", d);
       await expect.poll(() => pi.sent.length, { timeout: 15_000 }).toBe(1);
     } finally {
       stop();
@@ -1557,7 +1571,7 @@ describe("comments", () => {
     const set = await pi.callTool("clax_working", { url_or_id: pub.artifact_id, message: "Two columns" }, ctx);
     expect(set.isError).toBe(false);
     expect(JSON.parse(set.content[0].text!)).toMatchObject({ working: true, message: "Two columns", expires_in_s: 120, message_truncated: false });
-    const seen = await (await fetch(`${daemon.base}/api/artifacts/${pub.artifact_id}/working`)).json();
+    const seen = await (await fetch(`${daemon.base}/api/artifacts/${pub.artifact_id}/working`, { headers: { cookie: await browserCookie() } })).json();
     expect(seen.working[0]).toMatchObject({ harness: "pi", message: "Two columns" });
     expect(JSON.stringify(seen)).not.toContain("session_id");
     const done = await pi.callTool("clax_working", { url_or_id: pub.artifact_id, done: true }, ctx);
@@ -1616,7 +1630,7 @@ describe("comments", () => {
       spy.mockRestore();
     }
     await pi.emit("agent_end", { type: "agent_end", messages: [] }, ctx);
-    const seen = await (await fetch(`${daemon.base}/api/artifacts/${pub.artifact_id}/working`)).json();
+    const seen = await (await fetch(`${daemon.base}/api/artifacts/${pub.artifact_id}/working`, { headers: { cookie: await browserCookie() } })).json();
     expect(seen.working).toEqual([]);
   });
 
@@ -1628,7 +1642,7 @@ describe("comments", () => {
     form.set("anchor", JSON.stringify({ kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null }));
     form.set("body", "plain");
     form.set("version", "1");
-    const tid = (await (await fetch(`${daemon.base}/api/artifacts/${v1.artifact_id}/threads`, { method: "POST", body: form })).json()).thread.id;
+    const tid = (await (await fetch(`${daemon.base}/api/artifacts/${v1.artifact_id}/threads`, { method: "POST", headers: { cookie: await browserCookie() }, body: form })).json()).thread.id;
     const v2 = JSON.parse((await pi.callTool("clax_publish", { id: v1.artifact_id, html: "<h2>Goals</h2>", note: "Done", addresses: [tid] }, ctx)).content[0].text!);
     expect(v2).toMatchObject({ version: 2, note: "Done", note_truncated: false, addressed: [tid] });
   });
@@ -1638,7 +1652,7 @@ describe("comments", () => {
     await pi.emit("session_start", {}, ctx);
     const aid = parts(await pi.callTool("clax_publish", { html: "<h2>Goals</h2>", title: "Pi batch" }, ctx)).json.artifact_id;
     const ids = [await browserThread(aid, "one"), await browserThread(aid, "two")];
-    const res = await fetch(`${daemon.base}/api/artifacts/${aid}/threads:send`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ thread_ids: ids, note: "Together" }) });
+    const res = await fetch(`${daemon.base}/api/artifacts/${aid}/threads:send`, { method: "POST", headers: { "content-type": "application/json", cookie: await browserCookie() }, body: JSON.stringify({ thread_ids: ids, note: "Together" }) });
     expect(res.status).toBe(200);
     await expect.poll(() => pi.sent.length, { timeout: 15_000 }).toBe(1);
     expect(String(pi.sent[0].content)).toMatch(/^\[clax\] 2 comments sent to you:\n\[clax\] 2 comments on "Pi batch", sent together by Viewer \(not connected\)\. Note: "Together"\n/);

@@ -1991,7 +1991,22 @@ impl ClaxTools {
         };
         let opened = match program {
             Some(program) => {
-                let (url, wait) = (url.clone(), self.open_wait);
+                // The local daemon's browser opens through a one-use login
+                // link, so a browser not yet the owner's becomes one; the
+                // result names the artifact's own URL, never the link. A
+                // remote Clax's browsers sign in there.
+                let target = match self.client.is_remote() {
+                    true => url.clone(),
+                    false => match self.client.browser_login(&format!("/a/{id}")).await {
+                        Ok(v) => match v["path"].as_str() {
+                            Some(p) => format!("{}{p}", self.browser_base()),
+                            None => url.clone(),
+                        },
+                        Err(_) => url.clone(),
+                    },
+                };
+                let wait = self.open_wait;
+                let url = target;
                 clax_rt::spawn_blocking(move || run_opener(&program, &url, wait))
                     .await
                     .unwrap_or(false)

@@ -540,6 +540,13 @@ export class DaemonClient {
     return { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body), timeoutMs };
   }
 
+  /** `POST /api/browser-login` (`{next}`): a one-use login code for a
+   * browser to open, `{path, url, expires_in}`, `path` being
+   * `/login?code=…&next=…` (the local daemon's alone). */
+  browserLogin(next: string): Promise<any> {
+    return this.json("/api/browser-login", this.jsonBody("POST", { next }));
+  }
+
   /** `GET /healthz`: `{version, pid, started_at}`. */
   healthz(): Promise<any> {
     return this.json("/healthz", { method: "GET" });

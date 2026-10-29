@@ -68,6 +68,14 @@ export async function startDaemon(): Promise<TestDaemon> {
   return { home, base, token, stop };
 }
 
+/** The `clax_viewer` cookie (`name=value`) of a browser of this machine's
+ * with no name, minted by the daemon's debug-build test route: reaching the
+ * port alone mints no viewer. */
+export async function viewerCookie(d: { base: string; token: string }): Promise<string> {
+  const v = await api(d, "/api/_test/viewers", { method: "POST" });
+  return `clax_viewer=${v.cookie as string}`;
+}
+
 /** `GET` of a daemon API path, as JSON. */
 export async function api(d: { base: string; token: string }, path: string, init: RequestInit = {}): Promise<any> {
   const res = await fetch(`${d.base}${path}`, { ...init, headers: { authorization: `Bearer ${d.token}`, "content-type": "application/json", ...(init.headers ?? {}) } });

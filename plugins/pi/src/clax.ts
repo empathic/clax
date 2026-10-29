@@ -1430,7 +1430,7 @@ class Tools {
     const { id } = await this.resolveRef(c, a.url_or_id);
     await this.call(() => c.get(id));
     const url = this.artifactUrl(c, id);
-    const opened = this.env.CLAX_NO_OPEN === undefined && (await openInBrowser(url, this.env, this.opts.openWaitMs ?? OPEN_WAIT_MS));
+    const opened = this.env.CLAX_NO_OPEN === undefined && (await openInBrowser(await this.loginUrl(c, `/a/${id}`, url), this.env, this.opts.openWaitMs ?? OPEN_WAIT_MS));
     return { url, opened };
   }
 
@@ -1439,8 +1439,22 @@ class Tools {
     const c = this.clientFor(ctx);
     await this.call(() => (c.isRemote() ? c.ensureSession() : c.healthz()));
     const url = `${this.browserBase(c)}/`;
-    const opened = this.env.CLAX_NO_OPEN === undefined && (await openInBrowser(url, this.env, this.opts.openWaitMs ?? OPEN_WAIT_MS));
+    const opened = this.env.CLAX_NO_OPEN === undefined && (await openInBrowser(await this.loginUrl(c, "/", url), this.env, this.opts.openWaitMs ?? OPEN_WAIT_MS));
     return { url, opened };
+  }
+
+  /** Where the browser opens `path` (`url` on the daemon): on the local
+   * daemon a one-use login link, so a browser not yet the owner's becomes
+   * one; `url` itself on a remote Clax, whose browsers sign in there, or
+   * when no link can be had. The result names `url`, never the link. */
+  private async loginUrl(c: DaemonClient, path: string, url: string): Promise<string> {
+    if (c.isRemote()) return url;
+    try {
+      const v = await c.browserLogin(path);
+      return typeof v?.path === "string" && v.path.startsWith("/login?") ? `${this.browserBase(c)}${v.path}` : url;
+    } catch {
+      return url;
+    }
   }
 
   async assetUpload(ctx: ExtensionContext, a: Static<typeof AssetUploadArgs>): Promise<Json> {
