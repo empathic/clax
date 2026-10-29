@@ -207,27 +207,52 @@ clax.dev sends the request to its own router in process (`mint`), with
 HTTP to the instance:
 
 ```rust
-let i = integration(&queue_id, "https://clax.dev", "https://app.example.com", &grant_json)?;
-let req = mint_request(&i, now_unix_seconds, &user.id, &public_key, Some(&profile))?;
-let (parts, body) = req.into_parts();
-let body = axum::body::to_bytes(body, 64 * 1024).await?;
-let answer: serde_json::Value = reqwest::Client::new()
-    .post(format!("{}{}", i.instance, parts.uri)) // https://clax.dev/api/queues/<qid>/reporter-tokens
-    .headers(parts.headers)                       // Host, Authorization, Clax-Signature, Content-Type
-    .body(body)
-    .send()
-    .await?
-    .error_for_status()?
-    .json()
-    .await?; // {token, expires_at}: answer it to the browser as it is
+use clax_server::integrations::feedback::{integration, mint_request};
+
+/// A reporter token for `reporter_id`, bound to the browser's
+/// `public_key`, minted on the instance for pages of `page_origin`.
+async fn mint_over_http(
+    instance: &str,         // https://clax.dev
+    queue_id: &str,
+    page_origin: &str,      // https://app.example.com
+    grant_json: &str,       // {"token": "cxq_…", "private_key_pkcs8": "…"}
+    reporter_id: &str,
+    public_key: &str,
+    now_unix_seconds: i64,
+) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
+    let i = integration(queue_id, instance, page_origin, grant_json)?;
+    let req = mint_request(&i, now_unix_seconds, reporter_id, public_key, None)?;
+    let (parts, body) = req.into_parts();
+    let body = axum::body::to_bytes(body, 64 * 1024).await?;
+    let answer: serde_json::Value = reqwest::Client::new()
+        .post(format!("{}{}", i.instance, parts.uri)) // <instance>/api/queues/<qid>/reporter-tokens
+        .headers(parts.headers)                       // Host, Authorization, Clax-Signature, Content-Type
+        .body(body)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(answer) // {token, expires_at}: answer it to the browser as it is
+}
 ```
+
+This is `mint_over_http` in `crates/clax-server/tests/api_feedback_integration.rs`
+(`the_guides_rust_backend_mints_over_http`), which runs it against a
+daemon. Copied into your backend, it needs the copied functions in place
+of the `use` line, and `axum`, `reqwest`, `serde_json` and `clax-core` as
+dependencies.
 
 clax.dev's route around it, `token`, does what yours will:
 - it refuses agents (403 `not_for_agents`) and anyone without the
   `feedback` flag (403 `no_flag`);
 - it uses the person's public ID as `reporter_id`, and their GitHub name
   and login as the profile;
-- it passes a 400 about the browser's key back as a 400;
+- it passes a 400 about the browser's key back as a 400, with its code
+  (`invalid_key`). An `auth` that fails with an error whose `code` is
+  `invalid_key` has the overlay drop its kept key and ask once more with
+  a fresh one, so make your route's refusal reach the overlay that way
+  (the shell's `tokenAuth`, `web/shell/src/feedback/feedback.ts`, does);
 - it turns any other refusal into 503 `feedback_unavailable` (logged),
   since that one is the integration's own fault (a revoked grant, an
   origin the queue no longer lists).
@@ -251,9 +276,17 @@ Both refusals are 429 `limit_reached`, with `Retry-After`.
   overlay's `user` option is a stable ID of the signed-in user, which is
   hashed before it is stored. With it, the overlay keeps the reporter's key
   in IndexedDB for that instance, queue and user, as a non-extractable
-  Ed25519 CryptoKey that no script can read out. It keeps the token beside
-  the key and reuses it across page loads until 60 seconds before it
-  expires.
+  Ed25519 CryptoKey. It keeps the token beside the key and reuses it across
+  page loads until 60 seconds before it expires. The key can never be
+  exported, but any script on your page's origin can sign with it, as it
+  can call your token route with the user's cookie: your own origin is
+  the trust boundary, as it is for the session itself.
+- **Forget the reporter on sign-out.** Call `clax.forget()` on the running
+  overlay, or `Clax.forgetReporter({instance, queue, user})` when none is
+  running (it needs only the script), before your sign-out ends the
+  session. It deletes that user's kept key and token, so the next person to
+  sign in on that browser shares neither. clax.dev's shell does this on
+  both of its sign-outs (`forgetFeedback` in `web/shell/src/feedback/boot.ts`).
 - **Tokens are still minted:**
   - the first time a user loads the overlay in a browser;
   - every 15 minutes of use after that;
@@ -336,27 +369,26 @@ only, once per page load, and close it when the page goes away.
 ### SvelteKit
 
 The server decides who may report, and hands the page what the overlay
-needs. If your policy uses a nonce, your hooks make it once per request:
+needs. Let SvelteKit write the policy (`kit.csp`): it adds a nonce (or,
+on prerendered pages, a hash) for the inline scripts and styles it
+renders itself, which a hand-written header would have to match.
 
-```ts
-// src/hooks.server.ts: a nonce per request, in the policy and in locals
-import type { Handle } from "@sveltejs/kit";
-
-export const handle: Handle = async ({ event, resolve }) => {
-  const nonce = crypto.randomUUID().replaceAll("-", "");
-  event.locals.cspNonce = nonce;
-  const response = await resolve(event);
-  response.headers.set(
-    "content-security-policy",
-    `script-src 'self' https://clax.dev; connect-src 'self' https://clax.dev; style-src 'self' 'nonce-${nonce}'; img-src 'self' data: blob:`,
-  );
-  return response;
+```js
+// svelte.config.js
+export default {
+  kit: {
+    csp: {
+      mode: "auto",
+      directives: {
+        "script-src": ["self", "https://clax.dev"],
+        "connect-src": ["self", "https://clax.dev"],
+        "style-src": ["self"],
+        "img-src": ["self", "data:", "blob:"],
+      },
+    },
+  },
 };
 ```
-
-(SvelteKit's own `kit.csp` setting can make the nonce instead. Then read
-the nonce it puts in the page, as `%sveltekit.nonce%` in `app.html`, for
-example on a `data-` attribute, and pass that.)
 
 ```ts
 // src/routes/+layout.server.ts: what this user's overlay is given
@@ -369,7 +401,6 @@ export const load: LayoutServerLoad = ({ locals }) => ({
   queue: env.CLAX_QUEUE,
   release: { version: env.APP_VERSION, commit: env.APP_COMMIT },
   flags: locals.user?.flags ?? {},
-  cspNonce: locals.cspNonce,
 });
 ```
 
@@ -395,12 +426,16 @@ export const load: LayoutServerLoad = ({ locals }) => ({
         return r.json();
       },
       context: () => ({ release: data.release, flags: data.flags }),
-      nonce: data.cspNonce, // only with a strict style-src, below
+      // The nonce SvelteKit put on its boot script; a prerendered page,
+      // hashed rather than nonced, passes any string to say its style-src
+      // is strict.
+      nonce: document.querySelector<HTMLScriptElement>("script[nonce]")?.nonce || "strict",
     }).then(h => {
       if (closed) h.close();
       else clax = h;
     });
     return () => { closed = true; clax?.close(); };
+    // On sign-out, before the session ends: await clax?.forget();
   });
 </script>
 
@@ -468,7 +503,10 @@ The handle:
 - `on("badge", n => …)` hears how many reports wait for the user (a fix
   to check, or a reply), at once and on every change; `on("filed", r =>
   …)` hears each filed report; each returns its unsubscribe function;
-- `close()` removes the overlay.
+- `close()` removes the overlay;
+- `forget()` deletes the key and token kept for `user` (call it on
+  sign-out); `Clax.forgetReporter({instance, queue, user})` does the same
+  with no overlay running.
 
 `Clax.diagnostics.install()` starts recording errors before the overlay
 starts, for a page that loads it late. `Clax.CONTEXT_TIMEOUT_MS` (2000) is
