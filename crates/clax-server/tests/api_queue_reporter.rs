@@ -1766,6 +1766,18 @@ async fn under_all_another_reporters_context_is_left_out() {
         )
         .await;
     assert_eq!(res.status(), 200);
+    // Triage writes the page artifact's metadata too.
+    let (st, v) = s.triage("GET", &s.triage_report(&tid, ""), None).await;
+    assert_eq!(st, 200, "{v}");
+    let version = v["report"]["artifact"]["metadata_version"].clone();
+    let (st, v) = s
+        .triage(
+            "PATCH",
+            &s.triage_report(&tid, "/artifact"),
+            Some(json!({"metadata": {"crm": "acct-991"}, "if_version": version})),
+        )
+        .await;
+    assert_eq!(st, 200, "{v}");
 
     let comments = format!("{}/{tid}/comments", s.reports());
     for (who, own) in [(&a, true), (&b, false)] {
@@ -1781,6 +1793,9 @@ async fn under_all_another_reporters_context_is_left_out() {
             assert_eq!(report["anchor"]["kind"], "element", "{report}");
             if own {
                 assert_eq!(report["metadata"]["account"], "acme-77", "{report}");
+                assert_eq!(report["metadata_version"], 1, "{report}");
+                assert_eq!(report["artifact"]["metadata"]["crm"], "acct-991");
+                assert!(report["artifact"]["metadata_version"].as_u64() > Some(0));
                 assert_eq!(report["context"]["release"]["commit"], "f7e862ab0");
                 assert_eq!(
                     report["fixes"][0]["verdict_context"]["release"]["commit"],
@@ -1795,6 +1810,11 @@ async fn under_all_another_reporters_context_is_left_out() {
                 assert!(!report.to_string().contains("variant-b"), "{report}");
                 assert_eq!(report["metadata"], Value::Null, "{report}");
                 assert!(!report.to_string().contains("acme-77"), "{report}");
+                // Not even that metadata was written, or how often.
+                assert_eq!(report["metadata_version"], 0, "{report}");
+                assert_eq!(report["artifact"]["metadata"], Value::Null, "{report}");
+                assert_eq!(report["artifact"]["metadata_version"], 0, "{report}");
+                assert!(!report.to_string().contains("acct-991"), "{report}");
             }
         }
     }

@@ -3764,6 +3764,8 @@ it.
 |---|---|---|---|
 | `context`, `fixes[].verdict_context` | yes | yes | absent |
 | `metadata` (the host app's) | yes | yes | `null` |
+| `metadata_version` | yes | yes | `0` |
+| `artifact.metadata`, `artifact.metadata_version` (the page artifact's) | yes | yes | `null`, `0` |
 | `reporter_profile` | yes | absent | absent |
 | diagnostics (`…/diagnostics`) | yes | yes | 404 `not_found` |
 | `anchor`, `comments`, `fixes` (but their `verdict_context`) | yes | yes | yes |
