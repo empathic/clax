@@ -141,6 +141,8 @@ command.
   [Grok Build](plugins/clax-grok/README.md).
 - [The contract](docs/contract.md): every tool's arguments and results, the
   page contract and the security model, for anyone building an integration.
+- [Bug reports from your app](docs/feedback.md): add Clax's report overlay
+  to a product of your own, and let your agents fix what its users report.
 - [Clax on Cloudflare](docs/hosted/writeup.md): the same server as a hosted,
   multi-person service. Empathic's hosted Clax has its own
   [Terms of Service](docs/legal/terms.md) and

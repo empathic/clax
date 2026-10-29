@@ -472,6 +472,8 @@ path a session uses.
 
 [docs/contract.md](contract.md) is the contract for agents and integrators: every tool's arguments, results and error codes, how sessions are identified per harness, the page contract, the security model, and what is not yet available.
 
+[docs/feedback.md](feedback.md) is the guide to report queues for a product of your own: its users report problems from inside the app with a screenshot and what their browser knew, and your agents work them through `clax queue` and the `queue_*` tools until the reporter says the fix works.
+
 [docs/kubernetes.md](kubernetes.md) deploys hosted Clax instances on Kubernetes, each on its shard pod's volume and scaled across pods (`clax-fleet`, `deploy/k8s`).
 
 ## Upgrading
