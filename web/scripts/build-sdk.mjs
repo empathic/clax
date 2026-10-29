@@ -120,22 +120,40 @@ function thirdPartyNotices(moduleIds) {
   return `The packages ${PACKAGE_NAME} bundles, and their licenses.\n\n${sections.join(`\n${"-".repeat(78)}\n\n`)}`;
 }
 
+const formatDiagnostics = d => ts.formatDiagnostics(d, { getCanonicalFileName: f => f, getCurrentDirectory: () => web, getNewLine: () => "\n" });
+
+/** The declaration emit's compiler options: web/tsconfig.json's, which the
+ * type check uses, with what an emit of the package's declarations needs. */
+function declarationOptions() {
+  const { config, error } = ts.readConfigFile(join(web, "tsconfig.json"), ts.sys.readFile);
+  if (error) throw new Error(formatDiagnostics([error]));
+  const parsed = ts.parseJsonConfigFileContent(config, ts.sys, web);
+  if (parsed.errors.length) throw new Error(formatDiagnostics(parsed.errors));
+  return {
+    ...parsed.options,
+    // tsconfig.json only type-checks: emit, and declarations alone.
+    noEmit: false, declaration: true, emitDeclarationOnly: true,
+    // types/ mirrors web/, whatever the program's common source directory.
+    rootDir: web, outDir: "/types",
+    // No ambient package's types (tsconfig.json's vite/client, node and
+    // chrome): a declaration that needed one would carry a reference
+    // directive to a package the SDK package does not depend on.
+    types: [],
+  };
+}
+
 /** The entries' declarations: TypeScript's for each source the entries'
  * declarations reach, under types/, each relative specifier resolved to
- * a declaration file the package carries and written with `.js`. Fails on
- * a declaration TypeScript cannot emit, a specifier that leaves the
- * package's sources or names another package, and a reference directive. */
+ * a declaration file the package carries and written with `.js` (the
+ * sources import their siblings without an extension, which `nodenext`
+ * does not resolve). Fails on a declaration TypeScript cannot emit, a
+ * specifier that leaves the package's sources or names another package,
+ * and a reference directive. */
 function emitTypes() {
-  const program = ts.createProgram(ENTRIES.map(e => join(web, e.src)), {
-    target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler,
-    lib: ["lib.es2022.d.ts", "lib.dom.d.ts", "lib.dom.iterable.d.ts"], types: [],
-    strict: true, skipLibCheck: true, declaration: true, emitDeclarationOnly: true, rootDir: web, outDir: "/types",
-  });
+  const program = ts.createProgram(ENTRIES.map(e => join(web, e.src)), declarationOptions());
   const emitted = new Map();
   const result = program.emit(undefined, (file, text) => emitted.set(file.slice("/types/".length), text));
-  if (result.diagnostics.length) {
-    throw new Error(ts.formatDiagnostics(result.diagnostics, { getCanonicalFileName: f => f, getCurrentDirectory: () => web, getNewLine: () => "\n" }));
-  }
+  if (result.diagnostics.length) throw new Error(formatDiagnostics(result.diagnostics));
   const kept = new Map();
   const visit = file => {
     if (kept.has(file)) return;
