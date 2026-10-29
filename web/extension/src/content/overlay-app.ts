@@ -9,6 +9,7 @@
 // every message checked by `isFromWorker`, and tells it only what §9.4
 // lists.
 import { buildElementAnchor, buildRangeAnchor, OVERLAY_TAG } from "../../../bridge/src/anchor";
+import { keepOnTop } from "../../../bridge/src/top-layer";
 import { type AreaRect, buildAreaAnchor } from "../../../bridge/src/area";
 import { CommentMode } from "../../../bridge/src/comment-mode";
 import type { Anchor, AnchorResult } from "../../../bridge/src/protocol";
@@ -133,10 +134,11 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     }
   };
 
-  // The pins' host: a child of <html> in the top layer (a manual popover),
-  // styled so the page's rules cannot hide or move it, passing every pointer
-  // event but the pins' and the composer's through. Its only attributes are
-  // `popover` and `style`.
+  // The pins' host: in the top layer (a manual popover), a child of <html>,
+  // or of the page's topmost open modal dialog while there is one, raised
+  // above it (bridge/src/top-layer.ts), styled so the page's rules cannot
+  // hide or move it, passing every pointer event but the pins' and the
+  // composer's through. Its only attributes are `popover` and `style`.
   const host = doc.createElement(OVERLAY_TAG);
   const HOST_CSS = "all:initial!important;position:fixed!important;inset:0!important;display:block!important;pointer-events:none!important;background:transparent!important;border:0!important;margin:0!important;padding:0!important;overflow:visible!important;width:auto!important;height:auto!important;opacity:1!important;z-index:2147483647!important;";
   let hidden = false;
@@ -152,15 +154,17 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
   const popoverOpen = () => {
     try { return typeof host.showPopover !== "function" || host.matches(":popover-open"); } catch { return true; }
   };
-  const intact = () => host.parentNode === doc.documentElement && host.attributes.length === 2
+  // Each move into or out of a dialog watches the host's new parent.
+  let rewatch = () => {};
+  const top = keepOnTop(doc, host, () => rewatch());
+  const intact = () => host.parentNode === top.parent() && host.attributes.length === 2
     && host.getAttribute("popover") === "manual" && host.getAttribute("style") === ownStyle && popoverOpen();
   const attach = () => {
     applyHost();
-    doc.documentElement.appendChild(host);
-    try { host.showPopover(); } catch { /* no popover support, or already shown */ }
+    top.place();
   };
   attach();
-  stops.push(() => host.remove());
+  stops.push(() => { top.stop(); host.remove(); });
 
   // A page that removes, moves, restyles or closes the host gets it back
   // once; the next time the overlay gives up and the worker tells the side
@@ -179,9 +183,12 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     guard.disconnect();
     guard.observe(doc, { childList: true });
     guard.observe(doc.documentElement, { childList: true });
+    // In a modal dialog: a page that removes it from there is heard too.
+    if (host.parentNode && host.parentNode !== doc.documentElement) guard.observe(host.parentNode, { childList: true });
     guard.observe(host, { attributes: true });
   };
   watch();
+  rewatch = watch;
   host.addEventListener("toggle", check);
   stops.push(() => guard.disconnect());
 

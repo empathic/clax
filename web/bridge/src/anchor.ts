@@ -120,8 +120,17 @@ function fullPath(el: Element): string {
   return parts.length ? `body > ${parts.join(" > ")}` : "body";
 }
 
-/** `sha256:<hex>` of `el`'s outer HTML. */
-export const htmlHash = (el: Element) => `sha256:${sha256Hex(el.outerHTML)}`;
+/** `sha256:<hex>` of `el`'s outer HTML, Clax's own overlay hosts left out
+ * (one sits in the page's open modal dialog, ./top-layer.ts). */
+export const htmlHash = (el: Element) => `sha256:${sha256Hex(withoutOverlay(el).outerHTML)}`;
+
+/** `el`, or a copy of it without the overlay hosts in it. */
+function withoutOverlay(el: Element): Element {
+  if (!el.querySelector(OVERLAY_TAG)) return el;
+  const copy = el.cloneNode(true) as Element;
+  for (const h of copy.querySelectorAll(OVERLAY_TAG)) h.remove();
+  return copy;
+}
 
 function anchorRect(target: Element | Range, win: Window): AnchorRect {
   const r = typeof target.getBoundingClientRect === "function" ? target.getBoundingClientRect() : null;
@@ -253,8 +262,11 @@ export function textPrefix(el: Element, idx?: TextIndex): string {
 /** An area's element fingerprint: its local name, text prefix, and child
  * element count. */
 export function fingerprint(el: Element): { tag: string; text: string; children: number } {
-  return { tag: tagOf(el), text: textPrefix(el), children: el.childElementCount };
+  return { tag: tagOf(el), text: textPrefix(el), children: ownChildren(el) };
 }
+
+/** `el`'s child elements but Clax's overlay hosts. */
+const ownChildren = (el: Element) => el.childElementCount - [...el.children].filter(c => c.localName === OVERLAY_TAG).length;
 
 /** `el`'s local name, at most 64 UTF-16 units, never ending inside a surrogate pair. */
 const tagOf = (el: Element) => cut(el.localName, 0, 64);
@@ -290,7 +302,7 @@ export function fingerprintHolds(a: Anchor, el: Element, index?: () => TextIndex
   const f = a.area;
   if (!f || f.tag === undefined) return true;
   if (tagOf(el) !== f.tag) return false;
-  const childrenAgree = f.children === undefined || el.childElementCount === f.children;
+  const childrenAgree = f.children === undefined || ownChildren(el) === f.children;
   // The text is read only when the child count alone does not settle it.
   if (childrenAgree) return true;
   const textAgrees = f.text === undefined || textSimilarity(textPrefix(el, index?.()), f.text) >= TEXT_ALIKE;

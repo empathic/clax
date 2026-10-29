@@ -51,6 +51,7 @@ import { LongPress, type Timers, windowTimers } from "./long-press";
 import type { Box } from "./protocol";
 import { addSheet, type Sheet } from "./sheet";
 import { backgroundBehind, caretAt, chooseTarget, outlineBox, outlineColors, rectOf, viewportOf } from "./target";
+import { keepOnTop } from "./top-layer";
 
 export interface ModeHooks {
   hover(target: Element | Range | null): void;
@@ -110,6 +111,8 @@ const CHIP_GAP = 8;
 export class CommentMode {
   private on = false;
   private readonly host: HTMLElement;
+  /** Keeps the host above the page's modal dialogs. */
+  private readonly top: ReturnType<typeof keepOnTop>;
   private readonly outline: HTMLElement;
   private readonly areaBox: HTMLElement;
   private readonly focusBox: HTMLElement;
@@ -176,7 +179,11 @@ export class CommentMode {
     this.pin = root.querySelector(".pin")!;
     this.chip = root.querySelector(".c")!;
     addSheet(root, CSS);
-    doc.documentElement.appendChild(this.host);
+    // In the top layer, above the page's modal dialogs (./top-layer.ts).
+    this.host.setAttribute("popover", "manual");
+    this.host.style.cssText = "position:fixed;inset:0;margin:0;padding:0;border:0;background:none;overflow:visible;width:auto;height:auto;pointer-events:none";
+    this.top = keepOnTop(doc, this.host);
+    this.top.place();
   }
 
   set(on: boolean): void {
@@ -249,6 +256,7 @@ export class CommentMode {
   /** Ends comment mode and removes its drawing from the page for good. */
   destroy(): void {
     this.set(false);
+    this.top.stop();
     this.host.remove();
   }
 
@@ -364,11 +372,11 @@ export class CommentMode {
   }
 
   /** Created from `<head>`, the overlay precedes `<body>`; before it shows
-   * anything it moves last, so it stacks above page content at the same
-   * z-index. */
+   * anything it moves last in its parent (<html>, or the page's topmost
+   * modal dialog) and in the top layer, so it stacks above page content. */
   private ensureLast(): void {
-    const root = this.doc.documentElement;
-    if (root.lastElementChild !== this.host) root.appendChild(this.host);
+    const parent = this.top.parent();
+    if (this.host.parentNode !== parent || parent.lastElementChild !== this.host) this.top.place();
   }
 
   /** Sets the overlay's colours for the background behind `el`. */
