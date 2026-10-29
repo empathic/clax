@@ -55,6 +55,11 @@ describe("the SDK package", () => {
     expect(manifest.name).toBe("@empathic/clax-sdk");
     expect(manifest.version).toMatch(/^\d+\.\d+\.\d+/);
     expect(manifest.license).toBe("LGPL-2.1-only");
+    expect(manifest.publishConfig).toEqual({ access: "public" });
+    expect(manifest.author).toEqual({ name: "Empathic, Inc.", email: "alex@empathic.dev" });
+    expect(manifest.homepage).toBe("https://github.com/empathic/clax/tree/main/web/sdk#readme");
+    expect(manifest.bugs).toEqual({ url: "https://github.com/empathic/clax/issues" });
+    expect(manifest.keywords).toContain("clax");
     expect(manifest.type).toBe("module");
     expect(manifest.sideEffects).toBe(false);
     for (const k of ["dependencies", "peerDependencies", "optionalDependencies", "bundleDependencies"]) expect(manifest).not.toHaveProperty(k);
@@ -66,6 +71,10 @@ describe("the SDK package", () => {
       expect(existsSync(join(pkgDir, e.types)), e.types).toBe(true);
       expect(existsSync(join(pkgDir, e.default)), e.default).toBe(true);
     }
+  });
+
+  it("carries its README", () => {
+    expect(readFileSync(join(pkgDir, "README.md"), "utf8")).toBe(readFileSync(join(web, "sdk/README.md"), "utf8"));
   });
 
   it("carries its license text and the bundled packages' notices", () => {

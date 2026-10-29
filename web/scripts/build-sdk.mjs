@@ -16,10 +16,10 @@
 // under types/, emitted by TypeScript from the sources and kept to what the
 // entries' declarations import, with relative specifiers ending in `.js`
 // so a consumer's `moduleResolution` of `bundler` or `nodenext` reads them.
-// The package's license is the license of web/bridge, web/overlay and
-// web/sdk in the repository's LICENSE, and the build fails on a bundled
-// source file of Clax's from anywhere else; THIRD-PARTY-NOTICES.txt holds
-// the license of each npm package it bundles.
+// Its README is web/sdk/README.md. The package's license is the license of
+// web/bridge, web/overlay and web/sdk in the repository's LICENSE, and the
+// build fails on a bundled source file of Clax's from anywhere else;
+// THIRD-PARTY-NOTICES.txt holds the license of each npm package it bundles.
 //
 //   node scripts/build-sdk.mjs            build once
 //   node scripts/build-sdk.mjs --watch    build, then again on each change
@@ -59,8 +59,14 @@ function packageJson() {
     name: PACKAGE_NAME,
     version,
     description: "Clax's report queue SDK: the reporter client, the embeddable overlay and the service client",
+    keywords: ["clax", "reports", "feedback", "overlay", "sdk"],
     license: LICENSE,
+    author: { name: "Empathic, Inc.", email: "alex@empathic.dev" },
+    homepage: "https://github.com/empathic/clax/tree/main/web/sdk#readme",
+    bugs: { url: "https://github.com/empathic/clax/issues" },
     repository: { type: "git", url: "git+https://github.com/empathic/clax.git", directory: "web" },
+    // A scoped package publishes as private unless told otherwise.
+    publishConfig: { access: "public" },
     type: "module",
     sideEffects: false,
     exports: {
@@ -156,6 +162,7 @@ function emitTypes() {
 
 function writeMetadata(moduleIds) {
   writeFileSync(join(out, "package.json"), `${JSON.stringify(packageJson(), null, 2)}\n`);
+  writeFileSync(join(out, "README.md"), readFileSync(join(web, "sdk", "README.md")));
   writeFileSync(join(out, "LICENSE"), licenseNotice());
   mkdirSync(join(out, "LICENSES"), { recursive: true });
   writeFileSync(join(out, "LICENSES", `${LICENSE}.txt`), readFileSync(join(repo, "LICENSES", `${LICENSE}.txt`)));
