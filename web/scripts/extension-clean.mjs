@@ -1,5 +1,5 @@
-// Empties an extension build's output directory before a build, keeping its
-// committed .gitkeep. Never touches anything outside it: a symlinked output
+// Empties a build's output directory before a build (the extension's, the
+// SDK package's), keeping a committed .gitkeep. Never touches anything outside it: a symlinked output
 // directory is refused, and a symlinked entry is unlinked, not followed.
 import { lstatSync, mkdirSync, readdirSync, rmSync, unlinkSync } from "node:fs";
 

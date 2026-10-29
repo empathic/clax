@@ -618,6 +618,41 @@ a scratch directory would fall inside your home, never reads or copies an
 auth file, and runs Clax on a scratch port. The Pi session check, which needs
 a model, runs only with `VERIFY_PI_SESSION=1` and a provider key you export.
 
+### The SDK package
+
+The reporter client, the embeddable overlay and the service client are
+also built as an npm package, `@empathic/clax-sdk`, into `web/dist-sdk`
+(`web/scripts/build-sdk.mjs`): ES modules with Svelte and the overlay's
+other dependencies bundled, and declarations under `types/`. It has three
+entries: `@empathic/clax-sdk` (`ReporterClient`, `ClaxError` and the queue
+routes' types), `@empathic/clax-sdk/overlay` (`overlay`, the same overlay
+as `/_clax/overlay.js`) and `@empathic/clax-sdk/service` (`ServiceClient`,
+for a backend only). Its license is LGPL-2.1-only, that of `web/sdk`,
+`web/overlay` and `web/bridge`.
+
+- `just web` builds it with the rest of the web build (`//web:dist_sdk`
+  under Bazel, copied into `web/dist-sdk`), as does `pnpm run build` in
+  `web/`. `pnpm run build:sdk` builds the package alone.
+- `node scripts/build-sdk.mjs --watch`, in `web/`, rebuilds it on every
+  change to its sources. `just watch` runs it natively; with Bazel it does
+  not, so run `just web` again after a change (or the watch command, with
+  `web/node_modules` installed).
+- `//web:sdk_package` (`pnpm run test:sdk` after a build) checks the
+  package as an app gets it, and `//web:bundle_size` holds its overlay
+  entry to the `sdkOverlay` ceiling.
+
+To use the checkout's build from another app while developing, link the
+directory, which keeps the package's own name:
+
+```
+"@empathic/clax-sdk": "link:/path/to/clax/web/dist-sdk"
+```
+
+in that app's `package.json` `dependencies` (pnpm and bun both read
+`link:`), then install. A link is a symlink to the directory, so a rebuild
+reaches the app without reinstalling; reload it, or restart its dev server
+if that server cached the package.
+
 ### The Clax app
 
 `apps/clax_app` is a Flutter app for Android, macOS, iPhone and iPad. It

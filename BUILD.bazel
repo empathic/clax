@@ -23,6 +23,14 @@ copy_to_bin(
     visibility = ["//web:__pkg__"],
 )
 
+# The license text of web/bridge, web/overlay and web/sdk, which the SDK
+# package carries (web/scripts/build-sdk.mjs).
+copy_to_bin(
+    name = "lgpl_license",
+    srcs = ["LICENSES/LGPL-2.1-only.txt"],
+    visibility = ["//web:__pkg__"],
+)
+
 # The plugin marketplaces clax embeds (crates/clax-embedded/src/plugins.rs).
 filegroup(
     name = "marketplaces",
