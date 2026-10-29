@@ -178,7 +178,13 @@ function longRun(s: string, i: number): Span | null {
 const urlStop = oneOf("\"'<>`");
 const urlTrail = oneOf(".,;:!?)]}");
 
-/** The end of the URL that starts at `i`, if one does. */
+/** The end of the URL that starts at `i`, if one does: `http://` or
+ * `https://` starting a word, then a run of characters that are neither
+ * whitespace nor ``" ' < > ` ``, less any of `. , ; : ! ? ) ] }` at its end
+ * and then up to two `:` each followed by 1 to 5 digits (a stack frame's
+ * line and column), when the character before them is not a digit (so
+ * `?card=4111:1111:1111` stays whole); `url_at` in
+ * crates/clax-core/src/scrub.rs reads the same. */
 function urlAt(s: string, i: number): number | null {
   if (!wordStart(s, i)) return null;
   const scheme = ["https://", "http://"].find(w => startsWithCi(s, i, w));

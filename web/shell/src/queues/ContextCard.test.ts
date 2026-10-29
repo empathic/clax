@@ -18,7 +18,6 @@ describe("ContextCard", () => {
     expect(commit.textContent).toBe("f7e862ab0aa1");
     expect(commit.rel).toBe("noopener noreferrer");
     expect(commit.title).toBe("f7e862ab0aa1bb2cc3dd on github.com");
-    expect(commit.title).toBe("f7e862ab0aa1bb2cc3dd on github.com");
     expect([...m.root.querySelectorAll(".flags li")].map(text)).toEqual(["claxbot", "new_editor: variant-b", "beta: off"]);
     expect(text(m.root.querySelector('[data-zone="reader"]'))).toBe("Oct 29, 2026, 7:12 AM UTC");
     expect(text(m.root.querySelector('[data-zone="reporter"]'))).toBe("Oct 29, 2026, 12:12 AM PDT for the reporter (America/Los_Angeles)");
