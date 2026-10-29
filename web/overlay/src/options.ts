@@ -16,4 +16,8 @@ export interface OverlayOptions {
   /** The page's artifact. Default: `<meta name="clax-artifact">`'s content,
    * else none, and the instance files the report on the page URL without its route. */
   externalId?: string;
+  /** Whether the overlay shows its launcher (Report and Your reports) in
+   * the page's bottom right corner. Default true; without it the page opens
+   * them from its own controls, through the handle's `open` and `toggleReports`. */
+  launcher?: boolean;
 }

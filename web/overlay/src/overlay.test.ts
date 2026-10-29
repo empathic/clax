@@ -42,6 +42,7 @@ let listed: number;
 let comments: [string, string][];
 let timers: ReturnType<typeof manualTimers>;
 let host: HTMLElement;
+let props: Record<string, unknown>;
 const urls = URL as unknown as { createObjectURL?: unknown; revokeObjectURL?: unknown };
 const had = { create: urls.createObjectURL, revoke: urls.revokeObjectURL };
 
@@ -67,7 +68,8 @@ beforeEach(() => {
   };
   host = document.createElement("div");
   document.body.append(host);
-  view = mount(Overlay as never, { client, doc: document, host, picker, externalId: "shop-cart", metadata: { build: "7" }, timers }, host);
+  props = { client, doc: document, host, picker, externalId: "shop-cart", metadata: { build: "7" }, timers };
+  view = mount(Overlay as never, props, host);
 });
 afterEach(() => {
   view.unmount();
@@ -299,5 +301,77 @@ describe("the overlay", () => {
       document.removeEventListener("mousedown", page, true);
       outside.remove();
     }
+  });
+});
+
+describe("the overlay without its launcher", () => {
+  let opener: HTMLButtonElement;
+  const api = () => view.component as { open(): void; toggleReports(): void };
+  const open = () => { api().open(); flushSync(); };
+  beforeEach(() => {
+    view.unmount();
+    view = mount(Overlay as never, { ...props, launcher: false }, host);
+    opener = document.createElement("button");
+    document.body.append(opener);
+  });
+  afterEach(() => opener.remove());
+
+  it("draws no launcher, and open() starts comment mode, once", () => {
+    expect(q(".launcher")).toBeNull();
+    expect(button("Report")).toBeUndefined();
+    open();
+    expect(modes).toEqual([true]);
+    expect(q(".hint")?.textContent).toMatch(/Click what your report is about/);
+    open();
+    expect(modes).toEqual([true]);
+    click(q(".hint button"));
+    expect(modes).toEqual([true, false]);
+    open();
+    expect(modes).toEqual([true, false, true]);
+  });
+
+  it("sends a report started by open(), and gives focus back to what had it", async () => {
+    opener.focus();
+    open();
+    onPick({ anchor, render: async () => new Uint8Array([1]).buffer });
+    await settle();
+    expect(document.activeElement).toBe(q(".composer textarea"));
+    type("The total should include tax");
+    click(button("Send"));
+    await settle();
+    expect(filed.map(r => r.body)).toEqual(["The total should include tax"]);
+    expect(q(".composer")).toBeNull();
+    expect(q(".notice")?.textContent).toMatch(/Report sent/);
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it("Cancel and Escape in the composer give focus back to what had it at open()", async () => {
+    opener.focus();
+    open();
+    onPick({ anchor, render: async () => new ArrayBuffer(0) });
+    await settle();
+    click(button("Cancel"));
+    expect(q(".composer")).toBeNull();
+    expect(document.activeElement).toBe(opener);
+    open();
+    onPick({ anchor, render: async () => new ArrayBuffer(0) });
+    await settle();
+    q(".composer textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    flushSync();
+    expect(q(".composer")).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it("toggleReports() opens Your reports and polls it, and closes it and stops", async () => {
+    pages.push({ reports: [report("t1", ["Typo in header", "Fixed, thanks"])], next: null });
+    api().toggleReports();
+    await settle();
+    expect(listed).toBe(1);
+    expect(q(".panel")?.textContent).toMatch(/Typo in header/);
+    expect(timers.pending()).toContain(POLL_MS);
+    api().toggleReports();
+    flushSync();
+    expect(q(".panel")).toBeNull();
+    expect(timers.pending()).not.toContain(POLL_MS);
   });
 });

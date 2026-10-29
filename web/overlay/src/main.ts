@@ -2,11 +2,13 @@
 // global `Clax`) and as the `./overlay` entry of the SDK package
 // (scripts/build-sdk.mjs): a deployer's page calls `Clax.overlay({instance,
 // queue, auth})` and its visitors file reports into the queue (spec 2026-10-27
-// §5.3). Its interface lives in a shadow root on <html>: the page's rules do
-// not reach it and its own do not reach the page. Keys typed into it stop at
-// that root, so the page's shortcuts do not hear them. Its styles are set
-// through the CSSOM (the host's `style`, the root's adopted sheets), so a
-// page whose CSP `style-src` lacks 'unsafe-inline' does not refuse them.
+// §5.3), from its launcher or, with `launcher: false`, from the page's own
+// controls through the handle's `open` and `toggleReports`. Its interface
+// lives in a shadow root on <html>: the page's rules do not reach it and its
+// own do not reach the page. Keys typed into it stop at that root, so the
+// page's shortcuts do not hear them. Its styles are set through the CSSOM
+// (the host's `style`, the root's adopted sheets), so a page whose CSP
+// `style-src` lacks 'unsafe-inline' does not refuse them.
 import { mount, unmount } from "svelte";
 import { OVERLAY_TAG } from "../../bridge/src/anchor";
 import { addSheet } from "../../bridge/src/sheet";
@@ -21,7 +23,13 @@ export type { OverlayOptions };
 
 /** A running overlay. */
 export interface OverlayHandle {
-  /** Removes the overlay and ends comment mode. */
+  /** Starts comment mode, as the launcher's Report does; nothing while it
+   * is on. Closing the composer gives focus back to what had it now, when
+   * there is no launcher. */
+  open(): void;
+  /** Opens "Your reports", or closes it when open, as the launcher's button does. */
+  toggleReports(): void;
+  /** Removes the overlay and ends comment mode; the handle then does nothing. */
   close(): void;
 }
 
@@ -36,10 +44,11 @@ const COMPONENT_CSS: string = "__CLAX_OVERLAY_COMPONENT_CSS__";
 const HOST_CSS = "all:initial!important;position:fixed!important;left:0!important;top:0!important;width:0!important;height:0!important;display:block!important;pointer-events:none!important;visibility:visible!important;opacity:1!important;z-index:2147483647!important;";
 
 /** Starts the overlay on `doc` (default this page's): the launcher in the
- * page's bottom right corner. */
+ * page's bottom right corner, unless `opts.launcher` is false. */
 export function overlay(opts: OverlayOptions, doc: Document = document): OverlayHandle {
   for (const k of ["instance", "queue"] as const) if (typeof opts?.[k] !== "string" || !opts[k]) throw new TypeError(`Clax.overlay: ${k} must be a non-empty string`);
   if (typeof opts.auth !== "function") throw new TypeError("Clax.overlay: auth must be a function");
+  if (opts.launcher !== undefined && typeof opts.launcher !== "boolean") throw new TypeError("Clax.overlay: launcher must be a boolean");
   const client = new ReporterClient({ instance: opts.instance.replace(/\/+$/, ""), queue: opts.queue, auth: opts.auth });
 
   const host = doc.createElement(OVERLAY_TAG);
@@ -58,13 +67,16 @@ export function overlay(opts: OverlayOptions, doc: Document = document): Overlay
       picker: (onPick: (p: Picked) => void, onCancel: () => void) => commentPicker(doc, onPick, onCancel),
       externalId: externalIdOf(doc, opts.externalId),
       metadata: opts.metadata,
+      launcher: opts.launcher ?? true,
     },
   });
-  let open = true;
+  let live = true;
   return {
+    open() { if (live) app.open(); },
+    toggleReports() { if (live) app.toggleReports(); },
     close() {
-      if (!open) return;
-      open = false;
+      if (!live) return;
+      live = false;
       void unmount(app);
       host.remove();
     },

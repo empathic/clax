@@ -126,9 +126,9 @@ import { overlay, type OverlayHandle, type OverlayOptions } from "@empathic/clax
 import { ServiceClient, type ServiceOptions } from "@empathic/clax-sdk/service";
 
 const auth: ReporterAuth = async (publicKey: string): Promise<ReporterToken> => ({ token: publicKey, expires_at: "" });
-const opts: OverlayOptions = { instance: "https://clax.example", queue: "q1", auth };
+const opts: OverlayOptions = { instance: "https://clax.example", queue: "q1", auth, launcher: false };
 const handle: OverlayHandle = overlay(opts);
-handle.close();
+handle.open();
 const client = new ReporterClient({ instance: opts.instance, queue: opts.queue, auth });
 const report: NewReport = { url: "https://app.example/", title: "Home", anchor: null, body: "Hi" };
 export const filed: Promise<Report> = client.fileReport(report);
