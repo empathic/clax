@@ -216,6 +216,7 @@ async fn one_item_reads_unreads_and_the_summary_counts() {
         .await;
     let s = get(&ts, "/api/inbox/summary").await;
     assert_eq!(s["unread"], 3);
+    assert_eq!(s["waiting"], 2, "the question and the reply");
     assert_eq!(s["questions"].as_array().unwrap().len(), 1);
     assert_eq!(s["questions"][0]["id"], q["question"]["id"]);
     let latest = s["latest"].as_array().unwrap();
@@ -224,8 +225,8 @@ async fn one_item_reads_unreads_and_the_summary_counts() {
             .iter()
             .map(|i| i["kind"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["reply", "published"],
-        "newest first, no questions"
+        ["reply"],
+        "no questions, no activity"
     );
     let id = latest[0]["id"].as_str().unwrap();
     let one = get(&ts, &format!("/api/inbox/{id}")).await;
@@ -278,6 +279,63 @@ async fn one_item_reads_unreads_and_the_summary_counts() {
         (r["marked"].as_u64(), r["unread"].as_u64()),
         (Some(1), Some(2))
     );
+}
+
+#[tokio::test]
+async fn waiting_lists_what_waits_oldest_first_and_a_resolve_reads_its_replies() {
+    let ts = TestServer::spawn().await;
+    let (sid, aid, tid) = owner_thread(&ts).await;
+    ts.reply_as_agent(&sid, &aid, &tid, "Blue or teal?").await;
+    let other = ts.thread_as_owner(&aid, "and the footer").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ts.reply_as_agent(&sid, &aid, &other, "Done").await;
+    let w = get(&ts, "/api/inbox?waiting=1&limit=1").await;
+    let kinds = |v: &Value| -> Vec<(String, String)> {
+        v["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| {
+                (
+                    i["kind"].as_str().unwrap().to_string(),
+                    i["thread"]["id"].as_str().unwrap_or("").to_string(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        kinds(&w),
+        [("reply".to_string(), tid.clone())],
+        "oldest first"
+    );
+    assert_eq!(
+        (w["total"].as_u64(), &w["next_cursor"]),
+        (Some(2), &Value::Null)
+    );
+    let res = ts
+        .post_json(
+            &format!("/api/artifacts/{aid}/threads/{other}/resolve"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(res.status(), 200, "{}", res.text().await.unwrap());
+    let w = get(&ts, "/api/inbox?waiting=1").await;
+    assert_eq!(kinds(&w), [("reply".to_string(), tid.clone())]);
+    let resolved = get(
+        &ts,
+        &format!("/api/inbox?kind=reply&read=unread&artifact={aid}"),
+    )
+    .await;
+    assert_eq!(
+        kinds(&resolved),
+        [("reply".to_string(), tid)],
+        "the resolve read its reply"
+    );
+    for bad in ["/api/inbox?waiting=2", "/api/inbox?waiting=1&before=9"] {
+        assert_eq!(ts.get_authed(bad).await.status(), 400, "{bad}");
+    }
 }
 
 #[tokio::test]

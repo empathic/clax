@@ -362,6 +362,12 @@ fn inbox_queries() -> Vec<Hot> {
             &["inbox_by_thread"],
         ),
         (
+            "inbox read by resolve",
+            ib::READ_BY_RESOLVE.into(),
+            vec![t("art0001t1"), t("2026-01-01T00:00:00.000Z")],
+            &["inbox_by_thread"],
+        ),
+        (
             "inbox read by seen",
             ib::READ_BY_SEEN.into(),
             vec![t("art0001"), i(3), t("2026-01-01T00:00:00.000Z"), t("")],
