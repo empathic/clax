@@ -429,6 +429,26 @@ describe("drawing areas", () => {
     expect(hooks.pickArea).toHaveBeenCalledWith({ left: 24, top: 18, width: 176, height: 72 });
   });
 
+  it("in Area mode draws an area from a drag over text, and picks nothing by a click", () => {
+    textUnderPointer();
+    mode.set(true);
+    mode.setAreasOnly(true);
+    const p = document.querySelector("#p")!;
+    expect(at(p, "mousedown", 24, 18).defaultPrevented).toBe(true);
+    at(p, "mousemove", 200, 90);
+    at(p, "mouseup", 200, 90);
+    expect(hooks.pickArea).toHaveBeenCalledWith({ left: 24, top: 18, width: 176, height: 72 });
+    mode.captured();
+    at(p, "mousedown", 30, 30);
+    at(p, "mouseup", 30, 30);
+    at(p, "click", 30, 30);
+    expect(hooks.pickElement).not.toHaveBeenCalled();
+    expect(hooks.pickRange).not.toHaveBeenCalled();
+    mode.setAreasOnly(false);
+    at(p, "click", 30, 30);
+    expect(hooks.pickElement.mock.calls.length + hooks.pickRange.mock.calls.length).toBe(1);
+  });
+
   it("cancels a drag on Escape without leaving comment mode", () => {
     mode.set(true);
     const img = document.querySelector("#i")!;

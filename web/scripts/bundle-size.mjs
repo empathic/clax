@@ -11,7 +11,8 @@
 // gallery loads at `/people` and `/queues` through its lazy module, with what it imports
 // that the gallery has not loaded by then), and of app mode's host chunk (`host`:
 // what the artifact entry loads for `?app=1` beyond itself),
-// against web/perf/bundle-budget.json. The shell sets its type in the
+// of the embeddable overlay (`overlay`: dist/_clax/overlay.js, which loads
+// nothing more), against web/perf/bundle-budget.json. The shell sets its type in the
 // system's faces, so the build may carry no font file and no entry may load
 // one. The extension's release manifest may grant no host and declare no
 // content script, and its build may carry no key file and no test hook.
@@ -136,6 +137,15 @@ const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), 
   }
 }
 for (const [name, key] of Object.entries(partKeys)) sizes[key] = part(name);
+// The embeddable overlay (`overlay`): one classic script, loaded whole, and
+// its ES module twin, which must be one file too (no import of its own).
+sizes.overlay = gz("_clax/overlay.js");
+{
+  const mjs = read("_clax/overlay.mjs").toString();
+  // Static imports start a statement; a dynamic one would be `import(`.
+  if (/(^|[;}\n])\s*import\s*[{*"'\w]|\bimport\(/.test(mjs)) throw new Error("dist/_clax/overlay.mjs imports another file; the overlay is one file");
+  if (!/\bexport\s*\{[^}]*\boverlay\b/.test(mjs)) throw new Error("dist/_clax/overlay.mjs does not export overlay");
+}
 // App mode's host (`/a/<id>?app=1`): the chunk the artifact entry imports
 // for it, with what it imports (scripts and stylesheets) that the entry has
 // not loaded. The host's first `ready`, which ends the Clax app's
@@ -177,9 +187,9 @@ for (const [key, html] of [["extComposer", "composer.html"], ["extPanel", "sidep
   const files = [...text.matchAll(/(?:src|href)="\.\/(assets\/[^"]+)"/g)].map(m => m[1]);
   sizes[key] = extGz(html) + files.reduce((n, f) => n + extGz(f), 0);
 }
-console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, questions ${sizes.questions}, people ${sizes.people}, queues ${sizes.queues}, eager bridge ${sizes.bridge}, app host ${sizes.host}, transport ${sizes.transport}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, origin ${sizes.partOrigin}, room ${sizes.partRoom}, sample ${sizes.partSample}, live ${sizes.partLive}, extension: overlay ${sizes.extOverlay}, worker ${sizes.extWorker}, composer ${sizes.extComposer}, panel ${sizes.extPanel}`);
+console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, questions ${sizes.questions}, people ${sizes.people}, queues ${sizes.queues}, eager bridge ${sizes.bridge}, app host ${sizes.host}, transport ${sizes.transport}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, origin ${sizes.partOrigin}, room ${sizes.partRoom}, sample ${sizes.partSample}, live ${sizes.partLive}, embed ${sizes.overlay}, extension: overlay ${sizes.extOverlay}, worker ${sizes.extWorker}, composer ${sizes.extComposer}, panel ${sizes.extPanel}`);
 
-const RECORDED = ["gallery", "artifact", "host", "bridge", "transport", ...Object.values(partKeys)];
+const RECORDED = ["gallery", "artifact", "host", "bridge", "transport", "overlay", ...Object.values(partKeys)];
 const EXTENSION = ["extOverlay", "extWorker", "extComposer", "extPanel", "questions", "people", "queues"];
 const MEASURED = [...RECORDED, ...EXTENSION];
 const KEYS = [...MEASURED, "bridgeBaseline"];
