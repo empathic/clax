@@ -637,7 +637,7 @@ Performance gates nothing in either (`just perf` measures on demand).
 | worker cargo fmt, worker cargo test, worker cargo clippy | the workspace's format check, clippy and `//crates/clax-worker/...`'s Rust tests |
 | worker pnpm install | `@npm_worker`, from `crates/clax-worker/pnpm-lock.yaml` |
 | worker deploy config | `//crates/clax-worker:deploy_config_test` |
-| worker wasm | `//crates/clax-worker:bundle` and, under `wrangler dev --local`, `:wasm_test`, `:sandbox_test` and `:bot_test` |
+| worker wasm | `//crates/clax-worker:bundle` and, under `wrangler dev --local`, `:wasm_test`, `:sandbox_test`, `:bot_test` and `:feedback_test` |
 | worker e2e, worker hosted e2e | `//crates/clax-worker:e2e`, `:e2e_hosted` |
 | wasm32 check | `//bazel/wasm:check` (`just check-wasm`; `just check-wasm-native` runs `scripts/check-wasm.sh`) |
 | no unsafe code | `//scripts:no_unsafe` |
