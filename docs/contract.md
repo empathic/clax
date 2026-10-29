@@ -8330,6 +8330,14 @@ ID>`. An artifact URL whose `#` fragment is neither is the artifact.
   `clax serve --foreground --require-credential` answers only callers that
   hold the token or a cookie carrying it (see "Security model"); the Clax
   app's embedded core runs so.
+- `clax serve --foreground --listen-stdin` serves the listening TCP socket
+  on standard input instead of binding one: what launchd hands a job whose
+  plist declares `Sockets` with `inetdCompatibility` `Wait`. The socket
+  must be on `--bind` (else the daemon refuses to start), its port is the
+  daemon's, and standard input becomes `/dev/null`. launchd holds the
+  socket across the job's restarts (`launchctl kickstart -k`, a crash,
+  `KeepAlive`), so a request made while one daemon stops and the next
+  starts waits for the next instead of being refused.
 - `scripts/perf-clients.sh` (a quality gate) opens 1,000 `/api/stream`
   clients on a scratch release daemon, writes versions and comments at a
   steady rate, and judges delivery latency, cheap requests under that load,

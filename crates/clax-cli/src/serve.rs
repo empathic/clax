@@ -16,6 +16,11 @@ pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?),
         )
         .init();
+    let inherited = if a.listen_stdin {
+        Some(take_stdin_listener()?)
+    } else {
+        None
+    };
     let web: Arc<dyn FileTree> = match a.web_dist {
         Some(dir) => Arc::new(DiskTree::new(dir)),
         None => crate::bundle::web_ui(),
@@ -46,6 +51,7 @@ pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
         quickstart: clax_core::config::HomeConfig::load(home.root())
             .map(|c| c.gallery_quickstart())
             .unwrap_or(true),
+        inherited,
         stop: clax_server::serve::StopOn::Signals,
         owner_tailscale_login: owner_tailscale_login(home)?,
         trusted_host_frames: trusted_host_frames(home)?,
@@ -56,6 +62,28 @@ pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
     // every signal. Leave them to the process exit instead.
     rt.shutdown_background();
     r
+}
+
+/// The listening socket on standard input (`--listen-stdin`), as the
+/// daemon's own, and `/dev/null` as standard input in its place, so no
+/// program the daemon starts inherits the socket as its input. An error
+/// when standard input is not a listening TCP socket.
+fn take_stdin_listener() -> anyhow::Result<std::net::TcpListener> {
+    use std::os::fd::AsFd;
+    let fd = std::io::stdin().as_fd().try_clone_to_owned()?;
+    let l = std::net::TcpListener::from(fd);
+    let addr = l
+        .local_addr()
+        .map_err(|e| anyhow::anyhow!("--listen-stdin: standard input is not a TCP socket: {e}"))?;
+    // A connection (inetd's `Wait = false`) has a peer; a listener has none.
+    let probe = std::net::TcpStream::from(std::os::fd::OwnedFd::from(l.try_clone()?));
+    if let Ok(peer) = probe.peer_addr() {
+        anyhow::bail!(
+            "--listen-stdin: standard input is a connection from {peer} on {addr}, not a listening socket"
+        );
+    }
+    nix::unistd::dup2_stdin(std::fs::File::open("/dev/null")?)?;
+    Ok(l)
 }
 
 /// Hosted mode as the home's `[hosted]` sets it, or `None` without one. A

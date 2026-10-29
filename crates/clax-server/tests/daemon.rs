@@ -132,6 +132,7 @@ async fn serve_picks_a_free_port_writes_info_and_shuts_down_on_request() {
         trusted_hosts: Vec::new(),
         tailscale_identity: false,
         require_credential: false,
+        inherited: None,
         stop: StopOn::Signals,
         embed: None,
         quickstart: false,
@@ -182,12 +183,67 @@ fn config_on(home: &Home, port: u16) -> ServeConfig {
         trusted_hosts: Vec::new(),
         tailscale_identity: false,
         require_credential: false,
+        inherited: None,
         stop: StopOn::Signals,
         embed: None,
         quickstart: false,
         owner_tailscale_login: None,
         trusted_host_frames: false,
     }
+}
+
+#[tokio::test]
+async fn serve_serves_the_socket_it_was_handed_and_leaves_it_open() {
+    let _sigterm = no_sigterm().await;
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("ax"));
+    // launchd's socket: the daemon gets its own descriptor of it, and the
+    // holder keeps it listening once the daemon has stopped.
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let mut cfg = config_on(&home, 0);
+    cfg.inherited = Some(held.try_clone().unwrap());
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(serve(cfg, Some(tx)));
+    let info = rx.await.unwrap();
+    assert_eq!(info.port, port);
+    assert_eq!(read_daemon_info(&home).unwrap().port, port);
+    let client = reqwest::Client::new();
+    let res = client
+        .get(format!("http://127.0.0.1:{port}/healthz"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let res = client
+        .post(format!("http://127.0.0.1:{port}/api/admin/shutdown"))
+        .bearer_auth(&info.token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 202);
+    tokio::time::timeout(std::time::Duration::from_secs(20), handle)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    // A connection made after the daemon stopped waits for the next one.
+    let _c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    assert!(held.accept().is_ok());
+}
+
+#[tokio::test]
+async fn serve_refuses_a_handed_socket_off_its_bind_address() {
+    let Ok(held) = std::net::TcpListener::bind("[::1]:0") else {
+        return; // No IPv6 loopback here.
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("ax"));
+    let mut cfg = config_on(&home, 0);
+    cfg.inherited = Some(held);
+    let err = serve(cfg, None).await.unwrap_err();
+    assert!(err.to_string().contains("not 127.0.0.1"), "{err}");
+    assert!(read_daemon_info(&home).is_none());
 }
 
 /// Starts a daemon asked for `port`, returns the port it took, and stops it.
@@ -288,6 +344,7 @@ async fn shutdown_completes_while_an_sse_client_stays_connected() {
         trusted_hosts: Vec::new(),
         tailscale_identity: false,
         require_credential: false,
+        inherited: None,
         stop: StopOn::Signals,
         embed: None,
         quickstart: false,
@@ -340,6 +397,7 @@ async fn serve_exits_when_daemon_json_is_deleted() {
         trusted_hosts: Vec::new(),
         tailscale_identity: false,
         require_credential: false,
+        inherited: None,
         stop: StopOn::Signals,
         embed: None,
         quickstart: false,
@@ -377,6 +435,7 @@ async fn reaper_ends_idle_sessions_whose_process_is_gone() {
         trusted_hosts: Vec::new(),
         tailscale_identity: false,
         require_credential: false,
+        inherited: None,
         stop: StopOn::Signals,
         embed: None,
         quickstart: false,
@@ -488,6 +547,7 @@ async fn embedded(home: &Home) -> Embedded {
     let (stop, stop_rx) = tokio::sync::watch::channel(false);
     let (trim, trim_rx) = tokio::sync::mpsc::channel(1);
     let cfg = ServeConfig {
+        inherited: None,
         stop: StopOn::Embedded(EmbeddedControl {
             stop: stop_rx,
             trim: trim_rx,

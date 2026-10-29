@@ -18,6 +18,14 @@ pub struct Args {
     /// programs share, such as an Android device's.
     #[arg(long, requires = "foreground")]
     pub require_credential: bool,
+    /// Serve the listening TCP socket on standard input instead of binding
+    /// one: the socket launchd passes a job whose plist declares `Sockets`
+    /// with `inetdCompatibility` `Wait`. launchd holds it across the
+    /// daemon's restarts, so a connection made while one daemon stops and
+    /// the next starts waits for the next instead of being refused. It must
+    /// be on `--bind`; `--port` is unused.
+    #[arg(long, requires = "foreground")]
+    pub listen_stdin: bool,
     /// Report this version instead of the build's, so a test can run a
     /// genuine older daemon. Debug builds only.
     #[cfg(debug_assertions)]
@@ -61,6 +69,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
                 version: reported_version(a),
                 web_dist,
                 require_credential: a.require_credential,
+                listen_stdin: a.listen_stdin,
                 embed,
             },
         );
