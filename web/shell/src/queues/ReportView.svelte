@@ -101,14 +101,14 @@
       if (mine === turn) loadErr = `Could not load the report: ${refusal(x)}`;
     }
   }
-  async function act(done: string, fn: () => Promise<{ report: api.Report }>): Promise<boolean> {
+  async function act<T extends { report: api.Report }>(done: string | ((answer: T) => string), fn: () => Promise<T>): Promise<boolean> {
     if (busy) return false;
     busy = true; err = null; status = "";
     try {
-      const got = (await fn()).report;
+      const answer = await fn();
       turn++;
-      report = got;
-      status = done;
+      report = answer.report;
+      status = typeof done === "string" ? done : done(answer);
       form = null;
       return true;
     } catch (x) {
@@ -153,7 +153,8 @@
   async function release(e: Event) {
     e.preventDefault();
     const note = releaseNote.trim();
-    if (await act("Released the claim: the report is open again.", () => api.releaseClaim(p.qid, p.tid, note || undefined))) releaseNote = "";
+    const said = (a: { released?: boolean }) => a.released === false ? "The claim had already ended: the report is open." : "Released the claim: the report is open again.";
+    if (await act(said, () => api.releaseClaim(p.qid, p.tid, note || undefined))) releaseNote = "";
   }
   async function reply(e: Event) {
     e.preventDefault();

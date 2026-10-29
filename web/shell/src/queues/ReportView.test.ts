@@ -294,6 +294,20 @@ describe("ReportView", () => {
     expect(note.querySelector(".only")!.textContent).toBe("Triage only");
   });
 
+  it("says the claim had already ended when there was nothing to release", async () => {
+    stubFetch({
+      [`GET ${R}`]: { report: report(1, { state: "claimed", claim: CLAIM }) },
+      [`POST ${R}/release`]: { report: report(1), released: false },
+    });
+    const m = view();
+    await settle();
+    click(button(m.root, "Release claim"));
+    submit(m.root);
+    await settle();
+    expect(m.root.querySelector(".rh .state")!.textContent).toBe("Open");
+    expect(m.root.querySelector(".acts .stat")!.textContent).toBe("The claim had already ended: the report is open.");
+  });
+
   it("sends no note when none is written, and a form its state no longer allows closes", async () => {
     let current: Report = report(1, { state: "claimed", claim: CLAIM });
     const calls = stubFetch({ [`GET ${R}`]: () => ({ report: current }), [`POST ${R}/release`]: { report: report(1) } });

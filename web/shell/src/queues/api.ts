@@ -65,8 +65,10 @@ export const proposeFix = (qid: string, tid: string, f: FixFields) => call<{ rep
 /** Closes the report without a verdict, for `reason`. */
 export const resolve = (qid: string, tid: string, reason: ResolveReason) => call<{ report: Report }>(`${r(qid, tid)}/resolve`, "POST", { reason });
 /** Ends the report's claim, whoever holds it: the holder is told, and
- * `note` (when given) is a note for the queue's members alone. */
-export const releaseClaim = (qid: string, tid: string, note?: string) => call<{ report: Report }>(`${r(qid, tid)}/release`, "POST", note ? { note } : {});
+ * `note` (when given) is a note for the queue's members alone.
+ * `released` is false when no live claim was left to end (it had lapsed
+ * or been released already): nothing was written then. */
+export const releaseClaim = (qid: string, tid: string, note?: string) => call<{ report: Report; released?: boolean }>(`${r(qid, tid)}/release`, "POST", note ? { note } : {});
 /** Says, on the reporter's behalf, that the fix waiting works. */
 export const verify = (qid: string, tid: string, note?: string) => call<{ report: Report }>(`${r(qid, tid)}/verify`, "POST", note ? { note } : {});
 /** Says, on the reporter's behalf, that the report is still broken, with `body` as their comment. */

@@ -334,8 +334,10 @@ pub struct ReleaseBody {
 /// person's `note`, or a default line, is posted as their comment for the
 /// queue's members alone (`triage_only`, left out of the reporter's view);
 /// the holder's session is woken (`queue_event` `released`, with
-/// `released_by`); recorded as `queue.release` with reason `person`. A
-/// report no live lease holds is answered as it is. 400 `invalid_args`
+/// `released_by`); recorded as `queue.release` with reason `person`. Its
+/// answer's `released` says whether a lease was ended: a report no live
+/// lease holds (one that lapsed, or was released already) is answered as
+/// it is with `released: false`, and nothing is written. 400 `invalid_args`
 /// for a body that is not `{note?}`; `invalid_comment` for a note too
 /// long.
 #[allow(clippy::too_many_arguments)]
@@ -377,6 +379,7 @@ pub async fn release(
             st.release_as_person(&ctx, &qid, &t, &name, public_id.as_deref(), b.note)
         })
         .await?;
+    let released = woken.is_some();
     if let Some(woken) = woken {
         super::queue_reporter::wake_watchers(&s, woken).await;
         let cid = last_comment(&report);
@@ -388,7 +391,7 @@ pub async fn release(
             tracing::warn!(error = ?e, "announcing a released report failed");
         }
     }
-    Ok(Json(json!({"report": report})))
+    Ok(Json(json!({"report": report, "released": released})))
 }
 
 /// Tells queue `qid`'s topic that its report `tid` changed: a `report`

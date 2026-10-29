@@ -1797,6 +1797,7 @@ async fn a_member_releases_a_stale_claim_and_its_holder_is_told() {
         .await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["report"]["state"], "open", "{v}");
+    assert_eq!(v["released"], true, "{v}");
     assert!(v["report"]["claim"].is_null(), "{v}");
     let note = v["report"]["comments"]
         .as_array()
@@ -1867,6 +1868,7 @@ async fn a_member_releases_a_stale_claim_and_its_holder_is_told() {
     // Nothing to release: the report as it is, nothing written.
     let (s, v) = q.owner("POST", &q.report("/release"), json!({})).await;
     assert_eq!(s, 200, "{v}");
+    assert_eq!(v["released"], false, "{v}");
     assert_eq!(v["report"]["comments"].as_array().unwrap().len(), 2, "{v}");
     assert_eq!(
         q.kinds()
@@ -1881,6 +1883,30 @@ async fn a_member_releases_a_stale_claim_and_its_holder_is_told() {
         .await;
     assert_eq!(s, 200, "{again}");
     assert_eq!(again["fence"], lease["fence"].as_u64().unwrap() + 1);
+    // A claim that lapsed is not released again: the answer says so, and
+    // nothing is written or woken.
+    q.clock.advance(LEASE_SECS + 1);
+    let (s, v) = q
+        .browser(&ana.cookie, "POST", &q.report("/release"), json!({}))
+        .await;
+    assert_eq!((s, &v["released"]), (200, &json!(false)), "{v}");
+    assert_eq!(v["report"]["comments"].as_array().unwrap().len(), 2, "{v}");
+    assert_eq!(
+        q.kinds()
+            .iter()
+            .filter(|(k, _)| k == "queue.release")
+            .count(),
+        1
+    );
+    let (_, v) = q
+        .agent(
+            Some(&a),
+            "GET",
+            &format!("/api/sessions/{a}/feedback?tier=wait"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(v["feedback"].as_array().map(Vec::len), Some(0), "{v}");
 }
 
 /// A change's live update is best-effort: when the read that builds the
