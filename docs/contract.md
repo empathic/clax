@@ -3735,8 +3735,9 @@ the report), `reporter_profile` (triage members only), `resolve_reason`,
 verify_after?, proposer_name, created_at, outcome, verdict_note?,
 verdict_context?, verdict_at?}]`, oldest first; `outcome` is `pending`,
 `verified`, `rejected`, `superseded` (a person's next fix replaced it) or
-`closed` (the report was resolved without a verdict)), `reopen_count` and
-`diagnostics_lines` (the latest capture that has any). A reopen's comment
+`closed` (the report was resolved without a verdict)), `reopen_count`,
+`diagnostics_lines` (the latest capture that has any) and `filing_diagnostics_lines`
+(the filing's own, capture 0; absent when it has none). A reopen's comment
 carries `capture` (the reopen's number, the filing being capture 0),
 `has_clip` and `diagnostics_lines`.
 

@@ -330,6 +330,10 @@ pub struct Report {
     /// has.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub diagnostics_lines: u32,
+    /// How many diagnostics lines the filing itself (capture 0) has; 0
+    /// when it came with none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub filing_diagnostics_lines: u32,
 }
 
 fn is_zero(n: &u32) -> bool {
