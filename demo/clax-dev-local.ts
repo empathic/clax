@@ -1,24 +1,23 @@
 // clax.dev on this machine (`just clax-dev-local`):
 //
-//   node demo/clax-dev-local.ts [--fresh] [--setup] [--port <8788-8797>] [--no-build]
+//   node demo/clax-dev-local.ts [--fresh] [--owner] [--setup] [--port <8788-8797>] [--no-build]
 //
 // The Worker (crates/clax-worker) under `wrangler dev --local` with the
 // settings a production deploy gives it (crates/clax-worker/deploy.mjs,
 // the vars it writes): hosted, GitHub sign-in against real GitHub, the
-// owner's GitHub login, the bundled Terms of Service and Privacy Policy, a
-// CLAX_KEK, and no test, dev or diagnostics routes. What differs is what
-// cannot run here: the origins are http://localhost:<port> and each
-// artifact's site <ID>.localhost:<port>, and versions live in the RepoDO
-// stand-in (REPO_STORE=memory), not Cloudflare Artifacts. Nothing is
-// seeded: each new person who signs in with GitHub gets the quickstart.
+// bundled Terms of Service and Privacy Policy, a CLAX_KEK, and no test,
+// dev or diagnostics routes. What differs is what cannot run here: the
+// origins are http://localhost:<port> and each artifact's site
+// <ID>.localhost:<port>, and versions live in the RepoDO stand-in
+// (REPO_STORE=memory), not Cloudflare Artifacts. Nothing is seeded.
 //
 // Nothing to configure. GitHub sign-in needs a GitHub App; the first run
 // registers one from a manifest (GitHub's "create an App from a manifest"
 // flow): it serves a page on the port with one button, GitHub asks to
 // confirm, and the code GitHub returns is exchanged for the App's client
-// ID and secret. The App's owner, the account that confirmed, is the
-// instance's owner. They are kept in ~/.config/clax/local/github.env
-// (0600; $XDG_CONFIG_HOME moves it), shared by every worktree; the environment's GITHUB_CLIENT_ID,
+// ID and secret. They and the App owner's login are kept in
+// ~/.config/clax/local/github.env (0600; $XDG_CONFIG_HOME moves it),
+// shared by every worktree; the environment's GITHUB_CLIENT_ID,
 // GITHUB_CLIENT_SECRET and OWNER_GITHUB win over it. Delete that file to
 // register a new App. The App's callbacks are ports 8788-8797 (GitHub
 // requires an exact match and allows ten), and a run takes the first free
@@ -26,12 +25,17 @@
 // cookies across ports, so use one browser profile per instance.
 //
 // The owner is made through setup, as a first deploy's smoke does, under
-// the owner's login; their first Sign in with GitHub links the account and
-// renames them from GitHub. --setup leaves setup open instead and prints
-// the setup URL and secret, to try /setup itself. The instance's data, its
-// generated secrets (secrets.json, 0600), the build log and wrangler's log
-// are kept in target/clax-dev-local/ across runs; --fresh starts over.
-// Ctrl-C stops the Worker by its process group.
+// the name Owner and with no GitHub account, as clax.dev's owner is
+// Empathic's and not a visitor's: your GitHub sign-in is then a new
+// person's sign-up, which agrees to the Terms and gets the quickstart (the
+// owner's gallery is never seeded). The owner's session is kept, and each
+// run prints a fresh owner sign-in link. --owner makes the App owner's
+// GitHub account the owner instead (OWNER_GITHUB): their first Sign in
+// with GitHub links it. --setup leaves setup open and prints the setup URL
+// and secret, to try /setup itself. The instance's data, its generated
+// secrets and the owner's session (secrets.json, 0600), the build log and
+// wrangler's log are kept in target/clax-dev-local/ across runs; --fresh
+// starts over. Ctrl-C stops the Worker by its process group.
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -43,7 +47,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { BuildLog } from "./lib/build.ts";
-import { setupFirstPerson } from "./lib/http.ts";
+import { PersonSession, setupFirstPerson, signinLink, type PersonInfo } from "./lib/http.ts";
 import { startWorker, type RunningWorker } from "./lib/worker.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -58,13 +62,14 @@ const { values: opts } = parseArgs({
   options: {
     fresh: { type: "boolean", default: false },
     setup: { type: "boolean", default: false },
+    owner: { type: "boolean", default: false },
     port: { type: "string" },
     "no-build": { type: "boolean", default: false },
     help: { type: "boolean", short: "h" },
   },
 });
 if (opts.help === true) {
-  console.log("usage: just clax-dev-local [--fresh] [--setup] [--port <8788-8797>] [--no-build]\n  (clax.dev's settings on this machine; data kept in target/clax-dev-local/, --fresh starts over, --setup leaves setup open)");
+  console.log("usage: just clax-dev-local [--fresh] [--owner] [--setup] [--port <8788-8797>] [--no-build]\n  (clax.dev's settings on this machine; data kept in target/clax-dev-local/, --fresh starts over, --owner makes your GitHub account the owner, --setup leaves setup open)");
   process.exit(0);
 }
 
@@ -202,14 +207,25 @@ function registerApp(port: number): Promise<MadeApp> {
   });
 }
 
-/** The secrets a first deploy generates, made once per instance and kept
- * beside its data: the setup secret and CLAX_KEK (64 hex digits). */
-function instanceSecrets(): { SETUP_SECRET: string; CLAX_KEK: string } {
-  const path = join(DIR, "secrets.json");
-  if (existsSync(path)) return JSON.parse(readFileSync(path, "utf8"));
-  const s = { SETUP_SECRET: randomBytes(18).toString("base64url"), CLAX_KEK: randomBytes(32).toString("hex") };
-  writeFileSync(path, JSON.stringify(s, null, 2) + "\n", { mode: 0o600 });
-  return s;
+/** What is kept beside the instance's data: the secrets a first deploy
+ * generates (the setup secret, CLAX_KEK as 64 hex digits) and, once setup
+ * made the owner here, their session, to mint them sign-in links. */
+interface Kept {
+  SETUP_SECRET: string;
+  CLAX_KEK: string;
+  owner?: { person: PersonInfo; cookie: string };
+}
+const KEPT = join(DIR, "secrets.json");
+
+function keep(k: Kept): void {
+  writeFileSync(KEPT, JSON.stringify(k, null, 2) + "\n", { mode: 0o600 });
+}
+
+function instanceSecrets(): Kept {
+  if (existsSync(KEPT)) return JSON.parse(readFileSync(KEPT, "utf8"));
+  const k = { SETUP_SECRET: randomBytes(18).toString("base64url"), CLAX_KEK: randomBytes(32).toString("hex") };
+  keep(k);
+  return k;
 }
 
 const port = await choosePort();
@@ -246,7 +262,13 @@ try {
     port,
     secret: secrets.SETUP_SECRET,
     seats: "",
-    vars: { ...github, CLAX_KEK: secrets.CLAX_KEK, LEGAL: "bundled" },
+    vars: {
+      GITHUB_CLIENT_ID: github.GITHUB_CLIENT_ID,
+      GITHUB_CLIENT_SECRET: github.GITHUB_CLIENT_SECRET,
+      ...(opts.owner ? { OWNER_GITHUB: github.OWNER_GITHUB } : {}),
+      CLAX_KEK: secrets.CLAX_KEK,
+      LEGAL: "bundled",
+    },
   });
 } catch (e) {
   console.error(e instanceof Error ? e.message : e);
@@ -269,14 +291,29 @@ w.child.once("exit", () => {
 let { setup_open } = (await fetch(`${base}/api/hosted/me`).then((r) => r.json())) as { setup_open: boolean };
 if (setup_open && !opts.setup) {
   try {
-    await setupFirstPerson(base, secrets.SETUP_SECRET, github.OWNER_GITHUB);
+    const owner = await setupFirstPerson(base, secrets.SETUP_SECRET, opts.owner ? github.OWNER_GITHUB : "Owner");
+    secrets.owner = { person: owner.person, cookie: owner.cookie };
+    keep(secrets);
     setup_open = false;
   } catch (e) {
     console.error(`Setup failed: ${e instanceof Error ? e.message : e}`);
     await stop(1);
   }
 }
-const people = `Anyone else who signs in with GitHub signs up as a new person, with the quickstart in their gallery: try it in a private window with another GitHub account.`;
+
+/** A one-use sign-in link for the owner setup made here, or why there is none. */
+async function ownerLink(): Promise<string> {
+  if (!secrets.owner) return "none: setup was not done by this script (--fresh starts over)";
+  try {
+    return await signinLink(new PersonSession(base, secrets.owner.person, secrets.owner.cookie));
+  } catch (e) {
+    return `none: ${e instanceof Error ? e.message : e} (--fresh starts over)`;
+  }
+}
+
+const you = opts.owner
+  ? `Sign in with GitHub as ${github.OWNER_GITHUB}: that account is the owner (the owner's gallery gets no quickstart).`
+  : `Sign in with GitHub: you sign up as a new person, as a visitor to clax.dev does, agree to the Terms and get the quickstart in your gallery.`;
 console.log(
   setup_open
     ? `
@@ -284,15 +321,16 @@ clax.dev is up at ${base}, with setup open.
 
 Make the owner: open ${base}/setup and enter
   setup secret: ${secrets.SETUP_SECRET}
-and your name. Then Sign in with GitHub as ${github.OWNER_GITHUB} links that account to the owner. ${people}
+and a name.${opts.owner ? ` Then Sign in with GitHub as ${github.OWNER_GITHUB} links that account to the owner.` : ""}
 
 The data is kept for the next run; --fresh starts over.
 Ctrl-C stops it.`
     : `
 clax.dev is up at ${base}.
 
-Open it and Sign in with GitHub as ${github.OWNER_GITHUB}: that account is the owner. ${people}
-
+Open it and ${you}
+Another GitHub account in a private window signs up as another person.
+${opts.owner ? "" : `\nThe owner (People, admin), in another browser profile: ${await ownerLink()}\n  (works once, for 10 minutes; the next run prints a new one)\n`}
 The data is kept for the next run; --fresh starts over (--setup to try setup itself).
 Ctrl-C stops it.`,
 );
