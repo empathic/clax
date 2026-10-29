@@ -18,5 +18,6 @@
   "extPanel": 66560,
   "people": 1048576,
   "queues": 24576,
-  "partLive": 4616
+  "partLive": 4616,
+  "overlay": 78082
 }

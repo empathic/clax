@@ -268,6 +268,21 @@ describe("ReporterClient", () => {
     expect(new Uint8Array(await blob.arrayBuffer())).toEqual(new Uint8Array([1, 2]));
   });
 
+  it("sends a comment's lone surrogate as U+FFFD, never as an escape Clax refuses", async () => {
+    const s = setup(() => json(200, { report: REPORT }));
+    const { client } = await s.make();
+    await client.comment("t1", "half \uD83D of a face");
+    const text = new TextDecoder().decode(s.inst.sent[0].body);
+    expect(text).not.toMatch(/\\ud83d/i);
+    expect(JSON.parse(text)).toEqual({ body: "half \uFFFD of a face" });
+    await client.verify("t1", { note: "ok \uDC00" });
+    expect(JSON.parse(new TextDecoder().decode(s.inst.sent[1].body))).toEqual({ note: "ok \uFFFD" });
+    await client.fileReport({ url: "https://a.example/", title: "t", anchor: null, body: "b", externalId: "ext-\uD800", revision: "rev-\uDBFF" });
+    const req = s.inst.sent[2];
+    const form = await new Response(req.body as BodyInit, { headers: { "content-type": req.headers["content-type"] } }).formData();
+    expect([form.get("external_id"), form.get("revision")]).toEqual(["ext-\uFFFD", "rev-\uFFFD"]);
+  });
+
   it("makes its own key when none is given", async () => {
     const s = setup();
     const client = new ReporterClient({
