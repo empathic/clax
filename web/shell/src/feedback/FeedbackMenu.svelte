@@ -4,7 +4,7 @@
   // The header's feedback menu (spec 2026-10-29-feedback-loop §10.3), for a
   // person who may report problems with Clax, in the gallery's header and
   // the artifact view's top bar: **Report a problem**, with its shortcut
-  // (Ctrl+Shift+B, ⌘⇧B on Apple platforms), starts the overlay's report;
+  // (F, as the shell's C and ?), starts the overlay's report;
   // **My reports** opens the person's reports, with the count of those
   // waiting on them (the overlay's badge), which the menu's button shows too.
   // A menu button: opening focuses the first item; Up, Down, Home and End

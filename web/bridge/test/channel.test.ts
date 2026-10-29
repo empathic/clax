@@ -83,8 +83,8 @@ describe("pageShortcut", () => {
     expect(at(p, { key: "F" })).toBe("f");
     // A layout whose F key types another letter.
     expect(at(p, { key: "а", code: "KeyF" })).toBe("f");
-    expect(at(el("<input data-t>"), { key: "f" })).toBeNull();
     expect(at(p, { key: "f", ctrlKey: true })).toBeNull();
+    expect(at(el("<input data-t>"), { key: "f" })).toBeNull();
   });
 
   it("forwards no other key: not ?, not a letter, not Escape", () => {

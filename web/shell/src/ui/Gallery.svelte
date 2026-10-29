@@ -32,7 +32,8 @@
   // `/audit` (`bot/`). Once the lazy module loads, the New artifact tile
   // (`NewTile`) leads the first section's grid (searched or filtered
   // too), and the empty gallery. For a person who may report problems with
-  // Clax, the header carries the feedback menu (`feedback/`, with the lazy module's links).
+  // Clax, the header carries the feedback menu (`feedback/`), whatever the
+  // artifact list answers.
   import { onDestroy, onMount } from "svelte";
   import { ApiError, type Artifact, type AttentionSummary, type TagRef, deleteArtifact, getAttention, getToken, listArtifacts, patchArtifact } from "../api";
   import { REQUEST_STUCK, connTrouble } from "../conn-notice";
@@ -43,6 +44,7 @@
   import GalleryCard from "./GalleryCard.svelte";
   import Mark from "./Mark.svelte";
   import ThemeSwitch from "./ThemeSwitch.svelte";
+  import { feedbackMenu } from "../feedback/slot.svelte";
 
   let artifacts = $state<Artifact[] | null>(null);
   let error = $state<string | null>(null);
@@ -165,6 +167,7 @@
   {#if !inbox && !sub}<input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" value={query} oninput={e => { query = e.currentTarget.value; }} />{/if}
   {#if Q}<Q.InboxLink current={inbox} />{/if}
   {#if lm}<lm.Links current={sub} owner={!!token} {viewer} />{/if}
+  {#if feedbackMenu.current}<feedbackMenu.current />{/if}
   <ThemeSwitch />
 </header>
 <main class="gal">
