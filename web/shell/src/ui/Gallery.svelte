@@ -67,11 +67,12 @@
   let gw = $state<typeof import("./gallery-working") | null>(null);
   let feed = $state<import("./working-feed.svelte").WorkingFeed | null>(null);
   let sync: import("./card-sync").CardSync | null = null;
-  const inbox = location.pathname === "/inbox";
-  // The pages beside the gallery and the inbox, each its own chunk (`gallery-working` `page`);
-  // `/queues/<qid>` and `/queues/<qid>/<tid>` are views of the Queues page (the
-  // daemon serves the shell at no other page's sub-path).
-  const sub = /^\/(people|tags|queues|admin|settings|me|audit)(?:\/|$)/.exec(location.pathname)?.[1] as import("./gallery-working").Page | undefined;
+  // The page's path, with a queue's and a report's view (`/queues/<qid>`,
+  // `/queues/<qid>/<tid>`) read as the Queues page: the only sub-paths a page has.
+  const top = location.pathname.replace(/^\/queues\/.+/, "/queues");
+  const inbox = top === "/inbox";
+  // The pages beside the gallery and the inbox, each its own chunk (`gallery-working` `page`).
+  const sub = /^\/(people|tags|queues|admin|settings|me|audit)$/.exec(top)?.[1] as import("./gallery-working").Page | undefined;
   // The tag filter: the artifacts shown carry every one. It holds tag IDs
   // once the tags are known (`canonical`), and the address (`?tag=`) names
   // each tag by its name, so a rename follows in place and a deleted tag

@@ -60,6 +60,37 @@ describe("QueueView", () => {
     expect([...m.root.querySelectorAll("button")].some(b => b.textContent === "Load more")).toBe(false);
   });
 
+  it("moves between tabs with the arrow, Home and End keys, and rows keep the tab", async () => {
+    const page = (n: number) => ({ reports: [report(n)], next: null });
+    stubFetch({
+      [`GET ${LIST}?state=active&order=newest`]: page(1),
+      [`GET ${LIST}?state=fix_proposed&order=newest`]: page(2),
+      [`GET ${LIST}?order=newest`]: page(3),
+    });
+    const m = mount(QueueView, { qid: "q1", queue: QUEUE, nav: () => {} });
+    await settle();
+    const list = m.root.querySelector('[role="tablist"]')!;
+    const key = (k: string) => flush(() => list.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true })));
+    const selected = () => m.root.querySelector('[role="tab"][aria-selected="true"]')!.getAttribute("data-tab");
+    key("ArrowRight");
+    await settle();
+    expect([selected(), document.activeElement?.getAttribute("data-tab")]).toEqual(["fix_proposed", "fix_proposed"]);
+    expect(m.root.querySelector(".rrow a")!.getAttribute("href")).toBe("/queues/q1/t2?state=fix_proposed");
+    key("End");
+    await settle();
+    expect(selected()).toBe("all");
+    key("ArrowRight");
+    await settle();
+    expect(selected()).toBe("active");
+    expect(m.root.querySelector(".rrow a")!.getAttribute("href")).toBe("/queues/q1/t1");
+    key("ArrowLeft");
+    await settle();
+    expect(selected()).toBe("all");
+    key("Home");
+    await settle();
+    expect(selected()).toBe("active");
+  });
+
   it("opens on the tab the address names", async () => {
     history.replaceState(null, "", "/queues/q1?state=resolved");
     stubFetch({ [`GET ${LIST}?state=resolved&order=newest`]: { reports: [], next: null } });

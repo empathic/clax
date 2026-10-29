@@ -3,9 +3,9 @@
 <script lang="ts">
   // A capture's diagnostics (spec 2026-10-29-feedback-loop-design §5.2):
   // collapsed under how many lines it holds, fetched (`load`) the first
-  // time it opens, and filtered by level (every level, or one). Each line
-  // is the reporter's browser's, shown as text: its time, level, kind and
-  // text.
+  // time it opens (and again by Try again after a failed fetch), and
+  // filtered by level (every level, or one). Each line is the reporter's
+  // browser's, shown as text: its time, level, kind and text.
   import type { DiagLine } from "../../../sdk/src/types";
   import { LEVELS, refusal } from "./model";
 
@@ -19,15 +19,21 @@
   const KIND = { console: "console", error: "uncaught error", rejection: "unhandled rejection", request: "failed request" } as const;
   const clock = (at: string) => /T(\d\d:\d\d:\d\d(?:\.\d+)?)/.exec(at)?.[1] ?? at;
 
+  let loading = false;
+  function fetchLines() {
+    if (loading) return;
+    loading = true;
+    err = null;
+    p.load().then(l => { lines = l; }, x => { err = `Could not load the diagnostics: ${refusal(x)}`; }).finally(() => { loading = false; });
+  }
   function toggle(e: Event) {
-    if (!(e.currentTarget as HTMLDetailsElement).open || lines || err) return;
-    p.load().then(l => { lines = l; }, x => { err = `Could not load the diagnostics: ${refusal(x)}`; });
+    if ((e.currentTarget as HTMLDetailsElement).open && !lines && !err) fetchLines();
   }
 </script>
 
 <details class="diag" ontoggle={toggle}>
   <summary>{p.label ?? "Diagnostics"} <span class="n">{p.count} {p.count === 1 ? "line" : "lines"}</span></summary>
-  {#if err}<p class="err" role="alert">{err}</p>
+  {#if err}<p class="err" role="alert">{err} <button type="button" class="ghost" onclick={fetchLines}>Try again</button></p>
   {:else if !lines}<p class="muted" role="status">Loading…</p>
   {:else}
     <fieldset class="levels">

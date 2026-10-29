@@ -4,7 +4,8 @@
   // One report (`/queues/<qid>/<tid>`, spec 2026-10-29-feedback-loop-design
   // §8): its clip (fitted to the page, or at its own size or twice it, with
   // what the render left out outlined), its note, what it is anchored on,
-  // its context (`ContextCard`), its diagnostics (`Diagnostics`, collapsed),
+  // its context (`ContextCard`), the filing's diagnostics (capture 0) and
+  // each reopen's with its comment (`Diagnostics`, collapsed),
   // the reporter as the integrator names them, the conversation with a
   // reply box, its fixes (`FixHistory`), and what a triage person may do in
   // its state: propose a fix (open, claimed or waiting for a verdict),
@@ -14,7 +15,8 @@
   // agent's, never shown here. Every text the reporter's browser sent is
   // shown as text. Each action's answer is the report as it now is; a
   // refusal says why until the next action. The report is fetched again
-  // when the stream comes back.
+  // when the stream comes back; an answer older than the latest is dropped.
+  // Its back link returns to the queue view on the tab it came from.
   import { onMount } from "svelte";
   import type { EventStream } from "../stream";
   import { relativeTime } from "../format";
@@ -22,7 +24,7 @@
   import ContextCard from "./ContextCard.svelte";
   import Diagnostics from "./Diagnostics.svelte";
   import FixHistory from "./FixHistory.svelte";
-  import { REASON_LABEL, STATE_LABEL, anchorText, httpUrl, noteOf, queueHref, refusal, reporterName } from "./model";
+  import { REASON_LABEL, STATE_LABEL, TABS, anchorText, httpUrl, noteOf, queueHref, refusal, reporterName } from "./model";
 
   const p: { qid: string; tid: string; queue?: api.Queue | null; nav: (e: MouseEvent) => void; stream?: EventStream; zone?: string; locale?: string } = $props();
   let report = $state<api.Report | null>(null);
@@ -34,7 +36,8 @@
   let form = $state<"fix" | "resolve" | "verify" | "reopen" | null>(null);
   let fix = $state({ summary: "", url: "", commit: "", verify_url: "" });
   let reason = $state<api.ResolveReason | "">("");
-  let note = $state("");
+  let verifyNote = $state("");
+  let reopenBody = $state("");
   let replyText = $state("");
   // The clip: fitted, or at 1× or 2× its size on the reporter's screen.
   let zoom = $state<"fit" | 1 | 2>("fit");
@@ -53,21 +56,32 @@
   const github = $derived(profile?.github && /^[A-Za-z0-9-]+$/.test(profile.github) ? `https://github.com/${profile.github}` : null);
   const width = $derived(natural ? `${(natural.w / dpr) * (zoom === "fit" ? 1 : zoom)}px` : null);
   const pct = (v: number, of: number) => `${(v / of) * 100}%`;
+  // The queue view, on the tab the report was opened from (`?state=`).
+  const tab = TABS.find(t => t.key !== "active" && t.key === new URLSearchParams(location.search).get("state"))?.key;
+  // svelte-ignore state_referenced_locally
+  const back = `${queueHref(p.qid)}${tab ? `?state=${tab}` : ""}`;
 
+  // Each fetch's turn: a load answered after a later load or action is dropped.
+  let turn = 0;
   async function load() {
+    const mine = ++turn;
     try {
-      report = (await api.getReport(p.qid, p.tid)).report;
+      const got = (await api.getReport(p.qid, p.tid)).report;
+      if (mine !== turn) return;
+      report = got;
       loadErr = null;
-      document.title = `${(noteOf(report).split("\n")[0] || "Report").slice(0, 60)} · ${p.queue?.name ?? "Queues"} · Clax`;
+      document.title = `${(noteOf(got).split("\n")[0] || "Report").slice(0, 60)} · ${p.queue?.name ?? "Queues"} · Clax`;
     } catch (x) {
-      loadErr = `Could not load the report: ${refusal(x)}`;
+      if (mine === turn) loadErr = `Could not load the report: ${refusal(x)}`;
     }
   }
   async function act(done: string, fn: () => Promise<{ report: api.Report }>): Promise<boolean> {
     if (busy) return false;
     busy = true; err = null; status = "";
     try {
-      report = (await fn()).report;
+      const got = (await fn()).report;
+      turn++;
+      report = got;
       status = done;
       form = null;
       return true;
@@ -94,13 +108,13 @@
   }
   async function verify(e: Event) {
     e.preventDefault();
-    if (await act("Marked verified for the reporter.", () => api.verify(p.qid, p.tid, note.trim() || undefined))) note = "";
+    if (await act("Marked verified for the reporter.", () => api.verify(p.qid, p.tid, verifyNote.trim() || undefined))) verifyNote = "";
   }
   async function reopen(e: Event) {
     e.preventDefault();
-    const body = note.trim();
+    const body = reopenBody.trim();
     if (!body) { err = "Say what is still broken."; return; }
-    if (await act("Reopened for the reporter.", () => api.reopen(p.qid, p.tid, body))) note = "";
+    if (await act("Reopened for the reporter.", () => api.reopen(p.qid, p.tid, body))) reopenBody = "";
   }
   async function reply(e: Event) {
     e.preventDefault();
@@ -116,7 +130,7 @@
 </script>
 
 <article class="rview" aria-labelledby="rv-h">
-  <p class="back"><a href={queueHref(p.qid)} onclick={p.nav}>{p.queue?.name ?? "Queue"}</a></p>
+  <p class="back"><a href={back} onclick={p.nav}>{p.queue?.name ?? "Queue"}</a></p>
   {#if loadErr}<p class="err" role="alert">{loadErr}</p>{/if}
   {#if r}
     <header class="rh">
@@ -160,8 +174,8 @@
           {#if anchorText(r.anchor)}<p class="muted anchor">On {anchorText(r.anchor)}</p>{/if}
           <p class="muted where">{r.artifact.title}{#if pageUrl}{" · "}<a href={pageUrl} target="_blank" rel="noopener noreferrer">{r.artifact.url}</a>{/if}</p>
         </section>
-        {#if r.diagnostics_lines}
-          <Diagnostics count={r.diagnostics_lines} load={() => api.diagnostics(p.qid, p.tid).then(b => b.lines)} />
+        {#if r.filing_diagnostics_lines}
+          <Diagnostics count={r.filing_diagnostics_lines} label="Diagnostics at filing" load={() => api.diagnostics(p.qid, p.tid, 0).then(b => b.lines)} />
         {/if}
 
         <section class="convo" aria-label="Conversation">
@@ -223,13 +237,13 @@
           {:else if form === "verify"}
             <form class="af" onsubmit={verify}>
               <p class="muted">Says the fix works, on the reporter's behalf; it is recorded as yours.</p>
-              <label>Note <textarea name="note" rows="2" placeholder="Optional" bind:value={note}></textarea></label>
+              <label>Note <textarea name="note" rows="2" placeholder="Optional" bind:value={verifyNote}></textarea></label>
               <span class="row"><button type="submit" class="primary" disabled={busy}>Mark verified</button><button type="button" class="ghost" onclick={() => { form = null; }}>Cancel</button></span>
             </form>
           {:else if form === "reopen"}
             <form class="af" onsubmit={reopen}>
               <p class="muted">Says it is still broken, on the reporter's behalf; it is recorded as yours.</p>
-              <label>What is still broken <textarea name="body" rows="3" aria-required="true" bind:value={note}></textarea></label>
+              <label>What is still broken <textarea name="body" rows="3" aria-required="true" bind:value={reopenBody}></textarea></label>
               <span class="row"><button type="submit" class="primary" disabled={busy}>Reopen</button><button type="button" class="ghost" onclick={() => { form = null; }}>Cancel</button></span>
             </form>
           {/if}
