@@ -33,7 +33,10 @@ native_test(
 filegroup(
     name = "old_migrations",
     srcs = glob(["tests/fixtures/old-migrations/*.sql"]),
-    visibility = ["//crates/clax-server:__pkg__"],
+    visibility = [
+        "//crates/clax-server:__pkg__",
+        "//crates/clax-worker:__pkg__",
+    ],
 )
 
 # may_move's table (tests/fixtures/job-moves.json), which src/job_moves_fixture.rs

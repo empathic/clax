@@ -354,13 +354,26 @@ fn kv_put(state: &State, key: &str, value: &str) -> Result<()> {
     )
 }
 
-/// The commit the Worker was built from: `CLAX_BUILD_COMMIT` in the
-/// build's environment (deploy.mjs sets it), else `unknown`, which
-/// `/healthz` reports as `null`.
+/// The commit the Worker was built from when its build named one:
+/// `CLAX_BUILD_COMMIT` in the build's environment, else `unknown`
+/// ([`build_commit`]).
 const BUILD_COMMIT: &str = match option_env!("CLAX_BUILD_COMMIT") {
     Some(c) if !c.is_empty() => c,
     _ => "unknown",
 };
+
+/// The commit `/healthz` reports: the `CLAX_BUILD_COMMIT` var when set
+/// (deploy.mjs sets it to the commit it deployed), else [`BUILD_COMMIT`];
+/// `unknown` is reported as `null`. Bazel builds name no commit
+/// (docs/bazel.md, "Differences from Cargo"), so a deploy names it.
+fn build_commit(var: &str) -> &'static str {
+    static FROM_VAR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if var.is_empty() {
+        BUILD_COMMIT
+    } else {
+        FROM_VAR.get_or_init(|| var.to_owned())
+    }
+}
 
 /// The fewest characters a set `CLAX_TOKEN` may have: the owner's
 /// credential of a public Worker must not be guessable (the one the object
@@ -666,10 +679,9 @@ impl Instance {
                 clax_store::bot_settings::BaseUrlPolicy::HostedLoopbackForTests,
             );
         }
-        // What `/healthz` reports: the commit the Worker was built from
-        // (`CLAX_BUILD_COMMIT` in the build's environment, which deploy.mjs
-        // sets) and the deploy's build identity (the `CLAX_BUILD` var).
-        clax_core::set_build_commit(BUILD_COMMIT);
+        // What `/healthz` reports: the commit deployed (build_commit) and
+        // the deploy's build identity (the `CLAX_BUILD` var).
+        clax_core::set_build_commit(build_commit(&var(env, "CLAX_BUILD_COMMIT")));
         app.build = Some(var(env, "CLAX_BUILD")).filter(|b| !b.is_empty());
         let bot = worker_bot(env, &mut app);
         app.seats
@@ -1796,6 +1808,12 @@ impl InstanceDo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_deployed_commit_var_names_the_commit_over_the_build() {
+        assert_eq!(build_commit(""), BUILD_COMMIT);
+        assert_eq!(build_commit("0123abc"), "0123abc");
+    }
 
     #[test]
     fn a_set_owner_token_must_be_long_enough_to_be_unguessable() {

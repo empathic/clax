@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Checks scripts/check-no-unsafe.sh on a copy of it and of the
-# check-no-unsafe.py it runs, beside a minimal workspace (two crates that
-# take the workspace's lints, the separate clax-worker workspace, and
-# crates/clax-embed): the tree passes, from any
-# directory and with or without a root given; clax-embed not denying the
-# lint, the workspace not forbidding it, and another crate with lints of
-# its own (clax-ios's former exception among them) each fail, naming the
+# check-no-unsafe.py it runs, beside a minimal workspace (crates that take
+# the workspace's lints, clax-worker/vfs nested in another crate's directory
+# among them, and crates/clax-embed): the tree passes, from any directory
+# and with or without a root given; clax-embed not denying the lint, the
+# workspace not forbidding it, and another crate with lints of its own
+# (clax-ios's former exception and the nested crate among them) each fail,
+# naming the
 # finding; in crates/clax-embed/src/ffi.rs, a fifth
 # export, an unsafe subscribe or close, a safe open or call, a parameter
 # of another type, a second from_raw_parts or one without its SAFETY line,
@@ -50,17 +51,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(clax_embedded)'] }
 EOF
     _crate clax-core
     _crate clax-store
-    mkdir -p "$d/w/crates/clax-worker/src"
-    cat > "$d/w/crates/clax-worker/Cargo.toml" <<'EOF'
-[package]
-name = "clax-worker"
-
-[workspace]
-
-[lints.rust]
-unsafe_code = "deny"
-EOF
-    : > "$d/w/crates/clax-worker/src/lib.rs"
+    _crate clax-worker
+    _crate clax-worker/vfs
     mkdir -p "$d/w/crates/clax-embed/src"
     cat > "$d/w/crates/clax-embed/Cargo.toml" <<'EOF'
 [package]
@@ -256,6 +248,12 @@ _sub "$d/w/crates/clax-store/Cargo.toml" '[lints]
 workspace = true' '[lints.rust]
 unsafe_code = "deny"'
 _expect fail "another crate with lints of its own" "crates/clax-store/Cargo.toml: does not take the workspace's lints"
+
+_copy
+_sub "$d/w/crates/clax-worker/vfs/Cargo.toml" '[lints]
+workspace = true' '[lints.rust]
+unsafe_code = "deny"'
+_expect fail "a nested crate with lints of its own" "crates/clax-worker/vfs/Cargo.toml: does not take the workspace's lints"
 
 _copy
 _sub "$d/w/crates/clax-store/Cargo.toml" '[lints]

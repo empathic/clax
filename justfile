@@ -30,15 +30,19 @@ install-test:
 plugin-test:
     ./scripts/test-plugins.sh
 
-# Check clax-core, clax-rt, clax-mcp, clax-server and clax-content-git for wasm32-unknown-unknown (a hosted Worker's target), warnings denied; needs an LLVM clang with a wasm32 backend (brew install llvm, or $LLVM_BIN)
+# Build the crates a hosted Worker runs for wasm32-unknown-unknown, warnings denied (//bazel/wasm:check)
 check-wasm *ARGS:
-    ./scripts/check-wasm.sh "$@"
+    ./scripts/run.sh check-wasm "$@"
 
-# Run crates/clax-worker's checks: its format check with Bazel's rustfmt (//crates/clax-worker:rustfmt), then natively (its own Cargo workspace) npm ci, its tests, clippy, test-deploy-config.mjs (deploy.mjs's generated config), and test-wasm.mjs and test-sandbox.mjs under `wrangler dev --local` (scripts/worker-checks.sh)
+# Check the crates a hosted Worker runs for wasm32 natively, with cargo check (scripts/check-wasm.sh); needs an LLVM clang with a wasm32 backend (brew install llvm, or $LLVM_BIN)
+check-wasm-native *ARGS:
+    CLAX_BUILD=native ./scripts/run.sh check-wasm "$@"
+
+# Run crates/clax-worker's checks: its and its VFS's format check, tests and clippy, deploy.mjs's generated config, and the wasm Worker under `wrangler dev --local` (test-wasm.mjs, test-sandbox.mjs, test-bot.mjs) and in browsers (e2e.mjs, e2e-hosted.mjs)
 worker-test:
     ./scripts/run.sh worker-test
 
-# Run crates/clax-worker's checks natively, its format check with cargo fmt
+# Run crates/clax-worker's checks natively, with Cargo, pnpm and worker-build (scripts/worker-checks.sh, then the e2e runs)
 worker-test-native:
     CLAX_BUILD=native ./scripts/run.sh worker-test
 

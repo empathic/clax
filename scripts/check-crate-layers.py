@@ -75,6 +75,11 @@ ALLOWED = {
     # what `clax serve` runs, without its listener, and no command.
     "clax-embed": SERVER | {"clax-embedded"},
     "clax-testkit": SERVER | {"clax-fake-exe"},
+    # The hosted Worker: the server's routes in a Durable Object, its
+    # database on the SQLite VFS over the object's storage (clax-do-vfs,
+    # which depends on no workspace crate).
+    "clax-do-vfs": set(),
+    "clax-worker": HTTP | {"clax-server", "clax-git", "clax-content-git", "clax-do-vfs"},
     # ClaxBot's code-mode sandbox: the contract (pure types, a trait and
     # the conformance suite, for both targets) and its native QuickJS
     # implementation over it.

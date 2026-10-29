@@ -1,11 +1,12 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "clax-worker",
-  "main": "build/index.js",
+  "main": "../../target/clax-worker/build/index.js",
   "compatibility_date": "2026-09-25",
 
-  // worker-build compiles the crate to wasm32-unknown-unknown and writes the
-  // JS shim and wasm module to build/.
+  // build.sh builds the Worker (Bazel's //crates/clax-worker:bundle, or
+  // worker-build natively) into target/clax-worker/build at the
+  // repository root: the JS shim and the wasm module.
   "build": { "command": "./build.sh" },
 
   // The web UI (scripts/build-web.sh). Every request goes to the Worker

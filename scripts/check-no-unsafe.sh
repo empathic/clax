@@ -5,7 +5,7 @@
 #
 #  - the workspace's Cargo.toml forbids `unsafe_code`;
 #  - every crate's Cargo.toml takes the workspace's lints, but
-#    crates/clax-embed's and the separate crates/clax-worker workspace's;
+#    crates/clax-embed's;
 #  - crates/clax-embed/Cargo.toml, where there is one, denies
 #    `unsafe_code` and forbids `unsafe_op_in_unsafe_fn`, so an unsafe
 #    operation in the body of its `unsafe fn` exports needs an `unsafe`

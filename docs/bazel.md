@@ -105,6 +105,9 @@ a new use of a crate already in a `Cargo.toml`. A change to any
   script, and the workspace lints as rustc flags (a dev-dependency that
   turns a workspace crate's features on is refused, not derived);
 - `bazel/release_files.bzl`: `scripts/test-release.files` as labels;
+- `bazel/wasm/crates.MODULE.bazel` and `bazel/wasm/Cargo.lock`: the specs
+  and lockfile of `@crates_wasm`, the hosted Worker's wasm32 crates
+  (`bazel/wasm/README.md`);
 - `bazel/playwright/browsers.bzl`: the Chromium the locked Playwright runs,
   with checksums (rewritten only when the locked version moves);
 - `MODULE.bazel.lock`.
@@ -115,7 +118,9 @@ stale. It also fails when `MODULE.bazel`'s Rust version differs from
 `rust-toolchain.toml`, a workspace crate has no `BUILD.bazel`, `.bazelrc`
 limits jobs or cores, or a third-party crate's features under Bazel differ
 from `cargo tree --workspace`'s beyond `NATIVE_EXTRA` in
-`scripts/bazel-derive.py`. A merge conflict in a derived file is resolved
+`scripts/bazel-derive.py`, or one of `@crates_wasm`'s from `cargo tree -p
+clax-worker -p clax-do-vfs --target wasm32-unknown-unknown`'s beyond
+`WASM_EXTRA`. A merge conflict in a derived file is resolved
 by running the sync on the merged manifests. `scripts/bazel-sync.test.sh`
 tests the check.
 
@@ -195,6 +200,9 @@ which declares, with `<lib>` the library's crate name:
   each module with `#[cfg(any(not(clax_split), clax_split = "<module>"))]`;
   Cargo sets no `clax_split` and builds them all into one binary, as before;
 - `build_script` when the crate has one;
+- for a crate the hosted Worker builds, `<lib>_wasm` (and, with `cdylib`,
+  `<lib>_wasm_shared`): the library for wasm32, its third-party
+  dependencies from `@crates_wasm` (`bazel/wasm/README.md`);
 - `rust_sources`, for source scans, and `manifest`, the crate's
   `Cargo.toml`, for the layering check.
 
@@ -206,12 +214,10 @@ checks build the release binary. `//web:dist` (with `dist_extension`,
 `dist_extension_test`, `dist_e2e`) is the web build; `//web:lint`,
 `//web:typecheck`, `//web:unit`, `//web:bundle_size`,
 `//plugins/pi:typecheck` and `//plugins/pi:test` the web and Pi checks;
-`//scripts:*` the script gates. `crates/clax-worker` is a Cargo workspace
-of its own, with its own `Cargo.lock`, and no `cargo_package()`: its one
-target is `//crates/clax-worker:rustfmt`, the format check of its and its
-VFS's sources, with the rustfmt, configuration and flags of
-`--config=fmt` (`bazel/rustfmt_check.sh`), and only those sources: the
-Clax crates it uses by path are checked as the root workspace's. The perf benchmarks
+`//scripts:*` the script gates. `//crates/clax-worker:bundle` is the
+Worker as wrangler deploys it, and `//bazel/wasm:check` builds the crates a
+hosted Worker runs for wasm32 with warnings denied (`bazel/wasm/README.md`).
+The perf benchmarks
 (`//scripts:perf_daemon_full`, `//scripts:perf_clients_full`,
 `//web:perf_usable_full`) are `manual`: performance is measured on demand
 (`just perf`, which reruns them and prints their numbers) and gates nothing.
@@ -581,11 +587,7 @@ checkout, or runs Bazel itself: `scripts/test-plugins.sh` (git tags),
 `scripts/test-extension-signing.sh` (writes `web/dist-extension`),
 `scripts/check-no-hard-links.sh` and `scripts/check-pipefail-pipes.sh` over
 the tracked files (their own tests are Bazel tests),
-`scripts/bazel-sync.test.sh` and `scripts/bazel-web.test.sh`. CI's
-`worker` job runs the rest of `crates/clax-worker`'s checks natively
-(`scripts/worker-checks.sh`: its tests, clippy, `test-wasm.mjs`, then
-`e2e.mjs`), and `scripts/check-wasm.sh`: Bazel resolves only the root's
-`Cargo.lock`, and builds nothing for wasm32. The slow
+`scripts/bazel-sync.test.sh` and `scripts/bazel-web.test.sh`. The slow
 ones are skipped when they passed last time on the same files, as Bazel
 caches a passed test: the plugin and dev-script checks are keyed on the
 whole working tree and the `v*` tags, the two Bazel-setup tests on the
@@ -632,9 +634,12 @@ Performance gates nothing in either (`just perf` measures on demand).
 | plugins | `scripts/test-plugins.sh`, outside Bazel |
 | plugin wrapper | `//scripts:plugin_wrapper` |
 | comment loop | `//scripts:comment_loop` |
-| worker cargo fmt | `//crates/clax-worker:rustfmt` |
-| worker npm ci, worker cargo test, worker cargo clippy, worker wasm, worker e2e | CI's `worker` job, natively (`scripts/worker-checks.sh`, then `e2e.mjs`): `crates/clax-worker` is a workspace of its own, with a lockfile Bazel does not resolve |
-| wasm32 check | CI's `worker` job, natively (`scripts/check-wasm.sh`, `just check-wasm`) |
+| worker cargo fmt, worker cargo test, worker cargo clippy | the workspace's format check, clippy and `//crates/clax-worker/...`'s Rust tests |
+| worker pnpm install | `@npm_worker`, from `crates/clax-worker/pnpm-lock.yaml` |
+| worker deploy config | `//crates/clax-worker:deploy_config_test` |
+| worker wasm | `//crates/clax-worker:bundle` and, under `wrangler dev --local`, `:wasm_test`, `:sandbox_test` and `:bot_test` |
+| worker e2e, worker hosted e2e | `//crates/clax-worker:e2e`, `:e2e_hosted` |
+| wasm32 check | `//bazel/wasm:check` (`just check-wasm`; `just check-wasm-native` runs `scripts/check-wasm.sh`) |
 | no unsafe code | `//scripts:no_unsafe` |
 | no process launch on iOS | `//scripts:ios_spawns` (`scripts/check-ios-spawns.sh` against `scripts/ios-spawns.allow`), and the check's own test `//scripts:ios_spawns_test` |
 | crate layers | `//scripts:crate_layers` |
@@ -674,12 +679,8 @@ and provenance accept only GitHub-hosted runners) and `release.yml`'s
 format check, clippy, the web lint, the script gates that need no `clax`,
 the justfile, hard-link and pipefail checks), which stop the run on a
 failure, so a broken script or lint fails in minutes; then every test, then
-the slower checks outside Bazel. The `worker` job (4 cores) runs beside it
-what Bazel does not build, natively: `scripts/check-wasm.sh` over the crates
-a hosted Worker runs, and `crates/clax-worker` (a workspace of its own, for
-wasm32 only): `scripts/worker-checks.sh`, then its browser e2e (`e2e.mjs`)
-on a web UI built with pnpm. The Worker's format check is the `bazel` job's
-(`//crates/clax-worker:rustfmt`). `perf-log` runs the perf benchmarks after
+the slower checks outside Bazel: the hosted Worker's builds and checks
+among them (`bazel/wasm/README.md`). `perf-log` runs the perf benchmarks after
 every green push to main and appends a record to the `perf-log` branch
 (`docs/usage.md`, "Developing Clax"); it gates nothing. It runs what the
 sticky disk holds, so it has no write token: `perf-log-publish`, the only
@@ -852,7 +853,8 @@ tests that serve it; it recompiles no daemon crate.
   it to a child.
 - **`CARGO`** names nothing under Bazel; a test fallback that would run it
   fails loudly. Tests get `clax` through `CLAX_TEST_BIN`.
-- **`CLAX_BUILD_COMMIT`** is `unknown` in every Bazel build.
+- **`CLAX_BUILD_COMMIT`** is `unknown` in every Bazel build. A deployed
+  Worker names its commit by the `CLAX_BUILD_COMMIT` var deploy.mjs sets.
 - **Embedded files in debug builds.** Bazel's debug `clax` embeds the web
   UI, the extension and the plugins (`--cfg clax_embedded`, rust-embed's
   `debug-embed`); Cargo's reads them from the checkout. The one test of
@@ -866,7 +868,9 @@ tests that serve it; it recompiles no daemon crate.
   features only, as the native gates' `CLAX_TEST_BIN` is.
 - **The testkit in unit tests.** Bazel builds a crate's unit tests
   (`<lib>_lib_test`) without `clax-testkit`, which is for integration
-  tests only (`unit_dev_deps` in `bazel/cargo.bzl`); Cargo gives every test
+  tests only (`unit_dev_deps` in `bazel/cargo.bzl`), but for a crate the
+  testkit does not reach that asks for it (`lib_test_uses_testkit`:
+  `crates/clax-worker`); Cargo gives every test
   target all dev-dependencies, so `cargo test -p clax-server --lib` builds
   the testkit and the server under it first, and a unit test that names
   `clax_testkit` compiles under Cargo and fails to under Bazel.

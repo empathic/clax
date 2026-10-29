@@ -23,7 +23,7 @@ EMBED = {
 }
 EMBED_PARAM = {"u64", "i64", "i32", "usize", "*const u8", "ClaxPost"}
 SLICE = re.compile(r"let \w+ = unsafe \{ std::slice::from_raw_parts\(\w+, \w+\) \};$", re.A)
-OWN_LINTS = {"crates/clax-embed/Cargo.toml", "crates/clax-worker/Cargo.toml"}
+OWN_LINTS = {"crates/clax-embed/Cargo.toml"}
 # Whitespace as the regular expressions' \s, which is ASCII only.
 WS = " \t\n\r\f\v"
 
@@ -151,7 +151,7 @@ def main(sources):
     if not (workspace and level(workspace, "workspace.lints.rust.unsafe_code") == "forbid"):
         finding("Cargo.toml: the workspace must forbid unsafe_code")
 
-    for path in sorted(glob.glob("crates/*/Cargo.toml")):
+    for path in sorted(glob.glob("crates/*/Cargo.toml") + glob.glob("crates/*/*/Cargo.toml")):
         if path in OWN_LINTS:
             continue
         keys = manifest(path) or {}

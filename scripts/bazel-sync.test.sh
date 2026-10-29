@@ -3,8 +3,9 @@
 # Cargo and Bazel files: current files pass; a new default crate feature, a
 # changed workspace lint, a stale MODULE.bazel.lock (Bazel's error, faked), a
 # Rust version that differs from rust-toolchain.toml, a workspace crate
-# without a BUILD.bazel, and a job limit in .bazelrc each fail, naming the
-# cause; --check never writes a file. A sync whose resolution rewrites
+# without a BUILD.bazel, stale specs of the Worker's wasm32 crates, a
+# wasm-bindgen CLI pinned at another version than its crate, and a job limit
+# in .bazelrc each fail, naming the cause; --check never writes a file. A sync whose resolution rewrites
 # Cargo.lock (crate_universe, faked) resolves again, so one run is enough.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -57,6 +58,12 @@ if check; then fail "a toolchain mismatch fails"; elif grep -q 'rust-toolchain.t
 
 fresh; rm "$T/r/crates/clax-hooks/BUILD.bazel"
 if check; then fail "a crate without BUILD.bazel fails"; elif grep -q 'crates/clax-hooks' "$T/out"; then pass "a crate without BUILD.bazel fails"; else fail "message: $(cat "$T/out")"; fi
+
+fresh; edit '^crate\.spec\(default_features = False, features = \[[^]]*\], package = "tokio".*\n' '' "$T/r/bazel/wasm/crates.MODULE.bazel"
+if check; then fail "stale wasm specs fail"; elif grep -q 'bazel/wasm/crates.MODULE.bazel' "$T/out"; then pass "stale wasm specs fail, naming bazel/wasm/crates.MODULE.bazel"; else fail "message: $(cat "$T/out")"; fi
+
+fresh; edit 'wasm-bindgen-0\.2\.129-aarch64-apple-darwin\.tar\.gz"' 'wasm-bindgen-0.2.128-aarch64-apple-darwin.tar.gz"' "$T/r/bazel/wasm/tools.MODULE.bazel"
+if check; then fail "a wasm-bindgen CLI at another version fails"; elif grep -q 'pin the CLI' "$T/out"; then pass "a wasm-bindgen CLI at another version than its crate fails"; else fail "message: $(cat "$T/out")"; fi
 
 fresh; printf 'build --jobs=4\n' >> "$T/r/.bazelrc"
 if check; then fail "a job limit fails"; else pass "a job limit in .bazelrc fails"; fi

@@ -1,6 +1,6 @@
 // Checks the Worker's wasm build end to end: builds it (./build.sh), starts
 // `wrangler dev --local` on free ports with a fresh `--persist-to` under
-// target/wasm-test/, writes notes and blobs through the routes, checks that
+// target/clax-worker/wasm-test/, writes notes and blobs through the routes, checks that
 // a rollback, a refused journal mode and a transaction past the VFS's cap
 // leave the database as it was, then restarts wrangler on the same state
 // and checks that a fresh isolate sees the same rows, blob digest and page
@@ -15,9 +15,9 @@
 
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { HERE, build, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HERE, STATE, build, pruneRuns, start, writeConfig } from "./harness.mjs";
 
-const ROOT = join(HERE, "target/wasm-test");
+const ROOT = join(STATE, "wasm-test");
 const KEEP_RUNS = 3;
 
 function check(ok, what, detail) {

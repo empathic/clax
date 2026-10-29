@@ -6,21 +6,11 @@ license = "AGPL-3.0-only"
 publish = false
 description = "A Cloudflare Worker that runs the Clax server in a Durable Object per instance, its database in the object's own storage"
 
-# A workspace of its own, outside the Clax workspace: the Worker builds for
-# wasm32-unknown-unknown (natively only for its tests and clippy), and its
-# dependencies (workers-rs, wasm-bindgen) stay out of the daemon's lockfile
-# and builds. It uses the Clax crates by path.
-[workspace]
-resolver = "2"
-members = [".", "vfs"]
-# `cargo test` here runs the VFS's tests too.
-default-members = [".", "vfs"]
-
 [lib]
 crate-type = ["cdylib"]
 
-[lints.rust]
-unsafe_code = "deny"
+[lints]
+workspace = true
 
 [dependencies]
 async-trait = "0.1"
@@ -48,8 +38,9 @@ futures-util = "0.3"
 getrandom = { version = "0.3", features = ["wasm_js"] }
 js-sys = "0.3"
 rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
-# The web UI the router renders pages from (`src/web.rs`).
-rust-embed = "8"
+# The web UI the router renders pages from (`src/web.rs`), named by the
+# build script (`interpolate-folder-path`).
+rust-embed.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
@@ -67,11 +58,3 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 clax-testkit = { path = "../clax-testkit" }
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "net"] }
-
-# No `strip`: wasm-bindgen reads the module's `target_features` section to
-# find reference types, and fails ("externref table required for catch
-# wrappers") without it. wasm-opt, run by worker-build, shrinks the result.
-[profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1

@@ -37,7 +37,7 @@ args=(-E 'test(foo)' 'a b' '$(touch pwned)' ';' '*')
 want="$(printf '%s\n' "${args[@]}")"
 for r in build build-native web web-native web-test web-test-native web-e2e web-e2e-native \
     pi-test pi-test-native test test-native check check-native ci ci-native perf serve \
-    check-wasm bazel-gc release clax-dev-deploy; do
+    check-wasm check-wasm-native bazel-gc release clax-dev-deploy; do
     got="$(cd "$tmp" && just "$r" "${args[@]}" 2>&1 | tail -n "${#args[@]}")" || true
     if [ "$got" != "$want" ] || [ -e "$tmp/pwned" ]; then
         echo "just $r does not pass its arguments intact; got:" >&2

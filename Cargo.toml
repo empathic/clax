@@ -25,9 +25,37 @@ members = [
     "third_party/clax-rquickjs-sys",
     "third_party/clax-rquickjs-core",
     "crates/clax-embed",
+    # The Cloudflare Worker and its SQLite VFS. The Worker ships only for
+    # wasm32-unknown-unknown; natively it builds for its tests and clippy.
+    "crates/clax-worker",
+    "crates/clax-worker/vfs",
 ]
-# The Cloudflare Worker is a workspace of its own (wasm32 only, rusqlite 0.40).
-exclude = ["crates/clax-worker"]
+# A plain `cargo build` or `cargo test` builds the daemon's crates; the
+# Worker's builds with `--workspace` or `-p`.
+default-members = [
+    "crates/clax-core",
+    "crates/clax-server",
+    "crates/clax-cli",
+    "crates/clax-mcp",
+    "crates/clax-hooks",
+    "crates/clax-fake-exe",
+    "crates/clax-testkit",
+    "crates/clax-embedded",
+    "crates/clax-commands",
+    "crates/clax-sample",
+    "crates/clax-realtime",
+    "crates/clax-http",
+    "crates/clax-store",
+    "crates/clax-git",
+    "crates/clax-rt",
+    "crates/clax-content-git",
+    "crates/clax-bot-sandbox",
+    "crates/clax-bot-js",
+    "crates/clax-bot",
+    "third_party/clax-rquickjs-sys",
+    "third_party/clax-rquickjs-core",
+    "crates/clax-embed",
+]
 
 [workspace.package]
 version = "0.6.0"
@@ -102,3 +130,14 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# The Worker's wasm build (crates/clax-worker/build.sh), small and whole:
+# Cloudflare bounds a Worker's upload size. No `strip`: wasm-bindgen reads
+# the module's `target_features` section to find reference types, and fails
+# ("externref table required for catch wrappers") without it. wasm-opt
+# shrinks the result.
+[profile.worker-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1

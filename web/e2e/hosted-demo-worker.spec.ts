@@ -29,7 +29,7 @@ import type { Browser, BrowserContext, Frame, FrameLocator, Page } from "@playwr
 import { runDemo } from "../../demo/lib/agents";
 import { acceptInvite, type PersonSession } from "../../demo/lib/http";
 import { HEADING_ANCHOR, seed } from "../../demo/lib/seed";
-import { WORKER_DIR, freePort, gitToken, startWorker, type RunningWorker } from "../../demo/lib/worker";
+import { freePort, gitToken, startWorker, type RunningWorker } from "../../demo/lib/worker";
 import { expect, setName, test } from "./fixtures";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -112,7 +112,7 @@ function pruneRuns(root: string) {
   for (const n of runs.slice(2)) rmSync(join(root, n), { recursive: true, force: true });
 }
 
-const BUILT = existsSync(join(WORKER_DIR, "build/index.js")) && existsSync(join(ROOT, "web/dist/index.html"));
+const BUILT = existsSync(join(ROOT, "target/clax-worker/build/index.js")) && existsSync(join(ROOT, "web/dist/index.html"));
 
 test("the demo on the Worker: two people live, agents drafting and publishing, comments answered and held, a spectator, a fork and a git clone", async ({ browser }) => {
   test.skip(process.env.CLAX_E2E_WORKER !== "1", "runs with CLAX_E2E_WORKER=1, once the Worker is built");

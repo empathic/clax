@@ -7,15 +7,15 @@
 //
 // Usage: CLAX_TEST_BIN=<absolute path to clax> node e2e-publish.mjs [--no-build]
 // (the web UI built first with scripts/build-web.sh). Run state lives under
-// target/e2e-publish/; the local daemon's home is a fresh temporary
+// target/clax-worker/e2e-publish/; the local daemon's home is a fresh temporary
 // directory, stopped by its PID and removed at the end.
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HERE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HERE, STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
 
-const ROOT = join(HERE, "target/e2e-publish");
+const ROOT = join(STATE, "e2e-publish");
 const TOKEN = "e2e-owner-token-" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 const SECRET = "e2e setup secret " + Math.random().toString(36).slice(2);
 const LIMIT = 30_000;

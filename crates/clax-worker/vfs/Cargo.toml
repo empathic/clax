@@ -6,10 +6,8 @@ license = "AGPL-3.0-only"
 publish = false
 description = "A SQLite VFS that keeps a database's pages in a page store, such as a Durable Object's SQL storage"
 
-# The crate is outside the Clax workspace, so it forbids `unsafe_code` itself,
-# as the workspace does.
-[lints.rust]
-unsafe_code = "forbid"
+[lints]
+workspace = true
 
 [dependencies]
 # The VFS glue sqlite-wasm-rs re-exports; on wasm32 it registers into the

@@ -39,7 +39,7 @@ function exited(child: ChildProcess): Promise<void> {
 
 const wait = (ms: number) => new Promise<"timeout">((r) => setTimeout(() => r("timeout"), ms));
 
-/** Builds the Worker (`build.sh`: worker-build to build/). The web UI is built separately, first. */
+/** Builds the Worker (`build.sh`, into target/clax-worker/build). The web UI is built separately, first. */
 export async function buildWorker(stdio: "inherit" | "ignore" = "inherit"): Promise<void> {
   const b = spawn(join(WORKER_DIR, "build.sh"), [], { cwd: WORKER_DIR, stdio: ["ignore", stdio, "inherit"] });
   await exited(b);

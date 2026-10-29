@@ -212,7 +212,7 @@ if [ "$no_build" = 1 ]; then
   echo "skipped (--no-build: the packages an earlier run installed)"
 else
   "$root/scripts/pnpm-install-stamped.sh" "$root/web"
-  "$root/scripts/npm-ci-stamped.sh" "$worker"
+  "$root/scripts/pnpm-install-stamped.sh" "$worker"
 fi
 
 wrangler() { (cd "$worker" && ./node_modules/.bin/wrangler "$@"); }

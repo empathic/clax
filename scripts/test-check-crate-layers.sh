@@ -20,7 +20,7 @@ _fail() { echo "FAIL: $1" >&2; fails=$((fails + 1)); }
 _copy() {
     rm -rf "$d/w" && mkdir -p "$d/w"
     cp Cargo.toml "$d/w/"
-    for m in crates/*/Cargo.toml third_party/*/Cargo.toml; do
+    for m in crates/*/Cargo.toml crates/*/*/Cargo.toml third_party/*/Cargo.toml; do
         c="$d/w/$(dirname "$m")"
         mkdir -p "$c/src" && cp "$m" "$c/Cargo.toml" && : > "$c/src/lib.rs"
         # The target paths the manifest names (src/main.rs, tests/*.rs).

@@ -110,7 +110,7 @@ import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { dirname, join, resolve } from "node:path";
 import { buildId, builtFromRefusal, checkCiOptions, ciSecretsRefusal, doneText, healthOf, partialTriggerUpdate, prodTipOf, productionGate, versionIdOf } from "./deploy-lib.mjs";
-import { HERE, baseConfig, embedsWebUi } from "./harness.mjs";
+import { BUILD, BUILT_FROM, HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
 // Nothing generated lives under crates/: the deploy config goes in the
@@ -484,7 +484,7 @@ export function retiredContentOrigin(record) {
   }
 }
 
-function deployConfig(o, pub, site, account, github, legal, out, retired, build) {
+function deployConfig(o, pub, site, account, github, legal, out, retired, build, commit) {
   const c = baseConfig();
   delete c.$schema;
   // The config lives in target/deploy/, so its paths name the crate's files.
@@ -523,6 +523,9 @@ function deployConfig(o, pub, site, account, github, legal, out, retired, build)
     REPO_DEV_ROUTES: "0",
     CLAX_DIAG_ROUTES: o.diag ? "1" : "0",
     CLAX_BUILD: build,
+    // The commit /healthz reports (src/instance.rs build_commit): a var, so
+    // one build of the Worker deploys at any commit it was built from.
+    ...(commit ? { CLAX_BUILD_COMMIT: commit } : {}),
     ...(github.client_id ? { GITHUB_CLIENT_ID: github.client_id } : {}),
     ...(github.owner ? { OWNER_GITHUB: github.owner } : {}),
     ...(legal.legal ? { LEGAL: legal.legal } : {}),
@@ -728,7 +731,7 @@ async function writeDeployConfig(o, account) {
   const configPath = o.out ? resolve(o.out) : DEPLOY_CONFIG;
   const commit = await sourceCommit();
   const build = buildId(commit, new Date(), randomBytes(4).toString("hex"));
-  const config = deployConfig(o, pub, site, account, github, legal, configPath, retired, build);
+  const config = deployConfig(o, pub, site, account, github, legal, configPath, retired, build, commit);
   info(`wrote ${configPath} (worker ${config.name}, REPO_STORE=${o.store}, SITE_DOMAIN=${site}, diagnostics ${o.diag ? "on" : "off"}, build ${build})`);
   return { pub, site, github, legal, config, configPath, retired, commit, build };
 }
@@ -846,10 +849,10 @@ async function main() {
     step("Build: skipped (--no-build)");
     // What an earlier run built, from this commit (deploy-lib.mjs
     // builtFromRefusal): never a stale build, nor one from another commit.
-    const wasm = join(HERE, "build/index_bg.wasm");
-    const refusal = builtFromRefusal(existsSync(wasm) ? readFileSync(wasm) : null, commit);
-    if (refusal) throw new Error(refusal);
-    info(commit ? `the Worker in build/ was built from HEAD ${commit.slice(0, 12)}` : "the Worker in build/ is deployed as it is (no commit to check it against)");
+    const wasm = join(BUILD, "index_bg.wasm");
+    const refusal = builtFromRefusal(existsSync(wasm) ? readFileSync(wasm) : null, existsSync(BUILT_FROM) ? readFileSync(BUILT_FROM, "utf8") : null, commit);
+    if (refusal) throw new Error(`${BUILD}: ${refusal}`);
+    info(commit ? `the Worker in ${BUILD} was built from HEAD ${commit.slice(0, 12)}` : `the Worker in ${BUILD} is deployed as it is (no commit to check it against)`);
   }
   if (!existsSync(config.main)) throw new Error(`no ${config.main}: build first (drop --no-build)`);
   // The Worker embeds web/dist when clax-worker compiles (rust-embed,
@@ -857,11 +860,15 @@ async function main() {
   // embeds another web UI serves "ui_not_built" or stale pages for /setup
   // and every other shell page, so the upload is checked, not assumed.
   if (!embedsWebUi()) {
-    if (!o.build) throw new Error(`build/index_bg.wasm does not embed web/dist/index.html: drop --no-build`);
+    const wasm = join(BUILD, "index_bg.wasm");
+    if (!o.build) throw new Error(`${wasm} does not embed web/dist/index.html: drop --no-build`);
+    // Bazel rebuilds the Worker whenever web/dist changes; Cargo, through
+    // rust-embed, may not (crates/clax-worker/build.rs), so a native build
+    // is cleaned once.
     step("Build: the Worker embedded an older web UI; rebuilding clax-worker");
-    await run("cargo", ["clean", "-q", "--release", "--target", "wasm32-unknown-unknown", "-p", "clax-worker"]);
+    await run("cargo", ["clean", "-q", "--profile", "worker-release", "--target", "wasm32-unknown-unknown", "-p", "clax-worker"]);
     await buildWorker();
-    if (!embedsWebUi()) throw new Error("build/index_bg.wasm still does not embed web/dist/index.html");
+    if (!embedsWebUi()) throw new Error(`${wasm} still does not embed web/dist/index.html`);
   }
   info("the Worker embeds the web UI in web/dist");
 

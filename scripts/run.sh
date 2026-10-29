@@ -11,9 +11,12 @@
 #   scripts/run.sh web-e2e           the browser tests
 #   scripts/run.sh perf              the perf benchmarks, on demand (they gate nothing; on a
 #                                    Mac also the Clax app's launch, scripts/perf-app-launch.sh)
-#   scripts/run.sh worker-test       crates/clax-worker's checks: its format check (Bazel's
-#                                    rustfmt, or cargo fmt), then scripts/worker-checks.sh,
-#                                    natively either way (its own Cargo workspace)
+#   scripts/run.sh worker-test       crates/clax-worker's checks: its and its VFS's format
+#                                    check, tests and clippy, and its wasm build under
+#                                    `wrangler dev --local` and in browsers (natively
+#                                    scripts/worker-checks.sh and e2e.mjs)
+#   scripts/run.sh check-wasm        the crates a hosted Worker runs, built for wasm32 with
+#                                    warnings denied (natively scripts/check-wasm.sh)
 #   scripts/run.sh build             the clax binary
 #   scripts/run.sh web               web/dist and web/dist-extension, built
 #   scripts/run.sh clax [args]       build the debug clax and run it (serve, stop, doctor, …)
@@ -76,7 +79,8 @@ case "$task" in
     install) needs=(rust web) ;;
     web-test|pi-test|web) needs=(web) ;;
     web-e2e) needs=(rust web) ;;
-    worker-test) needs=(rust) ;;
+    worker-test) needs=(rust web) ;;
+    check-wasm) needs=(rust) ;;
     app-test|app-integration|app-apk|app-macos) needs=(rust web flutter) ;;
     home-bundle) needs=(flutter) ;;
     reel) needs=(rust web) ;;
@@ -244,11 +248,11 @@ _bazel() {
         pi-test) _run "${b[@]}" test --lockfile_mode=error //plugins/pi:typecheck //plugins/pi:test "$@" ;;
         web-e2e) _run "${b[@]}" test --lockfile_mode=error //web:e2e_gesture //web:e2e_chrome_overlay //web:e2e_rest "$@" ;;
         worker-test)
-            # Only the format check is Bazel's; the rest is Cargo and npm.
-            _run "${b[@]}" test --lockfile_mode=error //crates/clax-worker:rustfmt &&
-                echo "── the Worker's tests, clippy and wasm build run natively (its own Cargo workspace) ──" &&
-                _run "${awake[@]+"${awake[@]}"}" ./scripts/worker-checks.sh
+            _run "${b[@]}" build --lockfile_mode=error --config=fmt //crates/clax-worker/... &&
+                _run "${b[@]}" build --lockfile_mode=error --config=clippy //crates/clax-worker/... &&
+                _run "${b[@]}" test --lockfile_mode=error //crates/clax-worker/... //bazel/wasm:check "$@"
             ;;
+        check-wasm) _run "${b[@]}" test --lockfile_mode=error //bazel/wasm:check "$@" ;;
         perf)
             _run "${b[@]}" test --lockfile_mode=error --nocache_test_results --test_output=all \
                 --test_env=CLAX_PERF_JSON="$PERF_JSON" --sandbox_writable_path="$(dirname "$PERF_JSON")" \
@@ -318,11 +322,14 @@ _native() {
                 _run bash -c 'cd web && pnpm exec playwright install --with-deps chromium && pnpm run e2e'
             ;;
         worker-test)
-            # The workspace's own members only: `--all` would also format the
-            # Clax crates it uses by path.
-            _run bash -c 'cd crates/clax-worker && cargo fmt -- --check' &&
-                _run "${awake[@]+"${awake[@]}"}" ./scripts/worker-checks.sh
+            _run cargo fmt -p clax-worker -p clax-do-vfs -- --check &&
+                _run cargo test -q -p clax-worker -p clax-do-vfs &&
+                _run cargo clippy -q -p clax-worker -p clax-do-vfs --all-targets -- -D warnings &&
+                _run "${awake[@]+"${awake[@]}"}" ./scripts/worker-checks.sh &&
+                _run bash -c 'cd web && pnpm install --frozen-lockfile && pnpm exec playwright install chromium' &&
+                _run bash -c 'cd crates/clax-worker && node e2e.mjs --no-build && node e2e-hosted.mjs --no-build'
             ;;
+        check-wasm) _run ./scripts/check-wasm.sh "$@" ;;
         perf)
             _run bash -c 'cd web && pnpm install --frozen-lockfile' && _run ./scripts/build-web.sh &&
                 _run cargo build -q --release -p clax-cli &&

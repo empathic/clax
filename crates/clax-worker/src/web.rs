@@ -1,4 +1,5 @@
-//! The web UI the server's routes render pages from (`web/dist`), embedded
+//! The web UI the server's routes render pages from (`web/dist`, as
+//! `build.rs` names it), embedded
 //! in the Worker: the artifact page and the gallery the router answers, as
 //! the daemon serves them from its own tree. Static files under `/_clax/`
 //! come from the static assets binding instead (`static_asset`).
@@ -6,7 +7,7 @@
 use clax_core::embedded::{EmbeddedFile, FileTree};
 
 #[derive(rust_embed::RustEmbed)]
-#[folder = "../../web/dist"]
+#[folder = "$CLAX_WEB_DIST_DIR"]
 struct Dist;
 
 /// `web/dist` as the tree [`clax_http::state::AppState::web`] holds.

@@ -7,9 +7,5 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
-# rules_rust's patch (MODULE.bazel), and the rustfmt check of Rust sources
-# no Bazel Rust target holds (crates/clax-worker/BUILD.bazel).
-exports_files([
-    "rules_rust.patch",
-    "rustfmt_check.sh",
-])
+# rules_rust's patch (MODULE.bazel).
+exports_files(["rules_rust.patch"])

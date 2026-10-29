@@ -9,13 +9,21 @@ a wake, the alarm).
 
 ## Developing
 
-From this directory: `npm install`, build the web UI first
-(`../../scripts/build-web.sh`: the Worker embeds `web/dist`, its wasm build
-refuses to run without it, `build.rs`, and recompiles when it changes), then
+The Worker and its VFS are crates of the root workspace. `just worker-test`
+runs all of their checks under Bazel: the Rust tests, the wasm build
+(`//crates/clax-worker:bundle`, `../../bazel/wasm/README.md`) and the checks
+below on it, `wrangler dev --local` and the browsers included.
 
-- `npm run dev`: `wrangler dev --local` on `.wrangler/state` (runs
-  `build.sh`);
-- `cargo test`: the VFS's tests and the crate's unit tests, natively;
+By hand, from this directory: `pnpm install`, build the web UI first
+(`just web`, or `../../scripts/build-web.sh`: the Worker embeds `web/dist`,
+its wasm build refuses to run without it, `build.rs`, and recompiles when it
+changes), then
+
+- `pnpm run dev`: `wrangler dev --local` on `.wrangler/state` (runs
+  `build.sh`, which builds the Worker into `../../target/clax-worker/build`:
+  with Bazel when it is installed, else worker-build);
+- `cargo test -p clax-worker -p clax-do-vfs`: the VFS's tests and the
+  crate's unit tests, natively;
 - `node test-wasm.mjs`: the SQLite-on-Durable-Object spike across a restart;
 - `node test-sandbox.mjs`: ClaxBot's sandbox conformance suite against the
   Worker Loader sandbox (below), on the instance's object;
@@ -107,7 +115,7 @@ zone of its own for the site domain (each artifact is served at
 
 `scripts/cloudflare-setup.sh` does all of it, from any directory, and is
 safe to run again: it checks the tools (Node 26, rustup's wasm32 target, an
-LLVM that targets wasm32), installs the npm packages when their lockfiles
+LLVM that targets wasm32), installs the pnpm packages when their lockfiles
 changed, starts `wrangler login` for you to finish in the browser when you
 aren't signed in, then runs `deploy.mjs`, which creates only what is missing.
 It is a dry run unless you pass `--i-know-what-i-am-doing`:
@@ -166,7 +174,7 @@ deploy.
 Or step by step, in this directory:
 
 ```sh
-npx wrangler login                      # once, in this directory (npm install first)
+pnpm exec wrangler login                # once, in this directory (pnpm install first)
 just hosted-deploy --zone example.com --site-domain example.run   # or: node deploy.mjs …
 node smoke-remote.mjs --deploy ~/.config/clax/deploy/example.com.json
 ```
@@ -400,11 +408,12 @@ setting for later deploys.
 
 ```sh
 ../../scripts/build-web.sh
-npx wrangler deploy
+pnpm exec wrangler deploy
 ```
 
-`wrangler deploy` runs `build.sh` (worker-build, release, wasm-opt). `npm
-run size` prints the upload size without deploying. `deploy.mjs` does this
+`wrangler deploy` runs `build.sh` (the release build, wasm-opt and the shim;
+with Bazel or worker-build). `pnpm run size` prints the upload size without
+deploying. `deploy.mjs` does this
 with its generated `target/deploy/wrangler.deploy.jsonc` instead.
 
 ### DNS for the public host and the site domain
@@ -482,7 +491,8 @@ its steps. Not yet run against a deployed Worker:
   from storage in the same way.
 - The custom domains, certificates and `CF-Connecting-IP` from Cloudflare's
   edge (under `wrangler dev` every client is one address).
-- The build on Linux (CI): `build.sh` has run on macOS only.
+- The Bazel build on Linux (CI): the bundle has been built on macOS only
+  (the NDK's Linux LLVM compiles its C there).
 - ClaxBot's sandbox on real dynamic Workers: the `cpuMs` limit and the
   isolate's memory limit (and the error messages `src/sandbox/mod.rs`
   `platform_error` reads them by), `abortIsolate` after a script's last
