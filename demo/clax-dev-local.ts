@@ -13,6 +13,9 @@
 // reel is served by this process rather than Cloudflare Stream, once
 // //web/reel:reel has built in the background (target/clax-dev-local/
 // reel.log; --no-build serves the one built before). Nothing is seeded.
+// A change under web/ or crates/ rebuilds the web UI and the Worker and
+// restarts the Worker on the same data; reload the page to see it
+// (--no-build serves the build it started with and watches nothing).
 //
 // Nothing to configure. GitHub sign-in needs a GitHub App; the first run
 // registers one from a manifest (GitHub's "create an App from a manifest"
@@ -42,7 +45,7 @@
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, copyFileSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer, type AddressInfo } from "node:net";
 import { homedir } from "node:os";
@@ -293,6 +296,18 @@ const reelBase = await new Promise<string>((ok) =>
 );
 
 let reelBuild: ChildProcess | null = null;
+let reelCancelled = false;
+/** Interrupts a running reel build and waits for it to end; whether one was running. */
+async function cancelReel(): Promise<boolean> {
+  const b = reelBuild;
+  if (!b) return false;
+  reelCancelled = true;
+  const ended = new Promise((ok) => b.once("exit", ok));
+  b.kill("SIGINT");
+  await ended;
+  reelCancelled = false;
+  return true;
+}
 /** Builds the reel in the background, logged to reel.log, and copies it to REEL_DIR when done. */
 function buildReel(): void {
   const bazel = ["bazelisk", "bazel"].find((b) => spawnSync("sh", ["-c", `command -v ${b}`]).status === 0);
@@ -307,7 +322,7 @@ function buildReel(): void {
   reelBuild.once("exit", (code) => {
     reelBuild = null;
     if (code !== 0) {
-      if (!stopping) console.log(`\nThe reel did not build; see ${log}.`);
+      if (!stopping && !reelCancelled) console.log(`\nThe reel did not build; see ${log}.`);
       return;
     }
     // Bazel's outputs are read-only and a copy keeps their mode, so each is
@@ -331,34 +346,110 @@ function buildReel(): void {
 }
 
 console.log(`Starting clax.dev's Worker on :${port} (data ${join(DIR, "state")}, log ${join(DIR, "wrangler.log")})…`);
+const workerOptions = {
+  dir: DIR,
+  port,
+  secret: secrets.SETUP_SECRET,
+  seats: "",
+  vars: {
+    GITHUB_CLIENT_ID: github.GITHUB_CLIENT_ID,
+    GITHUB_CLIENT_SECRET: github.GITHUB_CLIENT_SECRET,
+    ...(opts.owner ? { OWNER_GITHUB: github.OWNER_GITHUB } : {}),
+    CLAX_KEK: secrets.CLAX_KEK,
+    LEGAL: "bundled",
+    REEL_URL: `${reelBase}/reel.mp4`,
+    REEL_POSTER_URL: `${reelBase}/reel-poster.jpg`,
+  },
+};
 let w: RunningWorker;
 try {
-  w = await startWorker({
-    dir: DIR,
-    port,
-    secret: secrets.SETUP_SECRET,
-    seats: "",
-    vars: {
-      GITHUB_CLIENT_ID: github.GITHUB_CLIENT_ID,
-      GITHUB_CLIENT_SECRET: github.GITHUB_CLIENT_SECRET,
-      ...(opts.owner ? { OWNER_GITHUB: github.OWNER_GITHUB } : {}),
-      CLAX_KEK: secrets.CLAX_KEK,
-      LEGAL: "bundled",
-      REEL_URL: `${reelBase}/reel.mp4`,
-      REEL_POSTER_URL: `${reelBase}/reel-poster.jpg`,
-    },
-  });
+  w = await startWorker(workerOptions);
 } catch (e) {
   console.error(e instanceof Error ? e.message : e);
   process.exit(1);
 }
 let stopping = false;
+const watchers: FSWatcher[] = [];
 async function stop(code: number): Promise<never> {
   stopping = true;
+  for (const x of watchers) x.close();
   reelBuild?.kill("SIGINT");
   reelServer.close();
   await w.stop();
   process.exit(code);
+}
+/** Ends the run when the Worker exits on its own, not when a rebuild restarts it. */
+function onWorkerExit(r: RunningWorker): void {
+  r.child.once("exit", () => {
+    if (stopping || r !== w || restarting) return;
+    console.error(`The Worker exited; see ${r.log}:\n${readFileSync(r.log, "utf8").slice(-2000)}`);
+    process.exit(1);
+  });
+}
+
+// A change to the web UI or the crates rebuilds both (the Worker embeds
+// web/dist) and restarts the Worker on the same port and data; a change
+// made during a rebuild runs one more. Reload the page to see it.
+// --no-build serves the build it started with.
+const WATCH_SKIP = /(^|\/)(node_modules|dist|dist-extension|reel)(\/|$)|\.qual$|\.DS_Store$/;
+let rebuilding = false;
+let restarting = false;
+let again = false;
+let settleTimer: ReturnType<typeof setTimeout> | undefined;
+/** Rebuilds the web UI and the Worker, then restarts the Worker; false when the build failed. */
+async function rebuildOnce(): Promise<boolean> {
+  console.log("\nA source changed: rebuilding.");
+  try {
+    await builds.web();
+    await builds.worker();
+  } catch (e) {
+    console.log(`The rebuild failed; the Worker serves the last build.\n${e instanceof Error ? e.message : e}`);
+    return false;
+  }
+  restarting = true;
+  try {
+    await w.stop();
+    if (stopping) return false;
+    w = await startWorker(workerOptions);
+    onWorkerExit(w);
+    console.log(`Rebuilt: reload ${base} to see it.`);
+    return true;
+  } catch (e) {
+    console.error(`The rebuilt Worker did not start: ${e instanceof Error ? e.message : e}`);
+    return stop(1);
+  } finally {
+    restarting = false;
+  }
+}
+// The reel is recorded from the web UI's build, so a change to it records
+// the reel again, for minutes, and Bazel runs one build at a time: a
+// running reel build is cancelled for the rebuild and started again after
+// it (the vignettes it recorded stay in Bazel's cache).
+async function rebuild(): Promise<void> {
+  if (rebuilding) {
+    again = true;
+    return;
+  }
+  rebuilding = true;
+  const reel = await cancelReel();
+  let built = false;
+  do {
+    again = false;
+    built = (await rebuildOnce()) || built;
+  } while (again && !stopping);
+  rebuilding = false;
+  if ((reel || built) && !stopping) buildReel();
+}
+function watchSources(): void {
+  for (const dir of ["web", "crates"]) {
+    watchers.push(
+      watch(join(ROOT, dir), { recursive: true }, (_, file) => {
+        if (!file || stopping || WATCH_SKIP.test(file.toString())) return;
+        clearTimeout(settleTimer);
+        settleTimer = setTimeout(() => void rebuild(), 300);
+      }),
+    );
+  }
 }
 process.on("SIGINT", () => void stop(0));
 process.on("SIGTERM", () => void stop(0));
@@ -371,11 +462,7 @@ process.on("unhandledRejection", (e) => {
   console.error(e);
   void stop(1);
 });
-w.child.once("exit", () => {
-  if (stopping) return;
-  console.error(`The Worker exited; see ${w.log}:\n${readFileSync(w.log, "utf8").slice(-2000)}`);
-  process.exit(1);
-});
+onWorkerExit(w);
 
 let { setup_open } = (await fetch(`${base}/api/hosted/me`).then((r) => r.json())) as { setup_open: boolean };
 if (setup_open && !opts.setup) {
@@ -401,7 +488,10 @@ async function ownerLink(): Promise<string> {
 }
 
 if (opts["no-build"]) console.log(existsSync(REEL_DIR) ? "The landing page's reel is the one built before." : "No reel is built: the landing page shows none.");
-else buildReel();
+else {
+  buildReel();
+  watchSources();
+}
 
 const you = opts.owner
   ? `Sign in with GitHub as ${github.OWNER_GITHUB}: that account is the owner (the owner's gallery gets no quickstart).`
