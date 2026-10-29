@@ -300,7 +300,8 @@ pub async fn unwatch(
 
 /// `POST /api/queues/<qid>/reports/<tid>/renew` → the lease, extended;
 /// its errors are a write's (`claim_required`, `lease_lost`,
-/// `thread_taken`).
+/// `thread_taken`). The queue's topic hears of it: the claim's expiry
+/// changed.
 pub async fn renew(
     State(s): State<AppState>,
     a: Agent<QueueRenew>,
@@ -310,12 +311,14 @@ pub async fn renew(
     let (qid, tid) = path(p)?;
     member(&s, &a, &qid).await?;
     let caller = a.caller.clone();
+    let (q, t) = (qid.clone(), tid.clone());
     let lease = s
         .store_call(move |st| {
             let sess = agent_session(st, &caller)?;
-            st.renew(&qid, &tid, &sess.id)
+            st.renew(&q, &t, &sess.id)
         })
         .await?;
+    announce_report(&s, &qid, &tid).await;
     Ok(Json(json!(lease)))
 }
 
@@ -570,27 +573,30 @@ async fn write_metadata<N: Need>(
     let b = body(req)?;
     member(&s, &a, &qid).await?;
     let caller = a.caller.clone();
+    let (q, t) = (qid.clone(), tid.clone());
     let out = s
         .store_call(move |st| {
             let w = Writer::of(st, &caller, &who)?;
             let v = if artifact {
                 st.set_report_artifact_metadata(
                     &ctx,
-                    &qid,
-                    &tid,
+                    &q,
+                    &t,
                     w.session(),
                     b.metadata,
                     b.if_version,
                 )?
             } else {
-                st.set_thread_metadata_as(&ctx, &qid, &tid, w.session(), b.metadata, b.if_version)?
+                st.set_thread_metadata_as(&ctx, &q, &t, w.session(), b.metadata, b.if_version)?
             };
             let report = st
-                .report(&qid, &tid, Visibility::All)?
+                .report(&q, &t, Visibility::All)?
                 .ok_or(CoreError::NotFound)?;
             Ok(json!({"metadata_version": v, "report": report}))
         })
         .await?;
+    // Open views show the metadata: they refetch.
+    announce_report(&s, &qid, &tid).await;
     Ok(Json(out))
 }
 
