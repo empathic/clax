@@ -207,6 +207,9 @@ pub struct ListQuery {
     /// `group=artifact`: items listed in each group.
     #[serde(default)]
     rows: Option<String>,
+    /// `1`: only what waits on the caller, oldest first.
+    #[serde(default)]
+    waiting: Option<String>,
 }
 
 impl ListQuery {
@@ -223,6 +226,7 @@ impl ListQuery {
             &self.before,
             &self.limit,
             &self.rows,
+            &self.waiting,
         ]
         .iter()
         .any(|p| p.is_some())
@@ -289,9 +293,12 @@ fn query_of<T>(q: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> {
     q.map(|Query(q)| q).map_err(|e| invalid(e.body_text()))
 }
 
-/// `GET /api/inbox?q=&kind=<k,…>&artifact=<aid>&agent=<harness|handle>&tag=<id or name>…&since=&until=&read=unread|read|all&before=<cursor>&limit=`
+/// `GET /api/inbox?q=&kind=<k,…>&artifact=<aid>&agent=<harness|handle>&tag=<id or name>…&since=&until=&read=unread|read|all&waiting=1&before=<cursor>&limit=`
 /// (`tag` repeatable: items about an artifact carrying every tag named;
-/// a name no tag has matches nothing),
+/// a name no tag has matches nothing; `waiting=1`: only what waits on the
+/// caller, an open question, an undecided approval request, an agent's
+/// reply that is its open thread's newest comment, listed oldest first
+/// with no `next_cursor` and with `total`, and 400 with `before`),
 /// or `GET /api/inbox?group=agent` (no other parameter; spec
 /// 2026-10-08-multi-agent-multi-person §13) → `{agents, unread}`: the agent
 /// strip, one entry per agent with unread items for the caller or an open
@@ -387,6 +394,14 @@ pub async fn list(
         tag: Some(Tags::List(tags)),
     }
     .query(me.clone())?;
+    iq.waiting = match q.waiting.as_deref() {
+        None | Some("" | "0") => false,
+        Some("1") => true,
+        Some(_) => return Err(invalid("waiting is 1 or 0")),
+    };
+    if iq.waiting && q.before.as_deref().is_some_and(|b| !b.is_empty()) {
+        return Err(invalid("waiting=1 lists oldest first and takes no before"));
+    }
     iq.read = match q.read.as_deref() {
         None | Some("" | "all") => ReadFilter::All,
         Some("unread") => ReadFilter::Unread,
@@ -417,6 +432,7 @@ pub async fn list(
         || iq.since.is_some()
         || iq.until.is_some()
         || !iq.tags.is_empty()
+        || iq.waiting
         || iq.read != ReadFilter::All;
     // A filtered list (a search included) also counts what matches, and a
     // grouping groups every match; each reads up to the whole inbox, so it
@@ -480,10 +496,12 @@ pub async fn list(
 }
 
 /// `GET /api/inbox/summary` (the owner, or a connected person: their own)
-/// → `{unread, questions, latest}`: the unread count, the open questions'
-/// views oldest first, and the five newest unread items other than
-/// questions (connection requests among them), for the gallery and the
-/// top bar. Each part is read on its
+/// → `{unread, waiting, questions, latest}`: the unread count, how many
+/// items wait on the caller (as `waiting=1` counts them), the open
+/// questions' views oldest first, and the five newest unread replies,
+/// approval and connection requests, for the gallery and the top bar.
+/// Activity (versions, publishes, finished and ended sessions, refused
+/// pushes) is in the list's `kind` filter, not here. Each part is read on its
 /// own, one just after another. With `?tag=<id or name>` (repeatable),
 /// `questions` and `latest` are only those about an artifact carrying every
 /// tag named (match all); `unread` stays the whole inbox's.
@@ -538,16 +556,7 @@ pub async fn summary(
                 .collect::<clax_core::Result<Vec<_>>>()?;
             let (rows, _) = db.inbox_list(&InboxQuery {
                 recipient: me.clone(),
-                kinds: vec![
-                    Kind::Reply,
-                    Kind::Version,
-                    Kind::Published,
-                    Kind::Finished,
-                    Kind::Connection,
-                    Kind::Approval,
-                    Kind::Ended,
-                    Kind::Push,
-                ],
+                kinds: vec![Kind::Reply, Kind::Connection, Kind::Approval],
                 read: ReadFilter::Unread,
                 limit: SUMMARY_LATEST,
                 tags: tag_ids,
@@ -555,8 +564,18 @@ pub async fn summary(
                 out_of_reach: hidden.clone(),
                 ..InboxQuery::default()
             })?;
+            let waiting = db.inbox_count(
+                &InboxQuery {
+                    recipient: me.clone(),
+                    waiting: true,
+                    out_of_reach: hidden.clone(),
+                    ..InboxQuery::default()
+                },
+                TOTAL_CAP,
+            )?;
             Ok(json!({
                 "unread": db.inbox_unread_but(me.as_deref(), &hidden)?,
+                "waiting": waiting,
                 "questions": questions,
                 "latest": inbox_views(db, &rows, hosted)?,
             }))

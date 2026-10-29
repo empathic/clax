@@ -189,6 +189,11 @@ pub struct InboxQuery {
     /// Artifacts out of the recipient's reach (on a hosted daemon): none of
     /// their items matches, is counted or is marked.
     pub out_of_reach: Vec<String>,
+    /// Only what waits on the recipient ([`WAITING`]): an open question, an
+    /// undecided approval request, and an agent's reply that is the newest
+    /// comment of an open thread. A page of them is oldest first, with no
+    /// next cursor.
+    pub waiting: bool,
 }
 
 /// One change to `inbox_items` in a committed transaction: the item `seq`
@@ -545,6 +550,9 @@ fn build(q: &InboxQuery, shape: Shape, now: &str) -> Built {
         }
         None => {}
     }
+    if q.waiting {
+        wh.push(WAITING.into());
+    }
     if let Some(s) = &q.since {
         let p = arg(Sql::Text(s.clone()), &mut args);
         wh.push(format!("+i.created_at >= {p}"));
@@ -574,7 +582,13 @@ fn build(q: &InboxQuery, shape: Shape, now: &str) -> Built {
                 Sql::Integer(i64::from(page_size(q.limit)) + past),
                 &mut args,
             );
-            sql.push_str(&format!(" ORDER BY {order} DESC LIMIT {p}"));
+            // What waits is read oldest first: the longest waiting leads.
+            let dir = if q.waiting && shape == Shape::Page {
+                "ASC"
+            } else {
+                "DESC"
+            };
+            sql.push_str(&format!(" ORDER BY {order} {dir} LIMIT {p}"));
         }
         Shape::Count(cap) => {
             let p = arg(Sql::Integer(i64::from(cap)), &mut args);
@@ -629,7 +643,8 @@ fn page_on(c: &Connection, q: &InboxQuery, shape: Shape) -> Result<(Vec<ItemRow>
     .map_err(|e| search_error(e, b.searched))?;
     let next = if items.len() > size {
         items.truncate(size);
-        items.last().map(|i| i.seq)
+        // An oldest-first page has no `before` cursor to the rest.
+        items.last().map(|i| i.seq).filter(|_| !q.waiting)
     } else {
         None
     };
@@ -705,6 +720,21 @@ macro_rules! undecided {
     };
 }
 const UNDECIDED: &str = undecided!();
+/// The items that wait on their recipient:
+/// an open question, an undecided approval request ([`UNDECIDED`]), and
+/// an agent's reply that is still its open thread's newest comment, so the
+/// next word is the recipient's. One reply per thread at most.
+pub(super) const WAITING: &str = concat!(
+    "((+i.kind = 'question' AND EXISTS (SELECT 1 FROM questions q
+        WHERE q.id = i.question_id AND q.status = 'open'))
+     OR ",
+    undecided!(),
+    "
+     OR (+i.kind = 'reply' AND EXISTS (SELECT 1 FROM threads t
+        WHERE t.id = i.thread_id AND t.status = 'open')
+        AND +i.comment_id = (SELECT c.id FROM comments c WHERE c.thread_id = i.thread_id
+            ORDER BY c.created_at DESC, c.id DESC LIMIT 1)))"
+);
 /// Marks recipient `?3`'s items `?1` (a JSON array of IDs) read at `?2`,
 /// leaving undecided approval items unread.
 pub(super) const MARK_READ: &str = concat!(
@@ -720,6 +750,10 @@ pub(super) const MARK_UNREAD: &str = "UPDATE inbox_items SET read_at = NULL
 pub(super) const READ_BY_LOOK: &str = "UPDATE inbox_items SET read_at = ?3
     WHERE thread_id = ?1 AND artifact_id = ?2 AND kind = 'reply' AND read_at IS NULL AND created_at <= ?3
       AND +COALESCE(recipient, '') = ?4";
+/// Thread `?1` resolved at `?2`: every recipient's unread `reply` items on
+/// it are read, as nothing on it waits on them now.
+pub(super) const READ_BY_RESOLVE: &str = "UPDATE inbox_items SET read_at = ?2
+    WHERE thread_id = ?1 AND kind = 'reply' AND read_at IS NULL";
 pub(super) const READ_BY_SEEN: &str = "UPDATE inbox_items SET read_at = ?3
     WHERE COALESCE(recipient, '') = ?4 AND artifact_id = ?1 AND read_at IS NULL AND
       ((kind = 'version' AND version_n <= ?2) OR (kind IN ('published', 'finished') AND created_at <= ?3))";
@@ -999,6 +1033,22 @@ pub(super) fn shapes() -> Vec<(String, Built)> {
             InboxQuery {
                 recipient: Some(SAM.into()),
                 text: Some("blue".into()),
+                ..base.clone()
+            },
+        ),
+        (
+            "WAITING_PAGE",
+            InboxQuery {
+                waiting: true,
+                ..base.clone()
+            },
+        ),
+        (
+            "PERSON_WAITING_UNREAD_PAGE",
+            InboxQuery {
+                recipient: Some(SAM.into()),
+                waiting: true,
+                read: ReadFilter::Unread,
                 ..base.clone()
             },
         ),
@@ -1648,6 +1698,12 @@ pub(crate) fn read_by_look(
     for t in tids {
         c.execute(READ_BY_LOOK, params![t, aid, at, r])?;
     }
+    Ok(())
+}
+
+/// Thread `tid` resolved at `at`: its `reply` items are read, everyone's.
+pub(crate) fn read_by_resolve(c: &Connection, tid: &str, at: &str) -> Result<()> {
+    c.execute(READ_BY_RESOLVE, params![tid, at])?;
     Ok(())
 }
 
@@ -3093,6 +3149,87 @@ mod tests {
                 .all(|x| x.artifact.is_none() && x.version.is_none())
         );
         assert!(s[reply].agent.is_some(), "sessions are never deleted");
+    }
+
+    /// The owner's waiting items, oldest first: (kind, thread).
+    fn waiting(st: &Store) -> Vec<(Kind, Option<String>)> {
+        st.inbox_list(&InboxQuery {
+            waiting: true,
+            ..Default::default()
+        })
+        .unwrap()
+        .0
+        .into_iter()
+        .map(|i| (i.kind, i.thread_id))
+        .collect()
+    }
+
+    #[test]
+    fn what_waits_is_open_questions_and_the_last_word_of_open_threads() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        let (owner, aid, answered) = owner_thread(&st);
+        agent_reply(&st, &answered, &sid, "Blue now?");
+        // The owner had the last word: nothing waits on them there.
+        st.add_comment(
+            &clax_core::audit::AuditCtx::DAEMON,
+            &answered,
+            NewComment {
+                author_kind: crate::threads::AUTHOR_VIEWER,
+                author_name: "Alex".into(),
+                author_public_id: Some(owner),
+                via_session_id: None,
+                body: "yes".into(),
+                via_page: false,
+            },
+        )
+        .unwrap();
+        let (_o, _a, open) = owner_thread(&st);
+        agent_reply(&st, &open, &sid, "Teal or amber?");
+        agent_reply(&st, &open, &sid, "Or both?");
+        let qid = ask(&st, &sid, Some(aid.as_str()));
+        let (_o, _a, done) = owner_thread(&st);
+        agent_reply(&st, &done, &sid, "Done.");
+        assert_eq!(
+            waiting(&st),
+            vec![
+                (Kind::Reply, Some(open.clone())),
+                (Kind::Question, None),
+                (Kind::Reply, Some(done.clone())),
+            ],
+            "oldest first, one reply per thread"
+        );
+        let page = st
+            .inbox_list(&InboxQuery {
+                waiting: true,
+                limit: 2,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!((page.0.len(), page.1), (2, None), "no cursor oldest first");
+        let count = st
+            .inbox_count(
+                &InboxQuery {
+                    waiting: true,
+                    ..Default::default()
+                },
+                100,
+            )
+            .unwrap();
+        assert_eq!(count, 3);
+        // A resolve reads its replies and leaves the waiting view.
+        st.resolve_thread(&clax_core::audit::AuditCtx::DAEMON, &done, "agent:claude")
+            .unwrap();
+        st.close_question(DAEMON, &qid, Close::Withdraw).unwrap();
+        assert_eq!(waiting(&st), vec![(Kind::Reply, Some(open.clone()))]);
+        let unread_on = |tid: &str| {
+            all(&st)
+                .iter()
+                .filter(|i| i.thread_id.as_deref() == Some(tid) && i.read_at.is_none())
+                .count()
+        };
+        assert_eq!(unread_on(&done), 0, "resolved: read");
+        assert_eq!(unread_on(&open), 2, "open: as it was");
     }
 
     #[test]

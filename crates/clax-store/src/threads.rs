@@ -1926,6 +1926,8 @@ impl Store {
                 params![thread_id],
             )?;
             let linked = then(tx, &t)?;
+            // Nothing on it waits on anyone now: its replies are read.
+            super::inbox::read_by_resolve(tx, thread_id, &now)?;
             if t.status != "resolved" {
                 let rec = resolve_record(&now, &t.artifact_id, thread_id, Some(by), linked);
                 self.record_audit(tx, ctx, rec)?;
