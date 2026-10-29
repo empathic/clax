@@ -60,6 +60,7 @@ copy_to_bin(
         "vite.transport.config.ts",
         "vite.overlay.config.ts",
         "vitest.config.ts",
+        "vitest.sdk.config.ts",
     ],
     visibility = ["//visibility:public"],
 )
@@ -91,19 +92,22 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
-# pnpm run build: the web UI, the extension and the extension's test build.
+# pnpm run build: the web UI, the extension, the extension's test build and
+# the SDK package.
 npm_script_build(
     name = "dist_all",
     srcs = [
         ":files_app",
         ":node_modules",
         "//:cargo_toml",
+        "//:lgpl_license",
         "//docs:legal",
     ],
     out_dirs = [
         "dist",
         "dist-extension",
         "dist-extension-test",
+        "dist-sdk",
     ],
     script = "build",
     visibility = ["//visibility:public"],
@@ -126,6 +130,14 @@ pick_dir(
 pick_dir(
     name = "dist_extension_test",
     dir = "dist-extension-test",
+    src = ":dist_all",
+    visibility = ["//visibility:public"],
+)
+
+# The SDK package, @empathic/clax-sdk (scripts/build-sdk.mjs).
+pick_dir(
+    name = "dist_sdk",
+    dir = "dist-sdk",
     src = ":dist_all",
     visibility = ["//visibility:public"],
 )
@@ -234,7 +246,22 @@ npm_script_test(
     script = "test",
 )
 
-# The bundle gate: gzip sizes of the built web UI and extension against
+# The SDK package as an app gets it (pnpm run test:sdk, sdk/package.test.ts):
+# its package.json, its exports imported by name, the overlay run from its
+# bundle, and its declarations type-checked as an app's.
+npm_script_test(
+    name = "sdk_package",
+    data = [
+        ":dist_sdk",
+        ":files",
+        ":node_modules",
+        "//:lgpl_license",
+    ],
+    script = "test:sdk",
+)
+
+# The bundle gate: gzip sizes of the built web UI, extension and SDK
+# package's overlay entry against
 # web/perf/bundle-budget.json (scripts/bundle-size.mjs). Its --record mode
 # writes the budget file in the checkout and stays a native command.
 npm_script_test(
@@ -242,6 +269,7 @@ npm_script_test(
     data = [
         ":dist",
         ":dist_extension",
+        ":dist_sdk",
         ":files",
         ":node_modules",
     ],
