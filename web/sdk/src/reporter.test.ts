@@ -277,6 +277,10 @@ describe("ReporterClient", () => {
     expect(JSON.parse(text)).toEqual({ body: "half \uFFFD of a face" });
     await client.verify("t1", { note: "ok \uDC00" });
     expect(JSON.parse(new TextDecoder().decode(s.inst.sent[1].body))).toEqual({ note: "ok \uFFFD" });
+    await client.fileReport({ url: "https://a.example/", title: "t", anchor: null, body: "b", externalId: "ext-\uD800", revision: "rev-\uDBFF" });
+    const req = s.inst.sent[2];
+    const form = await new Response(req.body as BodyInit, { headers: { "content-type": req.headers["content-type"] } }).formData();
+    expect([form.get("external_id"), form.get("revision")]).toEqual(["ext-\uFFFD", "rev-\uFFFD"]);
   });
 
   it("makes its own key when none is given", async () => {

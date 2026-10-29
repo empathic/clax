@@ -132,10 +132,10 @@ export class ReporterClient {
    * as a JSON part and `diagnostics` as `diagnostics.jsonl`. */
   async fileReport(r: NewReport): Promise<Report> {
     const parts: [string, Part][] = [];
-    if (r.externalId !== undefined) parts.push(["external_id", r.externalId]);
+    if (r.externalId !== undefined) parts.push(["external_id", wellFormed(r.externalId)]);
     parts.push(["url", wellFormed(r.url)], ["title", wellFormed(r.title)], ["anchor", JSON.stringify(wellFormedDeep(r.anchor ?? null))], ["body", wellFormed(r.body)]);
     if (r.metadata !== undefined) parts.push(["metadata", JSON.stringify(wellFormedDeep(r.metadata))]);
-    if (r.revision !== undefined) parts.push(["revision", r.revision]);
+    if (r.revision !== undefined) parts.push(["revision", wellFormed(r.revision)]);
     parts.push(...await captureParts(r));
     return this.sendMultipart(queuePath(this.opts.queue, "reporter", "reports"), parts);
   }
