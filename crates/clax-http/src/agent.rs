@@ -1063,6 +1063,16 @@ impl ReadRights {
         }
     }
 
+    /// Whether the caller may read a report queue's reports, as the triage
+    /// routes ask of a member's agent: its rights hold Comments `read`
+    /// somewhere (every other caller may).
+    pub fn reads_reports(&self) -> bool {
+        match &self.rights {
+            None => true,
+            Some((rights, _)) => rights.allows_somewhere(RightType::Comments, "read"),
+        }
+    }
+
     /// Whether it is a person's agent's.
     pub fn is_person_agent(&self) -> bool {
         self.agent

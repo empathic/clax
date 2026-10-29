@@ -101,23 +101,62 @@ pub(crate) fn release_session(tx: &Transaction<'_>, sid: &str, now: &str) -> Res
     Ok(touched)
 }
 
-/// What a row's being a queue's wake (`queue_id` and `event` both set)
-/// means for handing it to session `sid`: `Some(true)` when the session
-/// acts for a member of the queue, who reads the queue's reports whole on
-/// its triage routes, so neither the person's approvals nor their rights
-/// over the report's artifact hold the wake; `Some(false)` when the
-/// session's person is no longer a member (or the queue is gone), and the
-/// wake is not handed over; `None` for any other row.
-fn queue_wake_of(
+/// What a session may read, as a take hands rows to it: the artifacts
+/// its rights reach, and whether they read a queue's reports.
+#[derive(Clone, Copy)]
+pub struct Reach<'a> {
+    /// Which artifacts the session may read; `None`: every one.
+    pub artifacts: Option<&'a (dyn Fn(&Artifact) -> bool + Sync)>,
+    /// Whether its rights hold Comments `read` somewhere: what a queue's
+    /// triage routes ask of a member's agent (`queue_get`, `queue_list`).
+    pub reports: bool,
+}
+
+impl Reach<'_> {
+    /// Every artifact, and the queues' reports.
+    pub const ALL: Reach<'static> = Reach {
+        artifacts: None,
+        reports: true,
+    };
+}
+
+/// How a take treats a row on a queue's thread: a report's wake (its
+/// filing or a reopen) or any other comment on it, such as a reporter's
+/// reply to the agent that claimed it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QueueRow {
+    /// The row is on no queue's thread.
+    No,
+    /// The session acts for a member of the queue and its rights read the
+    /// queue's reports: handed whole, as `queue_get` serves the report,
+    /// whatever its person approved and whatever artifacts its rights reach.
+    Whole,
+    /// A member's session whose rights do not read reports: held as
+    /// `no_access`, as a row on an artifact it may not read is.
+    NoAccess,
+    /// The session's person is no longer a member, the session ended, or
+    /// the queue is gone: never handed over or told of.
+    Gone,
+}
+
+/// [`QueueRow`] for a row on a thread of queue `queue_id` (`None`: of no
+/// queue) to session `sid` with `reach`.
+fn queue_row_of(
     c: &Connection,
     queue_id: Option<&str>,
-    event: Option<QueueEvent>,
     sid: &str,
-) -> Result<Option<bool>> {
-    match (queue_id, event) {
-        (Some(qid), Some(_)) => Ok(Some(super::queues::session_is_member_in(c, qid, sid)?)),
-        _ => Ok(None),
-    }
+    reach: &Reach<'_>,
+) -> Result<QueueRow> {
+    let Some(qid) = queue_id else {
+        return Ok(QueueRow::No);
+    };
+    Ok(if !super::queues::session_is_member_in(c, qid, sid)? {
+        QueueRow::Gone
+    } else if reach.reports {
+        QueueRow::Whole
+    } else {
+        QueueRow::NoAccess
+    })
 }
 
 /// Where a send's rows go (spec §10, "Data flow").
@@ -1315,7 +1354,7 @@ impl Store {
         browser_base: &str,
         vis: &Visibility,
     ) -> Result<Taken> {
-        self.take_feedback_readable(ctx, q, browser_base, vis, None)
+        self.take_feedback_readable(ctx, q, browser_base, vis, Reach::ALL)
     }
 
     /// [`Store::take_feedback`], holding as well every row on an artifact
@@ -1326,17 +1365,19 @@ impl Store {
     /// to this page", nothing of the page or its comments) and gets
     /// `no_access_at`, so the session is told once; `queue` tells of none.
     /// A row the session may read again loses `no_access_at`, and is
-    /// handed over or held as withheld as any other. `None` reads every
-    /// artifact. A queue's wake is handed whole to a member of the queue,
-    /// whatever `vis` and `readable` say, and never to a session whose
-    /// person left the queue ([`queue_wake_of`]).
+    /// handed over or held as withheld as any other. A row on a queue's
+    /// thread (a report's wake, or another comment on a report) is handed
+    /// whole to a member of the queue whose rights read its reports,
+    /// whatever `vis` and `readable.artifacts` say; held as `no_access`
+    /// for a member whose rights do not; and never handed over to a
+    /// session whose person left the queue ([`QueueRow`]).
     pub fn take_feedback_readable(
         &self,
         ctx: &AuditCtx,
         q: &TakeFeedback,
         browser_base: &str,
         vis: &Visibility,
-        readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)>,
+        readable: Reach<'_>,
     ) -> Result<Taken> {
         let cutoff = ts(self.now_utc(), Self::RESEND_AFTER_SECS);
         let resends = q.include_resends && q.tier.resends();
@@ -1428,12 +1469,15 @@ impl Store {
                     );
                     continue;
                 };
-                let wake = queue_wake_of(tx, p.queue_id.as_deref(), p.queue_event, &q.session_id)?;
-                if wake == Some(false) {
+                let row = queue_row_of(tx, p.queue_id.as_deref(), &q.session_id, &readable)?;
+                if row == QueueRow::Gone {
                     continue;
                 }
-                let member_wake = wake == Some(true);
-                if !member_wake && let Some(may) = readable {
+                let member_wake = row == QueueRow::Whole;
+                let may = |a: &Artifact| {
+                    row != QueueRow::NoAccess && readable.artifacts.is_none_or(|f| f(a))
+                };
+                if !member_wake && (row == QueueRow::NoAccess || readable.artifacts.is_some()) {
                     match sight.artifact(&p.artifact_id)? {
                         Some(a) if may(&a) => {}
                         _ => {
@@ -1948,9 +1992,9 @@ impl Store {
     /// Only rows whose comment body `vis` lets its reader see are
     /// announced, on artifacts `readable` lets the session read (`None`:
     /// every one); a held row stays unannounced until it may be seen. A
-    /// queue's wake is announced to a member of the queue whatever `vis`
-    /// and `readable` say, and never to a session whose person left it
-    /// ([`queue_wake_of`]). A
+    /// row on a queue's thread is announced to a member of the queue whose
+    /// rights read its reports whatever `vis` and `readable.artifacts` say,
+    /// and to no other session ([`QueueRow`]). A
     /// notice's title is `an artifact by <name>` when the reader may not see
     /// it (spec 2026-10-08 §8.4). A view older than the visibility
     /// generation announces nothing and answers `stale`, as
@@ -1960,7 +2004,7 @@ impl Store {
         session_id: &str,
         browser_base: &str,
         vis: &Visibility,
-        readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)>,
+        readable: Reach<'_>,
     ) -> Result<Announced> {
         let base = browser_base.trim_end_matches('/').to_string();
         let now = self.now();
@@ -2023,12 +2067,12 @@ impl Store {
                 let reopened_by = (event == Some(QueueEvent::Reopened) && !by_reporter).then(|| {
                     vis.label(&author, &Author::of_viewer(author_public_id.as_deref()))
                 });
-                let wake = queue_wake_of(tx, queue_id.as_deref(), event, session_id)?;
-                if wake == Some(false) {
+                let row = queue_row_of(tx, queue_id.as_deref(), session_id, &readable)?;
+                if matches!(row, QueueRow::Gone | QueueRow::NoAccess) {
                     continue;
                 }
-                let member_wake = wake == Some(true);
-                if !member_wake && let Some(may) = readable {
+                let member_wake = row == QueueRow::Whole;
+                if !member_wake && let Some(may) = readable.artifacts {
                     match sight.artifact(&artifact_id)? {
                         Some(a) if may(&a) => {}
                         _ => continue,
@@ -2852,7 +2896,7 @@ mod tests {
     }
 
     fn notices(st: &Store, sid: &str) -> Vec<Notice> {
-        st.take_notices(sid, BASE, &Visibility::all(), None)
+        st.take_notices(sid, BASE, &Visibility::all(), Reach::ALL)
             .unwrap()
             .notices
     }
@@ -3339,7 +3383,7 @@ mod tests {
         let tid = thread(&st, &aid, "hi");
         st.send_to_agent(DAEMON, &tid).unwrap();
         assert!(
-            st.take_notices(&grok, "http://h:1", &Visibility::all(), None)
+            st.take_notices(&grok, "http://h:1", &Visibility::all(), Reach::ALL)
                 .unwrap()
                 .notices
                 .is_empty(),
@@ -3347,14 +3391,14 @@ mod tests {
         );
         st.ensure_watch(DAEMON, &grok, &aid).unwrap();
         let n = st
-            .take_notices(&grok, "http://h:1", &Visibility::all(), None)
+            .take_notices(&grok, "http://h:1", &Visibility::all(), Reach::ALL)
             .unwrap()
             .notices;
         assert_eq!(n.len(), 1);
         assert_eq!(n[0].thread_id, tid);
         assert_eq!(n[0].url, format!("http://h:1/a/{}", aid.as_str()));
         assert!(
-            st.take_notices(&grok, "http://h:1", &Visibility::all(), None)
+            st.take_notices(&grok, "http://h:1", &Visibility::all(), Reach::ALL)
                 .unwrap()
                 .notices
                 .is_empty(),
@@ -3375,7 +3419,7 @@ mod tests {
         st.send_to_agent(DAEMON, &tid).unwrap();
         take(&st, &grok, Tier::Piggyback);
         assert!(
-            st.take_notices(&grok, "http://h:1", &Visibility::all(), None)
+            st.take_notices(&grok, "http://h:1", &Visibility::all(), Reach::ALL)
                 .unwrap()
                 .notices
                 .is_empty()
@@ -3391,7 +3435,7 @@ mod tests {
         let tid = thread(&st, &aid, "hi");
         st.send_to_agent(DAEMON, &tid).unwrap();
         assert_eq!(
-            st.take_notices(&first, "http://h:1", &Visibility::all(), None)
+            st.take_notices(&first, "http://h:1", &Visibility::all(), Reach::ALL)
                 .unwrap()
                 .notices
                 .len(),
@@ -3402,7 +3446,7 @@ mod tests {
         st.watch(DAEMON, &next, &aid, true).unwrap();
         st.retarget_untargeted(&aid, &next).unwrap();
         assert_eq!(
-            st.take_notices(&next, "http://h:1", &Visibility::all(), None)
+            st.take_notices(&next, "http://h:1", &Visibility::all(), Reach::ALL)
                 .unwrap()
                 .notices
                 .len(),
@@ -4507,18 +4551,9 @@ mod delivery {
         }
     }
 
-    /// Spec §16: a grant session's payload names its clip by reference,
-    /// never by a path on the daemon's machine; the daemon token's agents
-    /// read the clip's file where the content is files.
-    /// A queue's wake reaches a member's agent whose person approved no
-    /// one, and whose rights do not reach the report's artifact: the
-    /// reporter is no connected person, but a member reads the queue's
-    /// reports whole on its triage routes, which the wake names. A wake
-    /// left undelivered when the person is no longer a member is not
-    /// handed over.
-    #[test]
-    fn a_queue_wake_reaches_a_member_whatever_their_approvals() {
-        let w = two_people();
+    /// Sam's queue, for whose reports he is a triage member, his agent
+    /// watching it, and a reporter's token for it.
+    fn sams_queue(w: &Two) -> (String, crate::queues::ReporterToken) {
         let qid =
             w.st.create_queue(
                 DAEMON,
@@ -4543,43 +4578,44 @@ mod delivery {
             expires_at: "2099-01-01T00:00:00.000Z".into(),
             profile: None,
         };
-        let file = |title: &str| {
-            w.st.file_report(
-                DAEMON,
-                &qid,
-                Some(&tok),
-                crate::queues::ExternalScope::Instance,
-                crate::queues::NewReport {
-                    external_id: Some(format!("page:{title}")),
-                    url: "https://app.example.com/invoices/4821".into(),
-                    title: title.into(),
-                    anchor: anchor(),
-                    body: "The total is wrong".into(),
-                    author_name: "emp-1".into(),
-                    metadata: serde_json::Value::Null,
-                    revision: None,
-                    clip: None,
-                    context: None,
-                    server: None,
-                    diagnostics: None,
-                },
-            )
-            .unwrap()
-            .id
-        };
-        let tid = file("Invoice 4821");
+        (qid, tok)
+    }
+
+    /// Files a report titled `title` into `qid` with `tok`; its ID.
+    fn file_into(w: &Two, qid: &str, tok: &crate::queues::ReporterToken, title: &str) -> String {
+        w.st.file_report(
+            DAEMON,
+            qid,
+            Some(tok),
+            crate::queues::ExternalScope::Instance,
+            crate::queues::NewReport {
+                external_id: Some(format!("page:{title}")),
+                url: "https://app.example.com/invoices/4821".into(),
+                title: title.into(),
+                anchor: anchor(),
+                body: "The total is wrong".into(),
+                author_name: "emp-1".into(),
+                metadata: serde_json::Value::Null,
+                revision: None,
+                clip: None,
+                context: None,
+                server: None,
+                diagnostics: None,
+            },
+        )
+        .unwrap()
+        .id
+    }
+
+    /// A take by Sam's agent at tier wait with `reach`, and the notices it
+    /// is told of first.
+    fn sams_take(w: &Two, reach: Reach<'_>) -> (Vec<Notice>, Taken) {
         let vis = w.sam_vis();
         assert!(!vis.is_all());
-        let none: &(dyn Fn(&Artifact) -> bool + Sync) = &|_| false;
         let n =
-            w.st.take_notices(&w.sid, BASE, &vis, Some(none))
+            w.st.take_notices(&w.sid, BASE, &vis, reach)
                 .unwrap()
                 .notices;
-        assert_eq!(n.len(), 1, "{n:?}");
-        assert_eq!(
-            (n[0].event, n[0].thread_id.as_str()),
-            (Some(QueueEvent::Filed), tid.as_str())
-        );
         let q = TakeFeedback {
             session_id: w.sid.clone(),
             tier: Tier::Wait,
@@ -4587,33 +4623,147 @@ mod delivery {
             include_resends: false,
         };
         let taken =
-            w.st.take_feedback_readable(DAEMON, &q, BASE, &vis, Some(none))
+            w.st.take_feedback_readable(DAEMON, &q, BASE, &vis, reach)
                 .unwrap();
+        (n, taken)
+    }
+
+    const NO_ARTIFACT: &(dyn Fn(&Artifact) -> bool + Sync) = &|_| false;
+
+    /// A queue's wake reaches a member's agent whose rights read reports
+    /// whole, though its person approved no one and its rights reach no
+    /// artifact: the reporter is no connected person, but `queue_get`
+    /// serves the report to that agent whole.
+    #[test]
+    fn a_queue_wake_reaches_a_member_who_reads_reports_whole() {
+        let w = two_people();
+        let (qid, tok) = sams_queue(&w);
+        let tid = file_into(&w, &qid, &tok, "Invoice 4821");
+        let (n, taken) = sams_take(
+            &w,
+            Reach {
+                artifacts: Some(NO_ARTIFACT),
+                reports: true,
+            },
+        );
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(
+            (n[0].event, n[0].thread_id.as_str()),
+            (Some(QueueEvent::Filed), tid.as_str())
+        );
         assert!(taken.placeholders.is_empty(), "{:?}", taken.placeholders);
         assert_eq!(taken.items.len(), 1, "{:?}", taken.items);
         assert_eq!(taken.items[0].queue_event, Some(QueueEvent::Filed));
         assert_eq!(taken.items[0].thread_id, tid);
         assert_eq!(taken.items[0].body, "The total is wrong");
+    }
 
-        // Sam leaves the queue after a filing woke his agent.
-        let left = file("Invoice 4822");
-        w.st.set_member(DAEMON, &qid, &w.sam, None).unwrap();
-        let n =
-            w.st.take_notices(&w.sid, BASE, &vis, Some(none))
-                .unwrap()
-                .notices;
+    /// A member's agent whose rights do not read reports (a grant that may
+    /// watch the queue and no more, or rights narrowed after it watched)
+    /// is told of the wake as `no_access`, as `queue_get` refuses it, and
+    /// never given the report.
+    #[test]
+    fn a_queue_wake_to_a_member_who_cannot_read_reports_is_no_access() {
+        let w = two_people();
+        let (qid, tok) = sams_queue(&w);
+        let tid = file_into(&w, &qid, &tok, "Invoice 4821");
+        let watch_only = Reach {
+            artifacts: Some(NO_ARTIFACT),
+            reports: false,
+        };
+        let (n, taken) = sams_take(&w, watch_only);
         assert!(n.is_empty(), "{n:?}");
-        let taken =
-            w.st.take_feedback_readable(DAEMON, &q, BASE, &vis, Some(none))
-                .unwrap();
+        assert!(taken.items.is_empty(), "{:?}", taken.items);
+        assert_eq!(taken.placeholders.len(), 1, "{:?}", taken.placeholders);
+        let p = serde_json::to_value(&taken.placeholders[0]).unwrap();
+        assert_eq!(p["thread_id"], tid.as_str(), "{p}");
+        assert!(!p.to_string().contains("The total is wrong"), "{p}");
+        // Told once.
+        let (_, again) = sams_take(&w, watch_only);
+        assert!(again.items.is_empty() && again.placeholders.is_empty());
+        // Rights that read reports again: handed over whole.
+        let (_, whole) = sams_take(
+            &w,
+            Reach {
+                artifacts: Some(NO_ARTIFACT),
+                reports: true,
+            },
+        );
+        assert_eq!(whole.items.len(), 1, "{:?}", whole.items);
+        assert_eq!(whole.items[0].thread_id, tid);
+    }
+
+    /// A reporter's reply to the agent that claimed its report reaches that
+    /// agent whole, as the report's wakes do.
+    #[test]
+    fn a_reporters_reply_reaches_the_claiming_member_whole() {
+        let w = two_people();
+        let (qid, tok) = sams_queue(&w);
+        let tid = file_into(&w, &qid, &tok, "Invoice 4821");
+        let reach = Reach {
+            artifacts: Some(NO_ARTIFACT),
+            reports: true,
+        };
+        sams_take(&w, reach);
+        w.st.claim(DAEMON, &qid, &tid, &w.sid).unwrap();
+        w.st.reporter_comment(DAEMON, &qid, &tid, "emp-1", "It is the total in euros")
+            .unwrap();
+        let (_, taken) = sams_take(&w, reach);
+        assert!(taken.placeholders.is_empty(), "{:?}", taken.placeholders);
+        assert_eq!(taken.items.len(), 1, "{:?}", taken.items);
+        assert_eq!(taken.items[0].thread_id, tid);
+        assert_eq!(taken.items[0].body, "It is the total in euros");
+        assert_eq!(taken.items[0].queue_event, None);
+    }
+
+    /// No wake reaches a session whose person left the queue, a queue that
+    /// is gone, or a session that ended: nothing is handed over or told of.
+    #[test]
+    fn a_queue_wake_reaches_no_former_member_gone_queue_or_ended_session() {
+        let reach = Reach {
+            artifacts: Some(NO_ARTIFACT),
+            reports: true,
+        };
+        let w = two_people();
+        let (qid, tok) = sams_queue(&w);
+        file_into(&w, &qid, &tok, "Invoice 4821");
+        w.st.set_member(DAEMON, &qid, &w.sam, None).unwrap();
+        let (n, taken) = sams_take(&w, reach);
+        assert!(n.is_empty(), "{n:?}");
         assert!(
-            taken.items.iter().all(|i| i.thread_id != left),
+            taken.items.is_empty() && taken.placeholders.is_empty(),
             "{:?}",
             taken.items
         );
-        assert!(taken.placeholders.is_empty(), "{:?}", taken.placeholders);
+
+        let w = two_people();
+        let (qid, tok) = sams_queue(&w);
+        file_into(&w, &qid, &tok, "Invoice 4821");
+        w.st.delete_queue(DAEMON, &qid).unwrap();
+        let (n, taken) = sams_take(&w, reach);
+        assert!(n.is_empty(), "{n:?}");
+        assert!(
+            taken.items.is_empty() && taken.placeholders.is_empty(),
+            "{:?}",
+            taken.items
+        );
+
+        let w = two_people();
+        let (qid, tok) = sams_queue(&w);
+        file_into(&w, &qid, &tok, "Invoice 4821");
+        w.st.end_session(DAEMON, &w.sid).unwrap();
+        let (n, taken) = sams_take(&w, reach);
+        assert!(n.is_empty(), "{n:?}");
+        assert!(
+            taken.items.is_empty() && taken.placeholders.is_empty(),
+            "{:?}",
+            taken.items
+        );
     }
 
+    /// Spec §16: a grant session's payload names its clip by reference,
+    /// never by a path on the daemon's machine; the daemon token's agents
+    /// read the clip's file where the content is files.
     #[test]
     fn a_grant_sessions_clip_is_a_reference() {
         let w = two_people();
@@ -5032,7 +5182,7 @@ mod delivery {
             })
             .unwrap();
         assert!(told.is_none(), "nothing written");
-        let n = w.st.take_notices(&w.sid, BASE, &old, None).unwrap();
+        let n = w.st.take_notices(&w.sid, BASE, &old, Reach::ALL).unwrap();
         assert!(n.stale && n.notices.is_empty());
         let r = w.take(Tier::Piggyback, &w.sam_vis());
         assert!(!r.stale);
@@ -5090,14 +5240,17 @@ mod delivery {
         let tid = w.thread(&aid, &w.mia, "MIACANARY", MIA_QUOTE, 1);
         let vis = w.sam_vis();
         assert!(
-            w.st.take_notices(&w.sid, BASE, &vis, None)
+            w.st.take_notices(&w.sid, BASE, &vis, Reach::ALL)
                 .unwrap()
                 .notices
                 .is_empty()
         );
         w.approve(&w.mia, Scope::Thread(tid.clone()));
         let vis = w.sam_vis();
-        let n = w.st.take_notices(&w.sid, BASE, &vis, None).unwrap().notices;
+        let n =
+            w.st.take_notices(&w.sid, BASE, &vis, Reach::ALL)
+                .unwrap()
+                .notices;
         assert_eq!(n.len(), 1);
         assert_eq!(
             n[0].title, "an artifact by Mia",
@@ -5121,12 +5274,30 @@ mod delivery {
         let none = |_: &Artifact| false;
         // `queue` tells of none.
         let r =
-            w.st.take_feedback_readable(DAEMON, &q(Tier::Queue), BASE, &vis, Some(&none))
-                .unwrap();
+            w.st.take_feedback_readable(
+                DAEMON,
+                &q(Tier::Queue),
+                BASE,
+                &vis,
+                Reach {
+                    artifacts: Some(&none),
+                    reports: true,
+                },
+            )
+            .unwrap();
         assert!(r.items.is_empty() && r.placeholders.is_empty());
         let r =
-            w.st.take_feedback_readable(DAEMON, &q(Tier::Piggyback), BASE, &vis, Some(&none))
-                .unwrap();
+            w.st.take_feedback_readable(
+                DAEMON,
+                &q(Tier::Piggyback),
+                BASE,
+                &vis,
+                Reach {
+                    artifacts: Some(&none),
+                    reports: true,
+                },
+            )
+            .unwrap();
         assert!(r.items.is_empty());
         assert_eq!(r.placeholders.len(), 1, "{:?}", r.placeholders);
         let p = &r.placeholders[0];
@@ -5146,14 +5317,31 @@ mod delivery {
         assert!(r.touched.threads.iter().any(|(_, t)| t == &tid));
         // Told once.
         let r =
-            w.st.take_feedback_readable(DAEMON, &q(Tier::Wait), BASE, &vis, Some(&none))
-                .unwrap();
+            w.st.take_feedback_readable(
+                DAEMON,
+                &q(Tier::Wait),
+                BASE,
+                &vis,
+                Reach {
+                    artifacts: Some(&none),
+                    reports: true,
+                },
+            )
+            .unwrap();
         assert!(r.items.is_empty() && r.placeholders.is_empty());
         assert!(
-            w.st.take_notices(&w.sid, BASE, &vis, Some(&none))
-                .unwrap()
-                .notices
-                .is_empty()
+            w.st.take_notices(
+                &w.sid,
+                BASE,
+                &vis,
+                Reach {
+                    artifacts: Some(&none),
+                    reports: true
+                }
+            )
+            .unwrap()
+            .notices
+            .is_empty()
         );
         // Held, not delivered: readable again, the rows are handed over.
         assert!(w.rows(&tid).iter().all(|f| f.delivered_at.is_none()));
@@ -5177,8 +5365,17 @@ mod delivery {
         };
         let none = |_: &Artifact| false;
         let r =
-            w.st.take_feedback_readable(DAEMON, &q, BASE, &vis, Some(&none))
-                .unwrap();
+            w.st.take_feedback_readable(
+                DAEMON,
+                &q,
+                BASE,
+                &vis,
+                Reach {
+                    artifacts: Some(&none),
+                    reports: true,
+                },
+            )
+            .unwrap();
         assert_eq!(r.placeholders.len(), 1);
         assert!(r.placeholders[0].no_access);
         let marks = || -> (Option<String>, Option<String>) {
@@ -5238,8 +5435,17 @@ mod delivery {
         );
         // Losing access again tells again.
         let r =
-            w.st.take_feedback_readable(DAEMON, &q, BASE, &vis, Some(&none))
-                .unwrap();
+            w.st.take_feedback_readable(
+                DAEMON,
+                &q,
+                BASE,
+                &vis,
+                Reach {
+                    artifacts: Some(&none),
+                    reports: true,
+                },
+            )
+            .unwrap();
         assert!(
             r.placeholders.iter().any(|p| p.no_access),
             "{:?}",
