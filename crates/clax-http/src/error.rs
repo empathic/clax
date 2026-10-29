@@ -236,6 +236,22 @@ impl From<CoreError> for ApiError {
             e @ CoreError::ClaimRequired => {
                 ApiError::new(StatusCode::CONFLICT, "claim_required", e.to_string())
             }
+            // The feedback loop (spec 2026-10-29-feedback-loop-design §5, §6).
+            e @ CoreError::InvalidContext(_) => {
+                ApiError::bad_request("invalid_context", e.to_string())
+            }
+            e @ CoreError::InvalidDiagnostics(_) => {
+                ApiError::bad_request("invalid_diagnostics", e.to_string())
+            }
+            e @ CoreError::InvalidProfile(_) => {
+                ApiError::bad_request("invalid_profile", e.to_string())
+            }
+            e @ CoreError::NotFixProposed => {
+                ApiError::new(StatusCode::CONFLICT, "not_fix_proposed", e.to_string())
+            }
+            e @ CoreError::NotClaimable => {
+                ApiError::new(StatusCode::CONFLICT, "not_claimable", e.to_string())
+            }
             e @ CoreError::ExternalArtifact => {
                 ApiError::bad_request("external_artifact", e.to_string())
             }
@@ -365,6 +381,31 @@ mod tests {
                 "token_expired",
             ),
             (CoreError::NotAMember, StatusCode::NOT_FOUND, "not_a_member"),
+            (
+                CoreError::InvalidContext("x".into()),
+                StatusCode::BAD_REQUEST,
+                "invalid_context",
+            ),
+            (
+                CoreError::InvalidDiagnostics("x".into()),
+                StatusCode::BAD_REQUEST,
+                "invalid_diagnostics",
+            ),
+            (
+                CoreError::InvalidProfile("x".into()),
+                StatusCode::BAD_REQUEST,
+                "invalid_profile",
+            ),
+            (
+                CoreError::NotFixProposed,
+                StatusCode::CONFLICT,
+                "not_fix_proposed",
+            ),
+            (
+                CoreError::NotClaimable,
+                StatusCode::CONFLICT,
+                "not_claimable",
+            ),
             (
                 CoreError::QueueReport {
                     queue_id: "q1".into(),
