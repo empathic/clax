@@ -65,6 +65,8 @@ lane_scripts() {
     run "justfile"              scripts/test-justfile.sh &&
     run "release scripts"       scripts/test-release.sh &&
     run "release command"       scripts/test-release-script.sh &&
+    run "version bump"          scripts/test-check-version-bump.sh &&
+    run "prod GitHub setup"     scripts/test-setup-prod-github.sh &&
     run "tool hook gate"        scripts/test-tool-hook.sh &&
     run "extension signing"     scripts/test-extension-signing.sh &&
     run "stable bin"            scripts/test-stable-bin.sh &&

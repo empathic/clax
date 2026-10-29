@@ -620,6 +620,8 @@ Performance gates nothing in either (`just perf` measures on demand).
 | justfile | `scripts/test-justfile.sh`, outside Bazel |
 | release scripts | `//scripts:release` |
 | release command | `//scripts:release_script` |
+| version bump | `//scripts:version_bump` |
+| prod GitHub setup | `//scripts:setup_prod_github` |
 | tool hook gate | `//scripts:tool_hook` |
 | extension signing | `scripts/test-extension-signing.sh`, outside Bazel |
 | stable bin | `//scripts:stable_bin` |

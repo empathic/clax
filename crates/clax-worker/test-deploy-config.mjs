@@ -115,6 +115,17 @@ try {
     }
   });
 
+  check("--retired-content-origin names the retired content host without a record, and replaces the record's", () => {
+    const r = deploy(["--public", "norecord.example.com", "--site-domain", "norecord.run", "--retired-content-origin", "https://content.norecord.example.com"]);
+    assert.equal(r.status, 0, r.text);
+    assert.equal(r.config.vars.RETIRED_CONTENT_ORIGIN, "https://content.norecord.example.com");
+    assert.deepEqual(r.config.routes[2], { pattern: "content.norecord.example.com", custom_domain: true });
+    const over = deploy(["--public", "old.example.com", "--retired-content-origin", "https://content2.old.example.com"]);
+    assert.equal(over.status, 0, over.text);
+    assert.equal(over.config.vars.RETIRED_CONTENT_ORIGIN, "https://content2.old.example.com");
+  });
+  check("--retired-content-origin takes an https:// origin alone", () => refused(["--public", "kept.example.com", "--retired-content-origin", "https://c.example.com/x"], /--retired-content-origin takes an https:\/\/ origin/));
+
   check("a given site domain replaces the record's", () => {
     const r = deploy(["--public", "kept.example.com", "--site-domain", "other.run"]);
     assert.equal(r.status, 0, r.text);

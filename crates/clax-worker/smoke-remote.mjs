@@ -5,21 +5,29 @@
 //   node smoke-remote.mjs --url https://clax.example.com --setup-secret … --token …
 //   node smoke-remote.mjs --url … --session <the clax session cookie's value> --token …
 //   node smoke-remote.mjs --url … --site-domain example.run …   # the site domain (else the record's site_domain)
+//   CLAX_SMOKE_TOKEN=cxa_… node smoke-remote.mjs --deploy …    # as an agent token (or --agent-token cxa_…)
 //   node smoke-remote.mjs --local [--no-build]   # against a fresh `wrangler dev --local`, REPO_STORE=memory
 //   node smoke-remote.mjs --local --setup-done   # the same, its setup done beforehand, as after an earlier
 //                                                # deploy (--without-token: and no owner token: a FAIL)
+//   node smoke-remote.mjs --local --as-agent     # the same, with an agent token the earlier owner minted,
+//                                                # and nothing else: as the deploy workflow's smoke
 //   node smoke-remote.mjs --local --remote-artifacts   # the same Worker locally on the account's real
 //                                                      # Artifacts (binding `remote: true`; needs the login)
 //
 // Steps: health; the diagnostics' view of the bindings; with Artifacts, the
 // binding's raw calls on a scratch repository (src/diag.rs's probe: get of
 // a missing repository, create, tokens, reads of missing objects, the
-// remote's advertisements, a fork, deletes); the owner: the given owner
-// session (--session), else setup with the secret when setup is open, else
-// the owner token (CLAX_TOKEN: --token, or deploy.mjs's record), as on
-// every deploy after the first, with which the steps that only a signed-in
-// browser can take (an agent token, /site-signin) skip and say so, and the
-// rest act as the owner token (no credential at all is a FAIL); an agent
+// remote's advertisements, a fork, deletes); the credential: the given
+// owner session (--session), else an agent token (CLAX_SMOKE_TOKEN or
+// --agent-token, as the deploy workflow runs it), else setup with the
+// secret when setup is open, else the owner token (CLAX_TOKEN: --token, or
+// deploy.mjs's record), as on every deploy after the first (no credential
+// at all is a FAIL). The steps a credential cannot take skip, each named
+// with why (deploy-lib.mjs SMOKE_CANNOT): with the owner token those only
+// a signed-in browser can take (an agent token, /site-signin); with an
+// agent token those only its person can (the diagnostics, the shell's
+// pages, a site's sign-ins, opening a site to the world, the live
+// stream), its fork and git token coming from the MCP tools. Then an agent
 // token; two versions published over /mcp and read back; a fork, read back;
 // the artifact's own site host (`<ID>.<site domain>`, from --site-domain or
 // the record; `localhost` with --local): its health, a private site refused
@@ -50,11 +58,14 @@
 // step failed. --json prints the whole report as JSON at the end; --probe
 // runs the Artifacts probe whatever the store (under `wrangler dev --local`
 // every call on the binding throws); --queue-wait <s> (default 120) bounds
-// the wait for the pushed event; --no-subscribe makes no subscription.
+// the wait for the pushed event; --no-subscribe makes no subscription;
+// --store artifacts|memory names the store until the diagnostics say (else
+// the record's), which an agent token's smoke, without them, goes by.
 
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { SMOKE_CANNOT, smokeCannot, smokeCredential } from "./deploy-lib.mjs";
 import { HERE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
 
 const args = process.argv.slice(2);
@@ -69,15 +80,26 @@ const RUN = Math.random().toString(36).slice(2, 8);
 const STEP_LIMIT = 30_000;
 const results = [];
 const failed = new Set();
+/** Who the smoke acts as, once the credential step chose
+ * (deploy-lib.mjs smokeCredential): the steps it cannot take skip. */
+let acting = "";
 
 function short(v, n = 300) {
   const s = typeof v === "string" ? v : JSON.stringify(v);
   return s && s.length > n ? `${s.slice(0, n)}…` : s;
 }
 
-/** Runs step `name` unless one of `needs` failed or was skipped; `fn`
- * answers its detail, or throws. `skip(reason)` inside skips it. */
+/** Runs step `name` unless the credential cannot take it
+ * (deploy-lib.mjs SMOKE_CANNOT) or one of `needs` failed or was skipped;
+ * `fn` answers its detail, or throws. `skip(reason)` inside skips it. */
 async function step(name, fn, needs = []) {
+  const cannot = smokeCannot(acting, name);
+  if (cannot) {
+    failed.add(name);
+    results.push({ name, status: "skip", ms: 0, detail: cannot, cannot: true });
+    console.log(`skip ${name} (not as ${CREDENTIAL_NAMES[acting]}): ${cannot}`);
+    return undefined;
+  }
   const missing = needs.filter((n) => failed.has(n));
   if (missing.length) {
     failed.add(name);
@@ -177,16 +199,19 @@ class Client {
     return at(`${this.base}${path}`, { redirect: "follow", ...init });
   }
 
-  /** The owner's credential as headers: the owner token, or the cookie. */
+  /** The credential as headers: the owner token, the agent token, or the
+   * owner's cookie. */
   credential() {
     if (this.as === "token") return { authorization: `Bearer ${this.token}` };
+    if (this.as === "agent") return { authorization: `Bearer ${this.agent}` };
     return this.cookie ? { cookie: this.cookie } : {};
   }
 
   /** A call as the owner, same origin: the browser's session cookie, or
    * the owner token as a bearer token when the smoke acts as the token. */
   async owner(path, init = {}) {
-    const headers = { origin: this.base, ...this.credential(), ...(init.headers ?? {}) };
+    // An agent token's request carries no Origin (a browser's would).
+    const headers = { ...(this.as === "agent" ? {} : { origin: this.base }), ...this.credential(), ...(init.headers ?? {}) };
     if (init.body !== undefined && typeof init.body === "string") headers["content-type"] ??= "application/json";
     const r = await this.raw(path, { ...init, headers });
     if (r.status >= 400) throw new Error(`${init.method ?? "GET"} ${path}: ${r.status} ${short(r.text)}`);
@@ -317,18 +342,19 @@ function probeLine(s) {
   return `       ${String(Math.round(s.ms ?? 0)).padStart(5)} ms  ${s.call} ${what}`;
 }
 
+/** A write token for the artifact's repository: the diagnostics' with the
+ * owner token, the git_remote tool's with an agent token. */
+const GIT_TOKEN = "git token (diagnostics, or git_remote as an agent)";
+
 const PAGE = (marker) =>
   `<!doctype html><title>Smoke ${RUN}</title><style>:root{--bg:#fff;--fg:#111}@media (prefers-color-scheme: dark){:root{--bg:#111;--fg:#eee}}body{background:var(--bg);color:var(--fg);font:16px system-ui;margin:0 16px}</style><main><h1>Smoke ${RUN}</h1><p id=m>${marker}</p></main>`;
 
-/** The step that makes the smoke the owner: setup with the secret while
- * setup is open, the given session, else the owner token. */
-const OWNER = "owner: setup, session or owner token";
-/** The steps only a signed-in browser can take: they skip, saying so,
- * when the smoke acts with the owner token (POST and DELETE
- * /api/hosted/agent-tokens refuse any request with Authorization; the
- * MCP steps then use the owner token, as the daemon token's sessionless
- * agent). */
-const SESSION_ONLY = ["agent token", "/site-signin"];
+/** The step that chooses the smoke's credential (deploy-lib.mjs
+ * smokeCredential): the given session, an agent token, setup with the
+ * secret while setup is open, else the owner token. With the owner token
+ * the MCP steps act as the daemon token's sessionless agent. */
+const OWNER = "credential: a session, an agent token, setup or the owner token";
+const CREDENTIAL_NAMES = { session: "the owner's session", agent: "an agent token", setup: "the owner made by setup", token: "the owner token" };
 
 async function smoke(c, o) {
   const store = { value: o.store ?? null };
@@ -339,6 +365,9 @@ async function smoke(c, o) {
   let agentTokenId = "";
   let subscription = "";
   let madeOwner = false;
+  // An agent token is chosen whatever setup's state (smokeCredential), so
+  // the steps before the credential step already know it.
+  if (smokeCredential({ session: o.session, agent: c.agent }) === "agent") acting = "agent";
 
   await step("health", async () => {
     const r = await c.raw("/healthz");
@@ -372,25 +401,37 @@ async function smoke(c, o) {
     const me = await c.raw("/api/hosted/me");
     if (me.status !== 200) throw new Error(`/api/hosted/me: ${me.status} ${short(me.text)}`);
     if (me.json.origin !== c.base) throw new Error(`the instance names its origin ${me.json.origin}, not ${c.base}: PUBLIC_ORIGIN differs from the URL used`);
-    if (o.session) {
+    const as = smokeCredential({ session: o.session, agent: c.agent, setupOpen: me.json.setup_open, secret: o.secret, token: c.token });
+    if (as === "session") {
       c.cookie = o.session.includes("=") ? o.session : `${c.base.startsWith("https:") ? "__Host-clax_session" : "clax_session"}=${o.session}`;
-      c.as = "session";
+      c.as = acting = "session";
       const who = await c.owner("/api/hosted/me");
       if (!who.json.signed_in) throw new Error(`the given session is not signed in: ${short(who.json)}`);
       return { detail: `the given session, signed in as ${who.json.person?.name ?? "?"}` };
     }
-    if (!me.json.setup_open || !o.secret) {
+    if (as === "agent") {
+      // As the deploy workflow's smoke: an agent token alone (CLAX_SMOKE_TOKEN).
+      c.as = acting = "agent";
+      // Nothing else of the owner's: the diagnostics skip.
+      c.token = "";
+      const r = await c.owner("/api/artifacts?limit=1").catch((e) => {
+        throw new Error(`the agent token was refused: ${e.message}`);
+      });
+      if (!Array.isArray(r.json?.artifacts)) throw new Error(`GET /api/artifacts with the agent token answered ${short(r.json ?? r.text)}`);
+      return { detail: "acting as the agent token; the steps only its person can take skip, each named" };
+    }
+    if (as !== "setup") {
       // Setup was done by an earlier deploy (or there is no secret to do
       // it with): act as the owner with the owner token, which the routes
       // take as on a local daemon. Without it nothing is tested: FAIL.
       const why = me.json.setup_open ? "setup is open but no --setup-secret was given" : "setup is closed (done already)";
-      if (!c.token) throw new Error(`${why}, and there is no owner token: pass --deploy <deploy.mjs's record> or --token <CLAX_TOKEN>, or --session <the owner's session cookie>`);
-      c.as = "token";
+      if (as === null) throw new Error(`${why}, and there is no owner token or agent token: pass --deploy <deploy.mjs's record> or --token <CLAX_TOKEN>, CLAX_SMOKE_TOKEN or --agent-token <cxa_…>, or --session <the owner's session cookie>`);
+      c.as = acting = "token";
       const r = await c.owner("/api/artifacts?limit=1").catch((e) => {
         throw new Error(`${why}; the owner token was refused: ${e.message}`);
       });
       if (!Array.isArray(r.json?.artifacts)) throw new Error(`${why}; GET /api/artifacts with the owner token answered ${short(r.json ?? r.text)}`);
-      return { detail: `${why}: acting with the owner token; the steps that need a browser session (${SESSION_ONLY.join(", ")}) skip` };
+      return { detail: `${why}: acting with the owner token; the steps that need a browser session skip, each named` };
     }
     const page = await c.raw("/setup", { headers: { accept: "text/html" } });
     if (page.status !== 200 || !/<!doctype html/i.test(page.text)) throw new Error(`the /setup page: ${page.status} ${short(page.text, 200)}`);
@@ -403,7 +444,7 @@ async function smoke(c, o) {
     c.cookie = sessionCookie(r.res);
     if (!c.cookie) throw new Error(`setup answered ${r.status} without a session cookie`);
     madeOwner = true;
-    c.as = "session";
+    c.as = acting = "session";
     o.onSetup?.();
     return { detail: `set up as ${o.ownerName}; cookie ${c.cookie.split("=")[0]}` };
   }, ["health"]);
@@ -426,7 +467,6 @@ async function smoke(c, o) {
   }, [OWNER]);
 
   await step("agent token", async () => {
-    if (c.as === "token") skip("only a signed-in browser mints agent tokens (--session <cookie> runs this step); the MCP steps use the owner token");
     const r = await c.owner("/api/hosted/agent-tokens", { method: "POST", body: JSON.stringify({ label: `smoke-remote ${RUN}` }) });
     c.agent = r.json.token;
     agentTokenId = r.json.id;
@@ -444,7 +484,7 @@ async function smoke(c, o) {
     const names = (list.tools ?? []).map((t) => t.name);
     for (const n of ["publish", "read", "delete"]) if (!names.includes(n)) throw new Error(`no ${n} tool among ${names.join(", ")}`);
     return { detail: `${init.serverInfo?.name} ${init.serverInfo?.version}; ${names.length} tools; as ${c.agent ? "the agent token" : "the owner token"}` };
-  }, c.as === "token" ? [OWNER] : ["agent token"]);
+  }, c.as === "token" || c.as === "agent" ? [OWNER] : ["agent token"]);
 
   await step("publish v1 (mcp)", async () => {
     const r = await c.tool("publish", { html: PAGE(`v1 ${RUN}`), title: `Smoke ${RUN}` });
@@ -469,12 +509,22 @@ async function smoke(c, o) {
   }, ["publish v2 (mcp)"]);
 
   await step("fork", async () => {
-    const r = await c.owner(`/api/artifacts/${aid}/fork`, { method: "POST", body: "{}" });
-    fork = r.json?.artifact?.id;
-    if (!fork) throw new Error(`no fork in ${short(r.json)}`);
+    // A person forks in the web UI (REST); an agent with the MCP tool.
+    let n = "?";
+    if (c.as === "agent") {
+      const r = await c.tool("fork", { url_or_id: aid });
+      fork = r.json?.id ?? r.json?.artifact?.id ?? r.json?.artifact_id ?? "";
+      n = r.json?.forked_from?.version ?? r.json?.version ?? "?";
+      if (!fork) throw new Error(`no fork in ${short(r.text)}`);
+    } else {
+      const r = await c.owner(`/api/artifacts/${aid}/fork`, { method: "POST", body: "{}" });
+      fork = r.json?.artifact?.id;
+      if (!fork) throw new Error(`no fork in ${short(r.json)}`);
+      n = r.json.version?.n ?? r.json.version ?? "?";
+    }
     const read = await c.tool("read", { url_or_id: fork });
     if (!read.text.includes(`v2 ${RUN}`)) throw new Error(`the fork reads ${short(read.text)}`);
-    return { detail: `fork ${fork} of v${r.json.version?.n ?? r.json.version ?? "?"} reads v2's content` };
+    return { detail: `fork ${fork} of v${n} reads v2's content${c.as === "agent" ? " (the MCP fork tool)" : ""}` };
   }, ["read back v1 and v2 (mcp)"]);
 
   // The artifact's own site host. A Worker without site hosts refuses the
@@ -529,7 +579,6 @@ async function smoke(c, o) {
   }, ["site host: health"]);
 
   await step("site: /site-signin, then /_clax/session (SameSite=Lax)", async () => {
-    if (c.as === "token") skip("only a signed-in browser is signed in to a site at /site-signin (--session <cookie> runs this step)");
     const cookie = await signInTo(aid);
     const attrs = cookie.raw.split(";").slice(1).map((a) => a.trim()).join("; ");
     if (!/SameSite=Lax/i.test(cookie.raw) || /Partitioned/i.test(cookie.raw) || !/HttpOnly/i.test(cookie.raw)) {
@@ -592,7 +641,6 @@ async function smoke(c, o) {
   }, ["site: a private site refused without a session", OWNER]);
 
   await step("site: two db artifacts kept apart", async () => {
-    if (c.as === "token") skip("each site is signed in to at /site-signin, which only a signed-in browser is (--session <cookie> runs this step)");
     for (const n of ["A", "B"]) {
       const r = await c.tool("publish", { html: PAGE(`db ${n} ${RUN}`), title: `Smoke db ${n} ${RUN}`, capabilities: { db: {} } });
       const id = r.json?.id ?? r.json?.artifact?.id ?? /\b([0-9a-z]{12})\b/.exec(r.text)?.[1];
@@ -622,12 +670,20 @@ async function smoke(c, o) {
 
   let remote = "";
   let gitToken = "";
-  await step("git token (diagnostics)", async () => {
+  await step(GIT_TOKEN, async () => {
+    if (c.as === "agent") {
+      // An agent's own way to a repository: the git_remote tool.
+      const r = await c.tool("git_remote", { url_or_id: aid, scope: "write" });
+      remote = r.json?.remote ?? "";
+      gitToken = r.json?.token ?? "";
+      if (!remote || !gitToken) throw new Error(`git_remote answered ${short(r.text.replaceAll(gitToken || "\0", "<token>"))}`);
+      return { detail: `git_remote (MCP); remote ${remote}; expires ${r.json.expires_at}` };
+    }
     const r = await c.diag(`repos/token?artifact=${aid}&scope=write`, "POST");
     if (r.status !== 200) throw new Error(`${r.status} ${short(r.json ?? r.text)}`);
     remote = r.json.remote;
     gitToken = r.json.token;
-    return { detail: `${r.json.ms} ms to mint; remote ${remote}; token ${JSON.stringify(r.json.token_shape)}; expires ${r.json.expires_at}` };
+    return { detail: `diagnostics; ${r.json.ms} ms to mint; remote ${remote}; token ${JSON.stringify(r.json.token_shape)}; expires ${r.json.expires_at}` };
   }, ["publish v2 (mcp)"]);
 
   await step("remote: advertisements", async () => {
@@ -643,7 +699,7 @@ async function smoke(c, o) {
       out.push(`${service}: ${a.refs.length} ref(s) [${a.capabilities.join(" ")}]`);
     }
     return { detail: out.join("; ") };
-  }, ["git token (diagnostics)"]);
+  }, [GIT_TOKEN]);
 
   const dir = join(git, "clone");
   const gitEnv = {
@@ -664,7 +720,7 @@ async function smoke(c, o) {
     if (!html.includes(`v2 ${RUN}`)) throw new Error(`the clone's index.html is not v2's: ${short(html, 200)}`);
     const log = await run("git", ["log", "--format=%h %s", "-n", "3"], { cwd: dir, env: gitEnv });
     return { detail: `index.html is v2's; log: ${log.out.trim().split("\n").join(" | ")}` };
-  }, ["git token (diagnostics)"]);
+  }, [GIT_TOKEN]);
 
   await step("artifacts: tree hashes (binding vs clone)", async () => {
     if (store.value !== "artifacts") skip(`REPO_STORE is ${store.value ?? "unknown"}`);
@@ -839,7 +895,32 @@ async function local(o) {
     }
     console.log("local: setup done beforehand (--setup-done)");
   }
-  return { base, secret, token: flag("--without-token") ? "" : token, stop: w.stop, work: dir };
+  let agent = "";
+  if (flag("--as-agent")) {
+    // As the deploy workflow's smoke: an owner set up earlier and minted an
+    // agent token in their browser; the smoke has that token alone.
+    const fail = async (why) => {
+      await w.stop();
+      throw new Error(`--as-agent: ${why}`);
+    };
+    const setup = await fetch(`${base}/api/hosted/setup`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({ secret, name: "Earlier owner" }),
+    }).catch((e) => ({ status: e.message }));
+    if (setup.status !== 200 && setup.status !== 201) await fail(`the setup answered ${setup.status}`);
+    const cookie = (setup.headers.getSetCookie?.() ?? []).find((s) => /clax_session=/.test(s))?.split(";")[0];
+    if (!cookie) await fail("the setup set no session cookie");
+    const minted = await fetch(`${base}/api/hosted/agent-tokens`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base, cookie },
+      body: JSON.stringify({ label: `smoke ${RUN}` }),
+    }).catch((e) => ({ status: e.message }));
+    agent = minted.status === 200 || minted.status === 201 ? (await minted.json()).token ?? "" : "";
+    if (!agent.startsWith("cxa_")) await fail(`minting an agent token answered ${minted.status}`);
+    console.log("local: setup done and an agent token minted beforehand (--as-agent); the smoke has only that token");
+  }
+  return { base, secret, token: flag("--without-token") || agent ? "" : token, agent, stop: w.stop, work: dir };
 }
 
 async function main() {
@@ -849,10 +930,14 @@ async function main() {
     local: flag("--local"),
     account: opt("--account") ?? process.env.CLOUDFLARE_ACCOUNT_ID,
     siteDomain: opt("--site-domain"),
+    // The store, until the diagnostics say (an agent token's smoke has none).
+    store: opt("--store"),
   };
   let base = opt("--url");
   let token = opt("--token") ?? process.env.CLAX_TOKEN;
   o.secret = opt("--setup-secret") ?? process.env.CLAX_SETUP_SECRET;
+  // An agent token, as the deploy workflow's smoke runs (CLAX_SMOKE_TOKEN).
+  let agent = opt("--agent-token") ?? (flag("--local") ? undefined : process.env.CLAX_SMOKE_TOKEN);
   let stop = async () => {};
   const record = opt("--deploy");
   if (record) {
@@ -862,15 +947,18 @@ async function main() {
     o.secret ??= r.setup_secret;
     o.account ??= r.account;
     o.siteDomain ??= r.site_domain;
+    o.store ??= r.store;
     o.onSetup = () => writeFileSync(record, JSON.stringify({ ...r, setup_done: true }, null, 2) + "\n", { mode: 0o600 });
   }
   if (o.local) {
     const l = await local(o);
     base = l.base;
     token = l.token;
-    o.secret = l.secret;
+    agent = l.agent || agent;
+    o.secret = l.agent ? undefined : l.secret;
     o.work = l.work;
     o.siteDomain = "localhost";
+    o.store = flag("--remote-artifacts") ? "artifacts" : "memory";
     stop = l.stop;
   }
   if (!base) throw new Error("give --deploy <record>, --url <public origin> or --local (see the top of smoke-remote.mjs)");
@@ -880,8 +968,9 @@ async function main() {
   }
   const c = new Client(base);
   c.token = token ?? "";
+  c.agent = agent ?? "";
   for (const sig of ["SIGINT", "SIGTERM"]) process.once(sig, () => void stop().then(() => process.exit(130)));
-  console.log(`smoke-remote ${RUN} against ${base}${c.token ? "" : " (no owner token: the diagnostics' steps skip)"}\n`);
+  console.log(`smoke-remote ${RUN} against ${base}${c.agent ? " as an agent token" : c.token ? "" : " (no owner token: the diagnostics' steps skip)"}\n`);
   const t0 = performance.now();
   try {
     await smoke(c, o);
@@ -892,6 +981,15 @@ async function main() {
   for (const r of results) counts[r.status] += 1;
   console.log(`\n${counts.ok} ok, ${counts.fail} failed, ${counts.skip} skipped in ${Math.round((performance.now() - t0) / 1000)} s`);
   for (const r of results.filter((r) => r.status === "fail")) console.log(`  FAIL ${r.name}: ${short(r.detail, 400)}`);
+  const cannot = results.filter((r) => r.cannot).map((r) => r.name);
+  if (cannot.length) console.log(`  not as ${CREDENTIAL_NAMES[acting]} (skipped, each named above): ${cannot.join("; ")}`);
+  // A step SMOKE_CANNOT names that this smoke does not have would skip
+  // nothing: a renamed step.
+  const unknown = Object.keys(SMOKE_CANNOT[acting] ?? {}).filter((n) => !results.some((r) => r.name === n));
+  if (unknown.length) {
+    console.log(`  FAIL deploy-lib.mjs SMOKE_CANNOT.${acting} names steps this smoke does not have: ${unknown.join("; ")}`);
+    counts.fail += 1;
+  }
   if (flag("--json")) console.log(JSON.stringify({ run: RUN, base, results }, null, 2));
   if (!o.local && results.some((r) => r.name === "diagnostics: env" && r.status === "ok")) {
     const bar = "!".repeat(76);

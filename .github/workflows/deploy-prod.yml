@@ -1,0 +1,180 @@
+name: Deploy prod
+
+# Deploys the hosted Clax instance (clax.dev) from the tip of `prod`
+# (docs/prod.md): on every push to prod, and by hand (Actions, Deploy prod,
+# Run workflow, on the branch prod), which redeploys prod's tip. A deploy
+# runs scripts/cloudflare-setup.sh in CI mode: it builds the Worker in a
+# step without the deploy's secrets, then, in the next, deploys it, waits
+# for /healthz to report the build, checks a site host and runs the smoke
+# as an agent token. A failure fails the run, and GitHub
+# notifies the owner; nothing is rolled back (docs/prod.md, "Rollback").
+#
+# Hourly, the drift check compares the commit /healthz reports with prod's
+# tip and fails when they differ. It deploys nothing and holds no deploy
+# credential. GitHub runs scheduled workflows from the default branch's
+# copy of this file.
+on:
+  push:
+    branches: [prod]
+  workflow_dispatch: {}
+  schedule:
+    - cron: "17 * * * *"
+
+permissions: {}
+
+jobs:
+  deploy:
+    if: ${{ github.event_name != 'schedule' && github.ref == 'refs/heads/prod' }}
+    # GitHub's runner: the environment's secrets go to no third-party
+    # runner. The tools are the ones scripts/cloudflare-setup.sh checks for.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # Its branch policy admits prod only; its variables and secrets are what
+    # scripts/setup-prod-github.sh sets and docs/prod.md describes.
+    environment: production
+    permissions: { contents: read }
+    # One deploy at a time, and a running one is never cancelled. GitHub
+    # keeps at most one waiting run per group, the newest, which is the tip.
+    concurrency: { group: deploy-prod, cancel-in-progress: false }
+    # The deploy's settings (none of them secret), for the build and the
+    # deploy alike.
+    env:
+      PUBLIC_HOST: ${{ vars.PUBLIC_HOST }}
+      SITE_DOMAIN: ${{ vars.SITE_DOMAIN }}
+      STORE: ${{ vars.STORE }}
+      # The GitHub OAuth App's client ID (GitHub refuses a variable named
+      # GITHUB_*).
+      OAUTH_CLIENT_ID: ${{ vars.OAUTH_CLIENT_ID }}
+      OWNER_GITHUB: ${{ vars.OWNER_GITHUB }}
+      RETIRED_CONTENT_ORIGIN: ${{ vars.RETIRED_CONTENT_ORIGIN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ github.sha }}", fetch-depth: 0, persist-credentials: false }
+
+      # A run that waited behind another may hold a commit prod has moved
+      # past: the run of the newer push deploys that one.
+      - name: Check the commit is prod's tip
+        run: |
+          set -euo pipefail
+          tip="$(git ls-remote origin refs/heads/prod | cut -f1)"
+          if [ "$tip" != "$GITHUB_SHA" ]; then
+            echo "::error::$GITHUB_SHA is not prod's tip (${tip:-no prod}); only prod's tip is deployed"
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with: { package_json_file: web/package.json }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: 26 }
+      # rust-toolchain.toml's version and targets; the Worker builds for
+      # wasm32-unknown-unknown.
+      - name: Install Rust toolchain
+        run: rustup toolchain install && rustup target add wasm32-unknown-unknown
+      # A clang that targets wasm32, and its linker and archiver.
+      - name: Install clang, lld and llvm
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm
+
+      # Installs and builds with no secret in the environment, so no
+      # package's install script and no crate's build script runs with the
+      # Cloudflare token: a dry run of the deploy below, with its settings,
+      # which installs the packages, builds the web UI and the Worker from
+      # this commit as the deploy would, and ends at `wrangler deploy
+      # --dry-run`.
+      - name: Build (scripts/cloudflare-setup.sh --ci --production, a dry run; no secrets)
+        env:
+          CLAX_DEPLOY_HOME: ${{ runner.temp }}/clax-deploy
+        run: |
+          set -euo pipefail
+          args=(--legal bundled --public "$PUBLIC_HOST" --site-domain "$SITE_DOMAIN" --store "$STORE")
+          if [ -n "$OAUTH_CLIENT_ID" ]; then
+            args+=(--github-client-id "$OAUTH_CLIENT_ID" --owner-github "$OWNER_GITHUB")
+          fi
+          if [ -n "$RETIRED_CONTENT_ORIGIN" ]; then
+            args+=(--retired-content-origin "$RETIRED_CONTENT_ORIGIN")
+          fi
+          scripts/cloudflare-setup.sh "${args[@]}" --account "$CLOUDFLARE_ACCOUNT_ID" --ci --production
+
+      # Deploys what the step above built (--no-build installs and builds
+      # nothing, and refuses a Worker built from another commit); only this
+      # step has the secrets.
+      - name: Deploy (scripts/cloudflare-setup.sh --ci --production --no-build --smoke)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLAX_SMOKE_TOKEN: ${{ secrets.CLAX_SMOKE_TOKEN }}
+          # The deploy record (setup secrets included on a first deploy)
+          # stays in the runner's temporary directory, never uploaded.
+          CLAX_DEPLOY_HOME: ${{ runner.temp }}/clax-deploy
+        run: |
+          set -euo pipefail
+          args=(--legal bundled --public "$PUBLIC_HOST" --site-domain "$SITE_DOMAIN" --store "$STORE")
+          if [ -n "$OAUTH_CLIENT_ID" ]; then
+            args+=(--github-client-id "$OAUTH_CLIENT_ID" --owner-github "$OWNER_GITHUB")
+          fi
+          if [ -n "$RETIRED_CONTENT_ORIGIN" ]; then
+            args+=(--retired-content-origin "$RETIRED_CONTENT_ORIGIN")
+          fi
+          scripts/cloudflare-setup.sh "${args[@]}" --account "$CLOUDFLARE_ACCOUNT_ID" \
+            --ci --production --no-build --smoke --i-know-what-i-am-doing
+
+      # The commit, the build and the Cloudflare version the record names
+      # (`wrangler rollback <version ID>` returns to it), and what /healthz
+      # answers now; only those two fields, since the record holds secrets.
+      - name: Summary
+        if: ${{ always() }}
+        env:
+          RECORD: ${{ runner.temp }}/clax-deploy/${{ vars.PUBLIC_HOST }}.json
+        run: |
+          field() { node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]] ?? "") } catch { console.log("") }' "$RECORD" "$1"; }
+          build="$(field build)"
+          version="$(field version_id)"
+          health="$(curl -fsS --max-time 20 "https://$PUBLIC_HOST/healthz" 2>&1 || true)"
+          {
+            echo "**Deploy of https://$PUBLIC_HOST**"
+            echo
+            echo "- commit: \`$GITHUB_SHA\`"
+            echo "- build: \`${build:-none recorded}\`"
+            echo "- Cloudflare version: \`${version:-none recorded}\`"
+            echo "- /healthz:"
+            echo
+            echo '```'
+            echo "$health"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  drift:
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # No environment: the production environment admits prod only, and this
+    # job needs none of its secrets. The host is the repository variable
+    # PUBLIC_HOST (scripts/setup-prod-github.sh sets it); without it the
+    # check fails, naming the variable.
+    permissions: { contents: read, actions: read }
+    steps:
+      - name: Compare /healthz's commit with prod's tip
+        env:
+          HOST: ${{ vars.PUBLIC_HOST }}
+          GH_TOKEN: ${{ github.token }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [ -n "$HOST" ] || { echo "::error::the repository variable PUBLIC_HOST is not set (scripts/setup-prod-github.sh sets it)"; exit 1; }
+          tip="$(git ls-remote "$REPO_URL" refs/heads/prod | cut -f1)"
+          [ -n "$tip" ] || { echo "::error::$REPO_URL has no branch prod"; exit 1; }
+          health="$(curl -fsS --max-time 30 --retry 3 --retry-all-errors "https://$HOST/healthz")" \
+            || { echo "::error::https://$HOST/healthz does not answer"; exit 1; }
+          commit="$(python3 -c 'import json, sys; print(json.loads(sys.argv[1]).get("commit") or "")' "$health")"
+          echo "prod's tip $tip; https://$HOST runs ${commit:-no commit}"
+          # /healthz may name the commit in full or by a prefix of it.
+          if [ "${#commit}" -lt 7 ] || [ "${tip#"$commit"}" = "$tip" ]; then
+            # A deploy of the tip still running or waiting is not drift.
+            pending="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow deploy-prod.yml --commit "$tip" \
+              --json status --jq '[.[] | select(.status != "completed")] | length')"
+            if [ "$pending" != 0 ]; then
+              echo "::notice::a Deploy prod run of $tip has not finished; not drift yet"
+              exit 0
+            fi
+            echo "::error::https://$HOST runs ${commit:-a build that names no commit}, not prod's tip $tip: see the latest Deploy prod run, or run it (docs/prod.md, \"Drift\")"
+            exit 1
+          fi
