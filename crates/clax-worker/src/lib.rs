@@ -30,8 +30,10 @@
 //!   `shell::gallery_page` sends (no framing, revalidated), except on a
 //!   hosted instance (`HOSTED` = `1`), whose gate decides who gets them;
 //! - `/_clax/<path>` is the web UI's file from the static assets with the
-//!   daemon's caching (`shell::asset_cache`), except the bridge and the
-//!   contract's type definitions, which the server answers;
+//!   daemon's caching (`shell::asset_cache`), and for the embeddable
+//!   overlay's files its type and any-origin reads (`shell::embed_file`),
+//!   except the bridge and the contract's type definitions, which the
+//!   server answers;
 //! - everything else (the API, `/a/…` with its first-load data, the
 //!   stream's WebSocket) goes to the instance's object, named by
 //!   `CLAX_INSTANCE` (`default` when unset). A file the assets lack goes
@@ -572,6 +574,17 @@ async fn static_asset(env: &Env, path: &str, app_host: bool) -> Result<Option<Ht
             header::CONTENT_TYPE,
             HeaderValue::from_static("text/javascript"),
         );
+    }
+    // The embeddable overlay's files, as the daemon answers them: to any
+    // origin, never with credentials, with their own content type.
+    if let Some(ty) = file
+        .strip_prefix("/_clax/")
+        .and_then(clax_server::shell::embed_file)
+    {
+        h.insert(header::CONTENT_TYPE, HeaderValue::from_static(ty));
+        h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+        h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+        h.remove(header::ACCESS_CONTROL_ALLOW_CREDENTIALS);
     }
     Ok(Some(res))
 }
