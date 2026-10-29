@@ -15,6 +15,9 @@ export interface FeedbackConfig {
   instance: string;
   /** The feedback queue's ID. */
   queue: string;
+  /** The person's public ID: the overlay's `user`, which keeps the
+   * reporter's key and token per person (null in an older answer). */
+  user: string | null;
   /** The release, flags and app the person's page runs, as the backend
    * knew them when the page loaded. */
   context: HostContext;

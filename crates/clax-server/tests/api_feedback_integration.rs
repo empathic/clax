@@ -294,6 +294,8 @@ async fn token_needs_the_feedback_flag() {
     assert_eq!(v["enabled"], true, "{v}");
     assert_eq!(v["instance"], ORIGIN);
     assert_eq!(v["queue"], s.qid.as_str());
+    // The overlay's `user`: the person's public ID, as the token's reporter ID.
+    assert_eq!(v["user"], ana.public_id.as_str(), "{v}");
     assert_eq!(v["context"]["release"]["channel"], "dev");
     // The release is what `/healthz` reports.
     let health: Value = s.ts.get("/healthz").await.json().await.unwrap();

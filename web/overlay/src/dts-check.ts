@@ -17,5 +17,7 @@ export const SAME: [
   Same<typeof Dts.overlay, typeof Main.overlay>,
   Same<typeof Dts.diagnostics, typeof Main.diagnostics>,
   Same<typeof Dts.CONTEXT_TIMEOUT_MS, typeof Main.CONTEXT_TIMEOUT_MS>,
-  Same<Window["Clax"], Pick<typeof Main, "overlay" | "diagnostics" | "CONTEXT_TIMEOUT_MS">>,
-] = [true, true, true, true, true, true, true, true, true, true, true];
+  Same<typeof Dts.forgetReporter, typeof Main.forgetReporter>,
+  Same<Dts.ReporterRef, Main.ReporterRef>,
+  Same<Window["Clax"], Pick<typeof Main, "overlay" | "diagnostics" | "CONTEXT_TIMEOUT_MS" | "forgetReporter">>,
+] = [true, true, true, true, true, true, true, true, true, true, true, true, true];

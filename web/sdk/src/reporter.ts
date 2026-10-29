@@ -38,7 +38,10 @@ export interface ReporterOptions {
    * shortly before the token expires, so `auth` is called once per token
    * lifetime rather than on every page load. Without it, or where
    * IndexedDB fails, they last as long as the page. Another user on the
-   * same browser gets a key and token of their own. */
+   * same browser gets a key and token of their own. The key cannot be
+   * exported, but any script of the page's origin can sign with it: the
+   * host's origin is the trust boundary, and the host forgets the key on
+   * sign-out (`forget`, `forgetReporter`). */
   user?: string;
   /** Where the key and token are kept. Default: IndexedDB when `user` is
    * given; `null` keeps them for the page alone. */
@@ -139,6 +142,8 @@ export class ReporterClient {
   private store: ReporterStore | null;
   /** The key as kept, for saving it again with a new token. */
   private kept: Kept | undefined;
+  /** A refused key was replaced once already. */
+  private rekeyed = false;
 
   constructor(private readonly opts: ReporterOptions) {
     this.fetch = opts.fetch ?? ((input, init) => globalThis.fetch(input, init));
@@ -259,6 +264,18 @@ export class ReporterClient {
     return (await this.key()).publicKey;
   }
 
+  /** Forgets this reporter, as a host does on sign-out: deletes the key
+   * and token kept for its user and drops them here, and keeps nothing
+   * from now on. A call after it makes a key for the page alone. */
+  async forget(): Promise<void> {
+    const store = this.store;
+    this.store = null;
+    this.signer = undefined;
+    this.kept = undefined;
+    this.token = undefined;
+    if (store) await store.forget().catch(() => undefined);
+  }
+
   private key(): Promise<KeyedSigner> {
     this.signer ??= (async () => {
       const kept = await this.loadKept();
@@ -293,6 +310,15 @@ export class ReporterClient {
     }
   }
 
+  /** Forgets the kept key and token, here and in the store, so the next
+   * `key()` makes a new key (and keeps it). */
+  private async dropKey(): Promise<void> {
+    this.signer = undefined;
+    this.kept = undefined;
+    this.token = undefined;
+    if (this.store) await this.store.forget().catch(() => { this.store = null; });
+  }
+
   /** Keeps `k` in the store, if it still works. */
   private async keep(k: Kept): Promise<void> {
     if (!this.store) return;
@@ -322,7 +348,17 @@ export class ReporterClient {
     if (t && this.now() < t.expiresAt - RENEW_BEFORE_S * 1000) return t;
     this.pending ??= (async () => {
       try {
-        const got = await this.opts.auth(key.publicKey);
+        let got: ReporterToken;
+        try {
+          got = await this.opts.auth(key.publicKey);
+        } catch (e) {
+          // The backend refused this key for good: forget it, and ask
+          // once with a fresh one.
+          if (this.rekeyed || (e as { code?: unknown } | null)?.code !== "invalid_key") throw e;
+          this.rekeyed = true;
+          await this.dropKey();
+          got = await this.opts.auth((await this.key()).publicKey);
+        }
         const expiresAt = Date.parse(got.expires_at);
         if (!got.token || Number.isNaN(expiresAt)) throw new Error("auth gave no reporter token");
         this.token = { token: got.token, expiresAt };

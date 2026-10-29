@@ -228,7 +228,22 @@ export interface OverlayHandle {
   on(event: "badge", fn: (n: number) => void): () => void;
   on(event: "filed", fn: (r: Report) => void): () => void;
   close(): void;
+  /** Forgets the reporter, as the host does when its user signs out:
+   * deletes the key and token kept for `user` and drops them from this
+   * overlay, which keeps nothing more. */
+  forget(): Promise<void>;
 }
+
+/** Whose kept key and token `forgetReporter` deletes. */
+export interface ReporterRef {
+  instance: string;
+  queue: string;
+  user: string;
+}
+
+/** Forgets the key and token kept for `r.user` (the `user` option): call
+ * it on sign-out; it needs no running overlay. */
+export declare function forgetReporter(r: ReporterRef): Promise<void>;
 
 /** How long the host's `context` and `metadata` functions may take, in ms. */
 export declare const CONTEXT_TIMEOUT_MS: 2000;
@@ -242,6 +257,6 @@ export declare function overlay(opts: OverlayOptions, doc?: Document): OverlayHa
 declare global {
   interface Window {
     /** The overlay's classic script (`/_clax/overlay.js`). */
-    Clax: { overlay: typeof overlay; diagnostics: typeof diagnostics; CONTEXT_TIMEOUT_MS: typeof CONTEXT_TIMEOUT_MS };
+    Clax: { overlay: typeof overlay; diagnostics: typeof diagnostics; CONTEXT_TIMEOUT_MS: typeof CONTEXT_TIMEOUT_MS; forgetReporter: typeof forgetReporter };
   }
 }

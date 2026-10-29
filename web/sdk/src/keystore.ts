@@ -1,8 +1,11 @@
 // Where a reporter's key and token are kept between page loads, so a
 // reporter is minted a token once per token lifetime (15 minutes), not on
 // every page load. The key is a non-extractable Ed25519 CryptoKey, which
-// IndexedDB stores as it is: its private half never becomes bytes a page
-// script can read. Everything kept is for one (instance, queue, user).
+// IndexedDB stores as it is: its private half can never be exported as
+// bytes, but any script of the page's origin can sign with it, so the
+// host's own origin is the trust boundary. Everything kept is for one
+// (instance, queue, user); a host forgets it on sign-out
+// (`forgetReporter`).
 
 /** A reporter's key and the token last minted for it. */
 export interface Kept {
@@ -19,8 +22,10 @@ export interface Kept {
 export interface ReporterStore {
   load(): Promise<Kept | null>;
   save(k: Kept): Promise<void>;
-  /** Forgets the token, keeping the key (a refused token, or a sign-out). */
+  /** Forgets the token, keeping the key (a token the instance refused). */
   forgetToken(): Promise<void>;
+  /** Forgets the key and the token (a sign-out, or a key refused for good). */
+  forget(): Promise<void>;
 }
 
 const DB = "clax-reporter";
@@ -66,12 +71,24 @@ export function indexedDbStore(instance: string, queue: string, user: string, id
     const [d, k] = await Promise.all([db(), name()]);
     await done(d.transaction(STORE, "readwrite").objectStore(STORE).put(kept, k));
   };
+  const remove = async () => {
+    const [d, k] = await Promise.all([db(), name()]);
+    await done(d.transaction(STORE, "readwrite").objectStore(STORE).delete(k));
+  };
   return {
     load: get,
     save: put,
+    forget: remove,
     forgetToken: async () => {
       const kept = await get();
       if (kept) await put({ privateKey: kept.privateKey, publicKey: kept.publicKey });
     },
   };
+}
+
+/** Forgets the key and token kept for `user` of `queue` on `instance`
+ * (`ReporterOptions.user`), as a host does on sign-out, whether or not a
+ * client is running; nothing where there is no IndexedDB. */
+export async function forgetReporter(instance: string, queue: string, user: string, idb: IDBFactory | undefined = globalThis.indexedDB): Promise<void> {
+  await indexedDbStore(instance, queue, user, idb)?.forget();
 }
