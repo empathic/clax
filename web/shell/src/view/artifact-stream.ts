@@ -220,6 +220,7 @@ export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
     const at = c.approvalTicket();
     getArtifact(c.id).then(d => {
       const n = d.artifact.current_version;
+      c.completeVersions(d.versions);
       c.setTags(tt, { tags: d.artifact.tags ?? [], may: !!d.artifact.may_tag });
       c.takeApproval(at, d.artifact);
       // A working delta heard since the request started is newer than its answer.

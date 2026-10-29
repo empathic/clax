@@ -6,6 +6,10 @@ import type { Loaded } from "./artifact-controller";
 /** The daemon's first-load data for `/a/…` (spec §8 Time to usable). */
 export type Boot = {
   v: 1; artifact: Loaded; threads: Thread[]; viewer: Viewer | null;
+  /** false: `artifact.versions` holds only the newest few and the one shown,
+   * and the shell fetches the rest on the stream's first `ready`; `threads`
+   * holds only the open ones, which that `ready` reloads with the resolved. */
+  versions_complete?: boolean;
   /** The site hosts the frame opens the artifact on. */
   site: SiteHosts;
   /** The cookie's viewer's attention on this artifact; absent without a viewer. */
@@ -26,7 +30,8 @@ function navigationType(): string {
  * from the browser's cache without asking the daemon, so its viewer can be
  * stale: it and its attention are left out (`viewer: null`, `attention:
  * null`), and the shell looks the viewer up.
- * The threads and the artifact are reloaded on the stream's first `ready`. */
+ * The threads and the artifact are reloaded on the stream's first `ready`,
+ * with the versions and resolved threads the bootstrap leaves out. */
 export function readBoot(doc: Document = document, navType: string = navigationType()): Boot | null {
   const text = doc.getElementById("clax-boot")?.textContent;
   if (!text) return null;

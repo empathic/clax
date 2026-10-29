@@ -670,3 +670,77 @@ async fn an_embedded_core_marks_every_shell_document_and_frames_content_on_its_o
         assert_eq!(again.status(), 304, "{stale}");
     }
 }
+
+#[tokio::test]
+async fn carries_the_newest_versions_the_shown_one_and_only_open_threads() {
+    let dist = dist();
+    let ts = TestServer::spawn_with_web(dist.path()).await;
+    let created = ts.publish("Long", &[("index.html", "<p>1</p>")]).await;
+    let id = created["artifact"]["id"].as_str().unwrap().to_string();
+    let total = clax_server::shell::boot::BOOT_VERSIONS as u64 + 5;
+    for n in 2..=total {
+        let res = ts
+            .authed(
+                ts.client
+                    .post(format!("{}/api/artifacts/{id}/versions", ts.base)),
+            )
+            .json(&json!({"if_version": n - 1, "files": {"index.html": {"content": format!("<p>{n}</p>"), "encoding": "utf8"}}}))
+            .send()
+            .await
+            .unwrap();
+        assert!(res.status().is_success(), "{}", res.text().await.unwrap());
+    }
+    let open = ts.thread(&id, 1, "open").await;
+    let done = ts.thread(&id, 1, "done").await;
+    let tid = done["id"].as_str().unwrap();
+    let res = ts
+        .authed(ts.client.post(format!(
+            "{}/api/artifacts/{id}/threads/{tid}/resolve",
+            ts.base
+        )))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success(), "{}", res.text().await.unwrap());
+
+    let ns = |b: &Value| -> Vec<u64> {
+        b["artifact"]["versions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["n"].as_u64().unwrap())
+            .collect()
+    };
+    let newest: Vec<u64> = (6..=total).collect();
+    let (_, b) = boot(
+        &page(&ts, &format!("/a/{id}"), &[])
+            .await
+            .text()
+            .await
+            .unwrap(),
+    );
+    assert_eq!(ns(&b), newest);
+    assert_eq!(b["versions_complete"], false);
+    let tids: Vec<&str> = b["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        tids,
+        [open["id"].as_str().unwrap()],
+        "the resolved one waits for ready"
+    );
+
+    // A pinned old version is carried beside the newest.
+    let (_, b) = boot(
+        &page(&ts, &format!("/a/{id}/v/2"), &[])
+            .await
+            .text()
+            .await
+            .unwrap(),
+    );
+    assert_eq!(ns(&b), [vec![2], newest].concat());
+}

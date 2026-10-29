@@ -230,10 +230,45 @@ fn without_sessions(artifact: Value, versions: Value) -> Value {
     v
 }
 
+/// How many of an artifact's newest versions the bootstrap carries: the
+/// first paint shows one, and the shell fetches the rest with the artifact
+/// on its stream's first `ready`, so the first response weighs the same
+/// however many versions a page has.
+pub const BOOT_VERSIONS: usize = 20;
+
+/// The versions the bootstrap carries, oldest first.
+struct BootVersions {
+    versions: Vec<clax_core::model::Version>,
+    /// Whether they are all of the artifact's.
+    complete: bool,
+}
+
+/// Of `versions` (oldest first), the [`BOOT_VERSIONS`] newest and `shown`.
+fn boot_versions(versions: Vec<clax_core::model::Version>, shown: u64) -> BootVersions {
+    let from = versions.len().saturating_sub(BOOT_VERSIONS);
+    if from == 0 {
+        return BootVersions {
+            versions,
+            complete: true,
+        };
+    }
+    let versions = versions
+        .into_iter()
+        .enumerate()
+        .filter(|(i, v)| *i >= from || u64::from(v.n) == shown)
+        .map(|(_, v)| v)
+        .collect();
+    BootVersions {
+        versions,
+        complete: false,
+    }
+}
+
 /// Everything `artifact.html` gets for `route`, or `None` when it names no
 /// artifact the store has. The data is what an unauthenticated browser reads
-/// from `GET /api/artifacts/<id>` (less its session IDs),
-/// `GET /api/artifacts/<id>/threads?include_resolved=true` without the token
+/// from `GET /api/artifacts/<id>` (less its session IDs, and of its versions
+/// only the [`BOOT_VERSIONS`] newest and the one shown),
+/// `GET /api/artifacts/<id>/threads` (the open ones) without the token
 /// (no `clip_path`), and `GET /api/viewers/me` for the request's existing
 /// viewer (the owner's for the owner cookie or a hosted session of the
 /// owner's, see [`clax_http::identity`]); no threads for a hosted daemon's
@@ -298,7 +333,7 @@ pub async fn assemble(
             let mut cursor: Option<String> = None;
             if comments {
                 loop {
-                    let (page, next) = st.list_threads(&lookup, true, cursor.as_deref(), 200)?;
+                    let (page, next) = st.list_threads(&lookup, false, cursor.as_deref(), 200)?;
                     threads.extend(clax_http::views::thread::thread_views_as(
                         st, &page, codex, false, &reads,
                     )?);
@@ -409,13 +444,16 @@ pub async fn assemble(
             frame_name(query),
         )
     });
+    let shown = boot_versions(versions, n);
+    let versions_complete = shown.complete;
     let artifact = without_sessions(
         artifact_json,
-        serde_json::to_value(&versions).expect("versions serialise"),
+        serde_json::to_value(&shown.versions).expect("versions serialise"),
     );
     let mut boot = json!({
         "v": 1,
         "artifact": artifact,
+        "versions_complete": versions_complete,
         "threads": threads,
         "viewer": viewer,
         "site": site,

@@ -954,6 +954,7 @@ export class ArtifactController {
     this.life.defer(onViewer(v => this.set({ me: v })));
     if (boot) {
       seedViewer(boot.viewer);
+      this.versionsPartial = boot.versions_complete === false;
       this.set({ threads: boot.threads });
       this.loaded(boot.artifact, boot.attention ?? null);
     } else {
@@ -971,6 +972,16 @@ export class ArtifactController {
     // and requests come after the page's first paint.
     if (!boot) this.loadThreads();
     this.life.timeout(() => this.openStream(), STREAM_WAIT_MS);
+  }
+
+  /** @internal Whether `data.versions` holds only the bootstrap's newest few. */
+  versionsPartial = false;
+  /** @internal The artifact's full version list, fetched on the stream's
+   * first `ready` when the bootstrap carried only the newest few. */
+  completeVersions(versions: Loaded["versions"]): void {
+    if (!this.versionsPartial || this.disposed) return;
+    this.versionsPartial = false;
+    this.set(s => ({ data: s.data ? { ...s.data, versions } : s.data }));
   }
 
   /** @internal (also app mode's auto-follow: a newer version loaded in place) */
