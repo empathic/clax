@@ -5,7 +5,7 @@ import type { Badge, DiagLine, Report } from "../../sdk/src/types";
 import type { Captured } from "./capture";
 import {
   BADGE_POLL_MS, BadgeWatch, CONTEXT_TIMEOUT_MS, MAX_CONTEXT_BYTES, PAGE_ANCHOR, Poll, POLL_MS, Session, type Timers, type Visibility,
-  buildContext, canSend, clipOf, clipStatus, contextPreview, defaultShapes, externalIdOf, failureText, newDraft, quoteOf, reopenOf, repliesOf, reportOf,
+  buildContext, canSend, carryShapes, clipOf, clipStatus, contextPreview, defaultShapes, externalIdOf, failureText, newDraft, quoteOf, reopenOf, repliesOf, reportOf,
   safeLink, stateLabel, summaryOf, waitingFix,
 } from "./model";
 
@@ -29,7 +29,7 @@ const now = () => at;
 const lines: DiagLine[] = [{ at: "2026-10-29T07:12:00Z", level: "error", kind: "error", text: "TypeError: x is undefined" }];
 const recorder = (l = lines): Recorder => ({ lines: () => l.slice(), count: () => l.length, stop: () => {} });
 const captured = (over: Partial<Captured> = {}): Captured => ({
-  png: new Blob([new Uint8Array([1])], { type: "image/png" }), info: { mode: "element", method: "dom", omitted: [] }, error: null, note: null, suggestExact: false, pick: { x: 4, y: 6, w: 20, h: 10 }, scale: 2, ...over,
+  png: new Blob([new Uint8Array([1])], { type: "image/png" }), info: { mode: "element", method: "dom", omitted: [] }, error: null, note: null, suggestExact: false, pick: { x: 4, y: 6, w: 20, h: 10 }, scale: 2, at: { x: 0, y: 0, w: 50, h: 25 }, ...over,
 });
 
 afterEach(() => { vi.useRealTimers(); });
@@ -406,5 +406,18 @@ describe("a report as the reporter reads it", () => {
     expect(safeLink("javascript:alert(1)")).toBeNull();
     expect(safeLink("not a url")).toBeNull();
     expect(safeLink(undefined)).toBeNull();
+  });
+});
+
+describe("marks when the exact screenshot replaces the render", () => {
+  it("are moved onto it, and the reporter told how many could not be", () => {
+    const box = { kind: "box" as const, from: { x: 4, y: 6 }, to: { x: 24, y: 16 } };
+    const far = { kind: "text" as const, at: { x: 90, y: 40 }, text: "gone" };
+    const render = captured({ at: { x: 0, y: 100, w: 50, h: 25 }, scale: 2 });
+    const exact = captured({ info: { mode: "element", method: "display" }, pick: null, at: { x: 2, y: 103, w: 20, h: 10 }, scale: 1 });
+    expect(carryShapes([box], render, exact)).toEqual({ shapes: [{ kind: "box", from: { x: 0, y: 0 }, to: { x: 10, y: 5 } }], note: "Your marks were moved onto the new screenshot. Check them before you send." });
+    expect(carryShapes([box, far], render, exact).note).toBe("1 of your marks fell outside the new screenshot and was removed. Check it before you send.");
+    expect(carryShapes([], render, exact)).toEqual({ shapes: [], note: null });
+    expect(carryShapes([box, far], render, { ...exact, at: null }).note).toMatch(/^2 of your marks fell outside .* were removed/);
   });
 });

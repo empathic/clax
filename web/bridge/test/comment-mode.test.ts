@@ -224,6 +224,19 @@ describe("CommentMode", () => {
   });
 });
 
+describe("an outline the host leads", () => {
+  it("outlines the element given while the mode is on, and hides it for none", () => {
+    const h = document.querySelector("h2")!;
+    mode.outlineTarget(h);
+    expect(outline().style.display).not.toBe("block");
+    mode.set(true);
+    mode.outlineTarget(h);
+    expect(outline().style.display).toBe("block");
+    mode.outlineTarget(null);
+    expect(outline().style.display).toBe("none");
+  });
+});
+
 describe("drawing areas", () => {
   const areaBox = () => document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".a")!;
   const at = (el: Element, type: string, x: number, y: number, init: MouseEventInit = {}) => {

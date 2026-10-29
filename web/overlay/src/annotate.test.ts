@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACCENT, type FlattenDeps, REDACT_FILL, type Shape, type Surface, STROKE_PX, TEXT_PX, flatten, spanOf } from "./annotate";
+import { ACCENT, type FlattenDeps, type KeyDraw, REDACT_FILL, type Shape, type Surface, STROKE_PX, TEXT_PX, flatten, keyStep, remapShapes, spanOf } from "./annotate";
 
 /** A software canvas: `fillRect` paints its pixels (each an opaque colour
  * string), and every call is logged in order. jsdom has no canvas. */
@@ -82,5 +82,59 @@ describe("flatten", () => {
 
   it("spans two corners whichever way they were drawn", () => {
     expect(spanOf({ x: 5, y: 1 }, { x: 2, y: 4 })).toEqual({ x: 2, y: 1, w: 3, h: 3 });
+  });
+});
+
+describe("drawing from the keyboard", () => {
+  const size = { w: 400, h: 200 };
+  it("moves the crosshair, sets each corner with Enter, and adds the mark", () => {
+    let st: KeyDraw = { cursor: { x: 200, y: 100 }, corner: null };
+    const press = (key: string, shift = false, tool: Shape["kind"] = "redact") => { const r = keyStep(st, key, shift, tool, size); st = r.state; return r; };
+    expect(press("ArrowLeft").used).toBe(true);
+    expect(st.cursor).toEqual({ x: 190, y: 100 });
+    press("ArrowUp", true);
+    expect(st.cursor).toEqual({ x: 190, y: 99 });
+    const first = press("Enter");
+    expect(first.say).toMatch(/Redaction: first corner set/);
+    expect(st.corner).toEqual({ x: 190, y: 99 });
+    press("ArrowRight");
+    press("ArrowDown");
+    const second = press("Enter");
+    expect(second.add).toEqual({ kind: "redact", from: { x: 190, y: 99 }, to: { x: 200, y: 109 } });
+    expect(second.say).toBe("Redaction added.");
+    expect(st.corner).toBeNull();
+    // Escape drops a first corner; with none, it is not used.
+    press(" ");
+    expect(press("Escape").say).toBe("Mark cancelled.");
+    expect(press("Escape").used).toBe(false);
+    // Text asks for its text at the crosshair.
+    expect(press("Enter", false, "text").askText).toEqual(st.cursor);
+    // The crosshair stays on the image.
+    for (let i = 0; i < 30; i++) press("ArrowLeft");
+    expect(st.cursor.x).toBe(0);
+    expect(press("x").used).toBe(false);
+  });
+});
+
+describe("moving marks onto another capture", () => {
+  // The render showed the page at 50,350 (400 x 300) at scale 1; the exact
+  // screenshot shows 100,400 (200 x 100) at scale 1.5.
+  const from = { at: { x: 50, y: 350, w: 400, h: 300 }, scale: 1, w: 400, h: 300 };
+  const to = { at: { x: 100, y: 400, w: 200, h: 100 }, scale: 1.5, w: 300, h: 150 };
+  it("keeps each mark on the same part of the page, cut to the new image, and counts those it cannot move", () => {
+    const shapes: Shape[] = [
+      { kind: "box", from: { x: 50, y: 50 }, to: { x: 250, y: 150 } },
+      { kind: "redact", from: { x: 0, y: 0 }, to: { x: 100, y: 100 } },
+      { kind: "arrow", from: { x: 60, y: 60 }, to: { x: 100, y: 80 } },
+      { kind: "text", at: { x: 380, y: 280 }, text: "far" },
+      { kind: "redact", from: { x: 300, y: 200 }, to: { x: 350, y: 250 } },
+    ];
+    const moved = remapShapes(shapes, from, to);
+    expect(moved.shapes).toEqual([
+      { kind: "box", from: { x: 0, y: 0 }, to: { x: 300, y: 150 } },
+      { kind: "redact", from: { x: 0, y: 0 }, to: { x: 75, y: 75 } },
+      { kind: "arrow", from: { x: 15, y: 15 }, to: { x: 75, y: 45 } },
+    ]);
+    expect(moved.dropped).toBe(2);
   });
 });

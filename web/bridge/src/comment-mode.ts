@@ -248,6 +248,16 @@ export class CommentMode {
     if (on) this.unhover();
   }
 
+  /** Outlines `t` as a hover does (none hides the outline), for a pick the
+   * host leads itself, such as from the keyboard; the next pointer move
+   * outlines what is under it again. */
+  outlineTarget(t: Element | null): void {
+    if (!this.on) return;
+    this.hovered = t;
+    if (t) this.place(t);
+    else this.outline.style.display = "none";
+  }
+
   /** Adds or removes the callout guard; `selection` (a colour) also tints
    * the page's selection, for a text drag. */
   private setGuard(on: boolean, selection?: string): void {

@@ -10,6 +10,9 @@ export interface Pt { x: number; y: number }
  * corners, or a line of text whose top left is `at`. */
 export type Shape = { kind: "box" | "arrow" | "redact"; from: Pt; to: Pt } | { kind: "text"; at: Pt; text: string };
 
+/** A drawing tool: the kind of mark it makes. */
+export type Tool = Shape["kind"];
+
 /** Box and arrow strokes, in CSS pixels (times the image's scale). */
 export const STROKE_PX = 3;
 /** Text size, in CSS pixels (times the image's scale). */
@@ -98,7 +101,7 @@ export function paint(ctx: Ink, shapes: readonly Shape[], scale: number): void {
       ctx.closePath();
       ctx.fill();
     } else if (sh.kind === "text") {
-      ctx.font = `600 ${size}px ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif`;
+      ctx.font = textFont(size);
       const p = plateOf(sh.at, ctx.measureText(sh.text).width, size);
       ctx.fillStyle = ACCENT;
       ctx.fillRect(p.x, p.y, p.w, p.h);
@@ -106,6 +109,98 @@ export function paint(ctx: Ink, shapes: readonly Shape[], scale: number): void {
       ctx.fillText(sh.text, p.x + p.pad, p.y + p.pad + size * 0.15);
     }
   }
+}
+
+/** The font a text mark is drawn in, `size` image pixels tall. */
+export function textFont(size: number): string {
+  return `600 ${size}px ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif`;
+}
+
+let measurer: { measureText(t: string): { width: number }; font: string } | null | undefined;
+/** How wide `text` draws in `textFont(size)`, as `paint` measures it: by a
+ * canvas where there is one (an `OffscreenCanvas`), else estimated. */
+export function textWidth(text: string, size: number): number {
+  if (measurer === undefined) {
+    try {
+      measurer = typeof OffscreenCanvas === "function" ? new OffscreenCanvas(1, 1).getContext("2d") : null;
+    } catch {
+      measurer = null;
+    }
+  }
+  if (!measurer) return text.length * size * 0.56;
+  measurer.font = textFont(size);
+  return measurer.measureText(text).width;
+}
+
+/** A rectangle in page CSS pixels (the viewport's, plus its scroll). */
+export interface PageRect { x: number; y: number; w: number; h: number }
+
+/** Where an image shows the page: the page rectangle it shows (`at`, CSS
+ * px) at `scale` image pixels per CSS pixel, and its size in image pixels. */
+export interface Placement { at: PageRect; scale: number; w: number; h: number }
+
+/** `shapes`, drawn on an image placed at `from`, moved onto an image placed
+ * at `to`, so each still marks the same part of the page. A box or a
+ * redaction is cut to the new image; a mark that falls outside it (all of
+ * a box, an arrow's end, a text's corner) cannot be moved and is in
+ * `dropped`. */
+export function remapShapes(shapes: readonly Shape[], from: Placement, to: Placement): { shapes: Shape[]; dropped: number } {
+  const map = (p: Pt): Pt => ({
+    x: Math.round(((from.at.x + p.x / from.scale) - to.at.x) * to.scale),
+    y: Math.round(((from.at.y + p.y / from.scale) - to.at.y) * to.scale),
+  });
+  const inside = (p: Pt) => p.x >= 0 && p.y >= 0 && p.x <= to.w && p.y <= to.h;
+  const clamp = (p: Pt): Pt => ({ x: Math.min(Math.max(p.x, 0), to.w), y: Math.min(Math.max(p.y, 0), to.h) });
+  const out: Shape[] = [];
+  let dropped = 0;
+  for (const sh of shapes) {
+    if (sh.kind === "text") {
+      const at = map(sh.at);
+      if (inside(at)) out.push({ kind: "text", at, text: sh.text }); else dropped++;
+    } else if (sh.kind === "arrow") {
+      const a = map(sh.from), b = map(sh.to);
+      if (inside(a) && inside(b)) out.push({ kind: "arrow", from: a, to: b }); else dropped++;
+    } else {
+      const a = clamp(map(sh.from)), b = clamp(map(sh.to));
+      const r = spanOf(a, b);
+      if (r.w > 0 && r.h > 0) out.push({ kind: sh.kind, from: a, to: b }); else dropped++;
+    }
+  }
+  return { shapes: out, dropped };
+}
+
+/** Where the keyboard is drawing: its crosshair, and the first corner set. */
+export interface KeyDraw { cursor: Pt; corner: Pt | null }
+
+/** What a key does to a keyboard drawing (`keyStep`): the next state, the
+ * mark it adds, a point to ask the text of, what to announce, and whether
+ * the key was used. */
+export interface KeyStep { state: KeyDraw; add?: Shape; askText?: Pt; say?: string; used: boolean }
+
+const NAMES: Record<Tool, string> = { box: "Box", arrow: "Arrow", redact: "Redaction", text: "Text" };
+
+/** The keyboard's way to draw on an image `size` image pixels big with
+ * `tool`: the arrow keys move the crosshair (by a fortieth of the image,
+ * or one pixel with Shift), Enter or Space sets the first corner (an
+ * arrow's tail) and then the second, adding the mark, or for Text asks for
+ * the text at the crosshair; Escape drops a first corner. */
+export function keyStep(st: KeyDraw, key: string, shift: boolean, tool: Tool, size: { w: number; h: number }): KeyStep {
+  const step = shift ? 1 : Math.max(1, Math.round(Math.max(size.w, size.h) / 40));
+  const move: Record<string, [number, number]> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+  if (move[key]) {
+    const [dx, dy] = move[key];
+    const cursor = { x: Math.min(Math.max(st.cursor.x + dx, 0), size.w), y: Math.min(Math.max(st.cursor.y + dy, 0), size.h) };
+    return { state: { ...st, cursor }, used: true };
+  }
+  if (key === "Enter" || key === " ") {
+    if (tool === "text") return { state: st, askText: st.cursor, say: "Type the text, then press Enter.", used: true };
+    if (!st.corner) return { state: { ...st, corner: st.cursor }, say: `${NAMES[tool]}: first corner set. Move to the other corner and press Enter.`, used: true };
+    const r = spanOf(st.corner, st.cursor);
+    if (r.w === 0 && r.h === 0) return { state: st, say: "Move away from the first corner first.", used: true };
+    return { state: { ...st, corner: null }, add: { kind: tool, from: st.corner, to: st.cursor }, say: `${NAMES[tool]} added.`, used: true };
+  }
+  if (key === "Escape" && st.corner) return { state: { ...st, corner: null }, say: "Mark cancelled.", used: true };
+  return { state: st, used: false };
 }
 
 /** A drawing surface the image and its marks are drawn on. */
