@@ -42,7 +42,7 @@
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, copyFileSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer, type AddressInfo } from "node:net";
 import { homedir } from "node:os";
@@ -310,8 +310,22 @@ function buildReel(): void {
       if (!stopping) console.log(`\nThe reel did not build; see ${log}.`);
       return;
     }
-    mkdirSync(REEL_DIR, { recursive: true });
-    for (const f of ["reel.mp4", "reel-poster.jpg"]) copyFileSync(join(ROOT, "bazel-bin/web/reel", f), join(REEL_DIR, f));
+    // Bazel's outputs are read-only and a copy keeps their mode, so each is
+    // copied beside its old copy, made writable and renamed over it: the
+    // next run replaces it, and the server never serves half a file.
+    try {
+      mkdirSync(REEL_DIR, { recursive: true });
+      for (const f of ["reel.mp4", "reel-poster.jpg"]) {
+        const to = join(REEL_DIR, f);
+        rmSync(`${to}.new`, { force: true });
+        copyFileSync(join(ROOT, "bazel-bin/web/reel", f), `${to}.new`);
+        chmodSync(`${to}.new`, 0o644);
+        renameSync(`${to}.new`, to);
+      }
+    } catch (e) {
+      console.log(`\nThe reel built but could not be copied to ${REEL_DIR}: ${(e as Error).message}`);
+      return;
+    }
     console.log(`\nThe landing page's reel is built: reload ${base}/start/ to see it.`);
   });
 }
@@ -348,6 +362,15 @@ async function stop(code: number): Promise<never> {
 }
 process.on("SIGINT", () => void stop(0));
 process.on("SIGTERM", () => void stop(0));
+// A crash stops the Worker too, rather than leaving it holding the port.
+process.on("uncaughtException", (e) => {
+  console.error(e);
+  void stop(1);
+});
+process.on("unhandledRejection", (e) => {
+  console.error(e);
+  void stop(1);
+});
 w.child.once("exit", () => {
   if (stopping) return;
   console.error(`The Worker exited; see ${w.log}:\n${readFileSync(w.log, "utf8").slice(-2000)}`);
