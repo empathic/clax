@@ -44,7 +44,7 @@
 // app mode (`confirmDrag` false) the host attests the finger, and the release
 // picks at once.
 
-import { OVERLAY_TAG } from "./anchor";
+import { OVERLAY_TAG, UNRENDERED } from "./anchor";
 import { nextFrame } from "./frame";
 import { type AreaRect, REPLACED, Widen, dragRect, isClickSized, nonTextAt, widenedTarget } from "./area";
 import { LongPress, type Timers, windowTimers } from "./long-press";
@@ -392,7 +392,7 @@ export class CommentMode {
   private target(e: Event): Element | null {
     const el = e.target as Element | null;
     if (!el || el === this.host || el === this.doc.documentElement || el === this.doc.body) return null;
-    return el.closest?.(OVERLAY_TAG) ? null : el;
+    return el.closest?.(UNRENDERED) ? null : el;
   }
 
   /** The comment target for the pointer at (`x`, `y`) over `el`. */
@@ -470,7 +470,7 @@ export class CommentMode {
   private elementAt(x: number, y: number): Element | null {
     const el = this.doc.elementFromPoint?.(x, y) ?? null;
     if (!el || el === this.host || el === this.doc.documentElement || el === this.doc.body) return null;
-    return el.closest?.(OVERLAY_TAG) ? null : el;
+    return el.closest?.(UNRENDERED) ? null : el;
   }
 
   /** A long-press released at (`x`, `y`): the browser's click, if it comes

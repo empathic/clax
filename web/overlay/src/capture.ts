@@ -1,0 +1,135 @@
+// What the overlay captures for a report (spec 2026-10-29-feedback-loop
+// §4.1–4.2): a pick (Element, which may be a text range, or Area) or the
+// visible viewport (Screen), first as a private render of the page's DOM
+// (`clip.ts`), which needs no permission; then, if the reporter asks, as the
+// browser's exact screenshot of this tab (`display-capture.ts`), cropped to
+// the pick. The exact screenshot is suggested when the DOM render left out
+// something under what was captured (a cross-origin frame, a canvas, a
+// video). The overlay, and whatever the host marked `data-clax-ignore`, is
+// stepped aside while the browser captures, so it is never in the picture.
+
+import { UNRENDERED } from "../../bridge/src/anchor";
+import { type Omitted, type Rect, type RenderResult, intersect, renderViewportClip, toImage } from "../../bridge/src/clip";
+import { type DisplayResult, captureDisplay, displayCaptureSupported } from "../../bridge/src/display-capture";
+import { nextFrame } from "../../bridge/src/frame";
+import type { CaptureInfo } from "../../sdk/src/types";
+import type { Picked } from "./picker";
+
+/** What the reporter captures: a pick, a drawn area, or the visible viewport. */
+export type Mode = "element" | "area" | "screen";
+
+/** A capture: its PNG (null when none could be made), how it was made, why
+ * the one asked for could not be made (`error`; a fallback may still be in
+ * `png`), what the reporter should know about it (`note`), and whether the
+ * exact screenshot would show more (`suggestExact`). */
+export interface Captured {
+  png: Blob | null;
+  info: CaptureInfo;
+  error: string | null;
+  note: string | null;
+  suggestExact: boolean;
+}
+
+/** What a capture uses, each replaceable: the viewport render, the display
+ * capture, whether the browser can capture the tab, the elements stepped
+ * aside while it does (the page's `UNRENDERED` ones by default), the wait
+ * for the page to be drawn without them, and, for `captureExact`, the DOM
+ * capture already made, to keep when the display capture fails. */
+export interface CaptureDeps {
+  renderViewport?: (win: Window) => Promise<RenderResult>;
+  display?: (win: Window, crop?: Rect) => Promise<DisplayResult>;
+  supported?: boolean;
+  aside?: Element[];
+  painted?: () => Promise<void>;
+  fallback?: Captured;
+}
+
+const FALLBACK_MESSAGES: Record<Exclude<DisplayResult, { ok: true }>["reason"], string> = {
+  denied: "You cancelled screen sharing — the page render is used instead.",
+  other_surface: "That was another tab or window — the page render is used instead.",
+  unsupported: "This browser cannot capture the tab — the page render is used instead.",
+  failed: "The tab could not be captured — the page render is used instead.",
+};
+
+/** Why a pick out of the viewport has no exact screenshot. */
+export const OUT_OF_VIEW = "The pick is out of view — the page render is used instead.";
+
+/** Said of an exact screenshot the browser could not confirm was this tab. */
+export const UNCONFIRMED_TAB = "Your browser cannot confirm this is this tab — check the picture before you send it.";
+
+const png = (b: ArrayBuffer) => new Blob([b], { type: "image/png" });
+const viewportOf = (win: Window): Rect => ({ x: 0, y: 0, w: win.innerWidth, h: win.innerHeight });
+
+/** The capture mode a report records for `mode` and its pick. */
+function infoMode(mode: Mode, target: Picked | null): CaptureInfo["mode"] {
+  return mode === "screen" || !target ? "screen" : target.mode;
+}
+
+function needTarget(mode: Mode, target: Picked | null): void {
+  if (mode !== "screen" && !target) throw new TypeError(`a ${mode} capture needs a pick`);
+}
+
+/** The DOM render for `mode`: the pick's clip, or the viewport's. Never
+ * rejects: a render that fails gives no PNG and its reason. The exact
+ * screenshot is suggested (where the browser can take one) when something
+ * the render left out lies under the pick, or the render failed. */
+export async function captureFor(mode: Mode, target: Picked | null, win: Window, deps: CaptureDeps = {}): Promise<Captured> {
+  needTarget(mode, target);
+  const supported = deps.supported ?? displayCaptureSupported(win);
+  const m = infoMode(mode, target);
+  try {
+    const res = mode === "screen" || !target ? await (deps.renderViewport ?? renderViewportClip)(win) : await target.render();
+    // What was captured, in the image's pixels (where `omitted` is): a pick may be
+    // only part of its clip (a range in its block, an element in its region).
+    const whole = toImage(res.at, res.at, res.scale);
+    const under = mode === "screen" || !target ? whole : toImage(target.rect(), res.at, res.scale);
+    const hidden = res.omitted.some((o: Omitted) => intersect(o.rect, under));
+    return { png: png(res.png), info: { mode: m, method: "dom", omitted: res.omitted }, error: null, note: null, suggestExact: supported && hidden };
+  } catch (e) {
+    const error = e instanceof Error && e.message ? e.message : String(e);
+    return { png: null, info: { mode: m, method: "dom" }, error, note: null, suggestExact: supported };
+  }
+}
+
+const twoFrames = () => new Promise<void>(resolve => nextFrame(() => nextFrame(resolve)));
+
+/** Runs `capture` with `els` hidden (their layout kept) once the page has
+ * been drawn without them, and shows them again whatever comes of it. */
+export async function steppingAside<T>(els: Element[], capture: () => Promise<T>, painted: () => Promise<void> = twoFrames): Promise<T> {
+  const prior = els.map(el => {
+    const s = (el as HTMLElement).style;
+    return s ? { s, value: s.getPropertyValue("visibility"), priority: s.getPropertyPriority("visibility") } : null;
+  });
+  for (const p of prior) p?.s.setProperty("visibility", "hidden", "important");
+  try {
+    await painted();
+    return await capture();
+  } finally {
+    for (const p of prior) {
+      if (!p) continue;
+      if (p.value) p.s.setProperty("visibility", p.value, p.priority); else p.s.removeProperty("visibility");
+    }
+  }
+}
+
+/** The browser's screenshot of this tab for `mode`, cropped to the pick
+ * (cut to the viewport) for Element and Area. When it cannot be had, the
+ * DOM capture (`deps.fallback`, else made now) is answered with `error`
+ * saying why; one the browser cannot confirm is this tab carries a `note`. */
+export async function captureExact(mode: Mode, target: Picked | null, win: Window, deps: CaptureDeps = {}): Promise<Captured> {
+  needTarget(mode, target);
+  const m = infoMode(mode, target);
+  const crop = mode === "screen" || !target ? undefined : intersect(target.rect(), viewportOf(win));
+  let error: string;
+  if (crop === null) {
+    error = OUT_OF_VIEW;
+  } else {
+    const aside = deps.aside ?? Array.from(win.document.querySelectorAll(UNRENDERED));
+    const display = deps.display ?? ((w: Window, c?: Rect) => captureDisplay(w, c));
+    const res = await steppingAside(aside, () => display(win, crop), deps.painted);
+    if (res.ok) return { png: png(res.png), info: { mode: m, method: "display" }, error: null, note: res.thisTab === true ? null : UNCONFIRMED_TAB, suggestExact: false };
+    error = FALLBACK_MESSAGES[res.reason];
+  }
+  const dom = deps.fallback ?? await captureFor(mode, target, win, deps);
+  return { ...dom, error, suggestExact: false };
+}

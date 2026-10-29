@@ -202,6 +202,16 @@ describe("CommentMode", () => {
     expect(hooks.pickElement).not.toHaveBeenCalled();
   });
 
+  it("never picks what a host marked data-clax-ignore", () => {
+    document.body.insertAdjacentHTML("beforeend", `<aside data-clax-ignore><button>Chat</button></aside>`);
+    mode.set(true);
+    const b = document.querySelector("aside button")!;
+    fire(b, "mousedown");
+    fire(b, "mouseup");
+    fire(b, "click");
+    expect(hooks.pickElement).not.toHaveBeenCalled();
+  });
+
   it("ignores a selection made before the mode was turned on", () => {
     const p = document.querySelector("p")!;
     select(p, 0, 4);

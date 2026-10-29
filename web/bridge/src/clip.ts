@@ -16,8 +16,17 @@
 // (`neutraliseCopy`). An element larger than the budget is rendered cropped
 // to its part in the viewport, grown to the budget within it, on each axis
 // over the budget that is not wholly in view.
+//
+// Every render is private (`privateRender`): what is typed into fields and
+// editable regions is blank in it unless the field (or what holds it) carries
+// `data-clax-show`, and a password never shows; an element marked
+// `data-clax-redact` is drawn as a solid block of its box; what carries
+// `data-clax-ignore`, and Clax's own overlay, is left out. Each render also
+// lists what it could not draw (`Omitted`), so a reporter can be offered the
+// browser's own screenshot instead.
 
-import { createContext, destroyContext, domToPng } from "modern-screenshot";
+import { type Options, createContext, destroyContext, domToPng } from "modern-screenshot";
+import { REDACT_ATTR, SHOW_ATTR, UNRENDERED } from "./anchor";
 import { blockAncestor } from "./block";
 import { backgroundBehind, outlineColors } from "./target";
 import { type TextPoint, type TextWindow, charsBetween, nextText, pointAt, pointInto, prevText, windowAround } from "./text-walk";
@@ -31,7 +40,40 @@ export const MAX_CLIP_REGION = { w: 1600, h: 2400 };
 /** How far above and below a range its region clip reaches, in CSS px. */
 export const REGION_PAD = 120;
 
-type Rect = { top: number; bottom: number; width: number; height: number };
+type Extent = { top: number; bottom: number; width: number; height: number };
+
+/** A rectangle in CSS px. */
+export type Rect = { x: number; y: number; w: number; h: number };
+
+/** Something a DOM render could not draw (a cross-origin iframe, object or
+ * embed; an image from another origin; a canvas it may not read; a video
+ * whose frame it cannot load), and where it is in the clip: `rect` is in the
+ * clip image's own pixels, from its top left corner (not the viewport's CSS
+ * px), cut to the image, so it outlines the omission exactly on the image. */
+export type Omitted = { kind: "iframe" | "image" | "canvas" | "video"; rect: Rect };
+
+/** A DOM render: its PNG, and what it left out (`omitted`, in the image's
+ * pixels). `at` is the part of the viewport the image shows (viewport CSS
+ * px; for a region clip, the region on the page) and `scale` the image's
+ * pixels per CSS px, so a viewport rectangle maps into the image as
+ * `(x - at.x) * scale`. */
+export interface RenderResult {
+  png: ArrayBuffer;
+  omitted: Omitted[];
+  at: Rect;
+  scale: number;
+}
+
+/** `r` (viewport CSS px) in the pixels of an image of `at` drawn at `scale`. */
+export function toImage(r: Rect, at: Rect, scale: number): Rect {
+  const x = Math.round((r.x - at.x) * scale);
+  const y = Math.round((r.y - at.y) * scale);
+  return { x, y, w: Math.max(1, Math.round((r.x + r.w - at.x) * scale) - x), h: Math.max(1, Math.round((r.y + r.h - at.y) * scale) - y) };
+}
+
+/** The most omissions a render lists, the largest first, so that a report's
+ * context stays within its bound. */
+export const MAX_OMITTED = 32;
 
 /** Whether a region of `r`'s size fits the clip budget. */
 export function fitsClipBudget(r: { width: number; height: number }): boolean {
@@ -41,7 +83,7 @@ export function fitsClipBudget(r: { width: number; height: number }): boolean {
 /** The vertical extent of the region clip for a range at `target` inside
  * `block` (client coordinates): `REGION_PAD` above and below the range, within
  * the block, at most `MAX_CLIP_REGION.h` tall (cut at the bottom). */
-export function regionBounds(target: Rect, block: Rect): { top: number; bottom: number } {
+export function regionBounds(target: Extent, block: Extent): { top: number; bottom: number } {
   const top = Math.max(block.top, target.top - REGION_PAD);
   const bottom = Math.min(block.bottom, target.bottom + REGION_PAD, top + MAX_CLIP_REGION.h);
   return { top, bottom: Math.max(top, bottom) };
@@ -143,10 +185,17 @@ export function dataUrlToBuffer(url: string): ArrayBuffer {
 
 /** How `renderClip` renders: `crop`, the part of the element to render
  * (relative to its top left corner; all of it when absent); `style`, more
- * inline style for the rendered root. */
+ * inline style for the rendered root; `omitted`, what the render leaves out
+ * (in viewport CSS px) and the part of the viewport the picture stands for
+ * (`at`), when the caller knows them better than the rendered element does
+ * (a region's copy stands off-screen for the page's elements); `viewport`,
+ * that the root is rendered as the viewport shows it, so fixed and stuck
+ * elements are drawn where they show now. */
 export interface ClipOptions {
   crop?: { x: number; y: number; w: number; h: number };
   style?: Partial<CSSStyleDeclaration>;
+  omitted?: { at: Rect; list: Omitted[] };
+  viewport?: boolean;
 }
 
 /** Documents whose policy refused the <style> modern-screenshot reads web
@@ -170,23 +219,35 @@ export const CLIP_SHRINKS = 3;
  * Rejects when the element has no size, when the PNG is still too large, or
  * when rendering exceeds `timeoutMs` in all. */
 export async function renderClip(el: Element, win: Window = window, timeoutMs = CLIP_TIMEOUT_MS, opts: ClipOptions = {}): Promise<ArrayBuffer> {
+  return (await renderClipWithReport(el, win, timeoutMs, opts)).png;
+}
+
+/** `renderClip`'s PNG, private (`privateRender`), with what it left out. */
+export async function renderClipWithReport(el: Element, win: Window = window, timeoutMs = CLIP_TIMEOUT_MS, opts: ClipOptions = {}): Promise<RenderResult> {
   const r = el.getBoundingClientRect();
   if (r.width < 1 || r.height < 1) throw new Error("the anchored element has no size");
   const origin = new URL(win.location.href).origin;
   const crop = opts.crop;
+  // The picture's place in the viewport.
+  const at: Rect = crop ? { x: r.left + crop.x, y: r.top + crop.y, w: crop.w, h: crop.h } : { x: r.left, y: r.top, w: r.width, h: r.height };
+  const seen = survey(el, origin, at, !!opts.viewport);
+  const shown = opts.omitted?.at ?? at;
+  const omitted = opts.omitted?.list ?? seen.omitted;
+  let drawnAt = 1;
   // A crop renders the element at its own size, moved so the crop sits in a
   // picture of the crop's size (the declarations replace the forced size).
   const cropStyle: Partial<CSSStyleDeclaration> = crop
     ? { width: `${r.width}px`, height: `${r.height}px`, transform: `translate(${-crop.x}px, ${-crop.y}px)`, transformOrigin: "0 0" }
     : {};
   const doc = el.ownerDocument;
+  const background = clipBackground(el, win);
   const once = async (scale: number) => {
     const ctx = await createContext(el, {
       ...(fontsRefused.has(doc) ? { font: false as const } : {}),
       scale,
-      filter: n => !crossOriginImage(n, origin),
+      ...privateRender(el, origin, seen, blockColour(background)),
       fetch: { placeholderImage: TRANSPARENT },
-      backgroundColor: clipBackground(el, win),
+      backgroundColor: background,
       style: { ...clipRootStyle(el, win), ...opts.style, ...cropStyle },
       timeout: timeoutMs,
       ...(crop ? { width: crop.w, height: crop.h } : {}),
@@ -209,7 +270,7 @@ export async function renderClip(el: Element, win: Window = window, timeoutMs = 
         fontsRefused.add(doc);
         buf = await once(scale);
       }
-      if (buf.byteLength <= MAX_CLIP_BYTES) return buf;
+      if (buf.byteLength <= MAX_CLIP_BYTES) { drawnAt = scale; return buf; }
       if (shrinks >= CLIP_SHRINKS) throw new Error("the screenshot is too large to keep, even scaled down");
       scale /= 2;
     }
@@ -217,10 +278,328 @@ export async function renderClip(el: Element, win: Window = window, timeoutMs = 
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`clip took longer than ${timeoutMs} ms`)), timeoutMs); });
   try {
-    return await Promise.race([png, late]);
+    const buf = await Promise.race([png, late]);
+    return { png: buf, omitted: omitted.map(o => ({ kind: o.kind, rect: toImage(o.rect, shown, drawnAt) })), at: shown, scale: drawnAt };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** The part of `a` inside `b`, rounded to whole CSS px; null when they do not overlap. */
+export function intersect(a: Rect, b: Rect): Rect | null {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const right = Math.min(a.x + a.w, b.x + b.w);
+  const bottom = Math.min(a.y + a.h, b.y + b.h);
+  if (right <= x || bottom <= y) return null;
+  const rx = Math.round(x);
+  const ry = Math.round(y);
+  return { x: rx, y: ry, w: Math.max(1, Math.round(right) - rx), h: Math.max(1, Math.round(bottom) - ry) };
+}
+
+const rectOf = (el: Element): Rect => {
+  const b = el.getBoundingClientRect();
+  return { x: b.left, y: b.top, w: b.width, h: b.height };
+};
+
+/** `found` cut to the `MAX_OMITTED` largest. */
+function largest(found: Omitted[]): Omitted[] {
+  return found.sort((a, b) => b.rect.w * b.rect.h - a.rect.w * a.rect.h).slice(0, MAX_OMITTED);
+}
+
+/** The document an iframe shows, when this page may read it and it is of
+ * this page's origin; null otherwise (another origin's, a sandbox's without
+ * `allow-same-origin`, or one not loaded). */
+function readableFrame(f: Element, origin: string): Document | null {
+  try {
+    const src = f.getAttribute("src");
+    if (src && !f.hasAttribute("srcdoc")) {
+      const u = new URL(src, f.baseURI);
+      if ((u.protocol === "http:" || u.protocol === "https:") && u.origin !== origin) return null;
+    }
+    const d = (f as HTMLIFrameElement).contentDocument;
+    return d?.documentElement ? d : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether a render can draw `v`'s current frame: it loads the video again
+ * from its URL, which works for this origin's files and data URLs only. */
+function drawableVideo(v: Element, origin: string): boolean {
+  const src = (v as HTMLVideoElement).currentSrc;
+  if (!src) return false;
+  try {
+    const u = new URL(src);
+    return u.protocol === "data:" || ((u.protocol === "http:" || u.protocol === "https:") && u.origin === origin);
+  } catch {
+    return false;
+  }
+}
+
+/** Whether this page may read `c`'s pixels (a canvas that drew another
+ * origin's image may not). */
+function readableCanvas(c: Element): boolean {
+  try {
+    (c as HTMLCanvasElement).toDataURL();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** What a render of `el` cannot draw, if anything. */
+function omission(el: Element, origin: string): Omitted["kind"] | null {
+  switch (el.localName) {
+    case "iframe": return readableFrame(el, origin) ? null : "iframe";
+    case "object": case "embed": return "iframe";
+    case "canvas": return readableCanvas(el) ? null : "canvas";
+    case "video": return drawableVideo(el, origin) ? null : "video";
+    default: return null;
+  }
+}
+
+/** Whether a render of `root` leaves `n` (one of its descendants) out: an
+ * image from another origin (it would taint the canvas), Clax's overlay, or
+ * what carries `data-clax-ignore`; and the hidden frame modern-screenshot
+ * attaches to the page to read default styles from, while it renders. */
+function leftOut(n: Node, origin: string): boolean {
+  if (n.nodeType !== Node.ELEMENT_NODE) return false;
+  const el = n as Element;
+  return crossOriginImage(el, origin) || el.matches(UNRENDERED) || (el.localName === "iframe" && el.id.startsWith("__SANDBOX__"));
+}
+
+/** Elements whose drawn copy keeps nothing of them (modern-screenshot draws
+ * a canvas or a video as a new image, a readable iframe as its document) or
+ * whose content paints over their background: a redaction of one is drawn
+ * over the picture instead. */
+const REPLACED = new Set(["img", "canvas", "video", "iframe", "object", "embed"]);
+
+/** What a render needs to know of the page before it clones it. */
+interface Survey {
+  omitted: Omitted[];
+  /** Redacted replaced elements' boxes, relative to the picture's top left corner. */
+  blocks: Rect[];
+  /** Whether the rendered root is in a `data-clax-show` region. */
+  shown: boolean;
+  /** Whether the rendered root is in an editable region. */
+  editable: boolean;
+  /** For a viewport render, where each fixed or stuck element (in the
+   * order the renderer meets them) is drawn, relative to the root's box. */
+  pinned: { fixed: boolean; dx: number; dy: number }[] | null;
+}
+
+/** The nearest element at or above `el` that matches `sel`, across shadow roots. */
+function closestComposed(el: Element, sel: string): Element | null {
+  for (let cur: Element | null = el; cur; ) {
+    const hit = cur.closest(sel);
+    if (hit) return hit;
+    const host: Element | undefined = (cur.getRootNode() as ShadowRoot).host;
+    cur = host ?? null;
+  }
+  return null;
+}
+
+/** Whether a fixed element's containing block is the viewport: no ancestor
+ * makes one for it (a transform, a filter, a perspective, paint containment). */
+function viewportFixed(el: Element, win: Window): boolean {
+  for (let a = el.parentElement; a; a = a.parentElement) {
+    const cs = win.getComputedStyle(a);
+    if ((cs.transform && cs.transform !== "none") || (cs.filter && cs.filter !== "none") || (cs.perspective && cs.perspective !== "none")
+      || /paint|layout|strict|content/.test(cs.contain ?? "") || /transform|filter|perspective/.test(cs.willChange ?? "")) return false;
+  }
+  return true;
+}
+
+/** Where a stuck element shows, against where it would be were it not stuck:
+ * the element is unstuck for one synchronous layout and put back. */
+function stuckOffset(el: HTMLElement): { dx: number; dy: number } {
+  const stuck = el.getBoundingClientRect();
+  const prior = el.style.getPropertyValue("position");
+  const priority = el.style.getPropertyPriority("position");
+  el.style.setProperty("position", "static", "important");
+  const free = el.getBoundingClientRect();
+  if (prior) el.style.setProperty("position", prior, priority); else el.style.removeProperty("position");
+  return { dx: stuck.left - free.left, dy: stuck.top - free.top };
+}
+
+/** Walks what a render of `root` draws, in the order modern-screenshot clones
+ * it (through shadow roots, slots and readable iframes; never into what
+ * `leftOut` drops, a video, or a style or script): what it cannot draw within
+ * `at`, the redacted replaced elements, and for a `viewport` render the
+ * fixed and stuck elements. */
+function survey(root: Element, origin: string, at: Rect, viewport: boolean): Survey {
+  const found: Omitted[] = [];
+  const blocks: Rect[] = [];
+  const pinned: Survey["pinned"] = viewport ? [] : null;
+  const rootBox = root.getBoundingClientRect();
+  const stack: { el: Element; redacted: boolean }[] = [{ el: root, redacted: false }];
+  while (stack.length) {
+    const { el, redacted: under } = stack.pop()!;
+    const redacted = under || el.hasAttribute(REDACT_ATTR);
+    const win = el.ownerDocument.defaultView;
+    if (!redacted) {
+      const kind = omission(el, origin);
+      const cut = kind && intersect(rectOf(el), at);
+      if (kind && cut) found.push({ kind, rect: cut });
+    } else if (!under && REPLACED.has(el.localName)) {
+      const b = rectOf(el);
+      blocks.push({ x: b.x - at.x, y: b.y - at.y, w: b.w, h: b.h });
+    }
+    if (pinned && win && el !== root) {
+      const pos = win.getComputedStyle(el).position;
+      if (pos === "fixed") {
+        const b = el.getBoundingClientRect();
+        pinned.push(viewportFixed(el, win) ? { fixed: true, dx: b.left - rootBox.left, dy: b.top - rootBox.top } : { fixed: true, dx: NaN, dy: NaN });
+      } else if (pos === "sticky" && el instanceof win.HTMLElement) {
+        pinned.push({ fixed: false, ...stuckOffset(el) });
+      }
+    }
+    if (el.localName === "video") continue;
+    let kids: Element[] = [];
+    if (el.localName === "iframe") {
+      const d = readableFrame(el, origin);
+      if (d) kids = [d.documentElement];
+    } else {
+      for (const c of Array.from((el.shadowRoot ?? el).children)) {
+        if (c.localName === "slot" && typeof (c as HTMLSlotElement).assignedElements === "function") kids.push(...(c as HTMLSlotElement).assignedElements());
+        else kids.push(c);
+      }
+      kids = kids.filter(c => c.localName !== "style" && c.localName !== "script");
+    }
+    for (let i = kids.length - 1; i >= 0; i--) {
+      const c = kids[i];
+      if (leftOut(c, origin)) {
+        if (!redacted && c.localName === "img") {
+          const cut = intersect(rectOf(c), at);
+          if (cut) found.push({ kind: "image", rect: cut });
+        }
+        continue;
+      }
+      stack.push({ el: c, redacted });
+    }
+  }
+  const editableAt = closestComposed(root, "[contenteditable]");
+  return {
+    omitted: largest(found),
+    blocks,
+    shown: !!closestComposed(root, `[${SHOW_ATTR}]`),
+    editable: !!editableAt && editableAt.getAttribute("contenteditable")?.toLowerCase() !== "false",
+    pinned,
+  };
+}
+
+/** The colour a redaction is drawn in: black on a light page, white on a dark one. */
+export function blockColour(background: string): "#000" | "#fff" {
+  const hex = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(background);
+  const rgb = hex ? hex.slice(1).map(h => parseInt(h, 16)) : (/rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/.exec(background)?.slice(1).map(Number) ?? [255, 255, 255]);
+  const [r, g, b] = rgb;
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b < 128 ? "#fff" : "#000";
+}
+
+/** Input types whose value is a label or nothing shown, not something typed. */
+const LABELLED = new Set(["button", "submit", "reset", "image", "checkbox", "radio"]);
+
+/** Blanks what is typed in the copy `root` (modern-screenshot's clone of the
+ * page): fields' values, selections, and the text of editable regions,
+ * except within `data-clax-show` (`shown`: the root is); passwords always. */
+function blankTyped(root: Element, shown: boolean, editable: boolean): void {
+  const isShown = (el: Element) => shown || !!el.closest(`[${SHOW_ATTR}]`);
+  for (const el of [root, ...Array.from(root.querySelectorAll("input, textarea, select"))]) {
+    const tag = el.localName;
+    if (tag === "input") {
+      const type = (el.getAttribute("type") ?? "").toLowerCase();
+      if (type !== "password" && (LABELLED.has(type) || isShown(el))) continue;
+      el.removeAttribute("value");
+      (el as HTMLInputElement).value = "";
+    } else if (tag === "textarea") {
+      if (isShown(el)) continue;
+      el.removeAttribute("value");
+      el.textContent = "";
+    } else if (tag === "select") {
+      if (isShown(el)) continue;
+      el.removeAttribute("value");
+      for (const o of Array.from(el.querySelectorAll("option, optgroup"))) {
+        o.removeAttribute("selected");
+        o.removeAttribute("label");
+        if (o.localName === "option") o.textContent = "";
+      }
+    }
+  }
+  if (!editable && !root.querySelector("[contenteditable]")) return;
+  const walk = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let t = walk.nextNode() as Text | null; t; t = walk.nextNode() as Text | null) {
+    const p = t.parentElement;
+    if (!p) continue;
+    const holder = p.closest("[contenteditable]");
+    const typed = holder ? holder.getAttribute("contenteditable")?.toLowerCase() !== "false" : editable;
+    if (typed && !isShown(p)) t.data = "";
+  }
+}
+
+/** Draws each fixed and stuck element of a viewport copy where the page
+ * shows it now (`pinned`, in the order of the copy's elements). The copy's
+ * root is the containing block of its fixed elements, so each is placed from
+ * the root's top left corner; a stuck one is moved by how far it is stuck.
+ * Nothing moves when the copy's fixed and stuck elements do not line up
+ * with the page's. */
+function pinElements(root: Element, pinned: NonNullable<Survey["pinned"]>): void {
+  const copies = Array.from(root.querySelectorAll<HTMLElement>("*")).filter(e => e.style && (e.style.position === "fixed" || e.style.position === "sticky"));
+  if (copies.length !== pinned.length) return;
+  copies.forEach((c, i) => {
+    const p = pinned[i];
+    if (p.fixed !== (c.style.position === "fixed") || Number.isNaN(p.dx)) return;
+    const set = (k: string, v: string) => c.style.setProperty(k, v, "important");
+    if (p.fixed) { set("left", `${p.dx}px`); set("top", `${p.dy}px`); set("margin", "0"); }
+    else { set("position", "relative"); set("left", `${p.dx}px`); set("top", `${p.dy}px`); }
+    set("right", "auto");
+    set("bottom", "auto");
+  });
+}
+
+/** The modern-screenshot options that make a render of `root` private:
+ * images from other origins, Clax's overlay and what carries
+ * `data-clax-ignore` are left out; typed values are blanked (`blankTyped`);
+ * every `data-clax-redact` element is drawn as a block of `colour` (a rule
+ * in the picture's style that paints its box and hides what it holds, and,
+ * for a replaced element, a block drawn over the picture at its box). */
+function privateRender(root: Element, origin: string, seen: Survey, colour: string): Pick<Options, "filter" | "onCloneNode" | "onCreateForeignObjectSvg"> {
+  return {
+    filter: n => !leftOut(n, origin),
+    onCloneNode: clone => {
+      if (clone.nodeType !== Node.ELEMENT_NODE) return;
+      blankTyped(clone as Element, seen.shown, seen.editable);
+      if (seen.pinned) pinElements(clone as Element, seen.pinned);
+    },
+    onCreateForeignObjectSvg: svg => {
+      const doc = svg.ownerDocument;
+      const style = doc.createElement("style");
+      const a = `[${REDACT_ATTR}]`;
+      style.textContent = `${a}{background:${colour}!important;border-color:${colour}!important;color:transparent!important;-webkit-text-fill-color:transparent!important;`
+        + "text-shadow:none!important;box-shadow:none!important;outline:none!important;text-decoration-color:transparent!important;caret-color:transparent!important}"
+        + `${a} *,${a}::before,${a}::after,${a} ::before,${a} ::after,${a}::marker,${a} ::marker{visibility:hidden!important}`;
+      svg.appendChild(style);
+      for (const b of seen.blocks) {
+        const rect = doc.createElementNS("http://www.w3.org/2000/svg", "rect");
+        for (const [k, v] of Object.entries({ x: b.x, y: b.y, width: b.w, height: b.h, fill: colour })) rect.setAttribute(k, String(v));
+        rect.setAttribute("data-clax-redacted", "");
+        svg.appendChild(rect);
+      }
+    },
+  };
+}
+
+/** A PNG of what the viewport of `win` shows now: its root element cropped
+ * to the viewport at the current scroll, within the clip limits, private as
+ * every clip is, with what it left out. Fixed and stuck elements are drawn
+ * where they show. */
+export async function renderViewportClip(win: Window = window, timeoutMs = AREA_CLIP_TIMEOUT_MS): Promise<RenderResult> {
+  const root = win.document.documentElement;
+  return renderClipWithReport(root, win, timeoutMs, {
+    crop: { x: win.scrollX, y: win.scrollY, w: win.innerWidth, h: win.innerHeight },
+    style: { margin: "0", display: "flow-root" },
+    viewport: true,
+  });
 }
 
 /** The span along one axis of an element from `start` of length `size`, in
@@ -262,19 +641,24 @@ export function elementRegion(r: { left: number; top: number; width: number; hei
  * nothing); a range in a larger block is
  * rendered as the region around it (`renderRegion`). */
 export async function renderTargetClip(t: Element | Range, win: Window = window, timeoutMs = CLIP_TIMEOUT_MS): Promise<ArrayBuffer> {
+  return (await renderTargetClipWithReport(t, win, timeoutMs)).png;
+}
+
+/** `renderTargetClip`'s PNG, with what it left out. */
+export async function renderTargetClipWithReport(t: Element | Range, win: Window = window, timeoutMs = CLIP_TIMEOUT_MS): Promise<RenderResult> {
   if ("nodeType" in t) {
     const r = t.getBoundingClientRect();
-    if (fitsClipBudget(r)) return renderClip(t, win, timeoutMs);
+    if (fitsClipBudget(r)) return renderClipWithReport(t, win, timeoutMs);
     const doc = t.ownerDocument;
     const vp = { w: doc.documentElement.clientWidth || win.innerWidth, h: doc.documentElement.clientHeight || win.innerHeight };
     const crop = elementRegion(r, vp);
     const whole = crop.x === 0 && crop.y === 0 && crop.w === Math.round(r.width) && crop.h === Math.round(r.height);
-    return renderClip(t, win, timeoutMs, whole ? {} : { crop });
+    return renderClipWithReport(t, win, timeoutMs, whole ? {} : { crop });
   }
   const range = t;
   const block = blockAncestor(range.commonAncestorContainer, win);
-  if (fitsClipBudget(block.getBoundingClientRect())) return renderClip(block, win, timeoutMs);
-  return renderRegion(block, range, win, timeoutMs);
+  if (fitsClipBudget(block.getBoundingClientRect())) return renderClipWithReport(block, win, timeoutMs);
+  return renderRegionWithReport(block, range, win, timeoutMs);
 }
 
 /** How long an area clip may take: longer than other clips, since the area's
@@ -306,8 +690,13 @@ export function areaRenderRoot(el: Element): Element {
  * it now: `areaRenderRoot(el)` rendered and cropped to `r` (which may reach
  * past it, for an area on the document: that part shows the page's background). */
 export async function renderAreaClip(el: Element, r: { x: number; y: number; w: number; h: number }, win: Window = window, timeoutMs = AREA_CLIP_TIMEOUT_MS): Promise<ArrayBuffer> {
+  return (await renderAreaClipWithReport(el, r, win, timeoutMs)).png;
+}
+
+/** `renderAreaClip`'s PNG, with what it left out. */
+export async function renderAreaClipWithReport(el: Element, r: { x: number; y: number; w: number; h: number }, win: Window = window, timeoutMs = AREA_CLIP_TIMEOUT_MS): Promise<RenderResult> {
   const root = areaRenderRoot(el);
-  return renderClip(root, win, timeoutMs, { crop: areaCrop(r, root.getBoundingClientRect()) });
+  return renderClipWithReport(root, win, timeoutMs, { crop: areaCrop(r, root.getBoundingClientRect()) });
 }
 
 /** The text point at or after (`c`, `o`) in `root`. */
@@ -490,6 +879,14 @@ function markPicked(copy: HTMLElement, from: number, length: number, tint: strin
  * the block (with shallow copies of the elements between them, so the page's
  * styles still apply), placed next to it off-screen, rendered, and removed. */
 export async function renderRegion(block: Element, range: Range, win: Window = window, timeoutMs = CLIP_TIMEOUT_MS): Promise<ArrayBuffer> {
+  return (await renderRegionWithReport(block, range, win, timeoutMs)).png;
+}
+
+/** `renderRegion`'s PNG, with what it left out: the page's elements in the
+ * region the copy cannot draw (embedded content, videos and canvases, which
+ * the copy holds as empty placeholders, and images from other origins),
+ * measured on the page. */
+export async function renderRegionWithReport(block: Element, range: Range, win: Window = window, timeoutMs = CLIP_TIMEOUT_MS): Promise<RenderResult> {
   const doc = block.ownerDocument;
   const br = block.getBoundingClientRect();
   const tr = range.getBoundingClientRect();
@@ -543,8 +940,25 @@ export async function renderRegion(block: Element, range: Range, win: Window = w
   block.after(copy);
   try {
     if (s && e && origin) markPicked(copy, charsBetween(block, origin, s), charsBetween(block, s, e), outlineColors(backgroundBehind(block)).tint);
-    return await renderClip(copy, win, timeoutMs);
+    const at: Rect = { x: br.left, y: top, w: br.width, h: Math.max(1, bottom - top) };
+    return await renderClipWithReport(copy, win, timeoutMs, { omitted: { at, list: regionOmitted(commonEl ?? block, part, at, new URL(win.location.href).origin) } });
   } finally {
     copy.remove();
   }
+}
+
+/** What a region copy of `part` (in `within`) cannot draw within `at`
+ * (viewport CSS px): embedded content, videos and canvases, which the copy
+ * holds as empty placeholders, and images from other origins; never what a
+ * render leaves out or a redaction covers. */
+function regionOmitted(within: Element, part: Range, at: Rect, origin: string): Omitted[] {
+  const found: Omitted[] = [];
+  for (const el of Array.from(within.querySelectorAll("iframe, object, embed, video, canvas, img"))) {
+    if (!part.intersectsNode(el) || el.closest(`${UNRENDERED}, [${REDACT_ATTR}]`)) continue;
+    const kind: Omitted["kind"] | null = el.localName === "img" ? (crossOriginImage(el, origin) ? "image" : null)
+      : el.localName === "video" ? "video" : el.localName === "canvas" ? "canvas" : "iframe";
+    const cut = kind && intersect(rectOf(el), at);
+    if (kind && cut) found.push({ kind, rect: cut });
+  }
+  return largest(found);
 }

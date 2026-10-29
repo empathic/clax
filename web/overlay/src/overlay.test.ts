@@ -9,6 +9,9 @@ import Overlay from "./Overlay.svelte";
 import type { Picked, Picker } from "./picker";
 
 const anchor: Anchor = { kind: "element", selector: "#total", quote: "Total: $12", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
+/** An element pick at `anchor` whose clip `render` draws, leaving nothing out. */
+const picked = (render: () => Promise<ArrayBuffer>): Picked =>
+  ({ anchor, mode: "element", rect: () => ({ x: 0, y: 0, w: 100, h: 20 }), render: () => render().then(png => ({ png, omitted: [], at: { x: 0, y: 0, w: 100, h: 20 }, scale: 1 })) });
 
 function report(id: string, bodies: string[]): Report {
   return {
@@ -99,7 +102,7 @@ describe("the overlay", () => {
   it("opens the composer at a pick with the clip's preview, and sends the report with it", async () => {
     click(button("Report"));
     let rendered: (b: ArrayBuffer) => void = () => {};
-    onPick({ anchor, render: () => new Promise(r => { rendered = r; }) });
+    onPick(picked(() => new Promise(r => { rendered = r; })));
     flushSync();
     await settle();
     expect(modes.at(-1)).toBe(false);
@@ -130,7 +133,7 @@ describe("the overlay", () => {
     history.replaceState(null, "", "/leave?team=7#req-2");
     try {
       click(button("Report"));
-      onPick({ anchor, render: async () => new ArrayBuffer(0) });
+      onPick(picked(async () => new ArrayBuffer(0)));
       await settle();
       type("Wrong date");
       click(button("Send"));
@@ -143,7 +146,7 @@ describe("the overlay", () => {
 
   it("Your reports opened over a draft hides the composer and keeps the draft for when it closes", async () => {
     click(button("Report"));
-    onPick({ anchor, render: async () => new Uint8Array([1]).buffer });
+    onPick(picked(async () => new Uint8Array([1]).buffer));
     await settle();
     type("Half written");
     click(button("Your reports"));
@@ -162,7 +165,7 @@ describe("the overlay", () => {
 
   it("stacks the panel and the notice above the launcher, apart", async () => {
     click(button("Report"));
-    onPick({ anchor, render: async () => new ArrayBuffer(0) });
+    onPick(picked(async () => new ArrayBuffer(0)));
     await settle();
     type("Sent");
     click(button("Send"));
@@ -175,7 +178,7 @@ describe("the overlay", () => {
 
   it("sends without a clip when the clip cannot be drawn", async () => {
     click(button("Report"));
-    onPick({ anchor, render: () => Promise.reject(new Error("a cross-origin image")) });
+    onPick(picked(() => Promise.reject(new Error("a cross-origin image"))));
     await settle();
     expect(q(".composer [role=status]")?.textContent).toMatch(/No screenshot: a cross-origin image/);
     type("Broken");
@@ -188,7 +191,7 @@ describe("the overlay", () => {
   it("waits for a clip still being taken before it sends", async () => {
     click(button("Report"));
     let rendered: (b: ArrayBuffer) => void = () => {};
-    onPick({ anchor, render: () => new Promise(r => { rendered = r; }) });
+    onPick(picked(() => new Promise(r => { rendered = r; })));
     await settle();
     type("Soon");
     click(button("Send"));
@@ -206,7 +209,7 @@ describe("the overlay", () => {
     const client: ReporterApi = { fileReport: async () => { throw Object.assign(new Error("x"), { code: "network" }); }, myReports: async () => ({ reports: [], next: null }), comment: async () => report("t", []) };
     view = mount(Overlay as never, { client, doc: document, host, picker: (p: (x: Picked) => void) => { onPick = p; return { set: () => {}, done: () => {}, destroy: () => {} }; }, timers }, host);
     click(button("Report"));
-    onPick({ anchor, render: async () => new ArrayBuffer(0) });
+    onPick(picked(async () => new ArrayBuffer(0)));
     await settle();
     type("Keep me");
     click(button("Send"));
@@ -218,7 +221,7 @@ describe("the overlay", () => {
 
   it("Cancel drops the draft", async () => {
     click(button("Report"));
-    onPick({ anchor, render: async () => new ArrayBuffer(0) });
+    onPick(picked(async () => new ArrayBuffer(0)));
     await settle();
     click(button("Cancel"));
     expect(q(".composer")).toBeNull();
@@ -227,7 +230,7 @@ describe("the overlay", () => {
 
   it("Escape in the composer drops the draft and gives focus back to Report", async () => {
     click(button("Report"));
-    onPick({ anchor, render: async () => new ArrayBuffer(0) });
+    onPick(picked(async () => new ArrayBuffer(0)));
     await settle();
     const t = q<HTMLTextAreaElement>(".composer textarea")!;
     expect(document.activeElement).toBe(t);

@@ -3746,7 +3746,8 @@ channel?}`, strings), `flags?` (values booleans, numbers or strings),
 `environment?` (`{url?, route?, title?, viewport?: {w, h, dpr}, scroll?:
 {x, y}, user_agent?, platform?, locale?, time_zone?, color_scheme?}`),
 `capture?` (`{mode: element|range|area|screen, method: dom|display,
-omitted?: [{kind, rect: {x, y, w, h}}]}`) and `app?` (the host's own JSON). A top-level key
+omitted?: [{kind, rect: {x, y, w, h}}]}`; each `rect` in the clip
+image's own pixels from its top left corner) and `app?` (the host's own JSON). A top-level key
 outside these, a wrong type, another `v` or a bad `captured_at` is 400
 `invalid_context`. The server scrubs it again (`environment.url`'s query
 values, `route`, `title` and every string in `app`): bearer and basic

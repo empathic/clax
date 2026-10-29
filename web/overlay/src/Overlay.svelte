@@ -87,7 +87,7 @@
     const d = newDraft(p.anchor);
     draft = d;
     const of = draft;
-    const clip = takeClip(() => p.render()).then(c => {
+    const clip = takeClip(() => p.render().then(r => r.png)).then(c => {
       picker.done();
       if (draft === of) {
         draft.clip = c;
