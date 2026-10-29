@@ -282,7 +282,7 @@ crate-package: web
     # The packed manifest has no [workspace] table (cargo strips it); unpacked inside this repository it needs one.
     cd target/crate-package/unpacked/clax-* && printf '\n[workspace]\n' >> Cargo.toml && CARGO_TARGET_DIR="{{justfile_directory()}}/target" cargo check --locked
 
-# Run the hosted demo locally in one go (demo/local.ts): build the web UI and the Worker, a fresh `wrangler dev --local` in hosted mode on a free port with one live seat, seed, links, steps and a git clone command; Enter starts the demo agents (extra args: --native for the native daemon instead, --port, --seats, --agents, --pace, --no-build)
+# Run the hosted demo locally in one go (demo/local.ts): install the Worker's packages (stamped pnpm install), build the web UI (Bazel when installed) and the Worker, a fresh `wrangler dev --local` in hosted mode on a free port with one live seat, seed, links, steps and a git clone command; Enter starts the demo agents (extra args: --native for the native daemon instead, --port, --seats, --agents, --pace, --no-build)
 hosted-demo *ARGS:
     node demo/local.ts "$@"
 

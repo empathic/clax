@@ -6,10 +6,11 @@
 // git-token route, as the Clone dialog asks for one.
 //
 // The Worker must be built first (`scripts/build-web.sh`, then
-// `crates/clax-worker/build.sh`, which `buildWorker` runs).
+// `crates/clax-worker/build.sh`, which `buildWorker` runs), and its
+// packages installed (`scripts/pnpm-install-stamped.sh crates/clax-worker`).
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,9 +40,12 @@ function exited(child: ChildProcess): Promise<void> {
 
 const wait = (ms: number) => new Promise<"timeout">((r) => setTimeout(() => r("timeout"), ms));
 
-/** Builds the Worker (`build.sh`, into target/clax-worker/build). The web UI is built separately, first. */
-export async function buildWorker(stdio: "inherit" | "ignore" = "inherit"): Promise<void> {
-  const b = spawn(join(WORKER_DIR, "build.sh"), [], { cwd: WORKER_DIR, stdio: ["ignore", stdio, "inherit"] });
+/** Builds the Worker (`build.sh`, into target/clax-worker/build). The web
+ * UI is built separately, first. `out` takes its stdout ("ignore" drops
+ * it), or as a file descriptor both its stdout and its stderr. */
+export async function buildWorker(out: "inherit" | "ignore" | number = "inherit"): Promise<void> {
+  const err = typeof out === "number" ? out : "inherit";
+  const b = spawn(join(WORKER_DIR, "build.sh"), [], { cwd: WORKER_DIR, stdio: ["ignore", out, err] });
   await exited(b);
   if (b.exitCode !== 0) throw new Error(`crates/clax-worker/build.sh failed (${b.exitCode ?? b.signalCode})`);
 }
@@ -110,12 +114,14 @@ function writeConfig(dir: string, vars: Record<string, string>): string {
  * once `/healthz` answers on the public origin. */
 export async function startWorker(o: WorkerOptions, readyMs = 90_000): Promise<RunningWorker> {
   mkdirSync(o.dir, { recursive: true });
+  const wrangler = join(WORKER_DIR, "node_modules/.bin/wrangler");
+  if (!existsSync(wrangler)) throw new Error(`${wrangler} is missing: install the Worker's packages with scripts/pnpm-install-stamped.sh crates/clax-worker`);
   const config = writeConfig(o.dir, { ...demoVars(o.port, o.secret, o.seats), ...o.vars });
   const log = join(o.dir, "wrangler.log");
   const out = openSync(log, "a");
   const inspector = await freePort();
   const child = spawn(
-    join(WORKER_DIR, "node_modules/.bin/wrangler"),
+    wrangler,
     [
       "dev", "--local",
       "--config", config,
