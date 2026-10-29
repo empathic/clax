@@ -622,7 +622,7 @@ name = "clax-do-vfs"
 version = "0.0.0"
 dependencies = [
  "rand 0.9.5",
- "rsqlite-vfs",
+ "rsqlite-vfs 0.2.0",
  "rusqlite",
  "sqlite-wasm-rs",
 ]
@@ -666,6 +666,39 @@ name = "clax-fake-exe"
 version = "0.6.0"
 dependencies = [
  "tempfile",
+]
+
+[[package]]
+name = "clax-fleet"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "clap",
+ "clax-core",
+ "clax-embedded",
+ "clax-http",
+ "clax-realtime",
+ "clax-sample",
+ "clax-server",
+ "futures",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+ "toml",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -2931,6 +2964,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rsqlite-vfs"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "353b74f9810d5b085b6c42c9d86a5f0fdb795553235cdd48753b32e3809d18a7"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "rusqlite"
 version = "0.40.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3332,7 +3374,7 @@ checksum = "dc3efc0da82635d7e1ced0053bbbfa8c7ab9645d0bf36ceb4f7127bb85315d75"
 dependencies = [
  "cc",
  "js-sys",
- "rsqlite-vfs",
+ "rsqlite-vfs 0.1.1",
  "wasm-bindgen",
 ]
 
@@ -3792,6 +3834,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-serde"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
+dependencies = [
+ "serde",
+ "tracing-core",
+]
+
+[[package]]
 name = "tracing-subscriber"
 version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3801,12 +3853,15 @@ dependencies = [
  "nu-ansi-term",
  "once_cell",
  "regex-automata",
+ "serde",
+ "serde_json",
  "sharded-slab",
  "smallvec",
  "thread_local",
  "tracing",
  "tracing-core",
  "tracing-log",
+ "tracing-serde",
 ]
 
 [[package]]

@@ -40,8 +40,11 @@ if (cd "$T" && scripts/bump-version.sh 9.8.7 >/dev/null) && [ "$(cd "$T" && scri
     && cmp -s "$T/scripts/ensure-clax.sh" "$T/plugins/pi/scripts/ensure-clax.sh" \
     && grep -q '^This is Clax plugin 9.8.7\.' "$T/plugins/pi/skills/clax/SKILL.md" \
     && python3 "$T/scripts/sync-skill-tools.py" --check >/dev/null \
-    && grep -A1 '^name = "clax-fake-exe"$' "$T/Cargo.lock" | grep '^version = "9.8.7"$' >/dev/null; then
-    pass "bump-version writes every version, the launcher copies and skill blocks included"
+    && grep -A1 '^name = "clax-fake-exe"$' "$T/Cargo.lock" | grep '^version = "9.8.7"$' >/dev/null \
+    && grep -q '^    newTag: "9.8.7"$' "$T/deploy/k8s/sqlite/kustomization.yaml" \
+    && grep -q 'deploy/k8s/sqlite?ref=v9.8.7$' "$T/docs/kubernetes.md" \
+    && grep -q 'ghcr.io/empathic/clax-fleet:9.8.7 ' "$T/docs/kubernetes.md"; then
+    pass "bump-version writes every version, the launcher copies, skill blocks and fleet image tags included"
 else fail "bump-version writes every version"; fi
 # The Worker's two crates keep their own version (0.0.0) in Cargo.lock.
 if grep -A1 -E '^name = "(clax-worker|clax-do-vfs)"$' "$T/Cargo.lock" | grep '^version = ' | grep -v '"0.0.0"' | grep . >/dev/null; then
@@ -71,6 +74,14 @@ for f in plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL
     out="$(cd "$T/stray" && scripts/check-version.sh 2>&1)"; rc=$?
     if [ "$rc" = 1 ] && echo "$out" | grep "$f tool block: 9.9.9" >/dev/null; then pass "a stray skill block is named ($f)"
     else fail "a stray skill block is named ($f: $out)"; fi
+done
+
+for f in deploy/k8s/sqlite/kustomization.yaml; do
+    fresh "$T/stray"
+    sed -i.bak 's/^    newTag: ".*"$/    newTag: "9.9.9"/' "$T/stray/$f"
+    out="$(cd "$T/stray" && scripts/check-version.sh 2>&1)"; rc=$?
+    if [ "$rc" = 1 ] && echo "$out" | grep "$f newTag: 9.9.9" >/dev/null; then pass "a stray fleet image tag is named ($f)"
+    else fail "a stray fleet image tag is named ($f: $out)"; fi
 done
 
 # A pattern that fails to match late in the list leaves every file as it was.

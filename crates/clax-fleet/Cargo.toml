@@ -1,0 +1,52 @@
+[package]
+name = "clax-fleet"
+version.workspace = true
+edition.workspace = true
+license = "GPL-2.0-only OR AGPL-3.0-only"
+# The tests are the [[test]] target below; tests/ holds its modules.
+autotests = false
+description = "Clax instances across a StatefulSet's processes, each shard's on its own volume: the Kubernetes deployment's server"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "clax-fleet"
+path = "src/main.rs"
+
+[dependencies]
+clax-core = { path = "../clax-core" }
+clax-sample = { path = "../clax-sample" }
+clax-realtime = { path = "../clax-realtime" }
+clax-http = { path = "../clax-http" }
+clax-server = { path = "../clax-server" }
+clax-embedded = { path = "../clax-embedded" }
+anyhow.workspace = true
+axum = { workspace = true, features = ["http1", "tokio", "ws"] }
+bytes.workspace = true
+clap.workspace = true
+futures.workspace = true
+http-body-util.workspace = true
+# The proxy between processes: a connection per forwarded request, with
+# upgrades (the stream's WebSocket).
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.11"
+tokio = { workspace = true, features = ["full"] }
+toml.workspace = true
+tower = { workspace = true, features = ["util"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["json"] }
+url.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+tempfile.workspace = true
+tokio-tungstenite.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

@@ -1,0 +1,49 @@
+# Who reaches the fleet's pods. Port 7480 takes requests from the Ingress
+# controller and forwards from the fleet's other pods; 7481 (health,
+# status, metrics) answers the kubelet's probes, which network policies do
+# not stop on common CNIs, and the fleet's pods. Label the Ingress
+# controller's namespace clax.empathic.dev/ingress=true (or edit the
+# selector below), and the namespace of a Prometheus that scrapes /metrics
+# clax.empathic.dev/metrics=true: /metrics asks for no credential (it holds
+# counters only), so this rule is what limits who reads it, while /status
+# asks for the peer key, which Prometheus is never given (docs/kubernetes.md,
+# Operating it). Forwards between pods carry cookies and
+# tokens in plain HTTP: keep the pod network encrypted (docs/kubernetes.md,
+# Security).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: clax
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: clax
+      app.kubernetes.io/component: fleet
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: clax
+              app.kubernetes.io/component: fleet
+        - namespaceSelector:
+            matchLabels:
+              clax.empathic.dev/ingress: "true"
+        # Behind a LoadBalancer or NodePort Service rather than an Ingress
+        # controller, requests come from outside the cluster (the clients'
+        # addresses with externalTrafficPolicy: Local, else the nodes'),
+        # which no selector above matches: admit those addresses.
+        # - ipBlock:
+        #     cidr: 203.0.113.0/24
+      ports:
+        - port: 7480
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: clax
+              app.kubernetes.io/component: fleet
+        - namespaceSelector:
+            matchLabels:
+              clax.empathic.dev/metrics: "true"
+      ports:
+        - port: 7481

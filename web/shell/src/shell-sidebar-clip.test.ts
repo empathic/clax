@@ -20,7 +20,6 @@ function shell() {
     agents: [], attention: null, decided: null, selection: { ids: [], anchor: null }, batchNote: "", batchBusy: false, sendTo: null };
   return mount(ShellSidebar, { ctl: { holds: () => true, shown: () => 1 } as never, s: s as never });
 }
-const settle = async () => { for (let i = 0; i < 8; i++) await new Promise(r => setTimeout(r, 0)); flush(); };
 const thumb = (root: Element) => root.querySelector<HTMLImageElement>(".clip-thumb img");
 
 afterEach(() => {
@@ -43,8 +42,9 @@ describe("a thread's clip in the artifact view's sidebar", () => {
     // jsdom has no URL.createObjectURL.
     Object.defineProperty(URL, "createObjectURL", { value: () => "blob:the-clip", configurable: true, writable: true });
     const m = shell();
-    await settle();
-    expect(fetch).toHaveBeenCalledWith(CLIP);
-    expect(thumb(m.root)?.getAttribute("src")).toBe("blob:the-clip");
+    // The fetch goes out after a dynamic import, which under load outlasts
+    // a fixed number of event loop turns: wait for the call itself.
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledWith(CLIP));
+    await vi.waitFor(() => { flush(); expect(thumb(m.root)?.getAttribute("src")).toBe("blob:the-clip"); });
   });
 });

@@ -241,9 +241,14 @@ test("Sam raises one of Mia's agents on his artifact; Mia's narrowing caps the r
     const agentRow = mia.page.locator(".agent").filter({ has: mia.page.locator(".aname", { hasText: /^notes-fix$/ }) });
     await expect(agentRow.locator(".raised-by .note.by")).toHaveText("Raised by Sam until this session ends: Publish new versions on “Sam's Notes”");
     await agentRow.locator(".narrow summary").click();
-    const box = agentRow.locator(".narrow .caps label", { hasText: "Publish new versions" }).locator("input");
+    const cap = agentRow.locator(".narrow .caps label", { hasText: "Publish new versions" });
+    const box = cap.locator("input");
     await box.uncheck();
     await expect.poll(() => publishes(fix)).toContain("not_permitted");
+    // The card takes no further change until the first one answers, which
+    // can come after the daemon already applies it: wait for the card to
+    // show it.
+    await expect(cap.locator(".raised")).toHaveText("Raised by Sam on “Sam's Notes”, but off while this is off");
     await box.check();
     await expect.poll(() => publishes(fix)).toBe("ok");
 

@@ -23,6 +23,7 @@ copy_to_bin(
 exports_files(
     [
         "contract.md",
+        "kubernetes.md",
         "usage.md",
     ],
     visibility = ["//scripts:__pkg__"],
