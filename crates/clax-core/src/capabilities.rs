@@ -130,7 +130,11 @@ pub fn net_hosts(caps: &Value) -> Result<Option<Vec<String>>> {
 /// approval before a version's declaration of them takes effect. The rest
 /// (`db`, `comments`, `user`, `room`, `artifact/self`, `assets`,
 /// `downloads`, `home`) act only inside the artifact and its own account's
-/// view of it.
+/// view of it. `webauthn` reaches past the page but is not gated: it is
+/// served to the owner's views alone, and every call shows the shell's own
+/// dialog naming the service's intent, then the passkey's own prompt with
+/// user verification, so no use goes without a fresh consent to that one
+/// intent; a declaration-time approval would add nothing.
 pub const GATED: &[&str] = &[
     "net", "sample", "account", "shell", "notify", "share", "file", "camera", "location",
 ];
