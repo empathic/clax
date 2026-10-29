@@ -44,11 +44,16 @@ pub const REPORTER_SCHEME: &str = "Clax-Reporter";
 /// reporter token request or a comment (at most
 /// [`clax_store::threads::MAX_BODY_CHARS`] characters) in JSON.
 pub const SMALL_BODY_LIMIT: usize = 64 * 1024;
-/// The most a report's multipart body holds: a clip of at most
-/// [`clax_store::threads::MAX_CLIP_BYTES`] and room for the text fields
-/// (thread metadata at most
+/// The most a report's multipart body (a filing or a reopen) holds: a
+/// clip of at most [`clax_store::threads::MAX_CLIP_BYTES`], diagnostics of
+/// at most [`clax_core::report::MAX_DIAG_BYTES`], a context as long as
+/// [`clax_core::report::parse_context`] reads, and room for the text
+/// fields (thread metadata at most
 /// [`clax_core::queue::MAX_THREAD_METADATA_BYTES`]).
-pub const REPORT_BODY_LIMIT: usize = clax_store::threads::MAX_CLIP_BYTES + 256 * 1024;
+pub const REPORT_BODY_LIMIT: usize = clax_store::threads::MAX_CLIP_BYTES
+    + clax_core::report::MAX_DIAG_BYTES
+    + 4 * clax_core::report::MAX_CONTEXT_BYTES
+    + 256 * 1024;
 /// The request headers a reporter's page may send cross-origin.
 pub const ALLOW_HEADERS: &str = "authorization, clax-signature, content-type";
 /// The methods of the reporter routes.
