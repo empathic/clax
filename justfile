@@ -286,7 +286,7 @@ crate-package: web
 hosted-demo *ARGS:
     node demo/local.ts "$@"
 
-# Run clax.dev on this machine (demo/clax-dev-local.ts): the Worker under `wrangler dev --local` on :8788 with a production deploy's settings (GitHub sign-in against real GitHub, the bundled Terms and Privacy Policy) and nothing seeded, its data kept in target/clax-dev-local/; the first run asks for a GitHub OAuth App's client ID and secret and your login, kept in ~/.config/clax/local/github.env, and prints the setup URL (args: --fresh to start over, --port, --no-build)
+# Run clax.dev on this machine (demo/clax-dev-local.ts): the Worker under `wrangler dev --local` on the first free port of 8788-8797 with a production deploy's settings (GitHub sign-in against real GitHub, the bundled Terms and Privacy Policy) and nothing seeded, you its owner, its data kept in target/clax-dev-local/; the first run on a machine registers a GitHub App in two clicks in the browser, kept in ~/.config/clax/local/github.env for every worktree (args: --fresh to start over, --setup to leave setup open, --port, --no-build)
 clax-dev-local *ARGS:
     node demo/clax-dev-local.ts "$@"
 

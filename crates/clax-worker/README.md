@@ -44,13 +44,15 @@ Each takes `--no-build` to skip `build.sh`.
 To try clax.dev itself on this machine (its signed-out pages, setup,
 GitHub sign-up and sign-in against real GitHub, invites, the Terms and the
 quickstart a new person gets), `just clax-dev-local` (from the repository's
-root, `demo/clax-dev-local.ts`) runs this Worker on `:8788` with a
-production deploy's vars, nothing seeded and its data kept between runs.
-Its first run asks for an OAuth App whose callback is
-`http://localhost:8788/auth/github/callback` (its client ID and secret and
-your login are kept in `~/.config/clax/local/github.env`) and prints the
-setup URL; `--fresh` starts over. `just hosted-demo` is the other local
-instance: seeded people and artifacts, and demo agents.
+root, `demo/clax-dev-local.ts`) runs this Worker on the first free port of
+8788–8797 with a production deploy's vars, nothing seeded, you its owner
+and its data kept between runs. It needs no configuration: the first run
+on a machine registers a GitHub App from a manifest (a page with one
+button, then GitHub's confirmation), whose callbacks name those ports and
+whose client ID, secret and owner are kept in
+`~/.config/clax/local/github.env` for every worktree. `--fresh` starts
+over and `--setup` leaves setup open to try it. `just hosted-demo` is the
+other local instance: seeded people and artifacts, and demo agents.
 
 ### ClaxBot's sandbox
 
