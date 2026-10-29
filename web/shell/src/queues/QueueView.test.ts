@@ -91,6 +91,41 @@ describe("QueueView", () => {
     expect(selected()).toBe("active");
   });
 
+  it("refetches the tab in place when its queue's topic says a report changed", async () => {
+    let first = { reports: [report(3), report(2)], next: "t2" as string | null };
+    let rest = { reports: [report(1)], next: null as string | null };
+    const calls = stubFetch({
+      [`GET ${LIST}?state=active&order=newest`]: () => first,
+      [`GET ${LIST}?state=active&order=newest&cursor=t2`]: () => rest,
+    });
+    const handlers: ((e: { type: string; topic?: string; [k: string]: unknown }) => void)[] = [];
+    const topics: string[][] = [];
+    const stream = { watch: (t: string[], f: (typeof handlers)[number]) => { topics.push(t); handlers.push(f); return () => {}; } };
+    const m = mount(QueueView, { qid: "q1", queue: QUEUE, nav: () => {}, stream: stream as never });
+    await settle();
+    expect(topics).toEqual([["queue:q1"]]);
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Load more"));
+    await settle();
+    expect(ids(m.root)).toEqual(["t3", "t2", "t1"]);
+    const row = m.root.querySelector('[data-id="t2"]');
+    // A new report is filed and t1 is claimed: both pages are fetched
+    // again, the rows never leave meanwhile, and the change is said.
+    first = { reports: [report(4), report(3)], next: "t3" };
+    stubFetch({
+      [`GET ${LIST}?state=active&order=newest`]: () => first,
+      [`GET ${LIST}?state=active&order=newest&cursor=t3`]: () => ({ reports: [report(2), report(1, { state: "claimed" })], next: null }),
+    });
+    const sent = (e: Parameters<(typeof handlers)[number]>[0]) => flush(() => { for (const h of handlers) h(e); });
+    sent({ type: "report", topic: "queue:q1", report_id: "t4", state: "open" });
+    expect(ids(m.root)).toEqual(["t3", "t2", "t1"]);
+    await settle();
+    expect(ids(m.root)).toEqual(["t4", "t3", "t2", "t1"]);
+    expect(m.root.querySelector('[data-id="t2"]')).toBe(row);
+    expect(m.root.querySelector('[data-id="t1"] .state')!.textContent).toBe("Claimed");
+    expect(m.root.querySelector('[aria-live="polite"].sr')!.textContent).toBe("1 new report. 1 report changed.");
+    expect(calls.length).toBe(2);
+  });
+
   it("opens on the tab the address names", async () => {
     history.replaceState(null, "", "/queues/q1?state=resolved");
     stubFetch({ [`GET ${LIST}?state=resolved&order=newest`]: { reports: [], next: null } });

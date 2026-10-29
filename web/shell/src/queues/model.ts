@@ -29,6 +29,10 @@ function originOf(s: string): string | null {
   return u.origin;
 }
 
+/** The stream topic of queue `qid`'s report changes (a `report` event,
+ * IDs and state, for its members alone). */
+export const queueTopic = (qid: string) => `queue:${qid}`;
+
 /** A queue's reports counted by state; `more` when the pages ran past the limit. */
 export type Counts = Record<ReportState, number> & { more: boolean };
 
