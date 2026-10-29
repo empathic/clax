@@ -62,6 +62,68 @@ async fn the_sign_in_pages_load_without_a_referrer_and_setup_closes_once_done() 
     assert_eq!(ts.get("/setup").await.status(), 404);
 }
 
+/// A hosted test daemon serving `dist` and the quickstart release of
+/// `clax_testkit::quickstart_tree("landing")`.
+async fn spawn_with_quickstart(clock: Arc<ManualClock>, dist: &tempfile::TempDir) -> TestServer {
+    let web: Arc<dyn clax_core::embedded::FileTree> =
+        Arc::new(clax_core::embedded::DiskTree::new(dist.path()));
+    let release =
+        clax_core::quickstart::Release::from_tree(&clax_testkit::quickstart_tree("landing"))
+            .map(Arc::new);
+    TestServer::spawn_hosted_with(clock, Some("s3cret"), move |s| {
+        s.web = web;
+        s.quickstart = release;
+    })
+    .await
+}
+
+/// A client that reports redirects rather than following them.
+fn unfollowed() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_signed_out_visitor_lands_on_the_bundled_quickstart() {
+    let dist = dist();
+    let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+    let ts = spawn_with_quickstart(clock, &dist).await;
+    let c = unfollowed();
+    let r = c.get(format!("{}/", ts.base)).send().await.unwrap();
+    assert_eq!(r.status(), 303);
+    assert_eq!(r.headers()["location"], "/start/");
+    // The gallery's other pages still send a signed-out visitor to sign in.
+    let r = c.get(format!("{}/inbox", ts.base)).send().await.unwrap();
+    assert_eq!(r.headers()["location"], "/signin");
+    let r = c.get(format!("{}/start", ts.base)).send().await.unwrap();
+    assert_eq!(r.headers()["location"], "/start/");
+    let r = c.get(format!("{}/start/", ts.base)).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["content-type"], "text/html; charset=utf-8");
+    assert_eq!(r.headers()["content-security-policy"], "frame-ancestors 'none'");
+    assert!(r.text().await.unwrap().contains("<p>landing</p>"));
+    let r = c.get(format!("{}/start/style.css", ts.base)).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(r.headers()["content-type"].to_str().unwrap().starts_with("text/css"));
+    assert_eq!(r.text().await.unwrap(), "landing");
+    let r = c.get(format!("{}/start/missing.css", ts.base)).send().await.unwrap();
+    assert_eq!(r.status(), 404);
+}
+
+#[tokio::test]
+async fn without_a_bundled_quickstart_a_signed_out_visitor_signs_in() {
+    let dist = dist();
+    let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+    let ts = spawn(clock, &dist).await;
+    let c = unfollowed();
+    let r = c.get(format!("{}/", ts.base)).send().await.unwrap();
+    assert_eq!(r.headers()["location"], "/signin");
+    let r = c.get(format!("{}/start/", ts.base)).send().await.unwrap();
+    assert_eq!(r.status(), 404);
+}
+
 #[tokio::test]
 async fn a_guest_gets_a_shared_pages_bootstrap_and_no_other() {
     let dist = dist();

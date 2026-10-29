@@ -88,6 +88,44 @@ afterEach(() => {
   history.replaceState(null, "", location.pathname);
 });
 
+/** Runs the page as a hosted Clax's landing page: at `/start/`, with no Clax around it. */
+function loadBare() {
+  history.replaceState(null, "", "/start/");
+  document.body.innerHTML = body;
+  vi.stubGlobal("addEventListener", (type: string, fn: EventListenerOrEventListenerObject, opts?: boolean | AddEventListenerOptions) => {
+    listeners.push([type, fn]);
+    listen(type, fn, opts);
+  });
+  new Function(script)();
+}
+
+const signInLinks = () => [...document.querySelectorAll<HTMLAnchorElement>("a.gh")];
+
+describe("the quickstart's sign-in links", () => {
+  it("sign_in_on_the_clax_serving_the_landing_page_in_the_same_tab", async () => {
+    loadBare();
+    await settle();
+    const links = signInLinks();
+    expect(links.length).toBeGreaterThan(0);
+    for (const a of links) {
+      expect(a.getAttribute("href")).toBe(`${location.origin}/auth/github`);
+      expect(a.hasAttribute("target")).toBe(false);
+    }
+    history.replaceState(null, "", "/");
+  });
+
+  it("open_clax_dev_in_a_new_tab_from_an_artifact", async () => {
+    load(at("https://clax.dev"));
+    await settle();
+    const links = signInLinks();
+    expect(links.length).toBeGreaterThan(0);
+    for (const a of links) {
+      expect(a.getAttribute("href")).toBe("https://clax.dev/auth/github");
+      expect(a.getAttribute("target")).toBe("_blank");
+    }
+  });
+});
+
 describe("the quickstart notices a sign-in", () => {
   it("ticks_sign_in_and_says_so_for_a_person_on_clax_dev", async () => {
     load(at("https://clax.dev"));

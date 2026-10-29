@@ -1584,6 +1584,9 @@ pub const OWN_PAGES: &[&str] = &[
     "/auth/github",
     crate::github::CALLBACK_PATH,
     "/site-signin",
+    // The landing page: the quickstart this build carries, for anyone.
+    LANDING,
+    "/start",
     // The Clax app's links, which Apple and Google fetch with no session;
     // each handler answers only on the public host.
     "/.well-known/apple-app-site-association",
@@ -1591,6 +1594,12 @@ pub const OWN_PAGES: &[&str] = &[
     // What this Clax is (`GET /.well-known/clax`), for any caller.
     "/.well-known/clax",
 ];
+
+/// The landing page's directory: the quickstart release the build carries
+/// ([`crate::state::AppState::quickstart`]), served as it ships
+/// (`clax_server::hosted::router`). A signed-out visitor to `/` is sent
+/// here when the build carries one, and to `/signin` when it does not.
+pub const LANDING: &str = "/start/";
 
 /// The bundled legal documents' pages ([`Hosted::serves_legal`]).
 pub const LEGAL_PAGES: &[&str] = &["/terms", "/privacy"];
@@ -1792,6 +1801,10 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
     let query = req.uri().query().map(str::to_string);
     match guest_need(&method, &path, query.as_deref()) {
         GuestNeed::Open => next.run(req).await,
+        // The front door is the landing page, when the build carries one.
+        GuestNeed::Gallery if path == "/" && s.quickstart.is_some() => {
+            Redirect::to(LANDING).into_response()
+        }
         GuestNeed::Gallery => Redirect::to("/signin").into_response(),
         GuestNeed::Refused => sign_in_required(),
         GuestNeed::At {

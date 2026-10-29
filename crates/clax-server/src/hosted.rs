@@ -191,6 +191,25 @@ async fn legal_page(
     crate::shell::legal_page(&s, &req, file)
 }
 
+/// `GET /start/…`: a file of the landing page, the quickstart release this
+/// build carries ([`LANDING`]), for anyone; 404 when the build carries none
+/// or not that file. `/start` itself redirects to the directory, whose
+/// relative links and `#step` links name it.
+async fn landing(
+    State(s): State<AppState>,
+    uri: axum::http::Uri,
+    req: HeaderMap,
+) -> Result<Response, ApiError> {
+    let Some(release) = s.quickstart.as_ref() else {
+        return Err(ApiError::not_found());
+    };
+    if uri.path() == "/start" {
+        return Ok(axum::response::Redirect::to(LANDING).into_response());
+    }
+    let file = uri.path().strip_prefix(LANDING).unwrap_or("");
+    crate::shell::landing_file(release, &req, if file.is_empty() { "index.html" } else { file })
+}
+
 /// `GET /api/hosted/me` → `{origin, setup_open, github, signed_in, person,
 /// legal}`; `legal` is null when the instance shows no documents, else
 /// `{terms_url, privacy_url, version, agreed}`, `agreed` null for a guest
@@ -1447,6 +1466,9 @@ pub fn router() -> Router<AppState> {
         .route("/join/{code}", get(signin_page))
         .route("/terms", get(legal_page))
         .route("/privacy", get(legal_page))
+        .route("/start", get(landing))
+        .route("/start/", get(landing))
+        .route("/start/{*file}", get(landing))
         .route("/api/hosted/me", get(me))
         .route("/api/hosted/legal/agree", post(legal_agree))
         .route("/api/hosted/setup", post(setup))

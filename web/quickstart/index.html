@@ -159,7 +159,13 @@
   }
   const tip = (h, s) => `<div class="tip"><b>${h}</b>${s}</div>`;
 
-  const CLAXDEV = "https://clax.dev";
+  /** Whether this page is a hosted Clax's landing page (served bare at its
+   * `/start/`, no Clax around it) rather than an artifact: its links then
+   * name the Clax serving it and stay in this tab. */
+  const LANDING = !window.claude && location.pathname.startsWith("/start/");
+  const CLAXDEV = LANDING ? location.origin : "https://clax.dev";
+  /** How a link to CLAXDEV opens: in this tab on the landing page, else in a new one. */
+  const OUT = LANDING ? "" : ' target="_blank" rel="noopener"';
   // The README's local setup: install.sh, then clax init.
   const README_LOCAL = "https://github.com/empathic/clax#pi-grok-build-or-every-harness-at-once";
   // This page's artifact ID: the first label of its own <ID>.localhost site.
@@ -201,9 +207,9 @@
 
   const NODES = {
     signin: { kind: "terminal", kicker: "Start", title: "Sign in to clax.dev", sub: "Your account, with GitHub",
-      cta: `<a class="gh" href="${CLAXDEV}/auth/github" target="_blank" rel="noopener">${GH}Sign in with GitHub</a>`,
+      cta: `<a class="gh" href="${CLAXDEV}/auth/github"${OUT}>${GH}Sign in with GitHub</a>`,
       body: `<p>Start with your clax.dev account. It's where your pages get public links, where you share them, and where comments come back from.</p>
-        <a class="gh wide" href="${CLAXDEV}/auth/github" target="_blank" rel="noopener">${GH}Sign in with GitHub</a>
+        <a class="gh wide" href="${CLAXDEV}/auth/github"${OUT}>${GH}Sign in with GitHub</a>
         <p class="muted-note">Sign-in opens in a new tab; this one stays here. Come back when you're done.</p>
         <p class="muted-note">Already signed in? Press its ✓ to mark it done.</p>` },
     install: { kicker: "Bring your own agent", title: "Bring your own agent", sub: "Make a token, pick yours",
@@ -212,18 +218,18 @@
       body: `<p>On clax.dev, Claude Code, Codex and Grok Build connect with an agent token from your People page. Pi works with a Clax on your own machine. Pick yours:</p>` },
     "install-claude": { kind: "small", agent: "claude", kicker: "Connect · Claude Code", title: "Claude Code", sub: "A token, one command",
       body: `<p>Claude Code reaches clax.dev through an agent token. The agent acts as you, with your rights, and you can revoke it on People.</p>
-        <ol><li>Open <a href="${CLAXDEV}/people" target="_blank" rel="noopener">People</a>, find <b>Agent tokens</b>, name this machine and press <b>Create token</b>.</li>
+        <ol><li>Open <a href="${CLAXDEV}/people"${OUT}>People</a>, find <b>Agent tokens</b>, name this machine and press <b>Create token</b>.</li>
         <li>Copy the <code>claude mcp add</code> command it shows and run it in your terminal. The token is shown only once.</li>
         <li>Start a new Claude Code session: the Clax tools are there.</li></ol>
         ${tip("Fewer prompts", `Claude Code asks before each tool call. To allow Clax's, add <code>"mcp__clax__*"</code> to <code>permissions.allow</code> in <code>~/.claude/settings.json</code>.`)}` },
     "install-codex": { kind: "small", agent: "codex", kicker: "Connect · Codex", title: "Codex", sub: "A token, a few lines of config",
       body: `<p>Codex reaches clax.dev through an agent token. The agent acts as you, with your rights, and you can revoke it on People.</p>
-        <ol><li>Open <a href="${CLAXDEV}/people" target="_blank" rel="noopener">People</a>, find <b>Agent tokens</b>, name this machine and press <b>Create token</b>.</li>
+        <ol><li>Open <a href="${CLAXDEV}/people"${OUT}>People</a>, find <b>Agent tokens</b>, name this machine and press <b>Create token</b>.</li>
         <li>Copy the Codex config it shows into <code>~/.codex/config.toml</code>. The token is shown only once.</li>
         <li>Start a new Codex session: the Clax tools are there.</li></ol>` },
     "install-grok": { kind: "small", agent: "grok", kicker: "Connect · Grok Build", title: "Grok Build", sub: "A token, one command",
       body: `<p>Grok Build reaches clax.dev through an agent token. The agent acts as you, with your rights, and you can revoke it on People.</p>
-        <ol><li>Open <a href="${CLAXDEV}/people" target="_blank" rel="noopener">People</a>, find <b>Agent tokens</b>, name this machine and press <b>Create token</b>.</li>
+        <ol><li>Open <a href="${CLAXDEV}/people"${OUT}>People</a>, find <b>Agent tokens</b>, name this machine and press <b>Create token</b>.</li>
         <li>Copy the <code>grok mcp add</code> command it shows and run it in your terminal. The token is shown only once.</li>
         <li>Start a new Grok session: the Clax tools are there, under <code>clax_hosted</code>.</li></ol>
         ${tip("Approvals", "Grok asks before every tool call. For headless runs, pass <code>--always-approve</code>.")}` },
