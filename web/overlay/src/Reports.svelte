@@ -13,7 +13,7 @@
   let sending = $state(false);
   let replyError = $state<string | null>(null);
 
-  const STATE: Record<Report["state"], string> = { open: "Open", claimed: "Being worked on", resolved: "Resolved" };
+  const STATE: Record<Report["state"], string> = { open: "Open", claimed: "Being worked on", fix_proposed: "Fix ready to check", verified: "Fixed", resolved: "Resolved" };
 
   function toggle(id: string): void {
     expanded = expanded === id ? null : id;

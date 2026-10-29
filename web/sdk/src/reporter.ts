@@ -1,8 +1,9 @@
 // A reporter's client (spec 2026-10-27 §5.3): a deployer's page files
 // reports into a queue and reads the replies, with a reporter token its own
 // backend mints for a key that never leaves the page.
-import type { Report, ReportPage, ReporterToken } from "./types";
+import type { Badge, DiagLine, Report, ReportContext, ReportPage, ReporterToken } from "./types";
 import { ClaxError, failure, multipart, queuePath, readJson, signedFetch, type Fetch, type Part } from "./client";
+import { encodeDiagnostics } from "./diagnostics";
 import { base64url, generateSigner, type KeyedSigner } from "./sign";
 
 /** Seconds before a token's `expires_at` that the client asks for a new one. */
@@ -43,6 +44,45 @@ export interface NewReport {
   revision?: string;
   /** A PNG of what the report points at. */
   clip?: Blob | Uint8Array;
+  /** What the reporter's browser says at capture (spec
+   * 2026-10-29-feedback-loop-design §5.1). */
+  context?: ReportContext;
+  /** The page's recent diagnostics (`installDiagnostics`); the newest that
+   * fit in 200 lines and 256 KiB are sent, none when empty. */
+  diagnostics?: DiagLine[];
+}
+
+/** A verdict that a fix works. */
+export interface Verification {
+  /** The reporter's words, posted with the verdict. */
+  note?: string;
+  /** The reporter's browser context at verification. */
+  context?: ReportContext;
+}
+
+/** A verdict that a report is still broken: a new capture of it. */
+export interface Reopening {
+  /** The reporter's comment, required. */
+  body: string;
+  /** A PNG of what is still broken. */
+  clip?: Blob | Uint8Array;
+  /** The page's recent diagnostics, sent as `NewReport.diagnostics` is. */
+  diagnostics?: DiagLine[];
+  context?: ReportContext;
+}
+
+/** The multipart parts a capture's `clip`, `context` and `diagnostics` make. */
+async function captureParts(c: { clip?: Blob | Uint8Array; context?: ReportContext; diagnostics?: DiagLine[] }): Promise<[string, Part][]> {
+  const parts: [string, Part][] = [];
+  if (c.clip !== undefined) {
+    const bytes = c.clip instanceof Uint8Array ? c.clip : new Uint8Array(await c.clip.arrayBuffer());
+    parts.push(["clip", { bytes, filename: "clip.png", type: "image/png" }]);
+  }
+  if (c.context !== undefined) parts.push(["context", JSON.stringify(c.context)]);
+  if (c.diagnostics !== undefined && c.diagnostics.length > 0) {
+    parts.push(["diagnostics", { bytes: encodeDiagnostics(c.diagnostics), filename: "diagnostics.jsonl", type: "application/jsonl" }]);
+  }
+  return parts;
 }
 
 /** Files and reads reports as one reporter.
@@ -64,21 +104,60 @@ export class ReporterClient {
     if (opts.signer) this.signer = Promise.resolve(opts.signer);
   }
 
-  /** Files `r` into the queue: `POST …/reporter/reports`. */
+  /** Files `r` into the queue: `POST …/reporter/reports`, with `context`
+   * as a JSON part and `diagnostics` as `diagnostics.jsonl`. */
   async fileReport(r: NewReport): Promise<Report> {
     const parts: [string, Part][] = [];
     if (r.externalId !== undefined) parts.push(["external_id", r.externalId]);
     parts.push(["url", r.url], ["title", r.title], ["anchor", JSON.stringify(r.anchor ?? null)], ["body", r.body]);
     if (r.metadata !== undefined) parts.push(["metadata", JSON.stringify(r.metadata)]);
     if (r.revision !== undefined) parts.push(["revision", r.revision]);
-    if (r.clip !== undefined) {
-      const bytes = r.clip instanceof Uint8Array ? r.clip : new Uint8Array(await r.clip.arrayBuffer());
-      parts.push(["clip", { bytes, filename: "clip.png", type: "image/png" }]);
-    }
-    const boundary = `clax-${base64url(crypto.getRandomValues(new Uint8Array(18)))}`;
-    const { body, contentType } = multipart(parts, boundary);
-    const { report } = await readJson<{ report: Report }>(await this.send("POST", queuePath(this.opts.queue, "reporter", "reports"), body, contentType));
+    parts.push(...await captureParts(r));
+    return this.sendMultipart(queuePath(this.opts.queue, "reporter", "reports"), parts);
+  }
+
+  /** Says the fix waiting on report `reportId`, which this reporter filed,
+   * works: `POST …/verify`. The report is `verified`; 409
+   * `not_fix_proposed` when no fix waits. */
+  async verify(reportId: string, v: Verification = {}): Promise<Report> {
+    const b: Verification = {};
+    if (v.note !== undefined) b.note = v.note;
+    if (v.context !== undefined) b.context = v.context;
+    const bytes = new TextEncoder().encode(JSON.stringify(b));
+    const { report } = await readJson<{ report: Report }>(
+      await this.send("POST", queuePath(this.opts.queue, "reporter", "reports", reportId, "verify"), bytes, "application/json"));
     return report;
+  }
+
+  /** Says report `reportId`, which this reporter filed, is still broken:
+   * `POST …/reopen`, a new capture whose comment is `r.body`. A fix
+   * waiting is `rejected` and the report is `open` again; 409
+   * `not_fix_proposed` for an `open` or `claimed` report. */
+  async reopen(reportId: string, r: Reopening): Promise<Report> {
+    const parts: [string, Part][] = [["body", r.body], ...await captureParts(r)];
+    return this.sendMultipart(queuePath(this.opts.queue, "reporter", "reports", reportId, "reopen"), parts);
+  }
+
+  /** The diagnostics of report `reportId`, which this reporter filed:
+   * capture `capture`'s (0 the filing's, `n` the `n`th reopen's), or
+   * without it the latest capture's that has any; `[]` for none. */
+  async diagnostics(reportId: string, capture?: number): Promise<DiagLine[]> {
+    const q = capture === undefined ? "" : `?capture=${encodeURIComponent(String(capture))}`;
+    const { lines } = await readJson<{ lines: DiagLine[] }>(
+      await this.send("GET", queuePath(this.opts.queue, "reporter", "reports", reportId, "diagnostics") + q));
+    return lines;
+  }
+
+  /** What waits for this reporter: its reports with a fix waiting for its
+   * verdict, or a comment not its own since it last read them (`seen`). */
+  async badge(): Promise<Badge> {
+    return readJson<Badge>(await this.send("GET", queuePath(this.opts.queue, "reporter", "badge")));
+  }
+
+  /** Marks report `reportId` read: its comments until now leave the badge. */
+  async seen(reportId: string): Promise<void> {
+    const res = await this.send("POST", queuePath(this.opts.queue, "reporter", "reports", reportId, "seen"));
+    if (!res.ok) throw await failure(res);
   }
 
   /** The reports this reporter may see (its own, or all under `reporters_see: "all"`), a page at a time. */
@@ -107,6 +186,26 @@ export class ReporterClient {
    * plain URL to it does not load. */
   async clipUrl(reportId: string): Promise<string> {
     return URL.createObjectURL(await this.clip(reportId));
+  }
+
+  /** The clip of comment `commentId` (a reopen's) on report `reportId`. */
+  async commentClip(reportId: string, commentId: string): Promise<Blob> {
+    const res = await this.send("GET", queuePath(this.opts.queue, "reporter", "reports", reportId, "comments", commentId, "clip"));
+    if (!res.ok) throw await failure(res);
+    return res.blob();
+  }
+
+  /** An object URL of `commentClip`, which the caller revokes. */
+  async commentClipUrl(reportId: string, commentId: string): Promise<string> {
+    return URL.createObjectURL(await this.commentClip(reportId, commentId));
+  }
+
+  /** Posts `parts` as signed multipart to `path`; the answer's report. */
+  private async sendMultipart(path: string, parts: [string, Part][]): Promise<Report> {
+    const boundary = `clax-${base64url(crypto.getRandomValues(new Uint8Array(18)))}`;
+    const { body, contentType } = multipart(parts, boundary);
+    const { report } = await readJson<{ report: Report }>(await this.send("POST", path, body, contentType));
+    return report;
   }
 
   /** The reporter's public key in unpadded base64url. */
