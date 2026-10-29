@@ -60,9 +60,6 @@ ALLOWED = {
     "clax-git": set(),
     "clax-content-git": CORE | {"clax-git"},
     "clax-fake-exe": set(),
-    # A SQLite VFS over a page store (PostgreSQL in the fleet), on no
-    # workspace crate.
-    "clax-pagevfs": set(),
     "clax-embedded": set(),
     "clax-store": CORE,
     "clax-sample": CORE,
@@ -86,7 +83,7 @@ ALLOWED = {
     # Clax across processes (the Kubernetes deployment's server): the
     # daemon's core per instance, on its pages VFS, with the web UI the
     # binary embeds.
-    "clax-fleet": SERVER | {"clax-pagevfs", "clax-embedded"},
+    "clax-fleet": SERVER | {"clax-embedded"},
     # ClaxBot's code-mode sandbox: the contract (pure types, a trait and
     # the conformance suite, for both targets) and its native QuickJS
     # implementation over it.

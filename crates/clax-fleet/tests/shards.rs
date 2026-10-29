@@ -1,7 +1,7 @@
 //! The SQLite backend's placement: each instance on the process of its
 //! shard, every request reaching it from any process.
 
-use clax_fleet::fleet::{Peers, Placement};
+use clax_fleet::fleet::{Peers, Shard};
 
 use crate::common::{catalog, healthz, listener, process, write_catalog};
 
@@ -19,7 +19,7 @@ async fn every_process_answers_every_instance_and_each_runs_its_own_shard() {
         l0,
         &dir.path().join("data-0"),
         &cat,
-        Placement::Shards {
+        Shard {
             ordinal: 0,
             peers: Peers::List(peers.clone()),
         },
@@ -30,7 +30,7 @@ async fn every_process_answers_every_instance_and_each_runs_its_own_shard() {
         l1,
         &dir.path().join("data-1"),
         &cat,
-        Placement::Shards {
+        Shard {
             ordinal: 1,
             peers: Peers::List(peers),
         },
@@ -79,7 +79,7 @@ async fn a_request_that_made_its_hops_is_not_forwarded_again() {
         l0,
         dir.path(),
         &cat,
-        Placement::Shards {
+        Shard {
             ordinal: 0,
             peers: Peers::List(vec![self_addr.clone(), self_addr]),
         },
@@ -106,7 +106,7 @@ async fn the_catalog_reloads_and_stops_what_changed() {
         l0,
         dir.path(),
         &cat,
-        Placement::Shards {
+        Shard {
             ordinal: 0,
             peers: Peers::List(peers),
         },
@@ -153,7 +153,7 @@ async fn a_forward_for_an_instance_the_owner_lacks_is_refused_not_defaulted() {
     let cat1 = write_catalog(&d1, &behind);
     let (l0, l1) = (listener().await, listener().await);
     let peers = vec![l0.1.to_string(), l1.1.to_string()];
-    let shards = |ordinal| Placement::Shards {
+    let shards = |ordinal| Shard {
         ordinal,
         peers: Peers::List(peers.clone()),
     };
@@ -177,7 +177,7 @@ async fn a_shard_without_the_home_does_not_start_an_empty_instance() {
         l0,
         dir.path(),
         &cat,
-        Placement::Shards {
+        Shard {
             ordinal: 0,
             peers: Peers::List(peers),
         },
@@ -233,7 +233,7 @@ async fn a_failed_start_is_retried_after_a_backoff_not_per_request() {
         l0,
         dir.path(),
         &cat,
-        Placement::Shards {
+        Shard {
             ordinal: 0,
             peers: Peers::List(peers),
         },
@@ -292,7 +292,7 @@ async fn the_admin_port_asks_for_the_key_for_status_alone() {
         l0,
         dir.path(),
         &cat,
-        Placement::Shards {
+        Shard {
             ordinal: 0,
             peers: Peers::List(peers),
         },

@@ -1,63 +1,43 @@
 //! The fleet: the instances this process serves, how a request finds the
 //! process that serves its instance, and the background work that keeps
-//! ownership right (see the crate docs for the whole design).
+//! them in step with the catalog (see the crate docs for the whole design).
 //!
 //! # Routing
 //!
 //! A request's `Host` names its instance ([`Catalog::resolve`]). An
 //! instance this process runs answers at once, in process. A paused one
-//! answers 503. Otherwise:
-//!
-//! - **Shards** (SQLite): the instance's shard is a process ordinal. This
-//!   process starts the instances of its own shard on their first request
-//!   and forwards the others to the process the peer template names.
-//! - **Leases** (PostgreSQL): a live lease names the owner, and the request
-//!   is forwarded there. With no live lease, the instance goes to the member
-//!   rendezvous hashing prefers ([`coord::preferred`]): this process when it
-//!   is preferred, which takes the lease and starts the instance, else the
-//!   preferred member, which does. Where a forward went is remembered for
-//!   [`ROUTE_CACHE`] (forgotten when the owner fails to answer), the members
-//!   for a tick, and one lookup per instance runs at a time.
+//! answers 503. Otherwise its shard decides: an instance of this process's
+//! shard starts here on its first request, and one of another shard is
+//! forwarded to the process the peers name ([`Peers`]).
 //!
 //! A forwarded request carries its hop count ([`HOP_HEADER`]), its
 //! instance's name ([`INSTANCE_HEADER`]) and the fleet's peer key
 //! ([`KEY_HEADER`]); without the key, the first two are a client's and are
 //! ignored. The process a forward reaches serves that instance or answers
 //! 503, whatever its own catalog makes of the `Host`. One forwarded twice
-//! is answered where it lands, so no request circles, and an instance is
-//! only ever started on the member hashing prefers. An instance being
-//! stopped here (a handover, a drain) still holds its lease until the stop
-//! releases it; a request for it meanwhile is refused 503, never started
-//! here again. A process that is draining starts nothing.
+//! is answered where it lands, so no request circles. An instance being
+//! stopped here is refused 503 until the stop ends. A process that is
+//! draining starts nothing.
 //!
-//! A 503 says only that the instance is unavailable; why (the database's
-//! error, which process holds it) goes to the log.
+//! A 503 says only that the instance is unavailable; why goes to the log.
 //!
 //! # Background
 //!
-//! [`Fleet::tick`], every [`coord::HEARTBEAT_EVERY`]: on leases it
-//! heartbeats and renews every held lease in one call (an instance whose
-//! lease is lost, or not renewed for [`RENEW_FAILURES`] ticks in a row, is
-//! stopped), and every third tick hands over the instances rendezvous
-//! hashing now prefers another member for, once that member has been alive
-//! for [`coord::SETTLE`], at most [`HANDOVERS_PER_TICK`] at a time: the
-//! instance stops here and its lease is released, and its next request
-//! starts it there. Then it reloads the catalog: an
-//! instance gone, paused, or whose config or shard changed is stopped; its
-//! next request starts it as the catalog says.
+//! [`Fleet::tick`] reloads the catalog: an instance gone, paused, or whose
+//! config or shard changed is stopped; its next request starts it as the
+//! catalog says.
 //!
 //! # Stopping
 //!
-//! A stop runs on a task of its own: the core stops, then (on leases) the
-//! fence is lost and the lease released. [`Fleet::stop`] waits for it at
-//! most [`STOP_TIMEOUT`]; a stop that takes longer goes on, and the
-//! instance's slot refuses every start until it ends, so a store left
-//! running is never opened twice.
+//! A stop runs on a task of its own. [`Fleet::stop`] waits for it at most
+//! [`STOP_TIMEOUT`]; a stop that takes longer goes on, and the instance's
+//! slot refuses every start until it ends, so a store left running is
+//! never opened twice.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -72,26 +52,11 @@ use tower::ServiceExt;
 use tracing::Instrument;
 
 use crate::catalog::{Catalog, Instance};
-use crate::coord::{self, Coordinator, Member};
-use crate::pg::{Fence, Pool};
 use crate::proxy::{HOP_HEADER, INSTANCE_HEADER, KEY_HEADER, Proxy, key_matches};
 
 /// Hops a request may make: one forwarded this many times is answered
 /// where it lands.
 pub const MAX_HOPS: u8 = 2;
-
-/// Ticks in a row a held lease may fail to renew before its instance stops.
-pub const RENEW_FAILURES: u32 = 4;
-
-/// How long a forward's target is remembered, sparing the database a
-/// lookup per request. A target that no longer serves the instance looks
-/// it up again itself, and one that fails to answer is forgotten at once.
-pub const ROUTE_CACHE: Duration = Duration::from_secs(10);
-
-/// The most instances one handover tick hands over (every third tick): a
-/// member that joins takes its share a few at a time, so their clients do
-/// not all reconnect, nor their instances all start, at once.
-pub const HANDOVERS_PER_TICK: usize = 4;
 
 /// How long after an instance's start failed its next start may be tried;
 /// doubled for each failure in a row, up to [`START_BACKOFF_MAX`].
@@ -110,13 +75,11 @@ pub const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 /// origin it was made for.
 pub const ORIGIN_FILE: &str = "fleet-origin";
 
-/// Where each instance runs.
-pub enum Placement {
-    /// The SQLite backend: an instance runs on the process whose ordinal is
-    /// its shard, reached where `peers` says.
-    Shards { ordinal: u32, peers: Peers },
-    /// The PostgreSQL backend: on whichever process holds its lease.
-    Leases(Arc<dyn Coordinator>),
+/// This process's shard: an instance runs on the process whose ordinal is
+/// its shard, reached where `peers` says.
+pub struct Shard {
+    pub ordinal: u32,
+    pub peers: Peers,
 }
 
 /// Where each shard's process is reached.
@@ -138,23 +101,14 @@ impl Peers {
     }
 }
 
-/// Where an instance keeps its database, content and app data.
-pub enum Storage {
-    /// Its home on this process's disk, as `clax serve` keeps one.
-    Disk,
-    /// PostgreSQL, through the page VFS and the content store; the home on
-    /// disk holds only what can be lost (its config, the audit journal's
-    /// export, caches).
-    Postgres(Arc<Pool>),
-}
-
 /// What a fleet runs with.
 pub struct FleetConfig {
     /// This process's name: the pod's.
     pub pod: String,
     /// Where the other processes reach this one (`host:port`).
     pub advertise: String,
-    /// The instances' homes are `<data_dir>/instances/<name>`.
+    /// The instances' homes are `<data_dir>/instances/<name>`, on this
+    /// process's volume, as `clax serve` keeps one.
     pub data_dir: PathBuf,
     /// The catalog file, reloaded each tick.
     pub catalog: PathBuf,
@@ -162,18 +116,14 @@ pub struct FleetConfig {
     pub version: &'static str,
     /// The web UI every instance serves.
     pub web: Arc<dyn FileTree>,
-    pub placement: Placement,
-    pub storage: Storage,
+    pub shard: Shard,
     /// The key-encryption key every instance's sealed secrets are under,
     /// written to a home that has none; a home that holds another key is
     /// never overwritten (the instance does not start). `None` leaves each
-    /// home to make its own (on disk that persists; on PostgreSQL it must
-    /// be given).
+    /// home to make its own, which its volume keeps.
     pub kek: Option<[u8; 32]>,
     /// The key forwards between this fleet's processes carry.
     pub peer_key: String,
-    /// On PostgreSQL, the page VFS limits of an instance's database.
-    pub db_limits: clax_pagevfs::Limits,
     /// The port the instances are told they serve on.
     pub port: u16,
     /// The clock a failed start's backoff is timed by.
@@ -182,14 +132,9 @@ pub struct FleetConfig {
 
 /// An instance running here.
 struct Running {
-    // Stopped first; the database's VFS registration is dropped after it.
     core: Option<Core>,
-    /// On leases, the hold its writes are fenced by, and its renewals that
-    /// failed in a row.
-    hold: Option<(Arc<Fence>, u32)>,
     /// The catalog config it started with.
     config: String,
-    _db: Option<clax_pagevfs::Registered>,
 }
 
 /// One instance's place in this process: its router while it runs (read
@@ -199,11 +144,8 @@ struct Running {
 struct Slot {
     router: RwLock<Option<axum::Router>>,
     running: tokio::sync::Mutex<Option<Running>>,
-    /// A stop is under way: its lease is still this process's until the
-    /// stop releases it, and no request may start it again meanwhile.
+    /// A stop is under way: no request may start it again meanwhile.
     stopping: AtomicBool,
-    /// One lease lookup at a time for this instance.
-    lookup: tokio::sync::Mutex<()>,
     /// Its last start failed, and no start since succeeded.
     failed: Mutex<Option<Failed>>,
 }
@@ -254,12 +196,7 @@ struct Metrics {
     starts: AtomicU64,
     start_failures: AtomicU64,
     stops: AtomicU64,
-    leases_lost: AtomicU64,
-    renew_failures: AtomicU64,
-    handovers: AtomicU64,
-    handovers_deferred: AtomicU64,
     catalog_errors: AtomicU64,
-    heartbeat_failures: AtomicU64,
 }
 
 /// The catalog's reload state, for `/status`.
@@ -276,16 +213,8 @@ pub struct Fleet {
     catalog: RwLock<Arc<Catalog>>,
     catalog_state: Mutex<CatalogState>,
     slots: Mutex<HashMap<String, Arc<Slot>>>,
-    routes: Mutex<HashMap<String, (Instant, String)>>,
-    members: Mutex<Option<(Instant, Vec<Member>)>>,
     draining: AtomicBool,
-    /// On leases: the last heartbeat reached the database.
-    healthy: AtomicBool,
-    ticks: AtomicU32,
     metrics: Metrics,
-    /// This run's ID, in every heartbeat: a restart under the same pod name
-    /// joins the membership afresh.
-    run: String,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -311,8 +240,7 @@ impl Fleet {
     /// # Errors
     /// The catalog cannot be read or is invalid.
     pub fn new(cfg: FleetConfig) -> anyhow::Result<Arc<Fleet>> {
-        let sqlite = matches!(cfg.placement, Placement::Shards { .. });
-        let catalog = Catalog::load(&cfg.catalog, sqlite).map_err(|e| {
+        let catalog = Catalog::load(&cfg.catalog).map_err(|e| {
             anyhow::anyhow!("{e}\n(the catalog in effect on the other processes stays; fix the ConfigMap, or check it first with clax-fleet check-catalog)")
         })?;
         std::fs::create_dir_all(cfg.data_dir.join("instances"))?;
@@ -326,13 +254,8 @@ impl Fleet {
                 error: None,
             }),
             slots: Mutex::default(),
-            routes: Mutex::default(),
-            members: Mutex::default(),
             draining: AtomicBool::new(false),
-            healthy: AtomicBool::new(true),
-            ticks: AtomicU32::new(0),
             metrics: Metrics::default(),
-            run: clax_core::new_ulid(),
         });
         fleet.check_ordinal();
         Ok(fleet)
@@ -341,10 +264,9 @@ impl Fleet {
     /// Logs when this shard's ordinal is past the catalog's shards: it then
     /// serves nothing of its own, only forwards.
     fn check_ordinal(&self) {
-        if let Placement::Shards { ordinal, .. } = &self.cfg.placement
-            && let Some(n) = self.catalog().shards
-            && *ordinal >= n
-        {
+        let ordinal = self.cfg.shard.ordinal;
+        let n = self.catalog().shards;
+        if ordinal >= n {
             tracing::warn!(
                 ordinal,
                 shards = n,
@@ -372,10 +294,9 @@ impl Fleet {
         names
     }
 
-    /// Whether this process should get requests: it is not draining, and on
-    /// leases its last heartbeat reached the database.
+    /// Whether this process should get requests: it is not draining.
     pub fn ready(&self) -> bool {
-        !self.draining.load(Ordering::SeqCst) && self.healthy.load(Ordering::SeqCst)
+        !self.draining.load(Ordering::SeqCst)
     }
 
     /// Whether the peer key is `given`'s.
@@ -399,40 +320,6 @@ impl Fleet {
         r.clone()
     }
 
-    fn is_stopping(&self, name: &str) -> bool {
-        lock(&self.slots)
-            .get(name)
-            .is_some_and(|s| s.stopping.load(Ordering::SeqCst))
-    }
-
-    fn cached_route(&self, name: &str) -> Option<String> {
-        let routes = lock(&self.routes);
-        let (at, addr) = routes.get(name)?;
-        (at.elapsed() < ROUTE_CACHE).then(|| addr.clone())
-    }
-
-    fn remember_route(&self, name: &str, addr: &str) {
-        lock(&self.routes).insert(name.to_string(), (Instant::now(), addr.to_string()));
-    }
-
-    fn forget_route(&self, name: &str) {
-        lock(&self.routes).remove(name);
-    }
-
-    /// The live members: those the last tick read, while fresh and
-    /// `cached` allows, else read now.
-    async fn members(&self, coord: &dyn Coordinator, cached: bool) -> Result<Vec<Member>, String> {
-        if cached
-            && let Some((at, m)) = &*lock(&self.members)
-            && at.elapsed() < coord::HEARTBEAT_EVERY * 2
-        {
-            return Ok(m.clone());
-        }
-        let m = coord.members().await?;
-        *lock(&self.members) = Some((Instant::now(), m.clone()));
-        Ok(m)
-    }
-
     /// Answers `req`, a request for `inst` that has made `hops` hops: here,
     /// forwarded to the process that serves it, or 503.
     pub async fn handle(self: &Arc<Self>, inst: &Instance, hops: u8, req: Request) -> Response {
@@ -449,14 +336,8 @@ impl Fleet {
                 Route::Forward(addr) => {
                     self.metrics.forwarded.fetch_add(1, Ordering::Relaxed);
                     let resp = self.proxy.forward(&addr, hops + 1, &inst.name, req).await;
-                    if matches!(
-                        resp.status(),
-                        StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE
-                    ) {
-                        if resp.status() == StatusCode::BAD_GATEWAY {
-                            self.metrics.forward_errors.fetch_add(1, Ordering::Relaxed);
-                        }
-                        self.forget_route(&inst.name);
+                    if resp.status() == StatusCode::BAD_GATEWAY {
+                        self.metrics.forward_errors.fetch_add(1, Ordering::Relaxed);
                     }
                     resp
                 }
@@ -482,121 +363,24 @@ impl Fleet {
         }
         let can_forward = hops < MAX_HOPS;
         let draining = self.draining.load(Ordering::SeqCst);
-        match &self.cfg.placement {
-            Placement::Shards { ordinal, peers } => {
-                let shard = inst.shard.unwrap_or(0);
-                if shard == *ordinal {
-                    if draining {
-                        return Route::Unavailable("this process is stopping".into());
-                    }
-                    return self.start(inst).await;
-                }
-                if can_forward && let Some(addr) = peers.addr(shard) {
-                    return Route::Forward(addr);
-                }
-                Route::Unavailable(format!(
-                    "instance {} is on shard {shard}, and this is shard {ordinal}",
-                    inst.name
-                ))
+        let Shard { ordinal, peers } = &self.cfg.shard;
+        let shard = inst.shard;
+        if shard == *ordinal {
+            if draining {
+                return Route::Unavailable("this process is stopping".into());
             }
-            Placement::Leases(coord) => self.route_leased(coord.as_ref(), inst, hops).await,
+            return self.start(inst).await;
         }
-    }
-
-    async fn route_leased(
-        self: &Arc<Self>,
-        coord: &dyn Coordinator,
-        inst: &Instance,
-        hops: u8,
-    ) -> Route {
-        let can_forward = hops < MAX_HOPS;
-        let draining = self.draining.load(Ordering::SeqCst);
-        // Only a request no process has forwarded yet: a process a forward
-        // reached because it is preferred, or held the lease when the
-        // forwarder looked, looks again, so a stale cache never sends a
-        // request back where it came from.
-        if hops == 0
-            && let Some(addr) = self.cached_route(&inst.name)
-        {
+        if can_forward && let Some(addr) = peers.addr(shard) {
             return Route::Forward(addr);
         }
-        let slot = self.slot(&inst.name);
-        let _one_lookup = slot.lookup.lock().await;
-        if hops == 0
-            && let Some(addr) = self.cached_route(&inst.name)
-        {
-            return Route::Forward(addr);
-        }
-        if let Some(r) = self.local_router(&inst.name) {
-            return Route::Local(r);
-        }
-        match coord.lease(&inst.name).await {
-            Err(e) => return Route::Unavailable(format!("the fleet's database: {e}")),
-            Ok(Some(l)) if l.holder != self.cfg.pod => {
-                if can_forward {
-                    self.remember_route(&inst.name, &l.addr);
-                    return Route::Forward(l.addr);
-                }
-                return Route::Unavailable(format!(
-                    "instance {} is held by {}",
-                    inst.name, l.holder
-                ));
-            }
-            // This process's own live lease of an instance it is stopping (a
-            // handover, a drain): it goes where it is going once the stop
-            // releases it, never back here.
-            Ok(Some(_)) if self.is_stopping(&inst.name) => {
-                return Route::Unavailable(format!("instance {} is moving", inst.name));
-            }
-            Ok(_) => {}
-        }
-        // A forward came here because its sender saw this process as the
-        // one to ask: the members are read again, so a member that left
-        // since is not sent the request back.
-        let members = match self.members(coord, hops == 0).await {
-            Err(e) => return Route::Unavailable(format!("the fleet's database: {e}")),
-            Ok(m) if draining => m.into_iter().filter(|m| m.pod != self.cfg.pod).collect(),
-            Ok(m) => m,
-        };
-        // Only a member whose build opens the instance's data may start it.
-        let need = match coord.store_schema(&inst.name).await {
-            Err(e) => return Route::Unavailable(format!("the fleet's database: {e}")),
-            Ok(n) => n,
-        };
-        if need > coord::STORE_SCHEMA && coord::preferred(&inst.name, need, &members).is_none() {
-            return Route::Unavailable(format!(
-                "instance {}'s data is at store schema {need}, newer than this build's {} and every member's: it starts once a newer clax-fleet runs",
-                inst.name,
-                coord::STORE_SCHEMA
-            ));
-        }
-        // Started only where it is preferred: a request out of hops never
-        // places it elsewhere.
-        if let Some(p) = coord::preferred(&inst.name, need, &members)
-            && p.pod != self.cfg.pod
-        {
-            if can_forward {
-                return Route::Forward(p.addr.clone());
-            }
-            return Route::Unavailable(format!(
-                "instance {} goes to {}, not here",
-                inst.name, p.pod
-            ));
-        }
-        if draining {
-            return Route::Unavailable("this process is stopping".into());
-        }
-        match self.start(inst).await {
-            Route::Unavailable(why) if can_forward => match coord.lease(&inst.name).await {
-                Ok(Some(l)) if l.holder != self.cfg.pod => Route::Forward(l.addr),
-                _ => Route::Unavailable(why),
-            },
-            r => r,
-        }
+        Route::Unavailable(format!(
+            "instance {} is on shard {shard}, and this is shard {ordinal}",
+            inst.name
+        ))
     }
 
-    /// Starts `inst` here, unless it already runs: on leases, once its lease
-    /// is taken.
+    /// Starts `inst` here, unless it already runs.
     async fn start(self: &Arc<Self>, inst: &Instance) -> Route {
         let slot = self.slot(&inst.name);
         let mut running = slot.running.lock().await;
@@ -623,41 +407,16 @@ impl Fleet {
         if let Some(why) = self.backing_off(&slot, inst) {
             return Route::Unavailable(why);
         }
-        let fence = match &self.cfg.placement {
-            Placement::Shards { .. } => None,
-            Placement::Leases(coord) => {
-                match coord
-                    .acquire(
-                        &inst.name,
-                        &self.cfg.pod,
-                        &self.cfg.advertise,
-                        coord::STORE_SCHEMA,
-                    )
-                    .await
-                {
-                    Ok(Some(epoch)) => Some(Fence::new(&inst.name, &self.cfg.pod, epoch)),
-                    Ok(None) => {
-                        return Route::Unavailable(format!(
-                            "instance {} is held by another process",
-                            inst.name
-                        ));
-                    }
-                    Err(e) => return Route::Unavailable(format!("the fleet's database: {e}")),
-                }
-            }
-        };
         let began = Instant::now();
-        match self.open(inst, fence.clone()).await {
+        match self.open(inst).await {
             Ok(r) => {
                 let router = r.core.as_ref().expect("just started").router();
                 *slot.router.write().unwrap_or_else(|e| e.into_inner()) = Some(router.clone());
                 *running = Some(r);
                 *lock(&slot.failed) = None;
-                self.forget_route(&inst.name);
                 self.metrics.starts.fetch_add(1, Ordering::Relaxed);
                 tracing::info!(
                     instance = %inst.name,
-                    epoch = fence.as_ref().map(|f| f.epoch()),
                     millis = began.elapsed().as_millis() as u64,
                     "instance started"
                 );
@@ -689,11 +448,6 @@ impl Fleet {
                     retry_in_secs = backoff.as_secs(),
                     "instance did not start"
                 );
-                if let (Some(f), Placement::Leases(coord)) = (&fence, &self.cfg.placement) {
-                    let epoch = f.epoch();
-                    f.lose();
-                    let _ = coord.release(&inst.name, &self.cfg.pod, epoch).await;
-                }
                 Route::Unavailable(format!("instance {} did not start", inst.name))
             }
         }
@@ -748,14 +502,12 @@ impl Fleet {
     }
 
     /// Prepares `inst`'s home (its config, its origin, the key-encryption
-    /// key) and starts its core, on its storage.
-    async fn open(&self, inst: &Instance, fence: Option<Arc<Fence>>) -> anyhow::Result<Running> {
+    /// key) and starts its core.
+    async fn open(&self, inst: &Instance) -> anyhow::Result<Running> {
         let home = Home::at(self.cfg.data_dir.join("instances").join(&inst.name));
-        let on_disk = matches!(self.cfg.storage, Storage::Disk);
-        // On SQLite shards the home is the instance: one missing here was
-        // never made here, or was moved away. Only a new instance makes one.
-        let sharded = matches!(self.cfg.placement, Placement::Shards { .. });
-        if on_disk && sharded && !home.db_path().exists() && !inst.create {
+        // The home is the instance: one missing here was never made here, or
+        // was moved away. Only a new instance makes one.
+        if !home.db_path().exists() && !inst.create {
             anyhow::bail!(
                 "instance {} has no home on this shard ({}); copy its home here (docs/kubernetes.md, Moving an instance), or set create = true for a new instance",
                 inst.name,
@@ -763,9 +515,7 @@ impl Fleet {
             );
         }
         home.ensure_dirs()?;
-        if on_disk {
-            claim_origin_file(&home, &inst.name, &inst.origin)?;
-        }
+        claim_origin_file(&home, &inst.name, &inst.origin)?;
         write_if_changed(
             &home.root().join("config.toml"),
             inst.config.as_bytes(),
@@ -811,53 +561,13 @@ impl Fleet {
             // quickstart, as on the Worker.
             quickstart: true,
         };
-        match &self.cfg.storage {
-            Storage::Disk => Ok(Running {
-                core: Some(Core::start(core_cfg, &mut |_| {}).await?),
-                hold: fence.map(|f| (f, 0)),
-                config: inst.config.clone(),
-                _db: None,
-            }),
-            Storage::Postgres(pool) => {
-                let fence = fence.ok_or_else(|| {
-                    anyhow::anyhow!("an instance on PostgreSQL runs only under a lease")
-                })?;
-                let pages = Arc::new(crate::pages::PgPages::new(pool.clone(), fence.clone()));
-                let content = Arc::new(crate::content::PgContent::new(pool.clone(), fence.clone()));
-                let (store_home, store_pages) = (home.clone(), pages.clone());
-                let (claim_pool, claim_fence, origin) =
-                    (pool.clone(), fence.clone(), inst.origin.clone());
-                let limits = self.cfg.db_limits;
-                // Opening reads the pages and migrates: blocking work.
-                let (store, registered) = tokio::task::spawn_blocking(move || {
-                    crate::pg::claim_origin(&claim_pool, &claim_fence, &origin)
-                        .map_err(anyhow::Error::msg)?;
-                    let db: Arc<dyn clax_pagevfs::PageStore> = store_pages;
-                    let (conn, registered) =
-                        clax_pagevfs::open_with("db", db, limits)?.into_parts();
-                    let store = clax_store::Store::open_on(
-                        &store_home,
-                        conn,
-                        Arc::new(clax_core::working::SystemClock),
-                        content,
-                    )?;
-                    anyhow::Ok((Arc::new(store), registered))
-                })
-                .await??;
-                let app_data = crate::app_data::PgAppData::new(pages, store.clock());
-                let core = Core::start_on(core_cfg, store, app_data).await?;
-                Ok(Running {
-                    core: Some(core),
-                    hold: Some((fence, 0)),
-                    config: inst.config.clone(),
-                    _db: Some(registered),
-                })
-            }
-        }
+        Ok(Running {
+            core: Some(Core::start(core_cfg, &mut |_| {}).await?),
+            config: inst.config.clone(),
+        })
     }
 
-    /// Stops instance `name` when it runs here, and on leases releases its
-    /// lease, saying `why` in the log. Waits for it at most
+    /// Stops instance `name` when it runs here, saying `why` in the log. Waits for it at most
     /// [`STOP_TIMEOUT`]; a stop that takes longer goes on (see the
     /// [module docs](self#stopping)).
     pub async fn stop(self: &Arc<Self>, name: &str, why: &str) {
@@ -873,23 +583,11 @@ impl Fleet {
         };
         drop(running);
         self.metrics.stops.fetch_add(1, Ordering::Relaxed);
-        let fleet = self.clone();
         let (name_owned, why_owned) = (name.to_string(), why.to_string());
         let done = tokio::spawn(async move {
             let mut r = r;
             if let Some(core) = r.core.take() {
                 core.stop().await;
-            }
-            if let Some((fence, _)) = &r.hold {
-                let epoch = fence.epoch();
-                // Nothing of the instance writes once the fence is lost,
-                // before another process can take the lease.
-                fence.lose();
-                if let Placement::Leases(coord) = &fleet.cfg.placement
-                    && let Err(e) = coord.release(&name_owned, &fleet.cfg.pod, epoch).await
-                {
-                    tracing::warn!(instance = %name_owned, error = %e, "releasing the lease failed; it expires");
-                }
             }
             drop(r);
             slot.stopping.store(false, Ordering::SeqCst);
@@ -905,124 +603,11 @@ impl Fleet {
 
     /// The background work of one tick (see the [module docs](self)).
     pub async fn tick(self: &Arc<Self>) {
-        let n = self.ticks.fetch_add(1, Ordering::SeqCst);
-        let mut stops: Vec<(String, &'static str)> = Vec::new();
-        if let Placement::Leases(coord) = &self.cfg.placement {
-            let draining = self.draining.load(Ordering::SeqCst);
-            if !draining {
-                match coord
-                    .heartbeat(
-                        &self.cfg.pod,
-                        &self.cfg.advertise,
-                        &self.run,
-                        coord::STORE_SCHEMA,
-                    )
-                    .await
-                {
-                    Ok(()) => self.healthy.store(true, Ordering::SeqCst),
-                    Err(e) => {
-                        self.healthy.store(false, Ordering::SeqCst);
-                        self.metrics
-                            .heartbeat_failures
-                            .fetch_add(1, Ordering::Relaxed);
-                        tracing::warn!(error = %e, "heartbeat failed");
-                    }
-                }
-            }
-            stops.extend(self.renew_all(coord.as_ref()).await);
-            let members = coord.members().await;
-            if let Ok(m) = &members {
-                *lock(&self.members) = Some((Instant::now(), m.clone()));
-            }
-            // Every third tick, the handover: at most HANDOVERS_PER_TICK,
-            // the rest at the next.
-            if !draining
-                && n % 3 == 2
-                && let Ok(members) = members
-            {
-                let mut handed = 0;
-                for name in self.running() {
-                    // It runs here, so its data is at this build's schema.
-                    if let Some(p) = coord::preferred(&name, coord::STORE_SCHEMA, &members)
-                        && p.pod != self.cfg.pod
-                        && p.age >= coord::SETTLE
-                        && !stops.iter().any(|(n, _)| *n == name)
-                    {
-                        if handed == HANDOVERS_PER_TICK {
-                            self.metrics
-                                .handovers_deferred
-                                .fetch_add(1, Ordering::Relaxed);
-                            continue;
-                        }
-                        handed += 1;
-                        tracing::info!(instance = %name, to = %p.pod, "handing the instance over");
-                        self.metrics.handovers.fetch_add(1, Ordering::Relaxed);
-                        stops.push((name, "another member is preferred"));
-                    }
-                }
-            }
-        }
-        stops.extend(self.reload().await);
-        stops.sort();
-        stops.dedup_by(|a, b| a.0 == b.0);
-        let stops = stops.into_iter().map(|(name, why)| {
+        let stops = self.reload().await.into_iter().map(|(name, why)| {
             let fleet = self.clone();
             async move { fleet.stop(&name, why).await }
         });
         futures::future::join_all(stops).await;
-    }
-
-    /// Renews every lease held here in one call: the instances that must
-    /// stop, and why (the lease is lost, or failed to renew
-    /// [`RENEW_FAILURES`] times in a row).
-    async fn renew_all(&self, coord: &dyn Coordinator) -> Vec<(String, &'static str)> {
-        let mut holds = Vec::new();
-        for name in self.running() {
-            let slot = self.slot(&name);
-            if slot.stopping.load(Ordering::SeqCst) {
-                continue;
-            }
-            // The epoch is read under the slot's lock without waiting: a
-            // start or a stop under way is renewed next tick.
-            let Ok(running) = slot.running.try_lock() else {
-                continue;
-            };
-            if let Some((fence, _)) = running.as_ref().and_then(|r| r.hold.as_ref()) {
-                holds.push((name, fence.epoch()));
-            }
-        }
-        if holds.is_empty() {
-            return Vec::new();
-        }
-        let renewed = coord.renew_all(&self.cfg.pod, &holds).await;
-        let mut stops = Vec::new();
-        for (name, epoch) in holds {
-            let slot = self.slot(&name);
-            let mut running = slot.running.lock().await;
-            let Some((fence, failures)) = running.as_mut().and_then(|r| r.hold.as_mut()) else {
-                continue;
-            };
-            if fence.epoch() != epoch {
-                continue;
-            }
-            match &renewed {
-                Ok(r) if r.contains(&name) => *failures = 0,
-                Ok(_) => {
-                    self.metrics.leases_lost.fetch_add(1, Ordering::Relaxed);
-                    stops.push((name, "its lease was lost"));
-                }
-                Err(e) => {
-                    *failures += 1;
-                    self.metrics.renew_failures.fetch_add(1, Ordering::Relaxed);
-                    tracing::warn!(instance = %name, error = %e, failures = *failures, "renewing the lease failed");
-                    if *failures >= RENEW_FAILURES {
-                        self.metrics.leases_lost.fetch_add(1, Ordering::Relaxed);
-                        stops.push((name, "its lease could not be renewed"));
-                    }
-                }
-            }
-        }
-        stops
     }
 
     /// Reads the catalog again, and answers each running instance it no
@@ -1032,8 +617,7 @@ impl Fleet {
     /// replaced stops too. A catalog that does not load is logged once per
     /// distinct error and kept out of effect.
     async fn reload(&self) -> Vec<(String, &'static str)> {
-        let sqlite = matches!(self.cfg.placement, Placement::Shards { .. });
-        match Catalog::load(&self.cfg.catalog, sqlite) {
+        match Catalog::load(&self.cfg.catalog) {
             Ok(next) => {
                 let changed = *self.catalog() != next;
                 if changed {
@@ -1069,9 +653,7 @@ impl Fleet {
                 (None, _) => Some("it left the catalog"),
                 (Some(i), _) if i.paused => Some("it is paused"),
                 (Some(i), Some(c)) if i.config != c => Some("its config changed"),
-                (Some(i), _) if matches!(self.cfg.placement, Placement::Shards { ordinal, .. } if i.shard != Some(ordinal)) => {
-                    Some("its shard changed")
-                }
+                (Some(i), _) if i.shard != self.cfg.shard.ordinal => Some("its shard changed"),
                 _ => None,
             };
             if let Some(why) = why {
@@ -1081,32 +663,15 @@ impl Fleet {
         stops
     }
 
-    /// Frees the leases an earlier run under this pod's name held, so their
-    /// instances go where hashing prefers at once rather than wait out the
-    /// lease (a container restarted in place keeps its pod's name).
-    pub async fn release_own_leases(&self) {
-        if let Placement::Leases(coord) = &self.cfg.placement
-            && let Err(e) = coord.release_all(&self.cfg.pod).await
-        {
-            tracing::warn!(error = %e, "releasing an earlier run's leases failed; they expire");
-        }
-    }
-
     /// Starts nothing more here, and answers not ready, while still serving
     /// the instances running here.
     pub fn begin_draining(&self) {
         self.draining.store(true, Ordering::SeqCst);
     }
 
-    /// Drains: starts nothing more, leaves the membership, and stops every
-    /// instance here (releasing their leases).
+    /// Drains: starts nothing more, and stops every instance here.
     pub async fn drain(self: &Arc<Self>) {
         self.begin_draining();
-        if let Placement::Leases(coord) = &self.cfg.placement
-            && let Err(e) = coord.leave(&self.cfg.pod).await
-        {
-            tracing::warn!(error = %e, "leaving the membership failed; it lapses");
-        }
         // Every slot, not just the running: a start under way holds its
         // slot's lock, and its stop waits for it.
         let names: Vec<String> = lock(&self.slots).keys().cloned().collect();
@@ -1132,17 +697,12 @@ impl Fleet {
     pub fn status(&self) -> serde_json::Value {
         let catalog = self.catalog();
         let state = lock(&self.catalog_state);
-        let (backend, ordinal) = match &self.cfg.placement {
-            Placement::Shards { ordinal, .. } => ("sqlite", Some(*ordinal)),
-            Placement::Leases(_) => ("postgres", None),
-        };
         serde_json::json!({
             "pod": self.cfg.pod,
             "advertise": self.cfg.advertise,
             "version": self.cfg.version,
             "commit": clax_core::build_commit(),
-            "backend": backend,
-            "ordinal": ordinal,
+            "ordinal": self.cfg.shard.ordinal,
             "shards": catalog.shards,
             "ready": self.ready(),
             "draining": self.draining.load(Ordering::SeqCst),
@@ -1199,34 +759,9 @@ impl Fleet {
         );
         counter("instance_stops_total", "Instances stopped here.", &m.stops);
         counter(
-            "leases_lost_total",
-            "Instances stopped because their lease was lost or not renewed.",
-            &m.leases_lost,
-        );
-        counter(
-            "lease_renew_failures_total",
-            "Lease renewals that failed.",
-            &m.renew_failures,
-        );
-        counter(
-            "handovers_total",
-            "Instances handed over to a preferred member.",
-            &m.handovers,
-        );
-        counter(
-            "handovers_deferred_total",
-            "Handovers left for a later tick, past the most one tick makes.",
-            &m.handovers_deferred,
-        );
-        counter(
             "catalog_reload_failures_total",
             "Catalog reloads that failed.",
             &m.catalog_errors,
-        );
-        counter(
-            "heartbeat_failures_total",
-            "Heartbeats that failed.",
-            &m.heartbeat_failures,
         );
         let catalog = self.catalog();
         let failing = lock(&self.catalog_state).error.is_some();
@@ -1240,24 +775,11 @@ impl Fleet {
             u8::from(failing),
             u8::from(self.ready()),
         ));
-        let mut pools: Vec<&Pool> = Vec::new();
-        if let Storage::Postgres(pool) = &self.cfg.storage {
-            pools.push(pool);
-        }
-        if let Placement::Leases(coord) = &self.cfg.placement
-            && let Some(pool) = coord.pool()
-        {
-            pools.push(pool);
-        }
-        if !pools.is_empty() {
-            out.push_str(&crate::pg::metrics(&pools));
-        }
         out
     }
 
     /// The admin port's routes: `/healthz` (alive) and `/readyz` (taking
-    /// requests: 503 while draining or, on leases, cut off from the
-    /// database) for the kubelet, `/metrics` (Prometheus: counters and
+    /// requests: 503 while draining) for the kubelet, `/metrics` (Prometheus: counters and
     /// gauges, no instance's name or data) for whoever the NetworkPolicy
     /// lets reach the port, and `/status` (this process, its catalog and
     /// its instances, as JSON) only to a caller with the peer key (another

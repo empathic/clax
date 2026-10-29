@@ -55,8 +55,6 @@ spec:
             - name: admin
               containerPort: 7481
           env:
-            - name: CLAX_FLEET_BACKEND
-              value: sqlite
             - name: CLAX_FLEET_PEER
               value: "clax-{shard}.clax-peers:7480"
             - name: CLAX_FLEET_CATALOG

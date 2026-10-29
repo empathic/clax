@@ -294,11 +294,9 @@ CRATES = {
             "//crates/clax-core:clax_core",
             "//crates/clax-embedded:clax_embedded",
             "//crates/clax-http:clax_http",
-            "//crates/clax-pagevfs:clax_pagevfs",
             "//crates/clax-realtime:clax_realtime",
             "//crates/clax-sample:clax_sample",
-            "//crates/clax-server:clax_server",
-            "//crates/clax-store:clax_store"
+            "//crates/clax-server:clax_server"
         ],
         "dev_deps": [],
         "edition": "2024",
@@ -308,8 +306,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-fleet",
         "tests": {
-            "integration": "tests/integration.rs",
-            "postgres": "tests/postgres.rs"
+            "integration": "tests/integration.rs"
         },
         "version": "0.6.0"
     },
@@ -454,31 +451,6 @@ CRATES = {
             "//crates/clax-rt:clax_rt"
         ],
         "wasm_proc_macro_deps": []
-    },
-    "crates/clax-pagevfs": {
-        "bins": {},
-        "default_features": [],
-        "deps": [],
-        "dev_deps": [
-            "//crates/clax-core:clax_core",
-            "//crates/clax-store:clax_store"
-        ],
-        "edition": "2024",
-        "features": [],
-        "has_build_script": False,
-        "lib": "clax_pagevfs",
-        "lib_root": "src/lib.rs",
-        "lint_flags": [
-            "--check-cfg=cfg(clax_embedded)",
-            "--check-cfg=cfg(clax_split)",
-            "--check-cfg=cfg(clax_split, values(any()))",
-            "-Wunexpected_cfgs",
-            "-Dunsafe_code",
-            "-Funsafe_op_in_unsafe_fn"
-        ],
-        "name": "clax-pagevfs",
-        "tests": {},
-        "version": "0.6.0"
     },
     "crates/clax-realtime": {
         "bins": {},

@@ -1,7 +1,6 @@
-# What both backends share: the Service clients reach, the catalog, the
-# service account and the disruption budget. An overlay adds the workload:
-# sqlite/ (a StatefulSet of shards) or postgres/ (a Deployment and its
-# autoscaler). docs/kubernetes.md walks through both.
+# What every deployment shares: the Service clients reach, the catalog, the
+# service account and the disruption budget. The sqlite/ overlay adds the
+# workload, a StatefulSet of shards; docs/kubernetes.md walks through it.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 labels:

@@ -6,12 +6,9 @@ filegroup(
     visibility = ["//crates/clax-fleet:__pkg__"],
 )
 
-# The overlays' image tag, which scripts/bump-version.sh writes and the
+# The overlay's image tag, which scripts/bump-version.sh writes and the
 # release script test checks (scripts/test-release.files).
 exports_files(
-    [
-        "postgres/kustomization.yaml",
-        "sqlite/kustomization.yaml",
-    ],
+    ["sqlite/kustomization.yaml"],
     visibility = ["//scripts:__pkg__"],
 )

@@ -1,3 +1,0 @@
-load("//bazel:cargo.bzl", "cargo_package")
-
-cargo_package()

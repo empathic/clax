@@ -100,34 +100,6 @@ impl Core {
     ) -> anyhow::Result<Core> {
         cfg.home.ensure_dirs()?;
         let store = Arc::new(Store::open_reporting(&cfg.home, progress)?);
-        Core::start_with(cfg, store, None).await
-    }
-
-    /// [`Core::start`] on `store`, which its host opened (a fleet
-    /// instance's, on a connection of its own VFS), keeping each artifact's
-    /// app data where `app_data` keeps it. The core moves into it the
-    /// documents `store` still holds itself, through
-    /// [`clax_http::app_data_host::MovingAppData`] over `store`.
-    ///
-    /// # Errors
-    /// When the state cannot be assembled.
-    pub async fn start_on<H: clax_http::app_data_host::AppDataHost + 'static>(
-        cfg: CoreConfig,
-        store: Arc<Store>,
-        app_data: H,
-    ) -> anyhow::Result<Core> {
-        let moving = clax_http::app_data_host::MovingAppData::new(app_data, store.clone());
-        Core::start_with(cfg, store, Some(Arc::new(moving))).await
-    }
-
-    /// The start of [`Core::start`] and [`Core::start_on`]: `app_data` is
-    /// the host in place of the home's, already moving `store`'s documents.
-    async fn start_with(
-        cfg: CoreConfig,
-        store: Arc<Store>,
-        app_data: Option<Arc<dyn clax_http::app_data_host::AppDataHost>>,
-    ) -> anyhow::Result<Core> {
-        cfg.home.ensure_dirs()?;
         // Hooks that waited on the previous daemon are gone: their questions
         // are withdrawn (and kept, as every question is).
         let gone = store.withdraw_hook_questions_on_start()?;
@@ -180,7 +152,6 @@ impl Core {
             hosted: cfg.hosted,
             web: cfg.web,
             embed: cfg.embed,
-            app_data,
         })?;
         state.clax_app = Arc::new(clax_app);
         if cfg.quickstart {

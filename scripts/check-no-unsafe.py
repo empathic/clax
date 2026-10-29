@@ -23,11 +23,10 @@ EMBED = {
 }
 EMBED_PARAM = {"u64", "i64", "i32", "usize", "*const u8", "ClaxPost"}
 SLICE = re.compile(r"let \w+ = unsafe \{ std::slice::from_raw_parts\(\w+, \w+\) \};$", re.A)
-OWN_LINTS = {"crates/clax-embed/Cargo.toml", "crates/clax-pagevfs/Cargo.toml", "crates/clax-worker/vfs/Cargo.toml"}
-# The SQLite VFS crates, each of which may run one statement unsafe: its
+OWN_LINTS = {"crates/clax-embed/Cargo.toml", "crates/clax-worker/vfs/Cargo.toml"}
+# The SQLite VFS crate, which may run one statement unsafe: its
 # registration with SQLite.
 VFS = {
-    "crates/clax-pagevfs/src/lib.rs": "crates/clax-pagevfs/Cargo.toml",
     "crates/clax-worker/vfs/src/lib.rs": "crates/clax-worker/vfs/Cargo.toml",
 }
 VFS_ONLY = "only the VFS's registration may use unsafe"
@@ -157,7 +156,7 @@ def exports(text, code):
 
 
 def registration(text, code):
-    """The lines granted to a SQLite VFS crate's registration: the first
+    """The lines granted to the SQLite VFS crate's registration: the first
     `let registered = unsafe { rsqlite_vfs::register_vfs::<IoMethods,
     Vfs>(VFS_NAME, (), false) };` directly after `#[allow(unsafe_code)]`,
     and that line, directly after a comment whose first line opens with

@@ -42,8 +42,7 @@ if (cd "$T" && scripts/bump-version.sh 9.8.7 >/dev/null) && [ "$(cd "$T" && scri
     && python3 "$T/scripts/sync-skill-tools.py" --check >/dev/null \
     && grep -A1 '^name = "clax-fake-exe"$' "$T/Cargo.lock" | grep '^version = "9.8.7"$' >/dev/null \
     && grep -q '^    newTag: "9.8.7"$' "$T/deploy/k8s/sqlite/kustomization.yaml" \
-    && grep -q '^    newTag: "9.8.7"$' "$T/deploy/k8s/postgres/kustomization.yaml" \
-    && grep -q 'deploy/k8s/postgres?ref=v9.8.7$' "$T/docs/kubernetes.md" \
+    && grep -q 'deploy/k8s/sqlite?ref=v9.8.7$' "$T/docs/kubernetes.md" \
     && grep -q 'ghcr.io/empathic/clax-fleet:9.8.7 ' "$T/docs/kubernetes.md"; then
     pass "bump-version writes every version, the launcher copies, skill blocks and fleet image tags included"
 else fail "bump-version writes every version"; fi
@@ -77,7 +76,7 @@ for f in plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL
     else fail "a stray skill block is named ($f: $out)"; fi
 done
 
-for f in deploy/k8s/sqlite/kustomization.yaml deploy/k8s/postgres/kustomization.yaml; do
+for f in deploy/k8s/sqlite/kustomization.yaml; do
     fresh "$T/stray"
     sed -i.bak 's/^    newTag: ".*"$/    newTag: "9.9.9"/' "$T/stray/$f"
     out="$(cd "$T/stray" && scripts/check-version.sh 2>&1)"; rc=$?

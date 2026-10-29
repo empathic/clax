@@ -49,11 +49,10 @@ for f in ("plugins/claude-code/.claude-plugin/plugin.json", "plugins/clax/.codex
 sub(".claude-plugin/marketplace.json", r'("version": ")([^"]+)(")', count=2)
 for f in ("scripts/ensure-clax.sh", "plugins/claude-code/scripts/ensure-clax.sh", "plugins/clax/scripts/ensure-clax.sh", "plugins/clax-grok/scripts/ensure-clax.sh", "plugins/pi/scripts/ensure-clax.sh"):
     sub(f, r'(^CLAX_VERSION=")([^"]+)(")')
-# The clax-fleet image the Kubernetes overlays run, which the release tag's
+# The clax-fleet image the Kubernetes overlay runs, which the release tag's
 # fleet-image workflow publishes, and the docs' examples of it.
-for f in ("deploy/k8s/sqlite/kustomization.yaml", "deploy/k8s/postgres/kustomization.yaml"):
-    sub(f, r'(^    newTag: ")([^"]+)(")')
-sub("docs/kubernetes.md", r'(/deploy/k8s/postgres\?ref=v)([0-9][0-9A-Za-z.-]*)()')
+sub("deploy/k8s/sqlite/kustomization.yaml", r'(^    newTag: ")([^"]+)(")')
+sub("docs/kubernetes.md", r'(/deploy/k8s/sqlite\?ref=v)([0-9][0-9A-Za-z.-]*)()')
 sub("docs/kubernetes.md", r'(ghcr\.io/empathic/clax-fleet:)([0-9][0-9A-Za-z.-]*)()')
 for path, text in pending.items():
     pathlib.Path(path).write_text(text)

@@ -25,7 +25,6 @@ crates/clax-bot-js/Cargo.toml
 third_party/clax-rquickjs-sys/Cargo.toml
 third_party/clax-rquickjs-core/Cargo.toml
 crates/clax-embed/Cargo.toml
-crates/clax-pagevfs/Cargo.toml
 crates/clax-fleet/Cargo.toml
 crates/clax-worker/Cargo.toml
 crates/clax-worker/vfs/Cargo.toml
@@ -57,5 +56,4 @@ plugins/clax-grok/README.md
 plugins/pi/scripts/ensure-clax.sh
 scripts/pin-release.sh
 deploy/k8s/sqlite/kustomization.yaml
-deploy/k8s/postgres/kustomization.yaml
 docs/kubernetes.md

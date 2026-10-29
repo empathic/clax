@@ -409,7 +409,7 @@ path a session uses.
 
 [docs/contract.md](contract.md) is the contract for agents and integrators: every tool's arguments, results and error codes, how sessions are identified per harness, the page contract, the security model, and what is not yet available.
 
-[docs/kubernetes.md](kubernetes.md) deploys hosted Clax instances on Kubernetes, backed by SQLite or PostgreSQL and scaled across pods (`clax-fleet`, `deploy/k8s`).
+[docs/kubernetes.md](kubernetes.md) deploys hosted Clax instances on Kubernetes, each on its shard pod's volume and scaled across pods (`clax-fleet`, `deploy/k8s`).
 
 ## Upgrading
 
@@ -463,11 +463,9 @@ it, and `clax-server` over `clax-bot-js` too, an optional dependency
 behind its default `native-sandbox` feature (without it, as in the
 crates.io package, scripts answer `unavailable`); the hosted Worker,
 `crates/clax-worker`, is a workspace of its
-own over the daemon crates. `clax-pagevfs` (a SQLite VFS over a page
-store) depends on no workspace crate, and `clax-fleet` (Clax instances
-across processes on SQLite or PostgreSQL, the server of the Kubernetes
-deployment, `docs/kubernetes.md`) sits beside `clax-cli`, over
-`clax-server`, `clax-pagevfs` and `clax-embedded`. `scripts/check-crate-layers.py`, a quality
+own over the daemon crates. `clax-fleet` (Clax instances across
+processes, the server of the Kubernetes deployment, `docs/kubernetes.md`)
+sits beside `clax-cli`, over `clax-server` and `clax-embedded`. `scripts/check-crate-layers.py`, a quality
 gate, holds the rule crate by crate (its `ALLOWED` map) and fails a
 dependency out of order.
 

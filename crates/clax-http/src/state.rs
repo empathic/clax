@@ -341,10 +341,6 @@ pub struct StateParts {
     /// The origins of the app that embeds the core
     /// ([`AppState::embed`]); `None` for a daemon.
     pub embed: Option<EmbedOrigins>,
-    /// Where artifacts' app data lives, already moving `store`'s documents
-    /// out ([`crate::app_data_host::MovingAppData`]); `None` for the home's
-    /// ([`crate::app_data_host::default_host`]).
-    pub app_data: Option<Arc<dyn crate::app_data_host::AppDataHost>>,
 }
 
 impl AppState {
@@ -360,9 +356,7 @@ impl AppState {
         let ext_creds = Arc::new(crate::extension::Credentials::load(&p.store)?);
         let grant_auth = Arc::new(crate::grant_auth::GrantAuth::load(&p.store)?);
         let vis_gen = VisGen::install(&p.store);
-        let app_data = p
-            .app_data
-            .unwrap_or_else(|| crate::app_data_host::default_host(&p.store, &p.home));
+        let app_data = crate::app_data_host::default_host(&p.store, &p.home);
         let settings = Arc::new(crate::settings::Settings::at_start(
             &p.home,
             p.hosted.is_some(),

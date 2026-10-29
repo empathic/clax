@@ -1,14 +1,14 @@
 //! The fleet's catalog (`fleet.toml`): the Clax instances it serves, each
-//! with the `config.toml` its home is given, and, on the SQLite backend,
-//! the number of shards and the shard that keeps each instance.
+//! with the `config.toml` its home is given, the number of shards and the
+//! shard that keeps each instance.
 //!
 //! ```toml
-//! shards = 2       # SQLite: the StatefulSet's replicas
+//! shards = 2       # the StatefulSet's replicas
 //!
 //! [[instance]]
 //! name = "acme"
-//! shard = 0        # SQLite: the StatefulSet ordinal whose volume keeps it
-//! create = true    # SQLite: may make its home (only for a new instance)
+//! shard = 0        # the StatefulSet ordinal whose volume keeps it
+//! create = true    # may make its home (only for a new instance)
 //! default = true   # answers a request whose Host names no instance
 //! paused = false   # true: kept stopped, its hosts answered 503
 //! config = '''
@@ -55,7 +55,7 @@ pub struct Instance {
     pub name: String,
     /// On the SQLite backend, the ordinal of the process whose volume keeps
     /// its home.
-    pub shard: Option<u32>,
+    pub shard: u32,
     /// Whether it answers requests whose `Host` names no instance.
     pub default: bool,
     /// Kept stopped: its hosts answer 503.
@@ -88,8 +88,8 @@ impl PartialEq for Instance {
 /// The instances a fleet serves.
 #[derive(Clone, Debug, Default)]
 pub struct Catalog {
-    /// On the SQLite backend, how many shards (processes) there are.
-    pub shards: Option<u32>,
+    /// How many shards (processes) there are.
+    pub shards: u32,
     pub instances: Vec<Instance>,
     by_authority: HashMap<String, usize>,
     by_site_domain: HashMap<String, usize>,
@@ -127,7 +127,7 @@ struct Entry {
 
 /// Whether `name` is an instance name: 1 to 63 lowercase ASCII letters,
 /// digits and dashes, neither first nor last a dash. It names the
-/// instance's home directory and its rows in PostgreSQL.
+/// instance's home directory.
 pub fn valid_name(name: &str) -> bool {
     (1..=63).contains(&name.len())
         && !name.starts_with('-')
@@ -150,7 +150,7 @@ fn normalize_host(host: &str) -> String {
 
 /// The fleet's own variables, which no instance's `setup_secret_env` may
 /// name: its setup secret would be the fleet's key or database URL.
-const FLEET_VARIABLES: [&str; 3] = ["CLAX_KEK", "CLAX_FLEET_PEER_KEY", "CLAX_POSTGRES_URL"];
+const FLEET_VARIABLES: [&str; 2] = ["CLAX_KEK", "CLAX_FLEET_PEER_KEY"];
 
 /// Whether host name `a` is `b` or under it, label by label.
 fn at_or_under(a: &str, b: &str) -> bool {
@@ -158,27 +158,26 @@ fn at_or_under(a: &str, b: &str) -> bool {
 }
 
 impl Catalog {
-    /// The catalog `text` describes, read as the file at `path`; `sqlite`
-    /// asks for the SQLite backend's shards.
+    /// The catalog `text` describes, read as the file at `path`.
     ///
     /// # Errors
     /// A message naming `path` and what is wrong: TOML that does not parse,
     /// an unknown key, a bad name, a name or origin used twice, a site
     /// domain at, under or above another instance's site domain or public
     /// host, two instances reading one setup secret variable or one reading
-    /// the fleet's own, two defaults, an instance with no usable `[hosted]`, or, on
-    /// SQLite, no `shards`, an instance with no `shard` or one past them.
-    pub fn parse(path: &Path, text: &str, sqlite: bool) -> Result<Catalog, String> {
+    /// the fleet's own, two defaults, an instance with no usable `[hosted]`,
+    /// no `shards`, or an instance with no `shard` or one past them.
+    pub fn parse(path: &Path, text: &str) -> Result<Catalog, String> {
         let at = path.display();
         let file: File = toml::from_str(text).map_err(|e| format!("{at}: {e}"))?;
-        let shards = match (sqlite, file.shards) {
-            (true, None) => {
+        let shards = match file.shards {
+            None => {
                 return Err(format!(
-                    "{at}: no shards; on the SQLite backend the catalog says how many shards (StatefulSet replicas) there are"
+                    "{at}: no shards; the catalog says how many shards (StatefulSet replicas) there are"
                 ));
             }
-            (true, Some(0)) => return Err(format!("{at}: shards is 0")),
-            (_, s) => s,
+            Some(0) => return Err(format!("{at}: shards is 0")),
+            Some(n) => n,
         };
         let mut names = HashSet::new();
         let mut authorities = HashSet::new();
@@ -198,19 +197,19 @@ impl Catalog {
             if !names.insert(name.clone()) {
                 return Err(format!("{at}: instance {name} is named twice"));
             }
-            match (shards.filter(|_| sqlite), e.shard) {
-                (Some(_), None) => {
+            let shard = match e.shard {
+                None => {
                     return Err(format!(
-                        "{at}: instance {name} has no shard; on the SQLite backend each instance names the ordinal whose volume keeps it"
+                        "{at}: instance {name} has no shard; each instance names the ordinal whose volume keeps it"
                     ));
                 }
-                (Some(n), Some(s)) if s >= n => {
+                Some(s) if s >= shards => {
                     return Err(format!(
-                        "{at}: instance {name}'s shard {s} is past the {n} shards"
+                        "{at}: instance {name}'s shard {s} is past the {shards} shards"
                     ));
                 }
-                _ => {}
-            }
+                Some(s) => s,
+            };
             let config = HomeConfig::from_text(
                 PathBuf::from(format!("{at} (instance {name})")),
                 &e.config,
@@ -287,7 +286,7 @@ impl Catalog {
             }
             instances.push(Instance {
                 name,
-                shard: e.shard,
+                shard,
                 default: e.default,
                 paused: e.paused,
                 create: e.create,
@@ -319,9 +318,9 @@ impl Catalog {
     ///
     /// # Errors
     /// The file cannot be read, or [`Catalog::parse`]'s.
-    pub fn load(path: &Path, sqlite: bool) -> Result<Catalog, String> {
+    pub fn load(path: &Path) -> Result<Catalog, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        Catalog::parse(path, &text, sqlite)
+        Catalog::parse(path, &text)
     }
 
     /// The instance named `name`.
@@ -364,8 +363,8 @@ impl Catalog {
 mod tests {
     use super::*;
 
-    fn parse(text: &str, sqlite: bool) -> Result<Catalog, String> {
-        Catalog::parse(Path::new("fleet.toml"), text, sqlite)
+    fn parse(text: &str) -> Result<Catalog, String> {
+        Catalog::parse(Path::new("fleet.toml"), text)
     }
 
     const TWO: &str = r#"
@@ -394,7 +393,7 @@ setup_secret_env = "CLAX_SETUP_SECRET_GLOBEX"
 
     #[test]
     fn requests_find_their_instance_by_origin_or_site_host() {
-        let c = parse(TWO, true).unwrap();
+        let c = parse(TWO).unwrap();
         let name = |h: Option<&str>| c.resolve(h).map(|i| i.name.as_str());
         assert_eq!(name(Some("ACME.example.com")), Some("acme"));
         assert_eq!(name(Some("acme.example.com:443")), Some("acme"));
@@ -412,8 +411,8 @@ setup_secret_env = "CLAX_SETUP_SECRET_GLOBEX"
         // Not a site host: two labels, or not an artifact ID.
         assert_eq!(name(Some("a.b.acme-sites.example.com")), Some("acme"));
         assert_eq!(name(None), Some("acme"));
-        assert_eq!(c.get("globex").unwrap().shard, Some(1));
-        assert_eq!(c.shards, Some(2));
+        assert_eq!(c.get("globex").unwrap().shard, 1);
+        assert_eq!(c.shards, 2);
         assert_eq!(
             c.get("globex").unwrap().origin,
             "https://clax.globex.test:8443"
@@ -422,7 +421,7 @@ setup_secret_env = "CLAX_SETUP_SECRET_GLOBEX"
 
     #[test]
     fn without_a_default_an_unknown_host_has_no_instance() {
-        let c = parse(&TWO.replace("default = true\n", ""), false).unwrap();
+        let c = parse(&TWO.replace("default = true\n", "")).unwrap();
         assert!(c.resolve(Some("elsewhere.test")).is_none());
         assert!(c.resolve(Some("abcdefghjkmn.other.test")).is_none());
         assert!(c.resolve(None).is_none());
@@ -472,13 +471,10 @@ setup_secret_env = "CLAX_SETUP_SECRET_GLOBEX"
             ),
         ];
         for (text, want) in cases {
-            let err = parse(&text, true).unwrap_err();
+            let err = parse(&text).unwrap_err();
             assert!(err.contains(want), "{want:?} not in {err:?}");
             assert!(err.starts_with("fleet.toml"), "{err}");
         }
-        // The PostgreSQL backend needs no shards.
-        let pg = TWO.replace("shard = 1\n", "").replace("shards = 2\n", "");
-        assert!(parse(&pg, false).is_ok());
     }
 
     /// No tenant's site domain may be at, under or above another tenant's
@@ -490,7 +486,7 @@ setup_secret_env = "CLAX_SETUP_SECRET_GLOBEX"
                 .map(|d| format!("site_domain = \"{d}\"\n"))
                 .unwrap_or_default();
             format!(
-                "[[instance]]\nname = \"a\"\nconfig = '''\n[hosted]\npublic_origin = \"{a_origin}\"\nsite_domain = \"{a_sites}\"\nsetup_secret_env = \"CLAX_SETUP_SECRET_A\"\n'''\n\n[[instance]]\nname = \"b\"\nconfig = '''\n[hosted]\npublic_origin = \"{b_origin}\"\nsetup_secret_env = \"CLAX_SETUP_SECRET_B\"\n{b_sites}'''\n"
+                "shards = 1\n\n[[instance]]\nname = \"a\"\nshard = 0\nconfig = '''\n[hosted]\npublic_origin = \"{a_origin}\"\nsite_domain = \"{a_sites}\"\nsetup_secret_env = \"CLAX_SETUP_SECRET_A\"\n'''\n\n[[instance]]\nname = \"b\"\nshard = 0\nconfig = '''\n[hosted]\npublic_origin = \"{b_origin}\"\nsetup_secret_env = \"CLAX_SETUP_SECRET_B\"\n{b_sites}'''\n"
             )
         };
         let refused = [
@@ -520,30 +516,24 @@ setup_secret_env = "CLAX_SETUP_SECRET_GLOBEX"
             ),
         ];
         for text in refused {
-            let err = parse(&text, false).unwrap_err();
+            let err = parse(&text).unwrap_err();
             assert!(err.contains("site domain"), "{err}");
         }
         assert!(
-            parse(
-                &two(
-                    "https://a.test",
-                    "a-sites.test",
-                    "https://b.test",
-                    Some("b-sites.test")
-                ),
-                false
-            )
+            parse(&two(
+                "https://a.test",
+                "a-sites.test",
+                "https://b.test",
+                Some("b-sites.test")
+            ),)
             .is_ok()
         );
     }
 
     #[test]
     fn paused_and_create_are_read() {
-        let c = parse(
-            &TWO.replace("shard = 0\n", "shard = 0\npaused = true\ncreate = true\n"),
-            true,
-        )
-        .unwrap();
+        let c = parse(&TWO.replace("shard = 0\n", "shard = 0\npaused = true\ncreate = true\n"))
+            .unwrap();
         let acme = c.get("acme").unwrap();
         assert!(acme.paused && acme.create);
         assert!(!c.get("globex").unwrap().paused);

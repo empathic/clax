@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use clax_core::embedded::MemTree;
 use clax_core::working::ManualClock;
-use clax_fleet::fleet::{Fleet, FleetConfig, Placement, Storage};
+use clax_fleet::fleet::{Fleet, FleetConfig, Shard};
 
 /// The peer key every process of a test fleet shares.
 pub const PEER_KEY: &str = "test-peer-key";
@@ -66,7 +66,7 @@ pub async fn process(
     (listener, addr): (tokio::net::TcpListener, SocketAddr),
     data_dir: &Path,
     catalog: &Path,
-    placement: Placement,
+    shard: Shard,
 ) -> Process {
     let clock = Arc::new(ManualClock::at("2026-01-01T00:00:00Z"));
     let fleet = Fleet::new(FleetConfig {
@@ -76,11 +76,9 @@ pub async fn process(
         catalog: catalog.to_path_buf(),
         version: "test",
         web: Arc::new(MemTree(Default::default())),
-        placement,
-        storage: Storage::Disk,
+        shard,
         kek: Some([7; 32]),
         peer_key: PEER_KEY.to_string(),
-        db_limits: clax_pagevfs::Limits::default(),
         port: addr.port(),
         clock: clock.clone(),
     })
