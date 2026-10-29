@@ -40,8 +40,9 @@ use clax_core::model::{Comment, Session, Thread};
 use clax_core::queue::{
     AUTHOR_REPORTER, Claim, LEASE_SECS, Lease, MAX_ARTIFACT_METADATA_BYTES,
     MAX_THREAD_METADATA_BYTES, Queue, REPORT_PAGE, REPORTER_TOKEN_PREFIX, REPORTER_TOKEN_SECS,
-    Report, ReportComment, ReportOrder, ReportersSee, Role, SERVICE_TOKEN_PREFIX, State, StateFilter,
-    check_queue_name, check_reporter_id, metadata_json, metadata_sha256, normalize_origin,
+    Report, ReportComment, ReportOrder, ReportersSee, Role, SERVICE_TOKEN_PREFIX, State,
+    StateFilter, check_queue_name, check_reporter_id, metadata_json, metadata_sha256,
+    normalize_origin,
 };
 use clax_core::report::{
     DiagLine, FixAttempt, FixOutcome, NewFix, ReportContext, ReporterProfile, ResolveReason,

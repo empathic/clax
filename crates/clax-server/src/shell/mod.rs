@@ -692,8 +692,17 @@ mod tests {
     fn only_the_overlay_files_are_offered_to_other_origins_with_their_types() {
         assert_eq!(embed_file("overlay.js"), Some("text/javascript"));
         assert_eq!(embed_file("overlay.mjs"), Some("text/javascript"));
-        assert_eq!(embed_file("overlay.d.ts"), Some("text/plain; charset=utf-8"));
-        for other in ["bridge.js", "transport.js", "shell/a-12345678.js", "overlay.css", "x/overlay.js"] {
+        assert_eq!(
+            embed_file("overlay.d.ts"),
+            Some("text/plain; charset=utf-8")
+        );
+        for other in [
+            "bridge.js",
+            "transport.js",
+            "shell/a-12345678.js",
+            "overlay.css",
+            "x/overlay.js",
+        ] {
             assert_eq!(embed_file(other), None, "{other}");
         }
         // The Worker serves them from its assets with their cache.

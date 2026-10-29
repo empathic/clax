@@ -349,7 +349,11 @@ fn reports_list_newest_first_a_page_at_a_time() {
     let (resolved, end) = newest(None, Some(StateFilter::One(State::Resolved)));
     assert_eq!(end, None);
     let got: Vec<&str> = resolved.iter().map(|r| r.id.as_str()).collect();
-    assert_eq!(got, [ids[2].as_str(), ids[0].as_str()], "filtered, newest first");
+    assert_eq!(
+        got,
+        [ids[2].as_str(), ids[0].as_str()],
+        "filtered, newest first"
+    );
     let (before, _) = newest(Some(&ids[2]), None);
     assert_eq!(
         before.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
@@ -374,7 +378,13 @@ fn reports_filed_in_one_instant_page_newest_first_by_id() {
     let (mut all, mut cur) = (Vec::new(), None);
     loop {
         let (page, next) = st
-            .reports_in_order(&qid, Visibility::All, None, cur.as_deref(), ReportOrder::Newest)
+            .reports_in_order(
+                &qid,
+                Visibility::All,
+                None,
+                cur.as_deref(),
+                ReportOrder::Newest,
+            )
             .unwrap();
         all.extend(page.into_iter().map(|r| r.id));
         if next.is_none() {
