@@ -3349,8 +3349,14 @@ mod tests {
         .unwrap();
         reopen(&tid);
         take(&st, &fixer, Tier::Wait);
-        st.resolve_report(DAEMON, &qid, &tid, &mia, clax_core::report::ResolveReason::Wontfix)
-            .unwrap();
+        st.resolve_report(
+            DAEMON,
+            &qid,
+            &tid,
+            &mia,
+            clax_core::report::ResolveReason::Wontfix,
+        )
+        .unwrap();
         let touched = reopen(&tid);
         assert!(touched.targets.is_empty(), "{touched:?}");
     }
