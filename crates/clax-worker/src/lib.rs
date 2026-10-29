@@ -582,8 +582,14 @@ async fn static_asset(env: &Env, path: &str, app_host: bool) -> Result<Option<Ht
         .and_then(clax_server::shell::embed_file)
     {
         h.insert(header::CONTENT_TYPE, HeaderValue::from_static(ty));
-        h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
-        h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+        h.insert(
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_static("*"),
+        );
+        h.insert(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        );
         h.remove(header::ACCESS_CONTROL_ALLOW_CREDENTIALS);
     }
     Ok(Some(res))
