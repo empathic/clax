@@ -137,6 +137,48 @@ pub fn legal_page(
     }
 }
 
+/// A file of the landing page, `file` relative to the quickstart `release`
+/// (`clax_server::hosted`'s `/start/`): its pages as static pages only
+/// their own origin may frame (the shell's landing entry frames
+/// `index.html`), and each other file by its extension, revalidated by its
+/// `ETag`. Names starting with a dot are never served.
+pub fn landing_file(
+    release: &clax_core::quickstart::Release,
+    req: &HeaderMap,
+    file: &str,
+) -> Result<Response, ApiError> {
+    let hidden = file.split('/').any(|c| c.starts_with('.') || c.is_empty());
+    let Some(data) = (!hidden).then(|| release.files.get(file)).flatten() else {
+        return Err(ApiError::not_found());
+    };
+    if file.ends_with(".html") {
+        let mut res = http_cache::html(req, &String::from_utf8_lossy(data));
+        let h = res.headers_mut();
+        h.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("frame-ancestors 'self'"),
+        );
+        h.insert(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("SAMEORIGIN"),
+        );
+        return Ok(res);
+    }
+    let ct = mime_guess::from_path(file)
+        .first_or_octet_stream()
+        .to_string();
+    Ok(http_cache::tagged(req, data, REVALIDATE, || {
+        (
+            [
+                (header::CONTENT_TYPE, ct),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+            ],
+            data.clone(),
+        )
+            .into_response()
+    }))
+}
+
 /// `/`, `/inbox`, `/people` and `/tags`: the gallery's entry, which shows
 /// the gallery, the inbox, People or the tags by its path.
 pub async fn gallery_page(

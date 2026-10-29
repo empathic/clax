@@ -2,10 +2,13 @@
 //
 //   node demo/local.ts [--native] [--port <free port>] [--seats 1] [--agents 3] [--pace 8000] [--no-build]
 //
-// By default the demo runs on the Worker: it builds the web UI and the
-// Worker (crates/clax-worker), and starts `wrangler dev --local` on a free
-// port with fresh state under target/demo-worker/ (wiped on every run) and
-// the hosted vars (lib/worker.ts): the public origin
+// By default the demo runs on the Worker: it installs the Worker's
+// packages from their lockfile (scripts/pnpm-install-stamped.sh, skipped
+// when node_modules already matches it), builds the web UI (scripts/run.sh
+// web: Bazel when it is installed) and the Worker (crates/clax-worker), and
+// starts `wrangler dev --local` on a free port with fresh state under
+// target/demo-worker/ (wiped on every run) and the hosted vars
+// (lib/worker.ts): the public origin
 // `http://localhost:<port>`, artifact content on `http://127.0.0.1:<port>`,
 // a random setup secret, CLAX_LIVE_PEOPLE_SEATS (1 by default, so the
 // spectator mode shows with one guest: the owner and the people an artifact
@@ -31,8 +34,9 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { NATIVE_MCP_PATH } from "./lib/http.ts";
+import { BuildLog } from "./lib/build.ts";
 import { describe, seed, type Seeded } from "./lib/seed.ts";
-import { buildWorker, freePort, gitToken, startWorker } from "./lib/worker.ts";
+import { freePort, gitToken, startWorker } from "./lib/worker.ts";
 
 const DEMO = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(DEMO, "..");
@@ -66,12 +70,8 @@ interface Target {
   extra(base: string, s: Seeded): Promise<string>;
 }
 
-function build(what: string, cmd: string, args: string[]): Promise<void> {
-  console.log(`Building ${what}…`);
-  return exited(spawn(cmd, args, { cwd: ROOT, stdio: ["ignore", "ignore", "inherit"] })).then(async (code) => {
-    if (code !== 0) await shutdown(1);
-  });
-}
+/** Where the builds' output goes (lib/build.ts), opened in the run directory once it is made. */
+let builds: BuildLog;
 
 /** The native daemon in hosted mode, on a home of its own. */
 const native: Target = {
@@ -81,17 +81,14 @@ const native: Target = {
   mcpPath: NATIVE_MCP_PATH,
   async start(port, secret, seats) {
     const log = this.log;
-    if (!opts["no-build"]) {
-      await build("the daemon", "cargo", ["build", "-p", "clax-cli", "--bin", "clax"]);
-      if (!existsSync(join(ROOT, "web/dist/index.html"))) await build("the web UI", "just", ["web"]);
-    }
+    if (!opts["no-build"] || !existsSync(join(ROOT, "web/dist/index.html"))) await builds.web();
+    const bin = await builds.output("the daemon", join(ROOT, "scripts/run.sh"), ["bin"]);
     const home = join(this.dir, "home");
     mkdirSync(home, { recursive: true });
     writeFileSync(
       join(home, "config.toml"),
       `[sample]\napi_key_env = "CLAX_DEMO_UNSET_KEY"\n\n[hosted]\npublic_origin = "http://localhost:${port}"\nsetup_secret_env = "CLAX_DEMO_SETUP_SECRET"\n`,
     );
-    const bin = join(ROOT, "target/debug/clax");
     console.log(`Starting the daemon in hosted mode on :${port} (home ${home}, log ${log})…`);
     return spawn(bin, ["serve", "--foreground", "--bind", "127.0.0.1", "--port", String(port), "--web-dist", join(ROOT, "web/dist")], {
       cwd: ROOT,
@@ -110,13 +107,10 @@ const worker: Target = {
   log: join(ROOT, "target/demo-worker/wrangler.log"),
   mcpPath: "/mcp",
   async start(port, secret, seats) {
+    await builds.workerPackages();
     if (!opts["no-build"]) {
-      await build("the web UI", join(ROOT, "scripts/build-web.sh"), []);
-      console.log("Building the Worker…");
-      await buildWorker("ignore").catch(async (e: unknown) => {
-        console.error(e instanceof Error ? e.message : e);
-        await shutdown(1);
-      });
+      await builds.web();
+      await builds.worker();
     }
     console.log(`Starting the Worker (wrangler dev --local) in hosted mode on :${port} (state ${this.dir}/state, log ${this.log})…`);
     return (await startWorker({ dir: this.dir, port, secret, seats, onSpawn: (c) => children.push(c) })).child;
@@ -197,6 +191,8 @@ if (await portTaken(port)) {
 
 rmSync(target.dir, { recursive: true, force: true });
 mkdirSync(target.dir, { recursive: true });
+builds = new BuildLog(target.dir);
+console.log(`Build output goes to ${builds.path}.`);
 const log = target.log;
 const secret = randomBytes(18).toString("base64url");
 let server: ChildProcess;
@@ -239,7 +235,8 @@ try {
   await shutdown(1);
 }
 const agentsCommand = `node demo/agents.ts --url ${base} --mcp-path ${target.mcpPath} --token ${s.token.token} --id ${s.brief.id} --agents ${s.agents} --pace ${opts.pace}`;
-console.log(`
+const links = join(target.dir, "links.txt");
+const text = `
 Running on ${target.name}.
 
 ${describe(s)}${extra}
@@ -267,7 +264,9 @@ Try it (live seats for people: ${opts.seats}; the owner and the people an artifa
   5. Open the Fork in ${s.editor.name}'s window: under its title, "Forked from
      ${s.checklist.title} v2" links back to the version it was copied from.
 
-Ctrl-C stops everything; the next run starts fresh.`);
+Ctrl-C stops everything; the next run starts fresh.`;
+writeFileSync(links, `${text.trimStart()}\n`);
+console.log(`${text}\n\nThe links and steps above are also in ${links}.`);
 
 const rl = createInterface({ input: process.stdin });
 let started = false;

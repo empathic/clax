@@ -136,6 +136,9 @@ pub struct Hosted {
     /// The site domain ([`Hosted::with_sites`]); `None` serves sites at
     /// `<id>.localhost` alone ([`crate::host::SiteHosts::local`]).
     pub sites: Option<crate::host::SiteHosts>,
+    /// Where the landing page's reel is served from ([`Hosted::with_reel`]);
+    /// `None` serves it only if the quickstart release carries it.
+    pub reel: Option<Reel>,
     /// A request for the public or content host came from a loopback peer
     /// with `behind_cloudflare` off, and was logged ([`Hosted::note_peer`]).
     proxy_noted: std::sync::atomic::AtomicBool,
@@ -151,7 +154,38 @@ impl std::fmt::Debug for Hosted {
             .field("github", &self.github)
             .field("legal", &self.legal)
             .field("sites", &self.sites)
+            .field("reel", &self.reel)
             .finish()
+    }
+}
+
+/// Where the landing page's reel is served from: a video CDN in
+/// production, the dev server's own address locally. The landing page names
+/// its files beside it ([`LANDING`]), and hosted mode redirects them here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reel {
+    /// The video's address (`reel.mp4`).
+    pub video: String,
+    /// The poster frame's address (`reel-poster.jpg`); `None` serves it
+    /// from the quickstart release, if it carries one.
+    pub poster: Option<String>,
+}
+
+impl Reel {
+    /// The reel at `video` with its poster at `poster`; an error naming the
+    /// address that is not `https://` (`http://` only on localhost).
+    pub fn new(video: &str, poster: Option<&str>) -> Result<Reel, String> {
+        for u in std::iter::once(video).chain(poster) {
+            if !clax_core::config::base_url_ok(u) {
+                return Err(format!(
+                    "the reel's addresses must be https:// URLs (http:// only on localhost), not \"{u}\""
+                ));
+            }
+        }
+        Ok(Reel {
+            video: video.into(),
+            poster: poster.map(Into::into),
+        })
     }
 }
 
@@ -370,6 +404,7 @@ impl Hosted {
             public_gallery: false,
             legal: None,
             sites: None,
+            reel: None,
             proxy_noted: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -434,6 +469,13 @@ impl Hosted {
     /// (`None`: at `<id>.localhost` alone).
     pub fn with_sites(self, sites: Option<crate::host::SiteHosts>) -> Hosted {
         Hosted { sites, ..self }
+    }
+
+    /// This hosted mode sending the landing page's reel (`reel.mp4` and
+    /// `reel-poster.jpg` under [`LANDING`]) to `reel`'s addresses (`None`:
+    /// served from the quickstart release, if it carries them).
+    pub fn with_reel(self, reel: Option<Reel>) -> Hosted {
+        Hosted { reel, ..self }
     }
 
     /// Whether this hosted mode serves the bundled documents at `/terms`
@@ -1584,6 +1626,9 @@ pub const OWN_PAGES: &[&str] = &[
     "/auth/github",
     crate::github::CALLBACK_PATH,
     "/site-signin",
+    // The landing page: the quickstart this build carries, for anyone.
+    LANDING,
+    "/start",
     // The Clax app's links, which Apple and Google fetch with no session;
     // each handler answers only on the public host.
     "/.well-known/apple-app-site-association",
@@ -1591,6 +1636,12 @@ pub const OWN_PAGES: &[&str] = &[
     // What this Clax is (`GET /.well-known/clax`), for any caller.
     "/.well-known/clax",
 ];
+
+/// The landing page's directory: the quickstart release the build carries
+/// ([`crate::state::AppState::quickstart`]), served as it ships
+/// (`clax_server::hosted::router`). A signed-out visitor to `/` is sent
+/// here when the build carries one, and to `/signin` when it does not.
+pub const LANDING: &str = "/start/";
 
 /// The bundled legal documents' pages ([`Hosted::serves_legal`]).
 pub const LEGAL_PAGES: &[&str] = &["/terms", "/privacy"];
@@ -1792,6 +1843,10 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
     let query = req.uri().query().map(str::to_string);
     match guest_need(&method, &path, query.as_deref()) {
         GuestNeed::Open => next.run(req).await,
+        // The front door is the landing page, when the build carries one.
+        GuestNeed::Gallery if path == "/" && s.quickstart.is_some() => {
+            Redirect::to(LANDING).into_response()
+        }
         GuestNeed::Gallery => Redirect::to("/signin").into_response(),
         GuestNeed::Refused => sign_in_required(),
         GuestNeed::At {

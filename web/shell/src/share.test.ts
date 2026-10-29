@@ -282,6 +282,46 @@ describe("Share dialog", () => {
     m.unmount();
   });
 
+  it("takes no General access change while a Comments change is in flight, and never shows one it did not send", async () => {
+    const sent: { method: string; url: string; body: unknown }[] = [];
+    let reload: ((r: Response) => void) | null = null;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : null;
+      if (method !== "GET") sent.push({ method, url, body });
+      if (url === `${BASE}/comments`) return new Response(JSON.stringify({ artifact_id: ID, comments: body?.on }));
+      if (url === `${BASE}/link`) return new Response(JSON.stringify({ artifact_id: ID, access: body?.access, listed: body?.listed, url: "" }));
+      // The reload after the Comments change hangs until the test answers it; later ones answer at once.
+      if (url === `${BASE}/sharing`) {
+        if (sent.length === 1) return new Promise<Response>(r => { reload = r; });
+        return new Response(JSON.stringify(open({ comments: false, general: "link", link_access: "viewer" })));
+      }
+      return new Response("{}", { status: 404 });
+    }));
+    const m = mount(ShareDialog, { id: ID, title: "Plan", initial: open(), onClose: vi.fn() });
+    const root = m.root;
+    const general = root.querySelector<HTMLSelectElement>("select[aria-label='General access']")!;
+    expect(general.disabled).toBe(false);
+    flush(() => root.querySelector<HTMLInputElement>("input[role=switch]")!.click());
+    await until(() => reload);
+    // The Comments change is held and its note shows; its reload is still on its way.
+    expect(root.querySelector("[data-testid=comments-note]")!.textContent).toBe("Off: nobody can comment, whatever their access.");
+    expect(general.disabled).toBe(true);
+    // A change that reaches the select anyway is not sent, and the select shows what the daemon holds.
+    flush(() => { general.value = "link"; general.dispatchEvent(new Event("change", { bubbles: true })); });
+    await until(() => general.value === "restricted");
+    expect(sent.map(s => s.url)).toEqual([`${BASE}/comments`]);
+    expect(root.querySelector("select[aria-label='What anyone with the link may do']")).toBeNull();
+    reload!(new Response(JSON.stringify(open({ comments: false }))));
+    await until(() => !general.disabled);
+    // Once the reload lands, the change takes.
+    flush(() => { general.value = "link"; general.dispatchEvent(new Event("change", { bubbles: true })); });
+    const linkSel = await until(() => root.querySelector<HTMLSelectElement>("select[aria-label='What anyone with the link may do']"));
+    expect(sent[1]).toEqual({ method: "PUT", url: `${BASE}/link`, body: { access: "viewer", listed: false } });
+    expect(linkSel.disabled).toBe(false);
+    m.unmount();
+  });
+
   it("offers no Public while the public gallery is off", () => {
     const state = { sharing: open({ public_gallery: false }) as Sharing };
     serve(state);
