@@ -236,6 +236,10 @@ pub struct ServeConfig {
     /// `None` for `clax serve`, but for the browser tests of the app's
     /// transport (`clax serve --embed-origins`, debug builds only).
     pub embed: Option<clax_http::state::EmbedOrigins>,
+    /// A listening socket the daemon was handed to serve in place of
+    /// binding `bind` and `port` (`clax serve --listen-stdin`: the socket
+    /// launchd holds across the daemon's restarts); it must be on `bind`.
+    pub inherited: Option<std::net::TcpListener>,
     /// How the daemon is asked to stop. `Signals` is `clax serve`'s: SIGTERM,
     /// Ctrl-C and the shutdown route. `Embedded` is a daemon inside another
     /// app's process: only its control and the shutdown route, and no signal
@@ -317,6 +321,25 @@ fn stop_asked(
     }
 }
 
+/// The listener a daemon was handed ([`ServeConfig::inherited`]), on its
+/// own port; an error when it is not on `bind`, so `daemon.json` never
+/// names an address the daemon does not listen on.
+fn inherited_listener(
+    l: std::net::TcpListener,
+    bind: IpAddr,
+) -> io::Result<tokio::net::TcpListener> {
+    let addr = l.local_addr()?;
+    if addr.ip() != bind {
+        return Err(io::Error::new(
+            io::ErrorKind::AddrNotAvailable,
+            format!("the socket the daemon was handed is on {addr}, not {bind}"),
+        ));
+    }
+    l.set_nonblocking(true)?;
+    tracing::info!(%addr, "serving the socket the daemon was handed");
+    tokio::net::TcpListener::from_std(l)
+}
+
 /// Binds the first port of [`port_range`]`(start)` that no other program
 /// holds ([`port_held`]) and that binds; `start` 0 lets the OS choose.
 async fn bind_first_free(bind: IpAddr, start: u16) -> io::Result<tokio::net::TcpListener> {
@@ -366,7 +389,10 @@ pub async fn serve(
         Ok((before, after)) => tracing::info!(before, after, "open file limit"),
         Err(e) => tracing::warn!(error = %e, "could not read or raise the open file limit"),
     }
-    let listener = bind_first_free(cfg.bind, cfg.port).await?;
+    let listener = match cfg.inherited {
+        Some(l) => inherited_listener(l, cfg.bind)?,
+        None => bind_first_free(cfg.bind, cfg.port).await?,
+    };
     let port = listener.local_addr()?.port();
     let core = Core::start(
         CoreConfig {
@@ -651,6 +677,7 @@ mod tests {
             trusted_host_frames: false,
             require_credential: false,
             embed: None,
+            inherited: None,
             stop: StopOn::Embedded(EmbeddedControl {
                 stop: stop_rx,
                 trim: trim_rx,
