@@ -79,6 +79,7 @@ describe("question and inbox fetchers", () => {
       "/api/inbox/01JA/read",
     ]);
     expect(inboxQuery({})).toBe("");
+    expect(inboxQuery({ waiting: true, kind: ["reply"] }, null, 4)).toBe("?kind=reply&waiting=1&limit=4");
     expect(inboxQuery({ q: "   ", kind: [], since: "2026-10-01", until: "2026-10-07", artifact: "7q3k9mzx2b4t" })).toBe("?artifact=7q3k9mzx2b4t&since=2026-10-01&until=2026-10-07");
   });
 
