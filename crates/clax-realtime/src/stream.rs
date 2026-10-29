@@ -3682,12 +3682,15 @@ mod tests {
         assert_eq!(topic.artifact(), None);
         assert!(!live_only_admits(&Default::default(), &topic));
         let mut o = hub.open_for(owner.clone(), true, None, None, Some(String::new()));
-        hub.update(&o.id, &owner, std::slice::from_ref(&topic), &[]).unwrap();
+        hub.update(&o.id, &owner, std::slice::from_ref(&topic), &[])
+            .unwrap();
         let mut s = hub.open_for(sam.clone(), false, None, None, Some("u_sam".into()));
-        hub.update(&s.id, &sam, std::slice::from_ref(&topic), &[]).unwrap();
+        hub.update(&s.id, &sam, std::slice::from_ref(&topic), &[])
+            .unwrap();
         // Mia left the queue after subscribing: she is not a member now.
         let mut m = hub.open_for(mia.clone(), false, None, None, Some("u_mia".into()));
-        hub.update(&m.id, &mia, std::slice::from_ref(&topic), &[]).unwrap();
+        hub.update(&m.id, &mia, std::slice::from_ref(&topic), &[])
+            .unwrap();
         hub.dispatch(&Event::Report {
             queue_id: Q.into(),
             report_id: "01JT0000000000000000000000".into(),
