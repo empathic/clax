@@ -114,6 +114,7 @@ console.log(JSON.stringify(out));
     const decls = files(join(pkgDir, "types")).filter(f => f.endsWith(".d.ts"));
     expect(decls.length).toBeGreaterThan(0);
     for (const f of decls) {
+      expect(relative(join(pkgDir, "types"), f), "a declaration of web/bridge, web/overlay or web/sdk").toMatch(/^(bridge|overlay|sdk)\//);
       const text = readFileSync(f, "utf8");
       expect(text, f).not.toMatch(/^\/\/\/\s*<reference/m);
       for (const [, spec] of text.matchAll(/(?:\bfrom\s+|\bimport\s*\(\s*)["']([^"']+)["']/g)) {

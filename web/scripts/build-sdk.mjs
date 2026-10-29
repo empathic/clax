@@ -18,15 +18,16 @@
 // so a consumer's `moduleResolution` of `bundler` or `nodenext` reads them.
 // Its README is web/sdk/README.md. The package's license is the license of
 // web/bridge, web/overlay and web/sdk in the repository's LICENSE, and the
-// build fails on a bundled source file of Clax's from anywhere else;
-// THIRD-PARTY-NOTICES.txt holds the license of each npm package it bundles.
+// build fails on a bundled source file, or a declaration, of Clax's from
+// anywhere else; THIRD-PARTY-NOTICES.txt holds the license of each npm
+// package it bundles.
 //
 //   node scripts/build-sdk.mjs            build once
 //   node scripts/build-sdk.mjs --watch    build, then again on each change
 //
 // Imported, it builds nothing (and loads no Vite): its tests
-// (build-sdk.test.ts) call the license guard and the notices' collection on
-// fixtures.
+// (build-sdk.test.ts) call the license guard, the notices' collection and
+// the declarations' on fixtures.
 import { mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve, sep } from "node:path";
@@ -152,21 +153,19 @@ function declarationOptions() {
   };
 }
 
-/** The entries' declarations: TypeScript's for each source the entries'
- * declarations reach, under types/, each relative specifier resolved to
- * a declaration file the package carries and written with `.js` (the
- * sources import their siblings without an extension, which `nodenext`
- * does not resolve). Fails on a declaration TypeScript cannot emit, a
- * specifier that leaves the package's sources or names another package,
- * and a reference directive. */
-function emitTypes() {
-  const program = ts.createProgram(ENTRIES.map(e => join(web, e.src)), declarationOptions());
-  const emitted = new Map();
-  const result = program.emit(undefined, (file, text) => emitted.set(file.slice("/types/".length), text));
-  if (result.diagnostics.length) throw new Error(formatDiagnostics(result.diagnostics));
+/** The declarations the package keeps of TypeScript's `emitted` (each
+ * declaration's path under `root`, web/, to its text): the entries' and
+ * those they reach, each relative specifier resolved to a declaration file
+ * the package carries and written with `.js` (the sources import their
+ * siblings without an extension, which `nodenext` does not resolve). Fails
+ * on a declaration of a source outside `LICENSED_DIRS`, a specifier that
+ * names another package or a file with no declarations, and a reference
+ * directive. */
+export function keepDeclarations(emitted, root = web) {
   const kept = new Map();
   const visit = file => {
     if (kept.has(file)) return;
+    assertLicensed(join(root, file), root);
     const text = emitted.get(file);
     if (text === undefined) throw new Error(`no declarations for ${file}`);
     kept.set(file, "");
@@ -181,7 +180,17 @@ function emitTypes() {
     }));
   };
   for (const e of ENTRIES) visit(e.src.replace(/\.ts$/, ".d.ts"));
-  for (const [file, text] of kept) {
+  return kept;
+}
+
+/** Writes the entries' declarations under types/ (keepDeclarations).
+ * Fails on a declaration TypeScript cannot emit. */
+function emitTypes() {
+  const program = ts.createProgram(ENTRIES.map(e => join(web, e.src)), declarationOptions());
+  const emitted = new Map();
+  const result = program.emit(undefined, (file, text) => emitted.set(file.slice("/types/".length), text));
+  if (result.diagnostics.length) throw new Error(formatDiagnostics(result.diagnostics));
+  for (const [file, text] of keepDeclarations(emitted)) {
     const to = join(out, "types", file);
     mkdirSync(dirname(to), { recursive: true });
     writeFileSync(to, text);
