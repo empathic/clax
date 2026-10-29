@@ -60,6 +60,7 @@ let view: Mounted<Record<string, unknown>>;
 let modes: boolean[];
 let areas: boolean[];
 let done: number;
+let keyboards: number;
 let onPick: (p: Picked) => void;
 let onCancel: () => void;
 let filed: NewReport[];
@@ -81,7 +82,7 @@ const had = { create: urls.createObjectURL, revoke: urls.revokeObjectURL };
 const pickerOf = () => (p: (x: Picked) => void, c: () => void): Picker => {
   onPick = p;
   onCancel = c;
-  return { set: on => modes.push(on), areasOnly: on => areas.push(on), done: () => { done++; }, destroy: () => {} };
+  return { set: on => modes.push(on), areasOnly: on => areas.push(on), keyboard: () => { keyboards++; }, done: () => { done++; }, destroy: () => {} };
 };
 const capture: CaptureDeps = {
   supported: false,
@@ -96,6 +97,7 @@ beforeEach(() => {
   modes = [];
   areas = [];
   done = 0;
+  keyboards = 0;
   filed = [];
   verified = [];
   reopened = [];
@@ -433,6 +435,41 @@ describe("the overlay", () => {
     expect(q('.composer[aria-label="Still broken"]')).toBeNull();
     expect(q(".modebar")).not.toBeNull();
     expect(modes.at(-1)).toBe(true);
+  });
+
+  it("is a toolbar: the arrow keys move between its buttons, and Element again picks from the keyboard", () => {
+    click(button("Report"));
+    const focused = () => nameOf(document.activeElement!);
+    expect(focused()).toBe("Element");
+    const press = (k: string) => key(k, document.activeElement!);
+    press("ArrowRight");
+    expect(focused()).toBe("Area");
+    press("ArrowRight");
+    press("ArrowRight");
+    expect(focused()).toBe("Cancel");
+    press("ArrowRight");
+    expect(focused()).toBe("Element");
+    press("ArrowLeft");
+    expect(focused()).toBe("Cancel");
+    press("Home");
+    expect(focused()).toBe("Element");
+    press("End");
+    expect(focused()).toBe("Cancel");
+    // No arrow started picking, and the bar kept focus.
+    expect(keyboards).toBe(0);
+    expect(q(".modebar")?.contains(document.activeElement)).toBe(true);
+    // E (or the pressed Element button) again: picking from the keyboard,
+    // focus leaving the bar so Enter picks.
+    key("e");
+    expect(keyboards).toBe(1);
+    expect(q(".modebar")?.contains(document.activeElement)).toBe(false);
+    click(button("Element"));
+    expect(keyboards).toBe(2);
+    // Not from another mode: E there chooses Element.
+    key("a");
+    key("e");
+    expect(keyboards).toBe(2);
+    expect(q('.modebar button[aria-pressed="true"]')?.textContent).toMatch(/Element/);
   });
 
   it("gives focus back to Report when the mode bar closes", () => {

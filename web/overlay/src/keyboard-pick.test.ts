@@ -74,7 +74,7 @@ describe("keys pressed in the overlay", () => {
   function overlayHost() {
     const host = document.getElementById("o")!;
     const root = host.shadowRoot ?? host.attachShadow({ mode: "open" });
-    root.innerHTML = `<div data-clax-keyboard-pick><button id="mode">Element</button></div><button id="send">Send</button><div id="stage" tabindex="0"></div>`;
+    root.innerHTML = `<div role="toolbar"><button id="mode">Element</button></div><button id="send">Send</button><div id="stage" tabindex="0"></div>`;
     return { root, mode: root.getElementById("mode")!, send: root.getElementById("send")!, stage: root.getElementById("stage")! };
   }
 
@@ -93,16 +93,22 @@ describe("keys pressed in the overlay", () => {
     expect(picked).toEqual([]);
   });
 
-  it("but the mode bar's arrows start picking, and move focus out of the overlay", () => {
+  it("the mode bar's arrows stay the bar's; start() outlines the element in the middle, and Enter picks it", () => {
     const o = overlayHost();
     kb.set(true);
     o.mode.focus();
     expect(o.root.activeElement).toBe(o.mode);
-    expect(press("ArrowDown", o.mode).defaultPrevented).toBe(true);
+    expect(press("ArrowDown", o.mode).defaultPrevented).toBe(false);
+    expect(press("ArrowRight", o.mode).defaultPrevented).toBe(false);
+    expect(outlined).toEqual([]);
+    expect(o.root.activeElement).toBe(o.mode);
+    expect(kb.start()).toBe(true);
     expect(at()).toBe("m");
-    expect(o.root.activeElement).toBeNull();
     expect(press("Enter").defaultPrevented).toBe(true);
     expect(picked).toEqual(["m"]);
+    // Off, it starts nothing.
+    kb.set(false);
+    expect(kb.start()).toBe(false);
   });
 
   it("goes on from what a pointer outlined", () => {

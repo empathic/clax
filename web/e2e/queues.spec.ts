@@ -282,12 +282,14 @@ test("a redaction drawn on a tall capture, scrolled in its stage, lands where it
     const agentToken = await agentTokenOf(owner);
     const agent = await agentOf(origin, agentToken);
 
-    // Pick the tall section from the keyboard: Down past each element (Right
-    // into the page's main), Enter on the one the mode bar announces.
+    // Pick the tall section from the keyboard: E again (Element is on)
+    // starts it, then Down past each element (Right into the page's main),
+    // Enter on the one the mode bar announces.
     const emp1 = await reporterOn(browser, site, "emp-1");
     await emp1.locator(".report-btn").click();
+    await emp1.keyboard.press("e");
     const announced = emp1.locator(".modebar [aria-live]");
-    let last = "";
+    let last = (await announced.textContent()) ?? "";
     for (let i = 0; i < 20 && !last.startsWith("Outlined section: Earlier requests"); i++) {
       await emp1.keyboard.press("ArrowDown");
       let now = (await announced.textContent()) ?? "";

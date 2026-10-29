@@ -8,15 +8,14 @@
 // mode's own (`CommentMode.outlineTarget`), and a pointer's hover moves the
 // keyboard's place to what it outlines (`follow`).
 //
-// Keys pressed in the overlay are the overlay's own (its buttons, its
-// drawing stage), but for the arrow keys pressed in the mode bar (marked
-// `KEYBOARD_PICK_FROM`), where picking starts: the first of them moves focus
-// out of the overlay, so Enter then picks rather than pressing a button.
+// Keys pressed in the overlay are the overlay's own (its buttons, the mode
+// bar's arrow keys between them, its drawing stage). From the mode bar,
+// picking starts with `start` (the overlay calls it for Element chosen
+// again), which outlines the element in the middle of the view; the
+// overlay moves focus out of itself then, so Enter picks rather than
+// pressing a button.
 
 import { OVERLAY_TAG, UNRENDERED } from "../../bridge/src/anchor";
-
-/** The attribute of the overlay's part whose arrow keys start keyboard picking. */
-export const KEYBOARD_PICK_FROM = "data-clax-keyboard-pick";
 
 /** What keyboard picking drives: the outline, the pick, and what to announce. */
 export interface KeyboardPickHooks {
@@ -72,16 +71,20 @@ export class KeyboardPick {
     const path = e.composedPath();
     const at = path[0];
     if (at instanceof HTMLElement && (at.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(at.tagName))) return;
-    const inOverlay = path.some(n => n instanceof Element && n.localName === OVERLAY_TAG);
-    if (inOverlay) {
-      const fromBar = path.some(n => n instanceof Element && n.hasAttribute(KEYBOARD_PICK_FROM));
-      if (!fromBar || !e.key.startsWith("Arrow")) return;
-    }
+    if (path.some(n => n instanceof Element && n.localName === OVERLAY_TAG)) return;
     if (!this.key(e.key)) return;
     e.preventDefault();
     e.stopPropagation();
-    if (inOverlay && at instanceof HTMLElement) at.blur();
   };
+
+  /** Starts picking from the keyboard where none is outlined yet: outlines
+   * the element in the middle of the view (as a first arrow key does), for
+   * the arrow keys to move and Enter to pick. Whether it is on. */
+  start(): boolean {
+    if (!this.on) return false;
+    this.target = null;
+    return this.key("ArrowDown");
+  }
 
   /** A pointer outlined `t`: the keyboard goes on from there. */
   follow(t: Element | Range | null): void {
