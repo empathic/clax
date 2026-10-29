@@ -154,7 +154,9 @@ export type CaptureMethod = "dom" | "display";
 export interface CaptureInfo {
   mode: CaptureMode;
   method: CaptureMethod;
-  /** What a DOM render left out (`iframe`, `canvas`, `video`, a masked element, …), and where, in CSS pixels. */
+  /** What a DOM render left out (`iframe`, `image`, `canvas`, `video`, …),
+   * and where: `rect` is in the clip image's own pixels, from its top left
+   * corner, so it outlines the omission exactly on the image. */
   omitted?: { kind: string; rect: { x: number; y: number; w: number; h: number } }[];
 }
 
