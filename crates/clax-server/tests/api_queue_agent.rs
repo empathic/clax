@@ -1773,6 +1773,51 @@ async fn a_queues_topic_tells_its_members_of_each_change_and_refuses_anyone_else
     );
 }
 
+/// A renewal and each metadata write change what an open view shows (the
+/// claim's expiry, the metadata), so each tells the queue's topic too.
+#[tokio::test]
+async fn a_renewal_and_metadata_writes_tell_the_queues_topic() {
+    let q = setup().await;
+    let topic = format!("queue:{}", q.qid);
+    let mut owner = q.ts.stream_as_owner(&[&topic]).await;
+    let a = q.session("a").await;
+    let changes = [
+        ("POST", "/claim", json!({})),
+        ("POST", "/renew", json!({})),
+        (
+            "PATCH",
+            "",
+            json!({"metadata": {"ticket": "T-1"}, "if_version": 1}),
+        ),
+        (
+            "PATCH",
+            "/artifact",
+            json!({"metadata": {"ticket": "T-1"}, "if_version": 1}),
+        ),
+    ];
+    for (method, tail, body) in changes {
+        let (s, v) = q.agent(Some(&a), method, &q.report(tail), body).await;
+        assert_eq!(s, 200, "{tail}: {v}");
+    }
+    let (s, v) = q
+        .owner("POST", &q.report("/resolve"), json!({"reason": "fixed"}))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    for (tail, state) in [
+        ("/claim", "claimed"),
+        ("/renew", "claimed"),
+        ("metadata", "claimed"),
+        ("/artifact", "claimed"),
+        ("/resolve", "resolved"),
+    ] {
+        assert_eq!(
+            next_report(&mut owner).await,
+            (q.tid.clone(), state.to_string()),
+            "{tail}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_member_releases_a_stale_claim_and_its_holder_is_told() {
     let q = setup().await;
