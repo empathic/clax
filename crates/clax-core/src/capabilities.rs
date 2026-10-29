@@ -17,7 +17,8 @@ fn bad(message: impl Into<String>) -> CoreError {
 /// `comments.customAnchors` are booleans; `user.scopes` is an array of
 /// `"profile"` and `"email"`; `room.topics` must pass
 /// [`Topics::from_capabilities`](crate::room::Topics::from_capabilities); `net.hosts` must pass
-/// [`net_hosts`]. Other names are stored as given.
+/// [`net_hosts`]; `webauthn.paths` must pass [`webauthn_paths`]. Other
+/// names are stored as given.
 ///
 /// # Errors
 /// `invalid_capabilities` naming the first problem.
@@ -36,6 +37,7 @@ pub fn validate(caps: &Value) -> Result<()> {
     ReadDecl::check(caps)?;
     crate::room::Topics::from_capabilities(caps)?;
     net_hosts(caps)?;
+    webauthn_paths(caps)?;
     if let Some(c) = obj.get("comments") {
         for k in ["composer_only", "customAnchors"] {
             if c.get(k).is_some_and(|v| !v.is_boolean()) {
@@ -117,9 +119,68 @@ pub fn net_hosts(caps: &Value) -> Result<Option<Vec<String>>> {
     Ok(Some(out))
 }
 
+/// Most path prefixes one `webauthn` declaration may list.
+pub const MAX_WEBAUTHN_PATHS: usize = 8;
+
+/// Clax's own path prefixes, which no `webauthn` declaration may name.
+const CLAX_PATHS: [&str; 4] = ["/api/", "/a/", "/_clax/", "/_blob/"];
+
+/// The path prefixes `capabilities.webauthn.paths` declares, in declaration
+/// order: `None` when `webauthn` is not declared. A declared `webauthn` lists
+/// 1 to [`MAX_WEBAUTHN_PATHS`] distinct prefixes, each starting and ending
+/// with `/`, of segments of unreserved URL characters with no `.` or `..`
+/// segment, outside Clax's own `/api/`, `/a/`, `/_clax/` and `/_blob/`.
+///
+/// # Errors
+/// `invalid_capabilities` naming the problem.
+pub fn webauthn_paths(caps: &Value) -> Result<Option<Vec<String>>> {
+    let Some(w) = caps.get("webauthn") else {
+        return Ok(None);
+    };
+    let paths = w
+        .get("paths")
+        .and_then(Value::as_array)
+        .ok_or_else(|| bad("capabilities.webauthn.paths is an array of path prefixes"))?;
+    if paths.is_empty() || paths.len() > MAX_WEBAUTHN_PATHS {
+        return Err(bad(format!(
+            "capabilities.webauthn.paths lists 1 to {MAX_WEBAUTHN_PATHS} path prefixes"
+        )));
+    }
+    let mut out: Vec<String> = Vec::with_capacity(paths.len());
+    for p in paths {
+        let p = p.as_str().filter(|p| is_path_prefix(p)).ok_or_else(|| {
+            bad(format!(
+                "capabilities.webauthn.paths: {p} is not a path prefix such as \"/approve/v1/\" outside /api/, /a/, /_clax/ and /_blob/"
+            ))
+        })?;
+        if !out.iter().any(|o| o == p) {
+            out.push(p.to_string());
+        }
+    }
+    Ok(Some(out))
+}
+
+/// Whether `p` is `/<segment>/…/` of unreserved URL characters, with no
+/// `.` or `..` segment, and not under one of [`CLAX_PATHS`].
+fn is_path_prefix(p: &str) -> bool {
+    let Some(inner) = p.strip_prefix('/').and_then(|r| r.strip_suffix('/')) else {
+        return false;
+    };
+    !inner.is_empty()
+        && p.len() <= 256
+        && inner.split('/').all(|s| {
+            !s.is_empty()
+                && s != "."
+                && s != ".."
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b))
+        })
+        && !CLAX_PATHS.iter().any(|own| p.starts_with(own))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{net_hosts, validate};
+    use super::{net_hosts, validate, webauthn_paths};
     use serde_json::json;
 
     #[test]
@@ -131,6 +192,7 @@ mod tests {
             json!({"self": {}, "downloads": {}, "assets": {}, "room": {"topics": {"chat": "interact"}}}),
             json!({"db": {"read": ["7q3k9mzx2b4t"], "share": {"read": ["8r4m0nay3c5v"]}}}),
             json!({"net": {"hosts": ["api.example.com", "x-1.example.co.uk"]}}),
+            json!({"webauthn": {"paths": ["/approve/v1/", "/sign/"]}}),
         ] {
             validate(&ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
         }
@@ -162,6 +224,20 @@ mod tests {
             json!({"net": {"hosts": ["[::1]"]}}),
             json!({"net": {"hosts": ["example.com."]}}),
             json!({"net": {"hosts": [7]}}),
+            json!({"webauthn": {}}),
+            json!({"webauthn": {"paths": []}}),
+            json!({"webauthn": {"paths": "/approve/"}}),
+            json!({"webauthn": {"paths": ["/approve"]}}),
+            json!({"webauthn": {"paths": ["approve/"]}}),
+            json!({"webauthn": {"paths": ["/"]}}),
+            json!({"webauthn": {"paths": ["//evil.example/"]}}),
+            json!({"webauthn": {"paths": ["/approve/../api/"]}}),
+            json!({"webauthn": {"paths": ["/api/"]}}),
+            json!({"webauthn": {"paths": ["/api/token/"]}}),
+            json!({"webauthn": {"paths": ["/_clax/x/"]}}),
+            json!({"webauthn": {"paths": ["/a/"]}}),
+            json!({"webauthn": {"paths": ["/approve%2F/"]}}),
+            json!({"webauthn": {"paths": [7]}}),
         ] {
             let e = validate(&bad).unwrap_err();
             assert!(
@@ -194,5 +270,19 @@ mod tests {
             .map(|i| format!("h{i}.example.com"))
             .collect();
         assert!(net_hosts(&json!({"net": {"hosts": many}})).is_err());
+    }
+
+    #[test]
+    fn webauthn_paths_reads_the_declaration_once_per_prefix() {
+        assert_eq!(webauthn_paths(&json!({"db": {}})).unwrap(), None);
+        assert_eq!(
+            webauthn_paths(&json!({"webauthn": {"paths": ["/sign/", "/approve/v1/", "/sign/"]}}))
+                .unwrap(),
+            Some(vec!["/sign/".to_string(), "/approve/v1/".to_string()])
+        );
+        let many: Vec<String> = (0..=super::MAX_WEBAUTHN_PATHS)
+            .map(|i| format!("/p{i}/"))
+            .collect();
+        assert!(webauthn_paths(&json!({"webauthn": {"paths": many}})).is_err());
     }
 }

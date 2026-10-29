@@ -6,7 +6,8 @@
 // `camera`, `location`) when declared and the Clax app hosts the view
 // (device-link.ts); `home` when declared, the Clax app hosts the view and
 // the app says this view is its home app (`home.available`); `net` to the
-// owner shell when declared; `site` (no capability a page declares: the
+// owner shell when declared; `webauthn` to the owner shell when declared;
+// `site` (no capability a page declares: the
 // relay of a page's own site API calls) where the Clax app hosts the view;
 // claude.ai's
 // `files` and `mcp` never.
@@ -38,6 +39,8 @@ export function isAvailable(name: string, declared: Declared, owner: boolean, se
     case "home": return declares(name, declared) && served.home === true;
     // The owner's views only: the fetch route takes the token (net.ts).
     case "net": return owner && declares(name, declared);
+    // The owner's views only: the passkeys are the owner's (webauthn.ts).
+    case "webauthn": return owner && declares(name, declared);
     // Not a capability a page declares: the relay of its own site's API
     // calls, which the Clax app's shell alone makes (site.ts).
     case "site": return served.site === true;

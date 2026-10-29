@@ -20,6 +20,8 @@ export const CAPABILITY_METHODS = {
   location: ["current", "watch"],
   // Clax's network, through the daemon (clax-extensions.d.ts `Net`).
   net: ["fetch"],
+  // The owner's passkey, for a service on the shell's origin (clax-extensions.d.ts `WebAuthn`).
+  webauthn: ["approve"],
 } as const satisfies Record<string, readonly string[]>;
 
 export type CapabilityName = keyof typeof CAPABILITY_METHODS;
