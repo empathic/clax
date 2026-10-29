@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { type DisplayDeps, captureDisplay, displayCaptureSupported } from "../src/display-capture";
+import { type DisplayDeps, captureDisplay, displayCaptureSupported, redactedBoxes } from "../src/display-capture";
 
 /** A fake track of the given surface; `handle` is what `getCaptureHandle`
  * answers (absent: the browser has no capture handles). */
@@ -52,7 +52,7 @@ function drawing() {
 
 describe("display capture", () => {
   it("asks for this tab, and crops the frame to the rect", async () => {
-    const v = track("browser", null);
+    const v = track("browser");
     const { win, asked } = page([v]);
     const d = drawing();
     const res = await captureDisplay(win, { x: 100, y: 50, w: 200, h: 100 }, d.deps);
@@ -154,5 +154,59 @@ describe("display capture", () => {
     const res = await captureDisplay(win, undefined, d.deps);
     expect(res).toMatchObject({ ok: false, reason: "failed" });
     expect(v.stop).toHaveBeenCalled();
+  });
+
+  it("gives up on a frame that never comes, when its time is up", async () => {
+    const v = track("browser");
+    const { win } = page([v]);
+    const d = drawing();
+    d.deps.grab = () => new Promise(() => {});
+    let fire: () => void = () => {};
+    const waits: number[] = [];
+    d.deps.timer = (ms, fn) => { waits.push(ms); fire = fn; return () => {}; };
+    const res = captureDisplay(win, undefined, d.deps);
+    await vi.waitFor(() => expect(waits).toHaveLength(1));
+    fire();
+    expect(await res).toMatchObject({ ok: false, reason: "failed" });
+    expect(v.stop).toHaveBeenCalled();
+  });
+
+  it("refuses a capture with no handle where this page named itself", async () => {
+    const { win, configs } = page([track("browser", null)]);
+    expect(await captureDisplay(win, undefined, drawing().deps)).toMatchObject({ ok: false, reason: "other_surface" });
+    expect(configs).toHaveLength(1);
+    // Where this page could not name itself (a frame), it is unknown.
+    const framed = page([track("browser", null)]);
+    (framed.win.navigator.mediaDevices as { setCaptureHandleConfig?: unknown }).setCaptureHandleConfig = () => { throw new DOMException("not top", "InvalidStateError"); };
+    expect(await captureDisplay(framed.win, undefined, drawing().deps)).toMatchObject({ ok: true, thisTab: "unknown" });
+  });
+
+  it("takes an aborted capture as a failure, not a refusal", async () => {
+    const { win } = page(new DOMException("Aborted", "AbortError"));
+    expect(await captureDisplay(win, undefined, drawing().deps)).toMatchObject({ ok: false, reason: "failed" });
+  });
+});
+
+describe("redacted boxes", () => {
+  it("are found through open shadow roots and same-origin frames, in the page's viewport", () => {
+    document.body.innerHTML = `<p id="a" data-clax-redact>a</p><div id="host"></div><iframe id="f"></iframe>`;
+    const box = (el: Element, left: number, top: number, width: number, height: number) => {
+      (el as HTMLElement).getBoundingClientRect = () => ({ left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON() {} }) as DOMRect;
+    };
+    box(document.getElementById("a")!, 10, 10, 50, 20);
+    const shadow = document.getElementById("host")!.attachShadow({ mode: "open" });
+    shadow.innerHTML = `<span id="s" data-clax-redact>s</span>`;
+    box(shadow.getElementById("s")!, 100, 10, 30, 10);
+    const frame = document.getElementById("f")!;
+    box(frame, 200, 300, 400, 200);
+    const inner = (frame as HTMLIFrameElement).contentDocument!;
+    inner.body.innerHTML = `<b id="i" data-clax-redact>i</b>`;
+    box(inner.getElementById("i")!, 5, 6, 40, 12);
+    expect(redactedBoxes(window)).toEqual([
+      { x: 10, y: 10, w: 50, h: 20 },
+      { x: 100, y: 10, w: 30, h: 10 },
+      { x: 205, y: 306, w: 40, h: 12 },
+    ]);
+    document.body.innerHTML = "";
   });
 });

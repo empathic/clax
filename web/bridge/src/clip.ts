@@ -497,6 +497,18 @@ export function blockColour(background: string): "#000" | "#fff" {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b < 128 ? "#fff" : "#000";
 }
 
+/** Marks the first option of the copied select `el` whose value is `value`
+ * as selected, and no other. */
+function selectValue(el: Element, value: string | null): void {
+  if (value === null) return;
+  let found = false;
+  for (const o of Array.from(el.querySelectorAll("option"))) {
+    // An option without a value attribute has its text, whitespace collapsed.
+    const v = o.getAttribute("value") ?? (o.textContent ?? "").replace(/\s+/g, " ").trim();
+    if (!found && v === value) { o.setAttribute("selected", ""); found = true; } else o.removeAttribute("selected");
+  }
+}
+
 /** Input types whose value is a label or nothing shown, not something typed. */
 const LABELLED = new Set(["button", "submit", "reset", "image", "checkbox", "radio"]);
 
@@ -513,11 +525,16 @@ function blankTyped(root: Element, shown: boolean, editable: boolean): void {
       el.removeAttribute("value");
       (el as HTMLInputElement).value = "";
     } else if (tag === "textarea") {
-      if (isShown(el)) continue;
+      // A textarea draws its text, not the value attribute modern-screenshot
+      // copies the typed value into: a shown one gets that value as its text.
+      if (isShown(el)) { const v = el.getAttribute("value"); if (v !== null) el.textContent = v; continue; }
       el.removeAttribute("value");
       el.textContent = "";
     } else if (tag === "select") {
-      if (isShown(el)) continue;
+      // A select draws its selected option: a shown one selects the option
+      // of the value modern-screenshot copied (the first of a multiple
+      // select's choices), and only that one.
+      if (isShown(el)) { selectValue(el, el.getAttribute("value")); continue; }
       el.removeAttribute("value");
       for (const o of Array.from(el.querySelectorAll("option, optgroup"))) {
         o.removeAttribute("selected");

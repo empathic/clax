@@ -88,9 +88,44 @@ describe("private DOM renders", () => {
       (document.getElementById("t") as HTMLTextAreaElement).value = "shown text";
       (document.getElementById("s") as HTMLSelectElement).selectedIndex = 1;
     });
+    // What draws: an input's value attribute, a textarea's text, the
+    // selected option.
     expect(inCopy("#q")!.getAttribute("value")).toBe("shown search");
-    expect(inCopy("#t")!.getAttribute("value")).toBe("shown text");
-    expect(svgs.at(-1)).toContain("Beta");
+    expect(inCopy("#t")!.textContent).toBe("shown text");
+    const options = Array.from(inCopy("#s")!.querySelectorAll("option"));
+    expect(options.map(o => [o.textContent, o.hasAttribute("selected")])).toEqual([["Alpha", false], ["Beta", true]]);
+  });
+
+  it("blanks a field in an open shadow root and in a same-origin frame", async () => {
+    await render(`<div id="host"></div><iframe id="f"></iframe>`, () => {
+      const shadow = document.getElementById("host")!.attachShadow({ mode: "open" });
+      shadow.innerHTML = `<input id="sq">`;
+      (shadow.getElementById("sq") as HTMLInputElement).value = "shadow secret";
+      const inner = (document.getElementById("f") as HTMLIFrameElement).contentDocument!;
+      inner.body.innerHTML = `<input id="fq">`;
+      (inner.getElementById("fq") as HTMLInputElement).value = "frame secret";
+    });
+    const svg = svgs.at(-1)!;
+    expect(svg).not.toContain("shadow secret");
+    expect(svg).not.toContain("frame secret");
+  });
+
+  it("keeps the text of a contenteditable=\"false\" part of an editable region", async () => {
+    await render(`<div id="e" contenteditable>typed words<span id="chip" contenteditable="false">Assignee: Ada</span></div>`);
+    expect(svgs.at(-1)).not.toContain("typed words");
+    expect(inCopy("#chip")!.textContent).toBe("Assignee: Ada");
+  });
+
+  it("covers a redaction inside a shadow root", async () => {
+    await render(`<div id="host"></div>`, () => {
+      const shadow = document.getElementById("host")!.attachShadow({ mode: "open" });
+      shadow.innerHTML = `<p id="sp" data-clax-redact>shadow card</p><canvas id="sc" data-clax-redact></canvas>`;
+      sized(shadow.getElementById("sc")!, 60, 80, 30, 20);
+    });
+    const doc = rendered();
+    expect(doc.querySelector("#sp")!.hasAttribute("data-clax-redact")).toBe(true);
+    const block = doc.querySelector("rect[data-clax-redacted]")!;
+    expect([block.getAttribute("x"), block.getAttribute("y"), block.getAttribute("width"), block.getAttribute("height")]).toEqual(["50", "60", "30", "20"]);
   });
 
   it("keeps the values under a rendered root that is itself data-clax-show", async () => {
