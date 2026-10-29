@@ -84,18 +84,20 @@ test("a person with the feedback flag files a report about Clax from its shell; 
     await menuButton.click();
     const report = owner.getByRole("menuitem", { name: "Report a problem" });
     await expect(report).toBeVisible();
-    const keys = (await report.getAttribute("aria-keyshortcuts"))!;
-    expect(keys).toMatch(/^(Meta|Control)\+Shift\+B$/);
-    await expect(report.locator("kbd")).toHaveText(keys.startsWith("Meta") ? "⌘⇧B" : "Ctrl+Shift+B");
+    await expect(report).toHaveAttribute("aria-keyshortcuts", "F");
+    await expect(report.locator("kbd")).toHaveText("F");
     await owner.keyboard.press("Escape");
     await expect(report).toHaveCount(0);
-    // Typed into the search box, the shortcut is the field's.
-    await owner.getByRole("searchbox", { name: "Search artifacts" }).focus();
-    await owner.keyboard.press(`${keys.startsWith("Meta") ? "Meta" : "Control"}+Shift+B`);
+    // Typed into the search box, F is the field's.
+    const search = owner.getByRole("searchbox", { name: "Search artifacts" });
+    await search.focus();
+    await owner.keyboard.press("f");
+    await expect(search).toHaveValue("f");
     const bar = owner.getByRole("toolbar", { name: "Capture" });
     await expect(bar).toHaveCount(0);
+    await search.fill("");
     await owner.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); });
-    await owner.keyboard.press(`${keys.startsWith("Meta") ? "Meta" : "Control"}+Shift+B`);
+    await owner.keyboard.press("f");
     await expect(bar).toBeVisible();
     await owner.keyboard.press("s");
     const composer = owner.getByRole("form", { name: "New report" });

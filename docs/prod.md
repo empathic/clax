@@ -171,16 +171,16 @@ with `CLAX_TOKEN` the owner's bearer token:
 
 In the shell (`web/shell/src/feedback/`), a flagged person gets a
 feedback menu in the gallery's header and the artifact view's top bar:
-**Report a problem**, with its shortcut Ctrl+Shift+B (⌘⇧B on Apple
-platforms; the shell binds no other modified key, and the keys sheet
-lists it), and **My reports**, with the count of reports waiting on them,
+**Report a problem**, with its key F (a single letter like the shell's C
+and ?; the keys sheet lists it), and **My reports**, with the count of reports waiting on them,
 which the menu's button shows too. The shell embeds the overlay as any
 product does: it asks `GET /_app/feedback/config` first; only when that
 answers `enabled: true` does it load `<instance>/_clax/overlay.js`, start
 `Clax.diagnostics.install()` and then `Clax.overlay({launcher: false, auth,
 context})`, with `auth` the token route above. For anyone else that one
-request is all. The shortcut does nothing in a text field or a modal
-dialog, nor inside the artifact's frame, whose keys are the page's.
+request is all. F does nothing with a modifier but Shift, in a text field
+or in a dialog; pressed in the artifact's frame, the bridge forwards it as
+it does C (`clax:shortcut`) unless the page handles it.
 
 To check it: `GET https://clax.dev/_app/feedback/config` in a flagged
 person's browser answers `enabled: true` with the queue's ID. To turn it

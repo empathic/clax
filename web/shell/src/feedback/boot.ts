@@ -1,6 +1,6 @@
 // The shell's feedback entry point (spec 2026-10-29-feedback-loop §10.3):
 // it reads the answer of `GET /_app/feedback/config` (`configOnce`, which
-// the artifact entry asks first thing, the gallery from its lazy module), and only for a person who may report does
+// each entry asks first thing), and only for a person who may report does
 // it load the integration (`state.svelte.ts` and `feedback.ts`, chunks of
 // their own), the overlay from the instance, and the header's menu. For
 // anyone else that one request is all: no menu, no shortcut, no overlay.

@@ -24,16 +24,18 @@ export function forwardedKey(m: { key?: unknown; down?: unknown }): { key: strin
   return typeof m.key === "string" && FORWARDED_KEYS.has(m.key) && typeof m.down === "boolean" ? { key: m.key, down: m.down } : null;
 }
 
-/** The shell keys a press in the page stands for (`clax:shortcut`): only C,
- * comment mode. `?` and every other key stay the page's. */
-const PAGE_SHORTCUTS: ReadonlySet<string> = new Set(["c"]);
+/** The shell keys a press in the page stands for (`clax:shortcut`): C,
+ * comment mode, and F, report a problem (also by the key's position,
+ * `KeyF`, on a layout where it types another letter). `?` and every other
+ * key stay the page's. */
+const PAGE_SHORTCUTS: ReadonlySet<string> = new Set(["c", "f"]);
 
 /** What a key is typed into: a form field, editable content, or a custom
  * text field or combo box. */
 const TYPING = "input, textarea, select, [contenteditable]:not([contenteditable=false]), [role=textbox], [role=combobox]";
 
 /** The shell key that keydown `e` in the page stands for, or null. It is C
- * (either case, so Caps Lock does not matter) when the browser delivered it
+ * or F (either case, so Caps Lock does not matter) when the browser delivered it
  * (`isTrusted`: a page's own `dispatchEvent` never counts), the page did not
  * cancel it (`defaultPrevented`, which the bridge reads again once every
  * listener has run), it has no modifier (Shift, Control, Option or Command), it is not a
@@ -41,12 +43,13 @@ const TYPING = "input, textarea, select, [contenteditable]:not([contenteditable=
  * input, textarea, select, contenteditable, or anything with the role
  * textbox or combobox, or inside one (the event's innermost target, through
  * open shadow roots, so it is called while the event is dispatched). */
-export function pageShortcut(e: KeyboardEvent): "c" | null {
+export function pageShortcut(e: KeyboardEvent): "c" | "f" | null {
   if (!e.isTrusted || e.defaultPrevented || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey || e.repeat || e.isComposing) return null;
-  if (typeof e.key !== "string" || !PAGE_SHORTCUTS.has(e.key.toLowerCase())) return null;
+  const k = e.code === "KeyF" ? "f" : typeof e.key === "string" ? e.key.toLowerCase() : "";
+  if (!PAGE_SHORTCUTS.has(k)) return null;
   const t = e.composedPath()[0] ?? e.target;
   if (t instanceof Element && ((t as HTMLElement).isContentEditable || t.closest(TYPING))) return null;
-  return "c";
+  return k as "c" | "f";
 }
 
 /** The message when the browser delivered it (a page's own `dispatchEvent`

@@ -6,8 +6,8 @@
   // to its Close button and Tab stays inside it; Escape, Close or a click
   // outside the panel closes it, and focus returns to where it was. For a
   // person who may report problems with Clax it lists the report shortcut
-  // too (`feedback/state.svelte.ts`).
-  import { feedbackKeyRows } from "../feedback/state.svelte";
+  // too (`feedback/slot.svelte.ts`).
+  import { feedbackKeyRows } from "../feedback/slot.svelte";
   import { KEY_ROWS } from "../view/keys";
   import { inertOutside, trapTab } from "./modal";
 

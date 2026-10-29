@@ -75,57 +75,48 @@ export function loadOverlay(doc: Document, instance: string): Promise<ClaxGlobal
   });
 }
 
-/** Whether this browser runs on an Apple platform, whose shortcuts use ⌘. */
-export function applePlatform(nav: Pick<Navigator, "platform" | "userAgent"> = navigator): boolean {
-  return /Mac|iPhone|iPad|iPod/.test(nav.platform || nav.userAgent || "");
-}
+/** The key that starts a report: F, as the shell's other keys are single
+ * letters (C, ?). `keys` are the keys sheet's, `label` the menu's, `aria`
+ * the menu item's `aria-keyshortcuts`. */
+export const SHORTCUT = { keys: ["F"], label: "F", aria: "F" } as const;
 
-/** The shortcut that starts a report: Ctrl+Shift+B, or ⌘⇧B on Apple
- * platforms. `keys` are the keys sheet's, `label` the menu's, `aria` the
- * menu item's `aria-keyshortcuts`. */
-export function shortcut(apple: boolean): { keys: string[]; label: string; aria: string } {
-  return apple
-    ? { keys: ["⌘", "Shift", "B"], label: "⌘⇧B", aria: "Meta+Shift+B" }
-    : { keys: ["Ctrl", "Shift", "B"], label: "Ctrl+Shift+B", aria: "Control+Shift+B" };
-}
+export type ShortcutKey = Pick<KeyboardEvent, "key" | "code" | "metaKey" | "ctrlKey" | "altKey" | "isComposing" | "repeat" | "defaultPrevented" | "target" | "composedPath">;
 
-export type ShortcutKey = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "isComposing" | "repeat" | "defaultPrevented" | "target">;
+/** What a key is typed into: a form field, editable content, or a custom
+ * text field or combo box. */
+const TYPING = "input, textarea, select, [contenteditable]:not([contenteditable=false]), [role=textbox], [role=combobox]";
 
-function typing(t: EventTarget | null): boolean {
-  if (!t || typeof (t as Element).closest !== "function") return false;
-  const el = t as HTMLElement;
-  return el.localName === "input" || el.localName === "textarea" || el.localName === "select" || el.isContentEditable || el.contentEditable === "true" || !!el.closest("[contenteditable=''], [contenteditable='true']");
-}
-
-/** Whether `e` is the report shortcut: Mod+Shift+B, with Mod ⌘ on Apple
- * platforms and Ctrl elsewhere, and no other modifier, not typed into a
- * text field or inside a modal dialog, not repeated, not composed. */
-export function isShortcut(e: ShortcutKey, apple: boolean): boolean {
-  if (e.defaultPrevented || e.isComposing || e.repeat || e.altKey || !e.shiftKey) return false;
-  if (apple ? !e.metaKey || e.ctrlKey : !e.ctrlKey || e.metaKey) return false;
-  if (e.key !== "B" && e.key !== "b") return false;
-  if (typing(e.target)) return false;
-  return !(e.target instanceof Element && e.target.closest("[aria-modal=true]"));
+/** Whether `e` is the report key: F (either case, or the key in F's place,
+ * `KeyF`, on a layout where it types another letter) with no modifier but
+ * Shift, not repeated or composed, not already handled, and not typed into a
+ * text field (the event's innermost target, through open shadow roots) or
+ * inside a dialog. */
+export function isShortcut(e: ShortcutKey): boolean {
+  if (e.defaultPrevented || e.isComposing || e.repeat || e.altKey || e.ctrlKey || e.metaKey) return false;
+  if (e.key !== "f" && e.key !== "F" && e.code !== "KeyF") return false;
+  const t = (typeof e.composedPath === "function" ? e.composedPath()[0] : null) ?? e.target;
+  if (!(t instanceof Element)) return true;
+  if ((t as HTMLElement).isContentEditable || t.closest(TYPING)) return false;
+  return !t.closest("[role=dialog], [aria-modal=true]");
 }
 
 /** A running feedback integration: the overlay, with no launcher of its
- * own; the shell's menu and shortcut drive it. */
+ * own; the shell's menu and key drive it. */
 export class Feedback {
   /** How many of the person's reports wait on them (the overlay's `badge`). */
   badge = 0;
-  readonly shortcut: { keys: string[]; label: string; aria: string };
+  readonly shortcut = SHORTCUT;
   private readonly listeners = new Set<(n: number) => void>();
   private readonly unBadge: () => void;
   private readonly onKey: (e: KeyboardEvent) => void;
 
-  constructor(private readonly handle: OverlayHandle, private readonly win: Window, apple: boolean) {
-    this.shortcut = shortcut(apple);
+  constructor(private readonly handle: OverlayHandle, private readonly win: Window) {
     this.unBadge = handle.on("badge", n => {
       this.badge = n;
       for (const fn of [...this.listeners]) fn(n);
     });
     this.onKey = e => {
-      if (!isShortcut(e, apple)) return;
+      if (!isShortcut(e)) return;
       e.preventDefault();
       this.report();
     };
@@ -142,7 +133,7 @@ export class Feedback {
     fn(this.badge);
     return () => { this.listeners.delete(fn); };
   }
-  /** Removes the shortcut and the overlay. */
+  /** Removes the key and the overlay. */
   close(): void {
     this.win.removeEventListener("keydown", this.onKey);
     this.unBadge();
@@ -158,7 +149,6 @@ export interface StartDeps {
   where?: () => AppView;
   /** Loads the overlay's global; default `loadOverlay`. */
   load?: (doc: Document, instance: string) => Promise<ClaxGlobal>;
-  apple?: boolean;
 }
 
 /** Starts the overlay for `cfg`: loads it from the instance, starts its
@@ -183,5 +173,5 @@ export async function startFeedback(cfg: FeedbackConfig, deps: StartDeps = {}): 
     launcher: false,
     context: hostContext(cfg, where),
   }, doc);
-  return new Feedback(handle, win, deps.apple ?? applePlatform(win.navigator));
+  return new Feedback(handle, win);
 }

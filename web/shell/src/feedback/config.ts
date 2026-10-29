@@ -39,9 +39,7 @@ export function askConfig(f: typeof fetch = fetch): Promise<unknown> {
 
 let asked: Promise<unknown> | null = null;
 
-/** `askConfig`, once per page, whoever asks first: `boot.ts`, which the
- * artifact entry runs first thing and the gallery from its lazy module
- * (`HeaderLinks`; the gallery's first paint carries none of this). */
+/** `askConfig`, once per page: `boot.ts`, which each entry runs first thing. */
 export function configOnce(): Promise<unknown> {
   return (asked ??= askConfig());
 }

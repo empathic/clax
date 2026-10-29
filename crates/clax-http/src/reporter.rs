@@ -21,7 +21,8 @@
 //! one `Origin`, equal to the token's and still among the queue's origins
 //! (403 `wrong_origin` otherwise, a missing one included), or, a browser's
 //! same-origin read carrying none, come from that origin's own pages
-//! (`Sec-Fetch-Site: same-origin` and the token origin's `Host`). [`cors`] answers
+//! (a `GET` or `HEAD` with `Sec-Fetch-Site: same-origin`, the token
+//! origin's `Host`, and the instance's own scheme). [`cors`] answers
 //! a reporter route's cross-origin reads for the queue's origins alone.
 
 use crate::agent;
@@ -103,9 +104,13 @@ fn wrong_origin() -> Refusal {
 /// same-origin `GET` or `HEAD`, and says so in the one
 /// `Sec-Fetch-Site: same-origin` (a header no page can set); the request's
 /// one `Host`, which the signature covers, must then be `origin`'s host and
-/// port. This is the instance's own pages filing to it (an instance that
-/// is its own integrating product, `docs/prod.md`).
-fn same_origin_as(headers: &HeaderMap, origin: &str) -> bool {
+/// port, and `origin`'s scheme the one the instance serves (`own`, its
+/// public origin). This is the instance's own pages reading from it (an
+/// instance that is its own integrating product, `docs/prod.md`).
+fn same_origin_as(method: &Method, headers: &HeaderMap, origin: &str, own: &str) -> bool {
+    if method != Method::GET && method != Method::HEAD {
+        return false;
+    }
     let one = |name: &str| {
         let mut v = headers.get_all(name).iter();
         match (v.next(), v.next()) {
@@ -113,14 +118,13 @@ fn same_origin_as(headers: &HeaderMap, origin: &str) -> bool {
             _ => None,
         }
     };
-    let Some(authority) = origin
-        .strip_prefix("https://")
-        .or_else(|| origin.strip_prefix("http://"))
-    else {
+    let scheme = |o: &str| o.split_once("://").map(|(s, rest)| (s.to_ascii_lowercase(), rest.to_string()));
+    let (Some((scheme_of, authority)), Some((own_scheme, _))) = (scheme(origin), scheme(own)) else {
         return false;
     };
-    one("sec-fetch-site") == Some("same-origin")
-        && one(header::HOST.as_str()).is_some_and(|h| h.eq_ignore_ascii_case(authority))
+    scheme_of == own_scheme
+        && one("sec-fetch-site") == Some("same-origin")
+        && one(header::HOST.as_str()).is_some_and(|h| h.eq_ignore_ascii_case(&authority))
 }
 
 /// The one `Authorization` value of the request, when its scheme is
@@ -299,7 +303,12 @@ impl<const LIMIT: usize> FromRequest<AppState> for ReporterCaller<LIMIT> {
         let mut sent = parts.headers.get_all(header::ORIGIN).iter();
         let from_origin = match (sent.next(), sent.next()) {
             (Some(o), None) => o.to_str().ok() == Some(t.origin.as_str()),
-            (None, _) => same_origin_as(&parts.headers, &t.origin),
+            (None, _) => same_origin_as(
+                &parts.method,
+                &parts.headers,
+                &t.origin,
+                &crate::site_access::public_origin(s),
+            ),
             _ => false,
         };
         if !from_origin || !origins.contains(&t.origin) {

@@ -2005,7 +2005,10 @@ frame holds the viewer's gesture (the check `compose` uses), since the page
 can post that message itself; after a load the page caused, or once a
 prompt the page raised opens or closes, the viewer's C in the page does
 nothing until they press in the shell, as they may still be typing for the
-page. No other key leaves the page: `?` stays the page's, and Escape in the
+page. F, report a problem with Clax, leaves the page the same way and
+under the same rules (also by its position, `KeyF`, on a layout where it
+types another letter), and acts only for a person whose shell runs the
+feedback integration (`docs/prod.md`). No other key leaves the page: `?` stays the page's, and Escape in the
 page ends comment mode there itself.
 Only the viewer's own input counts: the bridge ignores events the page
 dispatched, and the shell takes a pick only from its start
@@ -3785,9 +3788,11 @@ Reporter routes (`Authorization: Clax-Reporter <token>`, a
 `Clax-Signature` by the reporter's key, the token's `Origin`; each answers
 CORS for the queue's origins and its `OPTIONS` preflight). A page served
 by the instance at the token's origin, whose same-origin `GET` a browser
-sends with no `Origin`, is taken as from that origin when the request
-carries `Sec-Fetch-Site: same-origin` and a `Host` that is the origin's
-host and port; any other request without `Origin` is 403 `wrong_origin`. A reporter
+sends with no `Origin`, is taken as from that origin when it is a `GET` or
+`HEAD` carrying one `Sec-Fetch-Site: same-origin` and one `Host` that is
+the origin's host and port, and the origin's scheme is the instance's own
+(its public origin's); any other request without `Origin` is 403
+`wrong_origin`. A reporter
 reads the reports `reporters_see` shows it and gives verdicts on the ones
 it filed; any other is 404 `not_found`.
 
