@@ -217,6 +217,7 @@ export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
     const tt = c.tagTicket();
     getArtifact(c.id).then(d => {
       const n = d.artifact.current_version;
+      c.completeVersions(d.versions);
       c.setTags(tt, { tags: d.artifact.tags ?? [], may: !!d.artifact.may_tag });
       // A working delta heard since the request started is newer than its answer.
       c.set(s => ({ working: c.workingAt > t ? s.working : d.artifact.working ?? [], attention: d.attention ?? s.attention, looked: { ...s.looked, ...d.attention?.looked } }));
