@@ -1239,6 +1239,35 @@ async fn server_scrubs_what_the_client_did_not() {
 }
 
 #[tokio::test]
+async fn unreadable_diagnostics_lines_are_dropped_not_refused() {
+    let s = Setup::new().await;
+    let r = s.reporter("emp-1").await;
+    // A line a strict parser refuses (a lone surrogate) and one of the
+    // wrong shape, among good ones.
+    let body = format!(
+        "{{\"at\":1}}\n{DIAG}{}\n",
+        r#"{"at":"2026-10-27T09:59:59Z","level":"info","kind":"console","text":"\ud83d"}"#
+    );
+    let res = s.file_with(&r, &[("diagnostics", Part::Diag(&body))]).await;
+    assert_eq!(res.status(), 201);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["report"]["diagnostics_lines"], 3, "{v}");
+    let tid = v["report"]["id"].as_str().unwrap().to_string();
+    let (_, v) = s
+        .triage("GET", &s.triage_report(&tid, "/diagnostics"), None)
+        .await;
+    let lines = v["lines"].as_array().unwrap();
+    assert_eq!(lines.len(), 3, "{v}");
+    assert_eq!(lines[1]["text"], "slow total", "{v}");
+    assert_eq!(lines[2]["level"], "warn", "{v}");
+    assert_eq!(lines[2]["kind"], "error", "{v}");
+    assert_eq!(
+        lines[2]["text"], "‹dropped 2 diagnostics lines the server could not read›",
+        "{v}"
+    );
+}
+
+#[tokio::test]
 async fn invalid_context_is_400() {
     let s = Setup::new().await;
     let r = s.reporter("emp-1").await;
@@ -1253,10 +1282,6 @@ async fn invalid_context_is_400() {
             "{bad}"
         );
     }
-    let res = s
-        .file_with(&r, &[("diagnostics", Part::Diag("{\"at\":1}\n"))])
-        .await;
-    assert_eq!(status_code(res).await, (400, "invalid_diagnostics".into()));
     let res = s
         .file_with(
             &r,

@@ -1047,6 +1047,7 @@ async fn diagnostics_of_another_queue_is_not_a_member() {
     let ana = q.triager("Ana").await;
     let diag = clax_core::report::parse_diagnostics(
         br#"{"at":"2026-10-27T11:59:00Z","level":"error","kind":"error","text":"boom"}"#,
+        "2026-10-27T11:59:01Z",
     )
     .unwrap();
     let mine = file_into(&q.ts, &q.qid, Some(diag.clone())).await.id;

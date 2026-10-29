@@ -4,6 +4,7 @@
 import type { Badge, DiagLine, Report, ReportContext, ReportPage, ReporterToken } from "./types";
 import { ClaxError, failure, multipart, queuePath, readJson, signedFetch, type Fetch, type Part } from "./client";
 import { encodeDiagnostics } from "./diagnostics";
+import { wellFormed } from "./scrub";
 import { base64url, generateSigner, type KeyedSigner } from "./sign";
 
 /** Seconds before a token's `expires_at` that the client asks for a new one. */
@@ -71,6 +72,29 @@ export interface Reopening {
   context?: ReportContext;
 }
 
+/** `v` with every string and object key well-formed (`wellFormed`). */
+function wellFormedDeep(v: unknown): unknown {
+  if (typeof v === "string") return wellFormed(v);
+  if (Array.isArray(v)) return v.map(wellFormedDeep);
+  if (v !== null && typeof v === "object") {
+    const toJSON = (v as { toJSON?: unknown }).toJSON;
+    if (typeof toJSON === "function") return wellFormedDeep(toJSON.call(v));
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [wellFormed(k), wellFormedDeep(x)]));
+  }
+  return v;
+}
+
+/** `ctx` as the JSON a report sends: every string well-formed, and a flag
+ * whose value is a number that is not finite left out (JSON has no such
+ * number, and Clax refuses the `null` it would become). */
+export function contextJson(ctx: ReportContext): string {
+  const c = wellFormedDeep(ctx) as ReportContext;
+  if (c.flags) {
+    c.flags = Object.fromEntries(Object.entries(c.flags).filter(([, f]) => typeof f !== "number" || Number.isFinite(f)));
+  }
+  return JSON.stringify(c);
+}
+
 /** The multipart parts a capture's `clip`, `context` and `diagnostics` make. */
 async function captureParts(c: { clip?: Blob | Uint8Array; context?: ReportContext; diagnostics?: DiagLine[] }): Promise<[string, Part][]> {
   const parts: [string, Part][] = [];
@@ -78,7 +102,7 @@ async function captureParts(c: { clip?: Blob | Uint8Array; context?: ReportConte
     const bytes = c.clip instanceof Uint8Array ? c.clip : new Uint8Array(await c.clip.arrayBuffer());
     parts.push(["clip", { bytes, filename: "clip.png", type: "image/png" }]);
   }
-  if (c.context !== undefined) parts.push(["context", JSON.stringify(c.context)]);
+  if (c.context !== undefined) parts.push(["context", contextJson(c.context)]);
   if (c.diagnostics !== undefined && c.diagnostics.length > 0) {
     parts.push(["diagnostics", { bytes: encodeDiagnostics(c.diagnostics), filename: "diagnostics.jsonl", type: "application/jsonl" }]);
   }
@@ -109,8 +133,8 @@ export class ReporterClient {
   async fileReport(r: NewReport): Promise<Report> {
     const parts: [string, Part][] = [];
     if (r.externalId !== undefined) parts.push(["external_id", r.externalId]);
-    parts.push(["url", r.url], ["title", r.title], ["anchor", JSON.stringify(r.anchor ?? null)], ["body", r.body]);
-    if (r.metadata !== undefined) parts.push(["metadata", JSON.stringify(r.metadata)]);
+    parts.push(["url", r.url], ["title", r.title], ["anchor", JSON.stringify(wellFormedDeep(r.anchor ?? null))], ["body", r.body]);
+    if (r.metadata !== undefined) parts.push(["metadata", JSON.stringify(wellFormedDeep(r.metadata))]);
     if (r.revision !== undefined) parts.push(["revision", r.revision]);
     parts.push(...await captureParts(r));
     return this.sendMultipart(queuePath(this.opts.queue, "reporter", "reports"), parts);
@@ -120,10 +144,10 @@ export class ReporterClient {
    * works: `POST …/verify`. The report is `verified`; 409
    * `not_fix_proposed` when no fix waits. */
   async verify(reportId: string, v: Verification = {}): Promise<Report> {
-    const b: Verification = {};
-    if (v.note !== undefined) b.note = v.note;
-    if (v.context !== undefined) b.context = v.context;
-    const bytes = new TextEncoder().encode(JSON.stringify(b));
+    const fields: string[] = [];
+    if (v.note !== undefined) fields.push(`"note":${JSON.stringify(wellFormed(v.note))}`);
+    if (v.context !== undefined) fields.push(`"context":${contextJson(v.context)}`);
+    const bytes = new TextEncoder().encode(`{${fields.join(",")}}`);
     const { report } = await readJson<{ report: Report }>(
       await this.send("POST", queuePath(this.opts.queue, "reporter", "reports", reportId, "verify"), bytes, "application/json"));
     return report;

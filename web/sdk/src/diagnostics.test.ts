@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { encodeDiagnostics, installDiagnostics, MAX_DIAG_BYTES, MAX_TEXT_CHARS, type Recorder } from "./diagnostics";
+import { encodeDiagnostics, installDiagnostics, MAX_DIAG_BYTES, MAX_READ_CHARS, MAX_TEXT_CHARS, type Recorder } from "./diagnostics";
 import { REDACTED } from "./scrub";
 import type { DiagLine } from "./types";
 
@@ -114,6 +114,62 @@ describe("installDiagnostics", () => {
       { at: expect.any(String), level: "warn", kind: "request", text: `GET https://other.example/x?q=${REDACTED} → 404 in 42 ms [req req-7f3a]` },
       { at: expect.any(String), level: "error", kind: "request", text: "GET /down → failed in 42 ms" },
     ]);
+  });
+
+  it("keeps text well-formed and cuts it on a code point", () => {
+    const f = fakeWindow();
+    const rec = install(f.w, { now: f.clock });
+    // An astral character at 998–999 straddles the cut at 999.
+    f.win.console.warn(`${"x".repeat(MAX_TEXT_CHARS - 2)}😀${"y".repeat(10)}`);
+    f.win.console.warn("half \ud83d pair");
+    const [cutLine, lone] = rec.lines();
+    expect(cutLine.text).toBe(`${"x".repeat(MAX_TEXT_CHARS - 2)}…`);
+    expect(lone.text).toBe("half � pair");
+    const sent = new TextDecoder().decode(encodeDiagnostics([...rec.lines(), { at: "t", level: "info", kind: "console", text: "raw \udc00" }]));
+    expect(sent).not.toMatch(/\\u[dD][89a-fA-F]/);
+    expect(sent).toContain("raw �");
+    // A huge value is read only in part.
+    f.win.console.error("z".repeat(10 * MAX_READ_CHARS));
+    expect(rec.lines()[2].text).toHaveLength(MAX_TEXT_CHARS);
+  });
+
+  it("records each request of a reused XMLHttpRequest once", () => {
+    const f = fakeWindow();
+    const rec = install(f.w, { now: f.clock });
+    const x = new f.win.XMLHttpRequest();
+    const added: string[] = [];
+    const add = x.addEventListener.bind(x);
+    x.addEventListener = ((type: string, l: EventListenerOrEventListenerObject) => { added.push(type); add(type, l); }) as typeof x.addEventListener;
+    for (const [url, status] of [["/a", 500], ["/b", 200], ["/c", 404], ["https://clax.example/x", 500]] as const) {
+      FakeXhr.next = { status };
+      x.open("GET", url);
+      x.send();
+    }
+    expect(rec.lines().map(l => l.text)).toEqual(["GET /a → 500 in 0 ms", "GET /c → 404 in 0 ms", "GET https://clax.example/x → 500 in 0 ms"]);
+    expect(added).toEqual(["error", "timeout", "loadend"]);
+  });
+
+  it("records nothing once stopped, under another script's wrapper too", async () => {
+    const f = fakeWindow(async () => new Response("no", { status: 500 }));
+    const rec = install(f.w, { now: f.clock });
+    const ours = f.win.console.warn;
+    const theirs = (...a: unknown[]) => ours(...a);
+    f.win.console.warn = theirs;
+    const proto = f.win.XMLHttpRequest.prototype;
+    const ourSend = proto.send;
+    const theirSend = function (this: XMLHttpRequest, b?: unknown) { return ourSend.call(this, b as never); } as typeof proto.send;
+    proto.send = theirSend;
+    rec.stop();
+    expect(f.win.console.warn).toBe(theirs);
+    expect(proto.send).toBe(theirSend);
+    f.win.console.warn("after");
+    await f.win.fetch("/x");
+    FakeXhr.next = { status: 500 };
+    const x = new f.win.XMLHttpRequest();
+    x.open("GET", "/y");
+    x.send();
+    expect(rec.count()).toBe(0);
+    expect(f.logged.at(-1)).toEqual(["warn", "after"]);
   });
 
   it("records a failed XMLHttpRequest", () => {

@@ -175,20 +175,53 @@ function longRun(s: string, i: number): Span | null {
   return hex || b64 ? [i, runEnd(s, end, isEq)] : null;
 }
 
+const urlStop = oneOf("\"'<>`");
+const urlTrail = oneOf(".,;:!?)]}");
+
+/** The end of the URL that starts at `i`, if one does. */
+function urlAt(s: string, i: number): number | null {
+  if (!wordStart(s, i)) return null;
+  const scheme = ["https://", "http://"].find(w => startsWithCi(s, i, w));
+  if (!scheme) return null;
+  const from = i + scheme.length;
+  let end = runEnd(s, from, c => !(isWs(c) || urlStop(c)));
+  while (end > from && urlTrail(s.charCodeAt(end - 1))) end--;
+  // A stack frame's `:line:column` follows the script's URL.
+  for (let n = 0; n < 2; n++) {
+    let d = end;
+    while (d > from && isDigit(s.charCodeAt(d - 1))) d--;
+    if (d === end || d <= from || s[d - 1] !== ":") break;
+    end = d - 1;
+  }
+  return end;
+}
+
 /** The span at `i` that the first matching rule replaces. */
 function findAt(s: string, i: number): Span | null {
   return bearer(s, i) ?? claxToken(s, i) ?? jwt(s, i) ?? secretPair(s, i) ?? email(s, i) ?? longRun(s, i);
 }
 
 /** `s` with every match of the rules replaced by `REDACTED`, read left to
- * right: at each position the first rule that matches replaces what it
- * names and the scan resumes after it. Text already holding `REDACTED` in
+ * right: at each position an `http://` or `https://` URL is replaced by
+ * its `scrubUrl` form, else the first rule that matches replaces what it
+ * names, and the scan resumes after it. Text already holding `REDACTED` in
  * place of a secret scrubs to itself. */
 export function scrub(s: string): string {
   let out = "";
   let copied = 0;
   let i = 0;
   while (i < s.length) {
+    const urlEnd = urlAt(s, i);
+    if (urlEnd !== null) {
+      const url = s.slice(i, urlEnd);
+      const scrubbed = scrubUrl(url);
+      if (scrubbed !== url) {
+        out += s.slice(copied, i) + scrubbed;
+        copied = urlEnd;
+      }
+      i = urlEnd;
+      continue;
+    }
     const m = findAt(s, i);
     if (!m) {
       i++;
@@ -202,6 +235,26 @@ export function scrub(s: string): string {
     i = Math.max(end, i + 1);
   }
   return copied === 0 ? s : out + s.slice(copied);
+}
+
+/** `s` with each lone surrogate replaced by U+FFFD, so that its JSON is
+ * text Clax reads: `JSON.stringify` writes a lone surrogate as an escape
+ * (`\ud83d`) that a strict JSON parser refuses. Use it on every string a
+ * report's context or diagnostics carries. */
+export function wellFormed(s: string): string {
+  const native = (s as { toWellFormed?: () => string }).toWellFormed;
+  if (typeof native === "function") return native.call(s);
+  return s.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "�");
+}
+
+/** `s` cut to at most `max` UTF-16 code units, never inside a surrogate
+ * pair; a cut string ends in `…`. */
+export function cut(s: string, max: number): string {
+  if (s.length <= max) return s;
+  let end = Math.max(0, max - 1);
+  const last = s.charCodeAt(end - 1);
+  if (end > 0 && last >= 0xd800 && last <= 0xdbff) end--;
+  return `${s.slice(0, end)}…`;
 }
 
 /** `s` split at the first `sep`, or `null` without one. */

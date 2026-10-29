@@ -6,13 +6,22 @@
 //! `web/sdk/test/scrub-cases.json` is the table of cases both test suites
 //! run.
 //!
-//! [`scrub`] reads the text left to right. At each position it tries the
-//! rules below in order; the first that matches replaces what it names by
-//! [`REDACTED`] and the scan resumes after the match. Every pattern is
+//! [`scrub`] reads the text left to right. At each position it first looks
+//! for a URL, then tries the rules below in order; the first that matches
+//! replaces what it names by [`REDACTED`] and the scan resumes after the
+//! match. Every pattern is
 //! ASCII; letters in key names and schemes match in any case. "Base64url"
 //! characters are `A-Z a-z 0-9 - _`; a rule that says "starts a word"
 //! applies only where the previous character is not an ASCII letter or
 //! digit (or at the start of the text).
+//!
+//! **URLs**: `http://` or `https://` starting a word, then a maximal run of
+//! characters that are neither ASCII whitespace nor one of
+//! ``" ' < > ` ``, less any of `. , ; : ! ? ) ] }` at its end and then
+//! up to two `:` and digits (a stack frame's line and column). The URL is
+//! replaced by its [`scrub_url`] form (its query values replaced, its path
+//! scrubbed, any user name and password replaced), and the scan resumes
+//! after it.
 //!
 //! 1. **Bearer and Basic credentials**: `bearer` or `basic` starting a
 //!    word, one or more spaces or tabs, then a token: a maximal run of at
@@ -100,6 +109,18 @@ pub fn scrub(s: &str) -> Cow<'_, str> {
     let mut copied = 0;
     let mut i = 0;
     while i < b.len() {
+        if let Some(end) = url_at(b, i) {
+            let url = &s[i..end];
+            let scrubbed = scrub_url(url);
+            if scrubbed != url {
+                let o = out.get_or_insert_with(|| String::with_capacity(s.len()));
+                o.push_str(&s[copied..i]);
+                o.push_str(&scrubbed);
+                copied = end;
+            }
+            i = end;
+            continue;
+        }
         match find_at(b, i) {
             Some((start, end)) => {
                 if &s[start..end] != REDACTED {
@@ -197,6 +218,39 @@ fn push_query(out: &mut String, q: &str) {
             None => out.push_str(&scrub(entry)),
         }
     }
+}
+
+/// The end of the URL that starts at `i`, if one does.
+fn url_at(b: &[u8], i: usize) -> Option<usize> {
+    if !word_start(b, i) {
+        return None;
+    }
+    let scheme = ["https://", "http://"]
+        .into_iter()
+        .find(|w| starts_with_ci(b, i, w))?;
+    let mut end = run_end(b, i + scheme.len(), |c| {
+        !(c.is_ascii_whitespace() || matches!(c, b'"' | b'\'' | b'<' | b'>' | b'`'))
+    });
+    while end > i + scheme.len()
+        && matches!(
+            b[end - 1],
+            b'.' | b',' | b';' | b':' | b'!' | b'?' | b')' | b']' | b'}'
+        )
+    {
+        end -= 1;
+    }
+    // A stack frame's `:line:column` follows the script's URL.
+    for _ in 0..2 {
+        let mut d = end;
+        while d > i + scheme.len() && b[d - 1].is_ascii_digit() {
+            d -= 1;
+        }
+        if d == end || d <= i + scheme.len() || b[d - 1] != b':' {
+            break;
+        }
+        end = d - 1;
+    }
+    Some(end)
 }
 
 /// The byte range at `i` that the first matching rule replaces.

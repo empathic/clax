@@ -4,7 +4,7 @@
 // requests — each line scrubbed (§5.3) before it is kept. Nothing leaves
 // the page from here; a report sends the lines it is given.
 import type { DiagLine } from "./types";
-import { scrub, scrubUrl } from "./scrub";
+import { cut, scrub, scrubUrl, wellFormed } from "./scrub";
 
 export type { DiagLine } from "./types";
 
@@ -14,6 +14,8 @@ export const MAX_DIAG_LINES = 200;
 export const MAX_DIAG_BYTES = 256 * 1024;
 /** The longest `text` the recorder keeps, in UTF-16 code units; a longer one ends in `…`. */
 export const MAX_TEXT_CHARS = 1000;
+/** The most of a logged value the recorder reads before scrubbing it, in UTF-16 code units. */
+export const MAX_READ_CHARS = 8 * MAX_TEXT_CHARS;
 
 /** The response headers a failed request's ID is read from, in order. */
 export const REQUEST_ID_HEADERS = ["x-request-id", "cf-ray", "x-clax-request"];
@@ -64,11 +66,15 @@ const KEY = Symbol.for("clax.diagnostics");
  * It wraps `console.warn` and `console.error` (each still logs), listens to
  * `error` and `unhandledrejection`, and wraps `fetch` and `XMLHttpRequest`
  * to record an answer of status 400 or more, or no answer, as `"{METHOD}
- * {path} → {status} in {ms} ms [req {id}]"`: the path is the URL's path
- * and query for the page's own origin and the whole URL for another, with
- * every query value replaced (`scrubUrl`); the request ID is the first of
+ * {path} → {status | failed} in {ms} ms [req {id}]"`: the path is the
+ * URL's path and query for the page's own origin, and its origin, path
+ * and query for another (never its fragment), with every query value
+ * replaced (`scrubUrl`); the request ID is the first of
  * `REQUEST_ID_HEADERS` the answer carries. A request cancelled by its
- * caller is not recorded. */
+ * caller is not recorded.
+ *
+ * Each line's text is read to at most `MAX_READ_CHARS`, made well-formed
+ * (`wellFormed`), scrubbed, and cut to `MAX_TEXT_CHARS`. */
 export function installDiagnostics(win: Window, opts: DiagnosticsOptions = {}): Recorder {
   const w = win as unknown as DiagWindow & { [KEY]?: Installed };
   const existing = w[KEY];
@@ -85,11 +91,12 @@ export function installDiagnostics(win: Window, opts: DiagnosticsOptions = {}): 
   };
   if (opts.instance) ignore(opts.instance);
   let kept: DiagLine[] = [];
+  let stopped = false;
 
   const record = (level: DiagLine["level"], kind: DiagLine["kind"], text: string) => {
+    if (stopped) return;
     try {
-      let t = scrub(text);
-      if (t.length > MAX_TEXT_CHARS) t = `${t.slice(0, MAX_TEXT_CHARS - 1)}…`;
+      const t = cut(scrub(wellFormed(cut(text, MAX_READ_CHARS))), MAX_TEXT_CHARS);
       kept.push({ at: new Date(now()).toISOString(), level, kind, text: t });
       if (kept.length > max) kept = kept.slice(kept.length - max);
     } catch {
@@ -173,32 +180,52 @@ export function installDiagnostics(win: Window, opts: DiagnosticsOptions = {}): 
   const origOpen = proto?.open;
   const origSetHeader = proto?.setRequestHeader;
   const origSend = proto?.send;
-  const xhrs = new WeakMap<XMLHttpRequest, { method: string; url: string; signed: boolean }>();
+  /** An XMLHttpRequest's current request; `watched` while one is in flight
+   * that is recorded. Its listeners are added once, on its first recorded
+   * send, and read whichever request it carries then. */
+  interface XhrState { method: string; url: string; signed: boolean; watched: boolean; started: number; broke: boolean; listening: boolean }
+  const xhrs = new WeakMap<XMLHttpRequest, XhrState>();
+  type Proto = typeof XMLHttpRequest.prototype;
+  let ourOpen: Proto["open"] | undefined;
+  let ourSetHeader: Proto["setRequestHeader"] | undefined;
+  let ourSend: Proto["send"] | undefined;
   if (proto && origOpen && origSetHeader && origSend) {
-    proto.open = function (this: XMLHttpRequest, ...args: unknown[]) {
-      xhrs.set(this, { method: String(args[0]), url: String(args[1]), signed: false });
+    ourOpen = function (this: XMLHttpRequest, ...args: unknown[]) {
+      const next = { method: String(args[0]), url: String(args[1]), signed: false, watched: false, started: 0, broke: false };
+      const x = xhrs.get(this);
+      if (x) Object.assign(x, next);
+      else xhrs.set(this, { ...next, listening: false });
       return (origOpen as (...a: unknown[]) => void).apply(this, args);
-    } as typeof proto.open;
-    proto.setRequestHeader = function (this: XMLHttpRequest, name: string, value: string) {
+    } as Proto["open"];
+    ourSetHeader = function (this: XMLHttpRequest, name: string, value: string) {
       const x = xhrs.get(this);
       if (x && name.toLowerCase() === "clax-signature") x.signed = true;
       return origSetHeader.call(this, name, value);
     };
-    proto.send = function (this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
+    ourSend = function (this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
       const x = xhrs.get(this);
-      if (x && !skipped(x.url, x.signed)) {
-        const started = now();
-        let broke = false;
-        const onBroke = () => { broke = true; };
-        this.addEventListener("error", onBroke);
-        this.addEventListener("timeout", onBroke);
-        this.addEventListener("loadend", () => {
-          if (broke) failed(x.method, x.url, started, 0, null);
-          else if (this.status >= 400) failed(x.method, x.url, started, this.status, requestId(h => this.getResponseHeader(h)));
-        });
+      if (x) {
+        x.watched = !skipped(x.url, x.signed);
+        x.started = now();
+        x.broke = false;
+        if (x.watched && !x.listening) {
+          x.listening = true;
+          const onBroke = () => { x.broke = true; };
+          this.addEventListener("error", onBroke);
+          this.addEventListener("timeout", onBroke);
+          this.addEventListener("loadend", () => {
+            if (!x.watched) return;
+            x.watched = false;
+            if (x.broke) failed(x.method, x.url, x.started, 0, null);
+            else if (this.status >= 400) failed(x.method, x.url, x.started, this.status, requestId(h => this.getResponseHeader(h)));
+          });
+        }
       }
       return origSend.call(this, body);
     };
+    proto.open = ourOpen;
+    proto.setRequestHeader = ourSetHeader;
+    proto.send = ourSend;
   }
 
   const recorder: Installed = {
@@ -206,15 +233,18 @@ export function installDiagnostics(win: Window, opts: DiagnosticsOptions = {}): 
     count: () => kept.length,
     ignore,
     stop() {
+      // A wrapper another script put over one of ours stays, calling
+      // through ours, which then records nothing.
+      stopped = true;
       if (con.warn === wrappedWarn) con.warn = origWarn;
       if (con.error === wrappedError) con.error = origError;
       w.removeEventListener("error", onError);
       w.removeEventListener("unhandledrejection", onRejection);
       if (wrappedFetch && w.fetch === wrappedFetch) w.fetch = origFetch;
       if (proto && origOpen && origSetHeader && origSend) {
-        proto.open = origOpen;
-        proto.setRequestHeader = origSetHeader;
-        proto.send = origSend;
+        if (proto.open === ourOpen) proto.open = origOpen;
+        if (proto.setRequestHeader === ourSetHeader) proto.setRequestHeader = origSetHeader;
+        if (proto.send === ourSend) proto.send = origSend;
       }
       kept = [];
       if (w[KEY] === recorder) delete w[KEY];
@@ -232,7 +262,7 @@ export function encodeDiagnostics(lines: DiagLine[]): Uint8Array {
   let bytes = 0;
   for (let i = lines.length - 1; i >= 0 && out.length < MAX_DIAG_LINES; i--) {
     const { at, level, kind, text } = lines[i];
-    const line = JSON.stringify({ at, level, kind, text });
+    const line = JSON.stringify({ at: wellFormed(at), level, kind, text: wellFormed(text) });
     const n = utf8.encode(line).length + 1;
     if (bytes + n > MAX_DIAG_BYTES) break;
     bytes += n;
@@ -277,14 +307,14 @@ function describe(v: unknown): string {
     const head = `${e.name}: ${e.message}`;
     return typeof e.stack === "string" && e.stack ? (e.stack.startsWith(head) ? e.stack : `${head}\n${e.stack}`) : head;
   }
-  if (typeof v === "string") return v;
+  if (typeof v === "string") return cut(v, MAX_READ_CHARS);
   try {
-    return JSON.stringify(v) ?? String(v);
+    return cut(JSON.stringify(v) ?? String(v), MAX_READ_CHARS);
   } catch {
     return String(v);
   }
 }
 
 function formatArgs(args: unknown[]): string {
-  return args.map(describe).join(" ");
+  return cut(args.map(describe).join(" "), MAX_READ_CHARS);
 }

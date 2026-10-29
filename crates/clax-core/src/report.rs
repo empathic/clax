@@ -284,48 +284,73 @@ fn bad_diag(message: impl Into<String>) -> CoreError {
     CoreError::InvalidDiagnostics(message.into())
 }
 
-/// The diagnostics part `bytes`: UTF-8 JSON lines, one [`DiagLine`] each
-/// (blank lines, and a `\r` before a `\n`, are ignored), with each `text`
-/// [`scrub`]bed.
+/// The diagnostics part `bytes`: JSON lines, one [`DiagLine`] each (blank
+/// lines, and a `\r` before a `\n`, are ignored), with each `text`
+/// [`scrub`]bed. A line that is not UTF-8, or not a [`DiagLine`] with a
+/// known level and kind and an `at` of at most [`MAX_STAMP_BYTES`] bytes,
+/// is dropped, and one line is added at the end in their place:
+/// `{at: now, level: "warn", kind: "error", text: "‹dropped N diagnostics
+/// lines the server could not read›"}` ([`dropped_note`]).
 ///
 /// # Errors
 /// [`CoreError::InvalidDiagnostics`] when `bytes` is over
-/// [`MAX_DIAG_BYTES`] or not UTF-8, holds more than [`MAX_DIAG_LINES`]
-/// lines, or holds a line that is not a [`DiagLine`] with a known level
-/// and kind and an `at` of at most [`MAX_STAMP_BYTES`] bytes.
-pub fn parse_diagnostics(bytes: &[u8]) -> Result<Vec<DiagLine>> {
+/// [`MAX_DIAG_BYTES`] or holds more than [`MAX_DIAG_LINES`] lines that are
+/// not blank.
+pub fn parse_diagnostics(bytes: &[u8], now: &str) -> Result<Vec<DiagLine>> {
     if bytes.len() > MAX_DIAG_BYTES {
         return Err(bad_diag(format!(
             "diagnostics are at most {MAX_DIAG_BYTES} bytes"
         )));
     }
-    let text = std::str::from_utf8(bytes).map_err(|_| bad_diag("diagnostics are UTF-8"))?;
     let mut out = Vec::new();
-    for (n, raw) in text.split('\n').enumerate() {
-        let line = raw.strip_suffix('\r').unwrap_or(raw);
-        if line.trim().is_empty() {
+    let mut seen = 0;
+    let mut dropped = 0;
+    for raw in bytes.split(|&c| c == b'\n') {
+        let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
+        if raw.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        if out.len() == MAX_DIAG_LINES {
+        seen += 1;
+        if seen > MAX_DIAG_LINES {
             return Err(bad_diag(format!(
                 "diagnostics are at most {MAX_DIAG_LINES} lines"
             )));
         }
-        let at = |m: String| bad_diag(format!("line {}: {m}", n + 1));
-        let mut d: DiagLine = serde_json::from_str(line).map_err(|e| at(e.to_string()))?;
-        if !DIAG_LEVELS.contains(&d.level.as_str()) {
-            return Err(at(format!("level is one of {}", DIAG_LEVELS.join(", "))));
+        match diag_line(raw) {
+            Some(d) => out.push(d),
+            None => dropped += 1,
         }
-        if !DIAG_KINDS.contains(&d.kind.as_str()) {
-            return Err(at(format!("kind is one of {}", DIAG_KINDS.join(", "))));
-        }
-        if d.at.len() > MAX_STAMP_BYTES {
-            return Err(at(format!("at is at most {MAX_STAMP_BYTES} bytes")));
-        }
-        scrub_in_place(&mut d.text);
-        out.push(d);
+    }
+    if dropped > 0 {
+        out.push(DiagLine {
+            at: now.to_string(),
+            level: "warn".into(),
+            kind: "error".into(),
+            text: dropped_note(dropped),
+        });
     }
     Ok(out)
+}
+
+/// The text of the line [`parse_diagnostics`] adds in place of the `n`
+/// lines it dropped.
+pub fn dropped_note(n: usize) -> String {
+    format!("‹dropped {n} diagnostics lines the server could not read›")
+}
+
+/// The line `raw`, checked and its text scrubbed; `None` when it is not
+/// UTF-8 or not a [`DiagLine`] the shape admits.
+fn diag_line(raw: &[u8]) -> Option<DiagLine> {
+    let line = std::str::from_utf8(raw).ok()?;
+    let mut d: DiagLine = serde_json::from_str(line).ok()?;
+    if !DIAG_LEVELS.contains(&d.level.as_str())
+        || !DIAG_KINDS.contains(&d.kind.as_str())
+        || d.at.len() > MAX_STAMP_BYTES
+    {
+        return None;
+    }
+    scrub_in_place(&mut d.text);
+    Some(d)
 }
 
 /// Who a reporter is, as the integrator's backend asserts it when minting
@@ -655,34 +680,70 @@ mod tests {
             r#"{"at":"2026-10-29T07:12:03.120Z","level":"info","kind":"console","text":"hi"}"#;
         let ok = vec![line; MAX_DIAG_LINES].join("\n");
         assert_eq!(
-            parse_diagnostics(ok.as_bytes()).unwrap().len(),
+            parse_diagnostics(ok.as_bytes(), NOW).unwrap().len(),
             MAX_DIAG_LINES
         );
         let over = vec![line; MAX_DIAG_LINES + 1].join("\n");
-        let e = parse_diagnostics(over.as_bytes()).unwrap_err();
+        let e = parse_diagnostics(over.as_bytes(), NOW).unwrap_err();
+        assert!(matches!(e, CoreError::InvalidDiagnostics(_)), "{e:?}");
+        // Lines dropped count toward the limit too.
+        let over = format!("{}\nnot json", vec![line; MAX_DIAG_LINES].join("\n"));
+        let e = parse_diagnostics(over.as_bytes(), NOW).unwrap_err();
         assert!(matches!(e, CoreError::InvalidDiagnostics(_)), "{e:?}");
         let big = format!(
             r#"{{"at":"t","level":"info","kind":"console","text":"{}"}}"#,
             "x".repeat(MAX_DIAG_BYTES)
         );
-        let e = parse_diagnostics(big.as_bytes()).unwrap_err();
+        let e = parse_diagnostics(big.as_bytes(), NOW).unwrap_err();
         assert!(matches!(e, CoreError::InvalidDiagnostics(_)), "{e:?}");
-        for bad in [
+    }
+
+    const NOW: &str = "2026-10-29T08:00:00.000Z";
+
+    #[test]
+    fn unreadable_diagnostics_lines_are_dropped_with_a_note() {
+        let good =
+            r#"{"at":"2026-10-29T07:12:03.120Z","level":"info","kind":"console","text":"hi"}"#;
+        let long_at = format!(
+            r#"{{"at":"{}","level":"info","kind":"console","text":"x"}}"#,
+            "t".repeat(MAX_STAMP_BYTES + 1)
+        );
+        let mut body = Vec::new();
+        for l in [
+            good,
             r#"{"at":"t","level":"loud","kind":"console","text":"x"}"#,
             r#"{"at":"t","level":"info","kind":"telepathy","text":"x"}"#,
             r#"{"at":"t","level":"info","kind":"console","text":"x","extra":1}"#,
+            // A lone surrogate, as a browser's JSON.stringify writes one.
+            r#"{"at":"t","level":"info","kind":"console","text":"\ud83d"}"#,
             "not json",
+            &long_at,
         ] {
-            let e = parse_diagnostics(bad.as_bytes()).unwrap_err();
-            assert!(
-                matches!(e, CoreError::InvalidDiagnostics(_)),
-                "{bad}: {e:?}"
-            );
+            body.extend_from_slice(l.as_bytes());
+            body.push(b'\n');
         }
-        assert!(matches!(
-            parse_diagnostics(&[0xff, 0xfe]),
-            Err(CoreError::InvalidDiagnostics(_))
-        ));
+        body.extend_from_slice(&[0xff, 0xfe, b'\n']);
+        body.extend_from_slice(good.as_bytes());
+        let lines = parse_diagnostics(&body, NOW).unwrap();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!(lines[0].text, "hi");
+        assert_eq!(lines[1].text, "hi");
+        assert_eq!(
+            lines[2],
+            DiagLine {
+                at: NOW.into(),
+                level: "warn".into(),
+                kind: "error".into(),
+                text: "‹dropped 7 diagnostics lines the server could not read›".into(),
+            }
+        );
+        // What was kept, the note too, reads back as itself.
+        let again: Vec<u8> = lines
+            .iter()
+            .flat_map(|l| format!("{}\n", serde_json::to_string(l).unwrap()).into_bytes())
+            .collect();
+        assert_eq!(parse_diagnostics(&again, "later").unwrap(), lines);
+        assert_eq!(parse_diagnostics(good.as_bytes(), NOW).unwrap().len(), 1);
     }
 
     #[test]
@@ -693,12 +754,12 @@ mod tests {
             r#"{"at":"2026-10-29T07:12:04.000Z","level":"error","kind":"rejection","text":"fine"}"#,
             "\n",
         );
-        let lines = parse_diagnostics(body.as_bytes()).unwrap();
+        let lines = parse_diagnostics(body.as_bytes(), NOW).unwrap();
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].text, format!("GET /x?token={REDACTED}"));
         assert_eq!(lines[0].level, "warn");
         assert_eq!(lines[1].text, "fine");
-        assert!(parse_diagnostics(b"").unwrap().is_empty());
+        assert!(parse_diagnostics(b"", NOW).unwrap().is_empty());
     }
 
     #[test]

@@ -3725,15 +3725,23 @@ omitted?: [{kind, rect: {x, y, w, h}}]}`) and `app?` (the host's own JSON). A to
 outside these, a wrong type, another `v` or a bad `captured_at` is 400
 `invalid_context`. The server scrubs it again (`environment.url`'s query
 values, `route`, `title` and every string in `app`): bearer and basic
-credentials, `cx?_` tokens, JWT-shaped strings, query values,
-`password=`/`token=`/`secret=`/`key=` values, email addresses and long hex
+credentials, `cx?_` tokens, JWT-shaped strings, query values (of
+`environment.url`, and of every `http://` or `https://` URL inside a
+scrubbed text), `password=`/`token=`/`secret=`/`key=` values, email addresses and long hex
 or base64 runs become `‹redacted›`. It is stored as filed and never
 changes.
 
 **Diagnostics.** JSON lines `{at, level (debug|info|warn|error), kind
-(console|error|rejection|request), text}`, at most 200 lines and 256 KiB;
-each `text` is scrubbed again. Anything else is 400
-`invalid_diagnostics`. Each capture keeps its own: the filing's (capture
+(console|error|rejection|request), text}`, at most 200 lines and 256 KiB
+(more is 400 `invalid_diagnostics`); each `text` is scrubbed again. A
+line that is not UTF-8 or not of that shape is dropped, and one line
+`{at: <received>, level: "warn", kind: "error", text: "‹dropped N
+diagnostics lines the server could not read›"}` is added at the end in
+place of those dropped; the rest of the filing stands. The SDK's
+recorder (`installDiagnostics`) writes a failed request as `{METHOD}
+{path} → {status | failed} in {ms} ms [req {id}]`: `path` is the URL's
+path and query for the page's own origin, and its origin, path and query
+for another, with every query value replaced. Each capture keeps its own: the filing's (capture
 0) and each reopen's. They are served to triage members and to the
 reporter that filed the report, never to another reporter.
 

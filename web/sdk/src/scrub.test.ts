@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import cases from "../test/scrub-cases.json";
-import { REDACTED, scrub, scrubUrl } from "./scrub";
+import { cut, REDACTED, scrub, scrubUrl, wellFormed } from "./scrub";
 
 /** One row of the shared table (crates/clax-core/src/scrub.rs runs it too):
  * `in` is scrubbed, `url` is scrubUrl'ed. */
@@ -31,5 +31,32 @@ describe("scrub", () => {
     expect(scrubUrl("")).toBe("");
     expect(scrubUrl("?")).toBe("?");
     expect(scrubUrl("https://")).toBe("https://");
+  });
+});
+
+describe("wellFormed and cut", () => {
+  it("replaces lone surrogates and keeps pairs", () => {
+    const fallback = (s: string) => {
+      const proto = String.prototype as { toWellFormed?: unknown };
+      const own = Object.getOwnPropertyDescriptor(proto, "toWellFormed");
+      if (own) delete proto.toWellFormed;
+      try { return wellFormed(s); } finally { if (own) Object.defineProperty(proto, "toWellFormed", own); }
+    };
+    for (const f of [wellFormed, fallback]) {
+      expect(f("a\ud83db")).toBe("a�b");
+      expect(f("a\ude00")).toBe("a�");
+      expect(f("\ude00\ud83d")).toBe("��");
+      expect(f("ok 😀")).toBe("ok 😀");
+      expect(JSON.stringify(f("x\ud83d"))).toBe('"x�"');
+    }
+  });
+
+  it("cuts on a code point", () => {
+    expect(cut("abc", 3)).toBe("abc");
+    expect(cut("abcd", 3)).toBe("ab…");
+    // The pair at 1–2 straddles the cut at 2: it goes whole.
+    expect(cut("a😀bc", 3)).toBe("a…");
+    expect(cut("ab😀c", 4)).toBe("ab…");
+    expect(cut("ab😀cd", 5)).toBe("ab😀…");
   });
 });
