@@ -96,8 +96,6 @@ console.log(JSON.stringify(out));
     // jsdom has no constructed sheets: the overlay falls back to a <style> (bridge/src/sheet.ts).
     const css = [...(root.adoptedStyleSheets ?? []).flatMap(s => [...s.cssRules].map(r => r.cssText)), ...[...root.querySelectorAll("style")].map(s => s.textContent)].join("\n");
     expect(css).toMatch(/\.launcher\.svelte-/);
-    // The bundle's Svelte runs the overlay's effects (its picker's teardown among them) after a task.
-    await new Promise(r => setTimeout(r, 0));
     handle.close();
     expect(document.querySelector("clax-overlay")).toBeNull();
     expect(readFileSync(join(pkgDir, "overlay.js"), "utf8")).not.toContain("__CLAX_OVERLAY_COMPONENT_CSS__");

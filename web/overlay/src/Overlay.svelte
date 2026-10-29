@@ -8,7 +8,7 @@
   // draft, which comes back when the panel closes. The composer or the
   // panel, the notice and the launcher stack up from the bottom right corner,
   // none over another; closing the composer gives focus back to Report.
-  import { onDestroy, untrack } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import type { Report } from "../../sdk/src/types";
   import { type Clip, type Draft, POLL_MS, Poll, type ReporterApi, type Timers, canSend, clipStatus, failureText, newDraft, pageUrl, quoteOf, realTimers, reportOf, takeClip } from "./model";
   import type { Picked, Picker } from "./picker";
@@ -40,8 +40,16 @@
   /** The draft's clip, for a send to wait on; keyed by the draft it is for. */
   let clipFor: { of: Draft; clip: Promise<Clip> } | null = null;
 
-  const picker = untrack(() => makePicker(onPick, () => stopPicking()));
-  onDestroy(() => { picker.destroy(); poll.stop(); revokeClip(); timers.clear(noticeTimer); });
+  // Comment mode is made once the overlay mounts, with its teardown: an
+  // overlay unmounted before its effects ran (closed in the task that
+  // started it) never makes it, so leaves none of it in the page.
+  let picker: Picker | null = null;
+  onMount(() => {
+    const made = makePicker(onPick, () => stopPicking());
+    picker = made;
+    return () => made.destroy();
+  });
+  onDestroy(() => { poll.stop(); revokeClip(); timers.clear(noticeTimer); });
 
   function startPicking(): void {
     if (open) toggleReports();
@@ -49,11 +57,11 @@
     revokeClip();
     notice = null;
     picking = true;
-    picker.set(true);
+    picker?.set(true);
   }
   function stopPicking(): void {
     picking = false;
-    picker.set(false);
+    picker?.set(false);
   }
 
   // Comment mode takes every press and click on the page, the overlay's
@@ -82,13 +90,13 @@
   function onPick(p: Picked): void {
     picking = false;
     // Comment mode ends once its hook has returned.
-    queueMicrotask(() => picker.set(false));
+    queueMicrotask(() => picker?.set(false));
     revokeClip();
     const d = newDraft(p.anchor);
     draft = d;
     const of = draft;
     const clip = takeClip(() => p.render()).then(c => {
-      picker.done();
+      picker?.done();
       if (draft === of) {
         draft.clip = c;
         if (c.state === "taken") clipUrl = URL.createObjectURL(c.png);
