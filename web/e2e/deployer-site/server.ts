@@ -15,6 +15,7 @@
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { ClaxError } from "../../sdk/src/client";
 import { ServiceClient } from "../../sdk/src/service";
 import { freePort } from "../hosted-helpers";
 
@@ -116,6 +117,11 @@ export async function startDeployerSite(instance: string): Promise<DeployerSite>
           minted.push(user);
           return json(res, 200, t);
         } catch (e) {
+          // The browser's key refused, or a limit reached: passed back with
+          // its code, as docs/feedback.md's route does.
+          if (e instanceof ClaxError && (e.code === "invalid_key" || e.code === "limit_reached")) {
+            return json(res, e.status, { error: { code: e.code, message: e.message } });
+          }
           return json(res, 502, { error: e instanceof Error ? e.message : String(e) });
         }
       }

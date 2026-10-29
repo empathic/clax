@@ -15,7 +15,12 @@ Clax.overlay({
   user: user || undefined,
   auth: async publicKey => {
     const r = await fetch("/clax-token", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ public_key: publicKey }) });
-    if (!r.ok) throw new Error(`the site gave no reporter token: ${r.status} ${await r.text()}`);
+    if (!r.ok) {
+      const text = await r.text();
+      let code;
+      try { code = JSON.parse(text)?.error?.code; } catch { /* the status says it */ }
+      throw Object.assign(new Error(`the site gave no reporter token: ${r.status} ${text}`), { code });
+    }
     return r.json();
   },
   context: () => ({
