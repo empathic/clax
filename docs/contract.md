@@ -3755,7 +3755,10 @@ replies wait for the queue's people); `outcome` is `pending`,
 `diagnostics_lines` (the latest capture that has any) and `filing_diagnostics_lines`
 (the filing's own, capture 0; absent when it has none). A reopen's comment
 carries `capture` (the reopen's number, the filing being capture 0),
-`has_clip` and `diagnostics_lines`.
+`has_clip` and `diagnostics_lines`. A note for the queue's members alone
+(a person's release of a claim) carries `triage_only: true`: a reporter's
+view of the report leaves it out, and the reporter's badge does not count
+it.
 
 | Field | Triage | The reporter that filed it | Another reporter (`reporters_see: all`) |
 |---|---|---|---|
@@ -3859,6 +3862,7 @@ tools" says; 404 `not_a_member` otherwise):
 | `GET …/reports/<tid>/diagnostics?capture=` | | `{lines}`, of any report of the queue, read as the reporter's; 400 `invalid_query` |
 | `GET …/reports/<tid>/comments/<cid>/clip` | | a reopen's PNG |
 | `POST …/reports/<tid>/claim` | | the lease; 409 `not_claimable` for a `fix_proposed` report |
+| `POST …/reports/<tid>/release` | `{note?}` (a person's; an agent's body is not read) | `{report}`, `open`. An agent releases its own live lease (409 `claim_required`, `lease_lost` or `thread_taken` otherwise; `queue.release`, reason `explicit`). A person (not an agent) ends the report's live lease whoever holds it: the lease ends at once under its fence, so its holder's next `…/renew`, write or `…/fix` is 409 `lease_lost` (a new claim takes a larger fence); `note`, or `Released the claim: the report is open again.`, is posted as the person's comment with `triage_only`; the holder's session is woken (`queue_event` `released`, below); recorded as `queue.release` with reason `person` and the person as its actor. A report no live lease holds is answered as it is, and nothing is written. 400 `invalid_args` for another body |
 | `POST /api/queues/<qid>/watch` | | 204: the agent's session watches the queue until it unwatches it, ends, or its person leaves the queue (watching again changes nothing); 400 `no_session` without a session |
 | `DELETE /api/queues/<qid>/watch` | | 204: the session no longer watches it (one that did not is fine); it removes only the caller's own watch and needs no membership; 400 `no_session` without a session |
 
@@ -3895,20 +3899,27 @@ session, whoever claimed the report before; nor does any other
 reporter's comment. Triage reads every one on the report. It
 never makes the session the report's owner (a claim does) and is no
 part of the report's `feedback_state`: a wake does not show the report
-as sent to or delivered to an agent. Its item carries `queue_id`,
-`queue_event` (`filed` or `reopened`) and, for a reopen by a triage
-person, `reopened_by` (their name), and its text ends, in place of the
+as sent to or delivered to an agent. A person's release of a claim
+(`…/release`) wakes the session that held it alone, the same way, for
+the release's note (`queue_event` `released`), while that session has not
+ended and its person is a member; the queue's watchers are not woken by
+it. Its item carries `queue_id`,
+`queue_event` (`filed`, `reopened` or `released`) and, for a reopen by a triage
+person, `reopened_by` (their name), for a release `released_by` (the
+person's name), and its text ends, in place of the
 queue-tools line of a comment:
 
     This is a new report in queue <qid>: call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
     Report <report ID> in queue <qid> was reopened by <who>: call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
+    Your claim on report <report ID> in queue <qid> was released by <name>: stop working on it: queue_renew and queue_fix now answer lease_lost. To take it again, call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
 
 where `<who>` is `its reporter`, or `<name> for its reporter` for a
 triage person's reopen on the reporter's behalf. Its notice (`GET
-/api/sessions/<sid>/notices`, with `event` and `reopened_by`) is one of:
+/api/sessions/<sid>/notices`, with `event`, `reopened_by` and `released_by`) is one of:
 
     [clax] New report in queue <qid>: "<title>" (<url>), report <report ID>. Call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
     [clax] Report <report ID> in queue <qid> was reopened by <who>: "<title>" (<url>). Call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
+    [clax] Your claim on report <report ID> in queue <qid> was released by <name>: "<title>" (<url>). Stop working on it: queue_renew and queue_fix now answer lease_lost. To take it again, call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
 
 An undelivered wake of a session that ends is deleted, never handed to
 another session: the report waits in its queue.
@@ -7569,6 +7580,7 @@ except as noted:
 | `docs:<aid>` | Its `doc` events the caller may see, and `artifact_deleted`; needs `db` declared, or the token. |
 | `docs:<B>?reader=<A>` | B's `doc` events that `view` with no viewer may read, each only while app A may read B (checked as it is dispatched); subscribing needs A to exist and to be allowed to read B then (403 `not_granted` or `not_declared`). See "Reading another app's documents". |
 | `agents` | `agents` (`{topic}`, naming nothing) whenever the agents roster may have changed: an agent started, ended, was renamed or got watches back, a thread's owner changed, or a working record, question or approval request changed. Refetch `GET /api/agents`. Only the owner's and connected people's streams take it (403 `forbidden` otherwise). |
+| `queue:<qid>` | `report` whenever a report of report queue `<qid>` is filed, claimed, released (by its agent, or ended by a person), given a fix, verified, reopened, resolved or commented on. Only a member of the queue takes it (404 `not_a_member` otherwise, as its triage routes answer, and 400 `invalid_topic` for a `<qid>` that is not a queue ID); each event reaches only the streams of the queue's members at the change, so a member removed hears no more though their stream still holds the topic. |
 | `site:<origin>` | What `artifact:<aid>` carries, for every live page of the origin's site (every origin joined to it, those joined later too: see "Joined sites"), those made later included, and `site` when an origin joins the site or is split off. `<origin>` is written as the daemon normalizes it (`http://localhost:5173`: scheme, lowercased host, port unless the scheme's default, no path), else 400 `invalid_topic`. Only a stream that may see live pages takes it (404 `not_found` otherwise, as for a live page's topic), and only an owner's (403 `forbidden` otherwise). The `thread_deleted` a move sends for older clients is not on it. |
 
 **Events.** Every event but `ready` and `resync` carries `id:
@@ -7637,6 +7649,10 @@ event's data names its `topic`. Events carry what changed:
   people whose entry is new or changed, and the public IDs no longer listed.
   A report that changed nothing is not sent. Seed the list from `GET
   /api/artifacts/<aid>/presence`.
+- `report` on `queue:<qid>`: `{topic, queue_id, report_id, state}`: the
+  report's state after the change, never its text, its reporter or who
+  changed it: refetch `GET /api/queues/<qid>/reports/<tid>` (or the
+  listing). `/api/events` does not carry it.
 - `doc`: `{topic, artifact_id, path, version}` (`version` is `null` after a
   delete), never a body. An event for a path in a viewer's private subtree
   reaches only that viewer's streams; any other reaches only callers whose
@@ -8653,7 +8669,7 @@ the body below.
 | `thread.resolve` | `resolved_by, addressed_version (n\|null)`, and for a queue's report `reason` (`fixed\|duplicate\|wontfix\|cannot_reproduce\|other`) | a resolve of an open thread |
 | `thread.reopen` | none | a reopen of a resolved thread |
 | `queue.claim` | `queue_id, thread_id, session, lease_id, fence, expires_at` | a claim of a report that makes a new lease |
-| `queue.release` | `queue_id, thread_id, session, lease_id, reason (explicit\|member_removed\|fix_proposed)` | a lease ended by its session, by its person's removal from the queue, or by a fix |
+| `queue.release` | `queue_id, thread_id, session, lease_id, reason (explicit\|member_removed\|fix_proposed\|person)` | a lease ended by its session, by its person's removal from the queue, by a fix, or by a triage person (`…/release`; the actor is the person) |
 | `queue.fix` | `queue_id, thread_id, n, url?, commit?` | a fix proposed on a report, after its summary's `comment.add` |
 | `queue.verify` | `queue_id, thread_id, n` | a verdict that a report's fix works, after its `thread.resolve` (`reason: fixed`) |
 | `queue.reopen` | `queue_id, thread_id, n?, reopen_count` (`n` the latest fix's, when there is one) | a report said still broken, after its `comment.add` and `thread.reopen` |

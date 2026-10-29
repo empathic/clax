@@ -354,3 +354,62 @@ test("a redaction drawn on a tall capture, scrolled in its stage, lands where it
     await d.stop();
   }
 });
+
+test("the triage views stay current: a filing, an agent's claim and a person's release show without a reload", async ({ browser }) => {
+  test.setTimeout(90_000);
+  const { d, origin } = await hostedDaemon();
+  const site = await startDeployerSite(origin);
+  try {
+    const owner = await ownerOf(browser, origin);
+    const qid = await queueWithGrant(owner, origin, site);
+    const agent = await agentOf(origin, await agentTokenOf(owner));
+    await owner.goto(`${origin}/queues/${qid}`);
+    await expect(owner.locator(".qnone")).toHaveText("No active reports.");
+
+    // A site user files a report: the open queue view lists it.
+    const emp1 = await reporterOn(browser, site, "emp-1");
+    await emp1.locator(".report-btn").click();
+    await expect(emp1.getByText("Click what your report is about")).toBeVisible();
+    await emp1.locator("#req-1 h2").click();
+    const composer = emp1.getByRole("form", { name: "New report" });
+    await composer.getByRole("textbox", { name: "Report" }).fill("The dates are off by one.");
+    await composer.getByRole("button", { name: "Send" }).click();
+    await expect(emp1.getByRole("status", { name: "Filed" })).toBeVisible();
+    const row = owner.locator("li.rrow");
+    await expect(row).toHaveCount(1);
+    await expect(row.locator(".note")).toHaveText("The dates are off by one.");
+    const id = (await row.getAttribute("data-id"))!;
+
+    // The report view: the agent's claim shows, and a half-written reply stays.
+    await row.locator("a").click();
+    await expect(owner.locator(".rh .state")).toHaveText("Open");
+    const reply = owner.locator("#rv-reply");
+    await reply.fill("Half a reply");
+    const lease = await agent.ok<Lease>("POST", `/api/queues/${qid}/reports/${id}/claim`);
+    await expect(owner.locator(".rh .state")).toHaveText("Claimed");
+    await expect(owner.locator(".by .claim")).toContainText("claimed by");
+    await expect(reply).toHaveValue("Half a reply");
+
+    // The owner frees the claim, after confirming, with a note for triage.
+    await owner.getByRole("button", { name: "Release claim" }).click();
+    const confirm = owner.locator("form.af");
+    await expect(confirm).toContainText("claim now");
+    await confirm.locator("textarea[name=note]").fill("Stuck since Monday");
+    await confirm.getByRole("button", { name: "Release claim" }).click();
+    await expect(owner.locator(".rh .state")).toHaveText("Open");
+    await expect(owner.locator(".cm", { hasText: "Stuck since Monday" }).locator(".only")).toHaveText("Triage only");
+    await expect(reply).toHaveValue("Half a reply");
+    // The agent's lease is gone: its renew and its fix are lease_lost.
+    const renew = await agent.send("POST", `/api/queues/${qid}/reports/${id}/renew`, {});
+    expect([renew.status, renew.body.error?.code]).toEqual([409, "lease_lost"]);
+    const fix = await agent.send("POST", `/api/queues/${qid}/reports/${id}/fix`, { summary: "x", fence: lease.fence });
+    expect([fix.status, fix.body.error?.code]).toEqual([409, "lease_lost"]);
+    // The reporter never sees the note.
+    const mine = await openReports(emp1);
+    await expect(mine).toContainText("The dates are off by one.");
+    await expect(mine).not.toContainText("Stuck since Monday");
+  } finally {
+    await site.stop();
+    await d.stop();
+  }
+});

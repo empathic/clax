@@ -1609,3 +1609,276 @@ async fn mcp_get_fix_and_watch_round_trip() {
     assert_eq!(v["watching"], false, "{v}");
     assert!(q.ts.store.queue_watchers(&q.qid).unwrap().is_empty());
 }
+
+/// Opens `/api/stream` as the browser holding `cookie` (a `Cookie` header)
+/// and asks for `topics`: the reader, and the subscription's status and
+/// answer.
+async fn stream_with(
+    ts: &TestServer,
+    cookie: &str,
+    topics: &[&str],
+) -> (clax_testkit::EventReader, u16, Value) {
+    let res = ts
+        .client
+        .get(format!("{}/api/stream", ts.base))
+        .header("cookie", cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let mut events = clax_testkit::EventReader::from_response(res);
+    let id = events.next_named("ready").await["stream"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = ts
+        .client
+        .post(format!("{}/api/stream/{id}", ts.base))
+        .header("cookie", cookie)
+        .json(&json!({ "subscribe": topics }))
+        .send()
+        .await
+        .unwrap();
+    let status = res.status().as_u16();
+    (events, status, res.json().await.unwrap_or(Value::Null))
+}
+
+/// The next `report` event `r` carries: its report ID and state; panics
+/// past the hang guard (keep-alives never end `EventReader::next`'s wait).
+async fn next_report(r: &mut clax_testkit::EventReader) -> (String, String) {
+    tokio::time::timeout(clax_testkit::HANG, next_report_unbounded(r))
+        .await
+        .expect("a report event within the hang guard")
+}
+
+async fn next_report_unbounded(r: &mut clax_testkit::EventReader) -> (String, String) {
+    loop {
+        let (name, data) = r.next().await;
+        if name == "report" {
+            assert_eq!(
+                data.as_object().unwrap().keys().collect::<Vec<_>>(),
+                ["queue_id", "report_id", "state", "topic"],
+                "IDs and the state alone: {data}"
+            );
+            return (
+                data["report_id"].as_str().unwrap().to_string(),
+                data["state"].as_str().unwrap().to_string(),
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_queues_topic_tells_its_members_of_each_change_and_refuses_anyone_else() {
+    let q = setup().await;
+    let ana = q.triager("Ana").await;
+    let bob = q.ts.person("Bob").await;
+    let topic = format!("queue:{}", q.qid);
+    let (_, s, v) = stream_with(&q.ts, &format!("clax_viewer={}", bob.cookie), &[&topic]).await;
+    assert_eq!((s, code(&v)), (404, "not_a_member"), "{v}");
+    let (_, s, v) = stream_with(
+        &q.ts,
+        &format!("clax_viewer={}", ana.cookie),
+        &["queue:nope"],
+    )
+    .await;
+    assert_eq!((s, code(&v)), (400, "invalid_topic"), "{v}");
+    let mut owner = q.ts.stream_as_owner(&[&topic]).await;
+    let (mut theirs, s, v) =
+        stream_with(&q.ts, &format!("clax_viewer={}", ana.cookie), &[&topic]).await;
+    assert_eq!(s, 200, "{v}");
+
+    let a = q.session("a").await;
+    let changes: [(&str, &str, Value, &str); 4] = [
+        ("POST", "/claim", json!({}), "claimed"),
+        ("POST", "/comments", json!({"body": "On it"}), "claimed"),
+        ("POST", "/fix", fix_body(), "fix_proposed"),
+        ("POST", "/resolve", json!({"reason": "fixed"}), "resolved"),
+    ];
+    for (method, tail, body, state) in changes {
+        let (s, v) = q.agent(Some(&a), method, &q.report(tail), body).await;
+        assert!(s < 300, "{tail}: {v}");
+        if tail == "/fix" {
+            // A fix ends the lease: the resolve is a person's.
+            let (s, v) = q
+                .owner("POST", &q.report("/reopen"), json!({"body": "Still wrong"}))
+                .await;
+            assert_eq!(s, 200, "{v}");
+            for r in [&mut owner, &mut theirs] {
+                assert_eq!(next_report(r).await, (q.tid.clone(), "fix_proposed".into()));
+                assert_eq!(next_report(r).await, (q.tid.clone(), "open".into()));
+            }
+            let (s, v) = q
+                .agent(Some(&a), "POST", &q.report("/claim"), json!({}))
+                .await;
+            assert_eq!(s, 200, "{v}");
+            for r in [&mut owner, &mut theirs] {
+                assert_eq!(next_report(r).await, (q.tid.clone(), "claimed".into()));
+            }
+            continue;
+        }
+        for r in [&mut owner, &mut theirs] {
+            assert_eq!(
+                next_report(r).await,
+                (q.tid.clone(), state.to_string()),
+                "{tail}"
+            );
+        }
+    }
+    // The agent lets its claim go: the report stays resolved.
+    let (s, v) = q
+        .agent(Some(&a), "POST", &q.report("/release"), json!({}))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    for r in [&mut owner, &mut theirs] {
+        assert_eq!(next_report(r).await, (q.tid.clone(), "resolved".into()));
+    }
+    // A member removed hears nothing more, though its stream holds the topic.
+    q.ts.store
+        .set_member(&AuditCtx::DAEMON, &q.qid, &ana.public_id, None)
+        .unwrap();
+    let (s, v) = q
+        .owner("POST", &q.report("/reopen"), json!({"body": "Again"}))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        next_report(&mut owner).await,
+        (q.tid.clone(), "open".into())
+    );
+    let (s, v) = q
+        .owner("POST", &q.report("/comments"), json!({"body": "Marker"}))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(
+        next_report(&mut owner).await,
+        (q.tid.clone(), "open".into())
+    );
+    // Back on the queue, her stream carries the next change: the two she
+    // missed while she was not a member never reached it.
+    q.ts.store
+        .set_member(
+            &AuditCtx::DAEMON,
+            &q.qid,
+            &ana.public_id,
+            Some(Role::Triage),
+        )
+        .unwrap();
+    let (s, v) = q
+        .agent(Some(&a), "POST", &q.report("/claim"), json!({}))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        next_report(&mut theirs).await,
+        (q.tid.clone(), "claimed".into())
+    );
+}
+
+#[tokio::test]
+async fn a_member_releases_a_stale_claim_and_its_holder_is_told() {
+    let q = setup().await;
+    let ana = q.triager("Ana").await;
+    let bob = q.ts.person("Bob").await;
+    let a = q.session("a").await;
+    let (s, lease) = q
+        .agent(Some(&a), "POST", &q.report("/claim"), json!({}))
+        .await;
+    assert_eq!(s, 200, "{lease}");
+    let (s, v) = q
+        .browser(&bob.cookie, "POST", &q.report("/release"), json!({}))
+        .await;
+    assert_eq!((s, code(&v)), (404, "not_a_member"), "{v}");
+    let (s, v) = q
+        .browser(
+            &ana.cookie,
+            "POST",
+            &q.report("/release"),
+            json!({"note": "Stuck since Monday"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["report"]["state"], "open", "{v}");
+    assert!(v["report"]["claim"].is_null(), "{v}");
+    let note = v["report"]["comments"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (&note["author_name"], &note["body"], &note["triage_only"]),
+        (&json!("Ana"), &json!("Stuck since Monday"), &json!(true)),
+        "{v}"
+    );
+    // The holder's next renew, reply and fix are lease_lost.
+    for (tail, body) in [
+        ("/renew", json!({})),
+        ("/comments", json!({"body": "done"})),
+        ("/fix", {
+            let mut b = fix_body();
+            b["fence"] = lease["fence"].clone();
+            b
+        }),
+    ] {
+        let (s, v) = q.agent(Some(&a), "POST", &q.report(tail), body).await;
+        assert_eq!((s, code(&v)), (409, "lease_lost"), "{tail}: {v}");
+    }
+    // It is told, by name, with the person's note.
+    let (s, v) = q
+        .agent(
+            Some(&a),
+            "GET",
+            &format!("/api/sessions/{a}/feedback?tier=wait"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let items = v["feedback"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{v}");
+    assert_eq!(
+        (
+            &items[0]["queue_event"],
+            &items[0]["released_by"],
+            &items[0]["body"]
+        ),
+        (
+            &json!("released"),
+            &json!("Ana"),
+            &json!("Stuck since Monday")
+        ),
+        "{v}"
+    );
+    let text = v["text"].as_str().unwrap();
+    assert!(
+        text.contains(&format!(
+            "Your claim on report {} in queue {} was released by Ana: stop working on it",
+            q.tid, q.qid
+        )),
+        "{text}"
+    );
+    let releases: Vec<Value> = q
+        .kinds()
+        .into_iter()
+        .filter(|(k, _)| k == "queue.release")
+        .map(|(_, b)| b)
+        .collect();
+    assert_eq!(releases.len(), 1, "{releases:?}");
+    assert_eq!(releases[0]["reason"], "person", "{releases:?}");
+    assert_eq!(releases[0]["session"], a.as_str(), "{releases:?}");
+    // Nothing to release: the report as it is, nothing written.
+    let (s, v) = q.owner("POST", &q.report("/release"), json!({})).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["report"]["comments"].as_array().unwrap().len(), 2, "{v}");
+    assert_eq!(
+        q.kinds()
+            .iter()
+            .filter(|(k, _)| k == "queue.release")
+            .count(),
+        1
+    );
+    // The holder claims it again under a larger fence.
+    let (s, again) = q
+        .agent(Some(&a), "POST", &q.report("/claim"), json!({}))
+        .await;
+    assert_eq!(s, 200, "{again}");
+    assert_eq!(again["fence"], lease["fence"].as_u64().unwrap() + 1);
+}

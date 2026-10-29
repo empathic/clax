@@ -4,7 +4,8 @@
 //! - `GET /api/queues/<qid>/reports?state=&cursor=` → `{reports, next}`;
 //!   `GET /api/queues/<qid>/reports/<tid>` → `{report}`.
 //! - `POST …/reports/<tid>/claim`, `…/renew` → a lease (`{lease_id,
-//!   expires_at, fence, report}`); `…/release` → `{report}`.
+//!   expires_at, fence, report}`); `…/release {note?}` → `{report}`: an
+//!   agent lets its own claim go, a person ends whoever's claim holds it.
 //! - `POST …/reports/<tid>/comments {body}` → 201 `{comment, report}`;
 //!   `POST …/reports/<tid>/resolve` → `{report}`.
 //! - `PATCH …/reports/<tid> {metadata, if_version}` (the thread's),
@@ -33,6 +34,10 @@
 //! it, 409 `thread_taken` when another session holds it. A person (not an
 //! agent) replies, proposes fixes, resolves and writes metadata without a
 //! claim.
+//!
+//! Every change to a report reaches the queue's `queue:<qid>` stream topic
+//! as a `report` event, IDs and state alone, for its members' views to
+//! refetch ([`publish_report`]).
 
 use super::artifacts::{body, path, publishing_session};
 use super::threads::publish_thread;
@@ -83,7 +88,7 @@ async fn member<N: Need>(s: &AppState, a: &Agent<N>, qid: &str) -> Result<(), Ap
 }
 
 /// [`member`] for caller `c`.
-async fn member_as(s: &AppState, c: &Caller, qid: &str) -> Result<(), ApiError> {
+pub(crate) async fn member_as(s: &AppState, c: &Caller, qid: &str) -> Result<(), ApiError> {
     let Some(person) = queue_person(c) else {
         return Err(CoreError::NotAMember.into());
     };
@@ -244,6 +249,7 @@ pub async fn claim(
             st.claim(&ctx, &qid, &tid, &sess.id)
         })
         .await?;
+    announce_report(&s, &lease.report.queue_id, &lease.report.id).await;
     Ok(Json(json!(lease)))
 }
 
@@ -313,27 +319,114 @@ pub async fn renew(
     Ok(Json(json!(lease)))
 }
 
-/// `POST /api/queues/<qid>/reports/<tid>/release` → `{report}`, open again;
-/// its errors are a write's.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseBody {
+    #[serde(default)]
+    note: Option<String>,
+}
+
+/// `POST /api/queues/<qid>/reports/<tid>/release {note?}` → `{report}`,
+/// open again. An agent releases its own live lease (its errors are a
+/// write's; any body is not read). A person (not an agent) releases the
+/// report's live lease, whoever holds it: the lease ends under its fence,
+/// so its holder's next renew, write or fix is 409 `lease_lost`; the
+/// person's `note`, or a default line, is posted as their comment for the
+/// queue's members alone (`triage_only`, left out of the reporter's view);
+/// the holder's session is woken (`queue_event` `released`, with
+/// `released_by`); recorded as `queue.release` with reason `person`. A
+/// report no live lease holds is answered as it is. 400 `invalid_args`
+/// for a body that is not `{note?}`; `invalid_comment` for a note too
+/// long.
+#[allow(clippy::too_many_arguments)]
 pub async fn release(
     State(s): State<AppState>,
     a: Agent<QueueRelease>,
     _o: SameOrigin,
+    who: Identity,
     ctx: AuditCtx,
     p: Result<Path<(String, String)>, PathRejection>,
+    raw: Bytes,
 ) -> Result<Json<Value>, ApiError> {
     let (qid, tid) = path(p)?;
     member(&s, &a, &qid).await?;
     let caller = a.caller.clone();
-    let report = s
+    if caller.is_agent() {
+        let (q, t) = (qid.clone(), tid.clone());
+        let report = s
+            .store_call(move |st| {
+                let sess = agent_session(st, &caller)?;
+                st.release(&ctx, &q, &t, &sess.id)?;
+                st.report(&q, &t, Visibility::All)?
+                    .ok_or(CoreError::NotFound)
+            })
+            .await?;
+        announce_report(&s, &qid, &tid).await;
+        return Ok(Json(json!({"report": report})));
+    }
+    let b: ReleaseBody = if raw.iter().all(u8::is_ascii_whitespace) {
+        ReleaseBody::default()
+    } else {
+        serde_json::from_slice(&raw)
+            .map_err(|e| ApiError::bad_request("invalid_args", e.to_string()))?
+    };
+    let t = tid.clone();
+    let (report, woken) = s
         .store_call(move |st| {
-            let sess = agent_session(st, &caller)?;
-            st.release(&ctx, &qid, &tid, &sess.id)?;
-            st.report(&qid, &tid, Visibility::All)?
-                .ok_or(CoreError::NotFound)
+            let (name, public_id) = author(st, &who)?;
+            st.release_as_person(&ctx, &qid, &t, &name, public_id.as_deref(), b.note)
         })
         .await?;
+    if let Some(woken) = woken {
+        super::queue_reporter::wake_watchers(&s, woken).await;
+        let cid = last_comment(&report);
+        let an = Announcer::of(&s);
+        let r = s
+            .store_call(move |st| announce_comment(&an, st, &tid, cid.as_deref()))
+            .await;
+        if let Err(e) = r {
+            tracing::warn!(error = ?e, "announcing a released report failed");
+        }
+    }
     Ok(Json(json!({"report": report})))
+}
+
+/// Tells queue `qid`'s topic that its report `tid` changed: a `report`
+/// event with the report's state now, for the streams of the queue's
+/// members ([`clax_core::Event::Report`]). Nothing for a report or queue
+/// that is gone.
+///
+/// # Errors
+/// The store's.
+pub(crate) fn publish_report(
+    ctx: &clax_realtime::feedback::FeedbackCtx,
+    st: &Store,
+    qid: &str,
+    tid: &str,
+) -> clax_core::Result<()> {
+    if let Some((state, members)) = st.report_change(qid, tid)? {
+        ctx.events.publish(Event::Report {
+            queue_id: qid.to_string(),
+            report_id: tid.to_string(),
+            state,
+            members,
+        });
+    }
+    Ok(())
+}
+
+/// [`publish_report`] from a route, after a change that published no
+/// `thread` event (a claim, an agent's release); a failure is logged, the
+/// change being made.
+async fn announce_report(s: &AppState, qid: &str, tid: &str) {
+    let ctx = s.feedback_ctx();
+    let (qid, tid) = (qid.to_string(), tid.to_string());
+    let r = s
+        .store_call(move |st| publish_report(&ctx, st, &qid, &tid))
+        .await;
+    if let Err(e) = r {
+        tracing::warn!(error = ?e, "announcing a report's change failed");
+    }
 }
 
 #[derive(Deserialize)]

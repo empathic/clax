@@ -49,7 +49,9 @@ export interface ReportArtifact {
 /** One comment on a report. A reopen's comment carries its capture: the
  * reopen's number (the filing being capture 0), whether a clip came with it
  * (`…/comments/<cid>/clip`) and how many diagnostics lines
- * (`…/diagnostics?capture=<n>`); each is absent on any other comment. */
+ * (`…/diagnostics?capture=<n>`); each is absent on any other comment.
+ * `triage_only` marks a note for the queue's members alone (a person's
+ * release of a claim): a reporter's view leaves it out. */
 export interface ReportComment {
   id: string;
   author_kind: AuthorKind;
@@ -59,6 +61,7 @@ export interface ReportComment {
   capture?: number;
   has_clip?: boolean;
   diagnostics_lines?: number;
+  triage_only?: boolean;
 }
 
 /** A live claim on a report. */
