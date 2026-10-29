@@ -9973,7 +9973,11 @@ async fn a_queue_wake_reaches_a_members_agent_whole_only_when_it_reads_reports()
         .await;
     assert!(s < 300, "{s} {v}");
     let (s, v) = site
-        .post(&sam, "/api/hosted/agent-tokens", json!({"label": "sam-laptop"}))
+        .post(
+            &sam,
+            "/api/hosted/agent-tokens",
+            json!({"label": "sam-laptop"}),
+        )
         .await;
     assert_eq!(s, 201, "{v}");
     let mut agent = TokenAgent {
@@ -10049,18 +10053,27 @@ async fn a_queue_wake_reaches_a_members_agent_whole_only_when_it_reads_reports()
     let (_, r) = agent.call("wait_for_feedback", wait.clone()).await;
     let t = text(&r);
     assert!(t.contains("you no longer have access"), "{t}");
-    assert!(t.contains(&first) && !t.contains("The first total is wrong"), "{t}");
-    let (_, r) = agent.call("queue_get", json!({"queue": qid, "report_id": first})).await;
+    assert!(
+        t.contains(&first) && !t.contains("The first total is wrong"),
+        "{t}"
+    );
+    let (_, r) = agent
+        .call("queue_get", json!({"queue": qid, "report_id": first}))
+        .await;
     assert_eq!(tool_code(&r), "not_permitted", "{r}");
 
     // Rights that read comments: the next report comes whole.
-    let reads = json!([{"type": "clax-comments", "actions": ["read", "watch"], "locations": ["*"]}]);
+    let reads =
+        json!([{"type": "clax-comments", "actions": ["read", "watch"], "locations": ["*"]}]);
     set_rights(reads).await;
     let second = file("The second total is wrong");
     let (_, r) = agent.call("wait_for_feedback", wait.clone()).await;
     let t = text(&r);
     assert!(t.contains("The second total is wrong"), "{t}");
-    assert!(t.contains(&format!("This is a new report in queue {qid}")), "{t}");
+    assert!(
+        t.contains(&format!("This is a new report in queue {qid}")),
+        "{t}"
+    );
     assert!(t.contains(&second), "{t}");
 
     // Narrowed after it watched: no_access again.
@@ -10069,5 +10082,8 @@ async fn a_queue_wake_reaches_a_members_agent_whole_only_when_it_reads_reports()
     let (_, r) = agent.call("wait_for_feedback", wait).await;
     let t = text(&r);
     assert!(t.contains("you no longer have access"), "{t}");
-    assert!(t.contains(&third) && !t.contains("The third total is wrong"), "{t}");
+    assert!(
+        t.contains(&third) && !t.contains("The third total is wrong"),
+        "{t}"
+    );
 }
