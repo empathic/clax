@@ -141,14 +141,14 @@ mod api_seats;
 mod api_sessions;
 #[cfg(any(not(clax_split), clax_split = "api_settings"))]
 mod api_settings;
+#[cfg(any(not(clax_split), clax_split = "api_sign"))]
+mod api_sign;
 #[cfg(any(not(clax_split), clax_split = "api_site"))]
 mod api_site;
 #[cfg(any(not(clax_split), clax_split = "api_site_access"))]
 mod api_site_access;
 #[cfg(any(not(clax_split), clax_split = "api_site_api"))]
 mod api_site_api;
-#[cfg(any(not(clax_split), clax_split = "api_sign"))]
-mod api_sign;
 #[cfg(any(not(clax_split), clax_split = "api_stream"))]
 mod api_stream;
 #[cfg(any(not(clax_split), clax_split = "api_tags"))]
