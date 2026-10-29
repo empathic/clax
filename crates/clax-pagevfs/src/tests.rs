@@ -1,14 +1,6 @@
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::*;
-
-fn names_by_address(seen: &mut HashMap<usize, HashSet<String>>) {
-    let r = registry();
-    for (addr, name) in &r.handles {
-        seen.entry(*addr).or_default().insert(name.clone());
-    }
-}
 
 fn keys(db: &Connection) -> Vec<i64> {
     db.prepare("SELECT k FROM t ORDER BY k")
@@ -19,20 +11,16 @@ fn keys(db: &Connection) -> Vec<i64> {
         .unwrap()
 }
 
-/// Handles are told apart by the address of their name's buffer, and
-/// SQLite's allocator hands a closed handle's address to a later file.
 /// Over many opens and closes of one name in many stores, with temporary
 /// files opened and deleted in between and an earlier connection always
 /// alive, each connection reaches only its own store.
 #[test]
-fn a_reused_name_address_never_reaches_another_file() {
-    let mut seen: HashMap<usize, HashSet<String>> = HashMap::new();
+fn many_opens_of_one_name_each_reach_their_own_store() {
     let mut stale: Option<(Database, Arc<MemPages>)> = None;
     let mut parked: Vec<Registered> = Vec::new();
     for i in 0..300u64 {
         let store = Arc::new(MemPages::new());
         let db = open("reuse.db", store.clone()).unwrap();
-        names_by_address(&mut seen);
         db.execute_batch(
             "PRAGMA temp_store=FILE;
              CREATE TABLE IF NOT EXISTS t(k INTEGER PRIMARY KEY, v BLOB);
@@ -41,7 +29,6 @@ fn a_reused_name_address_never_reaches_another_file() {
              SELECT v FROM scratch ORDER BY v;",
         )
         .unwrap();
-        names_by_address(&mut seen);
         db.execute("INSERT INTO t VALUES (?1, randomblob(100))", [i as i64])
             .unwrap();
         // The earlier open, of another store, keeps reaching its own store
@@ -58,7 +45,6 @@ fn a_reused_name_address_never_reaches_another_file() {
             .into_parts();
         conn.execute_batch("CREATE TABLE IF NOT EXISTS t(k)")
             .unwrap();
-        names_by_address(&mut seen);
         drop(conn);
         parked.push(registered);
         if parked.len() > 5 {
@@ -67,11 +53,6 @@ fn a_reused_name_address_never_reaches_another_file() {
         assert_eq!(keys(&db), [i as i64], "open {i}");
         stale = Some((db, store));
     }
-    let reused = seen.values().filter(|names| names.len() > 1).count();
-    assert!(
-        reused > 0,
-        "no name address was reused: the test did not exercise reuse"
-    );
 }
 
 /// What one connection commits, the next open of the same store reads,
@@ -129,6 +110,46 @@ fn a_transaction_past_the_cap_rolls_back_to_the_last_commit() {
     drop(db);
     let db = open("cap.db", store).unwrap();
     assert_eq!(keys(&db), [1, 2]);
+}
+
+/// Connections on many threads fail VFS calls at the same time, each its
+/// own transaction past the cap: every one fails alone and rolls back, as
+/// the VFS keeps a failed call's message per thread.
+#[test]
+fn connections_on_many_threads_fail_at_once() {
+    let limits = Limits {
+        cache_bytes: 64 << 10,
+        max_transaction_bytes: 256 << 10,
+    };
+    let start = Arc::new(std::sync::Barrier::new(8));
+    let threads: Vec<_> = (0..8)
+        .map(|t| {
+            let start = start.clone();
+            std::thread::spawn(move || {
+                let store = Arc::new(MemPages::new());
+                let db = open_with(&format!("full-{t}.db"), store, limits).unwrap();
+                db.execute_batch("CREATE TABLE t(k INTEGER PRIMARY KEY, v BLOB)")
+                    .unwrap();
+                start.wait();
+                for _ in 0..20 {
+                    let err = db
+                        .execute_batch(
+                            "BEGIN;
+                             WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200)
+                             INSERT INTO t SELECT i, randomblob(4000) FROM n;
+                             COMMIT;",
+                        )
+                        .unwrap_err();
+                    assert!(err.to_string().contains("full"), "{err}");
+                    let _ = db.execute_batch("ROLLBACK");
+                }
+                assert_eq!(keys(&db), Vec::<i64>::new());
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
 }
 
 /// The settings the VFS relies on cannot be changed on its connection.

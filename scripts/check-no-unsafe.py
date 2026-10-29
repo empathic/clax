@@ -23,7 +23,17 @@ EMBED = {
 }
 EMBED_PARAM = {"u64", "i64", "i32", "usize", "*const u8", "ClaxPost"}
 SLICE = re.compile(r"let \w+ = unsafe \{ std::slice::from_raw_parts\(\w+, \w+\) \};$", re.A)
-OWN_LINTS = {"crates/clax-embed/Cargo.toml"}
+OWN_LINTS = {"crates/clax-embed/Cargo.toml", "crates/clax-pagevfs/Cargo.toml", "crates/clax-worker/vfs/Cargo.toml"}
+# The SQLite VFS crates, each of which may run one statement unsafe: its
+# registration with SQLite.
+VFS = {
+    "crates/clax-pagevfs/src/lib.rs": "crates/clax-pagevfs/Cargo.toml",
+    "crates/clax-worker/vfs/src/lib.rs": "crates/clax-worker/vfs/Cargo.toml",
+}
+VFS_ONLY = "only the VFS's registration may use unsafe"
+REGISTER = re.compile(
+    r"let registered = unsafe \{ rsqlite_vfs::register_vfs::<IoMethods, Vfs>\(VFS_NAME, \(\), false\) \};$", re.A
+)
 # Whitespace as the regular expressions' \s, which is ASCII only.
 WS = " \t\n\r\f\v"
 
@@ -146,6 +156,23 @@ def exports(text, code):
     return granted
 
 
+def registration(text, code):
+    """The lines granted to a SQLite VFS crate's registration: the first
+    `let registered = unsafe { rsqlite_vfs::register_vfs::<IoMethods,
+    Vfs>(VFS_NAME, (), false) };` directly after `#[allow(unsafe_code)]`,
+    and that line, directly after a comment whose first line opens with
+    `// SAFETY:`."""
+    for i in range(1, len(code) - 1):
+        if code[i] != "#[allow(unsafe_code)]" or not REGISTER.match(code[i + 1]):
+            continue
+        top = i
+        while top > 0 and code[top - 1] == "" and re.match(r"\s*//", text[top - 1], re.A):
+            top -= 1
+        if top < i and re.match(r"\s*// SAFETY:", text[top], re.A):
+            return {i, i + 1}
+    return set()
+
+
 def main(sources):
     workspace = manifest("Cargo.toml")
     if not (workspace and level(workspace, "workspace.lints.rust.unsafe_code") == "forbid"):
@@ -166,6 +193,14 @@ def main(sources):
             finding("crates/clax-embed/Cargo.toml: must deny unsafe_code")
         if level(embed, "lints.rust.unsafe_op_in_unsafe_fn") != "forbid":
             finding("crates/clax-embed/Cargo.toml: must forbid unsafe_op_in_unsafe_fn")
+    for path in sorted(set(VFS.values())):
+        if not os.path.exists(path):
+            continue
+        keys = manifest(path)
+        if level(keys, "lints.rust.unsafe_code") != "deny":
+            finding(f"{path}: must deny unsafe_code")
+        if level(keys, "lints.rust.unsafe_op_in_unsafe_fn") != "forbid":
+            finding(f"{path}: must forbid unsafe_op_in_unsafe_fn")
 
     for path in sources:
         try:
@@ -174,16 +209,24 @@ def main(sources):
             sys.exit(f"{path}: {e.strerror}")
         code = [re.sub(r"//.*", "", t).strip(WS) for t in text]
         embed = path.startswith("crates/clax-embed/")
-        granted = exports(text, code) if path == "crates/clax-embed/src/ffi.rs" else set()
+        vfs = path in VFS
+        if path == "crates/clax-embed/src/ffi.rs":
+            granted = exports(text, code)
+        elif vfs:
+            granted = registration(text, code)
+        else:
+            granted = set()
         for i, c in enumerate(code):
             if i in granted:
                 continue
             n = i + 1
             if re.search(r"\bunsafe\b(?!-)", c, re.A):
                 line = text[i][:-1] if text[i].endswith("\n") else text[i]
-                finding(f"{path}:{n}: {ONLY}" if embed else f"{path}:{n}: {line}")
+                finding(f"{path}:{n}: {ONLY}" if embed else f"{path}:{n}: {VFS_ONLY}" if vfs else f"{path}:{n}: {line}")
             elif embed and re.search(r"\bunsafe_code\b", c, re.A):
                 finding(f"{path}:{n}: {ONLY}")
+            elif vfs and re.search(r"\ballow\s*\(\s*unsafe_code\b", c, re.A):
+                finding(f"{path}:{n}: {VFS_ONLY}")
     return 1 if bad else 0
 
 

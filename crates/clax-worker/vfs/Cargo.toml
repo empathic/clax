@@ -6,17 +6,22 @@ license = "AGPL-3.0-only"
 publish = false
 description = "A SQLite VFS that keeps a database's pages in a page store, such as a Durable Object's SQL storage"
 
-[lints]
-workspace = true
+# The workspace's lints, but `unsafe_code` denied rather than forbidden:
+# src/lib.rs allows it on its one call to `rsqlite_vfs::register_vfs`, as
+# scripts/check-no-unsafe.py checks.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "forbid"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(clax_embedded)', 'cfg(clax_split)', 'cfg(clax_split, values(any()))'] }
 
 [dependencies]
-# The VFS glue sqlite-wasm-rs re-exports; on wasm32 it registers into the
-# SQLite that rusqlite links through sqlite-wasm-rs, natively into the SQLite
-# that rusqlite links through libsqlite3-sys.
-# Exactly 0.1.1: the VFS tells files apart by the address of the name buffer
-# its `xOpen` passes to `VfsStore::add_file` and then keeps in the handle
-# (`Registry::handles` in src/lib.rs).
-rsqlite-vfs = "=0.1.1"
+# The VFS glue. Its SQLite functions are `extern "C"` declarations, so on
+# wasm32 it registers into the SQLite that rusqlite links through
+# sqlite-wasm-rs (whose own rsqlite-vfs 0.1 it does not share), natively into
+# the SQLite that rusqlite links through libsqlite3-sys. 0.2 leaves a failed
+# call's message to the backend, which keeps it per thread (0.1 kept one for
+# the process in a `RefCell`), and gives each open a handle of the backend's.
+rsqlite-vfs = "0.2"
 rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
 
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]

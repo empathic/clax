@@ -628,7 +628,7 @@ name = "clax-do-vfs"
 version = "0.0.0"
 dependencies = [
  "rand 0.9.5",
- "rsqlite-vfs",
+ "rsqlite-vfs 0.2.0",
  "rusqlite",
  "sqlite-wasm-rs",
 ]
@@ -811,7 +811,7 @@ version = "0.6.0"
 dependencies = [
  "clax-core",
  "clax-store",
- "rsqlite-vfs",
+ "rsqlite-vfs 0.2.0",
  "rusqlite",
  "tempfile",
 ]
@@ -3100,6 +3100,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rsqlite-vfs"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "353b74f9810d5b085b6c42c9d86a5f0fdb795553235cdd48753b32e3809d18a7"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "rusqlite"
 version = "0.40.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3501,7 +3510,7 @@ checksum = "dc3efc0da82635d7e1ced0053bbbfa8c7ab9645d0bf36ceb4f7127bb85315d75"
 dependencies = [
  "cc",
  "js-sys",
- "rsqlite-vfs",
+ "rsqlite-vfs 0.1.1",
  "wasm-bindgen",
 ]
 

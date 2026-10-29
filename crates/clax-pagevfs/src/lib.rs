@@ -37,25 +37,26 @@
 //! nothing changes the stored file under its connection. `clax-fleet`'s
 //! page store fences each commit by its instance lease.
 //!
-//! The crate has no `unsafe` code: it implements only `rsqlite-vfs`'s safe
-//! traits, and tells files apart without reading their names back from
-//! SQLite's file handles (see `Registry::handles`).
+//! SQLite gives each open its own handle, which holds the file it opened.
+//! A failed call's message reaches SQLite through `xGetLastError`, and the
+//! VFS keeps it per thread: connections on different threads fail apart.
+//!
+//! The crate's one `unsafe` statement is in [`register`], which hands the
+//! VFS to SQLite through `rsqlite-vfs`'s `register_vfs` (its `SAFETY`
+//! comment gives the argument); everything else implements `rsqlite-vfs`'s
+//! safe traits.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, Once};
 use std::time::Duration;
 
-use rsqlite_vfs::ffi::{
-    SQLITE_CANTOPEN, SQLITE_FULL, SQLITE_IOERR, SQLITE_IOERR_DELETE, SQLITE_IOERR_FSYNC,
-    SQLITE_IOERR_READ, SQLITE_IOERR_WRITE, SQLITE_OPEN_MAIN_DB, SQLITE_OPEN_SUBJOURNAL,
-    SQLITE_OPEN_TEMP_DB, SQLITE_OPEN_TEMP_JOURNAL, SQLITE_OPEN_TRANSIENT_DB, SQLITE_OPEN_WAL,
-    sqlite3_vfs,
-};
 use rsqlite_vfs::{
-    MemChunksFile, SQLiteIoMethods, SQLiteVfs, SQLiteVfsFile, VfsError, VfsFile, VfsResult,
-    VfsStore,
+    AccessMode, FileKind, LockLevel, MemChunksFile, OpenOptions, OpenRequest, OpenedFile,
+    OsCallback, SQLiteIoMethods, SQLiteVfs, SyncOptions, VfsError, VfsErrorCode, VfsFile,
+    VfsResult, VfsStore,
 };
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::{Connection, OpenFlags};
@@ -215,15 +216,15 @@ struct StoredFile {
     stats: Cell<FileStats>,
 }
 
-fn io_err(code: i32, err: impl std::fmt::Display) -> VfsError {
-    VfsError::new(code, err.to_string())
+fn io_err(code: VfsErrorCode, err: impl std::fmt::Display) -> VfsError {
+    VfsError::new(code, err.to_string().into())
 }
 
 impl StoredFile {
     fn open(name: &str, store: Arc<dyn PageStore>, limits: Limits) -> VfsResult<Self> {
         let size = store
             .size(name)
-            .map_err(|e| io_err(SQLITE_IOERR_READ, e))?
+            .map_err(|e| io_err(VfsErrorCode::IoRead, e))?
             .unwrap_or(0);
         Ok(StoredFile {
             name: name.to_owned(),
@@ -258,7 +259,7 @@ impl StoredFile {
             self.count(|s| s.chunk_reads += 1);
             self.store
                 .read_chunk(&self.name, index)
-                .map_err(|e| io_err(SQLITE_IOERR_READ, e))?
+                .map_err(|e| io_err(VfsErrorCode::IoRead, e))?
                 .unwrap_or_default()
         } else {
             Vec::new()
@@ -273,9 +274,10 @@ impl StoredFile {
     }
 }
 
-impl VfsFile for StoredFile {
-    fn read(&self, buf: &mut [u8], offset: usize) -> VfsResult<bool> {
-        let offset = offset as u64;
+/// The file's I/O, as [`VfsFile`]'s: [`Handle`] makes the calls.
+impl StoredFile {
+    /// Reads what the file holds of `buf`'s range, returning how many bytes.
+    fn read(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
         let end = offset + buf.len() as u64;
         let available = self.size.min(end).saturating_sub(offset) as usize;
         let mut done = 0usize;
@@ -292,12 +294,10 @@ impl VfsFile for StoredFile {
             }
             done += take;
         }
-        buf[available..].fill(0);
-        Ok(available == buf.len())
+        Ok(available)
     }
 
-    fn write(&mut self, buf: &[u8], offset: usize) -> VfsResult<()> {
-        let offset = offset as u64;
+    fn write(&mut self, buf: &[u8], offset: u64) -> VfsResult<()> {
         let first = offset / CHUNK_SIZE as u64;
         let last = (offset + buf.len() as u64).div_ceil(CHUNK_SIZE as u64);
         let new_chunks = (first..last)
@@ -306,7 +306,7 @@ impl VfsFile for StoredFile {
         if !self.refused_at_cap && self.dirty.len() + new_chunks > self.max_dirty_chunks {
             self.refused_at_cap = true;
             return Err(io_err(
-                SQLITE_FULL,
+                VfsErrorCode::Full,
                 format!(
                     "{}: the transaction writes more than the {} bytes one commit may hold",
                     self.name,
@@ -339,8 +339,7 @@ impl VfsFile for StoredFile {
     /// else stored at the next sync with the writes before it. See
     /// `crates/clax-worker/vfs`'s `StoredFile::truncate` for why a refused
     /// truncation still reports success.
-    fn truncate(&mut self, size: usize) -> VfsResult<()> {
-        let size = size as u64;
+    fn truncate(&mut self, size: u64) -> VfsResult<()> {
         if size >= self.size {
             return Ok(());
         }
@@ -396,7 +395,7 @@ impl VfsFile for StoredFile {
                 .unsure
                 .map_or(self.stored_size, |u| u.max(self.stored_size));
             self.unsure = Some(may_hold.max(commit.size));
-            return Err(io_err(SQLITE_IOERR_FSYNC, e));
+            return Err(io_err(VfsErrorCode::IoSync, e));
         }
         self.count(|s| {
             s.commits += 1;
@@ -409,8 +408,8 @@ impl VfsFile for StoredFile {
         Ok(())
     }
 
-    fn size(&self) -> VfsResult<usize> {
-        Ok(self.size as usize)
+    fn size(&self) -> u64 {
+        self.size
     }
 }
 
@@ -419,58 +418,112 @@ impl VfsFile for StoredFile {
 enum PageFile {
     Stored(StoredFile),
     Memory(MemChunksFile),
-    /// A database file a later [`open_with`] of it replaced: every read or
-    /// write of it fails.
+    /// A database file a later [`open_with`] of it replaced, or whose
+    /// [`Database`] (or [`Registered`]) was dropped: every read or write of
+    /// it fails.
     Replaced,
 }
 
 fn replaced() -> VfsError {
-    not_open(SQLITE_IOERR, "the database file")
+    not_open(VfsErrorCode::Io, "the database file")
 }
 
-impl VfsFile for PageFile {
-    fn read(&self, buf: &mut [u8], offset: usize) -> VfsResult<bool> {
-        match self {
+/// An open file, shared between the registry and the handle using it.
+struct Slot {
+    file: Mutex<PageFile>,
+    /// The file left the registry, replaced by a later [`open_with`] of it
+    /// or with its [`Database`] dropped: its handle's calls fail without
+    /// waiting for its lock, which the replacing open holds. Cleared when
+    /// that open fails and the file is the latest again.
+    detached: AtomicBool,
+}
+
+type Shared = Arc<Slot>;
+
+fn shared(file: PageFile) -> Shared {
+    Arc::new(Slot {
+        file: Mutex::new(file),
+        detached: AtomicBool::new(false),
+    })
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// SQLite's handle on an open file. Its connection makes one call at a
+/// time; the file's lock keeps the call from [`open_with`] replacing the
+/// file and from [`stats`] reading it.
+struct Handle(Shared);
+
+// The handle goes wherever its connection does, which may be any thread.
+const _: fn() = || {
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<Handle>();
+};
+
+impl Handle {
+    /// The file, locked, unless it left the registry before the call or
+    /// while the call waited for it.
+    fn file(&self) -> VfsResult<MutexGuard<'_, PageFile>> {
+        let detached = || self.0.detached.load(Ordering::SeqCst);
+        if detached() {
+            return Err(replaced());
+        }
+        let f = lock(&self.0.file);
+        if detached() {
+            return Err(replaced());
+        }
+        Ok(f)
+    }
+}
+
+impl VfsFile for Handle {
+    fn read(&mut self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+        match &mut *self.file()? {
             PageFile::Stored(f) => f.read(buf, offset),
             PageFile::Memory(f) => f.read(buf, offset),
             PageFile::Replaced => Err(replaced()),
         }
     }
-    fn write(&mut self, buf: &[u8], offset: usize) -> VfsResult<()> {
-        match self {
+    fn write(&mut self, buf: &[u8], offset: u64) -> VfsResult<()> {
+        match &mut *self.file()? {
             PageFile::Stored(f) => f.write(buf, offset),
             PageFile::Memory(f) => f.write(buf, offset),
             PageFile::Replaced => Err(replaced()),
         }
     }
-    fn truncate(&mut self, size: usize) -> VfsResult<()> {
-        match self {
+    fn truncate(&mut self, size: u64) -> VfsResult<()> {
+        match &mut *self.file()? {
             PageFile::Stored(f) => f.truncate(size),
             PageFile::Memory(f) => f.truncate(size),
             PageFile::Replaced => Err(replaced()),
         }
     }
-    fn flush(&mut self) -> VfsResult<()> {
-        match self {
+    fn sync(&mut self, options: SyncOptions) -> VfsResult<()> {
+        match &mut *self.file()? {
             PageFile::Stored(f) => f.flush(),
-            PageFile::Memory(f) => f.flush(),
+            PageFile::Memory(f) => f.sync(options),
             PageFile::Replaced => Err(replaced()),
         }
     }
-    fn size(&self) -> VfsResult<usize> {
-        match self {
-            PageFile::Stored(f) => f.size(),
+    fn size(&self) -> VfsResult<u64> {
+        match &*self.file()? {
+            PageFile::Stored(f) => Ok(f.size()),
             PageFile::Memory(f) => f.size(),
             PageFile::Replaced => Err(replaced()),
         }
     }
-}
-
-/// An open file, shared between the registry and the I/O call using it.
-type Shared = Arc<Mutex<PageFile>>;
-
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
+    // Locks are no-ops: one connection per database file.
+    fn lock(&mut self, _level: LockLevel) -> VfsResult<()> {
+        Ok(())
+    }
+    fn unlock(&mut self, _level: LockLevel) -> VfsResult<()> {
+        Ok(())
+    }
+    fn check_reserved_lock(&self) -> VfsResult<bool> {
+        Ok(false)
+    }
 }
 
 /// A database file [`open`] registered and SQLite has not opened yet.
@@ -478,26 +531,16 @@ struct Pending {
     file: StoredFile,
 }
 
-/// The VFS's files in this process. Files are keyed by the name SQLite
-/// knows them by: for a database file, the one its [`open`] made up.
+/// The VFS's files in this process, by the name SQLite knows them by: for
+/// a database file, the one its [`open`] made up.
 #[derive(Default)]
 struct Registry {
     pending: HashMap<String, Pending>,
+    /// The database files SQLite has open.
     files: HashMap<String, Shared>,
-    /// The file name behind each open SQLite file handle, by the address of
-    /// the handle's copy of the name (`SQLiteVfsFile::name_ptr`).
-    ///
-    /// `rsqlite-vfs` 0.1.1's `xOpen` makes the name a `String`, passes it to
-    /// `VfsStore::add_file` and then leaks that same buffer into the handle,
-    /// freeing it in `xClose`. `Store::add_file` records the address it is
-    /// passed, and the I/O methods look a handle up by its `name_ptr`, which
-    /// compares addresses and never reads through one. While a handle is
-    /// open its name's buffer is live, so no other name can be recorded at
-    /// that address: the latest entry for a handle's address is its own.
-    /// The registry is the process's, as the heap the addresses come from
-    /// is. `Store::contains_file` answers `false` for every file it lets
-    /// open, so that every open goes through `add_file`.
-    handles: HashMap<usize, String>,
+    /// The temporary files SQLite opened by name, which a later open of the
+    /// name shares.
+    memory: HashMap<String, Shared>,
     /// For each store (by the address of its value) and name it keeps a
     /// database file under, the SQLite file name of its latest [`open`].
     /// Two stores may keep files of the same name: each is its own file.
@@ -512,137 +555,149 @@ fn registry() -> MutexGuard<'static, Registry> {
     lock(&REGISTRY)
 }
 
-impl Registry {
-    /// The name of the file behind a handle SQLite passes to the VFS, as
-    /// `Store::add_file` recorded it.
-    fn file_name(&self, file: &SQLiteVfsFile) -> Option<&str> {
-        self.handles
-            .get(&(file.name_ptr as usize))
-            .filter(|name| name.len() == file.name_length)
-            .map(String::as_str)
-    }
-
-    /// The open file behind a handle.
-    fn file(&self, vfs_file: &SQLiteVfsFile, code: i32) -> VfsResult<Shared> {
-        let Some(name) = self.file_name(vfs_file) else {
-            return Err(not_open(code, "the file"));
-        };
-        self.files
-            .get(name)
-            .cloned()
-            .ok_or_else(|| not_open(code, name))
-    }
-
-    /// Forgets the handles of the file SQLite knows as `name`.
-    fn forget_handles(&mut self, name: &str) {
-        self.handles.retain(|_, n| n != name);
-    }
+/// Whether SQLite keeps a file of `kind` for its connection alone: its
+/// temporary files, which the VFS keeps in memory.
+fn in_memory(kind: Option<FileKind>) -> bool {
+    matches!(
+        kind,
+        Some(
+            FileKind::TempDb | FileKind::TempJournal | FileKind::TransientDb | FileKind::SubJournal
+        )
+    )
 }
 
-/// Files a connection may keep in memory: SQLite's temporary files.
-const MEMORY_FILES: i32 = SQLITE_OPEN_TEMP_DB
-    | SQLITE_OPEN_TEMP_JOURNAL
-    | SQLITE_OPEN_TRANSIENT_DB
-    | SQLITE_OPEN_SUBJOURNAL;
+thread_local! {
+    /// The last error of a VFS call on this thread, for `xGetLastError`.
+    static LAST_ERROR: RefCell<Option<VfsError>> = const { RefCell::new(None) };
+}
 
 struct Store;
 
-impl VfsStore<PageFile, ()> for Store {
-    fn add_file(_vfs: *mut sqlite3_vfs, file: &str, flags: i32) -> VfsResult<()> {
-        if flags & SQLITE_OPEN_WAL != 0 {
+impl VfsStore for Store {
+    type File = Handle;
+    type AppData = ();
+
+    fn record_error(_data: &(), error: VfsError) {
+        // Not kept once the thread's locals are gone, as it ends.
+        let _ = LAST_ERROR.try_with(|e| *e.borrow_mut() = Some(error));
+    }
+
+    fn last_error(_data: &()) -> Option<VfsError> {
+        LAST_ERROR.try_with(|e| e.borrow().clone()).ok().flatten()
+    }
+
+    fn open_file(_data: &(), request: OpenRequest<'_>) -> VfsResult<OpenedFile<Handle>> {
+        let options = request.options;
+        let opened = |file: Shared| {
+            Ok(OpenedFile {
+                file: Handle(file),
+                access: options.access(),
+            })
+        };
+        let memory = || shared(PageFile::Memory(MemChunksFile::new(CHUNK_SIZE)));
+        let Some(file) = request.filename.map(|f| f.path()) else {
+            // A temporary file with no name: its handle's alone.
+            return opened(memory());
+        };
+        let kind = options.kind();
+        if kind == Some(FileKind::Wal) {
             return Err(io_err(
-                SQLITE_CANTOPEN,
+                VfsErrorCode::CantOpen,
                 format!(
                     "{file}: a WAL would keep commits out of the store; journal_mode must be MEMORY"
                 ),
             ));
         }
-        if file.is_empty() {
-            // Empty names would share one address in `Registry::handles`.
-            return Err(io_err(SQLITE_CANTOPEN, "a file name is empty"));
-        }
         let mut r = registry();
+        if in_memory(kind) {
+            // A temporary file opened again by name keeps its contents.
+            let f = r
+                .memory
+                .entry(file.to_owned())
+                .or_insert_with(memory)
+                .clone();
+            return opened(f);
+        }
         let f = match r.pending.remove(file) {
             // Read from the store by [`open_with`], outside the registry's lock.
-            Some(p) if flags & SQLITE_OPEN_MAIN_DB != 0 => PageFile::Stored(p.file),
+            Some(p) if kind == Some(FileKind::MainDb) => shared(PageFile::Stored(p.file)),
             Some(p) => {
                 r.pending.insert(file.to_owned(), p);
                 return Err(io_err(
-                    SQLITE_CANTOPEN,
+                    VfsErrorCode::CantOpen,
                     format!("{file} is a database file, opened as another kind"),
                 ));
             }
-            // A temporary file opened again by name keeps its contents.
-            None if flags & MEMORY_FILES != 0 => match r.files.remove(file) {
-                Some(f) if matches!(*lock(&f), PageFile::Memory(_)) => {
-                    r.files.insert(file.to_owned(), f);
-                    r.handles.insert(file.as_ptr() as usize, file.to_owned());
-                    return Ok(());
-                }
-                _ => PageFile::Memory(MemChunksFile::new(CHUNK_SIZE)),
-            },
+            None if r.files.contains_key(file) => {
+                return Err(io_err(
+                    VfsErrorCode::CantOpen,
+                    format!("{file} is open: a database file takes one connection"),
+                ));
+            }
             None => {
                 return Err(io_err(
-                    SQLITE_CANTOPEN,
+                    VfsErrorCode::CantOpen,
                     format!("{file} is not a database file open() registered"),
                 ));
             }
         };
-        r.files.insert(file.to_owned(), Arc::new(Mutex::new(f)));
-        // The buffer `file` points into becomes the handle's name.
-        r.handles.insert(file.as_ptr() as usize, file.to_owned());
+        r.files.insert(file.to_owned(), f.clone());
+        opened(f)
+    }
+
+    fn close_file(
+        _data: &(),
+        name: Option<&str>,
+        file: Handle,
+        options: OpenOptions,
+    ) -> VfsResult<()> {
+        if let Some(name) = name
+            && options.delete_on_close()
+        {
+            let mut r = registry();
+            // Not a file opened under the name since this one was deleted.
+            if r.memory.get(name).is_some_and(|f| Arc::ptr_eq(f, &file.0)) {
+                r.memory.remove(name);
+            }
+        }
         Ok(())
     }
 
-    fn contains_file(_vfs: *mut sqlite3_vfs, file: &str) -> VfsResult<bool> {
-        // A database file is created by its xOpen (`add_file`), once. Every
-        // open must reach `add_file` (see `Registry::handles`), so a
-        // temporary file reads as absent; SQLite asks `xAccess` only about
-        // journals and WAL files, which this VFS never keeps.
-        let open = registry().files.get(file).cloned();
-        match open {
-            Some(f) if matches!(*lock(&f), PageFile::Stored(_)) => Err(io_err(
-                SQLITE_CANTOPEN,
+    fn access(_data: &(), file: &str, _mode: AccessMode) -> VfsResult<bool> {
+        // SQLite asks only about journals and WAL files, which this VFS never
+        // keeps: a temporary file reads as absent, and a database file is
+        // created by its open, once.
+        if registry().files.contains_key(file) {
+            return Err(io_err(
+                VfsErrorCode::CantOpen,
                 format!("{file} is open: a database file takes one connection"),
-            )),
-            _ => Ok(false),
+            ));
         }
+        Ok(false)
     }
 
-    fn delete_file(_vfs: *mut sqlite3_vfs, file: &str) -> VfsResult<()> {
+    fn full_pathname(_data: &(), name: &str) -> VfsResult<String> {
+        Ok(name.to_owned())
+    }
+
+    fn delete_file(_data: &(), file: &str, _sync_dir: bool) -> VfsResult<()> {
         let removed = {
             let mut r = registry();
-            r.forget_handles(file);
+            r.memory.remove(file);
             r.files.remove(file)
         };
         if let Some(f) = removed
-            && let PageFile::Stored(f) = &*lock(&f)
+            && let PageFile::Stored(f) = &*lock(&f.file)
         {
             f.store
                 .delete(&f.name)
-                .map_err(|e| io_err(SQLITE_IOERR_DELETE, e))?;
+                .map_err(|e| io_err(VfsErrorCode::IoDelete, e))?;
         }
         Ok(())
     }
-
-    fn with_file<F: Fn(&PageFile) -> VfsResult<i32>>(
-        vfs_file: &SQLiteVfsFile,
-        f: F,
-    ) -> VfsResult<i32> {
-        let file = registry().file(vfs_file, SQLITE_IOERR)?;
-        f(&lock(&file))
-    }
-
-    fn with_file_mut<F: Fn(&mut PageFile) -> VfsResult<i32>>(
-        vfs_file: &SQLiteVfsFile,
-        f: F,
-    ) -> VfsResult<i32> {
-        let file = registry().file(vfs_file, SQLITE_IOERR_WRITE)?;
-        f(&mut lock(&file))
-    }
 }
 
-fn not_open(code: i32, name: &str) -> VfsError {
+fn not_open(code: VfsErrorCode, name: &str) -> VfsError {
     io_err(
         code,
         format!(
@@ -698,22 +753,18 @@ pub fn authorize(ctx: AuthContext<'_>) -> Authorization {
 struct IoMethods;
 
 impl SQLiteIoMethods for IoMethods {
-    type File = PageFile;
-    type AppData = ();
     type Store = Store;
-    const VERSION: i32 = 1;
 }
 
-struct Vfs;
+/// What SQLite asks the VFS for beside files: sleeps, randomness, the time.
+struct Os;
 
-impl SQLiteVfs<IoMethods> for Vfs {
-    const VERSION: i32 = 1;
-
-    fn sleep(dur: Duration) {
+impl OsCallback for Os {
+    fn sleep(&self, dur: Duration) {
         std::thread::sleep(dur)
     }
 
-    fn random(buf: &mut [u8]) {
+    fn random(&self, buf: &mut [u8]) -> usize {
         use std::collections::hash_map::RandomState;
         use std::hash::{BuildHasher, Hasher};
         // Randomness for temporary file names; not for cryptography.
@@ -721,14 +772,47 @@ impl SQLiteVfs<IoMethods> for Vfs {
             let n = RandomState::new().build_hasher().finish().to_le_bytes();
             chunk.copy_from_slice(&n[..chunk.len()]);
         }
+        buf.len()
     }
 
-    fn epoch_timestamp_in_ms() -> i64 {
+    fn epoch_timestamp_in_ms(&self) -> VfsResult<i64> {
         use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
+        Ok(SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as i64)
+            .map_or(0, |d| d.as_millis() as i64))
     }
+}
+
+struct Vfs;
+
+impl SQLiteVfs<IoMethods> for Vfs {
+    type Os = Os;
+    const VERSION: i32 = 1;
+
+    fn os(_data: &()) -> &Os {
+        &Os
+    }
+}
+
+/// Registers the VFS with SQLite for the life of the process: [`register`]
+/// calls it once, after SQLite is initialized.
+fn register_vfs() -> Result<(), rsqlite_vfs::RegisterVfsError> {
+    // SAFETY: the VFS is rsqlite-vfs's own `SQLiteVfs::vfs` and method
+    // table (`SQLiteIoMethods::METHODS`) over `Store`'s handles, with none
+    // of their callbacks overridden, so their versions, file layout and app
+    // data agree. The app data is `()` and the registration is never
+    // unregistered, so all the callbacks use outlives every open file.
+    // `register` runs this once, under a `Once`, and nothing else in the
+    // process registers `VFS_NAME`. The SQLite libsqlite3-sys bundles is
+    // built serialized (`SQLITE_THREADSAFE=1`). The VFS keeps its state
+    // behind mutexes and in thread-locals, and a handle, which moves with
+    // its connection, is `Send` and `Sync` (checked where `Handle` is
+    // defined), so the callbacks may run on any thread.
+    #[allow(unsafe_code)]
+    let registered = unsafe { rsqlite_vfs::register_vfs::<IoMethods, Vfs>(VFS_NAME, (), false) };
+    registered.map(|r| {
+        r.into_raw();
+    })
 }
 
 fn register() -> rusqlite::Result<()> {
@@ -740,11 +824,7 @@ fn register() -> rusqlite::Result<()> {
         let made = Connection::open_in_memory()
             .map(drop)
             .map_err(|e| e.to_string())
-            .and_then(|()| {
-                rsqlite_vfs::register_vfs::<IoMethods, Vfs>(VFS_NAME, (), false)
-                    .map(drop)
-                    .map_err(|e| e.to_string())
-            });
+            .and_then(|()| register_vfs().map_err(|e| e.to_string()));
         if let Err(e) = made {
             *lock(&RESULT) = Some(e);
         }
@@ -811,12 +891,18 @@ fn store_key(store: &Arc<dyn PageStore>) -> usize {
 
 impl Drop for OpenFile {
     fn drop(&mut self) {
-        let mut r = registry();
-        r.pending.remove(&self.sqlite_name);
-        r.files.remove(&self.sqlite_name);
-        r.forget_handles(&self.sqlite_name);
-        if r.latest.get(&self.key) == Some(&self.sqlite_name) {
-            r.latest.remove(&self.key);
+        let removed = {
+            let mut r = registry();
+            r.pending.remove(&self.sqlite_name);
+            if r.latest.get(&self.key) == Some(&self.sqlite_name) {
+                r.latest.remove(&self.key);
+            }
+            r.files.remove(&self.sqlite_name)
+        };
+        // A connection still open on the file (its `Registered` dropped
+        // first) fails from its next read or write.
+        if let Some(f) = removed {
+            f.detached.store(true, Ordering::SeqCst);
         }
     }
 }
@@ -871,13 +957,16 @@ pub fn open_with(
             .insert(key.clone(), sqlite_name.clone())
             .and_then(|earlier| {
                 r.pending.remove(&earlier);
-                r.files.remove(&earlier).map(|f| (earlier, f))
+                let f = r.files.remove(&earlier)?;
+                f.detached.store(true, Ordering::SeqCst);
+                Some((earlier, f))
             });
         (OpenFile { key, sqlite_name }, earlier)
     };
-    // Held until the open ends: an earlier I/O call that took the file
-    // before it left the registry waits here, and then fails.
-    let mut held = earlier.as_ref().map(|(_, f)| lock(f));
+    // Held until the open ends: an earlier I/O call already under way ends
+    // first, and one that took the file before it left the registry waits
+    // here, then fails unless the open fails too.
+    let mut held = earlier.as_ref().map(|(_, f)| lock(&f.file));
     match connect(name, store, limits, &file) {
         Ok(conn) => {
             if let Some(f) = held.as_deref_mut() {
@@ -891,6 +980,7 @@ pub fn open_with(
                 if r.latest.get(&file.key) == Some(&file.sqlite_name) {
                     r.latest.insert(file.key.clone(), earlier.clone());
                     r.files.insert(earlier.clone(), f.clone());
+                    f.detached.store(false, Ordering::SeqCst);
                 }
             }
             drop(held);
@@ -963,7 +1053,7 @@ pub fn stats(store: &Arc<dyn PageStore>, name: &str) -> Option<FileStats> {
             .get(r.latest.get(&(store_key(store), name.to_owned()))?)?
             .clone()
     };
-    match &*lock(&file) {
+    match &*lock(&file.file) {
         PageFile::Stored(f) => Some(f.stats.get()),
         PageFile::Memory(_) | PageFile::Replaced => None,
     }

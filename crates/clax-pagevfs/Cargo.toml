@@ -5,16 +5,19 @@ edition.workspace = true
 license = "GPL-2.0-only OR AGPL-3.0-only"
 description = "A thread-safe SQLite VFS that keeps each database's pages in a page store, such as PostgreSQL"
 
-[lints]
-workspace = true
+# The workspace's lints, but `unsafe_code` denied rather than forbidden:
+# src/lib.rs allows it on its one call to `rsqlite_vfs::register_vfs`, as
+# scripts/check-no-unsafe.py checks.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "forbid"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(clax_embedded)', 'cfg(clax_split)', 'cfg(clax_split, values(any()))'] }
 
 [dependencies]
 # The VFS glue, natively registered into the SQLite rusqlite links through
-# libsqlite3-sys. Exactly 0.1.1: the VFS tells files apart by the address
-# of the name buffer its `xOpen` passes to `VfsStore::add_file` and then
-# keeps in the handle (`Registry::handles` in src/lib.rs), as
-# crates/clax-worker/vfs does.
-rsqlite-vfs = "=0.1.1"
+# libsqlite3-sys. 0.2 leaves a failed call's message to the backend, which
+# keeps it per thread (0.1 kept one for the process in a `RefCell`).
+rsqlite-vfs = "0.2"
 rusqlite.workspace = true
 
 [dev-dependencies]
