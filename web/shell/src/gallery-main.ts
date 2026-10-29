@@ -1,6 +1,5 @@
 import "./owner-proof-install";
 import { mount } from "svelte";
-import { bootFeedback } from "./feedback/state.svelte";
 import Gallery from "./ui/Gallery.svelte";
 
 const target = document.getElementById("app")!;
@@ -8,8 +7,4 @@ const target = document.getElementById("app")!;
 // load their own chunk, as does its landing page (`/start/`); every other path is the gallery's.
 if (/^\/(setup$|device$|join\/|signin(\/|$))/.test(location.pathname)) void import("./hosted/SignIn.svelte").then(m => mount(m.default, { target }));
 else if (location.pathname === "/start/") void import("./hosted/Landing.svelte").then(m => mount(m.default, { target }));
-else {
-  // Asked first, so the feedback overlay's recorder starts as early as it can.
-  bootFeedback();
-  mount(Gallery, { target });
-}
+else mount(Gallery, { target });

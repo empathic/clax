@@ -68,6 +68,10 @@ test("a person with the feedback flag files a report about Clax from its shell; 
     Object.assign(auth, { "x-clax-session": sessions.session.id }, sessions.session_secret ? { "x-clax-session-secret": sessions.session_secret } : {});
 
     await watchCsp(owner);
+    // The instance is the shell's own origin: the overlay's same-origin
+    // reads (the badge, the reports) carry no `Origin`, and none is refused.
+    const refused: string[] = [];
+    owner.on("response", r => { if (r.url().includes("/reporter/") && r.status() >= 400) refused.push(`${r.status()} ${new URL(r.url()).pathname}`); });
     const requests: string[] = [];
     owner.on("request", r => { requests.push(new URL(r.url()).pathname); });
     await owner.goto(`${origin}/`);
@@ -120,30 +124,30 @@ test("a person with the feedback flag files a report about Clax from its shell; 
     // A fix proposed: the menu's button and My reports show it.
     const lease = await agent<Lease>("POST", `/api/queues/${qid}/reports/${id}/claim`);
     await agent("POST", `/api/queues/${qid}/reports/${id}/fix`, { summary: "The tag bar wraps above the grid now.", verify_url: `${origin}/`, fence: lease.fence });
-    const dbg: string[] = [];
-    owner.on("response", async r => { if (r.url().includes("/reporter/badge") || r.url().includes("feedback/token")) dbg.push(`${r.status()} ${r.url()} ${await r.text().catch(() => "")}`); });
-    owner.on("console", m => dbg.push(`console ${m.type()} ${m.text()}`));
-    test.info().annotations.push({ type: "dbg", description: "" });
-    process.on("exit", () => {});
     // Focus asks the overlay for the badge at once; a focus heard while an
     // earlier load is in flight is answered by that load, so it is repeated.
     await expect(async () => {
       await owner.evaluate(() => { window.dispatchEvent(new Event("focus")); });
-      await expect(menuButton, dbg.join("\n")).toHaveAccessibleName("Feedback: 1 report waits on you", { timeout: 1000 });
+      await expect(menuButton).toHaveAccessibleName("Feedback: 1 report waits on you", { timeout: 1000 });
     }).toPass({ timeout: 15_000 });
     await menuButton.click();
     await owner.getByRole("menuitem", { name: "My reports: 1 report waits on you" }).click();
     const panel = owner.getByRole("region", { name: "Your reports" });
     await expect(panel.getByRole("region", { name: "Fix waiting for your check" })).toContainText("The tag bar wraps above the grid now.");
 
+    // The shell's policy restricts no style or script source and the shell
+    // sets its type in system faces, so the overlay needs no `nonce`, and
+    // mounting and clipping trip nothing.
     expect(await cspViolations(owner)).toEqual([]);
+    expect(refused).toEqual([]);
 
     // Someone without the flag: one config request, no menu, no overlay.
     const ben = await memberOf(browser, owner, origin, "Ben", []);
     const benRequests: string[] = [];
     ben.on("request", r => { benRequests.push(new URL(r.url()).pathname); });
-    await ben.goto(`${origin}/`);
-    await expect(ben.getByRole("searchbox", { name: "Search artifacts" })).toBeVisible();
+    // On the Queues page the gallery's lazy module, which asks the config, loads at once.
+    await ben.goto(`${origin}/queues`);
+    await expect(ben.locator("header.gbar")).toBeVisible();
     await expect.poll(() => benRequests.includes("/_app/feedback/config")).toBe(true);
     expect((await call(ben, "GET", "/_app/feedback/config")).json).toEqual({ enabled: false, instance: null, queue: null, context: null });
     await expect(ben.getByRole("button", { name: /^Feedback/ })).toHaveCount(0);

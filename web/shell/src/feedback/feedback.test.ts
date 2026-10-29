@@ -56,9 +56,11 @@ const svelteKit = () => import("../test/svelte");
 const settle = async () => { for (let i = 0; i < 8; i++) await new Promise(r => setTimeout(r, 0)); (await svelteKit()).flush(); };
 /** What each test started, ended after it (the shortcut listens on the window). */
 const running: { close(): void }[] = [];
-/** The state module with its integration running once `bootFeedback` has started it. */
+/** The entry point, the headers' slot and the running state, as one. */
+const shell = async () => ({ ...(await import("./boot")), ...(await import("./slot.svelte")), ...(await import("./state.svelte")) });
+/** `shell()` with the integration running once `bootFeedback` has started it. */
 async function booted(where?: () => { view: string; artifact: string | null }) {
-  const s = await import("./state.svelte");
+  const s = await shell();
   s.bootFeedback(where);
   await vi.waitFor(() => { expect(s.feedbackMenu.current).not.toBeNull(); });
   running.push(s.feedback.current!);
@@ -84,7 +86,7 @@ describe("the shell's feedback", () => {
     const calls = stubFetch({ "GET /_app/feedback/config": OFF });
     const fake = fakeClax();
     (window as { Clax?: unknown }).Clax = fake.Clax;
-    const s = await import("./state.svelte");
+    const s = await shell();
     s.bootFeedback();
     await settle();
     expect(calls.map(c => `${c.method} ${c.url}`)).toEqual(["GET /_app/feedback/config"]);
@@ -98,7 +100,7 @@ describe("the shell's feedback", () => {
   });
 
   it("is off when the config route fails or answers without a queue", async () => {
-    const { loadConfig } = await import("./config");
+    const { loadConfig } = await import("./boot");
     stubFetch({ "GET /_app/feedback/config": [401, { error: { code: "unauthorized" } }] });
     expect(await loadConfig()).toBeNull();
     stubFetch({ "GET /_app/feedback/config": { ...CONFIG, queue: null } });
