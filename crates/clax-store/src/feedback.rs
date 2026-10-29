@@ -35,8 +35,17 @@ fn ts(now: chrono::DateTime<chrono::Utc>, secs_ago: i64) -> String {
 }
 
 /// Live sessions a sent thread on artifact `aid` goes to: the owner (first)
-/// and every watcher, without duplicates.
-fn live_targets(c: &Connection, aid: &str, owner: Option<&str>) -> Result<Vec<String>> {
+/// and every watcher, without duplicates; none on a routed artifact
+/// ([`Store::set_routed_artifacts`]).
+fn live_targets(
+    c: &Connection,
+    aid: &str,
+    owner: Option<&str>,
+    routed: bool,
+) -> Result<Vec<String>> {
+    if routed {
+        return Ok(Vec::new());
+    }
     let mut stmt = c.prepare(
         "SELECT id FROM sessions WHERE ended_at IS NULL
            AND (id = ?2 OR id IN (SELECT session_id FROM watches WHERE artifact_id = ?1))
@@ -108,8 +117,9 @@ fn targets_for(
     aid: &str,
     owner: Option<&str>,
     target: SendTarget<'_>,
+    routed: bool,
 ) -> Result<(Vec<String>, Option<String>)> {
-    let live = live_targets(tx, aid, owner)?;
+    let live = live_targets(tx, aid, owner, routed)?;
     match target {
         SendTarget::Agent(sid) => {
             if !live.iter().any(|s| s == sid) {
@@ -146,14 +156,14 @@ fn targets_for(
 }
 
 /// Live session IDs that a send `to` this artifact may name: its live owner
-/// and live watchers.
-pub(crate) fn live_targets_of(c: &Connection, aid: &str) -> Result<Vec<String>> {
+/// and live watchers; none when it is `routed`.
+pub(crate) fn live_targets_of(c: &Connection, aid: &str, routed: bool) -> Result<Vec<String>> {
     let owner: Option<String> = c.query_row(
         "SELECT owner_session_id FROM artifacts WHERE id = ?1",
         params![aid],
         |r| r.get(0),
     )?;
-    live_targets(c, aid, owner.as_deref())
+    live_targets(c, aid, owner.as_deref(), routed)
 }
 
 /// What [`send_in`] wrote: the feedback rows it inserted, the one session
@@ -251,6 +261,7 @@ pub(crate) fn give_untargeted_in(
 /// With no target, one untargeted row per comment. Returns the rows it
 /// inserted and whom it sent to. See [`Store::send_to_agent`] for the contract.
 pub(crate) fn send_in(
+    st: &super::Store,
     tx: &Transaction<'_>,
     thread_id: &str,
     batch_id: Option<&str>,
@@ -275,7 +286,15 @@ pub(crate) fn send_in(
         params![thread_id],
     )?;
     let target_before = stored_target(tx, thread_id)?;
-    let (targets, to) = targets_for(tx, thread_id, &t.artifact_id, owner.as_deref(), target)?;
+    let routed = st.routed(&t.artifact_id);
+    let (targets, to) = targets_for(
+        tx,
+        thread_id,
+        &t.artifact_id,
+        owner.as_deref(),
+        target,
+        routed,
+    )?;
     let retargeted = stored_target(tx, thread_id)? != target_before;
     // A send to one agent gives it the thread's comments it has no row
     // for, as `@name` does, the untargeted rows first.
@@ -878,12 +897,15 @@ impl Store {
                     )
                     .optional()?
                     .ok_or(CoreError::NotFound)?;
-                if !live_targets_of(tx, &aid)?.iter().any(|s| s == sid) {
+                if !live_targets_of(tx, &aid, self.routed(&aid))?
+                    .iter()
+                    .any(|s| s == sid)
+                {
                     super::watches::ensure_watch_in(self, tx, ctx, sid, &ArtifactId::parse(&aid)?)?;
                 }
             }
             let now = self.now();
-            let sent = send_in(tx, thread_id, None, target, &mut touched, &now)?;
+            let sent = send_in(self, tx, thread_id, None, target, &mut touched, &now)?;
             if let Some(old) = &sent.took_from {
                 displace_owner_in(self, tx, ctx, thread_id, old, &now, &mut touched)?;
             }
@@ -960,7 +982,7 @@ impl Store {
                     "a resolved thread cannot be sent; add a comment to reopen it",
                 ));
             }
-            let live = live_targets_of(tx, &t.artifact_id)?;
+            let live = live_targets_of(tx, &t.artifact_id, self.routed(&t.artifact_id))?;
             if let Some(sid) = sids.iter().find(|s| !live.contains(s)) {
                 return Err(CoreError::invalid(
                     "unknown_agent",
@@ -1098,6 +1120,12 @@ impl Store {
                     "a resolved thread cannot be handed off; add a comment to reopen it",
                 ));
             }
+            if self.routed(&aid) {
+                return Err(CoreError::invalid(
+                    "routed_artifact",
+                    "this artifact's comments go to no agent session; release the thread instead",
+                ));
+            }
             let live: Option<bool> = tx
                 .query_row(
                     "SELECT ended_at IS NULL FROM sessions WHERE id = ?1",
@@ -1111,7 +1139,7 @@ impl Store {
                     "no live agent has that name or handle",
                 ));
             }
-            if !live_targets_of(tx, &aid)?.iter().any(|s| s == to) {
+            if !live_targets_of(tx, &aid, self.routed(&aid))?.iter().any(|s| s == to) {
                 super::watches::ensure_watch_in(self, tx, ctx, to, &ArtifactId::parse(&aid)?)?;
             }
             touched.threads.insert((aid.clone(), tid.to_string()));
@@ -1772,11 +1800,99 @@ impl Store {
         }
     }
 
+    /// Routes the comments of artifacts `ids` outside Clax (`[serve]
+    /// routed_artifacts`; another daemon reads them and answers on their
+    /// threads): from now on a send on one goes to no agent session, its
+    /// rows stay untargeted and no watch or publish picks them up, no agent
+    /// takes its threads, and none may be handed one. Replaces the earlier
+    /// set. Each routed thread that has an owner loses it (`thread.release`,
+    /// reason `routed`) and its undelivered rows become untargeted, one per
+    /// comment, so the sessions that held them learn they are gone.
+    ///
+    /// # Errors
+    /// When the sweep's transaction fails; the set is kept either way.
+    pub fn set_routed_artifacts(&self, ctx: &AuditCtx, ids: &[ArtifactId]) -> Result<Touched> {
+        let set: std::collections::BTreeSet<String> =
+            ids.iter().map(|i| i.as_str().to_string()).collect();
+        *self.routed.write().unwrap_or_else(|e| e.into_inner()) = set.clone();
+        let mut touched = Touched::default();
+        if set.is_empty() {
+            return Ok(touched);
+        }
+        self.with_tx(|tx| {
+            let now = self.now();
+            for aid in &set {
+                let owned: Vec<(String, String)> = {
+                    let mut stmt = tx.prepare(
+                        "SELECT id, target_session_id FROM threads
+                         WHERE artifact_id = ?1 AND target_session_id IS NOT NULL ORDER BY id",
+                    )?;
+                    stmt.query_map(params![aid], |r| Ok((r.get(0)?, r.get(1)?)))?
+                        .collect::<rusqlite::Result<_>>()?
+                };
+                let holders: Vec<String> = {
+                    let mut stmt = tx.prepare(
+                        "SELECT DISTINCT f.target_session_id FROM feedback f JOIN threads t ON t.id = f.thread_id
+                         WHERE t.artifact_id = ?1 AND f.delivered_at IS NULL AND f.target_session_id IS NOT NULL",
+                    )?;
+                    stmt.query_map(params![aid], |r| r.get(0))?
+                        .collect::<rusqlite::Result<_>>()?
+                };
+                tx.execute(
+                    "UPDATE feedback SET target_session_id = NULL, untargeted_at = ?2,
+                        notified_at = NULL, push_failed_at = NULL
+                     WHERE delivered_at IS NULL AND target_session_id IS NOT NULL
+                       AND thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
+                    params![aid, now],
+                )?;
+                tx.execute(
+                    "DELETE FROM feedback WHERE delivered_at IS NULL AND target_session_id IS NULL
+                       AND thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)
+                       AND id NOT IN (SELECT MIN(f.id) FROM feedback f JOIN threads t ON t.id = f.thread_id
+                         WHERE t.artifact_id = ?1 AND f.delivered_at IS NULL AND f.target_session_id IS NULL
+                         GROUP BY f.comment_id)",
+                    params![aid],
+                )?;
+                touched.targets.extend(holders);
+                for (tid, sid) in owned {
+                    tx.execute(
+                        "UPDATE threads SET target_session_id = NULL WHERE id = ?1",
+                        params![tid],
+                    )?;
+                    let mut rec = thread_record(AuditKind::ThreadRelease, &now, aid, &tid)
+                        .with("thread_id", tid.as_str())
+                        .with("session", sid.as_str())
+                        .with("reason", "routed");
+                    rec.ids.session = Some(sid);
+                    self.record_audit(tx, ctx, rec)?;
+                    touched.threads.insert((aid.clone(), tid));
+                }
+            }
+            if !touched.threads.is_empty() {
+                self.agents_pinged();
+            }
+            Ok(())
+        })?;
+        Ok(touched)
+    }
+
+    /// Whether artifact `aid`'s comments are routed outside Clax
+    /// ([`Store::set_routed_artifacts`]).
+    pub fn routed(&self, aid: &str) -> bool {
+        self.routed
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(aid)
+    }
+
     /// Gives every untargeted, undelivered row on artifact `id` to `session_id`
     /// (it just published a version or watched the artifact). A row whose
     /// comment already has a row for that session is dropped instead.
     pub fn retarget_untargeted(&self, id: &ArtifactId, session_id: &str) -> Result<Touched> {
         let mut touched = Touched::default();
+        if self.routed(id.as_str()) {
+            return Ok(touched);
+        }
         self.with_tx(|tx| {
             let rows: Vec<(String, String, String)> = {
                 let mut stmt = tx.prepare(
@@ -5125,5 +5241,63 @@ mod ownership {
         let rows = st.feedback_rows(&tid).unwrap();
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0].id, "f-done");
+    }
+
+    /// A routed artifact's comments reach no agent session: the routing
+    /// releases its owned threads, later sends stay untargeted, a watch
+    /// picks none up, a reply takes nothing, and no agent can be named.
+    #[test]
+    fn a_routed_artifacts_comments_reach_no_agent() {
+        let (_d, st, a, b, tid) = two_watchers();
+        assert_eq!(take(&st, &a).items.len(), 1);
+        assert_eq!(st.thread_owner(&tid).unwrap().unwrap().session_id, a);
+        viewer_says(&st, &tid, "and the axis");
+        st.send_to(DAEMON, &tid, SendTarget::Thread).unwrap();
+        let aid = ArtifactId::parse(&st.get_thread(&tid).unwrap().unwrap().artifact_id).unwrap();
+        let touched = st
+            .set_routed_artifacts(DAEMON, std::slice::from_ref(&aid))
+            .unwrap();
+        assert!(touched.targets.contains(&a), "{touched:?}");
+        assert!(st.routed(aid.as_str()));
+        assert_eq!(st.thread_owner(&tid).unwrap(), None);
+        let recs = ownership_records(&st);
+        let last = &recs.last().unwrap().1;
+        assert_eq!(
+            (last["reason"].as_str(), last["session"].as_str()),
+            (Some("routed"), Some(a.as_str()))
+        );
+        assert!(take(&st, &a).items.is_empty());
+        assert!(take(&st, &b).items.is_empty());
+        // Later comments are sent to nobody, and a watch takes none.
+        viewer_says(&st, &tid, "and the legend");
+        st.send_to(DAEMON, &tid, SendTarget::Thread).unwrap();
+        let t2 = thread(&st, &aid, "a new one");
+        st.send_to(DAEMON, &t2, SendTarget::Everyone).unwrap();
+        st.retarget_untargeted(&aid, &b).unwrap();
+        for t in [&tid, &t2] {
+            let rows = st.feedback_rows(t).unwrap();
+            assert!(
+                rows.iter()
+                    .all(|r| r.delivered_at.is_some() || r.target_session_id.is_none()),
+                "{rows:?}"
+            );
+        }
+        assert!(take(&st, &a).items.is_empty());
+        assert!(take(&st, &b).items.is_empty());
+        // Any agent may reply; none becomes the owner.
+        st.add_agent_reply(DAEMON, &tid, reply(&b, "seen"), None)
+            .unwrap();
+        st.add_agent_reply(DAEMON, &tid, reply(&a, "also seen"), None)
+            .unwrap();
+        assert_eq!(st.thread_owner(&tid).unwrap(), None);
+        // No agent can be named or handed the thread.
+        assert!(st.send_to(DAEMON, &tid, SendTarget::Agent(&a)).is_err());
+        assert!(
+            st.send_to_named(DAEMON, &tid, std::slice::from_ref(&a))
+                .is_err()
+        );
+        let err = st.handoff(DAEMON, &tid, &a, Some(&b));
+        assert!(format!("{err:?}").contains("routed_artifact"), "{err:?}");
+        assert_eq!(st.thread_owner(&tid).unwrap(), None);
     }
 }

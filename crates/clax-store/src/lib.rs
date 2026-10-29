@@ -257,6 +257,9 @@ pub struct Store {
     resumed_at: Mutex<String>,
     /// Each GitHub member's caps ([`Store::set_member_caps`]).
     member_caps: RwLock<Option<github::MemberCaps>>,
+    /// The artifacts whose comments an outside route carries
+    /// ([`Store::set_routed_artifacts`]): sent to no agent session.
+    routed: RwLock<std::collections::BTreeSet<String>>,
     /// ClaxBot's settings the daemon's configuration sets, laid over the
     /// stored ones on every read ([`Store::set_bot_overrides`]).
     bot_overrides: RwLock<Arc<bot_settings::Overrides>>,
@@ -443,6 +446,7 @@ impl Store {
             pushed_listener: RwLock::new(None),
             resumed_at: Mutex::new(stamp(clock.now())),
             member_caps: RwLock::new(None),
+            routed: RwLock::default(),
             bot_overrides: RwLock::default(),
             base_url_policy: RwLock::default(),
             #[cfg(test)]

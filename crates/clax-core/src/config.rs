@@ -32,7 +32,10 @@
 //! `[serve] owner_tailscale_nodes` names when it is set
 //! ([`HomeConfig::serve_owner_tailscale_devices`]), and `[serve]
 //! trusted_host_frames` frames artifacts from a path of a trusted host
-//! ([`HomeConfig::serve_trusted_host_frames`]). Any other key in `[serve]`
+//! ([`HomeConfig::serve_trusted_host_frames`]), and `[serve]
+//! routed_artifacts` names the artifacts whose comments another daemon
+//! carries, which Clax sends to no agent session
+//! ([`HomeConfig::serve_routed_artifacts`]). Any other key in `[serve]`
 //! is logged and ignored. `[sample]`
 //! configures the
 //! `sample` capability ([`HomeConfig::sample`]); a daemon whose `[sample]` is
@@ -805,6 +808,48 @@ impl HomeConfig {
         Ok(on)
     }
 
+    /// `[serve] routed_artifacts`: the artifacts whose comments another
+    /// daemon reads and answers (such as an adapter that hands each comment
+    /// to one chosen agent over its own transport), so Clax sends them to no
+    /// agent session and no agent owns their threads
+    /// (`clax_store::Store::set_routed_artifacts`). Empty when absent.
+    ///
+    /// # Errors
+    /// `Invalid { code: "bad_config" }` naming the file (or the variable)
+    /// and the key when `[serve]` is not a table or `routed_artifacts` is
+    /// not a list of at most 256 artifact IDs. The daemon does not start on
+    /// it.
+    pub fn serve_routed_artifacts(&self) -> Result<Vec<crate::ArtifactId>> {
+        if let Some(serve) = self.value("serve")
+            && serve.as_dict().is_none()
+        {
+            return Err(self.bad(
+                "serve",
+                "[serve]",
+                format!("must be a table, not {}", kind_of(&serve)),
+            ));
+        }
+        let Some(v) = self.value("serve.routed_artifacts") else {
+            return Ok(Vec::new());
+        };
+        let ids: Option<Vec<crate::ArtifactId>> = v.as_array().and_then(|l| {
+            l.iter()
+                .map(|i| i.as_str().and_then(|i| crate::ArtifactId::parse(i).ok()))
+                .collect()
+        });
+        match ids.filter(|i| i.len() <= 256) {
+            Some(ids) => Ok(ids),
+            None => Err(self.bad(
+                "serve.routed_artifacts",
+                "[serve]",
+                format!(
+                    "routed_artifacts must list at most 256 artifact IDs such as \"f4s6pxhbs8bg\", not {}",
+                    shown(&v)
+                ),
+            )),
+        }
+    }
+
     /// `[sample]`: the default when absent.
     ///
     /// # Errors
@@ -1215,6 +1260,7 @@ const SERVE_KEYS: &[&str] = &[
     "owner_tailscale_nodes",
     "tailscale_cli",
     "trusted_host_frames",
+    "routed_artifacts",
 ];
 
 /// The owner's tailnet devices (`[serve] owner_tailscale_nodes`) and the
@@ -2812,6 +2858,35 @@ mod tests {
             let e = with(t).serve_trusted_host_frames().unwrap_err().to_string();
             assert!(
                 e.contains("config.toml") && e.contains("[serve]"),
+                "{t}: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn routed_artifacts_are_none_by_default_and_must_be_artifact_ids() {
+        for t in [
+            "",
+            "[serve]\nport = 7481\n",
+            "[serve]\nrouted_artifacts = []\n",
+        ] {
+            assert!(with(t).serve_routed_artifacts().unwrap().is_empty(), "{t}");
+        }
+        let ids = with("[serve]\nrouted_artifacts = [\"f4s6pxhbs8bg\"]\n")
+            .serve_routed_artifacts()
+            .unwrap();
+        assert_eq!(
+            ids.iter().map(|i| i.as_str()).collect::<Vec<_>>(),
+            ["f4s6pxhbs8bg"]
+        );
+        for t in [
+            "[serve]\nrouted_artifacts = \"f4s6pxhbs8bg\"\n",
+            "[serve]\nrouted_artifacts = [\"not an id\"]\n",
+            "[serve]\nrouted_artifacts = [7]\n",
+        ] {
+            let e = with(t).serve_routed_artifacts().unwrap_err().to_string();
+            assert!(
+                e.contains("config.toml") && e.contains("routed_artifacts"),
                 "{t}: {e}"
             );
         }

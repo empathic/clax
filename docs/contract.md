@@ -7990,7 +7990,16 @@ request of `<id>` with the path that follows), in a sandbox without
 response there), its bridge relaying every site API call through the
 shell (`data-api="frame"`, `site.fetch`); the bootstrap's and `GET
 /api/artifacts/<id>`'s `site` then carry `path: "/_clax/frame/"`. Only the
-owner reads there (see docs/usage.md). Other keys in `[serve]` are logged and ignored. `just watch` and `just dev` write
+owner reads there (see docs/usage.md). `routed_artifacts` (a list of at
+most 256 artifact IDs, unset by default; anything else is `bad_config`)
+names artifacts whose comments another daemon reads and answers: a send
+on one goes to no agent session (its rows stay untargeted, and neither a
+watch nor a publish picks them up), no agent takes its threads by a
+delivery or a reply, a send or `@name` naming an agent is
+`unknown_agent`, and a handoff to one is `routed_artifact`; agents may
+still reply. At each start the daemon releases every owned thread of
+those artifacts (`thread.release`, reason `routed`) and untargets their
+undelivered rows. Other keys in `[serve]` are logged and ignored. `just watch` and `just dev` write
 `port = 7481` (or `CLAX_DEV_PORT`'s value) into `~/.clax-dev/config.toml`
 when it has no `[serve]` table, so every daemon for that home, whoever
 starts it, listens there. Outside `--shared`, both first stop a daemon of

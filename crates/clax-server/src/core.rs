@@ -178,6 +178,17 @@ impl Core {
             state.quickstart = clax_core::quickstart::Release::from_tree(&*state.web).map(Arc::new);
         }
         state.owner_devices = owner_devices(&state.owner_tailscale_login, &config)?;
+        // `[serve] routed_artifacts`: a bad list stops the daemon. Their
+        // threads' owners are released here, once per start.
+        if let (None, Ok(c)) = (&state.hosted, &config) {
+            let routed = c.serve_routed_artifacts()?;
+            if !routed.is_empty() {
+                let touched = state
+                    .store
+                    .set_routed_artifacts(&clax_core::audit::AuditCtx::DAEMON, &routed)?;
+                tracing::info!(artifacts = ?routed.iter().map(|a| a.as_str()).collect::<Vec<_>>(), released = touched.threads.len(), "comments of these artifacts go to no agent session");
+            }
+        }
         // `[sign]`: a bad table stops the daemon, as `[serve]`'s owner keys do.
         state.sign = match (&state.hosted, &config) {
             (None, Ok(c)) => c.sign()?.map(Arc::new),

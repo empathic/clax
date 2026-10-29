@@ -252,6 +252,15 @@ How it stays isolated, without a site origin of its own:
 - **Owner only.** A local daemon's sites are the owner's alone, and so are path frames: the site API under the path answers only a request that is the owner's as any API request is (the token, the owner cookie, or `owner_tailscale_login` on a request the browser marks as same-origin, which only the shell's relay is: the opaque page's own requests are `cross-site` and get 403). The page's other files, which the opaque frame loads as another origin, are answered when `tailscale serve` names the owner's login, whatever made the request: a `GET` of a file changes nothing. Another login, or no login, gets 403.
 - **What it trades.** Every artifact's files share the host's name, so a page another site shows you can still include one of your artifacts' scripts or images by URL (it cannot read a page, a document or the API). An artifact page that navigates its frame elsewhere takes its sandbox with it, and the shell keeps answering a document in that frame with the artifact's own capabilities: what the page could already do. A draft's page shows, but its runtime is not relayed.
 
+When another daemon carries an artifact's comments (an adapter that reads them over the API and hands each to one chosen agent over its own transport), name the artifact so Clax sends its comments to no agent session and no agent owns its threads:
+
+```toml
+[serve]
+routed_artifacts = ["f4s6pxhbs8bg"]   # artifact IDs; unset by default
+```
+
+Agents may still reply on such a thread; none becomes its owner, and none can be sent or handed it. At each start the daemon releases the threads of those artifacts that an agent owns.
+
 To serve the internet (hosted mode), put the daemon behind a proxy that terminates TLS and keeps the `Host` header, and name its public origin in `config.toml`:
 
 ```toml
