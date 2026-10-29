@@ -6,3 +6,4 @@
 //!   through a report queue (spec 2026-10-29-feedback-loop-design §10).
 
 pub mod feedback;
+pub mod instance;

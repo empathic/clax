@@ -65,37 +65,27 @@ fi
 # The grant is kept while config.toml's [feedback] names this queue: it
 # was made for it by an earlier run.
 GRANT_FILE="$HOME_DIR/feedback-grant.json"
-if [ -s "$GRANT_FILE" ] && grep -qx "queue = \"$QID\"" "$HOME_DIR/config.toml" 2>/dev/null; then
+CONFIG="$HOME_DIR/config.toml"
+if [ -s "$GRANT_FILE" ] && [ "$(python3 scripts/lib/feedback-config.py queue "$CONFIG")" = "$QID" ]; then
     echo "service grant in $GRANT_FILE is there"
 else
-    umask 077
-    api POST "/api/queues/$QID/service-grants" '{"name": "dev feedback"}' | python3 -c '
-import json, sys
+    # Written whole to a new file at 0600, then moved over the old one, so
+    # a looser file there never holds the secret.
+    tmp="$GRANT_FILE.tmp.$$"
+    (umask 077 && api POST "/api/queues/$QID/service-grants" '{"name": "dev feedback"}' | python3 -c '
+import json, os, sys
 g = json.load(sys.stdin)
-json.dump({"token": g["token"], "private_key_pkcs8": g["private_key"]}, open(sys.argv[1], "w"))
-' "$GRANT_FILE"
-    chmod 600 "$GRANT_FILE"
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, "w") as f:
+    json.dump({"token": g["token"], "private_key_pkcs8": g["private_key"]}, f)
+' "$tmp") || { rm -f "$tmp"; die "the service grant was not made"; }
+    mv -f "$tmp" "$GRANT_FILE"
     echo "made a service grant: $GRANT_FILE"
 fi
 
 # [feedback] in config.toml, replacing the table if there is one.
-python3 - "$HOME_DIR/config.toml" "$QID" "$ORIGIN" <<'PY'
-import os, sys
-path, qid, origin = sys.argv[1], sys.argv[2], sys.argv[3]
-lines = open(path).read().splitlines() if os.path.exists(path) else []
-out, skip = [], False
-for line in lines:
-    s = line.strip()
-    if s.startswith("["):
-        skip = s == "[feedback]"
-    if not skip:
-        out.append(line)
-while out and not out[-1].strip():
-    out.pop()
-out += ["", "[feedback]", f'queue = "{qid}"', 'service_grant_file = "feedback-grant.json"', f'origin = "{origin}"']
-open(path, "w").write("\n".join(out) + "\n")
-PY
-echo "wrote [feedback] to $HOME_DIR/config.toml"
+python3 scripts/lib/feedback-config.py write "$CONFIG" "$QID" "$ORIGIN"
+echo "wrote [feedback] to $CONFIG"
 
 api PUT /api/admin/people/%2Aowner/flags '{"feedback": true}' >/dev/null
 echo "turned on the owner's feedback flag"
