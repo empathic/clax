@@ -94,8 +94,9 @@ pub fn one_line(s: &str) -> String {
 
 /// The push for item `i`, from its inbox view `v` (spec 2026-10-06 §7.6):
 /// who it is from, what it wants, and where a tap goes. `None` for an item
-/// that does not wait on the owner, is read, is a person's, or is a
-/// machine that connected with an invite (nothing to decide).
+/// that does not wait on the owner, is read, is a person's, a reply on a
+/// thread that is not open, or a machine that connected with an invite
+/// (nothing to decide).
 pub fn message(i: &ItemRow, v: &Value) -> Option<Message> {
     if i.recipient.is_some() || i.read_at.is_some() || !waits_on_owner(i.kind) {
         return None;
@@ -109,6 +110,9 @@ pub fn message(i: &ItemRow, v: &Value) -> Option<Message> {
     let title = match i.kind {
         Kind::Question => format!("{agent} asked you a question"),
         Kind::Approval => format!("{agent} needs your approval"),
+        // A reply on a thread already resolved (the agent replied and
+        // resolved) waits on no one: no push.
+        Kind::Reply if v["thread"]["status"] != "open" => return None,
         Kind::Reply => format!("{agent} replied to you"),
         Kind::Connection => {
             if v["connection"]["via"] == "invite" {
@@ -272,7 +276,8 @@ mod tests {
 
     #[test]
     fn a_push_is_a_title_a_shell_url_and_a_tag() {
-        let v = json!({"agent": {"name": "clax-claude", "harness": "claude"}, "url": "/a/7q3k9mzx2b4t?thread=t1"});
+        let v = json!({"agent": {"name": "clax-claude", "harness": "claude"}, "url": "/a/7q3k9mzx2b4t?thread=t1",
+                       "thread": {"id": "t1", "status": "open"}});
         assert_eq!(
             message(&item(Kind::Reply), &v),
             Some(Message {
@@ -309,6 +314,21 @@ mod tests {
         ] {
             assert_eq!(message(&item(k), &v), None, "{k:?}");
         }
+        // A reply on a resolved thread, or one that is gone, waits on no one.
+        for thread in [
+            json!({"status": "resolved"}),
+            json!({"status": null}),
+            json!(null),
+        ] {
+            assert_eq!(
+                message(
+                    &item(Kind::Reply),
+                    &json!({"url": "/a/x", "thread": thread})
+                ),
+                None,
+                "{thread}"
+            );
+        }
         let mut person = item(Kind::Question);
         person.recipient = Some("p_1".into());
         assert_eq!(message(&person, &v), None);
@@ -333,14 +353,18 @@ mod tests {
 
     #[test]
     fn titles_are_one_safe_line_and_urls_stay_on_the_shell() {
-        let v = json!({"agent": {"name": "evil\u{202e}\nname\twith   gaps"}, "url": "https://evil.example/"});
+        let v = json!({"agent": {"name": "evil\u{202e}\nname\twith   gaps"}, "url": "https://evil.example/",
+                       "thread": {"status": "open"}});
         let m = message(&item(Kind::Reply), &v).unwrap();
         assert_eq!(m.title, "evil name with gaps replied to you");
         assert_eq!(m.url, "/inbox");
         assert_eq!(
-            message(&item(Kind::Reply), &json!({"url": "//evil.example"}))
-                .unwrap()
-                .url,
+            message(
+                &item(Kind::Reply),
+                &json!({"url": "//evil.example", "thread": {"status": "open"}})
+            )
+            .unwrap()
+            .url,
             "/inbox"
         );
         let long = "a".repeat(200);
