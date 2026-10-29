@@ -4,9 +4,11 @@
 // cannot (cross-origin frames, canvases, video) but needs the reporter's
 // permission, and is not offered on phones nor in a frame (whose viewport is
 // not the tab's). The captured surface is checked: anything but a browser
-// tab is refused, and so is a tab that carries another page's capture handle;
-// where the browser has no capture handles, or the tab shows none, the result
-// says it could not tell (`thisTab: "unknown"`). The page's `data-clax-redact` boxes are covered in
+// tab is refused, and so is a tab that carries another page's capture handle,
+// or none where this page set its own; where the browser has no capture
+// handles (or this page could not set one), the result says it could not
+// tell (`thisTab: "unknown"`). A frame that never comes fails after
+// `FRAME_WAIT_MS`. The page's `data-clax-redact` boxes are covered in
 // the frame, as a DOM render draws them.
 
 import { REDACT_ATTR } from "./anchor";
@@ -41,6 +43,8 @@ export interface DisplayDeps {
   grab?: (track: MediaStreamTrack, stream: MediaStream, win: Window) => Promise<Frame>;
   canvas?: (w: number, h: number, win: Window) => PngCanvas;
   masks?: (win: Window) => Rect[];
+  /** Runs `fn` after `ms`; answers its cancel. Bounds the wait for a frame. */
+  timer?: (ms: number, fn: () => void) => () => void;
 }
 
 /** The capture options this tab is asked for with (`getDisplayMedia`): the
@@ -92,19 +96,58 @@ function nonce(win: Window): string {
   return Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
 }
 
-/** The boxes of the page's `data-clax-redact` elements in view, through open shadow roots. */
+/** The document a frame shows, when this page may read it. */
+function frameDocument(f: Element): Document | null {
+  try {
+    return (f as HTMLIFrameElement).contentDocument ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The boxes of the page's `data-clax-redact` elements in view (viewport
+ * CSS px), through open shadow roots and the frames this page may read
+ * (offset by each frame's content box). */
 export function redactedBoxes(win: Window): Rect[] {
   const out: Rect[] = [];
-  const visit = (root: Document | ShadowRoot) => {
+  const visit = (root: Document | ShadowRoot, dx: number, dy: number) => {
     for (const el of Array.from(root.querySelectorAll("*"))) {
-      if (el.shadowRoot) visit(el.shadowRoot);
+      if (el.shadowRoot) visit(el.shadowRoot, dx, dy);
+      if (el.localName === "iframe" || el.localName === "frame") {
+        const d = frameDocument(el);
+        if (d) {
+          const fb = el.getBoundingClientRect();
+          const cs = el.ownerDocument.defaultView?.getComputedStyle(el);
+          visit(d, dx + fb.left + el.clientLeft + (parseFloat(cs?.paddingLeft ?? "") || 0), dy + fb.top + el.clientTop + (parseFloat(cs?.paddingTop ?? "") || 0));
+        }
+      }
       if (!el.hasAttribute(REDACT_ATTR)) continue;
       const b = el.getBoundingClientRect();
-      if (b.width > 0 && b.height > 0 && b.right > 0 && b.bottom > 0 && b.left < win.innerWidth && b.top < win.innerHeight) out.push({ x: b.left, y: b.top, w: b.width, h: b.height });
+      const x = b.left + dx;
+      const y = b.top + dy;
+      if (b.width > 0 && b.height > 0 && x + b.width > 0 && y + b.height > 0 && x < win.innerWidth && y < win.innerHeight) out.push({ x, y, w: b.width, h: b.height });
     }
   };
-  visit(win.document);
+  visit(win.document, 0, 0);
   return out;
+}
+
+/** How long a capture waits for its one frame before it gives up. */
+export const FRAME_WAIT_MS = 5000;
+
+const realTimer = (ms: number, fn: () => void) => { const t = setTimeout(fn, ms); return () => clearTimeout(t); };
+
+/** `grab`'s frame, or a rejection once `FRAME_WAIT_MS` pass on `timer`; a
+ * frame that comes after that is closed. */
+function withinTime(grab: Promise<Frame>, timer: NonNullable<DisplayDeps["timer"]>): Promise<Frame> {
+  return new Promise<Frame>((resolve, reject) => {
+    let late = false;
+    const cancel = timer(FRAME_WAIT_MS, () => { late = true; reject(new Error(`no frame came within ${FRAME_WAIT_MS} ms`)); });
+    grab.then(
+      f => { if (late) f.close?.(); else { cancel(); resolve(f); } },
+      e => { cancel(); reject(e); },
+    );
+  });
 }
 
 /** One frame of `track`: `ImageCapture.grabFrame` where the browser has it,
@@ -190,10 +233,14 @@ export async function captureDisplay(win: Window, crop?: Rect, deps: DisplayDeps
   // This page names itself to its own capture; a frame (or a browser
   // without capture handles) cannot, and the check then says so.
   const handle = nonce(win);
+  let named = false;
   try {
-    media?.setCaptureHandleConfig?.({ handle, permittedOrigins: [win.location.origin] });
+    if (typeof media?.setCaptureHandleConfig === "function") {
+      media.setCaptureHandleConfig({ handle, permittedOrigins: [win.location.origin] });
+      named = true;
+    }
   } catch {
-    // Not the top document, or no capture handles here.
+    // Not the top document: this page cannot name itself.
   }
   const opts: Record<string, unknown> = { ...DISPLAY_OPTIONS };
   const CC = (win as Window & { CaptureController?: new () => { setFocusBehavior?(b: string): void } }).CaptureController;
@@ -211,7 +258,8 @@ export async function captureDisplay(win: Window, crop?: Rect, deps: DisplayDeps
     stream = await ask(opts as DisplayMediaStreamOptions);
   } catch (e) {
     const name = (e as { name?: string })?.name;
-    if (name === "NotAllowedError" || name === "AbortError") return fail("denied");
+    // A refusal is NotAllowedError; AbortError is the browser giving up.
+    if (name === "NotAllowedError") return fail("denied");
     if (name === "NotSupportedError" || name === "TypeError") return fail("unsupported", (e as Error).message);
     return fail("failed", e instanceof Error ? e.message : String(e));
   }
@@ -223,12 +271,13 @@ export async function captureDisplay(win: Window, crop?: Rect, deps: DisplayDeps
     if (typeof track.getCaptureHandle === "function") {
       const got = track.getCaptureHandle();
       if (got?.handle === handle) thisTab = true;
-      // Another page's handle: another tab. No handle leaves it unknown.
-      else if (got?.handle) return fail("other_surface");
+      // Another page's handle, or none where this page named itself: the
+      // capture shows another surface.
+      else if (got?.handle || named) return fail("other_surface");
     }
     let frame: Frame;
     try {
-      frame = await (deps.grab ?? grabFrame)(track, stream, win);
+      frame = await withinTime((deps.grab ?? grabFrame)(track, stream, win), deps.timer ?? realTimer);
     } catch (e) {
       return fail("failed", e instanceof Error ? e.message : String(e));
     }

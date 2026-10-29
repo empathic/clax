@@ -5,10 +5,12 @@
 // browser's exact screenshot of this tab (`display-capture.ts`), cropped to
 // the pick. The exact screenshot is suggested when the DOM render left out
 // something under what was captured (a cross-origin frame, a canvas, a
-// video). The overlay, and whatever the host marked `data-clax-ignore`, is
-// stepped aside while the browser captures, so it is never in the picture.
+// video). The overlay's own host, and whatever the page marked
+// `data-clax-ignore` (in open shadow roots too), are stepped aside while the
+// browser captures, so they are never in the picture. Another Clax overlay on
+// the page (the extension's) is left alone: it guards its own host's style.
 
-import { UNRENDERED } from "../../bridge/src/anchor";
+import { IGNORE_ATTR } from "../../bridge/src/anchor";
 import { type Omitted, type Rect, type RenderResult, intersect, renderViewportClip, toImage } from "../../bridge/src/clip";
 import { type DisplayResult, captureDisplay, displayCaptureSupported } from "../../bridge/src/display-capture";
 import { nextFrame } from "../../bridge/src/frame";
@@ -31,14 +33,16 @@ export interface Captured {
 }
 
 /** What a capture uses, each replaceable: the viewport render, the display
- * capture, whether the browser can capture the tab, the elements stepped
- * aside while it does (the page's `UNRENDERED` ones by default), the wait
- * for the page to be drawn without them, and, for `captureExact`, the DOM
- * capture already made, to keep when the display capture fails. */
+ * capture, whether the browser can capture the tab, the overlay's own host
+ * and more elements to step aside while it does (besides the page's
+ * `data-clax-ignore` ones), the wait for the page to be drawn without them,
+ * and, for `captureExact`, the DOM capture already made, to keep when the
+ * display capture fails. */
 export interface CaptureDeps {
   renderViewport?: (win: Window) => Promise<RenderResult>;
   display?: (win: Window, crop?: Rect) => Promise<DisplayResult>;
   supported?: boolean;
+  host?: Element;
   aside?: Element[];
   painted?: () => Promise<void>;
   fallback?: Captured;
@@ -93,21 +97,36 @@ export async function captureFor(mode: Mode, target: Picked | null, win: Window,
 
 const twoFrames = () => new Promise<void>(resolve => nextFrame(() => nextFrame(resolve)));
 
-/** Runs `capture` with `els` hidden (their layout kept) once the page has
- * been drawn without them, and shows them again whatever comes of it. */
+/** The page's elements marked `data-clax-ignore`, through open shadow roots. */
+export function ignoredElements(doc: Document): Element[] {
+  const out: Element[] = [];
+  const visit = (root: Document | ShadowRoot) => {
+    for (const el of Array.from(root.querySelectorAll("*"))) {
+      if (el.hasAttribute(IGNORE_ATTR)) out.push(el);
+      if (el.shadowRoot) visit(el.shadowRoot);
+    }
+  };
+  visit(doc);
+  return out;
+}
+
+/** Runs `capture` with `els` made fully transparent (`opacity: 0
+ * !important`: their layout kept, and nothing they hold can show through)
+ * once the page has been drawn without them, and puts back each one's own
+ * opacity, value and priority, whatever comes of it. */
 export async function steppingAside<T>(els: Element[], capture: () => Promise<T>, painted: () => Promise<void> = twoFrames): Promise<T> {
-  const prior = els.map(el => {
+  const prior = Array.from(new Set(els)).map(el => {
     const s = (el as HTMLElement).style;
-    return s ? { s, value: s.getPropertyValue("visibility"), priority: s.getPropertyPriority("visibility") } : null;
+    return s ? { s, value: s.getPropertyValue("opacity"), priority: s.getPropertyPriority("opacity") } : null;
   });
-  for (const p of prior) p?.s.setProperty("visibility", "hidden", "important");
+  for (const p of prior) p?.s.setProperty("opacity", "0", "important");
   try {
     await painted();
     return await capture();
   } finally {
     for (const p of prior) {
       if (!p) continue;
-      if (p.value) p.s.setProperty("visibility", p.value, p.priority); else p.s.removeProperty("visibility");
+      if (p.value) p.s.setProperty("opacity", p.value, p.priority); else p.s.removeProperty("opacity");
     }
   }
 }
@@ -124,7 +143,7 @@ export async function captureExact(mode: Mode, target: Picked | null, win: Windo
   if (crop === null) {
     error = OUT_OF_VIEW;
   } else {
-    const aside = deps.aside ?? Array.from(win.document.querySelectorAll(UNRENDERED));
+    const aside = [...(deps.host ? [deps.host] : []), ...ignoredElements(win.document), ...(deps.aside ?? [])];
     const display = deps.display ?? ((w: Window, c?: Rect) => captureDisplay(w, c));
     const res = await steppingAside(aside, () => display(win, crop), deps.painted);
     if (res.ok) return { png: png(res.png), info: { mode: m, method: "display" }, error: null, note: res.thisTab === true ? null : UNCONFIRMED_TAB, suggestExact: false };

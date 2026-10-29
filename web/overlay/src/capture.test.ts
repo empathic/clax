@@ -15,7 +15,7 @@ vi.mock("modern-screenshot", () => ({
   destroyContext: () => {},
 }));
 
-const { captureExact, captureFor } = await import("./capture");
+const { captureExact, captureFor, steppingAside } = await import("./capture");
 
 const sized = (el: Element, left: number, top: number, width: number, height: number) => {
   (el as HTMLElement).getBoundingClientRect = () => ({ left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON() {} }) as DOMRect;
@@ -78,21 +78,40 @@ describe("capture", () => {
 
   it("an exact capture of a pick is cropped to the pick, with the overlay stepped aside", async () => {
     const host = document.createElement("clax-overlay");
-    document.documentElement.append(host);
-    let seen: string | undefined;
+    // Another Clax overlay (the extension's) guards its host's style: it is
+    // never touched.
+    const other = document.createElement("clax-overlay");
+    document.documentElement.append(host, other);
+    document.body.innerHTML = `<aside id="chat" data-clax-ignore style="opacity: 0.5">chat</aside><div id="sh"></div>`;
+    const shadow = document.getElementById("sh")!.attachShadow({ mode: "open" });
+    shadow.innerHTML = `<div id="tip" data-clax-ignore>tip</div>`;
+    const chat = document.getElementById("chat")!;
+    const tip = shadow.getElementById("tip")!;
+    const extra = document.createElement("div");
+    document.body.append(extra);
+    let seen: string[] = [];
     let crop: unknown;
     const display = async (_w: Window, c?: unknown): Promise<DisplayResult> => {
-      seen = host.style.visibility;
+      seen = [host, other, chat, tip, extra].map(e => `${e.style.getPropertyValue("opacity")}${e.style.getPropertyPriority("opacity")}`);
       crop = c;
       return { ok: true, png: png(9), thisTab: true };
     };
-    const c = await captureExact("element", pick(), window, { display, painted: async () => {} });
+    const c = await captureExact("element", pick(), window, { display, host, aside: [extra], painted: async () => {} });
     expect(crop).toEqual({ x: 100, y: 100, w: 200, h: 100 });
-    expect(seen).toBe("hidden");
-    expect(host.style.visibility).toBe("");
+    expect(seen).toEqual(["0important", "", "0important", "0important", "0important"]);
+    expect([host, other, chat, tip, extra].map(e => e.style.getPropertyValue("opacity"))).toEqual(["", "", "0.5", "", ""]);
     expect(c).toMatchObject({ error: null, note: null, info: { mode: "element", method: "display" } });
     expect(await bytesOf(c.png!)).toEqual(new Uint8Array([9]));
     host.remove();
+    other.remove();
+    document.body.innerHTML = "";
+  });
+
+  it("steps back in when the capture fails", async () => {
+    const el = document.createElement("div");
+    el.style.setProperty("opacity", "0.7", "important");
+    await expect(steppingAside([el], () => Promise.reject(new Error("refused")), async () => {})).rejects.toThrow("refused");
+    expect([el.style.getPropertyValue("opacity"), el.style.getPropertyPriority("opacity")]).toEqual(["0.7", "important"]);
   });
 
   it("says when it cannot tell the capture was this tab", async () => {
