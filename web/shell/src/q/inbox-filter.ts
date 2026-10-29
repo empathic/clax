@@ -8,6 +8,8 @@ import { tagsFromUrl, withTags } from "../view/tags-model";
 
 /** The kinds the inbox page filters by. */
 export const INBOX_KINDS: readonly InboxKind[] = ["reply", "version", "published", "question", "finished", "approval", "connection", "ended", "push"];
+/** The kinds the Activity filter picks: notices that wait on no one. */
+export const ACTIVITY_KINDS: readonly InboxKind[] = ["version", "published", "finished", "ended", "push"];
 
 const PARAMS = ["search", "unread", "kind", "artifact", "agent", "since", "until"] as const;
 

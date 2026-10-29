@@ -86,7 +86,8 @@ const groupEl = (root: Element, key: string) => root.querySelector(`.igroup[data
 const rowIds = (el: Element) => [...el.querySelectorAll(".irow")].map(r => r.getAttribute("data-item"));
 const tell = (inbox: InboxFeed, c: unknown) => (inbox as unknown as { tell(c: unknown): void }).tell(c);
 
-beforeEach(() => { history.replaceState(null, "", "/inbox"); });
+// The grouped list, All items; Waiting on you has its own tests.
+beforeEach(() => { history.replaceState(null, "", "/inbox?view=all"); });
 afterEach(() => { STRIP = []; stripFetches = 0; vi.useRealTimers(); vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
 describe("InboxPage", () => {
@@ -323,7 +324,7 @@ describe("InboxPage", () => {
     await vi.advanceTimersByTimeAsync(100);
     flush(() => { box.value = "dash"; box.dispatchEvent(new Event("input", { bubbles: true })); });
     await vi.advanceTimersByTimeAsync(249);
-    expect(location.search).toBe("");
+    expect(location.search).toBe("?view=all");
     expect(calls).toHaveLength(n);
     await vi.advanceTimersByTimeAsync(1);
     flush();
@@ -552,6 +553,63 @@ describe("InboxPage", () => {
     expect(m.root.querySelector('.achip[aria-pressed="true"]')!.textContent).toContain("clax-claude");
     click(m.root.querySelector('.achip[aria-pressed="true"]')!);
     await settle();
+    expect(location.search).toBe("?view=all");
+  });
+});
+
+describe("InboxPage, Waiting on you", () => {
+  /** Five agents' replies that wait, oldest first, as `waiting=1` lists them. */
+  const WAITING = [1, 2, 3, 4, 5].map(n => item("reply", { id: `W${n}`, seq: 10 + n }));
+  function stubWaiting() {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url === "/api/inbox?group=agent") return ok({ agents: [], unread: 6 });
+      urls.push(url);
+      if (url === "/api/artifacts") return ok({ artifacts: [] });
+      const u = new URL(url, "http://x");
+      if (u.searchParams.get("waiting") === "1") return ok({ items: WAITING, next_cursor: null, unread: 6, total: WAITING.length });
+      return answer(url, [Q, ...READ]);
+    }));
+    return urls;
+  }
+  beforeEach(() => { history.replaceState(null, "", "/inbox"); });
+
+  it("opens on what waits: the question first, then the replies oldest first, four shown and the rest behind N more", async () => {
+    const urls = stubWaiting();
+    const { m } = page();
+    await settle();
+    expect(urls).toContain("/api/inbox?kind=reply&waiting=1&limit=200");
+    expect(urls.some(u => u.includes("group=artifact"))).toBe(false);
+    expect(m.root.querySelector(".pinned-h")!.textContent).toBe("Waiting on you6");
+    expect(m.root.querySelector(".icnt")!.textContent).toBe("6 waiting on you");
+    expect(m.root.querySelectorAll(".qcard")).toHaveLength(1);
+    expect(rowIds(m.root.querySelector(".rows.waiting")!)).toEqual(["W1", "W2", "W3"]);
+    const more = m.root.querySelector<HTMLButtonElement>(".wmore")!;
+    expect(more.textContent).toBe("2 more");
+    click(more);
+    expect(rowIds(m.root.querySelector(".rows.waiting")!)).toEqual(["W1", "W2", "W3", "W4", "W5"]);
+    expect(m.root.querySelector(".wmore")).toBeNull();
+    expect(m.root.querySelector(".igroup")).toBeNull();
+  });
+
+  it("goes to All items and back, kept in the URL, and a search goes to All items", async () => {
+    const urls = stubWaiting();
+    const { m } = page();
+    await settle();
+    const [waiting, all] = [...m.root.querySelectorAll<HTMLButtonElement>(".views .vbtn")];
+    expect([waiting.getAttribute("aria-pressed"), all.getAttribute("aria-pressed")]).toEqual(["true", "false"]);
+    click(all);
+    await settle();
+    expect(location.search).toBe("?view=all");
+    expect(urls).toContain("/api/inbox?group=artifact&rows=3");
+    expect(m.root.querySelector(".igroup")).not.toBeNull();
+    // The Activity chip picks the notices that wait on no one.
+    click(m.root.querySelector(".vbtn.activity")!);
+    await settle();
+    expect(location.search).toBe("?kind=version,published,finished,ended,push");
+    click(waiting);
+    await settle();
     expect(location.search).toBe("");
+    expect(m.root.querySelector(".rows.waiting")).not.toBeNull();
   });
 });

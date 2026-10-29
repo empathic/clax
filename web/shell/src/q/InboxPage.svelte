@@ -35,6 +35,13 @@
   // fetched again with the list. Tags, beside Page, picks tags (a list with
   // a search, `ui/TagPicker.svelte`): the items about artifacts carrying
   // every one picked.
+  // It opens on **Waiting on you**: only what
+  // waits on the reader, open questions, approval and connection requests,
+  // then agents' replies that are the last word of an open thread
+  // (`waiting=1`), oldest first, at most four shown and the rest behind
+  // "N more". **All items** (`?view=all`, or any search or filter) is the
+  // grouped list above; its **Activity** chip picks the notices that wait
+  // on no one (versions, publishes, finished and ended sessions, pushes).
   import { onMount } from "svelte";
   import { type InboxFilter, type InboxItem, type InboxKind, type StripAgent, type TagRef, getToken, listArtifacts } from "../api";
   import TagPicker from "../ui/TagPicker.svelte";
@@ -47,7 +54,7 @@
   import { after } from "../clock";
   import type { InboxFeed, QuestionFeed } from "./feed.svelte";
   import { approvalOf, newestSeq } from "./inbox-model";
-  import { INBOX_KINDS, filterFromUrl, filterToUrl } from "./inbox-filter";
+  import { ACTIVITY_KINDS, INBOX_KINDS, filterFromUrl, filterToUrl } from "./inbox-filter";
   import { GROUP_PAGE, GROUP_ROWS, type Group, MAX_GROUP_PAGE, MORE_ROWS, appendGroups, appendRows, fromWire, groupKey, mergeGroups, takeItem } from "./inbox-groups";
   import ApprovalCard from "../people/ApprovalCard.svelte";
   import ConnectionCard from "../people/ConnectionCard.svelte";
@@ -79,6 +86,8 @@
   /** The kinds shown as cards above the groups, and how many such items one fetch lists. */
   const CARD_KINDS: InboxKind[] = ["question", "approval", "connection"];
   const MAX_CARDS = 200;
+  /** How many waiting items Waiting on you shows before "N more" (Cowan 2001: about four chunks; a heuristic). */
+  const BUDGET = 4;
   const KIND_LABEL: Record<InboxKind, string> = { reply: "Replies", version: "Versions", published: "Published", question: "Questions", finished: "Finished", approval: "Approvals", connection: "Connections", ended: "Ended", push: "Pushes" };
   const fmt = (n: number | "10000+") => (n === "10000+" ? "10,000+" : n.toLocaleString("en-US"));
   /** Says what failed: `what` ("load the inbox"), and why. */
@@ -91,6 +100,14 @@
   let filter = $state<InboxFilter>(initial);
   let search = $state(initial.q ?? "");
   const asked = new URLSearchParams(location.search);
+  /** Whether `f` searches or filters: then every item is in reach, as All items. */
+  const anyFilter = (f: InboxFilter) => [f.q, f.kind?.length, f.artifact, f.agent, f.since, f.until, f.tag?.length, f.read === "unread"].some(Boolean);
+  // All items, rather than Waiting on you.
+  let all = $state(asked.get("view") === "all" || anyFilter(initial));
+  const waitingView = $derived(!all);
+  // Waiting on you's replies, oldest first, and whether "N more" was pressed.
+  let replies = $state<InboxItem[]>([]);
+  let expanded = $state(false);
   // The card to focus once listed: a question's (`?q=`) or an approval request's (`?approval=`).
   let target: { q: string } | { approval: string } | null = asked.get("q") ? { q: asked.get("q")! } : asked.get("approval") ? { approval: asked.get("approval")! } : null;
   let list = $state<List | null>(null);
@@ -150,7 +167,7 @@
   };
   // The pickers' options, [value, label]: the pages and the harnesses and
   // agents of the items listed, and the one chosen.
-  const listed = $derived([...cardItems, ...(list?.groups ?? []).flatMap(g => g.items)]);
+  const listed = $derived([...cardItems, ...replies, ...(list?.groups ?? []).flatMap(g => g.items)]);
   // Every artifact, and the pages of the items listed (live pages among them).
   let artifacts = $state<string[][]>([]);
   const pages = $derived([...new Map([...(filter.artifact ? [[filter.artifact, filter.artifact]] : []), ...artifacts, ...listed.flatMap(i => (i.artifact ? [[i.artifact.id, i.artifact.title ?? i.artifact.id]] : []))] as [string, string][])]);
@@ -161,7 +178,15 @@
     return [...seen];
   });
   // Something unread Mark all read would read: an open approval request stays unread until decided.
-  const markable = $derived(groups.some(g => freshOf(g) > 0) || cardItems.some(i => !i.read && approvalOf(i)?.status !== "open"));
+  const markable = $derived(groups.some(g => freshOf(g) > 0) || replies.some(i => !i.read) || cardItems.some(i => !i.read && approvalOf(i)?.status !== "open"));
+  // Waiting on you: the cards, then the replies, BUDGET of them unless expanded.
+  const waitingCount = $derived(pinned + replies.length);
+  const left = (n: number) => (expanded ? Infinity : Math.max(0, BUDGET - n));
+  const shownCards = $derived(cards.slice(0, left(0)));
+  const shownDecisions = $derived(decisions.slice(0, left(shownCards.length)));
+  const shownReplies = $derived(replies.slice(0, left(shownCards.length + shownDecisions.length)));
+  const hiddenCount = $derived(waitingCount - shownCards.length - shownDecisions.length - shownReplies.length);
+  const activityOn = $derived(filter.kind?.length === ACTIVITY_KINDS.length && ACTIVITY_KINDS.every(k => filter.kind!.includes(k)));
   const cardsFrom = (items: InboxItem[]) => {
     asCard = [...asCard, ...items.filter(i => i.kind === "question" && i.question && qview(i).status === "open" && !asCard.includes(i.id)).map(i => i.id)];
   };
@@ -178,9 +203,14 @@
   };
   /** A page of the groups, after `before`: every item's, or the unread ones' with the Unread filter. */
   const fetchGroups = async (before?: string | null, limit?: number): Promise<List> => {
+    if (waitingView) return { groups: [], next: null };
     const r = await inbox.groups(filter, before, GROUP_ROWS, limit);
     return { groups: r.groups.map(fromWire), next: r.next_cursor };
   };
+
+  /** Waiting on you's replies, oldest first (none for All items). */
+  const fetchReplies = async (): Promise<InboxItem[]> =>
+    (waitingView ? (await inbox.page({ waiting: true, kind: ["reply"] }, null, MAX_CARDS)).items : []);
 
   /** The cards as fetched, `c`, and, with `keep`, those closed or decided
    * here (read now, so no longer listed as unread). */
@@ -198,10 +228,11 @@
     const g = ++gen;
     void loadStrip();
     try {
-      const [c, l] = await Promise.all([fetchCards(), fetchGroups()]);
+      const [c, l, w] = await Promise.all([fetchCards(), fetchGroups(), fetchReplies()]);
       if (g !== gen) return;
       error = null;
       cardItems = keepCards(c, keep);
+      replies = w;
       list = l;
       opening(l.groups, l.groups.length === 1);
       void fill(g);
@@ -223,10 +254,11 @@
     void loadStrip();
     try {
       const shown = list.groups.length;
-      const [c, l] = await Promise.all([fetchCards(), fetchGroups(null, Math.min(MAX_GROUP_PAGE, Math.max(GROUP_PAGE, shown)))]);
+      const [c, l, w] = await Promise.all([fetchCards(), fetchGroups(null, Math.min(MAX_GROUP_PAGE, Math.max(GROUP_PAGE, shown))), fetchReplies()]);
       if (g !== gen || !list) return;
       error = null;
       cardItems = keepCards(c, true);
+      replies = w;
       // Under the Unread filter a group read since drops out of the fetch:
       // it stays where it is, all read, until the next load.
       const gone = (x: Group): Group => (unreadOnly ? { ...x, unread: 0, items: x.items.map(i => (i.read ? i : { ...i, read: true })) } : x);
@@ -285,6 +317,7 @@
   /** Applies a new search: into the URL, then the list again, its groups folded or open afresh. */
   function apply(next: InboxFilter): void {
     filter = next;
+    if (anyFilter(next)) all = true;
     history.replaceState(history.state, "", urlOf(next));
     listedOpen = {};
     void load(false);
@@ -301,10 +334,19 @@
     apply({ ...filter, kind: INBOX_KINDS.filter(x => (x === k) !== on.includes(x)) });
   };
   const toggleUnread = () => apply({ ...filter, read: unreadOnly ? undefined : "unread" });
+  const toggleActivity = () => apply({ ...filter, kind: activityOn ? undefined : [...ACTIVITY_KINDS] });
+  /** All items (`on`), or Waiting on you, which takes no search. */
+  function showAll(on: boolean): void {
+    if (on === all) return;
+    all = on;
+    expanded = false;
+    if (!on) { search = ""; typing?.(); replies = []; }
+    apply(on ? filter : {});
+  }
   const set = (k: "artifact" | "agent" | "since" | "until", v: string) => apply({ ...filter, [k]: v || undefined });
   const pickTag = (t: TagRef) => { const tag = toggleTag(filter.tag ?? [], t); apply({ ...filter, tag: tag.length ? tag : undefined }); };
   /** `f`'s address: its tags by name. */
-  const urlOf = (f: InboxFilter) => `/inbox${filterToUrl({ ...f, tag: f.tag && refsForUrl(f.tag, allTags) })}`;
+  const urlOf = (f: InboxFilter) => `/inbox${filterToUrl({ ...f, tag: f.tag && refsForUrl(f.tag, allTags) }) || (all ? "?view=all" : "")}`;
   /** Fetches every tag, and holds the Tags filter by tag ID: a renamed tag
    * keeps filtering under its new name, and a deleted one drops out (the
    * list fetched again without it). */
@@ -379,6 +421,12 @@
     const was = cardItems.find(x => x.id === item.id) ?? list?.groups.flatMap(g => g.items).find(x => x.id === item.id);
     const d = was && was.read !== item.read ? (item.read ? -1 : 1) : 0;
     if (cardItems.some(x => x.id === item.id)) cardItems = cardItems.map(x => (x.id === item.id ? item : x));
+    // What waits changes with any item (a reply, a resolve's reads): Waiting on you is fetched again.
+    if (waitingView) {
+      replies = replies.map(x => (x.id === item.id ? item : x));
+      soon();
+      return;
+    }
     if (list) list = { ...list, groups: takeItem(list.groups, item, d) };
     // One not shown: a new unread item, or one of a shown group's past its
     // listed rows, read or unread elsewhere, whose change in its group's
@@ -425,7 +473,7 @@
 <div class="inbox">
   <header class="ihead">
     <h2>Inbox</h2>
-    <span class="icnt">{inbox.unread.toLocaleString("en-US")} unread</span>
+    <span class="icnt">{waitingView && list ? `${waitingCount.toLocaleString("en-US")} waiting on you` : `${inbox.unread.toLocaleString("en-US")} unread`}</span>
     <span class="sp"></span>
     {#if push === "off"}<button type="button" class="pushon" disabled={pushBusy} onclick={() => setPush(true)}>Notify me on this device</button>
     {:else if push === "on"}<span class="icnt">Notifications on</span><button type="button" disabled={pushBusy} onclick={() => setPush(false)}>Turn off notifications</button>
@@ -437,12 +485,17 @@
   {#if pushError}<p class="err" role="alert">{pushError}</p>{/if}
   <AgentStrip agents={strip} now={clock.now} selected={filter.agent ?? null} onPick={h => apply({ ...filter, agent: h ?? undefined })} />
 
+  <div class="views" role="group" aria-label="View">
+    <button type="button" class="vbtn" aria-pressed={waitingView} onclick={() => showAll(false)}>Waiting on you</button>
+    <button type="button" class="vbtn" aria-pressed={all} onclick={() => showAll(true)}>All items</button>
+  </div>
   <div class="find">
     <input type="search" class="isearch" placeholder="Search the inbox" aria-label="Search the inbox" value={search} oninput={e => onSearch(e.currentTarget.value)} />
     <button type="button" class="filters-toggle" aria-expanded={filtersOpen} aria-controls="inbox-filters" onclick={() => { filtersOpen = !filtersOpen; }}>Filters</button>
   </div>
   <div class="filters" id="inbox-filters" data-open={filtersOpen ? "" : undefined}>
     <button type="button" class="kind unread-chip" aria-pressed={unreadOnly} onclick={toggleUnread}>Unread</button>
+    <button type="button" class="vbtn activity" aria-pressed={activityOn} onclick={toggleActivity}>Activity</button>
     <div class="kinds" role="group" aria-label="Kinds">
       {#each INBOX_KINDS.filter(k => k !== "connection" || owner || filter.kind?.includes(k)) as k (k)}
         <button type="button" class="kind" aria-pressed={!!filter.kind?.includes(k)} onclick={() => toggleKind(k)}>{KIND_LABEL[k]}</button>
@@ -482,6 +535,13 @@
   <section class="sec" aria-label="Items">
     {#if !list}
       {#if !error}<p class="note">Loading…</p>{/if}
+    {:else if waitingView}
+      {#if waitingCount}<h3 class="pinned-h" id="inbox-pinned-h">Waiting on you<span class="c">{fmt(waitingCount)}</span></h3>{/if}
+      <QuestionList list={shownCards} feed={questions} now={p.now} />
+      {@render decided(shownDecisions)}
+      {#if shownReplies.length}<ul class="rows waiting">{#each shownReplies as i (i.id)}<InboxRow item={i} others={listed} now={p.now} onOpen={open} onToggle={toggle} />{/each}</ul>{/if}
+      {#if hiddenCount > 0}<button type="button" class="more wmore" onclick={() => { expanded = true; }}>{fmt(hiddenCount)} more</button>{/if}
+      {#if !waitingCount}<p class="note">Nothing waits on you. <button type="button" class="ghost" onclick={() => showAll(true)}>All items</button></p>{/if}
     {:else}
       {#if pinned}<h3 class="pinned-h" id="inbox-pinned-h">{decisions.length ? "Waiting on you" : "Questions"}<span class="c">{fmt(pinned)}</span></h3>{/if}
       <QuestionList list={cards} feed={questions} now={p.now} />
@@ -503,13 +563,14 @@
     .inbox .icnt { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
     .inbox .sp { flex: 1; }
     .inbox .quiet { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); }
+    .inbox .views { display: flex; gap: 6px; margin-top: 14px; }
     .inbox .find { display: flex; gap: 8px; margin-top: 14px; }
     .inbox .isearch { flex: 1; min-width: 0; }
     .inbox .filters-toggle { display: none; }
     .inbox .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 10px; }
     .inbox .kinds { display: flex; flex-wrap: wrap; gap: 6px; }
-    .inbox .kind { min-height: 28px; padding: 3px 11px; border-radius: 999px; font: 500 12.5px var(--font); color: var(--muted); background: var(--card); border: 1px solid var(--border-hover); }
-    .inbox .kind[aria-pressed="true"] { color: var(--fg); background: var(--hover); border-color: var(--fg); }
+    .inbox .kind, .inbox .vbtn { min-height: 28px; padding: 3px 11px; border-radius: 999px; font: 500 12.5px var(--font); color: var(--muted); background: var(--card); border: 1px solid var(--border-hover); }
+    .inbox .kind[aria-pressed="true"], .inbox .vbtn[aria-pressed="true"] { color: var(--fg); background: var(--hover); border-color: var(--fg); }
     .inbox .pick { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
     .inbox .pick select { max-width: 220px; }
     .inbox .tagpick { position: relative; }

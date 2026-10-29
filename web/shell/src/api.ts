@@ -329,12 +329,15 @@ export type InboxPage = { items: InboxItem[]; next_cursor: string | null; unread
 export type InboxGroup = { artifact_id: string | null; artifact: InboxItem["artifact"]; total: number; unread: number; newest_at: string; items: InboxItem[]; next_cursor: string | null };
 /** One page of `GET /api/inbox?group=artifact`, newest group first. */
 export type InboxGroupPage = { groups: InboxGroup[]; next_cursor: string | null; unread: number; total?: number | "10000+" };
-/** `GET /api/inbox/summary`: open questions oldest first, the five newest unread other items. */
-export type InboxSummary = { unread: number; questions: QuestionView[]; latest: InboxItem[] };
+/** `GET /api/inbox/summary`: how many items wait on the caller, open
+ * questions oldest first, and the five newest unread replies, approval and
+ * connection requests. */
+export type InboxSummary = { unread: number; waiting?: number; questions: QuestionView[]; latest: InboxItem[] };
 /** The inbox page's search: text (`q`), kinds, an artifact ID, an agent
  * (harness or handle), dates (`YYYY-MM-DD` or RFC 3339), and read state. */
-/** `tag`: only items about artifacts carrying every tag named (match all). */
-export type InboxFilter = { q?: string; kind?: InboxKind[]; artifact?: string; agent?: string; since?: string; until?: string; read?: "unread" | "read" | "all"; tag?: string[] };
+/** `tag`: only items about artifacts carrying every tag named (match all).
+ * `waiting`: only what waits on the caller, oldest first. */
+export type InboxFilter = { q?: string; kind?: InboxKind[]; artifact?: string; agent?: string; since?: string; until?: string; read?: "unread" | "read" | "all"; tag?: string[]; waiting?: boolean };
 
 // People (spec 2026-10-08-multi-agent-multi-person §6, §7.4, §9, §17). The
 // owner's and a connected person's People page reads these; its fetchers

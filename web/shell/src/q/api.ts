@@ -51,6 +51,7 @@ export function inboxQuery(f: InboxFilter, before?: string | null, limit?: numbe
     if (v) u.set(k, v);
   }
   for (const t of f.tag ?? []) u.append("tag", t);
+  if (f.waiting) u.set("waiting", "1");
   if (before) u.set("before", before);
   if (limit) u.set("limit", String(limit));
   const s = u.toString();
