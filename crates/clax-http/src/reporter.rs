@@ -118,8 +118,12 @@ fn same_origin_as(method: &Method, headers: &HeaderMap, origin: &str, own: &str)
             _ => None,
         }
     };
-    let scheme = |o: &str| o.split_once("://").map(|(s, rest)| (s.to_ascii_lowercase(), rest.to_string()));
-    let (Some((scheme_of, authority)), Some((own_scheme, _))) = (scheme(origin), scheme(own)) else {
+    let scheme = |o: &str| {
+        o.split_once("://")
+            .map(|(s, rest)| (s.to_ascii_lowercase(), rest.to_string()))
+    };
+    let (Some((scheme_of, authority)), Some((own_scheme, _))) = (scheme(origin), scheme(own))
+    else {
         return false;
     };
     scheme_of == own_scheme
@@ -403,29 +407,72 @@ mod tests {
         assert!(same_origin_as(&Method::GET, &h, o, "https://clax.example"));
         assert!(same_origin_as(&Method::HEAD, &h, o, "https://clax.example"));
         // A browser sends `Origin` on every other method.
-        assert!(!same_origin_as(&Method::POST, &h, o, "https://clax.example"));
-        assert!(!same_origin_as(&Method::DELETE, &h, o, "https://clax.example"));
+        assert!(!same_origin_as(
+            &Method::POST,
+            &h,
+            o,
+            "https://clax.example"
+        ));
+        assert!(!same_origin_as(
+            &Method::DELETE,
+            &h,
+            o,
+            "https://clax.example"
+        ));
         // The instance serves http: a token for https on its host is not its pages'.
         assert!(!same_origin_as(&Method::GET, &h, o, "http://clax.example"));
-        assert!(!same_origin_as(&Method::GET, &h, "http://clax.example", "https://clax.example"));
+        assert!(!same_origin_as(
+            &Method::GET,
+            &h,
+            "http://clax.example",
+            "https://clax.example"
+        ));
         // Another host or port.
-        assert!(!same_origin_as(&Method::GET, &h, "https://clax.example:8443", "https://clax.example"));
-        assert!(!same_origin_as(&Method::GET, &same_origin_to("other.example"), o, "https://clax.example"));
+        assert!(!same_origin_as(
+            &Method::GET,
+            &h,
+            "https://clax.example:8443",
+            "https://clax.example"
+        ));
+        assert!(!same_origin_as(
+            &Method::GET,
+            &same_origin_to("other.example"),
+            o,
+            "https://clax.example"
+        ));
         // Two marks, or two hosts, are none.
         let mut two = h.clone();
         two.append("sec-fetch-site", HeaderValue::from_static("same-origin"));
-        assert!(!same_origin_as(&Method::GET, &two, o, "https://clax.example"));
+        assert!(!same_origin_as(
+            &Method::GET,
+            &two,
+            o,
+            "https://clax.example"
+        ));
         let mut hosts = h.clone();
         hosts.append(header::HOST, HeaderValue::from_static("clax.example"));
-        assert!(!same_origin_as(&Method::GET, &hosts, o, "https://clax.example"));
+        assert!(!same_origin_as(
+            &Method::GET,
+            &hosts,
+            o,
+            "https://clax.example"
+        ));
         for site in ["same-site", "cross-site", "none"] {
             let mut other = h.clone();
             other.insert("sec-fetch-site", HeaderValue::from_static(site));
-            assert!(!same_origin_as(&Method::GET, &other, o, "https://clax.example"), "{site}");
+            assert!(
+                !same_origin_as(&Method::GET, &other, o, "https://clax.example"),
+                "{site}"
+            );
         }
         let mut unmarked = h;
         unmarked.remove("sec-fetch-site");
-        assert!(!same_origin_as(&Method::GET, &unmarked, o, "https://clax.example"));
+        assert!(!same_origin_as(
+            &Method::GET,
+            &unmarked,
+            o,
+            "https://clax.example"
+        ));
     }
 
     #[test]

@@ -1547,7 +1547,11 @@ async fn reporter_reopen_with_clip_counts_and_reopens() {
     assert_eq!(c["has_clip"], true, "{c}");
     assert_eq!(c["diagnostics_lines"], 2);
     assert_eq!(report["diagnostics_lines"], 2, "{v}");
-    assert_eq!(report["filing_diagnostics_lines"], Value::Null, "the filing had none: {v}");
+    assert_eq!(
+        report["filing_diagnostics_lines"],
+        Value::Null,
+        "the filing had none: {v}"
+    );
     let cid = c["id"].as_str().unwrap();
     let filing = report["comments"][0]["id"].as_str().unwrap();
 
