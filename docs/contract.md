@@ -8345,7 +8345,7 @@ the body below.
 | `doc.move` | `from, to, collection, doc_id, version, sha256` | a private document following a viewer claimed for the owner |
 | `viewer.claim` | `from_public_id, to_public_id` | a claim that retires a public ID; a record naming `from_public_id` resolves to `to_public_id` |
 | `thread.open` | `version_n, anchor{kind, selector, quote, prefix, suffix, html_hash, file, route}, live_path, has_clip, first_comment_id` | a new thread, followed by its first `comment.add`; a thread on the whole artifact has `anchor.kind` `artifact` and `anchor.file` `""`, and its step's description reads `Opened thread <ID> about the whole artifact on version <n> of …` |
-| `comment.add` | `comment_id, body, author_kind, author_name, via_harness, via_page` | every comment; a viewer comment that reopens a resolved thread records `comment.add` then `thread.reopen` |
+| `comment.add` | `comment_id, body, author_kind, author_name, via_harness, via_page` | every comment; a viewer comment that reopens a resolved thread records `comment.add` then `thread.reopen` (a comment never reopens a queue's report: its reopen does, recording `comment.add`, `thread.reopen` and `queue.reopen`) |
 | `thread.resolve` | `resolved_by, addressed_version (n\|null)`, and for a queue's report `reason` (`fixed\|duplicate\|wontfix\|cannot_reproduce\|other`) | a resolve of an open thread |
 | `thread.reopen` | none | a reopen of a resolved thread |
 | `thread.delete` | `moved` | delete |

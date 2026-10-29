@@ -461,6 +461,10 @@ pub enum FixOutcome {
     Verified,
     /// The reporter said it is still broken.
     Rejected,
+    /// A triage person proposed another fix before a verdict on this one.
+    Superseded,
+    /// The report was resolved before a verdict on this fix.
+    Closed,
 }
 
 impl FixOutcome {
@@ -470,6 +474,8 @@ impl FixOutcome {
             FixOutcome::Pending => "pending",
             FixOutcome::Verified => "verified",
             FixOutcome::Rejected => "rejected",
+            FixOutcome::Superseded => "superseded",
+            FixOutcome::Closed => "closed",
         }
     }
 
@@ -479,6 +485,8 @@ impl FixOutcome {
             "pending" => Some(FixOutcome::Pending),
             "verified" => Some(FixOutcome::Verified),
             "rejected" => Some(FixOutcome::Rejected),
+            "superseded" => Some(FixOutcome::Superseded),
+            "closed" => Some(FixOutcome::Closed),
             _ => None,
         }
     }
@@ -547,6 +555,21 @@ impl ResolveReason {
 mod tests {
     use super::*;
     use crate::scrub::REDACTED;
+
+    #[test]
+    fn fix_outcomes_round_trip() {
+        for o in [
+            FixOutcome::Pending,
+            FixOutcome::Verified,
+            FixOutcome::Rejected,
+            FixOutcome::Superseded,
+            FixOutcome::Closed,
+        ] {
+            assert_eq!(FixOutcome::parse(o.as_str()), Some(o));
+            assert_eq!(serde_json::to_value(o).unwrap(), o.as_str());
+        }
+        assert_eq!(FixOutcome::parse("nope"), None);
+    }
 
     fn ctx(extra: &str) -> String {
         format!(r#"{{"v":1,"captured_at":"2026-10-29T07:12:03.120Z"{extra}}}"#)

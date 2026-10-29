@@ -301,7 +301,8 @@ struct CommentBody {
 }
 
 /// `POST /api/queues/<qid>/reporter/reports/<tid>/comments {body}`: the
-/// token's reporter comments on a report it sees (a resolved one reopens).
+/// token's reporter comments on a report it sees; the report's state is
+/// left as it is.
 /// Answers `{report}`.
 ///
 /// # Errors

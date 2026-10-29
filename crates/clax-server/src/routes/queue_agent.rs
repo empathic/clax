@@ -281,7 +281,7 @@ pub struct ReplyBody {
 
 /// `POST /api/queues/<qid>/reports/<tid>/comments {body}` → 201
 /// `{comment, report}`: an agent's reply under its live lease, or a
-/// person's comment (which reopens a resolved report).
+/// person's comment. Neither changes the report's state.
 pub async fn reply(
     State(s): State<AppState>,
     a: Agent<QueueReply>,

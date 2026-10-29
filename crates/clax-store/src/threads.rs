@@ -1093,8 +1093,9 @@ impl Store {
             .or_else(|| self.cached_remote_clip(tid))
     }
 
-    /// Adds a comment. A viewer comment on a resolved thread reopens it; an
-    /// agent comment never changes the thread's status. Records `comment.add`
+    /// Adds a comment. A viewer comment on a resolved thread reopens it,
+    /// unless the thread is a queue's report; an agent comment never
+    /// changes the thread's status. Records `comment.add`
     /// under `ctx`, and `thread.reopen` after it when the comment reopened
     /// the thread, in the comment's transaction.
     ///
@@ -1519,12 +1520,13 @@ impl Store {
             self.record_audit(tx, ctx, comment_record(&t.artifact_id, &comment))?;
             if comment.author_kind == AUTHOR_VIEWER {
                 insert_mentions(tx, &comment.id, &comment.body)?;
-                // A reopened report is no longer verified or closed for a
-                // reason; a fix waiting for a verdict still waits.
+            }
+            // A queue's report is reopened by its reopen alone
+            // (`Store::reopen_report`), never by a comment.
+            if comment.author_kind == AUTHOR_VIEWER && t.queue_id.is_none() {
                 tx.execute(
                     "UPDATE threads SET status = 'open', resolved_at = NULL, resolved_by = NULL,
-                        resolved_by_person = NULL, report_phase = NULLIF(report_phase, 'verified'),
-                        resolve_reason = NULL WHERE id = ?1",
+                        resolved_by_person = NULL WHERE id = ?1",
                     params![thread_id],
                 )?;
                 if t.status == "resolved" {
@@ -1909,8 +1911,8 @@ impl Store {
     /// ([`clax_core::report::ResolveReason`]'s name), which the thread
     /// keeps (`resolve_reason`) and its `thread.resolve` names. Resolving
     /// an open thread also ends a fix's wait for a verdict
-    /// (`report_phase` `fix_proposed`); resolving a resolved one changes
-    /// neither.
+    /// (`report_phase` `fix_proposed`; a `pending` attempt is `closed`);
+    /// resolving a resolved one changes neither.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn resolve_thread_reason_in(
         &self,
@@ -1937,6 +1939,14 @@ impl Store {
                  WHERE id = ?1",
                 params![thread_id, now, by, person, reason],
             )?;
+            // A fix still waiting for a verdict gets none now.
+            if t.status != "resolved" {
+                tx.execute(
+                    "UPDATE report_fixes SET outcome = 'closed' WHERE thread_id = ?1
+                       AND outcome = 'pending'",
+                    params![thread_id],
+                )?;
+            }
             // Who read a row before the undelivered ones go: told, alone,
             // when none is left.
             let readers = deliveries_in(tx, &[thread_id.to_string()], false)?
@@ -2027,7 +2037,28 @@ impl Store {
         ctx: &AuditCtx,
         thread_id: &str,
     ) -> Result<(Thread, clax_core::Touched)> {
+        // A queue report's reopen comments keep clips of their own.
+        let comment_clips: Vec<String> = self.with_read(|c| {
+            Ok(c.prepare_cached(
+                "SELECT clip_key FROM comments WHERE thread_id = ?1 AND clip_key IS NOT NULL",
+            )?
+            .query_map(params![thread_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
+        })?;
         let (t, targets) = self.delete_thread_rows(ctx, thread_id)?;
+        if !comment_clips.is_empty() {
+            let id = ArtifactId::parse(&t.artifact_id)?;
+            for key in &comment_clips {
+                if let Err(e) = self.content.delete_clip(&id, key).await {
+                    tracing::warn!(
+                        artifact = id.as_str(),
+                        thread = t.id,
+                        error = %e,
+                        "could not remove a deleted thread's comment clip"
+                    );
+                }
+            }
+        }
         if t.has_clip {
             let id = ArtifactId::parse(&t.artifact_id)?;
             if let Err(e) = self.content.delete_clip(&id, &t.id).await {

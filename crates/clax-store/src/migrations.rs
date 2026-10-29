@@ -1846,8 +1846,9 @@ pub const MIGRATIONS: &[&str] = &[
     // 60: the feedback loop (spec 2026-10-29-feedback-loop-design §5, §6,
     // §7.3): a report's context, server stamp, reporter profile, phase,
     // resolve reason, reopen count and the reporter's last read; the
-    // profile a reporter token carries; each report's diagnostics; its fix
-    // attempts and their verdicts; and the sessions watching a queue.
+    // profile a reporter token carries; a reopen comment's capture number
+    // and clip; each capture's diagnostics (the filing's is capture 0); its
+    // fix attempts and their verdicts; and the sessions watching a queue.
     "ALTER TABLE threads ADD COLUMN report_context_json TEXT CHECK (report_context_json IS NULL OR json_valid(report_context_json));
     ALTER TABLE threads ADD COLUMN report_server_json TEXT;
     ALTER TABLE threads ADD COLUMN reporter_profile_json TEXT;
@@ -1856,11 +1857,17 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE threads ADD COLUMN reopen_count INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE threads ADD COLUMN reporter_seen_at TEXT;
     ALTER TABLE queue_reporter_tokens ADD COLUMN profile_json TEXT;
-    CREATE TABLE report_diagnostics (thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE, lines_json TEXT NOT NULL, n INTEGER NOT NULL) WITHOUT ROWID;
+    ALTER TABLE comments ADD COLUMN report_capture INTEGER;
+    ALTER TABLE comments ADD COLUMN clip_key TEXT;
+    CREATE TABLE report_diagnostics (
+      thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      capture INTEGER NOT NULL, lines_json TEXT NOT NULL, n INTEGER NOT NULL,
+      PRIMARY KEY (thread_id, capture)) WITHOUT ROWID;
     CREATE TABLE report_fixes (
       thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
       n INTEGER NOT NULL, fix_json TEXT NOT NULL, proposer_name TEXT NOT NULL, created_at TEXT NOT NULL,
-      outcome TEXT NOT NULL DEFAULT 'pending' CHECK (outcome IN ('pending', 'verified', 'rejected')),
+      outcome TEXT NOT NULL DEFAULT 'pending'
+        CHECK (outcome IN ('pending', 'verified', 'rejected', 'superseded', 'closed')),
       verdict_note TEXT, verdict_context_json TEXT, verdict_at TEXT,
       PRIMARY KEY (thread_id, n)) WITHOUT ROWID;
     CREATE TABLE queue_watches (queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE, session_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (queue_id, session_id)) WITHOUT ROWID;",
@@ -5171,6 +5178,12 @@ mod tests {
             );
         }
         assert!(super::has_column(&c, "queue_reporter_tokens", "profile_json").unwrap());
+        for column in ["report_capture", "clip_key"] {
+            assert!(
+                super::has_column(&c, "comments", column).unwrap(),
+                "{column}"
+            );
+        }
     }
 
     /// Migration 48 as builds before `linked_comments.author_key` made it.
