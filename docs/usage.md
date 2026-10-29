@@ -1656,8 +1656,10 @@ become modules of it under `crates/<name>/src/`, their `crate::` and
 `clax-embedded` include are copied at their repository paths; the
 dependencies are the union of the crates' own, with the workspace's
 `Cargo.lock`; and `scripts/crate-package/build.rs` stands in for the
-crates' build scripts. Its license is `GPL-2.0-only AND AGPL-3.0-only`:
-GPL-2.0 Rust code with the AGPL-3.0 web UI embedded.
+crates' build scripts. Its license is `GPL-2.0-only AND AGPL-3.0-only AND
+LGPL-2.1-only`: GPL-2.0 Rust code with the AGPL-3.0 web UI embedded, whose
+bridge and overlay scripts are built from the LGPL-2.1 `web/bridge` and
+`web/overlay`.
 
 ```
 just crate-package                            # build the web UI, assemble, pack, and check the packed crate (uploads nothing)
