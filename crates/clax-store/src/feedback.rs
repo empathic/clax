@@ -120,12 +120,13 @@ impl Reach<'_> {
     };
 }
 
-/// How a take treats a row on a queue's thread: a report's wake (its
-/// filing or a reopen) or any other comment on it, such as a reporter's
-/// reply to the agent that claimed it.
+/// How a take treats a row on a queue's thread that is a report's wake
+/// (its filing or a reopen) or its reporter's reply to the agent that
+/// claimed it. Any other comment on a report's thread is handed over as a
+/// comment is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum QueueRow {
-    /// The row is on no queue's thread.
+    /// Not a wake or a reporter's reply on a queue's thread.
     No,
     /// The session acts for a member of the queue and its rights read the
     /// queue's reports: handed whole, as `queue_get` serves the report,
@@ -140,14 +141,16 @@ enum QueueRow {
 }
 
 /// [`QueueRow`] for a row on a thread of queue `queue_id` (`None`: of no
-/// queue) to session `sid` with `reach`.
+/// queue) to session `sid` with `reach`: `queue_row` says the row is a
+/// wake (its `queue_event` set) or a reporter's comment.
 fn queue_row_of(
     c: &Connection,
     queue_id: Option<&str>,
+    queue_row: bool,
     sid: &str,
     reach: &Reach<'_>,
 ) -> Result<QueueRow> {
-    let Some(qid) = queue_id else {
+    let Some(qid) = queue_id.filter(|_| queue_row) else {
         return Ok(QueueRow::No);
     };
     Ok(if !super::queues::session_is_member_in(c, qid, sid)? {
@@ -1365,8 +1368,8 @@ impl Store {
     /// to this page", nothing of the page or its comments) and gets
     /// `no_access_at`, so the session is told once; `queue` tells of none.
     /// A row the session may read again loses `no_access_at`, and is
-    /// handed over or held as withheld as any other. A row on a queue's
-    /// thread (a report's wake, or another comment on a report) is handed
+    /// handed over or held as withheld as any other. A report's wake, or
+    /// its reporter's reply sent to the agent working on it, is handed
     /// whole to a member of the queue whose rights read its reports,
     /// whatever `vis` and `readable.artifacts` say; held as `no_access`
     /// for a member whose rights do not; and never handed over to a
@@ -1469,7 +1472,13 @@ impl Store {
                     );
                     continue;
                 };
-                let row = queue_row_of(tx, p.queue_id.as_deref(), &q.session_id, &readable)?;
+                let row = queue_row_of(
+                    tx,
+                    p.queue_id.as_deref(),
+                    p.queue_event.is_some() || p.by_reporter,
+                    &q.session_id,
+                    &readable,
+                )?;
                 if row == QueueRow::Gone {
                     continue;
                 }
@@ -1992,7 +2001,7 @@ impl Store {
     /// Only rows whose comment body `vis` lets its reader see are
     /// announced, on artifacts `readable` lets the session read (`None`:
     /// every one); a held row stays unannounced until it may be seen. A
-    /// row on a queue's thread is announced to a member of the queue whose
+    /// report's wake or reporter's reply is announced to a member of the queue whose
     /// rights read its reports whatever `vis` and `readable.artifacts` say,
     /// and to no other session ([`QueueRow`]). A
     /// notice's title is `an artifact by <name>` when the reader may not see
@@ -2067,7 +2076,13 @@ impl Store {
                 let reopened_by = (event == Some(QueueEvent::Reopened) && !by_reporter).then(|| {
                     vis.label(&author, &Author::of_viewer(author_public_id.as_deref()))
                 });
-                let row = queue_row_of(tx, queue_id.as_deref(), session_id, &readable)?;
+                let row = queue_row_of(
+                    tx,
+                    queue_id.as_deref(),
+                    event.is_some() || by_reporter,
+                    session_id,
+                    &readable,
+                )?;
                 if matches!(row, QueueRow::Gone | QueueRow::NoAccess) {
                     continue;
                 }
@@ -4759,6 +4774,64 @@ mod delivery {
             "{:?}",
             taken.items
         );
+    }
+
+    /// Only a report's wakes and its reporter's replies take the queue's
+    /// member rule: another comment on a report's thread, sent to the
+    /// sessions watching its artifact, reaches the owner's session as any
+    /// comment does, though the queue is Sam's and the owner no member.
+    #[test]
+    fn other_comments_on_a_report_take_the_comment_path() {
+        let w = two_people();
+        let qid =
+            w.st.create_queue(
+                DAEMON,
+                Some(&w.sam),
+                crate::queues::NewQueue {
+                    name: "Sam's reports".into(),
+                    origins: vec!["https://app.example.com".into()],
+                    reporters_see: clax_core::queue::ReportersSee::Own,
+                },
+            )
+            .unwrap()
+            .id;
+        let tok = crate::queues::ReporterToken {
+            queue_id: qid.clone(),
+            service_grant_id: "g1".into(),
+            reporter_id: "emp-1".into(),
+            origin: "https://app.example.com".into(),
+            public_key: String::new(),
+            expires_at: "2099-01-01T00:00:00.000Z".into(),
+            profile: None,
+        };
+        let tid = file_into(&w, &qid, &tok, "Invoice 4821");
+        let aid = ArtifactId::parse(&w.st.get_thread(&tid).unwrap().unwrap().artifact_id).unwrap();
+        let owner = owner_agent(&w, &aid);
+        w.st.add_comment(
+            DAEMON,
+            &tid,
+            NewComment {
+                author_kind: AUTHOR_VIEWER,
+                author_name: "Sam".into(),
+                author_public_id: Some(w.sam.clone()),
+                via_session_id: None,
+                body: "Looking at the totals".into(),
+                via_page: false,
+            },
+        )
+        .unwrap();
+        w.st.send_to_agent(DAEMON, &tid).unwrap();
+        let q = TakeFeedback {
+            session_id: owner.clone(),
+            tier: Tier::Wait,
+            artifact_id: None,
+            include_resends: false,
+        };
+        let taken =
+            w.st.take_feedback_readable(DAEMON, &q, BASE, &Visibility::all(), Reach::ALL)
+                .unwrap();
+        let bodies: Vec<&str> = taken.items.iter().map(|i| i.body.as_str()).collect();
+        assert_eq!(bodies, ["Looking at the totals"], "{:?}", taken.items);
     }
 
     /// Spec §16: a grant session's payload names its clip by reference,
