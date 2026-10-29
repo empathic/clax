@@ -1354,6 +1354,14 @@ async fn mcp_get_fix_and_watch_round_trip() {
         let (v, _) = call("queue_list", json!({"queue": q.qid, "state": state})).await;
         assert_eq!(v["reports"], json!([]), "{state}: {v}");
     }
+    // A report filed with no diagnostics names no filing diagnostics.
+    let (v, _) = call("queue_get", json!({"queue": q.qid, "report_id": q.tid})).await;
+    assert_eq!(v["report"]["diagnostics_url"], Value::Null, "{v}");
+    assert_eq!(
+        v["diagnostics"],
+        json!({"capture": null, "lines": []}),
+        "{v}"
+    );
 
     // One report whole: its context, diagnostics inline, its clip attached.
     let base = format!("{}/api/queues/{}/reports/{tid}", q.ts.base, q.qid);
@@ -1399,9 +1407,27 @@ async fn mcp_get_fix_and_watch_round_trip() {
     )
     .await;
     assert_eq!(v["reports"][0]["id"], json!(tid), "{v}");
+    // Without a state the listing is the active reports; `all` is every one.
+    let ids = |v: &Value| -> Vec<Value> {
+        v["reports"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].clone())
+            .collect()
+    };
+    let (v, _) = call("queue_list", json!({"queue": q.qid})).await;
+    assert_eq!(ids(&v), [json!(q.tid)], "{v}");
+    let (v, _) = call("queue_list", json!({"queue": q.qid, "state": "all"})).await;
+    assert_eq!(ids(&v), [json!(q.tid), json!(tid)], "{v}");
 
     // The reporter says it is still broken, with a new capture: the next
-    // read names that capture's clip and diagnostics, and inlines them.
+    // read names that capture's clip and diagnostics, and inlines them. Its
+    // clip is 5000 pixels wide, too wide to attach.
+    let mut wide = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    wide.extend(5000u32.to_be_bytes());
+    wide.extend(10u32.to_be_bytes());
+    wide.extend([8, 6, 0, 0, 0]);
     q.ts.store
         .reopen_report_async(
             &AuditCtx::DAEMON,
@@ -1409,13 +1435,13 @@ async fn mcp_get_fix_and_watch_round_trip() {
             &tid,
             clax_store::queues::Verdict::Reporter("emp-1"),
             "Still blank".into(),
-            Some(FAKE_PNG.to_vec()),
+            Some(wide),
             Some(diag("again")),
             None,
         )
         .await
         .unwrap();
-    let (v, _) = call("queue_get", json!({"queue": q.qid, "report_id": tid})).await;
+    let (v, content) = call("queue_get", json!({"queue": q.qid, "report_id": tid})).await;
     let reopen = v["report"]["comments"]
         .as_array()
         .unwrap()
@@ -1437,6 +1463,18 @@ async fn mcp_get_fix_and_watch_round_trip() {
     assert_eq!(v["diagnostics"]["capture"], 1, "{v}");
     assert_eq!(v["diagnostics"]["lines"][0]["text"], "again", "{v}");
     assert_eq!(v["clip"]["capture"], 1, "{v}");
+    let note = v["clip"]["note"].as_str().unwrap();
+    assert!(note.contains("not attached (5000x10 pixels"), "{note}");
+    assert!(
+        !content.iter().any(|b| b["type"] == "image"),
+        "too wide to attach: {content:?}"
+    );
+    // The filing's diagnostics are still named, read to tell.
+    assert_eq!(
+        v["report"]["diagnostics_url"],
+        json!(format!("{base}/diagnostics?capture=0")),
+        "{v}"
+    );
     assert_eq!(v["report"]["fixes"][0]["outcome"], "rejected", "{v}");
     // A comment that carries no capture names no capture URLs.
     let filing = &v["report"]["comments"][0];
