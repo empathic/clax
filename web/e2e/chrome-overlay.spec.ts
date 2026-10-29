@@ -337,8 +337,9 @@ test("the panel recovers when the daemon restarts on another port", async ({ liv
   await expect.poll(async () => (await h.state(tabId))?.error ?? null).toBeNull();
 });
 
-/** How many overlay hosts the page's document has. */
-const overlays = (page: Page) => page.evaluate(() => document.querySelectorAll("clax-overlay[popover]").length);
+/** How many overlays the page's document has: each has two hosts in the
+ * top layer, the pins' and comment mode's. */
+const overlays = (page: Page) => page.evaluate(() => document.querySelectorAll("clax-overlay[popover]").length / 2);
 
 test("Clax is on only in the tab it was turned on in, stays on through a reload, and turns off when the tab leaves the origin", async ({ live }) => {
   const { siteUrl } = live;
@@ -871,8 +872,8 @@ test.describe("holding only the dev server's origin, as the release build does o
     const tabId = await tabIdOf(live, siteUrl);
     await Promise.all([h.comment(tabId, siteUrl), h.comment(tabId, siteUrl)]);
     await expect.poll(async () => (await h.state(tabId))?.overlay).toBe(true);
-    // Both injections may run overlay.js; the isolated world's flag starts it once: one pins host.
-    expect(await page.evaluate(() => document.querySelectorAll("clax-overlay[popover]").length)).toBe(1);
+    // Both injections may run overlay.js; the isolated world's flag starts it once: one overlay.
+    expect(await overlays(page)).toBe(1);
   });
 
   test("a composer frame loaded again is closed and its pick cancelled", async ({ live }) => {
@@ -894,7 +895,7 @@ test.describe("holding only the dev server's origin, as the release build does o
     expect(lookup.page).toBeNull();
   });
 
-  test("under a page's modal dialog the composer takes the keys but not the pointer", async ({ live }) => {
+  test("over a page's modal dialog the overlay stays on top: a pick inside it, and the composer takes the pointer and the keys", async ({ live }) => {
     const { siteUrl } = live;
     const h = hook(live);
     const page = await live.ctx.newPage();
@@ -908,20 +909,26 @@ test.describe("holding only the dev server's origin, as the release build does o
       document.body.append(d);
       d.showModal();
     });
+    // Both hosts move into the dialog (outside it the page is inert) and stay in the top layer, above it.
+    await expect.poll(() => page.evaluate(() => [...document.querySelectorAll("dialog > clax-overlay")].filter(el => el.matches(":popover-open")).length)).toBe(2);
     await page.locator("#ok").click();
     const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
     await composer.locator("textarea").waitFor();
     const box = (await (await composer.frameElement()).boundingBox())!;
     const top = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.tagName ?? null, [box.x + box.width / 2, box.y + box.height / 2] as const);
-    // The dialog makes the rest of the page inert, the overlay's host with it: its backdrop takes the pointer over the composer.
-    expect(top).toBe("DIALOG");
-    await page.keyboard.type("Under a dialog");
-    await expect(composer.locator("textarea")).toHaveValue("Under a dialog");
+    // Over the composer the pointer reaches the overlay's host, not the dialog or its backdrop.
+    expect(top).toBe("CLAX-OVERLAY");
+    const area = (await composer.locator("textarea").boundingBox())!;
+    await page.mouse.click(area.x + 10, area.y + 10);
+    await page.keyboard.type("Over a dialog");
+    await expect(composer.locator("textarea")).toHaveValue("Over a dialog");
     // The composer's own shortcut posts it.
     await page.keyboard.press("ControlOrMeta+Enter");
     const lookup = await until(async () => (await fetch(`${live.daemon.base}/api/live/pages?url=${encodeURIComponent(siteUrl)}`).then(r => r.json())).page);
     const thread = await until(async () => (await api(live, `/api/artifacts/${lookup.artifact_id}/threads`)).threads[0]);
-    expect(thread.comments[0].body).toBe("Under a dialog");
+    expect(thread.comments[0].body).toBe("Over a dialog");
+    // The pick is the dialog's button.
+    expect(thread.anchor).toMatchObject({ kind: "element", selector: "#ok" });
   });
 });
 

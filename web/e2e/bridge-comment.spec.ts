@@ -67,4 +67,31 @@ async function contentFrame(page: Page, id: string, n: number) {
     await frame.locator("h2").hover();
     await expect(frame.locator("clax-overlay .o")).toBeHidden();
   });
+
+  test(`over a page's modal dialog the outline and the pick reach inside it`, async ({ page }) => {
+    const html = `${PAGE}<dialog id="fb"><h3>Send feedback</h3><button id="send" type="button">Send</button></dialog>`;
+    const { artifact } = await publish(d.base, d.token, `Modal`, { "index.html": html });
+    await record(page);
+    await page.goto(`${d.base}/a/${artifact.id}`);
+    const frame = await contentFrame(page, artifact.id, 1);
+    await last(page, "clax:hello");
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await commentModeIn(frame);
+    // The page's own modal: everything outside it is inert, and it sits in the top layer.
+    await frame.evaluate(() => (document.getElementById("fb") as HTMLDialogElement).showModal());
+    await expect.poll(() => frame.evaluate(() => {
+      const h = document.querySelector("clax-overlay");
+      return !!h && h.parentElement?.id === "fb" && h.matches(":popover-open");
+    })).toBe(true);
+    await frame.locator("#send").hover();
+    await expect(frame.locator("clax-overlay .o")).toBeVisible();
+    expect((await last(page, "clax:hover")).selector).toBe("#send");
+    await frame.locator("#send").click();
+    const pick = await last(page, "clax:pick");
+    expect(pick.anchor).toMatchObject({ kind: "element", selector: "#send", quote: "Send" });
+    // Closed, the overlay goes back to <html>.
+    await page.locator(".composer").getByRole("button", { name: "Cancel" }).click();
+    await frame.evaluate(() => (document.getElementById("fb") as HTMLDialogElement).close());
+    await expect.poll(() => frame.evaluate(() => document.querySelector("clax-overlay")?.parentElement === document.documentElement)).toBe(true);
+  });
 }
