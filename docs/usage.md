@@ -220,7 +220,7 @@ owner_tailscale_nodes = ["nikWRyfT1721CNTRL", "orthrus.tail556f5b.ts.net"]   # n
 tailscale_cli = "/run/current-system/sw/bin/tailscale"                     # default: tailscale on PATH
 ```
 
-The login's request is then the owner's only when the one address `tailscale serve` puts in `X-Forwarded-For` belongs, by `tailscale whois --json <ip>` (at most 2 s, its answer kept a minute), to a listed node whose user is that login. From any other device, with no `X-Forwarded-For`, a repeated one, or an address `whois` does not name in time, the login is the tailnet viewer it names. `tailscale status` lists the node names; `tailscale whois --json <ip>` shows a node's `StableID`. Set without `owner_tailscale_login`, empty, or naming something that is neither, it stops the daemon from starting.
+The login's request is then the owner's only when the one address `tailscale serve` puts in `X-Forwarded-For` belongs, by `tailscale whois --json <ip>` (at most 2 s, its answer kept a minute), to a listed node whose user is that login. A loopback address there is a process of this machine that went through a local proxy, and counts as this machine. From any other device, with no `X-Forwarded-For`, a repeated one, or an address `whois` does not name in time, the login is the tailnet viewer it names. `tailscale status` lists the node names; `tailscale whois --json <ip>` shows a node's `StableID`. Set without `owner_tailscale_login`, empty, or naming something that is neither, it stops the daemon from starting.
 
 To sign chitin messages as yourself from a browser of yours, with a passkey, point Clax at chitin:
 

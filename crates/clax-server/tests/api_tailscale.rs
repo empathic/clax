@@ -464,12 +464,17 @@ async fn with_owner_nodes_the_owners_login_is_the_owner_only_from_a_listed_devic
         get_from(&ts, "/api/inbox", Some("100.98.28.5")).await.0,
         200
     );
+    // A process of this machine through `tailscale serve` (a loopback
+    // address): this machine is the owner's.
+    assert_eq!(get_from(&ts, "/api/inbox", Some("127.0.0.1")).await.0, 200);
     // orthrus is the owner's login too, but not listed; an address whois
     // does not know, a list, and no address are not the owner's device.
     for from in [
         Some("100.114.177.2"),
         Some("100.64.0.9"),
         Some("100.98.28.5, 100.98.28.5"),
+        // A client-sent loopback address ahead of the one serve appends.
+        Some("127.0.0.1, 100.114.177.2"),
         None,
     ] {
         let (token, _) = get_from(&ts, "/api/token", from).await;
