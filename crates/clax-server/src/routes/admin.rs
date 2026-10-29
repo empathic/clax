@@ -4,7 +4,8 @@
 //! models and the run caps; pricing; and the week's usage.
 //!
 //! - `GET /api/admin/people` → `[person]`; `PUT
-//!   /api/admin/people/<person>/flags {claxbot?, claxbot_unenforced?}`,
+//!   /api/admin/people/<person>/flags {claxbot?, claxbot_unenforced?,
+//!   feedback?}`,
 //!   `…/role {role}` (the owner alone: else 403 `owner_only`) and
 //!   `…/credits {lift_milli, reason}` → the person. `<person>` is a person
 //!   key, URL-encoded (`%2Aowner`).
@@ -145,6 +146,8 @@ pub struct FlagsBody {
     claxbot: Option<bool>,
     #[serde(default)]
     claxbot_unenforced: Option<bool>,
+    #[serde(default)]
+    feedback: Option<bool>,
 }
 
 /// `PUT /api/admin/people/<person>/flags` (see the module documentation).
@@ -167,6 +170,7 @@ pub async fn set_flags(
             let changes: Vec<(Flag, bool)> = [
                 (Flag::Claxbot, b.claxbot),
                 (Flag::ClaxbotUnenforced, b.claxbot_unenforced),
+                (Flag::Feedback, b.feedback),
             ]
             .into_iter()
             .filter_map(|(f, v)| v.map(|v| (f, v)))

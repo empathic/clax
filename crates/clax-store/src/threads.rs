@@ -1580,9 +1580,12 @@ impl Store {
                         ],
                     )?;
                 }
+                // A reopened report is no longer verified or closed for a
+                // reason; a fix waiting for a verdict still waits.
                 tx.execute(
                     "UPDATE threads SET status = 'open', resolved_at = NULL, resolved_by = NULL,
-                        resolved_by_person = NULL WHERE id = ?1",
+                        resolved_by_person = NULL, report_phase = NULLIF(report_phase, 'verified'),
+                        resolve_reason = NULL WHERE id = ?1",
                     params![thread_id],
                 )?;
                 if t.status == "resolved" {
@@ -1960,6 +1963,26 @@ impl Store {
         person: Option<&str>,
         then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<Option<u32>>,
     ) -> Result<clax_core::feedback::Touched> {
+        self.resolve_thread_reason_in(tx, ctx, thread_id, by, person, None, then)
+    }
+
+    /// [`Store::resolve_thread_in`] of a report closed for `reason`
+    /// ([`clax_core::report::ResolveReason`]'s name), which the thread
+    /// keeps (`resolve_reason`) and its `thread.resolve` names. Resolving
+    /// an open thread also ends a fix's wait for a verdict
+    /// (`report_phase` `fix_proposed`); resolving a resolved one changes
+    /// neither.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn resolve_thread_reason_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        by: &str,
+        person: Option<&str>,
+        reason: Option<&str>,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<Option<u32>>,
+    ) -> Result<clax_core::feedback::Touched> {
         {
             let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
             let now = self.now();
@@ -1968,8 +1991,12 @@ impl Store {
             tx.execute(
                 "UPDATE threads SET status = 'resolved', resolved_at = COALESCE(resolved_at, ?2),
                     resolved_by_person = CASE WHEN resolved_by IS NULL THEN ?4 ELSE resolved_by_person END,
-                    resolved_by = COALESCE(resolved_by, ?3) WHERE id = ?1",
-                params![thread_id, now, by, person],
+                    resolved_by = COALESCE(resolved_by, ?3),
+                    report_phase = CASE WHEN status = 'open' THEN NULLIF(report_phase, 'fix_proposed')
+                        ELSE report_phase END,
+                    resolve_reason = CASE WHEN status = 'open' THEN ?5 ELSE resolve_reason END
+                 WHERE id = ?1",
+                params![thread_id, now, by, person, reason],
             )?;
             // Who read a row before the undelivered ones go: told, alone,
             // when none is left.
@@ -1983,7 +2010,10 @@ impl Store {
             )?;
             let linked = then(tx, &t)?;
             if t.status != "resolved" {
-                let rec = resolve_record(&now, &t.artifact_id, thread_id, Some(by), linked);
+                let mut rec = resolve_record(&now, &t.artifact_id, thread_id, Some(by), linked);
+                if let Some(r) = reason {
+                    rec = rec.with("reason", r);
+                }
                 self.record_audit(tx, ctx, rec)?;
             }
             // Its open approval requests go with its held rows (spec
@@ -2012,8 +2042,9 @@ impl Store {
     }
 
     /// Reopens a thread: status `open`, `resolved_at` and `resolved_by`
-    /// cleared, recorded as `thread.reopen` under `ctx` in the same
-    /// transaction. Reopening an open thread changes and records nothing.
+    /// cleared (and a report's `verified` phase and resolve reason),
+    /// recorded as `thread.reopen` under `ctx` in the same transaction.
+    /// Reopening an open thread records nothing.
     ///
     /// # Errors
     /// `NotFound` when the thread or its artifact is gone.
@@ -2038,7 +2069,8 @@ impl Store {
         }
         tx.execute(
             "UPDATE threads SET status = 'open', resolved_at = NULL, resolved_by = NULL,
-                    resolved_by_person = NULL WHERE id = ?1",
+                    resolved_by_person = NULL, report_phase = NULLIF(report_phase, 'verified'),
+                    resolve_reason = NULL WHERE id = ?1",
             params![thread_id],
         )?;
         if t.status == "resolved" {

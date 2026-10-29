@@ -5,7 +5,7 @@
 use clax_core::audit::AuditCtx;
 use clax_core::queue::{LEASE_SECS, ReportersSee, Role};
 use clax_core::working::ManualClock;
-use clax_store::queues::{ExternalScope, NewQueue, NewReport};
+use clax_store::queues::{ExternalScope, NewQueue, NewReport, ReporterToken};
 use clax_testkit::{FAKE_PNG, TestServer, element_anchor};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -39,12 +39,21 @@ async fn setup_on(bind: std::net::IpAddr) -> Q {
         )
         .unwrap()
         .id;
+    let token = ReporterToken {
+        queue_id: qid.clone(),
+        service_grant_id: "g1".into(),
+        reporter_id: "emp-1".into(),
+        origin: "https://app.example.com".into(),
+        public_key: String::new(),
+        expires_at: "2099-01-01T00:00:00.000Z".into(),
+        profile: None,
+    };
     let r = ts
         .store
         .file_report_async(
             &AuditCtx::DAEMON,
             &qid,
-            Some("emp-1"),
+            Some(&token),
             ExternalScope::Instance,
             NewReport {
                 external_id: Some("invoice:4821".into()),
@@ -56,6 +65,9 @@ async fn setup_on(bind: std::net::IpAddr) -> Q {
                 metadata: json!({"build": "1"}),
                 revision: None,
                 clip: Some(FAKE_PNG.to_vec()),
+                context: None,
+                server: None,
+                diagnostics: None,
             },
         )
         .await

@@ -177,7 +177,14 @@ pub async fn list(
     };
     member(&s, &a, &qid).await?;
     let (reports, next) = s
-        .store_call(move |st| st.reports(&qid, Visibility::All, state, q.cursor.as_deref()))
+        .store_call(move |st| {
+            st.reports(
+                &qid,
+                Visibility::All,
+                state.map(clax_core::queue::StateFilter::One),
+                q.cursor.as_deref(),
+            )
+        })
         .await?;
     Ok(Json(json!({"reports": reports, "next": next})))
 }
@@ -325,7 +332,14 @@ pub async fn resolve(
     let report = s
         .store_call(move |st| {
             let w = Writer::of(st, &caller, &who)?;
-            let (t, touched, report) = st.resolve_report(&ctx, &qid, &tid, &w.as_store())?;
+            // The route names no reason yet; a resolve without one is `other`.
+            let (t, touched, report) = st.resolve_report(
+                &ctx,
+                &qid,
+                &tid,
+                &w.as_store(),
+                clax_core::report::ResolveReason::Other,
+            )?;
             let changed = match w.session() {
                 Some(sid) => {
                     fctx.working

@@ -110,7 +110,7 @@ pub async fn mint_token(
     let grant = c.grant;
     let (token, expires_at) = s
         .store_call(move |st| {
-            st.mint_reporter_token(&grant, &b.reporter_id, &b.origin, &b.public_key)
+            st.mint_reporter_token(&grant, &b.reporter_id, &b.origin, &b.public_key, None)
         })
         .await?;
     Ok(Json(
@@ -205,6 +205,9 @@ fn new_report(f: Fields, reporter_id: &str) -> Result<NewReport, ApiError> {
         metadata,
         revision: f.revision,
         clip: f.clip,
+        context: None,
+        server: None,
+        diagnostics: None,
     })
 }
 
@@ -244,7 +247,8 @@ pub async fn file_report(
     let mp = Multipart::from_request(r.request(), &())
         .await
         .map_err(|e| multipart_error(e.status(), e.body_text()))?;
-    let rid = r.token.reporter_id.clone();
+    let token = r.token.clone();
+    let rid = token.reporter_id.clone();
     let new = new_report(read_fields(mp).await?, &rid)?;
     // Each account of a hosted Clax is its own deployer, with its own
     // external IDs (spec §6.1).
@@ -254,7 +258,7 @@ pub async fn file_report(
     };
     let report = s
         .store_call_async(move |st| async move {
-            st.file_report_async(&reporter_ctx(&qid, &rid), &qid, Some(&rid), scope, new)
+            st.file_report_async(&reporter_ctx(&qid, &rid), &qid, Some(&token), scope, new)
                 .await
         })
         .await?;
