@@ -61,8 +61,10 @@ pub enum Cmd {
     /// per report filed into it or reopened, until interrupted.
     ///
     /// Each line is `{event, queue, report_id, title, url}` (`event`
-    /// `filed`, `reopened`, or `comment` for a comment on a report sent to
-    /// the session), with `reopened_by` for a reopen by a triage person.
+    /// `filed`, `reopened`, `released` when a triage person ended the
+    /// session's claim, or `comment` for a comment on a report sent to the
+    /// session), with `reopened_by` for a reopen by a triage person and
+    /// `released_by` for a release.
     /// The watch lasts until the session ends or `queue_watch` stops it.
     /// Once the queue is watched (and a report filed from then on reaches
     /// it), it says so once on stderr: `clax queue follow: watching queue
@@ -769,8 +771,8 @@ fn act(cli: &crate::Cli, c: &Client, a: &ActArgs, action: &str, body: Value) -> 
 }
 
 /// The JSON line `queue follow` prints for notice `n` when it is of queue
-/// `qid`: `{event, queue, report_id, title, url}` and `reopened_by` when
-/// present; `None` for a notice of anything else.
+/// `qid`: `{event, queue, report_id, title, url}` and `reopened_by` and
+/// `released_by` when present; `None` for a notice of anything else.
 fn event_line(n: &Value, qid: &str) -> Option<Value> {
     if n["queue_id"].as_str() != Some(qid) {
         return None;
@@ -784,6 +786,9 @@ fn event_line(n: &Value, qid: &str) -> Option<Value> {
     });
     if let Some(by) = n["reopened_by"].as_str() {
         e["reopened_by"] = json!(by);
+    }
+    if let Some(by) = n["released_by"].as_str() {
+        e["released_by"] = json!(by);
     }
     Some(e)
 }

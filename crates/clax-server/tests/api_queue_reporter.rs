@@ -1910,3 +1910,43 @@ async fn watch_then_file_wakes_a_waiting_watcher() {
         "{got}"
     );
 }
+
+/// A filing and a reporter's comment reach the queue's topic as `report`
+/// deltas, IDs and state alone (spec 2026-10-29-feedback-loop-design §8).
+#[tokio::test]
+async fn a_filing_and_a_reporters_comment_reach_the_queues_topic() {
+    let s = Setup::new().await;
+    let mut owner = s.ts.stream_as_owner(&[&format!("queue:{}", s.qid)]).await;
+    let r = s.reporter("emp-1").await;
+    let tid = s.filed(&r).await;
+    let next = |data: Value| {
+        (
+            data["report_id"].as_str().unwrap().to_string(),
+            data["state"].as_str().unwrap().to_string(),
+        )
+    };
+    assert_eq!(
+        next(
+            tokio::time::timeout(clax_testkit::HANG, owner.next_named("report"))
+                .await
+                .expect("a report event")
+        ),
+        (tid.clone(), "open".into())
+    );
+    let res = s
+        .post_as(
+            &r,
+            &format!("{}/{tid}/comments", s.reports()),
+            &json!({"body": "Order 7, again"}),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let got = tokio::time::timeout(clax_testkit::HANG, owner.next_named("report"))
+        .await
+        .expect("a report event");
+    assert_eq!(next(got.clone()), (tid.clone(), "open".into()));
+    assert!(
+        got.get("body").is_none() && got.get("comment").is_none(),
+        "{got}"
+    );
+}

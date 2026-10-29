@@ -1034,7 +1034,6 @@ impl Store {
         event: QueueEvent,
         also_session: Option<&str>,
     ) -> Result<Touched> {
-        let now = self.now();
         let aid: String = tx
             .query_row(
                 "SELECT artifact_id FROM threads WHERE id = ?1",
@@ -1055,6 +1054,53 @@ impl Store {
         {
             sessions.push(sid.to_string());
         }
+        self.queue_wake_rows_in(tx, qid, tid, &aid, comment_id, event, sessions)
+    }
+
+    /// Wakes session `sid` alone for `event` on report `tid` of queue
+    /// `qid`, in the caller's transaction, with a row for comment
+    /// `comment_id`, as [`Store::notify_queue_event_in`] wakes each of its
+    /// sessions: only while `sid` is live and acts for a member of the
+    /// queue, and not when it has a row for the comment already. A
+    /// person's release of a claim tells its holder this way.
+    ///
+    /// # Errors
+    /// `NotFound` for no such thread; database errors.
+    pub(crate) fn wake_session_in(
+        &self,
+        tx: &Transaction<'_>,
+        qid: &str,
+        tid: &str,
+        comment_id: &str,
+        event: QueueEvent,
+        sid: &str,
+    ) -> Result<Touched> {
+        let aid: String = tx
+            .query_row(
+                "SELECT artifact_id FROM threads WHERE id = ?1",
+                params![tid],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or(CoreError::NotFound)?;
+        self.queue_wake_rows_in(tx, qid, tid, &aid, comment_id, event, vec![sid.to_string()])
+    }
+
+    /// One queue wake row for comment `comment_id` of report `tid` (on
+    /// artifact `aid`) per session of `sessions` that is live and acts for
+    /// a member of queue `qid`, and has no row for the comment yet.
+    #[allow(clippy::too_many_arguments)]
+    fn queue_wake_rows_in(
+        &self,
+        tx: &Transaction<'_>,
+        qid: &str,
+        tid: &str,
+        aid: &str,
+        comment_id: &str,
+        event: QueueEvent,
+        sessions: Vec<String>,
+    ) -> Result<Touched> {
+        let now = self.now();
         let mut touched = Touched::default();
         for sid in sessions {
             // Only a live session of a member of the queue is told of its
@@ -1073,7 +1119,7 @@ impl Store {
             }
         }
         if !touched.targets.is_empty() {
-            touched.threads.insert((aid, tid.to_string()));
+            touched.threads.insert((aid.to_string(), tid.to_string()));
         }
         Ok(touched)
     }
@@ -1665,6 +1711,9 @@ impl Store {
             // A triage person's reopen names them; a reporter's names no one.
             let reopened_by = (p.queue_event == Some(QueueEvent::Reopened) && !p.by_reporter)
                 .then(|| p.author.clone());
+            // A release is a triage person's, named.
+            let released_by =
+                (p.queue_event == Some(QueueEvent::Released)).then(|| p.author.clone());
             items.push(FeedbackItem {
                 feedback_id: p.id,
                 thread_id: p.thread_id,
@@ -1686,6 +1735,7 @@ impl Store {
                 withheld,
                 queue_id: p.queue_id,
                 reopened_by,
+                released_by,
                 queue_event: p.queue_event,
             });
         }
@@ -2076,6 +2126,9 @@ impl Store {
                 let reopened_by = (event == Some(QueueEvent::Reopened) && !by_reporter).then(|| {
                     vis.label(&author, &Author::of_viewer(author_public_id.as_deref()))
                 });
+                let released_by = (event == Some(QueueEvent::Released)).then(|| {
+                    vis.label(&author, &Author::of_viewer(author_public_id.as_deref()))
+                });
                 let row = queue_row_of(
                     tx,
                     queue_id.as_deref(),
@@ -2134,6 +2187,7 @@ impl Store {
                         queue_id,
                         event,
                         reopened_by,
+                        released_by,
                     });
                 }
             }
@@ -2962,6 +3016,138 @@ mod tests {
         let (other, other_tok) = report_queue(&st);
         file_titled(&st, &other, &other_tok, "Elsewhere");
         assert!(take(&st, &a, Tier::Wait).is_empty());
+    }
+
+    #[test]
+    fn a_persons_release_ends_the_claim_and_wakes_its_holder_alone() {
+        let (_d, st) = store();
+        let (qid, tok) = report_queue(&st);
+        let tid = file_titled(&st, &qid, &tok, "Invoice 4821");
+        let fixer = session(&st, "claude", "fixer");
+        let watcher = session(&st, "codex", "watcher");
+        st.watch_queue(&qid, &watcher).unwrap();
+        let lease = st.claim(DAEMON, &qid, &tid, &fixer).unwrap();
+        let (r, touched) = st
+            .release_as_person(DAEMON, &qid, &tid, "Ana", Some("u_ana"), None)
+            .unwrap();
+        assert_eq!(r.state, clax_core::queue::State::Open);
+        assert!(r.claim.is_none());
+        let touched = touched.expect("a lease was released");
+        assert_eq!(
+            touched.targets.iter().collect::<Vec<_>>(),
+            [&fixer],
+            "the holder alone is told"
+        );
+        let last = r.comments.last().unwrap();
+        assert_eq!(
+            (last.author_kind.as_str(), last.author_name.as_str()),
+            ("viewer", "Ana")
+        );
+        assert_eq!(last.body, crate::queues::RELEASED_BODY);
+        assert!(last.triage_only, "{last:?}");
+        // The reporter is not told of it: its view leaves the note out, and
+        // its badge does not count it.
+        let theirs = st
+            .report(&qid, &tid, crate::queues::Visibility::Reporter("emp-1"))
+            .unwrap()
+            .unwrap();
+        assert!(
+            theirs
+                .comments
+                .iter()
+                .all(|c| c.body != crate::queues::RELEASED_BODY),
+            "{theirs:?}"
+        );
+        st.mark_reporter_seen(&qid, &tid, "emp-1").unwrap();
+        assert_eq!(st.reporter_badge(&qid, "emp-1").unwrap().waiting, 0);
+        // The lease ended under its fence: the holder's next write is lease_lost.
+        assert!(st.thread_owner(&tid).unwrap().is_none());
+        for got in [
+            st.check_lease(&qid, &tid, &fixer),
+            st.renew(&qid, &tid, &fixer).map(|_| ()),
+        ] {
+            assert!(matches!(got, Err(CoreError::LeaseLost)), "{got:?}");
+        }
+        let sf = st.get_session(&fixer).unwrap().unwrap();
+        let fixed = st.propose_fix_fenced(
+            DAEMON,
+            &qid,
+            &tid,
+            &crate::queues::ReportWriter::Agent(&sf),
+            clax_core::report::NewFix {
+                summary: "Rounded the total".into(),
+                url: None,
+                commit: None,
+                release: None,
+                verify_url: None,
+                verify_after: None,
+            },
+            Some(lease.fence),
+        );
+        assert!(matches!(fixed, Err(CoreError::LeaseLost)), "{fixed:?}");
+        let released: Vec<serde_json::Value> = st
+            .with_read(|c| {
+                let rows: Vec<String> = c
+                    .prepare(
+                        "SELECT body FROM audit_events WHERE kind = 'queue.release' ORDER BY seq",
+                    )?
+                    .query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                Ok(rows
+                    .iter()
+                    .map(|b| serde_json::from_str(b).unwrap())
+                    .collect())
+            })
+            .unwrap();
+        assert_eq!(released.len(), 1, "{released:?}");
+        assert_eq!(released[0]["reason"], "person");
+        assert_eq!(released[0]["session"], fixer.as_str());
+        assert_eq!(released[0]["lease_id"], lease.lease_id.as_str());
+        // The holder's wake names the person; the watcher hears nothing of it.
+        let n = notices(&st, &fixer);
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(n[0].event, Some(QueueEvent::Released));
+        assert_eq!(n[0].released_by.as_deref(), Some("Ana"));
+        let items = take(&st, &fixer, Tier::Wait);
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0].queue_event, Some(QueueEvent::Released));
+        assert_eq!(items[0].released_by.as_deref(), Some("Ana"));
+        assert_eq!(items[0].reopened_by, None);
+        let watched = take(&st, &watcher, Tier::Wait);
+        assert!(
+            watched
+                .iter()
+                .all(|i| i.queue_event == Some(QueueEvent::Filed)),
+            "{watched:?}"
+        );
+        // Its holder may claim it again, under a larger fence.
+        assert_eq!(
+            st.claim(DAEMON, &qid, &tid, &fixer).unwrap().fence,
+            lease.fence + 1
+        );
+        // A person's note is the comment; a report no lease holds is left as it is.
+        let (r, touched) = st
+            .release_as_person(
+                DAEMON,
+                &qid,
+                &tid,
+                "Ana",
+                Some("u_ana"),
+                Some(" Stuck for a day ".into()),
+            )
+            .unwrap();
+        assert_eq!(r.comments.last().unwrap().body, "Stuck for a day");
+        assert_eq!(touched.unwrap().targets.len(), 1);
+        let before = r.comments.len();
+        let (r, touched) = st
+            .release_as_person(DAEMON, &qid, &tid, "Ana", Some("u_ana"), None)
+            .unwrap();
+        assert_eq!(
+            r.comments.len(),
+            before,
+            "nothing to release: nothing written"
+        );
+        assert!(touched.is_none());
     }
 
     #[test]

@@ -81,6 +81,10 @@ pub(crate) fn publish_thread(
         artifact_id: t.artifact_id.clone(),
         thread: view,
     });
+    // A report's change reaches its queue's members as IDs and state.
+    if let Some(qid) = &t.queue_id {
+        super::queue_agent::publish_report(ctx, st, qid, &t.id)?;
+    }
     Ok(())
 }
 

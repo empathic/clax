@@ -144,10 +144,11 @@ pub struct FeedbackItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_id: Option<String>,
     /// What happened to the report when the row is a queue's wake of a
-    /// session watching it, or of the proposer of the fix a reopen
-    /// rejected (spec 2026-10-29-feedback-loop-design §7.3): it is
-    /// read with `queue_get` and taken with `queue_claim`. Absent for a
-    /// comment sent to the session.
+    /// session watching it, of the proposer of the fix a reopen
+    /// rejected (spec 2026-10-29-feedback-loop-design §7.3), or of the
+    /// session whose claim a triage person released: it is read with
+    /// `queue_get` and taken with `queue_claim`. Absent for a comment sent
+    /// to the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_event: Option<QueueEvent>,
     /// For a `reopened` wake by a triage person on the reporter's behalf,
@@ -155,6 +156,10 @@ pub struct FeedbackItem {
     /// anything else.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reopened_by: Option<String>,
+    /// For a `released` wake, the triage person who ended the session's
+    /// claim; absent for anything else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released_by: Option<String>,
 }
 
 /// Who reopened a report, as a wake's text says it: `its reporter`, or
@@ -168,12 +173,14 @@ fn reopener(by: Option<&str>) -> String {
 
 /// What a queue tells the sessions watching it (spec
 /// 2026-10-29-feedback-loop-design §7.3): a report was filed, or its
-/// reporter (or triage on their behalf) reopened it.
+/// reporter (or triage on their behalf) reopened it; and what it tells
+/// the session whose claim a triage person released (`released`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QueueEvent {
     Filed,
     Reopened,
+    Released,
 }
 
 impl QueueEvent {
@@ -182,6 +189,7 @@ impl QueueEvent {
         match self {
             QueueEvent::Filed => "filed",
             QueueEvent::Reopened => "reopened",
+            QueueEvent::Released => "released",
         }
     }
 
@@ -190,6 +198,7 @@ impl QueueEvent {
         match s {
             "filed" => Some(QueueEvent::Filed),
             "reopened" => Some(QueueEvent::Reopened),
+            "released" => Some(QueueEvent::Released),
             _ => None,
         }
     }
@@ -201,6 +210,20 @@ fn queue_wake_tail(q: &str, tid: &str) -> String {
     format!(
         "queue_get with queue \"{q}\" and report_id \"{tid}\", then queue_claim to work on it; if you have already handled it, do nothing."
     )
+}
+
+/// What a `released` wake tells the session whose claim ended, after its
+/// opening: stop, and how to take the report again.
+fn released_tail(q: &str, tid: &str) -> String {
+    format!(
+        "queue_renew and queue_fix now answer lease_lost. To take it again, call {}",
+        queue_wake_tail(q, tid)
+    )
+}
+
+/// Who released a claim, as a wake's text says it.
+fn releaser(by: Option<&str>) -> String {
+    by.map_or_else(|| "a triage person".to_string(), display_name)
 }
 
 /// The fields of a [`FeedbackItem`] withheld from its reader (spec
@@ -490,6 +513,12 @@ pub fn render_item(i: &FeedbackItem) -> String {
             tid = i.thread_id,
             by = reopener(i.reopened_by.as_deref()),
         ),
+        (Some(q), Some(QueueEvent::Released)) => format!(
+            "Your claim on report {tid} in queue {q} was released by {by}: stop working on it: {tail}",
+            tid = i.thread_id,
+            by = releaser(i.released_by.as_deref()),
+            tail = released_tail(q, &i.thread_id),
+        ),
         (Some(q), None) => format!(
             "This thread is a report of queue {q}: reply with queue_reply, then queue_resolve when done (queue {q}, report_id {tid}).",
             tid = i.thread_id
@@ -608,6 +637,9 @@ pub struct Notice {
     /// As [`FeedbackItem::reopened_by`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reopened_by: Option<String>,
+    /// As [`FeedbackItem::released_by`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released_by: Option<String>,
 }
 
 /// Longest title a notice line quotes, in characters.
@@ -640,6 +672,13 @@ pub fn render_notice(n: &Notice) -> String {
             tid = n.thread_id,
             tail = queue_wake_tail(q, &n.thread_id),
             by = reopener(n.reopened_by.as_deref()),
+        ),
+        (Some(q), Some(QueueEvent::Released)) => format!(
+            "[clax] Your claim on report {tid} in queue {q} was released by {by}: \"{title}\" ({url}). Stop working on it: {tail}",
+            url = n.url,
+            tid = n.thread_id,
+            by = releaser(n.released_by.as_deref()),
+            tail = released_tail(q, &n.thread_id),
         ),
         (Some(q), None) => format!(
             "[clax] New comment on \"{title}\" ({url}), thread {tid}, a report of queue {q}. Call queue_list with queue \"{q}\" to read it, and answer with queue_reply and queue_resolve; if you have already handled it, do nothing.",
@@ -712,6 +751,7 @@ mod tests {
             queue_id: None,
             queue_event: None,
             reopened_by: None,
+            released_by: None,
         }
     }
 
@@ -1199,6 +1239,7 @@ mod tests {
             queue_id: None,
             event: None,
             reopened_by: None,
+            released_by: None,
         };
         assert_eq!(
             render_notice(&n),
@@ -1237,11 +1278,55 @@ mod tests {
             queue_id: Some("01JQ".into()),
             event: None,
             reopened_by: None,
+            released_by: None,
         };
         let line = render_notice(&n);
         assert!(line.contains("a report of queue 01JQ"), "{line}");
         assert!(line.contains("queue_list with queue \"01JQ\""), "{line}");
         assert!(!line.contains("comments_read"), "{line}");
+    }
+
+    #[test]
+    fn a_released_wake_tells_the_holder_its_claim_ended() {
+        let n = Notice {
+            feedback_id: "f".into(),
+            comment_id: "c".into(),
+            thread_id: "01J9T".into(),
+            artifact_id: "7q3k9mzx2b4t".into(),
+            title: "Invoice".into(),
+            url: "http://localhost:7480/a/7q3k9mzx2b4t".into(),
+            queue_id: Some("01JQ".into()),
+            event: Some(QueueEvent::Released),
+            reopened_by: None,
+            released_by: Some("Ana\nLee".into()),
+        };
+        assert_eq!(
+            render_notice(&n),
+            "[clax] Your claim on report 01J9T in queue 01JQ was released by Ana Lee: \"Invoice\" (http://localhost:7480/a/7q3k9mzx2b4t). Stop working on it: queue_renew and queue_fix now answer lease_lost. To take it again, call queue_get with queue \"01JQ\" and report_id \"01J9T\", then queue_claim to work on it; if you have already handled it, do nothing."
+        );
+        assert_eq!(serde_json::to_value(&n).unwrap()["event"], "released");
+        assert_eq!(serde_json::to_value(&n).unwrap()["released_by"], "Ana\nLee");
+        let i = FeedbackItem {
+            queue_id: Some("01JQ".into()),
+            queue_event: Some(QueueEvent::Released),
+            released_by: Some("Ana".into()),
+            ..item()
+        };
+        let text = render_item(&i);
+        assert!(
+            text.ends_with(
+                "Your claim on report 01J9ZZZZZZZZZZZZZZZZZZZZZZ in queue 01JQ was released by Ana: stop working on it: queue_renew and queue_fix now answer lease_lost. To take it again, call queue_get with queue \"01JQ\" and report_id \"01J9ZZZZZZZZZZZZZZZZZZZZZZ\", then queue_claim to work on it; if you have already handled it, do nothing."
+            ),
+            "{text}"
+        );
+        assert_eq!(QueueEvent::parse("released"), Some(QueueEvent::Released));
+        assert_eq!(QueueEvent::Released.as_str(), "released");
+        assert!(
+            serde_json::to_value(item())
+                .unwrap()
+                .get("released_by")
+                .is_none()
+        );
     }
 
     #[test]
@@ -1256,6 +1341,7 @@ mod tests {
             queue_id: Some("01JQ".into()),
             event: Some(QueueEvent::Filed),
             reopened_by: None,
+            released_by: None,
         };
         assert_eq!(
             render_notice(&n),

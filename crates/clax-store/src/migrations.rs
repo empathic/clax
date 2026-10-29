@@ -1848,8 +1848,10 @@ pub const MIGRATIONS: &[&str] = &[
     // resolve reason, reopen count and the reporter's last read; the
     // profile a reporter token carries; a reopen comment's capture number
     // and clip; each capture's diagnostics (the filing's is capture 0); its
-    // fix attempts and their verdicts; the sessions watching a queue; and
-    // which feedback rows are a queue's wake (`filed`, `reopened`).
+    // fix attempts and their verdicts; which comments are notes for the
+    // queue's members alone (`triage_only`); the sessions watching a queue; and
+    // which feedback rows are a queue's wake (`filed`, `reopened`, and
+    // `released`: a person ended the session's claim).
     "ALTER TABLE threads ADD COLUMN report_context_json TEXT CHECK (report_context_json IS NULL OR json_valid(report_context_json));
     ALTER TABLE threads ADD COLUMN report_server_json TEXT;
     ALTER TABLE threads ADD COLUMN reporter_profile_json TEXT;
@@ -1860,6 +1862,7 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE queue_reporter_tokens ADD COLUMN profile_json TEXT;
     ALTER TABLE comments ADD COLUMN report_capture INTEGER;
     ALTER TABLE comments ADD COLUMN clip_key TEXT;
+    ALTER TABLE comments ADD COLUMN triage_only INTEGER NOT NULL DEFAULT 0;
     CREATE TABLE report_diagnostics (
       thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
       capture INTEGER NOT NULL, lines_json TEXT NOT NULL, n INTEGER NOT NULL,
@@ -1872,7 +1875,7 @@ pub const MIGRATIONS: &[&str] = &[
       verdict_note TEXT, verdict_context_json TEXT, verdict_at TEXT,
       PRIMARY KEY (thread_id, n)) WITHOUT ROWID;
     CREATE TABLE queue_watches (queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE, session_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (queue_id, session_id)) WITHOUT ROWID;
-    ALTER TABLE feedback ADD COLUMN queue_event TEXT CHECK (queue_event IS NULL OR queue_event IN ('filed', 'reopened'));",
+    ALTER TABLE feedback ADD COLUMN queue_event TEXT CHECK (queue_event IS NULL OR queue_event IN ('filed', 'reopened', 'released'));",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
