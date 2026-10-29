@@ -64,6 +64,8 @@ describe("the SDK package", () => {
     expect(manifest.sideEffects).toBe(false);
     for (const k of ["dependencies", "peerDependencies", "optionalDependencies", "bundleDependencies"]) expect(manifest).not.toHaveProperty(k);
     expect(Object.keys(manifest.exports).sort()).toEqual([".", "./overlay", "./package.json", "./service"]);
+    expect(manifest.types).toBe("./types/sdk/src/index.d.ts");
+    expect(manifest.typesVersions).toEqual({ "*": { overlay: ["./types/overlay/src/main.d.ts"], service: ["./types/sdk/src/service.d.ts"] } });
     for (const k of Object.keys(RUNTIME)) {
       const e = manifest.exports[k];
       if (typeof e === "string") throw new Error(`${k} has no conditions`);
@@ -126,7 +128,12 @@ console.log(JSON.stringify(out));
     }
   });
 
-  it.each([["nodenext", ts.ModuleResolutionKind.NodeNext, ts.ModuleKind.NodeNext], ["bundler", ts.ModuleResolutionKind.Bundler, ts.ModuleKind.ESNext]])(
+  it.each([
+    ["nodenext", ts.ModuleResolutionKind.NodeNext, ts.ModuleKind.NodeNext],
+    ["bundler", ts.ModuleResolutionKind.Bundler, ts.ModuleKind.ESNext],
+    // TypeScript's `node` (node10), which reads no `exports`.
+    ["node10", ts.ModuleResolutionKind.Node10, ts.ModuleKind.CommonJS],
+  ])(
     "type-checks an app's use of every entry under moduleResolution %s", (_, moduleResolution, module) => {
       const file = join(app, "app.ts");
       writeFileSync(file, `import { ClaxError, ReporterClient, type NewReport, type Report, type ReporterAuth, type ReporterToken } from "@empathic/clax-sdk";

@@ -15,7 +15,8 @@
 // dependency: the package declares none. Each entry has declarations
 // under types/, emitted by TypeScript from the sources and kept to what the
 // entries' declarations import, with relative specifiers ending in `.js`
-// so a consumer's `moduleResolution` of `bundler` or `nodenext` reads them.
+// so a consumer's `moduleResolution` of `bundler` or `nodenext` reads them;
+// `types` and `typesVersions` name them for `node` (node10).
 // Its README is web/sdk/README.md. The package's license is the license of
 // web/bridge, web/overlay and web/sdk in the repository's LICENSE, and the
 // build fails on a bundled source file, or a declaration, of Clax's from
@@ -76,6 +77,10 @@ function packageJson() {
       ...Object.fromEntries(ENTRIES.map(e => [e.path, { types: `./${types(e.src)}`, default: `./${e.name}.js` }])),
       "./package.json": "./package.json",
     },
+    // For TypeScript's `node` (node10) resolution, which reads no `exports`:
+    // the main entry's declarations, and each subpath's.
+    types: `./${types(ENTRIES.find(e => e.path === ".").src)}`,
+    typesVersions: { "*": Object.fromEntries(ENTRIES.filter(e => e.path !== ".").map(e => [e.path.slice(2), [`./${types(e.src)}`]])) },
   };
 }
 
