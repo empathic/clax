@@ -1,13 +1,15 @@
 <script lang="ts">
   // The overlay a deployer's page embeds (`Clax.overlay`): a launcher that
-  // starts comment mode, a composer for the pick (text, the clip's preview,
+  // starts comment mode (or none, and the page calls `open` and
+  // `toggleReports`), a composer for the pick (text, the clip's preview,
   // Send and Cancel) and "Your reports" with their replies, polled every
   // POLL_MS only while it is open. A clip that cannot be drawn leaves the
   // report without one; the send waits for a clip still being taken.
   // "Your reports" opened over a draft hides the composer and keeps the
   // draft, which comes back when the panel closes. The composer or the
   // panel, the notice and the launcher stack up from the bottom right corner,
-  // none over another; closing the composer gives focus back to Report.
+  // none over another; closing the composer gives focus back to Report, or
+  // without a launcher to what had focus when `open` was called.
   import { onDestroy, untrack } from "svelte";
   import type { Report } from "../../sdk/src/types";
   import { type Clip, type Draft, POLL_MS, Poll, type ReporterApi, type Timers, canSend, clipStatus, failureText, newDraft, pageUrl, quoteOf, realTimers, reportOf, takeClip } from "./model";
@@ -25,17 +27,21 @@
     externalId?: string;
     metadata?: unknown;
     timers?: Timers;
+    /** Whether the launcher (Report and Your reports) shows. */
+    launcher?: boolean;
   };
-  let { client, doc, host, picker: makePicker, externalId, metadata, timers = realTimers }: Props = $props();
+  let { client, doc, host, picker: makePicker, externalId, metadata, timers = realTimers, launcher = true }: Props = $props();
 
   let picking = $state(false);
   let draft = $state<Draft | null>(null);
   let clipUrl = $state<string | null>(null);
   let notice = $state<string | null>(null);
-  let open = $state(false);
+  let reportsOpen = $state(false);
   let reports = $state<Report[] | null>(null);
   let loadError = $state<string | null>(null);
   let reportBtn = $state<HTMLButtonElement | null>(null);
+  /** What had focus on the page when `open` was called. */
+  let opener: HTMLElement | null = null;
 
   /** The draft's clip, for a send to wait on; keyed by the draft it is for. */
   let clipFor: { of: Draft; clip: Promise<Clip> } | null = null;
@@ -44,12 +50,19 @@
   onDestroy(() => { picker.destroy(); poll.stop(); revokeClip(); timers.clear(noticeTimer); });
 
   function startPicking(): void {
-    if (open) toggleReports();
+    if (reportsOpen) toggleReports();
     draft = null;
     revokeClip();
     notice = null;
     picking = true;
     picker.set(true);
+  }
+  /** Starts comment mode, as Report does; nothing while it is on. */
+  export function open(): void {
+    if (picking) return;
+    const a = doc.activeElement;
+    opener = a instanceof HTMLElement && a !== doc.body && a !== host ? a : null;
+    startPicking();
   }
   function stopPicking(): void {
     picking = false;
@@ -103,12 +116,12 @@
     clipUrl = null;
   }
 
-  /** Drops the draft and gives focus back to the Report button. */
+  /** Drops the draft and gives focus back to the Report button, else to `open`'s opener. */
   function cancel(): void {
     draft = null;
     clipFor = null;
     revokeClip();
-    reportBtn?.focus();
+    (reportBtn ?? opener)?.focus();
   }
 
   let noticeTimer: unknown = null;
@@ -139,14 +152,15 @@
 
   const poll = untrack(() => new Poll(async () => {
     const page = await client.myReports();
-    if (!open) return;
+    if (!reportsOpen) return;
     reports = page.reports;
     loadError = null;
   }, timers, POLL_MS, e => { loadError = failureText(e); }));
 
-  function toggleReports(): void {
-    open = !open;
-    if (open) poll.start();
+  /** Opens "Your reports", or closes it when open, as its button does. */
+  export function toggleReports(): void {
+    reportsOpen = !reportsOpen;
+    if (reportsOpen) poll.start();
     else poll.stop();
   }
 
@@ -167,7 +181,7 @@
   {/if}
 
   <div class="dock">
-  {#if draft && !open}
+  {#if draft && !reportsOpen}
     <form class="composer" aria-label="New report" onsubmit={e => { e.preventDefault(); void send(); }}>
       <p class="quote">{quoteOf(draft.anchor)}</p>
       {#if clipUrl}
@@ -191,19 +205,21 @@
     </form>
   {/if}
 
-  {#if open}
+  {#if reportsOpen}
     <Reports reports={reports} error={loadError} onReply={reply} onClose={toggleReports} />
   {/if}
 
   {#if notice}<p class="notice" role="status">{notice}</p>{/if}
 
+  {#if launcher}
   <div class="launcher">
-    <button type="button" class="reports-btn" aria-expanded={open} onclick={toggleReports}>Your reports</button>
+    <button type="button" class="reports-btn" aria-expanded={reportsOpen} onclick={toggleReports}>Your reports</button>
     <button type="button" class="primary report-btn" bind:this={reportBtn} aria-pressed={picking} onclick={() => (picking ? stopPicking() : startPicking())}>
       <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2.5h10a1.5 1.5 0 0 1 1.5 1.5v6A1.5 1.5 0 0 1 13 11.5H7l-3.5 2.5v-2.5H3A1.5 1.5 0 0 1 1.5 10V4A1.5 1.5 0 0 1 3 2.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
       {picking ? "Picking…" : "Report"}
     </button>
   </div>
+  {/if}
   </div>
 </div>
 

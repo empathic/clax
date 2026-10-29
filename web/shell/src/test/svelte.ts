@@ -5,6 +5,8 @@ import { type Component, flushSync } from "svelte";
 
 export type Mounted<P> = {
   root: HTMLElement;
+  /** The component's exports. */
+  component: Record<string, unknown>;
   /** Updates the same instance's props in place, keeping its local state,
    * with `props` as its whole props, and runs its effects. */
   update(props: P): void;
@@ -25,6 +27,7 @@ export function mount<P extends Record<string, unknown>>(C: Component<P>, props:
   flushSync();
   return {
     root,
+    component: r.component,
     update: next => { void r.rerender(next); flushSync(); },
     unmount: () => { r.unmount(); flushSync(); },
   };
