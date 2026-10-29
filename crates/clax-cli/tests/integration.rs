@@ -49,6 +49,8 @@ mod native_host;
 mod passkeys;
 #[cfg(any(not(clax_split), clax_split = "people"))]
 mod people;
+#[cfg(any(not(clax_split), clax_split = "queue"))]
+mod queue;
 #[cfg(any(not(clax_split), clax_split = "remote_push"))]
 mod remote_push;
 #[cfg(any(not(clax_split), clax_split = "shutdown"))]
