@@ -67,6 +67,10 @@ fn forged(req: reqwest::RequestBuilder, ts: &TestServer) -> reqwest::RequestBuil
     req.header("sec-fetch-site", "same-origin")
         .header("origin", &ts.base)
         .header("x-clax-channel", "owner")
+        .header(
+            "clax-signature",
+            "t=1, n=AAAAAAAAAAAAAAAAAAAAAA, s=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        )
 }
 
 #[tokio::test]
@@ -257,6 +261,44 @@ async fn an_owner_session_survives_a_restart_and_ends_when_revoked() {
 }
 
 #[tokio::test]
+async fn an_owner_session_fetched_by_another_site_is_no_credential() {
+    let ts = TestServer::spawn().await;
+    let viewers = || {
+        let c = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+        c.query_row("SELECT COUNT(*) FROM viewers", [], |r| r.get::<_, i64>(0))
+            .unwrap()
+    };
+    let before = viewers();
+    // An artifact's `<id>.localhost` page or another localhost port is the
+    // same site, so the browser sends the Lax owner cookie with its fetches.
+    for site in ["same-site", "cross-site"] {
+        for path in ["/api/viewers/me", "/api/artifacts", "/api/token"] {
+            let res = ts
+                .client
+                .get(format!("{}{path}", ts.base))
+                .header("cookie", ts.owner_cookie())
+                .header("sec-fetch-site", site)
+                .send()
+                .await
+                .unwrap();
+            assert!(set_cookies(&res).is_empty(), "{site} {path}");
+            assert_eq!(code_of(res).await, (401, "no_credential".into()), "{site} {path}");
+        }
+    }
+    assert_eq!(viewers(), before, "no viewer was made");
+    // The shell's own fetches, the same cookie, are the owner's.
+    let res = ts
+        .client
+        .get(format!("{}/api/token", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .header("sec-fetch-site", "same-origin")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+}
+
+#[tokio::test]
 async fn owner_cookies_are_not_derived_from_the_token() {
     let ts = TestServer::spawn().await;
     let host = ts.base.trim_start_matches("http://");
@@ -377,6 +419,14 @@ async fn a_caller_without_a_credential_cannot_comment_or_mint_a_viewer() {
             .await
             .unwrap();
         assert_eq!(res.status(), 401);
+        // Nor a `?token=` that is not the token, where a route takes one.
+        for path in ["/api/events", &format!("/api/artifacts/{aid}/room")] {
+            let res = with(ts.client.get(format!("{}{path}?token=not-the-token", ts.base)))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(code_of(res).await, (401, "no_credential".into()), "{path}");
+        }
     }
     assert_eq!(viewers(), before, "no viewer was made");
     let threads: Value = ts
@@ -564,6 +614,22 @@ async fn a_lan_address_peer_is_held_to_the_loopback_rule() {
         .await
         .unwrap();
     assert_eq!(res.status(), 403);
+    // Nor is another machine with a `Clax-Signature` and no agent
+    // credential anyone.
+    for path in ["/api/viewers/me", "/api/artifacts"] {
+        let res = forged(
+            client
+                .get(format!("{}{path}", ts.base))
+                .header(LAN_HEADER, "1")
+                .header("host", &own),
+            &ts,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert!(set_cookies(&res).is_empty(), "{path}");
+        assert_eq!(res.status(), 403, "{path}");
+    }
     // Nor does another machine redeem a code.
     let path = login_path(&ts, "/").await;
     let res = client

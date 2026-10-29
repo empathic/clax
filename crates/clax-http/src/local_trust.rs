@@ -197,6 +197,21 @@ pub async fn sessions(State(s): State<AppState>, mut req: Request, next: Next) -
     next.run(req).await
 }
 
+/// Whether a request's owner browser session mark ([`OwnerSession`])
+/// stands for the owner's browser: the request names no agent credential
+/// of another machine, comes from this machine
+/// ([`crate::identity::from_this_machine`]), and was not fetched by
+/// another site's page ([`crate::viewer::fetched_from_elsewhere`]: an
+/// artifact's `<id>.localhost` page or another localhost port, which send
+/// the `SameSite=Lax` owner cookie as the same site). [`gate`] and
+/// [`crate::identity::Identity::from_parts`] both apply it, so a mark that
+/// does not count is no credential at all.
+pub fn session_counts(headers: &HeaderMap, extensions: &axum::http::Extensions) -> bool {
+    !crate::auth::is_grant_request(headers)
+        && crate::identity::from_this_machine(headers, crate::auth::conn_of(extensions))
+        && !crate::viewer::fetched_from_elsewhere(headers)
+}
+
 /// The owner cookie's paths: every path of the daemon's host, since a
 /// browser that holds no credential gets none of its pages ([`gate`]): the
 /// shell's pages, the API, and the login route ([`LOGIN_PATH`]), where a
@@ -354,10 +369,11 @@ fn refuse(method: &Method, path: &str, headers: &HeaderMap) -> Response {
 /// Middleware of a local daemon, before every route: a request that
 /// carries no credential reaches only [`open_to_anyone`]'s paths and a
 /// site host's routes. A credential is an owner browser session
-/// ([`OwnerSession`]), an `Authorization` the later layers check (the
-/// token, an agent credential of another machine, the extension's), a
-/// signed grant request (`Clax-Signature`), the token as `?token=` where a
-/// route takes it ([`query_token`]), or a `clax_viewer` cookie
+/// ([`OwnerSession`]) that counts for the request ([`session_counts`]), an
+/// `Authorization` the later layers check (the token, an agent credential
+/// of another machine with its `Clax-Signature`, the extension's), the
+/// token as `?token=` where a route takes it ([`query_token`]), or a
+/// `clax_viewer` cookie
 /// naming a viewer the daemon minted (a connected person's among them). A
 /// request from the extension's origin passes to the extension gateway,
 /// which admits it only with a live credential.
@@ -368,7 +384,8 @@ pub async fn gate(State(s): State<AppState>, req: Request, next: Next) -> Respon
     if s.hosted.is_some()
         || req.extensions().get::<crate::host::SiteRequest>().is_some()
         || open_to_anyone(req.uri().path())
-        || req.extensions().get::<OwnerSession>().is_some()
+        || (req.extensions().get::<OwnerSession>().is_some()
+            && session_counts(req.headers(), req.extensions()))
     {
         return next.run(req).await;
     }
@@ -380,7 +397,10 @@ pub async fn gate(State(s): State<AppState>, req: Request, next: Next) -> Respon
             ApiError::unauthorized().into_response()
         };
     }
-    if h.contains_key("clax-signature") || query_token(&req, &s.token) {
+    // A `Clax-Signature` alone is no credential: the layers after this one
+    // verify it only for an agent credential's `Authorization`, which
+    // passed above.
+    if query_token(&req, &s.token) {
         return next.run(req).await;
     }
     // The extension's origin, its preflights included: the extension

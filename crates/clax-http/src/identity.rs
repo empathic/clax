@@ -98,8 +98,8 @@ pub fn from_this_machine(headers: &HeaderMap, conn: Option<crate::auth::Conn>) -
 /// from another machine (a peer that is neither loopback nor the address
 /// the connection arrived on) answers 403
 /// `forbidden_host` unless it is a connected person's: an agent credential
-/// of another machine or its signed grant request ([`crate::auth::is_grant_request`],
-/// `Clax-Signature`), the grant routes a machine connects through
+/// of another machine in its `Authorization` ([`crate::auth::is_grant_request`];
+/// its `Clax-Signature` is verified later, and is nothing alone), the grant routes a machine connects through
 /// (`/api/grants…`, which check their own signatures), the browser link that makes a browser that person's
 /// (`/connect/b/<code>`), or a browser whose `clax_viewer` cookie names a
 /// person who is not revoked. A viewer who is not connected reads nothing
@@ -128,8 +128,9 @@ pub async fn local_peers(
         _ => return next.run(req).await,
     };
     let h = req.headers();
+    // A `Clax-Signature` alone is no credential: it is verified only with
+    // an agent credential's `Authorization` ([`crate::auth::is_grant_request`]).
     if crate::auth::is_grant_request(h)
-        || h.contains_key("clax-signature")
         || req.uri().path().starts_with("/connect/b/")
         || req.uri().path().starts_with("/api/grants")
     {
@@ -260,7 +261,7 @@ impl Identity {
         let id = Identity::of(headers, token, peer_of(extensions));
         let local = from_this_machine(headers, crate::auth::conn_of(extensions));
         let session = extensions.get::<crate::local_trust::OwnerSession>();
-        let counts = !id.grant_header && local && !crate::viewer::fetched_from_elsewhere(headers);
+        let counts = crate::local_trust::session_counts(headers, extensions);
         let id = Identity {
             local,
             owner_cookie: counts && session.is_some_and(|m| m.owner),
