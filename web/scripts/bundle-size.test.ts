@@ -38,6 +38,7 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
   dist("_clax/transport.js", "transport");
   dist("_clax/overlay.js", "overlay".repeat(100));
   dist("_clax/overlay.mjs", overlayMjs);
+  dist("_clax/overlay.d.ts", "export declare function overlay(): void;");
   dist("_clax/shell/a.js", "a");
   // The question module imports the gallery's entry chunk, the gallery's
   // lazy module's own import (which the artifact view has not loaded), and

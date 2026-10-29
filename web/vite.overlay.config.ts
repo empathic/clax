@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -19,7 +20,7 @@ function componentCssIntoScript(): Plugin {
     name: "clax-overlay-component-css",
     apply: "build",
     enforce: "post",
-    generateBundle(_, bundle) {
+    generateBundle(out, bundle) {
       const sheets = Object.values(bundle).filter(f => f.type === "asset" && f.fileName.endsWith(".css"));
       const css = sheets.map(f => (f.type === "asset" ? String(f.source) : "")).join("\n");
       for (const f of sheets) delete bundle[f.fileName];
@@ -31,6 +32,8 @@ function componentCssIntoScript(): Plugin {
       if (js?.type !== "chunk" || !slot.test(js.code)) return this.error(`${js?.fileName ?? "the overlay"} has no ${CSS_SLOT} for the components' CSS`);
       if (!css) return this.error("the overlay's components compiled to no CSS");
       js.code = js.code.replace(slot, () => JSON.stringify(css));
+      // The host API's types, served beside the script (/_clax/overlay.d.ts), once.
+      if (out.format === "iife") this.emitFile({ type: "asset", fileName: "overlay.d.ts", source: readFileSync(new URL("overlay/overlay.d.ts", import.meta.url), "utf8") });
     },
   };
 }

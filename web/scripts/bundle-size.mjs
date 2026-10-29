@@ -145,6 +145,7 @@ sizes.overlay = gz("_clax/overlay.js");
   // Static imports start a statement; a dynamic one would be `import(`.
   if (/(^|[;}\n])\s*import\s*[{*"'\w]|\bimport\(/.test(mjs)) throw new Error("dist/_clax/overlay.mjs imports another file; the overlay is one file");
   if (!/\bexport\s*\{[^}]*\boverlay\b/.test(mjs)) throw new Error("dist/_clax/overlay.mjs does not export overlay");
+  if (!existsSync(new URL("_clax/overlay.d.ts", dist))) throw new Error("dist/_clax/overlay.d.ts is missing; the overlay's types are served beside it");
 }
 // App mode's host (`/a/<id>?app=1`): the chunk the artifact entry imports
 // for it, with what it imports (scripts and stylesheets) that the entry has
