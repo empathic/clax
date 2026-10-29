@@ -20,6 +20,12 @@ vi.mock("modern-screenshot", async importOriginal => {
 // jsdom has no canvas: one reads as a blank one does in a browser.
 HTMLCanvasElement.prototype.toDataURL = () => "data:,";
 
+// jsdom reports a pseudo-element style as not implemented, then answers the
+// element's own; answering that without the report keeps the clone the same
+// and the test log free of a stack trace per pseudo-element read.
+const computed = window.getComputedStyle.bind(window);
+window.getComputedStyle = (elt: Element) => computed(elt);
+
 const { renderClipWithReport, renderViewportClip } = await import("../src/clip");
 
 const sized = (el: Element, left: number, top: number, width: number, height: number) => {

@@ -5,6 +5,10 @@ import { FRAME_FALLBACK_MS } from "../src/frame";
 // A backstop for a loaded machine; no test here times anything.
 vi.setConfig({ testTimeout: 20_000 });
 
+// jsdom reports window.focus as not implemented, with a stack trace each
+// time comment mode takes focus back; a no-op keeps the log readable.
+window.focus = () => {};
+
 let hooks: { [K in Exclude<keyof ModeHooks, "live">]: ReturnType<typeof vi.fn> } & Pick<ModeHooks, "live">;
 let mode: CommentMode;
 const nextFrame = () => new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
