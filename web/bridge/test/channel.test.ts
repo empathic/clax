@@ -84,7 +84,15 @@ describe("pageShortcut", () => {
     // A layout whose F key types another letter.
     expect(at(p, { key: "а", code: "KeyF" })).toBe("f");
     expect(at(p, { key: "f", ctrlKey: true })).toBeNull();
+    expect(at(p, { key: "F", shiftKey: true })).toBeNull();
     expect(at(el("<input data-t>"), { key: "f" })).toBeNull();
+  });
+
+  it("forwards no F pressed in the page's own dialog, as the shell's F skips one", () => {
+    expect(at(el("<div role=dialog><button data-t>OK</button></div>"), { key: "f" })).toBeNull();
+    expect(at(el("<div aria-modal=true><button data-t>OK</button></div>"), { key: "f" })).toBeNull();
+    // C keeps its rules there.
+    expect(at(el("<div role=dialog><button data-t>OK</button></div>"), { key: "c" })).toBe("c");
   });
 
   it("forwards no other key: not ?, not a letter, not Escape", () => {

@@ -42,15 +42,22 @@ const TYPING = "input, textarea, select, [contenteditable]:not([contenteditable=
  * repeat or an input method's composition, and it was not typed into an
  * input, textarea, select, contenteditable, or anything with the role
  * textbox or combobox, or inside one (the event's innermost target, through
- * open shadow roots, so it is called while the event is dispatched). */
+ * open shadow roots, so it is called while the event is dispatched). F is
+ * not forwarded from inside the page's own dialog either (`[role=dialog]`
+ * or `[aria-modal=true]`), as the shell's F is not (`isShortcut`,
+ * web/shell/src/feedback/feedback.ts). */
 export function pageShortcut(e: KeyboardEvent): "c" | "f" | null {
   if (!e.isTrusted || e.defaultPrevented || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey || e.repeat || e.isComposing) return null;
   const k = e.code === "KeyF" ? "f" : typeof e.key === "string" ? e.key.toLowerCase() : "";
   if (!PAGE_SHORTCUTS.has(k)) return null;
   const t = e.composedPath()[0] ?? e.target;
   if (t instanceof Element && ((t as HTMLElement).isContentEditable || t.closest(TYPING))) return null;
+  if (k === "f" && t instanceof Element && t.closest(DIALOG)) return null;
   return k as "c" | "f";
 }
+
+/** A dialog of the page's own, where F stays the page's. */
+const DIALOG = "[role=dialog], [aria-modal=true]";
 
 /** The message when the browser delivered it (a page's own `dispatchEvent`
  * of a made-up `MessageEvent`, which can name any source and origin, is not

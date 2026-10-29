@@ -82,19 +82,21 @@ export function loadOverlay(doc: Document, instance: string): Promise<ClaxGlobal
  * the menu item's `aria-keyshortcuts`. */
 export const SHORTCUT = { keys: ["F"], label: "F", aria: "F" } as const;
 
-export type ShortcutKey = Pick<KeyboardEvent, "key" | "code" | "metaKey" | "ctrlKey" | "altKey" | "isComposing" | "repeat" | "defaultPrevented" | "target" | "composedPath">;
+export type ShortcutKey = Pick<KeyboardEvent, "key" | "code" | "shiftKey" | "metaKey" | "ctrlKey" | "altKey" | "isComposing" | "repeat" | "defaultPrevented" | "target" | "composedPath">;
 
 /** What a key is typed into: a form field, editable content, or a custom
  * text field or combo box. */
 const TYPING = "input, textarea, select, [contenteditable]:not([contenteditable=false]), [role=textbox], [role=combobox]";
 
-/** Whether `e` is the report key: F (either case, or the key in F's place,
- * `KeyF`, on a layout where it types another letter) with no modifier but
- * Shift, not repeated or composed, not already handled, and not typed into a
- * text field (the event's innermost target, through open shadow roots) or
- * inside a dialog. */
+/** Whether `e` is the report key: F (either case, so Caps Lock does not
+ * matter, or the key in F's place, `KeyF`, on a layout where it types
+ * another letter) with no modifier (Shift, Control, Option or Command), not
+ * repeated or composed, not already handled, and not typed into a text
+ * field (the event's innermost target, through open shadow roots) or inside
+ * a dialog: the rules the bridge forwards F from the page by (`pageShortcut`,
+ * web/bridge/src/channel.ts). */
 export function isShortcut(e: ShortcutKey): boolean {
-  if (e.defaultPrevented || e.isComposing || e.repeat || e.altKey || e.ctrlKey || e.metaKey) return false;
+  if (e.defaultPrevented || e.isComposing || e.repeat || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return false;
   if (e.key !== "f" && e.key !== "F" && e.code !== "KeyF") return false;
   const t = (typeof e.composedPath === "function" ? e.composedPath()[0] : null) ?? e.target;
   if (!(t instanceof Element)) return true;
