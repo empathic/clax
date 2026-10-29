@@ -12,11 +12,22 @@ const choose = (el: Element | null, v: string) => flush(() => { const s = el as 
 const button = (root: Element, text: string) => [...root.querySelectorAll("button")].find(b => b.textContent?.trim() === text);
 const submit = (root: Element) => click(root.querySelector('form.af button[type="submit"]'));
 const view = () => mount(ReportView, { qid: "q1", tid: "t1", queue: QUEUE, nav: () => {}, zone: "UTC", locale: "en-US" });
+type Handler = (e: { type: string; topic?: string; [k: string]: unknown }) => void;
+/** A stream whose events the test sends: the topics watched, and `send`. */
+function fakeStream() {
+  const watching: { topics: string[]; on: Handler }[] = [];
+  return {
+    watching,
+    stream: { watch: (topics: string[], on: Handler) => { const w = { topics, on }; watching.push(w); return () => { watching.splice(watching.indexOf(w), 1); }; } },
+    send: (e: Parameters<Handler>[0]) => flush(() => { for (const w of [...watching]) w.on(e); }),
+  };
+}
+const CLAIM = { holder_name: "Claude Code", expires_at: "2026-10-29T08:30:00Z" };
 
 afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
 describe("ReportView", () => {
-  it("shows the report, its reporter and conversation, and no claim or release", async () => {
+  it("shows the report, its reporter and conversation, and no claim or release while it is open", async () => {
     const r = report(1, {
       reporter_profile: { name: "Ana", github: "ana-k" },
       comments: [...report(1).comments, { id: "c2", author_kind: "viewer", author_name: "Mia", body: "Looking", created_at: "2026-10-29T08:00:00Z" }],
@@ -221,6 +232,87 @@ describe("ReportView", () => {
     await settle();
     expect(m.root.querySelector(".back a")!.getAttribute("href")).toBe("/queues/q1?state=resolved");
     history.replaceState(null, "", "/queues/q1/t1");
+  });
+
+  it("refetches when its queue's topic says it changed, keeping a reply draft and saying what changed", async () => {
+    let current: Report = report(1);
+    const calls = stubFetch({ [`GET ${R}`]: () => ({ report: current }) });
+    const s = fakeStream();
+    const m = mount(ReportView, { qid: "q1", tid: "t1", queue: QUEUE, nav: () => {}, zone: "UTC", locale: "en-US", stream: s.stream as never });
+    await settle();
+    expect(s.watching.map(w => w.topics)).toEqual([["queue:q1"]]);
+    const box = m.root.querySelector<HTMLTextAreaElement>("form.reply textarea")!;
+    type(box, "Half a reply");
+    const gets = () => calls.filter(c => c.method === "GET" && c.url === R).length;
+    const before = gets();
+    // Another report's change is not this one's.
+    s.send({ type: "report", topic: "queue:q1", report_id: "t2", state: "claimed" });
+    await settle();
+    expect(gets()).toBe(before);
+    // An agent claims it elsewhere: the view shows it without a reload.
+    current = report(1, { state: "claimed", claim: CLAIM });
+    s.send({ type: "report", topic: "queue:q1", report_id: "t1", state: "claimed" });
+    await settle();
+    expect(gets()).toBe(before + 1);
+    expect(m.root.querySelector(".rh .state")!.textContent).toBe("Claimed");
+    expect(m.root.querySelector(".by .claim")!.textContent).toContain("claimed by Claude Code");
+    expect(box.isConnected && box.value).toBe("Half a reply");
+    const live = m.root.querySelector('[aria-live="polite"].sr')!;
+    expect(live.textContent).toBe("Now claimed by Claude Code.");
+    // A reply from someone else is said too; the draft stays.
+    current = report(1, { state: "claimed", claim: CLAIM, comments: [...report(1).comments, { id: "c2", author_kind: "reporter", author_name: "emp-1", body: "It is order 7", created_at: "2026-10-29T08:00:00Z" }] });
+    s.send({ type: "report", topic: "queue:q1", report_id: "t1", state: "claimed" });
+    await settle();
+    expect([...m.root.querySelectorAll(".convo .cm .body")].map(b => b.textContent)).toEqual(["It is order 7"]);
+    expect(live.textContent).toBe("New reply from emp-1.");
+    expect(box.value).toBe("Half a reply");
+    // The stream coming back refetches too.
+    s.send({ type: "ready", topic: "queue:q1" });
+    await settle();
+    expect(gets()).toBe(before + 3);
+  });
+
+  it("releases a claim after asking, with a note, and the report is open again", async () => {
+    const calls = stubFetch({
+      [`GET ${R}`]: { report: report(1, { state: "claimed", claim: CLAIM }) },
+      [`POST ${R}/release`]: { report: report(1, { comments: [...report(1).comments, { id: "c3", author_kind: "viewer", author_name: "Mia", body: "Stuck since Monday", created_at: "2026-10-29T09:00:00Z", triage_only: true }] }) },
+    });
+    const m = view();
+    await settle();
+    click(button(m.root, "Release claim"));
+    const f = m.root.querySelector("form.af")!;
+    expect(f.textContent).toContain("Ends Claude Code's claim now");
+    expect(calls.some(c => c.method === "POST")).toBe(false);
+    type(f.querySelector('textarea[name="note"]'), " Stuck since Monday ");
+    submit(m.root);
+    await settle();
+    expect(calls.find(c => c.method === "POST")).toEqual({ url: `${R}/release`, method: "POST", body: { note: "Stuck since Monday" } });
+    expect(m.root.querySelector(".rh .state")!.textContent).toBe("Open");
+    expect(m.root.querySelector(".acts .stat")!.textContent).toBe("Released the claim: the report is open again.");
+    expect(button(m.root, "Release claim")).toBeUndefined();
+    const note = m.root.querySelector('.cm[data-id="c3"]')!;
+    expect(note.querySelector(".only")!.textContent).toBe("Triage only");
+  });
+
+  it("sends no note when none is written, and a form its state no longer allows closes", async () => {
+    let current: Report = report(1, { state: "claimed", claim: CLAIM });
+    const calls = stubFetch({ [`GET ${R}`]: () => ({ report: current }), [`POST ${R}/release`]: { report: report(1) } });
+    const s = fakeStream();
+    const m = mount(ReportView, { qid: "q1", tid: "t1", queue: QUEUE, nav: () => {}, zone: "UTC", locale: "en-US", stream: s.stream as never });
+    await settle();
+    click(button(m.root, "Release claim"));
+    // The agent lets it go first: the confirmation is no longer offered.
+    current = report(1);
+    s.send({ type: "report", topic: "queue:q1", report_id: "t1", state: "open" });
+    await settle();
+    expect(m.root.querySelector("form.af")).toBeNull();
+    current = report(1, { state: "claimed", claim: CLAIM });
+    s.send({ type: "report", topic: "queue:q1", report_id: "t1", state: "claimed" });
+    await settle();
+    click(button(m.root, "Release claim"));
+    submit(m.root);
+    await settle();
+    expect(calls.find(c => c.method === "POST")!.body).toEqual({});
   });
 
   it("keeps the latest load when an earlier one answers after it", async () => {

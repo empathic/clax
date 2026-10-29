@@ -20,8 +20,9 @@ export function shotPath(info: TestInfo, name: string): string {
  * from no browser (no `Origin`, no cookie), in a session it registers
  * (`POST /api/sessions`) and names on every call (`X-Clax-Session` and the
  * session's secret): a claim's lease is its session's. `ok` answers a
- * call's JSON and fails the test on any status from 300 up; `bytes`
- * answers a GET's status, type and body. */
+ * call's JSON and fails the test on any status from 300 up; `send`
+ * answers a call's status and JSON whatever the status; `bytes` answers a
+ * GET's status, type and body. */
 export async function agentOf(origin: string, token: string) {
   const reg = await fetch(`${origin}/api/sessions`, {
     method: "POST",
@@ -41,6 +42,12 @@ export async function agentOf(origin: string, token: string) {
       const text = await r.text();
       expect(r.status, `${method} ${path}: ${text}`).toBeLessThan(300);
       return (text ? JSON.parse(text) : null) as T;
+    },
+    async send(method: string, path: string, body?: unknown): Promise<{ status: number; body: { error?: { code?: string } } & Record<string, unknown> }> {
+      const headers = { ...auth, ...(body === undefined ? {} : { "content-type": "application/json" }) };
+      const r = await fetch(`${origin}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+      const text = await r.text();
+      return { status: r.status, body: text ? JSON.parse(text) : {} };
     },
     async bytes(path: string): Promise<{ status: number; type: string | null; bytes: Uint8Array }> {
       const r = await fetch(`${origin}${path}`, { headers: auth });

@@ -8,13 +8,17 @@
   // row links to the report's view and shows its note,
   // its clip's thumbnail, who filed it, the release they ran, how long ago,
   // its state and how many fixes it has had. Load more fetches the next
-  // page from the listing's cursor. A tab's list is fetched again when the
-  // stream comes back.
+  // page from the listing's cursor. A tab's list is fetched again, as many
+  // pages as it shows, whenever the queue's topic says a report changed and
+  // when the stream comes back (one fetch at a time, one more after it when
+  // another change came meanwhile, none while Load more is fetching): the
+  // rows stay until the new ones replace them, so the page keeps its place,
+  // and what changed is said politely.
   import { onMount } from "svelte";
   import type { EventStream } from "../stream";
   import { relativeTime } from "../format";
   import * as api from "./api";
-  import { STATE_LABEL, TABS, noteOf, refusal, reportHref, reporterName } from "./model";
+  import { STATE_LABEL, TABS, noteOf, queueTopic, refusal, reportHref, reporterName } from "./model";
 
   const p: { qid: string; queue?: api.Queue | null; nav: (e: MouseEvent) => void; stream?: EventStream } = $props();
   const fromUrl = () => TABS.find(t => t.key === new URLSearchParams(location.search).get("state"))?.key ?? "active";
@@ -23,6 +27,10 @@
   let next = $state<string | null>(null);
   let err = $state<string | null>(null);
   let more = $state(false);
+  // What changed since the list was last fetched, said politely.
+  let notice = $state("");
+  // How many pages the tab shows.
+  let pages = 1;
   // Each fetch's turn: an answer for an earlier tab is dropped.
   let turn = 0;
 
@@ -36,11 +44,56 @@
       if (mine !== turn) return;
       reports = cursor ? [...(reports ?? []), ...page.reports] : page.reports;
       next = page.next;
+      pages = cursor ? pages + 1 : 1;
     } catch (x) {
       if (mine === turn) err = `Could not load the reports: ${refusal(x)}`;
     } finally {
-      if (mine === turn) more = false;
+      if (mine === turn) {
+        more = false;
+        // A change heard while this fetch was out.
+        if (again && !fetching) void refresh();
+      }
     }
+  }
+  /** What changed between the rows `was` and `now`, as a sentence. */
+  function changed(was: api.Report[], now: api.Report[]): string {
+    const added = now.filter(r => !was.some(w => w.id === r.id)).length;
+    const moved = now.filter(r => was.some(w => w.id === r.id && w.state !== r.state)).length;
+    return [added && `${added} new ${added === 1 ? "report" : "reports"}.`, moved && `${moved} ${moved === 1 ? "report" : "reports"} changed.`].filter(Boolean).join(" ");
+  }
+  /** Fetches the tab's pages again in place, as many as it shows. */
+  async function reload() {
+    const mine = ++turn;
+    const t = TABS.find(x => x.key === tab)!;
+    const got: api.Report[] = [];
+    let cursor: string | null = null;
+    let n = 0;
+    try {
+      do {
+        const page = await api.reportPage(p.qid, cursor, { state: t.state, order: "newest" });
+        if (mine !== turn) return;
+        got.push(...page.reports);
+        cursor = page.next;
+        n++;
+      } while (cursor && n < pages);
+    } catch (x) {
+      if (mine === turn) err = `Could not load the reports: ${refusal(x)}`;
+      return;
+    }
+    const said = changed(reports ?? [], got);
+    if (said) notice = said;
+    reports = got;
+    next = cursor;
+    err = null;
+  }
+  // One refetch at a time; a change heard meanwhile fetches once more after it.
+  let fetching = false;
+  let again = false;
+  async function refresh() {
+    // The first page is still coming, or Load more is: it refreshes once it answers.
+    if (fetching || more || reports === null) { again = true; return; }
+    fetching = true;
+    try { do { again = false; await reload(); } while (again); } finally { fetching = false; }
   }
   function choose(key: string) {
     if (key === tab) return;
@@ -63,7 +116,9 @@
 
   onMount(() => {
     void load();
-    return p.stream?.watch(["gallery"], e => { if (e.type === "resync") void load(); });
+    return p.stream?.watch([queueTopic(p.qid)], e => {
+      if (e.type === "ready" || e.type === "resync" || e.type === "report") void refresh();
+    });
   });
 </script>
 
@@ -79,6 +134,7 @@
       <button type="button" role="tab" class="tab" data-tab={t.key} aria-selected={tab === t.key} tabindex={tab === t.key ? 0 : -1} aria-controls="qv-list" onclick={() => choose(t.key)}>{t.label}</button>
     {/each}
   </div>
+  <p class="sr" aria-live="polite">{notice}</p>
   <div id="qv-list" role="tabpanel" aria-label={TABS.find(t => t.key === tab)?.label}>
     {#if err}<p class="qerr" role="alert">{err}</p>{/if}
     {#if reports?.length}
@@ -142,6 +198,7 @@
   .nfix { color: var(--muted); font-size: 12px; white-space: nowrap; }
   .more { text-align: center; margin: 12px 0; }
   .qnone { color: var(--muted); text-align: center; padding: 48px 0; }
+  .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
   @media (max-width: 560px) {
     .rlink { grid-template-columns: 56px minmax(0, 1fr); }

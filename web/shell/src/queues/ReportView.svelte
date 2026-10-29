@@ -11,12 +11,19 @@
   // its state: propose a fix (open, claimed or waiting for a verdict),
   // resolve it with a reason (the same), say for the reporter that the fix
   // works (waiting for a verdict), or that it is still broken (waiting for
-  // a verdict, verified or resolved). Claiming and releasing are an
-  // agent's, never shown here. Every text the reporter's browser sent is
-  // shown as text. Each action's answer is the report as it now is; a
-  // refusal says why until the next action. The report is fetched again
-  // when the stream comes back; an answer older than the latest is dropped.
-  // Its back link returns to the queue view on the tab it came from.
+  // a verdict, verified or resolved), and end a claim whoever holds it
+  // (claimed: "Release claim", after asking, with a note for triage alone);
+  // claiming is an agent's, never offered here. Every text the reporter's
+  // browser sent is shown as text, and a note for triage alone says so.
+  // Each action's answer is the report as it now is; a refusal says why
+  // until the next action. The report is fetched again whenever the
+  // queue's topic says it changed and when the stream comes back (one
+  // fetch at a time, one more after it when another change came
+  // meanwhile); an answer older than the latest is dropped. A refetch
+  // keeps the page where it is, the drafts typed and the form open while
+  // its state still allows it, and says politely what someone else
+  // changed. Its back link returns to the queue view on the tab it came
+  // from.
   import { onMount } from "svelte";
   import type { EventStream } from "../stream";
   import { relativeTime } from "../format";
@@ -24,7 +31,7 @@
   import ContextCard from "./ContextCard.svelte";
   import Diagnostics from "./Diagnostics.svelte";
   import FixHistory from "./FixHistory.svelte";
-  import { REASON_LABEL, STATE_LABEL, TABS, anchorText, httpUrl, noteOf, queueHref, refusal, reporterName } from "./model";
+  import { REASON_LABEL, STATE_LABEL, TABS, anchorText, httpUrl, noteOf, queueHref, queueTopic, refusal, reporterName } from "./model";
 
   const p: { qid: string; tid: string; queue?: api.Queue | null; nav: (e: MouseEvent) => void; stream?: EventStream; zone?: string; locale?: string } = $props();
   let report = $state<api.Report | null>(null);
@@ -33,12 +40,15 @@
   let status = $state("");
   let busy = $state(false);
   // The action form open, and each form's fields.
-  let form = $state<"fix" | "resolve" | "verify" | "reopen" | null>(null);
+  let form = $state<"fix" | "resolve" | "verify" | "reopen" | "release" | null>(null);
   let fix = $state({ summary: "", url: "", commit: "", verify_url: "" });
   let reason = $state<api.ResolveReason | "">("");
   let verifyNote = $state("");
   let reopenBody = $state("");
+  let releaseNote = $state("");
   let replyText = $state("");
+  // What someone else changed, said politely.
+  let notice = $state("");
   // The clip: fitted, or at 1× or 2× its size on the reporter's screen.
   let zoom = $state<"fit" | 1 | 2>("fit");
   let natural = $state<{ w: number; h: number } | null>(null);
@@ -48,6 +58,11 @@
   const canFix = $derived(st === "open" || st === "claimed" || st === "fix_proposed");
   const canVerify = $derived(st === "fix_proposed");
   const canReopen = $derived(st === "fix_proposed" || st === "verified" || st === "resolved");
+  const canRelease = $derived(st === "claimed" && !!r?.claim);
+  // The form open, while the report's state still allows it: one it no
+  // longer allows closes (its fields keep what was typed).
+  const shown = $derived(form && ({ fix: canFix, resolve: canFix, verify: canVerify, reopen: canReopen, release: canRelease } as const)[form] ? form : null);
+  $effect(() => { if (form && !shown) form = null; });
   const conversation = $derived(r?.comments.slice(1) ?? []);
   const omitted = $derived(r?.context?.capture?.omitted ?? []);
   const dpr = $derived(r?.context?.environment?.viewport?.dpr || 1);
@@ -61,6 +76,15 @@
   // svelte-ignore state_referenced_locally
   const back = `${queueHref(p.qid)}${tab ? `?state=${tab}` : ""}`;
 
+  /** What changed between `was` and `now`, as a sentence; "" for nothing said. */
+  function changed(was: api.Report, now: api.Report): string {
+    if (now.state !== was.state) return now.state === "claimed" && now.claim ? `Now claimed by ${now.claim.holder_name}.` : `Now ${(STATE_LABEL[now.state] ?? now.state).toLowerCase()}.`;
+    const added = now.comments.filter(c => !was.comments.some(w => w.id === c.id));
+    if (added.length === 1) return `New reply from ${added[0].author_name}.`;
+    if (added.length) return `${added.length} new replies.`;
+    return "";
+  }
+
   // Each fetch's turn: a load answered after a later load or action is dropped.
   let turn = 0;
   async function load() {
@@ -68,7 +92,9 @@
     try {
       const got = (await api.getReport(p.qid, p.tid)).report;
       if (mine !== turn) return;
+      const was = report;
       report = got;
+      if (was) { const said = changed(was, got); if (said) notice = said; }
       loadErr = null;
       document.title = `${(noteOf(got).split("\n")[0] || "Report").slice(0, 60)} · ${p.queue?.name ?? "Queues"} · Clax`;
     } catch (x) {
@@ -90,7 +116,15 @@
       return false;
     } finally { busy = false; }
   }
-  const open = (f: typeof form) => { form = form === f ? null : f; err = null; status = ""; };
+  const open = (f: typeof form) => { form = shown === f ? null : f; err = null; status = ""; };
+  // One refetch at a time; a change heard meanwhile fetches once more after it.
+  let fetching = false;
+  let again = false;
+  async function refresh() {
+    if (fetching) { again = true; return; }
+    fetching = true;
+    try { do { again = false; await load(); } while (again); } finally { fetching = false; }
+  }
 
   async function proposeFix(e: Event) {
     e.preventDefault();
@@ -116,6 +150,11 @@
     if (!body) { err = "Say what is still broken."; return; }
     if (await act("Reopened for the reporter.", () => api.reopen(p.qid, p.tid, body))) reopenBody = "";
   }
+  async function release(e: Event) {
+    e.preventDefault();
+    const note = releaseNote.trim();
+    if (await act("Released the claim: the report is open again.", () => api.releaseClaim(p.qid, p.tid, note || undefined))) releaseNote = "";
+  }
   async function reply(e: Event) {
     e.preventDefault();
     const body = replyText.trim();
@@ -125,7 +164,9 @@
 
   onMount(() => {
     void load();
-    return p.stream?.watch(["gallery"], e => { if (e.type === "resync") void load(); });
+    return p.stream?.watch([queueTopic(p.qid)], e => {
+      if (e.type === "ready" || e.type === "resync" || (e.type === "report" && e.report_id === p.tid)) void refresh();
+    });
   });
 </script>
 
@@ -184,7 +225,7 @@
             <ol>
               {#each conversation as c (c.id)}
                 <li class={["cm", c.author_kind]} data-id={c.id}>
-                  <header><b>{c.author_name}</b> <span class="muted">{c.author_kind === "reporter" ? "reporter" : c.author_kind === "agent" ? "agent" : ""}</span> <time class="muted" datetime={c.created_at} title={c.created_at}>{relativeTime(c.created_at)}</time></header>
+                  <header><b>{c.author_name}</b> <span class="muted">{c.author_kind === "reporter" ? "reporter" : c.author_kind === "agent" ? "agent" : ""}</span>{#if c.triage_only}<span class="only">Triage only</span>{/if} <time class="muted" datetime={c.created_at} title={c.created_at}>{relativeTime(c.created_at)}</time></header>
                   <p class="body">{c.body}</p>
                   {#if c.has_clip}<img class="cclip" src={api.commentClipUrl(p.qid, p.tid, c.id)} alt={`The clip ${c.author_name} sent with this`} loading="lazy" />{/if}
                   {#if c.diagnostics_lines && c.capture !== undefined}
@@ -209,14 +250,16 @@
         <section class="acts" aria-label="Actions">
           <h3>Actions</h3>
           <p class="stat" role="status">{status}</p>
+          <p class="sr" aria-live="polite">{notice}</p>
           {#if err}<p class="err" role="alert">{err}</p>{/if}
           <div class="btns">
-            {#if canFix}<button type="button" aria-expanded={form === "fix"} onclick={() => open("fix")}>Propose fix</button>{/if}
-            {#if canFix}<button type="button" aria-expanded={form === "resolve"} onclick={() => open("resolve")}>Resolve</button>{/if}
-            {#if canVerify}<button type="button" aria-expanded={form === "verify"} onclick={() => open("verify")}>Verify for the reporter</button>{/if}
-            {#if canReopen}<button type="button" aria-expanded={form === "reopen"} onclick={() => open("reopen")}>Reopen for the reporter</button>{/if}
+            {#if canFix}<button type="button" aria-expanded={shown === "fix"} onclick={() => open("fix")}>Propose fix</button>{/if}
+            {#if canFix}<button type="button" aria-expanded={shown === "resolve"} onclick={() => open("resolve")}>Resolve</button>{/if}
+            {#if canVerify}<button type="button" aria-expanded={shown === "verify"} onclick={() => open("verify")}>Verify for the reporter</button>{/if}
+            {#if canReopen}<button type="button" aria-expanded={shown === "reopen"} onclick={() => open("reopen")}>Reopen for the reporter</button>{/if}
+            {#if canRelease}<button type="button" aria-expanded={shown === "release"} onclick={() => open("release")}>Release claim</button>{/if}
           </div>
-          {#if form === "fix"}
+          {#if shown === "fix"}
             <form class="af fix" onsubmit={proposeFix}>
               <label>Summary <textarea name="summary" rows="4" maxlength="4096" aria-required="true" placeholder="What the fix changes; the reporter reads it." bind:value={fix.summary}></textarea></label>
               <label>Pull request or change <input name="url" type="url" placeholder="https://github.com/…/pull/123" bind:value={fix.url} /></label>
@@ -224,7 +267,7 @@
               <label>Where the reporter checks it <input name="verify_url" type="url" placeholder="https://…" bind:value={fix.verify_url} /></label>
               <span class="row"><button type="submit" class="primary" disabled={busy}>Propose fix</button><button type="button" class="ghost" onclick={() => { form = null; }}>Cancel</button></span>
             </form>
-          {:else if form === "resolve"}
+          {:else if shown === "resolve"}
             <form class="af" onsubmit={resolve}>
               <label>Reason
                 <select name="reason" bind:value={reason}>
@@ -234,17 +277,23 @@
               </label>
               <span class="row"><button type="submit" class="primary" disabled={busy}>Resolve</button><button type="button" class="ghost" onclick={() => { form = null; }}>Cancel</button></span>
             </form>
-          {:else if form === "verify"}
+          {:else if shown === "verify"}
             <form class="af" onsubmit={verify}>
               <p class="muted">Says the fix works, on the reporter's behalf; it is recorded as yours.</p>
               <label>Note <textarea name="note" rows="2" placeholder="Optional" bind:value={verifyNote}></textarea></label>
               <span class="row"><button type="submit" class="primary" disabled={busy}>Mark verified</button><button type="button" class="ghost" onclick={() => { form = null; }}>Cancel</button></span>
             </form>
-          {:else if form === "reopen"}
+          {:else if shown === "reopen"}
             <form class="af" onsubmit={reopen}>
               <p class="muted">Says it is still broken, on the reporter's behalf; it is recorded as yours.</p>
               <label>What is still broken <textarea name="body" rows="3" aria-required="true" bind:value={reopenBody}></textarea></label>
               <span class="row"><button type="submit" class="primary" disabled={busy}>Reopen</button><button type="button" class="ghost" onclick={() => { form = null; }}>Cancel</button></span>
+            </form>
+          {:else if shown === "release" && r.claim}
+            <form class="af" onsubmit={release}>
+              <p class="muted">Ends {r.claim.holder_name}'s claim now: its next renew or fix is refused, and it is told. The report is open for anyone to take.</p>
+              <label>Note <textarea name="note" rows="2" placeholder="Optional: why. Triage and the agent see it, the reporter does not." bind:value={releaseNote}></textarea></label>
+              <span class="row"><button type="submit" class="primary" disabled={busy}>Release claim</button><button type="button" class="ghost" onclick={() => { form = null; }}>Cancel</button></span>
             </form>
           {/if}
         </section>
@@ -294,6 +343,8 @@
   .cm.reporter { border-left-color: var(--accent); }
   .cm.agent { border-left-color: var(--agent); }
   .cm header { font-size: 13px; margin-bottom: 2px; }
+  .only { margin-left: 6px; padding: 0 6px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 11.5px; }
+  .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
   .cclip { display: block; max-width: 100%; max-height: 240px; margin-top: 6px; border: 1px solid var(--border); border-radius: var(--radius-xs); }
   .reply { display: grid; gap: 6px; }
   .reply label { font-size: 13px; font-weight: 600; }
