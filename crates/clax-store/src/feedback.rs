@@ -83,7 +83,8 @@ pub(crate) fn release_session(tx: &Transaction<'_>, sid: &str, now: &str) -> Res
         }
         let other_live: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM feedback f JOIN sessions s ON s.id = f.target_session_id
-              WHERE f.comment_id = ?1 AND f.id <> ?2 AND s.ended_at IS NULL)",
+              WHERE f.comment_id = ?1 AND f.id <> ?2 AND s.ended_at IS NULL
+                AND f.queue_event IS NULL)",
             params![comment_id, id],
             |r| r.get(0),
         )?;
@@ -426,6 +427,8 @@ struct Pending {
     queue_id: Option<String>,
     /// The queue's wake the row is, when it is one.
     queue_event: Option<QueueEvent>,
+    /// The comment is a reporter's (through a reporter token).
+    by_reporter: bool,
 }
 
 /// What [`Store::take_feedback`] handed over (spec 2026-10-08 §8.4, M16):
@@ -950,7 +953,8 @@ impl Store {
     /// transaction: one feedback row for comment `comment_id` (the filing's
     /// note, or the reopen's) per live session watching the queue, and
     /// for `also_session` when it is live (the previous proposer on a
-    /// reopen) whether it watches or not. A session with a row for the
+    /// reopen) whether it watches or not; each only while the session's
+    /// person (or the owner) is a member of the queue. A session with a row for the
     /// comment already gets none. The rows are the ones a send writes,
     /// marked with `event`, so [`Store::take_feedback`],
     /// [`Store::take_notices`] and the tiers that read them deliver them
@@ -988,17 +992,15 @@ impl Store {
         if let Some(sid) = also_session
             && !sessions.iter().any(|s| s == sid)
         {
-            let live: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1 AND ended_at IS NULL)",
-                params![sid],
-                |r| r.get(0),
-            )?;
-            if live {
-                sessions.push(sid.to_string());
-            }
+            sessions.push(sid.to_string());
         }
         let mut touched = Touched::default();
         for sid in sessions {
+            // Only a live session of a member of the queue is told of its
+            // reports: one whose person left the queue is not.
+            if !super::queues::session_is_member_in(tx, qid, &sid)? {
+                continue;
+            }
             let made = tx.execute(
                 "INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at, queue_event)
                  SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE NOT EXISTS (
@@ -1375,6 +1377,7 @@ impl Store {
                                 .get::<_, Option<String>>(23)?
                                 .as_deref()
                                 .and_then(QueueEvent::parse),
+                            by_reporter: r.get(24)?,
                             writer: if r.get::<_, String>(19)? == AUTHOR_AGENT {
                                 Author::System
                             } else {
@@ -1580,6 +1583,9 @@ impl Store {
             touched
                 .threads
                 .insert((p.artifact_id.clone(), p.thread_id.clone()));
+            // A triage person's reopen names them; a reporter's names no one.
+            let reopened_by = (p.queue_event == Some(QueueEvent::Reopened) && !p.by_reporter)
+                .then(|| p.author.clone());
             items.push(FeedbackItem {
                 feedback_id: p.id,
                 thread_id: p.thread_id,
@@ -1600,6 +1606,7 @@ impl Store {
                 live,
                 withheld,
                 queue_id: p.queue_id,
+                reopened_by,
                 queue_event: p.queue_event,
             });
         }
@@ -1938,8 +1945,9 @@ impl Store {
             let rows = {
                 let mut stmt = tx.prepare(
                     "SELECT f.id, f.comment_id, f.thread_id, t.artifact_id, a.title, t.queue_id,
-                            f.queue_event
+                            f.queue_event, c.reporter_id IS NOT NULL, c.author_name, c.author_public_id
                      FROM feedback f
+                     JOIN comments c ON c.id = f.comment_id
                      JOIN threads t ON t.id = f.thread_id
                      JOIN artifacts a ON a.id = t.artifact_id
                      WHERE f.target_session_id = ?1
@@ -1959,15 +1967,33 @@ impl Store {
                         r.get::<_, String>(4)?,
                         r.get::<_, Option<String>>(5)?,
                         r.get::<_, Option<String>>(6)?,
+                        r.get::<_, bool>(7)?,
+                        r.get::<_, String>(8)?,
+                        r.get::<_, Option<String>>(9)?,
                     ))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?
             };
             let mut sight = Sight::new(tx, vis);
             let mut out = Vec::new();
-            for (feedback_id, comment_id, thread_id, artifact_id, mut title, queue_id, event) in
-                rows
+            for (
+                feedback_id,
+                comment_id,
+                thread_id,
+                artifact_id,
+                mut title,
+                queue_id,
+                event,
+                by_reporter,
+                author,
+                author_public_id,
+            ) in rows
             {
+                let event = event.as_deref().and_then(QueueEvent::parse);
+                // A triage person's reopen names them; a reporter's names no one.
+                let reopened_by = (event == Some(QueueEvent::Reopened) && !by_reporter).then(|| {
+                    vis.label(&author, &Author::of_viewer(author_public_id.as_deref()))
+                });
                 if let Some(may) = readable {
                     match sight.artifact(&artifact_id)? {
                         Some(a) if may(&a) => {}
@@ -2013,7 +2039,8 @@ impl Store {
                         title,
                         url,
                         queue_id,
-                        event: event.as_deref().and_then(QueueEvent::parse),
+                        event,
+                        reopened_by,
                     });
                 }
             }
@@ -2098,7 +2125,7 @@ pub(crate) const TAKE_FEEDBACK: &str = "SELECT f.id, f.thread_id, f.comment_id, 
                         c.author_name, c.body, c.created_at, c.via_page,
                         f.batch_id, b.size, b.note, b.sent_by, b.sender, f.placeholder_at IS NOT NULL,
                         c.author_kind, c.author_public_id, f.no_access_at IS NOT NULL, t.queue_id,
-                        f.queue_event
+                        f.queue_event, c.reporter_id IS NOT NULL
                  FROM feedback f
                  LEFT JOIN send_batches b ON b.id = f.batch_id
                  JOIN threads t ON t.id = f.thread_id
@@ -2124,7 +2151,8 @@ pub(crate) fn id_array(ids: &[String]) -> String {
 }
 
 /// The feedback rows of each thread, oldest first, each with what
-/// [`Delivery`] reads of it.
+/// [`Delivery`] reads of it. A queue's wake is no delivery of the thread
+/// to an agent, and is left out.
 pub(crate) const FEEDBACK_STATES: &str =
     "SELECT f.thread_id, f.target_session_id, f.created_at, f.delivered_at, f.delivery_tier, f.acknowledged_at,
             f.resend_count, f.untargeted_at, s.ended_at, s.harness, s.harness_session_id IS NOT NULL,
@@ -2158,6 +2186,7 @@ pub(crate) const FEEDBACK_STATES: &str =
        JOIN threads t ON t.id = f.thread_id
        LEFT JOIN sessions s ON s.id = f.target_session_id
        LEFT JOIN watches w ON w.session_id = f.target_session_id AND w.artifact_id = t.artifact_id
+      WHERE f.queue_event IS NULL
       ORDER BY f.thread_id, f.created_at, f.id";
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2889,6 +2918,7 @@ mod tests {
             assert_eq!(items.len(), 1, "{items:?}");
             assert_eq!(items[0].queue_event, Some(QueueEvent::Reopened));
             assert_eq!(items[0].body, "Still wrong");
+            assert_eq!(items[0].reopened_by, None, "the reporter reopened it");
         }
         // A proposer that watches the queue too is woken once.
         st.watch_queue(&qid, &fixer).unwrap();
@@ -2912,16 +2942,112 @@ mod tests {
             DAEMON,
             &qid,
             &tid,
-            crate::queues::Verdict::Reporter("emp-1"),
+            crate::queues::Verdict::Person {
+                name: "Ana".into(),
+                public_id: None,
+            },
             "Still wrong again".into(),
             None,
             None,
             None,
         )
         .unwrap();
+        // A triage person's reopen names them; the reporter's did not.
+        let n = notices(&st, &fixer);
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(n[0].reopened_by.as_deref(), Some("Ana"));
         let items = take(&st, &fixer, Tier::Wait);
         assert_eq!(items.len(), 1, "{items:?}");
         assert_eq!(items[0].body, "Still wrong again");
+        assert_eq!(items[0].reopened_by.as_deref(), Some("Ana"));
+        assert!(
+            clax_core::feedback::render_item(&items[0])
+                .contains("reopened by Ana for its reporter"),
+            "{items:?}"
+        );
+    }
+
+    #[test]
+    fn a_removed_member_is_woken_no_more() {
+        let (_d, st) = store();
+        let (qid, tok) = report_queue(&st);
+        st.set_member(DAEMON, &qid, "u_t", Some(clax_core::queue::Role::Triage))
+            .unwrap();
+        let m = session(&st, "claude", "m");
+        st.with_tx(|tx| {
+            tx.execute("UPDATE sessions SET person = 'u_t' WHERE id = ?1", [&m])?;
+            Ok(())
+        })
+        .unwrap();
+        st.watch_queue(&qid, &m).unwrap();
+        let tid = file_titled(&st, &qid, &tok, "Invoice 1");
+        assert_eq!(take(&st, &m, Tier::Wait).len(), 1, "a member is woken");
+        // The member claims and proposes a fix, then leaves the queue.
+        st.claim(DAEMON, &qid, &tid, &m).unwrap();
+        let sm = st.get_session(&m).unwrap().unwrap();
+        st.propose_fix(
+            DAEMON,
+            &qid,
+            &tid,
+            &crate::queues::ReportWriter::Agent(&sm),
+            clax_core::report::NewFix {
+                summary: "Rounded the total".into(),
+                url: None,
+                commit: None,
+                release: None,
+                verify_url: None,
+                verify_after: None,
+            },
+        )
+        .unwrap();
+        st.set_member(DAEMON, &qid, "u_t", None).unwrap();
+        assert!(
+            st.queue_watchers(&qid).unwrap().is_empty(),
+            "its watch ends"
+        );
+        // Even a watch row left behind wakes no former member.
+        st.with_tx(|tx| {
+            tx.execute(
+                "INSERT INTO queue_watches (queue_id, session_id, created_at) VALUES (?1, ?2, '2026-01-01T00:00:00Z')",
+                params![qid, m],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let other = file_titled(&st, &qid, &tok, "Invoice 2");
+        assert!(st.feedback_rows(&other).unwrap().is_empty());
+        // Nor is the former proposer woken by a reopen.
+        let (_, woken) = st
+            .reopen_report(
+                DAEMON,
+                &qid,
+                &tid,
+                crate::queues::Verdict::Reporter("emp-1"),
+                "Still wrong".into(),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(woken.targets.is_empty(), "{woken:?}");
+        assert!(take(&st, &m, Tier::Wait).is_empty());
+    }
+
+    #[test]
+    fn a_wake_is_no_delivery_state_of_the_report() {
+        let (_d, st) = store();
+        let (qid, tok) = report_queue(&st);
+        let w = session(&st, "claude", "w");
+        st.watch_queue(&qid, &w).unwrap();
+        let tid = file_titled(&st, &qid, &tok, "Invoice 1");
+        assert_eq!(st.feedback_rows(&tid).unwrap().len(), 1);
+        assert_eq!(st.feedback_state(&tid, false).unwrap(), None);
+        take(&st, &w, Tier::Wait);
+        assert_eq!(
+            st.feedback_state(&tid, false).unwrap(),
+            None,
+            "not delivered to the watcher either"
+        );
     }
 
     #[test]

@@ -233,8 +233,8 @@ pub async fn claim(
 }
 
 /// `POST /api/queues/<qid>/watch` → 204: the agent's session watches the
-/// queue (spec 2026-10-29-feedback-loop-design §7.3) until it unwatches it
-/// or ends: each report filed into it, and each reopened, is then a
+/// queue (spec 2026-10-29-feedback-loop-design §7.3) until it unwatches it,
+/// ends, or its person leaves the queue: each report filed into it, and each reopened, is then a
 /// feedback delivery to the session (`wait_for_feedback`, `clax feedback
 /// follow`) naming `queue_get` and `queue_claim`. Watching it again
 /// changes nothing. A watch is a session's alone (400 `no_session`
@@ -257,8 +257,10 @@ pub async fn watch(
 }
 
 /// `DELETE /api/queues/<qid>/watch` → 204: the agent's session no longer
-/// watches the queue; one that did not watch it is fine. 400 `no_session`
-/// without a session.
+/// watches the queue; one that did not watch it is fine. It removes only
+/// the caller's own watch, so it needs no membership: a session whose
+/// person left the queue may unwatch it too. 400 `no_session` without a
+/// session.
 pub async fn unwatch(
     State(s): State<AppState>,
     a: Agent<QueueUnwatch>,
@@ -266,7 +268,6 @@ pub async fn unwatch(
     p: Result<Path<String>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
     let qid = path(p)?;
-    member(&s, &a, &qid).await?;
     let caller = a.caller.clone();
     s.store_call(move |st| {
         let sess = agent_session(st, &caller)?;

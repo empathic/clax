@@ -150,6 +150,20 @@ pub struct FeedbackItem {
     /// comment sent to the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_event: Option<QueueEvent>,
+    /// For a `reopened` wake by a triage person on the reporter's behalf,
+    /// that person's name; absent when the reporter reopened it, and for
+    /// anything else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reopened_by: Option<String>,
+}
+
+/// Who reopened a report, as a wake's text says it: `its reporter`, or
+/// `<name> for its reporter` for a triage person on their behalf.
+fn reopener(by: Option<&str>) -> String {
+    match by {
+        Some(name) => format!("{} for its reporter", display_name(name)),
+        None => "its reporter".to_string(),
+    }
 }
 
 /// What a queue tells the sessions watching it (spec
@@ -471,9 +485,10 @@ pub fn render_item(i: &FeedbackItem) -> String {
             queue_wake_tail(q, &i.thread_id)
         ),
         (Some(q), Some(QueueEvent::Reopened)) => format!(
-            "Report {tid} in queue {q} was reopened by its reporter: call {}",
+            "Report {tid} in queue {q} was reopened by {by}: call {}",
             queue_wake_tail(q, &i.thread_id),
-            tid = i.thread_id
+            tid = i.thread_id,
+            by = reopener(i.reopened_by.as_deref()),
         ),
         (Some(q), None) => format!(
             "This thread is a report of queue {q}: reply with queue_reply, then queue_resolve when done (queue {q}, report_id {tid}).",
@@ -590,6 +605,9 @@ pub struct Notice {
     /// ([`FeedbackItem::queue_event`]); absent for a comment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event: Option<QueueEvent>,
+    /// As [`FeedbackItem::reopened_by`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reopened_by: Option<String>,
 }
 
 /// Longest title a notice line quotes, in characters.
@@ -617,10 +635,11 @@ pub fn render_notice(n: &Notice) -> String {
             tail = queue_wake_tail(q, &n.thread_id),
         ),
         (Some(q), Some(QueueEvent::Reopened)) => format!(
-            "[clax] Report {tid} in queue {q} was reopened by its reporter: \"{title}\" ({url}). Call {tail}",
+            "[clax] Report {tid} in queue {q} was reopened by {by}: \"{title}\" ({url}). Call {tail}",
             url = n.url,
             tid = n.thread_id,
             tail = queue_wake_tail(q, &n.thread_id),
+            by = reopener(n.reopened_by.as_deref()),
         ),
         (Some(q), None) => format!(
             "[clax] New comment on \"{title}\" ({url}), thread {tid}, a report of queue {q}. Call queue_list with queue \"{q}\" to read it, and answer with queue_reply and queue_resolve; if you have already handled it, do nothing.",
@@ -692,6 +711,7 @@ mod tests {
             withheld: None,
             queue_id: None,
             queue_event: None,
+            reopened_by: None,
         }
     }
 
@@ -1178,6 +1198,7 @@ mod tests {
             url: "http://localhost:7480/a/7q3k9mzx2b4t".into(),
             queue_id: None,
             event: None,
+            reopened_by: None,
         };
         assert_eq!(
             render_notice(&n),
@@ -1215,6 +1236,7 @@ mod tests {
             url: "http://localhost:7480/a/7q3k9mzx2b4t".into(),
             queue_id: Some("01JQ".into()),
             event: None,
+            reopened_by: None,
         };
         let line = render_notice(&n);
         assert!(line.contains("a report of queue 01JQ"), "{line}");
@@ -1233,6 +1255,7 @@ mod tests {
             url: "http://localhost:7480/a/7q3k9mzx2b4t".into(),
             queue_id: Some("01JQ".into()),
             event: Some(QueueEvent::Filed),
+            reopened_by: None,
         };
         assert_eq!(
             render_notice(&n),
@@ -1249,6 +1272,15 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&reopened).unwrap()["event"],
             "reopened"
+        );
+        // Triage reopening on the reporter's behalf is named.
+        let by_triage = Notice {
+            reopened_by: Some("Ana\nLee".into()),
+            ..reopened.clone()
+        };
+        assert_eq!(
+            render_notice(&by_triage),
+            "[clax] Report 01J9T in queue 01JQ was reopened by Ana Lee for its reporter: \"Invoice '4821' total\" (http://localhost:7480/a/7q3k9mzx2b4t). Call queue_get with queue \"01JQ\" and report_id \"01J9T\", then queue_claim to work on it; if you have already handled it, do nothing."
         );
         // A delivery's text names the same tools, and the event travels
         // with the item.
@@ -1277,6 +1309,18 @@ mod tests {
             ),
             "{text}"
         );
+        let i = FeedbackItem {
+            reopened_by: Some("Ana".into()),
+            ..i
+        };
+        let text = render_item(&i);
+        assert!(
+            text.ends_with(
+                "Report 01J9ZZZZZZZZZZZZZZZZZZZZZZ in queue 01JQ was reopened by Ana for its reporter: call queue_get with queue \"01JQ\" and report_id \"01J9ZZZZZZZZZZZZZZZZZZZZZZ\", then queue_claim to work on it; if you have already handled it, do nothing."
+            ),
+            "{text}"
+        );
+        assert_eq!(serde_json::to_value(&i).unwrap()["reopened_by"], "Ana");
         assert!(
             serde_json::to_value(item())
                 .unwrap()

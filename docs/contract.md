@@ -3784,29 +3784,37 @@ tools" says; 404 `not_a_member` otherwise):
 | `GET …/reports/<tid>/diagnostics?capture=` | | `{lines}`, of any report of the queue, read as the reporter's; 400 `invalid_query` |
 | `GET …/reports/<tid>/comments/<cid>/clip` | | a reopen's PNG |
 | `POST …/reports/<tid>/claim` | | the lease; 409 `not_claimable` for a `fix_proposed` report |
-| `POST /api/queues/<qid>/watch` | | 204: the agent's session watches the queue until it unwatches it or ends (watching again changes nothing); 400 `no_session` without a session |
-| `DELETE /api/queues/<qid>/watch` | | 204: the session no longer watches it (one that did not is fine); 400 `no_session` without a session |
+| `POST /api/queues/<qid>/watch` | | 204: the agent's session watches the queue until it unwatches it, ends, or its person leaves the queue (watching again changes nothing); 400 `no_session` without a session |
+| `DELETE /api/queues/<qid>/watch` | | 204: the session no longer watches it (one that did not is fine); it removes only the caller's own watch and needs no membership; 400 `no_session` without a session |
 
 **Queue wakes.** A report filed into a queue, and a report reopened (by
 its reporter, or by triage on their behalf), wakes every live session
 watching the queue; a reopen also wakes the session of the report's
 latest lease (whoever claimed it last, so the fix's proposer) while that
-session has not ended, whether it watches the queue or not. A wake is a
+session has not ended, whether it watches the queue or not. Only a
+session whose person (or the owner) is still a member of the queue is
+woken; removing a member ends their sessions' watches of it. A wake is a
 feedback row for the filing's note or the reopen's comment, made in the
 filing's or reopen's transaction, one per session (a session with a row
 for that comment gets no second); it needs no watch of the report's
 artifact, and it reaches the session as any comment sent to it does:
-`wait_for_feedback` and the other tiers, and `clax feedback follow`. Its
-item carries `queue_id` and `queue_event` (`filed` or `reopened`), and
-its text ends, in place of the queue-tools line of a comment:
+`wait_for_feedback` and the other tiers, and `clax feedback follow`. It
+never makes the session the report's owner (a claim does) and is no
+part of the report's `feedback_state`: a wake does not show the report
+as sent to or delivered to an agent. Its item carries `queue_id`,
+`queue_event` (`filed` or `reopened`) and, for a reopen by a triage
+person, `reopened_by` (their name), and its text ends, in place of the
+queue-tools line of a comment:
 
     This is a new report in queue <qid>: call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
-    Report <report ID> in queue <qid> was reopened by its reporter: call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
+    Report <report ID> in queue <qid> was reopened by <who>: call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
 
-Its notice (`GET /api/sessions/<sid>/notices`, with `event`) is one of:
+where `<who>` is `its reporter`, or `<name> for its reporter` for a
+triage person's reopen on the reporter's behalf. Its notice (`GET
+/api/sessions/<sid>/notices`, with `event` and `reopened_by`) is one of:
 
     [clax] New report in queue <qid>: "<title>" (<url>), report <report ID>. Call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
-    [clax] Report <report ID> in queue <qid> was reopened by its reporter: "<title>" (<url>). Call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
+    [clax] Report <report ID> in queue <qid> was reopened by <who>: "<title>" (<url>). Call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
 
 An undelivered wake of a session that ends is deleted, never handed to
 another session: the report waits in its queue.
