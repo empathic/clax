@@ -101,6 +101,25 @@ pub(crate) fn release_session(tx: &Transaction<'_>, sid: &str, now: &str) -> Res
     Ok(touched)
 }
 
+/// What a row's being a queue's wake (`queue_id` and `event` both set)
+/// means for handing it to session `sid`: `Some(true)` when the session
+/// acts for a member of the queue, who reads the queue's reports whole on
+/// its triage routes, so neither the person's approvals nor their rights
+/// over the report's artifact hold the wake; `Some(false)` when the
+/// session's person is no longer a member (or the queue is gone), and the
+/// wake is not handed over; `None` for any other row.
+fn queue_wake_of(
+    c: &Connection,
+    queue_id: Option<&str>,
+    event: Option<QueueEvent>,
+    sid: &str,
+) -> Result<Option<bool>> {
+    match (queue_id, event) {
+        (Some(qid), Some(_)) => Ok(Some(super::queues::session_is_member_in(c, qid, sid)?)),
+        _ => Ok(None),
+    }
+}
+
 /// Where a send's rows go (spec §10, "Data flow").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SendTarget<'a> {
@@ -1308,7 +1327,9 @@ impl Store {
     /// `no_access_at`, so the session is told once; `queue` tells of none.
     /// A row the session may read again loses `no_access_at`, and is
     /// handed over or held as withheld as any other. `None` reads every
-    /// artifact.
+    /// artifact. A queue's wake is handed whole to a member of the queue,
+    /// whatever `vis` and `readable` say, and never to a session whose
+    /// person left the queue ([`queue_wake_of`]).
     pub fn take_feedback_readable(
         &self,
         ctx: &AuditCtx,
@@ -1407,7 +1428,12 @@ impl Store {
                     );
                     continue;
                 };
-                if let Some(may) = readable {
+                let wake = queue_wake_of(tx, p.queue_id.as_deref(), p.queue_event, &q.session_id)?;
+                if wake == Some(false) {
+                    continue;
+                }
+                let member_wake = wake == Some(true);
+                if !member_wake && let Some(may) = readable {
                     match sight.artifact(&p.artifact_id)? {
                         Some(a) if may(&a) => {}
                         _ => {
@@ -1425,7 +1451,7 @@ impl Store {
                         params![p.id],
                     )?;
                 }
-                let withheld = if vis.is_all() {
+                let withheld = if vis.is_all() || member_wake {
                     None
                 } else {
                     match sight.row(&p, &anchor)? {
@@ -1922,6 +1948,9 @@ impl Store {
     /// Only rows whose comment body `vis` lets its reader see are
     /// announced, on artifacts `readable` lets the session read (`None`:
     /// every one); a held row stays unannounced until it may be seen. A
+    /// queue's wake is announced to a member of the queue whatever `vis`
+    /// and `readable` say, and never to a session whose person left it
+    /// ([`queue_wake_of`]). A
     /// notice's title is `an artifact by <name>` when the reader may not see
     /// it (spec 2026-10-08 §8.4). A view older than the visibility
     /// generation announces nothing and answers `stale`, as
@@ -1994,13 +2023,18 @@ impl Store {
                 let reopened_by = (event == Some(QueueEvent::Reopened) && !by_reporter).then(|| {
                     vis.label(&author, &Author::of_viewer(author_public_id.as_deref()))
                 });
-                if let Some(may) = readable {
+                let wake = queue_wake_of(tx, queue_id.as_deref(), event, session_id)?;
+                if wake == Some(false) {
+                    continue;
+                }
+                let member_wake = wake == Some(true);
+                if !member_wake && let Some(may) = readable {
                     match sight.artifact(&artifact_id)? {
                         Some(a) if may(&a) => {}
                         _ => continue,
                     }
                 }
-                if !vis.is_all() {
+                if !vis.is_all() && !member_wake {
                     let Some(t) = sight.thread(&thread_id)? else {
                         continue;
                     };
@@ -4476,6 +4510,110 @@ mod delivery {
     /// Spec §16: a grant session's payload names its clip by reference,
     /// never by a path on the daemon's machine; the daemon token's agents
     /// read the clip's file where the content is files.
+    /// A queue's wake reaches a member's agent whose person approved no
+    /// one, and whose rights do not reach the report's artifact: the
+    /// reporter is no connected person, but a member reads the queue's
+    /// reports whole on its triage routes, which the wake names. A wake
+    /// left undelivered when the person is no longer a member is not
+    /// handed over.
+    #[test]
+    fn a_queue_wake_reaches_a_member_whatever_their_approvals() {
+        let w = two_people();
+        let qid =
+            w.st.create_queue(
+                DAEMON,
+                None,
+                crate::queues::NewQueue {
+                    name: "App reports".into(),
+                    origins: vec!["https://app.example.com".into()],
+                    reporters_see: clax_core::queue::ReportersSee::Own,
+                },
+            )
+            .unwrap()
+            .id;
+        w.st.set_member(DAEMON, &qid, &w.sam, Some(clax_core::queue::Role::Triage))
+            .unwrap();
+        w.st.watch_queue(&qid, &w.sid).unwrap();
+        let tok = crate::queues::ReporterToken {
+            queue_id: qid.clone(),
+            service_grant_id: "g1".into(),
+            reporter_id: "emp-1".into(),
+            origin: "https://app.example.com".into(),
+            public_key: String::new(),
+            expires_at: "2099-01-01T00:00:00.000Z".into(),
+            profile: None,
+        };
+        let file = |title: &str| {
+            w.st.file_report(
+                DAEMON,
+                &qid,
+                Some(&tok),
+                crate::queues::ExternalScope::Instance,
+                crate::queues::NewReport {
+                    external_id: Some(format!("page:{title}")),
+                    url: "https://app.example.com/invoices/4821".into(),
+                    title: title.into(),
+                    anchor: anchor(),
+                    body: "The total is wrong".into(),
+                    author_name: "emp-1".into(),
+                    metadata: serde_json::Value::Null,
+                    revision: None,
+                    clip: None,
+                    context: None,
+                    server: None,
+                    diagnostics: None,
+                },
+            )
+            .unwrap()
+            .id
+        };
+        let tid = file("Invoice 4821");
+        let vis = w.sam_vis();
+        assert!(!vis.is_all());
+        let none: &(dyn Fn(&Artifact) -> bool + Sync) = &|_| false;
+        let n =
+            w.st.take_notices(&w.sid, BASE, &vis, Some(none))
+                .unwrap()
+                .notices;
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(
+            (n[0].event, n[0].thread_id.as_str()),
+            (Some(QueueEvent::Filed), tid.as_str())
+        );
+        let q = TakeFeedback {
+            session_id: w.sid.clone(),
+            tier: Tier::Wait,
+            artifact_id: None,
+            include_resends: false,
+        };
+        let taken =
+            w.st.take_feedback_readable(DAEMON, &q, BASE, &vis, Some(none))
+                .unwrap();
+        assert!(taken.placeholders.is_empty(), "{:?}", taken.placeholders);
+        assert_eq!(taken.items.len(), 1, "{:?}", taken.items);
+        assert_eq!(taken.items[0].queue_event, Some(QueueEvent::Filed));
+        assert_eq!(taken.items[0].thread_id, tid);
+        assert_eq!(taken.items[0].body, "The total is wrong");
+
+        // Sam leaves the queue after a filing woke his agent.
+        let left = file("Invoice 4822");
+        w.st.set_member(DAEMON, &qid, &w.sam, None).unwrap();
+        let n =
+            w.st.take_notices(&w.sid, BASE, &vis, Some(none))
+                .unwrap()
+                .notices;
+        assert!(n.is_empty(), "{n:?}");
+        let taken =
+            w.st.take_feedback_readable(DAEMON, &q, BASE, &vis, Some(none))
+                .unwrap();
+        assert!(
+            taken.items.iter().all(|i| i.thread_id != left),
+            "{:?}",
+            taken.items
+        );
+        assert!(taken.placeholders.is_empty(), "{:?}", taken.placeholders);
+    }
+
     #[test]
     fn a_grant_sessions_clip_is_a_reference() {
         let w = two_people();

@@ -3829,6 +3829,11 @@ filing's or reopen's transaction, one per session (a session with a row
 for that comment gets no second); it needs no watch of the report's
 artifact, and it reaches the session as any comment sent to it does:
 `wait_for_feedback` and the other tiers, and `clax feedback follow`. It
+is handed to a member's session whole, whatever the authors its person
+has approved and whatever artifacts their rights reach, since a member
+reads the queue's reports whole on the triage routes; a wake still
+undelivered when its session's person is no longer a member (or the queue
+is gone) is never handed over or announced. It
 never makes the session the report's owner (a claim does) and is no
 part of the report's `feedback_state`: a wake does not show the report
 as sent to or delivered to an agent. Its item carries `queue_id`,
