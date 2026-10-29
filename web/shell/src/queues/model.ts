@@ -32,7 +32,7 @@ export type Counts = Record<ReportState, number> & { more: boolean };
 
 /** Counts the reports `page` gives, following each page's `next` for at most `limit` pages. */
 export async function countReports(page: (cursor: string | null) => Promise<ReportPage>, limit = 20): Promise<Counts> {
-  const c: Counts = { open: 0, claimed: 0, resolved: 0, more: false };
+  const c: Counts = { open: 0, claimed: 0, fix_proposed: 0, verified: 0, resolved: 0, more: false };
   let cursor: string | null = null;
   for (let i = 0; i < limit; i++) {
     const p = await page(cursor);
