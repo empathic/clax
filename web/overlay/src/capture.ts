@@ -30,7 +30,9 @@ export type Mode = "element" | "area" | "screen";
  * width, so a frame shrunk to fit is measured as it is), and the part of
  * the page the image shows (`at`, in page CSS pixels: the viewport's plus
  * its scroll at capture; null when there is no image), by which marks are
- * moved from one capture of the page to another. */
+ * moved from one capture of the page to another, and the PNG's own size
+ * (`size`, from its header; null when there is none), which the marks are
+ * kept within. */
 export interface Captured {
   png: Blob | null;
   info: CaptureInfo;
@@ -40,6 +42,7 @@ export interface Captured {
   pick: Rect | null;
   scale: number;
   at: Rect | null;
+  size: { w: number; h: number } | null;
 }
 
 /** A PNG's width and height from its header, or null when it is not one. */
@@ -108,10 +111,10 @@ export async function captureFor(mode: Mode, target: Picked | null, win: Window,
     const whole = toImage(res.at, res.at, res.scale);
     const under = mode === "screen" || !target ? whole : toImage(target.rect(), res.at, res.scale);
     const hidden = res.omitted.some((o: Omitted) => intersect(o.rect, under));
-    return { png: png(res.png), info: { mode: m, method: "dom", omitted: res.omitted }, error: null, note: null, suggestExact: supported && hidden, pick: mode === "screen" || !target ? null : under, scale: res.scale, at: { ...res.at, x: res.at.x + scroll.x, y: res.at.y + scroll.y } };
+    return { png: png(res.png), info: { mode: m, method: "dom", omitted: res.omitted }, error: null, note: null, suggestExact: supported && hidden, pick: mode === "screen" || !target ? null : under, scale: res.scale, at: { ...res.at, x: res.at.x + scroll.x, y: res.at.y + scroll.y }, size: pngSize(res.png) };
   } catch (e) {
     const error = e instanceof Error && e.message ? e.message : String(e);
-    return { png: null, info: { mode: m, method: "dom" }, error, note: null, suggestExact: supported, pick: null, scale: dprOf(win), at: null };
+    return { png: null, info: { mode: m, method: "dom" }, error, note: null, suggestExact: supported, pick: null, scale: dprOf(win), at: null, size: null };
   }
 }
 
@@ -171,7 +174,7 @@ export async function captureExact(mode: Mode, target: Picked | null, win: Windo
     if (res.ok) {
       const size = pngSize(res.png);
       const scale = size && shown.w > 0 ? size.w / shown.w : dprOf(win);
-      return { png: png(res.png), info: { mode: m, method: "display" }, error: null, note: res.thisTab === true ? null : UNCONFIRMED_TAB, suggestExact: false, pick: null, scale, at: { ...shown, x: shown.x + scroll.x, y: shown.y + scroll.y } };
+      return { png: png(res.png), info: { mode: m, method: "display" }, error: null, note: res.thisTab === true ? null : UNCONFIRMED_TAB, suggestExact: false, pick: null, scale, at: { ...shown, x: shown.x + scroll.x, y: shown.y + scroll.y }, size };
     }
     error = FALLBACK_MESSAGES[res.reason];
   }

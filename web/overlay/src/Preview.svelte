@@ -1,7 +1,7 @@
 <script lang="ts">
   // "What's sent" (spec 2026-10-29-feedback-loop §4.5), read from the very
-  // values a send carries (`reportOf`, `reopenOf`): the page and where on it
-  // the report points, the exact context JSON, the deployer's metadata, the
+  // values a send carries (`reportOf`, `reopenOf`): the page, and where on it
+  // the report points (a summary, then the whole anchor as its JSON), the exact context JSON, the deployer's metadata, the
   // recent errors' lines when they are ticked, and whether the screenshot goes.
   import type { NewReport, Reopening } from "../../sdk/src/reporter";
   import { contextPreview } from "./model";
@@ -33,6 +33,8 @@
       {#if page.externalId !== undefined}<dt>Artifact</dt><dd>{page.externalId}</dd>{/if}
       {#each where as [k, v] (k)}<dt>{k}</dt><dd>{v}</dd>{/each}
     </dl>
+    <h3>Where it points</h3>
+    <pre class="anchor">{JSON.stringify(page.anchor, null, 2)}</pre>
   {/if}
   <h3>Context</h3>
   {#if sent.context}

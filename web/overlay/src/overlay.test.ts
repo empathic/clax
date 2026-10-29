@@ -1,5 +1,5 @@
 import { render as renderComponent } from "@testing-library/svelte";
-import { flushSync } from "svelte";
+import { flushSync, tick } from "svelte";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Anchor } from "../../bridge/src/protocol";
 import type { RenderResult } from "../../bridge/src/clip";
@@ -12,7 +12,7 @@ import { PAGE_ANCHOR, POLL_MS, type ReporterApi, Session, type Timers } from "./
 import Overlay from "./Overlay.svelte";
 import type { Picked, Picker } from "./picker";
 
-const anchor: Anchor = { kind: "element", selector: "#total", quote: "Total: $12", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
+const anchor: Anchor = { kind: "element", selector: "#total", quote: "Total: $12", prefix: "Items: 3", suffix: null, html_hash: "h:4f2a", rect: { x: 10, y: 20, w: 100, h: 20, scrollX: 0, scrollY: 40, viewportW: 1024 }, custom_name: null, file: "index.html", label: "Total: $12", name: "Total" };
 /** An element pick at `anchor` whose clip `render` draws, leaving nothing out. */
 const picked = (render: () => Promise<ArrayBuffer>): Picked =>
   ({ anchor, mode: "element", rect: () => ({ x: 0, y: 0, w: 100, h: 20 }), render: () => render().then(png => ({ png, omitted: [], at: { x: 0, y: 0, w: 100, h: 20 }, scale: 1 })) });
@@ -328,23 +328,23 @@ describe("the overlay", () => {
     const stage = q(".annotator .stage")!;
     expect(stage.tabIndex).toBe(0);
     stage.focus();
-    const said = () => q(".annotator [aria-live]")?.textContent;
+    const said = async () => { await tick(); flushSync(); return q(".annotator [aria-live]")?.textContent; };
     const marks = () => [...view.root.querySelectorAll(".annotator svg [data-kind]")].map(n => n.getAttribute("data-kind"));
     for (const [tool, kind] of [["Box", "box"], ["Arrow", "arrow"], ["Redact", "redact"]] as const) {
       click(button(tool));
       stage.focus();
       key("Enter", stage);
-      expect(said()).toMatch(/first corner set/);
+      expect(await said()).toMatch(/first corner set/);
       key("ArrowRight", stage);
       key("ArrowDown", stage);
       key("Enter", stage);
-      expect(said()).toMatch(/added\./);
+      expect(await said()).toMatch(/added\./);
       expect(marks().at(-1)).toBe(kind);
     }
     // Escape drops a first corner, and leaves the draft be.
     key("Enter", stage);
     key("Escape", stage);
-    expect(said()).toBe("Mark cancelled.");
+    expect(await said()).toBe("Mark cancelled.");
     expect(q(".composer")).not.toBeNull();
     click(button("Text"));
     stage.focus();
@@ -355,7 +355,7 @@ describe("the overlay", () => {
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     flushSync();
     expect(marks().at(-1)).toBe("text");
-    expect(said()).toBe("Text added.");
+    expect(await said()).toBe("Text added.");
     click(button("Redact the pick"));
     const last = view.root.querySelectorAll(".annotator svg [data-kind=redact]");
     const r = last[last.length - 1];
@@ -366,6 +366,34 @@ describe("the overlay", () => {
     expect(drawn).toEqual([7]);
   });
 
+  it("starts the crosshair where the stage shows the image, keeps it in view, and says a repeated message again", async () => {
+    click(button("Report"));
+    onPick(picked(async () => new Uint8Array([1]).buffer));
+    await settle();
+    const stage = q(".annotator .stage")!;
+    const svg = q(".annotator svg")!;
+    // A drawing 800 px tall, scrolled 300 px down a 240 px stage (the image is 100 x 20 px).
+    const rect = (top: number, height: number) => () => ({ top, bottom: top + height, left: 0, right: 354, width: 354, height, x: 0, y: top, toJSON() {} }) as DOMRect;
+    stage.getBoundingClientRect = rect(0, 240);
+    svg.getBoundingClientRect = rect(-300, 800);
+    stage.focus();
+    key("ArrowDown", stage);
+    const cross = () => Number(q(".annotator .crosshair")?.getAttribute("data-y"));
+    // The middle of the stage is 420 px down the drawing: 10.5 of its 20 px; then one step down.
+    expect(cross()).toBe(11 + 3);
+    expect(stage.scrollTop).toBe(32);
+    const texts: string[] = [];
+    const live = q(".annotator [aria-live]")!;
+    new MutationObserver(() => texts.push(live.textContent ?? "")).observe(live, { childList: true, characterData: true, subtree: true });
+    for (let i = 0; i < 2; i++) {
+      key("Enter", stage);
+      await settle();
+      key("Escape", stage);
+      await settle();
+    }
+    expect(texts.filter(t => t === "Mark cancelled.")).toHaveLength(2);
+  });
+
   it("shows the page the report points at in What's sent, from what is sent", async () => {
     document.title = "Cart";
     click(button("Report"));
@@ -374,6 +402,8 @@ describe("the overlay", () => {
     const page = q(".composer details.sent dl.page")!;
     const rows = Object.fromEntries([...page.querySelectorAll("dt")].map(dt => [dt.textContent, dt.nextElementSibling?.textContent]));
     expect(rows).toMatchObject({ Title: "Cart", Address: location.href, Artifact: "shop-cart", Kind: "element", Selector: "#total", Text: "Total: $12" });
+    // And the whole anchor, every field as sent.
+    expect(JSON.parse(q(".composer details.sent pre.anchor")!.textContent!)).toEqual(anchor);
   });
 
   it("asks before a new report drops a Still broken note, and a reopen's capture can be retaken", async () => {

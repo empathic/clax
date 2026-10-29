@@ -122,7 +122,7 @@ describe("capture", () => {
     expect(pngSize(png(1, 2, 3))).toBeNull();
     const display = async (): Promise<DisplayResult> => ({ ok: true, png: header.buffer, thisTab: true });
     const c = await captureExact("element", pick(), window, { display, painted: async () => {} });
-    expect([c.scale, c.at]).toEqual([1.5, { x: 100, y: 400, w: 200, h: 100 }]);
+    expect([c.scale, c.at, c.size]).toEqual([1.5, { x: 100, y: 400, w: 200, h: 100 }, { w: 300, h: 150 }]);
     const dom = await captureFor("element", pick(), window, { supported: false });
     expect([dom.scale, dom.at]).toEqual([1, { x: 50, y: 350, w: 400, h: 300 }]);
   });

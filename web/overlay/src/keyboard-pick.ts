@@ -5,9 +5,18 @@
 // child, Left out to its parent, and Enter or Space picks it. Keys typed
 // into a text field are never taken, nor any with Option, Ctrl or Cmd held
 // (Option widens the pointer's pick in comment mode). The outline is comment
-// mode's own (`CommentMode.outlineTarget`).
+// mode's own (`CommentMode.outlineTarget`), and a pointer's hover moves the
+// keyboard's place to what it outlines (`follow`).
+//
+// Keys pressed in the overlay are the overlay's own (its buttons, its
+// drawing stage), but for the arrow keys pressed in the mode bar (marked
+// `KEYBOARD_PICK_FROM`), where picking starts: the first of them moves focus
+// out of the overlay, so Enter then picks rather than pressing a button.
 
-import { UNRENDERED } from "../../bridge/src/anchor";
+import { OVERLAY_TAG, UNRENDERED } from "../../bridge/src/anchor";
+
+/** The attribute of the overlay's part whose arrow keys start keyboard picking. */
+export const KEYBOARD_PICK_FROM = "data-clax-keyboard-pick";
 
 /** What keyboard picking drives: the outline, the pick, and what to announce. */
 export interface KeyboardPickHooks {
@@ -60,10 +69,26 @@ export class KeyboardPick {
 
   private readonly onKey = (e: KeyboardEvent) => {
     if (e.altKey || e.metaKey || e.ctrlKey || e.isComposing) return;
-    const at = e.composedPath()[0];
+    const path = e.composedPath();
+    const at = path[0];
     if (at instanceof HTMLElement && (at.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(at.tagName))) return;
-    if (this.key(e.key)) { e.preventDefault(); e.stopPropagation(); }
+    const inOverlay = path.some(n => n instanceof Element && n.localName === OVERLAY_TAG);
+    if (inOverlay) {
+      const fromBar = path.some(n => n instanceof Element && n.hasAttribute(KEYBOARD_PICK_FROM));
+      if (!fromBar || !e.key.startsWith("Arrow")) return;
+    }
+    if (!this.key(e.key)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (inOverlay && at instanceof HTMLElement) at.blur();
   };
+
+  /** A pointer outlined `t`: the keyboard goes on from there. */
+  follow(t: Element | Range | null): void {
+    if (!this.on || !(t instanceof Element) || t === this.target) return;
+    this.target = t;
+    this.trail = [];
+  }
 
   /** Moves or picks for `key`; whether it was used. */
   key(key: string): boolean {

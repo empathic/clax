@@ -29,7 +29,7 @@ const now = () => at;
 const lines: DiagLine[] = [{ at: "2026-10-29T07:12:00Z", level: "error", kind: "error", text: "TypeError: x is undefined" }];
 const recorder = (l = lines): Recorder => ({ lines: () => l.slice(), count: () => l.length, stop: () => {} });
 const captured = (over: Partial<Captured> = {}): Captured => ({
-  png: new Blob([new Uint8Array([1])], { type: "image/png" }), info: { mode: "element", method: "dom", omitted: [] }, error: null, note: null, suggestExact: false, pick: { x: 4, y: 6, w: 20, h: 10 }, scale: 2, at: { x: 0, y: 0, w: 50, h: 25 }, ...over,
+  png: new Blob([new Uint8Array([1])], { type: "image/png" }), info: { mode: "element", method: "dom", omitted: [] }, error: null, note: null, suggestExact: false, pick: { x: 4, y: 6, w: 20, h: 10 }, scale: 2, at: { x: 0, y: 0, w: 50, h: 25 }, size: null, ...over,
 });
 
 afterEach(() => { vi.useRealTimers(); });
@@ -419,5 +419,7 @@ describe("marks when the exact screenshot replaces the render", () => {
     expect(carryShapes([box, far], render, exact).note).toBe("1 of your marks fell outside the new screenshot and was removed. Check it before you send.");
     expect(carryShapes([], render, exact)).toEqual({ shapes: [], note: null });
     expect(carryShapes([box, far], render, { ...exact, at: null }).note).toMatch(/^2 of your marks fell outside .* were removed/);
+    // The new image's real size bounds the marks: a PNG of 8 x 4 cuts the box there.
+    expect(carryShapes([box], render, { ...exact, size: { w: 8, h: 4 } }).shapes).toEqual([{ kind: "box", from: { x: 0, y: 0 }, to: { x: 8, y: 4 } }]);
   });
 });
