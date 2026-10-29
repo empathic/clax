@@ -577,3 +577,58 @@ async fn only_the_shell_and_never_an_agent_mints() {
         assert_eq!(v["error"]["code"], "not_for_agents", "{method} {path}: {v}");
     }
 }
+
+/// docs/feedback.md's Rust backend, as the guide prints it: an outside
+/// backend's mint over HTTP, signed for the instance's host, for a page
+/// origin of its own.
+async fn mint_over_http(
+    instance: &str,
+    queue_id: &str,
+    page_origin: &str,
+    grant_json: &str,
+    reporter_id: &str,
+    public_key: &str,
+    now_unix_seconds: i64,
+) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+    use clax_server::integrations::feedback::{integration, mint_request};
+    let i = integration(queue_id, instance, page_origin, grant_json)?;
+    let req = mint_request(&i, now_unix_seconds, reporter_id, public_key, None)?;
+    let (parts, body) = req.into_parts();
+    let body = axum::body::to_bytes(body, 64 * 1024).await?;
+    let answer: Value = reqwest::Client::new()
+        .post(format!("{}{}", i.instance, parts.uri))
+        .headers(parts.headers)
+        .body(body)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(answer)
+}
+
+#[tokio::test]
+async fn the_guides_rust_backend_mints_over_http() {
+    let s = Setup::new().await;
+    let grant = json!({
+        "token": s.grant_token,
+        "private_key_pkcs8": base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(s.grant_key.pkcs8().expose()),
+    });
+    let browser = KeyPair::generate();
+    // The daemon's clock: 2026-10-29T10:00:00Z.
+    let now = 1_793_268_000;
+    let v = mint_over_http(
+        &s.ts.base,
+        &s.qid,
+        ORIGIN,
+        &grant.to_string(),
+        "u-42",
+        &sig::encode_public(&browser.public()),
+        now,
+    )
+    .await
+    .unwrap();
+    assert!(v["token"].as_str().unwrap().starts_with("cxr_"), "{v}");
+    assert!(v["expires_at"].is_string(), "{v}");
+}
