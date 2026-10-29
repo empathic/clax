@@ -51,6 +51,7 @@ describe("capture", () => {
     const c = await captureFor("screen", null, window, { supported: false });
     expect(renders).toEqual([{ width: window.innerWidth, height: window.innerHeight, transform: "translate(0px, -300px)" }]);
     expect(c.info).toEqual({ mode: "screen", method: "dom", omitted: [] });
+    expect(c.pick).toBeNull();
     expect(c.png).toBeInstanceOf(Blob);
     expect(c.error).toBeNull();
   });
@@ -65,6 +66,9 @@ describe("capture", () => {
     // In an image drawn at twice the scale the pick covers 100,100 (400 x 200): under it.
     const sharp = await captureFor("element", pick([{ kind: "iframe", rect: { x: 300, y: 150, w: 50, h: 50 } }], undefined, 2), window, { supported: true });
     expect(sharp.suggestExact).toBe(true);
+    // Where the pick shows in the image, for its outline, and the image's scale.
+    expect([under.pick, under.scale]).toEqual([{ x: 50, y: 50, w: 200, h: 100 }, 1]);
+    expect([sharp.pick, sharp.scale]).toEqual([{ x: 100, y: 100, w: 400, h: 200 }, 2]);
     // Where the browser cannot capture the tab, exact is never suggested.
     const phone = await captureFor("element", pick([{ kind: "iframe", rect: { x: 150, y: 120, w: 300, h: 200 } }]), window, { supported: false });
     expect(phone.suggestExact).toBe(false);

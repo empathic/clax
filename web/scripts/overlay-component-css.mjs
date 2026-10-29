@@ -6,13 +6,15 @@
 export const CSS_SLOT = "__CLAX_OVERLAY_COMPONENT_CSS__";
 
 /** A Vite plugin that moves the CSS the build extracts from the Svelte
- * components into the chunk `fileName`, as the string `CSS_SLOT` stood
- * for, and emits no .css file: the overlay adopts it as a constructed sheet
- * in its shadow root, which a page's CSP `style-src` without
- * 'unsafe-inline' allows, where the <style> elements Svelte's injected CSS
- * makes are refused. The build fails when the chunk has no slot or the
- * components compiled to no CSS. */
+ * components into the chunk `fileName` (or, given several names, the one
+ * of them each output holds: a build of several formats writes one per
+ * output), as the string `CSS_SLOT` stood for, and emits no .css file: the
+ * overlay adopts it as a constructed sheet in its shadow root, which a
+ * page's CSP `style-src` without 'unsafe-inline' allows, where the <style>
+ * elements Svelte's injected CSS makes are refused. The build fails when
+ * the chunk has no slot or the components compiled to no CSS. */
 export function componentCssIntoScript(fileName) {
+  const names = Array.isArray(fileName) ? fileName : [fileName];
   return {
     name: "clax-overlay-component-css",
     apply: "build",
@@ -21,9 +23,10 @@ export function componentCssIntoScript(fileName) {
       const sheets = Object.values(bundle).filter(f => f.type === "asset" && f.fileName.endsWith(".css"));
       const css = sheets.map(f => String(f.source)).join("\n");
       for (const f of sheets) delete bundle[f.fileName];
-      const js = bundle[fileName];
+      const name = names.find(n => n in bundle) ?? names.join(" or ");
+      const js = bundle[name];
       const slot = new RegExp(`(["'\`])${CSS_SLOT}\\1`);
-      if (js?.type !== "chunk" || !slot.test(js.code)) return this.error(`${fileName} has no ${CSS_SLOT} for the components' CSS`);
+      if (js?.type !== "chunk" || !slot.test(js.code)) return this.error(`${name} has no ${CSS_SLOT} for the components' CSS`);
       if (!css) return this.error("the overlay's components compiled to no CSS");
       js.code = js.code.replace(slot, () => JSON.stringify(css));
     },

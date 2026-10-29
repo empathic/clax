@@ -20,6 +20,8 @@ export interface Picked {
 /** Comment mode as the overlay drives it. */
 export interface Picker {
   set(on: boolean): void;
+  /** Area mode: every drag draws an area, and clicks pick nothing. */
+  areasOnly(on: boolean): void;
   /** The pick's clip is taken: the area's rectangle goes, and a new pick may start. */
   done(): void;
   destroy(): void;
@@ -47,5 +49,5 @@ export function commentPicker(doc: Document, onPick: (p: Picked) => void, onCanc
     },
     cancel: onCancel,
   });
-  return { set: on => mode.set(on), done: () => mode.captured(), destroy: () => mode.destroy() };
+  return { set: on => mode.set(on), areasOnly: on => mode.setAreasOnly(on), done: () => mode.captured(), destroy: () => mode.destroy() };
 }
