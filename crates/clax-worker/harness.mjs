@@ -138,6 +138,11 @@ export const BUILD = process.env.CLAX_WORKER_BUNDLE
   ? resolve(process.env.CLAX_WORKER_BUNDLE)
   : dirname(join(HERE, baseConfig().main));
 
+/** What build.sh records of the build in BUILD when given
+ * CLAX_BUILD_COMMIT, beside it: the commit and index_bg.wasm's sha256
+ * (deploy-lib.mjs builtFromRefusal). */
+export const BUILT_FROM = join(dirname(BUILD), "built-from.json");
+
 /** Whether the built Worker carries web/dist's current index.html. */
 export function embedsWebUi() {
   try {

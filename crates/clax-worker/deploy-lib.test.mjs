@@ -2,6 +2,7 @@
 //
 //   node --test crates/clax-worker/deploy-lib.test.mjs
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import {
   SMOKE_CANNOT,
@@ -260,14 +261,18 @@ test("the version ID is the one wrangler deploy names as current", () => {
 
 test("--no-build deploys only a Worker built from the checked-out commit", () => {
   const head = "0a2f4805a1b2c3d4e5f60718293a4b5c6d7e8f90";
-  const built = (commit) => Buffer.concat([Buffer.from([0, 97, 115, 109]), Buffer.from(`...${commit}...`)]);
-  assert.equal(builtFromRefusal(built(head), head), null);
+  const wasm = Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]);
+  const record = (commit, bytes = wasm) => JSON.stringify({ commit, wasm_sha256: createHash("sha256").update(bytes).digest("hex") });
+  assert.equal(builtFromRefusal(wasm, record(head), head), null);
   const other = "ffffffffffffffffffffffffffffffffffffffff";
-  assert.match(builtFromRefusal(built(other), head), /not built from HEAD 0a2f4805a1b2/);
-  // A Worker built with no commit reports "unknown": not this one either.
-  assert.match(builtFromRefusal(built("unknown"), head), /not built from HEAD/);
+  assert.match(builtFromRefusal(wasm, record(other), head), /not built from HEAD 0a2f4805a1b2/);
+  // Built with no commit given: build.sh leaves no record.
+  assert.match(builtFromRefusal(wasm, null, head), /not built from HEAD/);
+  assert.match(builtFromRefusal(wasm, "not JSON", head), /not built from HEAD/);
+  // Rebuilt after the record was written, by other means than build.sh.
+  assert.match(builtFromRefusal(wasm, record(head, Buffer.from("older")), head), /changed after it was built from HEAD 0a2f4805a1b2/);
   // Nothing built at all.
-  assert.match(builtFromRefusal(null, head), /no build\/index_bg\.wasm/);
+  assert.match(builtFromRefusal(null, record(head), head), /no index_bg\.wasm/);
   // No commit to compare (not a git checkout): nothing to refuse on.
-  assert.equal(builtFromRefusal(built(other), ""), null);
+  assert.equal(builtFromRefusal(wasm, null, ""), null);
 });

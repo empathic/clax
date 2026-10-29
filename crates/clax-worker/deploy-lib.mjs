@@ -1,6 +1,8 @@
 // What deploy.mjs decides from what it reads, as pure functions, so they are
 // tested without an account (deploy-lib.test.mjs).
 
+import { createHash } from "node:crypto";
+
 /** Whether a failed `wrangler deploy`'s output (stdout and stderr) says
  * only its triggers were left half-done: the script was uploaded, but the
  * routes or custom domains attached to it were "only partially updated"
@@ -30,17 +32,27 @@ export function versionIdOf(text) {
   return ids.length ? ids[ids.length - 1][1].toLowerCase() : null;
 }
 
-/** Why a `--no-build` deploy must not upload `wasm` (build/index_bg.wasm's
- * bytes as a Buffer, null when there is none), or null when it may. The Worker embeds
- * the commit it was built from (`CLAX_BUILD_COMMIT`, src/instance.rs
- * BUILD_COMMIT), so a build from another commit, or from none, is refused
- * rather than deployed as `head`'s. Without `head` (not a git checkout)
- * there is nothing to compare, and only a missing build is refused. */
-export function builtFromRefusal(wasm, head) {
-  if (!wasm) return "no build/index_bg.wasm: build first (drop --no-build)";
+/** Why a `--no-build` deploy must not upload `wasm` (index_bg.wasm's
+ * bytes as a Buffer, null when there is none), or null when it may.
+ * `record` is built-from.json's text, which build.sh writes beside the
+ * build when given `CLAX_BUILD_COMMIT` (null when there is none): the
+ * commit and the sha256 of the index_bg.wasm it built. A build is `head`'s
+ * only when its record names `head` and hashes these bytes, so a build
+ * from another commit, from none, or rebuilt since is refused rather than
+ * deployed as `head`'s. Without `head` (not a git checkout) there is
+ * nothing to compare, and only a missing build is refused. */
+export function builtFromRefusal(wasm, record, head) {
+  if (!wasm) return "no index_bg.wasm: build first (drop --no-build)";
   if (!head) return null;
-  if (wasm.indexOf(head) >= 0) return null;
-  return `build/index_bg.wasm was not built from HEAD ${head.slice(0, 12)}: build it from this checkout (drop --no-build)`;
+  let built = null;
+  try {
+    built = JSON.parse(record);
+  } catch {
+    // no record, or not its JSON
+  }
+  if (built?.commit !== head) return `the Worker was not built from HEAD ${head.slice(0, 12)}: build it from this checkout (drop --no-build)`;
+  if (built.wasm_sha256 !== createHash("sha256").update(wasm).digest("hex")) return `index_bg.wasm changed after it was built from HEAD ${head.slice(0, 12)}: build it again (drop --no-build)`;
+  return null;
 }
 
 /** What a 200 from `/healthz` says while waiting for build `want`:
