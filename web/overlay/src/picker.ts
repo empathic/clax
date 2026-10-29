@@ -23,6 +23,10 @@ export interface Picker {
   set(on: boolean): void;
   /** Area mode: every drag draws an area, and clicks pick nothing. */
   areasOnly(on: boolean): void;
+  /** Starts picking from the keyboard (on, outside Area mode): the element
+   * in the middle of the view is outlined, the arrow keys move the outline
+   * and Enter picks it. */
+  keyboard(): void;
   /** The pick's clip is taken: the area's rectangle goes, and a new pick may start. */
   done(): void;
   destroy(): void;
@@ -71,6 +75,7 @@ export function commentPicker(doc: Document, onPick: (p: Picked) => void, onCanc
   return {
     set: v => { on = v; mode.set(v); keys.set(v && !areas); },
     areasOnly: v => { areas = v; mode.setAreasOnly(v); keys.set(on && !v); },
+    keyboard: () => { if (on && !areas) keys.start(); },
     done: () => { mode.captured(); keys.done(); },
     destroy: () => { keys.set(false); mode.destroy(); },
   };

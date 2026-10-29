@@ -3,15 +3,18 @@
   // Option widens, selecting text gives a range), Area (drag) and Screen
   // (the visible viewport, at once), with E, A and S, and Escape leaving.
   // The keys are the overlay's (Overlay.svelte), heard wherever focus is
-  // but in a text field. `mode` is null when none is on yet (a "Still
-  // broken" note, before its new capture).
+  // but in a text field; E again in Element mode (or its button pressed
+  // again) starts picking from the keyboard. The bar is a toolbar: Left and
+  // Right move focus between its buttons (wrapping), Home and End to the
+  // first and last. `mode` is null when none is on yet (a "Still broken"
+  // note, before its new capture).
   import type { Mode } from "./capture";
 
   type Props = { mode: Mode | null; outlined?: string | null; onMode(m: Mode): void; onCancel(): void };
   let { mode, outlined = null, onMode, onCancel }: Props = $props();
 
   /** Focus goes to the mode that is on (none for a reopen's note, whose
-   * text field keeps it): from there the arrow keys start keyboard picking. */
+   * text field keeps it). */
   const focusOn = (el: HTMLButtonElement, m: Mode) => { if (mode === m) el.focus(); };
 
   const MODES: { mode: Mode; label: string; key: string }[] = [
@@ -20,13 +23,28 @@
     { mode: "screen", label: "Screen", key: "S" },
   ];
   const HINT: Record<Mode, string> = {
-    element: "Click what your report is about, or select text; or use the arrow keys and Enter. Esc cancels.",
+    element: "Click what your report is about, or select text; or press E again, then the arrow keys and Enter. Esc cancels.",
     area: "Drag over the part of the page your report is about. Esc cancels.",
     screen: "Taking the visible page…",
   };
+
+  /** The toolbar's arrow keys: Left and Right to the previous and next
+   * button (wrapping), Home and End to the first and last. */
+  function rove(e: KeyboardEvent): void {
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    const bar = e.currentTarget as HTMLElement;
+    const buttons = [...bar.querySelectorAll<HTMLButtonElement>("button")];
+    const i = buttons.indexOf(e.target as HTMLButtonElement);
+    if (i < 0) return;
+    const n = buttons.length;
+    const to = e.key === "ArrowRight" ? (i + 1) % n : e.key === "ArrowLeft" ? (i + n - 1) % n : e.key === "Home" ? 0 : e.key === "End" ? n - 1 : -1;
+    if (to < 0) return;
+    e.preventDefault();
+    buttons[to].focus();
+  }
 </script>
 
-<div class="modebar" role="toolbar" aria-label="Capture" data-clax-keyboard-pick>
+<div class="modebar" role="toolbar" aria-label="Capture" tabindex="-1" onkeydown={rove}>
   <div class="modes">
     {#each MODES as m (m.mode)}
       <button type="button" {@attach el => focusOn(el, m.mode)} aria-pressed={mode === m.mode} aria-keyshortcuts={m.key} onclick={() => onMode(m.mode)}>{m.label}<kbd aria-hidden="true">{m.key}</kbd></button>

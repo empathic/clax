@@ -123,8 +123,18 @@
     if (!open) toggleReports();
   }
 
+  /** Chooses `mode` in the mode bar. Element chosen again while it is on
+   * (E, or its button) starts picking from the keyboard: focus leaves the
+   * overlay, so the arrow keys move the outline and Enter picks. */
   function choose(mode: Mode): void {
     if (!bar) return;
+    if (mode === "element" && bar.mode === "element" && picking) {
+      picker.keyboard();
+      const root = cx?.getRootNode() as Document | ShadowRoot | undefined;
+      const at = root?.activeElement;
+      if (at instanceof HTMLElement && cx?.contains(at)) at.blur();
+      return;
+    }
     bar.mode = mode;
     if (mode === "screen") {
       setPicking(false);
@@ -426,10 +436,12 @@
   const outgoing = $derived(draft ? (draft.purpose.kind === "reopen" ? reopenOf(draft) : reportOf(draft, { url: pageUrl(doc), title: doc.title }, { externalId })) : null);
   let confirmDrop = $state<{ mode: Mode } | null>(null);
   let noteEl = $state<HTMLTextAreaElement | null>(null);
+  /** The overlay's own root element. */
+  let cx = $state<HTMLDivElement | null>(null);
   const reopening = $derived(draft?.purpose.kind === "reopen" ? draft.purpose.report : null);
 </script>
 
-<div class="cx">
+<div class="cx" bind:this={cx}>
   {#if bar}
     <ModeBar mode={bar.mode} {outlined} onMode={choose} onCancel={() => closeBar()} />
   {/if}

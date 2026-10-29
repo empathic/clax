@@ -611,10 +611,11 @@ reporter sees it before sending.
 
 1. **Report** opens the capture bar: **Element** (point at something; on
    by default), **Area** (drag a rectangle) or **Screen** (the visible
-   page at once). The keys E, A and S choose them; Escape cancels. From
-   the keyboard, an arrow key outlines the element in the middle of the
-   view, Down and Up move past it and back, Right goes into it, Left out
-   to its parent, and Enter picks.
+   page at once). The keys E, A and S choose them; Escape cancels. In
+   the bar, Left and Right move between its buttons. To pick from the
+   keyboard, press E again (or the Element button): the element in the
+   middle of the view is outlined, Down and Up move past it and back,
+   Right goes into it, Left out to its parent, and Enter picks.
 2. **Mark the screenshot**: Box, Arrow, Redact, Text, Undo, Clear.
    Redactions are opaque in the image sent. From the keyboard, arrow keys
    move a crosshair, Enter sets each corner, and "Redact the pick" covers
