@@ -1289,6 +1289,8 @@ pub fn guest_need(method: &Method, path: &str, query: Option<&str>) -> GuestNeed
         | ["people"]
         | ["tags"]
         | ["queues"]
+        | ["queues", _]
+        | ["queues", _, _]
         | ["admin"]
         | ["settings"]
         | ["me"]
@@ -2232,6 +2234,18 @@ mod tests {
         h.append(header::COOKIE, "clax_session=cxs_y".parse().unwrap());
         assert_eq!(session_token(&h, SESSION_COOKIE), None);
         assert_eq!(session_token(&HeaderMap::new(), SESSION_COOKIE), None);
+    }
+
+    #[test]
+    fn queue_subpaths_are_gallery_pages() {
+        use GuestNeed::*;
+        let q = "/queues/01J0000000000000000000000A";
+        let t = "/queues/01J0000000000000000000000A/01J0000000000000000000000B";
+        for path in ["/queues", q, t] {
+            assert_eq!(guest_need(&Method::GET, path, None), Gallery, "{path}");
+            assert_eq!(guest_need(&Method::POST, path, None), Refused, "{path}");
+        }
+        assert_eq!(guest_need(&Method::GET, &format!("{t}/x"), None), Refused);
     }
 
     #[test]

@@ -232,8 +232,26 @@ test("a site's user files a report through the overlay; an agent claims, replies
     // The Queues page counts it resolved.
     await owner.reload();
     const counted = owner.locator("li.qcard", { has: owner.getByRole("heading", { name: "Leave app reports" }) });
-    await expect(counted.locator(".counts")).toHaveText("0 open · 0 claimed · 1 resolved");
+    await expect(counted.locator(".counts")).toHaveText("0 open · 0 claimed · 0 fix proposed · 0 verified · 1 resolved");
     await owner.screenshot({ path: shotPath(info, "queues-page"), fullPage: true });
+
+    // The queue's view lists it under Resolved, and its report view shows the conversation.
+    await counted.getByRole("link", { name: "Leave app reports" }).click();
+    await expect(owner).toHaveURL(new RegExp(`/queues/${qid}$`));
+    await expect(owner.getByText("No active reports.")).toBeVisible();
+    await owner.getByRole("tab", { name: "Resolved" }).click();
+    const triaged = owner.locator(`li.rrow[data-id="${report.id}"]`);
+    await expect(triaged.locator(".state")).toHaveText("Resolved");
+    await triaged.getByRole("link").click();
+    await expect(owner).toHaveURL(new RegExp(`/queues/${qid}/${report.id}\\?state=resolved$`));
+    await expect(owner.locator(".rview .note .body")).toHaveText(body);
+    await expect(owner.locator(".convo .cm .body")).toHaveText([reply, "Thanks, 3 to 6 is right."]);
+    await expect(owner.getByRole("button", { name: "Reopen for the reporter" })).toBeVisible();
+    await owner.screenshot({ path: shotPath(info, "report-view"), fullPage: true });
+    await owner.locator(".rview .back a").click();
+    await expect(owner).toHaveURL(new RegExp(`/queues/${qid}\\?state=resolved$`));
+    await expect(owner.getByRole("tab", { name: "Resolved" })).toHaveAttribute("aria-selected", "true");
+    await expect(owner.locator(`li.rrow[data-id="${report.id}"]`)).toBeVisible();
 
     // The overlay ran under the site's policy without tripping it, but for
     // the one empty <style> the first clip's renderer (modern-screenshot)

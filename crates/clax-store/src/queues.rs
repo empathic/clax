@@ -40,7 +40,7 @@ use clax_core::model::{Comment, Session, Thread};
 use clax_core::queue::{
     AUTHOR_REPORTER, Claim, LEASE_SECS, Lease, MAX_ARTIFACT_METADATA_BYTES,
     MAX_THREAD_METADATA_BYTES, Queue, REPORT_PAGE, REPORTER_TOKEN_PREFIX, REPORTER_TOKEN_SECS,
-    Report, ReportComment, ReportersSee, Role, SERVICE_TOKEN_PREFIX, State, StateFilter,
+    Report, ReportComment, ReportOrder, ReportersSee, Role, SERVICE_TOKEN_PREFIX, State, StateFilter,
     check_queue_name, check_reporter_id, metadata_json, metadata_sha256, normalize_origin,
 };
 use clax_core::report::{
@@ -249,7 +249,8 @@ const REPORT_SELECT: &str = "SELECT t.id, t.queue_id, t.anchor_json, t.status, t
     t.metadata_json, t.metadata_version, t.has_clip, t.created_at,
     t.report_context_json, t.report_server_json, t.reporter_profile_json, t.report_phase,
     t.resolve_reason, t.reopen_count,
-    (SELECT n FROM report_diagnostics WHERE thread_id = t.id ORDER BY capture DESC LIMIT 1)
+    (SELECT n FROM report_diagnostics WHERE thread_id = t.id ORDER BY capture DESC LIMIT 1),
+    (SELECT n FROM report_diagnostics WHERE thread_id = t.id AND capture = 0)
     FROM threads t JOIN artifacts a ON a.id = t.artifact_id
     JOIN external_artifacts x ON x.artifact_id = t.artifact_id
     WHERE a.deleted_at IS NULL AND t.queue_id = ?1";
@@ -449,6 +450,7 @@ struct ReportRow {
     resolve_reason: Option<String>,
     reopen_count: u32,
     diagnostics_lines: Option<u32>,
+    filing_diagnostics_lines: Option<u32>,
 }
 
 fn report_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ReportRow> {
@@ -469,6 +471,7 @@ fn report_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ReportRow> {
         resolve_reason: r.get(13)?,
         reopen_count: r.get(14)?,
         diagnostics_lines: r.get(15)?,
+        filing_diagnostics_lines: r.get(16)?,
     })
 }
 
@@ -657,6 +660,7 @@ fn reports_of(
             fixes,
             reopen_count: row.reopen_count,
             diagnostics_lines: row.diagnostics_lines.unwrap_or(0),
+            filing_diagnostics_lines: row.filing_diagnostics_lines.unwrap_or(0),
         });
     }
     Ok(out)
@@ -1541,6 +1545,23 @@ impl Store {
         state: Option<StateFilter>,
         cursor: Option<&str>,
     ) -> Result<(Vec<Report>, Option<String>)> {
+        self.reports_in_order(qid, vis, state, cursor, ReportOrder::Oldest)
+    }
+
+    /// [`Store::reports`] in `order`: with [`ReportOrder::Newest`] the
+    /// latest filed first, each page after `cursor` holding the reports
+    /// filed before it.
+    ///
+    /// # Errors
+    /// As [`Store::reports`].
+    pub fn reports_in_order(
+        &self,
+        qid: &str,
+        vis: Visibility<'_>,
+        state: Option<StateFilter>,
+        cursor: Option<&str>,
+        order: ReportOrder,
+    ) -> Result<(Vec<Report>, Option<String>)> {
         let now = self.now();
         self.with_read(|c| {
             let q = queue_in(c, qid)?.ok_or(CoreError::NotAMember)?;
@@ -1577,10 +1598,14 @@ impl Store {
                     }
                 },
             };
+            let (after, dir) = match order {
+                ReportOrder::Oldest => (">", "ASC"),
+                ReportOrder::Newest => ("<", "DESC"),
+            };
             let sql = format!(
                 "{REPORT_SELECT} {filter} {state_sql}
-                 AND (?3 IS NULL OR (t.created_at, t.id) > (SELECT created_at, id FROM threads WHERE id = ?3))
-                 ORDER BY t.created_at, t.id LIMIT ?5"
+                 AND (?3 IS NULL OR (t.created_at, t.id) {after} (SELECT created_at, id FROM threads WHERE id = ?3))
+                 ORDER BY t.created_at {dir}, t.id {dir} LIMIT ?5"
             );
             let mut rows: Vec<ReportRow> = c
                 .prepare_cached(&sql)?

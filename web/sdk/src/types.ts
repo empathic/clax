@@ -94,6 +94,8 @@ export interface Report {
   reopen_count?: number;
   /** How many diagnostics lines its latest capture holding any has; absent when none has. */
   diagnostics_lines?: number;
+  /** How many diagnostics lines the filing itself (capture 0) has; absent when none. */
+  filing_diagnostics_lines?: number;
 }
 
 /** What the reporter's browser said at capture (spec

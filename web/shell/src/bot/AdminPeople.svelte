@@ -6,7 +6,8 @@
   // row cannot), whether they may use ClaxBot, whose key their runs use,
   // their weekly credits (the free tier and the lift an admin grants, with a
   // reason the audit records), this week's use against it, and whether the
-  // limit is enforced. Each change goes to the daemon and the list is read
+  // limit is enforced, and whether they may report problems with Clax
+  // itself (`feedback`). Each change goes to the daemon and the list is read
   // again; a refusal shows as the daemon words it.
   import { onMount } from "svelte";
   import { refusal } from "../people/refusal";
@@ -78,7 +79,7 @@
     <h3 id="ap-h">People</h3>
     <div class="scroll">
       <table class="ap">
-        <thead><tr><th>Person</th><th>Role</th><th>ClaxBot</th><th>Model key</th><th>Plan</th><th class="num">Weekly credits</th><th>This week</th><th>Unenforced</th></tr></thead>
+        <thead><tr><th>Person</th><th>Role</th><th>ClaxBot</th><th>Model key</th><th>Plan</th><th class="num">Weekly credits</th><th>This week</th><th>Unenforced</th><th>Feedback</th></tr></thead>
         <tbody>
           {#each people as p (p.person)}
             {@const m = meter({ ...p.week, start: "", end: "", warn: false, exhausted: false })}
@@ -109,12 +110,13 @@
               </td>
               <td data-l="This week"><div class="wk"><Meter {m} small label={`${name(p)}'s credits this week`} /><small>{credits(p.week.spent_milli)} · {tokens(p.tokens_week)} tok</small></div></td>
               <td data-l="Unenforced"><Switch checked={p.flags.claxbot_unenforced} label={`Unenforced limit for ${name(p)}`} hideLabel busy={busy === p.person} onchange={on => act(p.person, () => setFlags(p.person, { claxbot_unenforced: on }))} /></td>
+              <td data-l="Feedback"><Switch checked={p.flags.feedback} label={`Feedback for ${name(p)}`} hideLabel busy={busy === p.person} onchange={on => act(p.person, () => setFlags(p.person, { feedback: on }))} /></td>
             </tr>
           {/each}
         </tbody>
       </table>
     </div>
-    <p class="note">Unenforced: their use is metered and shown, and never stops a run.</p>
+    <p class="note">Unenforced: their use is metered and shown, and never stops a run. Feedback: they may report problems with Clax itself.</p>
   </section>
 {:else if !err}
   <p class="note" role="status">Loading people…</p>

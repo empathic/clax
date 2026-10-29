@@ -142,6 +142,35 @@ impl State {
     }
 }
 
+/// The order a listing of a queue's reports pages in: by when each was
+/// filed, `oldest` first (the default) or `newest` first; reports filed in
+/// the same instant are ordered by ID the same way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReportOrder {
+    #[default]
+    Oldest,
+    Newest,
+}
+
+impl ReportOrder {
+    /// The order's name in a query string.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReportOrder::Oldest => "oldest",
+            ReportOrder::Newest => "newest",
+        }
+    }
+
+    /// The order named `s`.
+    pub fn parse(s: &str) -> Option<ReportOrder> {
+        match s {
+            "oldest" => Some(ReportOrder::Oldest),
+            "newest" => Some(ReportOrder::Newest),
+            _ => None,
+        }
+    }
+}
+
 /// Which reports a listing returns (§6.1): those in one state, or the
 /// `active` ones, `open` or `claimed`. Serialized as its name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -301,6 +330,10 @@ pub struct Report {
     /// has.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub diagnostics_lines: u32,
+    /// How many diagnostics lines the filing itself (capture 0) has; 0
+    /// when it came with none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub filing_diagnostics_lines: u32,
 }
 
 fn is_zero(n: &u32) -> bool {

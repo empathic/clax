@@ -1169,6 +1169,7 @@ async fn file_with_context_and_diagnostics_round_trips() {
         "{v}"
     );
     assert_eq!(report["diagnostics_lines"], 2);
+    assert_eq!(report["filing_diagnostics_lines"], 2, "{v}");
 
     let (st, v) = s
         .triage("GET", &s.triage_report(&tid, "/diagnostics"), None)
@@ -1314,6 +1315,16 @@ async fn minted_profile_reaches_triage_not_reporters() {
     let tid = v["report"]["id"].as_str().unwrap().to_string();
     let v: Value = s.get_as(&r, &s.reports()).await.json().await.unwrap();
     assert!(v["reports"][0].get("reporter_profile").is_none(), "{v}");
+    let res = s
+        .post_as(
+            &r,
+            &format!("{}/{tid}/comments", s.reports()),
+            &json!({"body": "More detail"}),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    assert!(v["report"].get("reporter_profile").is_none(), "{v}");
 
     let (_, v) = s.triage("GET", &s.triage_report(&tid, ""), None).await;
     assert_eq!(v["report"]["reporter_profile"], profile, "{v}");
@@ -1443,6 +1454,8 @@ async fn reporter_reopen_with_clip_counts_and_reopens() {
     assert_eq!(c["capture"], 1, "{c}");
     assert_eq!(c["has_clip"], true, "{c}");
     assert_eq!(c["diagnostics_lines"], 2);
+    assert_eq!(report["diagnostics_lines"], 2, "{v}");
+    assert_eq!(report["filing_diagnostics_lines"], Value::Null, "the filing had none: {v}");
     let cid = c["id"].as_str().unwrap();
     let filing = report["comments"][0]["id"].as_str().unwrap();
 
