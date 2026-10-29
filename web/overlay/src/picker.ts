@@ -49,7 +49,7 @@ export function commentPicker(doc: Document, onPick: (p: Picked) => void, onCanc
   const win = doc.defaultView ?? window;
   const pickElement = (el: Element) => onPick({ anchor: buildElementAnchor(doc, el), mode: "element", rect: () => boxRect(el.getBoundingClientRect()), render: () => renderTargetClipWithReport(el, win) });
   const mode = new CommentMode(doc, {
-    hover: t => onHover(describe(t)),
+    hover: t => { keys.follow(t); onHover(describe(t)); },
     pickElement,
     pickRange: r => {
       const range = r.cloneRange();

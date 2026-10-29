@@ -138,3 +138,37 @@ describe("moving marks onto another capture", () => {
     expect(moved.dropped).toBe(2);
   });
 });
+
+describe("moving a redaction", () => {
+  it("covers every pixel it covered, whole pixels out, at any offset and scale", () => {
+    const from = { at: { x: 10.3, y: 0.7, w: 100, h: 100 }, scale: 1, w: 100, h: 100 };
+    const to = { at: { x: 10, y: 0, w: 100, h: 100 }, scale: 1.5, w: 150, h: 150 };
+    expect(remapShapes([{ kind: "redact", from: { x: 0, y: 0 }, to: { x: 1, y: 1 } }], from, to).shapes)
+      .toEqual([{ kind: "redact", from: { x: 0, y: 1 }, to: { x: 2, y: 3 } }]);
+    // Whatever the offsets and scales, the moved block holds the exact one.
+    for (const [ox, oy, s1, s2] of [[0.13, 0.91, 1, 1.25], [3.5, 7.25, 2, 1.5], [0.01, 0.99, 1.333, 0.75], [12.7, 3.3, 0.5, 2]]) {
+      const f = { at: { x: ox, y: oy, w: 400, h: 400 }, scale: s1, w: 400 * s1, h: 400 * s1 };
+      const t = { at: { x: 0, y: 0, w: 400, h: 400 }, scale: s2, w: 400 * s2, h: 400 * s2 };
+      const r = { kind: "redact" as const, from: { x: 21.4, y: 33.6 }, to: { x: 57.2, y: 41.9 } };
+      const [m] = remapShapes([r], f, t).shapes;
+      const ex = (v: number, o: number) => (o + v / s1) * s2;
+      expect(m.kind).toBe("redact");
+      if (m.kind !== "redact") continue;
+      expect(m.from.x).toBeLessThanOrEqual(ex(r.from.x, ox));
+      expect(m.from.y).toBeLessThanOrEqual(ex(r.from.y, oy));
+      expect(m.to.x).toBeGreaterThanOrEqual(ex(r.to.x, ox));
+      expect(m.to.y).toBeGreaterThanOrEqual(ex(r.to.y, oy));
+      expect([m.from.x, m.from.y, m.to.x, m.to.y].every(Number.isInteger)).toBe(true);
+    }
+  });
+
+  it("keeps a tiny redaction inside the image to a pixel, and drops one wholly outside", () => {
+    const same = { at: { x: 0, y: 0, w: 50, h: 50 }, scale: 1, w: 50, h: 50 };
+    expect(remapShapes([{ kind: "redact", from: { x: 4, y: 4 }, to: { x: 4, y: 4 } }], same, same).shapes)
+      .toEqual([{ kind: "redact", from: { x: 4, y: 4 }, to: { x: 5, y: 5 } }]);
+    expect(remapShapes([{ kind: "redact", from: { x: 50, y: 50 }, to: { x: 50, y: 50 } }], same, same).shapes)
+      .toEqual([]);
+    expect(remapShapes([{ kind: "redact", from: { x: 49.5, y: 10 }, to: { x: 49.9, y: 10.2 } }], same, same).shapes)
+      .toEqual([{ kind: "redact", from: { x: 49, y: 10 }, to: { x: 50, y: 11 } }]);
+  });
+});

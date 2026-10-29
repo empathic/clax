@@ -11,6 +11,7 @@
   // The image and its drawing share one box (`.canvas`) that scrolls inside
   // the stage as a whole, so a point on the drawing is the same point of the
   // image however tall the image is and however far it is scrolled.
+  import { tick } from "svelte";
   import { ACCENT, type KeyDraw, MAX_TEXT, ON_ACCENT, REDACT_FILL, STROKE_PX, TEXT_PX, type Pt, type Shape, type Tool, barbs, keyStep, plateOf, spanOf, textWidth } from "./annotate";
 
   type Props = {
@@ -86,19 +87,56 @@
     typing = null;
     const text = typed.trim().slice(0, MAX_TEXT);
     typed = "";
-    if (text) { onChange([...shapes, { kind: "text", at, text }]); said = "Text added."; }
+    if (text) { onChange([...shapes, { kind: "text", at, text }]); announce("Text added."); }
     stage?.focus();
+  }
+
+  /** Says `msg` in the live region: emptied first, so a message said again is heard again. */
+  function announce(msg: string): void {
+    said = "";
+    void tick().then(() => { said = msg; });
+  }
+
+  /** The drawing's and the stage's boxes on screen, when laid out. */
+  function boxes(): { draw: DOMRect; view: DOMRect } | null {
+    const draw = svg?.getBoundingClientRect(), view = stage?.getBoundingClientRect();
+    return draw && view && draw.width > 0 && draw.height > 0 && view.height > 0 ? { draw, view } : null;
+  }
+
+  /** The middle of what the stage shows of the image, in its pixels: where
+   * the keyboard's crosshair starts. */
+  function visibleCentre(): Pt {
+    const b = boxes();
+    if (!b) return { x: Math.round(box.w / 2), y: Math.round(box.h / 2) };
+    const clamp = (v: number, max: number) => Math.min(Math.max(Math.round(v), 0), max);
+    return {
+      x: clamp(((b.view.left + b.view.width / 2 - b.draw.left) / b.draw.width) * box.w, box.w),
+      y: clamp(((b.view.top + b.view.height / 2 - b.draw.top) / b.draw.height) * box.h, box.h),
+    };
+  }
+
+  /** Scrolls the stage so the crosshair at `p` is in view, with a margin. */
+  function reveal(p: Pt): void {
+    const b = boxes();
+    if (!b || !stage) return;
+    const margin = 12;
+    const x = b.draw.left + (p.x / box.w) * b.draw.width, y = b.draw.top + (p.y / box.h) * b.draw.height;
+    if (y < b.view.top + margin) stage.scrollTop -= b.view.top + margin - y;
+    else if (y > b.view.bottom - margin) stage.scrollTop += y - (b.view.bottom - margin);
+    if (x < b.view.left + margin) stage.scrollLeft -= b.view.left + margin - x;
+    else if (x > b.view.right - margin) stage.scrollLeft += x - (b.view.right - margin);
   }
 
   function onKey(e: KeyboardEvent): void {
     if (e.target !== stage || e.altKey || e.metaKey || e.ctrlKey) return;
-    const st = keys ?? { cursor: { x: Math.round(box.w / 2), y: Math.round(box.h / 2) }, corner: null };
+    const st = keys ?? { cursor: visibleCentre(), corner: null };
     const r = keyStep(st, e.key, e.shiftKey, tool, box);
     if (!r.used) return;
     e.preventDefault();
     e.stopPropagation();
     keys = r.state;
-    if (r.say) said = r.say;
+    reveal(r.state.cursor);
+    if (r.say) announce(r.say);
     if (r.add) onChange([...shapes, r.add]);
     if (r.askText) { typing = r.askText; typed = ""; }
   }
@@ -106,7 +144,7 @@
   function redactPick(): void {
     if (!pick) return;
     onChange([...shapes, { kind: "redact", from: { x: pick.x, y: pick.y }, to: { x: pick.x + pick.w, y: pick.y + pick.h } }]);
-    said = "The pick is redacted.";
+    announce("The pick is redacted.");
   }
 
   const pct = (v: number, of: number) => `${(v / of) * 100}%`;
@@ -119,8 +157,8 @@
       <button type="button" aria-pressed={tool === t.tool} onclick={() => { tool = t.tool; keys = keys && { ...keys, corner: null }; }}>{t.label}</button>
     {/each}
     {#if pick}<button type="button" onclick={redactPick}>Redact the pick</button>{/if}
-    <button type="button" disabled={shapes.length === 0} onclick={() => { onChange(shapes.slice(0, -1)); said = "Last mark removed."; }}>Undo</button>
-    <button type="button" disabled={shapes.length === 0} onclick={() => { onChange([]); said = "All marks removed."; }}>Clear</button>
+    <button type="button" disabled={shapes.length === 0} onclick={() => { onChange(shapes.slice(0, -1)); announce("Last mark removed."); }}>Undo</button>
+    <button type="button" disabled={shapes.length === 0} onclick={() => { onChange([]); announce("All marks removed."); }}>Clear</button>
   </div>
   <!-- The stage is a drawing widget: it takes the keys itself (keyStep). -->
   <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->

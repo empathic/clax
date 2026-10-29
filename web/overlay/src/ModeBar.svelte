@@ -10,6 +10,10 @@
   type Props = { mode: Mode | null; outlined?: string | null; onMode(m: Mode): void; onCancel(): void };
   let { mode, outlined = null, onMode, onCancel }: Props = $props();
 
+  /** Focus goes to the mode that is on (none for a reopen's note, whose
+   * text field keeps it): from there the arrow keys start keyboard picking. */
+  const focusOn = (el: HTMLButtonElement, m: Mode) => { if (mode === m) el.focus(); };
+
   const MODES: { mode: Mode; label: string; key: string }[] = [
     { mode: "element", label: "Element", key: "E" },
     { mode: "area", label: "Area", key: "A" },
@@ -22,10 +26,10 @@
   };
 </script>
 
-<div class="modebar" role="toolbar" aria-label="Capture">
+<div class="modebar" role="toolbar" aria-label="Capture" data-clax-keyboard-pick>
   <div class="modes">
     {#each MODES as m (m.mode)}
-      <button type="button" aria-pressed={mode === m.mode} aria-keyshortcuts={m.key} onclick={() => onMode(m.mode)}>{m.label}<kbd aria-hidden="true">{m.key}</kbd></button>
+      <button type="button" {@attach el => focusOn(el, m.mode)} aria-pressed={mode === m.mode} aria-keyshortcuts={m.key} onclick={() => onMode(m.mode)}>{m.label}<kbd aria-hidden="true">{m.key}</kbd></button>
     {/each}
   </div>
   <span class="hint" role="status">{mode ? HINT[mode] : "Add a screenshot: pick a mode, or just write your note."}</span>

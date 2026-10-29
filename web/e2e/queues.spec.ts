@@ -236,11 +236,10 @@ test("a site's user files a report through the overlay; an agent claims, replies
     await expect(counted.locator(".counts")).toHaveText("0 open · 0 claimed · 1 resolved");
     await owner.screenshot({ path: shotPath(info, "queues-page"), fullPage: true });
 
-    // The overlay ran under the site's policy without tripping it, but for
-    // the one empty <style> the first clip's renderer (modern-screenshot)
-    // reads web fonts through, which the policy refuses; that page's clips
-    // are then rendered without web fonts (web/bridge/src/clip.ts).
-    expect(await cspViolations(emp1)).toEqual(['style-src-elem inline ""']);
+    // The overlay ran under the site's strict policy without tripping it:
+    // told the page's nonce, its clips never read web fonts through an
+    // inline <style> (web/bridge/src/clip.ts withoutWebFonts).
+    expect(await cspViolations(emp1)).toEqual([]);
     expect(await cspViolations(emp2)).toEqual([]);
   } finally {
     await site.stop();
@@ -359,8 +358,8 @@ test("a reporter files the visible page, says a fix is still broken with a new c
     expect(verified.report.fixes?.map(f => f.outcome)).toEqual(["rejected", "verified"]);
     expect(verified.report.fixes?.[1].verdict_context).toMatchObject({ v: 1, environment: { url: `${site.origin}/` } });
 
-    // Only the clip renderer's empty font <style> trips the page's policy.
-    expect(await cspViolations(emp1)).toEqual(['style-src-elem inline ""']);
+    // The strict policy is never tripped.
+    expect(await cspViolations(emp1)).toEqual([]);
   } finally {
     await site.stop();
     await d.stop();
@@ -445,6 +444,7 @@ test("a redaction drawn on a tall capture, scrolled in its stage, lands where it
     expect(pixels.size).toEqual([geo.nw, geo.nh]);
     expect(pixels.at[0]).toEqual([0, 0, 0, 255]);
     expect(pixels.at[1]).not.toEqual([0, 0, 0, 255]);
+    expect(await cspViolations(emp1)).toEqual([]);
   } finally {
     await site.stop();
     await d.stop();
