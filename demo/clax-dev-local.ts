@@ -9,7 +9,10 @@
 // dev or diagnostics routes. What differs is what cannot run here: the
 // origins are http://localhost:<port> and each artifact's site
 // <ID>.localhost:<port>, and versions live in the RepoDO stand-in
-// (REPO_STORE=memory), not Cloudflare Artifacts. Nothing is seeded.
+// (REPO_STORE=memory), not Cloudflare Artifacts, and the landing page's
+// reel is served by this process rather than Cloudflare Stream, once
+// //web/reel:reel has built in the background (target/clax-dev-local/
+// reel.log; --no-build serves the one built before). Nothing is seeded.
 //
 // Nothing to configure. GitHub sign-in needs a GitHub App; the first run
 // registers one from a manifest (GitHub's "create an App from a manifest"
@@ -37,11 +40,11 @@
 // wrangler's log are kept in target/clax-dev-local/ across runs; --fresh
 // starts over. Ctrl-C stops the Worker by its process group.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
-import { createServer } from "node:net";
+import { createServer, type AddressInfo } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -254,6 +257,65 @@ try {
   process.exit(1);
 }
 
+// The landing page's reel, as clax.dev serves it from Cloudflare Stream:
+// here from this process, at REEL_URL and REEL_POSTER_URL. It is built in
+// the background once the Worker is up (//web/reel:reel, which records the
+// vignettes on its first build and is cached after), copied to
+// target/clax-dev-local/reel/, and 404 until then.
+const REEL_DIR = join(DIR, "reel");
+const REEL_FILES: Record<string, string> = { "/reel.mp4": "video/mp4", "/reel-poster.jpg": "image/jpeg" };
+const reelServer = createHttpServer((req, res) => {
+  const type = REEL_FILES[req.url ?? ""];
+  const file = type && join(REEL_DIR, req.url!.slice(1));
+  if (!file || !existsSync(file)) {
+    res.writeHead(404).end();
+    return;
+  }
+  const size = statSync(file).size;
+  const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? "");
+  const head = { "content-type": type, "accept-ranges": "bytes", "cache-control": "no-cache", "access-control-allow-origin": "*" };
+  if (range && (range[1] || range[2])) {
+    const start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]));
+    const end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+    if (start > end || start >= size) {
+      res.writeHead(416, { "content-range": `bytes */${size}` }).end();
+      return;
+    }
+    res.writeHead(206, { ...head, "content-range": `bytes ${start}-${end}/${size}`, "content-length": end - start + 1 });
+    createReadStream(file, { start, end }).pipe(res);
+    return;
+  }
+  res.writeHead(200, { ...head, "content-length": size });
+  createReadStream(file).pipe(res);
+});
+const reelBase = await new Promise<string>((ok) =>
+  reelServer.listen(0, "127.0.0.1", () => ok(`http://localhost:${(reelServer.address() as AddressInfo).port}`)),
+);
+
+let reelBuild: ChildProcess | null = null;
+/** Builds the reel in the background, logged to reel.log, and copies it to REEL_DIR when done. */
+function buildReel(): void {
+  const bazel = ["bazelisk", "bazel"].find((b) => spawnSync("sh", ["-c", `command -v ${b}`]).status === 0);
+  if (!bazel) {
+    console.log(`No Bazel on PATH: the landing page shows no reel${existsSync(REEL_DIR) ? " but the one built before" : ""}.`);
+    return;
+  }
+  const log = join(DIR, "reel.log");
+  console.log(`Building the landing page's reel in the background (log ${log}); the first build records every vignette and takes several minutes.`);
+  const fd = openSync(log, "w");
+  reelBuild = spawn(bazel, ["build", "//web/reel:reel"], { cwd: ROOT, stdio: ["ignore", fd, fd] });
+  reelBuild.once("exit", (code) => {
+    reelBuild = null;
+    if (code !== 0) {
+      if (!stopping) console.log(`\nThe reel did not build; see ${log}.`);
+      return;
+    }
+    mkdirSync(REEL_DIR, { recursive: true });
+    for (const f of ["reel.mp4", "reel-poster.jpg"]) copyFileSync(join(ROOT, "bazel-bin/web/reel", f), join(REEL_DIR, f));
+    console.log(`\nThe landing page's reel is built: reload ${base}/start/ to see it.`);
+  });
+}
+
 console.log(`Starting clax.dev's Worker on :${port} (data ${join(DIR, "state")}, log ${join(DIR, "wrangler.log")})…`);
 let w: RunningWorker;
 try {
@@ -268,6 +330,8 @@ try {
       ...(opts.owner ? { OWNER_GITHUB: github.OWNER_GITHUB } : {}),
       CLAX_KEK: secrets.CLAX_KEK,
       LEGAL: "bundled",
+      REEL_URL: `${reelBase}/reel.mp4`,
+      REEL_POSTER_URL: `${reelBase}/reel-poster.jpg`,
     },
   });
 } catch (e) {
@@ -277,6 +341,8 @@ try {
 let stopping = false;
 async function stop(code: number): Promise<never> {
   stopping = true;
+  reelBuild?.kill("SIGINT");
+  reelServer.close();
   await w.stop();
   process.exit(code);
 }
@@ -310,6 +376,9 @@ async function ownerLink(): Promise<string> {
     return `none: ${e instanceof Error ? e.message : e} (--fresh starts over)`;
   }
 }
+
+if (opts["no-build"]) console.log(existsSync(REEL_DIR) ? "The landing page's reel is the one built before." : "No reel is built: the landing page shows none.");
+else buildReel();
 
 const you = opts.owner
   ? `Sign in with GitHub as ${github.OWNER_GITHUB}: that account is the owner (the owner's gallery gets no quickstart).`
