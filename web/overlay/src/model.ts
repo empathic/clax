@@ -83,6 +83,14 @@ export interface OverlayOptions {
    * them takes an inline <style> such a policy refuses, so the overlay trips
    * no violation. A policy in a `<meta http-equiv>` is read without it. */
   nonce?: string;
+  /** A stable ID of the signed-in user, in the host's own terms (hashed
+   * before it is stored). With it, the reporter's key (a non-extractable
+   * CryptoKey) and its reporter token are kept in IndexedDB for this
+   * instance, queue and user and reused across page loads until shortly
+   * before the token expires, so `auth` is called about once per 15
+   * minutes per user rather than on every page load. Without it, every
+   * page load asks `auth` for a token. */
+  user?: string;
 }
 
 /** `given`'s value, or why it could not be had: it threw, rejected, or

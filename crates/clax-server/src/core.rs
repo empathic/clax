@@ -335,11 +335,11 @@ fn feedback_of(
             return None;
         }
     };
-    let origin = f.origin.clone().unwrap_or_else(|| {
-        s.hosted
-            .as_ref()
-            .map_or_else(|| s.browser_base.clone(), |h| h.origin.clone())
-    });
+    let instance = s
+        .hosted
+        .as_ref()
+        .map_or_else(|| s.browser_base.clone(), |h| h.origin.clone());
+    let origin = f.origin.clone().unwrap_or_else(|| instance.clone());
     let grant = match std::fs::read_to_string(&f.service_grant_file) {
         Ok(g) => g,
         Err(e) => {
@@ -354,7 +354,7 @@ fn feedback_of(
             "[feedback] service_grant_file is readable by others: chmod 600 it"
         );
     }
-    match crate::integrations::feedback::integration(&f.queue, &origin, &grant) {
+    match crate::integrations::feedback::integration(&f.queue, &instance, &origin, &grant) {
         Ok(i) => {
             tracing::info!(queue = %i.queue_id, origin = %i.origin, "feedback integration on");
             Some(i)

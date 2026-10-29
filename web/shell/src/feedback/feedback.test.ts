@@ -9,6 +9,7 @@ const CONFIG = {
   enabled: true,
   instance: "https://clax.dev/",
   queue: "q_feedback",
+  user: "p_ana",
   context: {
     release: { version: "0.6.0", commit: "abc123", id: "b42", channel: "prod" },
     flags: { claxbot: true, claxbot_unenforced: false, feedback: true },
@@ -46,6 +47,7 @@ function fakeClax() {
     CONTEXT_TIMEOUT_MS: 2000,
     diagnostics: { install: vi.fn(() => { order.push("diagnostics"); return { lines: () => [], count: () => 0, stop() {} }; }) },
     overlay: vi.fn((o: OverlayOptions) => { order.push("overlay"); opts = o; return handle as unknown as OverlayHandle; }),
+    forgetReporter: vi.fn(async () => { order.push("forget"); }),
   } as unknown as ClaxGlobal;
   return { Clax, handle, order, opts: () => opts!, badge: (n: number) => badge?.(n) };
 }
@@ -130,7 +132,7 @@ describe("the shell's feedback", () => {
     const s = await booted(() => ({ view: "artifact", artifact: "a_123" }));
     expect(fake.order).toEqual(["diagnostics", "overlay"]);
     const o = fake.opts();
-    expect(o).toMatchObject({ instance: "https://clax.dev", queue: "q_feedback", launcher: false });
+    expect(o).toMatchObject({ instance: "https://clax.dev", queue: "q_feedback", user: "p_ana", launcher: false });
     // No token is asked for until the overlay needs one.
     expect(calls.map(c => c.url)).toEqual(["/_app/feedback/config"]);
     expect(await o.auth("PUBKEY")).toEqual({ token: "cxr_abc", expires_at: "2026-10-29T12:00:00Z" });
@@ -142,6 +144,58 @@ describe("the shell's feedback", () => {
     const { tokenAuth } = await import("./feedback");
     stubFetch({ "POST /_app/feedback/token": [403, { error: { code: "no_flag", message: "…" } }] });
     await expect(tokenAuth()("PUBKEY")).rejects.toThrow("no_flag");
+    // A refused key's code rides on the error, so the overlay makes a new key.
+    stubFetch({ "POST /_app/feedback/token": [400, { error: { code: "invalid_key", message: "…" } }] });
+    await expect(tokenAuth()("PUBKEY")).rejects.toMatchObject({ code: "invalid_key" });
+  });
+
+  it("sign-out goes on whatever forgetting does: a chunk that fails to load, or a config that never answers", async () => {
+    const { forgetThenSignOut } = await import("../hosted/signout");
+    const signOut = vi.fn(async () => {});
+    await forgetThenSignOut(signOut, () => Promise.reject(new Error("chunk failed")));
+    expect(signOut).toHaveBeenCalledTimes(1);
+    // A config request that hangs is cut off when the injected timer fires.
+    const { forgetFeedback, FORGET_TIMEOUT_MS } = await import("./forget");
+    let fire: (() => void) | null = null;
+    const delays: number[] = [];
+    const timer = (ms: number, fn: () => void) => { delays.push(ms); fire = fn; return () => { fire = null; }; };
+    const load = vi.fn();
+    const hung = forgetThenSignOut(signOut, async () => ({ forgetFeedback: () => forgetFeedback({ config: () => new Promise(() => {}), load, timer, running: async () => null }) }));
+    await settle();
+    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(delays).toEqual([FORGET_TIMEOUT_MS]);
+    fire!();
+    await hung;
+    expect(signOut).toHaveBeenCalledTimes(2);
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("sign-out forgets through the running overlay when there is one", async () => {
+    const { forgetFeedback } = await import("./forget");
+    const fake = fakeClax();
+    const live = { forget: vi.fn(async () => {}) };
+    await forgetFeedback({ config: async () => CONFIG, load: async () => fake.Clax, running: async () => live });
+    expect(live.forget).toHaveBeenCalledTimes(1);
+    expect(fake.Clax.forgetReporter).not.toHaveBeenCalled();
+  });
+
+  it("sign-out forgets the person's reporter key and token through Clax.forgetReporter", async () => {
+    const { forgetFeedback } = await import("./forget");
+    const fake = fakeClax();
+    const loads: string[] = [];
+    const load = async (_: Document, instance: string) => { loads.push(instance); return fake.Clax; };
+    await forgetFeedback({ config: async () => CONFIG, load, running: async () => null });
+    expect(loads).toEqual(["https://clax.dev"]);
+    expect(fake.Clax.forgetReporter).toHaveBeenCalledWith({ instance: "https://clax.dev", queue: "q_feedback", user: "p_ana" });
+    // A person who may not report: no overlay is loaded.
+    await forgetFeedback({ config: async () => OFF, load });
+    await forgetFeedback({ config: async () => ({ ...CONFIG, user: undefined }), load });
+    expect(loads).toHaveLength(1);
+    // A failure never stops the sign-out.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(forgetFeedback({ config: async () => CONFIG, load: async () => { throw new Error("offline"); } })).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it("context carries the config's release and flags, and the view at capture", async () => {

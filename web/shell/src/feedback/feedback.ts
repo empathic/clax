@@ -26,9 +26,11 @@ export function tokenAuth(f: typeof fetch = fetch): ReporterAuth {
       body: JSON.stringify({ public_key: publicKey }),
     });
     if (!r.ok) {
-      let why = `${r.status}`;
-      try { why = ((await r.json()) as { error?: { code?: string } })?.error?.code ?? why; } catch { /* the status says it */ }
-      throw new Error(`the feedback token was refused (${why})`);
+      let code: string | undefined;
+      try { code = ((await r.json()) as { error?: { code?: string } })?.error?.code; } catch { /* the status says it */ }
+      // The route's code rides on the error: `invalid_key` has the overlay
+      // drop its kept key and ask once with a fresh one.
+      throw Object.assign(new Error(`the feedback token was refused (${code ?? r.status})`), { code });
     }
     const t = (await r.json()) as ReporterToken;
     if (typeof t?.token !== "string" || typeof t?.expires_at !== "string") throw new Error("the feedback token answer has no token");
@@ -133,6 +135,8 @@ export class Feedback {
     fn(this.badge);
     return () => { this.listeners.delete(fn); };
   }
+  /** Forgets the person's reporter key and token (sign-out). */
+  forget(): Promise<void> { return this.handle.forget(); }
   /** Removes the key and the overlay. */
   close(): void {
     this.win.removeEventListener("keydown", this.onKey);
@@ -170,6 +174,7 @@ export async function startFeedback(cfg: FeedbackConfig, deps: StartDeps = {}): 
     instance: cfg.instance,
     queue: cfg.queue,
     auth: tokenAuth(f),
+    ...(cfg.user ? { user: cfg.user } : {}),
     launcher: false,
     context: hostContext(cfg, where),
   }, doc);

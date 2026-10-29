@@ -106,8 +106,11 @@ pub struct FeedbackIntegration {
     pub grant_token: String,
     /// The service grant's Ed25519 key, PKCS#8 v2.
     pub grant_key_pkcs8: Vec<u8>,
-    /// The origin the reporter tokens are minted for: the instance's own,
-    /// one of the queue's origins.
+    /// The instance's base URL: the mint is sent to it and signed for its
+    /// host.
+    pub instance: String,
+    /// The page origin the reporter tokens are minted for, one of the
+    /// queue's origins (the instance's own, for its own shell).
     pub origin: String,
 }
 
@@ -117,6 +120,7 @@ impl std::fmt::Debug for FeedbackIntegration {
             .field("queue_id", &self.queue_id)
             .field("grant_token", &"…")
             .field("grant_key_pkcs8", &"…")
+            .field("instance", &self.instance)
             .field("origin", &self.origin)
             .finish()
     }

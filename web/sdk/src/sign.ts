@@ -107,11 +107,24 @@ function cryptoKeySigner(key: CryptoKey): Signer {
   return { sign: async m => new Uint8Array(await crypto.subtle.sign("Ed25519", key, m as BufferSource)) };
 }
 
-/** A new Ed25519 key whose private half cannot be exported. */
-export async function generateSigner(): Promise<KeyedSigner> {
+/** A new Ed25519 key whose private half cannot be exported: the
+ * CryptoKey (which IndexedDB keeps as it is) and the public half in
+ * unpadded base64url. */
+export async function generateKeyPair(): Promise<{ privateKey: CryptoKey; publicKey: string }> {
   const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, false, ["sign", "verify"]) as CryptoKeyPair;
   const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
-  return { ...cryptoKeySigner(pair.privateKey), publicKey: base64url(raw) };
+  return { privateKey: pair.privateKey, publicKey: base64url(raw) };
+}
+
+/** The signer of `privateKey`, whose public half is `publicKey`. */
+export function keyedSigner(privateKey: CryptoKey, publicKey: string): KeyedSigner {
+  return { ...cryptoKeySigner(privateKey), publicKey };
+}
+
+/** A new Ed25519 key whose private half cannot be exported. */
+export async function generateSigner(): Promise<KeyedSigner> {
+  const k = await generateKeyPair();
+  return keyedSigner(k.privateKey, k.publicKey);
 }
 
 /** A signer over the Ed25519 private key in PKCS#8 `doc` (a queue service

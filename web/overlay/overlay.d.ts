@@ -205,6 +205,14 @@ export interface OverlayOptions {
    * them takes an inline <style> such a policy refuses, so the overlay trips
    * no violation. A policy in a `<meta http-equiv>` is read without it. */
   nonce?: string;
+  /** A stable ID of the signed-in user, in the host's own terms (hashed
+   * before it is stored). With it, the reporter's key (a non-extractable
+   * CryptoKey) and its reporter token are kept in IndexedDB for this
+   * instance, queue and user and reused across page loads until shortly
+   * before the token expires, so `auth` is called about once per 15
+   * minutes per user rather than on every page load. Without it, every
+   * page load asks `auth` for a token. */
+  user?: string;
 }
 
 /** What a running overlay tells its host. */
@@ -220,7 +228,22 @@ export interface OverlayHandle {
   on(event: "badge", fn: (n: number) => void): () => void;
   on(event: "filed", fn: (r: Report) => void): () => void;
   close(): void;
+  /** Forgets the reporter, as the host does when its user signs out:
+   * deletes the key and token kept for `user` and drops them from this
+   * overlay, which keeps nothing more. */
+  forget(): Promise<void>;
 }
+
+/** Whose kept key and token `forgetReporter` deletes. */
+export interface ReporterRef {
+  instance: string;
+  queue: string;
+  user: string;
+}
+
+/** Forgets the key and token kept for `r.user` (the `user` option): call
+ * it on sign-out; it needs no running overlay. */
+export declare function forgetReporter(r: ReporterRef): Promise<void>;
 
 /** How long the host's `context` and `metadata` functions may take, in ms. */
 export declare const CONTEXT_TIMEOUT_MS: 2000;
@@ -234,6 +257,6 @@ export declare function overlay(opts: OverlayOptions, doc?: Document): OverlayHa
 declare global {
   interface Window {
     /** The overlay's classic script (`/_clax/overlay.js`). */
-    Clax: { overlay: typeof overlay; diagnostics: typeof diagnostics; CONTEXT_TIMEOUT_MS: typeof CONTEXT_TIMEOUT_MS };
+    Clax: { overlay: typeof overlay; diagnostics: typeof diagnostics; CONTEXT_TIMEOUT_MS: typeof CONTEXT_TIMEOUT_MS; forgetReporter: typeof forgetReporter };
   }
 }

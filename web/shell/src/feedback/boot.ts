@@ -11,10 +11,11 @@ import { type AppView, type FeedbackConfig, askConfig, configOnce } from "./conf
  * may not report (the integration off, no session, no `feedback` flag) or
  * the body is not one: the shell then shows no entry point. */
 export function readConfig(body: unknown): FeedbackConfig | null {
-  const b = body as { enabled?: unknown; instance?: unknown; queue?: unknown; context?: unknown } | null;
+  const b = body as { enabled?: unknown; instance?: unknown; queue?: unknown; user?: unknown; context?: unknown } | null;
   if (b?.enabled !== true || typeof b.instance !== "string" || !b.instance || typeof b.queue !== "string" || !b.queue) return null;
   const context = b.context && typeof b.context === "object" ? (b.context as HostContext) : {};
-  return { instance: b.instance.replace(/\/+$/, ""), queue: b.queue, context };
+  const user = typeof b.user === "string" && b.user ? b.user : null;
+  return { instance: b.instance.replace(/\/+$/, ""), queue: b.queue, user, context };
 }
 
 /** Asks the config route afresh and reads its answer. */

@@ -3796,6 +3796,16 @@ the origin's host and port, and the origin's scheme is the instance's own
 reads the reports `reporters_see` shows it and gives verdicts on the ones
 it filed; any other is 404 `not_found`.
 
+A reporter token lasts 900 seconds. Each queue key (a service grant's,
+which signs every mint, and each reporter's) signs at most 1,024 requests
+in any 240 seconds, and a queue holds the nonces of at most 4,096 keys at
+once; past either, its requests are 429 `limit_reached` until the nonces
+age out. The SDK's reporter client, given the signed-in user's ID
+(`user`), keeps its key (a non-extractable Ed25519 `CryptoKey`) and its
+token in IndexedDB per instance, queue and user, and asks the deployer's
+backend for a token again only from 60 seconds before it expires or after
+a 401.
+
 | Route | Body | Answer |
 |---|---|---|
 | `POST /api/queues/<qid>/reporter-tokens` (`Clax-Queue`, the service grant's signature, no `Origin`) | `{reporter_id, origin, public_key, profile?}` | `{token, expires_at}` |
@@ -3838,6 +3848,17 @@ filing's or reopen's transaction, one per session (a session with a row
 for that comment gets no second); it needs no watch of the report's
 artifact, and it reaches the session as any comment sent to it does:
 `wait_for_feedback` and the other tiers, and `clax feedback follow`. It
+is handed to a member's session whole exactly when that session's
+rights hold Comments `read` somewhere (as `queue_get` serves the report),
+whatever authors its person has approved and whatever artifacts its
+rights reach; a member's session whose rights do not is told of it as
+`no_access` ("you no longer have access to this page"), never given it;
+and a wake still undelivered when its session has ended, its person is
+no longer a member, or the queue is gone is never handed over or
+announced. A reporter's comment on a report (`…/reporter/reports/<tid>/comments`)
+is sent the same way to the session holding the report's live lease,
+while its person is a member: a feedback row for that comment, with no
+`queue_event`, delivered under the same rule. It
 never makes the session the report's owner (a claim does) and is no
 part of the report's `feedback_state`: a wake does not show the report
 as sent to or delivered to an agent. Its item carries `queue_id`,
@@ -3876,7 +3897,7 @@ people whose `feedback` flag is on; agents 403 `not_for_agents`.
 | Route | Body | Answer |
 |---|---|---|
 | `POST /_app/feedback/token` (same origin) | `{public_key}` (Ed25519, unpadded base64url) | `{token, expires_at}`: a reporter token for `reporter_id` = the person's public ID, the integration's origin and that key, with profile `{name?, github?}` from their GitHub account (`name` their Clax name without one); 404 `not_found` with the integration off; 401 without a credential; 403 `not_a_person` for a viewer, `no_flag` without the flag; 400 as the public route answers the key (`invalid_key`, or `invalid_args` naming `public_key`); 429 `limit_reached` as it answers one, with its `Retry-After`; 503 `feedback_unavailable` for any other refusal of the public route, which is the integration's own (a revoked grant, an origin the queue no longer lists) and names no credential |
-| `GET /_app/feedback/config` | | `{enabled: true, instance, queue, context: {release: {version, commit?, id?, channel}, flags, app: {repo}}}` for a caller who may file: `instance` the origin to file to (the token's), `queue` its ID, `context` what the shell attaches to each report (`release` as `/healthz` reports it, `id` its `build`, `channel` `prod` on `https://clax.dev` and `dev` elsewhere; `flags` the caller's own, as `GET /api/me/flags`; `app.repo` `https://github.com/empathic/clax`); for anyone else, the integration off included, `{enabled: false, instance: null, queue: null, context: null}` |
+| `GET /_app/feedback/config` | | `{enabled: true, instance, queue, user, context: {release: {version, commit?, id?, channel}, flags, app: {repo}}}` for a caller who may file: `instance` the instance's base URL to file to, `queue` its ID, `user` the caller's public ID (the reporter ID its tokens carry, and the overlay's `user`, which keeps its reporter key and token per person), `context` what the shell attaches to each report (`release` as `/healthz` reports it, `id` its `build`, `channel` `prod` on `https://clax.dev` and `dev` elsewhere; `flags` the caller's own, as `GET /api/me/flags`; `app.repo` `https://github.com/empathic/clax`); for anyone else, the integration off included, `{enabled: false, instance: null, queue: null, context: null}` |
 
 A report is read and written through its queue alone. The thread listings
 (`GET /api/artifacts/<id>/threads`, `GET /api/threads`, `comments_read`

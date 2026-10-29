@@ -9941,3 +9941,133 @@ async fn the_owner_forks_another_persons_page_only_once_it_is_shared_with_them()
     let (s, v) = site.post(&owner, &fork, json!({})).await;
     assert_eq!(s, 201, "{v}");
 }
+
+/// A queue's wake reaches a member's agent whole exactly when its rights
+/// read reports (Comments `read` somewhere), as `queue_get` serves them:
+/// an agent token whose rights may watch the queue and no more is told of
+/// the report as `no_access`; once its person's rights read comments, the
+/// next report comes whole; narrowed again after it watched, the next one
+/// is `no_access` again.
+#[tokio::test]
+async fn a_queue_wake_reaches_a_members_agent_whole_only_when_it_reads_reports() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let watch_only = json!([{"type": "clax-comments", "actions": ["watch"], "locations": ["*"]}]);
+    let (sam, pid) = site.person_with(&owner, "Sam", watch_only.clone()).await;
+    let (s, v) = site
+        .post(
+            &owner,
+            "/api/queues",
+            json!({"name": "App reports", "origins": ["https://app.example.com"], "reporters_see": "own"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let qid = v["queue"]["id"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &format!("/api/queues/{qid}/members/{pid}"),
+            json!({"role": "triage"}),
+        )
+        .await;
+    assert!(s < 300, "{s} {v}");
+    let (s, v) = site
+        .post(&sam, "/api/hosted/agent-tokens", json!({"label": "sam-laptop"}))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let mut agent = TokenAgent {
+        site: &site,
+        token: v["token"].as_str().unwrap().to_string(),
+        session: None,
+    };
+    assert_eq!(agent.initialize("fixer").await, 200);
+    let (s, r) = agent.call("queue_watch", json!({"queue": qid})).await;
+    assert_eq!((s, tool_code(&r).as_str()), (200, ""), "{r}");
+    let tok = clax_store::queues::ReporterToken {
+        queue_id: qid.clone(),
+        service_grant_id: "g1".into(),
+        reporter_id: "emp-1".into(),
+        origin: "https://app.example.com".into(),
+        public_key: String::new(),
+        expires_at: "2099-01-01T00:00:00.000Z".into(),
+        profile: None,
+    };
+    let file = |body: &str| {
+        site.ts
+            .store
+            .file_report(
+                &clax_core::audit::AuditCtx::DAEMON,
+                &qid,
+                Some(&tok),
+                clax_store::queues::ExternalScope::Maker,
+                clax_store::queues::NewReport {
+                    external_id: Some(format!("page:{body}")),
+                    url: "https://app.example.com/invoices/7".into(),
+                    title: "Invoice 7".into(),
+                    anchor: serde_json::from_value(clax_testkit::element_anchor()).unwrap(),
+                    body: body.into(),
+                    author_name: "emp-1".into(),
+                    metadata: Value::Null,
+                    revision: None,
+                    clip: None,
+                    context: None,
+                    server: None,
+                    diagnostics: None,
+                },
+            )
+            .unwrap()
+            .id
+    };
+    let text = |r: &Value| {
+        r["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let wait = json!({"timeout_s": 1});
+    let set_rights = |rights: Value| {
+        let (site, owner, pid) = (&site, &owner, pid.clone());
+        async move {
+            let (s, v) = site
+                .send(
+                    owner,
+                    reqwest::Method::PUT,
+                    &format!("/api/people/{pid}/rights"),
+                    json!({"rights": rights}),
+                )
+                .await;
+            assert!(s < 300, "{s} {v}");
+        }
+    };
+
+    // Watch only: told the report is out of reach, never given it.
+    let first = file("The first total is wrong");
+    let (_, r) = agent.call("wait_for_feedback", wait.clone()).await;
+    let t = text(&r);
+    assert!(t.contains("you no longer have access"), "{t}");
+    assert!(t.contains(&first) && !t.contains("The first total is wrong"), "{t}");
+    let (_, r) = agent.call("queue_get", json!({"queue": qid, "report_id": first})).await;
+    assert_eq!(tool_code(&r), "not_permitted", "{r}");
+
+    // Rights that read comments: the next report comes whole.
+    let reads = json!([{"type": "clax-comments", "actions": ["read", "watch"], "locations": ["*"]}]);
+    set_rights(reads).await;
+    let second = file("The second total is wrong");
+    let (_, r) = agent.call("wait_for_feedback", wait.clone()).await;
+    let t = text(&r);
+    assert!(t.contains("The second total is wrong"), "{t}");
+    assert!(t.contains(&format!("This is a new report in queue {qid}")), "{t}");
+    assert!(t.contains(&second), "{t}");
+
+    // Narrowed after it watched: no_access again.
+    set_rights(watch_only).await;
+    let third = file("The third total is wrong");
+    let (_, r) = agent.call("wait_for_feedback", wait).await;
+    let t = text(&r);
+    assert!(t.contains("you no longer have access"), "{t}");
+    assert!(t.contains(&third) && !t.contains("The third total is wrong"), "{t}");
+}
