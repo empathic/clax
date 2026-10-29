@@ -28,7 +28,7 @@
 // Imported, it builds nothing (and loads no Vite): its tests
 // (build-sdk.test.ts) call the license guard, the notices' collection and
 // the declarations' on fixtures.
-import { mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -183,14 +183,20 @@ export function keepDeclarations(emitted, root = web) {
   return kept;
 }
 
-/** Writes the entries' declarations under types/ (keepDeclarations).
- * Fails on a declaration TypeScript cannot emit. */
-function emitTypes() {
-  const program = ts.createProgram(ENTRIES.map(e => join(web, e.src)), declarationOptions());
+/** The program the declarations are emitted from: the entries' sources and
+ * what they import. */
+const declarationProgram = () => ts.createProgram(ENTRIES.map(e => join(web, e.src)), declarationOptions());
+
+/** Writes the entries' declarations from `program` under types/, in place
+ * of what was there (keepDeclarations). Fails on a declaration TypeScript
+ * cannot emit. */
+function emitTypes(program) {
   const emitted = new Map();
   const result = program.emit(undefined, (file, text) => emitted.set(file.slice("/types/".length), text));
   if (result.diagnostics.length) throw new Error(formatDiagnostics(result.diagnostics));
-  for (const [file, text] of keepDeclarations(emitted)) {
+  const kept = keepDeclarations(emitted);
+  rmSync(join(out, "types"), { recursive: true, force: true });
+  for (const [file, text] of kept) {
     const to = join(out, "types", file);
     mkdirSync(dirname(to), { recursive: true });
     writeFileSync(to, text);
@@ -207,14 +213,25 @@ function writeMetadata(moduleIds) {
 }
 
 /** Writes everything but the JavaScript once each bundle is written, with
- * the modules the bundle took (for THIRD-PARTY-NOTICES.txt). */
+ * the modules the bundle took (for THIRD-PARTY-NOTICES.txt), and removes a
+ * chunk an earlier build of `--watch` wrote that this one did not. Rollup
+ * watches the bundle's modules only, which leaves out one reached by
+ * `import type` alone (sdk/src/types.ts, overlay/src/options.ts): every
+ * source the declarations are emitted from is watched too. */
+let program;
 const packageFiles = {
   name: "clax-sdk-package-files",
   apply: "build",
+  buildStart() {
+    program = declarationProgram();
+    for (const f of program.getSourceFiles()) if (!f.fileName.includes("/node_modules/")) this.addWatchFile(f.fileName);
+  },
   writeBundle(_, bundle) {
+    const chunks = join(out, "chunks");
+    for (const f of existsSync(chunks) ? readdirSync(chunks) : []) if (!(`chunks/${f}` in bundle)) rmSync(join(chunks, f), { recursive: true });
     const ids = new Set(Object.values(bundle).flatMap(c => (c.type === "chunk" ? Object.keys(c.modules) : [])));
     writeMetadata(ids);
-    emitTypes();
+    emitTypes(program);
   },
 };
 
