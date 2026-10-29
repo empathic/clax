@@ -35,7 +35,10 @@ async fn the_overlay_files_are_served_to_any_origin_with_their_types() {
         let h = res.headers();
         assert_eq!(h["content-type"], ty, "{name}");
         assert_eq!(h["access-control-allow-origin"], "*", "{name}");
-        assert!(h.get("access-control-allow-credentials").is_none(), "{name}");
+        assert!(
+            h.get("access-control-allow-credentials").is_none(),
+            "{name}"
+        );
         assert_eq!(h["x-content-type-options"], "nosniff", "{name}");
     }
     // Any other file of the web UI is not offered to other origins.

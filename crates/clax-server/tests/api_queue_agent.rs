@@ -390,7 +390,12 @@ async fn reports_list_newest_first_on_asking() {
     let oldest = [q.tid.clone(), later.id.clone()];
     assert_eq!(ids(&v), oldest, "oldest first by default");
     let (_, v) = q
-        .agent(Some(&a), "GET", &list("?order=newest&state=active"), json!(null))
+        .agent(
+            Some(&a),
+            "GET",
+            &list("?order=newest&state=active"),
+            json!(null),
+        )
         .await;
     assert_eq!(ids(&v), [later.id.clone(), q.tid.clone()], "{v}");
     for same in ["?order=oldest", "?order="] {
