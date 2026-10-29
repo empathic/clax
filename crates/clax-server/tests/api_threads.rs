@@ -108,6 +108,7 @@ async fn bad_input_is_refused() {
     let res = ts
         .client
         .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .multipart(form)
         .send()
         .await
@@ -133,16 +134,8 @@ async fn bad_input_is_refused() {
 async fn viewer_cookie_names_the_author() {
     let ts = TestServer::spawn().await;
     let (_sid, aid) = setup(&ts).await;
-    let res = ts.get("/api/viewers/me").await;
-    let cookie = res.headers()["set-cookie"].to_str().unwrap().to_string();
-    assert!(
-        cookie.starts_with("clax_viewer=")
-            && cookie.contains("HttpOnly")
-            && cookie.contains("SameSite=Lax")
-            && !cookie.contains("Domain"),
-        "{cookie}"
-    );
-    let pair = cookie.split(';').next().unwrap().to_string();
+    // A viewer the daemon minted for a browser of this machine's.
+    let pair = format!("clax_viewer={}", ts.viewer(None).await.cookie);
     let v: Value = ts
         .client
         .put(format!("{}/api/viewers/me", ts.base))
@@ -189,10 +182,10 @@ async fn viewer_cookie_names_the_author() {
         .send()
         .await
         .unwrap();
-    assert!(
-        forged.headers().get("set-cookie").is_some(),
-        "a malformed cookie is replaced"
-    );
+    // A malformed cookie names no one, so it is no credential: refused,
+    // and no viewer is minted for it.
+    assert_eq!(forged.status(), 401);
+    assert!(forged.headers().get("set-cookie").is_none());
 }
 
 #[tokio::test]
@@ -206,6 +199,7 @@ async fn agent_replies_need_the_token_and_a_sent_thread() {
     assert_eq!(
         ts.client
             .post(&url)
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
             .json(&body)
             .send()
             .await
@@ -268,6 +262,7 @@ async fn at_agent_sends_but_an_address_does_not() {
             "{}/api/artifacts/{aid}/threads/{tid}/comments",
             ts.base
         ))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .json(&json!({"body": "over to you (@agent)."}))
         .send()
         .await
@@ -309,6 +304,7 @@ async fn resolve_by_viewer_and_agent() {
     let v: Value = ts
         .client
         .post(url(pid))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .send()
         .await
         .unwrap()
@@ -327,6 +323,7 @@ async fn resolve_by_viewer_and_agent() {
     assert_eq!(
         ts.client
             .post(url(sid2))
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
             .json(&agent)
             .send()
             .await
@@ -385,6 +382,7 @@ async fn events_announce_threads_comments_resolutions_and_feedback_state() {
             "{}/api/artifacts/{aid}/threads/{tid}/comments",
             ts.base
         ))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .json(&json!({"body": "second"}))
         .send()
         .await
@@ -408,6 +406,7 @@ async fn events_announce_threads_comments_resolutions_and_feedback_state() {
             "{}/api/artifacts/{aid}/threads/{tid}/resolve",
             ts.base
         ))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .send()
         .await
         .unwrap();
@@ -522,6 +521,7 @@ async fn viewer_resolve_withdraws_undelivered_feedback() {
             "{}/api/artifacts/{aid}/threads/{tid}/resolve",
             ts.base
         ))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .send()
         .await
         .unwrap()
@@ -582,24 +582,33 @@ async fn viewer_routes_refuse_foreign_origins() {
         let reqs = [
             ts.client
                 .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+                .header("cookie", format!("clax_viewer={}", ts.local_browser()))
                 .multipart(form()),
             ts.client
                 .post(format!(
                     "{}/api/artifacts/{aid}/threads/{tid}/comments",
                     ts.base
                 ))
+                .header("cookie", format!("clax_viewer={}", ts.local_browser()))
                 .json(&json!({"body": "x"})),
-            ts.client.post(format!(
-                "{}/api/artifacts/{aid}/threads/{tid}/send",
-                ts.base
-            )),
-            ts.client.post(format!(
-                "{}/api/artifacts/{aid}/threads/{tid}/resolve",
-                ts.base
-            )),
-            ts.client.get(format!("{}/api/viewers/me", ts.base)),
+            ts.client
+                .post(format!(
+                    "{}/api/artifacts/{aid}/threads/{tid}/send",
+                    ts.base
+                ))
+                .header("cookie", format!("clax_viewer={}", ts.local_browser())),
+            ts.client
+                .post(format!(
+                    "{}/api/artifacts/{aid}/threads/{tid}/resolve",
+                    ts.base
+                ))
+                .header("cookie", format!("clax_viewer={}", ts.local_browser())),
+            ts.client
+                .get(format!("{}/api/viewers/me", ts.base))
+                .header("cookie", format!("clax_viewer={}", ts.local_browser())),
             ts.client
                 .put(format!("{}/api/viewers/me", ts.base))
+                .header("cookie", format!("clax_viewer={}", ts.local_browser()))
                 .json(&json!({"display_name": "x"})),
         ];
         for r in reqs {
@@ -614,6 +623,7 @@ async fn viewer_routes_refuse_foreign_origins() {
     let same = ts
         .client
         .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .header("host", format!("localhost:{port}"))
         .header("origin", format!("http://localhost:{port}"))
         .multipart(form())
@@ -624,6 +634,7 @@ async fn viewer_routes_refuse_foreign_origins() {
     let none = ts
         .client
         .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .multipart(form())
         .send()
         .await
@@ -667,12 +678,14 @@ async fn malformed_viewer_cookies_are_skipped_and_disagreeing_ones_name_no_one()
     let only_a: Value = me(format!("clax_viewer={a}")).await.json().await.unwrap();
     assert_eq!(got, only_a["viewer"]["public_id"]);
     // Two values: one was planted by another page (cookies ignore ports, and
-    // a longer path is sent first). Neither is trusted, so neither wins.
+    // a longer path is sent first). Neither is trusted, so neither wins:
+    // the request names no one, and is no credential.
     let res = me(format!("clax_viewer={b}; clax_viewer={a}")).await;
-    let fresh = res.headers().get("set-cookie").is_some();
-    let got = res.json::<Value>().await.unwrap()["viewer"]["public_id"].clone();
-    assert!(fresh, "a new viewer is minted");
-    assert_ne!(got, only_a["viewer"]["public_id"]);
+    assert_eq!(res.status(), 401);
+    assert!(
+        res.headers().get("set-cookie").is_none(),
+        "no viewer is minted"
+    );
 }
 
 /// The viewer cookie is a credential and the session ID names a live agent:
@@ -929,6 +942,7 @@ async fn threads_are_anchored_on_any_file_of_their_version() {
             .text("version", "1");
         ts.client
             .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
             .multipart(form)
             .send()
     };
@@ -981,6 +995,7 @@ async fn area_threads_keep_their_drawn_rectangle_and_bad_areas_are_refused() {
             .text("version", "1");
         ts.client
             .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
             .multipart(form)
             .send()
     };
@@ -1034,6 +1049,7 @@ async fn viewers_reopen_and_delete_threads_with_events() {
     assert_eq!(
         ts.client
             .post(url("/resolve"))
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
             .send()
             .await
             .unwrap()
@@ -1101,7 +1117,12 @@ async fn reopening_and_deleting_need_a_name_or_the_token() {
     let unnamed = ts.viewer(None).await;
     let cookie = format!("clax_viewer={}", unnamed.cookie);
     for res in [
-        ts.client.post(url("/reopen")).send().await.unwrap(),
+        ts.client
+            .post(url("/reopen"))
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
+            .send()
+            .await
+            .unwrap(),
         ts.client
             .post(url("/reopen"))
             .header("cookie", &cookie)
@@ -1168,6 +1189,7 @@ async fn agents_reopen_and_delete_only_sent_threads_from_a_live_session() {
                 "{}/api/artifacts/{aid}/threads/{tid}/reopen",
                 ts.base
             ))
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
             .json(&json!({"as": "agent"}))
     };
     let res = agent(reopen(&sent), false).send().await.unwrap();
@@ -1185,10 +1207,12 @@ async fn agents_reopen_and_delete_only_sent_threads_from_a_live_session() {
         200
     );
     let del = |tid: &str| {
-        ts.client.delete(format!(
-            "{}/api/artifacts/{aid}/threads/{tid}?as=agent",
-            ts.base
-        ))
+        ts.client
+            .delete(format!(
+                "{}/api/artifacts/{aid}/threads/{tid}?as=agent",
+                ts.base
+            ))
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
     };
     assert_eq!(
         ts.client
@@ -1196,6 +1220,7 @@ async fn agents_reopen_and_delete_only_sent_threads_from_a_live_session() {
                 "{}/api/artifacts/{aid}/threads/{sent}?as=agent",
                 ts.base
             ))
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
             .send()
             .await
             .unwrap()
@@ -1236,6 +1261,7 @@ async fn reopen_and_delete_refuse_foreign_origins() {
             "{}/api/artifacts/{aid}/threads/{tid}/reopen",
             ts.base
         ))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .header("origin", &origin)
         .send()
         .await
@@ -1244,6 +1270,7 @@ async fn reopen_and_delete_refuse_foreign_origins() {
     let r = ts
         .client
         .delete(format!("{}/api/artifacts/{aid}/threads/{tid}", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .header("origin", &origin)
         .send()
         .await
@@ -1261,6 +1288,7 @@ async fn page_thread(ts: &TestServer, aid: &str, body: &str) -> Value {
     let res = ts
         .client
         .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .multipart(form)
         .send()
         .await
@@ -1283,6 +1311,7 @@ async fn page_written_comments_are_marked_and_their_mentions_send_nothing() {
     let v: Value = ts
         .client
         .post(&url)
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .json(&json!({"body": "@agent go", "via_page": true}))
         .send()
         .await
@@ -1308,6 +1337,7 @@ async fn page_written_comments_are_marked_and_their_mentions_send_nothing() {
     let res = ts
         .client
         .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .multipart(bad)
         .send()
         .await
@@ -1324,6 +1354,7 @@ async fn page_written_comments_are_marked_and_their_mentions_send_nothing() {
             "{}/api/artifacts/{aid}/threads/{stid}/comments",
             ts.base
         ))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .json(&json!({"body": "and the footer", "via_page": true}))
         .send()
         .await
@@ -1368,6 +1399,7 @@ async fn every_thread_of_every_artifact_needs_the_token() {
             ts.base,
             first["id"].as_str().unwrap()
         ))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .send()
         .await
         .unwrap();
@@ -1444,6 +1476,7 @@ async fn whole_artifact_threads_follow_the_comment_loop() {
     let res = ts
         .client
         .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .multipart(form(json!({"kind": "artifact", "file": ""}), false))
         .send()
         .await
@@ -1479,6 +1512,7 @@ async fn whole_artifact_threads_follow_the_comment_loop() {
         let res = ts
             .client
             .post(&url)
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
             .multipart(form(anchor, via_page))
             .send()
             .await
@@ -1572,6 +1606,7 @@ async fn comment(ts: &TestServer, aid: &str, tid: &str, body: Value) -> Value {
             "{}/api/artifacts/{aid}/threads/{tid}/comments",
             ts.base
         ))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .json(&body)
         .send()
         .await

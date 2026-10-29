@@ -731,12 +731,16 @@ async fn get_on(
     etag: Option<&str>,
 ) -> reqwest::Response {
     let mut req = ts.client.get(format!("{}{path}", ts.base));
-    if let Some(h) = host {
-        req = req.header("host", h);
-        // A site host's: with a site session of the owner's.
-        if let Some((id, _)) = h.split_once(".localhost") {
-            req = req.header("cookie", ts.site_cookie(id).await);
+    match host {
+        Some(h) => {
+            req = req.header("host", h);
+            // A site host's: with a site session of the owner's.
+            if let Some((id, _)) = h.split_once(".localhost") {
+                req = req.header("cookie", ts.site_cookie(id).await);
+            }
         }
+        // The instance's: a browser of this machine's with no name.
+        None => req = req.header("cookie", format!("clax_viewer={}", ts.local_browser())),
     }
     if let Some(e) = etag {
         req = req.header("if-none-match", e);

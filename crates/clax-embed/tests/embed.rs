@@ -474,7 +474,8 @@ async fn a_page_frame_carrying_a_credential_reaches_no_api() {
     let dir = tempfile::tempdir().unwrap();
     let (embed, _rx) = open(dir.path());
     let token = {
-        let (status, v) = call_json(&embed, head("GET", "/api/token", As::Owner), None).await;
+        let (status, v) =
+            call_json(&embed, head("GET", "/api/token", As::OwnerBrowser), None).await;
         assert_eq!(status, 200, "{v}");
         v["token"].as_str().unwrap().to_string()
     };
@@ -1156,7 +1157,7 @@ async fn the_apps_shell_samples_as_the_owners_browser() {
     )
     .await;
     assert_eq!(status, 200, "{v}");
-    let (status, v) = call_json(&embed, head("GET", "/api/token", As::Owner), None).await;
+    let (status, v) = call_json(&embed, head("GET", "/api/token", As::OwnerBrowser), None).await;
     assert_eq!(status, 200, "{v}");
     let bearer = format!("Bearer {}", v["token"].as_str().unwrap());
     let shell = |as_: As, method: &str, path: &str| {

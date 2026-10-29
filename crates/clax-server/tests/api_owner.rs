@@ -74,9 +74,7 @@ async fn two_browsers_and_the_cli_are_one_owner_and_a_lan_viewer_is_another() {
         .unwrap();
     assert!(res.headers().get("set-cookie").is_none());
 
-    let t = ts
-        .thread_as(&aid, "01J9Z3K4M5N6P7Q8R9S0T1V2W4", "first")
-        .await;
+    let t = ts.thread_as(&aid, &ts.local_browser(), "first").await;
     let tid = t["id"].as_str().unwrap().to_string();
     let from_chrome = reply(
         ts.client
@@ -232,7 +230,7 @@ async fn a_name_set_anywhere_reaches_every_browser_at_once() {
 }
 
 #[tokio::test]
-async fn the_shells_token_request_claims_its_browsers_old_viewer() {
+async fn a_login_claims_its_browsers_old_viewer() {
     let ts = TestServer::spawn().await;
     let a = ts
         .publish("T", &[("index.html", "<main><h2>x</h2></main>")])
@@ -243,15 +241,7 @@ async fn the_shells_token_request_claims_its_browsers_old_viewer() {
     let t = ts.thread_as(&aid, &safari.cookie, "from safari").await;
     let token = |cookie: String| {
         let ts = &ts;
-        async move {
-            ts.client
-                .get(format!("{}/api/token", ts.base))
-                .header("sec-fetch-site", "same-origin")
-                .header("cookie", format!("clax_viewer={cookie}"))
-                .send()
-                .await
-                .unwrap()
-        }
+        async move { login(ts, &format!("clax_viewer={cookie}")).await }
     };
     let res = token(chrome.cookie.clone()).await;
     let sets: Vec<String> = res
@@ -291,15 +281,21 @@ async fn the_shells_token_request_claims_its_browsers_old_viewer() {
         .await
         .unwrap();
     assert_eq!(gone["viewers"], json!([]));
-    // A request that is not the shell's claims nothing.
+    // The shell's token request claims nothing, even from a browser of
+    // the owner's.
     let lan = ts.viewer(Some("Sam")).await;
     let res = ts
         .client
         .get(format!("{}/api/token", ts.base))
-        .header("cookie", format!("clax_viewer={}", lan.cookie))
+        .header("sec-fetch-site", "same-origin")
+        .header(
+            "cookie",
+            format!("{}; clax_viewer={}", ts.owner_cookie(), lan.cookie),
+        )
         .send()
         .await
         .unwrap();
+    assert_eq!(res.status(), 200);
     assert!(res.headers().get("set-cookie").is_none());
     assert_eq!(
         me(&ts, &format!("clax_viewer={}", lan.cookie)).await["public_id"],
@@ -367,8 +363,7 @@ fn non_loopback_ipv4() -> Option<std::net::IpAddr> {
     (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
 }
 
-/// A daemon on every interface, and a LAN viewer of it: its cookie, minted
-/// for a request from `ip`, and its public ID.
+/// A daemon on every interface, and this machine's LAN address.
 async fn lan_daemon() -> Option<(TestServer, std::net::IpAddr)> {
     let Some(ip) = non_loopback_ipv4() else {
         eprintln!("skipping: this machine has no non-loopback IPv4 address");
@@ -382,37 +377,19 @@ async fn lan_daemon() -> Option<(TestServer, std::net::IpAddr)> {
     Some((ts, ip))
 }
 
-async fn lan_viewer(ts: &TestServer, ip: std::net::IpAddr) -> (String, String) {
-    let res = ts
-        .client
-        .get(format!("http://{ip}:{}/api/viewers/me", ts.addr.port()))
-        .send()
-        .await
-        .unwrap();
-    let cookie = res.headers()["set-cookie"]
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap()
-        .trim_start_matches("clax_viewer=")
-        .to_string();
-    let v: Value = res.json().await.unwrap();
-    (
-        cookie,
-        v["viewer"]["public_id"].as_str().unwrap().to_string(),
-    )
+/// A LAN viewer of `ts`: one minted for a request of another machine (as
+/// a daemon of before the browser login minted one for any LAN peer), its
+/// cookie and public ID.
+async fn lan_viewer(ts: &TestServer, _ip: std::net::IpAddr) -> (String, String) {
+    let cookie = clax_core::secret::viewer_cookie().expose().to_string();
+    let v = ts.store.mint_viewer(&cookie, false).unwrap();
+    (cookie, v.public_id)
 }
 
-/// The shell's token request in a browser holding `cookies`.
-async fn shell_token(ts: &TestServer, cookies: &str) -> reqwest::Response {
-    ts.client
-        .get(format!("{}/api/token", ts.base))
-        .header("sec-fetch-site", "same-origin")
-        .header("cookie", cookies)
-        .send()
-        .await
-        .unwrap()
+/// A browser login (`GET /login` with a code the token made) in a browser
+/// holding `cookies`; its answer, the redirect unfollowed.
+async fn login(ts: &TestServer, cookies: &str) -> reqwest::Response {
+    ts.login_with(cookies).await
 }
 
 #[tokio::test]
@@ -422,8 +399,8 @@ async fn a_planted_lan_cookie_is_never_adopted_as_the_owner() {
     };
     let (planted, lan_id) = lan_viewer(&ts, ip).await;
     // Another local page set `clax_viewer=<the LAN viewer's cookie>`; the
-    // owner's shell then fetches the token.
-    shell_token(&ts, &format!("clax_viewer={planted}")).await;
+    // owner's browser then logs in.
+    login(&ts, &format!("clax_viewer={planted}")).await;
     let owner = me(&ts, &owner_browser(&ts, None)).await;
     assert_ne!(
         owner["public_id"],
@@ -447,10 +424,10 @@ async fn a_planted_lan_cookie_never_merges_its_comments_into_the_owner() {
     let aid = a["artifact"]["id"].as_str().unwrap().to_string();
     // The owner exists, adopted from a browser of this machine.
     let chrome = ts.viewer(Some("Alex")).await;
-    shell_token(&ts, &format!("clax_viewer={}", chrome.cookie)).await;
+    login(&ts, &format!("clax_viewer={}", chrome.cookie)).await;
     let (planted, lan_id) = lan_viewer(&ts, ip).await;
     let t = ts.thread_as(&aid, &planted, "spam").await;
-    shell_token(&ts, &format!("clax_viewer={planted}")).await;
+    login(&ts, &format!("clax_viewer={planted}")).await;
     let v: Value = ts
         .get(&format!(
             "/api/artifacts/{aid}/threads/{}",
@@ -475,8 +452,8 @@ async fn a_shadowing_viewer_cookie_claims_nothing() {
     let ts = TestServer::spawn().await;
     let mine = ts.viewer(Some("Alex")).await;
     let other = ts.viewer(Some("Other")).await;
-    // A cookie scoped to /api/token is sent before the browser's own.
-    let res = shell_token(
+    // A cookie scoped to /login is sent before the browser's own.
+    let res = login(
         &ts,
         &format!("clax_viewer={}; clax_viewer={}", other.cookie, mine.cookie),
     )
@@ -497,19 +474,20 @@ async fn a_shadowing_viewer_cookie_claims_nothing() {
 async fn an_adopted_viewers_old_cookie_names_no_one() {
     let ts = TestServer::spawn().await;
     let chrome = ts.viewer(Some("Alex")).await;
-    shell_token(&ts, &format!("clax_viewer={}", chrome.cookie)).await;
+    login(&ts, &format!("clax_viewer={}", chrome.cookie)).await;
     let owner = me(&ts, &owner_browser(&ts, None)).await;
     assert_eq!(owner["public_id"], chrome.public_id.as_str());
     // Replaying the old cookie (it reached every localhost port) is not the owner.
     let replay = me(&ts, &format!("clax_viewer={}", chrome.cookie)).await;
     assert_ne!(replay["public_id"], owner["public_id"]);
+    // A cookie that names no one is no credential: it renames no one.
     let res = put_name(
         &ts,
         Some(&format!("clax_viewer={}", chrome.cookie)),
         "Mallory",
     )
     .await;
-    assert_eq!(res.status(), 200);
+    assert_eq!(res.status(), 401);
     assert_eq!(
         me(&ts, &owner_browser(&ts, None)).await["display_name"],
         "Alex"
@@ -518,21 +496,31 @@ async fn an_adopted_viewers_old_cookie_names_no_one() {
 
 #[tokio::test]
 async fn a_lan_peer_replaying_the_owner_cookie_is_not_the_owner() {
-    let Some((ts, ip)) = lan_daemon().await else {
-        return;
-    };
+    let ts = TestServer::spawn_on(
+        std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+        |_| {},
+    )
+    .await;
     let owner = ts.owner_public_id().await;
+    let (lan, base) = ts.lan();
     for site in [None, Some("same-origin")] {
-        let mut r = ts
-            .client
-            .get(format!("http://{ip}:{}/api/viewers/me", ts.addr.port()))
-            .header("host", format!("localhost:{}", ts.addr.port()))
-            .header("cookie", ts.owner_cookie());
-        if let Some(s) = site {
-            r = r.header("sec-fetch-site", s);
+        for host in [
+            format!("localhost:{}", ts.addr.port()),
+            format!("{}:{}", clax_testkit::LAN_LOCAL, ts.addr.port()),
+        ] {
+            let mut r = lan
+                .get(format!("{base}/api/viewers/me"))
+                .header("host", &host)
+                .header("cookie", ts.owner_cookie());
+            if let Some(s) = site {
+                r = r.header("sec-fetch-site", s);
+            }
+            let res = r.send().await.unwrap();
+            let status = res.status();
+            let v: Value = res.json().await.unwrap_or(Value::Null);
+            assert_ne!(v["viewer"]["public_id"], owner.as_str(), "{site:?} {host}");
+            assert_eq!(status, 403, "{site:?} {host}: another machine is refused");
         }
-        let v: Value = r.send().await.unwrap().json().await.unwrap();
-        assert_ne!(v["viewer"]["public_id"], owner.as_str(), "{site:?}");
     }
 }
 
@@ -556,7 +544,7 @@ async fn the_cli_reads_the_owner_without_making_one_and_a_browser_claimed_later_
     // The browser the person used before keeps its user ID; the CLI's
     // history and name move to it.
     let chrome = ts.viewer(None).await;
-    shell_token(&ts, &format!("clax_viewer={}", chrome.cookie)).await;
+    login(&ts, &format!("clax_viewer={}", chrome.cookie)).await;
     let owner = me(&ts, &owner_browser(&ts, None)).await;
     assert_eq!(owner["public_id"], chrome.public_id.as_str());
     assert_eq!(owner["display_name"], "Alex");
@@ -585,7 +573,7 @@ async fn a_merged_viewer_leaves_presence_at_once() {
     let a = ts.publish("T", &[("index.html", "<p>")]).await;
     let aid = a["artifact"]["id"].as_str().unwrap().to_string();
     let chrome = ts.viewer(Some("Alex")).await;
-    shell_token(&ts, &format!("clax_viewer={}", chrome.cookie)).await;
+    login(&ts, &format!("clax_viewer={}", chrome.cookie)).await;
     let safari = ts.viewer(Some("Alex S")).await;
     let res = ts
         .client
@@ -597,7 +585,7 @@ async fn a_merged_viewer_leaves_presence_at_once() {
         .unwrap();
     assert_eq!(res.status(), 200);
     let mut ev = ts.events(&format!("?artifact={aid}&types=presence")).await;
-    shell_token(&ts, &format!("clax_viewer={}", safari.cookie)).await;
+    login(&ts, &format!("clax_viewer={}", safari.cookie)).await;
     let e = tokio::time::timeout(std::time::Duration::from_secs(5), ev.next_named("presence"))
         .await
         .expect("the merged viewer's presence is dropped at once");

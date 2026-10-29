@@ -447,7 +447,7 @@ async fn credentials_and_origins_are_checked() {
         .send()
         .await
         .unwrap();
-    assert_eq!(other.status(), 403);
+    assert_eq!(other.status(), 401, "no credential of this daemon's");
     ts.authed(
         ts.client
             .delete(format!("{}/api/extension/credentials", ts.base)),
@@ -478,6 +478,7 @@ async fn the_shell_keeps_its_own_origin_rules() {
         .client
         .get(format!("{}{path}", ts.base))
         .header("origin", "http://localhost:5173")
+        .header("cookie", ts.owner_cookie())
         .send()
         .await
         .unwrap();

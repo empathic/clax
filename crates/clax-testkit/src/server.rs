@@ -258,6 +258,42 @@ impl clax_core::content::ContentStore for Deferred {
 /// The handshake state [`TestServer::site_cookie`] binds its codes to.
 pub const SITE_STATE: &str = "testkit-site-state";
 
+/// Logs a browser in on the local daemon at `base` (`http://host:port`)
+/// whose token is `token`, as `clax open` does: a login code made with the
+/// token (`POST /api/browser-login`), redeemed without following its
+/// redirect (`GET /login`). Returns the owner cookie it set (`name=value`).
+///
+/// # Panics
+/// When either step fails or no owner cookie is set.
+pub async fn browser_login(base: &str, token: &str) -> String {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let made: serde_json::Value = client
+        .post(format!("{base}/api/browser-login"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let path = made["path"].as_str().expect("a login path").to_string();
+    let res = client.get(format!("{base}{path}")).send().await.unwrap();
+    assert_eq!(res.status(), 303);
+    let host = base.trim_start_matches("http://");
+    let name = clax_http::identity::owner_cookie_name(host);
+    res.headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .filter_map(|v| v.split(';').next())
+        .find(|kv| kv.starts_with(&format!("{name}=")))
+        .expect("an owner cookie")
+        .to_string()
+}
+
 /// A running test daemon with its own temporary home and the fixed token `test-token`.
 pub struct TestServer {
     pub base: String,
@@ -292,6 +328,12 @@ pub struct TestServer {
     /// The server's state, for calling what a host calls beside the router
     /// (a socket's reopening).
     pub state: AppState,
+    /// The owner browser session a browser of the owner's holds, opened
+    /// when the daemon started (`None` on a hosted daemon, which has none).
+    owner_session: Option<String>,
+    /// The `clax_viewer` cookie of [`TestServer::local_browser`]'s browser,
+    /// minted on first use.
+    browser: std::sync::OnceLock<String>,
     extension_id: String,
     /// The owner's site session per artifact that [`TestServer::site_get`]
     /// made, as a browser keeps its cookie.
@@ -643,6 +685,7 @@ impl TestServer {
         let live_ids = Arc::new(clax_realtime::live::LiveIds::load(&store).unwrap());
         let ext_creds =
             Arc::new(clax_http::extension::Credentials::load_with(&store, clock.clone()).unwrap());
+        let owner_sessions = Arc::new(clax_http::local_trust::OwnerSessions::load(&store).unwrap());
         let started_at = store.now();
         let grant_auth = Arc::new(clax_http::grant_auth::GrantAuth::load(&store).unwrap());
         let vis_gen = clax_http::state::VisGen::install(&store);
@@ -688,6 +731,7 @@ impl TestServer {
             sockets: Arc::default(),
             live_ids,
             ext_creds,
+            owner_sessions,
             extension_id: clax_core::extension::extension_id_in_effect(home.root()),
             questions: Arc::new(Default::default()),
             question_grace: Duration::from_secs(5),
@@ -767,6 +811,14 @@ impl TestServer {
         let agent_gate = state.agent_gate.clone();
         let web = state.web.clone();
         let kept_state = state.clone();
+        let owner_session = state.hosted.is_none().then(|| {
+            state
+                .owner_sessions
+                .open(&state.store)
+                .unwrap()
+                .expose()
+                .to_string()
+        });
         let app = if shutdown {
             clax_server::router::build_router_with_shutdown(
                 state,
@@ -802,6 +854,8 @@ impl TestServer {
             seats,
             live_layers,
             state: kept_state,
+            owner_session,
+            browser: std::sync::OnceLock::new(),
             extension_id,
             site_sessions: std::sync::Mutex::default(),
             _v6_twin: v6_twin,
@@ -866,7 +920,20 @@ impl TestServer {
             .unwrap()
     }
 
+    /// A GET from [`TestServer::local_browser`]'s browser: one of this
+    /// machine's that holds no owner browser session.
     pub async fn get(&self, path: &str) -> reqwest::Response {
+        self.client
+            .get(format!("{}{}", self.base, path))
+            .header("cookie", format!("clax_viewer={}", self.local_browser()))
+            .send()
+            .await
+            .unwrap()
+    }
+
+    /// A GET with no credential at all, as any process reaching the port
+    /// sends one.
+    pub async fn get_anonymous(&self, path: &str) -> reqwest::Response {
         self.client
             .get(format!("{}{}", self.base, path))
             .send()
@@ -1168,20 +1235,23 @@ impl TestServer {
         }
         self.client
             .post(format!("{}/api/artifacts/{aid}/threads", self.base))
+            .header("cookie", format!("clax_viewer={}", self.local_browser()))
             .multipart(form)
             .send()
             .await
             .unwrap()
     }
 
-    /// Creates a thread without a clip; returns the thread view.
+    /// Creates a thread without a clip in [`TestServer::local_browser`]'s
+    /// browser; returns the thread view.
     pub async fn thread(&self, aid: &str, version: u32, body: &str) -> serde_json::Value {
         let res = self.create_thread(aid, version, body, None).await;
         assert_eq!(res.status(), 201);
         res.json::<serde_json::Value>().await.unwrap()["thread"].clone()
     }
 
-    /// Presses "Send to agent"; returns the thread view.
+    /// Presses "Send to agent" in [`TestServer::local_browser`]'s browser;
+    /// returns the thread view.
     pub async fn send_thread(&self, aid: &str, tid: &str) -> serde_json::Value {
         let res = self
             .client
@@ -1189,6 +1259,7 @@ impl TestServer {
                 "{}/api/artifacts/{aid}/threads/{tid}/send",
                 self.base
             ))
+            .header("cookie", format!("clax_viewer={}", self.local_browser()))
             .send()
             .await
             .unwrap();
@@ -1196,9 +1267,32 @@ impl TestServer {
         res.json::<serde_json::Value>().await.unwrap()["thread"].clone()
     }
 
-    /// Opens `/api/events<query>` and returns a reader past nothing yet.
+    /// Opens `/api/events<query>` in [`TestServer::local_browser`]'s
+    /// browser and returns a reader past nothing yet.
+    /// A `query` carrying `token=` is the token's alone, with no cookie.
     pub async fn events(&self, query: &str) -> EventReader {
-        self.events_as(query, None).await
+        if query.contains("token=") {
+            return self.events_as(query, None).await;
+        }
+        let cookie = self.local_browser();
+        self.events_as(query, Some(&cookie)).await
+    }
+
+    /// The `clax_viewer` cookie value of a browser of this machine that
+    /// holds no owner browser session and no name: a viewer the daemon
+    /// minted for it (as [`TestServer::viewer`] mints one), the same one on
+    /// every call. [`TestServer::create_thread`], [`TestServer::thread`],
+    /// [`TestServer::send_thread`] and [`TestServer::events`] speak for it:
+    /// a local daemon serves nothing of theirs to a request with no
+    /// credential at all.
+    pub fn local_browser(&self) -> String {
+        self.browser
+            .get_or_init(|| {
+                let cookie = clax_core::secret::viewer_cookie().expose().to_string();
+                self.store.mint_viewer(&cookie, true).unwrap();
+                cookie
+            })
+            .clone()
     }
 
     /// Like [`TestServer::events`], as the viewer whose cookie value is `cookie`.
@@ -1290,17 +1384,15 @@ impl TestViewer {
 }
 
 impl TestServer {
-    /// Creates a viewer, named `name` when given.
+    /// Creates a viewer, named `name` when given: a browser of this machine
+    /// that holds a `clax_viewer` cookie the daemon minted, as one did
+    /// before it logged in. Reaching the port alone mints none (the local
+    /// daemon's gate, `clax_http::local_trust::gate`), so the viewer is
+    /// minted in the store.
     pub async fn viewer(&self, name: Option<&str>) -> TestViewer {
-        let res = self.get("/api/viewers/me").await;
-        let set = res.headers()["set-cookie"].to_str().unwrap().to_string();
-        let cookie = set
-            .split(';')
-            .next()
-            .and_then(|kv| kv.strip_prefix("clax_viewer="))
-            .expect("clax_viewer cookie")
-            .to_string();
-        let mut v: serde_json::Value = res.json().await.unwrap();
+        let cookie = clax_core::secret::viewer_cookie().expose().to_string();
+        let minted = self.store.mint_viewer(&cookie, true).unwrap();
+        let mut v = serde_json::json!({"viewer": minted});
         if let Some(n) = name {
             let res = self
                 .client
@@ -1376,14 +1468,55 @@ impl TestServer {
         self.extension_id.clone()
     }
 
-    /// The owner cookie a browser of the owner's holds (`name=value`), as the
-    /// shell's token request sets it.
+    /// The owner cookie a browser of the owner's holds (`name=value`): the
+    /// owner browser session opened when this daemon started, as a login
+    /// sets it (`GET /login`). On a hosted daemon it names no session.
     pub fn owner_cookie(&self) -> String {
         let host = self.base.trim_start_matches("http://");
         format!(
             "{}={}",
             clax_http::identity::owner_cookie_name(host),
-            clax_http::identity::owner_cookie_value(&self.token)
+            self.owner_session.as_deref().unwrap_or("none")
+        )
+    }
+
+    /// A browser login in a browser holding `cookies` (a `Cookie` header's
+    /// value, maybe empty): a login code made with the token, redeemed at
+    /// `GET /login`, its 303 unfollowed and returned.
+    ///
+    /// # Panics
+    /// When the code is not made or the login answers other than 303.
+    pub async fn login_with(&self, cookies: &str) -> reqwest::Response {
+        let made: serde_json::Value = self
+            .authed(self.client.post(format!("{}/api/browser-login", self.base)))
+            .json(&serde_json::json!({"next": "/"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let mut req = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap()
+            .get(format!("{}{}", self.base, made["path"].as_str().unwrap()));
+        if !cookies.is_empty() {
+            req = req.header("cookie", cookies);
+        }
+        let res = req.send().await.unwrap();
+        assert_eq!(res.status(), 303);
+        res
+    }
+
+    /// The events cookie of the same session (`name=value`), which the
+    /// event streams take for the token.
+    pub fn events_cookie(&self) -> String {
+        let host = self.base.trim_start_matches("http://");
+        format!(
+            "{}={}",
+            clax_http::auth::events_cookie_name(host),
+            self.owner_session.as_deref().unwrap_or("none")
         )
     }
 

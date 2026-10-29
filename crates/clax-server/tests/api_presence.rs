@@ -41,7 +41,7 @@ async fn presence_is_reported_by_viewers_announced_and_lapses() {
         .send()
         .await
         .unwrap();
-    assert_eq!(anon.status(), 400);
+    assert_eq!(anon.status(), 401, "no credential");
     c.advance(91);
     clax_realtime::presence::sweep_and_announce(&ts.presence, &ts.events);
     assert_eq!(

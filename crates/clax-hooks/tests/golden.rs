@@ -76,6 +76,7 @@ fn hook_env(home: &Path, agent: &str, event: &str, stdin: &[u8], env: &[(&str, &
 /// A daemon in a temp home; stopped on drop.
 struct Daemon {
     dir: tempfile::TempDir,
+    viewer: std::sync::OnceLock<String>,
 }
 
 impl Daemon {
@@ -87,7 +88,10 @@ impl Daemon {
             .status()
             .unwrap();
         assert!(st.success());
-        Daemon { dir }
+        Daemon {
+            dir,
+            viewer: std::sync::OnceLock::new(),
+        }
     }
     fn home(&self) -> PathBuf {
         self.dir.path().join("ax")
@@ -129,9 +133,31 @@ impl Daemon {
     fn base(&self) -> String {
         format!("http://127.0.0.1:{}", self.info()["port"])
     }
+    /// A client that speaks as a browser of this machine's: an unnamed
+    /// viewer the daemon minted for the tests (its debug-build route), as a
+    /// request with no credential at all is refused before any route.
     fn http(&self) -> reqwest::blocking::Client {
+        let cookie = self.viewer.get_or_init(|| {
+            let v: Value = reqwest::blocking::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap()
+                .post(format!("{}/api/_test/viewers", self.base()))
+                .bearer_auth(self.token())
+                .send()
+                .unwrap()
+                .json()
+                .unwrap();
+            v["cookie"].as_str().unwrap().to_string()
+        });
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::COOKIE,
+            format!("clax_viewer={cookie}").parse().unwrap(),
+        );
         reqwest::blocking::Client::builder()
             .no_proxy()
+            .default_headers(headers)
             .build()
             .unwrap()
     }
@@ -1022,8 +1048,12 @@ impl Surface {
         });
         let s = Surface { rx };
         let id = s.next("ready")["stream"].as_str().unwrap().to_string();
-        let res = d
-            .http()
+        // The stream is the token's alone (opened above without a viewer
+        // cookie), so its subscription goes without one too.
+        let res = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
             .post(format!("{}/api/stream/{id}", d.base()))
             .bearer_auth(d.token())
             .json(&serde_json::json!({"subscribe": ["questions"]}))

@@ -26,7 +26,7 @@ async fn mcp_requires_the_bearer_token(path: &str) {
     let res = mcp_post(&ts, path, &initialize()).send().await.unwrap();
     assert_eq!(res.status(), 401);
     let body: Value = res.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "unauthorized");
+    assert_eq!(body["error"]["code"], "no_credential");
 
     let res = mcp_post(&ts, path, &initialize())
         .bearer_auth("wrong")

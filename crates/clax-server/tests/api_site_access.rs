@@ -612,6 +612,7 @@ async fn a_local_daemons_owner_holds_the_site_and_no_one_else() {
     let r = ts
         .client
         .post(format!("{}/api/artifacts/{aid}/site-code", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .json(&json!({}))
         .send()
         .await

@@ -1673,18 +1673,13 @@ async fn a_claim_that_retires_the_cli_owner_resolves_its_records() {
         .as_str()
         .unwrap()
         .to_string();
-    // The owner's browser loads the shell: its viewer is claimed.
+    // The owner's browser logs in: its viewer is claimed.
     let chrome = ts.viewer(None).await;
     let seq = last_seq(&ts);
     let res = ts
-        .client
-        .get(format!("{}/api/token", ts.base))
-        .header("sec-fetch-site", "same-origin")
-        .header("cookie", format!("clax_viewer={}", chrome.cookie))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
+        .login_with(&format!("clax_viewer={}", chrome.cookie))
+        .await;
+    assert_eq!(res.status(), 303);
     let claim = events_since(&ts, seq);
     assert_eq!(kinds(&claim), ["viewer.claim"]);
     assert_eq!(
@@ -1733,7 +1728,11 @@ async fn a_refused_owner_write_writes_nothing() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 403);
+    assert_eq!(
+        res.status(),
+        401,
+        "a cookie that names no viewer is no credential"
+    );
     for (method, path) in [
         (reqwest::Method::POST, "/api/live/rules".to_string()),
         (reqwest::Method::DELETE, "/api/live/rules/r1".to_string()),
@@ -1924,6 +1923,7 @@ async fn batch_send_is_one_event_listing_threads() {
     let (code, v) = status(
         ts.client
             .post(format!("{}/api/artifacts/{aid}/threads:send", ts.base))
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
             .json(&json!({
                 "thread_ids": [a, sent, b],
                 "note": "both",
@@ -1969,6 +1969,7 @@ async fn batch_send_is_one_event_listing_threads() {
     let (code, _) = status(
         ts.client
             .post(format!("{}/api/artifacts/{aid}/threads:send", ts.base))
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
             .json(&json!({"thread_ids": [a, b]})),
     )
     .await;
@@ -1980,6 +1981,7 @@ async fn batch_send_is_one_event_listing_threads() {
     let (code, _) = status(
         ts.client
             .post(format!("{}/api/artifacts/{aid}/threads:send", ts.base))
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
             .json(&json!({"thread_ids": [c]})),
     )
     .await;
@@ -2098,6 +2100,7 @@ async fn resolve_addressed_links_version() {
             "{}/api/artifacts/{aid}/threads/{second}/resolve",
             ts.base
         ))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .send()
         .await
         .unwrap();
@@ -2145,6 +2148,7 @@ async fn resolve_addressed_links_version() {
             "{}/api/artifacts/{aid}/threads/{other}/resolve",
             ts.base
         ))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .send()
         .await
         .unwrap();
@@ -2156,7 +2160,17 @@ async fn resolve_addressed_links_version() {
             &recs[0].body["resolved_by"],
             &recs[0].body["addressed_version"]
         ),
-        (&json!("viewer:anonymous"), &Value::Null)
+        (
+            &json!(format!(
+                "viewer:{}",
+                ts.store
+                    .get_viewer(&ts.local_browser())
+                    .unwrap()
+                    .unwrap()
+                    .public_id
+            )),
+            &Value::Null
+        )
     );
     // On a live page the address waits for the next snapshot, which lists it.
     let sam = ts.viewer(Some("Sam")).await;
@@ -2233,7 +2247,11 @@ async fn a_refused_thread_request_writes_nothing() {
         ts.client.delete(&url),
     ] {
         let res = req.header("cookie", fresh).send().await.unwrap();
-        assert_eq!(res.status(), 403);
+        assert_eq!(
+            res.status(),
+            401,
+            "a cookie that names no viewer is no credential"
+        );
     }
     // An agent's delete without the token is unauthorised, as before.
     let res = ts
@@ -2286,13 +2304,16 @@ async fn a_refused_thread_request_writes_nothing() {
             400,
         ),
     ] {
+        // A cookie that names no viewer is no credential: refused before
+        // any route, whatever the route would have answered.
+        let _ = want;
         let res = req.header("cookie", fresh).send().await.unwrap();
-        assert_eq!(res.status(), want, "{:?}", res.url());
+        assert_eq!(res.status(), 401, "{:?}", res.url());
     }
     assert_eq!(viewers(), before, "no viewer row was made");
     assert_eq!(last_seq(&ts), seq);
-    // Accepted by the access checks and refused by the store (an empty
-    // comment): no viewer row is made for a cookie that names none, and no
+    // Even a write the store would refuse (an empty comment) is refused
+    // first: no viewer row is made for a cookie that names none, and no
     // event.
     let res = ts
         .client
@@ -2302,7 +2323,7 @@ async fn a_refused_thread_request_writes_nothing() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 400);
+    assert_eq!(res.status(), 401);
     assert_eq!(
         viewers(),
         before,
@@ -2836,11 +2857,21 @@ async fn lan_viewer_cannot_export() {
         ];
         for (i, req) in refused.into_iter().enumerate() {
             let res = req.send().await.unwrap();
-            assert_eq!(res.status(), 403, "{path} request {i}");
+            // Another machine's viewer is refused before any route, and a
+            // request with no credential (a cookie naming no viewer is
+            // none) before any route too.
+            let want = match i {
+                0 | 1 => (403, "forbidden_host"),
+                2 => (403, "forbidden"),
+                _ => (401, "no_credential"),
+            };
+            let status = res.status().as_u16();
             let body: Value = res.json().await.unwrap();
-            // Another machine's viewer is refused before any route.
-            let want = if i < 2 { "forbidden_host" } else { "forbidden" };
-            assert_eq!(body["error"]["code"], want, "{path} request {i}");
+            assert_eq!(
+                (status, body["error"]["code"].as_str().unwrap_or("")),
+                want,
+                "{path} request {i}"
+            );
         }
     }
     assert_eq!((viewer_count(&ts), last_seq(&ts)), (viewers, seq));
@@ -2861,12 +2892,7 @@ async fn lan_viewer_cannot_export() {
         .unwrap();
     let cred = cred["credential"].as_str().unwrap().to_string();
     let (viewers, seq) = (viewer_count(&ts), last_seq(&ts));
-    let host = ts.base.trim_start_matches("http://");
-    let events = format!(
-        "{}={}",
-        clax_http::auth::events_cookie_name(host),
-        clax_http::auth::events_cookie_value(&ts.token)
-    );
+    let events = ts.events_cookie();
     for path in ["/api/toolpath/export", "/api/toolpath/status"] {
         let refused = [
             lan.get(format!("{base}{path}"))

@@ -397,8 +397,9 @@ pub fn listen(s: &AppState) {
 /// alone (the CLI by hand, scripts).
 fn owner_browser(caller: &Caller, what: &str) -> Result<(), ApiError> {
     match caller {
-        Caller::Owner { browser: true } => Ok(()),
-        Caller::Owner { browser: false } => Err(browser_required(what)),
+        Caller::Owner { .. } => {
+            clax_http::auth::require_owner_browser(caller, what).map_err(|_| browser_required(what))
+        }
         _ => Err(ApiError::forbidden(
             "forbidden",
             format!("only the owner {what}"),

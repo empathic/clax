@@ -8,22 +8,24 @@
 //! extension's, say) is added there and nowhere else. The credentials today:
 //!
 //! - the bearer token (the CLI, scripts, agents, and the owner's shell);
-//! - the events cookie ([`crate::auth::events_cookie_name`]), sent only to the
-//!   event streams;
-//! - the owner cookie ([`owner_cookie_name`]): a hash of the token, set with
-//!   the events cookie when the shell on this machine fetches the token, so
-//!   every browser of the owner's is the owner on every route without the
-//!   token.
-//!
+//! - an owner browser session ([`crate::local_trust`]): a random secret a
+//!   browser holds as its owner cookie ([`owner_cookie_name`]) and its events
+//!   cookie ([`crate::auth::events_cookie_name`]), set when it redeemed a
+//!   one-use login code a holder of the token made, so every browser of the
+//!   owner's is the owner on every route without the token.
+//!   [`crate::local_trust::sessions`] marks a request carrying one with
+//!   [`crate::local_trust::OwnerSession`];
 //! - the Clax Chrome extension's credential: the extension gateway
 //!   ([`crate::extension::gateway`]) checks it and marks the request it admits
 //!   with [`crate::extension::ViaExtension`], which counts as a browser of the
 //!   owner's (spec 2026-10-05-chrome-overlay-design L6).
 //!
-//! The two cookies count only on a request from this machine (a loopback
-//! peer naming a literal local host, the rule `GET /api/token` serves by)
-//! that the browser does not mark as made from another origin: cookies
-//! ignore ports, so another local server's page may send them too.
+//! A session counts only on a request from this machine ([`from_this_machine`]:
+//! a loopback peer naming a literal local host, or a peer at the very address
+//! the connection arrived on naming that address) that the browser does not
+//! mark as made from another origin: cookies ignore ports, so another local
+//! server's page may send them too. Nothing a request says of itself
+//! (`Sec-Fetch-Site`, `Origin`, `Host`, `X-Clax-Channel`) makes it the owner's.
 //!
 //! Anyone else is the viewer the `clax_viewer` cookie names (a LAN viewer),
 //! or no one.
@@ -55,34 +57,6 @@ pub fn owner_cookie_name(host: &str) -> String {
     crate::auth::events_cookie_name(host).replacen("clax_events_", "clax_owner_", 1)
 }
 
-/// The owner cookie's value for `token`: a SHA-256 of it (lowercase hex),
-/// under a label of its own, so it is neither the token nor the events cookie.
-pub fn owner_cookie_value(token: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::new()
-        .chain_update(b"clax owner cookie\n")
-        .chain_update(token.as_bytes())
-        .finalize();
-    digest.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// The paths the owner cookie is set for: the API, and the artifact pages
-/// (`/a/...`), whose bootstrap names the viewer.
-pub const OWNER_COOKIE_PATHS: [&str; 2] = ["/api", "/a"];
-
-/// `Set-Cookie` for the owner cookie on `host` and `path` (one of
-/// [`OWNER_COOKIE_PATHS`]): host-only, `HttpOnly`, `SameSite=Lax`, five years.
-/// A new token makes it worthless; the shell's next token request sets it
-/// again.
-pub fn set_owner_cookie(host: &str, token: &str, path: &str) -> Option<HeaderValue> {
-    HeaderValue::from_str(&format!(
-        "{}={}; Path={path}; Max-Age=157680000; HttpOnly; SameSite=Lax",
-        owner_cookie_name(host),
-        owner_cookie_value(token)
-    ))
-    .ok()
-}
-
 /// The peer a request came from, from the connection info the daemon serves
 /// with; `None` when it is missing (no connection: never local).
 pub fn peer_of(extensions: &axum::http::Extensions) -> Option<std::net::SocketAddr> {
@@ -97,6 +71,27 @@ pub fn is_local(headers: &HeaderMap, peer: Option<std::net::SocketAddr>) -> bool
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     peer.is_some_and(crate::auth::is_loopback) && crate::auth::is_local_host(host)
+}
+
+/// Whether a request that arrived on connection `conn` comes from this
+/// machine, for an owner browser session: [`is_local`]'s rule, or a peer at
+/// the very address the connection arrived on (a daemon bound to a LAN
+/// address, reached from its own machine) whose `Host` is that address
+/// ([`crate::auth::api_host_allowed`]). Such a peer is held to the
+/// loopback rule: no credential, nothing.
+pub fn from_this_machine(headers: &HeaderMap, conn: Option<crate::auth::Conn>) -> bool {
+    let Some(c) = conn else {
+        return false;
+    };
+    if is_local(headers, Some(c.peer)) {
+        return true;
+    }
+    let host = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    c.peer.ip().to_canonical() == c.local.ip().to_canonical()
+        && crate::auth::api_host_allowed(host, Some(c.local))
 }
 
 /// Middleware of a local daemon, which serves this machine alone: a request
@@ -165,46 +160,25 @@ pub fn clear_viewer_cookie() -> HeaderValue {
     HeaderValue::from_static("clax_viewer=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
 }
 
-/// The value of cookie `name` in `headers` equals `want` (constant time).
-fn has_cookie(headers: &HeaderMap, name: &str, want: &str) -> bool {
-    headers
-        .get_all(header::COOKIE)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(';'))
-        .filter_map(|kv| kv.trim().split_once('='))
-        .filter(|(k, _)| *k == name)
-        .any(|(_, v)| crate::auth::token_matches(v, want))
-}
-
-/// Whether `headers` carry this port's owner cookie for `token` (whatever
-/// the request's origin; [`Identity::of`] decides whether it counts).
-pub fn has_owner_cookie(headers: &HeaderMap, token: &str) -> bool {
-    let host = headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    has_cookie(
-        headers,
-        &owner_cookie_name(host),
-        &owner_cookie_value(token),
-    )
-}
-
 /// The credentials a request carries.
 #[derive(Clone, Debug, Default)]
 pub struct Identity {
     /// The bearer token in `Authorization`.
     pub token: bool,
-    /// The events cookie (only the event streams receive it), on a request
-    /// from this machine.
-    pub events_cookie: bool,
-    /// The owner cookie, on a request from this machine.
+    /// An owner browser session by its owner cookie
+    /// ([`crate::local_trust::OwnerSession`]), on a request from this
+    /// machine ([`from_this_machine`]) that the browser does not say another
+    /// origin made.
     pub owner_cookie: bool,
+    /// An owner browser session by its events cookie (only the event
+    /// streams receive it), which stands for the token there; on the same
+    /// terms as [`Identity::owner_cookie`].
+    pub events_cookie: bool,
     /// The `clax_viewer` cookie, when it has a cookie's form
     /// ([`crate::viewer::read`]).
     pub cookie: Option<String>,
-    /// The request comes from this machine ([`is_local`]).
+    /// The request comes from this machine ([`is_local`]; with its
+    /// connection, [`from_this_machine`]).
     pub local: bool,
     /// The extension gateway admitted the request with a live extension
     /// credential ([`crate::extension::ViaExtension`]).
@@ -245,17 +219,15 @@ pub const CHANNEL_HEADER: &str = "x-clax-channel";
 
 impl Identity {
     /// The credentials in `headers`, for a daemon whose token is `token`, on
-    /// a request from `peer`.
+    /// a request from `peer`. Headers alone name no owner browser session:
+    /// [`Identity::from_parts`] reads that from the request's marks.
     pub fn of(headers: &HeaderMap, token: &str, peer: Option<std::net::SocketAddr>) -> Identity {
         let local = is_local(headers, peer);
-        let cookies_count = local && !crate::viewer::fetched_from_elsewhere(headers);
         let grant_header = crate::auth::is_grant_request(headers);
         Identity {
             token: !grant_header && crate::auth::has_token(headers, token),
-            events_cookie: !grant_header
-                && cookies_count
-                && crate::auth::has_events_cookie(headers, token),
-            owner_cookie: !grant_header && cookies_count && has_owner_cookie(headers, token),
+            owner_cookie: false,
+            events_cookie: false,
             cookie: (!grant_header)
                 .then(|| crate::viewer::read(headers))
                 .flatten(),
@@ -277,16 +249,22 @@ impl Identity {
         }
     }
 
-    /// The credentials of a request with `headers` and `extensions` (its peer,
-    /// and whether the extension gateway admitted it), for a daemon whose
-    /// token is `token`.
+    /// The credentials of a request with `headers` and `extensions` (its
+    /// connection, its owner browser session's mark, and whether the
+    /// extension gateway admitted it), for a daemon whose token is `token`.
     pub fn from_parts(
         headers: &HeaderMap,
         extensions: &axum::http::Extensions,
         token: &str,
     ) -> Identity {
         let id = Identity::of(headers, token, peer_of(extensions));
+        let local = from_this_machine(headers, crate::auth::conn_of(extensions));
+        let session = extensions.get::<crate::local_trust::OwnerSession>();
+        let counts = !id.grant_header && local && !crate::viewer::fetched_from_elsewhere(headers);
         let id = Identity {
+            local,
+            owner_cookie: counts && session.is_some_and(|m| m.owner),
+            events_cookie: counts && session.is_some_and(|m| m.events),
             extension: !id.grant_header
                 && extensions.get::<crate::extension::ViaExtension>().is_some(),
             grant: extensions.get::<crate::agent::VerifiedGrant>().cloned(),
@@ -479,8 +457,8 @@ impl Identity {
     pub fn is_owner(&self) -> bool {
         !self.grant_header
             && (self.token
-                || self.events_cookie
                 || self.owner_cookie
+                || self.events_cookie
                 || self.extension
                 || self.hosted_owner)
     }
@@ -498,9 +476,9 @@ impl Identity {
         }
     }
 
-    /// Whether the request comes from a browser of the owner's: only the
-    /// shell's token request hands out the owner and events cookies, and the
-    /// extension is a browser of the owner's.
+    /// Whether the request comes from a browser of the owner's: one holding
+    /// an owner browser session (only a redeemed login code opens one), the
+    /// extension, or a hosted daemon's session of the owner's.
     pub fn owner_browser(&self) -> bool {
         !self.grant_header
             && (self.owner_cookie || self.events_cookie || self.extension || self.hosted_owner)
@@ -519,8 +497,8 @@ impl Identity {
         self.cookie_viewer(st)
     }
 
-    /// [`Identity::viewer`] for a browser's request (the owner or events
-    /// cookie, or a viewer cookie); `None` for the token alone (an agent, the
+    /// [`Identity::viewer`] for a browser's request (an owner browser
+    /// session, or a viewer cookie); `None` for the token alone (an agent, the
     /// CLI), which reads data as no viewer.
     pub fn browser_viewer(&self, st: &Store) -> clax_core::Result<Option<Viewer>> {
         if self.owner_browser() || self.names_viewer() {
@@ -881,79 +859,78 @@ mod tests {
         assert!(!forged.identity(TOKEN).token);
     }
 
-    #[test]
-    fn the_owner_cookie_is_named_for_the_port_and_never_holds_the_token() {
-        assert_eq!(owner_cookie_name("localhost:7480"), "clax_owner_7480");
-        assert_eq!(owner_cookie_name("[::1]"), "clax_owner_80");
-        let v = owner_cookie_value("tok");
-        assert_eq!(v.len(), 64);
-        assert_ne!(v, crate::auth::events_cookie_value("tok"));
-        let ok = format!("clax_owner_7480={v}");
-        let id = Identity::of(
-            &headers(&[("host", "localhost:7480"), ("cookie", &ok)]),
-            "tok",
-            LOOPBACK,
-        );
-        assert!(id.is_owner() && id.owner_browser() && !id.token);
-        // Another token, another port, or a request from another origin is no owner.
-        assert!(
-            !Identity::of(
-                &headers(&[("host", "localhost:7480"), ("cookie", &ok)]),
-                "x",
-                LOOPBACK
-            )
-            .is_owner()
-        );
-        assert!(
-            !Identity::of(
-                &headers(&[("host", "localhost:7481"), ("cookie", &ok)]),
-                "tok",
-                LOOPBACK
-            )
-            .is_owner()
-        );
-        assert!(
-            !Identity::of(
-                &headers(&[
-                    ("host", "localhost:7480"),
-                    ("cookie", &ok),
-                    ("sec-fetch-site", "same-site")
-                ]),
-                "tok",
-                LOOPBACK
-            )
-            .is_owner()
-        );
+    /// `extensions` of a request over a connection from `peer` arriving
+    /// on `local`, marked with an owner browser session when `session`.
+    fn parts(peer: &str, local: &str, session: bool) -> axum::http::Extensions {
+        let mut ext = axum::http::Extensions::new();
+        ext.insert(axum::extract::ConnectInfo(crate::auth::Conn {
+            peer: peer.parse().unwrap(),
+            local: local.parse().unwrap(),
+        }));
+        if session {
+            ext.insert(crate::local_trust::OwnerSession::browser());
+        }
+        ext
     }
 
     #[test]
-    fn the_owner_and_events_cookies_count_only_from_this_machine() {
-        let owner = format!("clax_owner_7480={}", owner_cookie_value("tok"));
-        let events = format!(
-            "clax_events_7480={}",
-            crate::auth::events_cookie_value("tok")
-        );
-        let lan: Option<std::net::SocketAddr> = Some("192.168.1.20:50000".parse().unwrap());
-        for cookie in [&owner, &events] {
-            // A LAN peer replaying the cookie, with or without Sec-Fetch-Site.
-            for extra in [None, Some(("sec-fetch-site", "same-origin"))] {
-                let mut h = headers(&[("host", "localhost:7480"), ("cookie", cookie)]);
-                if let Some((k, v)) = extra {
-                    h.insert(k, v.parse().unwrap());
-                }
-                assert!(
-                    !Identity::of(&h, "tok", lan).is_owner(),
-                    "{cookie} {extra:?}"
-                );
-            }
-            // A loopback peer naming the LAN address as its Host.
-            let h = headers(&[("host", "192.168.1.20:7480"), ("cookie", cookie)]);
-            assert!(!Identity::of(&h, "tok", LOOPBACK).is_owner(), "{cookie}");
-            // No connection info at all.
-            let h = headers(&[("host", "localhost:7480"), ("cookie", cookie)]);
-            assert!(!Identity::of(&h, "tok", None).is_owner(), "{cookie}");
-            assert!(Identity::of(&h, "tok", LOOPBACK).is_owner(), "{cookie}");
+    fn the_owner_cookie_is_named_for_the_port() {
+        assert_eq!(owner_cookie_name("localhost:7480"), "clax_owner_7480");
+        assert_eq!(owner_cookie_name("[::1]"), "clax_owner_80");
+    }
+
+    #[test]
+    fn an_owner_session_counts_only_from_this_machine_and_never_from_headers() {
+        let host = |h: &str| headers(&[("host", h)]);
+        let lo = ("127.0.0.1:50000", "127.0.0.1:7480");
+        let id = Identity::from_parts(&host("localhost:7480"), &parts(lo.0, lo.1, true), "tok");
+        assert!(id.is_owner() && id.owner_browser() && !id.token);
+        // The headers a browser sends name no session without the mark.
+        let forged = headers(&[
+            ("host", "localhost:7480"),
+            ("sec-fetch-site", "same-origin"),
+            ("origin", "http://localhost:7480"),
+            ("x-clax-channel", "owner"),
+        ]);
+        assert!(!Identity::from_parts(&forged, &parts(lo.0, lo.1, false), "tok").is_owner());
+        // Another origin's request carrying the session's cookie.
+        let elsewhere = headers(&[("host", "localhost:7480"), ("sec-fetch-site", "same-site")]);
+        assert!(!Identity::from_parts(&elsewhere, &parts(lo.0, lo.1, true), "tok").is_owner());
+        // Another machine on the LAN replaying the cookie.
+        let lan = ("192.168.1.30:50000", "192.168.1.20:7480");
+        for h in ["localhost:7480", "192.168.1.20:7480"] {
+            assert!(
+                !Identity::from_parts(&host(h), &parts(lan.0, lan.1, true), "tok").is_owner(),
+                "{h}"
+            );
         }
+        // A loopback peer naming the LAN address as its Host.
+        assert!(
+            !Identity::from_parts(&host("192.168.1.20:7480"), &parts(lo.0, lo.1, true), "tok")
+                .is_owner()
+        );
+        // This machine at its own LAN address, naming that address: as loopback.
+        let own = ("192.168.1.20:50000", "192.168.1.20:7480");
+        assert!(
+            Identity::from_parts(
+                &host("192.168.1.20:7480"),
+                &parts(own.0, own.1, true),
+                "tok"
+            )
+            .owner_browser()
+        );
+        assert!(
+            !Identity::from_parts(
+                &host("192.168.1.20:7480"),
+                &parts(own.0, own.1, false),
+                "tok"
+            )
+            .is_owner()
+        );
+        // No connection info at all.
+        let mut none = axum::http::Extensions::new();
+        none.insert(crate::local_trust::OwnerSession::browser());
+        assert!(!Identity::from_parts(&host("localhost:7480"), &none, "tok").is_owner());
     }
 
     #[test]

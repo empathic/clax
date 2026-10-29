@@ -77,6 +77,7 @@ mod l10 {
     /// The handlers of the routes the path rule does not cover.
     const GUARDS: &[(&str, Guard)] = &[
         ("token::token", NoArtifact),
+        ("login::redeem", NoArtifact),
         ("get_page::apple_app_site_association", NoArtifact),
         ("get_page::assetlinks", NoArtifact),
         ("remotes::list", Owner),
@@ -182,6 +183,7 @@ mod l10 {
         ("viewers::set_presence", SeesLive),
         ("extension::status", Token),
         ("extension::mint", Token),
+        ("login::create", Token),
         ("extension::revoke", Token),
         ("stream::open", Filtered),
         ("stream::open_socket", Filtered),
@@ -276,6 +278,7 @@ mod l10 {
         ("grants::create_invite", NoArtifact),
         ("grants::revoke_invite", NoArtifact),
         ("grants::test_sweep", Token),
+        ("login::test_viewer", Token),
         ("grants::test_index", Token),
         ("grants::test_fail_index", Token),
         ("connect::browser_link", NoArtifact),
@@ -348,6 +351,7 @@ mod l10 {
             "remote_apps" => include_str!("remote_apps.rs"),
             "room" => include_str!("room.rs"),
             "live_layers" => include_str!("live_layers.rs"),
+            "login" => include_str!("login.rs"),
             "sample" => include_str!("sample.rs"),
             "sessions" => include_str!("sessions.rs"),
             "settings" => include_str!("settings.rs"),
@@ -538,6 +542,10 @@ mod l10 {
         (
             "site_signin::site_code",
             "mints a one-use code for the caller's own browser to read a site it may read; changes nothing",
+        ),
+        (
+            "login::create",
+            "mints a one-use login code a browser of this machine redeems at GET /login; changes no one's content",
         ),
         (
             "app_bundles::record_install",
@@ -734,6 +742,10 @@ mod l10 {
         (
             "grants::test_sweep",
             "debug builds only; runs the daemon's grant sweep, which records its lapses as system:expiry",
+        ),
+        (
+            "login::test_viewer",
+            "debug builds only; mints a viewer for the browser tests, of no one's content",
         ),
     ];
 

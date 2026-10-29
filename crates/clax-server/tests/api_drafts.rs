@@ -620,22 +620,10 @@ async fn drafts_reach_the_owner_and_connected_people_only_and_keep_the_agent_wor
     // refused outright, `clax_http::identity::local_peers`); Mia is a
     // connected person on hers.
     let (here, local) = (&ts.client, &ts.base);
-    let lee = here
-        .get(format!("{local}/api/viewers/me"))
-        .send()
-        .await
-        .unwrap();
-    let lee_cookie = lee.headers()["set-cookie"]
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .and_then(|kv| kv.strip_prefix("clax_viewer="))
-        .unwrap()
-        .to_string();
+    let lee_cookie = ts.viewer(None).await.cookie;
     let mut mia = stream_with(&lan, &base, Some(&w.mia_cookie), &[&topic]).await;
     let mut lee = stream_with(here, local, Some(&lee_cookie), &[&topic]).await;
-    let mut nobody = stream_with(here, local, None, &[&topic]).await;
+    let mut nobody = stream_with(here, local, Some(&ts.local_browser()), &[&topic]).await;
     let mut owner = ts.stream_as_owner(&[&topic]).await;
     let r = put(ts, sid, aid, json!({"files": {"index.html": utf8(DRAFT)}})).await;
     assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
@@ -666,11 +654,12 @@ async fn drafts_reach_the_owner_and_connected_people_only_and_keep_the_agent_wor
             req = req.header("cookie", format!("clax_viewer={c}"));
         }
         let (s, v) = code(req.send().await.unwrap()).await;
-        assert_eq!(
-            (s, v["error"]["code"].as_str()),
-            (403, Some("forbidden")),
-            "{cookie:?}"
-        );
+        let want = match cookie {
+            Some(_) => (403, Some("forbidden")),
+            // No credential at all: refused before any route.
+            None => (401, Some("no_credential")),
+        };
+        assert_eq!((s, v["error"]["code"].as_str()), want, "{cookie:?}");
         let (s, v) = code(
             lan.get(format!("{base}/api/artifacts/{aid}/drafts"))
                 .send()

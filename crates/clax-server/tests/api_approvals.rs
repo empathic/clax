@@ -2184,7 +2184,10 @@ async fn who_approves_first_reaches_only_the_owner_and_connected_people() {
     // An anonymous subscriber to the artifact's events, before the thread changes.
     let mut anon =
         t.w.ts
-            .events_as(&format!("?artifact={}", t.aid), None)
+            .events_as(
+                &format!("?artifact={}", t.aid),
+                Some(&t.w.ts.local_browser()),
+            )
             .await;
     let lan = t.w.ts.viewer(Some("Lucy")).await;
     let lucy = Browser {
@@ -2193,7 +2196,7 @@ async fn who_approves_first_reaches_only_the_owner_and_connected_people() {
     };
     let nobody = Browser {
         ts: &t.w.ts,
-        cookie: String::new(),
+        cookie: format!("clax_viewer={}", t.w.ts.local_browser()),
     };
     // The route refuses them, and agents.
     for b in [&lucy, &nobody] {
@@ -2529,11 +2532,12 @@ async fn lan_browser<'a>(t: &'a Two, name: &str) -> Browser<'a> {
     }
 }
 
-/// A browser with no cookie at all.
+/// A browser of this machine with no name and no session (a local daemon
+/// serves no request with no credential at all).
 fn nobody(t: &Two) -> Browser<'_> {
     Browser {
         ts: &t.w.ts,
-        cookie: String::new(),
+        cookie: format!("clax_viewer={}", t.w.ts.local_browser()),
     }
 }
 
@@ -3034,7 +3038,10 @@ async fn visitors_read_sent_and_nothing_of_any_decision() {
     let topic = format!("artifact:{}", t.aid);
     let mut anon =
         t.w.ts
-            .events_as(&format!("?artifact={}", t.aid), None)
+            .events_as(
+                &format!("?artifact={}", t.aid),
+                Some(&t.w.ts.local_browser()),
+            )
             .await;
     let mut lucys = lucy.stream(&[&topic]).await;
     // Mia's thread to Sam's agent: held, then told at the take.

@@ -6,9 +6,10 @@
 use crate::routes::{
     admin, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot, client_imports,
     connect, content, discovery, docs, drafts, extension, feedback, git_token, grants, health,
-    inbox, jobs, live, live_layers, mcp_http, people, perf, permissions, questions, queue_agent,
-    queue_reporter, queues, remote_apps, remotes, room, sample, sessions, settings, site_signin,
-    sites, snapshot, stream, surface, tags, threads, token, toolpath, viewers, watches, working,
+    inbox, jobs, live, live_layers, login, mcp_http, people, perf, permissions, questions,
+    queue_agent, queue_reporter, queues, remote_apps, remotes, room, sample, sessions, settings,
+    site_signin, sites, snapshot, stream, surface, tags, threads, token, toolpath, viewers,
+    watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::routes::{events, mcp, net};
@@ -82,6 +83,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     let draft_limit = DefaultBodyLimit::max(drafts::DRAFT_BODY_LIMIT);
     let api_fast = Router::new()
         .route("/api/token", get(token::token))
+        .route("/api/browser-login", post(login::create))
         .route("/api/artifacts", get(artifacts::list))
         .route(
             "/api/sessions",
@@ -509,6 +511,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/_test/feedback/{id}/expire", post(feedback::expire))
         .route("/api/_test/feedback/{id}/hold", post(feedback::hold))
         .route("/api/_test/grants/sweep", post(grants::test_sweep))
+        .route("/api/_test/viewers", post(login::test_viewer))
         .route("/api/_test/agent/gate", get(agent::test_gate))
         .route("/api/_test/caller", get(agent::test_caller))
         .route("/api/_test/sessions/{id}/caller", get(agent::test_caller))
@@ -748,6 +751,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/_blob/{asset_id}", get(assets::blob))
         .route("/_clax/blob/{asset_id}", get(assets::blob))
         .route("/connect/b/{code}", get(connect::browser_link))
+        .route("/login", get(login::redeem))
         .route("/_blob/{aid}/{asset_id}", get(assets::scoped_blob))
         .route("/site-signin", get(site_signin::page))
         .route(
@@ -1086,6 +1090,12 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_credential,
+        ))
+        // A local daemon serves a request with no credential only what
+        // anyone may reach (`local_trust::gate`).
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            clax_http::local_trust::gate,
         ));
     let r = if hosted {
         r.layer(axum::middleware::from_fn_with_state(
@@ -1102,6 +1112,12 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 clax_http::identity::local_peers,
+            ))
+            // Outermost: every layer and route after it sees whether the
+            // request carries an owner browser session.
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                clax_http::local_trust::sessions,
             ))
     };
     // A queue's reporter and service routes carry their own credentials

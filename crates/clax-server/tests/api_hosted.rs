@@ -307,8 +307,15 @@ async fn a_local_daemon_serves_none_of_it() {
         .post_json("/api/hosted/setup", json!({"secret": "x", "name": "Ada"}))
         .await;
     assert_eq!(r.status(), 404);
-    // This machine's browser still gets the token.
-    assert_eq!(ts.get("/api/token").await.status(), 200);
+    // This machine's browser of the owner's still gets the token.
+    let res = ts
+        .client
+        .get(format!("{}/api/token", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
 }
 
 #[tokio::test]
@@ -5774,6 +5781,7 @@ async fn a_local_daemon_has_no_device_sign_in() {
     let r = ts
         .client
         .post(format!("{}/api/hosted/device/code", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .json(&json!({"client_name": "box"}))
         .send()
         .await
@@ -7632,6 +7640,7 @@ async fn a_local_daemons_agent_reads_its_clip_by_path_as_before() {
     let res = ts
         .client
         .get(format!("{}/_clip/{aid}/{tid}?k=00", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .send()
         .await
         .unwrap();

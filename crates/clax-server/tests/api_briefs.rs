@@ -183,7 +183,7 @@ async fn a_connected_person_starts_their_own_and_a_guest_or_a_reader_may_not() {
     assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
     // No credential.
     let (s, v) = call(&ts, None, "POST", NEW, brief("Nope")).await;
-    assert_eq!((s, code(&v)), (401, "unauthorized"), "{v}");
+    assert_eq!((s, code(&v)), (401, "no_credential"), "{v}");
     // Another site's page in the owner's browser.
     let res = ts
         .client

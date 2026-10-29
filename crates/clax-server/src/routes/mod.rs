@@ -27,6 +27,7 @@ pub mod inbox;
 pub mod jobs;
 pub mod live;
 pub mod live_layers;
+pub mod login;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
 pub mod mcp_http;

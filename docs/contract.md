@@ -2299,25 +2299,29 @@ it, so their comments carry one author, one public ID and one name. A
 request is the owner's when it carries an owner credential:
 
 - the bearer token (the CLI, scripts, and the owner's shell);
-- the events cookie (only the event streams receive it);
-- the owner cookie, `clax_owner_<port>` (`HttpOnly`, host-only,
-  `SameSite=Lax`, set twice: `Path=/api` and `Path=/a`): a hash of the
-  token, never the token, set beside the events cookie when the shell on
-  this machine fetches the token (`GET /api/token` from a loopback peer with
-  a literal local `Host`, marked `Sec-Fetch-Site: same-origin`). A new token
-  voids it;
+- an **owner browser session**: a random secret (`cxb_…`, 32 random bytes)
+  the daemon keeps by its SHA-256 alone, held by a browser as the owner
+  cookie, `clax_owner_<port>` (`HttpOnly`, host-only, `SameSite=Lax`, set
+  on `Path=/`, so every page of the daemon is the owner's), and as the events cookie
+  (only the event streams receive it). A browser gets one only by
+  redeeming a one-use login code a holder of the token made (see "Browser
+  login"); it lasts 400 days, survives daemon restarts and new tokens, and
+  can be ended. Nothing in it derives from the token;
 - the Clax Chrome extension's credential, accepted only through the
   extension gateway (see "Security model"), which acts as one of the
   owner's browsers on live pages.
 
-The events and owner cookies count only on a request from this machine (a
-loopback peer and a `Host` of `localhost`, `127.0.0.1` or `[::1]`, the
-rule the token is served by) that the browser does not mark as made from
-another origin: cookies ignore ports, so a page of another local server may
-send them, and a copy replayed from another machine is no one's.
+A session counts only on a request from this machine (a loopback peer and
+a `Host` of `localhost`, `127.0.0.1` or `[::1]`, or a peer at the very
+address the connection arrived on naming that address, as a daemon bound
+to a LAN address is reached from its own machine) that the browser does
+not mark as made from another origin: cookies ignore ports, so a page of
+another local server may send them, and a copy replayed from another
+machine is no one's. Nothing a request says of itself (`Sec-Fetch-Site`,
+`Origin`, `Host`, `X-Clax-Channel`) makes it the owner's.
 
-Everyone else (a LAN viewer, or a local browser that never fetched the
-token) is the viewer its `clax_viewer` cookie names. That cookie never names
+Everyone else (a LAN viewer, or a local browser that holds no session) is
+the viewer its `clax_viewer` cookie names. That cookie never names
 the owner. When a request carries several `clax_viewer` values (another
 page can set one scoped to a longer path, which is sent first), none is
 trusted: the request names no viewer. An owner credential decides who a
@@ -2341,10 +2345,10 @@ earlier owner's history, private documents and name move to it.
 Existing data: nothing stored before this identity existed tells which
 viewers were the owner's browsers, so no existing viewer is ever converted:
 their history stays theirs. From now on the daemon records whether it
-minted a viewer cookie for a request from this machine. When the shell's
-token request carries exactly one `clax_viewer` cookie and it names a
-viewer minted on this machine, that viewer is claimed for the owner and the
-cookie removed: the first one claimed becomes the owner, keeping its public
+minted a viewer cookie for a request from this machine. When a browser
+login (`GET /login`, below) carries exactly one `clax_viewer` cookie and it
+names a viewer minted on this machine, that viewer is claimed for the owner
+and the cookie removed: the first one claimed becomes the owner, keeping its public
 ID, name and history, its cookies forgotten so the old cookie names no
 one; a later one is folded into the owner and removed. Folding moves its
 comments' author, its mentions, the threads it resolved, its seen marks
@@ -2354,6 +2358,33 @@ moves under `data/users/<owner ID>/` with a new version, unless the owner
 already has one at that path, in which case the owner's stays and the old
 one is left where it was. The folded viewer's old public ID names no one
 from then on; it leaves every `presence` list and room at once.
+
+### Browser login
+
+A browser of a local daemon's machine becomes one of the owner's by
+redeeming a one-use login code a holder of the token made:
+
+- `POST /api/browser-login` (the token) `{next?}` → 201 `{path, url,
+  expires_in}`: a code (`cxi_…`, 32 random bytes, kept by its SHA-256)
+  good for 120 s, in the path that redeems it,
+  `/login?code=<code>&next=<next>` (`url` is that path on the daemon's
+  browser address). `next`, `/` by default, must be a path of this
+  daemon (one leading `/`, no `\`, no control character, at most 2048
+  bytes): else 400 `invalid_next`. 404 on a hosted daemon.
+- `GET /login?code=<code>&next=<next>`, from a browser on this machine
+  (else 403 `forbidden_host`): 303 to `next`, `Cache-Control: no-store`,
+  `Referrer-Policy: no-referrer`. A browser that holds no live session
+  gets a new one as its owner and events cookies; one carrying exactly one
+  `clax_viewer` cookie has that viewer claimed (above). 400 for a `next`
+  that is not a path of this daemon, before the code is spent; 410 for a
+  code used before, past its time, or never made.
+
+Every opener passes a code: `clax open` (the gallery without an
+artifact), the MCP and Pi `open` tools, `just watch`'s printed link, and
+the extension's "Open in Clax" and inbox links (through its native host's
+`login` message, which holds the token). `clax login [path]` prints a fresh
+link for a browser on its own. A browser that already holds a session
+never notices; a fresh browser profile needs one `clax open`.
 
 ### Versions, seen marks and attention
 
@@ -5483,6 +5514,7 @@ router), and a test fails when it differs:
 | `GET /api/bot/runs/{id}/draft/` | Denied | no |
 | `GET /api/bot/runs/{id}/draft/{*path}` | Denied | no |
 | `GET /api/bot/runs/{id}/events` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/browser-login` | Denied | no |
 | `POST /api/client-imports/{key}` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/core/trim` | Denied | no |
 | `GET /api/drafts` | Denied | no |
@@ -5603,6 +5635,7 @@ router), and a test fails when it differs:
 | `GET /connect/b/{code}` | Denied | no |
 | `GET /healthz` | Denied | no |
 | `GET /inbox` | Denied | no |
+| `GET /login` | Denied | no |
 | `ANY /mcp` | Denied | no |
 | `POST /mcp/json` | Denied | no |
 | `GET /me` | Denied | no |
@@ -8229,14 +8262,12 @@ sent only while A may read its artifact.
 - **Who is listening.** The subscriber's level is worked out as for the
   `db` routes when the stream opens and filters `doc` events (see "Security
   model"). The token counts when it comes in `Authorization`, as
-  `?token=`, or as the events cookie. `GET /api/token` sets that cookie
-  when the browser marks the request same-origin (`Sec-Fetch-Site:
-  same-origin`, the shell's own request), twice, once for each event
-  stream: `clax_events_<port>=<SHA-256 of the token, hex>;
-  Path=/api/events; HttpOnly; SameSite=Strict`, and the same with
-  `Path=/api/stream` (which covers `POST /api/stream/<stream>`), where
-  `<port>` is the port in the request's `Host` (80 when it names none).
-  The cookie never holds the token, and only the event streams read it.
+  `?token=`, or as the events cookie. A browser login sets that cookie
+  twice, once for each event stream: `clax_events_<port>=<the owner
+  browser session>; Path=/api/events; HttpOnly; SameSite=Strict`, and the
+  same with `Path=/api/stream` (which covers `POST /api/stream/<stream>`),
+  where `<port>` is the port in the request's `Host` (80 when it names
+  none). The cookie never holds the token, and only the event streams read it.
   Cookies ignore ports, so a page on another port of the same host sends
   it too: `/api/stream` counts it only on a request the browser does not
   mark as made from another origin (`Sec-Fetch-Site` absent, `same-origin`
@@ -8275,8 +8306,8 @@ The connection carries the events cookie, so its URL never carries the
 token and it holds the token's level on this machine; each page requests
 `GET /api/token` before it joins. A dropped connection is resumed with
 `Last-Event-ID`, retried after 0.5 s, doubling up to 30 s, each wait
-spread by a fifth either way, and each retry first requests `GET
-/api/token` again, which renews the cookie after a daemon restart. A
+spread by a fifth either way; the cookie outlives a daemon restart, so
+nothing renews it. A
 stream that has not said `ready` within 5 s, or has been silent for 40 s
 (the daemon's keep-alive comes every 15 s), counts as failed, and so does
 a subscription request that has not answered within 8 s. The shared worker
@@ -9173,14 +9204,31 @@ it starts, the runs a previous process left. A build without the
   it cannot publish, delete artifacts, read sessions or the token, use
   `db`, or see an artifact that is not a live page. Every other origin's
   requests are untouched by the gateway.
-- `GET /api/token` hands the token to the gallery in a local browser. On top
-  of the `Host` rule above, it answers only when the connection comes from a
-  loopback address and the `Host` header is literally `localhost`,
-  `127.0.0.1` or `[::1]` (with an optional port); otherwise (for example a LAN
-  peer, or the LAN IP as `Host`) it returns 403 `not_loopback`. Answering
-  the shell (`Sec-Fetch-Site: same-origin`), it also sets the events cookie
-  and the owner cookie, which make that browser the owner (see "The owner
-  and other viewers").
+- A local daemon trusts no one for reaching its port. A request that
+  carries no credential (the token, an owner browser session, an agent
+  credential of another machine or its signed request, the extension's
+  credential, or a `clax_viewer` cookie naming a viewer the daemon minted)
+  reaches only: `/healthz`, `/.well-known/clax`, the web UI's static files
+  (`/_clax/...`), content addressed by artifact ID (`/c/...`, `/_blob/...`,
+  artifact sites, whose access decides each request), the login route
+  (`GET /login`), and the invite and connect flows (`/connect/...`,
+  `/join/...`, `/api/grants...`), which carry codes and signatures of their
+  own. Anything else answers 401 `no_credential`; a browser's page load
+  (`GET` accepting `text/html`) gets a page instead: "Open Clax from your
+  terminal: `clax open` (or `clax login` for a link)". So reaching the port
+  mints no viewer, writes no comment and sends nothing to an agent.
+- `GET /api/token` hands the token to the shell of a browser of the
+  owner's: a request carrying a live owner browser session from this
+  machine. Anyone else gets 401 `unauthorized`, whatever its peer, `Host`,
+  `Origin` or `Sec-Fetch-Site`. It sets no cookie.
+- The decisions only a person at the owner's browser makes (approving or
+  denying a connection, inviting, setting a person's rights, revoking a
+  person) need an owner browser session, never the bearer token alone
+  (403 `browser_required`). An agent running as the owner's OS user can
+  read `daemon.json` as any of that user's processes can, and so act with
+  the token; hooks and the MCP shim mark their requests as the agent's
+  (`X-Clax-Session`, `X-Clax-Channel: agent`), and only OS-level
+  sandboxing of agents keeps one from presenting the token unmarked.
 - `/mcp` requires the bearer token on every request and accepts only a `Host`
   of `localhost`, `127.0.0.1`, `::1`, or the daemon's own address and port.
 - Each artifact has its own origin, its site, `http://<id>.localhost:<port>`.
@@ -9489,8 +9537,8 @@ it starts, the runs a previous process left. A build without the
   the Clax app's embedded core runs under the same rule). Every
   request without one answers 401 `unauthorized`, `GET /api/token`
   included, so a program that can only reach the port never gets the
-  token. A credential is the bearer token, the owner or events cookie that
-  `GET /api/token` sets, or the **key cookie** `clax_key_<port>` (the port
+  token. A credential is the bearer token, an owner browser session, or
+  the **key cookie** `clax_key_<port>` (the port
   from the request's `Host`), whose value is the token itself, compared in
   constant time. No response sets the key cookie: the program that starts
   the daemon puts it in its own browser's cookie store. Open without a

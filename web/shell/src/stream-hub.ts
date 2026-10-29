@@ -359,9 +359,8 @@ export class Hub {
   }
 
   private async run(ac: AbortController): Promise<void> {
-    // After a failure the daemon may have restarted with a new token: the
-    // token request renews the events cookie (a LAN view gets a 403 and none).
-    if (this.failures > 0 && !this.env.host) await this.fetch(this.url("/api/token"), { signal: ac.signal, cache: "no-store" }).catch(() => null);
+    // The events cookie is the browser's owner browser session, which
+    // outlives a daemon restart and a new token: nothing renews it.
     if (this.socketMode) return this.runSocket(ac);
     const headers: Record<string, string> = {};
     if (this.streamId) headers["Last-Event-ID"] = `${this.streamId}:${this.seq}`;

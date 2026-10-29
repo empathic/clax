@@ -524,6 +524,7 @@ async fn the_event_stream_carries_no_live_page_event_to_the_lan() {
     let res = ts
         .client
         .get(format!("{}/api/events", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .send()
         .await
         .unwrap();

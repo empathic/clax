@@ -165,6 +165,9 @@ pub struct AppState {
     /// The Clax extension's live credentials, by hash (spec
     /// 2026-10-05-chrome-overlay-design §5.3).
     pub ext_creds: Arc<crate::extension::Credentials>,
+    /// The live owner browser sessions of a local daemon, by hash
+    /// ([`crate::local_trust`]).
+    pub owner_sessions: Arc<crate::local_trust::OwnerSessions>,
     /// The extension ID in effect for this daemon's home (spec L15): the only
     /// extension that may pair.
     pub extension_id: String,
@@ -354,6 +357,7 @@ impl AppState {
     pub fn assemble(p: StateParts) -> clax_core::Result<AppState> {
         let live_ids = Arc::new(clax_realtime::live::LiveIds::load(&p.store)?);
         let ext_creds = Arc::new(crate::extension::Credentials::load(&p.store)?);
+        let owner_sessions = Arc::new(crate::local_trust::OwnerSessions::load(&p.store)?);
         let grant_auth = Arc::new(crate::grant_auth::GrantAuth::load(&p.store)?);
         let vis_gen = VisGen::install(&p.store);
         let app_data = crate::app_data_host::default_host(&p.store, &p.home);
@@ -403,6 +407,7 @@ impl AppState {
             sockets: Arc::default(),
             live_ids,
             ext_creds,
+            owner_sessions,
             extension_id: p.extension_id,
             questions: Arc::new(Default::default()),
             question_grace: Duration::from_secs(5),

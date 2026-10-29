@@ -613,6 +613,7 @@ async fn counts_follow_what_the_caller_sees_and_guests_see_only_tags_in_use() {
     let (s, v) = json_of(
         ts.client
             .get(format!("{}/api/tags", ts.base))
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
             .send()
             .await
             .unwrap(),

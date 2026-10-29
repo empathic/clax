@@ -490,12 +490,20 @@ async fn piggyback_and_wait_through_the_shim() {
     let aid = p["artifact_id"].as_str().unwrap().to_string();
     let base = shim.daemon_base();
     let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    // A browser of this machine's with no name: its viewer minted in the
+    // store (reaching the daemon's port alone mints none).
+    let cookie = clax_core::secret::viewer_cookie().expose().to_string();
+    clax_store::Store::open(&shim.home())
+        .unwrap()
+        .mint_viewer(&cookie, true)
+        .unwrap();
     let thread = |body: &'static str| {
         let form = reqwest::multipart::Form::new()
             .text("anchor", clax_testkit::element_anchor().to_string())
             .text("body", body)
             .text("version", "1");
         http.post(format!("{base}/api/artifacts/{aid}/threads"))
+            .header("cookie", format!("clax_viewer={cookie}"))
             .multipart(form)
             .send()
     };

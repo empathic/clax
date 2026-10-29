@@ -134,7 +134,7 @@ async fn admin_routes_admit_the_owner_and_admins_alone() {
             (Who::Person(p.sam.0.clone()), (403, "forbidden")),
             (Who::Viewer(p.lan.clone()), (403, "forbidden")),
             (Who::Agent, (403, "not_for_agents")),
-            (Who::Anonymous, (401, "unauthorized")),
+            (Who::Anonymous, (401, "no_credential")),
         ] {
             let (s, v) = call(ts, &who, m.clone(), path, body.clone()).await;
             assert_eq!((s, code(&v)), want, "{who:?} {m} {path}: {v}");
@@ -422,7 +422,7 @@ async fn me_bot_says_role_export_estimate_and_week() {
     for (who, want) in [
         (Who::Viewer(p.lan.clone()), (403, "forbidden")),
         (Who::Agent, (403, "not_for_agents")),
-        (Who::Anonymous, (401, "unauthorized")),
+        (Who::Anonymous, (401, "no_credential")),
     ] {
         let (s, v) = call(ts, &who, Method::GET, "/api/me/bot", Value::Null).await;
         assert_eq!((s, code(&v)), want, "{who:?}: {v}");

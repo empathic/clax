@@ -37,7 +37,7 @@ async fn the_token_route_answers_no_one_without_a_credential() {
         .unwrap();
     assert_eq!(res.status(), 401);
     let body: serde_json::Value = res.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "unauthorized");
+    assert_eq!(body["error"]["code"], "no_credential");
     assert!(body.get("token").is_none());
     // A wrong key cookie is no credential.
     let host = ts.base.trim_start_matches("http://");
@@ -64,8 +64,8 @@ async fn reads_are_refused_without_a_credential_and_served_with_one() {
         let authed = ts.get_authed(path).await.status();
         assert!(authed.is_success(), "{path} with the token: {authed}");
     }
-    // The WebView's key cookie admits the shell page and its token request,
-    // which hands the shell its cookies as before. (Documents ask the
+    // The WebView's key cookie, which stands for an owner browser session,
+    // admits the shell page and its token request. (Documents ask the
     // handler's own credential, which the shell sends as the token.)
     let key = key_cookie(&ts);
     for path in reads.iter().filter(|p| !p.contains("/docs")) {
@@ -81,17 +81,13 @@ async fn reads_are_refused_without_a_credential_and_served_with_one() {
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
-    let cookies: Vec<String> = res
-        .headers()
-        .get_all("set-cookie")
-        .iter()
-        .map(|v| v.to_str().unwrap().to_string())
-        .collect();
-    assert!(cookies.iter().any(|c| c.starts_with("clax_owner_")));
-    assert!(cookies.iter().any(|c| c.starts_with("clax_events_")));
+    assert!(
+        res.headers().get("set-cookie").is_none(),
+        "it sets no cookie"
+    );
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["token"], ts.token);
-    // The owner cookie the token request set admits the API too.
+    // An owner browser session admits the API too.
     assert_eq!(
         status(&ts, "/api/artifacts", Some(&ts.owner_cookie())).await,
         200
@@ -121,10 +117,11 @@ async fn health_stays_open_and_a_sites_content_is_its_access_checks() {
 }
 
 #[tokio::test]
-async fn the_default_daemon_still_serves_loopback_without_a_credential() {
+async fn the_default_daemon_serves_loopback_nothing_without_a_credential() {
     let ts = TestServer::spawn().await;
-    assert_eq!(status(&ts, "/api/token", None).await, 200);
-    assert_eq!(status(&ts, "/api/artifacts", None).await, 200);
+    assert_eq!(status(&ts, "/api/token", None).await, 401);
+    assert_eq!(status(&ts, "/api/artifacts", None).await, 401);
+    assert_eq!(status(&ts, "/healthz", None).await, 200);
 }
 
 /// Content addressed by artifact ID never names its artifact to the hosts it

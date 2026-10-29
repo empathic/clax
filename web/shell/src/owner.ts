@@ -5,14 +5,15 @@ import { getToken } from "./api";
 import { backoff } from "./lifecycle";
 
 /** Whether this is a browser of the owner's: the daemon serves it the token
- * (`GET /api/token`: to loopback browsers only, or on a hosted daemon the
- * owner's signed-in browser its shell token). A refusal (403) is the
- * answer no; any other failure (the daemon restarting, say) is asked again
- * after a backoff, so it resolves only once it knows, or with false once
- * `signal` aborts (the asker is gone: it asks no more). */
+ * (`GET /api/token`: on a local daemon to a browser holding an owner
+ * browser session, on a hosted daemon to the owner's signed-in browser as
+ * its shell token). A refusal (401 or 403) is the answer no; any other
+ * failure (the daemon restarting, say) is asked again after a backoff, so
+ * it resolves only once it knows, or with false once `signal` aborts (the
+ * asker is gone: it asks no more). */
 export async function ownerBrowser(signal?: AbortSignal): Promise<boolean> {
   if (await getToken()) return !signal?.aborted;
-  return ask("/api/token", r => r.status === 403, signal);
+  return ask("/api/token", r => r.status === 403 || r.status === 401, signal);
 }
 
 /** A viewer as `GET /api/viewers/me` gives it: `person` for a connected

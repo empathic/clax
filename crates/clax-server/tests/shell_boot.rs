@@ -26,12 +26,32 @@ fn boot(html: &str) -> (String, Value) {
     (text, v)
 }
 
+/// `path` in a browser sending `headers`; one whose cookies name neither a
+/// viewer nor the owner's session is a browser of this machine's with no
+/// name and no session ([`TestServer::local_browser`]): a local daemon
+/// serves no page to a request with no credential at all.
 async fn page(ts: &TestServer, path: &str, headers: &[(&str, String)]) -> reqwest::Response {
     let mut req = ts.client.get(format!("{}{path}", ts.base));
+    let mut cookies: Vec<String> = Vec::new();
     for (k, v) in headers {
-        req = req.header(*k, v);
+        if k.eq_ignore_ascii_case("cookie") {
+            if !v.is_empty() {
+                cookies.push(v.clone());
+            }
+        } else {
+            req = req.header(*k, v);
+        }
     }
-    req.send().await.unwrap()
+    if !cookies
+        .iter()
+        .any(|c| c.contains("clax_viewer=") || c.contains("clax_owner_"))
+    {
+        cookies.push(format!("clax_viewer={}", ts.local_browser()));
+    }
+    req.header("cookie", cookies.join("; "))
+        .send()
+        .await
+        .unwrap()
 }
 
 async fn publish_version(ts: &TestServer, id: &str, html: &str) {
@@ -75,12 +95,20 @@ async fn embeds_what_the_api_answers_and_never_the_token() {
     );
     let html = res.text().await.unwrap();
     let (_, b) = boot(&html);
-    let api: Value = ts
+    let mut api: Value = ts
         .get(&format!("/api/artifacts/{id}"))
         .await
         .json()
         .await
         .unwrap();
+    // The viewer's attention, which the bootstrap carries beside the
+    // artifact.
+    let attention = api.as_object_mut().unwrap().remove("attention");
+    assert_eq!(
+        b["attention"]["open_in"],
+        attention.unwrap()["open_in"],
+        "the viewer's own attention"
+    );
     let threads: Value = ts
         .get(&format!(
             "/api/artifacts/{id}/threads?include_resolved=true&limit=200"
@@ -97,7 +125,9 @@ async fn embeds_what_the_api_answers_and_never_the_token() {
     );
     assert_eq!(b["artifact"], without_sessions(api));
     assert_eq!(b["threads"], threads["threads"]);
-    assert_eq!(b["viewer"], Value::Null);
+    // The request's own viewer: a browser of this machine's with no name.
+    let me: Value = ts.get("/api/viewers/me").await.json().await.unwrap();
+    assert_eq!(b["viewer"], me["viewer"]);
     assert!(b.get("frame").is_none());
     assert!(!html.contains(&ts.token));
     assert!(html.contains("<h1>Report</h1>"));
@@ -214,13 +244,11 @@ async fn names_the_cookies_viewer_only() {
         &[("cookie", "clax_viewer=01J00000000000000000000000".into())],
     )
     .await;
+    // A cookie that names no viewer is no credential: refused, with
+    // nothing of the artifact's.
+    assert_eq!(unknown.status(), 401);
     assert!(unknown.headers().get("set-cookie").is_none());
-    let b = boot(&unknown.text().await.unwrap()).1;
-    assert_eq!(b["viewer"], Value::Null);
-    assert!(
-        b.get("attention").is_none(),
-        "an unknown cookie gets no attention"
-    );
+    assert!(!unknown.text().await.unwrap().contains(OPEN));
 }
 
 #[tokio::test]

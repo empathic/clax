@@ -106,6 +106,7 @@ pub mod batches;
 pub mod bot_runs;
 pub mod bot_settings;
 pub mod briefs;
+pub mod browser_login;
 pub mod capability_approvals;
 pub mod changelog;
 pub mod credits;

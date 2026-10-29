@@ -37,16 +37,9 @@ use serde_json::{Value, json};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// 403 `browser_required` unless a browser of the owner's makes the request
-/// (M20): [`Caller::browser`] for the owner.
+/// (M20; [`clax_http::auth::require_owner_browser`]).
 fn require_browser(caller: &Caller, what: &str) -> Result<(), ApiError> {
-    if caller.browser() && caller.is_owner() {
-        Ok(())
-    } else {
-        Err(ApiError::forbidden(
-            "browser_required",
-            format!("{what} needs the owner's browser: open People in Clax"),
-        ))
-    }
+    clax_http::auth::require_owner_browser(caller, what)
 }
 
 fn invite_view(i: &Invite) -> Value {

@@ -91,6 +91,8 @@ mod api_live_site;
 mod api_live_sites;
 #[cfg(any(not(clax_split), clax_split = "api_live_watch"))]
 mod api_live_watch;
+#[cfg(any(not(clax_split), clax_split = "api_local_trust"))]
+mod api_local_trust;
 #[cfg(any(not(clax_split), clax_split = "api_locked"))]
 mod api_locked;
 #[cfg(any(not(clax_split), clax_split = "api_mcp"))]

@@ -287,6 +287,7 @@ async fn shutdown_completes_while_an_sse_client_stays_connected() {
     let client = reqwest::Client::new();
     let mut sse = client
         .get(format!("http://127.0.0.1:{}/api/events", info.port))
+        .bearer_auth(&info.token)
         .send()
         .await
         .unwrap();
