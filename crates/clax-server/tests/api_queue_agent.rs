@@ -1882,3 +1882,33 @@ async fn a_member_releases_a_stale_claim_and_its_holder_is_told() {
     assert_eq!(s, 200, "{again}");
     assert_eq!(again["fence"], lease["fence"].as_u64().unwrap() + 1);
 }
+
+/// A change's live update is best-effort: when the read that builds the
+/// queue topic's `report` event fails after the write committed, the
+/// route still answers the write it made, so its client does not retry it.
+#[tokio::test]
+async fn a_failed_live_update_read_does_not_fail_a_committed_write() {
+    let q = setup().await;
+    let a = q.session("a").await;
+    let (s, _) = q
+        .agent(Some(&a), "POST", &q.report("/claim"), json!({}))
+        .await;
+    assert_eq!(s, 200);
+    // `report_change` reads the queue's members to address the event; an
+    // owner's session never reads that table to write.
+    let db = rusqlite::Connection::open(q.ts.home.db_path()).unwrap();
+    db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
+    db.execute_batch("DROP TABLE queue_members").unwrap();
+    let (s, v) = q
+        .agent(
+            Some(&a),
+            "POST",
+            &q.report("/comments"),
+            json!({"body": "on it"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["comment"]["body"], "on it", "{v}");
+    let t = q.ts.store.get_thread(&q.tid).unwrap().unwrap();
+    assert_eq!(t.comments.last().unwrap().body, "on it");
+}
