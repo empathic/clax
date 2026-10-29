@@ -2661,9 +2661,12 @@ impl Store {
     /// thread_id, n?, reopen_count}` (`n` the latest attempt's, when there
     /// is one), after the comment's `comment.add`. In the same transaction
     /// the reopen's comment wakes every live session watching the queue
-    /// and the session of the report's latest lease when it has not ended
-    /// (whoever claimed it last, the fix's proposer), watching or not
-    /// ([`Store::notify_queue_event_in`], `reopened`). Answers the report
+    /// and, watching or not, the agent's session that proposed the
+    /// report's latest fix (the one the reopen rejects,
+    /// `report_fixes.proposer_session_id`) while it has not ended; when a
+    /// person proposed it no other session is woken, whoever claimed the
+    /// report before ([`Store::notify_queue_event_in`], `reopened`, which
+    /// wakes a session only while it acts for a member). Answers the report
     /// as `by` reads it, and the sessions woken, to wake their waits with.
     ///
     /// # Errors
@@ -2759,14 +2762,15 @@ impl Store {
                  WHERE id = ?1",
                 params![c.id, reporter, capture, clip_key],
             )?;
-            let last: Option<(u32, String)> = tx
+            let last: Option<(u32, String, Option<String>)> = tx
                 .query_row(
-                    "SELECT n, outcome FROM report_fixes WHERE thread_id = ?1 ORDER BY n DESC LIMIT 1",
+                    "SELECT n, outcome, proposer_session_id FROM report_fixes
+                     WHERE thread_id = ?1 ORDER BY n DESC LIMIT 1",
                     params![tid],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()?;
-            if let Some((n, outcome)) = &last
+            if let Some((n, outcome, _)) = &last
                 && outcome == FixOutcome::Pending.as_str()
             {
                 tx.execute(
@@ -2797,19 +2801,21 @@ impl Store {
                     params![tid, capture, lines, n],
                 )?;
             }
-            let previous = match current_in(tx, tid, &now)? {
-                Some(cur) => {
+            // The agent's session that proposed the fix the reopen rejects,
+            // while it has not ended; none when a person proposed it.
+            let proposer = match last.as_ref().and_then(|(_, _, p)| p.as_deref()) {
+                Some(sid) => {
                     let live: bool = tx.query_row(
                         "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1 AND ended_at IS NULL)",
-                        params![cur.session_id],
+                        params![sid],
                         |r| r.get(0),
                     )?;
-                    live.then_some(cur.session_id)
+                    live.then(|| sid.to_string())
                 }
                 None => None,
             };
             let mut rec = queue_record(AuditKind::QueueReopen, &now, qid).with("thread_id", tid);
-            if let Some((n, _)) = last {
+            if let Some((n, _, _)) = last {
                 rec = rec.with("n", n);
             }
             rec = rec.with("reopen_count", capture);
@@ -2822,7 +2828,7 @@ impl Store {
                 tid,
                 &c.id,
                 QueueEvent::Reopened,
-                previous.as_deref(),
+                proposer.as_deref(),
             )
         });
         let woken = match done {

@@ -3246,6 +3246,96 @@ mod tests {
         );
     }
 
+    /// A reopen wakes the session that proposed the fix it rejects, not
+    /// the report's last claimant: an agent whose claim a person released
+    /// before a person's fix is not woken, nor a proposer that ended.
+    #[test]
+    fn reopen_wakes_the_rejected_fixs_proposer_and_no_earlier_claimant() {
+        let (_d, st) = store();
+        let (qid, tok) = report_queue(&st);
+        let fix = |s: &str| clax_core::report::NewFix {
+            summary: s.into(),
+            url: None,
+            commit: None,
+            release: None,
+            verify_url: None,
+            verify_after: None,
+        };
+        let reopen = |tid: &str| {
+            st.reopen_report(
+                DAEMON,
+                &qid,
+                tid,
+                crate::queues::Verdict::Reporter("emp-1"),
+                "Still wrong".into(),
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+            .1
+        };
+        let mia = crate::queues::ReportWriter::Person {
+            name: "Mia".into(),
+            public_id: None,
+        };
+
+        // An agent's fix: its proposer is woken.
+        let fixer = session(&st, "claude", "fixer");
+        let sf = st.get_session(&fixer).unwrap().unwrap();
+        let tid = file_titled(&st, &qid, &tok, "Invoice 4821");
+        st.claim(DAEMON, &qid, &tid, &fixer).unwrap();
+        st.propose_fix(
+            DAEMON,
+            &qid,
+            &tid,
+            &crate::queues::ReportWriter::Agent(&sf),
+            fix("Rounded it"),
+        )
+        .unwrap();
+        let touched = reopen(&tid);
+        assert_eq!(
+            touched.targets.iter().collect::<Vec<_>>(),
+            vec![&fixer],
+            "{touched:?}"
+        );
+        take(&st, &fixer, Tier::Wait);
+
+        // A claim a person released, then a person's fix: no agent is woken.
+        let tid = file_titled(&st, &qid, &tok, "Invoice 4822");
+        st.claim(DAEMON, &qid, &tid, &fixer).unwrap();
+        st.release_as_person(DAEMON, &qid, &tid, "Ana", None, None)
+            .unwrap();
+        st.propose_fix(DAEMON, &qid, &tid, &mia, fix("Rounded it"))
+            .unwrap();
+        let touched = reopen(&tid);
+        assert!(touched.targets.is_empty(), "{touched:?}");
+        let items = take(&st, &fixer, Tier::Wait);
+        assert!(
+            items
+                .iter()
+                .all(|i| i.queue_event == Some(QueueEvent::Released)),
+            "the released agent hears its release alone: {items:?}"
+        );
+
+        // The proposer's session ended: no one is woken.
+        let gone = session(&st, "claude", "gone");
+        let sg = st.get_session(&gone).unwrap().unwrap();
+        let tid = file_titled(&st, &qid, &tok, "Invoice 4823");
+        st.claim(DAEMON, &qid, &tid, &gone).unwrap();
+        st.propose_fix(
+            DAEMON,
+            &qid,
+            &tid,
+            &crate::queues::ReportWriter::Agent(&sg),
+            fix("Rounded it"),
+        )
+        .unwrap();
+        st.end_session(DAEMON, &gone).unwrap();
+        let touched = reopen(&tid);
+        assert!(touched.targets.is_empty(), "{touched:?}");
+    }
+
     #[test]
     fn a_removed_member_is_woken_no_more() {
         let (_d, st) = store();

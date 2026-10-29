@@ -3868,10 +3868,12 @@ tools" says; 404 `not_a_member` otherwise):
 
 **Queue wakes.** A report filed into a queue, and a report reopened (by
 its reporter, or by triage on their behalf), wakes every live session
-watching the queue; a reopen also wakes the session of the report's
-latest lease (its previous claimant: the rejected fix's proposer when an
-agent proposed it) while that
-session has not ended, whether it watches the queue or not. Only a
+watching the queue; a reopen also wakes the agent's session that proposed
+the fix it rejects (the report's latest fix; its `proposer_kind` is
+`agent`) while that session has not ended, whether it watches the queue
+or not. When a person proposed that fix, no other session is woken,
+whoever claimed the report before (an agent whose claim was released or
+lapsed is not). Only a
 session whose person (or the owner) is still a member of the queue is
 woken; removing a member ends their sessions' watches of it. A wake is a
 feedback row for the filing's note or the reopen's comment, made in the

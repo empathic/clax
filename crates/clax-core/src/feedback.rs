@@ -144,8 +144,9 @@ pub struct FeedbackItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_id: Option<String>,
     /// What happened to the report when the row is a queue's wake of a
-    /// session watching it, of the proposer of the fix a reopen
-    /// rejected (spec 2026-10-29-feedback-loop-design §7.3), or of the
+    /// session watching it, of the agent's session that proposed the fix
+    /// a reopen rejected (none when a person proposed it; spec
+    /// 2026-10-29-feedback-loop-design §6.3), or of the
     /// session whose claim a triage person released: it is read with
     /// `queue_get` and taken with `queue_claim`. Absent for a comment sent
     /// to the session.
