@@ -5,6 +5,9 @@
   // and where to check it, with "It's fixed" and "Still broken". A comment
   // never changes the report's state; only a verdict does. "Still broken"
   // hands over to the overlay, which asks for a note and offers a new capture.
+  // While a fix waits, a reply reaches the fix's proposer while its session
+  // lives and its person is a member of the queue, and the queue's people
+  // always; the reply box says so.
   import type { Report } from "../../sdk/src/types";
   import { OUTCOME, failureText, safeLink, waitingFix } from "./model";
 
@@ -88,6 +91,9 @@
     <form onsubmit={e => { e.preventDefault(); void reply(); }}>
       <textarea rows={2} aria-label="Reply" placeholder="Reply…" bind:value={text}
         onkeydown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); void reply(); } }}></textarea>
+      {#if waiting}
+        <p class="reply-note small muted">A reply goes to {waiting.proposer_name} while they are still at work, and to the queue's people. If the fix did not work, press Still broken.</p>
+      {/if}
       <div class="actions"><button type="submit" class="primary" disabled={sending || !text.trim()}>{sending ? "Sending…" : "Reply"}</button></div>
     </form>
   {/if}
@@ -105,6 +111,7 @@
   .links { display: flex; gap: 12px; margin-top: 4px; }
   .links a { color: var(--agent-ink); font-weight: 600; }
   .verdict { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }
+  .reply-note { margin-top: 4px; }
   .actions { display: flex; justify-content: flex-end; margin-top: 6px; }
   .error { color: var(--danger); }
 </style>

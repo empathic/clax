@@ -4731,6 +4731,104 @@ mod delivery {
         assert_eq!(taken.items[0].queue_event, None);
     }
 
+    /// While a fix waits (the report `fix_proposed`, its lease ended), a
+    /// reporter's reply reaches the session that held the latest lease,
+    /// the fix's proposer, under the queue's member rule: whole while its
+    /// rights read reports, `no_access` while they do not, and nothing once
+    /// its person leaves the queue or the session ends.
+    #[test]
+    fn a_reporters_reply_while_a_fix_waits_reaches_the_proposer() {
+        let reads = Reach {
+            artifacts: Some(NO_ARTIFACT),
+            reports: true,
+        };
+        let fix = || clax_core::report::NewFix {
+            summary: "Rounded the total".into(),
+            url: None,
+            commit: None,
+            release: None,
+            verify_url: None,
+            verify_after: None,
+        };
+        let propose = |w: &Two, qid: &str, tid: &str| {
+            w.st.claim(DAEMON, qid, tid, &w.sid).unwrap();
+            let s = w.st.get_session(&w.sid).unwrap().unwrap();
+            w.st.propose_fix(
+                DAEMON,
+                qid,
+                tid,
+                &crate::queues::ReportWriter::Agent(&s),
+                fix(),
+            )
+            .unwrap();
+            sams_take(w, reads);
+        };
+
+        let w = two_people();
+        let (qid, tok) = sams_queue(&w);
+        let tid = file_into(&w, &qid, &tok, "Invoice 4821");
+        propose(&w, &qid, &tid);
+        let (_, touched) =
+            w.st.reporter_comment_touched(DAEMON, &qid, &tid, "emp-1", "Where do I check it?")
+                .unwrap();
+        assert!(touched.targets.contains(&w.sid), "{touched:?}");
+        let (_, taken) = sams_take(&w, reads);
+        assert!(taken.placeholders.is_empty(), "{:?}", taken.placeholders);
+        assert_eq!(taken.items.len(), 1, "{:?}", taken.items);
+        assert_eq!(taken.items[0].thread_id, tid);
+        assert_eq!(taken.items[0].body, "Where do I check it?");
+
+        // Rights that do not read reports: told of it, not handed it.
+        w.st.reporter_comment(DAEMON, &qid, &tid, "emp-1", "Still on Safari")
+            .unwrap();
+        let (_, taken) = sams_take(
+            &w,
+            Reach {
+                artifacts: Some(NO_ARTIFACT),
+                reports: false,
+            },
+        );
+        assert!(taken.items.is_empty(), "{:?}", taken.items);
+        assert_eq!(taken.placeholders.len(), 1, "{:?}", taken.placeholders);
+
+        // A proposer whose person left the queue hears nothing.
+        let w = two_people();
+        let (qid, tok) = sams_queue(&w);
+        let tid = file_into(&w, &qid, &tok, "Invoice 4821");
+        propose(&w, &qid, &tid);
+        w.st.set_member(DAEMON, &qid, &w.sam, None).unwrap();
+        let (_, touched) =
+            w.st.reporter_comment_touched(DAEMON, &qid, &tid, "emp-1", "Hello?")
+                .unwrap();
+        assert!(touched.targets.is_empty(), "{touched:?}");
+
+        // Nor does one whose session ended.
+        let w = two_people();
+        let (qid, tok) = sams_queue(&w);
+        let tid = file_into(&w, &qid, &tok, "Invoice 4821");
+        propose(&w, &qid, &tid);
+        w.st.end_session(DAEMON, &w.sid).unwrap();
+        let (_, touched) =
+            w.st.reporter_comment_touched(DAEMON, &qid, &tid, "emp-1", "Hello?")
+                .unwrap();
+        assert!(touched.targets.is_empty(), "{touched:?}");
+    }
+
+    /// A reporter's reply on a report whose lease lapsed while it was
+    /// `claimed` (no fix waiting) reaches no session: triage reads it.
+    #[test]
+    fn a_reporters_reply_after_a_lapsed_claim_reaches_no_session() {
+        let w = two_people();
+        let (qid, tok) = sams_queue(&w);
+        let tid = file_into(&w, &qid, &tok, "Invoice 4821");
+        w.st.claim(DAEMON, &qid, &tid, &w.sid).unwrap();
+        w.st.release(DAEMON, &qid, &tid, &w.sid).unwrap();
+        let (_, touched) =
+            w.st.reporter_comment_touched(DAEMON, &qid, &tid, "emp-1", "Anyone?")
+                .unwrap();
+        assert!(touched.targets.is_empty(), "{touched:?}");
+    }
+
     /// No wake reaches a session whose person left the queue, a queue that
     /// is gone, or a session that ended: nothing is handed over or told of.
     #[test]

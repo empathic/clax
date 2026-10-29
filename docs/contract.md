@@ -3856,9 +3856,13 @@ rights reach; a member's session whose rights do not is told of it as
 and a wake still undelivered when its session has ended, its person is
 no longer a member, or the queue is gone is never handed over or
 announced. A reporter's comment on a report (`…/reporter/reports/<tid>/comments`)
-is sent the same way to the session holding the report's live lease,
-while its person is a member: a feedback row for that comment, with no
-`queue_event`, delivered under the same rule. It
+is sent the same way to the session holding the report's live lease or,
+while a fix waits (`fix_proposed`, its lease ended with the proposal), to
+the session of the report's latest lease (the fix's proposer) while that
+session has not ended, in each case while its person is a member: a
+feedback row for that comment, with no `queue_event`, delivered under
+the same rule. Any other reporter's comment reaches no session; triage
+reads it on the report. It
 never makes the session the report's owner (a claim does) and is no
 part of the report's `feedback_state`: a wake does not show the report
 as sent to or delivered to an agent. Its item carries `queue_id`,
