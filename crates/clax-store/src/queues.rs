@@ -126,7 +126,7 @@ pub struct ReporterToken {
     pub profile: Option<ReporterProfile>,
 }
 
-/// A report to file ([`Store::file_report_async`]).
+/// A report to file ([`Store::file_report_touched_async`]).
 #[derive(Clone, Debug)]
 pub struct NewReport {
     /// The app's ID of the record; `None`: the page URL without its route.
@@ -300,6 +300,25 @@ fn role_in(c: &Connection, q: &QueueRow, person: Option<&str>) -> Result<Option<
         )
         .optional()?;
     Ok(role.as_deref().and_then(Role::parse))
+}
+
+/// Whether live session `sid` acts for a member of live queue `qid` (its
+/// person, or the owner, has a role there, the maker's being admin).
+pub(crate) fn session_is_member_in(c: &Connection, qid: &str, sid: &str) -> Result<bool> {
+    let Some(q) = queue_in(c, qid)? else {
+        return Ok(false);
+    };
+    let person: Option<Option<String>> = c
+        .query_row(
+            "SELECT person FROM sessions WHERE id = ?1 AND ended_at IS NULL",
+            params![sid],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match person {
+        Some(p) => Ok(role_in(c, &q, p.as_deref())?.is_some()),
+        None => Ok(false),
+    }
 }
 
 fn normalize_origins(origins: &[String]) -> Result<Vec<String>> {
@@ -957,8 +976,8 @@ impl Store {
     /// queue's maker is its admin whatever this says. A removal releases
     /// every live lease the person's sessions hold on the queue's reports,
     /// each recorded as `queue.release {queue_id, thread_id, session,
-    /// lease_id, reason: "member_removed"}`, and clears those threads'
-    /// owner.
+    /// lease_id, reason: "member_removed"}`, clears those threads'
+    /// owner, and ends the person's sessions' watches of the queue.
     ///
     /// # Errors
     /// [`CoreError::NotAMember`] for no such queue.
@@ -1001,6 +1020,12 @@ impl Store {
             self.record_audit(tx, ctx, rec)?;
             if role.is_none() && q.person.as_deref() != Some(person) {
                 self.release_person_in(tx, ctx, qid, person, &now)?;
+                // Its sessions no longer watch the queue.
+                tx.execute(
+                    "DELETE FROM queue_watches WHERE queue_id = ?1
+                       AND session_id IN (SELECT id FROM sessions WHERE person = ?2)",
+                    params![qid, person],
+                )?;
             }
             Ok(())
         })
@@ -1304,10 +1329,13 @@ impl Store {
         }
     }
 
-    /// [`Store::file_report_async`], blocking on its content store.
+    /// [`Store::file_report_touched_async`], blocking on its content store
+    /// and dropping the sessions it woke: for a caller with no waits to
+    /// wake (tests and tools without a daemon), whose wake rows are still
+    /// written and taken at the sessions' next poll.
     ///
     /// # Errors
-    /// [`Store::file_report_async`]'s.
+    /// [`Store::file_report_touched_async`]'s.
     pub fn file_report(
         &self,
         ctx: &AuditCtx,
@@ -1316,23 +1344,7 @@ impl Store {
         scope: ExternalScope,
         r: NewReport,
     ) -> Result<Report> {
-        self.block_on(self.file_report_async(ctx, qid, reporter, scope, r))
-    }
-
-    /// [`Store::file_report_touched_async`], without the sessions it woke.
-    ///
-    /// # Errors
-    /// [`Store::file_report_touched_async`]'s.
-    pub async fn file_report_async(
-        &self,
-        ctx: &AuditCtx,
-        qid: &str,
-        reporter: Option<&ReporterToken>,
-        scope: ExternalScope,
-        r: NewReport,
-    ) -> Result<Report> {
-        self.file_report_touched_async(ctx, qid, reporter, scope, r)
-            .await
+        self.block_on(self.file_report_touched_async(ctx, qid, reporter, scope, r))
             .map(|(report, _)| report)
     }
 

@@ -48,9 +48,9 @@ async fn setup_on(bind: std::net::IpAddr) -> Q {
         expires_at: "2099-01-01T00:00:00.000Z".into(),
         profile: None,
     };
-    let r = ts
+    let (r, _) = ts
         .store
-        .file_report_async(
+        .file_report_touched_async(
             &AuditCtx::DAEMON,
             &qid,
             Some(&token),
@@ -596,7 +596,7 @@ async fn file_into(
         profile: None,
     };
     ts.store
-        .file_report_async(
+        .file_report_touched_async(
             &AuditCtx::DAEMON,
             qid,
             Some(&token),
@@ -618,6 +618,7 @@ async fn file_into(
         )
         .await
         .unwrap()
+        .0
 }
 
 impl Q {
@@ -1111,6 +1112,40 @@ async fn watch_then_file_delivers_through_wait_for_feedback() {
         .agent(Some(&w), "POST", "/api/queues/nope/watch", json!(null))
         .await;
     assert_eq!((s, code(&v)), (404, "not_a_member"), "{v}");
+    // A queue the caller is no member of: another person made it.
+    let theirs =
+        q.ts.store
+            .create_queue(
+                &AuditCtx::DAEMON,
+                Some("u_maker"),
+                NewQueue {
+                    name: "Theirs".into(),
+                    origins: vec!["https://app.example.com".into()],
+                    reporters_see: ReportersSee::Own,
+                },
+            )
+            .unwrap()
+            .id;
+    let (s, v) = q
+        .agent(
+            Some(&w),
+            "POST",
+            &format!("/api/queues/{theirs}/watch"),
+            json!(null),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (404, "not_a_member"), "{v}");
+    assert!(q.ts.store.queue_watchers(&theirs).unwrap().is_empty());
+    // Unwatching removes only the caller's own watch, member or not.
+    let (s, v) = q
+        .agent(
+            Some(&w),
+            "DELETE",
+            &format!("/api/queues/{theirs}/watch"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 204, "{v}");
     let (s, v) = q.agent(Some(&w), "POST", &watch, json!(null)).await;
     assert_eq!(s, 204, "{v}");
     assert_eq!(q.ts.store.queue_watchers(&q.qid).unwrap(), [w.as_str()]);
@@ -1180,11 +1215,12 @@ async fn watch_then_file_delivers_through_wait_for_feedback() {
     let text = got["text"].as_str().unwrap();
     assert!(
         text.contains(&format!(
-            "Report {} in queue {} was reopened by its reporter: call queue_get",
+            "Report {} in queue {} was reopened by ",
             q.tid, q.qid
-        )),
+        )) && text.contains(" for its reporter: call queue_get"),
         "{text}"
     );
+    assert!(items[0]["reopened_by"].is_string(), "{got}");
     let (s, v) = q
         .agent(
             Some(&w),
