@@ -107,7 +107,7 @@ impl Store {
         let to = b.to;
         self.with_tx(|tx| {
             if let Some(sid) = to.as_deref()
-                && !live_targets_of(tx, aid.as_str())?.iter().any(|s| s == sid)
+                && !live_targets_of(tx, aid.as_str(), self.routed(aid.as_str()))?.iter().any(|s| s == sid)
             {
                 return Err(CoreError::invalid("unknown_agent", "no live agent on this artifact has that handle"));
             }
@@ -143,7 +143,7 @@ impl Store {
             let mut requests = Vec::new();
             let mut took = Vec::new();
             for t in &ids {
-                let made = send_in(tx, t, Some(&batch_id), target, &mut touched, &self.now())?;
+                let made = send_in(self, tx, t, Some(&batch_id), target, &mut touched, &self.now())?;
                 if let Some(old) = &made.took_from {
                     super::feedback::displace_owner_in(self, tx, ctx, t, old, &self.now(), &mut touched)?;
                 }

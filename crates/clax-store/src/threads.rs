@@ -346,6 +346,11 @@ pub(crate) fn take_in(
     else {
         return Err(CoreError::NotFound);
     };
+    // A routed artifact's threads have no agent owner
+    // ([`Store::set_routed_artifacts`]).
+    if st.routed(&aid) {
+        return Ok(false);
+    }
     tx.execute(
         "UPDATE threads SET target_session_id = ?2 WHERE id = ?1",
         params![tid, sid],
