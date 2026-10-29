@@ -357,7 +357,7 @@ async fn announce(s: &AppState, tid: String) {
     let r = s
         .store_call(move |st| {
             if let Some(t) = st.get_thread(&tid)? {
-                super::threads::publish_thread(&ctx, st, &t)?;
+                super::threads::publish_thread(&ctx, st, &t);
             }
             Ok(())
         })
@@ -589,7 +589,7 @@ pub async fn verify(
                 context,
             )?;
             let t = st.get_thread(&tid)?.ok_or(CoreError::NotFound)?;
-            announce_resolved(&an, st, &ctx, &t, None, &touched)?;
+            announce_resolved(&an, st, &ctx, &t, None, &touched);
             Ok(report)
         })
         .await?;

@@ -461,8 +461,11 @@ pub async fn reply(
                 thread_id: tid.clone(),
                 comment: json!(c),
             });
-            if let Some(t) = st.get_thread(&tid)? {
-                publish_thread(&fctx, st, &t)?;
+            // The reply is made: announcing it is best-effort.
+            match st.get_thread(&tid) {
+                Ok(Some(t)) => publish_thread(&fctx, st, &t),
+                Ok(None) => {}
+                Err(e) => tracing::warn!(error = ?e, "announcing a report's reply failed"),
             }
             Ok(json!({"comment": c, "report": report}))
         })
@@ -506,7 +509,7 @@ pub async fn resolve(
             let w = Writer::of(st, &caller, &who)?;
             let (t, touched, report) =
                 st.resolve_report(&ctx, &qid, &tid, &w.as_store(), reason)?;
-            announce_resolved(&an, st, &ctx, &t, w.session(), &touched)?;
+            announce_resolved(&an, st, &ctx, &t, w.session(), &touched);
             Ok(report)
         })
         .await?;
@@ -627,10 +630,7 @@ impl Announcer {
 /// verify), as a thread's resolve does: the working record on it ends
 /// (`session`'s, or anyone's for a person's resolve), `thread_resolved`,
 /// the feedback the resolve withdrew (`touched`), the `thread` event and
-/// the questions on it.
-///
-/// # Errors
-/// [`publish_thread`]'s.
+/// the questions on it. Best-effort, as [`publish_thread`] is.
 pub(crate) fn announce_resolved(
     an: &Announcer,
     st: &Store,
@@ -638,7 +638,7 @@ pub(crate) fn announce_resolved(
     t: &clax_core::model::Thread,
     session: Option<&str>,
     touched: &clax_core::feedback::Touched,
-) -> clax_core::Result<()> {
+) {
     let fctx = &an.fctx;
     let changed = match session {
         Some(sid) => fctx
@@ -656,17 +656,17 @@ pub(crate) fn announce_resolved(
         resolved_at: t.resolved_at.clone().unwrap_or_default(),
     });
     apply(fctx, st, touched);
-    publish_thread(fctx, st, t)?;
+    publish_thread(fctx, st, t);
     clax_http::views::question::announce_thread(&an.app, st, &t.id);
-    Ok(())
 }
 
 /// Tells everyone that comment `cid` was added to report `tid` and the
 /// report changed with it (a fix's summary, a reopen's note): the
-/// `comment` event, the `thread` event and the questions on it.
+/// `comment` event, the `thread` event and the questions on it. Its
+/// callers run it after the change committed and log its error.
 ///
 /// # Errors
-/// [`publish_thread`]'s.
+/// The thread's read.
 pub(crate) fn announce_comment(
     an: &Announcer,
     st: &Store,
@@ -684,7 +684,7 @@ pub(crate) fn announce_comment(
             comment: json!(c),
         });
     }
-    publish_thread(fctx, st, &t)?;
+    publish_thread(fctx, st, &t);
     clax_http::views::question::announce_thread(&an.app, st, tid);
     Ok(())
 }
@@ -758,7 +758,10 @@ pub async fn fix(
                         .thread_done(sid, &report.artifact.id, &tid, StopReason::Explicit);
                 clax_realtime::working::settle(st, &ctx, &fctx.events, &fctx.working, &changed);
             }
-            announce_comment(&an, st, &tid, last_comment(&report).as_deref())?;
+            // The fix is made: announcing it is best-effort.
+            if let Err(e) = announce_comment(&an, st, &tid, last_comment(&report).as_deref()) {
+                tracing::warn!(error = ?e, "announcing a proposed fix failed");
+            }
             Ok(report)
         })
         .await?;
@@ -815,7 +818,7 @@ pub async fn verify(
                 None,
             )?;
             let t = st.get_thread(&tid)?.ok_or(CoreError::NotFound)?;
-            announce_resolved(&an, st, &ctx, &t, None, &touched)?;
+            announce_resolved(&an, st, &ctx, &t, None, &touched);
             Ok(report)
         })
         .await?;
