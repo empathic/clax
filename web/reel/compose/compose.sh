@@ -137,7 +137,7 @@ toml_get() {
   fi
 }
 
-urlenc() { python3 -I -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$1"; }
+urlenc() { "$PY" -I -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$1"; }
 
 shot() { # shot OUT.png QUERY [extra chrome flags]
   local dest="$1" query="$2"; shift 2
@@ -181,7 +181,7 @@ card_clip() {
   local dest="$1" query="$2" secs="$3" base="${1%.mp4}" ph
   local pa=0.3 pb=0.7 pc=1
   for ph in a b c; do eval "p=\$p$ph"; shot "$base.$ph.png" "$query&p=$p"; done
-  local hold; hold="$(python3 -I -c "print(round($secs - 4/$FPS, 4))")"
+  local hold; hold="$("$PY" -I -c "print(round($secs - 4/$FPS, 4))")"
   ff -loop 1 -framerate $FPS -t 0.0667 -i "$base.a.png" -loop 1 -framerate $FPS -t 0.0667 -i "$base.b.png" \
      -loop 1 -framerate $FPS -t "$hold" -i "$base.c.png" \
      -filter_complex "[0:v][1:v][2:v]concat=n=3:v=1:a=0,format=yuv420p,setsar=1,fps=$FPS[o]" -map "[o]" -r $FPS \
@@ -207,7 +207,7 @@ if [ -n "$teaser" ]; then
     tid="${shots[k]%%@*}"; tat="${shots[k]#*@}"; td=""
     for d in "${all_dirs[@]}"; do [ "$(basename "${d%/}")" = "${tid}_frames" ] && td="$(cd "$d" && pwd)"; done
     [ -n "$td" ] || { echo "compose: --teaser names $tid but no ${tid}_frames directory was given" >&2; exit 1; }
-    f="$(cam at "$td/beats.json" "$tat")"; m="$(python3 -I -c "print(round($TEASER_SECONDS * $FPS))")"
+    f="$(cam at "$td/beats.json" "$tat")"; m="$("$PY" -I -c "print(round($TEASER_SECONDS * $FPS))")"
     printf 'seg %s %s 1.0 %s\n' "$f" "$m" "$m" > "$out/cards/teaser-$k.plan"
     cam path "$td" "$out/cards/teaser-$k.plan" --no-camera > "$out/camera/teaser-$k.tsv"
     read -r w h < <(head -1 "$out/camera/teaser-$k.tsv" | sed -E 's/.*; ([0-9]+)x([0-9]+).*/\1 \2/')
@@ -239,7 +239,7 @@ for ((k = 0; k < n; k++)); do
   enc=(-r $FPS -c:v libx264 -pix_fmt yuv420p -crf 20 -preset medium -an)
   if [ "$overlay" = 1 ]; then
     shot "$out/cards/$tag.png" "lower=1&title=$(urlenc "$title")&sub=$(urlenc "$sub")" --default-background-color=00000000
-    filt="[0:v]setsar=1[body];[1:v]format=rgba,fade=t=in:st=0:d=0.25:alpha=1,fade=t=out:st=$(python3 -I -c "print($tsec-0.35)"):d=0.35:alpha=1[ov];[body][ov]overlay=0:0:enable='lt(t,$tsec)',format=yuv420p[o]"
+    filt="[0:v]setsar=1[body];[1:v]format=rgba,fade=t=in:st=0:d=0.25:alpha=1,fade=t=out:st=$("$PY" -I -c "print($tsec-0.35)"):d=0.35:alpha=1[ov];[body][ov]overlay=0:0:enable='lt(t,$tsec)',format=yuv420p[o]"
     cam render "$d" "$out/camera/$tag.tsv" |
       ff "${raw[@]}" -loop 1 -framerate $FPS -t "$tsec" -i "$out/cards/$tag.png" -filter_complex "$filt" -map "[o]" "${enc[@]}" "$out/clips/$tag.mp4"
   else
@@ -265,9 +265,9 @@ rm -f "$list"
 # The shareable mp4: CRF MP4_CRF, or two-pass to fit MP4_MAX_BYTES when that is larger.
 enc_small=(-c:v libx264 -pix_fmt yuv420p -preset slow -an -movflags +faststart)
 ff -i "$out/clax-reel-hq.mp4" "${enc_small[@]}" -crf "$MP4_CRF" "$out/clax-reel.mp4"
-if [ "$(stat -f %z "$out/clax-reel.mp4" 2>/dev/null || stat -c %s "$out/clax-reel.mp4")" -gt "$MP4_MAX_BYTES" ]; then
+if [ "$(wc -c < "$out/clax-reel.mp4" | tr -d " ")" -gt "$MP4_MAX_BYTES" ]; then
   secs="$("$FFPROBE" -v error -show_entries format=duration -of csv=p=0 "$out/clax-reel-hq.mp4")"
-  kbps="$(python3 -I -c "print(int($MP4_MAX_BYTES * 0.97 * 8 / $secs / 1000))")"
+  kbps="$("$PY" -I -c "print(int($MP4_MAX_BYTES * 0.97 * 8 / $secs / 1000))")"
   log "over $MP4_MAX_BYTES bytes at CRF $MP4_CRF: two-pass at ${kbps}k"
   ( cd "$out" && ff -i clax-reel-hq.mp4 "${enc_small[@]}" -b:v "${kbps}k" -pass 1 -passlogfile "$out/x264pass" -f mp4 /dev/null &&
     ff -i clax-reel-hq.mp4 "${enc_small[@]}" -b:v "${kbps}k" -pass 2 -passlogfile "$out/x264pass" clax-reel.mp4 )
@@ -276,7 +276,7 @@ fi
 log "mp4 done"
 
 # cut.json: map each vignette's beats through its speed ramp.
-python3 -I - "$out" "$FFPROBE" "$overlay" "$CARD_SECONDS" "${#prelude[@]}" ${prelude[@]+"${prelude[@]}"} "${dirs[@]}" <<'PY'
+"$PY" -I - "$out" "$FFPROBE" "$overlay" "$CARD_SECONDS" "${#prelude[@]}" ${prelude[@]+"${prelude[@]}"} "${dirs[@]}" <<'PY'
 import json, subprocess, sys
 out, probe, overlay, card = sys.argv[1], sys.argv[2], sys.argv[3] == "1", float(sys.argv[4])
 npre = int(sys.argv[5]); pre = sys.argv[6:6 + npre]; dirs = sys.argv[6 + npre:]
@@ -344,7 +344,7 @@ best=""; bestsize=0
 for dither in none sierra2_4a; do
   g="$out/clax-reel.$dither.gif"
   ff "${inputs[@]}" -i "$pal" -filter_complex "$filt;[all][$n:v]paletteuse=dither=$dither:diff_mode=rectangle[o]" -map "[o]" -loop 0 "$g"
-  sz="$(stat -f %z "$g" 2>/dev/null || stat -c %s "$g")"
+  sz="$(wc -c < "$g" | tr -d " ")"
   log "gif dither=$dither: $sz bytes"
   if [ -z "$best" ] || [ "$sz" -lt "$bestsize" ]; then best="$g"; bestsize="$sz"; fi
 done

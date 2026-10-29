@@ -1,0 +1,10 @@
+coldopen=Ask for a page|One request in the gallery; the agent builds it
+realtime=Work together, live|Teammates see each other’s cursors, drafts and changes
+more=Pages that do more|Live data with the owner’s approval
+history=Every version, kept|Step back through versions and restore one
+claxbot=No agent? Use ClaxBot|Clax’s own agent builds from a brief
+share=Share it|Invite someone; they arrive and comment
+agent=Ask your agent|Draw on the page, ask for more; it delivers
+dash=From raw data to answers|A spreadsheet becomes a forecast dashboard on request
+globe=Ask for anything|A customers table becomes a spinning 3D globe
+game=Build things together|A sketch pad becomes a live multiplayer game
