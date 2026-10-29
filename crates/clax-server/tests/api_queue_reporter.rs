@@ -603,23 +603,23 @@ async fn a_same_origin_read_without_origin_holds_only_on_the_tokens_host() {
             },
         )
         .unwrap();
-    let mint = |origin: String| {
+    async fn mint(s: &Setup, origin: &str) -> Reporter {
         let key = KeyPair::generate();
-        let public = sig::encode_public(&key.public());
-        let s = &s;
-        async move {
-            let res = s
-                .service(
-                    &format!("/api/queues/{}/reporter-tokens", s.qid),
-                    &json!({"reporter_id": "emp-1", "origin": origin, "public_key": public}),
-                )
-                .await;
-            assert_eq!(res.status(), 200);
-            let v: Value = res.json().await.unwrap();
-            Reporter { token: v["token"].as_str().unwrap().to_string(), key }
+        let res = s
+            .service(
+                &format!("/api/queues/{}/reporter-tokens", s.qid),
+                &json!({"reporter_id": "emp-1", "origin": origin,
+                        "public_key": sig::encode_public(&key.public())}),
+            )
+            .await;
+        assert_eq!(res.status(), 200);
+        let v: Value = res.json().await.unwrap();
+        Reporter {
+            token: v["token"].as_str().unwrap().to_string(),
+            key,
         }
-    };
-    let read = |r: &Reporter, site: Option<&str>| {
+    }
+    async fn read(s: &Setup, r: &Reporter, site: Option<&str>) -> reqwest::Response {
         let sig = s.sign(&r.key, "GET", &s.reports(), &r.token, &[]);
         let mut h = vec![
             ("authorization", format!("Clax-Reporter {}", r.token)),
@@ -628,23 +628,22 @@ async fn a_same_origin_read_without_origin_holds_only_on_the_tokens_host() {
         if let Some(v) = site {
             h.push(("sec-fetch-site", v.to_string()));
         }
-        let pq = s.reports();
-        async move { s.send("GET", &pq, &h, vec![]).await }
-    };
-    let here = mint(own).await;
-    assert_eq!(read(&here, Some("same-origin")).await.status(), 200);
+        s.send("GET", &s.reports(), &h, vec![]).await
+    }
+    let here = mint(&s, &own).await;
+    assert_eq!(read(&s, &here, Some("same-origin")).await.status(), 200);
     for site in [None, Some("same-site"), Some("cross-site"), Some("none")] {
         assert_eq!(
-            status_code(read(&here, site).await).await,
+            status_code(read(&s, &here, site).await).await,
             (403, "wrong_origin".into()),
             "{site:?}"
         );
     }
     // A token for another origin holds only with that `Origin`, whatever
     // the browser says of this request.
-    let elsewhere = mint(ORIGIN.into()).await;
+    let elsewhere = mint(&s, ORIGIN).await;
     assert_eq!(
-        status_code(read(&elsewhere, Some("same-origin")).await).await,
+        status_code(read(&s, &elsewhere, Some("same-origin")).await).await,
         (403, "wrong_origin".into())
     );
 }
