@@ -149,12 +149,42 @@ describe("the shell's feedback", () => {
     await expect(tokenAuth()("PUBKEY")).rejects.toMatchObject({ code: "invalid_key" });
   });
 
+  it("sign-out goes on whatever forgetting does: a chunk that fails to load, or a config that never answers", async () => {
+    const { forgetThenSignOut } = await import("../hosted/signout");
+    const signOut = vi.fn(async () => {});
+    await forgetThenSignOut(signOut, () => Promise.reject(new Error("chunk failed")));
+    expect(signOut).toHaveBeenCalledTimes(1);
+    // A config request that hangs is cut off when the injected timer fires.
+    const { forgetFeedback, FORGET_TIMEOUT_MS } = await import("./forget");
+    let fire: (() => void) | null = null;
+    const delays: number[] = [];
+    const timer = (ms: number, fn: () => void) => { delays.push(ms); fire = fn; return () => { fire = null; }; };
+    const load = vi.fn();
+    const hung = forgetThenSignOut(signOut, async () => ({ forgetFeedback: () => forgetFeedback({ config: () => new Promise(() => {}), load, timer, running: async () => null }) }));
+    await settle();
+    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(delays).toEqual([FORGET_TIMEOUT_MS]);
+    fire!();
+    await hung;
+    expect(signOut).toHaveBeenCalledTimes(2);
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("sign-out forgets through the running overlay when there is one", async () => {
+    const { forgetFeedback } = await import("./forget");
+    const fake = fakeClax();
+    const live = { forget: vi.fn(async () => {}) };
+    await forgetFeedback({ config: async () => CONFIG, load: async () => fake.Clax, running: async () => live });
+    expect(live.forget).toHaveBeenCalledTimes(1);
+    expect(fake.Clax.forgetReporter).not.toHaveBeenCalled();
+  });
+
   it("sign-out forgets the person's reporter key and token through Clax.forgetReporter", async () => {
     const { forgetFeedback } = await import("./forget");
     const fake = fakeClax();
     const loads: string[] = [];
     const load = async (_: Document, instance: string) => { loads.push(instance); return fake.Clax; };
-    await forgetFeedback({ config: async () => CONFIG, load });
+    await forgetFeedback({ config: async () => CONFIG, load, running: async () => null });
     expect(loads).toEqual(["https://clax.dev"]);
     expect(fake.Clax.forgetReporter).toHaveBeenCalledWith({ instance: "https://clax.dev", queue: "q_feedback", user: "p_ana" });
     // A person who may not report: no overlay is loaded.

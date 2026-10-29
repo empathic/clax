@@ -135,6 +135,8 @@ export class Feedback {
     fn(this.badge);
     return () => { this.listeners.delete(fn); };
   }
+  /** Forgets the person's reporter key and token (sign-out). */
+  forget(): Promise<void> { return this.handle.forget(); }
   /** Removes the key and the overlay. */
   close(): void {
     this.win.removeEventListener("keydown", this.onKey);

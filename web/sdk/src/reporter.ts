@@ -142,7 +142,7 @@ export class ReporterClient {
   private store: ReporterStore | null;
   /** The key as kept, for saving it again with a new token. */
   private kept: Kept | undefined;
-  /** A refused key was replaced once already. */
+  /** A refused key was replaced since the last successful mint. */
   private rekeyed = false;
 
   constructor(private readonly opts: ReporterOptions) {
@@ -362,6 +362,8 @@ export class ReporterClient {
         const expiresAt = Date.parse(got.expires_at);
         if (!got.token || Number.isNaN(expiresAt)) throw new Error("auth gave no reporter token");
         this.token = { token: got.token, expiresAt };
+        // A key that worked: a later refusal of it may be replaced again.
+        this.rekeyed = false;
         if (this.kept) await this.keep({ privateKey: this.kept.privateKey, publicKey: this.kept.publicKey, token: this.token });
         return this.token;
       } finally {
