@@ -5,7 +5,7 @@
   "packageManager": "pnpm@12.3.4",
   "type": "module",
   "scripts": {
-    "build": "node scripts/clean-dist.mjs && node scripts/build-parts.mjs && vite build -c vite.bridge.config.ts && vite build -c vite.transport.config.ts && vite build -c vite.shell.config.ts && vite build -c vite.overlay.config.ts && node scripts/build-legal.mjs && node scripts/build-extension.mjs && node scripts/build-quickstart.mjs && node scripts/build-sdk.mjs",
+    "build": "node scripts/clean-dist.mjs && node scripts/build-parts.mjs && vite build -c vite.bridge.config.ts && vite build -c vite.transport.config.ts && vite build -c vite.shell.config.ts && vite build -c vite.overlay.config.ts && node scripts/build-legal.mjs && node scripts/build-extension.mjs && node scripts/build-quickstart.mjs",
     "build:sdk": "node scripts/build-sdk.mjs",
     "build:e2e": "node scripts/build-e2e.mjs",
     "bundle-size": "node scripts/bundle-size.mjs",

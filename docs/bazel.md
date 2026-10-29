@@ -211,9 +211,9 @@ what its tests read. `//crates/clax-cli:clax_warm` runs the binary once
 ("macOS first runs"); `//crates/clax-cli:clax_opt` is the optimized build
 (`bazel/opt.bzl`) the perf benchmarks run and `--ci` builds, as the native
 checks build the release binary. `//web:dist` (with `dist_extension`,
-`dist_extension_test`, `dist_e2e`) is the web build, and `//web:dist_sdk`
-the SDK package; `//web:lint`, `//web:typecheck`, `//web:unit`,
-`//web:bundle_size`, `//web:sdk_package`,
+`dist_extension_test`, `dist_e2e`) is the web build, and `//web:dist_sdk`,
+an action of its own, the SDK package; `//web:lint`, `//web:typecheck`,
+`//web:unit`, `//web:bundle_size`, `//web:sdk_package`,
 `//plugins/pi:typecheck` and `//plugins/pi:test` the web and Pi checks;
 `//scripts:*` the script gates. `//crates/clax-worker:bundle` is the
 Worker as wrangler deploys it, and `//bazel/wasm:check` builds the crates a
@@ -608,7 +608,8 @@ Performance gates nothing in either (`just perf` measures on demand).
 | `quality_gates.sh` gate | Under Bazel (`--ci`) |
 |---|---|
 | web pnpm install, pi pnpm install | `scripts/pnpm-lock-check.py web plugins/pi`; rules_js installs from each lockfile |
-| web build | `//web:dist`, `//web:dist_extension` (inputs of the tests and the binaries that embed them), `//web:dist_sdk` |
+| web build | `//web:dist`, `//web:dist_extension` (inputs of the tests and the binaries that embed them) |
+| web sdk build | `//web:dist_sdk` (its own action, an input of `//web:sdk_package` and `//web:bundle_size`) |
 | web unit | `//web:unit` |
 | web bundle size | `//web:bundle_size` |
 | web sdk package | `//web:sdk_package` |

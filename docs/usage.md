@@ -632,9 +632,10 @@ as `/_clax/overlay.js`) and `@empathic/clax-sdk/service` (`ServiceClient`,
 for a backend only). Its license is LGPL-2.1-only, that of `web/sdk`,
 `web/overlay` and `web/bridge`.
 
-- `just web` builds it with the rest of the web build (`//web:dist_sdk`
-  under Bazel, copied into `web/dist-sdk`), as does `pnpm run build` in
-  `web/`. `pnpm run build:sdk` builds the package alone.
+- `just web` builds it beside the web build (`//web:dist_sdk` under Bazel,
+  copied into `web/dist-sdk`); `pnpm run build:sdk` in `web/` builds it
+  alone. `pnpm run build`, the web UI the binary embeds, does not build it,
+  so a failure of the package's build fails no build of `clax`.
 - `node scripts/build-sdk.mjs --watch`, in `web/`, rebuilds it on every
   change to its sources. `just watch` runs it natively; with Bazel it does
   not, so run `just web` again after a change (or the watch command, with

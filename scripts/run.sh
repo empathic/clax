@@ -338,7 +338,7 @@ _native() {
                 _run env CLAX_PERF_JSON="$PERF_JSON" CLAX_PERF_BIN="$PWD/target/release/clax" ./scripts/perf-daemon.sh &&
                 _run env CLAX_PERF_JSON="$PERF_JSON" CLAX_PERF_BIN="$PWD/target/release/clax" ./scripts/perf-clients.sh &&
                 _run env CLAX_PERF_JSON="$PERF_JSON" bash -c 'cd web && pnpm exec playwright install chromium >/dev/null && pnpm run perf' &&
-                _run env CLAX_PERF_JSON="$PERF_JSON" bash -c 'cd web && node scripts/bundle-size.mjs'
+                _run env CLAX_PERF_JSON="$PERF_JSON" bash -c 'cd web && pnpm run build:sdk && node scripts/bundle-size.mjs'
             local status=$?
             _perf_app_launch
             return "$status"
@@ -360,7 +360,10 @@ _native() {
                 _install "$PWD/target/release/clax"
             ;;
         rust-project) echo "Natively rust-analyzer reads Cargo.toml: nothing to generate." ;;
-        web) _run bash -c 'cd web && pnpm install --frozen-lockfile' && _run ./scripts/build-web.sh ;;
+        web)
+            _run bash -c 'cd web && pnpm install --frozen-lockfile' && _run ./scripts/build-web.sh &&
+                _run bash -c 'cd web && pnpm run build:sdk'
+            ;;
         app-test)
             _run ./scripts/build-home-bundle.sh --i-know-what-i-am-doing &&
                 _run bash -c 'cd apps/clax_app && tool/check.sh'

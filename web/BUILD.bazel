@@ -92,22 +92,19 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
-# pnpm run build: the web UI, the extension, the extension's test build and
-# the SDK package.
+# pnpm run build: the web UI, the extension and the extension's test build.
 npm_script_build(
     name = "dist_all",
     srcs = [
         ":files_app",
         ":node_modules",
         "//:cargo_toml",
-        "//:lgpl_license",
         "//docs:legal",
     ],
     out_dirs = [
         "dist",
         "dist-extension",
         "dist-extension-test",
-        "dist-sdk",
     ],
     script = "build",
     visibility = ["//visibility:public"],
@@ -134,11 +131,20 @@ pick_dir(
     visibility = ["//visibility:public"],
 )
 
-# The SDK package, @empathic/clax-sdk (scripts/build-sdk.mjs).
-pick_dir(
+# pnpm run build:sdk: the SDK package, @empathic/clax-sdk
+# (scripts/build-sdk.mjs), an action of its own so that no web build the
+# binaries embed runs it. It reads the workspace version from Cargo.toml and
+# carries the license text of web/bridge, web/overlay and web/sdk.
+npm_script_build(
     name = "dist_sdk",
-    dir = "dist-sdk",
-    src = ":dist_all",
+    srcs = [
+        ":files_app",
+        ":node_modules",
+        "//:cargo_toml",
+        "//:lgpl_license",
+    ],
+    out_dirs = ["dist-sdk"],
+    script = "build:sdk",
     visibility = ["//visibility:public"],
 )
 
