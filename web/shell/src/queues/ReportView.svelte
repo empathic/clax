@@ -164,8 +164,12 @@
   }
 
   onMount(() => {
-    void load();
+    void refresh();
+    // The topic's first `ready` is its going live as the view opens, which
+    // the fetch above covers; a later one is the stream coming back.
+    let opened = false;
     return p.stream?.watch([queueTopic(p.qid)], e => {
+      if (e.type === "ready" && !opened) { opened = true; return; }
       if (e.type === "ready" || e.type === "resync" || (e.type === "report" && e.report_id === p.tid)) void refresh();
     });
   });

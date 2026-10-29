@@ -126,6 +126,49 @@ describe("QueueView", () => {
     expect(calls.length).toBe(2);
   });
 
+  it("fetches once on open: its topic going live does not fetch again, the stream coming back does", async () => {
+    const calls = stubFetch({ [`GET ${LIST}?state=active&order=newest`]: { reports: [report(1)], next: null } });
+    const handlers: ((e: { type: string; topic?: string }) => void)[] = [];
+    const stream = { watch: (_t: string[], f: (typeof handlers)[number]) => { handlers.push(f); return () => {}; } };
+    const m = mount(QueueView, { qid: "q1", queue: QUEUE, nav: () => {}, stream: stream as never });
+    const sent = (e: Parameters<(typeof handlers)[number]>[0]) => flush(() => { for (const h of handlers) h(e); });
+    // The topic goes live while the first page is out.
+    sent({ type: "ready", topic: "queue:q1" });
+    await settle();
+    expect(ids(m.root)).toEqual(["t1"]);
+    expect(calls.length).toBe(1);
+    sent({ type: "ready", topic: "queue:q1" });
+    await settle();
+    expect(calls.length).toBe(2);
+  });
+
+  it("refetches once after Load more answers when a change came while it was out", async () => {
+    const urls: string[] = [];
+    let held = true;
+    let answer!: () => void;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      urls.push(url);
+      if (url.includes("cursor=t2") && held) { held = false; await new Promise<void>(r => { answer = r; }); }
+      const body = url.includes("cursor=") ? { reports: [report(1)], next: null } : { reports: [report(3), report(2)], next: "t2" };
+      return new Response(JSON.stringify(body));
+    }));
+    const handlers: ((e: { type: string; topic?: string; [k: string]: unknown }) => void)[] = [];
+    const stream = { watch: (_t: string[], f: (typeof handlers)[number]) => { handlers.push(f); return () => {}; } };
+    const m = mount(QueueView, { qid: "q1", queue: QUEUE, nav: () => {}, stream: stream as never });
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Load more"));
+    await settle();
+    flush(() => { for (const h of handlers) h({ type: "report", topic: "queue:q1", report_id: "t3", state: "claimed" }); });
+    flush(() => { for (const h of handlers) h({ type: "report", topic: "queue:q1", report_id: "t2", state: "claimed" }); });
+    await settle();
+    expect(urls.length).toBe(2);
+    answer();
+    await settle();
+    expect(ids(m.root)).toEqual(["t3", "t2", "t1"]);
+    // Both pages once more, and nothing after.
+    expect(urls.slice(2)).toEqual([`${LIST}?state=active&order=newest`, `${LIST}?state=active&order=newest&cursor=t2`]);
+  });
+
   it("opens on the tab the address names", async () => {
     history.replaceState(null, "", "/queues/q1?state=resolved");
     stubFetch({ [`GET ${LIST}?state=resolved&order=newest`]: { reports: [], next: null } });
