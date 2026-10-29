@@ -1723,6 +1723,75 @@ async fn under_all_another_reporters_diagnostics_are_not_found() {
     assert_eq!(status_code(res).await, (400, "invalid_query".into()));
 }
 
+/// Under `reporters_see: all`, another reporter's report comes without its
+/// context or any verdict's context (the filer's browser, page and flags):
+/// those stay the filer's and triage's, as its diagnostics do.
+#[tokio::test]
+async fn under_all_another_reporters_context_is_left_out() {
+    let s = Setup::new().await;
+    s.ts.store
+        .update_queue(
+            &AuditCtx::DAEMON,
+            &s.qid,
+            clax_store::queues::QueuePatch {
+                reporters_see: Some(ReportersSee::All),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let a = s.reporter("emp-a").await;
+    let b = s.reporter("emp-b").await;
+    let ctx = context("https://app.example/orders/7");
+    let res = s.file_with(&a, &[("context", Part::Text(&ctx))]).await;
+    assert_eq!(res.status(), 201);
+    let v: Value = res.json().await.unwrap();
+    let tid = v["report"]["id"].as_str().unwrap().to_string();
+    s.propose(&tid);
+    let verdict: Value = serde_json::from_str(&ctx).unwrap();
+    let res = s
+        .post_as(
+            &a,
+            &format!("{}/{tid}/verify", s.reports()),
+            &json!({"context": verdict}),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+
+    let comments = format!("{}/{tid}/comments", s.reports());
+    for (who, own) in [(&a, true), (&b, false)] {
+        let list: Value = s.get_as(who, &s.reports()).await.json().await.unwrap();
+        let res = s.post_as(who, &comments, &json!({"body": "Same here"})).await;
+        assert_eq!(res.status(), 200);
+        let replied: Value = res.json().await.unwrap();
+        for report in [&list["reports"][0], &replied["report"]] {
+            assert_eq!(report["id"], json!(tid), "{report}");
+            assert_eq!(report["fixes"].as_array().unwrap().len(), 1, "{report}");
+            if own {
+                assert_eq!(report["context"]["release"]["commit"], "f7e862ab0");
+                assert_eq!(
+                    report["fixes"][0]["verdict_context"]["release"]["commit"],
+                    "f7e862ab0"
+                );
+            } else {
+                assert!(report.get("context").is_none(), "{report}");
+                assert!(
+                    report["fixes"][0].get("verdict_context").is_none(),
+                    "{report}"
+                );
+                assert!(!report.to_string().contains("variant-b"), "{report}");
+            }
+        }
+    }
+    // Triage reads both.
+    let (st, v) = s.triage("GET", &s.triage_report(&tid, ""), None).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["report"]["context"]["release"]["commit"], "f7e862ab0");
+    assert_eq!(
+        v["report"]["fixes"][0]["verdict_context"]["release"]["commit"],
+        "f7e862ab0"
+    );
+}
+
 #[tokio::test]
 async fn a_filing_at_full_size_fits_and_one_byte_more_is_too_large() {
     use clax_core::report::{MAX_CONTEXT_BYTES, MAX_DIAG_BYTES, MAX_DIAG_LINES};
