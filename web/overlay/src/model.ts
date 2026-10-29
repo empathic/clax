@@ -253,9 +253,11 @@ export function defaultShapes(c: Captured): Shape[] {
   return [{ kind: "box", from: { x, y }, to: { x: x + w, y: y + h } }];
 }
 
-/** Where a capture's image shows the page, when it has one. */
+/** Where a capture's image shows the page, and its size, when it has one. */
 function placementOf(c: Captured): Placement | null {
-  return c.png && c.at ? { at: c.at, scale: c.scale, w: c.at.w * c.scale, h: c.at.h * c.scale } : null;
+  if (!c.png || !c.at) return null;
+  // The decoded PNG's own size where its header gives it: the bounds marks are kept within.
+  return { at: c.at, scale: c.scale, w: c.size?.w ?? c.at.w * c.scale, h: c.size?.h ?? c.at.h * c.scale };
 }
 
 /** The reporter's `shapes` on capture `from`, moved onto capture `to` (the

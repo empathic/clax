@@ -51,4 +51,12 @@ export interface OverlayOptions {
   /** The page's artifact. Default: `<meta name="clax-artifact">`'s content,
    * else none, and the instance files the report on the page URL without its route. */
   externalId?: string;
+  /** The nonce the page's Content-Security-Policy gives its own inline
+   * styles, on a page whose `style-src` refuses 'unsafe-inline' (or any
+   * strict string, such as `"strict"`, where it uses hashes). The overlay
+   * styles itself without inline style; given this, its page renders
+   * (clips) are drawn without the page's web fonts from the first, as reading
+   * them takes an inline <style> such a policy refuses, so the overlay trips
+   * no violation. A policy in a `<meta http-equiv>` is read without it. */
+  nonce?: string;
 }
