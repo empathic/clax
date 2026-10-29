@@ -67,5 +67,7 @@
   { "in": "mail ahk@example.com from https://a.example/u/ahk@example.com?ref=mail", "out": "mail ‹redacted› from https://a.example/u/‹redacted›?ref=‹redacted›" },
   { "in": "https:// alone", "out": "https:// alone" },
   { "in": "at render (https://app.example/a.js?v=9f2c:12:7)", "out": "at render (https://app.example/a.js?v=‹redacted›:12:7)" },
-  { "in": "GET http://localhost:5173/api?x=1 refused", "out": "GET http://localhost:5173/api?x=‹redacted› refused" }
+  { "in": "GET http://localhost:5173/api?x=1 refused", "out": "GET http://localhost:5173/api?x=‹redacted› refused" },
+  { "in": "paid at https://shop.example/pay?card=4111:1111:1111", "out": "paid at https://shop.example/pay?card=‹redacted›" },
+  { "in": "call https://tel.example/?pin=ab:5551234567 now", "out": "call https://tel.example/?pin=‹redacted› now" }
 ]

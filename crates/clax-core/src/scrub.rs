@@ -18,7 +18,9 @@
 //! **URLs**: `http://` or `https://` starting a word, then a maximal run of
 //! characters that are neither ASCII whitespace nor one of
 //! ``" ' < > ` ``, less any of `. , ; : ! ? ) ] }` at its end and then
-//! up to two `:` and digits (a stack frame's line and column). The URL is
+//! up to two `:` and 1 to 5 digits (a stack frame's line and column), when
+//! the character before them is not a digit (so `?card=4111:1111:1111`
+//! stays whole). The URL is
 //! replaced by its [`scrub_url`] form (its query values replaced, its path
 //! scrubbed, any user name and password replaced), and the scan resumes
 //! after it.
@@ -240,15 +242,20 @@ fn url_at(b: &[u8], i: usize) -> Option<usize> {
         end -= 1;
     }
     // A stack frame's `:line:column` follows the script's URL.
+    let from = i + scheme.len();
+    let mut cut = end;
     for _ in 0..2 {
-        let mut d = end;
-        while d > i + scheme.len() && b[d - 1].is_ascii_digit() {
+        let mut d = cut;
+        while d > from && b[d - 1].is_ascii_digit() {
             d -= 1;
         }
-        if d == end || d <= i + scheme.len() || b[d - 1] != b':' {
+        if !(1..=5).contains(&(cut - d)) || d <= from || b[d - 1] != b':' {
             break;
         }
-        end = d - 1;
+        cut = d - 1;
+    }
+    if cut < end && !b[cut - 1].is_ascii_digit() {
+        end = cut;
     }
     Some(end)
 }

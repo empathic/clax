@@ -187,12 +187,15 @@ function urlAt(s: string, i: number): number | null {
   let end = runEnd(s, from, c => !(isWs(c) || urlStop(c)));
   while (end > from && urlTrail(s.charCodeAt(end - 1))) end--;
   // A stack frame's `:line:column` follows the script's URL.
+  let cutAt = end;
   for (let n = 0; n < 2; n++) {
-    let d = end;
+    let d = cutAt;
     while (d > from && isDigit(s.charCodeAt(d - 1))) d--;
-    if (d === end || d <= from || s[d - 1] !== ":") break;
-    end = d - 1;
+    const digits = cutAt - d;
+    if (digits < 1 || digits > 5 || d <= from || s[d - 1] !== ":") break;
+    cutAt = d - 1;
   }
+  if (cutAt < end && !isDigit(s.charCodeAt(cutAt - 1))) end = cutAt;
   return end;
 }
 
