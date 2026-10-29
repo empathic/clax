@@ -3744,6 +3744,12 @@ verdict_context?, verdict_at?}]`, oldest first; `outcome` is `pending`,
 carries `capture` (the reopen's number, the filing being capture 0),
 `has_clip` and `diagnostics_lines`.
 
+| Field | Triage | The reporter that filed it | Another reporter (`reporters_see: all`) |
+|---|---|---|---|
+| `context`, `fixes[].verdict_context` | yes | yes | absent |
+| `reporter_profile` | yes | absent | absent |
+| diagnostics (`…/diagnostics`) | yes | yes | 404 `not_found` |
+
 **Context.** A JSON object, at most 16 KiB written compact: `v` (1),
 `captured_at` (RFC 3339), `release?` (`{id?, version?, commit?,
 channel?}`, strings), `flags?` (values booleans, numbers or strings),

@@ -303,7 +303,8 @@ pub struct Report {
     pub claim: Option<Claim>,
     pub created_at: String,
     /// What the reporter's browser said at capture (feedback-loop §5.1);
-    /// absent on a report filed without one.
+    /// absent on a report filed without one, and on a report served to a
+    /// reporter that did not file it (`reporters_see: all`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<ReportContext>,
     /// The receiving server's stamp (feedback-loop §5.1); absent on a

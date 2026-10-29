@@ -80,7 +80,8 @@ export interface Report {
   comments: ReportComment[];
   claim: ReportClaim | null;
   created_at: string;
-  /** What the reporter's browser said at capture; absent when none was sent. */
+  /** What the reporter's browser said at capture; absent when none was
+   * sent, and on a report served to a reporter that did not file it. */
   context?: ReportContext;
   /** The receiving server's stamp; absent on a report filed without one. */
   server?: ServerStamp;
@@ -102,7 +103,9 @@ export interface Report {
  * 2026-10-29-feedback-loop-design §5.1): at most 16 KiB as compact JSON,
  * with no top-level key but these (else 400 `invalid_context`). Clax
  * scrubs `environment.url`, `environment.route`, `environment.title` and
- * every string of `app` again on receipt. */
+ * every string of `app` again on receipt. Served to triage and to the
+ * reporter that filed the report; another reporter (`reporters_see: all`)
+ * is served the report without it, and without any verdict's context. */
 export interface ReportContext {
   /** The shape's version: 1. */
   v: 1;
@@ -201,7 +204,8 @@ export interface FixAttempt {
   created_at: string;
   outcome: FixOutcome;
   verdict_note?: string;
-  /** The verdict-giver's browser context at the verdict. */
+  /** The verdict-giver's browser context at the verdict; absent on a
+   * report served to a reporter that did not file it. */
   verdict_context?: ReportContext;
   verdict_at?: string;
 }

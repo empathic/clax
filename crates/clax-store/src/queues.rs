@@ -567,16 +567,24 @@ struct FixRow {
     verdict_at: Option<String>,
 }
 
-/// The report views of `rows`, read on `c` at `now`; with the reporter's
-/// profile only `with_profile` (a member's read, never a reporter's).
+/// The report views of `rows` as `vis` reads them, on `c` at `now`: the
+/// reporter's profile only for a member ([`Visibility::All`]), never a
+/// reporter; the filing's context and each verdict's context only for a
+/// member and for the reporter that filed the report, never another
+/// reporter (`reporters_see: all`), as its diagnostics are.
 fn reports_of(
     c: &Connection,
     rows: Vec<ReportRow>,
     now: &str,
-    with_profile: bool,
+    vis: Visibility<'_>,
 ) -> Result<Vec<Report>> {
+    let with_profile = vis == Visibility::All;
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
+        let own = match vis {
+            Visibility::All => true,
+            Visibility::Reporter(r) => row.reporter_id.as_deref() == Some(r),
+        };
         let artifact = c
             .prepare_cached(&format!(
                 "{EXTERNAL_SELECT} WHERE x.artifact_id = (SELECT artifact_id FROM threads WHERE id = ?1)"
@@ -620,7 +628,12 @@ fn reports_of(
                 expires_at: cur.expires_at,
             });
         let state = state_of(&row.status, row.phase.as_deref(), claim.is_some());
-        let fixes = fixes_in(c, &artifact.artifact_id, &row.id)?;
+        let mut fixes = fixes_in(c, &artifact.artifact_id, &row.id)?;
+        if !own {
+            for f in &mut fixes {
+                f.verdict_context = None;
+            }
+        }
         out.push(Report {
             id: row.id,
             queue_id: row.queue_id,
@@ -638,11 +651,15 @@ fn reports_of(
             comments,
             claim,
             created_at: row.created_at,
-            context: from_json(
-                row.context_json.as_deref(),
-                &artifact.artifact_id,
-                "threads.report_context_json",
-            )?,
+            context: if own {
+                from_json(
+                    row.context_json.as_deref(),
+                    &artifact.artifact_id,
+                    "threads.report_context_json",
+                )?
+            } else {
+                None
+            },
             server: from_json(
                 row.server_json.as_deref(),
                 &artifact.artifact_id,
@@ -680,7 +697,7 @@ fn report_in(
         .prepare_cached(&format!("{REPORT_SELECT} AND t.id = ?3 {filter}"))?
         .query_row(params![q.id, now, tid, reporter], report_row)
         .optional()?;
-    Ok(reports_of(c, row.into_iter().collect(), now, vis == Visibility::All)?.pop())
+    Ok(reports_of(c, row.into_iter().collect(), now, vis)?.pop())
 }
 
 /// Whether report `tid` of queue `q` is one `vis` sees, on `c`.
@@ -1621,7 +1638,7 @@ impl Store {
             } else {
                 None
             };
-            Ok((reports_of(c, rows, &now, vis == Visibility::All)?, next))
+            Ok((reports_of(c, rows, &now, vis)?, next))
         })
     }
 
