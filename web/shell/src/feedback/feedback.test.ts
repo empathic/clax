@@ -150,7 +150,7 @@ describe("the shell's feedback", () => {
   });
 
   it("sign-out forgets the person's reporter key and token through Clax.forgetReporter", async () => {
-    const { forgetFeedback } = await import("./boot");
+    const { forgetFeedback } = await import("./forget");
     const fake = fakeClax();
     const loads: string[] = [];
     const load = async (_: Document, instance: string) => { loads.push(instance); return fake.Clax; };

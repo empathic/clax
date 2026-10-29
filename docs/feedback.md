@@ -286,7 +286,7 @@ Both refusals are 429 `limit_reached`, with `Retry-After`.
   running (it needs only the script), before your sign-out ends the
   session. It deletes that user's kept key and token, so the next person to
   sign in on that browser shares neither. clax.dev's shell does this on
-  both of its sign-outs (`forgetFeedback` in `web/shell/src/feedback/boot.ts`).
+  both of its sign-outs (`forgetFeedback` in `web/shell/src/feedback/forget.ts`).
 - **Tokens are still minted:**
   - the first time a user loads the overlay in a browser;
   - every 15 minutes of use after that;
