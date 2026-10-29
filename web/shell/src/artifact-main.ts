@@ -1,4 +1,5 @@
 import { mountArtifactView } from "./artifact";
+import { bootFeedback } from "./feedback/boot";
 import { appQuery, inspectQuery, parseShellPath } from "./route";
 import { loadMoreMenu } from "./ui/more-menu.svelte";
 import { allowSidebarPrefetch } from "./ui/sidebar-chunk";
@@ -15,6 +16,9 @@ if (r.kind === "artifact") {
   // threads are hidden (not for a deleted artifact), so the first Threads tap
   // shows them at once.
   if (!inspecting) allowSidebarPrefetch();
+  // Reporting a problem with Clax (`feedback/`), asked first so the
+  // overlay's recorder starts as early as it can; not in the inspect view.
+  if (!inspecting) bootFeedback();
   const mount = mountArtifactView(document.getElementById("app")!, { id: r.id, pinnedVersion: r.version, file: r.file }, { boot: readBoot(), early: () => takeEarly() });
   // The Clax app's view (`?app=1`, and its inspect view): its host module,
   // with its styles, loads only here, so a browser's view carries none of it.

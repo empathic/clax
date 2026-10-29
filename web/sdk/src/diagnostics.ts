@@ -36,9 +36,10 @@ export interface DiagnosticsOptions {
   now?: () => number;
   /** The most lines kept. Default and ceiling: `MAX_DIAG_LINES`. */
   max?: number;
-  /** A Clax instance's base URL: requests to its origin are not recorded.
-   * A signed request (one with a `Clax-Signature` header) is never
-   * recorded, wherever it goes. */
+  /** A Clax instance's base URL: the SDK's own requests to it (its
+   * `/_clax/` files and its `/api/queues/<qid>/reporter…` routes) are not
+   * recorded; the page's other requests to it are. A signed request (one
+   * with a `Clax-Signature` header) is never recorded, wherever it goes. */
   instance?: string;
 }
 
@@ -55,6 +56,9 @@ interface DiagWindow {
 interface Installed extends Recorder {
   ignore(origin: string): void;
 }
+
+/** The paths of an instance's that are the SDK's own traffic. */
+const SDK_PATH = /^\/(_clax\/|api\/queues\/[^/]+\/reporter)/;
 
 /** Where a window's recorder is kept, shared by every copy of the SDK on the page. */
 const KEY = Symbol.for("clax.diagnostics");
@@ -104,11 +108,18 @@ export function installDiagnostics(win: Window, opts: DiagnosticsOptions = {}): 
     }
   };
 
-  /** Whether a request to `url` is the SDK's own, or the instance's. */
+  /** Whether a request to `url` is the SDK's own: signed, or to an
+   * instance's overlay files or reporter routes. Any other request to the
+   * instance is the page's (on an instance that is its own product, every
+   * request of the page goes there). */
   const skipped = (url: string, signed: boolean) => {
     if (signed) return true;
-    const o = originOf(url, w.location.href);
-    return o !== null && ignored.has(o);
+    try {
+      const u = new URL(url, w.location.href);
+      return ignored.has(u.origin) && SDK_PATH.test(u.pathname);
+    } catch {
+      return false;
+    }
   };
   /** `url` as a line names it. */
   const target = (url: string) => {

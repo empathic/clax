@@ -19,7 +19,10 @@
 //! A service request is server to server: one carrying an `Origin` or a
 //! cookie is 403 `forbidden_origin`. A reporter request must carry exactly
 //! one `Origin`, equal to the token's and still among the queue's origins
-//! (403 `wrong_origin` otherwise, a missing one included). [`cors`] answers
+//! (403 `wrong_origin` otherwise, a missing one included), or, a browser's
+//! same-origin read carrying none, come from that origin's own pages
+//! (a `GET` or `HEAD` with `Sec-Fetch-Site: same-origin`, the token
+//! origin's `Host`, and the instance's own scheme). [`cors`] answers
 //! a reporter route's cross-origin reads for the queue's origins alone.
 
 use crate::agent;
@@ -94,6 +97,38 @@ fn wrong_origin() -> Refusal {
         "a reporter token is accepted only from the origin it was minted for",
     )
     .into()
+}
+
+/// Whether a request that carries no `Origin` is a browser's from a page
+/// of `origin` on this very host: a browser leaves `Origin` off a
+/// same-origin `GET` or `HEAD`, and says so in the one
+/// `Sec-Fetch-Site: same-origin` (a header no page can set); the request's
+/// one `Host`, which the signature covers, must then be `origin`'s host and
+/// port, and `origin`'s scheme the one the instance serves (`own`, its
+/// public origin). This is the instance's own pages reading from it (an
+/// instance that is its own integrating product, `docs/prod.md`).
+fn same_origin_as(method: &Method, headers: &HeaderMap, origin: &str, own: &str) -> bool {
+    if method != Method::GET && method != Method::HEAD {
+        return false;
+    }
+    let one = |name: &str| {
+        let mut v = headers.get_all(name).iter();
+        match (v.next(), v.next()) {
+            (Some(v), None) => v.to_str().ok(),
+            _ => None,
+        }
+    };
+    let scheme = |o: &str| {
+        o.split_once("://")
+            .map(|(s, rest)| (s.to_ascii_lowercase(), rest.to_string()))
+    };
+    let (Some((scheme_of, authority)), Some((own_scheme, _))) = (scheme(origin), scheme(own))
+    else {
+        return false;
+    };
+    scheme_of == own_scheme
+        && one("sec-fetch-site") == Some("same-origin")
+        && one(header::HOST.as_str()).is_some_and(|h| h.eq_ignore_ascii_case(&authority))
 }
 
 /// The one `Authorization` value of the request, when its scheme is
@@ -246,7 +281,8 @@ impl<const LIMIT: usize> FromRequest<AppState> for ReporterCaller<LIMIT> {
     /// # Errors
     /// 401 `invalid_token` for another credential, an unknown token, one
     /// whose grant was revoked, or another queue's; 401 `token_expired`;
-    /// 403 `wrong_origin` for an `Origin` other than the token's, none, or
+    /// 403 `wrong_origin` for an `Origin` other than the token's, none (but
+    /// for a same-origin browser request to the token origin's host), or
     /// one the queue no longer lists; 401 `invalid_signature`,
     /// `stale_request` or `replayed_request`; 429 `limit_reached`; 413
     /// `body_too_large`.
@@ -269,11 +305,17 @@ impl<const LIMIT: usize> FromRequest<AppState> for ReporterCaller<LIMIT> {
             .await?;
         let (t, origins) = found.ok_or_else(invalid_token)?;
         let mut sent = parts.headers.get_all(header::ORIGIN).iter();
-        let origin = match (sent.next(), sent.next()) {
-            (Some(o), None) => o.to_str().ok(),
-            _ => None,
+        let from_origin = match (sent.next(), sent.next()) {
+            (Some(o), None) => o.to_str().ok() == Some(t.origin.as_str()),
+            (None, _) => same_origin_as(
+                &parts.method,
+                &parts.headers,
+                &t.origin,
+                &crate::site_access::public_origin(s),
+            ),
+            _ => false,
         };
-        if origin != Some(t.origin.as_str()) || !origins.contains(&t.origin) {
+        if !from_origin || !origins.contains(&t.origin) {
             return Err(wrong_origin());
         }
         let key = sig::decode_public(&t.public_key).map_err(|e| grant_auth::refuse(e, &s.store))?;
@@ -349,6 +391,89 @@ pub async fn cors(State(s): State<AppState>, req: Request, next: Next) -> Respon
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Headers of a browser's same-origin request to `host`.
+    fn same_origin_to(host: &'static str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(header::HOST, HeaderValue::from_static(host));
+        h.insert("sec-fetch-site", HeaderValue::from_static("same-origin"));
+        h
+    }
+
+    #[test]
+    fn a_same_origin_read_needs_get_or_head_one_mark_one_host_and_the_scheme() {
+        let o = "https://clax.example";
+        let h = same_origin_to("clax.example");
+        assert!(same_origin_as(&Method::GET, &h, o, "https://clax.example"));
+        assert!(same_origin_as(&Method::HEAD, &h, o, "https://clax.example"));
+        // A browser sends `Origin` on every other method.
+        assert!(!same_origin_as(
+            &Method::POST,
+            &h,
+            o,
+            "https://clax.example"
+        ));
+        assert!(!same_origin_as(
+            &Method::DELETE,
+            &h,
+            o,
+            "https://clax.example"
+        ));
+        // The instance serves http: a token for https on its host is not its pages'.
+        assert!(!same_origin_as(&Method::GET, &h, o, "http://clax.example"));
+        assert!(!same_origin_as(
+            &Method::GET,
+            &h,
+            "http://clax.example",
+            "https://clax.example"
+        ));
+        // Another host or port.
+        assert!(!same_origin_as(
+            &Method::GET,
+            &h,
+            "https://clax.example:8443",
+            "https://clax.example"
+        ));
+        assert!(!same_origin_as(
+            &Method::GET,
+            &same_origin_to("other.example"),
+            o,
+            "https://clax.example"
+        ));
+        // Two marks, or two hosts, are none.
+        let mut two = h.clone();
+        two.append("sec-fetch-site", HeaderValue::from_static("same-origin"));
+        assert!(!same_origin_as(
+            &Method::GET,
+            &two,
+            o,
+            "https://clax.example"
+        ));
+        let mut hosts = h.clone();
+        hosts.append(header::HOST, HeaderValue::from_static("clax.example"));
+        assert!(!same_origin_as(
+            &Method::GET,
+            &hosts,
+            o,
+            "https://clax.example"
+        ));
+        for site in ["same-site", "cross-site", "none"] {
+            let mut other = h.clone();
+            other.insert("sec-fetch-site", HeaderValue::from_static(site));
+            assert!(
+                !same_origin_as(&Method::GET, &other, o, "https://clax.example"),
+                "{site}"
+            );
+        }
+        let mut unmarked = h;
+        unmarked.remove("sec-fetch-site");
+        assert!(!same_origin_as(
+            &Method::GET,
+            &unmarked,
+            o,
+            "https://clax.example"
+        ));
+    }
 
     #[test]
     fn reporter_qid_reads_only_reporter_paths() {

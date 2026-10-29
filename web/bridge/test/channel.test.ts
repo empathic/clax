@@ -51,7 +51,7 @@ describe("pageShortcut", () => {
   /** What `pageShortcut` says of keydown `init` on `target`, read while the
    * event is dispatched, as the bridge's listener reads it. */
   const at = (target: Element, init: KeyboardEventInit, opts: { untrusted?: boolean; cancel?: boolean } = {}) => {
-    let got: "c" | null | undefined;
+    let got: "c" | "f" | null | undefined;
     const e = new KeyboardEvent("keydown", { bubbles: true, composed: true, cancelable: true, ...init });
     if (opts.cancel) target.addEventListener("keydown", ev => ev.preventDefault(), { once: true });
     const listen = (ev: Event) => { got = pageShortcut(ev as KeyboardEvent); };
@@ -75,6 +75,16 @@ describe("pageShortcut", () => {
     expect(at(p, { key: "c" })).toBe("c");
     expect(at(p, { key: "C" })).toBe("c");
     expect(at(document.body, { key: "c" })).toBe("c");
+  });
+
+  it("forwards F, the report key, in either case or by its key's position", () => {
+    const p = el("<p data-t>Text</p>");
+    expect(at(p, { key: "f" })).toBe("f");
+    expect(at(p, { key: "F" })).toBe("f");
+    // A layout whose F key types another letter.
+    expect(at(p, { key: "а", code: "KeyF" })).toBe("f");
+    expect(at(p, { key: "f", ctrlKey: true })).toBeNull();
+    expect(at(el("<input data-t>"), { key: "f" })).toBeNull();
   });
 
   it("forwards no other key: not ?, not a letter, not Escape", () => {
