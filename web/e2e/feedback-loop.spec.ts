@@ -88,11 +88,23 @@ test("a report with context and recent errors goes from capture to an agent's fi
     await expect(sentContext).toContainText('"commit": "e2e0000"');
     await expect(sentContext).toContainText('"single_day_requests": true');
     await expect(composer.locator("ol.diag")).toContainText(ERROR_TEXT);
+    // What the preview lists, each line without its time: what the agent must read.
+    const previewed = (await composer.locator("ol.diag li").allTextContents()).map(t => t.trim().replace(/^\S+ /, ""));
     await composer.getByRole("textbox", { name: "Report" }).fill("Approving Tomás's one-day request fails.");
     await composer.locator("details.sent").scrollIntoViewIfNeeded();
     await emp1.screenshot({ path: shotPath(info, "loop-whats-sent") });
     await composer.getByRole("button", { name: "Send" }).click();
     await expect(emp1.getByRole("status", { name: "Filed" })).toBeVisible();
+    // The overlay keeps its reporter key and token for this user (the
+    // site passes `user`): a page load reuses them, and mints nothing.
+    const minted = site.minted.length;
+    expect(minted).toBeGreaterThanOrEqual(1);
+    await emp1.reload();
+    await expect(emp1.locator(".report-btn")).toBeVisible();
+    await openReports(emp1);
+    await emp1.locator(".reports-btn").click();
+    await expect(emp1.locator(".reports-btn")).toHaveAttribute("aria-expanded", "false");
+    expect(site.minted).toHaveLength(minted);
 
     // The filing wakes the agent's wait, naming the report.
     const woke = await agent.ok("wait_for_feedback", { timeout_s: 60 });
@@ -102,17 +114,20 @@ test("a report with context and recent errors goes from capture to an agent's fi
     const listed = (await agent.ok("queue_list", { queue: qid, state: "active" })).data as { reports: (Report & { context_summary?: { release?: unknown; mode?: string } })[] };
     expect(listed.reports).toHaveLength(1);
     const item = listed.reports[0];
-    expect(item.context_summary).toMatchObject({ release: RELEASE, mode: "screen" });
+    expect(item.context_summary?.release).toEqual(RELEASE);
+    expect(item.context_summary?.mode).toBe("screen");
     expect(item.diagnostics_lines).toBeGreaterThanOrEqual(1);
     const id = item.id;
     expect(woke.text).toContain(id);
 
     // It reads the report whole: what the reporter's browser said is what an agent reads.
     const got = (await agent.ok("queue_get", { queue: qid, report_id: id })).data as unknown as QueueGet;
-    expect(got.report.context).toMatchObject({ v: 1, release: RELEASE, flags: FLAGS, app: { repo: "example/leave" }, capture: { mode: "screen", method: "dom" }, environment: { url: `${site.origin}/` } });
+    expect(got.report.context).toMatchObject({ v: 1, app: { repo: "example/leave" }, capture: { mode: "screen", method: "dom" }, environment: { url: `${site.origin}/` } });
+    expect(got.report.context?.release).toEqual(RELEASE);
     expect(got.report.context?.flags).toEqual(FLAGS);
     expect(got.diagnostics.capture).toBe(0);
     expect(got.diagnostics.lines).toContainEqual(expect.objectContaining({ level: "error", text: expect.stringContaining(ERROR_TEXT) }));
+    expect(got.diagnostics.lines.map(l => `${l.level} ${l.kind} ${l.text}`)).toEqual(previewed);
     expect(got.clip).toMatchObject({ capture: 0 });
 
     // The first fix.
@@ -169,7 +184,9 @@ test("a report with context and recent errors goes from capture to an agent's fi
     expect(verified.report).toMatchObject({ state: "verified" });
     expect(verified.report.fixes).toHaveLength(2);
     expect(verified.report.fixes?.map(f => f.outcome)).toEqual(["rejected", "verified"]);
-    expect(verified.report.fixes?.[1].verdict_context).toMatchObject({ v: 1, release: RELEASE, flags: FLAGS });
+    expect(verified.report.fixes?.[1].verdict_context).toMatchObject({ v: 1 });
+    expect(verified.report.fixes?.[1].verdict_context?.release).toEqual(RELEASE);
+    expect(verified.report.fixes?.[1].verdict_context?.flags).toEqual(FLAGS);
 
     // The owner's triage view: the context card's commit and both fixes.
     await owner.goto(`${origin}/queues/${qid}/${id}`);

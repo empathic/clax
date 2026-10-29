@@ -4,12 +4,15 @@
 // which knows the signed-in user by their cookie. Each capture carries the
 // site's release and flags (a fixed release, as a build would stamp it),
 // and "Include recent errors" starts ticked.
-const { instance, queue, nonce } = document.documentElement.dataset;
+// The signed-in user's ID lets the overlay keep its reporter key and token
+// across page loads, so the backend mints once per token, not per load.
+const { instance, queue, nonce, user } = document.documentElement.dataset;
 Clax.overlay({
   instance,
   queue,
   // The page's policy refuses inline style but for this nonce.
   nonce,
+  user: user || undefined,
   auth: async publicKey => {
     const r = await fetch("/clax-token", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ public_key: publicKey }) });
     if (!r.ok) throw new Error(`the site gave no reporter token: ${r.status} ${await r.text()}`);

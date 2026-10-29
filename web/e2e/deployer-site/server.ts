@@ -94,7 +94,7 @@ export async function startDeployerSite(instance: string): Promise<DeployerSite>
         if (!service) return json(res, 503, { error: "no service grant yet" });
         const nonce = randomBytes(18).toString("base64url");
         res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": policyFor(instance, nonce), "cache-control": "no-store" });
-        return res.end(page.replaceAll("{{INSTANCE}}", instance).replaceAll("{{QUEUE}}", service.queue).replaceAll("{{NONCE}}", nonce));
+        return res.end(page.replaceAll("{{INSTANCE}}", instance).replaceAll("{{QUEUE}}", service.queue).replaceAll("{{NONCE}}", nonce).replaceAll("{{USER}}", cookieUser(req) ?? ""));
       }
       if (req.method === "GET" && url.pathname === "/app.js") {
         res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });

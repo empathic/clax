@@ -5,7 +5,8 @@ import type { Badge, DiagLine, Report, ReportContext, ReportPage, ReporterToken 
 import { ClaxError, failure, multipart, queuePath, readJson, signedFetch, type Fetch, type Part } from "./client";
 import { encodeDiagnostics } from "./diagnostics";
 import { wellFormed } from "./scrub";
-import { base64url, generateSigner, type KeyedSigner } from "./sign";
+import { indexedDbStore, type Kept, type ReporterStore } from "./keystore";
+import { base64url, generateKeyPair, keyedSigner, type KeyedSigner } from "./sign";
 
 /** Seconds before a token's `expires_at` that the client asks for a new one. */
 export const RENEW_BEFORE_S = 60;
@@ -26,10 +27,22 @@ export interface ReporterOptions {
   fetch?: Fetch;
   /** Milliseconds since the Unix epoch. Default: `Date.now`. */
   now?: () => number;
-  /** The reporter's key. Default: a new non-extractable one, made on first
-   * use; a browser without WebCrypto Ed25519 fails every call with
-   * `ClaxError` code `unsupported_browser`. */
+  /** The reporter's key. Default: the one kept for `user` (below), else a
+   * new non-extractable one, made on first use; a browser without WebCrypto
+   * Ed25519 fails every call with `ClaxError` code `unsupported_browser`. */
   signer?: KeyedSigner;
+  /** A stable ID of the signed-in user, in the host's own terms (it is
+   * hashed before it is stored). With it, the reporter's key (a
+   * non-extractable CryptoKey) and its token are kept in IndexedDB for
+   * this instance, queue and user, and reused across page loads until
+   * shortly before the token expires, so `auth` is called once per token
+   * lifetime rather than on every page load. Without it, or where
+   * IndexedDB fails, they last as long as the page. Another user on the
+   * same browser gets a key and token of their own. */
+  user?: string;
+  /** Where the key and token are kept. Default: IndexedDB when `user` is
+   * given; `null` keeps them for the page alone. */
+  store?: ReporterStore | null;
 }
 
 /** A report to file. The reporter is the token's, never the body's. */
@@ -114,18 +127,27 @@ async function captureParts(c: { clip?: Blob | Uint8Array; context?: ReportConte
  * Each call carries a reporter token: the client asks `auth` for one on
  * first use and again from [`RENEW_BEFORE_S`] seconds before it expires,
  * and on a 401 asks once more and sends the call again once. Calls made
- * while a token is being fetched share that one `auth` call. */
+ * while a token is being fetched share that one `auth` call. With a `user`,
+ * the key and the token are kept across page loads (`ReporterOptions.user`). */
 export class ReporterClient {
   private readonly fetch: Fetch;
   private readonly now: () => number;
   private signer: Promise<KeyedSigner> | undefined;
   private token: { token: string; expiresAt: number } | undefined;
   private pending: Promise<{ token: string; expiresAt: number }> | undefined;
+  /** Where the key and token are kept, until it first fails. */
+  private store: ReporterStore | null;
+  /** The key as kept, for saving it again with a new token. */
+  private kept: Kept | undefined;
 
   constructor(private readonly opts: ReporterOptions) {
     this.fetch = opts.fetch ?? ((input, init) => globalThis.fetch(input, init));
     this.now = opts.now ?? Date.now;
     if (opts.signer) this.signer = Promise.resolve(opts.signer);
+    this.store = opts.signer ? null
+      : opts.store !== undefined ? opts.store
+      : opts.user !== undefined ? indexedDbStore(opts.instance, opts.queue, opts.user)
+      : null;
   }
 
   /** Files `r` into the queue: `POST …/reporter/reports`, with `context`
@@ -238,13 +260,47 @@ export class ReporterClient {
   }
 
   private key(): Promise<KeyedSigner> {
-    this.signer ??= generateSigner().catch((e: unknown) => {
-      if ((e as { name?: unknown } | null)?.name === "NotSupportedError") {
-        throw new ClaxError("unsupported_browser", "this browser lacks WebCrypto Ed25519 signing", 0);
+    this.signer ??= (async () => {
+      const kept = await this.loadKept();
+      if (kept) {
+        this.kept = kept;
+        if (kept.token) this.token ??= kept.token;
+        return keyedSigner(kept.privateKey, kept.publicKey);
       }
-      throw e;
-    });
+      const made = await generateKeyPair().catch((e: unknown) => {
+        if ((e as { name?: unknown } | null)?.name === "NotSupportedError") {
+          throw new ClaxError("unsupported_browser", "this browser lacks WebCrypto Ed25519 signing", 0);
+        }
+        throw e;
+      });
+      this.kept = made;
+      await this.keep(made);
+      return keyedSigner(made.privateKey, made.publicKey);
+    })();
     return this.signer;
+  }
+
+  /** The key and token the store keeps, or none (the store failing is
+   * given up on). */
+  private async loadKept(): Promise<Kept | null> {
+    if (!this.store) return null;
+    try {
+      const k = await this.store.load();
+      return k && k.privateKey && typeof k.publicKey === "string" ? k : null;
+    } catch {
+      this.store = null;
+      return null;
+    }
+  }
+
+  /** Keeps `k` in the store, if it still works. */
+  private async keep(k: Kept): Promise<void> {
+    if (!this.store) return;
+    try {
+      await this.store.save(k);
+    } catch {
+      this.store = null;
+    }
   }
 
   private async send(method: string, path: string, body?: Uint8Array, contentType?: string): Promise<Response> {
@@ -255,19 +311,22 @@ export class ReporterClient {
     const first = await once((await this.current()).token);
     if (first.status !== 401) return first;
     this.token = undefined;
+    if (this.store) await this.store.forgetToken().catch(() => { this.store = null; });
     return once((await this.current()).token);
   }
 
   /** A token valid for at least [`RENEW_BEFORE_S`] more seconds. */
-  private current(): Promise<{ token: string; expiresAt: number }> {
+  private async current(): Promise<{ token: string; expiresAt: number }> {
+    const key = await this.key();
     const t = this.token;
-    if (t && this.now() < t.expiresAt - RENEW_BEFORE_S * 1000) return Promise.resolve(t);
+    if (t && this.now() < t.expiresAt - RENEW_BEFORE_S * 1000) return t;
     this.pending ??= (async () => {
       try {
-        const got = await this.opts.auth((await this.key()).publicKey);
+        const got = await this.opts.auth(key.publicKey);
         const expiresAt = Date.parse(got.expires_at);
         if (!got.token || Number.isNaN(expiresAt)) throw new Error("auth gave no reporter token");
         this.token = { token: got.token, expiresAt };
+        if (this.kept) await this.keep({ privateKey: this.kept.privateKey, publicKey: this.kept.publicKey, token: this.token });
         return this.token;
       } finally {
         this.pending = undefined;

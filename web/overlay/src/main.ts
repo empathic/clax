@@ -87,7 +87,8 @@ export function overlay(opts: OverlayOptions, doc: Document = document): Overlay
   if (opts.nonce !== undefined && (typeof opts.nonce !== "string" || !opts.nonce)) throw new TypeError("Clax.overlay: nonce must be a non-empty string");
   const instance = opts.instance.replace(/\/+$/, "");
   const win = doc.defaultView ?? window;
-  const client = new ReporterClient({ instance, queue: opts.queue, auth: opts.auth });
+  if (opts.user !== undefined && (typeof opts.user !== "string" || !opts.user)) throw new TypeError("Clax.overlay: user must be a non-empty string");
+  const client = new ReporterClient({ instance, queue: opts.queue, auth: opts.auth, user: opts.user });
   const recorder = installDiagnostics(win, { instance });
   // A page refusing inline style: its clips never try the web fonts' <style>.
   if (opts.nonce !== undefined || metaRefusesInlineStyle(doc)) withoutWebFonts(doc);
