@@ -169,6 +169,19 @@ with `CLAX_TOKEN` the owner's bearer token:
    people): the Admin page, or `PUT /api/admin/people/<person>/flags
    {"feedback": true}` (`<person>` a public ID, or `%2Aowner`).
 
+In the shell (`web/shell/src/feedback/`), a flagged person gets a
+feedback menu in the gallery's header and the artifact view's top bar:
+**Report a problem**, with its shortcut Ctrl+Shift+B (⌘⇧B on Apple
+platforms; the shell binds no other modified key, and the keys sheet
+lists it), and **My reports**, with the count of reports waiting on them,
+which the menu's button shows too. The shell embeds the overlay as any
+product does: it asks `GET /_app/feedback/config` first; only when that
+answers `enabled: true` does it load `<instance>/_clax/overlay.js`, start
+`Clax.diagnostics.install()` and then `Clax.overlay({launcher: false, auth,
+context})`, with `auth` the token route above. For anyone else that one
+request is all. The shortcut does nothing in a text field or a modal
+dialog, nor inside the artifact's frame, whose keys are the page's.
+
 To check it: `GET https://clax.dev/_app/feedback/config` in a flagged
 person's browser answers `enabled: true` with the queue's ID. To turn it
 off, delete either secret (`npx wrangler secret delete … --name clax`);
