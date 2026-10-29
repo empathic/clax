@@ -50,7 +50,9 @@ pub enum Cmd {
     Renew(ActArgs),
     /// Release your claim on a report.
     Release(ActArgs),
-    /// Reply to a report you claimed (`-` reads the reply from stdin).
+    /// Reply to a report you claimed, or with no claim to one whose fix
+    /// you proposed while it waits for the reporter's verdict (`-` reads
+    /// the reply from stdin).
     Reply(ReplyArgs),
     /// Propose a fix for a report you claimed; it then waits in
     /// fix_proposed for the reporter's verdict, and your claim ends.

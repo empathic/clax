@@ -705,6 +705,12 @@ The recipe a fixing agent follows:
    `url`, and `verify_url` (where to check) and `verify_after` (such as
    `release:2.3.1`) when the fix is not live yet. The report moves to
    `fix_proposed` and the claim ends.
+5. While the fix waits, the reporter's replies wake the agent that
+   proposed it, and it answers with `queue_reply` without a claim (only
+   that agent, only until the verdict). A fix a person proposed from the
+   Queues page is theirs to talk through: the reporter's replies to it
+   reach no agent, and the overlay's reply box says the queue's people
+   will read them.
 
 ### Verify or reopen
 

@@ -29,7 +29,7 @@ function report(id: string, bodies: string[], over: Partial<Report> = {}): Repor
 }
 const proposed = (id: string) => report(id, ["The end date is wrong", "Fixed the end date in 0.6.1"], {
   state: "fix_proposed",
-  fixes: [{ n: 1, summary: "Fixed the end date in 0.6.1", url: "https://github.com/o/leave/pull/12", verify_url: "https://leave.example/req/1", proposer_name: "Triage agent", created_at: "", outcome: "pending" }],
+  fixes: [{ n: 1, summary: "Fixed the end date in 0.6.1", url: "https://github.com/o/leave/pull/12", verify_url: "https://leave.example/req/1", proposer_name: "Triage agent", proposer_kind: "agent", created_at: "", outcome: "pending" }],
 });
 
 function manualTimers() {
@@ -712,6 +712,18 @@ describe("the overlay", () => {
     expect(contexts).toBe(before + 1);
     expect(q(".panel .state")?.textContent).toBe("Fixed: you confirmed it");
     expect(button("It's fixed")).toBeUndefined();
+  });
+
+  it("a person's waiting fix: the reply box names the queue's people, not an agent at work", async () => {
+    const r = proposed("t1");
+    r.fixes = [{ ...r.fixes![0], proposer_name: "Mia", proposer_kind: "person" }];
+    pages.push({ reports: [r], next: null });
+    click(button("Your reports"));
+    await settle();
+    click(q(".panel .row"));
+    const note = q(".panel .reply-note")?.textContent ?? "";
+    expect(note).toMatch(/queue's people.*Mia.*Still broken/s);
+    expect(note).not.toMatch(/at work/);
   });
 
   it("Still broken requires a note and sends reopen with the new clip", async () => {

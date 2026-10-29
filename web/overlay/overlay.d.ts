@@ -80,6 +80,7 @@ export type ReportStatus = "open" | "resolved";
 export type ReportState = "open" | "claimed" | "fix_proposed" | "verified" | "resolved";
 export type ResolveReason = "fixed" | "duplicate" | "wontfix" | "cannot_reproduce" | "other";
 export type FixOutcome = "pending" | "verified" | "rejected" | "superseded" | "closed";
+export type ProposerKind = "agent" | "person";
 export type AuthorKind = "viewer" | "agent" | "reporter";
 
 export interface ReportArtifact {
@@ -131,6 +132,7 @@ export interface FixAttempt {
   verify_url?: string;
   verify_after?: string;
   proposer_name: string;
+  proposer_kind: ProposerKind;
   created_at: string;
   outcome: FixOutcome;
   verdict_note?: string;

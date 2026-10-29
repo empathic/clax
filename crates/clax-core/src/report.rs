@@ -517,6 +517,15 @@ impl FixOutcome {
     }
 }
 
+/// Who proposed a fix: an agent, through its session under its lease, or
+/// a person (a triage member, in their browser).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProposerKind {
+    Agent,
+    Person,
+}
+
 /// A fix proposed on a report (§6.2), numbered from 1 in the order
 /// proposed, with its verdict once given (§6.3): the verdict's note, the
 /// context of whoever gave it, and when.
@@ -526,6 +535,10 @@ pub struct FixAttempt {
     #[serde(flatten)]
     pub fix: NewFix,
     pub proposer_name: String,
+    /// Whether an agent or a person proposed it. While it waits, the
+    /// agent's session hears the reporter's replies and may answer them;
+    /// a person's fix is answered from the triage views.
+    pub proposer_kind: ProposerKind,
     pub created_at: String,
     pub outcome: FixOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -872,6 +885,7 @@ mod tests {
                 ..fix("s")
             },
             proposer_name: "claude".into(),
+            proposer_kind: ProposerKind::Agent,
             created_at: "2026-10-29T07:12:03.120Z".into(),
             outcome: FixOutcome::Pending,
             verdict_note: None,
@@ -882,6 +896,7 @@ mod tests {
         assert_eq!(v["summary"], "s");
         assert_eq!(v["url"], "https://github.com/x/y/pull/1");
         assert_eq!(v["outcome"], "pending");
+        assert_eq!(v["proposer_kind"], "agent");
         assert_eq!(serde_json::from_value::<FixAttempt>(v).unwrap(), a);
         for r in [
             ResolveReason::Fixed,

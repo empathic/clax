@@ -5,9 +5,10 @@
   // and where to check it, with "It's fixed" and "Still broken". A comment
   // never changes the report's state; only a verdict does. "Still broken"
   // hands over to the overlay, which asks for a note and offers a new capture.
-  // While a fix waits, a reply reaches the fix's proposer while its session
-  // lives and its person is a member of the queue, and the queue's people
-  // always; the reply box says so.
+  // While a fix waits, a reply reaches the agent that proposed it while its
+  // session lives and its person is a member of the queue (that agent may
+  // answer), and the queue's people always; a person's fix is answered by
+  // the queue's people alone. The reply box says who will hear it.
   import type { Report } from "../../sdk/src/types";
   import { OUTCOME, failureText, safeLink, waitingFix } from "./model";
 
@@ -91,8 +92,10 @@
     <form onsubmit={e => { e.preventDefault(); void reply(); }}>
       <textarea rows={2} aria-label="Reply" placeholder="Reply…" bind:value={text}
         onkeydown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); void reply(); } }}></textarea>
-      {#if waiting}
+      {#if waiting?.proposer_kind === "agent"}
         <p class="reply-note small muted">A reply goes to {waiting.proposer_name} while they are still at work, and to the queue's people. If the fix did not work, press Still broken.</p>
+      {:else if waiting}
+        <p class="reply-note small muted">A reply goes to the queue's people, {waiting.proposer_name} among them. If the fix did not work, press Still broken.</p>
       {/if}
       <div class="actions"><button type="submit" class="primary" disabled={sending || !text.trim()}>{sending ? "Sending…" : "Reply"}</button></div>
     </form>

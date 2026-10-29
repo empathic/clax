@@ -1848,7 +1848,8 @@ pub const MIGRATIONS: &[&str] = &[
     // resolve reason, reopen count and the reporter's last read; the
     // profile a reporter token carries; a reopen comment's capture number
     // and clip; each capture's diagnostics (the filing's is capture 0); its
-    // fix attempts and their verdicts; the sessions watching a queue; and
+    // fix attempts, the session of each agent's (NULL: a person's), and
+    // their verdicts; the sessions watching a queue; and
     // which feedback rows are a queue's wake (`filed`, `reopened`).
     "ALTER TABLE threads ADD COLUMN report_context_json TEXT CHECK (report_context_json IS NULL OR json_valid(report_context_json));
     ALTER TABLE threads ADD COLUMN report_server_json TEXT;
@@ -1866,7 +1867,8 @@ pub const MIGRATIONS: &[&str] = &[
       PRIMARY KEY (thread_id, capture)) WITHOUT ROWID;
     CREATE TABLE report_fixes (
       thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
-      n INTEGER NOT NULL, fix_json TEXT NOT NULL, proposer_name TEXT NOT NULL, created_at TEXT NOT NULL,
+      n INTEGER NOT NULL, fix_json TEXT NOT NULL, proposer_name TEXT NOT NULL,
+      proposer_session_id TEXT, created_at TEXT NOT NULL,
       outcome TEXT NOT NULL DEFAULT 'pending'
         CHECK (outcome IN ('pending', 'verified', 'rejected', 'superseded', 'closed')),
       verdict_note TEXT, verdict_context_json TEXT, verdict_at TEXT,
