@@ -16,6 +16,7 @@ import { OVERLAY_TAG } from "../../bridge/src/anchor";
 import { metaRefusesInlineStyle, withoutWebFonts } from "../../bridge/src/clip";
 import { addSheet } from "../../bridge/src/sheet";
 import { type Recorder, installDiagnostics } from "../../sdk/src/diagnostics";
+import { forgetReporter as forgetKept } from "../../sdk/src/keystore";
 import { ReporterClient, type ReporterAuth } from "../../sdk/src/reporter";
 import type { DiagLine, Report } from "../../sdk/src/types";
 import type { Mode } from "./capture";
@@ -51,6 +52,26 @@ export interface OverlayHandle {
   /** Removes the overlay and ends comment mode. The page's diagnostics
    * recorder keeps recording, for a later overlay. */
   close(): void;
+  /** Forgets the reporter, as the host does when its user signs out:
+   * deletes the key and token kept for `user` and drops them from this
+   * overlay, which keeps nothing more. */
+  forget(): Promise<void>;
+}
+
+/** Whose kept key and token `forgetReporter` deletes: the overlay's
+ * `instance`, `queue` and `user` options. */
+export interface ReporterRef {
+  instance: string;
+  queue: string;
+  user: string;
+}
+
+/** Forgets what the overlay keeps for `r.user` (`OverlayOptions.user`):
+ * the reporter's key and token, so the next user on this browser shares
+ * neither. Call it on sign-out; it needs no running overlay. */
+export async function forgetReporter(r: ReporterRef): Promise<void> {
+  for (const k of ["instance", "queue", "user"] as const) if (typeof r?.[k] !== "string" || !r[k]) throw new TypeError(`Clax.forgetReporter: ${k} must be a non-empty string`);
+  await forgetKept(r.instance.replace(/\/+$/, ""), r.queue, r.user);
 }
 
 /** The overlay's mounted component: what `Overlay.svelte` exports. */
@@ -134,6 +155,7 @@ export function overlay(opts: OverlayOptions, doc: Document = document): Overlay
       if (event === "badge" && lastBadge !== null) (fn as (n: number) => void)(lastBadge);
       return () => { set.delete(fn); };
     },
+    forget: () => client.forget(),
     close() {
       if (!open) return;
       open = false;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { indexedDbStore, type Kept, type ReporterStore } from "./keystore";
+import { forgetReporter, indexedDbStore, type Kept, type ReporterStore } from "./keystore";
 import { ReporterClient, RENEW_BEFORE_S } from "./reporter";
 import type { ReporterToken } from "./types";
 
@@ -18,16 +18,18 @@ function memoryStore() {
       load: async () => { if (s.broken) throw new Error("no IndexedDB"); return kept; },
       save: async (k: Kept) => { if (s.broken) throw new Error("no IndexedDB"); s.saves += 1; kept = k; },
       forgetToken: async () => { if (s.broken) throw new Error("no IndexedDB"); if (kept) kept = { privateKey: kept.privateKey, publicKey: kept.publicKey }; },
+      forget: async () => { if (s.broken) throw new Error("no IndexedDB"); kept = null; },
     } satisfies ReporterStore,
   };
   return s;
 }
 
 /** A page load's client on `store`, at `now()`, answering 200 (or `status`). */
-function pageLoad(store: ReporterStore | null, now: () => number, auths: string[], status: () => number = () => 200) {
+function pageLoad(store: ReporterStore | null, now: () => number, auths: string[], status: () => number = () => 200, refuse: (pk: string) => boolean = () => false) {
   let n = auths.length;
   const auth = async (pk: string): Promise<ReporterToken> => {
     auths.push(pk);
+    if (refuse(pk)) throw Object.assign(new Error("the feedback token was refused (invalid_key)"), { code: "invalid_key" });
     n += 1;
     return { token: `cxr_${n}`, expires_at: new Date(now() + TOKEN_S * 1000).toISOString() };
   };
@@ -98,6 +100,47 @@ describe("a reporter's key and token across page loads", () => {
     await pageLoad(null, () => T0, auths).client.badge();
     expect(auths).toHaveLength(2);
     expect(auths[0]).not.toBe(auths[1]);
+  });
+
+  it("forget deletes the kept key and token and keeps nothing more", async () => {
+    const m = memoryStore();
+    const auths: string[] = [];
+    const load = pageLoad(m.store, () => T0, auths);
+    await load.client.badge();
+    const before = await load.client.publicKey();
+    expect(m.kept).not.toBeNull();
+    await load.client.forget();
+    expect(m.kept).toBeNull();
+    // The running client asks afresh, for a new key it keeps for the page alone.
+    await load.client.badge();
+    expect(auths).toHaveLength(2);
+    expect(auths[1]).not.toBe(before);
+    expect(m.kept).toBeNull();
+    // The next page load (the next user's) mints with a key of its own.
+    await pageLoad(m.store, () => T0, auths).client.badge();
+    expect(auths).toHaveLength(3);
+    expect(new Set(auths).size).toBe(3);
+  });
+
+  it("drops a kept key the backend refuses for good and asks once with a fresh one", async () => {
+    const m = memoryStore();
+    const auths: string[] = [];
+    await pageLoad(m.store, () => T0 - TOKEN_S * 1000, auths).client.badge();
+    const refused = auths[0];
+    const load = pageLoad(m.store, () => T0, auths, () => 200, pk => pk === refused);
+    await load.client.badge();
+    expect(auths).toHaveLength(3);
+    expect(auths[1]).toBe(refused);
+    expect(auths[2]).not.toBe(refused);
+    expect(m.kept?.publicKey).toBe(auths[2]);
+    expect(load.sent).toEqual(["Clax-Reporter cxr_2"]);
+    // Refused again, it gives up with the backend's error.
+    const again = pageLoad(memoryStore().store, () => T0, auths, () => 200, () => true);
+    await expect(again.client.badge()).rejects.toMatchObject({ code: "invalid_key" });
+  });
+
+  it("forgetReporter does nothing where there is no IndexedDB", async () => {
+    await expect(forgetReporter("https://clax.example", "q1", "u1", undefined)).resolves.toBeUndefined();
   });
 
   it("uses IndexedDB only for a named user, and none where there is none", () => {

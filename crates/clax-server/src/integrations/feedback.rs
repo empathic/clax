@@ -493,7 +493,17 @@ pub async fn config(
     let Ok(person) = filer(&d.caller(&s).await?) else {
         return Ok(off);
     };
-    let flags = s.store_call(move |st| st.flags_of(&person)).await?;
+    let (flags, user) = s
+        .store_call(move |st| {
+            let flags = st.flags_of(&person)?;
+            let user = if person == OWNER {
+                st.owner_viewer(false)?.public_id
+            } else {
+                person
+            };
+            Ok((flags, user))
+        })
+        .await?;
     if !flags.feedback {
         return Ok(off);
     }
@@ -503,6 +513,7 @@ pub async fn config(
         "enabled": true,
         "instance": i.instance,
         "queue": i.queue_id,
+        "user": user,
         "context": {
             "release": release,
             "flags": flags,
