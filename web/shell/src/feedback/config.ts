@@ -31,18 +31,18 @@ export interface AppView {
   artifact: string | null;
 }
 
-/** `GET /_app/feedback/config`, or null when this person may not report
- * (the integration off, no session, no `feedback` flag) or the route could
- * not be read: the shell then shows no entry point. */
-export async function loadConfig(f: typeof fetch = fetch): Promise<FeedbackConfig | null> {
-  try {
-    const r = await f(CONFIG_PATH, { credentials: "same-origin", headers: { accept: "application/json" } });
-    if (!r.ok) return null;
-    const b = (await r.json()) as { enabled?: unknown; instance?: unknown; queue?: unknown; context?: unknown };
-    if (b?.enabled !== true || typeof b.instance !== "string" || !b.instance || typeof b.queue !== "string" || !b.queue) return null;
-    const context = b.context && typeof b.context === "object" ? (b.context as HostContext) : {};
-    return { instance: b.instance.replace(/\/+$/, ""), queue: b.queue, context };
-  } catch {
-    return null;
-  }
+/** `GET /_app/feedback/config`'s body, or null when it could not be read
+ * (`readConfig` in `boot.ts` reads it). */
+export function askConfig(f: typeof fetch = fetch): Promise<unknown> {
+  return f(CONFIG_PATH, { credentials: "same-origin" }).then(r => (r.ok ? r.json() : null)).catch(() => null);
 }
+
+let asked: Promise<unknown> | null = null;
+
+/** `askConfig`, once per page, whoever asks first: `boot.ts`, which the
+ * artifact entry runs first thing and the gallery from its lazy module
+ * (`HeaderLinks`; the gallery's first paint carries none of this). */
+export function configOnce(): Promise<unknown> {
+  return (asked ??= askConfig());
+}
+

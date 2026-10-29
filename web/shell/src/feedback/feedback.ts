@@ -12,7 +12,7 @@
 import type { HostContext, OverlayHandle, ReporterAuth, ReporterToken } from "../../../overlay/overlay";
 import { type AppView, type ClaxGlobal, type FeedbackConfig, TOKEN_PATH } from "./config";
 
-export { type AppView, type ClaxGlobal, type FeedbackConfig, CONFIG_PATH, TOKEN_PATH, loadConfig } from "./config";
+export { type AppView, type ClaxGlobal, type FeedbackConfig, CONFIG_PATH, TOKEN_PATH } from "./config";
 
 /** The overlay's `auth`: asks the shell's backend for a reporter token for
  * the overlay's key. The session cookie says who the reporter is; the
@@ -164,7 +164,11 @@ export interface StartDeps {
 /** Starts the overlay for `cfg`: loads it from the instance, starts its
  * diagnostics recorder at once (so what goes wrong from here on is kept,
  * before the overlay itself mounts), then mounts it with no launcher,
- * the shell's token route as its `auth` and `hostContext` as its context. */
+ * the shell's token route as its `auth` and `hostContext` as its context.
+ * It passes no `nonce`: the shell's pages restrict no style or script
+ * source (their policy is `frame-ancestors 'none'`) and use no web fonts,
+ * so the overlay's styles and clips trip nothing. A product whose
+ * `style-src` is strict passes its nonce here. */
 export async function startFeedback(cfg: FeedbackConfig, deps: StartDeps = {}): Promise<Feedback> {
   const doc = deps.doc ?? document;
   const win = doc.defaultView ?? window;

@@ -35,7 +35,7 @@
   import { type ArtifactController, commentsOff, viewReady } from "../view/artifact-controller";
   import { clone, cloneOpen, legal, moreMenu, permissions, permissionsOpen, publish, publishOpen, share, shareOpen, who } from "./more-menu.svelte";
   import SampleCount from "./SampleCount.svelte";
-  import { feedbackMenu } from "../feedback/state.svelte";
+  import { feedbackMenu } from "../feedback/slot.svelte";
   import ThemeSwitch from "./ThemeSwitch.svelte";
   import VersionMenu from "./VersionMenu.svelte";
 

@@ -1,5 +1,5 @@
 import { mountArtifactView } from "./artifact";
-import { bootFeedback } from "./feedback/state.svelte";
+import { bootFeedback } from "./feedback/boot";
 import { appQuery, inspectQuery, parseShellPath } from "./route";
 import { loadMoreMenu } from "./ui/more-menu.svelte";
 import { allowSidebarPrefetch } from "./ui/sidebar-chunk";
