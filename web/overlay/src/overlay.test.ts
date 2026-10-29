@@ -726,6 +726,17 @@ describe("the overlay", () => {
     expect(note).not.toMatch(/at work/);
   });
 
+  it("a fix from a server that names no proposer kind reads as an agent's, as before the kind", async () => {
+    const r = proposed("t1");
+    const { proposer_kind: _, ...older } = r.fixes![0];
+    r.fixes = [older];
+    pages.push({ reports: [r], next: null });
+    click(button("Your reports"));
+    await settle();
+    click(q(".panel .row"));
+    expect(q(".panel .reply-note")?.textContent ?? "").toMatch(/goes to Triage agent while they are still at work/);
+  });
+
   it("Still broken requires a note and sends reopen with the new clip", async () => {
     pages.push({ reports: [proposed("t1")], next: null });
     click(button("Your reports"));

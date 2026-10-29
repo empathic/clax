@@ -210,8 +210,9 @@ export interface FixAttempt {
   proposer_name: string;
   /** `agent` when an agent's session proposed it: while it waits, that
    * session hears the reporter's replies and may answer them. `person`
-   * when a triage member did: replies wait for the queue's people. */
-  proposer_kind: ProposerKind;
+   * when a triage member did: replies wait for the queue's people.
+   * Absent from a server older than the field: read it as `agent`. */
+  proposer_kind?: ProposerKind;
   created_at: string;
   outcome: FixOutcome;
   verdict_note?: string;

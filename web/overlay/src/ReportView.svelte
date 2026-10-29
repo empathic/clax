@@ -92,7 +92,7 @@
     <form onsubmit={e => { e.preventDefault(); void reply(); }}>
       <textarea rows={2} aria-label="Reply" placeholder="Reply…" bind:value={text}
         onkeydown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); void reply(); } }}></textarea>
-      {#if waiting?.proposer_kind === "agent"}
+      {#if waiting && waiting.proposer_kind !== "person"}
         <p class="reply-note small muted">A reply goes to {waiting.proposer_name} while they are still at work, and to the queue's people. If the fix did not work, press Still broken.</p>
       {:else if waiting}
         <p class="reply-note small muted">A reply goes to the queue's people, {waiting.proposer_name} among them. If the fix did not work, press Still broken.</p>

@@ -132,7 +132,8 @@ export interface FixAttempt {
   verify_url?: string;
   verify_after?: string;
   proposer_name: string;
-  proposer_kind: ProposerKind;
+  /** Absent from a server older than the field: read it as `agent`. */
+  proposer_kind?: ProposerKind;
   created_at: string;
   outcome: FixOutcome;
   verdict_note?: string;
