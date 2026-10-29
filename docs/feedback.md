@@ -114,7 +114,7 @@ app.post("/clax-token", async (req, res) => {
   if (typeof public_key !== "string" || !public_key) return res.status(400).json({ error: "public_key" });
   const minted = await clax.mintReporterToken({
     reporter_id: user.id,
-    origin: "https://app.example.com",   // the page's origin: one of the queue's
+    origin: "https://app.example.com",   // the page's origin, one of the queue's (not the instance)
     public_key,
   }, { name: user.name, github: user.githubLogin });
   res.set("cache-control", "no-store").json(minted); // {token, expires_at}
@@ -129,19 +129,26 @@ a complete backend of this shape in under 200 lines.
 The request is `POST /api/queues/<qid>/reporter-tokens` with
 `Authorization: Clax-Queue <token>` and a `Clax-Signature` by the service
 grant's key over the canonical lines that `docs/contract.md` ("Signed
-requests") lists. A Rust backend can depend on `clax-core` for
-`clax_core::sig` (the signer the instance verifies with) or implement the
-lines with any Ed25519 crate.
+requests") lists. Two addresses go into it and must not be confused:
 
-clax.dev's own token route is written this way. Its backend half uses
-only what an outside backend has (a queue ID, the grant's token and key,
-and the public route) and is quoted here from
+- the **instance** (`https://clax.dev`, or your own Clax): the request is
+  sent to it, and signed for its host;
+- the **page origin** (`https://app.example.com`): where your overlay
+  runs, one of the queue's origins. It goes in the body, and the token is
+  bound to it.
+
+A Rust backend can depend on `clax-core` for `clax_core::sig` (the signer
+the instance verifies with), or implement the lines with any Ed25519
+crate. clax.dev's own token route is written this way. Its backend half
+uses only what an outside backend has (a queue ID, the grant's token and
+key, and the public route). Here it is, quoted from
 `crates/clax-server/src/integrations/feedback.rs`:
 
 ```rust
 /// The request an integrator's backend sends to mint a reporter token for
 /// `reporter_id`, bound to the browser's `public_key`, signed at `now`
-/// (Unix seconds).
+/// (Unix seconds). It is signed for the instance's host (`i.instance`),
+/// while its body names the page origin the token is for (`i.origin`).
 pub fn mint_request(
     i: &FeedbackIntegration,
     now: i64,
@@ -152,7 +159,7 @@ pub fn mint_request(
     let key = KeyPair::from_pkcs8(&i.grant_key_pkcs8)
         .map_err(|_| "the service grant's key is not an Ed25519 PKCS#8 key".to_string())?;
     let path = format!("/api/queues/{}/reporter-tokens", i.queue_id);
-    let host = host_of(&i.origin)?;
+    let host = host_of(&i.instance)?;
     let body = serde_json::to_vec(&MintBody {
         reporter_id,
         origin: &i.origin,
@@ -187,36 +194,83 @@ pub fn mint_request(
 }
 ```
 
-`integration(queue_id, origin, grant_json)` in the same file reads the
-grant (`{token, private_key_pkcs8}`, the key as the Queues page shows it)
-and checks it once at start. clax.dev sends the request to its own router
-in process (`mint`); an outside backend sends the same request over HTTP
-to `https://<instance><path>` with any client (`reqwest`, `hyper`).
+`integration(queue_id, instance, origin, grant_json)` in the same file
+reads the grant (`{token, private_key_pkcs8}`, the key as the Queues page
+shows it) and checks it once at start. `FeedbackIntegration` keeps the
+queue ID, the grant, `instance` and `origin`. `host_of` is the URL's host
+with its port, and `MintBody` is `{reporter_id, origin, public_key,
+profile?}`.
 
-clax.dev's route around it, `token`, does what yours will: it refuses
-agents and anyone without the `feedback` flag (403 `no_flag`), uses the
-person's public ID as `reporter_id` and their GitHub name and login as the
-profile, passes a 400 about the browser's key back as a 400, and turns any
-other refusal into 503 `feedback_unavailable` (logged), since that one is
-the integration's own fault (a revoked grant, an origin the queue no
-longer lists).
+clax.dev sends the request to its own router in process (`mint`), with
+`instance` and `origin` both `https://clax.dev`. An outside backend copies
+`mint_request`, `host_of` and `MintBody`, and sends the same request over
+HTTP to the instance:
+
+```rust
+let i = integration(&queue_id, "https://clax.dev", "https://app.example.com", &grant_json)?;
+let req = mint_request(&i, now_unix_seconds, &user.id, &public_key, Some(&profile))?;
+let (parts, body) = req.into_parts();
+let body = axum::body::to_bytes(body, 64 * 1024).await?;
+let answer: serde_json::Value = reqwest::Client::new()
+    .post(format!("{}{}", i.instance, parts.uri)) // https://clax.dev/api/queues/<qid>/reporter-tokens
+    .headers(parts.headers)                       // Host, Authorization, Clax-Signature, Content-Type
+    .body(body)
+    .send()
+    .await?
+    .error_for_status()?
+    .json()
+    .await?; // {token, expires_at}: answer it to the browser as it is
+```
+
+clax.dev's route around it, `token`, does what yours will:
+- it refuses agents (403 `not_for_agents`) and anyone without the
+  `feedback` flag (403 `no_flag`);
+- it uses the person's public ID as `reporter_id`, and their GitHub name
+  and login as the profile;
+- it passes a 400 about the browser's key back as a 400;
+- it turns any other refusal into 503 `feedback_unavailable` (logged),
+  since that one is the integration's own fault (a revoked grant, an
+  origin the queue no longer lists).
 
 ### What the token route sees
 
-- **Every visitor who loads the overlay asks for a token.** "Your
-  reports" polls the reporter's badge when the page loads, every minute
-  while it is visible, and whenever it regains focus, and each poll needs
-  a token. So the route is called for people who never file anything.
-  Load the overlay only for users your own "may report" check accepts,
-  rather than loading it for everyone and refusing them in the token
-  route, or pass `canFile: false` to users who may read their reports but
-  not file new ones.
-- **Every reporter shares the service grant's limit.** Each mint is
-  signed by the one grant key, and a key may sign at most 65,536 requests
-  in any 240 seconds (429 `limit_reached`, with `Retry-After`). That is
-  far above any product's sign-in rate, but a loop that mints on every
-  request will reach it for everyone at once. Tokens last hours; the
-  overlay keeps its token and asks again only when it expires.
+The instance's limits on queue keys (`crates/clax-http/src/grant_auth.rs`):
+
+- A reporter token lasts 900 seconds (`REPORTER_TOKEN_SECS`).
+- A queue key, the service grant's or a reporter's, signs at most 1,024
+  requests in any 240 seconds (`QUEUE_NONCES_PER_KEY`).
+- A queue holds the nonces of at most 4,096 keys at once
+  (`QUEUE_KEYS_PER_QUEUE`), and past that its requests are refused.
+
+Both refusals are 429 `limit_reached`, with `Retry-After`.
+
+- **Every reporter shares the service grant's limit.** Every mint is
+  signed by the one grant key, so the whole product mints at most 1,024
+  tokens in any four minutes, about four a second.
+- **Pass `user`, and a reporter mints about once per 15 minutes.** The
+  overlay's `user` option is a stable ID of the signed-in user, which is
+  hashed before it is stored. With it, the overlay keeps the reporter's key
+  in IndexedDB for that instance, queue and user, as a non-extractable
+  Ed25519 CryptoKey that no script can read out. It keeps the token beside
+  the key and reuses it across page loads until 60 seconds before it
+  expires.
+- **Tokens are still minted:**
+  - the first time a user loads the overlay in a browser;
+  - every 15 minutes of use after that;
+  - in each new browser or private window, and after the site's storage
+    is cleared;
+  - after the instance refuses a token (401);
+  - on every page load where IndexedDB is unavailable;
+  - on every page load when you do not pass `user`.
+
+  Each browser's key also counts toward the queue's 4,096.
+- **Every visitor who loads the overlay asks for a token**, including
+  people who never file. "Your reports" polls the reporter's badge when
+  the page loads, every minute while it is visible, and on focus, and each
+  poll needs a token. `canFile: false` hides Report, but the overlay still
+  polls. Load the overlay only for users your own "may report" check
+  accepts, rather than loading it for everyone and refusing them in the
+  token route.
 
 ## 3. Load the overlay on your pages
 
@@ -239,6 +293,7 @@ The instance serves the overlay to any origin, without credentials:
 const clax = Clax.overlay({
   instance: "https://clax.dev",
   queue: "<queue ID>",
+  user: currentUser.id, // keeps the reporter's key and token across page loads
   auth: async publicKey => {
     const r = await fetch("/clax-token", {
       method: "POST",
@@ -253,43 +308,97 @@ const clax = Clax.overlay({
 
 ### A dynamic import, with types
 
+Save `<instance>/_clax/overlay.d.ts` beside your code as
+`clax-overlay.d.ts` (in SvelteKit, `src/lib/clax-overlay.d.ts`, imported
+as `$lib/clax-overlay`). It is a module, so import its types and type the
+import with it:
+
 ```ts
-// Save <instance>/_clax/overlay.d.ts as src/clax-overlay.d.ts and declare
-// the module once:
-//   declare module "https://clax.dev/_clax/overlay.mjs" { export * from "./clax-overlay"; }
-const { overlay } = await import(/* @vite-ignore */ "https://clax.dev/_clax/overlay.mjs");
-const clax = overlay({ instance, queue, auth });
+import type { OverlayHandle, OverlayOptions } from "./clax-overlay";
+
+type Overlay = typeof import("./clax-overlay");
+
+const OVERLAY_URL = "https://clax.dev/_clax/overlay.mjs";
+
+/** Loads the overlay from the instance and starts it with `opts`. */
+export async function startOverlay(opts: OverlayOptions): Promise<OverlayHandle> {
+  const { overlay } = (await import(/* @vite-ignore */ OVERLAY_URL)) as Overlay;
+  return overlay(opts);
+}
 ```
+
+`web/overlay/guide/load-overlay.ts` is this snippet, and `//web:typecheck`
+keeps it compiling against the served `overlay.d.ts`.
 
 The overlay touches `document` when it starts, so start it in the browser
 only, once per page load, and close it when the page goes away.
 
 ### SvelteKit
 
+The server decides who may report, and hands the page what the overlay
+needs. If your policy uses a nonce, your hooks make it once per request:
+
+```ts
+// src/hooks.server.ts: a nonce per request, in the policy and in locals
+import type { Handle } from "@sveltejs/kit";
+
+export const handle: Handle = async ({ event, resolve }) => {
+  const nonce = crypto.randomUUID().replaceAll("-", "");
+  event.locals.cspNonce = nonce;
+  const response = await resolve(event);
+  response.headers.set(
+    "content-security-policy",
+    `script-src 'self' https://clax.dev; connect-src 'self' https://clax.dev; style-src 'self' 'nonce-${nonce}'; img-src 'self' data: blob:`,
+  );
+  return response;
+};
+```
+
+(SvelteKit's own `kit.csp` setting can make the nonce instead. Then read
+the nonce it puts in the page, as `%sveltekit.nonce%` in `app.html`, for
+example on a `data-` attribute, and pass that.)
+
+```ts
+// src/routes/+layout.server.ts: what this user's overlay is given
+import type { LayoutServerLoad } from "./$types";
+import { env } from "$env/dynamic/private";
+
+export const load: LayoutServerLoad = ({ locals }) => ({
+  mayReport: locals.user?.flags.reportsProblems === true, // your own check
+  user: locals.user?.id ?? null,
+  queue: env.CLAX_QUEUE,
+  release: { version: env.APP_VERSION, commit: env.APP_COMMIT },
+  flags: locals.user?.flags ?? {},
+  cspNonce: locals.cspNonce,
+});
+```
+
 ```svelte
 <!-- src/routes/+layout.svelte -->
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { OverlayHandle } from "$lib/clax-overlay"; // overlay.d.ts, saved
-  let { data, children } = $props(); // data.mayReport, data.release from +layout.server.ts
+  import type { OverlayHandle } from "$lib/clax-overlay";
+  import { startOverlay } from "$lib/start-overlay"; // the function above
+  let { data, children } = $props();
 
   onMount(() => {
-    if (!data.mayReport) return; // your own check: no overlay, no token requests
+    if (!data.mayReport || !data.user) return; // no overlay, no token requests
     let clax: OverlayHandle | undefined;
     let closed = false;
-    import(/* @vite-ignore */ "https://clax.dev/_clax/overlay.mjs").then(({ overlay }) => {
-      if (closed) return;
-      clax = overlay({
-        instance: "https://clax.dev",
-        queue: data.queue,
-        auth: async (public_key: string) => {
-          const r = await fetch("/clax-token", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ public_key }) });
-          if (!r.ok) throw new Error(`no reporter token: ${r.status}`);
-          return r.json();
-        },
-        context: () => ({ release: data.release, flags: data.flags }),
-        nonce: data.cspNonce, // only with a strict style-src, below
-      });
+    startOverlay({
+      instance: "https://clax.dev",
+      queue: data.queue,
+      user: data.user,
+      auth: async (public_key: string) => {
+        const r = await fetch("/clax-token", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ public_key }) });
+        if (!r.ok) throw new Error(`no reporter token: ${r.status}`);
+        return r.json();
+      },
+      context: () => ({ release: data.release, flags: data.flags }),
+      nonce: data.cspNonce, // only with a strict style-src, below
+    }).then(h => {
+      if (closed) h.close();
+      else clax = h;
     });
     return () => { closed = true; clax?.close(); };
   });
@@ -298,8 +407,10 @@ only, once per page load, and close it when the page goes away.
 {@render children()}
 ```
 
-With a Rust backend serving the SvelteKit build, the token route above is
-the backend's; nothing changes on the page.
+The token route is `src/routes/clax-token/+server.ts` (the TypeScript
+above, with `locals.user` as the user). With a Rust backend serving the
+SvelteKit build, it is the backend's route, and nothing changes on the
+page.
 
 ### Content-Security-Policy
 
@@ -341,12 +452,13 @@ drawn in fallback fonts.
 | `queue` | The queue's ID. |
 | `auth(publicKey)` | Gets a reporter token from your backend (section 2). |
 | `launcher` | `"corner"` (default): Report and "Your reports" in the bottom right corner. `false`: none; you call `report()` and `showReports()` from your own menu. |
-| `canFile` | Default `true`. `false` hides Report and keeps "Your reports". |
+| `canFile` | Default `true`. `false` hides Report and keeps "Your reports" (and its badge polls, which ask for tokens). |
 | `context` | Your `release`, `flags` and `app`, or a function giving them, called when each capture starts (section 5). |
 | `metadata` | Any JSON attached to each report, or a function giving it, called once per report. Triage can edit it later. |
 | `diagnostics` | `{default: true}` ticks "Include recent errors" by default (default unticked). |
-| `externalId` | The record the report is about, in your terms (`invoice:4821`). Default: `<meta name="clax-artifact" content="…">`, else the page's URL without its route. |
+| `externalId` | The record the report is about, in your terms (`invoice:4821`). Default: the page's `<meta name="clax-artifact" content="…">`; with neither, the instance files the report on the page's origin and path (its query and fragment left out), so every report on one path is about one record. |
 | `nonce` | Your policy's style nonce (section 3). |
+| `user` | A stable ID of the signed-in user: the reporter's key and token are kept across page loads for it (section 2). |
 
 The handle:
 
@@ -364,8 +476,23 @@ how long your `context` and `metadata` functions may take; a function that
 throws or takes longer files the report anyway, with
 `app: {context_error}` in place of what it would have given.
 
-clax.dev runs it with `launcher: false`: "Report a problem" and "My
-reports" sit in the account menu, the badge beside the latter.
+With `launcher: false` you put Report and "Your reports" in your own UI,
+the badge from `on("badge")` beside the latter. If you give them a
+keyboard shortcut, pick one no browser binds (clax.dev uses plain `F`;
+Mod+Shift+B, for example, is the browsers' bookmarks bar), and ignore it
+while the user types. Check the event's `composedPath()[0]`, not its
+`target`: inside a shadow DOM, `target` is the shadow host, never the
+input itself.
+
+```js
+addEventListener("keydown", e => {
+  if (e.key !== "f" || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+  const el = e.composedPath()[0];
+  if (el instanceof HTMLElement && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
+  e.preventDefault();
+  clax.report();
+});
+```
 
 ## 5. Context and flags
 
@@ -442,7 +569,11 @@ reporter sees it before sending.
 3. **The note** (required), "Include screenshot" (on), and "Include
    recent errors (N)": the console errors, uncaught errors, rejected
    promises and failed requests recorded since the page loaded, at most
-   200 lines, with query values removed.
+   200 lines, with query values removed. The recorder leaves out only the
+   overlay's own calls (`/_clax/*`, the queue's reporter routes
+   `/api/queues/<qid>/reporter*`, and signed requests), so your app's own
+   failed requests are recorded, even when your app is served from the
+   instance's origin.
 4. **What's sent** shows exactly what goes: the page and the anchor, the
    context JSON, your metadata, the error lines when ticked, and whether
    the screenshot goes.
@@ -538,10 +669,22 @@ clax.dev reports problems with Clax itself into its own queue,
   context's release mirrors `/healthz`, its flags are the person's own
   from `GET /api/me/flags`).
 - **The shell**: the overlay with `launcher: false`, "Report a problem"
-  and "My reports" in the account menu, and `context()` returning that
+  (shortcut `F` outside text fields) and "My reports" in the account menu, and `context()` returning that
   release and those flags, with `app: {repo, view, artifact}`.
+- **What is clax.dev's own, not for your product**: the shell is served
+  from the instance itself, so its reporter calls go to the same origin.
+  The instance accepts a reporter's calls without CORS only from its own
+  pages (no `Origin`, `Sec-Fetch-Site: same-origin`, and a `Host` that
+  matches). An outside product's pages are on another origin, and go
+  through CORS for the queue's origins. The shell's `viewOf` (which view
+  is open, for `app.view`) and the `/_app/feedback/*` paths are also the
+  shell's own: your backend's token route lives wherever you like, and
+  your page knows its own views.
 - **Configuration**: the Worker secrets `CLAX_FEEDBACK_QUEUE` and
   `CLAX_FEEDBACK_SERVICE_GRANT` on clax.dev, or a `[feedback]` table
   (`queue`, `service_grant_file`, `origin`) in a daemon's `config.toml`.
+  The instance mints for itself: the integration's `instance` is the
+  daemon's public origin, and its `origin` is the `[feedback]` origin
+  (default: the same).
   `docs/prod.md` has the steps; `just dev-feedback` sets up a dev queue
   on `~/.clax-dev`, so the loop runs locally.
