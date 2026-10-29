@@ -253,8 +253,10 @@ npm_script_test(
 )
 
 # The SDK package as an app gets it (pnpm run test:sdk, sdk/package.test.ts):
-# its package.json, its exports imported by name, the overlay run from its
-# bundle, and its declarations type-checked as an app's.
+# installed from the tarball `npm pack` makes of it, with the Node
+# toolchain's npm, its package.json, its exports imported by name, the
+# overlay run from its bundle, and its declarations type-checked as an
+# app's.
 npm_script_test(
     name = "sdk_package",
     data = [
@@ -262,6 +264,14 @@ npm_script_test(
         ":files",
         ":node_modules",
         "//:lgpl_license",
+        "@nodejs//:npm_bin",
+        "@nodejs//:npm_files",
+    ],
+    env = {"CLAX_NPM_CLI": "$(rootpath @nodejs//:npm_bin)"},
+    # The toolchain's npm stays where its repository put it.
+    no_copy_to_bin = [
+        "@nodejs//:npm_bin",
+        "@nodejs//:npm_files",
     ],
     script = "test:sdk",
 )

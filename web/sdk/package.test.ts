@@ -1,13 +1,14 @@
 // The built SDK package (web/dist-sdk, scripts/build-sdk.mjs), as an app
-// that installs it gets it: its package.json, each export resolved by Node
+// that installs it gets it, from the tarball `npm pack` makes of it, which
+// is what npm would publish: its package.json, each export resolved by Node
 // and imported, the overlay run from its own bundle, and its declarations
 // read by TypeScript as a consumer's. Run by `pnpm run test:sdk` after the
 // build (//web:sdk_package under Bazel), not by the unit tests.
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -34,15 +35,28 @@ const RUNTIME: Record<string, string[]> = {
 
 let manifest: Manifest;
 let app: string;
+/** The package as installed in the app, from its tarball. */
+let pkg: string;
 
 beforeAll(() => {
   if (!existsSync(join(pkgDir, "package.json"))) throw new Error("web/dist-sdk has no package.json: run node scripts/build-sdk.mjs first");
   manifest = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"));
-  // An app with the package installed under its name, copied (no links).
+  // An app with the package installed under its name: what `npm pack`
+  // puts in the tarball npm would publish, extracted (no links). npm runs
+  // offline, with its cache in the app's directory: under Bazel the Node
+  // toolchain's (CLAX_NPM_CLI, relative to the runfiles root), else the
+  // `npm` on PATH.
   app = mkdtempSync(join(tmpdir(), "clax-sdk-app-"));
-  const installed = join(app, "node_modules", ...manifest.name.split("/"));
-  mkdirSync(dirname(installed), { recursive: true });
-  cpSync(pkgDir, installed, { recursive: true });
+  const cli = process.env.CLAX_NPM_CLI;
+  const runfiles = join(process.env.JS_BINARY__RUNFILES ?? "", process.env.JS_BINARY__WORKSPACE ?? "_main");
+  const [cmd, pre] = cli ? [process.execPath, [isAbsolute(cli) ? cli : join(runfiles, cli)]] : ["npm", []];
+  const packed = JSON.parse(execFileSync(cmd, [...pre, "pack", "--json", "--offline", "--ignore-scripts", "--pack-destination", app], {
+    cwd: pkgDir, encoding: "utf8", env: { ...process.env, npm_config_cache: join(app, ".npm"), npm_config_update_notifier: "false" },
+  }));
+  pkg = join(app, "node_modules", ...manifest.name.split("/"));
+  mkdirSync(pkg, { recursive: true });
+  execFileSync("tar", ["-xzf", join(app, packed[0].filename), "-C", pkg, "--strip-components=1"]);
+  manifest = JSON.parse(readFileSync(join(pkg, "package.json"), "utf8"));
   writeFileSync(join(app, "package.json"), JSON.stringify({ name: "app", private: true, type: "module" }));
 });
 afterAll(() => { if (app) rmSync(app, { recursive: true, force: true }); });
@@ -70,19 +84,19 @@ describe("the SDK package", () => {
       const e = manifest.exports[k];
       if (typeof e === "string") throw new Error(`${k} has no conditions`);
       expect(Object.keys(e)).toEqual(["types", "default"]);
-      expect(existsSync(join(pkgDir, e.types)), e.types).toBe(true);
-      expect(existsSync(join(pkgDir, e.default)), e.default).toBe(true);
+      expect(existsSync(join(pkg, e.types)), e.types).toBe(true);
+      expect(existsSync(join(pkg, e.default)), e.default).toBe(true);
     }
   });
 
   it("carries its README", () => {
-    expect(readFileSync(join(pkgDir, "README.md"), "utf8")).toBe(readFileSync(join(web, "sdk/README.md"), "utf8"));
+    expect(readFileSync(join(pkg, "README.md"), "utf8")).toBe(readFileSync(join(web, "sdk/README.md"), "utf8"));
   });
 
   it("carries its license text and the bundled packages' notices", () => {
-    expect(readFileSync(join(pkgDir, "LICENSE"), "utf8")).toContain("GNU Lesser General Public License, version 2.1 only");
-    expect(readFileSync(join(pkgDir, "LICENSES/LGPL-2.1-only.txt"), "utf8")).toBe(readFileSync(join(web, "../LICENSES/LGPL-2.1-only.txt"), "utf8"));
-    const notices = readFileSync(join(pkgDir, "THIRD-PARTY-NOTICES.txt"), "utf8");
+    expect(readFileSync(join(pkg, "LICENSE"), "utf8")).toContain("GNU Lesser General Public License, version 2.1 only");
+    expect(readFileSync(join(pkg, "LICENSES/LGPL-2.1-only.txt"), "utf8")).toBe(readFileSync(join(web, "../LICENSES/LGPL-2.1-only.txt"), "utf8"));
+    const notices = readFileSync(join(pkg, "THIRD-PARTY-NOTICES.txt"), "utf8");
     for (const dep of ["svelte", "modern-screenshot"]) expect(notices).toMatch(new RegExp(`^${dep} \\S+ \\(MIT\\)$`, "m"));
   });
 
@@ -98,7 +112,7 @@ console.log(JSON.stringify(out));
 
   it("changes nothing on import, and runs the overlay with its components' CSS from its own bundle", async () => {
     const before = { html: document.documentElement.outerHTML, globals: Object.keys(globalThis).sort() };
-    const mod = await import(/* @vite-ignore */ pathToFileURL(join(pkgDir, "overlay.js")).href);
+    const mod = await import(/* @vite-ignore */ pathToFileURL(join(pkg, "overlay.js")).href);
     expect({ html: document.documentElement.outerHTML, globals: Object.keys(globalThis).sort() }).toEqual(before);
 
     const handle = mod.overlay({ instance: "https://clax.example", queue: "q1", auth: async () => { throw new Error("no backend"); } });
@@ -109,25 +123,25 @@ console.log(JSON.stringify(out));
     expect(css).toMatch(/\.launcher\.svelte-/);
     handle.close();
     expect(document.querySelector("clax-overlay")).toBeNull();
-    expect(readFileSync(join(pkgDir, "overlay.js"), "utf8")).not.toContain("__CLAX_OVERLAY_COMPONENT_CSS__");
+    expect(readFileSync(join(pkg, "overlay.js"), "utf8")).not.toContain("__CLAX_OVERLAY_COMPONENT_CSS__");
   });
 
   it("keeps class fields and private members as written, for the app's bundler to lower if it must", () => {
-    for (const f of files(pkgDir).filter(p => p.endsWith(".js"))) expect(readFileSync(f, "utf8"), relative(pkgDir, f)).not.toMatch(/__private(Get|Set|Add|Method)\b|__publicField\b/);
+    for (const f of files(pkg).filter(p => p.endsWith(".js"))) expect(readFileSync(f, "utf8"), relative(pkg, f)).not.toMatch(/__private(Get|Set|Add|Method)\b|__publicField\b/);
   });
 
   it("keeps its declarations inside the package, importing no other package", () => {
-    const decls = files(join(pkgDir, "types")).filter(f => f.endsWith(".d.ts"));
+    const decls = files(join(pkg, "types")).filter(f => f.endsWith(".d.ts"));
     expect(decls.length).toBeGreaterThan(0);
     for (const f of decls) {
-      expect(relative(join(pkgDir, "types"), f), "a declaration of web/bridge, web/overlay or web/sdk").toMatch(/^(bridge|overlay|sdk)\//);
+      expect(relative(join(pkg, "types"), f), "a declaration of web/bridge, web/overlay or web/sdk").toMatch(/^(bridge|overlay|sdk)\//);
       const text = readFileSync(f, "utf8");
       expect(text, f).not.toMatch(/^\/\/\/\s*<reference/m);
       for (const [, spec] of text.matchAll(/(?:\bfrom\s+|\bimport\s*\(\s*)["']([^"']+)["']/g)) {
-        expect(spec, `${relative(pkgDir, f)} imports ${spec}`).toMatch(/^\.\.?\/.*\.js$/);
+        expect(spec, `${relative(pkg, f)} imports ${spec}`).toMatch(/^\.\.?\/.*\.js$/);
         const target = resolve(dirname(f), spec.replace(/\.js$/, ".d.ts"));
-        expect(relative(pkgDir, target).startsWith(".."), `${relative(pkgDir, f)} imports ${spec}, outside the package`).toBe(false);
-        expect(existsSync(target), `${relative(pkgDir, f)} imports ${spec}, which is missing`).toBe(true);
+        expect(relative(pkg, target).startsWith(".."), `${relative(pkg, f)} imports ${spec}, outside the package`).toBe(false);
+        expect(existsSync(target), `${relative(pkg, f)} imports ${spec}, which is missing`).toBe(true);
       }
     }
   });
