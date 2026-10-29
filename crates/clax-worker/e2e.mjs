@@ -165,6 +165,15 @@ async function main() {
     check(anon.status === 401, "publishing without the token is refused", anon.status);
     const tok = await fetch(`${base}/api/token`);
     check(tok.status === 403, "GET /api/token serves no one", tok.status);
+    // The embeddable overlay's files, from the static assets, as the daemon
+    // answers them (shell::embed_file): to any origin, without credentials.
+    for (const [file, type] of [["overlay.js", "text/javascript"], ["overlay.mjs", "text/javascript"], ["overlay.d.ts", "text/plain; charset=utf-8"]]) {
+      const r = await fetch(`${base}/_clax/${file}`, { headers: { origin: "https://changelist.example" } });
+      const got = { status: r.status, type: r.headers.get("content-type"), acao: r.headers.get("access-control-allow-origin"), creds: r.headers.get("access-control-allow-credentials"), sniff: r.headers.get("x-content-type-options") };
+      check(got.status === 200 && got.type === type && got.acao === "*" && got.creds === null && got.sniff === "nosniff", `/_clax/${file} is served to any origin as ${type}`, got);
+    }
+    const svg = await fetch(`${base}/_clax/mark.svg`, { headers: { origin: "https://changelist.example" } });
+    check(svg.status === 200 && svg.headers.get("access-control-allow-origin") === null, "the web UI's other files are not offered to other origins", svg.status);
 
     // A Worker that is not hosted signs no browser in, and a private
     // artifact's site answers only a site session, which the shell asks for

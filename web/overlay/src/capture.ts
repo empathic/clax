@@ -22,14 +22,35 @@ export type Mode = "element" | "area" | "screen";
 
 /** A capture: its PNG (null when none could be made), how it was made, why
  * the one asked for could not be made (`error`; a fallback may still be in
- * `png`), what the reporter should know about it (`note`), and whether the
- * exact screenshot would show more (`suggestExact`). */
+ * `png`), what the reporter should know about it (`note`), whether the
+ * exact screenshot would show more (`suggestExact`), where the pick shows
+ * in the image (`pick`, in the image's own pixels; null for Screen and for
+ * the exact screenshot, which is cropped to the pick), the image's pixels
+ * per CSS pixel (`scale`; for the exact screenshot, read from the PNG's own
+ * width, so a frame shrunk to fit is measured as it is), and the part of
+ * the page the image shows (`at`, in page CSS pixels: the viewport's plus
+ * its scroll at capture; null when there is no image), by which marks are
+ * moved from one capture of the page to another, and the PNG's own size
+ * (`size`, from its header; null when there is none), which the marks are
+ * kept within. */
 export interface Captured {
   png: Blob | null;
   info: CaptureInfo;
   error: string | null;
   note: string | null;
   suggestExact: boolean;
+  pick: Rect | null;
+  scale: number;
+  at: Rect | null;
+  size: { w: number; h: number } | null;
+}
+
+/** A PNG's width and height from its header, or null when it is not one. */
+export function pngSize(b: ArrayBuffer): { w: number; h: number } | null {
+  if (b.byteLength < 24) return null;
+  const v = new DataView(b);
+  if (v.getUint32(0) !== 0x89504e47 || v.getUint32(12) !== 0x49484452) return null;
+  return { w: v.getUint32(16), h: v.getUint32(20) };
 }
 
 /** What a capture uses, each replaceable: the viewport render, the display
@@ -63,6 +84,7 @@ export const UNCONFIRMED_TAB = "Your browser cannot confirm this is this tab —
 
 const png = (b: ArrayBuffer) => new Blob([b], { type: "image/png" });
 const viewportOf = (win: Window): Rect => ({ x: 0, y: 0, w: win.innerWidth, h: win.innerHeight });
+const dprOf = (win: Window): number => (Number.isFinite(win.devicePixelRatio) && win.devicePixelRatio > 0 ? win.devicePixelRatio : 1);
 
 /** The capture mode a report records for `mode` and its pick. */
 function infoMode(mode: Mode, target: Picked | null): CaptureInfo["mode"] {
@@ -81,6 +103,7 @@ export async function captureFor(mode: Mode, target: Picked | null, win: Window,
   needTarget(mode, target);
   const supported = deps.supported ?? displayCaptureSupported(win);
   const m = infoMode(mode, target);
+  const scroll = { x: win.scrollX || 0, y: win.scrollY || 0 };
   try {
     const res = mode === "screen" || !target ? await (deps.renderViewport ?? renderViewportClip)(win) : await target.render();
     // What was captured, in the image's pixels (where `omitted` is): a pick may be
@@ -88,10 +111,10 @@ export async function captureFor(mode: Mode, target: Picked | null, win: Window,
     const whole = toImage(res.at, res.at, res.scale);
     const under = mode === "screen" || !target ? whole : toImage(target.rect(), res.at, res.scale);
     const hidden = res.omitted.some((o: Omitted) => intersect(o.rect, under));
-    return { png: png(res.png), info: { mode: m, method: "dom", omitted: res.omitted }, error: null, note: null, suggestExact: supported && hidden };
+    return { png: png(res.png), info: { mode: m, method: "dom", omitted: res.omitted }, error: null, note: null, suggestExact: supported && hidden, pick: mode === "screen" || !target ? null : under, scale: res.scale, at: { ...res.at, x: res.at.x + scroll.x, y: res.at.y + scroll.y }, size: pngSize(res.png) };
   } catch (e) {
     const error = e instanceof Error && e.message ? e.message : String(e);
-    return { png: null, info: { mode: m, method: "dom" }, error, note: null, suggestExact: supported };
+    return { png: null, info: { mode: m, method: "dom" }, error, note: null, suggestExact: supported, pick: null, scale: dprOf(win), at: null, size: null };
   }
 }
 
@@ -145,8 +168,14 @@ export async function captureExact(mode: Mode, target: Picked | null, win: Windo
   } else {
     const aside = [...(deps.host ? [deps.host] : []), ...ignoredElements(win.document), ...(deps.aside ?? [])];
     const display = deps.display ?? ((w: Window, c?: Rect) => captureDisplay(w, c));
+    const shown = crop ?? viewportOf(win);
+    const scroll = { x: win.scrollX || 0, y: win.scrollY || 0 };
     const res = await steppingAside(aside, () => display(win, crop), deps.painted);
-    if (res.ok) return { png: png(res.png), info: { mode: m, method: "display" }, error: null, note: res.thisTab === true ? null : UNCONFIRMED_TAB, suggestExact: false };
+    if (res.ok) {
+      const size = pngSize(res.png);
+      const scale = size && shown.w > 0 ? size.w / shown.w : dprOf(win);
+      return { png: png(res.png), info: { mode: m, method: "display" }, error: null, note: res.thisTab === true ? null : UNCONFIRMED_TAB, suggestExact: false, pick: null, scale, at: { ...shown, x: shown.x + scroll.x, y: shown.y + scroll.y }, size };
+    }
     error = FALLBACK_MESSAGES[res.reason];
   }
   const dom = deps.fallback ?? await captureFor(mode, target, win, deps);
