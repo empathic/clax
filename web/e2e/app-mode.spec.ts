@@ -5,7 +5,8 @@
 // the app's own history of pages, fragments and pushState routes, and the
 // overlays an app that names them `native` draws itself. The app's side is
 // ./app-host.ts.
-import { type CDPSession, type Frame, type Locator, type Page } from "@playwright/test";
+import { writeFile } from "node:fs/promises";
+import { type CDPSession, type Frame, type Locator, type Page, type TestInfo } from "@playwright/test";
 import { hostChannel, host, initHost, NONCE, noFrames, ofType, toHost } from "./app-host";
 import { test, expect, type Daemon, api, approve, contentFrame, publishAs, publishNext, record, registerSession, streamLive } from "./fixtures";
 import { ask } from "./questions-helpers";
@@ -13,6 +14,13 @@ import { advance, quietEval } from "./time";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
+// What a test attaches when it fails, before its page closes.
+let onFailure: ((page: Page, info: TestInfo) => Promise<void>) | null = null;
+test.afterEach(async ({ page }, info) => {
+  const attach = onFailure;
+  onFailure = null;
+  if (attach && info.status !== info.expectedStatus) await attach(page, info);
+});
 test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 800 } });
 
 const PAGE = `<!doctype html><html><head><title>App</title><style>body{margin:0;font:18px/28px sans-serif}main{padding:24px}h2{margin:0 0 24px}.tall{height:3000px}</style>
@@ -324,6 +332,22 @@ test("back() moves through the app's own fragments and pages in place, and acros
   const { artifact } = await publishAs(d.base, d.token, s.id, "Routes", { "index.html": ROUTES, "other.html": "<!doctype html><title>O</title><h1 id=o>Other</h1>" });
   const id = artifact.id;
   await hostChannel(page);
+  // The page's reports to the shell, in the order the shell hears them, and
+  // the host's posts: attached when the test fails, as the trail they make is
+  // what the last assertion checks.
+  await page.addInitScript(() => {
+    if (window.top !== window) return;
+    const heard: unknown[] = [];
+    (window as unknown as { claxHeard: unknown[] }).claxHeard = heard;
+    addEventListener("message", e => { const m = e.data; if (typeof m?.type === "string" && /^clax:(hello|hash|route|navigate)$/.test(m.type)) heard.push({ type: m.type, file: m.file, hash: m.hash, depth: m.depth }); });
+  });
+  onFailure = async (shown, info) => {
+    const heard = await shown.evaluate(() => (window as unknown as { claxHeard?: unknown[] }).claxHeard ?? []);
+    // A file in the test's output folder, which CI keeps (ci.yml's test logs).
+    const path = info.outputPath("trail.json");
+    await writeFile(path, JSON.stringify({ heard, toHost: await toHost(shown) }, null, 1));
+    await info.attach("trail", { path, contentType: "application/json" });
+  };
   await page.goto(`${d.base}/a/${id}?app=1`);
   const f1 = await contentFrame(page, id, 1);
   await initHost(page);

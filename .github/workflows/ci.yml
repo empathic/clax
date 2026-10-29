@@ -85,12 +85,13 @@ jobs:
           name: bazel
           commit: "true"
       # The targets of scripts/bazel-test.sh --ci's test pass, built and not
-      # run.
+      # run. The query names each target, so the macOS and iOS ones are
+      # requested explicitly and skipped here as that pass skips them.
       - name: Build
         run: |
           listed="$(bazelisk query 'tests(//...) except attr(tags, "\bmanual\b", //...)')"
           mapfile -t tests <<< "$listed"
-          bazelisk build --keep_going //crates/... //web:playwright "${tests[@]}"
+          bazelisk build --keep_going --skip_incompatible_explicit_targets //crates/... //web:playwright "${tests[@]}"
       # The format and clippy aspects the next run's quick checks start
       # with. A lint that fails (often why the bazel job did) leaves the
       # rest of them cached, so this step does not fail on one.

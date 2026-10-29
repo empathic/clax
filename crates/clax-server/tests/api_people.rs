@@ -503,7 +503,9 @@ async fn a_waiting_agent_takes_with_its_narrowed_rights() {
         .unwrap();
     // Sam's agent waits. The owner sends it a comment on the first
     // artifact, which wakes the wait; before its take, Sam narrows the agent
-    // to the other artifact. The take then runs with the narrowed rights.
+    // to the other artifact. The take then runs with the narrowed rights: it
+    // holds the comment and answers at once with a `no_access` placeholder
+    // for its thread (spec §7.5), so nothing waits for the poll after that.
     let h = p.handle(&sid);
     let path = format!("/api/sessions/{sid}/feedback?tier=wait&wait=600");
     let waiting = async { json_of(p.sam.agent("GET", &path, Some(&sid), None).await).await };
@@ -533,12 +535,15 @@ async fn a_waiting_agent_takes_with_its_narrowed_rights() {
             .await;
         assert_eq!(status, 200, "{v}");
         p.ts.hold_feedback_at(&sid, false, "before_take").await;
-        p.ts.wait_feedback_waiters(&sid, 1).await;
-        p.ts.expire_feedback(&sid).await;
+        tid
     };
-    let ((status, v), ()) = tokio::join!(waiting, meanwhile);
+    let ((status, v), tid) = tokio::join!(waiting, meanwhile);
     assert_eq!(status, 200, "{v}");
     assert!(!v.to_string().contains("please fix the chart"), "{v}");
+    assert_eq!(v["feedback"], json!([]), "{v}");
+    assert_eq!(v["withheld"].as_array().map(Vec::len), Some(1), "{v}");
+    assert_eq!(v["withheld"][0]["thread_id"], tid, "{v}");
+    assert_eq!(v["withheld"][0]["no_access"], true, "{v}");
     // Narrowing removed: its next take delivers it.
     let (status, _) = p
         .sams_browser(
