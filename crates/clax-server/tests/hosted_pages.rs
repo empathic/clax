@@ -113,6 +113,65 @@ async fn a_signed_out_visitor_lands_on_the_bundled_quickstart() {
 }
 
 #[tokio::test]
+async fn the_landing_pages_reel_redirects_to_where_hosted_mode_serves_it() {
+    let dist = dist();
+    let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+    let web: Arc<dyn clax_core::embedded::FileTree> =
+        Arc::new(clax_core::embedded::DiskTree::new(dist.path()));
+    let release =
+        clax_core::quickstart::Release::from_tree(&clax_testkit::quickstart_tree("landing"))
+            .map(Arc::new);
+    let reel = clax_http::hosted::Reel::new(
+        "https://videos.example/r/downloads/default.mp4",
+        Some("https://videos.example/r/thumbnails/thumbnail.jpg"),
+    )
+    .unwrap();
+    let ts = TestServer::spawn_hosted_with(clock, Some("s3cret"), move |s| {
+        s.web = web;
+        s.quickstart = release;
+        s.hosted = s.hosted.take().map(|h| {
+            Arc::new(
+                Arc::try_unwrap(h)
+                    .expect("hosted is not shared yet")
+                    .with_reel(Some(reel)),
+            )
+        });
+    })
+    .await;
+    let c = unfollowed();
+    let r = c.get(format!("{}/start/reel.mp4", ts.base)).send().await.unwrap();
+    assert_eq!(r.status(), 307);
+    assert_eq!(r.headers()["location"], "https://videos.example/r/downloads/default.mp4");
+    let r = c.get(format!("{}/start/reel-poster.jpg", ts.base)).send().await.unwrap();
+    assert_eq!(r.status(), 307);
+    assert_eq!(r.headers()["location"], "https://videos.example/r/thumbnails/thumbnail.jpg");
+    let r = c.get(format!("{}/start/style.css", ts.base)).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn without_a_reel_elsewhere_the_landing_page_serves_none() {
+    let dist = dist();
+    let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+    let ts = spawn_with_quickstart(clock, &dist).await;
+    let c = unfollowed();
+    for f in ["reel.mp4", "reel-poster.jpg"] {
+        let r = c.get(format!("{}/start/{f}", ts.base)).send().await.unwrap();
+        assert_eq!(r.status(), 404, "{f}");
+    }
+}
+
+#[test]
+fn a_reel_is_served_only_from_https_or_localhost() {
+    use clax_http::hosted::Reel;
+    assert!(Reel::new("https://videos.example/r.mp4", None).is_ok());
+    assert!(Reel::new("http://localhost:8788/reel.mp4", Some("http://127.0.0.1:1/p.jpg")).is_ok());
+    let e = Reel::new("https://videos.example/r.mp4", Some("http://videos.example/p.jpg")).unwrap_err();
+    assert!(e.contains("http://videos.example/p.jpg"), "{e}");
+    assert!(Reel::new("ftp://videos.example/r.mp4", None).is_err());
+}
+
+#[tokio::test]
 async fn without_a_bundled_quickstart_a_signed_out_visitor_signs_in() {
     let dist = dist();
     let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));

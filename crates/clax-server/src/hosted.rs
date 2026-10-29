@@ -194,7 +194,11 @@ async fn legal_page(
 /// `GET /start/…`: a file of the landing page, the quickstart release this
 /// build carries ([`LANDING`]), for anyone; 404 when the build carries none
 /// or not that file. `/start` itself redirects to the directory, whose
-/// relative links and `#step` links name it.
+/// relative links and `#step` links name it. The reel's files redirect to
+/// where hosted mode serves the reel from ([`Hosted::with_reel`]), when it
+/// names a place.
+///
+/// [`Hosted::with_reel`]: clax_http::hosted::Hosted::with_reel
 async fn landing(
     State(s): State<AppState>,
     uri: axum::http::Uri,
@@ -207,6 +211,14 @@ async fn landing(
         return Ok(axum::response::Redirect::to(LANDING).into_response());
     }
     let file = uri.path().strip_prefix(LANDING).unwrap_or("");
+    let elsewhere = hosted_of(&s).reel.clone().and_then(|r| match file {
+        "reel.mp4" => Some(r.video),
+        "reel-poster.jpg" => r.poster,
+        _ => None,
+    });
+    if let Some(to) = elsewhere {
+        return Ok(axum::response::Redirect::temporary(&to).into_response());
+    }
     crate::shell::landing_file(release, &req, if file.is_empty() { "index.html" } else { file })
 }
 

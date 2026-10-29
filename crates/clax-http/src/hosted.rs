@@ -136,6 +136,9 @@ pub struct Hosted {
     /// The site domain ([`Hosted::with_sites`]); `None` serves sites at
     /// `<id>.localhost` alone ([`crate::host::SiteHosts::local`]).
     pub sites: Option<crate::host::SiteHosts>,
+    /// Where the landing page's reel is served from ([`Hosted::with_reel`]);
+    /// `None` serves it only if the quickstart release carries it.
+    pub reel: Option<Reel>,
     /// A request for the public or content host came from a loopback peer
     /// with `behind_cloudflare` off, and was logged ([`Hosted::note_peer`]).
     proxy_noted: std::sync::atomic::AtomicBool,
@@ -151,7 +154,38 @@ impl std::fmt::Debug for Hosted {
             .field("github", &self.github)
             .field("legal", &self.legal)
             .field("sites", &self.sites)
+            .field("reel", &self.reel)
             .finish()
+    }
+}
+
+/// Where the landing page's reel is served from: a video CDN in
+/// production, the dev server's own address locally. The landing page names
+/// its files beside it ([`LANDING`]), and hosted mode redirects them here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reel {
+    /// The video's address (`reel.mp4`).
+    pub video: String,
+    /// The poster frame's address (`reel-poster.jpg`); `None` serves it
+    /// from the quickstart release, if it carries one.
+    pub poster: Option<String>,
+}
+
+impl Reel {
+    /// The reel at `video` with its poster at `poster`; an error naming the
+    /// address that is not `https://` (`http://` only on localhost).
+    pub fn new(video: &str, poster: Option<&str>) -> Result<Reel, String> {
+        for u in std::iter::once(video).chain(poster) {
+            if !clax_core::config::base_url_ok(u) {
+                return Err(format!(
+                    "the reel's addresses must be https:// URLs (http:// only on localhost), not \"{u}\""
+                ));
+            }
+        }
+        Ok(Reel {
+            video: video.into(),
+            poster: poster.map(Into::into),
+        })
     }
 }
 
@@ -370,6 +404,7 @@ impl Hosted {
             public_gallery: false,
             legal: None,
             sites: None,
+            reel: None,
             proxy_noted: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -434,6 +469,13 @@ impl Hosted {
     /// (`None`: at `<id>.localhost` alone).
     pub fn with_sites(self, sites: Option<crate::host::SiteHosts>) -> Hosted {
         Hosted { sites, ..self }
+    }
+
+    /// This hosted mode sending the landing page's reel (`reel.mp4` and
+    /// `reel-poster.jpg` under [`LANDING`]) to `reel`'s addresses (`None`:
+    /// served from the quickstart release, if it carries them).
+    pub fn with_reel(self, reel: Option<Reel>) -> Hosted {
+        Hosted { reel, ..self }
     }
 
     /// Whether this hosted mode serves the bundled documents at `/terms`
