@@ -120,7 +120,7 @@ describe("ReportView", () => {
       { at: "2026-10-29T07:12:02.000Z", level: "error", kind: "error", text: "TypeError: total is undefined" },
       { at: "2026-10-29T07:12:02.500Z", level: "warn", kind: "request", text: "GET /api/total 500" },
     ];
-    const calls = stubFetch({ [`GET ${R}`]: { report: report(1, { diagnostics_lines: 3 }) }, [`GET ${R}/diagnostics`]: { lines } });
+    const calls = stubFetch({ [`GET ${R}`]: { report: report(1, { diagnostics_lines: 3, filing_diagnostics_lines: 3 }) }, [`GET ${R}/diagnostics?capture=0`]: { lines } });
     const m = view();
     await settle();
     const d = m.root.querySelector<HTMLDetailsElement>("details.diag")!;
@@ -135,5 +135,103 @@ describe("ReportView", () => {
     click(d.querySelector('input[type="radio"][value="debug"]'));
     expect(d.querySelector(".line")).toBeNull();
     expect(d.textContent).toContain("No debug lines.");
+  });
+
+  it("loads the filing's diagnostics as capture 0 and a reopen's as its own capture", async () => {
+    const line = (text: string): DiagLine => ({ at: "2026-10-29T07:12:01.000Z", level: "error", kind: "console", text });
+    const reopened = report(1, {
+      diagnostics_lines: 2, filing_diagnostics_lines: 1, reopen_count: 1,
+      comments: [...report(1).comments, { id: "c9", author_kind: "reporter", author_name: "emp-1", body: "Still broken", created_at: "2026-10-29T09:00:00Z", capture: 1, has_clip: false, diagnostics_lines: 2 }],
+    });
+    const calls = stubFetch({
+      [`GET ${R}`]: { report: reopened },
+      [`GET ${R}/diagnostics?capture=0`]: { lines: [line("at filing")] },
+      [`GET ${R}/diagnostics?capture=1`]: { lines: [line("at reopen"), line("again")] },
+    });
+    const m = view();
+    await settle();
+    const [filing, again] = [...m.root.querySelectorAll<HTMLDetailsElement>("details.diag")];
+    expect(filing.querySelector("summary")!.textContent).toContain("1 line");
+    expect(again.closest('[data-id="c9"]')).not.toBeNull();
+    for (const d of [filing, again]) flush(() => { d.open = true; d.dispatchEvent(new Event("toggle")); });
+    await settle();
+    expect([...filing.querySelectorAll(".line .text")].map(l => l.textContent)).toEqual(["at filing"]);
+    expect([...again.querySelectorAll(".line .text")].map(l => l.textContent)).toEqual(["at reopen", "again"]);
+    expect(calls.map(c => c.url).filter(u => u.includes("diagnostics")).sort()).toEqual([`${R}/diagnostics?capture=0`, `${R}/diagnostics?capture=1`]);
+  });
+
+  it("shows no filing diagnostics when only a reopen has some", async () => {
+    stubFetch({ [`GET ${R}`]: { report: report(1, { diagnostics_lines: 2 }) } });
+    const m = view();
+    await settle();
+    expect(m.root.querySelector("details.diag")).toBeNull();
+  });
+
+  it("retries diagnostics after a failed load", async () => {
+    let fail = true;
+    stubFetch({
+      [`GET ${R}`]: { report: report(1, { diagnostics_lines: 1, filing_diagnostics_lines: 1 }) },
+      [`GET ${R}/diagnostics?capture=0`]: () => (fail ? [500, { error: { code: "internal", message: "store unavailable" } }] : { lines: [{ at: "2026-10-29T07:12:01Z", level: "info", kind: "console", text: "ok" }] }),
+    });
+    const m = view();
+    await settle();
+    const d = m.root.querySelector<HTMLDetailsElement>("details.diag")!;
+    flush(() => { d.open = true; d.dispatchEvent(new Event("toggle")); });
+    await settle();
+    expect(d.querySelector(".err")!.textContent).toContain("Store unavailable.");
+    fail = false;
+    click(button(d, "Try again"));
+    await settle();
+    expect(d.querySelector(".line .text")!.textContent).toBe("ok");
+  });
+
+  it("replies with the box's text and clears it", async () => {
+    const replied = report(1, { comments: [...report(1).comments, { id: "c2", author_kind: "viewer", author_name: "Mia", body: "On it", created_at: "2026-10-29T08:00:00Z" }] });
+    const calls = stubFetch({ [`GET ${R}`]: { report: report(1) }, [`POST ${R}/comments`]: { report: replied } });
+    const m = view();
+    await settle();
+    const box = m.root.querySelector<HTMLTextAreaElement>("form.reply textarea")!;
+    type(box, "  On it ");
+    click(m.root.querySelector('form.reply button[type="submit"]'));
+    await settle();
+    expect(calls.find(c => c.method === "POST")).toEqual({ url: `${R}/comments`, method: "POST", body: { body: "On it" } });
+    expect(box.value).toBe("");
+    expect([...m.root.querySelectorAll(".convo .cm .body")].map(b => b.textContent)).toEqual(["On it"]);
+  });
+
+  it("keeps verify's note and reopen's text apart", async () => {
+    const calls = stubFetch({ [`GET ${R}`]: { report: report(1, { state: "fix_proposed" }) }, [`POST ${R}/reopen`]: { report: report(1) } });
+    const m = view();
+    await settle();
+    click(button(m.root, "Verify for the reporter"));
+    type(m.root.querySelector('form.af textarea[name="note"]'), "looks fine");
+    click(button(m.root, "Reopen for the reporter"));
+    const body = m.root.querySelector<HTMLTextAreaElement>('form.af textarea[name="body"]')!;
+    expect(body.value).toBe("");
+    type(body, "Still 21");
+    submit(m.root);
+    await settle();
+    expect(calls.find(c => c.method === "POST")!.body).toEqual({ body: "Still 21" });
+  });
+
+  it("links back to the queue on the tab it came from", async () => {
+    history.replaceState(null, "", "/queues/q1/t1?state=resolved");
+    stubFetch({ [`GET ${R}`]: { report: report(1) } });
+    const m = view();
+    await settle();
+    expect(m.root.querySelector(".back a")!.getAttribute("href")).toBe("/queues/q1?state=resolved");
+    history.replaceState(null, "", "/queues/q1/t1");
+  });
+
+  it("keeps the latest load when an earlier one answers after it", async () => {
+    let answer!: (r: Response) => void;
+    let n = 0;
+    vi.stubGlobal("fetch", vi.fn(() => (++n === 1 ? new Promise<Response>(r => { answer = r; }) : Promise.resolve(new Response(JSON.stringify({ report: report(1, { state: "resolved" }) }))))));
+    const stream = { watch: (_t: string[], f: (e: { type: string }) => void) => { f({ type: "resync" }); return () => {}; } };
+    const m = mount(ReportView, { qid: "q1", tid: "t1", queue: QUEUE, nav: () => {}, zone: "UTC", locale: "en-US", stream: stream as never });
+    await settle();
+    answer(new Response(JSON.stringify({ report: report(1) })));
+    await settle();
+    expect(m.root.querySelector(".rh .state")!.textContent).toBe("Resolved");
   });
 });

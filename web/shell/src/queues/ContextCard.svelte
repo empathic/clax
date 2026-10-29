@@ -38,7 +38,7 @@
           {#if rel.version}<b>{rel.version}</b>{/if}
           {#if rel.channel}<span class="cchip">{rel.channel}</span>{/if}
           {#if commit}
-            {#if commit.href}<a class="commit" href={commit.href} target="_blank" rel="noopener noreferrer" title={rel.commit}>{commit.text}</a>
+            {#if commit.href}<a class="commit" href={commit.href} target="_blank" rel="noopener noreferrer" title={`${rel.commit} on ${commit.host}`}>{commit.text}</a>
             {:else}<code class="commit" title={rel.commit}>{commit.text}</code>{/if}
           {/if}
           {#if rel.id}<span class="muted">{rel.id}</span>{/if}

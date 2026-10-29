@@ -4,7 +4,8 @@
   // A queue's reports (`/queues/<qid>`, spec 2026-10-29-feedback-loop-design
   // §8), the latest filed first, by tab: Active (open or claimed), Fix
   // proposed, Verified, Resolved and All; the tab is kept in the address
-  // (`?state=`). Each row links to the report's view and shows its note,
+  // (`?state=`, which each row's link carries to the report's view). Each
+  // row links to the report's view and shows its note,
   // its clip's thumbnail, who filed it, the release they ran, how long ago,
   // its state and how many fixes it has had. Load more fetches the next
   // page from the listing's cursor. A tab's list is fetched again when the
@@ -85,7 +86,7 @@
         {#each reports as r (r.id)}
           {@const n = fixes(r)}
           <li class="rrow" data-id={r.id}>
-            <a class="rlink" href={reportHref(p.qid, r.id)} onclick={p.nav}>
+            <a class="rlink" href={`${reportHref(p.qid, r.id)}${tab === "active" ? "" : `?state=${tab}`}`} onclick={p.nav}>
               {#if r.has_clip}<img class="thumb" src={api.clipUrl(p.qid, r.id)} alt="" loading="lazy" />{:else}<span class="thumb none" aria-hidden="true"></span>{/if}
               <span class="main">
                 <span class="note">{noteOf(r) || "(no note)"}</span>

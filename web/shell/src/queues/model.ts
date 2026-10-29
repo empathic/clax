@@ -120,14 +120,15 @@ export function repoUrl(app: unknown): string | null {
   return u ? u.replace(/\/+$/, "").replace(/\.git$/, "") : null;
 }
 
-/** The release's commit as text, with a link to it when the context's
- * `app.repo` names a repository; `null` when the release names no commit. */
-export function commitLink(ctx: ReportContext | undefined): { text: string; href: string | null } | null {
+/** The release's commit as text, with a link to it and the link's host
+ * when the context's `app.repo` names a repository; `null` when the release
+ * names no commit. */
+export function commitLink(ctx: ReportContext | undefined): { text: string; href: string | null; host: string | null } | null {
   const c = ctx?.release?.commit?.trim();
   if (!c) return null;
   const repo = repoUrl(ctx?.app);
-  const safe = /^[0-9A-Za-z._-]+$/.test(c);
-  return { text: c.length > 12 && /^[0-9a-f]+$/i.test(c) ? c.slice(0, 12) : c, href: repo && safe ? `${repo}/commit/${c}` : null };
+  const href = repo && /^[0-9A-Za-z._-]+$/.test(c) ? `${repo}/commit/${c}` : null;
+  return { text: c.length > 12 && /^[0-9a-f]+$/i.test(c) ? c.slice(0, 12) : c, href, host: href ? new URL(href).host : null };
 }
 
 /** A browser and its major version, read from a user agent: "Chrome 131",

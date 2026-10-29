@@ -59,9 +59,9 @@ describe("a report's reporter, commit, browser and anchor", () => {
 
   it("links the commit when app.repo names the repository, and shows it as text otherwise", () => {
     const ctx = (app: unknown, commit = "f7e862ab0aa1bb2cc3dd") => ({ v: 1 as const, captured_at: "2026-10-29T07:12:03Z", release: { commit }, app });
-    expect(commitLink(ctx({ repo: "https://github.com/empathic/clax.git" }))).toEqual({ text: "f7e862ab0aa1", href: "https://github.com/empathic/clax/commit/f7e862ab0aa1bb2cc3dd" });
+    expect(commitLink(ctx({ repo: "https://github.com/empathic/clax.git" }))).toEqual({ text: "f7e862ab0aa1", href: "https://github.com/empathic/clax/commit/f7e862ab0aa1bb2cc3dd", host: "github.com" });
     expect(commitLink(ctx({ repo: "empathic/clax" }))!.href).toBe("https://github.com/empathic/clax/commit/f7e862ab0aa1bb2cc3dd");
-    expect(commitLink(ctx({ repo: "javascript:alert(1)" }))).toEqual({ text: "f7e862ab0aa1", href: null });
+    expect(commitLink(ctx({ repo: "javascript:alert(1)" }))).toEqual({ text: "f7e862ab0aa1", href: null, host: null });
     expect(commitLink(ctx(undefined))!.href).toBeNull();
     expect(commitLink(ctx({ repo: "empathic/clax" }, "../x?y"))!.href).toBeNull();
     expect(commitLink({ v: 1, captured_at: "x" })).toBeNull();
