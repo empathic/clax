@@ -664,6 +664,8 @@ describe("the overlay", () => {
     expect(fix.querySelector<HTMLAnchorElement>('a[data-link="change"]')?.href).toBe("https://github.com/o/leave/pull/12");
     expect(fix.querySelector<HTMLAnchorElement>('a[data-link="verify"]')?.href).toBe("https://leave.example/req/1");
     expect(button("Still broken")).toBeDefined();
+    // The reply box says who hears a reply while the fix waits.
+    expect(q(".panel .reply-note")?.textContent).toMatch(/Triage agent.*queue's people.*Still broken/s);
     const before = contexts;
     click(button("It's fixed"));
     await settle();

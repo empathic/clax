@@ -2122,11 +2122,16 @@ impl Store {
     }
 
     /// [`Store::reporter_comment`], sending the comment to the session
-    /// that holds the report's live lease (the agent working on it), when
-    /// that session's person is still a member of the queue: a feedback
-    /// row for it, made in the comment's transaction, which reaches the
-    /// session as any comment sent to it does. Answers the report and the
-    /// session woken, for the caller to wake its waits and pushes.
+    /// that holds the report's live lease (the agent working on it) or,
+    /// while a fix waits (`fix_proposed`), to the session of its latest
+    /// lease (the fix's proposer) while that session lives, when that
+    /// session's person is still a member of the queue: a feedback row for
+    /// it, made in the comment's transaction, which reaches the session as
+    /// any comment sent to it does, under the queue's member rule (whole
+    /// while its rights read reports, `no_access` otherwise). Otherwise no
+    /// session is sent it, and triage reads it on the report. Answers the
+    /// report and the session woken, for the caller to wake its waits and
+    /// pushes.
     ///
     /// # Errors
     /// As [`Store::reporter_comment`].
@@ -2160,9 +2165,17 @@ impl Store {
                     "UPDATE comments SET reporter_id = ?2 WHERE id = ?1",
                     params![c.id, rid],
                 )?;
-                let Some(cur) = current_in(tx, tid, &now)?.filter(|cur| cur.live) else {
+                let Some(cur) = current_in(tx, tid, &now)? else {
                     return Ok(());
                 };
+                if !cur.live {
+                    // A fix waits: its proposer's lease ended with the
+                    // proposal, and the reply goes to that session still.
+                    let s = standing_in(tx, tid)?;
+                    if state_of(&s.status, s.phase.as_deref(), false) != State::FixProposed {
+                        return Ok(());
+                    }
+                }
                 if !session_is_member_in(tx, qid, &cur.session_id)? {
                     return Ok(());
                 }
