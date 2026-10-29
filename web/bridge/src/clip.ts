@@ -203,6 +203,28 @@ export interface ClipOptions {
  * clips are rendered without web fonts, in the fonts the browser falls back to. */
 const fontsRefused = new WeakSet<Document>();
 
+/** Renders `doc`'s clips without web fonts from the first: for a page whose
+ * policy refuses inline <style>, so no clip trips it (modern-screenshot reads
+ * fonts' @import rules through an inline <style>; refused, it fails and the
+ * clip is drawn again without them). */
+export function withoutWebFonts(doc: Document): void {
+  fontsRefused.add(doc);
+}
+
+/** Whether `doc`'s own `<meta http-equiv="Content-Security-Policy">` refuses
+ * inline <style> (its `style-src-elem`, else `style-src`, else `default-src`
+ * without 'unsafe-inline', or with a nonce or hash). A policy sent as a header cannot be read from
+ * the page: its host says so (`withoutWebFonts`). */
+export function metaRefusesInlineStyle(doc: Document): boolean {
+  for (const m of Array.from(doc.querySelectorAll<HTMLMetaElement>('meta[http-equiv="Content-Security-Policy" i]'))) {
+    const directives = new Map(m.content.split(";").map(d => d.trim().split(/\s+/)).filter(d => d[0]).map(([k, ...v]) => [k.toLowerCase(), v]));
+    const style = directives.get("style-src-elem") ?? directives.get("style-src") ?? directives.get("default-src");
+    // A nonce or a hash makes a browser ignore 'unsafe-inline'.
+    if (style && (!style.includes("'unsafe-inline'") || style.some(v => /^'(nonce|sha256|sha384|sha512)-/.test(v)))) return true;
+  }
+  return false;
+}
+
 /** Whether `e` is modern-screenshot failing on that refused <style>, whose
  * `sheet` is null (each engine's message names the `cssRules` it read). */
 function fontSheetRefused(e: unknown): boolean {

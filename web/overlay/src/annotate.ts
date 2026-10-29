@@ -140,17 +140,21 @@ export interface PageRect { x: number; y: number; w: number; h: number }
 export interface Placement { at: PageRect; scale: number; w: number; h: number }
 
 /** `shapes`, drawn on an image placed at `from`, moved onto an image placed
- * at `to`, so each still marks the same part of the page. A box or a
- * redaction is cut to the new image; a mark that falls outside it (all of
- * a box, an arrow's end, a text's corner) cannot be moved and is in
+ * at `to`, so each still marks the same part of the page. A box is cut to
+ * the new image. A redaction is widened to whole pixels (its near corner
+ * rounded down, its far one up) before it is cut, so no sliver of what it
+ * covered shows, and one inside the image is never dropped (it keeps at
+ * least a pixel). A mark that falls outside the new image (all of a box or
+ * a redaction, an arrow's end, a text's corner) cannot be moved and is in
  * `dropped`. */
 export function remapShapes(shapes: readonly Shape[], from: Placement, to: Placement): { shapes: Shape[]; dropped: number } {
-  const map = (p: Pt): Pt => ({
-    x: Math.round(((from.at.x + p.x / from.scale) - to.at.x) * to.scale),
-    y: Math.round(((from.at.y + p.y / from.scale) - to.at.y) * to.scale),
+  const exact = (p: Pt): Pt => ({
+    x: ((from.at.x + p.x / from.scale) - to.at.x) * to.scale,
+    y: ((from.at.y + p.y / from.scale) - to.at.y) * to.scale,
   });
+  const map = (p: Pt): Pt => { const e = exact(p); return { x: Math.round(e.x), y: Math.round(e.y) }; };
   const inside = (p: Pt) => p.x >= 0 && p.y >= 0 && p.x <= to.w && p.y <= to.h;
-  const clamp = (p: Pt): Pt => ({ x: Math.min(Math.max(p.x, 0), to.w), y: Math.min(Math.max(p.y, 0), to.h) });
+  const clampTo = (v: number, max: number) => Math.min(Math.max(v, 0), max);
   const out: Shape[] = [];
   let dropped = 0;
   for (const sh of shapes) {
@@ -160,10 +164,21 @@ export function remapShapes(shapes: readonly Shape[], from: Placement, to: Place
     } else if (sh.kind === "arrow") {
       const a = map(sh.from), b = map(sh.to);
       if (inside(a) && inside(b)) out.push({ kind: "arrow", from: a, to: b }); else dropped++;
+    } else if (sh.kind === "redact") {
+      const a = exact(sh.from), b = exact(sh.to);
+      const x0 = Math.floor(Math.min(a.x, b.x)), y0 = Math.floor(Math.min(a.y, b.y));
+      const x1 = Math.ceil(Math.max(a.x, b.x)), y1 = Math.ceil(Math.max(a.y, b.y));
+      // Wholly outside the new image: nothing of it shows there.
+      if (x1 <= 0 || y1 <= 0 || x0 >= to.w || y0 >= to.h) { dropped++; continue; }
+      let cx0 = clampTo(x0, to.w), cy0 = clampTo(y0, to.h), cx1 = clampTo(x1, to.w), cy1 = clampTo(y1, to.h);
+      if (cx1 <= cx0) { cx1 = Math.min(cx0 + 1, Math.ceil(to.w)); cx0 = cx1 - 1; }
+      if (cy1 <= cy0) { cy1 = Math.min(cy0 + 1, Math.ceil(to.h)); cy0 = cy1 - 1; }
+      out.push({ kind: "redact", from: { x: cx0, y: cy0 }, to: { x: cx1, y: cy1 } });
     } else {
-      const a = clamp(map(sh.from)), b = clamp(map(sh.to));
-      const r = spanOf(a, b);
-      if (r.w > 0 && r.h > 0) out.push({ kind: sh.kind, from: a, to: b }); else dropped++;
+      const a = map(sh.from), b = map(sh.to);
+      const ca = { x: clampTo(a.x, to.w), y: clampTo(a.y, to.h) }, cb = { x: clampTo(b.x, to.w), y: clampTo(b.y, to.h) };
+      const r = spanOf(ca, cb);
+      if (r.w > 0 && r.h > 0) out.push({ kind: sh.kind, from: ca, to: cb }); else dropped++;
     }
   }
   return { shapes: out, dropped };
