@@ -57,5 +57,15 @@
   { "url": "https://clax.dev/cb#state=xyz&code=4/0AfJohXk", "out": "https://clax.dev/cb#state=‹redacted›&code=‹redacted›" },
   { "url": "https://clax.dev/a/x#comments", "out": "https://clax.dev/a/x#comments" },
   { "url": "/relative/path?x=1&y=", "out": "/relative/path?x=‹redacted›&y=" },
-  { "url": "https://clax.dev/u/ahk@example.com/x?a=1", "out": "https://clax.dev/u/‹redacted›/x?a=‹redacted›" }
+  { "url": "https://clax.dev/u/ahk@example.com/x?a=1", "out": "https://clax.dev/u/‹redacted›/x?a=‹redacted›" },
+  { "in": "load failed https://app.example/search?q=alice+smith&page=2 retrying", "out": "load failed https://app.example/search?q=‹redacted›&page=‹redacted› retrying" },
+  { "in": "(see HTTP://App.Example/a?b=1).", "out": "(see HTTP://App.Example/a?b=‹redacted›)." },
+  { "in": "href=\"https://x.example/cb#state=s&code=c\" ok", "out": "href=\"https://x.example/cb#state=‹redacted›&code=‹redacted›\" ok" },
+  { "in": "at https://app.example/assets/index-4f2a.js:12:7", "out": "at https://app.example/assets/index-4f2a.js:12:7" },
+  { "in": "go to <http://user:pw@intra.example/x?y=> now", "out": "go to <http://‹redacted›@intra.example/x?y=> now" },
+  { "in": "xhttps://a.example/?q=1 stays", "out": "xhttps://a.example/?q=1 stays" },
+  { "in": "mail ahk@example.com from https://a.example/u/ahk@example.com?ref=mail", "out": "mail ‹redacted› from https://a.example/u/‹redacted›?ref=‹redacted›" },
+  { "in": "https:// alone", "out": "https:// alone" },
+  { "in": "at render (https://app.example/a.js?v=9f2c:12:7)", "out": "at render (https://app.example/a.js?v=‹redacted›:12:7)" },
+  { "in": "GET http://localhost:5173/api?x=1 refused", "out": "GET http://localhost:5173/api?x=‹redacted› refused" }
 ]

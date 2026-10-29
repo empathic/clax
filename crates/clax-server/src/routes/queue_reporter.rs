@@ -271,11 +271,12 @@ impl Parts {
             .transpose()?)
     }
 
-    /// The `diagnostics` part, checked and scrubbed ([`parse_diagnostics`]).
-    fn diagnostics(&mut self) -> Result<Option<Vec<DiagLine>>, ApiError> {
+    /// The `diagnostics` part, checked and scrubbed ([`parse_diagnostics`]),
+    /// a note stamped `now` in place of any line it dropped.
+    fn diagnostics(&mut self, now: &str) -> Result<Option<Vec<DiagLine>>, ApiError> {
         Ok(self
             .bytes("diagnostics")
-            .map(|d| parse_diagnostics(&d))
+            .map(|d| parse_diagnostics(&d, now))
             .transpose()?)
     }
 
@@ -332,7 +333,7 @@ fn new_report(s: &AppState, mut p: Parts, reporter_id: &str) -> Result<NewReport
     };
     let clip = p.clip()?;
     let context = p.context()?;
-    let diagnostics = p.diagnostics()?;
+    let diagnostics = p.diagnostics(&s.store.now())?;
     Ok(NewReport {
         external_id: p.text("external_id")?,
         url: p.required("url")?,
@@ -599,7 +600,7 @@ pub async fn reopen(
     let mut p = read_parts(mp, REOPEN_PARTS, "a reopen").await?;
     let body = p.required("body")?;
     let clip = p.clip()?;
-    let diagnostics = p.diagnostics()?;
+    let diagnostics = p.diagnostics(&s.store.now())?;
     let context = p.context()?;
     let rid = r.token.reporter_id;
     let t = tid.clone();

@@ -726,8 +726,9 @@ fn check_verdict_in(c: &Connection, q: &QueueRow, tid: &str, by: &Verdict<'_>) -
 
 /// Report `tid`'s diagnostics as stored, with their count, when `lines`
 /// holds a line; checked as the diagnostics part of a filing is
-/// ([`clax_core::report::parse_diagnostics`]), each text scrubbed again.
-fn diagnostics_json(lines: &[DiagLine]) -> Result<Option<(String, u32)>> {
+/// ([`clax_core::report::parse_diagnostics`]), each text scrubbed again
+/// and a line the shape does not admit dropped, with a note stamped `now`.
+fn diagnostics_json(lines: &[DiagLine], now: &str) -> Result<Option<(String, u32)>> {
     if lines.is_empty() {
         return Ok(None);
     }
@@ -736,7 +737,7 @@ fn diagnostics_json(lines: &[DiagLine]) -> Result<Option<(String, u32)>> {
         part.push_str(&serde_json::to_string(l).expect("diagnostics serialise"));
         part.push('\n');
     }
-    let checked = clax_core::report::parse_diagnostics(part.as_bytes())?;
+    let checked = clax_core::report::parse_diagnostics(part.as_bytes(), now)?;
     let json = serde_json::to_string(&checked).expect("diagnostics serialise");
     Ok(Some((json, checked.len() as u32)))
 }
@@ -1363,7 +1364,7 @@ impl Store {
             .as_ref()
             .map(|s| serde_json::to_string(s).expect("stamps serialise"));
         let diagnostics = match r.diagnostics.as_deref() {
-            Some(lines) => diagnostics_json(lines)?,
+            Some(lines) => diagnostics_json(lines, &self.now())?,
             None => None,
         };
         let profile = reporter
@@ -2346,7 +2347,7 @@ impl Store {
             return Err(CoreError::invalid("invalid_clip", problem));
         }
         let diagnostics = match diagnostics.as_deref() {
-            Some(lines) => diagnostics_json(lines)?,
+            Some(lines) => diagnostics_json(lines, &self.now())?,
             None => None,
         };
         let context = context.as_ref().map(context_json).transpose()?;

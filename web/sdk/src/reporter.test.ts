@@ -157,6 +157,27 @@ describe("ReporterClient", () => {
     expect(bare.has("context")).toBe(false);
   });
 
+  it("sends only JSON Clax reads: well-formed strings, finite flags", async () => {
+    const s = setup(() => json(201, { report: REPORT }));
+    const { client } = await s.make();
+    const context = {
+      v: 1 as const, captured_at: "2026-10-29T07:12:03.120Z",
+      flags: { ok: 1, nan: Number.NaN, inf: Number.POSITIVE_INFINITY, on: true },
+      app: { "k\ud83d": ["v\udc00"] },
+    };
+    await client.fileReport({ url: "u", title: "t", anchor: { s: "\ud83d" }, body: "b", metadata: { m: "\ud83d" }, context });
+    const form = await new Response(s.inst.sent[0].body as BodyInit, { headers: { "content-type": s.inst.sent[0].headers["content-type"] } }).formData();
+    for (const name of ["context", "anchor", "metadata"]) expect(form.get(name) as string).not.toMatch(/\\u[dD][89a-fA-F]/);
+    expect(JSON.parse(form.get("context") as string)).toEqual({
+      v: 1, captured_at: "2026-10-29T07:12:03.120Z", flags: { ok: 1, on: true }, app: { "k�": ["v�"] },
+    });
+    await client.verify("t1", { note: "fine \ud83d", context });
+    const body = new TextDecoder().decode(s.inst.sent[1].body);
+    expect(body).not.toMatch(/\\u[dD][89a-fA-F]/);
+    expect(JSON.parse(body).note).toBe("fine �");
+    expect(JSON.parse(body).context.flags).toEqual({ ok: 1, on: true });
+  });
+
   it("verify posts note and context", async () => {
     const s = setup(() => json(200, { report: { ...REPORT, state: "verified" } }));
     const { signer, client } = await s.make();

@@ -42,4 +42,12 @@ describe("environment", () => {
     expect(env).not.toHaveProperty("user_agent");
     expect(environment(fakeWindow({ matchMedia: () => ({ matches: false }) })).color_scheme).toBe("light");
   });
+
+  it("leaves out numbers JSON cannot carry and keeps strings well-formed", () => {
+    const env = environment(fakeWindow({ innerWidth: Number.NaN, scrollY: Number.POSITIVE_INFINITY, document: { title: "half \ud83d" } }));
+    expect(env).not.toHaveProperty("viewport");
+    expect(env).not.toHaveProperty("scroll");
+    expect(env.title).toBe("half �");
+    expect(environment(fakeWindow({ devicePixelRatio: Number.NaN })).viewport).toEqual({ w: 1440, h: 900, dpr: 1 });
+  });
 });

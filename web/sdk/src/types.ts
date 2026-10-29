@@ -123,7 +123,8 @@ export interface Release {
   channel?: string;
 }
 
-/** A feature flag's value. */
+/** A feature flag's value. The SDK leaves out a flag whose number is not
+ * finite (`NaN`, `Infinity`), which JSON cannot carry. */
 export type FlagValue = boolean | number | string;
 
 /** The page and browser a capture was made in. `url` keeps its query keys,
