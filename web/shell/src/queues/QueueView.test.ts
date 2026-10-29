@@ -16,7 +16,7 @@ describe("QueueView", () => {
   it("filters by state tab", async () => {
     const calls = stubFetch({
       [`GET ${LIST}?state=active&order=newest`]: { reports: [report(2), report(1, { state: "claimed" })], next: null },
-      [`GET ${LIST}?state=fix_proposed&order=newest`]: { reports: [report(3, { state: "fix_proposed", fixes: [{ n: 1, summary: "s", proposer_name: "Ana", created_at: "2026-10-29T08:00:00Z", outcome: "pending" }] })], next: null },
+      [`GET ${LIST}?state=fix_proposed&order=newest`]: { reports: [report(3, { state: "fix_proposed", fixes: [{ n: 1, summary: "s", proposer_name: "Ana", proposer_kind: "person", created_at: "2026-10-29T08:00:00Z", outcome: "pending" }] })], next: null },
       [`GET ${LIST}?order=newest`]: { reports: [report(3), report(2), report(1)], next: null },
     });
     const m = mount(QueueView, { qid: "q1", queue: QUEUE, nav: () => {} });

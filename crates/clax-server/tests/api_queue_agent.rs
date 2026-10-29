@@ -749,7 +749,90 @@ async fn fix_by_lease_holder_proposes_and_releases() {
         .expect("a queue.fix");
     assert_eq!(fixed.1["n"], 1);
     assert_eq!(fixed.1["commit"], "abc123");
-    // Its lease is gone: it writes no more until the report is reopened.
+    // Its lease is gone: it replies while its fix waits, but resolves
+    // nothing until it claims the report again.
+    let (s, v) = q
+        .agent(
+            Some(&a),
+            "POST",
+            &q.report("/resolve"),
+            json!({"reason": "fixed"}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (409, "claim_required"), "{v}");
+    // Nor claims it while the fix waits for its verdict.
+    let (s, v) = q
+        .agent(Some(&a), "POST", &q.report("/claim"), json!({}))
+        .await;
+    assert_eq!((s, code(&v)), (409, "not_claimable"), "{v}");
+}
+
+/// The agent that proposed the waiting fix replies to the reporter with no
+/// lease; another agent, or the proposer once the fix is verified, is
+/// refused as before.
+#[tokio::test]
+async fn the_proposer_replies_while_its_fix_waits() {
+    let q = setup().await;
+    let (a, b) = (q.session("a").await, q.session("b").await);
+    let (s, _) = q
+        .agent(Some(&a), "POST", &q.report("/claim"), json!({}))
+        .await;
+    assert_eq!(s, 200);
+    let (s, v) = q
+        .agent(Some(&a), "POST", &q.report("/fix"), fix_body())
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["report"]["fixes"][0]["proposer_kind"], "agent", "{v}");
+    let reply = json!({"body": "Check it on 0.6.1"});
+    let (s, v) = q
+        .agent(Some(&a), "POST", &q.report("/comments"), reply.clone())
+        .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["comment"]["author_kind"], "agent", "{v}");
+    assert_eq!(v["report"]["state"], "fix_proposed", "{v}");
+    let seen =
+        q.ts.store
+            .report(
+                &q.qid,
+                &q.tid,
+                clax_store::queues::Visibility::Reporter("emp-1"),
+            )
+            .unwrap()
+            .unwrap();
+    assert_eq!(seen.comments.last().unwrap().body, "Check it on 0.6.1");
+    // Another agent needs a live claim, as before.
+    let (s, v) = q
+        .agent(Some(&b), "POST", &q.report("/comments"), reply.clone())
+        .await;
+    assert_eq!((s, code(&v)), (409, "claim_required"), "{v}");
+    // Verified, the fix waits no more: the proposer's reply is refused.
+    let ana = q.triager("Ana").await;
+    let (s, v) = q
+        .browser(&ana.cookie, "POST", &q.report("/verify"), json!({}))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = q
+        .agent(Some(&a), "POST", &q.report("/comments"), reply)
+        .await;
+    assert_eq!((s, code(&v)), (409, "claim_required"), "{v}");
+}
+
+/// A person's fix after an agent's released claim is the person's: that
+/// agent replies only under a claim, and the fix names a person.
+#[tokio::test]
+async fn an_earlier_agent_does_not_answer_for_a_persons_fix() {
+    let q = setup().await;
+    let a = q.session("a").await;
+    q.agent(Some(&a), "POST", &q.report("/claim"), json!({}))
+        .await;
+    q.agent(Some(&a), "POST", &q.report("/release"), json!({}))
+        .await;
+    let ana = q.triager("Ana").await;
+    let (s, v) = q
+        .browser(&ana.cookie, "POST", &q.report("/fix"), fix_body())
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["report"]["fixes"][0]["proposer_kind"], "person", "{v}");
     let (s, v) = q
         .agent(
             Some(&a),
@@ -759,11 +842,6 @@ async fn fix_by_lease_holder_proposes_and_releases() {
         )
         .await;
     assert_eq!((s, code(&v)), (409, "claim_required"), "{v}");
-    // Nor claims it while the fix waits for its verdict.
-    let (s, v) = q
-        .agent(Some(&a), "POST", &q.report("/claim"), json!({}))
-        .await;
-    assert_eq!((s, code(&v)), (409, "not_claimable"), "{v}");
 }
 
 #[tokio::test]

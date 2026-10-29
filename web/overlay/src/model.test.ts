@@ -395,7 +395,7 @@ describe("a report as the reporter reads it", () => {
   });
 
   it("waits on the latest fix only while a fix is proposed", () => {
-    const fix = { n: 2, summary: "Fixed the end date", proposer_name: "agent", created_at: "", outcome: "pending" as const };
+    const fix = { n: 2, summary: "Fixed the end date", proposer_name: "agent", proposer_kind: "agent" as const, created_at: "", outcome: "pending" as const };
     expect(waitingFix({ ...base, state: "fix_proposed", fixes: [{ ...fix, n: 1, outcome: "rejected" }, fix] })).toEqual(fix);
     expect(waitingFix({ ...base, state: "open", fixes: [fix] })).toBeNull();
     expect(waitingFix({ ...base, state: "fix_proposed", fixes: undefined })).toBeNull();

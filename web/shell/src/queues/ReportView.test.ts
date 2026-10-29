@@ -54,7 +54,7 @@ describe("ReportView", () => {
   });
 
   it("propose fix posts summary and url", async () => {
-    const proposed: Report = report(1, { state: "fix_proposed", fixes: [{ n: 1, summary: "Rounds the total", url: "https://github.com/o/r/pull/9", proposer_name: "Mia", created_at: "2026-10-29T09:00:00Z", outcome: "pending" }] });
+    const proposed: Report = report(1, { state: "fix_proposed", fixes: [{ n: 1, summary: "Rounds the total", url: "https://github.com/o/r/pull/9", proposer_name: "Mia", proposer_kind: "person", created_at: "2026-10-29T09:00:00Z", outcome: "pending" }] });
     const calls = stubFetch({ [`GET ${R}`]: { report: report(1) }, [`POST ${R}/fix`]: { report: proposed } });
     const m = view();
     await settle();

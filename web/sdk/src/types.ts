@@ -20,6 +20,8 @@ export type ResolveReason = "fixed" | "duplicate" | "wontfix" | "cannot_reproduc
  * (the reporter reopened), superseded by a later fix, or closed (the report
  * was resolved before a verdict). */
 export type FixOutcome = "pending" | "verified" | "rejected" | "superseded" | "closed";
+/** Who proposed a fix: an agent through its session, or a person. */
+export type ProposerKind = "agent" | "person";
 /** Who wrote a comment on a report. */
 export type AuthorKind = "viewer" | "agent" | "reporter";
 
@@ -74,6 +76,8 @@ export interface Report {
   status: ReportStatus;
   state: ReportState;
   reporter_id: string | null;
+  /** The host app's metadata; `null` on a report served to a reporter
+   * that did not file it. */
   metadata: unknown;
   metadata_version: number;
   has_clip: boolean;
@@ -201,6 +205,10 @@ export interface FixAttempt {
   /** When the reporter can check it, such as `release:0.6.1`. */
   verify_after?: string;
   proposer_name: string;
+  /** `agent` when an agent's session proposed it: while it waits, that
+   * session hears the reporter's replies and may answer them. `person`
+   * when a triage member did: replies wait for the queue's people. */
+  proposer_kind: ProposerKind;
   created_at: string;
   outcome: FixOutcome;
   verdict_note?: string;

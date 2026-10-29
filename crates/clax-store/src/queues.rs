@@ -45,8 +45,8 @@ use clax_core::queue::{
     normalize_origin,
 };
 use clax_core::report::{
-    DiagLine, FixAttempt, FixOutcome, NewFix, ReportContext, ReporterProfile, ResolveReason,
-    ServerStamp,
+    DiagLine, FixAttempt, FixOutcome, NewFix, ProposerKind, ReportContext, ReporterProfile,
+    ResolveReason, ServerStamp,
 };
 use clax_core::secret::Secret;
 use clax_core::sig::KeyPair;
@@ -422,6 +422,49 @@ fn check_lease_in(c: &Connection, tid: &str, sid: &str, now: &str) -> Result<()>
     }
 }
 
+/// The session that proposed report `tid`'s waiting fix, on `c`: while the
+/// report is `fix_proposed`, the agent's session its pending attempt was
+/// proposed through (the fix comment's `via_session_id`); `None` when no
+/// fix waits or a person proposed the one that does.
+fn pending_proposer_in(c: &Connection, tid: &str) -> Result<Option<String>> {
+    let s = standing_in(c, tid)?;
+    if state_of(&s.status, s.phase.as_deref(), false) != State::FixProposed {
+        return Ok(None);
+    }
+    Ok(c.query_row(
+        "SELECT proposer_session_id FROM report_fixes WHERE thread_id = ?1
+           AND outcome = 'pending' ORDER BY n DESC LIMIT 1",
+        params![tid],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .optional()?
+    .flatten())
+}
+
+/// `Ok` when session `sid` may reply on report `tid` of queue `qid`, on
+/// `c` at `now`: it holds the report's live lease ([`check_lease_in`]), or
+/// the report is `fix_proposed` and `sid` proposed the fix that waits, has
+/// not ended and acts for a member of the queue. Its lease ended with the
+/// proposal; this lets it answer the reporter's replies, which reach it
+/// ([`Store::reporter_comment_touched`]), until the verdict.
+///
+/// # Errors
+/// [`check_lease_in`]'s otherwise.
+fn check_reply_in(c: &Connection, qid: &str, tid: &str, sid: &str, now: &str) -> Result<()> {
+    match check_lease_in(c, tid, sid, now) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            if pending_proposer_in(c, tid)?.as_deref() == Some(sid)
+                && session_is_member_in(c, qid, sid)?
+            {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
 /// Thread `tid` of queue `qid` exists on a live artifact, and its artifact.
 fn report_artifact_in(c: &Connection, qid: &str, tid: &str) -> Result<String> {
     c.query_row(
@@ -514,7 +557,7 @@ fn fixes_in(c: &Connection, aid: &str, tid: &str) -> Result<Vec<FixAttempt>> {
     let rows: Vec<FixRow> = c
         .prepare_cached(
             "SELECT n, fix_json, proposer_name, created_at, outcome, verdict_note,
-                verdict_context_json, verdict_at
+                verdict_context_json, verdict_at, proposer_session_id IS NOT NULL
              FROM report_fixes WHERE thread_id = ?1 ORDER BY n",
         )?
         .query_map(params![tid], |r| {
@@ -527,6 +570,7 @@ fn fixes_in(c: &Connection, aid: &str, tid: &str) -> Result<Vec<FixAttempt>> {
                 verdict_note: r.get(5)?,
                 verdict_context_json: r.get(6)?,
                 verdict_at: r.get(7)?,
+                by_agent: r.get(8)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -542,6 +586,11 @@ fn fixes_in(c: &Connection, aid: &str, tid: &str) -> Result<Vec<FixAttempt>> {
                 n: f.n,
                 fix,
                 proposer_name: f.proposer_name,
+                proposer_kind: if f.by_agent {
+                    ProposerKind::Agent
+                } else {
+                    ProposerKind::Person
+                },
                 created_at: f.created_at,
                 outcome: FixOutcome::parse(&f.outcome).unwrap_or(FixOutcome::Pending),
                 verdict_note: f.verdict_note,
@@ -565,13 +614,16 @@ struct FixRow {
     verdict_note: Option<String>,
     verdict_context_json: Option<String>,
     verdict_at: Option<String>,
+    by_agent: bool,
 }
 
 /// The report views of `rows` as `vis` reads them, on `c` at `now`: the
 /// reporter's profile only for a member ([`Visibility::All`]), never a
-/// reporter; the filing's context and each verdict's context only for a
-/// member and for the reporter that filed the report, never another
-/// reporter (`reporters_see: all`), as its diagnostics are.
+/// reporter; the filing's context, each verdict's context and the report's
+/// metadata (the host app's, `null` when withheld) only for a member and
+/// for the reporter that filed the report, never another reporter
+/// (`reporters_see: all`), as its diagnostics are. The anchor, where on
+/// the page the report points, is everyone's who sees the report.
 fn reports_of(
     c: &Connection,
     rows: Vec<ReportRow>,
@@ -644,6 +696,7 @@ fn reports_of(
             reporter_id: row.reporter_id,
             metadata: row
                 .metadata_json
+                .filter(|_| own)
                 .and_then(|m| serde_json::from_str(&m).ok())
                 .unwrap_or(serde_json::Value::Null),
             metadata_version: row.metadata_version,
@@ -1995,13 +2048,15 @@ impl Store {
 
     /// `by`'s reply `body` on report `tid` of queue `qid`, and the report
     /// after it. An agent's reply needs its session's live lease on the
-    /// report, checked in the reply's transaction; a person's needs no
-    /// claim. A reply never changes the report's state: only
-    /// [`Store::reopen_report`] reopens a closed one.
+    /// report or, while the report is `fix_proposed`, to be the session
+    /// that proposed the fix that waits (while it has not ended and acts
+    /// for a member of the queue), checked in the reply's transaction; a
+    /// person's needs no claim. A reply never changes the report's state:
+    /// only [`Store::reopen_report`] reopens a closed one.
     ///
     /// # Errors
     /// [`CoreError::NotAMember`] for no such queue, `NotFound` for no such
-    /// report of it; [`Store::check_lease`]'s for an agent;
+    /// report of it; for any other agent [`Store::check_lease`]'s;
     /// `invalid_comment` for a bad body.
     pub fn report_reply(
         &self,
@@ -2014,7 +2069,13 @@ impl Store {
         let comment = match by {
             ReportWriter::Agent(sess) => {
                 // A lapsed lease's owner is cleared whatever this answers.
-                self.check_lease(qid, tid, &sess.id)?;
+                let now = self.now();
+                self.with_tx(|tx| {
+                    queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+                    report_artifact_in(tx, qid, tid)?;
+                    settle_in(self, tx, tid, &now)?;
+                    Ok(check_reply_in(tx, qid, tid, &sess.id, &now))
+                })??;
                 NewComment {
                     author_kind: AUTHOR_AGENT,
                     author_name: sess.harness.clone(),
@@ -2042,7 +2103,7 @@ impl Store {
         let c = self.add_comment_then(ctx, tid, comment, |tx, _, _| {
             report_artifact_in(tx, qid, tid)?;
             if let Some(sid) = agent {
-                check_lease_in(tx, tid, sid, &now)?;
+                check_reply_in(tx, qid, tid, sid, &now)?;
                 check_not_taken_in(tx, tid, sid)?;
             }
             Ok(())
@@ -2140,9 +2201,10 @@ impl Store {
 
     /// [`Store::reporter_comment`], sending the comment to the session
     /// that holds the report's live lease (the agent working on it) or,
-    /// while a fix waits (`fix_proposed`), to the session of its latest
-    /// lease (the fix's proposer) while that session lives, when that
-    /// session's person is still a member of the queue: a feedback row for
+    /// while a fix waits (`fix_proposed`), to the session that proposed
+    /// that fix (the fix comment's `via_session_id`; none when a person
+    /// proposed it) while that session lives, when that session's person
+    /// is still a member of the queue: a feedback row for
     /// it, made in the comment's transaction, which reaches the session as
     /// any comment sent to it does, under the queue's member rule (whole
     /// while its rights read reports, `no_access` otherwise). Otherwise no
@@ -2182,26 +2244,25 @@ impl Store {
                     "UPDATE comments SET reporter_id = ?2 WHERE id = ?1",
                     params![c.id, rid],
                 )?;
-                let Some(cur) = current_in(tx, tid, &now)? else {
+                // The live lease's holder; else, while a fix waits, the
+                // session that proposed it (its lease ended with the
+                // proposal), and no one when a person proposed it.
+                let target = match current_in(tx, tid, &now)? {
+                    Some(cur) if cur.live => Some(cur.session_id),
+                    _ => pending_proposer_in(tx, tid)?,
+                };
+                let Some(sid) = target else {
                     return Ok(());
                 };
-                if !cur.live {
-                    // A fix waits: its proposer's lease ended with the
-                    // proposal, and the reply goes to that session still.
-                    let s = standing_in(tx, tid)?;
-                    if state_of(&s.status, s.phase.as_deref(), false) != State::FixProposed {
-                        return Ok(());
-                    }
-                }
-                if !session_is_member_in(tx, qid, &cur.session_id)? {
+                if !session_is_member_in(tx, qid, &sid)? {
                     return Ok(());
                 }
                 tx.execute(
                     "INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at)
                      VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![new_ulid(), tid, c.id, cur.session_id, now],
+                    params![new_ulid(), tid, c.id, sid, now],
                 )?;
-                woken.targets.insert(cur.session_id);
+                woken.targets.insert(sid);
                 woken
                     .threads
                     .insert((t.artifact_id.clone(), tid.to_string()));
@@ -2313,9 +2374,10 @@ impl Store {
                 |r| r.get(0),
             )?;
             tx.execute(
-                "INSERT INTO report_fixes (thread_id, n, fix_json, proposer_name, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![tid, n, fix_json, proposer, now],
+                "INSERT INTO report_fixes (thread_id, n, fix_json, proposer_name,
+                    proposer_session_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![tid, n, fix_json, proposer, agent, now],
             )?;
             tx.execute(
                 "UPDATE threads SET report_phase = 'fix_proposed' WHERE id = ?1",

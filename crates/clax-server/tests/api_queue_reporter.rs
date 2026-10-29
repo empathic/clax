@@ -1724,8 +1724,9 @@ async fn under_all_another_reporters_diagnostics_are_not_found() {
 }
 
 /// Under `reporters_see: all`, another reporter's report comes without its
-/// context or any verdict's context (the filer's browser, page and flags):
-/// those stay the filer's and triage's, as its diagnostics do.
+/// context, any verdict's context (the filer's browser, page and flags) or
+/// its metadata (the host app's, `null`): those stay the filer's and
+/// triage's, as its diagnostics do. Its anchor, where on the page, stays.
 #[tokio::test]
 async fn under_all_another_reporters_context_is_left_out() {
     let s = Setup::new().await;
@@ -1742,7 +1743,16 @@ async fn under_all_another_reporters_context_is_left_out() {
     let a = s.reporter("emp-a").await;
     let b = s.reporter("emp-b").await;
     let ctx = context("https://app.example/orders/7");
-    let res = s.file_with(&a, &[("context", Part::Text(&ctx))]).await;
+    let meta = r#"{"account":"acme-77"}"#;
+    let res = s
+        .file_with(
+            &a,
+            &[
+                ("context", Part::Text(&ctx)),
+                ("metadata", Part::Text(meta)),
+            ],
+        )
+        .await;
     assert_eq!(res.status(), 201);
     let v: Value = res.json().await.unwrap();
     let tid = v["report"]["id"].as_str().unwrap().to_string();
@@ -1768,7 +1778,9 @@ async fn under_all_another_reporters_context_is_left_out() {
         for report in [&list["reports"][0], &replied["report"]] {
             assert_eq!(report["id"], json!(tid), "{report}");
             assert_eq!(report["fixes"].as_array().unwrap().len(), 1, "{report}");
+            assert_eq!(report["anchor"]["kind"], "element", "{report}");
             if own {
+                assert_eq!(report["metadata"]["account"], "acme-77", "{report}");
                 assert_eq!(report["context"]["release"]["commit"], "f7e862ab0");
                 assert_eq!(
                     report["fixes"][0]["verdict_context"]["release"]["commit"],
@@ -1781,6 +1793,8 @@ async fn under_all_another_reporters_context_is_left_out() {
                     "{report}"
                 );
                 assert!(!report.to_string().contains("variant-b"), "{report}");
+                assert_eq!(report["metadata"], Value::Null, "{report}");
+                assert!(!report.to_string().contains("acme-77"), "{report}");
             }
         }
     }
@@ -1788,6 +1802,7 @@ async fn under_all_another_reporters_context_is_left_out() {
     let (st, v) = s.triage("GET", &s.triage_report(&tid, ""), None).await;
     assert_eq!(st, 200, "{v}");
     assert_eq!(v["report"]["context"]["release"]["commit"], "f7e862ab0");
+    assert_eq!(v["report"]["metadata"]["account"], "acme-77");
     assert_eq!(
         v["report"]["fixes"][0]["verdict_context"]["release"]["commit"],
         "f7e862ab0"
