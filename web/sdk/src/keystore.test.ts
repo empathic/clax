@@ -139,6 +139,28 @@ describe("a reporter's key and token across page loads", () => {
     await expect(again.client.badge()).rejects.toMatchObject({ code: "invalid_key" });
   });
 
+  it("a long-lived page replaces a refused key again after a mint succeeded", async () => {
+    const m = memoryStore();
+    const auths: string[] = [];
+    let now = T0;
+    const refused = new Set<string>();
+    const load = pageLoad(m.store, () => now, auths, () => 200, pk => refused.has(pk));
+    await load.client.badge();
+    refused.add(auths[0]);
+    // The token runs out; the backend refuses the key: a fresh one.
+    now += TOKEN_S * 1000;
+    await load.client.badge();
+    const second = auths.at(-1)!;
+    expect(second).not.toBe(auths[0]);
+    // Much later, that key is refused too: it is replaced again.
+    refused.add(second);
+    now += TOKEN_S * 1000;
+    await load.client.badge();
+    const third = auths.at(-1)!;
+    expect(new Set([auths[0], second, third]).size).toBe(3);
+    expect(m.kept?.publicKey).toBe(third);
+  });
+
   it("forgetReporter does nothing where there is no IndexedDB", async () => {
     await expect(forgetReporter("https://clax.example", "q1", "u1", undefined)).resolves.toBeUndefined();
   });
