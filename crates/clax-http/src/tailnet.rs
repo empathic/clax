@@ -13,6 +13,8 @@
 //! ([`crate::auth::require_api_host`]). Everything fails closed: no
 //! `X-Forwarded-For`, a repeated one, a list, an address `whois` does not
 //! answer for in time, or an answer that does not parse is not the owner.
+//! A loopback `X-Forwarded-For` is a process of this machine that reached
+//! the tailnet name through a local proxy: this machine's, so the owner's.
 //!
 //! A local process can forge every header straight to the daemon's loopback
 //! port, `X-Forwarded-For` too, but it is this machine's, which is the
@@ -120,10 +122,22 @@ impl OwnerDevices {
     }
 
     /// The owner's device a request of the owner's tailnet `login` came
-    /// from, or why it is not one.
-    pub async fn device_of(&self, headers: &HeaderMap, login: &str) -> Result<WhoisNode, String> {
+    /// from (`None`: this machine), or why it is not one.
+    ///
+    /// A loopback `X-Forwarded-For` is a process of this machine that went
+    /// through `tailscale serve` (a browser or tool reaching the tailnet
+    /// name through a local proxy), which `whois` names no node for; this
+    /// machine is the owner's ([`crate::identity`]), so it counts.
+    pub async fn device_of(
+        &self,
+        headers: &HeaderMap,
+        login: &str,
+    ) -> Result<Option<WhoisNode>, String> {
         let ip = forwarded_for(headers)
             .ok_or("X-Forwarded-For is missing, repeated or not one address")?;
+        if ip.to_canonical().is_loopback() {
+            return Ok(None);
+        }
         let node = self.node_at(ip).await?;
         if node.login != login {
             return Err(format!("{ip} is a node of {}, not of {login}", node.login));
@@ -134,7 +148,7 @@ impl OwnerDevices {
                 node.name, node.stable_id
             ));
         }
-        Ok(node)
+        Ok(Some(node))
     }
 
     async fn node_at(&self, ip: IpAddr) -> Result<WhoisNode, String> {
@@ -255,6 +269,8 @@ mod tests {
             headers(&[]),
             headers(&["100.98.28.5", "100.98.28.5"]),
             headers(&["1.2.3.4, 100.98.28.5"]),
+            headers(&["127.0.0.1, 100.114.177.2"]),
+            headers(&["127.0.0.1", "100.114.177.2"]),
             headers(&["phone"]),
         ] {
             assert_eq!(forwarded_for(&h), None, "{h:?}");
@@ -285,9 +301,21 @@ mod tests {
             d.device_of(&phone, "bdelanghe@github")
                 .await
                 .unwrap()
-                .stable_id,
-            "nikWRyfT1721CNTRL"
+                .map(|n| n.stable_id)
+                .as_deref(),
+            Some("nikWRyfT1721CNTRL")
         );
+        // A process of this machine through `tailscale serve`: whois is
+        // never asked about it.
+        let before = whois.1.load(Ordering::SeqCst);
+        for local in ["127.0.0.1", "::1"] {
+            assert_eq!(
+                d.device_of(&headers(&[local]), "bdelanghe@github").await,
+                Ok(None),
+                "{local}"
+            );
+        }
+        assert_eq!(whois.1.load(Ordering::SeqCst), before);
         // Another login on the listed node is not the owner.
         assert!(d.device_of(&phone, "alex@github").await.is_err());
         // orthrus is the owner's login, but not listed here.
