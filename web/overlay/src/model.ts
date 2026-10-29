@@ -75,6 +75,14 @@ export interface OverlayOptions {
   /** The page's artifact. Default: `<meta name="clax-artifact">`'s content,
    * else none, and the instance files the report on the page URL without its route. */
   externalId?: string;
+  /** The nonce the page's Content-Security-Policy gives its own inline
+   * styles, on a page whose `style-src` refuses 'unsafe-inline' (or any
+   * strict string, such as `"strict"`, where it uses hashes). The overlay
+   * styles itself without inline style; given this, its page renders
+   * (clips) are drawn without the page's web fonts from the first, as reading
+   * them takes an inline <style> such a policy refuses, so the overlay trips
+   * no violation. A policy in a `<meta http-equiv>` is read without it. */
+  nonce?: string;
 }
 
 /** `given`'s value, or why it could not be had: it threw, rejected, or
@@ -299,9 +307,11 @@ export function defaultShapes(c: Captured): Shape[] {
   return [{ kind: "box", from: { x, y }, to: { x: x + w, y: y + h } }];
 }
 
-/** Where a capture's image shows the page, when it has one. */
+/** Where a capture's image shows the page, and its size, when it has one. */
 function placementOf(c: Captured): Placement | null {
-  return c.png && c.at ? { at: c.at, scale: c.scale, w: c.at.w * c.scale, h: c.at.h * c.scale } : null;
+  if (!c.png || !c.at) return null;
+  // The decoded PNG's own size where its header gives it: the bounds marks are kept within.
+  return { at: c.at, scale: c.scale, w: c.size?.w ?? c.at.w * c.scale, h: c.size?.h ?? c.at.h * c.scale };
 }
 
 /** The reporter's `shapes` on capture `from`, moved onto capture `to` (the

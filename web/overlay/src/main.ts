@@ -13,6 +13,7 @@
 // page whose CSP `style-src` lacks 'unsafe-inline' does not refuse them.
 import { mount, unmount } from "svelte";
 import { OVERLAY_TAG } from "../../bridge/src/anchor";
+import { metaRefusesInlineStyle, withoutWebFonts } from "../../bridge/src/clip";
 import { addSheet } from "../../bridge/src/sheet";
 import { type Recorder, installDiagnostics } from "../../sdk/src/diagnostics";
 import { ReporterClient, type ReporterAuth } from "../../sdk/src/reporter";
@@ -83,10 +84,13 @@ export function overlay(opts: OverlayOptions, doc: Document = document): Overlay
   for (const k of ["instance", "queue"] as const) if (typeof opts?.[k] !== "string" || !opts[k]) throw new TypeError(`Clax.overlay: ${k} must be a non-empty string`);
   if (typeof opts.auth !== "function") throw new TypeError("Clax.overlay: auth must be a function");
   if (opts.launcher !== undefined && opts.launcher !== "corner" && opts.launcher !== false) throw new TypeError('Clax.overlay: launcher must be "corner" or false');
+  if (opts.nonce !== undefined && (typeof opts.nonce !== "string" || !opts.nonce)) throw new TypeError("Clax.overlay: nonce must be a non-empty string");
   const instance = opts.instance.replace(/\/+$/, "");
   const win = doc.defaultView ?? window;
   const client = new ReporterClient({ instance, queue: opts.queue, auth: opts.auth });
   const recorder = installDiagnostics(win, { instance });
+  // A page refusing inline style: its clips never try the web fonts' <style>.
+  if (opts.nonce !== undefined || metaRefusesInlineStyle(doc)) withoutWebFonts(doc);
   const session = new Session({ context: opts.context, metadata: opts.metadata, diagnostics: opts.diagnostics, recorder }, win);
 
   const listeners = { badge: new Set<(n: number) => void>(), filed: new Set<(r: Report) => void>() };
