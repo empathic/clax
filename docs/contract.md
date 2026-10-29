@@ -1852,8 +1852,8 @@ session's ID (the version's, else the artifact owner's) when there is one.
 
 Every request an agent's client sends carries `X-Clax-Channel: agent`: the
 MCP shim (from its first request, before its registration completes),
-`/mcp`'s internal client, every `clax hook` command, `clax feedback follow`
-and the Pi extension. The marker counts only with the daemon's token: with
+`/mcp`'s internal client, every `clax hook` command, `clax feedback follow`,
+`clax queue follow` and the Pi extension. The marker counts only with the daemon's token: with
 it, the request is the owner's agent, not the owner (who is the CLI used by
 hand, scripts, and the owner's browsers). A token request that names a
 session (`/api/sessions/<id>/…` or `X-Clax-Session`) is the owner's agent
@@ -8299,6 +8299,47 @@ ID>`. An artifact URL whose `#` fragment is neither is the artifact.
   `file_path`s resolving against the working directory. Readable output
   prints the document (`get`), one line per document (`list`, `query`), or
   what was written and its new version.
+- `clax queue ls|show|clip|diagnostics|claim|renew|release|reply|fix|resolve|follow`
+  work a report queue on its triage routes ("Report queue routes"), as
+  the queue tools do. Each takes `--queue <ID>`, else `CLAX_QUEUE`; IDs
+  that are not ULIDs are `invalid_args`. `ls` and `show` run `queue_list`
+  and `queue_get` with no session, so their `--json` is those tools'
+  results (`show` without the empty `feedback`); the other subcommands
+  make the same daemon calls the tools make. `ls` lists the reports in
+  state `active` (`--state open|claimed|fix_proposed|verified|resolved|active|all`),
+  every page, as `ID  STATE  RELEASE  AGE  NOTE` columns (RELEASE the
+  context's release version, else its ID, else its commit's first 12
+  characters; NOTE the filing's text) or `--json` `{queue, reports}`;
+  without a queue it lists the caller's queues (`ID  ROLE  NAME`, `--json`
+  `{queues}`). `show <report>` prints the report, its context, its
+  conversation, its fixes and its latest capture's diagnostics count and
+  clip. `clip <report> [--capture N] [-o FILE]` writes a capture's PNG
+  (0 the filing's, `N` the `N`th reopen's, from `…/clip` or
+  `…/comments/<cid>/clip`; default the latest capture with a clip) to
+  `FILE`, default `<report>.png`, `-` for stdout (`--json` `{queue,
+  report_id, capture, path, bytes}`); a capture without one is `no_clip`.
+  `diagnostics <report> [--capture N]` prints a capture's lines (default
+  the latest capture with any) as `AT  LEVEL  KIND  TEXT`, `--json`
+  `{queue, report_id, capture, lines}`. `claim`, `renew`, `release`,
+  `reply <report> <body>` (`-` reads stdin), `fix <report> --summary S
+  [--url U] [--commit C] [--release R] [--verify-url V] [--verify-after
+  A]` and `resolve <report> [--reason fixed|duplicate|wontfix|cannot_reproduce|other]`
+  act in the agent session named as `clax feedback follow` names it
+  (`--session`, or `--agent` with `--harness-session`, or
+  `GROK_SESSION_ID`); with none they act as the CLI's credential, and the
+  route's `no_session` says to pass one. `--json` prints the route's
+  answer; no result carries the session's waiting feedback, which still
+  arrives through its delivery tiers. `follow [<queue>]` watches the queue
+  as that session (`POST /api/queues/<qid>/watch`, again whenever the
+  session is registered anew) and long-polls its notices, printing one
+  JSON line per notice of the queue: `{event, queue, report_id, title,
+  url}`, `event` being `filed`, `reopened` or `comment` (a comment on a
+  report sent to the session), with `reopened_by` when the notice has it.
+  It passes over notices of anything else (they still arrive through the
+  tiers), never starts a daemon, follows the session across daemon
+  restarts, exits 0 once the session has ended (or, with `--once`, after
+  the first poll that printed a line), exits 1 on a refused watch (such
+  as `not_a_member`), and exits 2 without a session.
 - `clax status` also lists the working roster: every agent working on an
   artifact now, newest first, with its harness and handle, the artifact's
   title and ID, the threads it named (by number), its message, how long it

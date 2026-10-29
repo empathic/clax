@@ -20,6 +20,7 @@ pub mod people;
 pub mod pin;
 pub mod publish;
 pub mod push;
+pub mod queue;
 pub mod read;
 pub mod remotes;
 pub mod serve;

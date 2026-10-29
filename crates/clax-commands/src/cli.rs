@@ -81,6 +81,16 @@ pub enum Cmd {
     /// Read and write an artifact's page database, as the db_* tools do.
     #[command(subcommand)]
     Db(commands::db::Cmd),
+    /// Work a report queue's reports, as the queue_* tools do: list, show,
+    /// save a clip, print diagnostics, claim, renew, release, reply,
+    /// propose a fix, resolve, and follow new and reopened reports.
+    ///
+    /// Every subcommand takes --queue <ID>, else CLAX_QUEUE. Claims,
+    /// replies, fixes, resolves and following act in an agent session:
+    /// --session, or --agent with --harness-session, or, inside Grok
+    /// Build, GROK_SESSION_ID.
+    #[command(subcommand)]
+    Queue(commands::queue::Cmd),
     /// Open an artifact in the browser.
     Open(commands::open::Args),
     /// Delete an artifact.
@@ -254,7 +264,7 @@ pub fn env_port(env: Option<std::ffi::OsString>) -> Option<anyhow::Result<u16>> 
 /// Whether `cmd` runs while this home is connected to another machine's
 /// Clax (spec §6.7): the commands that list, read and act through the
 /// remote daemon as the person (`list`, `read`, `open`, `versions`, `db`,
-/// `comments`, `agents`, `approvals`, `status`, `connect`; `agents` and
+/// `queue`, `comments`, `agents`, `approvals`, `status`, `connect`; `agents` and
 /// `approvals` changes print the remote People link), the agent
 /// sides that run over it (`mcp`, `hook`, `feedback`), and this machine's
 /// own (its local daemon with `serve` and `stop`, installing, `doctor`,
@@ -267,6 +277,7 @@ fn remote_ok(cmd: &Cmd) -> bool {
         | Cmd::Open(_)
         | Cmd::Versions(_)
         | Cmd::Db(_)
+        | Cmd::Queue(_)
         | Cmd::Comments(_)
         | Cmd::Agents { .. }
         | Cmd::Approvals { .. }
@@ -388,6 +399,7 @@ pub(crate) fn main() {
         Cmd::Inbox(a) => commands::inbox::run(&cli, &home, a),
         Cmd::Versions(a) => commands::versions::run(&cli, &home, a),
         Cmd::Db(c) => commands::db::run(&cli, &home, c),
+        Cmd::Queue(c) => commands::queue::run(&cli, &home, c),
         Cmd::Open(a) => commands::open::run(&cli, &home, a),
         Cmd::Delete(a) => commands::delete::run(&cli, &home, a),
         Cmd::Pin(a) => commands::pin::run(&cli, &home, a, true),

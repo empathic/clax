@@ -143,6 +143,10 @@ clax comments reply <ID>#2 "Thanks"  # reply as you (- reads stdin); also resolv
 clax comments name "Alex"            # your name, in the CLI and every browser of yours
 clax versions <ID>                   # versions: label, publisher, time, threads addressed
 clax db get <ID> tasks t1            # the page database: get, list, query, set, update, delete, str-replace, batch
+clax queue ls --queue <QID>          # a report queue's active reports (CLAX_QUEUE sets the queue; --state all for every state)
+clax queue show <report>             # one report: context, conversation, fixes; also clip, diagnostics
+clax queue claim <report> --session <SID>  # also renew, release, reply, fix --summary …, resolve --reason …
+clax queue follow <QID> --session <SID>    # one JSON line per report filed into the queue or reopened
 clax status                          # show whether the daemon is running and which agents are working on what
 clax doctor                          # check the home directory, daemon, database, and stored files
 clax doctor --fix                    # also remove stray temp files and stale rows (never live artifacts' rows)

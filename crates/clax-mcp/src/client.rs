@@ -445,6 +445,24 @@ impl DaemonClient {
         DaemonClient::managed(find.clone(), find, registration).with_remote(remote)
     }
 
+    /// This client proving the session it names (the `session_id` it was
+    /// made with) by `secret` (`X-Clax-Session-Secret`, spec 2026-10-08
+    /// §6.8): a remote daemon's grant session. Call it on a client just
+    /// made.
+    ///
+    /// # Panics
+    /// When the client has been cloned already.
+    pub fn with_session_secret(mut self, secret: Secret) -> DaemonClient {
+        let inner =
+            Arc::get_mut(&mut self.inner).expect("with_session_secret on a client just made");
+        inner
+            .state
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .session_secret = Some(secret);
+        self
+    }
+
     /// Whether this client talks to a remote daemon.
     pub fn is_remote(&self) -> bool {
         self.inner.remote.is_some()
