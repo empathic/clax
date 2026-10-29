@@ -135,7 +135,7 @@ describe("the shell's feedback", () => {
     expect(calls.map(c => c.url)).toEqual(["/_app/feedback/config"]);
     expect(await o.auth("PUBKEY")).toEqual({ token: "cxr_abc", expires_at: "2026-10-29T12:00:00Z" });
     expect(calls[1]).toEqual({ url: "/_app/feedback/token", method: "POST", body: { public_key: "PUBKEY" }, credentials: "same-origin" });
-    expect(s.feedbackKeyRows()).toEqual([{ keys: [expect.any(String), "Shift", "B"], what: "Report a problem with Clax" }]);
+    expect(s.feedbackKeyRows()).toEqual([{ keys: ["F"], what: "Report a problem with Clax" }]);
   });
 
   it("a refused token fails the overlay's auth with the route's code", async () => {
@@ -159,39 +159,54 @@ describe("the shell's feedback", () => {
     expect(viewOf("/me")).toEqual({ view: "me", artifact: null });
   });
 
-  it("the shortcut starts a report, but not typed into a field, with another modifier, or repeated", async () => {
-    const { Feedback } = await import("./feedback");
+  it("F starts a report, but not typed into a field (in a shadow root too), in a dialog, with a modifier, or repeated", async () => {
+    const { Feedback, SHORTCUT } = await import("./feedback");
     const fake = fakeClax();
     const handle = fake.Clax.overlay({} as OverlayOptions);
-    const fb = new Feedback(handle, window, false);
+    const fb = new Feedback(handle, window);
     running.push(fb);
-    expect(fb.shortcut.label).toBe("Ctrl+Shift+B");
-    expect(key({ key: "B", ctrlKey: true, shiftKey: true }).defaultPrevented).toBe(true);
-    expect(fake.handle.report).toHaveBeenCalledTimes(1);
+    expect(SHORTCUT).toEqual({ keys: ["F"], label: "F", aria: "F" });
+    expect(key({ key: "f" }).defaultPrevented).toBe(true);
+    key({ key: "F", shiftKey: true });
+    // A layout whose F key types another letter.
+    key({ key: "а", code: "KeyF" });
+    expect(fake.handle.report).toHaveBeenCalledTimes(3);
     const input = document.body.appendChild(document.createElement("input"));
     const area = document.body.appendChild(document.createElement("textarea"));
     const editable = document.body.appendChild(document.createElement("div"));
     editable.setAttribute("contenteditable", "true");
     const inner = editable.appendChild(document.createElement("span"));
-    for (const t of [input, area, editable, inner]) key({ key: "B", ctrlKey: true, shiftKey: true }, t);
-    key({ key: "B", metaKey: true, shiftKey: true });
-    key({ key: "B", ctrlKey: true, shiftKey: true, altKey: true });
-    key({ key: "b", ctrlKey: true });
-    key({ key: "B", ctrlKey: true, shiftKey: true, repeat: true });
-    expect(fake.handle.report).toHaveBeenCalledTimes(1);
+    const host = document.body.appendChild(document.createElement("div"));
+    const shadowed = host.attachShadow({ mode: "open" }).appendChild(document.createElement("input"));
+    const dialog = document.body.appendChild(document.createElement("div"));
+    dialog.setAttribute("role", "dialog");
+    const inDialog = dialog.appendChild(document.createElement("button"));
+    const modal = document.body.appendChild(document.createElement("div"));
+    modal.setAttribute("aria-modal", "true");
+    const inModal = modal.appendChild(document.createElement("button"));
+    for (const t of [input, area, editable, inner, shadowed, inDialog, inModal]) key({ key: "f", composed: true }, t);
+    for (const mod of ["ctrlKey", "metaKey", "altKey", "repeat"] as const) key({ key: "f", [mod]: true });
+    key({ key: "g" });
+    expect(fake.handle.report).toHaveBeenCalledTimes(3);
     fb.close();
-    key({ key: "B", ctrlKey: true, shiftKey: true });
-    expect(fake.handle.report).toHaveBeenCalledTimes(1);
+    key({ key: "f" });
+    expect(fake.handle.report).toHaveBeenCalledTimes(3);
     expect(fake.handle.close).toHaveBeenCalled();
+  });
 
-    const mac = new Feedback(fake.Clax.overlay({} as OverlayOptions), window, true);
-    running.push(mac);
-    expect(mac.shortcut).toEqual({ keys: ["⌘", "Shift", "B"], label: "⌘⇧B", aria: "Meta+Shift+B" });
-    key({ key: "B", ctrlKey: true, shiftKey: true });
-    expect(fake.handle.report).toHaveBeenCalledTimes(1);
-    key({ key: "B", metaKey: true, shiftKey: true });
-    expect(fake.handle.report).toHaveBeenCalledTimes(2);
-    mac.close();
+  it("starts on the gallery even when the artifact list fails: diagnostics installed, menu shown", async () => {
+    stubFetch({ "GET /_app/feedback/config": CONFIG, "GET /api/artifacts": [403, { error: { code: "forbidden", message: "no" } }] });
+    const fake = fakeClax();
+    (window as { Clax?: unknown }).Clax = fake.Clax;
+    const app = document.body.appendChild(document.createElement("div"));
+    app.id = "app";
+    await import("../gallery-main");
+    const slot = await import("./slot.svelte");
+    await vi.waitFor(() => { expect(slot.feedbackMenu.current).not.toBeNull(); });
+    running.push((await import("./state.svelte")).feedback.current!);
+    expect(fake.order).toEqual(["diagnostics", "overlay"]);
+    await vi.waitFor(() => { expect(document.querySelector("button.fb-btn")).not.toBeNull(); });
+    expect(slot.feedbackKeyRows()).toEqual([{ keys: ["F"], what: "Report a problem with Clax" }]);
   });
 
   it("menu entry calls report(), shows its shortcut, and My reports carries the badge", async () => {

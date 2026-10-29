@@ -45,6 +45,33 @@ describe("C pressed in the page", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(commenting()).toBe(true);
   });
 
+  it("F pressed in the page starts a report while one can be filed, with the frame's gesture", async () => {
+    const { setReportKey } = await import("./feedback/slot.svelte");
+    const { view, frame, win } = await open();
+    let reports = 0;
+    const F = { type: "clax:shortcut", key: "f" };
+    // No feedback for this viewer: F does nothing.
+    gestureIn(frame);
+    fromFrame(win, F);
+    expect(view.controller().shortcut("report", "page")).toBe(false);
+    setReportKey(() => { reports++; });
+    try {
+      gestureIn(frame);
+      fromFrame(win, F);
+      expect(reports).toBe(1);
+      gestureIn(frame, false);
+      fromFrame(win, F);
+      expect(reports).toBe(1);
+      // Nor while the keys sheet is open.
+      expect(view.controller().shortcut("help")).toBe(true);
+      gestureIn(frame);
+      fromFrame(win, F);
+      expect(reports).toBe(1);
+    } finally {
+      setReportKey(null);
+    }
+  });
+
   it("does nothing where the Comment button is off: comments turned off for the page", async () => {
     const base = artifact(1);
     const { frame, win, commenting } = await open({ ...base, artifact: { ...base.artifact, comments: false } as typeof base.artifact });
