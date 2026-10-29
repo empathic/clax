@@ -14,7 +14,8 @@
 # test's merge_pr merges as GitHub would, with a signed merge commit on
 # prod; a Release run (ID 101) once a tag on the commit is pushed; a CI run
 # (201) once prod or main holds the commit; a publish-pi run (301, 302, ...)
-# per dispatch, titled as .github/workflows/publish-pi.yml titles it.
+# and a publish-sdk run (401, 402, ...) per dispatch, titled as
+# .github/workflows/publish-pi.yml and publish-sdk.yml title them.
 # $FAKE_STATE/<ID> lists the states `gh run view <ID>` reports, one per call
 # (the last one sticks; none means "completed success"). Run 101 seen to
 # succeed publishes the release ($FAKE_STATE/release) unless it exists, with
@@ -200,6 +201,7 @@ case "$1 $2" in
                 if origin merge-base --is-ancestor "$sha" refs/heads/prod 2>/dev/null \
                     || origin merge-base --is-ancestor "$sha" refs/heads/main 2>/dev/null; then echo "201 $sha"; fi ;;
             publish-pi.yml) cat "$S/publish-runs" 2>/dev/null || true ;;
+            publish-sdk.yml) cat "$S/publish-sdk-runs" 2>/dev/null || true ;;
             *) echo "fake gh: unexpected: $*" >&2; exit 2 ;;
         esac ;;
     "run view")
@@ -218,11 +220,15 @@ case "$1 $2" in
             state="$(sed -n 1p "$S/$3")"
             if [ "$(wc -l < "$S/$3")" -gt 1 ]; then sed -i.bak 1d "$S/$3"; fi
         fi
-        # A Publish Pi package run that succeeds puts its commit's version on npm.
+        # A Publish Pi package or Publish SDK package run that succeeds puts
+        # its commit's version on npm.
         case "$3:$state" in
             30?:"completed success")
                 sha="$(awk -F '\t' -v id="$3" '$1 == id { sub("Publish Pi package ", "", $2); print $2 }' "$S/publish-runs")"
                 origin show "$sha:plugins/pi/package.json" | sed -n 's/^  "version": "\(.*\)",$/\1/p' >> "$S/npm-versions" ;;
+            40?:"completed success")
+                sha="$(awk -F '\t' -v id="$3" '$1 == id { sub("Publish SDK package ", "", $2); print $2 }' "$S/publish-sdk-runs")"
+                origin show "$sha:scripts/ensure-clax.sh" | sed -n 's/^CLAX_VERSION="\(.*\)"$/\1/p' >> "$S/sdk-npm-versions" ;;
         esac
         if [ "$3" = 101 ] && [ "$state" = "completed success" ] && [ ! -e "$S/release" ]; then
             : > "$S/release"
@@ -238,15 +244,22 @@ case "$1 $2" in
                 n=$(( $(cat "$S/publish-runs" 2>/dev/null | wc -l) + 301 ))
                 { printf '%s\tPublish Pi package %s\n' "$n" "$sha"; cat "$S/publish-runs" 2>/dev/null; } > "$S/publish-runs.new"
                 mv "$S/publish-runs.new" "$S/publish-runs" ;;
+            "publish-sdk.yml "*" -f dry_run=false -f sha="*)
+                for a in "$@"; do case "$a" in sha=*) sha="${a#sha=}" ;; esac; done
+                n=$(( $(cat "$S/publish-sdk-runs" 2>/dev/null | wc -l) + 401 ))
+                { printf '%s\tPublish SDK package %s\n' "$n" "$sha"; cat "$S/publish-sdk-runs" 2>/dev/null; } > "$S/publish-sdk-runs.new"
+                mv "$S/publish-sdk-runs.new" "$S/publish-sdk-runs" ;;
             *) echo "fake gh: unexpected: $*" >&2; exit 2 ;;
         esac ;;
     *) echo "fake gh: unexpected: $*" >&2; exit 2 ;;
 esac
 SH
 # npm: the Pi package exists at 0.5.0 unless $FAKE_STATE/npm-absent does;
-# $FAKE_STATE/npm-versions lists the versions it has besides; `npm whoami`
-# fails while $FAKE_STATE/npm-no-login exists. A publish logs the commit it
-# runs in and adds its package.json's version.
+# $FAKE_STATE/npm-versions lists the versions it has besides; the SDK
+# package likewise, with $FAKE_STATE/sdk-npm-absent and sdk-npm-versions.
+# `npm whoami` fails while $FAKE_STATE/npm-no-login exists. A publish logs
+# the commit it runs in and adds its package.json's version to its
+# package's.
 fake_exe "$T/bin/npm" <<'SH'
 #!/bin/sh
 S="$FAKE_STATE"
@@ -258,9 +271,11 @@ absent() {
 }
 case "$1" in
     view)
-        [ ! -e "$S/npm-absent" ] || absent "$2"
+        p=""
+        case "$2" in @empathic/clax-sdk*) p=sdk- ;; esac
+        [ ! -e "$S/${p}npm-absent" ] || absent "$2"
         case "$2" in
-            ?*@*) v="${2##*@}"; if grep -x "$v" "$S/npm-versions" 2>/dev/null; then :; fi ;;
+            ?*@*) v="${2##*@}"; if grep -x "$v" "$S/${p}npm-versions" 2>/dev/null; then :; fi ;;
             *) echo 0.5.0 ;;
         esac ;;
     whoami)
@@ -269,18 +284,27 @@ case "$1" in
     publish)
         # $FAKE_STATE/npm-hide: the registry has not listed it yet.
         echo "npm publish at $(git rev-parse HEAD)" >> "$S/calls"
+        p=""
+        case "$(sed -n 's/^  "name": "\(.*\)",$/\1/p' package.json)" in @empathic/clax-sdk) p=sdk- ;; esac
         if [ -e "$S/npm-hide" ]; then
-            sed -n 's/^  "version": "\(.*\)",$/\1/p' package.json >> "$S/npm-hidden"
+            sed -n 's/^  "version": "\(.*\)",$/\1/p' package.json >> "$S/${p}npm-hidden"
         else
-            sed -n 's/^  "version": "\(.*\)",$/\1/p' package.json >> "$S/npm-versions"
-            rm -f "$S/npm-absent"
+            sed -n 's/^  "version": "\(.*\)",$/\1/p' package.json >> "$S/${p}npm-versions"
+            rm -f "$S/${p}npm-absent"
         fi ;;
     *) echo "fake npm: unexpected: $*" >&2; exit 2 ;;
 esac
 SH
+# pnpm: `run build:sdk` writes dist-sdk/package.json at the checkout's
+# version, as web/scripts/build-sdk.mjs does.
 fake_exe "$T/bin/pnpm" <<'SH'
 #!/bin/sh
 echo "pnpm $* (in $(basename "$(dirname "$PWD")")/$(basename "$PWD"))" >> "$FAKE_STATE/calls"
+if [ "$*" = "run build:sdk" ]; then
+    mkdir -p dist-sdk
+    v="$(sed -n 's/^CLAX_VERSION="\(.*\)"$/\1/p' ../scripts/ensure-clax.sh)"
+    printf '{\n  "name": "@empathic/clax-sdk",\n  "version": "%s",\n  "type": "module"\n}\n' "$v" > dist-sdk/package.json
+fi
 SH
 FAKE_PATH="$T/bin:$PATH"
 # origin's pre-receive hook: refuses a merge commit on main, as GitHub's
@@ -313,7 +337,7 @@ SH
 # ($MAIN0).
 new_case() {
     C="$(mktemp -d "$T/case.XXXXXX")"
-    mkdir -p "$C/state" "$C/repo/scripts" "$C/repo/bazel" "$C/repo/plugins/pi/scripts"
+    mkdir -p "$C/state" "$C/repo/scripts" "$C/repo/bazel" "$C/repo/plugins/pi/scripts" "$C/repo/web/scripts"
     export FAKE_STATE="$C/state" FAKE_REMOTE="$C/origin.git" FAKE_OUT="$C/out" CLAX_RELEASE_NOW_FILE="$C/now"
     echo 1000000 > "$C/now"
     git init -q --bare -b main "$C/origin.git"
@@ -331,6 +355,7 @@ new_case() {
     printf 'CLAX_VERSION="0.5.0"\nPINNED_VERSION="0.5.0"\n' > "$r/scripts/ensure-clax.sh"
     printf 'CLAX_VERSION="0.5.0"\nPINNED_VERSION="0.5.0"\n' > "$r/plugins/pi/scripts/ensure-clax.sh"
     printf '{\n  "name": "@empathic/clax-pi",\n  "version": "0.5.0",\n  "type": "module"\n}\n' > "$r/plugins/pi/package.json"
+    printf 'export const PACKAGE_NAME = "@empathic/clax-sdk";\n' > "$r/web/scripts/build-sdk.mjs"
     echo "version = 0.5.0" > "$r/bazel/workspace.bzl"
     echo "version = 0.5.0" > "$r/MODULE.bazel.lock"
     cat > "$r/scripts/check-version.sh" <<'SH'
@@ -492,7 +517,8 @@ released() {
         && [ "$(git -C "$r" worktree list | wc -l | tr -d ' ')" = 1 ]
 }
 published_from_pin() {
-    [ "$(count "gh workflow run publish-pi.yml --ref prod -f dry_run=false -f sha=$(o rev-parse prod)")" = 1 ]
+    [ "$(count "gh workflow run publish-pi.yml --ref prod -f dry_run=false -f sha=$(o rev-parse prod)")" = 1 ] \
+        && [ "$(count "gh workflow run publish-sdk.yml --ref prod -f dry_run=false -f sha=$(o rev-parse prod)")" = 1 ]
 }
 
 # Someone else's commit lands on origin's main.
@@ -542,14 +568,14 @@ case_2() {
     if [ "$rc" = 0 ] && [ "$got" = "$want" ] && prepared_ok \
         && has "The release is prepared: the pull request https://github.com/empathic/clax-test/pull/7 into prod." \
         && has "  the pull request: https://github.com/empathic/clax-test/pull/7" \
-        && ! has "step 10/21" && logs "== step 6 of 21 ran 0s"; then
+        && ! has "step 10/22" && logs "== step 6 of 22 ran 0s"; then
         pass "the first run cuts the release branch from prod, merges main, bumps, tests, pushes it and opens its pull request"
     else fail "the first run prepares the release (rc=$rc; calls: $got; $(cat "$C/out"))"; fi
     if has "  4. [todo] Bump the version: scripts/bump-version.sh 0.6.0" \
-        && has "Estimated: about 40m in all, about 40m for the steps to do (typical durations" \
-        && has "[0%] step 2/21 Cut the release branch: git switch -c release/0.6.0 origin/prod" \
-        && has "[2%] step 6/21 Run the gates: just ci" && has "[21%] step 9/21 Open the pull request into prod: " \
-        && [ "$(grep -c '^\[[0-9]*%\] step [0-9]*/21 ' "$C/out")" = 8 ] \
+        && has "Estimated: about 43m in all, about 43m for the steps to do (typical durations" \
+        && has "[0%] step 2/22 Cut the release branch: git switch -c release/0.6.0 origin/prod" \
+        && has "[2%] step 6/22 Run the gates: just ci" && has "[20%] step 9/22 Open the pull request into prod: " \
+        && [ "$(grep -c '^\[[0-9]*%\] step [0-9]*/22 ' "$C/out")" = 8 ] \
         && ! has "fake ci: every gate passed" && ! has "fake bazel-sync" && logs "fake ci: every gate passed"; then
         pass "a run shows the steps, then one line per step; the steps' output goes to the log alone"
     else fail "a run's terminal output ($(cat "$C/out"))"; fi
@@ -569,7 +595,8 @@ case_2() {
     act; rc=$?
     pin="$(o rev-parse prod)"
     want="$(printf '%s\n' "gh run view 101" "pin v0.6.0" "just ci" "gh run view 201" \
-        "gh workflow run publish-pi.yml --ref prod -f dry_run=false -f sha=$pin" "gh run view 301")"
+        "gh workflow run publish-pi.yml --ref prod -f dry_run=false -f sha=$pin" "gh run view 301" \
+        "gh workflow run publish-sdk.yml --ref prod -f dry_run=false -f sha=$pin" "gh run view 401")"
     # Each run's polls, as one line.
     got="$(grep -E '^(bump|pin|just|gh pr create|gh workflow run|gh run view)' "$FAKE_STATE/calls" \
         | sed 's/^\(gh run view [0-9]*\) .*/\1/' | awk '!($0 ~ /^gh run view/ && $0 == prev) { print } { prev = $0 }')"
@@ -579,17 +606,18 @@ case_2() {
         && has "gh run list --workflow deploy-prod.yml --repo empathic/clax-test" && ! has "clax-dev-deploy"; then
         pass "once merged, a run on prod tags, waits, pins, pushes prod, carries both commits to main and publishes, in order"
     else fail "the cut, in order (rc=$rc; calls: $got; $(cat "$C/out"))"; fi
-    # Steps 2-10 (530s of 2390s) count in full.
-    if has "[22%] step 10/21 Merge the pull request (you, on GitHub): done already" \
-        && has "[22%] step 11/21 Tag the release: " && has "[94%] step 20/21 Publish the Pi package: " \
-        && [ "$(grep -c '^\[[0-9]*%\] step [0-9]*/21 ' "$C/out")" = 20 ]; then
+    # Steps 2-10 (530s of 2570s) count in full.
+    if has "[20%] step 10/22 Merge the pull request (you, on GitHub): done already" \
+        && has "[20%] step 11/22 Tag the release: " && has "[88%] step 20/22 Publish the Pi package: " \
+        && has "[92%] step 21/22 Publish the SDK package: " \
+        && [ "$(grep -c '^\[[0-9]*%\] step [0-9]*/22 ' "$C/out")" = 21 ]; then
         pass "the run on prod shows the preparation done and one line per step"
     else fail "the run on prod's terminal output ($(cat "$C/out"))"; fi
 
     : > "$FAKE_STATE/calls"
     before="$(snapshot)"
     act; rc=$?
-    if [ "$rc" = 0 ] && [ -z "$(actions)" ] && [ "$before" = "$(snapshot)" ] && has "step 20/21 Publish the Pi package: done already"; then
+    if [ "$rc" = 0 ] && [ -z "$(actions)" ] && [ "$before" = "$(snapshot)" ] && has "step 20/22 Publish the Pi package: done already"; then
         pass "a run after a finished release does nothing again"
     else fail "a run after a finished release does nothing again (rc=$rc: $(actions); $(cat "$C/out"))"; fi
 }
@@ -613,8 +641,8 @@ case_3() {
     else fail "a dry run after a failing just ci (rc=$rc: $(cat "$C/out"))"; fi
     rm "$FAKE_STATE/ci-fail"
     act; rc=$?
-    if [ "$rc" = 0 ] && prepared_ok && [ "$(count "bump 0.6.0")" = 1 ] && has "step 4/21 Bump the version: done already" \
-        && has "step 3/21 Merge main into it: done already"; then
+    if [ "$rc" = 0 ] && prepared_ok && [ "$(count "bump 0.6.0")" = 1 ] && has "step 4/22 Bump the version: done already" \
+        && has "step 3/22 Merge main into it: done already"; then
         pass "the next run resumes at the gates and prepares the release, bumping once"
     else fail "resume after a failing just ci (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -631,8 +659,8 @@ case_3b() {
     rm "$FAKE_STATE/reject-branch"
     git -C "$C/repo" switch -q main
     act; rc=$?
-    if [ "$rc" = 0 ] && prepared_ok && has "step 2/21 Cut the release branch: git switch" \
-        && has "step 7/21 Commit the release: done already" && [ "$(count "just ci")" = 1 ]; then
+    if [ "$rc" = 0 ] && prepared_ok && has "step 2/22 Cut the release branch: git switch" \
+        && has "step 7/22 Commit the release: done already" && [ "$(count "just ci")" = 1 ]; then
         pass "the next run, from main, switches to the release branch and pushes it"
     else fail "resume at the release branch from main (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -647,7 +675,7 @@ case_3c() {
     else fail "a refused pull request (rc=$rc: $(cat "$C/out"))"; fi
     rm "$FAKE_STATE/pr-create-fail"
     act; rc=$?
-    if [ "$rc" = 0 ] && prepared_ok && has "step 8/21 Push the release branch: done already"; then
+    if [ "$rc" = 0 ] && prepared_ok && has "step 8/22 Push the release branch: done already"; then
         pass "the next run opens the pull request"
     else fail "resume at the pull request (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -678,7 +706,7 @@ case_3d() {
     git -C "$C/repo" add fix.txt
     git -C "$C/repo" commit -q -S --no-edit
     act; rc=$?
-    if [ "$rc" = 0 ] && prepared_ok && has "step 3/21 Merge main into it: done already"; then
+    if [ "$rc" = 0 ] && prepared_ok && has "step 3/22 Merge main into it: done already"; then
         pass "merged by hand as told, the next run goes on"
     else fail "resume after a merge by hand (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -696,13 +724,13 @@ case_4() {
     else fail "a failed Release run stops the run (rc=$rc: $(cat "$C/out"))"; fi
     echo "in_progress " > "$FAKE_STATE/101"
     act; rc=$?
-    if [ "$rc" = 1 ] && has "step 12/21 Push the tag: done already" && has "gave up waiting for run 101 after 3 polls" \
+    if [ "$rc" = 1 ] && has "step 12/22 Push the tag: done already" && has "gave up waiting for run 101 after 3 polls" \
         && has "step 13 (Wait for the Release workflow) failed"; then
         pass "a wait that runs out of polls stops at step 13"
     else fail "a wait that runs out of polls stops at step 13 (rc=$rc: $(cat "$C/out"))"; fi
     echo "completed success" > "$FAKE_STATE/101"
     act; rc=$?
-    if [ "$rc" = 0 ] && released && [ "$(count "just ci")" = 1 ] && has "step 11/21 Tag the release: done already"; then
+    if [ "$rc" = 0 ] && released && [ "$(count "just ci")" = 1 ] && has "step 11/22 Tag the release: done already"; then
         pass "the next run resumes at the wait and finishes the release, tagging and testing once"
     else fail "resume after a failed wait (rc=$rc: $(grep '^just' "$FAKE_STATE/calls"); $(cat "$C/out"))"; fi
 }
@@ -718,7 +746,7 @@ case_5() {
     echo same > "$FAKE_STATE/earlier-run"
     echo "in_progress " > "$FAKE_STATE/101"
     act; rc=$?
-    if [ "$rc" = 0 ] && released && has "step 13/21 Wait for the Release workflow: done already"; then
+    if [ "$rc" = 0 ] && released && has "step 13/22 Wait for the Release workflow: done already"; then
         pass "a release built from the tag's tree by an earlier run, as after re-signing, is accepted"
     else fail "a release built from the tag's tree by an earlier run (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -732,7 +760,7 @@ case_5b() {
     echo same > "$FAKE_STATE/earlier-run"
     echo "in_progress " > "$FAKE_STATE/101"
     act; rc=$?
-    if [ "$rc" = 0 ] && released && has "step 13/21 Wait for the Release workflow: done already"; then
+    if [ "$rc" = 0 ] && released && has "step 13/22 Wait for the Release workflow: done already"; then
         pass "a release with no SOURCE_TREE is judged by the run that uploaded it"
     else fail "a release with no SOURCE_TREE judged by its run (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -796,13 +824,13 @@ case_8() {
     other_work
     echo "completed success" > "$FAKE_STATE/201"
     act; rc=$?
-    if [ "$rc" = 0 ] && has "step 18/21 Carry the release to main: done already" && published_from_pin \
+    if [ "$rc" = 0 ] && has "step 18/22 Carry the release to main: done already" && published_from_pin \
         && [ "$(subject main)" = "Other work" ]; then
         pass "once main has moved past the carried pin, the next run resumes at the CI wait and publishes from prod's pin"
     else fail "resume after main moved past the carried pin (rc=$rc: $(cat "$C/out"))"; fi
     : > "$FAKE_STATE/calls"
     act; rc=$?
-    if [ "$rc" = 0 ] && [ -z "$(actions)" ] && has "step 20/21 Publish the Pi package: done already"; then
+    if [ "$rc" = 0 ] && [ -z "$(actions)" ] && has "step 20/22 Publish the Pi package: done already"; then
         pass "a finished release with main moved on reports every step done"
     else fail "a finished release with main moved on (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -830,7 +858,7 @@ case_10() {
     rm "$FAKE_STATE/reject-push"
     other_work
     act; rc=$?
-    if [ "$rc" = 0 ] && released && [ "$(subject main~2)" = "Other work" ] && has "step 17/21 Push prod: done already"; then
+    if [ "$rc" = 0 ] && released && [ "$(subject main~2)" = "Other work" ] && has "step 17/22 Push prod: done already"; then
         pass "after main moved on, the next run carries the release onto its new tip and finishes"
     else fail "resume after a refused push of main with main moved on (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -869,7 +897,7 @@ case_11() {
     git -C "$d" push -q origin HEAD:refs/heads/main
     git -C "$C/repo" worktree remove "$d"
     act; rc=$?
-    if [ "$rc" = 0 ] && released && has "step 18/21 Carry the release to main: done already" && published_from_pin; then
+    if [ "$rc" = 0 ] && released && has "step 18/22 Carry the release to main: done already" && published_from_pin; then
         pass "carried by hand as told, the next run goes on to CI and the Pi package"
     else fail "resume after a carry by hand (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -910,7 +938,7 @@ case_11b() {
     git -C "$C/repo" worktree remove "$d"
     act; rc=$?
     if [ "$rc" = 0 ] && released && [ "$(o show main:plugins/new/VERSION)" = 0.6.0 ] \
-        && has "step 18/21 Carry the release to main: done already" && published_from_pin; then
+        && has "step 18/22 Carry the release to main: done already" && published_from_pin; then
         pass "bumped by hand as told, the next run goes on to CI and the Pi package"
     else fail "resume after a bump by hand on main (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -923,9 +951,26 @@ case_12() {
         pass "a failed Publish Pi package run stops at step 20"
     else fail "a failed Publish Pi package run stops at step 20 (rc=$rc: $(cat "$C/out"))"; fi
     act; rc=$?
-    if [ "$rc" = 0 ] && [ "$(grep -c '^gh workflow run' "$FAKE_STATE/calls")" = 2 ] && logs "Publish Pi package: run 302"; then
+    if [ "$rc" = 0 ] && [ "$(grep -c '^gh workflow run publish-pi.yml' "$FAKE_STATE/calls")" = 2 ] && logs "Publish Pi package: run 302"; then
         pass "the next run dispatches the publish again and waits for the new run"
     else fail "resume after a failed publish (rc=$rc: $(cat "$C/out"))"; fi
+}
+case_12b() {
+    # The same for the SDK package, after the Pi package's publish.
+    new_case
+    ready_to_cut
+    echo "completed failure" > "$FAKE_STATE/401"
+    act; rc=$?
+    if [ "$rc" = 1 ] && has "step 21 (Publish the SDK package) failed" && has "Publish SDK package concluded failure" \
+        && has "step 20/22 Publish the Pi package: gh workflow run"; then
+        pass "a failed Publish SDK package run stops at step 21, after the Pi package's"
+    else fail "a failed Publish SDK package run stops at step 21 (rc=$rc: $(cat "$C/out"))"; fi
+    act; rc=$?
+    if [ "$rc" = 0 ] && released && [ "$(grep -c '^gh workflow run publish-sdk.yml' "$FAKE_STATE/calls")" = 2 ] \
+        && [ "$(grep -c '^gh workflow run publish-pi.yml' "$FAKE_STATE/calls")" = 1 ] \
+        && has "step 20/22 Publish the Pi package: done already" && logs "Publish SDK package: run 402"; then
+        pass "the next run dispatches the SDK publish again and waits for the new run"
+    else fail "resume after a failed SDK publish (rc=$rc: $(cat "$C/out"))"; fi
 }
 case_13() {
 
@@ -963,13 +1008,40 @@ case_15() {
     pin="$(o rev-parse prod)"
     if [ "$rc" = 0 ] && released && [ "$(count "npm publish at $pin")" = 1 ] && [ "$(count "npm publish --access public")" = 1 ] \
         && [ "$(count "pnpm install --frozen-lockfile (in plugins/pi)")" = 1 ] && [ "$(count "pnpm run typecheck (in plugins/pi)")" = 1 ] \
-        && [ "$(grep -c '^gh workflow run' "$FAKE_STATE/calls")" = 0 ] \
+        && [ "$(grep -c '^gh workflow run publish-pi.yml' "$FAKE_STATE/calls")" = 0 ] \
         && has "GitHub Actions: organization empathic, repository clax-test, workflow" \
         && has "publish-pi.yml, environment npm." \
         && has "switch README.md and plugins/pi/README.md to lead their Pi install with" \
         && [ ! -e "$C/repo/target/release/0.6.0/pi-publish" ]; then
         pass "a Pi package not on npm is published from here, from the pin commit, with the trusted-publisher setup"
     else fail "the first Pi publish (rc=$rc: $(actions); $(cat "$C/out"))"; fi
+}
+case_15c() {
+    # The SDK package not on npm yet: its first version is built, tested and
+    # published from here, from the pin commit, and its trusted-publisher
+    # setup is printed; the Pi package goes through its workflow.
+    new_case
+    : > "$FAKE_STATE/sdk-npm-absent"
+    release 0.6.0; rc=$?
+    if [ "$rc" = 0 ] && has "@empathic/clax-sdk is not on npm yet: step 21 publishes its first version from this machine" \
+        && ! has "@empathic/clax-pi is not on npm yet"; then
+        pass "the dry run says the SDK package's first version is published from here"
+    else fail "the dry run with the SDK package not on npm (rc=$rc: $(cat "$C/out"))"; fi
+    ready_to_cut
+    act; rc=$?
+    pin="$(o rev-parse prod)"
+    if [ "$rc" = 0 ] && released && [ "$(count "npm publish at $pin")" = 1 ] && [ "$(count "npm publish --access public")" = 1 ] \
+        && [ "$(count "pnpm install --frozen-lockfile (in sdk-publish/web)")" = 1 ] && [ "$(count "pnpm run build:sdk (in sdk-publish/web)")" = 1 ] \
+        && [ "$(count "pnpm run test:sdk (in sdk-publish/web)")" = 1 ] \
+        && grep -x 0.6.0 "$FAKE_STATE/sdk-npm-versions" >/dev/null \
+        && [ "$(grep -c '^gh workflow run publish-sdk.yml' "$FAKE_STATE/calls")" = 0 ] \
+        && [ "$(count "gh workflow run publish-pi.yml --ref prod -f dry_run=false -f sha=$pin")" = 1 ] \
+        && has "@empathic/clax-sdk@0.6.0 is on npm. Later releases publish through publish-sdk.yml" \
+        && has "once: set up npm trusted publishing for @empathic/clax-sdk" \
+        && ! has "once: set up npm trusted publishing for @empathic/clax-pi" \
+        && [ ! -e "$C/repo/target/release/0.6.0/sdk-publish" ]; then
+        pass "an SDK package not on npm is built, tested and published from here, from the pin commit, with the trusted-publisher setup"
+    else fail "the first SDK publish (rc=$rc: $(actions); $(cat "$C/out"))"; fi
 }
 case_15b() {
     # The npm environment missing or open to more than prod: a dry run warns
@@ -993,8 +1065,12 @@ case_15b() {
     : > "$FAKE_STATE/no-env"
     echo 0.6.0 > "$FAKE_STATE/npm-versions"
     release 0.6.0; rc=$?
-    if [ "$rc" = 0 ] && ! has "WARN"; then pass "a version npm has already needs no npm environment"
-    else fail "a version npm has already, with no npm environment (rc=$rc: $(cat "$C/out"))"; fi
+    if [ "$rc" = 0 ] && has "note: WARN: the repository has no environment npm"; then pass "the Pi package alone at the version on npm still needs the npm environment"
+    else fail "the Pi package alone at the version on npm, with no npm environment (rc=$rc: $(cat "$C/out"))"; fi
+    echo 0.6.0 > "$FAKE_STATE/sdk-npm-versions"
+    release 0.6.0; rc=$?
+    if [ "$rc" = 0 ] && ! has "WARN"; then pass "versions npm has already need no npm environment"
+    else fail "versions npm has already, with no npm environment (rc=$rc: $(cat "$C/out"))"; fi
 }
 case_16() {
     # A publish npm has not listed yet when the wait gives up: the rerun finds
@@ -1011,7 +1087,7 @@ case_16() {
     rm "$FAKE_STATE/npm-absent" "$FAKE_STATE/npm-hide"
     mv "$FAKE_STATE/npm-hidden" "$FAKE_STATE/npm-versions"
     act; rc=$?
-    if [ "$rc" = 0 ] && has "step 20/21 Publish the Pi package: done already" \
+    if [ "$rc" = 0 ] && has "step 20/22 Publish the Pi package: done already" \
         && has "once: set up npm trusted publishing for @empathic/clax-pi" \
         && [ "$(count "npm publish --access public")" = 1 ]; then
         pass "the rerun finds the publish done and prints the trusted-publisher setup"
@@ -1048,18 +1124,22 @@ case_16b() {
     ready_to_cut
     act; rc=$?
     if [ "$rc" = 0 ] && released && [ "$(count "npm publish --access public")" = 0 ] \
-        && [ "$(grep -c '^gh workflow run publish-pi.yml --ref prod' "$FAKE_STATE/calls")" = 1 ] && ! has "Trusted Publisher"; then
-        pass "a Pi package on npm is published through publish-pi.yml, on prod"
-    else fail "a Pi package on npm is published through publish-pi.yml (rc=$rc: $(cat "$C/out"))"; fi
+        && [ "$(grep -c '^gh workflow run publish-pi.yml --ref prod' "$FAKE_STATE/calls")" = 1 ] \
+        && [ "$(grep -c '^gh workflow run publish-sdk.yml --ref prod' "$FAKE_STATE/calls")" = 1 ] && ! has "Trusted Publisher"; then
+        pass "the Pi and SDK packages on npm are published through publish-pi.yml and publish-sdk.yml, on prod"
+    else fail "packages on npm are published through their workflows (rc=$rc: $(cat "$C/out"))"; fi
 }
 case_17() {
-    # The version on npm already: step 20 is done.
+    # The versions on npm already: steps 20 and 21 are done.
     new_case
     echo 0.6.0 > "$FAKE_STATE/npm-versions"
+    echo 0.6.0 > "$FAKE_STATE/sdk-npm-versions"
     ready_to_cut
     act; rc=$?
     if [ "$rc" = 0 ] && has "note: @empathic/clax-pi@0.6.0 is on npm already: step 20 is done" \
-        && has "step 20/21 Publish the Pi package: done already" && ! grep -E '^(gh workflow run|npm publish)' "$FAKE_STATE/calls" >/dev/null; then
+        && has "note: @empathic/clax-sdk@0.6.0 is on npm already: step 21 is done" \
+        && has "step 20/22 Publish the Pi package: done already" && has "step 21/22 Publish the SDK package: done already" \
+        && ! grep -E '^(gh workflow run|npm publish)' "$FAKE_STATE/calls" >/dev/null; then
         pass "a version npm has already is not published again"
     else fail "a version npm has already (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -1156,6 +1236,12 @@ case_28() {
     : > "$FAKE_STATE/npm-no-login"
     refuse "a first Pi publish with npm signed out" "is not on npm yet, so step 20 publishes its first version from here: sign in first (npm login; npm whoami fails)"
 }
+case_28b() {
+    new_case
+    : > "$FAKE_STATE/sdk-npm-absent"
+    : > "$FAKE_STATE/npm-no-login"
+    refuse "a first SDK publish with npm signed out" "@empathic/clax-sdk is not on npm yet, so step 21 publishes its first version from here: sign in first (npm login; npm whoami fails)"
+}
 case_29() {
     new_case
     git -C "$C/repo" config user.signingkey "$T/no-such-key"
@@ -1230,7 +1316,7 @@ case_38() {
 
     # --- progress --------------------------------------------------------------------
     # Steps a run finds done count in full: with typical durations (no
-    # earlier log), steps 1-12 are 545s of 2390s.
+    # earlier log), steps 1-12 are 545s of 2570s.
     new_case
     ready_to_cut
     echo "completed failure" > "$FAKE_STATE/101"
@@ -1239,10 +1325,10 @@ case_38() {
     echo "completed success" > "$FAKE_STATE/101"
     act; rc=$?
     if [ "$rc" = 0 ] && released && has "  12. [done] Push the tag" && has "  13. [todo] Wait for the Release workflow" \
-        && has "Estimated: about 40m in all, about 31m for the steps to do (typical durations" \
-        && has "[0%] step 2/21 Cut the release branch: done already" \
-        && has "[22%] step 12/21 Push the tag: done already" \
-        && has "[22%] step 13/21 Wait for the Release workflow: gh run list" \
+        && has "Estimated: about 43m in all, about 34m for the steps to do (typical durations" \
+        && has "[0%] step 2/22 Cut the release branch: done already" \
+        && has "[21%] step 12/22 Push the tag: done already" \
+        && has "[21%] step 13/22 Wait for the Release workflow: gh run list" \
         && has "Starting at step 13."; then
         pass "a resumed run counts the steps done in its percentage"
     else fail "a resumed run's percentage (rc=$rc: $(cat "$C/out"))"; fi
@@ -1256,7 +1342,7 @@ case_39() {
     echo 300 > "$FAKE_STATE/ci-advance"
     ready_to_cut
     act; rc=$?
-    if [ "$rc" = 0 ] && logs "== step 15 of 21 ran 300s" && logs "== step 13 of 21 ran 0s" \
+    if [ "$rc" = 0 ] && logs "== step 15 of 22 ran 300s" && logs "== step 13 of 22 ran 0s" \
         && has "Clax 0.6.0 is released. This run took 5m00s."; then
         pass "a run records each step's duration in its log"
     else fail "a run records each step's duration (rc=$rc: $(cat "$C/out"))"; fi
@@ -1264,8 +1350,8 @@ case_39() {
     if [ "$rc" = 0 ] && has "Estimated: about 23m in all, under a minute for the steps to do (the steps' durations in 1 earlier run log(s)"; then
         pass "the estimate comes from earlier runs' logs"
     else fail "the estimate from earlier runs' logs (rc=$rc: $(cat "$C/out"))"; fi
-    # A log of the earlier numbering is not read.
-    printf '== step 4 ran 9999s\n' > "$C/repo/target/release/0.5.0.log"
+    # A log of an earlier numbering is not read: steps unnumbered, or of 21.
+    printf '== step 4 ran 9999s\n== step 4 of 21 ran 9999s\n' > "$C/repo/target/release/0.5.0.log"
     release 0.6.0; rc=$?
     if [ "$rc" = 0 ] && has "Estimated: about 23m in all"; then
         pass "a log of the earlier step numbering does not count"
@@ -1273,12 +1359,12 @@ case_39() {
 }
 case_40() {
     # A heartbeat while just ci runs, its clock moved on by 3m12s: Bazel's
-    # tests from the log, the share done ((55 + 192) / 2390) and the time left.
+    # tests from the log, the share done ((55 + 192) / 2570) and the time left.
     new_case
     echo 192 > "$FAKE_STATE/ci-advance"
     : > "$FAKE_STATE/ci-heartbeat"
     CLAX_RELEASE_HEARTBEAT_SECONDS=0.05 act; rc=$?
-    if [ "$rc" = 0 ] && prepared_ok && has "[10%] step 6/21 Run the gates: 40/56 tests, 3m12s (about 36m left)"; then
+    if [ "$rc" = 0 ] && prepared_ok && has "[9%] step 6/22 Run the gates: 40/56 tests, 3m12s (about 39m left)"; then
         pass "a heartbeat tells the share done, Bazel's tests, the time taken and the time left"
     else fail "a heartbeat (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -1287,7 +1373,7 @@ case_41() {
     new_case
     release 0.6.0 --i-know-what-i-am-doing --verbose; rc=$?
     if [ "$rc" = 0 ] && prepared_ok && has "fake ci: every gate passed" \
-        && has "[2%] step 6/21 Run the gates: just ci" && logs "fake ci: every gate passed"; then
+        && has "[2%] step 6/22 Run the gates: just ci" && logs "fake ci: every gate passed"; then
         pass "--verbose streams the steps' output and logs it"
     else fail "--verbose (rc=$rc: $(cat "$C/out"))"; fi
     merge_pr && to_prod
@@ -1299,7 +1385,7 @@ case_41() {
 
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 [ "$JOBS" -le 8 ] || JOBS=8
-CASES="case_1 case_2 case_3 case_3b case_3c case_3d case_4 case_5 case_5b case_5c case_6 case_7 case_8 case_9 case_10 case_11 case_11b case_12 case_13 case_14 case_15 case_15b case_16 case_16b case_16c case_17 case_18 case_19 case_20 case_21 case_22 case_22b case_22c case_23 case_24 case_25 case_26 case_27 case_28 case_29 case_30 case_31 case_32 case_33 case_34 case_35 case_36 case_37 case_38 case_39 case_40 case_41"
+CASES="case_1 case_2 case_3 case_3b case_3c case_3d case_4 case_5 case_5b case_5c case_6 case_7 case_8 case_9 case_10 case_11 case_11b case_12 case_12b case_13 case_14 case_15 case_15b case_15c case_16 case_16b case_16c case_17 case_18 case_19 case_20 case_21 case_22 case_22b case_22c case_23 case_24 case_25 case_26 case_27 case_28 case_28b case_29 case_30 case_31 case_32 case_33 case_34 case_35 case_36 case_37 case_38 case_39 case_40 case_41"
 # A case's subshell exits 0 once its last check has run; one that dies on
 # the way (an unbound variable under set -u, say) exits otherwise, and fails
 # the gate whatever it printed before. Each case's status is collected by its
