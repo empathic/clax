@@ -88,12 +88,25 @@ triage members with each report, and never to other reporters. A
 `github` login lets a fixing agent ask the reporter to review its pull
 request.
 
+### Licences of the code you copy
+
+The files this guide has you copy or depend on carry Clax's licences
+(`LICENSE`): `web/sdk/src` (`service.ts`, `client.ts`, `sign.ts`,
+`types.ts`) and the overlay's `overlay.d.ts` are AGPL-3.0-only, and
+`clax-core` (with `clax_core::sig`) is GPL-2.0-only OR AGPL-3.0-only;
+the snippets quoted here are as their source files say. They suit a
+product that accepts those terms. A product that does not implements the
+protocol itself: the signed request (`docs/contract.md`, "Signed
+requests") and the reporter routes (`docs/contract.md`, "Report queue routes")
+are the whole contract, and any Ed25519 library signs the lines; the
+overlay script itself is loaded from the instance, not copied.
+
 ### TypeScript (Node 20 or later, Workers, Deno, Bun)
 
 `ServiceClient` (`web/sdk/src/service.ts`) signs the request with
 WebCrypto. It is a small file with no dependencies; copy `service.ts`,
 `client.ts`, `sign.ts` and `types.ts` from `web/sdk/src` into your
-backend.
+backend (AGPL-3.0-only; see "Licences of the code you copy" above).
 
 ```ts
 import { ServiceClient } from "./clax/service";
@@ -138,8 +151,9 @@ requests") lists. Two addresses go into it and must not be confused:
   bound to it.
 
 A Rust backend can depend on `clax-core` for `clax_core::sig` (the signer
-the instance verifies with), or implement the lines with any Ed25519
-crate. clax.dev's own token route is written this way. Its backend half
+the instance verifies with; GPL-2.0-only OR AGPL-3.0-only, see
+"Licences of the code you copy" above), or implement the lines with any
+Ed25519 crate. clax.dev's own token route is written this way. Its backend half
 uses only what an outside backend has (a queue ID, the grant's token and
 key, and the public route). Here it is, quoted from
 `crates/clax-server/src/integrations/feedback.rs`:
@@ -343,8 +357,9 @@ const clax = Clax.overlay({
 
 Save `<instance>/_clax/overlay.d.ts` beside your code as
 `clax-overlay.d.ts` (in SvelteKit, `src/lib/clax-overlay.d.ts`, imported
-as `$lib/clax-overlay`). It is a module, so import its types and type the
-import with it:
+as `$lib/clax-overlay`; AGPL-3.0-only, see "Licences of the code you
+copy" above). It is a module, so import its types and type the import
+with it:
 
 ```ts
 import type { OverlayHandle, OverlayOptions } from "./clax-overlay";
@@ -699,8 +714,8 @@ fix, and the report verified.
 clax.dev reports problems with Clax itself into its own queue,
 `clax-feedback`:
 
-- **Who files**: the owner and people whose `feedback` flag an admin
-  turned on. This is clax.dev's choice, made in its backend as yours is.
+- **Who files**: people, the owner included, whose `feedback` flag an
+  admin turned on. This is clax.dev's choice, made in its backend as yours is.
 - **The backend**: `POST /_app/feedback/token` (the route above) and
   `GET /_app/feedback/config`, which tells the shell whether to mount the
   overlay and with what (`{enabled, instance, queue, context}`; the
