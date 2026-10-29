@@ -108,14 +108,15 @@
       if (mine === turn) loadErr = `Could not load the report: ${refusal(x)}`;
     }
   }
-  async function act<T extends { report: api.Report }>(done: string | ((answer: T) => string), fn: () => Promise<T>): Promise<boolean> {
+  // A release that found no claim left (`released: false`) says so instead of `done`.
+  async function act(done: string, fn: () => Promise<{ report: api.Report; released?: boolean }>): Promise<boolean> {
     if (busy) return false;
     busy = true; err = null; status = "";
     try {
       const answer = await fn();
       turn++;
       report = answer.report;
-      status = typeof done === "string" ? done : done(answer);
+      status = answer.released === false ? "The claim had already ended." : done;
       form = null;
       return true;
     } catch (x) {
@@ -160,8 +161,7 @@
   async function release(e: Event) {
     e.preventDefault();
     const note = releaseNote.trim();
-    const said = (a: { released?: boolean }) => a.released === false ? "The claim had already ended: the report is open." : "Released the claim: the report is open again.";
-    if (await act(said, () => api.releaseClaim(p.qid, p.tid, note || undefined))) releaseNote = "";
+    if (await act("Released the claim: the report is open again.", () => api.releaseClaim(p.qid, p.tid, note || undefined))) releaseNote = "";
   }
   async function reply(e: Event) {
     e.preventDefault();
@@ -174,9 +174,9 @@
     void refresh();
     // The topic's first `ready` is its going live as the view opens, which
     // the fetch above covers; a later one is the stream coming back.
-    let opened = false;
+    let opened = 0;
     return p.stream?.watch([queueTopic(p.qid)], e => {
-      if (e.type === "ready" && !opened) { opened = true; return; }
+      if (e.type === "ready" && !opened++) return;
       if (e.type === "ready" || e.type === "resync" || (e.type === "report" && e.report_id === p.tid)) void refresh();
     });
   });

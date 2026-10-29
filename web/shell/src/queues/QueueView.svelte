@@ -122,9 +122,9 @@
     void load();
     // The topic's first `ready` is its going live as the view opens, which
     // the fetch above covers; a later one is the stream coming back.
-    let opened = false;
+    let opened = 0;
     return p.stream?.watch([queueTopic(p.qid)], e => {
-      if (e.type === "ready" && !opened) { opened = true; return; }
+      if (e.type === "ready" && !opened++) return;
       if (e.type === "ready" || e.type === "resync" || e.type === "report") void refresh();
     });
   });

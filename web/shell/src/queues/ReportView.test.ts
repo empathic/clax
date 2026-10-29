@@ -306,7 +306,7 @@ describe("ReportView", () => {
     submit(m.root);
     await settle();
     expect(m.root.querySelector(".rh .state")!.textContent).toBe("Open");
-    expect(m.root.querySelector(".acts .stat")!.textContent).toBe("The claim had already ended: the report is open.");
+    expect(m.root.querySelector(".acts .stat")!.textContent).toBe("The claim had already ended.");
   });
 
   it("sends no note when none is written, and a form its state no longer allows closes", async () => {
