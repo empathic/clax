@@ -3334,6 +3334,25 @@ mod tests {
         st.end_session(DAEMON, &gone).unwrap();
         let touched = reopen(&tid);
         assert!(touched.targets.is_empty(), "{touched:?}");
+
+        // A fix already rejected, then resolved with no fix: the second
+        // reopen rejects nothing of the fixer's, so it is not woken.
+        let tid = file_titled(&st, &qid, &tok, "Invoice 4824");
+        st.claim(DAEMON, &qid, &tid, &fixer).unwrap();
+        st.propose_fix(
+            DAEMON,
+            &qid,
+            &tid,
+            &crate::queues::ReportWriter::Agent(&sf),
+            fix("Rounded it"),
+        )
+        .unwrap();
+        reopen(&tid);
+        take(&st, &fixer, Tier::Wait);
+        st.resolve_report(DAEMON, &qid, &tid, &mia, clax_core::report::ResolveReason::Wontfix)
+            .unwrap();
+        let touched = reopen(&tid);
+        assert!(touched.targets.is_empty(), "{touched:?}");
     }
 
     #[test]

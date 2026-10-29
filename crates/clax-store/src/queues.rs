@@ -2808,9 +2808,14 @@ impl Store {
                     params![tid, capture, lines, n],
                 )?;
             }
-            // The agent's session that proposed the fix the reopen rejects,
-            // while it has not ended; none when a person proposed it.
-            let proposer = match last.as_ref().and_then(|(_, _, p)| p.as_deref()) {
+            // The agent's session that proposed the fix the reopen rejects (a
+            // pending or verified one; an attempt already rejected or closed
+            // is not this reopen's), while it has not ended; none when a
+            // person proposed it.
+            let rejects = last.as_ref().filter(|(_, outcome, _)| {
+                outcome == FixOutcome::Pending.as_str() || outcome == FixOutcome::Verified.as_str()
+            });
+            let proposer = match rejects.and_then(|(_, _, p)| p.as_deref()) {
                 Some(sid) => {
                     let live: bool = tx.query_row(
                         "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1 AND ended_at IS NULL)",
