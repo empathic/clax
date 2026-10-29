@@ -38,7 +38,7 @@ check-wasm *ARGS:
 check-wasm-native *ARGS:
     CLAX_BUILD=native ./scripts/run.sh check-wasm "$@"
 
-# Run crates/clax-worker's checks: its and its VFS's format check, tests and clippy, deploy.mjs's generated config, and the wasm Worker under `wrangler dev --local` (test-wasm.mjs, test-sandbox.mjs, test-bot.mjs) and in browsers (e2e.mjs, e2e-hosted.mjs)
+# Run crates/clax-worker's checks: its and its VFS's format check, tests and clippy, deploy.mjs's generated config, and the wasm Worker under `wrangler dev --local` (test-wasm.mjs, test-sandbox.mjs, test-bot.mjs, test-feedback.mjs) and in browsers (e2e.mjs, e2e-hosted.mjs)
 worker-test:
     ./scripts/run.sh worker-test
 
