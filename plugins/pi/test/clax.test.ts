@@ -644,12 +644,18 @@ describe("clax Pi extension", () => {
         { url_or_id: id, scope: "read" },
         { url_or_id: id, scope: "write" },
       ],
-      clax_queue_list: [{}, { queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", state: "claimed", cursor: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
+      clax_queue_list: [{}, { queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", state: "claimed", cursor: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }, ...["open", "fix_proposed", "verified", "resolved", "active"].map(state => ({ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", state }))],
       clax_queue_claim: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
       clax_queue_renew: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
       clax_queue_release: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
       clax_queue_reply: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", body: "Fixed in r2" }],
-      clax_queue_resolve: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
+      clax_queue_resolve: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }, { queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", reason: "cannot_reproduce" }],
+      clax_queue_get: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
+      clax_queue_fix: [
+        { queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", summary: "Fixed" },
+        { queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", summary: "Fixed", url: "https://x", commit: "c", release: "r", verify_url: "https://y", verify_after: "release:1" },
+      ],
+      clax_queue_watch: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }, { queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", stop: true }],
     };
     const invalid: Record<string, Record<string, unknown>[]> = {
       clax_publish: [{ html: "x", bogus: 1 }, { html: "x", files: { "a.css": { content: "x", nope: 1 } } }, { html: "x", files: { "a.css": { content: "x", encoding: "hex" } } }],
@@ -683,6 +689,10 @@ describe("clax Pi extension", () => {
       clax_queue_list: [{ state: "taken" }, { bogus: 1 }],
       clax_queue_claim: [{ queue: "q" }, { report_id: "r" }, { queue: "q", report_id: "r", bogus: 1 }],
       clax_queue_reply: [{ queue: "q", report_id: "r" }],
+      clax_queue_resolve: [{ queue: "q", report_id: "r", reason: "fixed_it" }],
+      clax_queue_get: [{ queue: "q" }, { queue: "q", report_id: "r", capture: 1 }],
+      clax_queue_fix: [{ queue: "q", report_id: "r" }, { queue: "q", report_id: "r", summary: "s", fence: 3 }],
+      clax_queue_watch: [{}, { queue: "q", stop: "yes" }],
     };
     expect(Object.keys(valid).sort()).toEqual([...TOOLS].sort());
     const check = (name: string, args: Record<string, unknown>) =>
@@ -1709,7 +1719,7 @@ function trackTimers(ms: number) {
  * `s1` and ends it, records its tool-call and call-ID reports, and passes
  * other requests to `handle`, which answers through `reply` or returns false
  * to leave the request unanswered. */
-async function fakeDaemonHome(handle: (req: import("node:http").IncomingMessage, reply: (body: unknown) => void) => unknown) {
+async function fakeDaemonHome(handle: (req: import("node:http").IncomingMessage, reply: (body: unknown) => void, res: import("node:http").ServerResponse) => unknown) {
   const home = join(scratch, `fake-${Math.random().toString(36).slice(2)}`);
   mkdirSync(home, { recursive: true });
   const server = createHttpServer((req, res) => {
@@ -1730,7 +1740,7 @@ async function fakeDaemonHome(handle: (req: import("node:http").IncomingMessage,
       res.statusCode = 204;
       return res.end();
     }
-    handle(req, reply);
+    handle(req, reply, res);
   });
   await new Promise<void>(r => server.listen(0, "127.0.0.1", () => r()));
   const port = (server.address() as { port: number }).port;
@@ -1775,6 +1785,100 @@ describe("report queues", () => {
     expect(json(bad).error).toMatchObject({ code: "invalid_args", message: "'q' is not a queue ID" });
     const loose = await pi.callToolAsPi("clax_queue_list", { state: "open" }, ctx);
     expect(json(loose).error.code).toBe("invalid_args");
+  });
+
+  const Q = "01K6AB3Q9X7N2M4P5R6S8T0V1W";
+  const R = "01K6AB3Q9X7N2M4P5R6S8T0V1X";
+  const C = "01K6AB3Q9X7N2M4P5R6S8T0V1Y";
+  /** A fake daemon answering the report routes from `routes` (`METHOD
+   * path` to a JSON body, or a Buffer served as a PNG), every feedback
+   * poll with nothing, and recording each body POSTed in `posted`. */
+  async function queueDaemon(routes: Record<string, unknown>) {
+    const posted: Record<string, unknown> = {};
+    const fake = await fakeDaemonHome((req, reply, res) => {
+      const line = `${req.method} ${req.url}`;
+      if (req.url?.startsWith("/api/sessions/s1/feedback")) return reply({ feedback: [], answers: [], text: null, waited_s: 0 });
+      let raw = "";
+      req.on("data", c => { raw += c; });
+      req.on("end", () => {
+        if (raw) posted[line] = JSON.parse(raw);
+        const body = routes[line];
+        if (body === undefined) {
+          res.statusCode = 404;
+          return reply({ error: { code: "not_found", message: line } });
+        }
+        if (Buffer.isBuffer(body)) {
+          res.setHeader("content-type", "image/png");
+          return res.end(body);
+        }
+        if (body === null) {
+          res.statusCode = 204;
+          return res.end();
+        }
+        reply(body);
+      });
+    });
+    return { ...fake, posted };
+  }
+  const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
+
+  it("queue_fix posts summary and links", async () => {
+    const fake = await queueDaemon({ [`POST /api/queues/${Q}/reports/${R}/fix`]: { report: { id: R, state: "fix_proposed" } } });
+    try {
+      const { pi, ctx } = load(fake.home, "pi-queue-fix");
+      const fix = { summary: "Drew the axis again", url: "https://github.com/acme/app/pull/7", commit: "abc123", release: "0.6.1", verify_url: "https://app.example.com/i/7", verify_after: "release:0.6.1" };
+      const v = parts(await pi.callToolAsPi("clax_queue_fix", { queue: Q, report_id: R, ...fix }, ctx)).json;
+      expect(v.report.state).toBe("fix_proposed");
+      // The fence is the session's lease's: none is sent.
+      expect(fake.posted[`POST /api/queues/${Q}/reports/${R}/fix`]).toEqual(fix);
+      const blank = await pi.callToolAsPi("clax_queue_fix", { queue: Q, report_id: R, summary: "  " }, ctx);
+      expect(json(blank).error.code).toBe("invalid_args");
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("queue_get returns diagnostics", async () => {
+    const report = {
+      id: R, queue_id: Q, state: "open", has_clip: true, diagnostics_lines: 1, reopen_count: 1,
+      context: { v: 1, captured_at: "2026-10-27T11:58:00Z", release: { version: "0.6.0" }, capture: { mode: "screen", method: "dom" } },
+      comments: [
+        { id: R, author_kind: "viewer", author_name: "emp-1", body: "Blank", created_at: "2026-10-27T11:58:01Z" },
+        { id: C, author_kind: "viewer", author_name: "emp-1", body: "Still blank", created_at: "2026-10-27T12:30:00Z", capture: 1, has_clip: true, diagnostics_lines: 1 },
+      ],
+      fixes: [{ n: 1, summary: "Drew it", outcome: "rejected" }],
+    };
+    const fake = await queueDaemon({
+      [`GET /api/queues/${Q}/reports/${R}`]: { report },
+      [`GET /api/queues/${Q}/reports/${R}/diagnostics?capture=1`]: { lines: [{ at: "2026-10-27T12:29:59Z", level: "error", kind: "error", text: "again" }] },
+      [`GET /api/queues/${Q}/reports/${R}/comments/${C}/clip`]: PNG,
+      [`GET /api/queues/${Q}/reports?state=active`]: { reports: [report], next: null },
+      [`POST /api/queues/${Q}/watch`]: null,
+      [`DELETE /api/queues/${Q}/watch`]: null,
+    });
+    try {
+      const { pi, ctx } = load(fake.home, "pi-queue-get");
+      const r = await pi.callToolAsPi("clax_queue_get", { queue: Q, report_id: R }, ctx);
+      const v = parts(r).json;
+      const base = `${v.report.clip_url.split("/api/")[0]}/api/queues/${Q}/reports/${R}`;
+      expect(v.report.clip_url).toBe(`${base}/clip`);
+      expect(v.report.diagnostics_url).toBe(`${base}/diagnostics?capture=0`);
+      expect(v.report.comments[0].clip_url).toBeUndefined();
+      expect(v.report.comments[1]).toMatchObject({ clip_url: `${base}/comments/${C}/clip`, diagnostics_url: `${base}/diagnostics?capture=1` });
+      expect(v.diagnostics).toEqual({ capture: 1, lines: [{ at: "2026-10-27T12:29:59Z", level: "error", kind: "error", text: "again" }] });
+      expect(v.clip.capture).toBe(1);
+      expect(v.note).toContain("data");
+      expect(r.content.find(b => b.type === "image")).toMatchObject({ type: "image", mimeType: "image/png", data: PNG.toString("base64") });
+
+      const l = parts(await pi.callToolAsPi("clax_queue_list", { queue: Q, state: "active" }, ctx)).json;
+      expect(l.reports[0].context).toBeUndefined();
+      expect(l.reports[0].context_summary).toEqual({ release: { version: "0.6.0" }, captured_at: "2026-10-27T11:58:00Z", mode: "screen" });
+
+      expect(parts(await pi.callToolAsPi("clax_queue_watch", { queue: Q }, ctx)).json).toMatchObject({ queue: Q, watching: true });
+      expect(parts(await pi.callToolAsPi("clax_queue_watch", { queue: Q, stop: true }, ctx)).json).toMatchObject({ queue: Q, watching: false });
+    } finally {
+      fake.close();
+    }
   });
 });
 

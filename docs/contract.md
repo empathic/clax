@@ -14,7 +14,7 @@ The implementation is the authority where the two disagree:
 
 ## Tools
 
-Thirty-eight tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
+Forty-one tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
 `tag` and `tags` (see "Tags"), `fork`,
 `asset_upload`, `status`, the comment tools `comments_read`,
 `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working` (see
@@ -25,8 +25,8 @@ one), `ask` and `where_to_ask` (see "Agent questions"), `publish_public` (see "P
 public Clax"), and the data tools `db_get`, `db_list`,
 `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`,
 `db_batch` (see "Runtime capabilities"), and the report queue tools
-`queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`
-and `queue_resolve` (see "Report queue tools"). The MCP implementation lives in
+`queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`,
+`queue_resolve`, `queue_get`, `queue_fix` and `queue_watch` (see "Report queue tools"). The MCP implementation lives in
 `crates/clax-mcp` and is served two ways:
 
 - the stdio shim `clax mcp --agent <claude|codex|grok>`, which a harness
@@ -45,7 +45,7 @@ and `queue_resolve` (see "Report queue tools"). The MCP implementation lives in
   which attributes publishes to no session.
 
 Pi's extension API cannot register an MCP server, so `plugins/pi` implements
-the same thirty-eight tools in TypeScript against the daemon's REST API, with the same
+the same forty-one tools in TypeScript against the daemon's REST API, with the same
 arguments and the same result and error JSON.
 
 Names as the model sees them:
@@ -3659,12 +3659,15 @@ the copy's remote, the link holds the copy's address alone.
 | `working` | `url_or_id`; optional `thread_ids` (at most 20 open threads), `message` (at most 140 characters), `done` | `{artifact_id, url, working: true, message, thread_ids, started_at, expires_in_s, message_truncated}` or `{artifact_id, url, working: false, cleared}` |
 | `draft` | `url_or_id`; `html` or `file_path` (the page) and/or `files` (as `publish` takes them, `null` removing a path); optional `if_version`, `note` (at most 140 characters), `done` | `{artifact_id, url, drafting: true, base_version, paths, note, note_truncated, expires_in_s}` or `{artifact_id, url, drafting: false, ended}` |
 | `git_remote` | `url_or_id`, `scope` (`read` or `write`) | `{artifact_id, url, scope, remote, token, expires_at, clone_command, jj_clone_command, existing_checkout}` (see "Git remotes") |
-| `queue_list` | optional `queue`; with it, optional `state` (`open`, `claimed` or `resolved`), `cursor` | without `queue`, `{queues}` (`GET /api/queues`); with it, `{reports, next}` (`GET /api/queues/<queue>/reports`) |
+| `queue_list` | optional `queue`; with it, optional `state` (`open`, `claimed`, `fix_proposed`, `verified`, `resolved` or `active`), `cursor` | without `queue`, `{queues}` (`GET /api/queues`); with it, `{reports, next}` (`GET /api/queues/<queue>/reports`), each report's `context` replaced by `context_summary` (`{release, captured_at, mode}`, or `null` for a report filed without context) |
+| `queue_get` | `queue`, `report_id` | `{report, diagnostics, clip, note}` (below) |
 | `queue_claim` | `queue`, `report_id` | the lease `{lease_id, expires_at, fence, report}`; `thread_taken` names the holder |
 | `queue_renew` | `queue`, `report_id` | the lease, extended to 10 minutes from now; `claim_required`, `lease_lost` or `thread_taken` |
 | `queue_release` | `queue`, `report_id` | `{report}`, open again |
 | `queue_reply` | `queue`, `report_id`, `body` | `{comment, report}`; `claim_required`, `lease_lost` or `thread_taken` |
-| `queue_resolve` | `queue`, `report_id` | `{report}`, resolved; `claim_required`, `lease_lost` or `thread_taken` |
+| `queue_resolve` | `queue`, `report_id`, optional `reason` (`fixed`, `duplicate`, `wontfix`, `cannot_reproduce` or `other`, the default) | `{report}`, resolved with `resolve_reason`; `claim_required`, `lease_lost` or `thread_taken` |
+| `queue_fix` | `queue`, `report_id`, `summary`; optional `url`, `commit`, `release`, `verify_url`, `verify_after` | `{report}`, `fix_proposed` (`POST …/fix`, with no `fence`: the session's live lease is checked); `claim_required`, `lease_lost`, `thread_taken`, `invalid_fix` or `not_claimable` |
+| `queue_watch` | `queue`, optional `stop` | `{queue, watching: true, wake}` (`POST /api/queues/<queue>/watch`; `wake` as `watch` gives it), or with `stop: true` `{queue, watching: false}` (`DELETE`) |
 
 #### Report queue tools
 
@@ -3682,7 +3685,28 @@ lease on it. A person in their browser replies to and resolves reports
 without a claim. A write is checked against the lease by the writing
 session; a fix (`POST …/fix`) may also send the `fence` its claim answered,
 and is then refused 409 `lease_lost` under any other lease of the session.
-No other write takes the fence.
+No other write takes the fence, and `queue_fix` sends none.
+
+`queue_get` reads one report (`GET …/reports/<tid>`) and adds the URLs of
+each capture on the Clax's public origin: the report's `clip_url` (the
+filing's clip, `null` without one) and `diagnostics_url`
+(`…/diagnostics?capture=0`), and on each comment that carries a reopen's
+`capture` its `clip_url` (`…/comments/<cid>/clip`) and `diagnostics_url`
+(`…/diagnostics?capture=<n>`), each `null` when that capture has none. Each
+URL serves the reader's own credential. `diagnostics` is `{capture,
+lines}`: the latest capture's that has any, inline (`{capture: null,
+lines: []}` when none has). `clip` is `{capture, url, note}` for the latest
+capture that has a clip, or `null`: the MCP tool attaches that clip to the
+result as an image block (`image/png`) and Pi's tool as an image content
+item, unless it is over 1 MiB or a side is over 4096 pixels, when `note`
+says it is not attached and why. `note` says that context, metadata,
+diagnostics and comments are written by the app's users. Verifying a fix
+and reopening a report on the reporter's behalf are a person's alone (403
+`not_for_agents`) and are no tools.
+
+A queue wake reaching a session launched with the Claude Code channel
+carries `queue_id` and `queue_event` (`filed` or `reopened`) in its
+channel event's `meta`.
 
 #### Report queue routes
 

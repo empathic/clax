@@ -576,7 +576,30 @@ export class DaemonClient {
     return this.json(`/api/queues/${encodeURIComponent(qid)}/reports${qs ? `?${qs}` : ""}`, { method: "GET" });
   }
 
-  /** `POST /api/queues/<qid>/reports/<tid>/<action>` (`claim`, `renew`, `release`, `resolve`, `comments`): the route's answer. */
+  /** `GET /api/queues/<qid>/reports/<tid>`: `{report}`. */
+  queueReport(qid: string, tid: string): Promise<any> {
+    return this.json(`/api/queues/${encodeURIComponent(qid)}/reports/${encodeURIComponent(tid)}`, { method: "GET" });
+  }
+
+  /** `GET /api/queues/<qid>/reports/<tid>/diagnostics?capture=<n>`: `{lines}`, capture `n`'s. */
+  queueDiagnostics(qid: string, tid: string, capture: number): Promise<any> {
+    return this.json(`/api/queues/${encodeURIComponent(qid)}/reports/${encodeURIComponent(tid)}/diagnostics?capture=${capture}`, { method: "GET" });
+  }
+
+  /** `POST /api/queues/<qid>/watch` (`on`) or `DELETE` (not `on`): the session watches the queue, or no longer does. */
+  async queueWatch(qid: string, on: boolean): Promise<void> {
+    await this.request(`/api/queues/${encodeURIComponent(qid)}/watch`, { method: on ? "POST" : "DELETE" });
+  }
+
+  /** The PNG the daemon serves at `path` (a queue report's `…/clip` or
+   * `…/comments/<cid>/clip`): its `Content-Type` and bytes, at most `maxBytes`. */
+  async pngAt(path: string, maxBytes: number): Promise<{ contentType: string | undefined; bytes: Buffer }> {
+    const res = await this.request(path, { method: "GET", maxBytes });
+    const ct = res.headers["content-type"];
+    return { contentType: Array.isArray(ct) ? ct[0] : ct, bytes: res.body };
+  }
+
+  /** `POST /api/queues/<qid>/reports/<tid>/<action>` (`claim`, `renew`, `release`, `resolve`, `comments`, `fix`): the route's answer. */
   queueReportAction(qid: string, tid: string, action: string, body: unknown): Promise<any> {
     return this.json(`/api/queues/${encodeURIComponent(qid)}/reports/${encodeURIComponent(tid)}/${action}`, this.jsonBody("POST", body));
   }

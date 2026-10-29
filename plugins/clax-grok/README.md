@@ -66,14 +66,14 @@ https://clax.dev`, then Publish to clax.dev or the `publish_public` tool).
 
 ## What it adds
 
-- The `clax_grok` MCP server (`clax mcp --agent grok`): thirty-eight tools,
+- The `clax_grok` MCP server (`clax mcp --agent grok`): forty-one tools,
   `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `tag`, `tags`, `fork`,
   `asset_upload`, `status`, `comments_read`, `comments_reply`,
   `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `publish_public`,
   and the data tools
   `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`,
   `db_str_replace`, `db_batch`, and the report queue tools
-  `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`, `queue_resolve`, which Grok names `clax_grok__<tool>` and reaches through `use_tool`.
+  `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`, `queue_resolve`, `queue_get`, `queue_fix`, `queue_watch`, which Grok names `clax_grok__<tool>` and reaches through `use_tool`.
   The first tool call starts the daemon when none is running.
 - The `clax` skill: when to publish, the page contract, the comment loop,
   and how to start the monitor that wakes the session for comments ("Live

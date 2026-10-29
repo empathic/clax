@@ -112,14 +112,14 @@ binary differ.
 
 ## What it adds
 
-- The `clax` MCP server (`clax mcp --agent claude`): thirty-eight tools,
+- The `clax` MCP server (`clax mcp --agent claude`): forty-one tools,
   `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `tag`, `tags`, `fork`,
   `asset_upload`, `status`, `comments_read`, `comments_reply`,
   `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `publish_public`,
   and the data tools
   `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`,
   `db_str_replace`, `db_batch`, and the report queue tools
-  `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`, `queue_resolve`.
+  `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`, `queue_resolve`, `queue_get`, `queue_fix`, `queue_watch`.
 - Hooks (`hooks/hooks.json`), run as `clax hook --agent claude <event>`
   (`PostToolUse` through its gate script).
   Hooks never start a daemon (the first tool call does); with none running
