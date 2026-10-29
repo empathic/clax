@@ -54,6 +54,7 @@ describe("the namespace method lists match the 0.2.61 contract", () => {
     ["db", [...members(contract("db"), "type DB = {"), ...members(ext, "interface Db {")].sort()],
     ["net", members(ext, "interface Net {")],
     ["shell", members(ext, "interface Shell {")],
+    ["webauthn", members(ext, "interface WebAuthn {")],
     ["location", members(ext, "interface Location {")],
   ] as const)("%s", (name, expected) => {
     expect([...CAPABILITY_METHODS[name]].sort()).toEqual(expected);

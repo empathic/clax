@@ -579,6 +579,51 @@ declare namespace ClaxExtensions {
       url: string;
     }
   }
+
+  /**
+   * The owner's passkey, for a service on the shell's own origin (its
+   * relying party): the shell runs the WebAuthn ceremony at top level, so
+   * the page, framed without an origin of its own, never touches a
+   * credential. Served to the owner's views only. Declare the path prefixes
+   * of the service, `{"webauthn": {"paths": ["/approve/v1/"]}}` (each
+   * starts and ends with `/`; at most 8; never Clax's own `/api/`, `/a/`
+   * or `/_clax/`), and obtain it with `await claude.use("webauthn")`: it
+   * resolves `null` when undeclared or for another viewer.
+   *
+   * `approve({challenge, assertion})` reads the challenge (`GET challenge`,
+   * answering `{ok: true, publicKey: {challenge, rpId?, allowCredentials?,
+   * timeout?}, intent?: {to, text}}`, binary fields base64url), shows the
+   * owner the shell's own dialog naming what is approved (the service's
+   * `intent`, never the page's words), and only on Approve asks the passkey
+   * (user verification required), then posts the assertion (`POST
+   * assertion`, JSON: `{id, rawId, type, response: {clientDataJSON,
+   * authenticatorData, signature, userHandle}}`, base64url) and resolves
+   * with the service's JSON answer. Every call asks; nothing is kept.
+   */
+  namespace WebAuthn {
+    /**
+     * Rejection codes of `approve` (as `{code, message}`):
+     * - `not_declared`: a path is not under `webauthn.paths`.
+     * - `refused`: the service issued no challenge (`message` is its
+     *   `reason`), or the passkey refused.
+     * - `cancelled`: the owner chose Cancel, or cancelled the passkey prompt.
+     * - `unsupported`: this browser has no passkeys.
+     * - `invalid_argument`: a path that is not one of this origin.
+     * - `unavailable`: the service could not be reached, or answered no JSON.
+     */
+    type ErrorCode = "not_declared" | "refused" | "cancelled" | "unsupported" | "invalid_argument" | "unavailable";
+
+    interface Request {
+      /** The challenge's path on the shell's origin (`/approve/v1/challenge/<id>`). */
+      challenge: string;
+      /** Where the assertion is posted (`/approve/v1/assertion/<id>`). */
+      assertion: string;
+    }
+
+    interface WebAuthn {
+      approve(request: Request): Promise<unknown>;
+    }
+  }
 }
 
 /** What Clax adds to `window.claude` (`claude.d.ts` `interface Claude`). */

@@ -9,9 +9,10 @@
 // (device-link.ts); `home` when declared, the Clax app hosts the view and
 // the app says this view is its home app (`home.available`); `net` to the
 // owner shell when declared; `shell` to the owner shell and editors (the
-// viewer's `may_edit`) when declared; `site` (no
-// capability a page declares: the relay of a page's own site API calls)
-// where the Clax app hosts the view; claude.ai's `files` and `mcp` never.
+// viewer's `may_edit`) when declared; `webauthn` to the owner shell when
+// declared; `site` (no capability a page declares: the relay of a page's
+// own site API calls) where the Clax app hosts the view; claude.ai's
+// `files` and `mcp` never.
 
 export type Declared = Record<string, Record<string, unknown> | undefined>;
 
@@ -43,6 +44,8 @@ export function isAvailable(name: string, declared: Declared, owner: boolean, se
     case "net": return owner && declares(name, declared);
     // The owner's and editors' views: a reader's tour has no Fork or Publish to point at.
     case "shell": return (owner || served.edits === true) && declares(name, declared);
+    // The owner's views only: the passkeys are the owner's (webauthn.ts).
+    case "webauthn": return owner && declares(name, declared);
     // Not a capability a page declares: the relay of its own site's API
     // calls, which the Clax app's shell alone makes (site.ts).
     case "site": return served.site === true;

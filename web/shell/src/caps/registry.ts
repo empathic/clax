@@ -47,4 +47,5 @@ export const REGISTRY: Record<string, HandlerFactory> = {
   // In the Clax app, a page's calls to its own site's API (site.ts).
   site: lazyHandler(() => import("./site").then(m => m.siteHandler)),
   user: lazyHandler(() => import("./user").then(m => m.userHandler)),
+  webauthn: lazyHandler(() => import("./webauthn").then(m => m.webauthnHandler)),
 };

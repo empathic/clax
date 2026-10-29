@@ -22,6 +22,8 @@ export const CAPABILITY_METHODS = {
   net: ["fetch"],
   // Clax's own controls around the page (clax-extensions.d.ts `Shell`).
   shell: ["highlight", "commentMode", "can", "address"],
+  // The owner's passkey, for a service on the shell's origin (clax-extensions.d.ts `WebAuthn`).
+  webauthn: ["approve"],
 } as const satisfies Record<string, readonly string[]>;
 
 export type CapabilityName = keyof typeof CAPABILITY_METHODS;

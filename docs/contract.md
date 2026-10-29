@@ -7166,6 +7166,41 @@ for any other member. The namespace says only whether a named control is
 shown now and where the page is shown; it names no agent, harness, session
 or person.
 
+### The owner's passkey (`webauthn`)
+
+A page framed without an origin of its own cannot run WebAuthn, and the
+owner's passkeys belong to the shell's origin (for a trusted host, its
+name: `phobos.tail556f5b.ts.net`). `webauthn` lets a page ask the owner's
+passkey for a service on that origin while the shell, not the page, runs
+the ceremony.
+
+**Declaring.** `{"webauthn": {"paths": ["/approve/v1/"]}}`: 1 to 8 distinct
+path prefixes, each starting and ending with `/`, of unreserved URL
+characters with no `.` or `..` segment, and never under Clax's own
+`/api/`, `/a/`, `/_clax/` or `/_blob/`; anything else is refused
+`invalid_capabilities` at publish.
+
+**In the page.** `const w = await window.claude.use("webauthn")` resolves
+in the owner's views when declared, and `null` elsewhere.
+`w.approve({challenge, assertion})` takes two paths on the shell's origin,
+each under a declared prefix (resolved first, so `..` cannot leave one;
+else `not_declared`, before any request). The shell reads `GET challenge`,
+which answers `{ok: true, publicKey: {challenge, rpId?, allowCredentials?,
+timeout?}, intent?: {to, text}}` with binary fields in base64url (an
+answer without `ok: true` rejects `refused` with its `reason`). It then
+shows its own dialog, "Approve with your passkey?", whose text is the
+service's `intent` ("“A” asks you to approve sending this to <to>:" and
+the text) or, without one, the origin it asks on, never the page's words.
+Only on Approve does it call `navigator.credentials.get` (user
+verification required, the click on Approve being the gesture), post the
+assertion to `assertion` as JSON (`{id, rawId, type, response:
+{clientDataJSON, authenticatorData, signature, userHandle}}`, base64url),
+and resolve with the service's JSON answer. Every call asks; nothing is
+kept. Rejections: `cancelled` (Cancel, or the passkey prompt cancelled or
+timed out), `refused`, `unsupported` (no passkeys in this browser),
+`invalid_argument`, `unavailable`. The types are `ClaxExtensions.WebAuthn`
+in `clax-extensions.d.ts`.
+
 ## Room protocol
 
 A page's `room` is its site's: the bridge opens `/_clax/api/room?peer=<label>`
