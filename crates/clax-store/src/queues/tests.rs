@@ -848,7 +848,7 @@ fn file_stores_context_server_stamp_diagnostics_and_profile() {
     assert_eq!(got.reporter_id.as_deref(), Some("emp-1"));
     assert_eq!((got.reopen_count, got.fixes.len()), (0, 0));
     assert_eq!(
-        st.report_diagnostics(&qid, &filed.id, Visibility::All)
+        st.report_diagnostics(&qid, &filed.id, Visibility::All, None)
             .unwrap()
             .unwrap(),
         [diag("TypeError: x is undefined"), diag("GET /x 500")]
@@ -859,7 +859,8 @@ fn file_stores_context_server_stamp_diagnostics_and_profile() {
     assert!(b.context.is_none() && b.server.is_none() && b.reporter_profile.is_none());
     assert_eq!(b.diagnostics_lines, 0);
     assert_eq!(
-        st.report_diagnostics(&qid, &bare, Visibility::All).unwrap(),
+        st.report_diagnostics(&qid, &bare, Visibility::All, None)
+            .unwrap(),
         None
     );
     // More lines than a report holds are refused.
@@ -976,6 +977,12 @@ fn fix_moves_to_fix_proposed_and_ends_the_lease() {
         .unwrap();
     assert_eq!(r.fixes.iter().map(|f| f.n).collect::<Vec<_>>(), [1, 2]);
     assert_eq!(r.fixes[1].proposer_name, "Ana");
+    assert_eq!(
+        (r.fixes[0].outcome, r.fixes[1].outcome),
+        (FixOutcome::Superseded, FixOutcome::Pending),
+        "the earlier fix waits no more"
+    );
+    assert_eq!(r.state, State::FixProposed);
     assert_eq!(r.comments.last().unwrap().author_kind, "viewer");
     // A bad fix is refused.
     assert!(matches!(
@@ -1160,16 +1167,20 @@ fn reopen_from_fix_proposed_rejects_attempt_and_counts() {
         (last.author_kind.as_str(), last.body.as_str()),
         ("reporter", "Still wrong on 0.6.1")
     );
-    assert!(r.has_clip);
     assert_eq!(
-        st.block_on(st.report_clip_async(&qid, &tid, Visibility::All))
+        (last.capture, last.has_clip, last.diagnostics_lines),
+        (Some(1), true, 1)
+    );
+    assert!(!r.has_clip, "the filing had no clip, and still has none");
+    assert_eq!(
+        st.block_on(st.report_comment_clip_async(&qid, &tid, &last.id, Visibility::All))
             .unwrap()
             .as_deref(),
         Some(PNG)
     );
     assert_eq!(r.diagnostics_lines, 1);
     assert_eq!(
-        st.report_diagnostics(&qid, &tid, Visibility::Reporter("emp-1"))
+        st.report_diagnostics(&qid, &tid, Visibility::Reporter("emp-1"), None)
             .unwrap()
             .unwrap(),
         [diag("still failing")]
@@ -1340,7 +1351,7 @@ fn under_own_a_reporter_cannot_verify_anothers_report() {
         Err(CoreError::NotFound)
     ));
     assert!(matches!(
-        st.report_diagnostics(&qid, &tid, Visibility::Reporter("emp-2")),
+        st.report_diagnostics(&qid, &tid, Visibility::Reporter("emp-2"), None),
         Err(CoreError::NotFound)
     ));
     assert_eq!(state(&st, &qid, &tid), State::FixProposed);
@@ -1441,6 +1452,13 @@ fn badge_counts_fix_proposed_and_unseen_replies() {
     let badge = st.reporter_badge(&qid, "emp-1").unwrap();
     assert_eq!(badge.waiting, 2);
     assert_eq!(badge.report_ids, [replied.clone(), proposed.clone()]);
+    // Under `all`, another reporter's comment is one.
+    st.reporter_comment(DAEMON, &qid, &quiet, "emp-2", "Me too")
+        .unwrap();
+    assert_eq!(
+        st.reporter_badge(&qid, "emp-1").unwrap().report_ids,
+        [quiet.clone(), replied.clone(), proposed.clone()]
+    );
     assert_eq!(
         st.reporter_badge(&qid, "emp-2").unwrap().report_ids,
         [theirs]
@@ -1513,23 +1531,23 @@ fn diagnostics_are_per_queue() {
         .unwrap()
         .id;
     assert_eq!(
-        st.report_diagnostics(&q1, &t1, Visibility::All)
+        st.report_diagnostics(&q1, &t1, Visibility::All, None)
             .unwrap()
             .unwrap(),
         [diag("boom")]
     );
     // Through another queue the report is not there.
     assert!(matches!(
-        st.report_diagnostics(&q2, &t1, Visibility::All),
+        st.report_diagnostics(&q2, &t1, Visibility::All, None),
         Err(CoreError::NotFound)
     ));
     assert!(matches!(
-        st.report_diagnostics("01J0000000000000000000000Z", &t1, Visibility::All),
+        st.report_diagnostics("01J0000000000000000000000Z", &t1, Visibility::All, None),
         Err(CoreError::NotAMember)
     ));
     st.delete_queue(DAEMON, &q1).unwrap();
     assert!(matches!(
-        st.report_diagnostics(&q1, &t1, Visibility::All),
+        st.report_diagnostics(&q1, &t1, Visibility::All, None),
         Err(CoreError::NotAMember)
     ));
 }
@@ -1572,24 +1590,169 @@ fn watchers_list_and_unwatch() {
 }
 
 #[test]
-fn a_comment_on_a_verified_report_reopens_it_unverified() {
+fn comments_leave_a_verified_or_resolved_report_as_it_is() {
+    let (_d, st) = store();
+    let qid = queue(&st, ReportersSee::Own);
+    let (verified, _) = fixed(&st, &qid);
+    st.verify_report(
+        DAEMON,
+        &qid,
+        &verified,
+        Verdict::Reporter("emp-1"),
+        None,
+        None,
+    )
+    .unwrap();
+    let resolved = file(&st, &qid, Some("emp-1"), Some("resolved"));
+    st.resolve_report(DAEMON, &qid, &resolved, &ana(), ResolveReason::Wontfix)
+        .unwrap();
+    for (tid, want) in [(&verified, State::Verified), (&resolved, State::Resolved)] {
+        let r = st
+            .reporter_comment(DAEMON, &qid, tid, "emp-1", "Back again")
+            .unwrap();
+        assert_eq!((r.state, r.status.as_str()), (want, "resolved"), "{want:?}");
+        let (_, r) = st.report_reply(DAEMON, &qid, tid, &ana(), "Noted").unwrap();
+        assert_eq!((r.state, r.reopen_count), (want, 0), "{want:?}");
+        assert!(r.resolve_reason.is_some());
+    }
+    assert!(audit(&st, "thread.reopen").is_empty());
+    assert!(bodies(&st, "queue.reopen").is_empty());
+}
+
+#[test]
+fn a_resolve_closes_the_fix_waiting_for_a_verdict() {
     let (_d, st) = store();
     let qid = queue(&st, ReportersSee::Own);
     let (tid, _) = fixed(&st, &qid);
-    st.verify_report(DAEMON, &qid, &tid, Verdict::Reporter("emp-1"), None, None)
-        .unwrap();
-    let r = st
-        .reporter_comment(DAEMON, &qid, &tid, "emp-1", "Back again")
-        .unwrap();
-    assert_eq!((r.state, r.resolve_reason), (State::Open, None));
     let (_, _, r) = st
-        .resolve_report(DAEMON, &qid, &tid, &ana(), ResolveReason::Other)
+        .resolve_report(DAEMON, &qid, &tid, &ana(), ResolveReason::Duplicate)
         .unwrap();
-    assert_eq!(r.state, State::Resolved, "no longer verified");
-    assert_eq!(r.resolve_reason, Some(ResolveReason::Other));
-    // A resolve ends a fix's wait for a verdict, however it comes.
+    assert_eq!(r.state, State::Resolved);
+    assert_eq!(r.fixes[0].outcome, FixOutcome::Closed);
+    // A reopen from resolved leaves the closed attempt as it is.
+    let (r, _) = st
+        .reopen_report(
+            DAEMON,
+            &qid,
+            &tid,
+            by_ana(),
+            "Not a duplicate".into(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        (r.state, r.fixes[0].outcome),
+        (State::Open, FixOutcome::Closed)
+    );
+    assert_eq!(audit(&st, "thread.reopen").len(), 1);
+    // A resolve however it comes ends the wait.
     let (other, _) = fixed(&st, &qid);
     st.resolve_thread(DAEMON, &other, "agent:claude").unwrap();
-    st.reopen_thread(DAEMON, &other).unwrap();
-    assert_eq!(state(&st, &qid, &other), State::Open);
+    let r = st.report(&qid, &other, Visibility::All).unwrap().unwrap();
+    assert_eq!(
+        (r.state, r.fixes[0].outcome),
+        (State::Resolved, FixOutcome::Closed)
+    );
+}
+
+#[test]
+fn every_capture_keeps_its_clip_and_diagnostics() {
+    let (_d, st) = store();
+    let qid = queue(&st, ReportersSee::Own);
+    let first: &[u8] = b"\x89PNG\r\n\x1a\nfiled";
+    let second: &[u8] = b"\x89PNG\r\n\x1a\nreopen-1";
+    let third: &[u8] = b"\x89PNG\r\n\x1a\nreopen-2";
+    let mut r = report(Some("invoice:9"), "Broken");
+    r.clip = Some(first.to_vec());
+    r.diagnostics = Some(vec![diag("filed")]);
+    let tok = token(&qid, "emp-1", None);
+    let tid = st
+        .file_report(DAEMON, &qid, Some(&tok), ExternalScope::Instance, r)
+        .unwrap()
+        .id;
+    let reopen = |body: &str, clip: &[u8], diags: Option<Vec<DiagLine>>| {
+        st.propose_fix(DAEMON, &qid, &tid, &ana(), fix("Try this"))
+            .unwrap();
+        st.reopen_report(
+            DAEMON,
+            &qid,
+            &tid,
+            Verdict::Reporter("emp-1"),
+            body.into(),
+            Some(clip.to_vec()),
+            diags,
+            None,
+        )
+        .unwrap()
+        .0
+    };
+    reopen("Still", second, Some(vec![diag("one"), diag("two")]));
+    let r = reopen("Again", third, None);
+    let clip = |cid: Option<&str>| match cid {
+        None => st.block_on(st.report_clip_async(&qid, &tid, Visibility::All)),
+        Some(c) => st.block_on(st.report_comment_clip_async(&qid, &tid, c, Visibility::All)),
+    };
+    assert_eq!(
+        clip(None).unwrap().as_deref(),
+        Some(first),
+        "the filing's clip stays"
+    );
+    let captures: Vec<_> = r
+        .comments
+        .iter()
+        .filter(|c| c.capture.is_some())
+        .map(|c| (c.capture, c.has_clip, c.diagnostics_lines, c.id.clone()))
+        .collect();
+    assert_eq!(captures.len(), 2);
+    assert_eq!(
+        (captures[0].0, captures[0].1, captures[0].2),
+        (Some(1), true, 2)
+    );
+    assert_eq!(
+        (captures[1].0, captures[1].1, captures[1].2),
+        (Some(2), true, 0)
+    );
+    assert_eq!(clip(Some(&captures[0].3)).unwrap().as_deref(), Some(second));
+    assert_eq!(clip(Some(&captures[1].3)).unwrap().as_deref(), Some(third));
+    // The filing comment carries no capture and no clip of its own.
+    assert_eq!(clip(Some(&r.comments[0].id)).unwrap(), None);
+    assert!(matches!(clip(Some("nope")), Err(CoreError::NotFound)));
+    assert_eq!(r.diagnostics_lines, 2, "the latest capture holding any");
+    let diags = |capture| {
+        st.report_diagnostics(&qid, &tid, Visibility::All, capture)
+            .unwrap()
+    };
+    assert_eq!(diags(None).unwrap(), [diag("one"), diag("two")]);
+    assert_eq!(diags(Some(0)).unwrap(), [diag("filed")]);
+    assert_eq!(diags(Some(1)).unwrap().len(), 2);
+    assert_eq!(diags(Some(2)), None);
+    // Deleting the report removes every clip it held.
+    let keys: Vec<String> = st
+        .with_read(|c| {
+            Ok(c.prepare(
+                "SELECT clip_key FROM comments WHERE thread_id = ?1 AND clip_key IS NOT NULL",
+            )?
+            .query_map([&tid], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
+        })
+        .unwrap();
+    assert_eq!(keys.len(), 2);
+    let aid = clax_core::ArtifactId::parse(&r.artifact.id).unwrap();
+    for key in &keys {
+        assert!(
+            st.block_on(st.content.read_clip(&aid, key))
+                .unwrap()
+                .is_some()
+        );
+    }
+    st.delete_thread(DAEMON, &tid).unwrap();
+    for key in &keys {
+        assert_eq!(
+            st.block_on(st.content.read_clip(&aid, key)).unwrap(),
+            None,
+            "{key}"
+        );
+    }
 }

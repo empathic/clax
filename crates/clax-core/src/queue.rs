@@ -221,7 +221,9 @@ pub struct ReportArtifact {
 }
 
 /// A comment of a report: `author_kind` is `viewer`, `agent` or
-/// [`AUTHOR_REPORTER`].
+/// [`AUTHOR_REPORTER`]. A reopen's comment (feedback-loop §6.3) carries
+/// its capture: the reopen's number, whether a clip came with it, and how
+/// many diagnostics lines.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReportComment {
     pub id: String,
@@ -229,6 +231,18 @@ pub struct ReportComment {
     pub author_name: String,
     pub body: String,
     pub created_at: String,
+    /// The reopen this comment was posted with (1 for the first); absent
+    /// on any other comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<u32>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub has_clip: bool,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub diagnostics_lines: u32,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// A live claim on a report: who holds it, until when.
@@ -282,8 +296,9 @@ pub struct Report {
     /// it (feedback-loop §6.3).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub reopen_count: u32,
-    /// How many diagnostics lines were filed with it (feedback-loop §5.2);
-    /// 0 when none were.
+    /// How many diagnostics lines its latest capture holding any has: the
+    /// filing's, or a later reopen's (feedback-loop §5.2); 0 when none
+    /// has.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub diagnostics_lines: u32,
 }
