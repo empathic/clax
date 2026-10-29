@@ -679,12 +679,14 @@ async fn comments_on_a_claxbot_thread_follow_up_on_their_authors_credits_and_rig
     clax_server::bot::start_driver(&driver);
     let all = events(&ts, &first, None).await;
     assert_eq!(all.last().unwrap().2["run"]["status"], "finished");
+    // The thread's `n`th run, once it has one: the driver may have made
+    // the next before this looks (runs_for_thread is newest first).
     let runs_after = |n: usize| {
         let st = ts.store.clone();
         let tid = tid.clone();
         move || {
             let mut runs = st.runs_for_thread(&tid, 10).unwrap();
-            (runs.len() == n).then(|| runs.remove(0))
+            (runs.len() >= n).then(|| runs.remove(runs.len() - n))
         }
     };
     let second = when(&mut bus, runs_after(2)).await;
