@@ -15,33 +15,52 @@
 //! digit (or at the start of the text).
 //!
 //! 1. **Bearer and Basic credentials**: `bearer` or `basic` starting a
-//!    word, one or more spaces or tabs, then a token of at least 8
-//!    characters of `A-Z a-z 0-9 - . _ ~ + /` followed by any `=`. The
-//!    token is replaced; the scheme and the spaces stay.
+//!    word, one or more spaces or tabs, then a token: a maximal run of at
+//!    least 8 characters of `A-Z a-z 0-9 - . _ ~ + /`, followed by any
+//!    `=`, that looks like a credential: it holds a digit, or it holds a
+//!    lowercase letter and an uppercase letter after its first character
+//!    (so `Basic authentication` and `Bearer Authentication` are prose).
+//!    The token is replaced; the scheme and the spaces stay.
 //! 2. **Clax tokens**: `cx`, one lowercase letter and `_` (`cxq_`,
 //!    `cxr_`, …), starting a word that `_` does not precede either,
 //!    followed by at least 16 base64url characters. The whole token is
 //!    replaced.
 //! 3. **JWT-shaped strings**: three maximal runs of at least 8 base64url
-//!    characters joined by `.`, the first not preceded by a base64url
-//!    character. The whole string is replaced.
+//!    characters joined by `.`, the first starting with `eyJ` and not
+//!    preceded by a base64url character. The whole string is replaced.
 //! 4. **Secret pairs**: one of `password`, `passwd`, `token`, `secret`,
-//!    `key`, `api_key`, `access_token`, `auth`, preceded by the start of
-//!    the text or by a character that is not an ASCII letter or digit (so
-//!    `GITHUB_TOKEN=` and `x-api-key:` match, `monkey=` does not); then an
-//!    optional `"` or `'`, then `=` or `:`, then optional spaces or tabs,
-//!    then an optional `"` or `'`, then a value of at least one character
-//!    running up to whitespace, `&`, `"` or `'`. The value is replaced; the
-//!    key and the separator stay.
+//!    `key`, `api_key`, `api-key`, `access_token`, `auth`, preceded by the
+//!    start of the text or by a character that is not an ASCII letter or
+//!    digit (so `GITHUB_TOKEN=`, `sort_key=` and `X-Api-Key:` match,
+//!    `monkey=` does not); then an optional `"` or `'`, then `=` or `:`
+//!    (for the bare `key`, `:` only after a quote, so `Missing key: id` is
+//!    prose while `"key": "…"` is a pair); then optional spaces or tabs;
+//!    then the value, at least one character:
+//!    - after a `"` or `'`, everything up to the matching quote (a `\`
+//!      escapes the character after it), or to the end of the text;
+//!    - else, when a Bearer or Basic credential (rule 1) starts there, the
+//!      scheme, the spaces and the token;
+//!    - else, everything up to whitespace or one of `& " ' , ; )`.
+//!
+//!    The value is replaced; the key, the separator and the quotes stay.
 //! 5. **Email addresses**: one or more of `A-Z a-z 0-9 . _ % + -` not
 //!    preceded by one of them, `@`, then two or more labels of
 //!    `A-Z a-z 0-9 -` joined by `.` whose last is at least two ASCII
-//!    letters (a trailing `.` or `-` ends the address). The address is
-//!    replaced.
-//! 6. **Long runs**: a maximal run of `A-Z a-z 0-9 + - _` (`/` and `.`
-//!    end a run, so paths and host names are never one) followed by any
-//!    `=`, when it is at least 32 hexadecimal digits, or at least 40
-//!    characters with at least one digit. The run is replaced.
+//!    letters and, in any case, not a file extension of the web
+//!    ([`FILE_EXTENSIONS`], so `logo@2x.png` is a file); a trailing `.` or
+//!    `-` ends the address. The address is replaced.
+//! 6. **Long runs**: a maximal run of `A-Z a-z 0-9 + - _` not preceded by
+//!    one of them, followed by any `=`.
+//!    - When the run is not preceded by `/`, `.` or `:`, it extends
+//!      through `/` and the characters above (a base64 secret such as
+//!      `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`); the extended run is
+//!      replaced, with any `=` after it, when it holds a `/`, is at least
+//!      40 characters, holds an uppercase letter, a lowercase letter and a
+//!      digit, and none of its `/`-separated parts is a path word (3 or
+//!      more characters of `a-z - _` only, such as `api` or `queues`).
+//!    - Otherwise the run (which `/` and `.` end, so a path or host name
+//!      is never one) is replaced when it is at least 32 hexadecimal
+//!      digits, or at least 40 characters with at least one digit.
 //!
 //! Text already holding [`REDACTED`] in place of a secret scrubs to
 //! itself.
@@ -60,8 +79,16 @@ const SECRET_KEYS: &[&str] = &[
     "secret",
     "key",
     "api_key",
+    "api-key",
     "access_token",
     "auth",
+];
+
+/// The last labels of an `x@y.z` that name a file, not a mail domain
+/// (rule 5), matched in any case.
+pub const FILE_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "js", "mjs", "css", "map", "json", "html",
+    "woff", "woff2",
 ];
 
 /// `s` with every match of the module's rules replaced by [`REDACTED`],
@@ -96,10 +123,13 @@ pub fn scrub(s: &str) -> Cow<'_, str> {
 }
 
 /// `url` with its scheme, host, path and query keys kept and every query
-/// value replaced by [`REDACTED`] (an empty value stays empty). The path,
-/// a query entry with no `=`, and the fragment are [`scrub`]bed; a user
-/// name or password before the host is replaced. A string with no
-/// `scheme://` is treated as a path with an optional query and fragment.
+/// value replaced by [`REDACTED`] (an empty value stays empty). The path
+/// and a query entry with no `=` are [`scrub`]bed; a user name or
+/// password before the host is replaced. The fragment is read as a route:
+/// the part after its first `?` is a query (`#/reset?code=…`); a fragment
+/// with no `?` but an `=` is a query as a whole (`#state=…&code=…`);
+/// anything else in it is [`scrub`]bed. A string with no `scheme://` is
+/// treated as a path with an optional query and fragment.
 pub fn scrub_url(url: &str) -> String {
     let (before_frag, frag) = match url.split_once('#') {
         Some((a, f)) => (a, Some(f)),
@@ -132,27 +162,41 @@ pub fn scrub_url(url: &str) -> String {
     }
     if let Some(q) = query {
         out.push('?');
-        for (n, entry) in q.split('&').enumerate() {
-            if n > 0 {
-                out.push('&');
-            }
-            match entry.split_once('=') {
-                Some((k, v)) => {
-                    out.push_str(&scrub(k));
-                    out.push('=');
-                    if !v.is_empty() {
-                        out.push_str(REDACTED);
-                    }
-                }
-                None => out.push_str(&scrub(entry)),
-            }
-        }
+        push_query(&mut out, q);
     }
     if let Some(f) = frag {
         out.push('#');
-        out.push_str(&scrub(f));
+        match f.split_once('?') {
+            Some((route, q)) => {
+                out.push_str(&scrub(route));
+                out.push('?');
+                push_query(&mut out, q);
+            }
+            None if f.contains('=') => push_query(&mut out, f),
+            None => out.push_str(&scrub(f)),
+        }
     }
     out
+}
+
+/// The query `q` onto `out`, its keys kept and every non-empty value
+/// replaced.
+fn push_query(out: &mut String, q: &str) {
+    for (n, entry) in q.split('&').enumerate() {
+        if n > 0 {
+            out.push('&');
+        }
+        match entry.split_once('=') {
+            Some((k, v)) => {
+                out.push_str(&scrub(k));
+                out.push('=');
+                if !v.is_empty() {
+                    out.push_str(REDACTED);
+                }
+            }
+            None => out.push_str(&scrub(entry)),
+        }
+    }
 }
 
 /// The byte range at `i` that the first matching rule replaces.
@@ -215,7 +259,11 @@ fn bearer(b: &[u8], i: usize) -> Option<(usize, usize)> {
         return None;
     }
     let body = run_end(b, start, is_b64token);
-    if body - start < 8 {
+    let token = &b[start..body];
+    let credential = token.iter().any(u8::is_ascii_digit)
+        || (token.iter().any(u8::is_ascii_lowercase)
+            && token[1..].iter().any(u8::is_ascii_uppercase));
+    if token.len() < 8 || !credential {
         return None;
     }
     Some((start, run_end(b, body, |c| c == b'=')))
@@ -235,7 +283,7 @@ fn clax_token(b: &[u8], i: usize) -> Option<(usize, usize)> {
 
 /// Rule 3: a JWT-shaped string.
 fn jwt(b: &[u8], i: usize) -> Option<(usize, usize)> {
-    if i > 0 && is_b64url(b[i - 1]) {
+    if (i > 0 && is_b64url(b[i - 1])) || !b[i..].starts_with(b"eyJ") {
         return None;
     }
     let mut at = i;
@@ -262,18 +310,32 @@ fn secret_pair(b: &[u8], i: usize) -> Option<(usize, usize)> {
     }
     let key = SECRET_KEYS.iter().find(|k| starts_with_ci(b, i, k))?;
     let mut at = i + key.len();
-    if matches!(b.get(at), Some(b'"' | b'\'')) {
+    let quoted_key = matches!(b.get(at), Some(b'"' | b'\''));
+    if quoted_key {
         at += 1;
     }
-    if !matches!(b.get(at), Some(b'=' | b':')) {
-        return None;
+    match b.get(at) {
+        Some(b'=') => {}
+        Some(b':') if quoted_key || *key != "key" => {}
+        _ => return None,
     }
     at = run_end(b, at + 1, |c| c == b' ' || c == b'\t');
-    if matches!(b.get(at), Some(b'"' | b'\'')) {
-        at += 1;
+    if let Some(&quote) = b.get(at)
+        && matches!(quote, b'"' | b'\'')
+    {
+        let start = at + 1;
+        let mut end = start;
+        while end < b.len() && b[end] != quote {
+            end += if b[end] == b'\\' { 2 } else { 1 };
+        }
+        let end = end.min(b.len());
+        return (end > start).then_some((start, end));
+    }
+    if let Some((_, end)) = bearer(b, at) {
+        return Some((at, end));
     }
     let end = run_end(b, at, |c| {
-        !(c.is_ascii_whitespace() || matches!(c, b'&' | b'"' | b'\''))
+        !(c.is_ascii_whitespace() || matches!(c, b'&' | b'"' | b'\'' | b',' | b';' | b')'))
     });
     (end > at).then_some((at, end))
 }
@@ -301,7 +363,19 @@ fn email(b: &[u8], i: usize) -> Option<(usize, usize)> {
         return None;
     }
     let tld = domain.rsplit(|&c| c == b'.').next()?;
-    (tld.len() >= 2 && tld.iter().all(u8::is_ascii_alphabetic)).then_some((i, end))
+    let file = FILE_EXTENSIONS
+        .iter()
+        .any(|x| tld.eq_ignore_ascii_case(x.as_bytes()));
+    (tld.len() >= 2 && tld.iter().all(u8::is_ascii_alphabetic) && !file).then_some((i, end))
+}
+
+/// Whether `part` of a `/`-joined run is a path word: 3 or more of
+/// `a-z - _` only.
+fn is_path_word(part: &[u8]) -> bool {
+    part.len() >= 3
+        && part
+            .iter()
+            .all(|&c| c.is_ascii_lowercase() || c == b'-' || c == b'_')
 }
 
 /// Rule 6: a long hex or base64 run.
@@ -310,6 +384,22 @@ fn long_run(b: &[u8], i: usize) -> Option<(usize, usize)> {
         return None;
     }
     let end = run_end(b, i, is_run);
+    if end == i {
+        return None;
+    }
+    if i == 0 || !matches!(b[i - 1], b'/' | b'.' | b':') {
+        let ext = run_end(b, i, |c| is_run(c) || c == b'/');
+        let run = &b[i..ext];
+        if ext > end
+            && run.len() >= 40
+            && run.iter().any(u8::is_ascii_uppercase)
+            && run.iter().any(u8::is_ascii_lowercase)
+            && run.iter().any(u8::is_ascii_digit)
+            && !run.split(|&c| c == b'/').any(is_path_word)
+        {
+            return Some((i, run_end(b, ext, |c| c == b'=')));
+        }
+    }
     let run = &b[i..end];
     let hex = run.len() >= 32 && run.iter().all(u8::is_ascii_hexdigit);
     let b64 = run.len() >= 40 && run.iter().any(u8::is_ascii_digit);

@@ -158,12 +158,22 @@ pub async fn list(
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let state = match q.state.as_deref() {
         None | Some("") => None,
-        Some(x) => Some(ReportState::parse(x).ok_or_else(|| {
-            ApiError::bad_request(
-                "invalid_state",
-                format!("state is open, claimed or resolved, not '{x}'"),
-            )
-        })?),
+        // Only the states the store records are served.
+        Some(x) => Some(
+            ReportState::parse(x)
+                .filter(|st| {
+                    matches!(
+                        st,
+                        ReportState::Open | ReportState::Claimed | ReportState::Resolved
+                    )
+                })
+                .ok_or_else(|| {
+                    ApiError::bad_request(
+                        "invalid_state",
+                        format!("state is open, claimed or resolved, not '{x}'"),
+                    )
+                })?,
+        ),
     };
     member(&s, &a, &qid).await?;
     let (reports, next) = s
