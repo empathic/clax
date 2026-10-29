@@ -156,9 +156,10 @@ test("a site's user files a report through the overlay; an agent claims, replies
     await emp1.emulateMedia({ colorScheme: "light" });
     await expect(send).toHaveCSS("background-color", "rgb(28, 27, 25)");
     await composer.getByRole("button", { name: "Send" }).click();
-    await expect(emp1.getByText("Report sent.")).toBeVisible();
+    const filedNote = emp1.getByRole("status", { name: "Filed" });
+    await expect(filedNote).toBeVisible();
     await expect(composer).toHaveCount(0);
-    await expect(emp1.locator(".report-btn")).toBeFocused();
+    await expect(filedNote.getByRole("button", { name: "View in Your reports" })).toBeFocused();
     expect(site.minted).toContain("emp-1");
 
     // The owner's agent, with an agent token made in the owner's browser.
@@ -259,6 +260,209 @@ test("a site's user files a report through the overlay; an agent claims, replies
     // are then rendered without web fonts (web/bridge/src/clip.ts).
     expect(await cspViolations(emp1)).toEqual(['style-src-elem inline ""']);
     expect(await cspViolations(emp2)).toEqual([]);
+  } finally {
+    await site.stop();
+    await d.stop();
+  }
+});
+
+/** A queue for `site`'s origin, reporters seeing their own reports, made
+ * by `owner` on the Queues page, with a service grant handed to the site. */
+async function queueWithGrant(owner: Page, origin: string, site: DeployerSite): Promise<string> {
+  await owner.goto(`${origin}/queues`);
+  await owner.getByRole("button", { name: "New queue" }).click();
+  const form = owner.locator("form.qform");
+  await form.getByLabel("Name", { exact: true }).fill("Leave app reports");
+  await form.getByLabel("Origins, one per line").fill(site.origin);
+  await form.getByLabel("Their own reports").check();
+  await form.getByRole("button", { name: "Create queue" }).click();
+  const card = owner.locator("li.qcard", { has: owner.getByRole("heading", { name: "Leave app reports" }) });
+  await expect(card).toBeVisible();
+  const qid = (await card.getAttribute("data-id"))!;
+  await card.getByRole("button", { name: "Manage" }).click();
+  await card.getByLabel("Name", { exact: true }).fill("leave app backend");
+  await card.getByRole("button", { name: "Create service grant" }).click();
+  const secret = card.getByRole("region", { name: "New service grant" });
+  await expect(secret).toBeVisible();
+  const token = (await secret.locator("code").nth(0).textContent())!.trim();
+  const privateKey = (await secret.locator("code").nth(1).textContent())!.trim();
+  await secret.getByRole("button", { name: "Done" }).click();
+  site.grant({ queue: qid, token, privateKey });
+  return qid;
+}
+
+/** Tells `page`'s overlay the page has focus again, which asks for the badge at once. */
+const refocus = (page: Page) => page.evaluate(() => { window.dispatchEvent(new Event("focus")); });
+
+test("a reporter files the visible page, says a fix is still broken with a new capture, then confirms the next fix", async ({ browser }) => {
+  test.setTimeout(90_000);
+  const { d, origin } = await hostedDaemon();
+  const site = await startDeployerSite(origin);
+  try {
+    const owner = await ownerOf(browser, origin);
+    const qid = await queueWithGrant(owner, origin, site);
+    const agentToken = await owner.evaluate(async () => {
+      const r = await fetch("/api/hosted/agent-tokens", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ label: "triage-laptop" }) });
+      if (!r.ok) throw new Error(`agent token: ${r.status} ${await r.text()}`);
+      return (await r.json()).token as string;
+    });
+    const agent = await agentOf(origin, agentToken);
+
+    // Screen mode, from the mode bar's S key: the visible page at once.
+    const emp1 = await reporterOn(browser, site, "emp-1");
+    await emp1.locator(".report-btn").click();
+    const bar = emp1.getByRole("toolbar", { name: "Capture" });
+    await expect(bar.getByRole("button", { name: "Element", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await emp1.keyboard.press("s");
+    await expect(bar).toHaveCount(0);
+    const composer = emp1.getByRole("form", { name: "New report" });
+    await expect(composer.getByRole("img", { name: "Screenshot of the page" })).toBeVisible();
+    await composer.getByText("What's sent").click();
+    await expect(composer.locator("pre.context")).toContainText('"mode": "screen"');
+    await expect(composer.getByText("Recent errors are not sent.")).toBeVisible();
+    await composer.getByRole("textbox", { name: "Report" }).fill("The second request has no end date.");
+    await composer.getByRole("button", { name: "Send" }).click();
+    await expect(emp1.getByRole("status", { name: "Filed" })).toBeVisible();
+
+    const listed = await agent.ok<ReportPage>("GET", `/api/queues/${qid}/reports`);
+    expect(listed.reports).toHaveLength(1);
+    const id = listed.reports[0].id;
+    const filed = await agent.ok<{ report: Report }>("GET", `/api/queues/${qid}/reports/${id}`);
+    expect(filed.report).toMatchObject({ has_clip: true, anchor: { kind: "artifact" }, context: { v: 1, capture: { mode: "screen", method: "dom" }, environment: { url: `${site.origin}/` } } });
+
+    // A fix is proposed: the badge rises, and "Your reports" opens on it.
+    const propose = async (summary: string) => {
+      const lease = await agent.ok<Lease>("POST", `/api/queues/${qid}/reports/${id}/claim`);
+      await agent.ok("POST", `/api/queues/${qid}/reports/${id}/fix`, { summary, url: "https://github.com/example/leave/pull/12", verify_url: `${site.origin}/`, fence: lease.fence });
+    };
+    const count = emp1.locator(".reports-btn .count");
+    await refocus(emp1);
+    await expect(count).toHaveCount(0);
+    await propose("The end date shows on every request now.");
+    await refocus(emp1);
+    await expect(count).toHaveText("1");
+    await emp1.locator(".reports-btn").click();
+    const panel = emp1.getByRole("region", { name: "Your reports" });
+    const waiting = panel.getByRole("region", { name: "Fix waiting for your check" });
+    await expect(waiting).toContainText("The end date shows on every request now.");
+    await expect(waiting.getByRole("link", { name: "The change" })).toHaveAttribute("href", "https://github.com/example/leave/pull/12");
+    await expect(panel.locator(".state").first()).toHaveText("Fix ready for you to check");
+
+    // Still broken: a note and a new capture of the second request.
+    await waiting.getByRole("button", { name: "Still broken" }).click();
+    const reopen = emp1.getByRole("form", { name: "Still broken" });
+    await expect(reopen).toBeVisible();
+    await bar.getByRole("button", { name: "Element", exact: true }).click();
+    await emp1.locator("#req-2 h2").click();
+    await expect(reopen.getByRole("img", { name: "Screenshot of the page" })).toBeVisible();
+    await reopen.getByRole("textbox", { name: "What is still broken" }).fill("Still no end date on this one.");
+    await reopen.getByRole("button", { name: "Send" }).click();
+    await expect(reopen).toHaveCount(0);
+    const reopened = await agent.ok<{ report: Report }>("GET", `/api/queues/${qid}/reports/${id}`);
+    expect(reopened.report).toMatchObject({ state: "open", reopen_count: 1 });
+    expect(reopened.report.fixes?.map(f => f.outcome)).toEqual(["rejected"]);
+    expect(reopened.report.comments.at(-1)).toMatchObject({ author_kind: "reporter", body: "Still no end date on this one.", capture: 1, has_clip: true });
+
+    // The next fix: "It's fixed" verifies it, with the reporter's context.
+    await refocus(emp1);
+    await expect(count).toHaveCount(0);
+    await propose("The end date shows on single-day requests too.");
+    await refocus(emp1);
+    await expect(count).toHaveText("1");
+    const mine = await openReports(emp1);
+    await mine.getByRole("region", { name: "Fix waiting for your check" }).getByRole("button", { name: "It's fixed" }).click();
+    await expect(mine.locator(".state").first()).toHaveText("Fixed: you confirmed it");
+    const verified = await agent.ok<{ report: Report }>("GET", `/api/queues/${qid}/reports/${id}`);
+    expect(verified.report).toMatchObject({ state: "verified", status: "resolved" });
+    expect(verified.report.fixes?.map(f => f.outcome)).toEqual(["rejected", "verified"]);
+    expect(verified.report.fixes?.[1].verdict_context).toMatchObject({ v: 1, environment: { url: `${site.origin}/` } });
+
+    // Only the clip renderer's empty font <style> trips the page's policy.
+    expect(await cspViolations(emp1)).toEqual(['style-src-elem inline ""']);
+  } finally {
+    await site.stop();
+    await d.stop();
+  }
+});
+
+test("a redaction drawn on a tall capture, scrolled in its stage, lands where it was drawn in the PNG sent", async ({ browser }) => {
+  test.setTimeout(90_000);
+  const { d, origin } = await hostedDaemon();
+  const site = await startDeployerSite(origin);
+  try {
+    const owner = await ownerOf(browser, origin);
+    const qid = await queueWithGrant(owner, origin, site);
+    const agentToken = await owner.evaluate(async () => {
+      const r = await fetch("/api/hosted/agent-tokens", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ label: "triage-laptop" }) });
+      if (!r.ok) throw new Error(`agent token: ${r.status} ${await r.text()}`);
+      return (await r.json()).token as string;
+    });
+    const agent = await agentOf(origin, agentToken);
+
+    // Pick the tall section from the keyboard: Down past each element (Right
+    // into the page's main), Enter on the one the mode bar announces.
+    const emp1 = await reporterOn(browser, site, "emp-1");
+    await emp1.locator(".report-btn").click();
+    const announced = emp1.locator(".modebar [aria-live]");
+    let last = "";
+    for (let i = 0; i < 20 && !last.startsWith("Outlined section: Earlier requests"); i++) {
+      await emp1.keyboard.press("ArrowDown");
+      let now = (await announced.textContent()) ?? "";
+      if (now === last) {
+        await emp1.keyboard.press("ArrowRight");
+        now = (await announced.textContent()) ?? "";
+      }
+      last = now;
+    }
+    expect(last).toMatch(/^Outlined section: Earlier requests/);
+    await emp1.keyboard.press("Enter");
+    const composer = emp1.getByRole("form", { name: "New report" });
+    const img = composer.getByRole("img", { name: "Screenshot of the picked part of the page" });
+    await expect(img).toBeVisible();
+    await expect.poll(() => img.evaluate(i => (i as HTMLImageElement).naturalHeight)).toBeGreaterThan(1000);
+
+    // Scroll the stage well down, and drag a redaction around its middle.
+    await composer.getByRole("button", { name: "Clear", exact: true }).click();
+    await composer.getByRole("button", { name: "Redact", exact: true }).click();
+    const stage = composer.locator(".annotator .stage");
+    await stage.evaluate(el => { el.scrollTop = 300; });
+    await expect.poll(() => stage.evaluate(el => el.scrollTop)).toBe(300);
+    const sb = (await stage.boundingBox())!;
+    const mid = { x: sb.x + sb.width / 2, y: sb.y + sb.height / 2 };
+    await emp1.mouse.move(mid.x - 30, mid.y - 20);
+    await emp1.mouse.down();
+    await emp1.mouse.move(mid.x + 30, mid.y + 20, { steps: 5 });
+    await emp1.mouse.up();
+    await expect(composer.locator(".annotator svg [data-kind=redact]")).toHaveCount(1);
+    // Where the middle of the drag is in the image's own pixels, read off the drawing.
+    const geo = await composer.locator(".annotator svg").evaluate(el => {
+      const r = el.getBoundingClientRect();
+      const i = el.previousElementSibling as HTMLImageElement;
+      return { x: r.x, y: r.y, w: r.width, h: r.height, nw: i.naturalWidth, nh: i.naturalHeight };
+    });
+    expect(geo.h).toBeGreaterThan(sb.height + 300);
+    const at = { x: Math.round(((mid.x - geo.x) / geo.w) * geo.nw), y: Math.round(((mid.y - geo.y) / geo.h) * geo.nh) };
+    // Where it would land were the drawing the stage's visible box, not the image's.
+    const stuck = { x: at.x, y: Math.round(((mid.y - sb.y) / geo.h) * geo.nh) };
+    expect(at.y - stuck.y).toBeGreaterThan(100);
+
+    await composer.getByRole("textbox", { name: "Report" }).fill("The history shows a name it should not.");
+    await composer.getByRole("button", { name: "Send" }).click();
+    await expect(emp1.getByRole("status", { name: "Filed" })).toBeVisible();
+    const listed = await agent.ok<ReportPage>("GET", `/api/queues/${qid}/reports`);
+    const clip = await agent.bytes(`/api/queues/${qid}/reports/${listed.reports[0].id}/clip`);
+    expect(clip.status).toBe(200);
+    const pixels = await emp1.evaluate(async ({ b64, points }) => {
+      const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+      const bmp = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+      const c = new OffscreenCanvas(bmp.width, bmp.height);
+      const g = c.getContext("2d")!;
+      g.drawImage(bmp, 0, 0);
+      return { size: [bmp.width, bmp.height], at: points.map(p => [...g.getImageData(p.x, p.y, 1, 1).data]) };
+    }, { b64: Buffer.from(clip.bytes).toString("base64"), points: [at, stuck] });
+    expect(pixels.size).toEqual([geo.nw, geo.nh]);
+    expect(pixels.at[0]).toEqual([0, 0, 0, 255]);
+    expect(pixels.at[1]).not.toEqual([0, 0, 0, 255]);
   } finally {
     await site.stop();
     await d.stop();
