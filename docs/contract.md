@@ -3787,6 +3787,16 @@ CORS for the queue's origins and its `OPTIONS` preflight). A reporter
 reads the reports `reporters_see` shows it and gives verdicts on the ones
 it filed; any other is 404 `not_found`.
 
+A reporter token lasts 900 seconds. Each queue key (a service grant's,
+which signs every mint, and each reporter's) signs at most 1,024 requests
+in any 240 seconds, and a queue holds the nonces of at most 4,096 keys at
+once; past either, its requests are 429 `limit_reached` until the nonces
+age out. The SDK's reporter client, given the signed-in user's ID
+(`user`), keeps its key (a non-extractable Ed25519 `CryptoKey`) and its
+token in IndexedDB per instance, queue and user, and asks the deployer's
+backend for a token again only from 60 seconds before it expires or after
+a 401.
+
 | Route | Body | Answer |
 |---|---|---|
 | `POST /api/queues/<qid>/reporter-tokens` (`Clax-Queue`, the service grant's signature, no `Origin`) | `{reporter_id, origin, public_key, profile?}` | `{token, expires_at}` |
