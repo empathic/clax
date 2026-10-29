@@ -85,6 +85,10 @@ doctor:
 clax *ARGS:
     . scripts/dev-home.sh && watch_settings && CLAX_HOME="$DEV_HOME" ./scripts/run.sh clax "$@"
 
+# Set up the instance's own feedback queue on the running dev daemon (~/.clax-dev, or $CLAX_HOME): queue clax-feedback-dev, its service grant, [feedback] in config.toml and the owner's flag; restart the daemon after (docs/prod.md)
+dev-feedback:
+    ./scripts/dev-feedback.sh
+
 # The Clax app (apps/clax_app). With Bazel each builds or checks from the
 # shared cache (docs/bazel.md, "The Clax app"); each has a `-native` twin
 # (Flutter, Gradle, Xcode and Cargo, as before).
