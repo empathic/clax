@@ -99,10 +99,17 @@ async fn a_signed_out_visitor_lands_on_the_bundled_quickstart() {
     assert_eq!(r.headers()["location"], "/signin");
     let r = c.get(format!("{}/start", ts.base)).send().await.unwrap();
     assert_eq!(r.headers()["location"], "/start/");
+    // The directory is the shell's chrome (the gallery entry), which no page
+    // may frame; the quickstart page in it may be framed by its own origin.
     let r = c.get(format!("{}/start/", ts.base)).send().await.unwrap();
     assert_eq!(r.status(), 200);
-    assert_eq!(r.headers()["content-type"], "text/html; charset=utf-8");
     assert_eq!(r.headers()["content-security-policy"], "frame-ancestors 'none'");
+    assert!(r.text().await.unwrap().contains("<p>gallery</p>"));
+    let r = c.get(format!("{}/start/index.html", ts.base)).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["content-type"], "text/html; charset=utf-8");
+    assert_eq!(r.headers()["content-security-policy"], "frame-ancestors 'self'");
+    assert_eq!(r.headers()["x-frame-options"], "SAMEORIGIN");
     assert!(r.text().await.unwrap().contains("<p>landing</p>"));
     let r = c.get(format!("{}/start/style.css", ts.base)).send().await.unwrap();
     assert_eq!(r.status(), 200);

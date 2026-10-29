@@ -159,13 +159,14 @@
   }
   const tip = (h, s) => `<div class="tip"><b>${h}</b>${s}</div>`;
 
-  /** Whether this page is a hosted Clax's landing page (served bare at its
-   * `/start/`, no Clax around it) rather than an artifact: its links then
-   * name the Clax serving it and stay in this tab. */
+  /** Whether this page is a hosted Clax's landing page (served at its
+   * `/start/`, in the shell's landing chrome rather than as an artifact):
+   * its links then name the Clax serving it and open in the window around
+   * the chrome. */
   const LANDING = !window.claude && location.pathname.startsWith("/start/");
   const CLAXDEV = LANDING ? location.origin : "https://clax.dev";
-  /** How a link to CLAXDEV opens: in this tab on the landing page, else in a new one. */
-  const OUT = LANDING ? "" : ' target="_blank" rel="noopener"';
+  /** How a link to CLAXDEV opens: in the top window on the landing page, else in a new tab. */
+  const OUT = LANDING ? ' target="_top"' : ' target="_blank" rel="noopener"';
   // The README's local setup: install.sh, then clax init.
   const README_LOCAL = "https://github.com/empathic/clax#pi-grok-build-or-every-harness-at-once";
   // This page's artifact ID: the first label of its own <ID>.localhost site.

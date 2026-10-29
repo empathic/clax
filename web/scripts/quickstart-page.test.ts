@@ -88,9 +88,9 @@ afterEach(() => {
   history.replaceState(null, "", location.pathname);
 });
 
-/** Runs the page as a hosted Clax's landing page: at `/start/`, with no Clax around it. */
+/** Runs the page as a hosted Clax's landing page: at `/start/index.html`, in the landing chrome rather than as an artifact. */
 function loadBare() {
-  history.replaceState(null, "", "/start/");
+  history.replaceState(null, "", "/start/index.html");
   document.body.innerHTML = body;
   vi.stubGlobal("addEventListener", (type: string, fn: EventListenerOrEventListenerObject, opts?: boolean | AddEventListenerOptions) => {
     listeners.push([type, fn]);
@@ -102,14 +102,14 @@ function loadBare() {
 const signInLinks = () => [...document.querySelectorAll<HTMLAnchorElement>("a.gh")];
 
 describe("the quickstart's sign-in links", () => {
-  it("sign_in_on_the_clax_serving_the_landing_page_in_the_same_tab", async () => {
+  it("sign_in_on_the_clax_serving_the_landing_page_in_the_window_around_its_chrome", async () => {
     loadBare();
     await settle();
     const links = signInLinks();
     expect(links.length).toBeGreaterThan(0);
     for (const a of links) {
       expect(a.getAttribute("href")).toBe(`${location.origin}/auth/github`);
-      expect(a.hasAttribute("target")).toBe(false);
+      expect(a.getAttribute("target")).toBe("_top");
     }
     history.replaceState(null, "", "/");
   });

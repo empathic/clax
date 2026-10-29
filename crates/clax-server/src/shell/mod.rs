@@ -138,10 +138,10 @@ pub fn legal_page(
 }
 
 /// A file of the landing page, `file` relative to the quickstart `release`
-/// (`clax_server::hosted`'s `/start/`): its page as a static page no other
-/// page may frame, as the legal pages are, and each other file by its
-/// extension, revalidated by its `ETag`. Names starting with a dot are
-/// never served.
+/// (`clax_server::hosted`'s `/start/`): its pages as static pages only
+/// their own origin may frame (the shell's landing entry frames
+/// `index.html`), and each other file by its extension, revalidated by its
+/// `ETag`. Names starting with a dot are never served.
 pub fn landing_file(
     release: &clax_core::quickstart::Release,
     req: &HeaderMap,
@@ -152,10 +152,14 @@ pub fn landing_file(
         return Err(ApiError::not_found());
     };
     if file.ends_with(".html") {
-        return Ok(unframeable(http_cache::html(
-            req,
-            &String::from_utf8_lossy(data),
-        )));
+        let mut res = http_cache::html(req, &String::from_utf8_lossy(data));
+        let h = res.headers_mut();
+        h.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("frame-ancestors 'self'"),
+        );
+        h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("SAMEORIGIN"));
+        return Ok(res);
     }
     let ct = mime_guess::from_path(file)
         .first_or_octet_stream()
