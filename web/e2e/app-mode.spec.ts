@@ -209,7 +209,8 @@ test("a picked row of elements is labelled with a space between their texts, as 
 });
 
 /** A page that keeps one note in its documents: Add writes it, and the page
- * shows it while it exists. */
+ * shows it while it exists. Add is wired once its documents are: the button
+ * is marked `data-wired` then. */
 const NOTES = `<!doctype html><html><head><title>Notes</title><style>body{margin:0;font:18px/28px sans-serif}main{padding:24px}h2{margin:0 0 24px}.tall{height:3000px}</style>
 </head>
 <body><main><h2 id="t">Notes</h2><p id="note">none</p><button id="add">Add</button><div class="tall"></div><p id="end">The end</p></main>
@@ -217,7 +218,9 @@ const NOTES = `<!doctype html><html><head><title>Notes</title><style>body{margin
 (async () => {
   const db = await claude.use("db");
   db.doc("notes/n1").onSnapshot(s => { document.getElementById("note").textContent = s.exists ? s.data().text : "none"; });
-  document.getElementById("add").onclick = () => db.doc("notes/n1").set({ text: "kept" });
+  const add = document.getElementById("add");
+  add.onclick = () => db.doc("notes/n1").set({ text: "kept" });
+  add.dataset.wired = "";
 })();
 </script></body></html>`;
 
@@ -225,7 +228,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: a published version is offered, not loaded, and lands in place on reloadLatest with the documents and scroll kept; a restore likewise`, async ({ page }) => {
     const { id, sid, frame } = await openApp(page, `App notes ${mode}`, mode, true, { html: NOTES, capabilities: { db: {} } });
     await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
-    await frame.locator("#add").tap();
+    await frame.locator("#add[data-wired]").tap();
     await expect(frame.locator("#note")).toHaveText("kept");
     await streamLive(page);
     const y = await scrollAndReport(page, frame, 1200);

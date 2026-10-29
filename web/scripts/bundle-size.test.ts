@@ -41,13 +41,15 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
   // lazy module's own import (which the artifact view has not loaded), and
   // one file of its own.
   for (const f of ["w.js", "as.js", "s.js", "q.js", "qd.js", "h.js", "hd.js"]) dist(`_clax/shell/${f}`, f.repeat(100));
-  // The People page imports the gallery's lazy module's import too, and one file of its own.
-  for (const f of ["p.js", "pd.js"]) dist(`_clax/shell/${f}`, f.repeat(100));
+  // The People and Queues pages import the gallery's lazy module's import too, and one file of their own.
+  for (const f of ["p.js", "pd.js", "u.js", "ud.js"]) dist(`_clax/shell/${f}`, f.repeat(100));
   dist(".vite/manifest.json", JSON.stringify({
     "index.html": { file: "_clax/shell/a.js" }, "artifact.html": { file: "_clax/shell/a.js", dynamicImports: ["src/app/host.ts"] },
-    "src/ui/gallery-working.ts": { file: "_clax/shell/w.js", isDynamicEntry: true, imports: ["index.html", "_s.js"], dynamicImports: ["_index-q.js", "src/people/People.svelte"] },
+    "src/ui/gallery-working.ts": { file: "_clax/shell/w.js", isDynamicEntry: true, imports: ["index.html", "_s.js"], dynamicImports: ["_index-q.js", "src/people/People.svelte", "src/queues/Queues.svelte"] },
     "src/people/People.svelte": { file: "_clax/shell/p.js", isDynamicEntry: true, imports: ["index.html", "_s.js", "_pd.js"] },
     "_pd.js": { file: "_clax/shell/pd.js" },
+    "src/queues/Queues.svelte": { file: "_clax/shell/u.js", isDynamicEntry: true, imports: ["index.html", "_s.js", "_ud.js"] },
+    "_ud.js": { file: "_clax/shell/ud.js" },
     "src/view/artifact-stream.ts": { file: "_clax/shell/as.js", isDynamicEntry: true, imports: ["artifact.html"], dynamicImports: ["_index-q.js"] },
     "src/ui/MoreMenu.svelte": { file: "_clax/shell/as.js", isDynamicEntry: true },
     "src/ui/Who.svelte": { file: "_clax/shell/as.js", isDynamicEntry: true },
@@ -87,7 +89,7 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
 }
 
 describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
-  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, transport: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partOrigin: 10_000, partRoom: 10_000, partSample: 10_000, partLive: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000, questions: 10_000, people: 10_000, host: 10_000 };
+  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, transport: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partOrigin: 10_000, partRoom: 10_000, partSample: 10_000, partLive: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000, questions: 10_000, people: 10_000, queues: 10_000, host: 10_000 };
 
   it("passes within budget", () => {
     expect(run(full).status).toBe(0);
@@ -264,10 +266,21 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
     expect(r.stderr).toContain("people");
   });
 
+  it("counts the Queues page with what it imports beyond the gallery and its lazy module", () => {
+    const size = (r: ReturnType<typeof run>) => Number(/queues (\d+)/.exec(r.stdout)?.[1]);
+    const u = size(run(full));
+    const one = (f: string) => pako.gzip(f.repeat(100), { level: 9 }).length;
+    expect(u).toBe(one("u.js") + one("ud.js"));
+    rmSync(root, { recursive: true, force: true });
+    const r = run({ ...full, queues: u - 1 });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("queues");
+  });
+
   it("never records the extension's ceilings or the question module's, nor adds a missing one", () => {
     expect(run(full, ENTRY, ["--record"]).status).toBe(0);
     const recorded = JSON.parse(readFileSync(join(root, "web/perf/bundle-budget.json"), "utf8"));
-    for (const k of ["extOverlay", "extWorker", "extComposer", "extPanel", "questions", "people"]) expect(recorded[k], k).toBe(10_000);
+    for (const k of ["extOverlay", "extWorker", "extComposer", "extPanel", "questions", "people", "queues"]) expect(recorded[k], k).toBe(10_000);
     expect(recorded.gallery).toBeLessThan(10_000);
     rmSync(root, { recursive: true, force: true });
     const { extPanel: _, ...noPanel } = full;

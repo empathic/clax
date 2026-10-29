@@ -5,10 +5,10 @@
 
 use crate::routes::{
     admin, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot, client_imports,
-    connect, content, docs, drafts, extension, feedback, git_token, grants, health, inbox, jobs,
-    live, live_layers, mcp_http, people, perf, permissions, questions, remote_apps, remotes, room,
-    sample, sessions, settings, site_signin, sites, snapshot, stream, surface, tags, threads,
-    token, toolpath, viewers, watches, working,
+    connect, content, discovery, docs, drafts, extension, feedback, git_token, grants, health,
+    inbox, jobs, live, live_layers, mcp_http, people, perf, permissions, questions, queue_agent,
+    queue_reporter, queues, remote_apps, remotes, room, sample, sessions, settings, site_signin,
+    sites, snapshot, stream, surface, tags, threads, token, toolpath, viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::routes::{events, mcp, net};
@@ -148,6 +148,61 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route(
             "/api/artifacts/{aid}/tags",
             put(tags::put_artifact).patch(tags::patch_artifact),
+        )
+        // Report queues: their admins' routes, then their triage routes
+        // (spec 2026-10-27-clax-sdk-design §7). The reporter routes carry
+        // their own credentials and are mounted in front of the credential
+        // layers ([`wrap`]).
+        .route("/api/queues", get(queues::list).post(queues::create))
+        .route(
+            "/api/queues/{qid}",
+            patch(queues::patch).delete(queues::delete),
+        )
+        .route("/api/queues/{qid}/members", get(queues::members))
+        .route(
+            "/api/queues/{qid}/members/{public_id}",
+            put(queues::put_member).delete(queues::delete_member),
+        )
+        .route(
+            "/api/queues/{qid}/service-grants",
+            get(queues::grants).post(queues::create_grant),
+        )
+        .route(
+            "/api/queues/{qid}/service-grants/{gid}",
+            delete(queues::revoke_grant),
+        )
+        .route("/api/queues/{qid}/reports", get(queue_agent::list))
+        .route(
+            "/api/queues/{qid}/reports/{tid}",
+            get(queue_agent::get).patch(queue_agent::patch),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/claim",
+            post(queue_agent::claim),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/renew",
+            post(queue_agent::renew),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/release",
+            post(queue_agent::release),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/comments",
+            post(queue_agent::reply),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/resolve",
+            post(queue_agent::resolve),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/artifact",
+            patch(queue_agent::patch_artifact),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/clip",
+            get(queue_agent::clip),
         )
         .route("/api/artifacts/{aid}/assets", get(assets::list))
         .route(
@@ -645,6 +700,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/", get(shell::gallery_page))
         .route("/inbox", get(shell::gallery_page))
         .route("/people", get(shell::gallery_page))
+        .route("/queues", get(shell::gallery_page))
         .route("/tags", get(shell::gallery_page))
         .route("/admin", get(shell::gallery_page))
         .route("/settings", get(shell::gallery_page))
@@ -663,6 +719,8 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             get(get_page::apple_app_site_association),
         )
         .route("/.well-known/assetlinks.json", get(get_page::assetlinks))
+        // What this Clax is, for any caller (`clax_http::hosted::OWN_PAGES`).
+        .route("/.well-known/clax", get(discovery::get))
         // `/a/<id>[/v/<n>]/<file>`: the shell reads the version and page from the path.
         .route("/a/{aid}/{*rest}", get(shell::artifact_page))
         .route("/_clax/{*path}", get(shell::static_file))
@@ -1046,6 +1104,44 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
                 clax_http::identity::local_peers,
             ))
     };
+    // A queue's reporter and service routes carry their own credentials
+    // and answer other origins: on the instance's host they are matched in
+    // front of the layers above, and every other request goes through them.
+    // A queue credential stands for no one anywhere else: on any other
+    // route, or on a site's host, it is 401 `invalid_token`.
+    let elsewhere = r.clone();
+    let reporter =
+        queue_reporter::router(state.clone()).fallback(move |req: axum::extract::Request| {
+            let to = elsewhere.clone();
+            async move {
+                if clax_http::reporter::carries_queue_credential(req.headers()) {
+                    return axum::response::IntoResponse::into_response(
+                        clax_http::reporter::refused_elsewhere(),
+                    );
+                }
+                use tower::ServiceExt as _;
+                let Ok(res) = to.oneshot(req).await;
+                res
+            }
+        });
+    let r = axum::Router::new().fallback(move |req: axum::extract::Request| {
+        let site = req
+            .extensions()
+            .get::<clax_http::host::SiteRequest>()
+            .is_some();
+        let refused = site && clax_http::reporter::carries_queue_credential(req.headers());
+        let to = if site { r.clone() } else { reporter.clone() };
+        async move {
+            if refused {
+                return axum::response::IntoResponse::into_response(
+                    clax_http::reporter::refused_elsewhere(),
+                );
+            }
+            use tower::ServiceExt as _;
+            let Ok(res) = to.oneshot(req).await;
+            res
+        }
+    });
     r.layer(axum::middleware::from_fn_with_state(
         state,
         host::site_layer,

@@ -137,6 +137,12 @@ pub struct FeedbackItem {
     /// when it sees every field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub withheld: Option<ItemWithheld>,
+    /// The report queue the thread is a report of (spec
+    /// 2026-10-27-clax-sdk-design §7): it is answered with the queue tools
+    /// (`queue_reply`, `queue_resolve`), never the comment ones. Absent for
+    /// any other thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_id: Option<String>,
 }
 
 /// The fields of a [`FeedbackItem`] withheld from its reader (spec
@@ -415,12 +421,19 @@ pub fn render_item(i: &FeedbackItem) -> String {
             body = quoted(&i.body),
         );
     }
+    let answer = match &i.queue_id {
+        Some(q) => format!(
+            "This thread is a report of queue {q}: reply with queue_reply, then queue_resolve when done (queue {q}, report_id {tid}).",
+            tid = i.thread_id
+        ),
+        None => "Reply with comments_reply, then comments_resolve when done.".to_string(),
+    };
     format!(
         "[clax] Comment sent to you{resent} on {title} ({url}), thread {tid}\n\
          {anchor}  (v{v})\n\
          {clip}\n\
          {author}{by_page}: {body}\n\
-         Reply with comments_reply, then comments_resolve when done.",
+         {answer}",
         title = quoted(&i.artifact_title),
         url = i.url,
         tid = i.thread_id,
@@ -516,6 +529,10 @@ pub struct Notice {
     pub title: String,
     /// The artifact's browser URL.
     pub url: String,
+    /// The report queue the thread is a report of, read with the queue
+    /// tools; absent for any other thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_id: Option<String>,
 }
 
 /// Longest title a notice line quotes, in characters.
@@ -533,12 +550,19 @@ pub fn render_notice(n: &Notice) -> String {
         .chars()
         .take(NOTICE_TITLE_CHARS)
         .collect();
-    format!(
-        "[clax] New comment on \"{title}\" ({url}), thread {tid}. Call comments_read with url_or_id \"{aid}\" and thread_id \"{tid}\" to read it; if you have already handled it, do nothing.",
-        url = n.url,
-        tid = n.thread_id,
-        aid = n.artifact_id,
-    )
+    match &n.queue_id {
+        Some(q) => format!(
+            "[clax] New comment on \"{title}\" ({url}), thread {tid}, a report of queue {q}. Call queue_list with queue \"{q}\" to read it, and answer with queue_reply and queue_resolve; if you have already handled it, do nothing.",
+            url = n.url,
+            tid = n.thread_id,
+        ),
+        None => format!(
+            "[clax] New comment on \"{title}\" ({url}), thread {tid}. Call comments_read with url_or_id \"{aid}\" and thread_id \"{tid}\" to read it; if you have already handled it, do nothing.",
+            url = n.url,
+            tid = n.thread_id,
+            aid = n.artifact_id,
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -595,6 +619,7 @@ mod tests {
             batch: None,
             live: None,
             withheld: None,
+            queue_id: None,
         }
     }
 
@@ -1079,10 +1104,47 @@ mod tests {
             artifact_id: "7q3k9mzx2b4t".into(),
             title: "Quarterly\nReview".into(),
             url: "http://localhost:7480/a/7q3k9mzx2b4t".into(),
+            queue_id: None,
         };
         assert_eq!(
             render_notice(&n),
             "[clax] New comment on \"Quarterly Review\" (http://localhost:7480/a/7q3k9mzx2b4t), thread 01J9T. Call comments_read with url_or_id \"7q3k9mzx2b4t\" and thread_id \"01J9T\" to read it; if you have already handled it, do nothing."
         );
+    }
+
+    #[test]
+    fn a_reports_delivery_and_notice_name_its_queue_and_the_queue_tools() {
+        let i = FeedbackItem {
+            queue_id: Some("01JQ".into()),
+            ..item()
+        };
+        let text = render_item(&i);
+        assert!(
+            text.ends_with(
+                "This thread is a report of queue 01JQ: reply with queue_reply, then queue_resolve when done (queue 01JQ, report_id 01J9ZZZZZZZZZZZZZZZZZZZZZZ)."
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("comments_reply"), "{text}");
+        assert_eq!(serde_json::to_value(&i).unwrap()["queue_id"], "01JQ");
+        assert!(
+            serde_json::to_value(item())
+                .unwrap()
+                .get("queue_id")
+                .is_none()
+        );
+        let n = Notice {
+            feedback_id: "f".into(),
+            comment_id: "c".into(),
+            thread_id: "01J9T".into(),
+            artifact_id: "7q3k9mzx2b4t".into(),
+            title: "Invoice".into(),
+            url: "http://localhost:7480/a/7q3k9mzx2b4t".into(),
+            queue_id: Some("01JQ".into()),
+        };
+        let line = render_notice(&n);
+        assert!(line.contains("a report of queue 01JQ"), "{line}");
+        assert!(line.contains("queue_list with queue \"01JQ\""), "{line}");
+        assert!(!line.contains("comments_read"), "{line}");
     }
 }

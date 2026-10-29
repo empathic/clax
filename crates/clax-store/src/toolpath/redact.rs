@@ -367,6 +367,29 @@ fn body_class(kind: &str, field: &str) -> Class {
         // The keys of the local daemon's settings written to config.toml
         // (`serve.port`), never their values.
         ("admin.settings", "fields") => Safe,
+        // External artifacts and report queues (spec
+        // 2026-10-27-clax-sdk-design §6.6): an app's opaque IDs, titles,
+        // revisions and metadata are its users' text; a page URL can carry
+        // a query.
+        (
+            "external.create" | "external.update",
+            "external_id" | "title" | "revision" | "metadata",
+        ) => Text,
+        ("external.create" | "external.update", "url") => Path,
+        ("external.create" | "external.update", "metadata_sha256" | "previous_sha256") => Safe,
+        ("external.delete", "external_id") => Text,
+        ("external.delete", "metadata_sha256") => Safe,
+        ("thread.metadata", "metadata") => Text,
+        ("thread.metadata", "thread_id" | "metadata_sha256" | "previous_sha256") => Safe,
+        ("queue.create" | "queue.update", "name" | "grant_name") => Text,
+        (
+            "queue.create" | "queue.update",
+            "queue_id" | "origins" | "reporters_see" | "op" | "member" | "role" | "grant_id",
+        ) => Safe,
+        (
+            "queue.claim" | "queue.release",
+            "queue_id" | "thread_id" | "session" | "lease_id" | "fence" | "expires_at" | "reason",
+        ) => Safe,
         _ => Class::Unclassified,
     }
 }

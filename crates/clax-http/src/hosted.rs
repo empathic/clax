@@ -1288,6 +1288,7 @@ pub fn guest_need(method: &Method, path: &str, query: Option<&str>) -> GuestNeed
         | ["inbox"]
         | ["people"]
         | ["tags"]
+        | ["queues"]
         | ["admin"]
         | ["settings"]
         | ["me"]
@@ -1587,6 +1588,8 @@ pub const OWN_PAGES: &[&str] = &[
     // each handler answers only on the public host.
     "/.well-known/apple-app-site-association",
     "/.well-known/assetlinks.json",
+    // What this Clax is (`GET /.well-known/clax`), for any caller.
+    "/.well-known/clax",
 ];
 
 /// The bundled legal documents' pages ([`Hosted::serves_legal`]).
@@ -2246,6 +2249,7 @@ mod tests {
             (Method::GET, "/people", None, Gallery),
             (Method::GET, "/inbox", None, Gallery),
             (Method::GET, "/tags", None, Gallery),
+            (Method::GET, "/queues", None, Gallery),
             (Method::GET, "/admin", None, Gallery),
             (Method::GET, "/settings", None, Gallery),
             (Method::GET, "/me", None, Gallery),

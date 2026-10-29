@@ -1,0 +1,44 @@
+/* The overlay's root, in a shadow root on the deployer's page: no rule of
+   the page reaches in, and none of these reaches out. The tokens repeat the
+   shell's (shell/src/theme.css) that the overlay uses, with its dark values
+   under the system's dark scheme. */
+:host {
+  all: initial;
+  --bg: #f7f7f5; --card: #ffffff; --raised: #ffffff; --hover: #f2f2ef; --fg: #1c1b19; --muted: #5f5d58;
+  --border: #e6e5e1; --border-hover: #d6d4ce; --border-strong: #85827b;
+  --primary-hover: #3a3935; --danger: #b3261e; --danger-tint: #fbeceb; --focus: #2f6f2a;
+  --you: #e0532f; --on-you: #141413; --you-ink: #b5401f; --agent-ink: #2f6f2a; --accent-tint: #e8f1e6;
+  --comment-hl: #fbe9e3;
+  --elev-lg: 0 2px 6px rgba(20,20,15,.06), 0 16px 40px rgba(20,20,15,.12);
+  --font: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  --t: .12s cubic-bezier(.4,0,.2,1);
+  --radius: 10px; --radius-sm: 8px; --radius-xs: 4px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :host {
+    --bg: #141413; --card: #1c1c1a; --raised: #232321; --hover: #2a2a27; --fg: #ecebe7; --muted: #a9a69f;
+    --border: #2c2c29; --border-hover: #3a3a36; --border-strong: #7c7972;
+    --primary-hover: #d6d4ce; --danger: #ff8a80; --danger-tint: #3a1f1c; --focus: #7cc36f;
+    --you: #ff7a57; --you-ink: #ff7a57; --agent-ink: #7cc36f; --accent-tint: #1f2a1d;
+    --comment-hl: #2e1e19;
+    --elev-lg: 0 2px 6px rgba(0,0,0,.4), 0 16px 40px rgba(0,0,0,.5);
+    color-scheme: dark;
+  }
+}
+*, *::before, *::after { box-sizing: border-box; }
+.cx { font: 14px/1.5 var(--font); color: var(--fg); -webkit-font-smoothing: antialiased; text-align: left; letter-spacing: normal; }
+.cx :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.cx p { margin: 0; }
+.cx button { font: 500 14px/1.15 var(--font); min-height: 32px; padding: 7px 12px; margin: 0; background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; transition: color var(--t), background-color var(--t), border-color var(--t); }
+.cx button:not(:disabled):hover { background-color: var(--hover); border-color: var(--border-hover); }
+.cx button.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.cx button.primary:not(:disabled):hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+.cx button.ghost { background: none; border-color: transparent; }
+.cx button:disabled { opacity: .5; cursor: default; }
+.cx textarea { display: block; width: 100%; margin: 0; resize: vertical; font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 6px 10px; min-height: 32px; transition: border-color var(--t); }
+.cx textarea:focus { border-color: var(--focus); outline: none; }
+.cx textarea::placeholder { color: var(--muted); opacity: 1; }
+.cx .muted { color: var(--muted); }
+.cx .small { font-size: 12px; }
+@media (pointer: coarse) { .cx button { min-height: 40px; } }

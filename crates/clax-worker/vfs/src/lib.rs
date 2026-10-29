@@ -43,6 +43,12 @@
 //! share the one registered VFS, and a connection from an earlier open of a
 //! name cannot reach a later open's store.
 //!
+//! The registered VFS is the process's, and `rsqlite-vfs` keeps its last
+//! error in a `RefCell` every thread's connections share: use it from one
+//! thread at a time (a Worker isolate has one). Natively, two threads
+//! failing VFS calls at once panic there inside an `extern "C"` callback,
+//! which aborts the process.
+//!
 //! The crate has no `unsafe` code: it implements only `rsqlite-vfs`'s safe
 //! traits, and tells files apart without reading their names back from
 //! SQLite's file handles (see `Registry::handles`).

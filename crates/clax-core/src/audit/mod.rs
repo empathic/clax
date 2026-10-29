@@ -130,6 +130,14 @@ kinds! {
     AdminKey = "admin.key",
     AdminCostLine = "admin.cost_line",
     AdminSettings = "admin.settings",
+    ExternalCreate = "external.create",
+    ExternalUpdate = "external.update",
+    ExternalDelete = "external.delete",
+    ThreadMetadata = "thread.metadata",
+    QueueCreate = "queue.create",
+    QueueUpdate = "queue.update",
+    QueueClaim = "queue.claim",
+    QueueRelease = "queue.release",
 }
 
 impl std::fmt::Display for AuditKind {
@@ -230,6 +238,18 @@ pub enum Actor {
     /// Every ClaxBot step runs under the rights of that person.
     Bot {
         on_behalf_of: String,
+    },
+    /// A reporter of a report queue, through its reporter token (spec
+    /// 2026-10-27-clax-sdk-design §5.3): the queue and the reporter ID the
+    /// deployer's app gave. No person of this instance.
+    Reporter {
+        queue_id: String,
+        reporter_id: String,
+    },
+    /// A deployer's backend, through a queue's service grant (§5.3).
+    Service {
+        queue_id: String,
+        grant_id: String,
     },
 }
 
@@ -817,6 +837,14 @@ mod tests {
             "admin.key",
             "admin.cost_line",
             "admin.settings",
+            "external.create",
+            "external.update",
+            "external.delete",
+            "thread.metadata",
+            "queue.create",
+            "queue.update",
+            "queue.claim",
+            "queue.release",
         ];
         let names: Vec<&str> = AuditKind::ALL.iter().map(|k| k.as_str()).collect();
         assert_eq!(names, spec);

@@ -13,8 +13,9 @@
   // wait in Clax and are answered there; anyone else at `/inbox` is told
   // the browser has no inbox, and nothing more of it is fetched. At `/people` the
   // page is People (its own chunk, through the lazy module, with the page's
-  // stream), and no artifacts are fetched. **People** is in the header for
-  // the owner and for a connected person, once the lazy module has loaded.
+  // stream), and no artifacts are fetched; so is `/queues`, the report
+  // queues. **People** and **Queues** are in the header for the owner and
+  // for a connected person, once the lazy module has loaded.
   // Every one of these pages ends with a link to Clax's source on GitHub,
   // and, on a hosted Clax that shows Terms of Service and a Privacy Policy,
   // links to them; a person who has not agreed to them is asked to
@@ -67,8 +68,7 @@
   let sync: import("./card-sync").CardSync | null = null;
   const inbox = location.pathname === "/inbox";
   // The pages beside the gallery and the inbox, each its own chunk (`gallery-working` `page`).
-  const sub = /^\/(people|tags|admin|settings|me|audit)$/.exec(location.pathname)?.[1] as import("./gallery-working").Page | undefined;
-  const people = sub === "people";
+  const sub = /^\/(people|tags|queues|admin|settings|me|audit)$/.exec(location.pathname)?.[1] as import("./gallery-working").Page | undefined;
   // The tag filter: the artifacts shown carry every one. It holds tag IDs
   // once the tags are known (`canonical`), and the address (`?tag=`) names
   // each tag by its name, so a rename follows in place and a deleted tag
@@ -159,7 +159,7 @@
   <a href="/" class="home" aria-label="Gallery"><Mark /></a><h1>Clax</h1><span class="sub hide-sm">{site ?? "local artifacts"}{#if me}{` · seen as ${me}`}{/if}</span>
   {#if !inbox && !sub}<input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" value={query} oninput={e => { query = e.currentTarget.value; }} />{/if}
   {#if Q}<Q.InboxLink current={inbox} />{/if}
-  {#if lm}<lm.Links current={people} owner={!!token} {viewer} />{/if}
+  {#if lm}<lm.Links current={sub} owner={!!token} {viewer} />{/if}
   <ThemeSwitch />
 </header>
 <main class="gal">

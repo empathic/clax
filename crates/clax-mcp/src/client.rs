@@ -1043,6 +1043,61 @@ impl DaemonClient {
             .await
     }
 
+    /// `GET /api/queues`: `{queues}`, the queues the caller's person is a
+    /// member of.
+    pub async fn queues(&self) -> Result<Value> {
+        self.json(|c| c.request(reqwest::Method::GET, "/api/queues"))
+            .await
+    }
+
+    /// `GET /api/queues/<qid>/reports?state=&cursor=`: `{reports, next}`.
+    pub async fn queue_reports(
+        &self,
+        qid: &str,
+        state: Option<&str>,
+        cursor: Option<&str>,
+    ) -> Result<Value> {
+        let mut q: Vec<(&str, &str)> = Vec::new();
+        if let Some(s) = state {
+            q.push(("state", s));
+        }
+        if let Some(c) = cursor {
+            q.push(("cursor", c));
+        }
+        self.json(|c| {
+            c.request(
+                reqwest::Method::GET,
+                &format!("/api/queues/{}/reports", encode_segment(qid)),
+            )
+            .query(&q)
+        })
+        .await
+    }
+
+    /// `POST /api/queues/<qid>/reports/<tid>/<action>` (`claim`, `renew`,
+    /// `release`, `resolve`, `comments`) with JSON `body`: the route's
+    /// answer.
+    pub async fn queue_report_action(
+        &self,
+        qid: &str,
+        tid: &str,
+        action: &str,
+        body: &Value,
+    ) -> Result<Value> {
+        self.json(|c| {
+            c.request(
+                reqwest::Method::POST,
+                &format!(
+                    "/api/queues/{}/reports/{}/{action}",
+                    encode_segment(qid),
+                    encode_segment(tid)
+                ),
+            )
+            .json(body)
+        })
+        .await
+    }
+
     /// `PATCH /api/artifacts/<id>/tags {add, remove}`: changes the tags the
     /// artifact carries; `{artifact_id, tags, changed}`.
     pub async fn edit_tags(&self, id: &str, body: &Value) -> Result<Value> {

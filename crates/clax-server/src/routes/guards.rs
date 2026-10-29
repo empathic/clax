@@ -243,6 +243,29 @@ mod l10 {
         ("toolpath::status", Owner),
         ("grants::list", Owner),
         ("grants::request", NoArtifact),
+        // Report queues (spec 2026-10-27-clax-sdk-design §7): each names
+        // no artifact in its path; a report's artifact is the queue's.
+        ("queues::list", NoArtifact),
+        ("queues::create", NoArtifact),
+        ("queues::patch", NoArtifact),
+        ("queues::delete", NoArtifact),
+        ("queues::members", NoArtifact),
+        ("queues::put_member", NoArtifact),
+        ("queues::delete_member", NoArtifact),
+        ("queues::grants", NoArtifact),
+        ("queues::create_grant", NoArtifact),
+        ("queues::revoke_grant", NoArtifact),
+        ("queue_agent::list", NoArtifact),
+        ("queue_agent::get", NoArtifact),
+        ("queue_agent::patch", NoArtifact),
+        ("queue_agent::claim", NoArtifact),
+        ("queue_agent::renew", NoArtifact),
+        ("queue_agent::release", NoArtifact),
+        ("queue_agent::reply", NoArtifact),
+        ("queue_agent::resolve", NoArtifact),
+        ("queue_agent::patch_artifact", NoArtifact),
+        ("queue_agent::clip", NoArtifact),
+        ("discovery::get", NoArtifact),
         ("grants::revoke", NoArtifact),
         ("grants::poll", NoArtifact),
         ("grants::disconnect", NoArtifact),
@@ -342,6 +365,9 @@ mod l10 {
             "watches" => include_str!("watches.rs"),
             "working" => include_str!("working.rs"),
             "tags" => include_str!("tags.rs"),
+            "queues" => include_str!("queues.rs"),
+            "queue_agent" => include_str!("queue_agent.rs"),
+            "discovery" => include_str!("discovery.rs"),
             "agent" => include_str!("../../../clax-http/src/agent.rs"),
             "mcp" => include_str!("mcp.rs"),
             "people" => include_str!("people.rs"),
@@ -505,6 +531,10 @@ mod l10 {
     /// [`DeferredAudit`](clax_http::audit::DeferredAudit)), and why.
     const UNAUDITED: &[(&str, &str)] = &[
         ("working::renew", "a heartbeat (§6.11)"),
+        (
+            "queue_agent::renew",
+            "a heartbeat on the caller's own lease (spec 2026-10-27-clax-sdk-design §7.4)",
+        ),
         (
             "site_signin::site_code",
             "mints a one-use code for the caller's own browser to read a site it may read; changes nothing",
@@ -1550,6 +1580,68 @@ mod agents {
             ("GET", "/api/agents", Own, None),
             ("POST", "/api/sessions/{id}/tool-calls", Own, None),
             ("POST", "/api/sessions/{id}/tool-call-ids", Own, None),
+            // Report queues (spec 2026-10-27-clax-sdk-design §7).
+            ("GET", "/api/queues", Own, None),
+            (
+                "GET",
+                "/api/queues/{qid}/reports",
+                Own,
+                Some((Comments, "read")),
+            ),
+            (
+                "GET",
+                "/api/queues/{qid}/reports/{tid}",
+                Own,
+                Some((Comments, "read")),
+            ),
+            (
+                "PATCH",
+                "/api/queues/{qid}/reports/{tid}",
+                Own,
+                Some((Comments, "reply")),
+            ),
+            (
+                "GET",
+                "/api/queues/{qid}/reports/{tid}/clip",
+                Own,
+                Some((Comments, "read")),
+            ),
+            (
+                "POST",
+                "/api/queues/{qid}/reports/{tid}/claim",
+                Own,
+                Some((Comments, "reply")),
+            ),
+            (
+                "POST",
+                "/api/queues/{qid}/reports/{tid}/renew",
+                Own,
+                Some((Comments, "reply")),
+            ),
+            (
+                "POST",
+                "/api/queues/{qid}/reports/{tid}/release",
+                Own,
+                Some((Comments, "reply")),
+            ),
+            (
+                "POST",
+                "/api/queues/{qid}/reports/{tid}/comments",
+                Own,
+                Some((Comments, "reply")),
+            ),
+            (
+                "POST",
+                "/api/queues/{qid}/reports/{tid}/resolve",
+                Own,
+                Some((Comments, "resolve")),
+            ),
+            (
+                "PATCH",
+                "/api/queues/{qid}/reports/{tid}/artifact",
+                Own,
+                Some((Artifacts, "update")),
+            ),
         ]
     };
 

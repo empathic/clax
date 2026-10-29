@@ -14,7 +14,7 @@ The implementation is the authority where the two disagree:
 
 ## Tools
 
-Thirty-two tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
+Thirty-eight tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
 `tag` and `tags` (see "Tags"), `fork`,
 `asset_upload`, `status`, the comment tools `comments_read`,
 `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working` (see
@@ -24,7 +24,9 @@ remote and a short-lived token for an artifact's repository, where Clax keeps
 one), `ask` and `where_to_ask` (see "Agent questions"), `publish_public` (see "Publishing to a
 public Clax"), and the data tools `db_get`, `db_list`,
 `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`,
-`db_batch` (see "Runtime capabilities"). The MCP implementation lives in
+`db_batch` (see "Runtime capabilities"), and the report queue tools
+`queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`
+and `queue_resolve` (see "Report queue tools"). The MCP implementation lives in
 `crates/clax-mcp` and is served two ways:
 
 - the stdio shim `clax mcp --agent <claude|codex|grok>`, which a harness
@@ -43,7 +45,7 @@ public Clax"), and the data tools `db_get`, `db_list`,
   which attributes publishes to no session.
 
 Pi's extension API cannot register an MCP server, so `plugins/pi` implements
-the same thirty-two tools in TypeScript against the daemon's REST API, with the same
+the same thirty-eight tools in TypeScript against the daemon's REST API, with the same
 arguments and the same result and error JSON.
 
 Names as the model sees them:
@@ -58,7 +60,7 @@ Names as the model sees them:
 
 Every MCP tool carries MCP annotations, all with `openWorldHint: false`
 (every tool acts on this machine's Clax home and daemon):
-`readOnlyHint: true` on `read`, `list`, `comments_read`,
+`readOnlyHint: true` on `read`, `list`, `comments_read`, `queue_list`,
 `wait_for_feedback`, `db_get`, `db_list` and `db_query`; `status` is not
 read-only, since with `name` it names the agent (it is
 `destructiveHint: false`, `idempotentHint: true`); `destructiveHint:
@@ -66,10 +68,11 @@ true` on `delete`, `db_set`, `db_update`, `db_delete`, `db_str_replace` and
 `db_batch`, which replace or remove data no version keeps; `destructiveHint:
 false` on the rest, which only add (a publish keeps every earlier version) or
 toggle state (`pin`, `unpin`, `watch`, `comments_resolve`,
-`comments_handoff`, `working`, `draft`, `status` with `name`), or open a browser tab
+`comments_handoff`, `working`, `draft`, `status` with `name`, and the queue
+tools' claims, replies and resolves), or open a browser tab
 (`open`).
 `idempotentHint` is true on `delete`, `db_delete`, `pin`, `unpin`, `watch`,
-`comments_resolve` and `status`. The read-only tools acknowledge comments they deliver,
+`comments_resolve`, `queue_renew`, `queue_resolve` and `status`. The read-only tools acknowledge comments they deliver,
 as every tool result does; that is delivery bookkeeping, and no annotation
 could exempt a Clax tool from it. `plugins/pi/test/fixtures/contract.json` lists them and
 `crates/clax-mcp` tests them. Codex's default approval mode (`auto`) runs
@@ -3656,6 +3659,39 @@ the copy's remote, the link holds the copy's address alone.
 | `working` | `url_or_id`; optional `thread_ids` (at most 20 open threads), `message` (at most 140 characters), `done` | `{artifact_id, url, working: true, message, thread_ids, started_at, expires_in_s, message_truncated}` or `{artifact_id, url, working: false, cleared}` |
 | `draft` | `url_or_id`; `html` or `file_path` (the page) and/or `files` (as `publish` takes them, `null` removing a path); optional `if_version`, `note` (at most 140 characters), `done` | `{artifact_id, url, drafting: true, base_version, paths, note, note_truncated, expires_in_s}` or `{artifact_id, url, drafting: false, ended}` |
 | `git_remote` | `url_or_id`, `scope` (`read` or `write`) | `{artifact_id, url, scope, remote, token, expires_at, clone_command, jj_clone_command, existing_checkout}` (see "Git remotes") |
+| `queue_list` | optional `queue`; with it, optional `state` (`open`, `claimed` or `resolved`), `cursor` | without `queue`, `{queues}` (`GET /api/queues`); with it, `{reports, next}` (`GET /api/queues/<queue>/reports`) |
+| `queue_claim` | `queue`, `report_id` | the lease `{lease_id, expires_at, fence, report}`; `thread_taken` names the holder |
+| `queue_renew` | `queue`, `report_id` | the lease, extended to 10 minutes from now; `claim_required`, `lease_lost` or `thread_taken` |
+| `queue_release` | `queue`, `report_id` | `{report}`, open again |
+| `queue_reply` | `queue`, `report_id`, `body` | `{comment, report}`; `claim_required`, `lease_lost` or `thread_taken` |
+| `queue_resolve` | `queue`, `report_id` | `{report}`, resolved; `claim_required`, `lease_lost` or `thread_taken` |
+
+#### Report queue tools
+
+The queue tools act through a queue's triage routes (`/api/queues/<qid>/reports…`)
+as the agent's person, who must be a member of the queue (404 `not_a_member`
+otherwise, as for a queue that does not exist). Claims are leases of 10
+minutes, held by the agent's session: an agent claims, renews, releases,
+replies, resolves and writes report metadata from its session (400
+`no_session` without one), and its replies, resolves and metadata writes need
+its own live lease: 409 `claim_required` when the session never claimed the
+report or released it, 409 `lease_lost` when its lease expired or another
+lease superseded it, 409 `thread_taken` when another session holds it. A
+`working` call naming a claimed report in `thread_ids` renews the session's
+lease on it. A person in their browser replies to and resolves reports
+without a claim. A write is checked against the lease by the writing
+session: the `fence` a claim answers is informational in this version, and
+no write takes it.
+
+A report is read and written through its queue alone. The thread listings
+(`GET /api/artifacts/<id>/threads`, `GET /api/threads`, `comments_read`
+without `thread_id`) leave reports out, and every route of one thread
+(`GET`, `DELETE`, `/clip`, `/comments`, `/resolve`, `/reopen`, `/send`,
+`/handoff`, and so `comments_read` with its `thread_id`, `comments_reply`
+and `comments_resolve`) answers 409 `queue_report` for a report, its `error`
+naming the report's `queue_id`. A comment on a report that is delivered to
+an agent (`wait_for_feedback`, a notice) carries `queue_id`, and its text
+names the queue tools to answer it with.
 
 `comments_read` returns the open threads (and resolved ones with
 `include_resolved`) oldest first, 50 per page, with `next_cursor` naming the
@@ -5348,12 +5384,24 @@ router), and a test fails when it differs:
 | `POST /api/sessions/{id}/tool-call-ids` | Own | none | 2 MiB | yes |
 | `GET /api/sessions/{id}/where-to-ask` | Own | `clax-ask` `ask` | 2 MiB | yes |
 | `POST /api/sessions/{id}/terminal` | Own | none | 2 MiB | yes |
+| `GET /api/queues` | Own | none | 2 MiB | yes |
+| `GET /api/queues/{qid}/reports` | Own | `clax-comments` `read` | 2 MiB | yes |
+| `GET /api/queues/{qid}/reports/{tid}` | Own | `clax-comments` `read` | 2 MiB | yes |
+| `GET /api/queues/{qid}/reports/{tid}/clip` | Own | `clax-comments` `read` | 2 MiB | yes |
+| `POST /api/queues/{qid}/reports/{tid}/claim` | Own | `clax-comments` `reply` | 2 MiB | yes |
+| `POST /api/queues/{qid}/reports/{tid}/renew` | Own | `clax-comments` `reply` | 2 MiB | yes |
+| `POST /api/queues/{qid}/reports/{tid}/release` | Own | `clax-comments` `reply` | 2 MiB | yes |
+| `POST /api/queues/{qid}/reports/{tid}/comments` | Own | `clax-comments` `reply` | 2 MiB | yes |
+| `POST /api/queues/{qid}/reports/{tid}/resolve` | Own | `clax-comments` `resolve` | 2 MiB | yes |
+| `PATCH /api/queues/{qid}/reports/{tid}` | Own | `clax-comments` `reply` | 2 MiB | yes |
+| `PATCH /api/queues/{qid}/reports/{tid}/artifact` | Own | `clax-artifacts` `update` | 2 MiB | yes |
 
 | Route | Class | Refuses the owner's agents |
 |---|---|---|
 | `GET /` | Denied | no |
 | `GET /.well-known/apple-app-site-association` | Denied | no |
 | `GET /.well-known/assetlinks.json` | Denied | no |
+| `GET /.well-known/clax` | Denied | no |
 | `GET /_blob/{aid}/{asset_id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /_blob/{asset_id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /_clax/blob/{asset_id}` | Denied | yes: 403 `not_for_agents` |
@@ -5504,6 +5552,15 @@ router), and a test fails when it differs:
 | `POST /api/questions/{qid}/decline` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/questions/{qid}/pull` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/questions/{qid}/release` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/queues` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/queues/{qid}` | Denied | yes: 403 `not_for_agents` |
+| `PATCH /api/queues/{qid}` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/queues/{qid}/members` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/queues/{qid}/members/{public_id}` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/queues/{qid}/members/{public_id}` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/queues/{qid}/service-grants` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/queues/{qid}/service-grants` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/queues/{qid}/service-grants/{gid}` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/remotes` | Denied | no |
 | `POST /api/remotes` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/remotes/{id}` | Denied | yes: 403 `not_for_agents` |
@@ -5550,6 +5607,7 @@ router), and a test fails when it differs:
 | `POST /mcp/json` | Denied | no |
 | `GET /me` | Denied | no |
 | `GET /people` | Denied | no |
+| `GET /queues` | Denied | no |
 | `GET /settings` | Denied | no |
 | `GET /site-signin` | Denied | yes: 403 `not_for_agents` |
 | `GET /tags` | Denied | no |
@@ -8384,6 +8442,8 @@ taken from the request's identity and session:
 | the owner | `human:clax-owner` | `name` "Clax owner"; identity `{system: "clax", id: "<install ID>/<public ID>"}` |
 | a LAN viewer | `human:clax-viewer/<public ID>` | `name` the display name (none under `--no-names`); identity `{system: "clax", id: "<install ID>/<public ID>"}` |
 | an anonymous viewer | `human:clax-anonymous` | `name` "Anonymous viewer" |
+| a report queue's reporter (a reporter token's requests) | `human:clax-reporter/<queue ID>.<reporter ID>` | `name` the reporter ID (none under `--no-names`); identity `{system: "clax-reporter", id: "<install ID>/<queue ID>/<reporter ID>"}`; the actor is `{"type": "reporter", "queue_id", "reporter_id"}` |
+| a report queue's service grant (the deployer's backend; minting a reporter token records nothing) | `tool:clax-service/<grant ID>` | `name` "Report queue service"; identities `{system: "clax-queue-grant", id: <grant ID>}` and `{system: "clax-queue", id: "<install ID>/<queue ID>"}`; the actor is `{"type": "service", "queue_id", "grant_id"}` |
 | ClaxBot acting for a person | `agent:claxbot/<person>` (`agent:claxbot/owner` for the owner) | `name` "ClaxBot"; identity `{system: "clax-person", id: "<install ID>/<person key>"}`; the actor is `{"type": "bot", "on_behalf_of": "<public ID>\|*owner"}` |
 | Clax itself | `tool:clax/<recording version>` | `name` "Clax"; identity `{system: "clax-build", id: <commit>}`; the reason (`ttl`, `rule`, `backfill`, `daemon`) is `meta.clax.system_reason` |
 

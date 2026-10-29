@@ -2984,13 +2984,339 @@
             ],
             "timestamp": "2026-10-06T14:09:17.104Z"
           }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab": {
+              "structural": {
+                "external_id": {
+                  "redacted": "text",
+                  "sha256": "sha256:4a0d792654757d1690d435dc7786023cabd5e15f6fcc66743cb7c873e897dc14"
+                },
+                "metadata": null,
+                "metadata_sha256": "sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+                "revision": {
+                  "redacted": "text",
+                  "sha256": "sha256:dbb7b294e78f1c47d4a10d160442fb6a276ea0eedd9ca7c7206731f29257b511"
+                },
+                "title": {
+                  "redacted": "text",
+                  "sha256": "sha256:eb3cba5aaf063dd0c1805ef56e34257913cc06f0bc68cd35ae1aabd0776ae40e"
+                },
+                "type": "clax.external.create",
+                "url": {
+                  "redacted": "path",
+                  "sha256": "sha256:05792e46b54a88368a7f58232a442dafdad0edc49d801c7210c6eed52f2e6708"
+                }
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "external.create",
+              "seq": 109,
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Created external artifact k3m9q2w8x1ab",
+            "refs": [
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000109",
+            "parents": [
+              "e000000000104"
+            ],
+            "timestamp": "2026-10-06T14:09:22.109Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab": {
+              "structural": {
+                "metadata": {
+                  "redacted": "text",
+                  "sha256": "sha256:2781d27780a3408110609ec011adec26f87c654fb19cf9c7fd41ed0d33b0e8b0"
+                },
+                "metadata_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "previous_sha256": "sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+                "type": "clax.external.update"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "external.update",
+              "seq": 110,
+              "session_id": "01JB9S00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Changed the metadata of external artifact k3m9q2w8x1ab",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000110",
+            "parents": [
+              "e000000000109"
+            ],
+            "timestamp": "2026-10-06T14:09:23.110Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001": {
+              "structural": {
+                "expires_at": "2026-10-06T14:19:24.110Z",
+                "fence": 1,
+                "lease_id": "01JBQL00000000000000000001",
+                "queue_id": "01JBQQ00000000000000000001",
+                "session": "01JB9S00000000000000000001",
+                "thread_id": "01JB9T00000000000000000001",
+                "type": "clax.queue.claim"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "queue.claim",
+              "seq": 111,
+              "session_id": "01JB9S00000000000000000001",
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Claimed report 01JB9T00000000000000000001 until 2026-10-06T14:19:24.110Z",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000111",
+            "parents": [
+              "e000000000110"
+            ],
+            "timestamp": "2026-10-06T14:09:24.111Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001": {
+              "structural": {
+                "metadata": {
+                  "redacted": "text",
+                  "sha256": "sha256:c45e88d9ddd542c408eb9c6ea44d36696845d2494adba1ac96103e3fd5780bd1"
+                },
+                "metadata_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "previous_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "thread_id": "01JB9T00000000000000000001",
+                "type": "clax.thread.metadata"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "thread.metadata",
+              "seq": 112,
+              "session_id": "01JB9S00000000000000000001",
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Set the metadata of thread 01JB9T00000000000000000001",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000112",
+            "parents": [
+              "e000000000111"
+            ],
+            "timestamp": "2026-10-06T14:09:25.112Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001": {
+              "structural": {
+                "lease_id": "01JBQL00000000000000000001",
+                "queue_id": "01JBQQ00000000000000000001",
+                "reason": "explicit",
+                "session": "01JB9S00000000000000000001",
+                "thread_id": "01JB9T00000000000000000001",
+                "type": "clax.queue.release"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "queue.release",
+              "seq": 113,
+              "session_id": "01JB9S00000000000000000001",
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Released the claim on report 01JB9T00000000000000000001 (explicit)",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000113",
+            "parents": [
+              "e000000000112"
+            ],
+            "timestamp": "2026-10-06T14:09:26.113Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab": {
+              "structural": {
+                "external_id": {
+                  "redacted": "text",
+                  "sha256": "sha256:4a0d792654757d1690d435dc7786023cabd5e15f6fcc66743cb7c873e897dc14"
+                },
+                "metadata_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "type": "clax.external.delete"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "external.delete",
+              "seq": 114,
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Deleted external artifact k3m9q2w8x1ab",
+            "refs": [
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000114",
+            "parents": [
+              "e000000000113"
+            ],
+            "timestamp": "2026-10-06T14:09:27.114Z"
+          }
         }
       ],
       "path": {
         "base": {
           "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab"
         },
-        "head": "e000000000104",
+        "head": "e000000000114",
         "id": "clax-artifact-k3m9q2w8x1ab"
       },
       "meta": {
@@ -5900,13 +6226,86 @@
             ],
             "timestamp": "2026-10-06T14:09:19.106Z"
           }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/queue/01JBQQ00000000000000000001": {
+              "structural": {
+                "name": {
+                  "redacted": "text",
+                  "sha256": "sha256:6fa29a20046c3878a645f9222732ee0a1bd8977035dff861d964d19ffe57be83"
+                },
+                "origins": [
+                  "https://app.acme.example"
+                ],
+                "queue_id": "01JBQQ00000000000000000001",
+                "reporters_see": "own",
+                "type": "clax.queue.create"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "queue.create",
+              "seq": 107,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Created queue 01JBQQ00000000000000000001"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000107",
+            "parents": [
+              "e000000000106"
+            ],
+            "timestamp": "2026-10-06T14:09:20.107Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/queue/01JBQQ00000000000000000001": {
+              "structural": {
+                "member": "u_5am7q2",
+                "op": "member",
+                "queue_id": "01JBQQ00000000000000000001",
+                "role": "triage",
+                "type": "clax.queue.update"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "queue.update",
+              "seq": 108,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Changed queue 01JBQQ00000000000000000001 (member)"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000108",
+            "parents": [
+              "e000000000107"
+            ],
+            "timestamp": "2026-10-06T14:09:21.108Z"
+          }
         }
       ],
       "path": {
         "base": {
           "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697"
         },
-        "head": "e000000000106",
+        "head": "e000000000108",
         "id": "clax-install-6a1f0c3e"
       },
       "meta": {
@@ -6091,7 +6490,7 @@
       "clax_version": "0.3.1",
       "first_seq": 1,
       "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-      "last_seq": 106,
+      "last_seq": 114,
       "redaction": [
         "no-text",
         "no-names",

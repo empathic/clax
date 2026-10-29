@@ -49,6 +49,7 @@ import { nextFrame } from "./frame";
 import { type AreaRect, REPLACED, Widen, dragRect, isClickSized, nonTextAt, widenedTarget } from "./area";
 import { LongPress, type Timers, windowTimers } from "./long-press";
 import type { Box } from "./protocol";
+import { addSheet, type Sheet } from "./sheet";
 import { backgroundBehind, caretAt, chooseTarget, outlineBox, outlineColors, rectOf, viewportOf } from "./target";
 
 export interface ModeHooks {
@@ -130,7 +131,7 @@ export class CommentMode {
   private readonly trustedOnly: boolean;
   private readonly longPress: LongPress;
   /** The callout guard, in the page while the mode is on. */
-  private guard: HTMLStyleElement | null = null;
+  private guard: Sheet | null = null;
   private readonly timers: Timers;
   /** A long-press released, waiting for the browser's click: the timer that
    * picks without it. */
@@ -168,12 +169,13 @@ export class CommentMode {
     }, this.timers, { trustedOnly: this.trustedOnly });
     this.host = doc.createElement(OVERLAY_TAG);
     const root = this.host.attachShadow({ mode: opts.shadow ?? "open" });
-    root.innerHTML = `<style>${CSS}</style><div class="f"></div><div class="o"></div><div class="a"></div><div class="pin"></div><button class="c" type="button" tabindex="-1">Comment</button>`;
+    root.innerHTML = `<div class="f"></div><div class="o"></div><div class="a"></div><div class="pin"></div><button class="c" type="button" tabindex="-1">Comment</button>`;
     this.outline = root.querySelector(".o")!;
     this.areaBox = root.querySelector(".a")!;
     this.focusBox = root.querySelector(".f")!;
     this.pin = root.querySelector(".pin")!;
     this.chip = root.querySelector(".c")!;
+    addSheet(root, CSS);
     doc.documentElement.appendChild(this.host);
   }
 
@@ -239,9 +241,9 @@ export class CommentMode {
    * the page's selection, for a text drag. */
   private setGuard(on: boolean, selection?: string): void {
     if (!on) { this.guard?.remove(); this.guard = null; return; }
-    this.guard ??= this.doc.createElement("style");
-    this.guard.textContent = selection ? `${GUARD_CSS}::selection{background:${selection}}` : GUARD_CSS;
-    (this.doc.head ?? this.doc.documentElement).appendChild(this.guard);
+    const css = selection ? `${GUARD_CSS}::selection{background:${selection}}` : GUARD_CSS;
+    if (this.guard) this.guard.set(css);
+    else this.guard = addSheet(this.doc, css);
   }
 
   /** Ends comment mode and removes its drawing from the page for good. */

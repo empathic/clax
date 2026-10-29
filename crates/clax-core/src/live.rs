@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 pub const KIND_HTML: &str = "html";
 /// `artifacts.kind` of a live page.
 pub const KIND_LIVE: &str = "live";
+/// The `kind` an artifact serves as when it is an external artifact (spec
+/// 2026-10-27-clax-sdk-design §6.1): its row keeps `html`, with an
+/// `external_artifacts` row beside it.
+pub const KIND_EXTERNAL: &str = "external";
 /// The longest page URL accepted, in bytes.
 pub const MAX_URL: usize = 4096;
 /// The longest route kept, in bytes; a longer one is cut at a character boundary.

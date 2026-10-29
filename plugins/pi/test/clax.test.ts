@@ -644,6 +644,12 @@ describe("clax Pi extension", () => {
         { url_or_id: id, scope: "read" },
         { url_or_id: id, scope: "write" },
       ],
+      clax_queue_list: [{}, { queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", state: "claimed", cursor: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
+      clax_queue_claim: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
+      clax_queue_renew: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
+      clax_queue_release: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
+      clax_queue_reply: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", body: "Fixed in r2" }],
+      clax_queue_resolve: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
     };
     const invalid: Record<string, Record<string, unknown>[]> = {
       clax_publish: [{ html: "x", bogus: 1 }, { html: "x", files: { "a.css": { content: "x", nope: 1 } } }, { html: "x", files: { "a.css": { content: "x", encoding: "hex" } } }],
@@ -674,6 +680,9 @@ describe("clax Pi extension", () => {
       clax_db_query: [{ url_or_id: id, collection: "tasks", query: { bogus: 1 } }],
       clax_db_set: [{ url_or_id: id, collection: "tasks", doc_id: "t1", data: { n: 1 }, if_version: 0 }, { url_or_id: id, collection: "tasks", doc_id: "t1", bogus: 1 }],
       clax_db_batch: [{ url_or_id: id, writes: [] }, { url_or_id: id, writes: [{ op: "move", collection: "tasks", doc_id: "t1" }] }],
+      clax_queue_list: [{ state: "taken" }, { bogus: 1 }],
+      clax_queue_claim: [{ queue: "q" }, { report_id: "r" }, { queue: "q", report_id: "r", bogus: 1 }],
+      clax_queue_reply: [{ queue: "q", report_id: "r" }],
     };
     expect(Object.keys(valid).sort()).toEqual([...TOOLS].sort());
     const check = (name: string, args: Record<string, unknown>) =>
@@ -1747,6 +1756,27 @@ async function mcpTools(d: { base: string; token: string }): Promise<Map<string,
   const list = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" });
   return new Map(list.result.tools.map((t: any) => [t.name, t.inputSchema]));
 }
+
+describe("report queues", () => {
+  it("the queue tools reach the triage routes, and a queue the caller is not in is not_a_member", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-queues");
+    const q = "01K6AB3Q9X7N2M4P5R6S8T0V1W";
+    for (const [tool, args] of [
+      ["clax_queue_list", { queue: q }],
+      ["clax_queue_claim", { queue: q, report_id: q }],
+      ["clax_queue_reply", { queue: q, report_id: q, body: "hi" }],
+      ["clax_queue_resolve", { queue: q, report_id: q }],
+    ] as const) {
+      const r = await pi.callToolAsPi(tool, args, ctx);
+      expect(r.isError, tool).toBe(true);
+      expect(json(r).error.code, tool).toBe("not_a_member");
+    }
+    const bad = await pi.callToolAsPi("clax_queue_claim", { queue: "q", report_id: q }, ctx);
+    expect(json(bad).error).toMatchObject({ code: "invalid_args", message: "'q' is not a queue ID" });
+    const loose = await pi.callToolAsPi("clax_queue_list", { state: "open" }, ctx);
+    expect(json(loose).error.code).toBe("invalid_args");
+  });
+});
 
 describe("agents and people", () => {
   it("clax_comments_handoff is registered", () => {

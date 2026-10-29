@@ -1,13 +1,13 @@
 {
   "bridgeBaseline": 32861,
-  "gallery": 31164,
+  "gallery": 31232,
   "artifact": 70000,
   "host": 9088,
   "questions": 17500,
   "bridge": 6272,
   "transport": 2368,
-  "partComment": 14848,
-  "partClip": 17408,
+  "partComment": 15104,
+  "partClip": 17664,
   "partCaps": 9216,
   "partOrigin": 11136,
   "partRoom": 3657,
@@ -16,6 +16,7 @@
   "extWorker": 24832,
   "extComposer": 28672,
   "extPanel": 66560,
-  "people": 16896,
+  "people": 1048576,
+  "queues": 7680,
   "partLive": 4616
 }

@@ -202,9 +202,14 @@ session while it is idle: read the `wake` block of the `watch` result and do wha
 /// digits and underscores; Claude Code drops any other key.
 pub fn event_params(notice: &Value, line: &str) -> Value {
     let id = |k: &str| notice[k].as_str().unwrap_or_default().to_string();
-    json!({"content": line, "meta": {
+    let mut v = json!({"content": line, "meta": {
         "artifact_id": id("artifact_id"), "thread_id": id("thread_id"), "comment_id": id("comment_id"),
-    }})
+    }});
+    // A report's notice names its queue: it is read with the queue tools.
+    if let Some(q) = notice["queue_id"].as_str() {
+        v["meta"]["queue_id"] = json!(q);
+    }
+    v
 }
 
 /// `status.push.follow_command` under Grok Build: the command its `monitor`
@@ -341,6 +346,10 @@ mod tests {
                 "{k}"
             );
         }
+        let report = json!({"feedback_id": "f", "comment_id": "c1", "thread_id": "t1",
+            "artifact_id": "7q3k9mzx2b4t", "title": "T", "url": "http://h/a/7q3k9mzx2b4t",
+            "queue_id": "01JQ"});
+        assert_eq!(event_params(&report, "x")["meta"]["queue_id"], "01JQ");
     }
 
     #[test]

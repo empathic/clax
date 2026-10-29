@@ -351,7 +351,7 @@ pub(super) fn segment(h: &History, closed: bool) -> String {
 }
 
 /// The `seq` of the golden history's last row (`tests/toolpath/history.json`).
-const LAST_SEQ: i64 = 106;
+const LAST_SEQ: i64 = 114;
 
 #[test]
 fn render_each_kind_matches_golden() {
@@ -612,7 +612,40 @@ fn people_and_their_agents_render_with_grant_and_person() {
         actor_def(&client, "i", "c", &Redaction::ALL),
         json!({"identities": [{"system": "clax-grant", "id": "g_7"}]})
     );
-    for a in [&agent, &sessionless, &cli, &person, &client] {
+    let reporter = Actor::Reporter {
+        queue_id: "01JBQQ".into(),
+        reporter_id: "emp 1@acme".into(),
+    };
+    assert_eq!(
+        actor_string(&reporter, "0.3.1"),
+        "human:clax-reporter/01JBQQ.emp-1-acme"
+    );
+    assert_eq!(
+        actor_def(&reporter, "i", "c", &Redaction::NONE),
+        json!({"name": "emp 1@acme", "identities": [{"system": "clax-reporter", "id": "i/01JBQQ/emp 1@acme"}]})
+    );
+    assert_eq!(
+        actor_def(&reporter, "i", "c", &Redaction::ALL),
+        json!({"identities": [{"system": "clax-reporter", "id": "i/01JBQQ/emp 1@acme"}]})
+    );
+    let service = Actor::Service {
+        queue_id: "01JBQQ".into(),
+        grant_id: "01JBQG".into(),
+    };
+    assert_eq!(actor_string(&service, "0.3.1"), "tool:clax-service/01JBQG");
+    assert_eq!(
+        serde_json::to_value(&reporter).unwrap(),
+        json!({"type": "reporter", "queue_id": "01JBQQ", "reporter_id": "emp 1@acme"})
+    );
+    for a in [
+        &agent,
+        &sessionless,
+        &cli,
+        &person,
+        &client,
+        &reporter,
+        &service,
+    ] {
         assert!(is_actor_ref(&actor_string(a, "0.3.1")));
     }
 }
