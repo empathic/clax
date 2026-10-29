@@ -249,7 +249,8 @@ const REPORT_SELECT: &str = "SELECT t.id, t.queue_id, t.anchor_json, t.status, t
     t.metadata_json, t.metadata_version, t.has_clip, t.created_at,
     t.report_context_json, t.report_server_json, t.reporter_profile_json, t.report_phase,
     t.resolve_reason, t.reopen_count,
-    (SELECT n FROM report_diagnostics WHERE thread_id = t.id ORDER BY capture DESC LIMIT 1)
+    (SELECT n FROM report_diagnostics WHERE thread_id = t.id ORDER BY capture DESC LIMIT 1),
+    (SELECT n FROM report_diagnostics WHERE thread_id = t.id AND capture = 0)
     FROM threads t JOIN artifacts a ON a.id = t.artifact_id
     JOIN external_artifacts x ON x.artifact_id = t.artifact_id
     WHERE a.deleted_at IS NULL AND t.queue_id = ?1";
@@ -449,6 +450,7 @@ struct ReportRow {
     resolve_reason: Option<String>,
     reopen_count: u32,
     diagnostics_lines: Option<u32>,
+    filing_diagnostics_lines: Option<u32>,
 }
 
 fn report_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ReportRow> {
@@ -469,6 +471,7 @@ fn report_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ReportRow> {
         resolve_reason: r.get(13)?,
         reopen_count: r.get(14)?,
         diagnostics_lines: r.get(15)?,
+        filing_diagnostics_lines: r.get(16)?,
     })
 }
 
@@ -657,6 +660,7 @@ fn reports_of(
             fixes,
             reopen_count: row.reopen_count,
             diagnostics_lines: row.diagnostics_lines.unwrap_or(0),
+            filing_diagnostics_lines: row.filing_diagnostics_lines.unwrap_or(0),
         });
     }
     Ok(out)

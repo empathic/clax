@@ -364,6 +364,30 @@ fn reports_list_newest_first_a_page_at_a_time() {
 }
 
 #[test]
+fn reports_filed_in_one_instant_page_newest_first_by_id() {
+    let (_d, st, _clock) = clocked();
+    let qid = queue(&st, ReportersSee::All);
+    // The clock stands still: every report has the same created_at.
+    let mut ids: Vec<String> = (0..clax_core::queue::REPORT_PAGE + 3)
+        .map(|i| file(&st, &qid, None, Some(&format!("s{i}"))))
+        .collect();
+    let (mut all, mut cur) = (Vec::new(), None);
+    loop {
+        let (page, next) = st
+            .reports_in_order(&qid, Visibility::All, None, cur.as_deref(), ReportOrder::Newest)
+            .unwrap();
+        all.extend(page.into_iter().map(|r| r.id));
+        if next.is_none() {
+            break;
+        }
+        cur = next;
+    }
+    ids.sort();
+    ids.reverse();
+    assert_eq!(all, ids, "each once, by ID, across the page boundary");
+}
+
+#[test]
 fn same_external_id_two_queues_one_artifact_threads_apart() {
     let (_d, st) = store();
     let q1 = queue(&st, ReportersSee::All);
@@ -1770,6 +1794,7 @@ fn every_capture_keeps_its_clip_and_diagnostics() {
     assert_eq!(clip(Some(&r.comments[0].id)).unwrap(), None);
     assert!(matches!(clip(Some("nope")), Err(CoreError::NotFound)));
     assert_eq!(r.diagnostics_lines, 2, "the latest capture holding any");
+    assert_eq!(r.filing_diagnostics_lines, 1, "the filing's own");
     let diags = |capture| {
         st.report_diagnostics(&qid, &tid, Visibility::All, capture)
             .unwrap()
