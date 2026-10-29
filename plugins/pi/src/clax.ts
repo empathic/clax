@@ -406,13 +406,15 @@ function summarizeContext(r: Json): void {
 }
 
 /** Report `report` with the URLs, below `base`, of each capture's clip and
- * diagnostics, and the latest captures with a clip and with diagnostics
- * (`capture_links` in crates/clax-mcp/src/tools.rs). */
-function captureLinks(report: Json, base: string): { clip?: { capture: number; tail: string; url: string }; diagnostics?: number; filingDiagnostics?: boolean } {
-  const latest: { clip?: { capture: number; tail: string; url: string }; diagnostics?: number; filingDiagnostics?: boolean } = {};
+ * diagnostics (the filing's diagnostics link as its
+ * `filing_diagnostics_lines` says), and the latest captures with a clip and
+ * with diagnostics (`capture_links` in crates/clax-mcp/src/tools.rs). */
+function captureLinks(report: Json, base: string): { clip?: { capture: number; tail: string; url: string }; diagnostics?: number } {
+  const latest: { clip?: { capture: number; tail: string; url: string }; diagnostics?: number } = {};
   const filedClip = report.has_clip === true;
   if (filedClip) latest.clip = { capture: 0, tail: "/clip", url: `${base}/clip` };
-  if ((report.diagnostics_lines ?? 0) > 0) latest.diagnostics = 0;
+  const filedDiagnostics = (report.filing_diagnostics_lines ?? 0) > 0;
+  if (filedDiagnostics) latest.diagnostics = 0;
   for (const c of Array.isArray(report.comments) ? report.comments : []) {
     const n = c?.capture;
     if (typeof n !== "number") continue;
@@ -422,10 +424,8 @@ function captureLinks(report: Json, base: string): { clip?: { capture: number; t
     if (c.clip_url && (latest.clip === undefined || latest.clip.capture < n)) latest.clip = { capture: n, tail, url: c.clip_url };
     if (c.diagnostics_url && (latest.diagnostics === undefined || latest.diagnostics < n)) latest.diagnostics = n;
   }
-  // Without a reopen's diagnostics, the report's count is the filing's.
-  if (latest.diagnostics === undefined || latest.diagnostics === 0) latest.filingDiagnostics = latest.diagnostics !== undefined;
   report.clip_url = filedClip ? `${base}/clip` : null;
-  report.diagnostics_url = latest.filingDiagnostics === false ? null : `${base}/diagnostics?capture=0`;
+  report.diagnostics_url = filedDiagnostics ? `${base}/diagnostics?capture=0` : null;
   return latest;
 }
 
@@ -2027,12 +2027,6 @@ class Tools {
         const why = e instanceof ClientError && e.kind === "api" ? String(e.error.code ?? "refused") : e instanceof Error ? e.message : String(e);
         diagnostics = { capture: n, lines: [], note: `not read (${why.replace(/[\r\n]+/g, " ")}): fetch the capture's diagnostics_url to see them` };
       }
-    }
-    if (latest.filingDiagnostics === undefined) {
-      try {
-        const d = await c.queueDiagnostics(a.queue, a.report_id, 0);
-        if (Array.isArray(d.lines) && d.lines.length === 0) report.diagnostics_url = null;
-      } catch { /* kept: the URL says where to look */ }
     }
     const images: { data: string; mimeType: string }[] = [];
     let clip: Json | null = null;

@@ -3695,7 +3695,7 @@ No other write takes the fence, and `queue_fix` sends none.
 `queue_get` reads one report (`GET …/reports/<tid>`) and adds the URLs of
 each capture on the Clax's public origin: the report's `clip_url` (the
 filing's clip, `null` without one) and `diagnostics_url`
-(`…/diagnostics?capture=0`, `null` when the filing has none), and on each comment that carries a reopen's
+(`…/diagnostics?capture=0`, `null` when the filing has none, as its `filing_diagnostics_lines` says), and on each comment that carries a reopen's
 `capture` its `clip_url` (`…/comments/<cid>/clip`) and `diagnostics_url`
 (`…/diagnostics?capture=<n>`), each `null` when that capture has none. Each
 URL serves the reader's own credential. `diagnostics` is `{capture,

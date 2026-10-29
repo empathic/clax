@@ -909,17 +909,13 @@ struct LatestClip {
 struct LatestCaptures {
     clip: Option<LatestClip>,
     diagnostics: Option<u64>,
-    /// Whether the filing has diagnostics; `None` when the report's view
-    /// cannot tell (a reopen has some, so its `diagnostics_lines` is the
-    /// reopen's).
-    filing_diagnostics: Option<bool>,
 }
 
 /// Report `report` (a triage route's view) with the URLs, below `base`
 /// (the report's route on the daemon's public origin), of each capture's
 /// clip and diagnostics: `clip_url` (null without a clip) and
-/// `diagnostics_url` (`?capture=0`; null when the filing has none, kept
-/// when that is not known) on the report for its filing, and on
+/// `diagnostics_url` (`?capture=0`; null when the filing has none, as its
+/// `filing_diagnostics_lines` says) on the report for its filing, and on
 /// each comment that carries a reopen's `capture` its `clip_url` and
 /// `diagnostics_url` (each null when it has none). Returns the latest
 /// captures with a clip and with diagnostics.
@@ -933,7 +929,8 @@ fn capture_links(report: &mut Value, base: &str) -> LatestCaptures {
             url: format!("{base}/clip"),
         });
     }
-    if report["diagnostics_lines"].as_u64().unwrap_or(0) > 0 {
+    let filed_diagnostics = report["filing_diagnostics_lines"].as_u64().unwrap_or(0) > 0;
+    if filed_diagnostics {
         latest.diagnostics = Some(0);
     }
     if let Some(comments) = report["comments"].as_array_mut() {
@@ -963,14 +960,9 @@ fn capture_links(report: &mut Value, base: &str) -> LatestCaptures {
             }
         }
     }
-    // Without a reopen's diagnostics, the report's count is the filing's.
-    if latest.diagnostics.is_none_or(|d| d == 0) {
-        latest.filing_diagnostics = Some(latest.diagnostics.is_some());
-    }
     report["clip_url"] = json!(filed_clip.then(|| format!("{base}/clip")));
-    report["diagnostics_url"] = json!(
-        (latest.filing_diagnostics != Some(false)).then(|| format!("{base}/diagnostics?capture=0"))
-    );
+    report["diagnostics_url"] =
+        json!(filed_diagnostics.then(|| format!("{base}/diagnostics?capture=0")));
     latest
 }
 
@@ -2962,15 +2954,6 @@ impl ClaxTools {
             },
             None => json!({"capture": null, "lines": []}),
         };
-        if latest.filing_diagnostics.is_none()
-            && let Ok(d) = self
-                .client
-                .queue_diagnostics(&a.queue, &a.report_id, 0)
-                .await
-            && d["lines"].as_array().is_some_and(Vec::is_empty)
-        {
-            report["diagnostics_url"] = Value::Null;
-        }
         let mut image = None;
         let clip = match latest.clip {
             Some(c) => {
@@ -4542,7 +4525,8 @@ mod tests {
     /// diagnostics make it the latest capture with any.
     #[test]
     fn capture_links_name_each_capture_and_the_latest() {
-        let mut r = json!({"has_clip": true, "diagnostics_lines": 2, "comments": [
+        let mut r = json!({"has_clip": true, "diagnostics_lines": 2,
+            "filing_diagnostics_lines": 2, "comments": [
             {"id": "c0", "body": "filed"},
             {"id": "c1", "capture": 1, "has_clip": false, "diagnostics_lines": 2},
             {"id": "c2", "capture": 2, "has_clip": false, "diagnostics_lines": 0},
@@ -4557,7 +4541,6 @@ mod tests {
                     url: "https://h/api/queues/q/reports/t/clip".into(),
                 }),
                 diagnostics: Some(1),
-                filing_diagnostics: None,
             }
         );
         assert!(r["comments"][0].get("clip_url").is_none());
@@ -4568,24 +4551,39 @@ mod tests {
         );
         assert_eq!(r["comments"][2]["diagnostics_url"], Value::Null);
         let mut none = json!({"has_clip": false, "diagnostics_lines": 0, "comments": []});
-        assert_eq!(
-            capture_links(&mut none, "b"),
-            LatestCaptures {
-                filing_diagnostics: Some(false),
-                ..LatestCaptures::default()
-            }
-        );
+        assert_eq!(capture_links(&mut none, "b"), LatestCaptures::default());
         assert_eq!(none["clip_url"], Value::Null);
         assert_eq!(none["diagnostics_url"], Value::Null);
-        let mut filed = json!({"has_clip": false, "diagnostics_lines": 3, "comments": [
+        let mut filed = json!({"has_clip": false, "diagnostics_lines": 3,
+            "filing_diagnostics_lines": 3, "comments": [
             {"id": "c1", "capture": 1, "has_clip": true}]});
         let latest = capture_links(&mut filed, "b");
-        assert_eq!(
-            (latest.diagnostics, latest.filing_diagnostics),
-            (Some(0), Some(true))
-        );
+        assert_eq!(latest.diagnostics, Some(0));
         assert_eq!(filed["diagnostics_url"], "b/diagnostics?capture=0");
         assert_eq!(latest.clip.unwrap().tail, "/comments/c1/clip");
+    }
+
+    /// The filing's diagnostics link is read off `filing_diagnostics_lines`,
+    /// whatever its reopens hold: none for a filing without any, though a
+    /// reopen has some, and one for a filing with some under a reopen's.
+    #[test]
+    fn capture_links_read_the_filings_count() {
+        let mut bare_filing = json!({"has_clip": false, "diagnostics_lines": 2, "comments": [
+            {"id": "c1", "capture": 1, "diagnostics_lines": 2}]});
+        let latest = capture_links(&mut bare_filing, "b");
+        assert_eq!(latest.diagnostics, Some(1));
+        assert_eq!(bare_filing["diagnostics_url"], Value::Null);
+        let mut both = json!({"has_clip": false, "diagnostics_lines": 2,
+            "filing_diagnostics_lines": 4, "comments": [
+            {"id": "c1", "capture": 1, "diagnostics_lines": 2}]});
+        let latest = capture_links(&mut both, "b");
+        assert_eq!(latest.diagnostics, Some(1));
+        assert_eq!(both["diagnostics_url"], "b/diagnostics?capture=0");
+        // A filing's alone.
+        let mut filed = json!({"has_clip": false, "diagnostics_lines": 4,
+            "filing_diagnostics_lines": 4, "comments": []});
+        assert_eq!(capture_links(&mut filed, "b").diagnostics, Some(0));
+        assert_eq!(filed["diagnostics_url"], "b/diagnostics?capture=0");
     }
 
     #[test]

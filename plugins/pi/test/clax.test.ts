@@ -1796,8 +1796,10 @@ describe("report queues", () => {
    * poll with nothing, and recording each body POSTed in `posted`. */
   async function queueDaemon(routes: Record<string, unknown>) {
     const posted: Record<string, unknown> = {};
+    const asked: string[] = [];
     const fake = await fakeDaemonHome((req, reply, res) => {
       const line = `${req.method} ${req.url}`;
+      asked.push(line);
       if (req.url?.startsWith("/api/sessions/s1/feedback")) return reply({ feedback: [], answers: [], text: null, waited_s: 0 });
       let raw = "";
       req.on("data", c => { raw += c; });
@@ -1819,7 +1821,7 @@ describe("report queues", () => {
         reply(body);
       });
     });
-    return { ...fake, posted };
+    return { ...fake, posted, asked };
   }
   const WIDE = Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), Buffer.from([0, 0, 0x13, 0x88, 0, 0, 0, 10, 8, 6, 0, 0, 0])]);
   const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
@@ -1856,8 +1858,8 @@ describe("report queues", () => {
       [`GET /api/queues/${Q}/reports/${R}/comments/${C}/clip`]: PNG,
       [`GET /api/queues/${Q}/reports?state=active`]: { reports: [report], next: null },
       [`GET /api/queues/${Q}/reports`]: { reports: [], next: null },
-      // A report whose clip is too wide to attach and whose diagnostics cannot be read.
-      [`GET /api/queues/${Q}/reports/${R2}`]: { report: { id: R2, queue_id: Q, state: "open", has_clip: true, diagnostics_lines: 2, comments: [] } },
+      // A report whose clip is too wide to attach and whose filing's diagnostics cannot be read.
+      [`GET /api/queues/${Q}/reports/${R2}`]: { report: { id: R2, queue_id: Q, state: "open", has_clip: true, diagnostics_lines: 2, filing_diagnostics_lines: 2, comments: [] } },
       [`GET /api/queues/${Q}/reports/${R2}/clip`]: WIDE,
       [`POST /api/queues/${Q}/watch`]: null,
       [`DELETE /api/queues/${Q}/watch`]: null,
@@ -1868,7 +1870,10 @@ describe("report queues", () => {
       const v = parts(r).json;
       const base = `${v.report.clip_url.split("/api/")[0]}/api/queues/${Q}/reports/${R}`;
       expect(v.report.clip_url).toBe(`${base}/clip`);
-      expect(v.report.diagnostics_url).toBe(`${base}/diagnostics?capture=0`);
+      // The filing has none (no filing_diagnostics_lines): no link, and no
+      // request to find that out.
+      expect(v.report.diagnostics_url).toBeNull();
+      expect(fake.asked.filter(l => l.includes("capture=0"))).toEqual([]);
       expect(v.report.comments[0].clip_url).toBeUndefined();
       expect(v.report.comments[1]).toMatchObject({ clip_url: `${base}/comments/${C}/clip`, diagnostics_url: `${base}/diagnostics?capture=1` });
       expect(v.diagnostics).toEqual({ capture: 1, lines: [{ at: "2026-10-27T12:29:59Z", level: "error", kind: "error", text: "again" }] });
