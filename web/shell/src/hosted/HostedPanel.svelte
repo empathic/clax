@@ -14,7 +14,6 @@
   import { onMount } from "svelte";
   import { listArtifacts } from "../api";
   import * as api from "./api";
-  import { forgetFeedback } from "../feedback/boot";
   import { refusal } from "../people/refusal";
 
   let { me }: { me: api.HostedMe } = $props();
@@ -50,7 +49,7 @@
   }
   const copy = (what: string, text: string) => { void navigator.clipboard?.writeText(text).then(() => { copied = what; }, () => {}); };
   const makeLink = () => act("me", async () => { link = await api.signinLink(); });
-  const signOut = () => act("me", async () => { await forgetFeedback(); await api.signOut(); location.assign("/signin"); });
+  const signOut = () => act("me", async () => { await (await import("../feedback/forget")).forgetFeedback(); await api.signOut(); location.assign("/signin"); });
   const mint = (e: Event) => { e.preventDefault(); void act("tokens", async () => { minted = await api.mintToken(label.trim()); label = ""; }); };
   const share = (e: Event) => { e.preventDefault(); if (pick) void act("links", () => api.setLink(pick, pickAccess)); };
   const minutes = (iso: string) => Math.max(0, Math.round((Date.parse(iso) - Date.now()) / 60000));
