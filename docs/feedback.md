@@ -109,6 +109,7 @@ WebCrypto. It is a small file with no dependencies; copy `service.ts`,
 backend (AGPL-3.0-only; see "Licences of the code you copy" above).
 
 ```ts
+import { ClaxError } from "./clax/client";
 import { ServiceClient } from "./clax/service";
 
 const clax = new ServiceClient({
@@ -125,12 +126,22 @@ app.post("/clax-token", async (req, res) => {
   if (!user.flags.reportsProblems) return res.status(403).json({ error: "not for you" });
   const { public_key } = req.body;
   if (typeof public_key !== "string" || !public_key) return res.status(400).json({ error: "public_key" });
-  const minted = await clax.mintReporterToken({
-    reporter_id: user.id,
-    origin: "https://app.example.com",   // the page's origin, one of the queue's (not the instance)
-    public_key,
-  }, { name: user.name, github: user.githubLogin });
-  res.set("cache-control", "no-store").json(minted); // {token, expires_at}
+  try {
+    const minted = await clax.mintReporterToken({
+      reporter_id: user.id,
+      origin: "https://app.example.com", // the page's origin, one of the queue's (not the instance)
+      public_key,
+    }, { name: user.name, github: user.githubLogin });
+    res.set("cache-control", "no-store").json(minted); // {token, expires_at}
+  } catch (e) {
+    // The browser's key refused (the overlay makes a new one), or a limit
+    // reached: passed back with its code. Anything else is your grant's.
+    if (e instanceof ClaxError && (e.code === "invalid_key" || e.code === "limit_reached")) {
+      return res.status(e.status).json({ error: { code: e.code, message: e.message } });
+    }
+    console.error("clax mint", e);
+    res.status(503).json({ error: { code: "feedback_unavailable", message: "reports are off for now" } });
+  }
 });
 ```
 
@@ -347,7 +358,12 @@ const clax = Clax.overlay({
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ public_key: publicKey }),
     });
-    if (!r.ok) throw new Error(`no reporter token: ${r.status}`);
+    if (!r.ok) {
+      // The route's code rides on the error: `invalid_key` has the overlay
+      // drop its kept key and ask once more with a fresh one.
+      const code = (await r.json().catch(() => null))?.error?.code;
+      throw Object.assign(new Error(`no reporter token: ${code ?? r.status}`), { code });
+    }
     return r.json(); // {token, expires_at}
   },
 });
@@ -437,7 +453,10 @@ export const load: LayoutServerLoad = ({ locals }) => ({
       user: data.user,
       auth: async (public_key: string) => {
         const r = await fetch("/clax-token", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ public_key }) });
-        if (!r.ok) throw new Error(`no reporter token: ${r.status}`);
+        if (!r.ok) {
+          const code = (await r.json().catch(() => null))?.error?.code; // `invalid_key`: the overlay asks again
+          throw Object.assign(new Error(`no reporter token: ${code ?? r.status}`), { code });
+        }
         return r.json();
       },
       context: () => ({ release: data.release, flags: data.flags }),
