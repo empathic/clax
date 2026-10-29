@@ -64,6 +64,9 @@ pub enum Cmd {
     /// `filed`, `reopened`, or `comment` for a comment on a report sent to
     /// the session), with `reopened_by` for a reopen by a triage person.
     /// The watch lasts until the session ends or `queue_watch` stops it.
+    /// Once the queue is watched (and a report filed from then on reaches
+    /// it), it says so once on stderr: `clax queue follow: watching queue
+    /// <QID> as session <SID>`.
     /// Never starts a daemon; follows the session across daemon restarts,
     /// and exits 0 once the session has ended. A notice of anything else
     /// sent to the session is passed over: it still arrives through its
@@ -804,6 +807,7 @@ fn follow(home: &Home, a: &FollowArgs) -> anyhow::Result<()> {
         grace: Duration::from_secs(a.grace_secs),
     };
     let mut stdout = std::io::stdout();
+    let mut told = false;
     let followed = feedback::follow(
         home,
         &target,
@@ -816,7 +820,19 @@ fn follow(home: &Home, a: &FollowArgs) -> anyhow::Result<()> {
                 Some(&s),
                 |d| async move { d.queue_watch(&q, true).await },
             )? {
-                Ok(()) => Ok(Ready::Yes),
+                Ok(()) => {
+                    // Once: from here a report filed or reopened reaches
+                    // this follower.
+                    if !told {
+                        eprintln!(
+                            "clax queue follow: watching queue {} as session {}",
+                            term::clean_line(&qid),
+                            term::clean_line(sid)
+                        );
+                        told = true;
+                    }
+                    Ok(Ready::Yes)
+                }
                 Err(ClientError::Api { error, .. })
                     if feedback::gone_code(error["code"].as_str().unwrap_or("")) =>
                 {

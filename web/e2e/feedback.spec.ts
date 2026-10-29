@@ -127,11 +127,15 @@ test("a person with the feedback flag files a report about Clax from its shell; 
     const lease = await agent<Lease>("POST", `/api/queues/${qid}/reports/${id}/claim`);
     await agent("POST", `/api/queues/${qid}/reports/${id}/fix`, { summary: "The tag bar wraps above the grid now.", verify_url: `${origin}/`, fence: lease.fence });
     // Focus asks the overlay for the badge at once; a focus heard while an
-    // earlier load is in flight is answered by that load, so it is repeated.
-    await expect(async () => {
+    // earlier load is in flight is answered by that load, which may predate
+    // the fix, so focus is repeated until a badge answer counts it.
+    for (;;) {
+      const answer = owner.waitForResponse(r => /\/reporter\/badge$/.test(new URL(r.url()).pathname));
       await owner.evaluate(() => { window.dispatchEvent(new Event("focus")); });
-      await expect(menuButton).toHaveAccessibleName("Feedback: 1 report waits on you", { timeout: 1000 });
-    }).toPass({ timeout: 15_000 });
+      const badge = await (await answer).json() as { waiting: number };
+      if (badge.waiting === 1) break;
+    }
+    await expect(menuButton).toHaveAccessibleName("Feedback: 1 report waits on you");
     await menuButton.click();
     await owner.getByRole("menuitem", { name: "My reports: 1 report waits on you" }).click();
     const panel = owner.getByRole("region", { name: "Your reports" });
