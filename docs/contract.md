@@ -3783,7 +3783,11 @@ reporters.
 
 Reporter routes (`Authorization: Clax-Reporter <token>`, a
 `Clax-Signature` by the reporter's key, the token's `Origin`; each answers
-CORS for the queue's origins and its `OPTIONS` preflight). A reporter
+CORS for the queue's origins and its `OPTIONS` preflight). A page served
+by the instance at the token's origin, whose same-origin `GET` a browser
+sends with no `Origin`, is taken as from that origin when the request
+carries `Sec-Fetch-Site: same-origin` and a `Host` that is the origin's
+host and port; any other request without `Origin` is 403 `wrong_origin`. A reporter
 reads the reports `reporters_see` shows it and gives verdicts on the ones
 it filed; any other is 404 `not_found`.
 

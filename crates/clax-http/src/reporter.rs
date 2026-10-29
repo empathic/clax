@@ -19,7 +19,9 @@
 //! A service request is server to server: one carrying an `Origin` or a
 //! cookie is 403 `forbidden_origin`. A reporter request must carry exactly
 //! one `Origin`, equal to the token's and still among the queue's origins
-//! (403 `wrong_origin` otherwise, a missing one included). [`cors`] answers
+//! (403 `wrong_origin` otherwise, a missing one included), or, a browser's
+//! same-origin read carrying none, come from that origin's own pages
+//! (`Sec-Fetch-Site: same-origin` and the token origin's `Host`). [`cors`] answers
 //! a reporter route's cross-origin reads for the queue's origins alone.
 
 use crate::agent;
@@ -94,6 +96,31 @@ fn wrong_origin() -> Refusal {
         "a reporter token is accepted only from the origin it was minted for",
     )
     .into()
+}
+
+/// Whether a request that carries no `Origin` is a browser's from a page
+/// of `origin` on this very host: a browser leaves `Origin` off a
+/// same-origin `GET` or `HEAD`, and says so in the one
+/// `Sec-Fetch-Site: same-origin` (a header no page can set); the request's
+/// one `Host`, which the signature covers, must then be `origin`'s host and
+/// port. This is the instance's own pages filing to it (an instance that
+/// is its own integrating product, `docs/prod.md`).
+fn same_origin_as(headers: &HeaderMap, origin: &str) -> bool {
+    let one = |name: &str| {
+        let mut v = headers.get_all(name).iter();
+        match (v.next(), v.next()) {
+            (Some(v), None) => v.to_str().ok(),
+            _ => None,
+        }
+    };
+    let Some(authority) = origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    one("sec-fetch-site") == Some("same-origin")
+        && one(header::HOST.as_str()).is_some_and(|h| h.eq_ignore_ascii_case(authority))
 }
 
 /// The one `Authorization` value of the request, when its scheme is
@@ -246,7 +273,8 @@ impl<const LIMIT: usize> FromRequest<AppState> for ReporterCaller<LIMIT> {
     /// # Errors
     /// 401 `invalid_token` for another credential, an unknown token, one
     /// whose grant was revoked, or another queue's; 401 `token_expired`;
-    /// 403 `wrong_origin` for an `Origin` other than the token's, none, or
+    /// 403 `wrong_origin` for an `Origin` other than the token's, none (but
+    /// for a same-origin browser request to the token origin's host), or
     /// one the queue no longer lists; 401 `invalid_signature`,
     /// `stale_request` or `replayed_request`; 429 `limit_reached`; 413
     /// `body_too_large`.
@@ -269,11 +297,12 @@ impl<const LIMIT: usize> FromRequest<AppState> for ReporterCaller<LIMIT> {
             .await?;
         let (t, origins) = found.ok_or_else(invalid_token)?;
         let mut sent = parts.headers.get_all(header::ORIGIN).iter();
-        let origin = match (sent.next(), sent.next()) {
-            (Some(o), None) => o.to_str().ok(),
-            _ => None,
+        let from_origin = match (sent.next(), sent.next()) {
+            (Some(o), None) => o.to_str().ok() == Some(t.origin.as_str()),
+            (None, _) => same_origin_as(&parts.headers, &t.origin),
+            _ => false,
         };
-        if origin != Some(t.origin.as_str()) || !origins.contains(&t.origin) {
+        if !from_origin || !origins.contains(&t.origin) {
             return Err(wrong_origin());
         }
         let key = sig::decode_public(&t.public_key).map_err(|e| grant_auth::refuse(e, &s.store))?;
