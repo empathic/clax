@@ -186,7 +186,13 @@ impl Core {
                 let touched = state
                     .store
                     .set_routed_artifacts(&clax_core::audit::AuditCtx::DAEMON, &routed)?;
-                tracing::info!(artifacts = ?routed.iter().map(|a| a.as_str()).collect::<Vec<_>>(), released = touched.threads.len(), "comments of these artifacts go to no agent session");
+                let artifacts = match &routed {
+                    clax_core::config::RoutedArtifacts::All => vec!["*"],
+                    clax_core::config::RoutedArtifacts::Listed(ids) => {
+                        ids.iter().map(|a| a.as_str()).collect()
+                    }
+                };
+                tracing::info!(artifacts = ?artifacts, released = touched.threads.len(), "comments of these artifacts go to no agent session");
             }
         }
         // `[sign]`: a bad table stops the daemon, as `[serve]`'s owner keys do.

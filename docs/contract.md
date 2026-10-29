@@ -8026,7 +8026,8 @@ response there), its bridge relaying every site API call through the
 shell (`data-api="frame"`, `site.fetch`); the bootstrap's and `GET
 /api/artifacts/<id>`'s `site` then carry `path: "/_clax/frame/"`. Only the
 owner reads there (see docs/usage.md). `routed_artifacts` (a list of at
-most 256 artifact IDs, unset by default; anything else is `bad_config`)
+most 256 artifact IDs, or `["*"]` for every artifact, live pages and
+later ones included; unset by default; anything else is `bad_config`)
 names artifacts whose comments another daemon reads and answers: a send
 on one goes to no agent session (its rows stay untargeted, and neither a
 watch nor a publish picks them up), no agent takes its threads by a

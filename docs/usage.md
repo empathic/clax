@@ -256,8 +256,10 @@ When another daemon carries an artifact's comments (an adapter that reads them o
 
 ```toml
 [serve]
-routed_artifacts = ["f4s6pxhbs8bg"]   # artifact IDs; unset by default
+routed_artifacts = ["f4s6pxhbs8bg"]   # artifact IDs, or ["*"] for every artifact; unset by default
 ```
+
+`["*"]` routes every artifact, live pages included, and any made later: no agent session is sent a comment.
 
 Agents may still reply on such a thread; none becomes its owner, and none can be sent or handed it. At each start the daemon releases the threads of those artifacts that an agent owns.
 

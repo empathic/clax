@@ -812,14 +812,15 @@ impl HomeConfig {
     /// daemon reads and answers (such as an adapter that hands each comment
     /// to one chosen agent over its own transport), so Clax sends them to no
     /// agent session and no agent owns their threads
-    /// (`clax_store::Store::set_routed_artifacts`). Empty when absent.
+    /// (`clax_store::Store::set_routed_artifacts`). Empty when absent;
+    /// `["*"]` routes every artifact.
     ///
     /// # Errors
     /// `Invalid { code: "bad_config" }` naming the file (or the variable)
     /// and the key when `[serve]` is not a table or `routed_artifacts` is
-    /// not a list of at most 256 artifact IDs. The daemon does not start on
-    /// it.
-    pub fn serve_routed_artifacts(&self) -> Result<Vec<crate::ArtifactId>> {
+    /// neither `["*"]` nor a list of at most 256 artifact IDs. The daemon
+    /// does not start on it.
+    pub fn serve_routed_artifacts(&self) -> Result<RoutedArtifacts> {
         if let Some(serve) = self.value("serve")
             && serve.as_dict().is_none()
         {
@@ -830,20 +831,25 @@ impl HomeConfig {
             ));
         }
         let Some(v) = self.value("serve.routed_artifacts") else {
-            return Ok(Vec::new());
+            return Ok(RoutedArtifacts::Listed(Vec::new()));
         };
+        if let Some([only]) = v.as_array()
+            && only.as_str() == Some("*")
+        {
+            return Ok(RoutedArtifacts::All);
+        }
         let ids: Option<Vec<crate::ArtifactId>> = v.as_array().and_then(|l| {
             l.iter()
                 .map(|i| i.as_str().and_then(|i| crate::ArtifactId::parse(i).ok()))
                 .collect()
         });
         match ids.filter(|i| i.len() <= 256) {
-            Some(ids) => Ok(ids),
+            Some(ids) => Ok(RoutedArtifacts::Listed(ids)),
             None => Err(self.bad(
                 "serve.routed_artifacts",
                 "[serve]",
                 format!(
-                    "routed_artifacts must list at most 256 artifact IDs such as \"f4s6pxhbs8bg\", not {}",
+                    "routed_artifacts must be [\"*\"] or list at most 256 artifact IDs such as \"f4s6pxhbs8bg\", not {}",
                     shown(&v)
                 ),
             )),
@@ -1272,6 +1278,24 @@ pub struct OwnerTailnetDevices {
     pub nodes: Vec<String>,
     /// The `tailscale` CLI, a path or a name found on `PATH`.
     pub tailscale: String,
+}
+
+/// `[serve] routed_artifacts`, from [`HomeConfig::serve_routed_artifacts`]:
+/// the artifacts whose comments go to no agent session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RoutedArtifacts {
+    /// The artifacts listed (none when the key is absent or empty).
+    Listed(Vec<crate::ArtifactId>),
+    /// Every artifact, live pages included (`routed_artifacts = ["*"]`).
+    All,
+}
+
+impl RoutedArtifacts {
+    /// Whether no artifact is routed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        matches!(self, RoutedArtifacts::Listed(ids) if ids.is_empty())
+    }
 }
 
 /// `[sign]`, from [`HomeConfig::sign`].
@@ -2872,17 +2896,28 @@ mod tests {
         ] {
             assert!(with(t).serve_routed_artifacts().unwrap().is_empty(), "{t}");
         }
-        let ids = with("[serve]\nrouted_artifacts = [\"f4s6pxhbs8bg\"]\n")
+        let RoutedArtifacts::Listed(ids) = with("[serve]\nrouted_artifacts = [\"f4s6pxhbs8bg\"]\n")
             .serve_routed_artifacts()
-            .unwrap();
+            .unwrap()
+        else {
+            panic!("a listed id is not All");
+        };
         assert_eq!(
             ids.iter().map(|i| i.as_str()).collect::<Vec<_>>(),
             ["f4s6pxhbs8bg"]
+        );
+        assert_eq!(
+            with("[serve]\nrouted_artifacts = [\"*\"]\n")
+                .serve_routed_artifacts()
+                .unwrap(),
+            RoutedArtifacts::All
         );
         for t in [
             "[serve]\nrouted_artifacts = \"f4s6pxhbs8bg\"\n",
             "[serve]\nrouted_artifacts = [\"not an id\"]\n",
             "[serve]\nrouted_artifacts = [7]\n",
+            "[serve]\nrouted_artifacts = \"*\"\n",
+            "[serve]\nrouted_artifacts = [\"*\", \"f4s6pxhbs8bg\"]\n",
         ] {
             let e = with(t).serve_routed_artifacts().unwrap_err().to_string();
             assert!(

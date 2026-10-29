@@ -8,6 +8,7 @@ use super::threads::{AUTHOR_AGENT, AUTHOR_VIEWER, take_in, thread_in, thread_rec
 use crate::visibility::Visibility;
 use clax_core::anchor::Anchor;
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
+use clax_core::config::RoutedArtifacts;
 use clax_core::feedback::{
     FeedbackBatch, FeedbackItem, FeedbackPhase, FeedbackState, ItemWithheld, Notice, Placeholder,
     Tier, Touched,
@@ -1800,27 +1801,44 @@ impl Store {
         }
     }
 
-    /// Routes the comments of artifacts `ids` outside Clax (`[serve]
-    /// routed_artifacts`; another daemon reads them and answers on their
-    /// threads): from now on a send on one goes to no agent session, its
-    /// rows stay untargeted and no watch or publish picks them up, no agent
-    /// takes its threads, and none may be handed one. Replaces the earlier
-    /// set. Each routed thread that has an owner loses it (`thread.release`,
-    /// reason `routed`) and its undelivered rows become untargeted, one per
-    /// comment, so the sessions that held them learn they are gone.
+    /// Routes the comments of the artifacts `routed` names outside Clax
+    /// (`[serve] routed_artifacts`; another daemon reads them and answers
+    /// on their threads): from now on a send on one goes to no agent
+    /// session, its rows stay untargeted and no watch or publish picks them
+    /// up, no agent takes its threads, and none may be handed one.
+    /// [`RoutedArtifacts::All`] routes every artifact, live pages and ones
+    /// made later included. Replaces the earlier set. Each routed thread
+    /// that has an owner loses it (`thread.release`, reason `routed`) and
+    /// its undelivered rows become untargeted, one per comment, so the
+    /// sessions that held them learn they are gone.
     ///
     /// # Errors
     /// When the sweep's transaction fails; the set is kept either way.
-    pub fn set_routed_artifacts(&self, ctx: &AuditCtx, ids: &[ArtifactId]) -> Result<Touched> {
-        let set: std::collections::BTreeSet<String> =
-            ids.iter().map(|i| i.as_str().to_string()).collect();
-        *self.routed.write().unwrap_or_else(|e| e.into_inner()) = set.clone();
+    pub fn set_routed_artifacts(
+        &self,
+        ctx: &AuditCtx,
+        routed: &RoutedArtifacts,
+    ) -> Result<Touched> {
+        *self.routed.write().unwrap_or_else(|e| e.into_inner()) = routed.clone();
         let mut touched = Touched::default();
-        if set.is_empty() {
+        if routed.is_empty() {
             return Ok(touched);
         }
         self.with_tx(|tx| {
             let now = self.now();
+            let set: std::collections::BTreeSet<String> = match routed {
+                RoutedArtifacts::Listed(ids) => ids.iter().map(|i| i.as_str().to_string()).collect(),
+                // Only the artifacts with something to sweep.
+                RoutedArtifacts::All => {
+                    let mut stmt = tx.prepare(
+                        "SELECT artifact_id FROM threads WHERE target_session_id IS NOT NULL
+                         UNION SELECT t.artifact_id FROM feedback f JOIN threads t ON t.id = f.thread_id
+                         WHERE f.delivered_at IS NULL AND f.target_session_id IS NOT NULL",
+                    )?;
+                    stmt.query_map([], |r| r.get(0))?
+                        .collect::<rusqlite::Result<_>>()?
+                }
+            };
             for aid in &set {
                 let owned: Vec<(String, String)> = {
                     let mut stmt = tx.prepare(
@@ -1879,10 +1897,10 @@ impl Store {
     /// Whether artifact `aid`'s comments are routed outside Clax
     /// ([`Store::set_routed_artifacts`]).
     pub fn routed(&self, aid: &str) -> bool {
-        self.routed
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(aid)
+        match &*self.routed.read().unwrap_or_else(|e| e.into_inner()) {
+            RoutedArtifacts::All => true,
+            RoutedArtifacts::Listed(ids) => ids.iter().any(|i| i.as_str() == aid),
+        }
     }
 
     /// Gives every untargeted, undelivered row on artifact `id` to `session_id`
@@ -5255,7 +5273,7 @@ mod ownership {
         st.send_to(DAEMON, &tid, SendTarget::Thread).unwrap();
         let aid = ArtifactId::parse(&st.get_thread(&tid).unwrap().unwrap().artifact_id).unwrap();
         let touched = st
-            .set_routed_artifacts(DAEMON, std::slice::from_ref(&aid))
+            .set_routed_artifacts(DAEMON, &RoutedArtifacts::Listed(vec![aid.clone()]))
             .unwrap();
         assert!(touched.targets.contains(&a), "{touched:?}");
         assert!(st.routed(aid.as_str()));
@@ -5299,5 +5317,42 @@ mod ownership {
         let err = st.handoff(DAEMON, &tid, &a, Some(&b));
         assert!(format!("{err:?}").contains("routed_artifact"), "{err:?}");
         assert_eq!(st.thread_owner(&tid).unwrap(), None);
+    }
+
+    /// `routed_artifacts = ["*"]`: every artifact is routed, its owned
+    /// threads released, and so is one no list could have named, such as
+    /// an artifact or live page that only exists afterwards.
+    #[test]
+    fn routing_every_artifact_releases_all_and_covers_later_ones() {
+        let (_d, st, a, b, tid) = two_watchers();
+        assert_eq!(take(&st, &a).items.len(), 1);
+        assert_eq!(st.thread_owner(&tid).unwrap().unwrap().session_id, a);
+        let aid = ArtifactId::parse(&st.get_thread(&tid).unwrap().unwrap().artifact_id).unwrap();
+        let touched = st
+            .set_routed_artifacts(DAEMON, &RoutedArtifacts::All)
+            .unwrap();
+        assert!(
+            touched
+                .threads
+                .contains(&(aid.as_str().to_string(), tid.clone())),
+            "{touched:?}"
+        );
+        assert_eq!(st.thread_owner(&tid).unwrap(), None);
+        assert!(st.routed(aid.as_str()));
+        assert!(
+            st.routed("zzzzzzzzzzzz"),
+            "an artifact made later is routed too"
+        );
+        viewer_says(&st, &tid, "who is listening?");
+        st.send_to(DAEMON, &tid, SendTarget::Thread).unwrap();
+        assert!(take(&st, &a).items.is_empty());
+        assert!(take(&st, &b).items.is_empty());
+        // A second start finds nothing left to release.
+        assert!(
+            st.set_routed_artifacts(DAEMON, &RoutedArtifacts::All)
+                .unwrap()
+                .threads
+                .is_empty()
+        );
     }
 }

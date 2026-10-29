@@ -259,7 +259,7 @@ pub struct Store {
     member_caps: RwLock<Option<github::MemberCaps>>,
     /// The artifacts whose comments an outside route carries
     /// ([`Store::set_routed_artifacts`]): sent to no agent session.
-    routed: RwLock<std::collections::BTreeSet<String>>,
+    routed: RwLock<clax_core::config::RoutedArtifacts>,
     /// ClaxBot's settings the daemon's configuration sets, laid over the
     /// stored ones on every read ([`Store::set_bot_overrides`]).
     bot_overrides: RwLock<Arc<bot_settings::Overrides>>,
@@ -446,7 +446,7 @@ impl Store {
             pushed_listener: RwLock::new(None),
             resumed_at: Mutex::new(stamp(clock.now())),
             member_caps: RwLock::new(None),
-            routed: RwLock::default(),
+            routed: RwLock::new(clax_core::config::RoutedArtifacts::Listed(Vec::new())),
             bot_overrides: RwLock::default(),
             base_url_policy: RwLock::default(),
             #[cfg(test)]
