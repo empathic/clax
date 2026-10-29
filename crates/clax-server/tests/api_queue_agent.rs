@@ -352,8 +352,10 @@ async fn the_owners_agent_lists_reports_by_state() {
         .agent(Some(&a), "GET", &list("claimed"), json!(null))
         .await;
     assert_eq!(v["reports"][0]["id"], json!(q.tid));
-    let (s, v) = q.agent(Some(&a), "GET", &list("bogus"), json!(null)).await;
-    assert_eq!((s, code(&v)), (400, "invalid_state"), "{v}");
+    for bad in ["bogus", "fix_proposed", "verified", "active"] {
+        let (s, v) = q.agent(Some(&a), "GET", &list(bad), json!(null)).await;
+        assert_eq!((s, code(&v)), (400, "invalid_state"), "{bad}: {v}");
+    }
 }
 
 #[tokio::test]

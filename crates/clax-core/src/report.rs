@@ -597,7 +597,7 @@ mod tests {
                "environment":{"url":"https://clax.dev/a/x?token=s&tab=2#f","title":"mail ahk@example.com",
                  "viewport":{"w":1440,"h":900,"dpr":2},"scroll":{"x":0,"y":340.5}},
                "capture":{"mode":"screen","method":"dom","omitted":[{"kind":"iframe","rect":{"x":1,"y":2,"w":3,"h":4}}]},
-               "app":{"note":"password=hunter2","list":["Bearer abcdefghijkl"],"n":3}"#,
+               "app":{"note":"password=hunter2","list":["Bearer abcdefgh1jkl"],"n":3}"#,
         ))
         .unwrap();
         let env = c.environment.as_ref().unwrap();
