@@ -239,7 +239,7 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("comment.add", "body") => Text,
         ("comment.add", "author_name") => Name,
         ("comment.add", "comment_id" | "author_kind" | "via_harness" | "via_page") => Safe,
-        ("thread.resolve", "resolved_by" | "addressed_version") => Safe,
+        ("thread.resolve", "resolved_by" | "addressed_version" | "reason") => Safe,
         ("thread.delete", "moved") => Safe,
         (
             "thread.send",

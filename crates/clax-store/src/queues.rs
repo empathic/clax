@@ -16,11 +16,22 @@
 //! session the thread's owner (`threads.target_session_id`); a lapsed
 //! lease's owner is cleared by the next claim, renewal, release or check
 //! of the thread.
+//!
+//! A report also keeps what the feedback loop adds (spec
+//! 2026-10-29-feedback-loop-design §5, §6): the context and diagnostics it
+//! was filed with, the receiving server's stamp and the reporter's profile;
+//! its fix attempts (`report_fixes`) and their verdicts; and its phase
+//! (`threads.report_phase`), from which with the thread's status and lease
+//! its [`State`] follows: a resolved thread is `verified` in phase
+//! `verified` and `resolved` otherwise; an open one is `fix_proposed` in
+//! phase `fix_proposed`, else `claimed` under a live lease, else `open`.
+//! Sessions watch a queue (`queue_watches`) until they end.
 
 use super::Store;
 use super::external::{EXTERNAL_SELECT, NewExternal, row_to_external};
 use super::threads::{
-    AUTHOR_AGENT, AUTHOR_VIEWER, NewComment, NewThread, check_not_taken_in, clip_problem,
+    AUTHOR_AGENT, AUTHOR_VIEWER, NewComment, NewThread, check_body, check_not_taken_in,
+    clip_problem,
 };
 use clax_core::anchor::Anchor;
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
@@ -28,8 +39,12 @@ use clax_core::model::{Comment, Session, Thread};
 use clax_core::queue::{
     AUTHOR_REPORTER, Claim, LEASE_SECS, Lease, MAX_ARTIFACT_METADATA_BYTES,
     MAX_THREAD_METADATA_BYTES, Queue, REPORT_PAGE, REPORTER_TOKEN_PREFIX, REPORTER_TOKEN_SECS,
-    Report, ReportComment, ReportersSee, Role, SERVICE_TOKEN_PREFIX, State, check_queue_name,
-    check_reporter_id, metadata_json, metadata_sha256, normalize_origin,
+    Report, ReportComment, ReportersSee, Role, SERVICE_TOKEN_PREFIX, State, StateFilter,
+    check_queue_name, check_reporter_id, metadata_json, metadata_sha256, normalize_origin,
+};
+use clax_core::report::{
+    DiagLine, FixAttempt, FixOutcome, NewFix, ReportContext, ReporterProfile, ResolveReason,
+    ServerStamp,
 };
 use clax_core::secret::Secret;
 use clax_core::sig::KeyPair;
@@ -105,6 +120,9 @@ pub struct ReporterToken {
     /// The reporter's Ed25519 public key, unpadded base64url.
     pub public_key: String,
     pub expires_at: String,
+    /// Who the reporter is, as the minting backend asserted it; each
+    /// report filed under the token keeps it.
+    pub profile: Option<ReporterProfile>,
 }
 
 /// A report to file ([`Store::file_report_async`]).
@@ -125,6 +143,58 @@ pub struct NewReport {
     pub revision: Option<String>,
     /// A PNG clip ([`clip_problem`] says what is refused).
     pub clip: Option<Vec<u8>>,
+    /// What the reporter's browser said at capture, kept as filed.
+    pub context: Option<ReportContext>,
+    /// The receiving server's stamp.
+    pub server: Option<ServerStamp>,
+    /// The diagnostics filed beside the clip (an empty list is none).
+    pub diagnostics: Option<Vec<DiagLine>>,
+}
+
+/// Who gives a verdict on a fix, or reopens a report
+/// ([`Store::verify_report`], [`Store::reopen_report`]): its reporter, or
+/// a triage person on the reporter's behalf. Agents give none, so no agent
+/// marks its own fix verified.
+#[derive(Clone, Debug)]
+pub enum Verdict<'a> {
+    /// The reporter that filed the report, by its reporter ID.
+    Reporter(&'a str),
+    /// A triage member themself; `public_id` is their viewer's, `None`
+    /// writes as anonymous.
+    Person {
+        name: String,
+        public_id: Option<String>,
+    },
+}
+
+impl Verdict<'_> {
+    /// Whose reads the verdict's answer is: the reporter's, or a member's.
+    fn visibility(&self) -> Visibility<'_> {
+        match self {
+            Verdict::Reporter(r) => Visibility::Reporter(r),
+            Verdict::Person { .. } => Visibility::All,
+        }
+    }
+
+    /// The `resolved_by` of a verify.
+    fn resolved_by(&self) -> String {
+        match self {
+            Verdict::Reporter(r) => format!("reporter:{r}"),
+            Verdict::Person { public_id, .. } => {
+                format!("viewer:{}", public_id.as_deref().unwrap_or("anonymous"))
+            }
+        }
+    }
+}
+
+/// What waits for a reporter ([`Store::reporter_badge`]): its reports with
+/// a fix waiting for its verdict, or with a reply it has not read, oldest
+/// first.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Badge {
+    /// How many reports wait (`report_ids.len()`).
+    pub waiting: u32,
+    pub report_ids: Vec<String>,
 }
 
 /// Whose external IDs a filed report's ID is among (spec §6.1): one
@@ -175,7 +245,9 @@ impl ReportWriter<'_> {
 
 /// The reports of `?1` with their external artifact; callers append `AND ...`.
 const REPORT_SELECT: &str = "SELECT t.id, t.queue_id, t.anchor_json, t.status, t.reporter_id,
-    t.metadata_json, t.metadata_version, t.has_clip, t.created_at
+    t.metadata_json, t.metadata_version, t.has_clip, t.created_at,
+    t.report_context_json, t.report_server_json, t.reporter_profile_json, t.report_phase,
+    t.resolve_reason, t.reopen_count, (SELECT n FROM report_diagnostics WHERE thread_id = t.id)
     FROM threads t JOIN artifacts a ON a.id = t.artifact_id
     JOIN external_artifacts x ON x.artifact_id = t.artifact_id
     WHERE a.deleted_at IS NULL AND t.queue_id = ?1";
@@ -349,6 +421,13 @@ struct ReportRow {
     metadata_version: u64,
     has_clip: bool,
     created_at: String,
+    context_json: Option<String>,
+    server_json: Option<String>,
+    profile_json: Option<String>,
+    phase: Option<String>,
+    resolve_reason: Option<String>,
+    reopen_count: u32,
+    diagnostics_lines: Option<u32>,
 }
 
 fn report_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ReportRow> {
@@ -362,11 +441,97 @@ fn report_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ReportRow> {
         metadata_version: r.get(6)?,
         has_clip: r.get(7)?,
         created_at: r.get(8)?,
+        context_json: r.get(9)?,
+        server_json: r.get(10)?,
+        profile_json: r.get(11)?,
+        phase: r.get(12)?,
+        resolve_reason: r.get(13)?,
+        reopen_count: r.get(14)?,
+        diagnostics_lines: r.get(15)?,
     })
 }
 
-/// The report views of `rows`, read on `c` at `now`.
-fn reports_of(c: &Connection, rows: Vec<ReportRow>, now: &str) -> Result<Vec<Report>> {
+/// A report's state (see the module documentation): from its thread's
+/// `status`, its `phase` and whether a live lease holds it.
+fn state_of(status: &str, phase: Option<&str>, claimed: bool) -> State {
+    match (status, phase) {
+        ("resolved", Some("verified")) => State::Verified,
+        ("resolved", _) => State::Resolved,
+        (_, Some("fix_proposed")) => State::FixProposed,
+        _ if claimed => State::Claimed,
+        _ => State::Open,
+    }
+}
+
+/// The value of the JSON `json`, when it is one of `T`; `None` for none
+/// (a column the store wrote, so one that does not read is left out).
+fn from_json<T: serde::de::DeserializeOwned>(json: Option<&str>) -> Option<T> {
+    json.and_then(|j| serde_json::from_str(j).ok())
+}
+
+/// Report `tid`'s fix attempts on `c`, oldest first; `aid` is its
+/// artifact.
+fn fixes_in(c: &Connection, aid: &str, tid: &str) -> Result<Vec<FixAttempt>> {
+    let rows: Vec<FixRow> = c
+        .prepare_cached(
+            "SELECT n, fix_json, proposer_name, created_at, outcome, verdict_note,
+                verdict_context_json, verdict_at
+             FROM report_fixes WHERE thread_id = ?1 ORDER BY n",
+        )?
+        .query_map(params![tid], |r| {
+            Ok(FixRow {
+                n: r.get(0)?,
+                fix_json: r.get(1)?,
+                proposer_name: r.get(2)?,
+                created_at: r.get(3)?,
+                outcome: r.get(4)?,
+                verdict_note: r.get(5)?,
+                verdict_context_json: r.get(6)?,
+                verdict_at: r.get(7)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    rows.into_iter()
+        .map(|f| {
+            let fix: NewFix =
+                serde_json::from_str(&f.fix_json).map_err(|_| CoreError::Corrupt {
+                    artifact_id: aid.to_string(),
+                    column: "report_fixes.fix_json",
+                    version: None,
+                })?;
+            Ok(FixAttempt {
+                n: f.n,
+                fix,
+                proposer_name: f.proposer_name,
+                created_at: f.created_at,
+                outcome: FixOutcome::parse(&f.outcome).unwrap_or(FixOutcome::Pending),
+                verdict_note: f.verdict_note,
+                verdict_context: from_json(f.verdict_context_json.as_deref()),
+                verdict_at: f.verdict_at,
+            })
+        })
+        .collect()
+}
+
+struct FixRow {
+    n: u32,
+    fix_json: String,
+    proposer_name: String,
+    created_at: String,
+    outcome: String,
+    verdict_note: Option<String>,
+    verdict_context_json: Option<String>,
+    verdict_at: Option<String>,
+}
+
+/// The report views of `rows`, read on `c` at `now`; with the reporter's
+/// profile only `with_profile` (a member's read, never a reporter's).
+fn reports_of(
+    c: &Connection,
+    rows: Vec<ReportRow>,
+    now: &str,
+    with_profile: bool,
+) -> Result<Vec<Report>> {
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let artifact = c
@@ -405,13 +570,8 @@ fn reports_of(c: &Connection, rows: Vec<ReportRow>, now: &str) -> Result<Vec<Rep
                 holder_name: cur.holder_name,
                 expires_at: cur.expires_at,
             });
-        let state = if row.status == "resolved" {
-            State::Resolved
-        } else if claim.is_some() {
-            State::Claimed
-        } else {
-            State::Open
-        };
+        let state = state_of(&row.status, row.phase.as_deref(), claim.is_some());
+        let fixes = fixes_in(c, &artifact.artifact_id, &row.id)?;
         out.push(Report {
             id: row.id,
             queue_id: row.queue_id,
@@ -429,13 +589,17 @@ fn reports_of(c: &Connection, rows: Vec<ReportRow>, now: &str) -> Result<Vec<Rep
             comments,
             claim,
             created_at: row.created_at,
-            context: None,
-            server: None,
-            reporter_profile: None,
-            resolve_reason: None,
-            fixes: Vec::new(),
-            reopen_count: 0,
-            diagnostics_lines: 0,
+            context: from_json(row.context_json.as_deref()),
+            server: from_json(row.server_json.as_deref()),
+            reporter_profile: if with_profile {
+                from_json(row.profile_json.as_deref())
+            } else {
+                None
+            },
+            resolve_reason: row.resolve_reason.as_deref().and_then(ResolveReason::parse),
+            fixes,
+            reopen_count: row.reopen_count,
+            diagnostics_lines: row.diagnostics_lines.unwrap_or(0),
         });
     }
     Ok(out)
@@ -454,7 +618,127 @@ fn report_in(
         .prepare_cached(&format!("{REPORT_SELECT} AND t.id = ?3 {filter}"))?
         .query_row(params![q.id, now, tid, reporter], report_row)
         .optional()?;
-    Ok(reports_of(c, row.into_iter().collect(), now)?.pop())
+    Ok(reports_of(c, row.into_iter().collect(), now, vis == Visibility::All)?.pop())
+}
+
+/// Whether report `tid` of queue `q` is one `vis` sees, on `c`.
+fn sees_in(c: &Connection, q: &QueueRow, tid: &str, vis: Visibility<'_>) -> Result<bool> {
+    let (filter, reporter) = reporter_filter(q, vis);
+    Ok(c.prepare_cached(&format!(
+        "SELECT EXISTS(SELECT 1 FROM threads t JOIN artifacts a ON a.id = t.artifact_id
+            JOIN external_artifacts x ON x.artifact_id = t.artifact_id
+            WHERE a.deleted_at IS NULL AND t.queue_id = ?1 AND t.id = ?3 AND ?2 IS NULL {filter})"
+    ))?
+    .query_row(params![q.id, Option::<&str>::None, tid, reporter], |r| {
+        r.get(0)
+    })?)
+}
+
+/// Report `tid`'s thread status, phase, reporter and artifact on `c`.
+struct Standing {
+    status: String,
+    phase: Option<String>,
+    reporter_id: Option<String>,
+    artifact_id: String,
+}
+
+fn standing_in(c: &Connection, tid: &str) -> Result<Standing> {
+    c.query_row(
+        "SELECT status, report_phase, reporter_id, artifact_id FROM threads WHERE id = ?1",
+        params![tid],
+        |r| {
+            Ok(Standing {
+                status: r.get(0)?,
+                phase: r.get(1)?,
+                reporter_id: r.get(2)?,
+                artifact_id: r.get(3)?,
+            })
+        },
+    )
+    .optional()?
+    .ok_or(CoreError::NotFound)
+}
+
+/// Report `tid`'s standing, when `by` may give a verdict on it in queue
+/// `q`: a member always may; a reporter only on a report it filed and
+/// sees.
+///
+/// # Errors
+/// `NotFound` otherwise, and for no such report of the queue.
+fn check_verdict_in(c: &Connection, q: &QueueRow, tid: &str, by: &Verdict<'_>) -> Result<Standing> {
+    if !sees_in(c, q, tid, by.visibility())? {
+        return Err(CoreError::NotFound);
+    }
+    let s = standing_in(c, tid)?;
+    if let Verdict::Reporter(r) = by
+        && s.reporter_id.as_deref() != Some(*r)
+    {
+        return Err(CoreError::NotFound);
+    }
+    Ok(s)
+}
+
+/// Report `tid`'s diagnostics as stored, with their count, when `lines`
+/// holds a line; checked as the diagnostics part of a filing is
+/// ([`clax_core::report::parse_diagnostics`]), each text scrubbed again.
+fn diagnostics_json(lines: &[DiagLine]) -> Result<Option<(String, u32)>> {
+    if lines.is_empty() {
+        return Ok(None);
+    }
+    let mut part = String::new();
+    for l in lines {
+        part.push_str(&serde_json::to_string(l).expect("diagnostics serialise"));
+        part.push('\n');
+    }
+    let checked = clax_core::report::parse_diagnostics(part.as_bytes())?;
+    let json = serde_json::to_string(&checked).expect("diagnostics serialise");
+    Ok(Some((json, checked.len() as u32)))
+}
+
+/// `ctx` as stored: checked and scrubbed as a filed context is
+/// ([`clax_core::report::parse_context`]).
+fn context_json(ctx: &ReportContext) -> Result<String> {
+    let checked =
+        clax_core::report::parse_context(&serde_json::to_string(ctx).expect("contexts serialise"))?;
+    Ok(serde_json::to_string(&checked).expect("contexts serialise"))
+}
+
+/// Ends report `tid`'s current lease when it is live at `now`, as
+/// [`Store::release`] does, recorded as `queue.release {queue_id,
+/// thread_id, session, lease_id, reason}`.
+#[allow(clippy::too_many_arguments)]
+fn end_lease_in(
+    st: &Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    qid: &str,
+    tid: &str,
+    aid: &str,
+    now: &str,
+    reason: &str,
+) -> Result<()> {
+    let Some(cur) = current_in(tx, tid, now)?.filter(|c| c.live) else {
+        return Ok(());
+    };
+    tx.execute(
+        "UPDATE queue_claims SET released = 1 WHERE thread_id = ?1 AND session_id = ?2",
+        params![tid, cur.session_id],
+    )?;
+    tx.execute(
+        "UPDATE threads SET target_session_id = NULL WHERE id = ?1 AND target_session_id = ?2",
+        params![tid, cur.session_id],
+    )?;
+    st.agents_pinged();
+    let mut rec = queue_record(AuditKind::QueueRelease, now, qid)
+        .with("thread_id", tid)
+        .with("session", cur.session_id.as_str())
+        .with("lease_id", cur.lease_id.as_str())
+        .with("reason", reason);
+    rec.ids.artifact = Some(aid.to_string());
+    rec.ids.thread = Some(tid.to_string());
+    rec.ids.session = Some(cur.session_id);
+    st.record_audit(tx, ctx, rec)?;
+    Ok(())
 }
 
 /// The SQL limiting reports to what `vis` sees (parameter `?4`), and its
@@ -850,25 +1134,33 @@ impl Store {
     /// Mints a reporter token ([`REPORTER_TOKEN_PREFIX`]) of `grant` for
     /// reporter `reporter_id` on `origin`, bound to the reporter's Ed25519
     /// `public_key` (unpadded base64url), valid for
-    /// [`REPORTER_TOKEN_SECS`]. Answers the token, kept only as its
-    /// SHA-256, and its expiry. A token minting changes no history and
-    /// records nothing. Tokens that expired a day before are dropped.
+    /// [`REPORTER_TOKEN_SECS`], carrying the reporter's `profile` (an
+    /// empty one is none). Answers the token, kept only as its SHA-256,
+    /// and its expiry. A token minting changes no history and records
+    /// nothing. Tokens that expired a day before are dropped.
     ///
     /// # Errors
     /// [`CoreError::WrongOrigin`] for an origin the queue does not list;
-    /// `invalid_origin`, `invalid_reporter_id` or `invalid_key` for bad
-    /// input; `NotFound` when the grant or its queue is gone.
+    /// `invalid_origin`, `invalid_reporter_id`, `invalid_key` or
+    /// [`CoreError::InvalidProfile`] for bad input; `NotFound` when the
+    /// grant or its queue is gone.
     pub fn mint_reporter_token(
         &self,
         grant: &ServiceGrant,
         reporter_id: &str,
         origin: &str,
         public_key: &str,
+        profile: Option<&ReporterProfile>,
     ) -> Result<(Secret, String)> {
         check_reporter_id(reporter_id)?;
         let origin = normalize_origin(origin)?;
         clax_core::sig::decode_public(public_key)
             .map_err(|_| CoreError::invalid("invalid_key", "public_key is not an Ed25519 key"))?;
+        let profile = profile.filter(|p| !p.is_empty());
+        if let Some(p) = profile {
+            p.check()?;
+        }
+        let profile_json = profile.map(|p| serde_json::to_string(p).expect("profiles serialise"));
         let token = clax_core::secret::token(REPORTER_TOKEN_PREFIX);
         let now = self.now_utc();
         let expires_at = later(now, REPORTER_TOKEN_SECS);
@@ -892,7 +1184,8 @@ impl Store {
             )?;
             tx.execute(
                 "INSERT INTO queue_reporter_tokens (token_sha256, queue_id, service_grant_id,
-                    reporter_id, origin, public_key, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    reporter_id, origin, public_key, expires_at, profile_json)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     token.sha256_hex(),
                     grant.queue_id,
@@ -900,7 +1193,8 @@ impl Store {
                     reporter_id,
                     origin,
                     public_key,
-                    expires_at
+                    expires_at,
+                    profile_json
                 ],
             )?;
             Ok(())
@@ -918,7 +1212,8 @@ impl Store {
         let now = self.now();
         let found = self.with_read(|c| {
             Ok(c.prepare_cached(
-                "SELECT r.queue_id, r.service_grant_id, r.reporter_id, r.origin, r.public_key, r.expires_at
+                "SELECT r.queue_id, r.service_grant_id, r.reporter_id, r.origin, r.public_key, r.expires_at,
+                    r.profile_json
                  FROM queue_reporter_tokens r
                  JOIN queue_service_grants g ON g.id = r.service_grant_id
                  JOIN queues q ON q.id = r.queue_id
@@ -932,6 +1227,7 @@ impl Store {
                     origin: r.get(3)?,
                     public_key: r.get(4)?,
                     expires_at: r.get(5)?,
+                    profile: from_json(r.get::<_, Option<String>>(6)?.as_deref()),
                 })
             })
             .optional()?)
@@ -950,44 +1246,66 @@ impl Store {
         &self,
         ctx: &AuditCtx,
         qid: &str,
-        reporter: Option<&str>,
+        reporter: Option<&ReporterToken>,
         scope: ExternalScope,
         r: NewReport,
     ) -> Result<Report> {
         self.block_on(self.file_report_async(ctx, qid, reporter, scope, r))
     }
 
-    /// Files report `r` to queue `qid` by `reporter` (a reporter token's
-    /// reporter ID; `None` otherwise). Finds or makes the external
+    /// Files report `r` to queue `qid` by `reporter` (the reporter token
+    /// it came with; `None` otherwise). Finds or makes the external
     /// artifact `r.external_id` names, or the page URL without its route
     /// when it names none, among the external IDs of `scope`
     /// ([`Store::ensure_external_async`], as the queue's maker's), then makes the thread on its current version with the
-    /// queue, the reporter and the metadata in the thread's transaction
-    /// (`thread.open`, `comment.add`, and `thread.metadata` for metadata
-    /// that is not null). The anchor's file is the artifact's
-    /// one page, and a route it names is dropped: an external artifact is
-    /// no live page.
+    /// queue, the reporter and its token's profile, the metadata, the
+    /// context, the server stamp and the diagnostics in the thread's
+    /// transaction (`thread.open`, `comment.add`, and `thread.metadata`
+    /// for metadata that is not null). The context and diagnostics are
+    /// checked and scrubbed again as a filing's are
+    /// ([`clax_core::report::parse_context`],
+    /// [`clax_core::report::parse_diagnostics`]). The anchor's file is
+    /// the artifact's one page, and a route it names is dropped: an
+    /// external artifact is no live page. Answers the report as its filer
+    /// reads it: a reporter's view carries no profile.
     ///
     /// # Errors
-    /// [`CoreError::NotAMember`] for no such queue; `invalid_clip`,
-    /// `metadata_too_large`, `invalid_reporter_id` and the errors of
-    /// [`Store::ensure_external_async`] and [`Store::create_thread`] for
-    /// bad input.
+    /// [`CoreError::NotAMember`] for no such queue, or a token of another
+    /// queue; `invalid_clip`, `metadata_too_large`, `invalid_reporter_id`,
+    /// [`CoreError::InvalidContext`], [`CoreError::InvalidDiagnostics`]
+    /// and the errors of [`Store::ensure_external_async`] and
+    /// [`Store::create_thread`] for bad input.
     pub async fn file_report_async(
         &self,
         ctx: &AuditCtx,
         qid: &str,
-        reporter: Option<&str>,
+        reporter: Option<&ReporterToken>,
         scope: ExternalScope,
         r: NewReport,
     ) -> Result<Report> {
         let q = self.queue(qid)?.ok_or(CoreError::NotAMember)?;
-        if let Some(rid) = reporter {
-            check_reporter_id(rid)?;
+        if let Some(tok) = reporter {
+            check_reporter_id(&tok.reporter_id)?;
+            if tok.queue_id != qid {
+                return Err(CoreError::NotAMember);
+            }
         }
         if let Some(problem) = r.clip.as_deref().and_then(clip_problem) {
             return Err(CoreError::invalid("invalid_clip", problem));
         }
+        let context = r.context.as_ref().map(context_json).transpose()?;
+        let server = r
+            .server
+            .as_ref()
+            .map(|s| serde_json::to_string(s).expect("stamps serialise"));
+        let diagnostics = match r.diagnostics.as_deref() {
+            Some(lines) => diagnostics_json(lines)?,
+            None => None,
+        };
+        let profile = reporter
+            .and_then(|t| t.profile.as_ref())
+            .filter(|p| !p.is_empty())
+            .map(|p| serde_json::to_string(p).expect("profiles serialise"));
         let meta = match &r.metadata {
             serde_json::Value::Null => None,
             v => Some(metadata_json(v, MAX_THREAD_METADATA_BYTES)?),
@@ -1033,7 +1351,7 @@ impl Store {
             via_page: false,
         };
         let qid_owned = qid.to_string();
-        let reporter_owned = reporter.map(str::to_string);
+        let reporter_owned = reporter.map(|t| t.reporter_id.clone());
         let metadata = r.metadata;
         let now = self.now();
         let artifact_id = x.artifact_id.clone();
@@ -1041,9 +1359,16 @@ impl Store {
             .create_thread_then_async(ctx, &aid, t, move |tx, tid| {
                 tx.execute(
                     "UPDATE threads SET queue_id = ?2, reporter_id = ?3, metadata_json = ?4,
-                        metadata_version = 1 WHERE id = ?1",
-                    params![tid, qid_owned, reporter_owned, meta],
+                        metadata_version = 1, report_context_json = ?5, report_server_json = ?6,
+                        reporter_profile_json = ?7 WHERE id = ?1",
+                    params![tid, qid_owned, reporter_owned, meta, context, server, profile],
                 )?;
+                if let Some((lines, n)) = &diagnostics {
+                    tx.execute(
+                        "INSERT INTO report_diagnostics (thread_id, lines_json, n) VALUES (?1, ?2, ?3)",
+                        params![tid, lines, n],
+                    )?;
+                }
                 if reporter_owned.is_some() {
                     tx.execute(
                         "UPDATE comments SET reporter_id = ?2 WHERE thread_id = ?1",
@@ -1069,14 +1394,18 @@ impl Store {
                 Ok((None, records))
             })
             .await?;
-        self.report(qid, &thread.id, Visibility::All)?
+        let vis = match reporter {
+            Some(t) => Visibility::Reporter(&t.reporter_id),
+            None => Visibility::All,
+        };
+        self.report(qid, &thread.id, vis)?
             .ok_or(CoreError::NotFound)
     }
 
     /// A page of queue `qid`'s reports that `vis` sees, in order of arrival,
-    /// after report `cursor` (`None`: from the first), in `state` (`None`:
-    /// any), at most [`REPORT_PAGE`]; and the cursor of the next page when
-    /// there is one.
+    /// after report `cursor` (`None`: from the first), that `state` passes
+    /// (`None`: any), at most [`REPORT_PAGE`]; and the cursor of the next
+    /// page when there is one.
     ///
     /// # Errors
     /// [`CoreError::NotAMember`] for no such queue; `invalid_cursor` when
@@ -1085,7 +1414,7 @@ impl Store {
         &self,
         qid: &str,
         vis: Visibility<'_>,
-        state: Option<State>,
+        state: Option<StateFilter>,
         cursor: Option<&str>,
     ) -> Result<(Vec<Report>, Option<String>)> {
         let now = self.now();
@@ -1105,13 +1434,24 @@ impl Store {
                 }
             }
             let (filter, reporter) = reporter_filter(&q, vis);
+            // As `state_of` reads a report's state.
+            const UNFIXED: &str = "t.status = 'open' AND t.report_phase IS NOT 'fix_proposed'";
             let state_sql = match state {
                 None => String::new(),
-                Some(State::Resolved) => "AND t.status = 'resolved'".into(),
-                Some(State::Claimed) => format!("AND t.status = 'open' AND {LIVE_CLAIM}"),
-                Some(State::Open) => format!("AND t.status = 'open' AND NOT {LIVE_CLAIM}"),
-                // The store keeps no report in these states yet.
-                Some(State::FixProposed | State::Verified) => "AND 0".into(),
+                Some(StateFilter::Active) => format!("AND {UNFIXED}"),
+                Some(StateFilter::One(s)) => match s {
+                    State::Open => format!("AND {UNFIXED} AND NOT {LIVE_CLAIM}"),
+                    State::Claimed => format!("AND {UNFIXED} AND {LIVE_CLAIM}"),
+                    State::FixProposed => {
+                        "AND t.status = 'open' AND t.report_phase = 'fix_proposed'".into()
+                    }
+                    State::Verified => {
+                        "AND t.status = 'resolved' AND t.report_phase = 'verified'".into()
+                    }
+                    State::Resolved => {
+                        "AND t.status = 'resolved' AND t.report_phase IS NOT 'verified'".into()
+                    }
+                },
             };
             let sql = format!(
                 "{REPORT_SELECT} {filter} {state_sql}
@@ -1131,7 +1471,7 @@ impl Store {
             } else {
                 None
             };
-            Ok((reports_of(c, rows, &now)?, next))
+            Ok((reports_of(c, rows, &now, vis == Visibility::All)?, next))
         })
     }
 
@@ -1174,7 +1514,9 @@ impl Store {
     /// `NotFound` for no such report of the queue, [`CoreError::NotAMember`]
     /// for no such queue; [`CoreError::ThreadTaken`] naming the holder when
     /// another session holds a live lease or owns the thread;
-    /// `unknown_session` for a session that is not live.
+    /// [`CoreError::NotClaimable`] while a fix waits for its verdict
+    /// (`fix_proposed`, until it is reopened); `unknown_session` for a
+    /// session that is not live.
     pub fn claim(&self, ctx: &AuditCtx, qid: &str, tid: &str, sid: &str) -> Result<Lease> {
         let now_utc = self.now_utc();
         let now = clax_core::time::stamp(now_utc);
@@ -1182,7 +1524,11 @@ impl Store {
         self.with_tx(|tx| {
             let q = queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
             let aid = report_artifact_in(tx, qid, tid)?;
-            live_session_in(tx, sid)?;
+            let s = standing_in(tx, tid)?;
+            if state_of(&s.status, s.phase.as_deref(), false) == State::FixProposed {
+                return Err(CoreError::NotClaimable);
+            }
+            live_session_in(tx, sid, "a claim comes from a live session")?;
             settle_in(self, tx, tid, &now)?;
             let cur = current_in(tx, tid, &now)?;
             let (lease_id, fence) = match cur {
@@ -1539,11 +1885,14 @@ impl Store {
         Ok((c, report))
     }
 
-    /// `by` resolves report `tid` of queue `qid` as
+    /// `by` resolves report `tid` of queue `qid` for `reason` as
     /// [`Store::resolve_thread_touched`] does (`resolved_by`
     /// `agent:<harness>` with its session's person, or `viewer:<public ID>`),
-    /// and answers the thread, what the resolve changed, and the report. An
-    /// agent's resolve needs its session's live lease, checked in the
+    /// and answers the thread, what the resolve changed, and the report:
+    /// `resolved` with its reason, kept with the thread and named by its
+    /// `thread.resolve`. A fix waiting for a verdict waits no more (its
+    /// attempt stays `pending`). Resolving a closed report changes nothing.
+    /// An agent's resolve needs its session's live lease, checked in the
     /// resolve's transaction; a person's needs no claim.
     ///
     /// # Errors
@@ -1555,6 +1904,7 @@ impl Store {
         qid: &str,
         tid: &str,
         by: &ReportWriter<'_>,
+        reason: ResolveReason,
     ) -> Result<(Thread, clax_core::feedback::Touched, Report)> {
         let (resolved_by, person) = match by {
             ReportWriter::Agent(sess) => {
@@ -1582,9 +1932,15 @@ impl Store {
                 check_lease_in(tx, tid, sid, &now)?;
                 check_not_taken_in(tx, tid, sid)?;
             }
-            self.resolve_thread_in(tx, ctx, tid, &resolved_by, person.as_deref(), |_, _| {
-                Ok(None)
-            })
+            self.resolve_thread_reason_in(
+                tx,
+                ctx,
+                tid,
+                &resolved_by,
+                person.as_deref(),
+                Some(reason.as_str()),
+                |_, _| Ok(None),
+            )
         })?;
         let thread = self.get_thread(tid)?.ok_or(CoreError::NotFound)?;
         let report = self
@@ -1632,6 +1988,535 @@ impl Store {
         )?;
         self.report(qid, tid, vis)?.ok_or(CoreError::NotFound)
     }
+
+    /// `by` proposes `fix` on report `tid` of queue `qid` (spec
+    /// 2026-10-29-feedback-loop-design §6.2), and answers the report after:
+    /// the attempt is numbered one past the report's last, its summary is
+    /// posted as `by`'s comment (which the reporter reads), the report
+    /// moves to `fix_proposed`, and its live lease ends as
+    /// [`Store::release`] ends one (`queue.release`, reason
+    /// `fix_proposed`). Recorded as `queue.fix {queue_id, thread_id, n,
+    /// url?, commit?}`. An agent proposes only under its own live lease,
+    /// checked in the fix's transaction; a person needs none, and a
+    /// person's fix on a report that is `fix_proposed` already is its next
+    /// attempt.
+    ///
+    /// # Errors
+    /// `invalid_fix` for a bad fix ([`NewFix::check`]);
+    /// [`CoreError::NotAMember`] for no such queue, `NotFound` for no such
+    /// report of it; [`Store::check_lease`]'s for an agent;
+    /// [`CoreError::NotClaimable`] for a `verified` or `resolved` report.
+    pub fn propose_fix(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        tid: &str,
+        by: &ReportWriter<'_>,
+        fix: NewFix,
+    ) -> Result<Report> {
+        fix.check()?;
+        let comment = match by {
+            ReportWriter::Agent(sess) => {
+                // A lapsed lease's owner is cleared whatever this answers.
+                self.check_lease(qid, tid, &sess.id)?;
+                NewComment {
+                    author_kind: AUTHOR_AGENT,
+                    author_name: sess.harness.clone(),
+                    author_public_id: None,
+                    via_session_id: Some(sess.id.clone()),
+                    body: fix.summary.clone(),
+                    via_page: false,
+                }
+            }
+            ReportWriter::Person { name, public_id } => NewComment {
+                author_kind: AUTHOR_VIEWER,
+                author_name: name.clone(),
+                author_public_id: public_id.clone(),
+                via_session_id: None,
+                body: fix.summary.clone(),
+                via_page: false,
+            },
+        };
+        let proposer = comment.author_name.clone();
+        let agent = by.session();
+        let now = self.now();
+        let fix_json = serde_json::to_string(&fix).expect("fixes serialise");
+        self.add_comment_then(ctx, tid, comment, |tx, t, _| {
+            queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+            let aid = report_artifact_in(tx, qid, tid)?;
+            if let Some(sid) = agent {
+                check_lease_in(tx, tid, sid, &now)?;
+                check_not_taken_in(tx, tid, sid)?;
+            }
+            // `t` is the thread as it was before the summary: a person's
+            // comment would have reopened a closed one.
+            if t.status == "resolved" {
+                return Err(CoreError::NotClaimable);
+            }
+            let n: u32 = tx.query_row(
+                "SELECT COALESCE(MAX(n), 0) + 1 FROM report_fixes WHERE thread_id = ?1",
+                params![tid],
+                |r| r.get(0),
+            )?;
+            tx.execute(
+                "INSERT INTO report_fixes (thread_id, n, fix_json, proposer_name, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![tid, n, fix_json, proposer, now],
+            )?;
+            tx.execute(
+                "UPDATE threads SET report_phase = 'fix_proposed' WHERE id = ?1",
+                params![tid],
+            )?;
+            end_lease_in(self, tx, ctx, qid, tid, &aid, &now, "fix_proposed")?;
+            let mut rec = queue_record(AuditKind::QueueFix, &now, qid)
+                .with("thread_id", tid)
+                .with("n", n);
+            if let Some(u) = &fix.url {
+                rec = rec.with("url", u.as_str());
+            }
+            if let Some(c) = &fix.commit {
+                rec = rec.with("commit", c.as_str());
+            }
+            rec.ids.artifact = Some(aid);
+            rec.ids.thread = Some(tid.to_string());
+            rec.ids.session = agent.map(str::to_string);
+            self.record_audit(tx, ctx, rec)?;
+            Ok(())
+        })?;
+        self.report(qid, tid, Visibility::All)?
+            .ok_or(CoreError::NotFound)
+    }
+
+    /// [`Store::verify_report_touched`]'s report.
+    ///
+    /// # Errors
+    /// [`Store::verify_report_touched`]'s.
+    pub fn verify_report(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        tid: &str,
+        by: Verdict<'_>,
+        note: Option<String>,
+        context: Option<ReportContext>,
+    ) -> Result<Report> {
+        self.verify_report_touched(ctx, qid, tid, by, note, context)
+            .map(|(r, _)| r)
+    }
+
+    /// `by` says the fix waiting on report `tid` of queue `qid` works (spec
+    /// 2026-10-29-feedback-loop-design §6.3): the latest attempt's outcome
+    /// is `verified`, with `note` (blank is none), `by`'s `context` at
+    /// verification and the time; the report is `verified` and its thread
+    /// resolved as [`Store::resolve_thread_touched`] resolves one, by
+    /// `reporter:<reporter ID>` or `viewer:<public ID>`, for reason
+    /// `fixed`. Recorded as `queue.verify {queue_id, thread_id, n}`.
+    /// Answers the report as `by` reads it, and what the resolve changed.
+    ///
+    /// # Errors
+    /// [`CoreError::NotAMember`] for no such queue; `NotFound` for no such
+    /// report of it, or one a reporter did not file or does not see;
+    /// [`CoreError::NotFixProposed`] when no fix waits for a verdict;
+    /// `invalid_comment` for a note too long; [`CoreError::InvalidContext`].
+    pub fn verify_report_touched(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        tid: &str,
+        by: Verdict<'_>,
+        note: Option<String>,
+        context: Option<ReportContext>,
+    ) -> Result<(Report, clax_core::feedback::Touched)> {
+        let note = note.filter(|n| !n.trim().is_empty());
+        if let Some(n) = &note {
+            check_body(n)?;
+        }
+        let context = context.as_ref().map(context_json).transpose()?;
+        let now = self.now();
+        let resolved_by = by.resolved_by();
+        let touched = self.with_tx(|tx| {
+            let q = queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+            let s = check_verdict_in(tx, &q, tid, &by)?;
+            if state_of(&s.status, s.phase.as_deref(), false) != State::FixProposed {
+                return Err(CoreError::NotFixProposed);
+            }
+            let n: u32 = tx
+                .query_row(
+                    "SELECT MAX(n) FROM report_fixes WHERE thread_id = ?1",
+                    params![tid],
+                    |r| r.get::<_, Option<u32>>(0),
+                )?
+                .ok_or(CoreError::NotFixProposed)?;
+            tx.execute(
+                "UPDATE report_fixes SET outcome = 'verified', verdict_note = ?3,
+                    verdict_context_json = ?4, verdict_at = ?5 WHERE thread_id = ?1 AND n = ?2",
+                params![tid, n, note, context, now],
+            )?;
+            let touched = self.resolve_thread_reason_in(
+                tx,
+                ctx,
+                tid,
+                &resolved_by,
+                None,
+                Some(ResolveReason::Fixed.as_str()),
+                |_, _| Ok(None),
+            )?;
+            tx.execute(
+                "UPDATE threads SET report_phase = 'verified' WHERE id = ?1",
+                params![tid],
+            )?;
+            let mut rec = queue_record(AuditKind::QueueVerify, &now, qid)
+                .with("thread_id", tid)
+                .with("n", n);
+            rec.ids.artifact = Some(s.artifact_id);
+            rec.ids.thread = Some(tid.to_string());
+            self.record_audit(tx, ctx, rec)?;
+            Ok(touched)
+        })?;
+        let report = self
+            .report(qid, tid, by.visibility())?
+            .ok_or(CoreError::NotFound)?;
+        Ok((report, touched))
+    }
+
+    /// [`Store::reopen_report_async`], blocking on its content store.
+    ///
+    /// # Errors
+    /// [`Store::reopen_report_async`]'s.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reopen_report(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        tid: &str,
+        by: Verdict<'_>,
+        body: String,
+        clip: Option<Vec<u8>>,
+        diagnostics: Option<Vec<DiagLine>>,
+        context: Option<ReportContext>,
+    ) -> Result<(Report, Option<String>)> {
+        self.block_on(self.reopen_report_async(ctx, qid, tid, by, body, clip, diagnostics, context))
+    }
+
+    /// `by` says report `tid` of queue `qid` is still broken (spec
+    /// 2026-10-29-feedback-loop-design §6.3), from `fix_proposed`,
+    /// `verified` or `resolved`: `body` is posted as `by`'s comment (a
+    /// reporter's carries its reporter ID), `clip` replaces the report's
+    /// clip and `diagnostics` its diagnostics when given; a latest attempt
+    /// still `pending` is `rejected`, with `body` as its note, `by`'s
+    /// `context` and the time; the report is open again, its phase and
+    /// resolve reason cleared and its `reopen_count` one more. Recorded as
+    /// `queue.reopen {queue_id, thread_id, n?, reopen_count}` (`n` the
+    /// latest attempt's, when there is one), after the comment's
+    /// `comment.add` and `thread.reopen`. Answers the report as `by` reads
+    /// it, and the session of its latest lease when that session has not
+    /// ended (whoever claimed it last, to be told).
+    ///
+    /// # Errors
+    /// [`CoreError::NotAMember`] for no such queue; `NotFound` for no such
+    /// report of it, or one a reporter did not file or does not see;
+    /// [`CoreError::NotFixProposed`] for an `open` or `claimed` report;
+    /// `invalid_comment`, `invalid_clip`, [`CoreError::InvalidDiagnostics`]
+    /// and [`CoreError::InvalidContext`] for bad input.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn reopen_report_async(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        tid: &str,
+        by: Verdict<'_>,
+        body: String,
+        clip: Option<Vec<u8>>,
+        diagnostics: Option<Vec<DiagLine>>,
+        context: Option<ReportContext>,
+    ) -> Result<(Report, Option<String>)> {
+        check_body(&body)?;
+        if let Some(problem) = clip.as_deref().and_then(clip_problem) {
+            return Err(CoreError::invalid("invalid_clip", problem));
+        }
+        let diagnostics = match diagnostics.as_deref() {
+            Some(lines) => diagnostics_json(lines)?,
+            None => None,
+        };
+        let context = context.as_ref().map(context_json).transpose()?;
+        let reopenable = |s: &Standing| match state_of(&s.status, s.phase.as_deref(), false) {
+            State::FixProposed | State::Verified | State::Resolved => Ok(()),
+            State::Open | State::Claimed => Err(CoreError::NotFixProposed),
+        };
+        // Checked before the clip is written, and again in the reopen's
+        // transaction.
+        let aid = self.with_read(|c| {
+            let q = queue_in(c, qid)?.ok_or(CoreError::NotAMember)?;
+            let s = check_verdict_in(c, &q, tid, &by)?;
+            reopenable(&s)?;
+            Ok(s.artifact_id)
+        })?;
+        let aid = ArtifactId::parse(&aid)?;
+        // The clip goes first, under the lock a delete holds across its
+        // transaction and the content's removal; what it replaced is put
+        // back when the reopen is refused.
+        let (_lock, replaced) = match &clip {
+            Some(bytes) => {
+                let lock = self.lock_content(&aid).await?;
+                if !self.with_read(|c| super::threads::artifact_live(c, aid.as_str()))? {
+                    return Err(CoreError::NotFound);
+                }
+                let before = self.read_clip_async(&aid, tid).await?;
+                self.content.put_clip(&aid, tid, bytes).await?;
+                (Some(lock), Some(before))
+            }
+            None => (None, None),
+        };
+        let comment = match &by {
+            Verdict::Reporter(r) => NewComment {
+                author_kind: AUTHOR_VIEWER,
+                author_name: r.to_string(),
+                author_public_id: None,
+                via_session_id: None,
+                body: body.clone(),
+                via_page: false,
+            },
+            Verdict::Person { name, public_id } => NewComment {
+                author_kind: AUTHOR_VIEWER,
+                author_name: name.clone(),
+                author_public_id: public_id.clone(),
+                via_session_id: None,
+                body: body.clone(),
+                via_page: false,
+            },
+        };
+        let now = self.now();
+        let done = self.with_tx(|tx| {
+            let q = queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+            let s = check_verdict_in(tx, &q, tid, &by)?;
+            reopenable(&s)?;
+            let (c, _) = self.add_comment_in(tx, ctx, tid, comment)?;
+            if let Verdict::Reporter(r) = &by {
+                tx.execute(
+                    "UPDATE comments SET reporter_id = ?2 WHERE id = ?1",
+                    params![c.id, r],
+                )?;
+            }
+            let last: Option<(u32, String)> = tx
+                .query_row(
+                    "SELECT n, outcome FROM report_fixes WHERE thread_id = ?1 ORDER BY n DESC LIMIT 1",
+                    params![tid],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            if let Some((n, outcome)) = &last
+                && outcome == FixOutcome::Pending.as_str()
+            {
+                tx.execute(
+                    "UPDATE report_fixes SET outcome = 'rejected', verdict_note = ?3,
+                        verdict_context_json = ?4, verdict_at = ?5 WHERE thread_id = ?1 AND n = ?2",
+                    params![tid, n, body, context, now],
+                )?;
+            }
+            tx.execute(
+                "UPDATE threads SET report_phase = NULL, resolve_reason = NULL,
+                    reopen_count = reopen_count + 1, has_clip = has_clip OR ?2 WHERE id = ?1",
+                params![tid, clip.is_some()],
+            )?;
+            let reopen_count: u32 = tx.query_row(
+                "SELECT reopen_count FROM threads WHERE id = ?1",
+                params![tid],
+                |r| r.get(0),
+            )?;
+            if let Some((lines, n)) = &diagnostics {
+                tx.execute(
+                    "INSERT INTO report_diagnostics (thread_id, lines_json, n) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(thread_id) DO UPDATE SET lines_json = excluded.lines_json,
+                        n = excluded.n",
+                    params![tid, lines, n],
+                )?;
+            }
+            let previous = match current_in(tx, tid, &now)? {
+                Some(cur) => {
+                    let live: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1 AND ended_at IS NULL)",
+                        params![cur.session_id],
+                        |r| r.get(0),
+                    )?;
+                    live.then_some(cur.session_id)
+                }
+                None => None,
+            };
+            let mut rec = queue_record(AuditKind::QueueReopen, &now, qid).with("thread_id", tid);
+            if let Some((n, _)) = last {
+                rec = rec.with("n", n);
+            }
+            rec = rec.with("reopen_count", reopen_count);
+            rec.ids.artifact = Some(s.artifact_id);
+            rec.ids.thread = Some(tid.to_string());
+            self.record_audit(tx, ctx, rec)?;
+            Ok(previous)
+        });
+        let previous = match done {
+            Ok(p) => p,
+            Err(e) => {
+                let restored = match replaced {
+                    Some(Some(bytes)) => self.content.put_clip(&aid, tid, &bytes).await,
+                    Some(None) => self.content.delete_clip(&aid, tid).await,
+                    None => Ok(()),
+                };
+                if let Err(gone) = restored {
+                    tracing::warn!(
+                        artifact = aid.as_str(),
+                        thread = tid,
+                        error = %gone,
+                        "could not restore the clip of a report not reopened"
+                    );
+                }
+                return Err(e);
+            }
+        };
+        let report = self
+            .report(qid, tid, by.visibility())?
+            .ok_or(CoreError::NotFound)?;
+        Ok((report, previous))
+    }
+
+    /// The diagnostics report `tid` of queue `qid` was filed with, or last
+    /// reopened with, as `vis` may see them; `None` when it has none.
+    ///
+    /// # Errors
+    /// [`CoreError::NotAMember`] for no such queue; `NotFound` for no such
+    /// report of it, or one `vis` does not see.
+    pub fn report_diagnostics(
+        &self,
+        qid: &str,
+        tid: &str,
+        vis: Visibility<'_>,
+    ) -> Result<Option<Vec<DiagLine>>> {
+        self.with_read(|c| {
+            let q = queue_in(c, qid)?.ok_or(CoreError::NotAMember)?;
+            if !sees_in(c, &q, tid, vis)? {
+                return Err(CoreError::NotFound);
+            }
+            let json: Option<String> = c
+                .query_row(
+                    "SELECT lines_json FROM report_diagnostics WHERE thread_id = ?1",
+                    params![tid],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            json.map(|j| {
+                serde_json::from_str(&j).map_err(|_| CoreError::Corrupt {
+                    artifact_id: tid.to_string(),
+                    column: "report_diagnostics.lines_json",
+                    version: None,
+                })
+            })
+            .transpose()
+        })
+    }
+
+    /// What waits for reporter `reporter_id` in queue `qid` (spec
+    /// 2026-10-29-feedback-loop-design §6.1): the reports it filed whose
+    /// fix waits for its verdict (`fix_proposed`), or that hold a comment
+    /// not its own newer than it last read the report
+    /// ([`Store::mark_reporter_seen`]; any, before it ever did), oldest
+    /// first.
+    ///
+    /// # Errors
+    /// [`CoreError::NotAMember`] for no such queue.
+    pub fn reporter_badge(&self, qid: &str, reporter_id: &str) -> Result<Badge> {
+        self.with_read(|c| {
+            queue_in(c, qid)?.ok_or(CoreError::NotAMember)?;
+            let report_ids: Vec<String> = c
+                .prepare_cached(
+                    "SELECT t.id FROM threads t JOIN artifacts a ON a.id = t.artifact_id
+                     WHERE a.deleted_at IS NULL AND t.queue_id = ?1 AND t.reporter_id = ?2
+                       AND ((t.status = 'open' AND t.report_phase = 'fix_proposed')
+                         OR EXISTS (SELECT 1 FROM comments c WHERE c.thread_id = t.id
+                              AND c.reporter_id IS NULL
+                              AND (t.reporter_seen_at IS NULL OR c.created_at > t.reporter_seen_at)))
+                     ORDER BY t.created_at, t.id",
+                )?
+                .query_map(params![qid, reporter_id], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok(Badge {
+                waiting: report_ids.len() as u32,
+                report_ids,
+            })
+        })
+    }
+
+    /// Reporter `reporter_id` has read report `tid` of queue `qid` now: a
+    /// comment before now no longer counts in its badge
+    /// ([`Store::reporter_badge`]). A report it sees but did not file is
+    /// left as it is. Records nothing.
+    ///
+    /// # Errors
+    /// [`CoreError::NotAMember`] for no such queue; `NotFound` for no such
+    /// report of it, or one the reporter does not see.
+    pub fn mark_reporter_seen(&self, qid: &str, tid: &str, reporter_id: &str) -> Result<()> {
+        let now = self.now();
+        self.with_tx(|tx| {
+            let q = queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+            if !sees_in(tx, &q, tid, Visibility::Reporter(reporter_id))? {
+                return Err(CoreError::NotFound);
+            }
+            tx.execute(
+                "UPDATE threads SET reporter_seen_at = ?3 WHERE id = ?1 AND reporter_id = ?2",
+                params![tid, reporter_id, now],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Session `sid` watches queue `qid` (spec 2026-10-29-feedback-loop-design
+    /// §7.3) until it unwatches it or ends; watching it again changes
+    /// nothing. Records nothing.
+    ///
+    /// # Errors
+    /// [`CoreError::NotAMember`] for no such queue; `unknown_session` for a
+    /// session that is not live.
+    pub fn watch_queue(&self, qid: &str, sid: &str) -> Result<()> {
+        let now = self.now();
+        self.with_tx(|tx| {
+            queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+            live_session_in(tx, sid, "a queue is watched by a live session")?;
+            tx.execute(
+                "INSERT INTO queue_watches (queue_id, session_id, created_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(queue_id, session_id) DO NOTHING",
+                params![qid, sid, now],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Session `sid` no longer watches queue `qid`; one that did not
+    /// watch it is fine.
+    ///
+    /// # Errors
+    /// Database errors.
+    pub fn unwatch_queue(&self, qid: &str, sid: &str) -> Result<()> {
+        self.with_tx(|tx| {
+            tx.execute(
+                "DELETE FROM queue_watches WHERE queue_id = ?1 AND session_id = ?2",
+                params![qid, sid],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// The live sessions watching queue `qid`, in the order they began
+    /// watching it.
+    ///
+    /// # Errors
+    /// Database errors.
+    pub fn queue_watchers(&self, qid: &str) -> Result<Vec<String>> {
+        self.with_read(|c| {
+            Ok(c.prepare_cached(
+                "SELECT w.session_id FROM queue_watches w JOIN sessions s ON s.id = w.session_id
+                 WHERE w.queue_id = ?1 AND s.ended_at IS NULL ORDER BY w.created_at, w.session_id",
+            )?
+            .query_map(params![qid], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
+        })
+    }
 }
 
 fn grant_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ServiceGrant> {
@@ -1645,7 +2530,10 @@ fn grant_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ServiceGrant> {
 }
 
 /// `Ok` when `sid` is a session that has not ended.
-fn live_session_in(c: &Connection, sid: &str) -> Result<()> {
+///
+/// # Errors
+/// `unknown_session` with `message` otherwise.
+fn live_session_in(c: &Connection, sid: &str, message: &'static str) -> Result<()> {
     let live: bool = c.query_row(
         "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1 AND ended_at IS NULL)",
         params![sid],
@@ -1654,10 +2542,7 @@ fn live_session_in(c: &Connection, sid: &str) -> Result<()> {
     if live {
         Ok(())
     } else {
-        Err(CoreError::invalid(
-            "unknown_session",
-            "a claim comes from a live session",
-        ))
+        Err(CoreError::invalid("unknown_session", message))
     }
 }
 

@@ -47,7 +47,7 @@ fn live_targets(c: &Connection, aid: &str, owner: Option<&str>) -> Result<Vec<St
         .collect::<rusqlite::Result<Vec<String>>>()?)
 }
 
-/// Releases session `sid` after it ended: drops its watches and scope watches; each of its
+/// Releases session `sid` after it ended: drops its watches, scope watches and queue watches; each of its
 /// undelivered rows is deleted when another live session is a target of the
 /// same comment, else untargeted for the next session that publishes or watches.
 pub(crate) fn release_session(tx: &Transaction<'_>, sid: &str, now: &str) -> Result<Touched> {
@@ -55,6 +55,10 @@ pub(crate) fn release_session(tx: &Transaction<'_>, sid: &str, now: &str) -> Res
     tx.execute("DELETE FROM watches WHERE session_id = ?1", params![sid])?;
     tx.execute(
         "DELETE FROM live_watches WHERE session_id = ?1",
+        params![sid],
+    )?;
+    tx.execute(
+        "DELETE FROM queue_watches WHERE session_id = ?1",
         params![sid],
     )?;
     let rows: Vec<(String, String, String, String)> = {
@@ -2587,11 +2591,20 @@ mod tests {
             )
             .unwrap()
             .id;
+        let tok = crate::queues::ReporterToken {
+            queue_id: qid.clone(),
+            service_grant_id: "g1".into(),
+            reporter_id: "emp-1".into(),
+            origin: "https://app.example.com".into(),
+            public_key: String::new(),
+            expires_at: "2099-01-01T00:00:00.000Z".into(),
+            profile: None,
+        };
         let r = st
             .file_report(
                 DAEMON,
                 &qid,
-                Some("emp-1"),
+                Some(&tok),
                 crate::queues::ExternalScope::Instance,
                 crate::queues::NewReport {
                     external_id: Some("invoice:4821".into()),
@@ -2603,6 +2616,9 @@ mod tests {
                     metadata: serde_json::Value::Null,
                     revision: None,
                     clip: None,
+                    context: None,
+                    server: None,
+                    diagnostics: None,
                 },
             )
             .unwrap();

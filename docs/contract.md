@@ -8346,7 +8346,7 @@ the body below.
 | `viewer.claim` | `from_public_id, to_public_id` | a claim that retires a public ID; a record naming `from_public_id` resolves to `to_public_id` |
 | `thread.open` | `version_n, anchor{kind, selector, quote, prefix, suffix, html_hash, file, route}, live_path, has_clip, first_comment_id` | a new thread, followed by its first `comment.add`; a thread on the whole artifact has `anchor.kind` `artifact` and `anchor.file` `""`, and its step's description reads `Opened thread <ID> about the whole artifact on version <n> of …` |
 | `comment.add` | `comment_id, body, author_kind, author_name, via_harness, via_page` | every comment; a viewer comment that reopens a resolved thread records `comment.add` then `thread.reopen` |
-| `thread.resolve` | `resolved_by, addressed_version (n\|null)` | a resolve of an open thread |
+| `thread.resolve` | `resolved_by, addressed_version (n\|null)`, and for a queue's report `reason` (`fixed\|duplicate\|wontfix\|cannot_reproduce\|other`) | a resolve of an open thread |
 | `thread.reopen` | none | a reopen of a resolved thread |
 | `thread.delete` | `moved` | delete |
 | `thread.send` | `target ("watchers" \| {session_id, agent_handle}), feedback_ids[], batch_id?, thread_ids[]` | a send that changes something, automatic forwards included |
@@ -8391,7 +8391,7 @@ the body below.
 | `view.audit` | `filters` | the audit view opened or filtered |
 | `view.usage` | `subject_person, week?` | a usage page opened |
 | `admin.role` | `person, role (admin), op (grant\|remove)` | the owner granted or removed admin |
-| `admin.flag` | `person, flag (claxbot\|claxbot_unenforced), value` | a flag changed |
+| `admin.flag` | `person, flag (claxbot\|claxbot_unenforced\|feedback), value` | a flag changed |
 | `admin.credits` | `person, lift_from, lift_to, reason` | a person's weekly lift changed |
 | `admin.provider` | `fields[]` (the setting keys that changed), `values{key: value}` (their new values; none is a secret) | ClaxBot's provider, models or caps changed |
 | `admin.key` | `scope (instance\|own), op (set\|clear\|use_own), last4, person?` (an own key's person), `value` (with `use_own`: whether the key is now in use) | a model key set or cleared, or an own key put in or out of use; never the key |
@@ -8755,7 +8755,9 @@ owner's public ID is.
   row; only the owner grants or removes `admin`, recorded as `admin.role`.
   A revoked person is a member, whatever row is left.
 - **Flags** (`person_flags`): `claxbot` (on for the owner, off for anyone
-  else until set) and `claxbot_unenforced` (off); other names are refused
+  else until set), `claxbot_unenforced` (off) and `feedback` (off for
+  everyone, the owner too: whether the person may report problems with
+  Clax itself); other names are refused
   (`unknown_flag`). Each change is an `admin.flag`.
 - **Settings** (`bot_settings`): `base_url`, `models.default|quick|complex`,
   `max_tokens`, `max_steps`, `max_run_credits`, `max_run_minutes`,

@@ -414,6 +414,7 @@ async fn a_service_grant_is_shown_once_and_its_revocation_ends_its_reporter_toke
                 "user-1",
                 "https://app.example.com",
                 &clax_core::sig::encode_public(&reporter_key.public()),
+                None,
             )
             .unwrap();
     assert!(

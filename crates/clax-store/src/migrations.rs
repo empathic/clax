@@ -1843,6 +1843,27 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (thread_id, session_id)
     ) WITHOUT ROWID;
     CREATE INDEX queue_claims_by_session ON queue_claims(session_id);",
+    // 60: the feedback loop (spec 2026-10-29-feedback-loop-design §5, §6,
+    // §7.3): a report's context, server stamp, reporter profile, phase,
+    // resolve reason, reopen count and the reporter's last read; the
+    // profile a reporter token carries; each report's diagnostics; its fix
+    // attempts and their verdicts; and the sessions watching a queue.
+    "ALTER TABLE threads ADD COLUMN report_context_json TEXT CHECK (report_context_json IS NULL OR json_valid(report_context_json));
+    ALTER TABLE threads ADD COLUMN report_server_json TEXT;
+    ALTER TABLE threads ADD COLUMN reporter_profile_json TEXT;
+    ALTER TABLE threads ADD COLUMN report_phase TEXT CHECK (report_phase IN ('fix_proposed', 'verified'));
+    ALTER TABLE threads ADD COLUMN resolve_reason TEXT;
+    ALTER TABLE threads ADD COLUMN reopen_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE threads ADD COLUMN reporter_seen_at TEXT;
+    ALTER TABLE queue_reporter_tokens ADD COLUMN profile_json TEXT;
+    CREATE TABLE report_diagnostics (thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE, lines_json TEXT NOT NULL, n INTEGER NOT NULL) WITHOUT ROWID;
+    CREATE TABLE report_fixes (
+      thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      n INTEGER NOT NULL, fix_json TEXT NOT NULL, proposer_name TEXT NOT NULL, created_at TEXT NOT NULL,
+      outcome TEXT NOT NULL DEFAULT 'pending' CHECK (outcome IN ('pending', 'verified', 'rejected')),
+      verdict_note TEXT, verdict_context_json TEXT, verdict_at TEXT,
+      PRIMARY KEY (thread_id, n)) WITHOUT ROWID;
+    CREATE TABLE queue_watches (queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE, session_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (queue_id, session_id)) WITHOUT ROWID;",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -1884,8 +1905,13 @@ pub const CAPABILITY_APPROVALS_MIGRATION: u32 = QUICKSTART_MIGRATION + 1;
 
 /// The migration that adds report queues and external artifacts
 /// (`queues`, `external_artifacts`, `queue_claims`, and the queue columns
-/// of threads and comments), as a schema version, and this build's last.
+/// of threads and comments), as a schema version.
 pub const QUEUES_MIGRATION: u32 = CAPABILITY_APPROVALS_MIGRATION + 1;
+
+/// The feedback loop's migration (`report_fixes`, `report_diagnostics`,
+/// `queue_watches`, the report columns of threads and the profile of
+/// reporter tokens), as a schema version, and this build's last.
+pub const FEEDBACK_LOOP_MIGRATION: u32 = QUEUES_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -2045,11 +2071,11 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`QUEUES_MIGRATION`]. They follow the app's in every
+/// [`FEEDBACK_LOOP_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 10] = [
+const MARKS_AFTER_APP: [Mark<'static>; 11] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -2060,6 +2086,7 @@ const MARKS_AFTER_APP: [Mark<'static>; 10] = [
     Mark::Table("quickstarts"),
     Mark::Table("capability_approvals"),
     Mark::Table("queues"),
+    Mark::Table("report_fixes"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -5011,7 +5038,9 @@ mod tests {
             super::CAPABILITY_APPROVALS_MIGRATION + 1
         );
         assert!(MIGRATIONS[first + 17].contains("CREATE TABLE queues ("));
-        assert_eq!(MIGRATIONS.len() as u32, super::QUEUES_MIGRATION);
+        assert_eq!(super::FEEDBACK_LOOP_MIGRATION, super::QUEUES_MIGRATION + 1);
+        assert!(MIGRATIONS[first + 18].contains("CREATE TABLE report_fixes ("));
+        assert_eq!(MIGRATIONS.len() as u32, super::FEEDBACK_LOOP_MIGRATION);
     }
 
     #[test]
@@ -5100,7 +5129,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_database_reaches_59() {
+    fn a_fresh_database_reaches_60() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -5118,11 +5147,30 @@ mod tests {
         assert_eq!(super::QUICKSTART_MIGRATION, 57);
         assert_eq!(super::CAPABILITY_APPROVALS_MIGRATION, 58);
         assert_eq!(super::QUEUES_MIGRATION, 59);
-        assert_eq!(user_version(&c), super::QUEUES_MIGRATION);
+        assert_eq!(super::FEEDBACK_LOOP_MIGRATION, 60);
+        assert_eq!(user_version(&c), super::FEEDBACK_LOOP_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
         }
+        for table in ["report_fixes", "report_diagnostics", "queue_watches"] {
+            assert_eq!(table_count(&c, table), 1, "{table}");
+        }
+        for column in [
+            "report_context_json",
+            "report_server_json",
+            "reporter_profile_json",
+            "report_phase",
+            "resolve_reason",
+            "reopen_count",
+            "reporter_seen_at",
+        ] {
+            assert!(
+                super::has_column(&c, "threads", column).unwrap(),
+                "{column}"
+            );
+        }
+        assert!(super::has_column(&c, "queue_reporter_tokens", "profile_json").unwrap());
     }
 
     /// Migration 48 as builds before `linked_comments.author_key` made it.
@@ -5860,7 +5908,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::QUEUES_MIGRATION);
+        assert_eq!(user_version(&c), super::FEEDBACK_LOOP_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -6354,14 +6402,14 @@ mod tests {
         // remote kind migration to 49, ClaxBot's to 50, the site
         // migrations to 54, the return-to migration to 55, the version
         // declarations' to 56, the quickstart's to 57 and the capability
-        // approvals' to 58 and the queues' to 59.
+        // approvals' to 58, the queues' to 59 and the feedback loop's to 60.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::QUEUES_MIGRATION);
+            assert_eq!(user_version(&c), super::FEEDBACK_LOOP_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -6369,8 +6417,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            super::QUEUES_MIGRATION + 1,
-            "ClaxBot's 50 and the migrations 51 to 59 after it are one later now"
+            super::FEEDBACK_LOOP_MIGRATION + 1,
+            "ClaxBot's 50 and the migrations 51 to 60 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -6389,7 +6437,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), super::QUEUES_MIGRATION);
+        assert_eq!(user_version(&copied), super::FEEDBACK_LOOP_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -6403,7 +6451,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (super::QUEUES_MIGRATION + 1, schema, rows)
+            (super::FEEDBACK_LOOP_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -6677,7 +6725,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, super::QUEUES_MIGRATION);
+        assert_eq!(last, super::FEEDBACK_LOOP_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
