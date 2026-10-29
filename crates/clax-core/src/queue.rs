@@ -268,6 +268,10 @@ pub struct ReportComment {
     pub has_clip: bool,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub diagnostics_lines: u32,
+    /// A note for the queue's members alone (a person's release of a
+    /// claim): a reporter's view of the report leaves it out.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub triage_only: bool,
 }
 
 fn is_false(b: &bool) -> bool {

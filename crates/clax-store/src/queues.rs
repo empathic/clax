@@ -343,6 +343,10 @@ fn normalize_origins(origins: &[String]) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// The comment a person's release of a claim posts when they give no
+/// note ([`Store::release_as_person`]).
+pub const RELEASED_BODY: &str = "Released the claim: the report is open again.";
+
 fn queue_record(kind: AuditKind, at: &str, qid: &str) -> AuditRecord {
     AuditRecord::new(kind, at).with("queue_id", qid)
 }
@@ -653,10 +657,12 @@ fn reports_of(
                 "SELECT c.id, c.author_kind, c.author_name, c.body, c.created_at, c.reporter_id,
                     c.report_capture, c.clip_key IS NOT NULL,
                     (SELECT d.n FROM report_diagnostics d
-                     WHERE d.thread_id = c.thread_id AND d.capture = c.report_capture)
-                 FROM comments c WHERE c.thread_id = ?1 ORDER BY c.created_at, c.id",
+                     WHERE d.thread_id = c.thread_id AND d.capture = c.report_capture),
+                    c.triage_only
+                 FROM comments c WHERE c.thread_id = ?1 AND (?2 OR NOT c.triage_only)
+                 ORDER BY c.created_at, c.id",
             )?
-            .query_map(params![row.id], |r| {
+            .query_map(params![row.id, with_profile], |r| {
                 let reporter: Option<String> = r.get(5)?;
                 Ok(ReportComment {
                     id: r.get(0)?,
@@ -670,6 +676,7 @@ fn reports_of(
                     capture: r.get(6)?,
                     has_clip: r.get(7)?,
                     diagnostics_lines: r.get::<_, Option<u32>>(8)?.unwrap_or(0),
+                    triage_only: r.get(9)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1913,6 +1920,130 @@ impl Store {
         })
     }
 
+    /// A triage person (`name`, `public_id`) ends the live lease on report
+    /// `tid` of queue `qid`, whoever holds it: the report is open again,
+    /// the thread has no owner, and the holder's next renew, write or fix
+    /// is [`CoreError::LeaseLost`] (its lease ends at once, as one that
+    /// lapsed; a new claim takes a larger fence). The person's `note` (or,
+    /// blank or absent, [`RELEASED_BODY`]) is posted as their comment, a
+    /// note for the queue's members alone (`triage_only`: a reporter's view
+    /// leaves it out and its badge does not count it), and the holder's session
+    /// is woken with it (`released`, [`Store::wake_session_in`]) while it
+    /// is live and acts for a member. Recorded as `queue.release
+    /// {queue_id, thread_id, session, lease_id, reason: "person"}` under
+    /// `ctx`, the person's. Answers the report and the sessions woken, or
+    /// for a report no live lease holds the report as it is and `None`:
+    /// nothing is written.
+    ///
+    /// # Errors
+    /// [`CoreError::NotAMember`] for no such queue, `NotFound` for no such
+    /// report of it; `invalid_comment` for a note too long.
+    pub fn release_as_person(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        tid: &str,
+        name: &str,
+        public_id: Option<&str>,
+        note: Option<String>,
+    ) -> Result<(Report, Option<Touched>)> {
+        let body = note
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .unwrap_or(RELEASED_BODY)
+            .to_string();
+        let now = self.now();
+        let woken = self.with_tx(|tx| {
+            queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+            let aid = report_artifact_in(tx, qid, tid)?;
+            settle_in(self, tx, tid, &now)?;
+            let Some(cur) = current_in(tx, tid, &now)?.filter(|c| c.live) else {
+                return Ok(None);
+            };
+            // The lease lapses now, unreleased: its holder's next check is
+            // lease_lost, as for a lapsed or superseded lease.
+            tx.execute(
+                "UPDATE queue_claims SET expires_at = ?3 WHERE thread_id = ?1 AND session_id = ?2",
+                params![tid, cur.session_id, now],
+            )?;
+            tx.execute(
+                "UPDATE threads SET target_session_id = NULL WHERE id = ?1 AND target_session_id = ?2",
+                params![tid, cur.session_id],
+            )?;
+            self.agents_pinged();
+            let (c, _) = self.add_comment_in(
+                tx,
+                ctx,
+                tid,
+                NewComment {
+                    author_kind: AUTHOR_VIEWER,
+                    author_name: name.to_string(),
+                    author_public_id: public_id.map(str::to_string),
+                    via_session_id: None,
+                    body,
+                    via_page: false,
+                },
+            )?;
+            tx.execute(
+                "UPDATE comments SET triage_only = 1 WHERE id = ?1",
+                params![c.id],
+            )?;
+            let mut rec = queue_record(AuditKind::QueueRelease, &now, qid)
+                .with("thread_id", tid)
+                .with("session", cur.session_id.as_str())
+                .with("lease_id", cur.lease_id.as_str())
+                .with("reason", "person");
+            rec.ids.artifact = Some(aid);
+            rec.ids.thread = Some(tid.to_string());
+            rec.ids.session = Some(cur.session_id.clone());
+            self.record_audit(tx, ctx, rec)?;
+            self.wake_session_in(tx, qid, tid, &c.id, QueueEvent::Released, &cur.session_id)
+                .map(Some)
+        })?;
+        let report = self
+            .report(qid, tid, Visibility::All)?
+            .ok_or(CoreError::NotFound)?;
+        Ok((report, woken))
+    }
+
+    /// What a change to report `tid` of queue `qid` tells the queue's
+    /// topic: the report's state now, and the recipient keys of the
+    /// queue's members (empty for the owner, a connected person's public
+    /// ID), its maker first; `None` for no such live queue or report.
+    ///
+    /// # Errors
+    /// Database errors.
+    pub fn report_change(&self, qid: &str, tid: &str) -> Result<Option<(State, Vec<String>)>> {
+        let now = self.now();
+        self.with_read(|c| {
+            let Some(q) = queue_in(c, qid)? else {
+                return Ok(None);
+            };
+            match report_artifact_in(c, qid, tid) {
+                Ok(_) => {}
+                Err(CoreError::NotFound) => return Ok(None),
+                Err(e) => return Err(e),
+            }
+            let s = standing_in(c, tid)?;
+            let claimed = current_in(c, tid, &now)?.is_some_and(|cur| cur.live);
+            let state = state_of(&s.status, s.phase.as_deref(), claimed);
+            let mut members = vec![q.person.clone().unwrap_or_default()];
+            let rows: Vec<String> = c
+                .prepare_cached(
+                    "SELECT person FROM queue_members WHERE queue_id = ?1 ORDER BY created_at, person",
+                )?
+                .query_map(params![qid], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            for p in rows {
+                if !members.contains(&p) {
+                    members.push(p);
+                }
+            }
+            Ok(Some((state, members)))
+        })
+    }
+
     /// `Ok` when session `sid` may write to report `tid` of queue `qid`
     /// (reply, resolve, metadata): it holds the report's live lease. An
     /// agent writes to a report only under its own claim; a person writes
@@ -2816,7 +2947,7 @@ impl Store {
                      WHERE a.deleted_at IS NULL AND t.queue_id = ?1 AND t.reporter_id = ?2
                        AND ((t.status = 'open' AND t.report_phase = 'fix_proposed')
                          OR EXISTS (SELECT 1 FROM comments c WHERE c.thread_id = t.id
-                              AND c.reporter_id IS NOT ?2
+                              AND c.reporter_id IS NOT ?2 AND NOT c.triage_only
                               AND (t.reporter_seen_at IS NULL OR c.created_at >= t.reporter_seen_at)))
                      ORDER BY t.created_at, t.id",
                 )?
