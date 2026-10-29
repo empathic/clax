@@ -112,6 +112,10 @@ console.log(JSON.stringify(out));
     expect(readFileSync(join(pkgDir, "overlay.js"), "utf8")).not.toContain("__CLAX_OVERLAY_COMPONENT_CSS__");
   });
 
+  it("keeps class fields and private members as written, for the app's bundler to lower if it must", () => {
+    for (const f of files(pkgDir).filter(p => p.endsWith(".js"))) expect(readFileSync(f, "utf8"), relative(pkgDir, f)).not.toMatch(/__private(Get|Set|Add|Method)\b|__publicField\b/);
+  });
+
   it("keeps its declarations inside the package, importing no other package", () => {
     const decls = files(join(pkgDir, "types")).filter(f => f.endsWith(".d.ts"));
     expect(decls.length).toBeGreaterThan(0);

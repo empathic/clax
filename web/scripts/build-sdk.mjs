@@ -254,6 +254,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     define: { "process.env.NODE_ENV": JSON.stringify("production") },
     build: {
       outDir: out, emptyOutDir: false, minify: false, sourcemap: false, cssCodeSplit: false,
+      // The oldest browsers the package's code runs in already: those with
+      // Object.hasOwn (web/bridge/src/describe.ts), which /_clax/overlay.js
+      // needs too. Vite's default target lowers the syntax for older ones,
+      // which gain nothing by it, turning Svelte's class fields and private
+      // members into WeakMap helpers an app's bundler cannot undo; an app
+      // that targets older browsers lowers the package in its own build.
+      target: ["chrome93", "edge93", "firefox92", "safari15.4"],
       lib: { entry: Object.fromEntries(ENTRIES.map(e => [e.name, join(web, e.src)])), formats: ["es"], fileName: (_, name) => `${name}.js` },
       rollupOptions: { output: { chunkFileNames: "chunks/[name].js" } },
       watch: watch ? {} : null,
