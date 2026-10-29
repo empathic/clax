@@ -291,9 +291,13 @@ Through the reporter token, on the overlay's report view:
 - **"Still broken"** → `POST …/reporter/reports/<tid>/reopen {body,
   clip?, diagnostics?}`: required note, optional new capture (the overlay
   offers the capture modes again); state `open`, outcome `rejected`, the
-  note and capture as a comment, `reopen_count` incremented. The previous
-  claimant, if its session lives, gets a feedback delivery naming the
-  report.
+  note and capture as a comment, `reopen_count` incremented. The agent's
+  session that proposed the rejected fix (the attempt's
+  `proposer_session_id`), while it lives and acts for a member of the
+  queue, gets a feedback delivery naming the report (whole only when its
+  rights read reports, §7.3's queue wakes). When a person proposed the
+  fix, no particular agent's session is woken, whoever claimed the report
+  before; the sessions watching the queue hear of the reopen either way.
 
 A triage person may also verify or reopen on the reporter's behalf, which
 is recorded as theirs. The overlay's launcher shows the badge count; when
