@@ -28,8 +28,12 @@ fn client() -> reqwest::Client {
 struct Setup {
     ts: TestServer,
     qid: String,
+    grant_id: String,
     grant_token: String,
     grant_key: KeyPair,
+    /// The daemon's state, as it was before it served (its stores and
+    /// caches are the daemon's own).
+    state: clax_http::state::AppState,
 }
 
 impl Setup {
@@ -51,7 +55,7 @@ impl Setup {
                 )
                 .unwrap()
                 .id;
-            let (_, token, key) = s
+            let (service_grant, token, key) = s
                 .store
                 .create_service_grant(&AuditCtx::DAEMON, &qid, "clax.dev")
                 .unwrap();
@@ -64,15 +68,23 @@ impl Setup {
                 clax_server::integrations::feedback::integration(&qid, ORIGIN, &grant.to_string())
                     .unwrap();
             s.feedback = Some(Arc::new(i));
-            *out.lock().unwrap() = Some((qid, token.expose().to_string(), key));
+            *out.lock().unwrap() = Some((
+                qid,
+                service_grant.id,
+                token.expose().to_string(),
+                key,
+                s.clone(),
+            ));
         })
         .await;
-        let (qid, grant_token, grant_key) = made.lock().unwrap().take().unwrap();
+        let (qid, grant_id, grant_token, grant_key, state) = made.lock().unwrap().take().unwrap();
         Setup {
             ts,
             qid,
+            grant_id,
             grant_token,
             grant_key,
+            state,
         }
     }
 
@@ -331,6 +343,8 @@ async fn token_is_minted_through_the_public_route() {
     assert!(token.starts_with("cxr_"), "{v}");
     assert!(v["expires_at"].is_string(), "{v}");
     let in_process: Vec<String> = s.audit_kinds()[before.len()..].to_vec();
+    // Minting is unaudited by design, in process as over HTTP.
+    assert!(in_process.is_empty(), "{in_process:?}");
 
     // The token files a report as the person, with their GitHub profile.
     let filed = s.file(&token, &key).await;
@@ -365,7 +379,7 @@ async fn token_is_minted_through_the_public_route() {
         .await;
     assert_eq!(res.status(), 200);
     let external: Vec<String> = s.audit_kinds()[before.len()..].to_vec();
-    assert_eq!(in_process, external);
+    assert!(external.is_empty(), "{external:?}");
 }
 
 #[tokio::test]
@@ -456,4 +470,104 @@ async fn me_flags_lists_own_flags() {
         .await
         .unwrap();
     assert_eq!(res.status(), 403);
+}
+
+#[tokio::test]
+async fn the_in_process_mint_is_the_public_routes_request() {
+    let s = Setup::new().await;
+    let i = s.state.feedback.clone().unwrap();
+    let pk = sig::encode_public(&KeyPair::generate().public());
+    let req = clax_server::integrations::feedback::mint_request(
+        &i,
+        s.ts.store.now_utc().timestamp(),
+        "r1",
+        &pk,
+        None,
+    )
+    .unwrap();
+    let (parts, body) = req.into_parts();
+    let body = axum::body::to_bytes(body, 1 << 16).await.unwrap();
+    let again =
+        axum::http::Request::from_parts(parts.clone(), axum::body::Body::from(body.clone()));
+    let instance = clax_server::integrations::instance::Instance::new(s.state.clone());
+    let minted = clax_server::integrations::feedback::mint(instance.router(), again)
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            minted,
+            clax_server::integrations::feedback::Minted::Token { .. }
+        ),
+        "{minted:?}"
+    );
+    // The same signed request sent over HTTP is a replay: the in-process
+    // mint spent its nonce, as the public route spends every request's.
+    let mut http = client().post(format!("{}{}", s.ts.base, parts.uri));
+    for (k, v) in &parts.headers {
+        http = http.header(k.as_str(), v.as_bytes());
+    }
+    let res = http.body(body.to_vec()).send().await.unwrap();
+    let status = res.status().as_u16();
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(
+        (status, v["error"]["code"].as_str()),
+        (401, Some("replayed_request")),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn a_revoked_grant_is_unavailable() {
+    let s = Setup::new().await;
+    let ana = s.ts.person("Ana").await;
+    s.flag(&ana.public_id, true);
+    s.ts.store
+        .revoke_service_grant(&AuditCtx::DAEMON, &s.qid, &s.grant_id)
+        .unwrap();
+    let (status, v) = s.mint_as(&ana, &KeyPair::generate()).await;
+    assert_eq!(
+        (status, v["error"]["code"].as_str()),
+        (503, Some("feedback_unavailable")),
+        "{v}"
+    );
+    // Nor does it name the grant.
+    assert!(!v.to_string().contains(&s.grant_token), "{v}");
+}
+
+#[tokio::test]
+async fn only_the_shell_and_never_an_agent_mints() {
+    let s = Setup::new().await;
+    let ana = s.ts.person("Ana").await;
+    s.flag(&ana.public_id, true);
+    let pk = sig::encode_public(&KeyPair::generate().public());
+    let res = client()
+        .post(format!("{}/_app/feedback/token", s.ts.base))
+        .header("cookie", format!("clax_viewer={}", ana.cookie))
+        .header("origin", "https://evil.example")
+        .json(&json!({"public_key": pk}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["error"]["code"], "forbidden_origin", "{v}");
+    for (method, path) in [
+        ("POST", "/_app/feedback/token"),
+        ("GET", "/_app/feedback/config"),
+    ] {
+        let mut req = client()
+            .request(
+                reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
+                format!("{}{path}", s.ts.base),
+            )
+            .header("authorization", format!("Bearer {}", s.ts.token))
+            .header("x-clax-channel", "agent");
+        if method == "POST" {
+            req = req.json(&json!({"public_key": pk}));
+        }
+        let res = req.send().await.unwrap();
+        assert_eq!(res.status(), 403, "{method} {path}");
+        let v: Value = res.json().await.unwrap();
+        assert_eq!(v["error"]["code"], "not_for_agents", "{method} {path}: {v}");
+    }
 }

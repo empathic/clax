@@ -572,7 +572,7 @@ mod l10 {
         ),
         (
             "feedback_integration::token",
-            "an integrator's backend asking the public reporter-tokens route for a token, which records what that route records for any backend's mint (spec 2026-10-29-feedback-loop-design §10.2)",
+            "mints a reporter token through the public reporter-tokens route, and minting is unaudited by design: that route records nothing for any backend's mint, this one's included (spec 2026-10-29-feedback-loop-design §10.2)",
         ),
         (
             "remotes::add",

@@ -553,6 +553,9 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     let api_fast = api_fast.layer(axum::middleware::from_fn(clax_http::http_cache::api_etag));
     let api_fast =
         with_timeout(api_fast, state.request_timeout).layer(clax_http::http_cache::compression());
+    // The instance the feedback integration mints through, its whole
+    // router built at the first mint.
+    let feedback_instance = crate::integrations::instance::Instance::new(state.clone());
     let api_slow = Router::new()
         .route(
             "/api/artifacts",
@@ -573,8 +576,14 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/me/flags", get(bot::me_flags))
         // The instance's own feedback integration, as a product's backend
         // routes behind its sign-in (`crate::integrations::feedback`).
-        .route("/_app/feedback/token", post(feedback_integration::token))
-        .route("/_app/feedback/config", get(feedback_integration::config))
+        .route(
+            "/_app/feedback/token",
+            post(feedback_integration::token).layer(axum::Extension(feedback_instance.clone())),
+        )
+        .route(
+            "/_app/feedback/config",
+            get(feedback_integration::config).layer(axum::Extension(feedback_instance)),
+        )
         .route("/api/bot/runs", get(bot::list).post(bot::create))
         .route("/api/bot/runs/{id}", get(bot::get))
         .route("/api/bot/runs/{id}/cancel", post(bot::cancel))

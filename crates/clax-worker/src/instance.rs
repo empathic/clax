@@ -531,9 +531,11 @@ fn feedback_of(env: &Env, app: &AppState) -> Option<clax_http::state::FeedbackIn
     match clax_server::integrations::feedback::integration(&queue, &origin, &grant) {
         Ok(i) => Some(i),
         Err(e) => {
-            worker::console_error!(
-                "CLAX_FEEDBACK_SERVICE_GRANT: {e}; the feedback integration is off"
-            );
+            let name = match e.input {
+                clax_server::integrations::feedback::Input::Queue => "CLAX_FEEDBACK_QUEUE",
+                clax_server::integrations::feedback::Input::Grant => "CLAX_FEEDBACK_SERVICE_GRANT",
+            };
+            worker::console_error!("{name}: {e}; the feedback integration is off");
             None
         }
     }

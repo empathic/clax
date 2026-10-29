@@ -178,7 +178,8 @@ every reporter token it minted.
 
 A daemon takes the same from `[feedback]` in its home's `config.toml`:
 `queue`, `service_grant_file` (a JSON file `{token, private_key_pkcs8}`,
-relative to the home) and, optionally, `origin` (by default a hosted
+relative to the home; keep it 0600, as the daemon warns at start when
+its group or others may read it) and, optionally, `origin` (by default a hosted
 daemon's public origin, else its browser address). `just dev-feedback`
 (`scripts/dev-feedback.sh`) sets it all up on the dev home (`~/.clax-dev`)
 with a queue `clax-feedback-dev` for `http://localhost:<port>`, so the

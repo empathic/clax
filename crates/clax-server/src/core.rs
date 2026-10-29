@@ -347,15 +347,45 @@ fn feedback_of(
             return None;
         }
     };
+    if let Some(mode) = loose_mode(&f.service_grant_file) {
+        tracing::warn!(
+            file = %f.service_grant_file.display(),
+            mode = format!("{mode:o}"),
+            "[feedback] service_grant_file is readable by others: chmod 600 it"
+        );
+    }
     match crate::integrations::feedback::integration(&f.queue, &origin, &grant) {
         Ok(i) => {
             tracing::info!(queue = %i.queue_id, origin = %i.origin, "feedback integration on");
             Some(i)
         }
         Err(e) => {
-            tracing::warn!(file = %f.service_grant_file.display(), error = %e, "[feedback] is off");
+            let input = match e.input {
+                crate::integrations::feedback::Input::Queue => "[feedback] queue".to_string(),
+                crate::integrations::feedback::Input::Grant => {
+                    f.service_grant_file.display().to_string()
+                }
+            };
+            tracing::warn!(input, error = %e, "[feedback] is off");
             None
         }
+    }
+}
+
+/// The permission bits of the file at `path` when its group or others may
+/// read or write it; `None` when they may not, or on a platform without
+/// such bits.
+fn loose_mode(path: &std::path::Path) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(path).ok()?.permissions().mode() & 0o777;
+        (mode & 0o066 != 0).then_some(mode)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
     }
 }
 
@@ -517,4 +547,27 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
     });
 
     vec![reaper, grant_sweeper, optimizer, drafts_sweeper, sweeper]
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn a_grant_file_others_may_read_is_loose() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("g.json");
+        std::fs::write(&p, "{}").unwrap();
+        for (mode, loose) in [
+            (0o600, false),
+            (0o400, false),
+            (0o640, true),
+            (0o604, true),
+            (0o620, true),
+        ] {
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(super::loose_mode(&p).is_some(), loose, "{mode:o}");
+        }
+        assert_eq!(super::loose_mode(&dir.path().join("none")), None);
+    }
 }
