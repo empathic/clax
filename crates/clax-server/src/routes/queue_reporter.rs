@@ -428,7 +428,10 @@ pub async fn file_report(
         .await?;
     announce(&s, report.id.clone()).await;
     wake_watchers(&s, woken).await;
-    Ok((StatusCode::CREATED, Json(json!({ "report": report }))))
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "report": report.for_reporter() })),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -456,6 +459,10 @@ pub async fn my_reports(
             st.reports(&qid, Visibility::Reporter(&rid), None, q.cursor.as_deref())
         })
         .await?;
+    let reports: Vec<_> = reports
+        .into_iter()
+        .map(clax_core::queue::Report::for_reporter)
+        .collect();
     Ok(Json(json!({ "reports": reports, "next": next })))
 }
 
@@ -488,7 +495,7 @@ pub async fn comment(
         .await?;
     announce(&s, tid).await;
     wake_watchers(&s, woken).await;
-    Ok(Json(json!({ "report": report })))
+    Ok(Json(json!({ "report": report.for_reporter() })))
 }
 
 /// A reporter's page keeps no clip: its token is short-lived and its
@@ -593,7 +600,7 @@ pub async fn verify(
             Ok(report)
         })
         .await?;
-    Ok(Json(json!({ "report": report })))
+    Ok(Json(json!({ "report": report.for_reporter() })))
 }
 
 /// `POST /api/queues/<qid>/reporter/reports/<tid>/reopen` (multipart
@@ -604,8 +611,9 @@ pub async fn verify(
 /// carries the capture's number, its clip (`…/comments/<cid>/clip`) and its
 /// diagnostics (`…/diagnostics?capture=<n>`); the filing's stay as they
 /// were. A fix waiting is `rejected`, and the report is `open` again with
-/// `reopen_count` one more. The queue's watching sessions and the session
-/// of the report's last lease are woken. Answers `{report}`.
+/// `reopen_count` one more. The queue's watching sessions and the agent's
+/// session that proposed the fix the reopen rejects are woken. Answers
+/// `{report}`.
 ///
 /// # Errors
 /// [`ReporterCaller`]'s; 404 `not_found` for a report the reporter did not
@@ -651,7 +659,7 @@ pub async fn reopen(
     if let Err(e) = done {
         tracing::warn!(error = ?e, "announcing a reopened report failed");
     }
-    Ok(Json(json!({ "report": report })))
+    Ok(Json(json!({ "report": report.for_reporter() })))
 }
 
 /// `GET /api/queues/<qid>/reporter/reports/<tid>/diagnostics?capture=`:

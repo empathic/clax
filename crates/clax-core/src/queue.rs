@@ -341,6 +341,20 @@ pub struct Report {
     pub filing_diagnostics_lines: u32,
 }
 
+impl Report {
+    /// The report as a reporter-facing route serializes it: whatever the
+    /// store answered, never a comment for the queue's members alone
+    /// (`triage_only`) nor the reporter's profile (feedback-loop §5.4).
+    /// The store's reporter view leaves them out already; this holds at
+    /// the serving layer too.
+    #[must_use]
+    pub fn for_reporter(mut self) -> Self {
+        self.comments.retain(|c| !c.triage_only);
+        self.reporter_profile = None;
+        self
+    }
+}
+
 fn is_zero(n: &u32) -> bool {
     *n == 0
 }
@@ -602,5 +616,68 @@ mod tests {
         assert!(r.context.is_none() && r.fixes.is_empty());
         assert_eq!((r.reopen_count, r.diagnostics_lines), (0, 0));
         assert_eq!(serde_json::to_value(&r).unwrap(), m1);
+    }
+
+    /// A reporter-facing serialization never carries a triage-only note or
+    /// the reporter's profile, even from a report that holds them.
+    #[test]
+    fn a_reporters_report_never_carries_a_triage_only_note() {
+        let anchor: Anchor =
+            serde_json::from_value(serde_json::json!({"kind": "artifact", "file": ""})).unwrap();
+        let comment = |id: &str, triage_only: bool| ReportComment {
+            id: id.into(),
+            author_kind: "viewer".into(),
+            author_name: "Ana".into(),
+            body: format!("note {id}"),
+            created_at: "2026-10-29T07:12:03.120Z".into(),
+            capture: None,
+            has_clip: false,
+            diagnostics_lines: 0,
+            triage_only,
+        };
+        let r = Report {
+            id: "t1".into(),
+            queue_id: "q1".into(),
+            artifact: ReportArtifact {
+                id: "a1".into(),
+                external_id: "e".into(),
+                title: "T".into(),
+                url: "https://x.example/".into(),
+                metadata: serde_json::Value::Null,
+                metadata_version: 0,
+                revision: None,
+            },
+            anchor,
+            status: "open".into(),
+            state: State::Open,
+            reporter_id: Some("emp-1".into()),
+            metadata: serde_json::Value::Null,
+            metadata_version: 0,
+            has_clip: false,
+            comments: vec![comment("c1", false), comment("c2", true)],
+            claim: None,
+            created_at: "2026-10-29T07:12:03.120Z".into(),
+            context: None,
+            server: None,
+            reporter_profile: Some(ReporterProfile {
+                name: Some("Ana".into()),
+                ..Default::default()
+            }),
+            resolve_reason: None,
+            fixes: Vec::new(),
+            reopen_count: 0,
+            diagnostics_lines: 0,
+            filing_diagnostics_lines: 0,
+        };
+        let v = serde_json::to_value(r.for_reporter()).unwrap();
+        let ids: Vec<&str> = v["comments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["c1"], "{v}");
+        assert!(!v.to_string().contains("triage_only"), "{v}");
+        assert!(v.get("reporter_profile").is_none(), "{v}");
     }
 }
