@@ -91,6 +91,37 @@ impl EmbedOrigins {
     }
 }
 
+/// What the instance's own feedback integration files with (spec
+/// 2026-10-29-feedback-loop-design §10.2): the queue its people report
+/// problems with Clax into, the service grant it mints their reporter
+/// tokens with, and the origin those tokens are bound to. A host sets it
+/// (`[feedback]` in `config.toml`, or the Worker's `CLAX_FEEDBACK_QUEUE`
+/// and `CLAX_FEEDBACK_SERVICE_GRANT`); with none the integration is off.
+/// `clax_server::integrations::feedback` is the code that uses it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct FeedbackIntegration {
+    /// The queue's ID.
+    pub queue_id: String,
+    /// The service grant's token (`cxq_…`).
+    pub grant_token: String,
+    /// The service grant's Ed25519 key, PKCS#8 v2.
+    pub grant_key_pkcs8: Vec<u8>,
+    /// The origin the reporter tokens are minted for: the instance's own,
+    /// one of the queue's origins.
+    pub origin: String,
+}
+
+impl std::fmt::Debug for FeedbackIntegration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FeedbackIntegration")
+            .field("queue_id", &self.queue_id)
+            .field("grant_token", &"…")
+            .field("grant_key_pkcs8", &"…")
+            .field("origin", &self.origin)
+            .finish()
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<Store>,
@@ -250,6 +281,10 @@ pub struct AppState {
     /// ClaxBot's keys and run driver seam ([`crate::bot`]); the daemon
     /// and the Worker install theirs after [`AppState::assemble`].
     pub bot: Arc<crate::bot::Bot>,
+    /// The instance's own feedback integration ([`FeedbackIntegration`]),
+    /// which the host sets after [`AppState::assemble`]; `None` (off) by
+    /// default.
+    pub feedback: Option<Arc<FeedbackIntegration>>,
 }
 
 /// [`AppState::sites`] without a site domain.
@@ -370,6 +405,7 @@ impl AppState {
         Ok(AppState {
             settings,
             bot: Arc::default(),
+            feedback: None,
             home: p.home,
             token: p.token,
             require_credential: p.require_credential,

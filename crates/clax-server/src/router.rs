@@ -3,6 +3,7 @@
 //! them all ([`build_router`]). The debug builds' test routes and the
 //! testkit's delay middleware are here too.
 
+use crate::integrations::feedback as feedback_integration;
 use crate::routes::{
     admin, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot, client_imports,
     connect, content, discovery, docs, drafts, extension, feedback, git_token, grants, health,
@@ -569,6 +570,11 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/me/bot", get(bot::me_get).put(bot::me_put))
         .route("/api/me/bot/key", put(bot::key_put).delete(bot::key_delete))
         .route("/api/me/usage", get(bot::usage))
+        .route("/api/me/flags", get(bot::me_flags))
+        // The instance's own feedback integration, as a product's backend
+        // routes behind its sign-in (`crate::integrations::feedback`).
+        .route("/_app/feedback/token", post(feedback_integration::token))
+        .route("/_app/feedback/config", get(feedback_integration::config))
         .route("/api/bot/runs", get(bot::list).post(bot::create))
         .route("/api/bot/runs/{id}", get(bot::get))
         .route("/api/bot/runs/{id}/cancel", post(bot::cancel))

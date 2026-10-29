@@ -126,6 +126,64 @@ token named `smoke` (settings, Agent tokens) and set it as
 `CLAX_SMOKE_TOKEN`. The smoke runs every step an agent can and names each
 owner-only step it skips.
 
+## Feedback: clax.dev's own report queue
+
+clax.dev's people report problems with Clax itself through a report
+queue, as any product's users do (spec
+[`2026-10-29-feedback-loop-design`](superpowers/specs/2026-10-29-feedback-loop-design.md)
+§10): the shell asks `POST /_app/feedback/token` for a reporter token, and
+the instance mints it with the queue's service grant through the public
+`POST /api/queues/<qid>/reporter-tokens` route
+(`crates/clax-server/src/integrations/feedback.rs`). It is off until the
+Worker has both secrets below. Once, signed in to clax.dev as the owner,
+with `CLAX_TOKEN` the owner's bearer token:
+
+1. Make the queue `clax-feedback` for `https://clax.dev` (the Queues page,
+   or):
+
+   ```
+   curl -sf https://clax.dev/api/queues -H "authorization: Bearer $CLAX_TOKEN" \
+     -H 'content-type: application/json' \
+     -d '{"name": "clax-feedback", "origins": ["https://clax.dev"], "reporters_see": "own"}'
+   ```
+
+   Its answer's `queue.id` is the queue ID.
+2. Add the people who triage reports: `PUT
+   /api/queues/<qid>/members/<public ID> {"role": "triage"}` (or
+   `"admin"`), or the queue's Members page.
+3. Make its service grant: `POST /api/queues/<qid>/service-grants
+   {"name": "clax.dev"}` answers `{grant, token, private_key}` once.
+4. Store both as Worker secrets, from `crates/clax-worker` (`clax` is the
+   Worker's name):
+
+   ```
+   printf %s "<queue ID>" | npx wrangler secret put CLAX_FEEDBACK_QUEUE --name clax
+   printf '{"token":"%s","private_key_pkcs8":"%s"}' "<token>" "<private_key>" \
+     | npx wrangler secret put CLAX_FEEDBACK_SERVICE_GRANT --name clax
+   ```
+
+   They are secrets, not vars: a deploy rewrites the Worker's vars from
+   `wrangler.jsonc` and keeps its secrets. A grant that does not read is
+   logged and leaves the integration off.
+5. Turn on the `feedback` flag of each person who may report (Empathic's
+   people): the Admin page, or `PUT /api/admin/people/<person>/flags
+   {"feedback": true}` (`<person>` a public ID, or `%2Aowner`).
+
+To check it: `GET https://clax.dev/_app/feedback/config` in a flagged
+person's browser answers `enabled: true` with the queue's ID. To turn it
+off, delete either secret (`npx wrangler secret delete … --name clax`);
+to rotate the grant, make a new one, put the secret again, and revoke the
+old one (`DELETE /api/queues/<qid>/service-grants/<gid>`), which ends
+every reporter token it minted.
+
+A daemon takes the same from `[feedback]` in its home's `config.toml`:
+`queue`, `service_grant_file` (a JSON file `{token, private_key_pkcs8}`,
+relative to the home) and, optionally, `origin` (by default a hosted
+daemon's public origin, else its browser address). `just dev-feedback`
+(`scripts/dev-feedback.sh`) sets it all up on the dev home (`~/.clax-dev`)
+with a queue `clax-feedback-dev` for `http://localhost:<port>`, so the
+loop runs locally end to end.
+
 ## The deploy workflow
 
 Deploy prod runs on every push to `prod` and by hand (Actions, Deploy

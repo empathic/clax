@@ -154,6 +154,11 @@ impl Core {
             embed: cfg.embed,
         })?;
         state.clax_app = Arc::new(clax_app);
+        state.feedback = config
+            .as_ref()
+            .ok()
+            .and_then(|c| feedback_of(c, &state))
+            .map(Arc::new);
         if cfg.quickstart {
             state.quickstart = clax_core::quickstart::Release::from_tree(&*state.web).map(Arc::new);
         }
@@ -310,6 +315,47 @@ impl Core {
             f(&home);
         }
         stopped
+    }
+}
+
+/// The instance's own feedback integration from `config`'s `[feedback]`
+/// ([`crate::integrations::feedback`]): its queue, the service grant in
+/// its `service_grant_file`, and its `origin` (by default a hosted core's
+/// public origin, else the daemon's browser address). `None`, and logged,
+/// when `[feedback]` is absent, does not check, or its grant file does not
+/// read: the integration is then off and the core serves on.
+fn feedback_of(
+    config: &clax_core::config::HomeConfig,
+    s: &AppState,
+) -> Option<clax_http::state::FeedbackIntegration> {
+    let f = match config.feedback() {
+        Ok(f) => f?,
+        Err(e) => {
+            tracing::warn!(error = %e, "[feedback] is off");
+            return None;
+        }
+    };
+    let origin = f.origin.clone().unwrap_or_else(|| {
+        s.hosted
+            .as_ref()
+            .map_or_else(|| s.browser_base.clone(), |h| h.origin.clone())
+    });
+    let grant = match std::fs::read_to_string(&f.service_grant_file) {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::warn!(file = %f.service_grant_file.display(), error = %e, "[feedback] is off: its service_grant_file does not read");
+            return None;
+        }
+    };
+    match crate::integrations::feedback::integration(&f.queue, &origin, &grant) {
+        Ok(i) => {
+            tracing::info!(queue = %i.queue_id, origin = %i.origin, "feedback integration on");
+            Some(i)
+        }
+        Err(e) => {
+            tracing::warn!(file = %f.service_grant_file.display(), error = %e, "[feedback] is off");
+            None
+        }
     }
 }
 
