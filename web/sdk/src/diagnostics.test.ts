@@ -244,8 +244,25 @@ describe("installDiagnostics", () => {
     await f.win.fetch("/_clax/overlay.js");
     await f.win.fetch("/api/queues/q1/reporter/badge");
     await f.win.fetch("https://app.example/api/queues/q1/reporter-tokens");
+    await f.win.fetch("/api/queues/q1/reporter");
+    await f.win.fetch("/api/queues/q1/reporter-tokens?x=1");
     await f.win.fetch("/api/queues/q1/reports");
-    expect(rec.lines().map(l => l.text)).toEqual(["GET /api/x → 500 in 42 ms", "GET /api/queues/q1/reports → 500 in 42 ms"]);
+    // Only the SDK's own: a route that merely starts like one, and the
+    // instance's other `/_clax/` files (the page's own, here), are the page's.
+    await f.win.fetch("/api/queues/q1/reporterX");
+    await f.win.fetch("/api/queues/q1/reporter-tokensX");
+    await f.win.fetch("/_clax/shell/app.js");
+    await f.win.fetch("/_clax/overlay.jsx");
+    await f.win.fetch("/_clax/overlay.mjs");
+    await f.win.fetch("/_clax/overlay.d.ts");
+    expect(rec.lines().map(l => l.text)).toEqual([
+      "GET /api/x → 500 in 42 ms",
+      "GET /api/queues/q1/reports → 500 in 42 ms",
+      "GET /api/queues/q1/reporterX → 500 in 42 ms",
+      "GET /api/queues/q1/reporter-tokensX → 500 in 42 ms",
+      "GET /_clax/shell/app.js → 500 in 42 ms",
+      "GET /_clax/overlay.jsx → 500 in 42 ms",
+    ]);
   });
 });
 

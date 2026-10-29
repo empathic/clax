@@ -37,7 +37,8 @@ export interface DiagnosticsOptions {
   /** The most lines kept. Default and ceiling: `MAX_DIAG_LINES`. */
   max?: number;
   /** A Clax instance's base URL: the SDK's own requests to it (its
-   * `/_clax/` files and its `/api/queues/<qid>/reporter…` routes) are not
+   * overlay files, `/_clax/overlay.js`, `.mjs` and `.d.ts`, and its
+   * `/api/queues/<qid>/reporter` and `…/reporter-tokens` routes) are not
    * recorded; the page's other requests to it are. A signed request (one
    * with a `Clax-Signature` header) is never recorded, wherever it goes. */
   instance?: string;
@@ -57,8 +58,11 @@ interface Installed extends Recorder {
   ignore(origin: string): void;
 }
 
-/** The paths of an instance's that are the SDK's own traffic. */
-const SDK_PATH = /^\/(_clax\/|api\/queues\/[^/]+\/reporter)/;
+/** The paths of an instance's that are the SDK's own traffic: the
+ * overlay's files and a queue's reporter routes (`…/reporter`,
+ * `…/reporter/…`, `…/reporter-tokens`), each whole, so a path that merely
+ * starts like one, or the instance's other `/_clax/` files, is the page's. */
+const SDK_PATH = /^\/(_clax\/overlay\.(m?js|d\.ts)$|api\/queues\/[^/]+\/reporter(-tokens)?(\/|$|\?))/;
 
 /** Where a window's recorder is kept, shared by every copy of the SDK on the page. */
 const KEY = Symbol.for("clax.diagnostics");
