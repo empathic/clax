@@ -31,6 +31,7 @@ const NOT_PAGE_CONTENT: Record<string, string> = {
   "caps/db.ts": "the app's migration journal put back (replayJournal), as the app's restore asks: the documents' values from before the migration, no new content of the page's",
   "caps/approval.ts": "the owner's approval, made from the shell's own bar and dialog, never at a page's asking: no content of the page's",
   "caps/net.ts": "the owner's network grant, saved after the owner allows it, and a fetch the daemon makes for the page: no content of the page's into the store",
+  "caps/webauthn.ts": "the owner's passkey assertion, posted after the owner approves in the shell's own dialog to a service path the page declared: no content of the page's into the store",
 };
 
 describe("x-clax request headers", () => {
