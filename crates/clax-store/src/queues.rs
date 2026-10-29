@@ -429,6 +429,13 @@ fn reports_of(c: &Connection, rows: Vec<ReportRow>, now: &str) -> Result<Vec<Rep
             comments,
             claim,
             created_at: row.created_at,
+            context: None,
+            server: None,
+            reporter_profile: None,
+            resolve_reason: None,
+            fixes: Vec::new(),
+            reopen_count: 0,
+            diagnostics_lines: 0,
         });
     }
     Ok(out)
@@ -1103,6 +1110,8 @@ impl Store {
                 Some(State::Resolved) => "AND t.status = 'resolved'".into(),
                 Some(State::Claimed) => format!("AND t.status = 'open' AND {LIVE_CLAIM}"),
                 Some(State::Open) => format!("AND t.status = 'open' AND NOT {LIVE_CLAIM}"),
+                // The store keeps no report in these states yet.
+                Some(State::FixProposed | State::Verified) => "AND 0".into(),
             };
             let sql = format!(
                 "{REPORT_SELECT} {filter} {state_sql}

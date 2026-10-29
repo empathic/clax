@@ -1,9 +1,11 @@
 //! Report queues and external artifacts (spec 2026-10-27-clax-sdk-design
-//! §6, §7): the records a queue's routes serve, their limits, and the
-//! checks of what a deployer's app sends. The store keeps them
-//! (`clax_store::queues`, `clax_store::external`).
+//! §6, §7; spec 2026-10-29-feedback-loop-design §6): the records a
+//! queue's routes serve, their limits, and the checks of what a deployer's
+//! app sends. The store keeps them (`clax_store::queues`,
+//! `clax_store::external`).
 
 use crate::anchor::Anchor;
+use crate::report::{FixAttempt, ReportContext, ReporterProfile, ResolveReason, ServerStamp};
 use crate::{CoreError, Result};
 use serde::{Deserialize, Serialize};
 
@@ -92,34 +94,102 @@ impl Role {
     }
 }
 
-/// Where a report stands (§7.3): `resolved` once its thread is; else
-/// `claimed` while a live lease holds it; else `open`.
+/// Where a report stands (spec 2026-10-29-feedback-loop-design §6.1):
+/// `open`, waiting for someone; `claimed`, while a live lease holds it;
+/// `fix_proposed`, while a fix waits for the reporter's verdict;
+/// `verified`, once the reporter said it is fixed; `resolved`, once triage
+/// closed it without a verdict. `verified` and `resolved` resolve the
+/// report's thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum State {
     Open,
     Claimed,
+    FixProposed,
+    Verified,
     Resolved,
 }
 
 impl State {
-    /// The served name.
+    /// Every state, in the order a report moves through them.
+    pub const ALL: &'static [State] = &[
+        State::Open,
+        State::Claimed,
+        State::FixProposed,
+        State::Verified,
+        State::Resolved,
+    ];
+
+    /// The stored and served name.
     pub fn as_str(self) -> &'static str {
         match self {
             State::Open => "open",
             State::Claimed => "claimed",
+            State::FixProposed => "fix_proposed",
+            State::Verified => "verified",
             State::Resolved => "resolved",
         }
     }
 
     /// The state named `s`.
     pub fn parse(s: &str) -> Option<State> {
-        match s {
-            "open" => Some(State::Open),
-            "claimed" => Some(State::Claimed),
-            "resolved" => Some(State::Resolved),
-            _ => None,
+        State::ALL.iter().copied().find(|st| st.as_str() == s)
+    }
+
+    /// Whether a report in this state has its thread resolved.
+    pub fn is_closed(self) -> bool {
+        matches!(self, State::Verified | State::Resolved)
+    }
+}
+
+/// Which reports a listing returns (§6.1): those in one state, or the
+/// `active` ones, `open` or `claimed`. Serialized as its name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StateFilter {
+    One(State),
+    Active,
+}
+
+impl StateFilter {
+    /// The filter's name in a query string: a state's name, or `active`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StateFilter::One(s) => s.as_str(),
+            StateFilter::Active => "active",
         }
+    }
+
+    /// The filter named `s`.
+    pub fn parse(s: &str) -> Option<StateFilter> {
+        match s {
+            "active" => Some(StateFilter::Active),
+            _ => State::parse(s).map(StateFilter::One),
+        }
+    }
+
+    /// Whether a report in `state` passes the filter.
+    pub fn matches(self, state: State) -> bool {
+        match self {
+            StateFilter::One(s) => s == state,
+            StateFilter::Active => matches!(state, State::Open | State::Claimed),
+        }
+    }
+}
+
+impl Serialize for StateFilter {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for StateFilter {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        StateFilter::parse(&s).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "{s:?} is not a report state (open, claimed, fix_proposed, verified, resolved) or active"
+            ))
+        })
     }
 }
 
@@ -189,6 +259,37 @@ pub struct Report {
     pub comments: Vec<ReportComment>,
     pub claim: Option<Claim>,
     pub created_at: String,
+    /// What the reporter's browser said at capture (feedback-loop §5.1);
+    /// absent on a report filed without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ReportContext>,
+    /// The receiving server's stamp (feedback-loop §5.1); absent on a
+    /// report filed without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<ServerStamp>,
+    /// The reporter's profile (feedback-loop §5.4), served to triage
+    /// members only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reporter_profile: Option<ReporterProfile>,
+    /// Why a `verified` or `resolved` report was closed (feedback-loop
+    /// §6.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolve_reason: Option<ResolveReason>,
+    /// The fixes proposed on it, oldest first (feedback-loop §6.2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fixes: Vec<FixAttempt>,
+    /// How many times the reporter (or triage on their behalf) reopened
+    /// it (feedback-loop §6.3).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub reopen_count: u32,
+    /// How many diagnostics lines were filed with it (feedback-loop §5.2);
+    /// 0 when none were.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub diagnostics_lines: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// A claim's answer (§7.4): the lease, its expiry, its fence (larger for
@@ -386,5 +487,67 @@ mod tests {
             assert_eq!(serde_json::to_value(s).unwrap(), s.as_str());
         }
         assert!(Role::Admin > Role::Triage);
+    }
+
+    #[test]
+    fn states_round_trip_including_fix_proposed_and_verified() {
+        for s in [
+            State::Open,
+            State::Claimed,
+            State::FixProposed,
+            State::Verified,
+            State::Resolved,
+        ] {
+            assert_eq!(State::parse(s.as_str()), Some(s));
+            assert_eq!(serde_json::to_value(s).unwrap(), s.as_str());
+            assert_eq!(
+                serde_json::from_value::<State>(s.as_str().into()).unwrap(),
+                s
+            );
+        }
+        assert_eq!(State::FixProposed.as_str(), "fix_proposed");
+        assert_eq!(State::Verified.as_str(), "verified");
+        assert_eq!(State::parse("active"), None);
+    }
+
+    #[test]
+    fn active_filter_parses() {
+        assert_eq!(StateFilter::parse("active"), Some(StateFilter::Active));
+        assert_eq!(
+            StateFilter::parse("fix_proposed"),
+            Some(StateFilter::One(State::FixProposed))
+        );
+        assert_eq!(StateFilter::parse("closed"), None);
+        for f in [StateFilter::Active, StateFilter::One(State::Verified)] {
+            assert_eq!(StateFilter::parse(f.as_str()), Some(f));
+        }
+        assert!(StateFilter::Active.matches(State::Open));
+        assert!(StateFilter::Active.matches(State::Claimed));
+        for s in [State::FixProposed, State::Verified, State::Resolved] {
+            assert!(!StateFilter::Active.matches(s));
+        }
+        assert!(StateFilter::One(State::Verified).matches(State::Verified));
+        assert!(!StateFilter::One(State::Verified).matches(State::Resolved));
+    }
+
+    /// A milestone-1 report (no context, fixes or counts) serializes as it
+    /// did, and reads back.
+    #[test]
+    fn report_fields_of_the_feedback_loop_are_additive() {
+        let anchor: Anchor =
+            serde_json::from_value(serde_json::json!({"kind": "artifact", "file": ""})).unwrap();
+        let m1 = serde_json::json!({
+            "id": "t1", "queue_id": "q1",
+            "artifact": {"id": "a1", "external_id": "e", "title": "T", "url": "https://x.example/",
+                         "metadata": null, "metadata_version": 0, "revision": null},
+            "anchor": anchor,
+            "status": "open", "state": "open", "reporter_id": null, "metadata": null,
+            "metadata_version": 0, "has_clip": false, "comments": [], "claim": null,
+            "created_at": "2026-10-29T07:12:03.120Z"
+        });
+        let r: Report = serde_json::from_value(m1.clone()).unwrap();
+        assert!(r.context.is_none() && r.fixes.is_empty());
+        assert_eq!((r.reopen_count, r.diagnostics_lines), (0, 0));
+        assert_eq!(serde_json::to_value(&r).unwrap(), m1);
     }
 }
