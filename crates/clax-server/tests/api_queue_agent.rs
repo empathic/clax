@@ -1236,3 +1236,222 @@ async fn watch_then_file_delivers_through_wait_for_feedback() {
     assert_eq!(s, 204, "{v}");
     assert!(q.ts.store.queue_watchers(&q.qid).unwrap().is_empty());
 }
+
+/// The MCP tools `queue_watch`, `queue_get`, `queue_fix` and `queue_resolve`
+/// with a reason, and `queue_list`'s `active` filter and context summary,
+/// against a daemon (spec 2026-10-29-feedback-loop-design §7.1).
+#[tokio::test]
+async fn mcp_get_fix_and_watch_round_trip() {
+    let q = setup().await;
+    let sid = q.session("mcp-get").await;
+    let log = tempfile::tempdir().unwrap();
+    let tools = clax_mcp::tools::ClaxTools::new(
+        clax_mcp::client::DaemonClient::new(
+            q.ts.base.clone(),
+            q.ts.token.clone(),
+            Some(sid.clone()),
+        ),
+        q.ts.base.clone(),
+        None,
+        log.path().join("mcp.log"),
+    );
+    // A tool's JSON result and its content blocks.
+    let call = |name: &'static str, args: Value| {
+        let tools = tools.clone();
+        async move {
+            let r = tools
+                .call_direct(
+                    rmcp::model::CallToolRequestParams::new(name)
+                        .with_arguments(args.as_object().unwrap().clone()),
+                )
+                .await
+                .unwrap();
+            let rmcp::model::CallToolResponse::Complete(r) = r else {
+                panic!("{name} completes")
+            };
+            let r = serde_json::to_value(r).unwrap();
+            assert_eq!(r["isError"], false, "{name}: {r}");
+            let text = r["content"][0]["text"].as_str().unwrap().to_string();
+            (
+                serde_json::from_str::<Value>(&text).unwrap(),
+                r["content"].as_array().unwrap().clone(),
+            )
+        }
+    };
+    let (v, _) = call("queue_watch", json!({"queue": q.qid})).await;
+    assert_eq!(v["watching"], true, "{v}");
+    assert!(v["wake"].is_object(), "{v}");
+    assert_eq!(q.ts.store.queue_watchers(&q.qid).unwrap(), [sid.as_str()]);
+
+    let token = ReporterToken {
+        queue_id: q.qid.clone(),
+        service_grant_id: "g1".into(),
+        reporter_id: "emp-1".into(),
+        origin: "https://app.example.com".into(),
+        public_key: String::new(),
+        expires_at: "2099-01-01T00:00:00.000Z".into(),
+        profile: None,
+    };
+    let diag = |text: &str| {
+        clax_core::report::parse_diagnostics(
+            format!(
+                r#"{{"at":"2026-10-27T11:59:00Z","level":"error","kind":"error","text":"{text}"}}"#
+            )
+            .as_bytes(),
+            "2026-10-27T11:59:01Z",
+        )
+        .unwrap()
+    };
+    let (r, _) =
+        q.ts.store
+            .file_report_touched_async(
+                &AuditCtx::DAEMON,
+                &q.qid,
+                Some(&token),
+                ExternalScope::Instance,
+                NewReport {
+                    external_id: None,
+                    url: "https://app.example.com/invoices/7".into(),
+                    title: "Invoice 7".into(),
+                    anchor: serde_json::from_value(element_anchor()).unwrap(),
+                    body: "The chart is blank".into(),
+                    author_name: "emp-1".into(),
+                    metadata: Value::Null,
+                    revision: None,
+                    clip: Some(FAKE_PNG.to_vec()),
+                    context: Some(
+                        serde_json::from_value(json!({
+                            "v": 1, "captured_at": "2026-10-27T11:58:00Z",
+                            "release": {"version": "0.6.0", "commit": "f7e862ab"},
+                            "environment": {"url": "https://app.example.com/invoices/7"},
+                            "capture": {"mode": "screen", "method": "dom"},
+                        }))
+                        .unwrap(),
+                    ),
+                    server: None,
+                    diagnostics: Some(diag("boom")),
+                },
+            )
+            .await
+            .unwrap();
+    let tid = r.id;
+
+    // The listing's items carry the context's summary, not the context.
+    let (v, _) = call("queue_list", json!({"queue": q.qid, "state": "active"})).await;
+    let items = v["reports"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{v}");
+    let item = items.iter().find(|i| i["id"] == json!(tid)).unwrap();
+    assert!(item.get("context").is_none(), "{item}");
+    assert_eq!(
+        item["context_summary"],
+        json!({"release": {"version": "0.6.0", "commit": "f7e862ab"},
+               "captured_at": "2026-10-27T11:58:00Z", "mode": "screen"}),
+        "{item}"
+    );
+    let first = items.iter().find(|i| i["id"] == json!(q.tid)).unwrap();
+    assert_eq!(first["context_summary"], Value::Null, "{first}");
+    for state in ["fix_proposed", "verified"] {
+        let (v, _) = call("queue_list", json!({"queue": q.qid, "state": state})).await;
+        assert_eq!(v["reports"], json!([]), "{state}: {v}");
+    }
+
+    // One report whole: its context, diagnostics inline, its clip attached.
+    let base = format!("{}/api/queues/{}/reports/{tid}", q.ts.base, q.qid);
+    let (v, content) = call("queue_get", json!({"queue": q.qid, "report_id": tid})).await;
+    let rep = &v["report"];
+    assert_eq!(rep["id"], json!(tid), "{v}");
+    assert_eq!(rep["context"]["release"]["version"], "0.6.0", "{v}");
+    assert_eq!(rep["clip_url"], json!(format!("{base}/clip")), "{v}");
+    assert_eq!(
+        rep["diagnostics_url"],
+        json!(format!("{base}/diagnostics?capture=0")),
+        "{v}"
+    );
+    assert_eq!(v["diagnostics"]["capture"], 0, "{v}");
+    assert_eq!(v["diagnostics"]["lines"][0]["text"], "boom", "{v}");
+    assert_eq!(v["clip"]["capture"], 0, "{v}");
+    assert!(v["note"].as_str().unwrap().contains("data"), "{v}");
+    assert!(
+        content.iter().any(|b| b["type"] == "image"),
+        "the clip is attached: {content:?}"
+    );
+
+    // A fix under the session's lease: no fence passed.
+    let (v, _) = call("queue_claim", json!({"queue": q.qid, "report_id": tid})).await;
+    assert_eq!(v["report"]["state"], "claimed", "{v}");
+    let (v, _) = call(
+        "queue_fix",
+        json!({"queue": q.qid, "report_id": tid, "summary": "Drew the axis again",
+               "url": "https://github.com/acme/app/pull/7", "commit": "abc123",
+               "release": "0.6.1", "verify_url": "https://app.example.com/invoices/7",
+               "verify_after": "release:0.6.1"}),
+    )
+    .await;
+    assert_eq!(v["report"]["state"], "fix_proposed", "{v}");
+    let fix = &v["report"]["fixes"][0];
+    assert_eq!(fix["summary"], "Drew the axis again", "{v}");
+    assert_eq!(fix["url"], "https://github.com/acme/app/pull/7", "{v}");
+    assert_eq!(fix["verify_after"], "release:0.6.1", "{v}");
+    assert_eq!(fix["outcome"], "pending", "{v}");
+    let (v, _) = call(
+        "queue_list",
+        json!({"queue": q.qid, "state": "fix_proposed"}),
+    )
+    .await;
+    assert_eq!(v["reports"][0]["id"], json!(tid), "{v}");
+
+    // The reporter says it is still broken, with a new capture: the next
+    // read names that capture's clip and diagnostics, and inlines them.
+    q.ts.store
+        .reopen_report_async(
+            &AuditCtx::DAEMON,
+            &q.qid,
+            &tid,
+            clax_store::queues::Verdict::Reporter("emp-1"),
+            "Still blank".into(),
+            Some(FAKE_PNG.to_vec()),
+            Some(diag("again")),
+            None,
+        )
+        .await
+        .unwrap();
+    let (v, _) = call("queue_get", json!({"queue": q.qid, "report_id": tid})).await;
+    let reopen = v["report"]["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["capture"] == 1)
+        .unwrap_or_else(|| panic!("a capture 1 comment: {v}"))
+        .clone();
+    let cid = reopen["id"].as_str().unwrap();
+    assert_eq!(
+        reopen["clip_url"],
+        json!(format!("{base}/comments/{cid}/clip")),
+        "{v}"
+    );
+    assert_eq!(
+        reopen["diagnostics_url"],
+        json!(format!("{base}/diagnostics?capture=1")),
+        "{v}"
+    );
+    assert_eq!(v["diagnostics"]["capture"], 1, "{v}");
+    assert_eq!(v["diagnostics"]["lines"][0]["text"], "again", "{v}");
+    assert_eq!(v["clip"]["capture"], 1, "{v}");
+    assert_eq!(v["report"]["fixes"][0]["outcome"], "rejected", "{v}");
+    // A comment that carries no capture names no capture URLs.
+    let filing = &v["report"]["comments"][0];
+    assert!(filing.get("clip_url").is_none(), "{filing}");
+
+    // A resolve with a reason.
+    call("queue_claim", json!({"queue": q.qid, "report_id": q.tid})).await;
+    let (v, _) = call(
+        "queue_resolve",
+        json!({"queue": q.qid, "report_id": q.tid, "reason": "duplicate"}),
+    )
+    .await;
+    assert_eq!(v["report"]["resolve_reason"], "duplicate", "{v}");
+
+    let (v, _) = call("queue_watch", json!({"queue": q.qid, "stop": true})).await;
+    assert_eq!(v["watching"], false, "{v}");
+    assert!(q.ts.store.queue_watchers(&q.qid).unwrap().is_empty());
+}

@@ -37,6 +37,8 @@ export const GIT_TOOLS: ReadonlySet<string> = new Set([
   "queue_release",
   "queue_reply",
   "queue_resolve",
+  "queue_fix",
+  "queue_watch",
 ]);
 
 /** `v` in the JSON Canonicalization Scheme (RFC 8785): object keys sorted by
