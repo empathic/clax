@@ -31,6 +31,7 @@ import type { Presence, PresenceReporter } from "./presence-reporter";
 import type { FrameHost } from "./frame-host";
 import { type KeyAction, holdKeysAcrossLoad, keyAction, keysHeldAtLoad } from "./keys";
 import { keyboardTrail } from "./trail";
+
 import { type Ask, promptQueue } from "./prompt-queue";
 import { autoSendOn, defaultTarget, rememberAutoSend, rememberTarget } from "./send-target";
 import { Store } from "./store";
@@ -41,6 +42,13 @@ import type { LiveUi, LiveView } from "./live-view";
 import type { AgentView, Working } from "./working-model";
 import type { DraftChanged, DraftView } from "./draft-model";
 import type { Drafts } from "./drafts";
+
+/** The viewer's light/dark choice, as the shell's switch left it on the shell's
+ * root (`theme-model.ts` `applyChoice`); null while following the system. */
+const shellTheme = (): "light" | "dark" | null => {
+  const t = document.documentElement.dataset.theme;
+  return t === "light" || t === "dark" ? t : null;
+};
 
 /** `file` is the page the frame opens on, from the shell URL (`index.html` when it names none). */
 /** How long a reopen asked of an unnamed viewer waits for its name. */
@@ -1094,6 +1102,11 @@ export class ArtifactController {
   }
 
   private listen(): void {
+    // The shell's light/dark switch reaches the page too (the page contract's
+    // `data-theme`), once it greeted; a page that greets later gets it in its welcome.
+    const themes = new MutationObserver(() => { if (this.gate.open) this.send({ type: "clax:theme", theme: shellTheme() }); });
+    themes.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    this.life.defer(() => themes.disconnect());
     const onMessage = (e: MessageEvent) => this.hear(e);
     addEventListener("message", onMessage);
     // Whether the pointer is over the content frame (the shell sees a
@@ -1319,7 +1332,7 @@ export class ArtifactController {
           this.send({ type: "clax:hash", hash: this.pendingFragment });
           this.pendingFragment = null;
         }
-        this.send({ type: "clax:welcome", mode: this.s.commenting ? "comment" : "view", ...this.app?.welcome(greeted, m.again === true) });
+        this.send({ type: "clax:welcome", mode: this.s.commenting ? "comment" : "view", ...this.app?.welcome(greeted, m.again === true), ...(shellTheme() ? { theme: shellTheme()! } : {}) });
         this.resolveAll();
         this.sendFocus();
         this.liveView?.hello();
