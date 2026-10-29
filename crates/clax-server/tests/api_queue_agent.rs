@@ -371,6 +371,39 @@ async fn the_owners_agent_lists_reports_by_state() {
 }
 
 #[tokio::test]
+async fn reports_list_newest_first_on_asking() {
+    let q = setup().await;
+    q.clock.advance(5);
+    let later = file_into(&q.ts, &q.qid, None).await;
+    let list = |query: &str| format!("/api/queues/{}/reports{query}", q.qid);
+    let ids = |v: &Value| -> Vec<String> {
+        v["reports"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let a = q.session("a").await;
+    let (s, v) = q.agent(Some(&a), "GET", &list(""), json!(null)).await;
+    assert_eq!(s, 200, "{v}");
+    let oldest = [q.tid.clone(), later.id.clone()];
+    assert_eq!(ids(&v), oldest, "oldest first by default");
+    let (_, v) = q
+        .agent(Some(&a), "GET", &list("?order=newest&state=active"), json!(null))
+        .await;
+    assert_eq!(ids(&v), [later.id.clone(), q.tid.clone()], "{v}");
+    for same in ["?order=oldest", "?order="] {
+        let (_, v) = q.agent(Some(&a), "GET", &list(same), json!(null)).await;
+        assert_eq!(ids(&v), oldest, "{same}: {v}");
+    }
+    for bad in ["?order=Newest", "?order=latest"] {
+        let (s, v) = q.agent(Some(&a), "GET", &list(bad), json!(null)).await;
+        assert_eq!((s, code(&v)), (400, "invalid_query"), "{bad}: {v}");
+    }
+}
+
+#[tokio::test]
 async fn a_stale_if_version_is_a_conflict() {
     let q = setup().await;
     let a = q.session("a").await;

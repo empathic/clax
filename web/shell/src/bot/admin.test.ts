@@ -17,7 +17,7 @@ const button = (root: Element, text: string | RegExp) => [...root.querySelectorA
 
 const ALEX = adminPerson({ person: "p_alex", name: "Alex", role: "owner", key_source: "instance", week: { weekly_milli: 2_000_000, lift_milli: 0, spent_milli: 3_280_000 }, tokens_week: 9_400_000 });
 const SAM = adminPerson();
-const MIA = adminPerson({ person: "p_mia", name: "Mia", role: "admin", flags: { claxbot: false, claxbot_unenforced: true }, key_source: "instance" });
+const MIA = adminPerson({ person: "p_mia", name: "Mia", role: "admin", flags: { claxbot: false, claxbot_unenforced: true, feedback: true }, key_source: "instance" });
 
 beforeEach(() => { forget(); history.replaceState(null, "", "/admin"); });
 afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
@@ -68,6 +68,21 @@ describe("Admin › People & flags", () => {
     click(m.root.querySelector('[role="switch"][aria-label="Unenforced limit for Mia"]')!);
     await settle();
     expect(calls.filter(c => c.method === "PUT").at(-1)).toEqual({ url: "/api/admin/people/p_mia/flags", method: "PUT", body: { claxbot_unenforced: false } });
+  });
+
+  it("turns a person's feedback flag on and off", async () => {
+    const calls = stubFetch({ "GET /api/admin/people": [ALEX, SAM, MIA], "PUT /api/admin/people/p_sam/flags": SAM, "PUT /api/admin/people/p_mia/flags": MIA });
+    const m = mount(AdminPeople, { role: "owner" });
+    await settle();
+    const sam = m.root.querySelector('[role="switch"][aria-label="Feedback for Sam"]')!;
+    const mia = m.root.querySelector('[role="switch"][aria-label="Feedback for Mia"]')!;
+    expect([sam.getAttribute("aria-checked"), mia.getAttribute("aria-checked")]).toEqual(["false", "true"]);
+    click(sam);
+    await settle();
+    expect(calls.filter(c => c.method === "PUT").at(-1)).toEqual({ url: "/api/admin/people/p_sam/flags", method: "PUT", body: { feedback: true } });
+    click(mia);
+    await settle();
+    expect(calls.filter(c => c.method === "PUT").at(-1)).toEqual({ url: "/api/admin/people/p_mia/flags", method: "PUT", body: { feedback: false } });
   });
 
   it("puts a refused role change back in its select", async () => {

@@ -3,18 +3,23 @@
 <script lang="ts">
   // The Queues page (`/queues`, spec 2026-10-27-clax-sdk-design §5.3, §6.2):
   // every report queue the viewer is a member of, with its origins, what
-  // its reporters see, the viewer's role and its reports counted open,
-  // claimed and resolved. New queue makes one (the maker is its admin). A
-  // queue's admin edits it in place, deletes it after confirming, and
-  // opens Manage for its members and service grants (`QueueAdmin`). A
-  // refused change says why until the next one. The list is fetched again
-  // after each change and when the stream comes back.
+  // its reporters see, the viewer's role and its reports counted by state.
+  // New queue makes one (the maker is its admin). A queue's admin edits it
+  // in place, deletes it after confirming, and opens Manage for its members
+  // and service grants (`QueueAdmin`). A refused change says why until the
+  // next one. The list is fetched again after each change and when the
+  // stream comes back. A queue's name opens its reports (`/queues/<qid>`,
+  // `QueueView`), and a report its own view (`/queues/<qid>/<tid>`,
+  // `ReportView`; spec 2026-10-29-feedback-loop-design §8): the page moves
+  // between them in place, through the browser's history.
   import { onMount } from "svelte";
   import type { EventStream } from "../stream";
   import * as api from "./api";
-  import { type Counts, countReports, countsText, refusal } from "./model";
+  import { type Counts, countReports, countsText, queueHref, queuesRoute, refusal } from "./model";
   import QueueAdmin from "./QueueAdmin.svelte";
   import QueueForm from "./QueueForm.svelte";
+  import QueueView from "./QueueView.svelte";
+  import ReportView from "./ReportView.svelte";
 
   const p: { stream?: EventStream } = $props();
   let queues = $state<api.Queue[] | null>(null);
@@ -25,6 +30,26 @@
   // The form open: a queue's ID, "new", or none; and the queues whose Manage is open.
   let editing = $state<string | null>(null);
   let managing = $state<Record<string, boolean>>({});
+  let path = $state(location.pathname);
+  const route = $derived(queuesRoute(path));
+  // The queue a sub-view is of: `null` while the list loads, `undefined` when the viewer has none of that ID.
+  const current = $derived(route.view === "list" ? null : queues ? queues.find(q => q.id === route.qid) : null);
+
+  /** Follows a plain click on a link to another of the page's views in place. */
+  function nav(e: MouseEvent) {
+    const a = e.currentTarget as HTMLAnchorElement;
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || a.target) return;
+    e.preventDefault();
+    const href = a.getAttribute("href")!;
+    if (href !== `${location.pathname}${location.search}`) history.pushState(null, "", href);
+    moved();
+    window.scrollTo?.(0, 0);
+  }
+  /** The address changed: show its view, the list counted afresh. */
+  function moved() {
+    path = location.pathname;
+    if (route.view === "list") count();
+  }
 
   async function load() {
     try {
@@ -34,7 +59,11 @@
       loadError = `Could not load the queues: ${refusal(x)}`;
       return;
     }
-    for (const q of queues) void countReports(c => api.reportPage(q.id, c)).then(c => { counts[q.id] = c; }, () => { counts[q.id] = "failed"; });
+    if (route.view === "list") count();
+  }
+  /** Counts each queue's reports by state, for the list. */
+  function count() {
+    for (const q of queues ?? []) void countReports(c => api.reportPage(q.id, c)).then(c => { counts[q.id] = c; }, () => { counts[q.id] = "failed"; });
   }
 
   async function save(f: api.QueueFields, q?: api.Queue): Promise<string | null> {
@@ -64,13 +93,25 @@
   const open = (what: string) => { editing = what; status = ""; error = null; };
   const seeText = (q: api.Queue) => (q.reporters_see === "all" ? "Reporters see every report" : "Reporters see their own reports");
 
+  $effect(() => {
+    if (route.view === "list") document.title = "Queues · Clax";
+    else if (route.view === "queue") document.title = `${current?.name ?? "Queue"} · Queues · Clax`;
+  });
+
   onMount(() => {
-    document.title = "Queues · Clax";
     void load();
-    return p.stream?.watch(["gallery"], e => { if (e.type === "ready" || e.type === "resync") void load(); });
+    const back = () => moved();
+    addEventListener("popstate", back);
+    const off = p.stream?.watch(["gallery"], e => { if (e.type === "ready" || e.type === "resync") void load(); });
+    return () => { removeEventListener("popstate", back); off?.(); };
   });
 </script>
 
+{#if route.view === "queue"}
+  {#key route.qid}<QueueView qid={route.qid} queue={current} {nav} stream={p.stream} />{/key}
+{:else if route.view === "report"}
+  {#key `${route.qid}/${route.tid}`}<ReportView qid={route.qid} tid={route.tid} queue={current} {nav} stream={p.stream} />{/key}
+{:else}
 <section class="queues" aria-labelledby="queues-h">
   <header class="qh">
     <h2 id="queues-h">Queues</h2>
@@ -91,7 +132,7 @@
             <QueueForm queue={q} onSave={f => save(f, q)} onCancel={() => { editing = null; }} />
           {:else}
             <header class="qrow">
-              <h3>{q.name}</h3>
+              <h3><a href={queueHref(q.id)} onclick={nav}>{q.name}</a></h3>
               <span class="role">{q.role === "admin" ? "Admin" : "Triage"}</span>
               <span class="sp"></span>
               {#if q.role === "admin"}
@@ -120,6 +161,7 @@
     <p class="qnone">Loading…</p>
   {/if}
 </section>
+{/if}
 
 <style>
   .queues { max-width: 880px; margin: 0 auto; min-width: 0; }
@@ -135,6 +177,8 @@
   .qcard > :global(.qform) { margin: 0; padding: 0; border: 0; background: none; }
   .qrow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
   .qrow h3 { margin: 0; font-size: 16px; overflow-wrap: anywhere; min-width: 0; }
+  .qrow h3 a { color: inherit; text-decoration: none; }
+  .qrow h3 a:hover, .qrow h3 a:focus-visible { text-decoration: underline; }
   .role { padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 12px; }
   .acts { display: flex; flex-wrap: wrap; gap: 2px; }
   .acts button { min-height: 28px; padding: 2px 8px; color: var(--muted); }

@@ -4,7 +4,9 @@ use super::{
 use crate::Store;
 use crate::test_util::{DAEMON, anchor, session, store, store_with_clock};
 use clax_core::CoreError;
-use clax_core::queue::{LEASE_SECS, REPORTER_TOKEN_SECS, ReportersSee, Role, State, StateFilter};
+use clax_core::queue::{
+    LEASE_SECS, REPORTER_TOKEN_SECS, ReportOrder, ReportersSee, Role, State, StateFilter,
+};
 use clax_core::report::{
     DiagLine, FixOutcome, NewFix, ReportContext, ReporterProfile, ResolveReason, ServerStamp,
 };
@@ -316,6 +318,49 @@ fn reports_list_by_state_and_page() {
     assert_eq!(count(State::Claimed), 1);
     assert_eq!(count(State::Resolved), 1);
     assert_eq!(count(State::Open), ids.len() - 2);
+}
+
+#[test]
+fn reports_list_newest_first_a_page_at_a_time() {
+    let (_d, st, clock) = clocked();
+    let qid = queue(&st, ReportersSee::All);
+    let ids: Vec<String> = (0..clax_core::queue::REPORT_PAGE + 2)
+        .map(|i| {
+            clock.advance(1);
+            file(&st, &qid, None, Some(&format!("r{i}")))
+        })
+        .collect();
+    let newest = |cur: Option<&str>, state| {
+        st.reports_in_order(&qid, Visibility::All, state, cur, ReportOrder::Newest)
+            .unwrap()
+    };
+    let (first, next) = newest(None, None);
+    assert_eq!(first.len(), clax_core::queue::REPORT_PAGE);
+    assert_eq!(first[0].id, *ids.last().unwrap(), "the latest first");
+    let (rest, end) = newest(next.as_deref(), None);
+    assert_eq!(end, None);
+    let all: Vec<String> = first.iter().chain(&rest).map(|r| r.id.clone()).collect();
+    let mut want = ids.clone();
+    want.reverse();
+    assert_eq!(all, want, "in reverse order of arrival");
+
+    st.resolve_thread(DAEMON, &ids[0], "agent:claude").unwrap();
+    st.resolve_thread(DAEMON, &ids[2], "agent:claude").unwrap();
+    let (resolved, end) = newest(None, Some(StateFilter::One(State::Resolved)));
+    assert_eq!(end, None);
+    let got: Vec<&str> = resolved.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(got, [ids[2].as_str(), ids[0].as_str()], "filtered, newest first");
+    let (before, _) = newest(Some(&ids[2]), None);
+    assert_eq!(
+        before.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+        [ids[1].clone(), ids[0].clone()],
+        "after a cursor, the reports filed before it"
+    );
+    assert_eq!(
+        st.reports(&qid, Visibility::All, None, None).unwrap().0[0].id,
+        ids[0],
+        "reports keeps its order of arrival"
+    );
 }
 
 #[test]

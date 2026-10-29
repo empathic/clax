@@ -516,16 +516,29 @@ async fn queue(batch: worker::MessageBatch<Value>, env: Env, _ctx: worker::Conte
     Ok(())
 }
 
+/// Whether `path` is one of the gallery shell's pages, which the daemon
+/// serves as its shell page (`clax_server::router`): `/`, `/inbox`,
+/// `/people`, `/tags`, `/admin`, `/settings`, `/me`, `/audit`, and the
+/// Queues page with a queue's and a report's views (`/queues`,
+/// `/queues/<qid>`, `/queues/<qid>/<tid>`).
+fn shell_page(path: &str) -> bool {
+    let segs: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    matches!(
+        segs.as_slice(),
+        [""] | ["inbox" | "people" | "tags" | "admin" | "settings" | "me" | "audit"]
+            | ["queues"]
+            | ["queues", _]
+            | ["queues", _, _]
+    ) && path.starts_with('/')
+        && !segs.iter().skip(1).any(|s| s.is_empty())
+}
+
 /// The web UI's file for `path` from the static assets, with the headers
 /// the daemon serves it with; `None` for a path the server answers, or a
 /// file the assets lack.
 async fn static_asset(env: &Env, path: &str, app_host: bool) -> Result<Option<HttpResponse>> {
     let (file, cache, entry) = match path {
-        "/" | "/inbox" | "/people" | "/tags" | "/admin" | "/settings" | "/me" | "/audit"
-            if app_host =>
-        {
-            ("/index.html".to_string(), "no-cache", true)
-        }
+        _ if app_host && shell_page(path) => ("/index.html".to_string(), "no-cache", true),
         _ => match path
             .strip_prefix("/_clax/")
             .and_then(clax_server::shell::asset_cache)
@@ -905,6 +918,31 @@ mod tests {
             retired: None,
         };
         super::route(path, url_host, host, &hosts, spike)
+    }
+
+    #[test]
+    fn the_shell_pages_include_a_queues_and_a_reports_view() {
+        for p in [
+            "/",
+            "/inbox",
+            "/audit",
+            "/queues",
+            "/queues/01J0000000000000000000000A",
+            "/queues/01J0000000000000000000000A/01J0000000000000000000000B",
+        ] {
+            assert!(super::shell_page(p), "{p}");
+        }
+        for p in [
+            "",
+            "/queues/",
+            "/queues//t",
+            "/queues/q/t/x",
+            "/a/7q3k9mzx2b4t",
+            "/people/x",
+            "/_clax/app.js",
+        ] {
+            assert!(!super::shell_page(p), "{p}");
+        }
     }
 
     #[test]

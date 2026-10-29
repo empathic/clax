@@ -40,7 +40,7 @@ use clax_core::model::{Comment, Session, Thread};
 use clax_core::queue::{
     AUTHOR_REPORTER, Claim, LEASE_SECS, Lease, MAX_ARTIFACT_METADATA_BYTES,
     MAX_THREAD_METADATA_BYTES, Queue, REPORT_PAGE, REPORTER_TOKEN_PREFIX, REPORTER_TOKEN_SECS,
-    Report, ReportComment, ReportersSee, Role, SERVICE_TOKEN_PREFIX, State, StateFilter,
+    Report, ReportComment, ReportOrder, ReportersSee, Role, SERVICE_TOKEN_PREFIX, State, StateFilter,
     check_queue_name, check_reporter_id, metadata_json, metadata_sha256, normalize_origin,
 };
 use clax_core::report::{
@@ -1541,6 +1541,23 @@ impl Store {
         state: Option<StateFilter>,
         cursor: Option<&str>,
     ) -> Result<(Vec<Report>, Option<String>)> {
+        self.reports_in_order(qid, vis, state, cursor, ReportOrder::Oldest)
+    }
+
+    /// [`Store::reports`] in `order`: with [`ReportOrder::Newest`] the
+    /// latest filed first, each page after `cursor` holding the reports
+    /// filed before it.
+    ///
+    /// # Errors
+    /// As [`Store::reports`].
+    pub fn reports_in_order(
+        &self,
+        qid: &str,
+        vis: Visibility<'_>,
+        state: Option<StateFilter>,
+        cursor: Option<&str>,
+        order: ReportOrder,
+    ) -> Result<(Vec<Report>, Option<String>)> {
         let now = self.now();
         self.with_read(|c| {
             let q = queue_in(c, qid)?.ok_or(CoreError::NotAMember)?;
@@ -1577,10 +1594,14 @@ impl Store {
                     }
                 },
             };
+            let (after, dir) = match order {
+                ReportOrder::Oldest => (">", "ASC"),
+                ReportOrder::Newest => ("<", "DESC"),
+            };
             let sql = format!(
                 "{REPORT_SELECT} {filter} {state_sql}
-                 AND (?3 IS NULL OR (t.created_at, t.id) > (SELECT created_at, id FROM threads WHERE id = ?3))
-                 ORDER BY t.created_at, t.id LIMIT ?5"
+                 AND (?3 IS NULL OR (t.created_at, t.id) {after} (SELECT created_at, id FROM threads WHERE id = ?3))
+                 ORDER BY t.created_at {dir}, t.id {dir} LIMIT ?5"
             );
             let mut rows: Vec<ReportRow> = c
                 .prepare_cached(&sql)?

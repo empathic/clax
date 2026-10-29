@@ -45,7 +45,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::audit::AuditCtx;
 use clax_core::model::Session;
-use clax_core::queue::StateFilter;
+use clax_core::queue::{ReportOrder, StateFilter};
 use clax_core::report::{NewFix, ResolveReason};
 use clax_core::working::StopReason;
 use clax_core::{CoreError, Event};
@@ -160,12 +160,16 @@ pub struct ListQuery {
     state: Option<String>,
     #[serde(default)]
     cursor: Option<String>,
+    #[serde(default)]
+    order: Option<String>,
 }
 
-/// `GET /api/queues/<qid>/reports?state=&cursor=` → `{reports, next}`: in
-/// order of arrival, a page at a time; `state` is one of `open`,
-/// `claimed`, `fix_proposed`, `verified` and `resolved`, or `active`
-/// (`open` or `claimed`); 400 `invalid_state` for another.
+/// `GET /api/queues/<qid>/reports?state=&order=&cursor=` → `{reports,
+/// next}`: a page at a time, in order of arrival (`order=oldest`, the
+/// default) or latest first (`order=newest`), 400 `invalid_query` for
+/// another order; `state` is one of `open`, `claimed`, `fix_proposed`,
+/// `verified` and `resolved`, or `active` (`open` or `claimed`); 400
+/// `invalid_state` for another.
 pub async fn list(
     State(s): State<AppState>,
     a: Agent<QueueReportsList>,
@@ -185,9 +189,20 @@ pub async fn list(
             )
         })?),
     };
+    let order = match q.order.as_deref() {
+        None | Some("") => ReportOrder::Oldest,
+        Some(x) => ReportOrder::parse(x).ok_or_else(|| {
+            ApiError::bad_request(
+                "invalid_query",
+                format!("order is oldest or newest, not '{x}'"),
+            )
+        })?,
+    };
     member(&s, &a, &qid).await?;
     let (reports, next) = s
-        .store_call(move |st| st.reports(&qid, Visibility::All, state, q.cursor.as_deref()))
+        .store_call(move |st| {
+            st.reports_in_order(&qid, Visibility::All, state, q.cursor.as_deref(), order)
+        })
         .await?;
     Ok(Json(json!({"reports": reports, "next": next})))
 }

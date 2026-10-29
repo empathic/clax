@@ -23,7 +23,7 @@ describe("Queues", () => {
     await settle();
     const card = m.root.querySelector('[data-id="q1"]')!;
     expect(card.querySelector("h3")!.textContent).toBe("Bugs");
-    expect(card.querySelector(".counts")!.textContent).toBe("2 open · 1 claimed · 0 resolved");
+    expect(card.querySelector(".counts")!.textContent).toBe("2 open · 1 claimed · 0 fix proposed · 0 verified · 0 resolved");
     expect(card.querySelector(".origins")!.textContent).toContain("https://app.example");
     expect(document.title).toBe("Queues · Clax");
   });
