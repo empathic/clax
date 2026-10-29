@@ -196,3 +196,19 @@ describe("C pressed in the page", () => {
     expect(shortcuts()).toEqual([{ type: "clax:shortcut", key: "c" }]);
   });
 });
+
+describe("the shell's light/dark choice", () => {
+  const root = document.documentElement;
+  it("sets data-theme from the welcome and from clax:theme, and removes only what it set", () => {
+    send({ type: "clax:welcome", mode: "view", theme: "dark" });
+    expect(root.dataset.theme).toBe("dark");
+    send({ type: "clax:theme", theme: "light" });
+    expect(root.dataset.theme).toBe("light");
+    send({ type: "clax:theme", theme: null });
+    expect(root.dataset.theme).toBeUndefined();
+    root.dataset.theme = "dark"; // the page's own choice
+    send({ type: "clax:theme", theme: null });
+    expect(root.dataset.theme).toBe("dark");
+    delete root.dataset.theme;
+  });
+});

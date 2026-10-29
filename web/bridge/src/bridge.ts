@@ -371,18 +371,29 @@ type PartName = keyof Parts;
   // The shell keeps its address bar's fragment in step with the page's.
   addEventListener("hashchange", () => { if (welcomed) post(hashFor(location.hash)); });
 
+  // The shell's light/dark choice on the page's root (the page contract's
+  // `:root[data-theme]`); the system again removes only a theme the shell set,
+  // never one the page set itself.
+  let themed = false;
+  const theme = (t: "light" | "dark" | null) => {
+    const root = document.documentElement;
+    if (t) { root.dataset.theme = t; themed = true; } else if (themed) { delete root.dataset.theme; themed = false; }
+  };
+
   addEventListener("message", e => {
     const m = acceptFromShell(e, shellWin, origins);
     if (!m) return;
     shellOrigin = e.origin;
     switch (m.type) {
       case "clax:welcome":
+        theme(m.theme ?? null);
         welcomed = true; appShell = m.app === true; shellMode = m.mode === "comment"; followMode(); rpc.connect(); post(hashFor(location.hash));
         prefetch();
         if (m.app) void parts.caps().then(c => { routes = c.app(window, post, meta.file, m.restoreScroll); }, () => {});
         break;
       case "clax:use-result": case "clax:call-result": case "clax:event": rpc.accept(m); break;
       case "clax:comment-mode": shellMode = m.on; followMode(); break;
+      case "clax:theme": theme(m.theme); break;
       // In place, with no entry of its own, and only ever its fragment: the
       // URL up to `#` is the page's own (absolute, so no <base> moves it).
       case "clax:hash": location.replace(location.href.split("#")[0] + "#" + m.hash.slice(1)); break;

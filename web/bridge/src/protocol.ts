@@ -105,8 +105,14 @@ export type ShellToBridge =
    * reports its scroll position (`clax:scroll`), and scrolls to
    * `restoreScroll` (CSS pixels from the top) once the document is tall
    * enough, or after 2 s as far as it reaches: the app shell sends it when it
-   * loaded a newer version in place of the one the viewer was scrolling. */
-  | { type: "clax:welcome"; mode: "comment" | "view"; app?: boolean; restoreScroll?: number }
+   * loaded a newer version in place of the one the viewer was scrolling.
+   * `theme`: the viewer's light/dark choice in the shell (spec §8), set on
+   * the page's root as `data-theme` (the page contract's explicit choice);
+   * absent when the viewer follows the system. */
+  | { type: "clax:welcome"; mode: "comment" | "view"; app?: boolean; restoreScroll?: number; theme?: "light" | "dark" }
+  /** The viewer pressed the shell's light/dark switch: the page's root gets
+   * `data-theme` (`null`: the system again, so the attribute is removed). */
+  | { type: "clax:theme"; theme: "light" | "dark" | null }
   | { type: "clax:comment-mode"; on: boolean }
   /** Moves the page to the fragment `hash` (`#…`, or `""` for none) in
    * place, replacing its history entry (the page's own `clax:hash` reports
@@ -299,5 +305,5 @@ export type BridgeToShell =
   | UseRequest
   | CallRequest;
 
-export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:back", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:inspect", "clax:test", "clax:migrate", "clax:peers", "clax:storage-access", "clax:use-result", "clax:call-result", "clax:event"]);
+export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:theme", "clax:comment-mode", "clax:hash", "clax:greet", "clax:back", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:inspect", "clax:test", "clax:migrate", "clax:peers", "clax:storage-access", "clax:use-result", "clax:call-result", "clax:event"]);
 export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:shortcut", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:cursor", "clax:peer-at", "clax:no-cookie", "clax:storage-access", "clax:scroll", "clax:route", "clax:chrome", "clax:wait", "clax:inspection", "clax:tests", "clax:migration", "clax:use", "clax:call"]);
