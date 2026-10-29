@@ -644,7 +644,7 @@ describe("clax Pi extension", () => {
         { url_or_id: id, scope: "read" },
         { url_or_id: id, scope: "write" },
       ],
-      clax_queue_list: [{}, { queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", state: "claimed", cursor: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }, ...["open", "fix_proposed", "verified", "resolved", "active"].map(state => ({ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", state }))],
+      clax_queue_list: [{}, { queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", state: "claimed", cursor: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }, ...["open", "fix_proposed", "verified", "resolved", "active", "all"].map(state => ({ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", state }))],
       clax_queue_claim: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
       clax_queue_renew: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
       clax_queue_release: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
@@ -1790,6 +1790,7 @@ describe("report queues", () => {
   const Q = "01K6AB3Q9X7N2M4P5R6S8T0V1W";
   const R = "01K6AB3Q9X7N2M4P5R6S8T0V1X";
   const C = "01K6AB3Q9X7N2M4P5R6S8T0V1Y";
+  const R2 = "01K6AB3Q9X7N2M4P5R6S8T0V1Z";
   /** A fake daemon answering the report routes from `routes` (`METHOD
    * path` to a JSON body, or a Buffer served as a PNG), every feedback
    * poll with nothing, and recording each body POSTed in `posted`. */
@@ -1820,6 +1821,7 @@ describe("report queues", () => {
     });
     return { ...fake, posted };
   }
+  const WIDE = Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), Buffer.from([0, 0, 0x13, 0x88, 0, 0, 0, 10, 8, 6, 0, 0, 0])]);
   const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
 
   it("queue_fix posts summary and links", async () => {
@@ -1853,6 +1855,10 @@ describe("report queues", () => {
       [`GET /api/queues/${Q}/reports/${R}/diagnostics?capture=1`]: { lines: [{ at: "2026-10-27T12:29:59Z", level: "error", kind: "error", text: "again" }] },
       [`GET /api/queues/${Q}/reports/${R}/comments/${C}/clip`]: PNG,
       [`GET /api/queues/${Q}/reports?state=active`]: { reports: [report], next: null },
+      [`GET /api/queues/${Q}/reports`]: { reports: [], next: null },
+      // A report whose clip is too wide to attach and whose diagnostics cannot be read.
+      [`GET /api/queues/${Q}/reports/${R2}`]: { report: { id: R2, queue_id: Q, state: "open", has_clip: true, diagnostics_lines: 2, comments: [] } },
+      [`GET /api/queues/${Q}/reports/${R2}/clip`]: WIDE,
       [`POST /api/queues/${Q}/watch`]: null,
       [`DELETE /api/queues/${Q}/watch`]: null,
     });
@@ -1870,9 +1876,19 @@ describe("report queues", () => {
       expect(v.note).toContain("data");
       expect(r.content.find(b => b.type === "image")).toMatchObject({ type: "image", mimeType: "image/png", data: PNG.toString("base64") });
 
-      const l = parts(await pi.callToolAsPi("clax_queue_list", { queue: Q, state: "active" }, ctx)).json;
+      // Without a state the listing is the active reports; `all` sends no filter.
+      const l = parts(await pi.callToolAsPi("clax_queue_list", { queue: Q }, ctx)).json;
       expect(l.reports[0].context).toBeUndefined();
       expect(l.reports[0].context_summary).toEqual({ release: { version: "0.6.0" }, captured_at: "2026-10-27T11:58:00Z", mode: "screen" });
+      expect(parts(await pi.callToolAsPi("clax_queue_list", { queue: Q, state: "all" }, ctx)).json.reports).toEqual([]);
+
+      const r2 = await pi.callToolAsPi("clax_queue_get", { queue: Q, report_id: R2 }, ctx);
+      const v2 = parts(r2).json;
+      expect(v2.clip.note).toContain("not attached (5000x10 pixels");
+      expect(r2.content.some(b => b.type === "image")).toBe(false);
+      expect(v2.diagnostics).toMatchObject({ capture: 0, lines: [] });
+      expect(v2.diagnostics.note).toMatch(/^not read \(not_found\)/);
+      expect(v2.report.diagnostics_url).toBe(`${base.replace(R, R2)}/diagnostics?capture=0`);
 
       expect(parts(await pi.callToolAsPi("clax_queue_watch", { queue: Q }, ctx)).json).toMatchObject({ queue: Q, watching: true });
       expect(parts(await pi.callToolAsPi("clax_queue_watch", { queue: Q, stop: true }, ctx)).json).toMatchObject({ queue: Q, watching: false });

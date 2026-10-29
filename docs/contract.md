@@ -3659,7 +3659,7 @@ the copy's remote, the link holds the copy's address alone.
 | `working` | `url_or_id`; optional `thread_ids` (at most 20 open threads), `message` (at most 140 characters), `done` | `{artifact_id, url, working: true, message, thread_ids, started_at, expires_in_s, message_truncated}` or `{artifact_id, url, working: false, cleared}` |
 | `draft` | `url_or_id`; `html` or `file_path` (the page) and/or `files` (as `publish` takes them, `null` removing a path); optional `if_version`, `note` (at most 140 characters), `done` | `{artifact_id, url, drafting: true, base_version, paths, note, note_truncated, expires_in_s}` or `{artifact_id, url, drafting: false, ended}` |
 | `git_remote` | `url_or_id`, `scope` (`read` or `write`) | `{artifact_id, url, scope, remote, token, expires_at, clone_command, jj_clone_command, existing_checkout}` (see "Git remotes") |
-| `queue_list` | optional `queue`; with it, optional `state` (`open`, `claimed`, `fix_proposed`, `verified`, `resolved` or `active`), `cursor` | without `queue`, `{queues}` (`GET /api/queues`); with it, `{reports, next}` (`GET /api/queues/<queue>/reports`), each report's `context` replaced by `context_summary` (`{release, captured_at, mode}`, or `null` for a report filed without context) |
+| `queue_list` | optional `queue`; with it, optional `state` (`active`, the default; `open`, `claimed`, `fix_proposed`, `verified`, `resolved`, or `all`, which sends the route no filter), `cursor` | without `queue`, `{queues}` (`GET /api/queues`); with it, `{reports, next}` (`GET /api/queues/<queue>/reports`), each report's `context` replaced by `context_summary` (`{release, captured_at, mode}`, or `null` for a report filed without context) |
 | `queue_get` | `queue`, `report_id` | `{report, diagnostics, clip, note}` (below) |
 | `queue_claim` | `queue`, `report_id` | the lease `{lease_id, expires_at, fence, report}`; `thread_taken` names the holder |
 | `queue_renew` | `queue`, `report_id` | the lease, extended to 10 minutes from now; `claim_required`, `lease_lost` or `thread_taken` |
@@ -3690,12 +3690,13 @@ No other write takes the fence, and `queue_fix` sends none.
 `queue_get` reads one report (`GET …/reports/<tid>`) and adds the URLs of
 each capture on the Clax's public origin: the report's `clip_url` (the
 filing's clip, `null` without one) and `diagnostics_url`
-(`…/diagnostics?capture=0`), and on each comment that carries a reopen's
+(`…/diagnostics?capture=0`, `null` when the filing has none), and on each comment that carries a reopen's
 `capture` its `clip_url` (`…/comments/<cid>/clip`) and `diagnostics_url`
 (`…/diagnostics?capture=<n>`), each `null` when that capture has none. Each
 URL serves the reader's own credential. `diagnostics` is `{capture,
 lines}`: the latest capture's that has any, inline (`{capture: null,
-lines: []}` when none has). `clip` is `{capture, url, note}` for the latest
+lines: []}` when none has); when they cannot be read, `lines` is `[]` and
+`note` says why, and the call still succeeds. `clip` is `{capture, url, note}` for the latest
 capture that has a clip, or `null`: the MCP tool attaches that clip to the
 result as an image block (`image/png`) and Pi's tool as an image content
 item, unless it is over 1 MiB or a side is over 4096 pixels, when `note`
