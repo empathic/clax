@@ -1,4 +1,4 @@
-//! The Clax MCP tool set: thirty-two tools that call the daemon's REST API.
+//! The Clax MCP tool set: thirty-nine tools that call the daemon's REST API.
 
 use crate::client::{ClientError, DaemonClient};
 use crate::render;
@@ -407,6 +407,20 @@ pub struct QueueReplyArgs {
 #[serde(deny_unknown_fields)]
 pub struct WhereToAskArgs {}
 
+/// `connect_instance`'s arguments (spec 2026-10-29-remote-instances §3).
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectInstanceArgs {
+    /// A URL on the Clax instance (the page you want to read), or its origin.
+    pub url_or_origin: Option<String>,
+    /// Why you need it, in a sentence the person reads.
+    pub reason: Option<String>,
+    /// `request_id` from a previous call, to keep waiting on that request.
+    pub request_id: Option<String>,
+    /// Seconds to wait for the person's answer (default 600, 50 under Codex).
+    pub timeout_s: Option<u64>,
+}
+
 /// What `ask`'s `approval` asks to see (spec §9.2).
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -653,6 +667,64 @@ pub struct DbBatchArgs {
 
 /// A tool's outcome before rendering: the success object, or a finished error result.
 type Outcome = Result<Value, CallToolResult>;
+
+/// What a tool that works on remote artifacts was handed: an artifact of
+/// this Clax (and the version the reference names), or one on a connected
+/// remote.
+enum Ref {
+    Local { id: String, version: Option<u32> },
+    Remote(RemoteRef),
+}
+
+/// An artifact on a connected remote, as `GET /api/resolve` names it: the
+/// remote's ID, origin and name, the artifact's ID there, the version the
+/// URL names, and its address there.
+struct RemoteRef {
+    remote: String,
+    origin: String,
+    name: String,
+    artifact_id: String,
+    version: Option<u32>,
+    url: String,
+}
+
+impl RemoteRef {
+    /// `remote: {origin, name}`, which a result about it carries.
+    fn instance(&self) -> Value {
+        json!({"origin": self.origin, "name": self.name})
+    }
+}
+
+/// Where `read` reads a file from.
+enum Source<'a> {
+    Local(&'a str),
+    Remote(&'a RemoteRef),
+}
+
+/// The comments `threads` (thread views) withhold from the reader: the
+/// sum of their `withheld.count`.
+fn withheld_comments(threads: &[Value]) -> u64 {
+    threads
+        .iter()
+        .filter_map(|t| t["withheld"]["count"].as_u64())
+        .sum()
+}
+
+/// What a result about remote artifact `r` says of the `n` comments the
+/// remote withholds from its agents: `{count, note}`, the note "<n>
+/// comments from people you have not approved for agents on <name>";
+/// `None` when it withholds none.
+pub fn withheld_note(n: u64, name: &str) -> Option<Value> {
+    (n > 0).then(|| {
+        json!({
+            "count": n,
+            "note": format!(
+                "{n} comment{} from people you have not approved for agents on {name}",
+                if n == 1 { "" } else { "s" }
+            ),
+        })
+    })
+}
 
 /// The line a publish result carries when the answer's
 /// `pending_capabilities` says what waits for approval, `None` when
@@ -1330,6 +1402,24 @@ impl ClaxTools {
         render::client_error(e, self.daemon_log())
     }
 
+    /// [`Self::fail`] for a call to a remote artifact's route: the daemon's
+    /// `remote_sign_in_required` (the remote refused its token) is the
+    /// error a URL on an instance this Clax is not connected to gets
+    /// ([`crate::target::sign_in_required`]), naming how to ask the person
+    /// to connect it again.
+    fn remote_fail(&self, e: ClientError) -> CallToolResult {
+        if let ClientError::Api { error, .. } = &e
+            && error["code"] == "remote_sign_in_required"
+        {
+            return crate::target::sign_in_required(
+                error["origin"].as_str().unwrap_or_default(),
+                error["name"].as_str().unwrap_or_default(),
+                &error["request"],
+            );
+        }
+        self.fail(e)
+    }
+
     /// Where the log errors name is: this home's, unless the daemon is
     /// another machine's (remote mode), or these tools are a remote
     /// agent's on the Clax serving them ([`ClaxTools::for_remote_agent`]:
@@ -1377,17 +1467,73 @@ impl ClaxTools {
     /// `invalid_id` for a reference that names nothing, or a page URL with
     /// no live page yet.
     async fn resolve_ref(&self, url_or_id: &str) -> Result<(String, Option<u32>), CallToolResult> {
+        let t = self.target(url_or_id).await?;
+        self.local_ref(t).await
+    }
+
+    /// What `url_or_id` names for a tool that works on remote artifacts as
+    /// well ([`Self::target`]): a remote artifact, or the local artifact
+    /// [`Self::resolve_ref`] reads.
+    async fn resolve_any(&self, url_or_id: &str) -> Result<Ref, CallToolResult> {
         match self.target(url_or_id).await? {
+            crate::target::Target::Remote {
+                remote,
+                origin,
+                name,
+                artifact_id,
+                version,
+                url,
+            } => Ok(Ref::Remote(RemoteRef {
+                remote,
+                origin,
+                name,
+                artifact_id,
+                version,
+                url,
+            })),
+            t => self
+                .local_ref(t)
+                .await
+                .map(|(id, version)| Ref::Local { id, version }),
+        }
+    }
+
+    /// The local artifact of [`Self::resolve_ref`], for a tool that does not
+    /// wait on remote artifacts yet: a remote one is `remote_not_yet`.
+    async fn resolve_id_not_yet(&self, url_or_id: &str) -> Result<String, CallToolResult> {
+        match self.target(url_or_id).await? {
+            crate::target::Target::Remote { origin, url, .. } => {
+                Err(crate::target::remote_not_yet(&origin, &url))
+            }
+            t => self.local_ref(t).await.map(|(id, _)| id),
+        }
+    }
+
+    /// The local artifact target `t` names, and the version when it names
+    /// one; a page is resolved to its live page. A remote artifact is
+    /// `not_on_remote`, naming the instance.
+    ///
+    /// # Errors
+    /// `invalid_id` for a page URL with no live page yet;
+    /// `remote_sign_in_required` for an instance this Clax is not connected
+    /// to.
+    async fn local_ref(
+        &self,
+        t: crate::target::Target,
+    ) -> Result<(String, Option<u32>), CallToolResult> {
+        match t {
             crate::target::Target::Artifact { id, version } => {
                 self.client.note_artifact(&id);
                 Ok((id, version))
             }
-            crate::target::Target::SignInRequired { origin, name } => {
-                Err(crate::target::sign_in_required(&origin, &name))
-            }
-            crate::target::Target::Remote { origin, url, .. } => {
-                Err(crate::target::remote_not_yet(&origin, &url))
-            }
+            crate::target::Target::SignInRequired {
+                origin,
+                name,
+                request,
+            } => Err(crate::target::sign_in_required(&origin, &name, &request)),
+            crate::target::Target::Remote {
+                origin, name, url, ..
+            } => Err(crate::target::not_on_remote(&name, &origin, &url)),
             crate::target::Target::Page(url) => {
                 let res = self
                     .client
@@ -1688,8 +1834,71 @@ impl ClaxTools {
     }
 
     async fn do_read(&self, a: ReadArgs) -> Outcome {
-        let (id, url_version) = self.resolve_ref(&a.url_or_id).await?;
-        let got = self.client.get(&id).await.map_err(|e| self.fail(e))?;
+        match self.resolve_any(&a.url_or_id).await? {
+            Ref::Local { id, version } => {
+                let got = self.client.get(&id).await.map_err(|e| self.fail(e))?;
+                self.read_file(&a, &id, version, &got, Source::Local(&id))
+                    .await
+            }
+            Ref::Remote(r) => {
+                let got = self
+                    .client
+                    .remote_get(&r.remote, &r.artifact_id)
+                    .await
+                    .map_err(|e| self.remote_fail(e))?;
+                let mut out = self
+                    .read_file(&a, &r.artifact_id, r.version, &got, Source::Remote(&r))
+                    .await?;
+                out["url"] = json!(r.url);
+                out["remote"] = r.instance();
+                // What the remote withholds from its agents, counted on its
+                // open threads (their first page).
+                let threads = self
+                    .client
+                    .remote_threads(&r.remote, &r.artifact_id, false, None)
+                    .await
+                    .map_err(|e| self.remote_fail(e))?;
+                let threads = threads["threads"].as_array().cloned().unwrap_or_default();
+                if let Some(w) = withheld_note(withheld_comments(&threads), &r.name) {
+                    out["withheld_comments"] = w;
+                }
+                Ok(out)
+            }
+        }
+    }
+
+    /// The bytes of `path` of version `n` of the artifact `src` names.
+    async fn source_bytes(
+        &self,
+        src: &Source<'_>,
+        n: u32,
+        path: &str,
+    ) -> Result<Vec<u8>, CallToolResult> {
+        match src {
+            Source::Local(id) => self
+                .client
+                .file_bytes(id, n, path)
+                .await
+                .map_err(|e| self.fail(e)),
+            Source::Remote(r) => self
+                .client
+                .remote_file_bytes(&r.remote, &r.artifact_id, n, path)
+                .await
+                .map_err(|e| self.remote_fail(e)),
+        }
+    }
+
+    /// `read`'s result for artifact `id`, whose `{artifact, versions}` are
+    /// `got`, its files read from `src`: the version `a` (else the URL's
+    /// `url_version`, else the current one) names, and its file `a.path`.
+    async fn read_file(
+        &self,
+        a: &ReadArgs,
+        id: &str,
+        url_version: Option<u32>,
+        got: &Value,
+        src: Source<'_>,
+    ) -> Outcome {
         let n = match a.version.or(url_version) {
             Some(n) => n,
             None => got["artifact"]["current_version"].as_u64().unwrap_or(0) as u32,
@@ -1700,26 +1909,21 @@ impl ClaxTools {
             .ok_or_else(|| not_found(format!("artifact {id} has no version {n}")))?;
         let path = a
             .path
+            .clone()
             .unwrap_or_else(|| clax_core::publish::INDEX.to_string());
         let Some(meta) = version["files"].get(&path) else {
             // A version that withholds files from this agent's person lists
             // none of them; the daemon answers a withheld file and a missing
             // one alike (403 `withheld`), which the agent is handed.
-            if version["files_withheld"].as_u64().unwrap_or(0) > 0
-                && let Err(e) = self.client.file_bytes(&id, n, &path).await
-            {
-                return Err(self.fail(e));
+            if version["files_withheld"].as_u64().unwrap_or(0) > 0 {
+                self.source_bytes(&src, n, &path).await?;
             }
             return Err(not_found(format!(
                 "version {n} of {id} has no file '{path}'"
             )));
         };
         let content_type = meta["content_type"].as_str().unwrap_or("").to_string();
-        let bytes = self
-            .client
-            .file_bytes(&id, n, &path)
-            .await
-            .map_err(|e| self.fail(e))?;
+        let bytes = self.source_bytes(&src, n, &path).await?;
         let size = bytes.len();
         let max =
             usize::try_from(a.max_bytes.unwrap_or(DEFAULT_READ_MAX_BYTES)).unwrap_or(usize::MAX);
@@ -1997,9 +2201,25 @@ impl ClaxTools {
     }
 
     async fn do_open(&self, a: TargetArgs) -> Outcome {
-        let id = self.resolve_id(&a.url_or_id).await?;
-        self.client.get(&id).await.map_err(|e| self.fail(e))?;
-        let url = self.artifact_url(&id);
+        let (id, remote) = match self.resolve_any(&a.url_or_id).await? {
+            Ref::Local { id, .. } => {
+                self.client.get(&id).await.map_err(|e| self.fail(e))?;
+                (id, None)
+            }
+            // A remote artifact opens at its address there, where the
+            // person's browser signs in.
+            Ref::Remote(r) => {
+                self.client
+                    .remote_get(&r.remote, &r.artifact_id)
+                    .await
+                    .map_err(|e| self.remote_fail(e))?;
+                (r.artifact_id.clone(), Some(r))
+            }
+        };
+        let url = match &remote {
+            Some(r) => r.url.clone(),
+            None => self.artifact_url(&id),
+        };
         let program = match &self.opener {
             Opener::Platform if std::env::var_os("CLAX_NO_OPEN").is_none() => {
                 Some(PathBuf::from(platform_opener()))
@@ -2013,7 +2233,7 @@ impl ClaxTools {
                 // link, so a browser not yet the owner's becomes one; the
                 // result names the artifact's own URL, never the link. A
                 // remote Clax's browsers sign in there.
-                let target = match self.client.is_remote() {
+                let target = match self.client.is_remote() || remote.is_some() {
                     true => url.clone(),
                     false => match self.client.browser_login(&format!("/a/{id}")).await {
                         Ok(v) => match v["path"].as_str() {
@@ -2031,7 +2251,11 @@ impl ClaxTools {
             }
             None => false,
         };
-        Ok(json!({"url": url, "opened": opened}))
+        let mut out = json!({"url": url, "opened": opened});
+        if let Some(r) = &remote {
+            out["remote"] = r.instance();
+        }
+        Ok(out)
     }
 
     async fn do_asset_upload(&self, a: AssetUploadArgs) -> Outcome {
@@ -2326,7 +2550,10 @@ impl ClaxTools {
         &self,
         a: CommentsReadArgs,
     ) -> Result<(Value, Option<ContentBlock>), CallToolResult> {
-        let id = self.resolve_id(&a.url_or_id).await?;
+        let id = match self.resolve_any(&a.url_or_id).await? {
+            Ref::Local { id, .. } => id,
+            Ref::Remote(r) => return Ok((self.comments_read_remote(&r, &a).await?, None)),
+        };
         let (threads, next) = match &a.thread_id {
             Some(tid) => {
                 check_thread_id(tid)?;
@@ -2392,6 +2619,53 @@ impl ClaxTools {
         ))
     }
 
+    /// `comments_read` of remote artifact `r`: its threads as the remote
+    /// shows them to its person's agents, with `url` its address there,
+    /// `remote: {origin, name}`, and `withheld_comments` when the remote
+    /// withholds comments from them ([`withheld_note`]). Nothing is
+    /// acknowledged here, and no clip is attached.
+    async fn comments_read_remote(&self, r: &RemoteRef, a: &CommentsReadArgs) -> Outcome {
+        let (threads, next) = match &a.thread_id {
+            Some(tid) => {
+                check_thread_id(tid)?;
+                let v = self
+                    .client
+                    .remote_thread(&r.remote, &r.artifact_id, tid)
+                    .await
+                    .map_err(|e| self.remote_fail(e))?;
+                (vec![v["thread"].clone()], Value::Null)
+            }
+            None => {
+                let v = self
+                    .client
+                    .remote_threads(
+                        &r.remote,
+                        &r.artifact_id,
+                        a.include_resolved.unwrap_or(false),
+                        a.cursor.as_deref(),
+                    )
+                    .await
+                    .map_err(|e| self.remote_fail(e))?;
+                (
+                    v["threads"].as_array().cloned().unwrap_or_default(),
+                    v["next_cursor"].clone(),
+                )
+            }
+        };
+        let mut out = json!({
+            "artifact_id": r.artifact_id,
+            "url": r.url,
+            "remote": r.instance(),
+            "threads": threads.iter().map(thread_summary).collect::<Vec<_>>(),
+            "next_cursor": next,
+            "note": clax_core::feedback::UNTRUSTED_NOTE,
+        });
+        if let Some(w) = withheld_note(withheld_comments(&threads), &r.name) {
+            out["withheld_comments"] = w;
+        }
+        Ok(out)
+    }
+
     /// Thread `tid`'s clip on artifact `aid` as an image block, read
     /// through the caller's own credential (so a clip it may not see is not
     /// read), and the clip's note: attached, or not attached and why (over
@@ -2423,13 +2697,32 @@ impl ClaxTools {
     /// agent `to` names, or without `to` releases it; the thread as the
     /// session now sees it, with its `owner`.
     async fn do_comments_handoff(&self, a: CommentsHandoffArgs) -> Outcome {
-        let id = self.resolve_id(&a.url_or_id).await?;
+        let target = self.resolve_any(&a.url_or_id).await?;
         check_thread_id(&a.thread_id)?;
         if a.to.as_deref().is_some_and(|t| t.trim().is_empty()) {
             return Err(invalid(
                 "to names a live agent; leave it out to release the thread",
             ));
         }
+        let id = match target {
+            Ref::Local { id, .. } => id,
+            Ref::Remote(r) => {
+                // There, `to` names a live agent of the remote's.
+                let v = self
+                    .client
+                    .remote_handoff(&r.remote, &r.artifact_id, &a.thread_id, a.to.as_deref())
+                    .await
+                    .map_err(|e| self.remote_fail(e))?;
+                return Ok(json!({
+                    "artifact_id": r.artifact_id,
+                    "url": r.url,
+                    "remote": r.instance(),
+                    "released": a.to.is_none(),
+                    "thread": thread_summary(&v["thread"]),
+                    "note": clax_core::feedback::UNTRUSTED_NOTE,
+                }));
+            }
+        };
         self.require_session().await?;
         // The thread must be the artifact's: a thread of another artifact
         // is not found there.
@@ -2458,16 +2751,38 @@ impl ClaxTools {
     }
 
     async fn do_comments_reply(&self, a: CommentsReplyArgs) -> Outcome {
-        let id = self.resolve_id(&a.url_or_id).await?;
+        let target = self.resolve_any(&a.url_or_id).await?;
         check_thread_id(&a.thread_id)?;
         if a.text.trim().is_empty() {
             return Err(invalid("text must not be empty"));
         }
-        let res = self
-            .client
-            .reply(&id, &a.thread_id, &a.text, a.addressed.unwrap_or(false))
-            .await
-            .map_err(|e| self.fail(e))?;
+        let res = match &target {
+            Ref::Local { id, .. } => self
+                .client
+                .reply(id, &a.thread_id, &a.text, a.addressed.unwrap_or(false))
+                .await
+                .map_err(|e| self.fail(e))?,
+            Ref::Remote(r) => {
+                if a.addressed == Some(true) {
+                    return Err(invalid(
+                        "addressed is for live pages; a remote artifact is not one",
+                    ));
+                }
+                // One key per reply: the request sent again (by the client,
+                // once it registered its session again) is answered there
+                // with the comment the first made.
+                self.client
+                    .remote_reply(
+                        &r.remote,
+                        &r.artifact_id,
+                        &a.thread_id,
+                        &a.text,
+                        &clax_core::new_ulid(),
+                    )
+                    .await
+                    .map_err(|e| self.remote_fail(e))?
+            }
+        };
         Ok(match res["guidance"].as_str() {
             Some(g) => json!({"thread_id": a.thread_id, "replied": false, "guidance": g}),
             None => {
@@ -2481,13 +2796,25 @@ impl ClaxTools {
     }
 
     async fn do_comments_resolve(&self, a: CommentsResolveArgs) -> Outcome {
-        let id = self.resolve_id(&a.url_or_id).await?;
+        let target = self.resolve_any(&a.url_or_id).await?;
         check_thread_id(&a.thread_id)?;
-        let res = self
-            .client
-            .resolve(&id, &a.thread_id)
-            .await
-            .map_err(|e| self.fail(e))?;
+        let res = match &target {
+            Ref::Local { id, .. } => self
+                .client
+                .resolve(id, &a.thread_id)
+                .await
+                .map_err(|e| self.fail(e))?,
+            Ref::Remote(r) => self
+                .client
+                .remote_resolve(
+                    &r.remote,
+                    &r.artifact_id,
+                    &a.thread_id,
+                    &clax_core::new_ulid(),
+                )
+                .await
+                .map_err(|e| self.remote_fail(e))?,
+        };
         Ok(match res["guidance"].as_str() {
             Some(g) => json!({"thread_id": a.thread_id, "resolved": false, "guidance": g}),
             None => {
@@ -2512,8 +2839,12 @@ impl ClaxTools {
             crate::target::Target::Artifact { id, .. } => {
                 return self.do_watch_artifact(id, a).await;
             }
-            crate::target::Target::SignInRequired { origin, name } => {
-                return Err(crate::target::sign_in_required(&origin, &name));
+            crate::target::Target::SignInRequired {
+                origin,
+                name,
+                request,
+            } => {
+                return Err(crate::target::sign_in_required(&origin, &name, &request));
             }
             crate::target::Target::Remote { origin, url, .. } => {
                 return Err(crate::target::remote_not_yet(&origin, &url));
@@ -2779,6 +3110,67 @@ impl ClaxTools {
         }
         self.queue_action(&a.queue, &a.report_id, "comments", json!({"body": a.body}))
             .await
+    }
+
+    /// `connect_instance` (spec 2026-10-29-remote-instances §3): asks the
+    /// person to connect the Clax instance `url_or_origin` is on (or keeps
+    /// waiting on `request_id`), then waits for their answer in polls of at
+    /// most 50 s, up to `timeout_s`.
+    async fn do_connect_instance(&self, a: ConnectInstanceArgs) -> Outcome {
+        let session = self.require_session().await?;
+        let wait = a
+            .timeout_s
+            .unwrap_or_else(|| default_ask_wait(&session.harness))
+            .clamp(MIN_WAIT_S, max_ask_wait(&session.harness));
+        let id = match (a.url_or_origin.as_deref(), a.request_id) {
+            (Some(url), None) => {
+                let v = self
+                    .client
+                    .remote_request(url, a.reason.as_deref())
+                    .await
+                    .map_err(|e| self.fail(e))?;
+                if v["status"] != "open" {
+                    // Connected, muted or held off: nothing to wait for.
+                    let mut out = v.clone();
+                    out["call_again"] = json!(false);
+                    return Ok(out);
+                }
+                v["request"]["id"].as_str().unwrap_or_default().to_string()
+            }
+            (None, Some(id)) if clax_core::is_ulid(&id) => id,
+            (None, Some(id)) => return Err(invalid(format!("'{id}' is not a request ID"))),
+            _ => {
+                return Err(invalid(
+                    "pass `url_or_origin` to ask, or `request_id` to keep waiting on a request",
+                ));
+            }
+        };
+        let started = clax_rt::time::Instant::now();
+        loop {
+            let left = wait.saturating_sub(started.elapsed().as_secs());
+            let v = self
+                .client
+                .remote_request_wait(&id, left.min(50))
+                .await
+                .map_err(|e| {
+                    render::client_error_with(e, self.daemon_log(), json!({"request_id": id}))
+                })?;
+            // `retry_after_s`: every wait on the request is taken; the
+            // agent calls again rather than this call polling at once.
+            if v["status"] != "open" || left <= 50 || v.get("retry_after_s").is_some() {
+                let mut out = v.clone();
+                out["waited_s"] = json!(started.elapsed().as_secs());
+                if v["status"] == "open" {
+                    let url = format!("{}/inbox?remote_request={id}", self.browser_base());
+                    out["tell_terminal"] = json!(format!(
+                        "Asked in Clax to connect {}: {url}",
+                        v["name"].as_str().unwrap_or("the instance")
+                    ));
+                    out["url"] = json!(url);
+                }
+                return Ok(out);
+            }
+        }
     }
 
     /// The daemon's suggestion of where to ask the session's person now:
@@ -3241,7 +3633,7 @@ impl ClaxTools {
     /// Tier 4. Its own result carries the feedback, so no piggyback follows.
     async fn do_wait(&self, a: WaitArgs) -> CallToolResult {
         let artifact = match &a.url_or_id {
-            Some(r) => match self.resolve_id(r).await {
+            Some(r) => match self.resolve_id_not_yet(r).await {
                 Ok(id) => Some(id),
                 Err(e) => return e,
             },
@@ -3471,6 +3863,7 @@ direct_tools!(
     git_remote,
     ask,
     where_to_ask,
+    connect_instance,
     db_get,
     db_list,
     db_query,
@@ -3836,6 +4229,22 @@ impl ClaxTools {
         Parameters(args): Parameters<AskArgs>,
     ) -> Result<CallToolResult, McpError> {
         self.finish(self.do_ask(args).await).await
+    }
+
+    #[tool(
+        description = "Ask the person to connect this Clax to another Clax instance, so you can read a page there (a `url_or_id` another tool refused with `remote_sign_in_required`). Pass `url_or_origin` (the page's URL, or the instance's origin) and a short `reason`; the person sees one card, in the inbox and in your thread, and approves on the other instance, or answers Not now or Never. Waits for the answer (up to `timeout_s`): `status` is `connected` (with `remote`; call the refused tool again), `dismissed`, `muted`, `not_now` (with `until`), `expired`, or `open` with `call_again` (call again with `request_id`; write the `tell_terminal` line in chat). You never see a code or a token.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    pub async fn connect_instance(
+        &self,
+        Parameters(args): Parameters<ConnectInstanceArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.finish(self.do_connect_instance(args).await).await
     }
 
     #[tool(
@@ -4320,12 +4729,12 @@ mod tests {
         }
     }
 
-    /// Thirty-eight tools, `comments_handoff` (spec 2026-10-08 §16),
+    /// Thirty-nine tools, `connect_instance` (spec 2026-10-29 §3), `comments_handoff` (spec 2026-10-08 §16),
     /// `where_to_ask` (spec 2026-10-16 §1), `tag`, `tags` and the six queue
     /// tools (spec 2026-10-27 §7) among them.
     #[test]
-    fn tool_count_is_38() {
-        assert_eq!(ClaxTools::tool_count(), 38);
+    fn tool_count_is_39() {
+        assert_eq!(ClaxTools::tool_count(), 39);
         for name in [
             "comments_handoff",
             "where_to_ask",

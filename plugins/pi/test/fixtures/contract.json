@@ -186,6 +186,10 @@
         "page": "http://localhost:80/a/7q3k9mzx2b4t"
       },
       {
+        "input": "https://localhost:7480/a/7q3k9mzx2b4t",
+        "page": "https://localhost:7480/a/7q3k9mzx2b4t"
+      },
+      {
         "input": "nope",
         "error": "invalid_id"
       },
@@ -746,6 +750,16 @@
       "description": "Where to ask the person now: `surface` (`clax` or `terminal`), `where` (the narrowest place in Clax: `thread_id`, `artifact_id`), `confidence` (`clear` or `unsure`) and `why`. Read it before you ask anything; ask only on the surface it names, at the place it names, and tell the other surface (in chat, the `tell_terminal` line `ask` returns; in Clax, `ask` with `in_terminal: true`, so Clax shows that you are asking in the terminal). When you know better (the person said where they are), follow that and say why.",
       "annotations": {
         "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "connect_instance",
+      "description": "Ask the person to connect this Clax to another Clax instance, so you can read a page there (a `url_or_id` another tool refused with `remote_sign_in_required`). Pass `url_or_origin` (the page's URL, or the instance's origin) and a short `reason`; the person sees one card, in the inbox and in your thread, and approves on the other instance, or answers Not now or Never. Waits for the answer (up to `timeout_s`): `status` is `connected` (with `remote`; call the refused tool again), `dismissed`, `muted`, `not_now` (with `until`), `expired`, or `open` with `call_again` (call again with `request_id`; write the `tell_terminal` line in chat). You never see a code or a token.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
         "openWorldHint": false
       }
     },

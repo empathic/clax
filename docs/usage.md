@@ -284,6 +284,26 @@ publish as, check the code and approve: this Clax receives an agent token of
 yours, which your People page there lists (named `Clax on <host name>`) and
 revokes. Codes last ten minutes and work once.
 
+An agent cannot add a remote (`clax remote add` under a harness answers
+"This is for people, not agents: open … in a browser; agents: use `clax
+remote request <url>`."). It asks instead:
+
+```bash
+clax remote request https://clax.example/a/7q3k9mzx2b4t --reason "to read the launch plan"
+```
+
+The person sees one card in the inbox (and in the agent's thread when it
+was working in one): "<agent> wants to connect to <name> (<origin>) to
+read <url>", with **Connect** (this Clax's device sign-in, approved on the
+other instance in a new tab), **Not now** (no new request for a day) and
+**Never for this instance** (muted until unmuted in Settings, Remotes).
+The command asks as the agent's own Clax session, which it finds from the
+harness (its session variable, else its process), or `--session`; it waits
+(600 s, 50 s under Codex, or `--wait`) and prints the answer: `connected`,
+`dismissed`, `muted`, `not_now` or `expired`, or `open` while the person
+has not answered. Agents with the MCP tools use
+`connect_instance` instead.
+
 A push publishes every version the public copy has not had, in order, with
 its label, note and files. The public versions are yours there: each names
 the local agent that made it, and the ones you published by hand read as
@@ -390,7 +410,7 @@ published from the app, is not an app: its get page says so.
 
 ## Use from an agent
 
-Each harness gets the same thirty-eight tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `tag`, `tags`, `fork`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `publish_public`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`, `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`, `queue_resolve`) and the `clax` skill. Install the plugin for each harness (see Install); plugin details: [plugins/claude-code/README.md](../plugins/claude-code/README.md), [plugins/clax/README.md](../plugins/clax/README.md), [plugins/pi/README.md](../plugins/pi/README.md), [plugins/clax-grok/README.md](../plugins/clax-grok/README.md).
+Each harness gets the same thirty-nine tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `tag`, `tags`, `fork`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `connect_instance`, `publish_public`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`, `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`, `queue_resolve`) and the `clax` skill. Install the plugin for each harness (see Install); plugin details: [plugins/claude-code/README.md](../plugins/claude-code/README.md), [plugins/clax/README.md](../plugins/clax/README.md), [plugins/pi/README.md](../plugins/pi/README.md), [plugins/clax-grok/README.md](../plugins/clax-grok/README.md).
 
 The plugins run `CLAX_BIN`, else the `bin` setting, else the release they
 pin (see "Which clax the plugins run"). `status` and `clax doctor --agent`

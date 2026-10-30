@@ -8,12 +8,16 @@
 //! 1. The URL is one of this daemon's own artifact URLs: its base (any
 //!    local name on its port, for a local daemon, as
 //!    [`clax_mcp::target::target`] reads it) or its site domain. Read from
-//!    the URL alone: no artifact is looked up.
+//!    the URL alone: no artifact is looked up. A URL on another scheme
+//!    than the base's, or on the origin of a remote this home connected
+//!    (on the same port, under another name), is not the daemon's.
 //! 2. The URL is the public copy of an artifact this daemon pushed, found
 //!    among the remote links by its URL or by its remote and public
 //!    artifact ID: the local artifact.
 //! 3. The URL is on a connected remote's origin, or under the site domain
-//!    its discovery names: that remote's artifact.
+//!    its discovery names: that remote's artifact. On the origin of a
+//!    remote that refused its token (`signed_out`): one to sign in to
+//!    again.
 //! 4. Its origin's `GET /.well-known/clax` says it is a Clax instance:
 //!    one to sign in to.
 //! 5. Otherwise, a page.
@@ -69,12 +73,44 @@ pub enum Resolved {
         version: Option<u32>,
         url: String,
     },
-    /// A Clax instance this home is not connected to: the URL's origin and
-    /// the name its discovery gives.
-    SignInRequired { origin: String, name: String },
+    /// A Clax instance this home is not connected to: the URL's origin,
+    /// the name its discovery gives, and how an agent asks the person to
+    /// connect it.
+    SignInRequired {
+        origin: String,
+        name: String,
+        request: SignInRequest,
+    },
     /// Not a Clax artifact this daemon can name: a web page, the URL as
     /// given.
     Page { url: String },
+}
+
+/// How an agent asks the person to connect an instance: a connection
+/// request (`POST /api/remotes/requests`), through the MCP tool `tool` or
+/// the CLI's `command`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SignInRequest {
+    pub tool: String,
+    pub command: String,
+}
+
+impl SignInRequest {
+    /// The request for `url`, a URL on the instance: the command names it
+    /// as the URL parser wrote it (normalized and percent-encoded), quoted
+    /// for a POSIX shell ([`shell_quote`]), so nothing in it runs.
+    pub fn for_url(url: &url::Url) -> SignInRequest {
+        SignInRequest {
+            tool: "connect_instance".to_string(),
+            command: format!("clax remote request {}", shell_quote(url.as_str())),
+        }
+    }
+}
+
+/// `s` as one word of a POSIX shell: single-quoted, each single quote in
+/// it written `'\''`.
+pub fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// What `url` names, as the module comment orders it.
@@ -84,23 +120,34 @@ pub enum Resolved {
 /// is on this daemon and names no artifact; the store's.
 pub async fn resolve(s: &AppState, url: &str) -> Result<Resolved, ApiError> {
     let (raw, u) = parse(url)?;
-    if let Some(own) = own(s, &raw, &u)? {
-        return Ok(own);
-    }
     if s.hosted.is_some() {
-        return Ok(Resolved::Page { url: raw });
+        return Ok(own(s, &raw, &u, &[])?.unwrap_or(Resolved::Page { url: raw }));
     }
     let origin = u.origin().ascii_serialization();
     let (remotes, links) = s
         .store_call(|st| Ok((st.remotes()?, st.all_remote_links()?)))
         .await?;
+    if let Some(own) = own(s, &raw, &u, &remotes)? {
+        return Ok(own);
+    }
+    if let Some(l) = links.iter().find(|l| same_url(&l.url, &u)) {
+        return Ok(local(l));
+    }
+    // A remote that refused its token is one to connect again.
+    if let Some(r) = remotes
+        .iter()
+        .find(|r| r.status == "signed_out" && r.origin == origin)
+    {
+        return Ok(Resolved::SignInRequired {
+            origin: r.origin.clone(),
+            name: r.name.clone(),
+            request: SignInRequest::for_url(&u),
+        });
+    }
     let remotes: Vec<Remote> = remotes
         .into_iter()
         .filter(|r| r.status == "connected")
         .collect();
-    if let Some(l) = links.iter().find(|l| same_url(&l.url, &u)) {
-        return Ok(local(l));
-    }
     if let Some((r, at)) = on_remote(s, &remotes, &u, &origin).await {
         let Some((artifact_id, version)) = at else {
             return Ok(Resolved::Page { url: raw });
@@ -124,6 +171,7 @@ pub async fn resolve(s: &AppState, url: &str) -> Result<Resolved, ApiError> {
         Some(i) => Resolved::SignInRequired {
             origin,
             name: i.name,
+            request: SignInRequest::for_url(&u),
         },
         None => Resolved::Page { url: raw },
     })
@@ -134,9 +182,13 @@ pub async fn resolve(s: &AppState, url: &str) -> Result<Resolved, ApiError> {
 ///
 /// # Errors
 /// As [`resolve`]'s.
-pub fn resolve_local(s: &AppState, url: &str) -> Result<Resolved, ApiError> {
+pub async fn resolve_local(s: &AppState, url: &str) -> Result<Resolved, ApiError> {
     let (raw, u) = parse(url)?;
-    Ok(own(s, &raw, &u)?.unwrap_or(Resolved::Page { url: raw }))
+    let remotes = match s.hosted {
+        Some(_) => Vec::new(),
+        None => s.store_call(|st| st.remotes()).await?,
+    };
+    Ok(own(s, &raw, &u, &remotes)?.unwrap_or(Resolved::Page { url: raw }))
 }
 
 fn invalid(message: String) -> ApiError {
@@ -190,12 +242,28 @@ fn on_site(domain: &str, base: &url::Url, u: &url::Url) -> Option<(String, Optio
 }
 
 /// Step 1: `u` as one of this daemon's own artifact URLs, `None` when it is
-/// another's.
-fn own(s: &AppState, raw: &str, u: &url::Url) -> Result<Option<Resolved>, ApiError> {
+/// another's: one on another scheme than the daemon's base, or on the
+/// origin of one of `remotes` (connected or signed out), is another's,
+/// whatever its port (a local daemon owns every host on its port).
+fn own(
+    s: &AppState,
+    raw: &str,
+    u: &url::Url,
+    remotes: &[Remote],
+) -> Result<Option<Resolved>, ApiError> {
     let base = match &s.hosted {
         Some(h) => h.origin.clone(),
         None => s.browser_base.clone(),
     };
+    let origin = u.origin().ascii_serialization();
+    let scheme_differs = url::Url::parse(&base).is_ok_and(|b| b.scheme() != u.scheme());
+    if scheme_differs
+        || remotes
+            .iter()
+            .any(|r| r.status != "pending" && r.origin == origin)
+    {
+        return Ok(None);
+    }
     let local = |(artifact_id, version)| Resolved::Local {
         artifact_id,
         version,
@@ -270,7 +338,7 @@ async fn on_remote<'r>(
 /// What `origin`'s discovery says, from [`AppState::discovery`] or asked
 /// now: the Clax instance it is, or `None` when it is none, did not
 /// answer, or may not be asked (not `https`, nor `http` on loopback).
-async fn discover(s: &AppState, origin: &str) -> Option<Instance> {
+pub async fn discover(s: &AppState, origin: &str) -> Option<Instance> {
     clax_core::config::hosted_origin(origin)?;
     match s.discovery.get(origin) {
         Cached::Clax(i) => return Some(i),
@@ -319,6 +387,35 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// The command's URL is one quoted word whatever the agent's URL held:
+    /// an `&`, a `;`, a `$(…)`, a space or a single quote runs nothing.
+    #[test]
+    fn the_request_command_quotes_the_url_for_a_shell() {
+        assert_eq!(shell_quote("a'b"), "'a'\\''b'");
+        assert_eq!(shell_quote(""), "''");
+        let raw = "https://clax.example/a/7q3k9mzx2b4t?x=1&y=2;rm -rf $(whoami)#it's";
+        let u = url::Url::parse(raw).unwrap();
+        let cmd = SignInRequest::for_url(&u).command;
+        let arg = cmd.strip_prefix("clax remote request ").unwrap();
+        // One single-quoted word: quotes only at its ends, or as '\''.
+        assert!(arg.starts_with('\'') && arg.ends_with('\''), "{cmd}");
+        let inner = &arg[1..arg.len() - 1];
+        assert!(!inner.replace("'\\''", "").contains('\''), "{cmd}");
+        assert!(!inner.contains(' '), "a space is percent-encoded: {cmd}");
+        // Unquoted as a shell would, it is the parsed URL again.
+        assert_eq!(inner.replace("'\\''", "'"), u.as_str());
+        // A literal single quote that reaches the word is escaped.
+        let q = url::Url::parse("https://clax.example/a/x#a'b").unwrap();
+        let cmd = SignInRequest::for_url(&q).command;
+        assert_eq!(
+            cmd,
+            format!(
+                "clax remote request '{}'",
+                q.as_str().replace('\'', "'\\''")
+            )
+        );
+    }
+
     #[test]
     fn resolved_serialises_as_its_kind() {
         let v = |r: Resolved| serde_json::to_value(r).unwrap();
@@ -345,9 +442,14 @@ mod tests {
         assert_eq!(
             v(Resolved::SignInRequired {
                 origin: "https://clax.example".into(),
-                name: "Acme".into()
+                name: "Acme".into(),
+                request: SignInRequest::for_url(
+                    &url::Url::parse("https://clax.example/a/7q3k9mzx2b4t").unwrap()
+                ),
             }),
-            json!({"kind": "sign_in_required", "origin": "https://clax.example", "name": "Acme"})
+            json!({"kind": "sign_in_required", "origin": "https://clax.example", "name": "Acme",
+                   "request": {"tool": "connect_instance",
+                               "command": "clax remote request 'https://clax.example/a/7q3k9mzx2b4t'"}})
         );
         assert_eq!(
             v(Resolved::Page {

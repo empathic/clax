@@ -235,6 +235,7 @@ fn rename(cli: &crate::Cli, home: &Home, agent: &str, name: &str) -> anyhow::Res
         return Err(NotForAgents {
             url: people_link(&c),
             inbox: false,
+            instead: None,
         }
         .into());
     }

@@ -89,7 +89,7 @@ fn parent_of(pid: u32) -> Option<u32> {
 }
 
 /// Ancestors of `pid`, nearest first, up to [`MAX_ANCESTORS`], stopping at pid 1.
-fn ancestors(pid: u32) -> Vec<u32> {
+pub(crate) fn ancestors(pid: u32) -> Vec<u32> {
     let mut chain = Vec::new();
     let mut cur = pid;
     while chain.len() < MAX_ANCESTORS {

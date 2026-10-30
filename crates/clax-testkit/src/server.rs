@@ -633,11 +633,17 @@ impl TestServer {
     /// the database and files are this one's, and nothing held in memory
     /// (streams, claims, caches) carries over. Both serve until dropped.
     pub async fn reopened(&self) -> TestServer {
+        self.reopened_with(|_| {}).await
+    }
+
+    /// [`TestServer::reopened`] with `f` applied to the state before it
+    /// serves.
+    pub async fn reopened_with(&self, f: impl FnOnce(&mut AppState)) -> TestServer {
         Self::start(
             self._dir.clone(),
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             Arc::new(SystemClock),
-            |_| {},
+            f,
             false,
             None,
         )
@@ -740,6 +746,7 @@ impl TestServer {
             discovery: Arc::new(clax_http::discovery_cache::DiscoveryCache::new(
                 clock.clone(),
             )),
+            remote_drivers: Arc::default(),
             question_clock: clock,
             terminal_after_s: clax_core::config::TERMINAL_AFTER_S,
             calibration: Arc::default(),
@@ -804,6 +811,7 @@ impl TestServer {
         clax_http::pushes::listen(&state);
         clax_http::git_remotes::listen(&state);
         clax_server::linked::listen(&state);
+        clax_server::routes::remote_requests::resume(&state);
         let events = state.events.clone();
         let store = state.store.clone();
         let working = state.working.clone();

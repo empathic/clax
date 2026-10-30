@@ -1,8 +1,8 @@
 //! `GET /api/resolve?url=<url>` → what the URL names ([`crate::resolve`]):
 //! `{kind: "local", artifact_id, version?}`, `{kind: "remote", remote,
 //! origin, name, artifact_id, version?, url}`, `{kind: "sign_in_required",
-//! origin, name}` or `{kind: "page", url}`. It changes nothing but the
-//! discovery cache.
+//! origin, name, request: {tool, command}}` or `{kind: "page", url}`. It
+//! changes nothing but the discovery cache.
 //!
 //! The owner and the owner's agents get every answer; any other caller
 //! (a person's agent, a person) only `local` or `page`
@@ -43,7 +43,7 @@ pub async fn get(
             // A discovery request is a JavaScript fetch on the Worker.
             clax_rt::sendable(crate::resolve::resolve(&s, &q.url)).await?
         }
-        _ => crate::resolve::resolve_local(&s, &q.url)?,
+        _ => crate::resolve::resolve_local(&s, &q.url).await?,
     };
     Ok(Json(serde_json::json!(resolved)))
 }

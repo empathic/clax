@@ -92,7 +92,9 @@ async fn resolve_tells_local_remote_unconnected_and_page_apart() {
         (
             format!("{}/a/{raid}", other.origin),
             json!({"kind": "sign_in_required", "origin": other.origin,
-                   "name": format!("localhost:{}", other.ts.addr.port())}),
+                   "name": format!("localhost:{}", other.ts.addr.port()),
+                   "request": {"tool": "connect_instance",
+                               "command": format!("clax remote request '{}/a/{raid}'", other.origin)}}),
         ),
         (free.clone(), json!({"kind": "page", "url": free})),
         (pushed.clone(), mine.clone()),
@@ -129,7 +131,7 @@ async fn resolve_tells_local_remote_unconnected_and_page_apart() {
     assert_eq!(s, 400);
 
     // The MCP tools read through it: an unconnected Clax's URL names the
-    // instance to connect, a connected remote's is not reached yet.
+    // instance to connect, a connected remote's is read there.
     let call = |url: String| {
         json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {"name": "read", "arguments": {"url_or_id": url}}})
@@ -154,14 +156,26 @@ async fn resolve_tells_local_remote_unconnected_and_page_apart() {
         e["next"].as_str().unwrap().contains("connect_instance"),
         "{e}"
     );
+    assert_eq!(
+        e["request"],
+        json!({"tool": "connect_instance",
+               "command": format!("clax remote request '{}/a/{raid}'", other.origin)}),
+        "{e}"
+    );
     let res = mcp_post(&local, ADAPTER, &call(format!("{o}/a/{raid}")))
         .bearer_auth(&local.token)
         .header("mcp-protocol-version", "2025-06-18")
         .send()
         .await
         .unwrap();
-    let e = tool_error(rpc_message(res).await);
-    assert_eq!(e["code"], "remote_not_yet", "{e}");
+    let v = rpc_message(res).await;
+    let text = v["result"]["content"][0]["text"].as_str().unwrap();
+    let read: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(
+        (read["artifact_id"].as_str(), read["content"].as_str()),
+        (Some(raid.as_str()), Some(PAGE)),
+        "{v}"
+    );
     let res = mcp_post(&local, ADAPTER, &call(pushed))
         .bearer_auth(&local.token)
         .header("mcp-protocol-version", "2025-06-18")
@@ -280,7 +294,8 @@ async fn a_negative_discovery_is_kept_ten_minutes() {
     assert_eq!(resolve(&local, &url).await, page, "for ten minutes");
     assert_eq!(site.asked(), 1);
     clock.advance(1);
-    let clax = json!({"kind": "sign_in_required", "origin": site.origin, "name": "Late"});
+    let clax = json!({"kind": "sign_in_required", "origin": site.origin, "name": "Late",
+        "request": {"tool": "connect_instance", "command": format!("clax remote request '{url}'")}});
     assert_eq!(resolve(&local, &url).await, clax, "then asked again");
     assert_eq!(site.asked(), 2);
     clock.advance(86_400 * 30);

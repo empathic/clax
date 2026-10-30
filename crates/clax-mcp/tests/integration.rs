@@ -15,6 +15,8 @@ mod channel;
 mod comments;
 #[cfg(any(not(clax_split), clax_split = "confirmations"))]
 mod confirmations;
+#[cfg(any(not(clax_split), clax_split = "connect_instance"))]
+mod connect_instance;
 #[cfg(any(not(clax_split), clax_split = "db"))]
 mod db;
 #[cfg(any(not(clax_split), clax_split = "live"))]
@@ -29,6 +31,8 @@ mod people;
 mod publish_public;
 #[cfg(any(not(clax_split), clax_split = "remote"))]
 mod remote;
+#[cfg(any(not(clax_split), clax_split = "remote_artifacts"))]
+mod remote_artifacts;
 #[cfg(any(not(clax_split), clax_split = "shim"))]
 mod shim;
 #[cfg(any(not(clax_split), clax_split = "site_access"))]

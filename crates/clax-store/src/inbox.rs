@@ -58,10 +58,14 @@ pub enum Kind {
     /// An automatic push of a new version to a public Clax was refused
     /// (`detail_json`: the remote and the refusal).
     Push,
+    /// An agent asks the owner to connect this home to a Clax instance
+    /// (`detail_json`: the request's ID, origin, name, URL and reason;
+    /// [`crate::remote_requests`]).
+    RemoteRequest,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 9] = [
+    pub const ALL: [Kind; 10] = [
         Kind::Reply,
         Kind::Version,
         Kind::Published,
@@ -71,6 +75,7 @@ impl Kind {
         Kind::Connection,
         Kind::Ended,
         Kind::Push,
+        Kind::RemoteRequest,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -84,6 +89,7 @@ impl Kind {
             Kind::Connection => "connection",
             Kind::Ended => "ended",
             Kind::Push => "push",
+            Kind::RemoteRequest => "remote_request",
         }
     }
 
@@ -1254,6 +1260,44 @@ fn insert_at(c: &Connection, n: New<'_>, now: &str) -> Result<Option<i64>> {
     Ok(Some(seq))
 }
 
+/// Connection request `rid` opened by session `sid`: a `remote_request`
+/// item for the owner (only the owner's agents ask), in the asking
+/// agent's thread `at` (artifact and thread) when it was working in one,
+/// with `detail` (the request's ID, origin, name, URL and reason) and
+/// `text` to search by. Keyed by the request, so it is made once.
+pub(crate) fn note_remote_request(
+    c: &Connection,
+    rid: &str,
+    sid: &str,
+    at: (Option<&str>, Option<&str>),
+    detail: Value,
+    text: &str,
+    now: &str,
+) -> Result<Option<i64>> {
+    // A hidden draft makes no item: the request goes to the inbox alone.
+    let at = match at.0 {
+        Some(aid) if super::drafts::is_hidden_in(c, aid)? => (None, None),
+        _ => at,
+    };
+    insert_at(
+        c,
+        New {
+            artifact_id: at.0,
+            thread_id: at.1,
+            session_id: Some(sid),
+            detail: Some(detail),
+            text: text.to_string(),
+            ..New::of(Kind::RemoteRequest, remote_request_key(rid))
+        },
+        now,
+    )
+}
+
+/// The inbox key of connection request `rid`'s item.
+pub(crate) fn remote_request_key(rid: &str) -> String {
+    format!("remote_request:{rid}")
+}
+
 /// An agent comment `cid` on thread `tid` of artifact `aid`: a `reply`
 /// item for each person in the thread ([`in_thread`]): the owner, and every
 /// connected person (never about a live page). The `seq`s made.
@@ -2353,8 +2397,9 @@ impl Store {
                             }
                         }
                     }
-                    // An approval request's thread, for its card.
-                    Kind::Approval => {
+                    // An approval request's thread, for its card; a
+                    // connection request's, where its agent worked.
+                    Kind::Approval | Kind::RemoteRequest => {
                         if let (Some(tid), true) = (&i.thread_id, live) {
                             s.thread = thread_ref(c, tid)?;
                         }

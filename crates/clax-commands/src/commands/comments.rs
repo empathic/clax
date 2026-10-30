@@ -12,6 +12,13 @@
 //! browser of the owner's is too. Replies, resolves and sends carry the
 //! owner's name, the one `clax comments name` sets and the browser's "Your
 //! name" field shows.
+//!
+//! An artifact's URL is resolved by the daemon (`GET /api/resolve`), as the
+//! MCP tools resolve one: an artifact of a Clax instance this home is
+//! connected to is listed, shown, replied to, resolved and reopened through
+//! the daemon's remote artifact routes (`/api/remotes/<rid>/artifacts/<id>`),
+//! with the agent token the daemon holds there, as the person it is the
+//! token of. Sending a remote thread to an agent is not offered.
 
 use crate::client::Client;
 use crate::term::{self, Paint};
@@ -81,9 +88,71 @@ pub struct NameArgs {
     pub name: Option<String>,
 }
 
+/// An artifact named on the command line: this daemon's, or one on a
+/// connected remote.
+#[derive(Clone, Debug, PartialEq)]
+struct Art {
+    /// Its ID (on its remote, for a remote one).
+    id: String,
+    /// The daemon's route of it: `/api/artifacts/<id>`, or
+    /// `/api/remotes/<rid>/artifacts/<id>`.
+    api: String,
+    /// On a remote: its address there, and `{origin, name}`.
+    remote: Option<(String, Value)>,
+}
+
+impl Art {
+    fn local(id: &str) -> Art {
+        Art {
+            id: id.to_string(),
+            api: format!("/api/artifacts/{id}"),
+            remote: None,
+        }
+    }
+
+    /// The artifact `GET /api/resolve`'s answer `v` for `raw` names.
+    fn resolved(raw: &str, v: &Value) -> anyhow::Result<Art> {
+        let text = |k: &str| v[k].as_str().unwrap_or_default();
+        match text("kind") {
+            "local" => Ok(Art::local(text("artifact_id"))),
+            "remote" => Ok(Art {
+                id: text("artifact_id").to_string(),
+                api: format!(
+                    "/api/remotes/{}/artifacts/{}",
+                    text("remote"),
+                    text("artifact_id")
+                ),
+                remote: Some((
+                    text("url").to_string(),
+                    json!({"origin": v["origin"], "name": v["name"]}),
+                )),
+            }),
+            "sign_in_required" => anyhow::bail!(
+                "{raw} is on {} ({}), a Clax instance this Clax is not connected to: connect it with `{}`",
+                text("name"),
+                text("origin"),
+                v["request"]["command"].as_str().map_or_else(
+                    || format!("clax remote add {}", text("origin")),
+                    str::to_string
+                )
+            ),
+            _ => anyhow::bail!("'{raw}' is a web page, not a Clax artifact"),
+        }
+    }
+
+    /// Its address in a browser.
+    fn url(&self, c: &Client) -> String {
+        match &self.remote {
+            Some((url, _)) => url.clone(),
+            None => c.browser_url(&format!("/a/{}", self.id)),
+        }
+    }
+}
+
 /// One artifact's threads, every one of them, oldest first: a thread's
 /// number is its index plus one.
 struct Group {
+    art: Art,
     artifact_id: String,
     title: String,
     files: Vec<String>,
@@ -96,7 +165,7 @@ impl Group {
     }
 }
 
-/// A thread named on the command line.
+/// A thread named on the command line, its artifact as given.
 enum ThreadRef {
     /// `<artifact>#<n>`.
     Number(String, usize),
@@ -119,21 +188,49 @@ fn thread_ref(raw: &str) -> anyhow::Result<Option<ThreadRef>> {
         if n == 0 {
             anyhow::bail!("thread numbers start at #1");
         }
-        return Ok(Some(ThreadRef::Number(artifact_id(left)?, n)));
+        return Ok(Some(ThreadRef::Number(artifact_named(left)?, n)));
     }
     if clax_core::is_ulid(right) {
         return Ok(Some(ThreadRef::Id(
-            Some(artifact_id(left)?),
+            Some(artifact_named(left)?),
             right.to_string(),
         )));
     }
     Ok(None)
 }
 
-/// The artifact ID in an artifact ID or URL, as the MCP tools read it.
-fn artifact_id(raw: &str) -> anyhow::Result<String> {
-    clax_mcp::tools::artifact_ref(raw)
-        .map(|(id, _)| id)
+/// Whether `raw` is an http(s) URL, which the daemon resolves.
+fn is_url(raw: &str) -> bool {
+    let lower = raw.trim().to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// `raw` when it names an artifact: an http(s) URL (which the daemon
+/// resolves, [`artifact`]), or an artifact ID or Clax path, as the MCP
+/// tools read one.
+fn artifact_named(raw: &str) -> anyhow::Result<String> {
+    let raw = raw.trim();
+    if is_url(raw) || clax_mcp::tools::artifact_ref(raw).is_ok() {
+        return Ok(raw.to_string());
+    }
+    anyhow::bail!("'{raw}' is not an artifact ID or URL, `<artifact>#<n>`, or a thread ID")
+}
+
+/// The artifact `raw` names: an http(s) URL as the daemon resolves it
+/// (`GET /api/resolve`; a daemon from before it reads one as the MCP tools
+/// read an ID), else the artifact ID it is or holds.
+fn artifact(c: &Client, raw: &str) -> anyhow::Result<Art> {
+    let raw = artifact_named(raw)?;
+    if is_url(&raw) {
+        let q = super::remotes::encode(&raw);
+        match c.get(&format!("/api/resolve?url={q}")) {
+            Ok(v) => return Art::resolved(&raw, &v),
+            Err(e) if e.to_string().contains("not_found") => {}
+            Err(e) => return Err(e),
+        }
+    }
+    clax_mcp::tools::artifact_ref(&raw)
+        .map(|(id, _)| Art::local(&id))
         .map_err(|_| {
             anyhow::anyhow!(
                 "'{raw}' is not an artifact ID or URL, `<artifact>#<n>`, or a thread ID"
@@ -156,7 +253,7 @@ fn load_all(c: &Client) -> anyhow::Result<Vec<Group>> {
             let Some(id) = a["id"].as_str() else {
                 continue;
             };
-            let g = load_one(c, id)?;
+            let g = load_one(c, &Art::local(id))?;
             if !g.threads.is_empty() {
                 groups.push(g);
             }
@@ -170,6 +267,7 @@ fn load_all(c: &Client) -> anyhow::Result<Vec<Group>> {
         .unwrap_or_default()
         .iter()
         .map(|g| Group {
+            art: Art::local(g["artifact_id"].as_str().unwrap_or_default()),
             artifact_id: g["artifact_id"].as_str().unwrap_or_default().to_string(),
             title: g["title"].as_str().unwrap_or_default().to_string(),
             files: strings(&g["files"]),
@@ -178,9 +276,9 @@ fn load_all(c: &Client) -> anyhow::Result<Vec<Group>> {
         .collect())
 }
 
-/// Every thread of artifact `id`.
-fn load_one(c: &Client, id: &str) -> anyhow::Result<Group> {
-    let a = c.get(&format!("/api/artifacts/{id}"))?;
+/// Every thread of artifact `art`.
+fn load_one(c: &Client, art: &Art) -> anyhow::Result<Group> {
+    let a = c.get(&art.api)?;
     let n = a["artifact"]["current_version"].as_u64();
     let files = a["versions"]
         .as_array()
@@ -189,25 +287,32 @@ fn load_one(c: &Client, id: &str) -> anyhow::Result<Group> {
         .map(|f| f.keys().cloned().collect())
         .unwrap_or_default();
     Ok(Group {
-        artifact_id: id.to_string(),
+        artifact_id: art.id.clone(),
+        art: art.clone(),
         title: a["artifact"]["title"]
             .as_str()
             .unwrap_or_default()
             .to_string(),
         files,
-        threads: all_threads(c, id)?,
+        threads: threads_at(c, &art.api)?,
     })
 }
 
 /// Every thread view of artifact `id`, resolved ones included, oldest first:
 /// the order thread numbers follow.
 pub(crate) fn all_threads(c: &Client, id: &str) -> anyhow::Result<Vec<Value>> {
+    threads_at(c, &format!("/api/artifacts/{id}"))
+}
+
+/// [`all_threads`] of the artifact at the daemon's route `api`.
+fn threads_at(c: &Client, api: &str) -> anyhow::Result<Vec<Value>> {
     let mut threads = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
-        let mut path = format!("/api/artifacts/{id}/threads?include_resolved=true&limit=200");
+        let mut path = format!("{api}/threads?include_resolved=true&limit=200");
         if let Some(cur) = &cursor {
-            path.push_str(&format!("&cursor={cur}"));
+            // A remote's cursor is its own text: one query value here.
+            path.push_str(&format!("&cursor={}", super::remotes::encode(cur)));
         }
         let page = c.get(&path)?;
         threads.extend(page["threads"].as_array().cloned().unwrap_or_default());
@@ -230,18 +335,20 @@ fn strings(v: &Value) -> Vec<String> {
 /// The group and index of the thread `r` names.
 fn locate(c: &Client, r: ThreadRef) -> anyhow::Result<(Group, usize)> {
     match r {
-        ThreadRef::Number(aid, n) => {
-            let g = load_one(c, &aid)?;
+        ThreadRef::Number(raw, n) => {
+            let g = load_one(c, &artifact(c, &raw)?)?;
+            let aid = &g.artifact_id;
             if n > g.threads.len() {
                 anyhow::bail!(
-                    "{aid} has no thread #{n}: it has {} (run `clax comments {aid} --all`)",
+                    "{aid} has no thread #{n}: it has {} (run `clax comments {raw} --all`)",
                     g.threads.len()
                 );
             }
             Ok((g, n - 1))
         }
-        ThreadRef::Id(Some(aid), tid) => {
-            let g = load_one(c, &aid)?;
+        ThreadRef::Id(Some(raw), tid) => {
+            let g = load_one(c, &artifact(c, &raw)?)?;
+            let aid = &g.artifact_id;
             let i = g
                 .find(&tid)
                 .ok_or_else(|| anyhow::anyhow!("{aid} has no thread {tid}"))?;
@@ -349,13 +456,17 @@ fn thread_json(g: &Group, i: usize, roster: &[Value]) -> Value {
 }
 
 fn group_json(c: &Client, g: &Group, picked: &[usize], roster: &[Value]) -> Value {
-    json!({
+    let mut v = json!({
         "artifact_id": g.artifact_id,
-        "url": c.browser_url(&format!("/a/{}", g.artifact_id)),
+        "url": g.art.url(c),
         "title": g.title,
         "threads": picked.iter().map(|&i| thread_json(g, i, roster)).collect::<Vec<_>>(),
         "next_cursor": null,
-    })
+    });
+    if let Some((_, instance)) = &g.art.remote {
+        v["remote"] = instance.clone();
+    }
+    v
 }
 
 /// The indexes of `g`'s threads a listing shows, newest activity first.
@@ -382,7 +493,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
                 }
                 show(cli, home, t)
             }
-            Some(t) => list(cli, home, Some(&artifact_id(t)?), a.all),
+            Some(t) => list(cli, home, Some(&artifact_named(t)?), a.all),
             None => list(cli, home, None, a.all),
         },
     }
@@ -391,7 +502,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
 fn list(cli: &crate::Cli, home: &Home, only: Option<&str>, all: bool) -> anyhow::Result<()> {
     let c = Client::connect(home, cli.port_for(home)?)?;
     let groups = match only {
-        Some(id) => vec![load_one(&c, id)?],
+        Some(raw) => vec![load_one(&c, &artifact(&c, raw)?)?],
         None => load_all(&c)?,
     };
     let roster = roster(&c);
@@ -457,7 +568,7 @@ fn header(c: &Client, g: &Group, paint: Paint) -> String {
         "{}  {}  {}",
         paint.bold(&term::snippet(&g.title, 60)),
         paint.dim(&g.artifact_id),
-        paint.dim(&c.browser_url(&format!("/a/{}", g.artifact_id)))
+        paint.dim(&g.art.url(c))
     )
 }
 
@@ -709,9 +820,10 @@ fn reply(cli: &crate::Cli, home: &Home, r: &ReplyArgs) -> anyhow::Result<()> {
         None => owner(&c)?,
     };
     let tid = g.threads[i]["id"].as_str().unwrap_or_default();
-    let res = c.send(
-        Method::POST,
-        &format!("/api/artifacts/{}/threads/{tid}/comments", g.artifact_id),
+    let res = write(
+        &c,
+        &g,
+        &format!("{}/threads/{tid}/comments", g.art.api),
         Some(&json!({"body": text})),
     )?;
     let reference = format!("{}#{}", g.artifact_id, i + 1);
@@ -740,6 +852,16 @@ fn reply(cli: &crate::Cli, home: &Home, r: &ReplyArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A `POST` of `body` to `path`, a thread route of `g`'s artifact: on a
+/// remote one with an `Idempotency-Key` of its own, so the write sent again
+/// is answered there with what the first made.
+fn write(c: &Client, g: &Group, path: &str, body: Option<&Value>) -> anyhow::Result<Value> {
+    match &g.art.remote {
+        Some(_) => c.send_keyed(Method::POST, path, body, &clax_core::new_ulid()),
+        None => c.send(Method::POST, path, body),
+    }
+}
+
 enum Action {
     Resolve,
     Reopen,
@@ -753,11 +875,7 @@ fn act(cli: &crate::Cli, home: &Home, raw: &str, action: Action) -> anyhow::Resu
         Action::Resolve => ("resolve", "resolved"),
         Action::Reopen => ("reopen", "reopened"),
     };
-    let res = c.send(
-        Method::POST,
-        &format!("/api/artifacts/{}/threads/{tid}/{verb}", g.artifact_id),
-        None,
-    )?;
+    let res = write(&c, &g, &format!("{}/threads/{tid}/{verb}", g.art.api), None)?;
     let reference = format!("{}#{}", g.artifact_id, i + 1);
     let mut out = json!({"thread_id": tid, "ref": reference, "status": res["thread"]["status"]});
     out[key] = json!(true);
@@ -768,6 +886,11 @@ fn act(cli: &crate::Cli, home: &Home, raw: &str, action: Action) -> anyhow::Resu
 fn send(cli: &crate::Cli, home: &Home, a: &SendArgs) -> anyhow::Result<()> {
     let c = Client::connect(home, cli.port_for(home)?)?;
     let (g, i) = locate_raw(&c, &a.thread)?;
+    if let Some((url, _)) = &g.art.remote {
+        anyhow::bail!(
+            "{url} is on a connected Clax instance: send its threads to an agent there, in its page"
+        );
+    }
     let tid = g.threads[i]["id"].as_str().unwrap_or_default();
     let art = c.get(&format!("/api/artifacts/{}", g.artifact_id))?;
     let agents: Vec<&Value> = art["artifact"]["participants"]["agents"]
@@ -873,6 +996,48 @@ mod tests {
         );
     }
 
+    /// What the daemon resolves a URL to is the artifact the commands
+    /// act on: here, at a remote's routes, or nothing at all.
+    #[test]
+    fn a_resolved_url_names_a_local_or_remote_artifact() {
+        let raw = "https://clax.example/a/k3m9x2a7b8c4";
+        assert_eq!(
+            Art::resolved(
+                raw,
+                &json!({"kind": "local", "artifact_id": "k3m9x2a7b8c4"})
+            )
+            .unwrap(),
+            Art::local("k3m9x2a7b8c4")
+        );
+        let r = Art::resolved(
+            raw,
+            &json!({"kind": "remote", "remote": "r_1", "origin": "https://clax.example",
+                    "name": "acme", "artifact_id": "k3m9x2a7b8c4", "url": raw}),
+        )
+        .unwrap();
+        assert_eq!(r.api, "/api/remotes/r_1/artifacts/k3m9x2a7b8c4");
+        assert_eq!(
+            r.remote,
+            Some((
+                raw.to_string(),
+                json!({"origin": "https://clax.example", "name": "acme"})
+            ))
+        );
+        let e = Art::resolved(
+            raw,
+            &json!({"kind": "sign_in_required", "origin": "https://clax.example", "name": "Acme",
+                    "request": {"tool": "connect_instance",
+                                "command": format!("clax remote request '{raw}'")}}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            e.contains("not connected") && e.contains("clax remote request"),
+            "{e}"
+        );
+        assert!(Art::resolved(raw, &json!({"kind": "page", "url": raw})).is_err());
+    }
+
     #[test]
     fn thread_references_name_a_number_or_an_id() {
         let aid = "k3m9x2a7b8c4";
@@ -883,7 +1048,7 @@ mod tests {
         ));
         assert!(matches!(
             thread_ref(&format!("http://localhost:7480/a/{aid}#12")).unwrap(),
-            Some(ThreadRef::Number(a, 12)) if a == aid
+            Some(ThreadRef::Number(a, 12)) if a == format!("http://localhost:7480/a/{aid}")
         ));
         assert!(matches!(
             thread_ref(ulid).unwrap(),

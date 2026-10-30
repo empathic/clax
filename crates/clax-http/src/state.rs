@@ -243,6 +243,9 @@ pub struct AppState {
     /// Other Clax instances' discovery answers (`clax_server::resolve`), in
     /// memory, their negative answers expiring on the state's clock.
     pub discovery: Arc<crate::discovery_cache::DiscoveryCache>,
+    /// Connection requests' sign-in drivers and Connect lock
+    /// (`clax_server::routes::remote_requests`).
+    pub remote_drivers: Arc<crate::remote_drivers::RemoteDrivers>,
     /// Where each artifact's app data is ([`crate::app_data_host`]):
     /// [`AppState::assemble`] sets the host's default (each artifact's file
     /// in the home natively), which a host with its own stores replaces.
@@ -422,6 +425,7 @@ impl AppState {
             question_grace: Duration::from_secs(5),
             question_sleeper: p.question_sleeper,
             discovery: Arc::new(crate::discovery_cache::DiscoveryCache::new(p.clock.clone())),
+            remote_drivers: Arc::default(),
             question_clock: p.clock,
             terminal_after_s: p.terminal_after_s,
             calibration: Arc::default(),

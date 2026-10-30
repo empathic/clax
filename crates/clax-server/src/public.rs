@@ -717,9 +717,22 @@ impl Client {
             }
             v => v?,
         };
-        let sid = v["session"]["id"].as_str().unwrap_or_default().to_string();
-        let secret = Secret::new(v["session_secret"].as_str().unwrap_or_default().to_string());
-        self.session = Some((sid.clone(), secret));
+        // A session answered without its ID or secret is not one to speak
+        // for: refused, rather than kept empty.
+        let (Some(sid), Some(secret)) = (
+            v["session"]["id"].as_str().filter(|x| !x.is_empty()),
+            v["session_secret"].as_str().filter(|x| !x.is_empty()),
+        ) else {
+            return Err(RemoteFail {
+                origin: self.origin.clone(),
+                status: Some(502),
+                code: "bad_answer".into(),
+                message: "the remote's new session names no ID or secret".into(),
+                body: v,
+            });
+        };
+        let sid = sid.to_string();
+        self.session = Some((sid.clone(), Secret::new(secret.to_string())));
         let _ = self
             .call(
                 reqwest::Method::PATCH,
@@ -860,11 +873,23 @@ pub async fn poll_sign_in(s: &AppState, r: &Remote) -> Result<SignIn, ApiError> 
             &json!({"device_code": code.expose()}),
         )
         .await;
+    // A sign-in another poll finished meanwhile (the remote answers a used
+    // code as expired) is that poll's: connected, not forgotten.
     let forget = |why: &'static str| async move {
         let id = r.id.clone();
-        s.store_call(move |st| st.remove_remote(&id).map(|_| ()))
+        let now = s
+            .store_call(
+                move |st| match st.find_remote(&id)?.filter(|x| x.id == id) {
+                    Some(x) if x.status == "connected" => Ok(Some(x)),
+                    Some(_) => st.remove_remote(&id).map(|_| None),
+                    None => Ok(None),
+                },
+            )
             .await?;
-        Ok::<_, ApiError>(SignIn::Refused(why))
+        Ok::<_, ApiError>(match now {
+            Some(x) => SignIn::Connected(Box::new(x)),
+            None => SignIn::Refused(why),
+        })
     };
     match out {
         Ok(v) => {

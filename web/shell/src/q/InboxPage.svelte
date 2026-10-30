@@ -53,6 +53,7 @@
   import ConfirmationCard from "./ConfirmationCard.svelte";
   import { confirmations } from "./confirm.svelte";
   import ConnectionCard from "../people/ConnectionCard.svelte";
+  import RemoteRequestCard from "./RemoteRequestCard.svelte";
   import InboxGroup from "./InboxGroup.svelte";
   import InboxRow from "./InboxRow.svelte";
   import { inboxAgents } from "./api";
@@ -90,9 +91,13 @@
   /** How long typing waits before the search applies. */
   const DEBOUNCE_MS = 250;
   /** The kinds shown as cards above the groups, and how many such items one fetch lists. */
-  const CARD_KINDS: InboxKind[] = ["question", "approval", "connection"];
+  const CARD_KINDS: InboxKind[] = ["question", "approval", "connection", "remote_request"];
   const MAX_CARDS = 200;
-  const KIND_LABEL: Record<InboxKind, string> = { reply: "Replies", version: "Versions", published: "Published", question: "Questions", finished: "Finished", approval: "Approvals", connection: "Connections", ended: "Ended", push: "Pushes" };
+  /** A card's data attribute: `data-question`, `data-approval` or `data-request`. */
+  type CardKind = "question" | "approval" | "request";
+  /** The `/inbox` query parameters naming a card to focus, and its kind. */
+  const CARD_PARAMS: [string, CardKind][] = [["q", "question"], ["approval", "approval"], ["remote_request", "request"]];
+  const KIND_LABEL: Record<InboxKind, string> = { reply: "Replies", version: "Versions", published: "Published", question: "Questions", finished: "Finished", approval: "Approvals", connection: "Connections", ended: "Ended", push: "Pushes", remote_request: "Connect a Clax" };
   const fmt = (n: number | "10000+") => (n === "10000+" ? "10,000+" : n.toLocaleString("en-US"));
   /** Says what failed: `what` ("load the inbox"), and why. */
   const oops = (what: string) => (e: unknown) => { error = `Could not ${what}: ${e instanceof Error ? e.message : String(e)}`; };
@@ -104,8 +109,13 @@
   let filter = $state<InboxFilter>(initial);
   let search = $state(initial.q ?? "");
   const asked = new URLSearchParams(location.search);
-  // The card to focus once listed: a question's (`?q=`) or an approval request's (`?approval=`).
-  let target: { q: string } | { approval: string } | null = asked.get("q") ? { q: asked.get("q")! } : asked.get("approval") ? { approval: asked.get("approval")! } : null;
+  // The card to focus once listed: a question's (`?q=`), an approval request's (`?approval=`) or a connection request's (`?remote_request=`).
+  type Target = { kind: CardKind; id: string };
+  const targetOf = (u: URLSearchParams): Target | null => {
+    for (const [param, kind] of CARD_PARAMS) { const id = u.get(param); if (id) return { kind, id }; }
+    return null;
+  };
+  let target: Target | null = targetOf(asked);
   let list = $state<List | null>(null);
   // The cards pinned above the groups: open questions and decisions, and those closed or decided here.
   let cardItems = $state<InboxItem[]>([]);
@@ -140,8 +150,8 @@
   // A card's view: the question feed's (live), else the item's.
   const qview = (i: InboxItem) => (i.question && (questions.get(i.question.id) ?? i.question))!;
   const cards = $derived(cardItems.filter(i => asCard.includes(i.id)).map(qview).sort((a, b) => a.created_at.localeCompare(b.created_at)));
-  /** Whether `i` is a decision's card: an approval request, or a machine's request to connect. */
-  const decision = (i: InboxItem) => i.kind === "approval" || (i.kind === "connection" && i.connection?.via !== "invite");
+  /** Whether `i` is a decision's card: an approval request, a machine's request to connect, or an agent's request to connect another Clax. */
+  const decision = (i: InboxItem) => i.kind === "approval" || i.kind === "remote_request" || (i.kind === "connection" && i.connection?.via !== "invite");
   const decisions = $derived(cardItems.filter(decision).sort((a, b) => a.seq - b.seq));
   // The cards pinned above the groups, under one heading: "Questions" when all are, else "Waiting on you".
   const pinned = $derived(cards.length + decisions.length);
@@ -214,9 +224,9 @@
       list = l;
       opening(l.groups, l.groups.length === 1);
       void fill(g);
-      // `?q=` or `?approval=`: that card takes focus, once.
+      // `?q=`, `?approval=` or `?remote_request=`: that card takes focus, once.
       const t = target;
-      if (t) queueMicrotask(() => { if ("q" in t ? toCard(t.q) : toCard(t.approval, "approval")) target = null; });
+      if (t) queueMicrotask(() => { if (toCard(t.id, t.kind)) target = null; });
     } catch (e) {
       if (g === gen) loadFailed(e);
     }
@@ -283,8 +293,8 @@
 
   const flip = (g: Group) => { toggled = { ...toggled, [g.key]: !isOpen(g) }; };
 
-  /** Scrolls to question `id`'s card (or approval request `id`'s) and focuses it; false when no card shows it. */
-  const toCard = (id: string, kind: "question" | "approval" = "question"): boolean => {
+  /** Scrolls to question `id`'s card (or approval or connection request `id`'s) and focuses it; false when no card shows it. */
+  const toCard = (id: string, kind: CardKind = "question"): boolean => {
     const el = [...document.querySelectorAll<HTMLElement>(`.inbox [data-${kind}]`)].find(e => e.dataset[kind] === id);
     el?.scrollIntoView?.({ block: "center" });
     el?.focus({ preventScroll: true });
@@ -356,8 +366,9 @@
 
   // Where an item leads; a question's (`/inbox?q=…`) is this page, whose card, if shown, takes focus.
   const go = (url: string) => {
-    const m = /^\/inbox\?(q|approval)=([^&]+)$/.exec(url);
-    if (m) toCard(decodeURIComponent(m[2]), m[1] === "q" ? "question" : "approval");
+    const m = /^\/inbox\?(q|approval|remote_request)=([^&]+)$/.exec(url);
+    const kind = m && CARD_PARAMS.find(([param]) => param === m[1])?.[1];
+    if (m && kind) toCard(decodeURIComponent(m[2]), kind);
     else (p.go ?? (u => location.assign(u)))(url);
   };
   const open = (i: InboxItem) => void openItem(inbox, i, go);
@@ -403,7 +414,7 @@
 
 {#snippet decided(list: InboxItem[])}
   {#if list.length}
-    <div class="dlist">{#each list as i (i.id)}{#if i.kind === "approval"}<ApprovalCard item={i} now={p.now} />{:else}<ConnectionCard item={i} now={p.now} onRead={toggle} />{/if}{/each}</div>
+    <div class="dlist">{#each list as i (i.id)}{#if i.kind === "approval"}<ApprovalCard item={i} now={p.now} />{:else if i.kind === "remote_request"}<RemoteRequestCard item={i} now={p.now} />{:else}<ConnectionCard item={i} now={p.now} onRead={toggle} />{/if}{/each}</div>
   {/if}
 {/snippet}
 

@@ -143,6 +143,7 @@ pub mod questions;
 pub mod queues;
 pub mod quickstart;
 pub mod reach;
+pub mod remote_requests;
 pub mod remotes;
 pub mod roles;
 pub mod sample_grants;
