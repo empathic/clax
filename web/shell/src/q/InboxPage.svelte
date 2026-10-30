@@ -48,6 +48,7 @@
   import { GROUP_PAGE, GROUP_ROWS, type Group, MAX_GROUP_PAGE, MORE_ROWS, appendGroups, appendRows, fromWire, groupKey, mergeGroups, takeItem } from "./inbox-groups";
   import ApprovalCard from "../people/ApprovalCard.svelte";
   import ConnectionCard from "../people/ConnectionCard.svelte";
+  import RemoteRequestCard from "./RemoteRequestCard.svelte";
   import InboxGroup from "./InboxGroup.svelte";
   import InboxRow from "./InboxRow.svelte";
   import { inboxAgents } from "./api";
@@ -71,9 +72,9 @@
   /** How long typing waits before the search applies. */
   const DEBOUNCE_MS = 250;
   /** The kinds shown as cards above the groups, and how many such items one fetch lists. */
-  const CARD_KINDS: InboxKind[] = ["question", "approval", "connection"];
+  const CARD_KINDS: InboxKind[] = ["question", "approval", "connection", "remote_request"];
   const MAX_CARDS = 200;
-  const KIND_LABEL: Record<InboxKind, string> = { reply: "Replies", version: "Versions", published: "Published", question: "Questions", finished: "Finished", approval: "Approvals", connection: "Connections", ended: "Ended", push: "Pushes" };
+  const KIND_LABEL: Record<InboxKind, string> = { reply: "Replies", version: "Versions", published: "Published", question: "Questions", finished: "Finished", approval: "Approvals", connection: "Connections", ended: "Ended", push: "Pushes", remote_request: "Connect a Clax" };
   const fmt = (n: number | "10000+") => (n === "10000+" ? "10,000+" : n.toLocaleString("en-US"));
   /** Says what failed: `what` ("load the inbox"), and why. */
   const oops = (what: string) => (e: unknown) => { error = `Could not ${what}: ${e instanceof Error ? e.message : String(e)}`; };
@@ -121,8 +122,8 @@
   // A card's view: the question feed's (live), else the item's.
   const qview = (i: InboxItem) => (i.question && (questions.get(i.question.id) ?? i.question))!;
   const cards = $derived(cardItems.filter(i => asCard.includes(i.id)).map(qview).sort((a, b) => a.created_at.localeCompare(b.created_at)));
-  /** Whether `i` is a decision's card: an approval request, or a machine's request to connect. */
-  const decision = (i: InboxItem) => i.kind === "approval" || (i.kind === "connection" && i.connection?.via !== "invite");
+  /** Whether `i` is a decision's card: an approval request, a machine's request to connect, or an agent's request to connect another Clax. */
+  const decision = (i: InboxItem) => i.kind === "approval" || i.kind === "remote_request" || (i.kind === "connection" && i.connection?.via !== "invite");
   const decisions = $derived(cardItems.filter(decision).sort((a, b) => a.seq - b.seq));
   // The cards pinned above the groups, under one heading: "Questions" when all are, else "Waiting on you".
   const pinned = $derived(cards.length + decisions.length);
@@ -383,7 +384,7 @@
 
 {#snippet decided(list: InboxItem[])}
   {#if list.length}
-    <div class="dlist">{#each list as i (i.id)}{#if i.kind === "approval"}<ApprovalCard item={i} now={p.now} />{:else}<ConnectionCard item={i} now={p.now} onRead={toggle} />{/if}{/each}</div>
+    <div class="dlist">{#each list as i (i.id)}{#if i.kind === "approval"}<ApprovalCard item={i} now={p.now} />{:else if i.kind === "remote_request"}<RemoteRequestCard item={i} now={p.now} />{:else}<ConnectionCard item={i} now={p.now} onRead={toggle} />{/if}{/each}</div>
   {/if}
 {/snippet}
 

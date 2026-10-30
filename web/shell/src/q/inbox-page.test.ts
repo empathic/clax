@@ -119,7 +119,7 @@ describe("InboxPage", () => {
     expect(groups[0].querySelector(".irow .title")!.textContent).toBe("claude replied");
     expect(groups[1].querySelector<HTMLElement>(".gbody")!.hidden).toBe(true);
     expect(groups[1].querySelector(".gread")).toBeNull();
-    expect(calls.map(c => c.url)).toEqual(expect.arrayContaining(["/api/inbox?kind=question%2Capproval%2Cconnection&read=unread&limit=200", "/api/inbox?group=artifact&rows=3"]));
+    expect(calls.map(c => c.url)).toEqual(expect.arrayContaining(["/api/inbox?kind=question%2Capproval%2Cconnection%2Cremote_request&read=unread&limit=200", "/api/inbox?group=artifact&rows=3"]));
     // The quiet line opens in place: its newest read rows, then more of it.
     click(second);
     expect(second.getAttribute("aria-expanded")).toBe("true");
@@ -328,7 +328,7 @@ describe("InboxPage", () => {
     await vi.advanceTimersByTimeAsync(1);
     flush();
     expect(location.search).toBe("?search=dash");
-    expect(calls.slice(n).map(c => c.url)).toEqual([`/api/inbox?q=dash&kind=question%2Capproval%2Cconnection&read=unread&limit=200`, "/api/inbox?q=dash&group=artifact&rows=3"]);
+    expect(calls.slice(n).map(c => c.url)).toEqual([`/api/inbox?q=dash&kind=question%2Capproval%2Cconnection%2Cremote_request&read=unread&limit=200`, "/api/inbox?q=dash&group=artifact&rows=3"]);
     await vi.advanceTimersByTimeAsync(0);
     flush();
     expect([...m.root.querySelectorAll(".irow")].map(r => r.getAttribute("data-item"))).toEqual(["IR"]);
@@ -397,7 +397,7 @@ describe("InboxPage", () => {
     handlers[0]({ type: "ready" });
     await new Promise(r => setTimeout(r, 300));
     await settle();
-    expect(pages()).toEqual(["/api/inbox?kind=question%2Capproval%2Cconnection&read=unread&limit=200", "/api/inbox?group=artifact&rows=3"]);
+    expect(pages()).toEqual(["/api/inbox?kind=question%2Capproval%2Cconnection%2Cremote_request&read=unread&limit=200", "/api/inbox?group=artifact&rows=3"]);
     expect(m.root.querySelectorAll(".irow").length).toBeGreaterThan(0);
   });
 

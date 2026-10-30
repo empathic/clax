@@ -20,6 +20,7 @@
   import ModelSelect from "./ModelSelect.svelte";
   import SourceBadge from "./SourceBadge.svelte";
   import Switch from "./Switch.svelte";
+  import RemoteMutes from "./RemoteMutes.svelte";
 
   let s = $state<Settings | null>(null);
   let none = $state(false);
@@ -108,6 +109,7 @@
       {#if hasModels}<button type="button" onclick={runTest}>Test connection</button>{/if}
       <span role="status">{#if test}<span class={test.ok ? "ok" : "err"}>{test.text}</span>{:else if saved}<span class="ok">{saved}</span>{:else if changed.length}<span class="note">{changed.length} changed{restart ? ", takes effect after a restart" : ""}</span>{/if}</span>
     </div>
+    <RemoteMutes />
   {:else if !err}
     <p class="note" role="status">Loading the settings…</p>
   {/if}
