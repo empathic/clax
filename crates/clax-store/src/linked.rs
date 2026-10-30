@@ -75,6 +75,15 @@ pub struct LinkedThread {
     pub unlinked_at: Option<String>,
 }
 
+/// Whether outbox row `o`'s link has ended: the artifact is not linked to
+/// the remote, or the row's thread pairing was ended (by an unlink or the
+/// remote's removal, which end every pairing of the link, or by a link
+/// moved to another public copy).
+const ENDED: &str = "(NOT EXISTS (SELECT 1 FROM remote_links l
+                        WHERE l.artifact_id = o.artifact_id AND l.remote_id = o.remote_id)
+     OR EXISTS (SELECT 1 FROM linked_threads lt
+                WHERE lt.thread_id = o.thread_id AND lt.unlinked_at IS NOT NULL))";
+
 const LT_COLS: &str = "thread_id, remote_id, artifact_id, remote_artifact_id, remote_thread_id,
     origin, remote_version, twin, synced_status, remote_name, remote_origin, unlinked_at";
 
@@ -1003,11 +1012,15 @@ impl Store {
         })
     }
 
-    /// Remote `rid`'s unacknowledged writes, oldest first.
+    /// Remote `rid`'s unacknowledged writes whose link has not ended,
+    /// oldest first: those of a thread whose pairing an unlink or the
+    /// remote's removal ended are [`Store::unsent_of`]'s, even once the
+    /// artifact is linked to the remote again.
     pub fn outbox_of(&self, rid: &str) -> Result<Vec<OutboxRow>> {
         self.with_read(|c| {
             let mut stmt = c.prepare(&format!(
-                "SELECT {OUT_COLS} FROM linked_outbox o WHERE o.remote_id = ?1 ORDER BY o.seq"
+                "SELECT {OUT_COLS} FROM linked_outbox o WHERE o.remote_id = ?1 AND NOT {ENDED}
+                 ORDER BY o.seq"
             ))?;
             Ok(stmt
                 .query_map(params![rid], row_out)?
@@ -1015,15 +1028,14 @@ impl Store {
         })
     }
 
-    /// The writes on artifact `aid` not sent to a remote it is no longer
-    /// linked to (unlinked, or the remote removed), oldest first: what the
-    /// owner confirms dropping.
+    /// The writes on artifact `aid` not sent before its link ended
+    /// (unlinked, or the remote removed), oldest first, whether or not it
+    /// is linked to that remote again: what the owner confirms dropping.
+    /// They are never sent.
     pub fn unsent_of(&self, aid: &str) -> Result<Vec<OutboxRow>> {
         self.with_read(|c| {
             let mut stmt = c.prepare(&format!(
-                "SELECT {OUT_COLS} FROM linked_outbox o WHERE o.artifact_id = ?1
-                   AND NOT EXISTS (SELECT 1 FROM remote_links l
-                                   WHERE l.artifact_id = o.artifact_id AND l.remote_id = o.remote_id)
+                "SELECT {OUT_COLS} FROM linked_outbox o WHERE o.artifact_id = ?1 AND {ENDED}
                  ORDER BY o.seq"
             ))?;
             Ok(stmt
@@ -1036,10 +1048,7 @@ impl Store {
     pub fn drop_unsent(&self, aid: &str) -> Result<usize> {
         self.with_tx(|tx| {
             Ok(tx.execute(
-                "DELETE FROM linked_outbox WHERE artifact_id = ?1
-                   AND NOT EXISTS (SELECT 1 FROM remote_links l
-                                   WHERE l.artifact_id = linked_outbox.artifact_id
-                                     AND l.remote_id = linked_outbox.remote_id)",
+                &format!("DELETE FROM linked_outbox AS o WHERE o.artifact_id = ?1 AND {ENDED}"),
                 params![aid],
             )?)
         })
@@ -1938,6 +1947,51 @@ mod tests {
         assert!(w.st.outbox_of(&w.rid).unwrap().is_empty());
         assert!(!w.st.has_linked_comment(&w.rid, "rc1").unwrap());
         assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0);
+    }
+
+    #[test]
+    fn writes_left_unsent_by_an_unlink_wait_for_the_owner_after_a_new_link() {
+        let w = world();
+        let l = link(&w, (1, 1));
+        let t =
+            w.st.mirror_thread(
+                &AuditCtx::DAEMON,
+                &l,
+                ("clax.example", "https://clax.example"),
+                1,
+                true,
+                MirrorThread {
+                    remote_thread_id: "rt1".into(),
+                    remote_version: 1,
+                    anchor: whole(),
+                    first: mirror("hi", "rc1"),
+                },
+            )
+            .unwrap();
+        w.clock.advance(1);
+        w.st.add_comment(
+            &AuditCtx::DAEMON,
+            &t.id,
+            NewComment {
+                author_kind: AUTHOR_VIEWER,
+                author_name: "Owner".into(),
+                author_public_id: Some(w.owner.clone()),
+                via_session_id: None,
+                body: "unsent".into(),
+                via_page: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
+        w.st.unlink_remote(&w.aid, &w.rid).unwrap();
+        assert_eq!(w.st.unsent_of(&w.aid).unwrap().len(), 1);
+        // Pushed to the same remote again: the old write is still the
+        // owner's to retry or drop, never sent on its own.
+        link(&w, (1, 2));
+        assert!(w.st.outbox_of(&w.rid).unwrap().is_empty(), "not drained");
+        assert_eq!(w.st.unsent_of(&w.aid).unwrap().len(), 1);
+        assert_eq!(w.st.drop_unsent(&w.aid).unwrap(), 1);
+        assert!(w.st.unsent_of(&w.aid).unwrap().is_empty());
     }
 
     #[test]

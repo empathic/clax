@@ -419,7 +419,8 @@ pub async fn remove(
 /// read them all; `pending` and `failed`: its writes waiting to go up, and
 /// those not sent; `failed_questions`: its open questions whose copies were
 /// not sent, which Retry sends too), every connected remote, and `unsent`:
-/// the writes not sent to a remote the artifact is no longer linked to, which
+/// the writes not sent before a link of the artifact ended (never sent, even
+/// once it is linked to that remote again), which
 /// the owner may drop (`POST /api/artifacts/<aid>/unsent:drop`).
 pub async fn for_artifact(
     State(s): State<AppState>,
@@ -609,7 +610,7 @@ pub async fn retry(
 }
 
 /// `POST /api/artifacts/<aid>/unsent:drop` (the owner) → `{dropped}`: drops
-/// the writes not sent to a remote the artifact is no longer linked to,
+/// the writes not sent before a link of the artifact ended,
 /// once the owner confirms.
 pub async fn drop_unsent(
     State(s): State<AppState>,

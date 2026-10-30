@@ -1554,8 +1554,9 @@ the threads changed since the link's cursor (`since`, below), and every
   `linked: {origin, remote, author_kind, author_name, state}`.
 - `GET /api/artifacts/<id>/remotes` adds, per link, `download_only`,
   `sync: {unreachable_since, last_error, synced_at}`, `pending` and `failed`
-  counts, and `unsent`: the writes not sent to a remote the artifact is no
-  longer linked to. `PATCH /api/artifacts/<id>/remotes/<remote>
+  counts, and `unsent`: the writes not sent before a link of the artifact
+  ended, which are never sent, even once it is linked to that remote
+  again. `PATCH /api/artifacts/<id>/remotes/<remote>
   {download_only}` (the owner; `clax remote comments <artifact>
   two-way|download-only`) keeps new local threads local while replies and
   resolves on linked threads still go up (made two-way again, a thread
@@ -1563,9 +1564,10 @@ the threads changed since the link's cursor (`since`, below), and every
   writes not sent again; `DELETE …` (`clax remote unlink <artifact>`) ends
   the link: its threads stay as read-only history (`unlinked: true`; a
   reply, resolve or reopen there is 409 `thread_unlinked`) and its unsent
-  writes stay until `POST /api/artifacts/<id>/unsent:drop` (the owner's
-  confirmation) drops them. Removing the remote does the same for all its
-  links.
+  writes stay unsent until `POST /api/artifacts/<id>/unsent:drop` (the
+  owner's confirmation) drops them. Removing the remote does the same for all its
+  links. The public copy stays on the remote; the next push makes a new
+  one.
 - The public side: `POST /api/artifacts/<id>/threads` and `POST
   …/threads/<tid>/comments` by an agent token may name an
   `Idempotency-Key` (as a publish's): a request naming it again answers
