@@ -2005,6 +2005,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_configured_name_is_trimmed_and_reaches_hosted_mode() {
+        let hosted = |extra: &str| {
+            let text = format!("[hosted]\npublic_origin = \"https://clax.example\"\n{extra}");
+            let c = clax_core::config::HomeConfig::from_text(
+                "/h/config.toml".into(),
+                &text,
+                std::iter::empty(),
+            )
+            .unwrap();
+            Hosted::from_config(&c.hosted().unwrap().unwrap()).unwrap()
+        };
+        assert_eq!(hosted("").name, None);
+        assert_eq!(hosted("name = \"  \"\n").name, None);
+        assert_eq!(
+            hosted("name = \"  Studio Clax \"\n").name.as_deref(),
+            Some("Studio Clax")
+        );
+    }
+
+    #[test]
     fn a_public_host_from_loopback_is_noted_once_and_only_off_cloudflare() {
         let peer = |p: &str| {
             let mut e = axum::http::Extensions::new();

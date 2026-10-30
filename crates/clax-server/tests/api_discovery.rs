@@ -65,6 +65,13 @@ async fn discovery_of_a_local_daemon_offers_no_device_sign_in() {
     let v = discovery(&ts).await;
     assert_eq!(v["kind"], "local", "{v}");
     assert_eq!(v["api"], "/api", "{v}");
+    let port = ts.addr.port();
+    assert_eq!(
+        v["origin"],
+        json!(format!("http://localhost:{port}")),
+        "{v}"
+    );
+    assert_eq!(v["name"], json!(format!("localhost:{port}")), "{v}");
     assert!(v.get("device").is_none(), "{v}");
     assert!(v.get("site_domain").is_none(), "{v}");
     assert!(

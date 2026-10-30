@@ -17,9 +17,12 @@ pub const CONTRACT_VERSION: &str = "1";
 /// site_domain?, sign_in, device?, capabilities}`, whatever the credential:
 ///
 /// - `kind`: `hosted` for a hosted Clax, else `local`.
-/// - `name`: the hosted instance's configured name, else its host
-///   (`localhost:<port>` for a local daemon).
-/// - `origin`: the hosted public origin, else `http://localhost:<port>`.
+/// - `name`: the hosted instance's configured name, else its host. A
+///   local daemon's is the host and port of `origin`.
+/// - `origin`: the hosted public origin; a local daemon's is where it
+///   says it is reached (`AppState::browser_base`: `localhost` on a
+///   loopback bind, the LAN address on a LAN bind). Advisory for a local
+///   daemon, not an identity, and the same for every caller.
 /// - `api`: the API root, `/api`.
 /// - `site_domain`: hosted, when artifacts' sites have a domain.
 /// - `sign_in`: how a client obtains a credential here. `invite` (a
@@ -57,8 +60,8 @@ pub async fn get(State(s): State<AppState>, _d: DeniedToGrants) -> Result<Json<V
         }
         None => json!({
             "kind": "local",
-            "name": format!("localhost:{}", s.port),
-            "origin": format!("http://localhost:{}", s.port),
+            "name": s.browser_base.split_once("://").map_or(s.browser_base.as_str(), |(_, h)| h),
+            "origin": s.browser_base,
             "sign_in": ["invite", "reporter_token"],
         }),
     };

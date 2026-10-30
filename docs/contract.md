@@ -1131,9 +1131,11 @@ the same routes):
   name, origin, api, site_domain?, sign_in, device?, capabilities}`: `kind`
   is `local` or `hosted` (the Worker answers `hosted`); `name` is the
   instance's own (`[hosted] name`, the Worker's `INSTANCE_NAME`) or, when it
-  has none, its host (a local daemon's is `localhost:<port>`); `origin` is
-  where it is reached (a hosted Clax's public origin, else
-  `http://localhost:<port>`); `api` is `/api`;
+  has none, its host (a local daemon's is the host and port of its
+  `origin`); `origin` is where it is reached (a hosted Clax's public
+  origin; a local daemon's is where it says it is reached, `localhost` on
+  a loopback bind and the LAN address on a LAN bind, advisory and the same
+  for every caller, not an identity); `api` is `/api`;
   `site_domain` is the domain its artifacts' sites are served under, on a
   hosted Clax that has one. A hosted Clax adds `"device"` to `sign_in` and
   `device: {code: "/api/hosted/device/code", approve: "/device", token:
