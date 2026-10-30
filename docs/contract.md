@@ -1552,10 +1552,14 @@ the threads changed since the link's cursor (`since`, below), and every
   origin ("remote" | "local"), remote_version, twin, unlinked, state
   (null | "pending" | "held" | "failed"), error}` and each linked comment
   `linked: {origin, remote, author_kind, author_name, state}`.
-- `GET /api/artifacts/<id>/remotes` adds, per link, `download_only`,
+- `GET /api/artifacts/<id>/remotes` adds, per link, `remote_status` (its
+  remote's: `signed_out` while the remote refuses this Clax's token, its
+  pushes and writes waiting for a new sign-in, which keeps the link),
+  `download_only`,
   `sync: {unreachable_since, last_error, synced_at}`, `pending` and `failed`
-  counts, and `unsent`: the writes not sent to a remote the artifact is no
-  longer linked to. `PATCH /api/artifacts/<id>/remotes/<remote>
+  counts, and `unsent`: the writes not sent before a link of the artifact
+  ended, which are never sent, even once it is linked to that remote
+  again. `PATCH /api/artifacts/<id>/remotes/<remote>
   {download_only}` (the owner; `clax remote comments <artifact>
   two-way|download-only`) keeps new local threads local while replies and
   resolves on linked threads still go up (made two-way again, a thread
@@ -1563,9 +1567,10 @@ the threads changed since the link's cursor (`since`, below), and every
   writes not sent again; `DELETE …` (`clax remote unlink <artifact>`) ends
   the link: its threads stay as read-only history (`unlinked: true`; a
   reply, resolve or reopen there is 409 `thread_unlinked`) and its unsent
-  writes stay until `POST /api/artifacts/<id>/unsent:drop` (the owner's
-  confirmation) drops them. Removing the remote does the same for all its
-  links.
+  writes stay unsent until `POST /api/artifacts/<id>/unsent:drop` (the
+  owner's confirmation) drops them. Removing the remote does the same for all its
+  links. The public copy stays on the remote; the next push makes a new
+  one.
 - The public side: `POST /api/artifacts/<id>/threads` and `POST
   …/threads/<tid>/comments` by an agent token may name an
   `Idempotency-Key` (as a publish's): a request naming it again answers
@@ -1750,7 +1755,8 @@ app's versions with the bundle each carries.
   /api/remotes/<remote>/links {artifact_id, remote_artifact_id, url,
   remote_n}` → 201 `{link}` links a local app, at its current version, to
   public version `remote_n` of a copy without a push (an app got from a
-  copy): a local write that asks nothing of the remote, though it needs
+  copy; at the local version a push of it made `remote_n` from, when one
+  did, as when it is linked again after a new sign-in): a local write that asks nothing of the remote, though it needs
   the core signed in there (400 `not_connected`). `url` is required and unread: the link's
   address is always `<origin>/a/<remote_artifact_id>`, as a push makes
   it; 400 `invalid_args` for a malformed ID or `remote_n` 0, 404 for no

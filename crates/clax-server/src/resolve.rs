@@ -334,17 +334,20 @@ async fn on_remote<'r>(
     // Only a host whose first label is an artifact ID can be a site's.
     let first = u.host_str()?.split('.').next()?;
     ArtifactId::parse(first).ok()?;
-    let mut claims: Vec<(&Remote, String, Option<String>)> = Vec::new();
-    for r in remotes {
-        let host = url::Url::parse(&r.origin)
-            .ok()
-            .and_then(|b| b.host_str().map(str::to_ascii_lowercase))
-            .unwrap_or_default();
-        let domain = discover_connected(s, &r.origin, true)
-            .await
-            .and_then(|i| i.site_domain);
-        claims.push((r, host, domain));
-    }
+    // Every remote's discovery at once: one that does not answer costs its
+    // timeout once, not once per remote before it.
+    let claims: Vec<(&Remote, String, Option<String>)> =
+        futures::future::join_all(remotes.iter().map(|r| async move {
+            let host = url::Url::parse(&r.origin)
+                .ok()
+                .and_then(|b| b.host_str().map(str::to_ascii_lowercase))
+                .unwrap_or_default();
+            let domain = discover_connected(s, &r.origin, true)
+                .await
+                .and_then(|i| i.site_domain);
+            (r, host, domain)
+        }))
+        .await;
     for (i, (r, _, domain)) in claims.iter().enumerate() {
         let Some(domain) = domain else {
             continue;

@@ -946,11 +946,7 @@ pub async fn poll_sign_in(s: &AppState, r: &Remote) -> Result<SignIn, ApiError> 
                 person_name: v["person"]["display_name"].as_str().map(str::to_string),
                 grant_id: v["grant_id"].as_str().unwrap_or_default().to_string(),
             };
-            let id = r.id.clone();
-            let r = s
-                .store_call(move |st| st.connect_remote(&id, &signed))
-                .await?;
-            Ok(SignIn::Connected(Box::new(r)))
+            finish_sign_in(s, r, signed).await
         }
         Err(f) if f.status == Some(400) => match f.code.as_str() {
             "authorization_pending" | "slow_down" => Ok(SignIn::Waiting),
@@ -959,6 +955,38 @@ pub async fn poll_sign_in(s: &AppState, r: &Remote) -> Result<SignIn, ApiError> 
             _ => Err(f.into()),
         },
         Err(f) => Err(f.into()),
+    }
+}
+
+/// Connects remote `r` with the token its approved sign-in was given
+/// (`signed`). A remote removed while the poll was out (no longer
+/// pending here) leaves that token held by no one: it is revoked there
+/// (a failure to is logged) and the answer is `not_found`.
+///
+/// # Errors
+/// The store's; `not_found` when the remote is no longer pending.
+pub async fn finish_sign_in(
+    s: &AppState,
+    r: &Remote,
+    signed: SignedInAs,
+) -> Result<SignIn, ApiError> {
+    let (id, token) = (r.id.clone(), signed.token.clone());
+    match s
+        .store_call(move |st| st.connect_remote(&id, &signed))
+        .await
+    {
+        Ok(r) => Ok(SignIn::Connected(Box::new(r))),
+        Err(e) if e.code == "not_found" => {
+            if let Err(why) = revoke(r, token).await {
+                tracing::warn!(
+                    remote = r.origin.as_str(),
+                    error = why.message.as_str(),
+                    "could not revoke the token of a sign-in whose remote was removed"
+                );
+            }
+            Err(e)
+        }
+        Err(e) => Err(e),
     }
 }
 
@@ -1159,11 +1187,25 @@ pub fn rewrite_assets(
 
 /// The idempotency key of local version `n` of `aid` published onto
 /// `target`: a public artifact's ID, or for a new public artifact `new:`
-/// and the artifact the link moves from (`-` for none), so a push sent
-/// again names the same key and a push as new again (`mode: new`) a fresh
-/// one.
+/// and the artifact the link moves from (for a push with no link,
+/// [`new_key_target`]), so a push sent again names the same key and a push
+/// as new again (`mode: new`) a fresh one.
 pub fn version_key(aid: &str, n: u32, target: &str) -> String {
     format!("clax-push:{aid}:{n}:{target}")
+}
+
+/// The target [`version_key`] names for a new public artifact made by a
+/// push with no link, after `made` public copies of the artifact on the
+/// remote ([`clax_store::Store::remote_copies`]): `new:-` for the first, so
+/// keys made before the count was named stay the same, and `new:-:<made>`
+/// after. A push after an unlink then makes a new public copy rather than
+/// replaying the first one, while a push sent again before its answer was
+/// recorded counts the same copies and replays its own.
+pub fn new_key_target(made: u32) -> String {
+    match made {
+        0 => "new:-".to_string(),
+        n => format!("new:-:{n}"),
+    }
 }
 
 /// The idempotency key of local version `n` of `aid` published in app mode
@@ -1639,10 +1681,15 @@ pub async fn push_from(
             l.pushed_n + 1
         }
     };
-    // A new public artifact's key names the one the link moves from.
+    // A new public artifact's key names the one the link moves from, or
+    // with no link the public copies made before it ([`new_key_target`]).
     let new_target = match (mode, &link) {
         (Mode::New, Some(l)) => format!("new:{}", l.remote_artifact_id),
-        _ => "new:-".to_string(),
+        _ => {
+            let (rid, a2) = (rid.clone(), aid.as_str().to_string());
+            let made = s.store_call(move |st| st.remote_copies(&rid, &a2)).await?;
+            new_key_target(made)
+        }
     };
     let (id, last_n) = (aid.clone(), end);
     let versions = if from <= last_n {

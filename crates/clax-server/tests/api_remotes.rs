@@ -621,6 +621,70 @@ async fn a_push_whose_answer_was_lost_is_answered_the_version_it_made() {
 }
 
 #[tokio::test]
+async fn a_link_says_when_its_remote_signed_this_clax_out() {
+    let public = Public::new().await;
+    let local = TestServer::spawn().await;
+    let rid = connect(&local, &public).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let aid = local
+        .publish("Plan", &[("index.html", "<h1>v1</h1>")])
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = owner_post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
+    assert_eq!(s, 200, "{v}");
+    let links = |v: &Value| v["links"][0]["remote_status"].as_str().map(str::to_string);
+    let path = format!("/api/artifacts/{aid}/remotes");
+    let (_, v) = local_req(&local, reqwest::Method::GET, &path, json!(null), None).await;
+    assert_eq!(links(&v).as_deref(), Some("connected"), "{v}");
+    // The remote refused the token: the link stays, saying why it waits.
+    assert!(local.store.sign_out_remote(&rid).unwrap());
+    let (_, v) = local_req(&local, reqwest::Method::GET, &path, json!(null), None).await;
+    assert_eq!(links(&v).as_deref(), Some("signed_out"), "{v}");
+    assert_eq!(v["remotes"], json!([]), "{v}");
+}
+
+#[tokio::test]
+async fn a_push_after_an_unlink_makes_a_new_public_copy() {
+    let public = Public::new().await;
+    let local = TestServer::spawn().await;
+    let rid = connect(&local, &public).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let aid = local
+        .publish("Plan", &[("index.html", "<h1>v1</h1>")])
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut made: Vec<String> = Vec::new();
+    for _ in 0..3 {
+        let (s, v) = owner_post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v["pushed"], json!([{"n": 1, "remote_n": 1}]), "{v}");
+        let raid = v["link"]["remote_artifact_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(!made.contains(&raid), "{raid} made again: {made:?}");
+        made.push(raid);
+        let (s, v) = local_req(
+            &local,
+            reqwest::Method::DELETE,
+            &format!("/api/artifacts/{aid}/remotes/{rid}"),
+            json!(null),
+            None,
+        )
+        .await;
+        assert!((200..300).contains(&s), "{s} {v}");
+    }
+}
+
+#[tokio::test]
 async fn a_pages_assets_are_uploaded_and_its_references_rewritten() {
     let public = Public::new().await;
     let local = TestServer::spawn().await;
@@ -885,6 +949,53 @@ async fn removing_a_remote_revokes_its_token_there_or_says_it_could_not() {
     .await;
     assert_eq!((s, v["revoked"].as_bool()), (200, Some(false)), "{v}");
     assert!(local.store.remotes().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_sign_in_approved_after_its_remote_was_removed_revokes_its_token_there() {
+    let public = Public::new().await;
+    let local = TestServer::spawn().await;
+    let (s, v) = post(&local, "/api/remotes", json!({"url": public.origin})).await;
+    assert_eq!(s, 201, "{v}");
+    let id = v["remote"]["id"].as_str().unwrap().to_string();
+    let uc = v["user_code"].as_str().unwrap().to_string();
+    let (s, v) = public
+        .browser(
+            reqwest::Method::POST,
+            &format!("/api/hosted/device/{uc}/approve"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    public.clock.advance(5);
+    // The poll's token request is answered...
+    let r = local.store.find_remote(&id).unwrap().unwrap();
+    let code = local.store.remote_device_code(&id).unwrap().unwrap();
+    let (s, v) = public
+        .cli(
+            reqwest::Method::POST,
+            "/api/hosted/device/token",
+            Some(json!({"device_code": code.expose()})),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let gid = v["grant_id"].as_str().unwrap().to_string();
+    assert_eq!(public.ts.store.grant(&gid).unwrap().status, "approved");
+    // ...and the remote is removed before the poll connects it.
+    local.store.remove_remote(&id).unwrap();
+    let signed = clax_store::remotes::SignedInAs {
+        token: clax_core::Secret::new(v["token"].as_str().unwrap().to_string()),
+        person_public_id: v["person"]["public_id"].as_str().unwrap().to_string(),
+        person_name: None,
+        grant_id: gid.clone(),
+    };
+    let out = clax_server::public::finish_sign_in(&local.state, &r, signed).await;
+    assert_eq!(out.err().map(|e| e.code), Some("not_found"));
+    assert_ne!(
+        public.ts.store.grant(&gid).unwrap().status,
+        "approved",
+        "the token no one holds is revoked there"
+    );
 }
 
 #[tokio::test]

@@ -410,16 +410,20 @@ pub async fn remove(
 }
 
 /// `GET /api/artifacts/<aid>/remotes` → `{links: [{remote_id, remote_name,
-/// origin, url, pushed_n, remote_n, auto, behind, download_only, sync,
-/// read_error, pending, failed, failed_questions}], remotes, unsent}`: the
-/// artifact's public twins (`behind`: local versions not pushed yet;
+/// origin, remote_status, url, pushed_n, remote_n, auto, behind,
+/// download_only, sync, read_error, pending, failed, failed_questions}],
+/// remotes, unsent}`: the artifact's public twins (`remote_status`: its
+/// remote's, `signed_out` when the remote refused this Clax's token and
+/// pushes and linked threads wait for a new sign-in; `behind`: local
+/// versions not pushed yet;
 /// `download_only`: local threads stay local; `sync`: how its remote's
 /// linked-threads sync stands, with `unreachable_since`; `read_error`: what
 /// the last cycle could not read of this link's threads, `null` when it
 /// read them all; `pending` and `failed`: its writes waiting to go up, and
 /// those not sent; `failed_questions`: its open questions whose copies were
 /// not sent, which Retry sends too), every connected remote, and `unsent`:
-/// the writes not sent to a remote the artifact is no longer linked to, which
+/// the writes not sent before a link of the artifact ended (never sent, even
+/// once it is linked to that remote again), which
 /// the owner may drop (`POST /api/artifacts/<aid>/unsent:drop`).
 pub async fn for_artifact(
     State(s): State<AppState>,
@@ -478,6 +482,7 @@ pub async fn for_artifact(
                 "remote_id": l.remote_id,
                 "remote_name": r.map(|r| r.name.clone()),
                 "origin": r.map(|r| r.origin.clone()),
+                "remote_status": r.map(|r| r.status.clone()),
                 "remote_artifact_id": l.remote_artifact_id,
                 "url": l.url,
                 "pushed_n": l.pushed_n,
@@ -609,7 +614,7 @@ pub async fn retry(
 }
 
 /// `POST /api/artifacts/<aid>/unsent:drop` (the owner) → `{dropped}`: drops
-/// the writes not sent to a remote the artifact is no longer linked to,
+/// the writes not sent before a link of the artifact ended,
 /// once the owner confirms.
 pub async fn drop_unsent(
     State(s): State<AppState>,

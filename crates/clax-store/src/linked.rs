@@ -75,6 +75,15 @@ pub struct LinkedThread {
     pub unlinked_at: Option<String>,
 }
 
+/// Whether outbox row `o`'s link has ended: the artifact is not linked to
+/// the remote, or the row's thread pairing was ended (by an unlink or the
+/// remote's removal, which end every pairing of the link, or by a link
+/// moved to another public copy).
+const ENDED: &str = "(NOT EXISTS (SELECT 1 FROM remote_links l
+                        WHERE l.artifact_id = o.artifact_id AND l.remote_id = o.remote_id)
+     OR EXISTS (SELECT 1 FROM linked_threads lt
+                WHERE lt.thread_id = o.thread_id AND lt.unlinked_at IS NOT NULL))";
+
 const LT_COLS: &str = "thread_id, remote_id, artifact_id, remote_artifact_id, remote_thread_id,
     origin, remote_version, twin, synced_status, remote_name, remote_origin, unlinked_at";
 
@@ -224,6 +233,9 @@ pub struct LinkedQuestionView {
     /// `pending` until the copy is acknowledged, `failed` when it was not
     /// sent (Retry); `None` once sent or both sides closed.
     pub state: Option<&'static str>,
+    /// Why the copy is not sent, while `state` is set; once the copy is
+    /// done, why the remote's answer was refused here (the question then
+    /// stays open here); else `None`.
     pub error: Option<String>,
     /// Whether the answer or decline came from the remote.
     pub answered_there: bool,
@@ -445,6 +457,22 @@ impl Store {
                 params![rid, aid],
                 |r| r.get(0),
             )?)
+        })
+    }
+
+    /// The local version of `aid` a push of it made public version
+    /// `remote_n` of `raid` from, on any remote, connected now or removed
+    /// since: what a link made again after a new sign-in bases on.
+    pub fn pushed_twin(&self, aid: &str, raid: &str, remote_n: u32) -> Result<Option<u32>> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT local_n FROM remote_versions
+                 WHERE artifact_id = ?1 AND remote_artifact_id = ?2 AND remote_n = ?3
+                 ORDER BY local_n DESC LIMIT 1",
+                params![aid, raid, remote_n],
+                |r| r.get(0),
+            )
+            .optional()?)
         })
     }
 
@@ -840,6 +868,48 @@ impl Store {
         })
     }
 
+    /// Writes status `status` (`open` or `resolved`) that thread `tid`'s
+    /// twin has on the remote here, and records that both sides agree on
+    /// it ([`Store::set_synced_status`]), in one transaction: a
+    /// [`Store::scan_linked`] never sees the change without its synced
+    /// status, so it never queues it back up. A resolve is by
+    /// `viewer:anonymous` ([`Store::resolve_thread_touched`]), a reopen as
+    /// [`Store::reopen_thread`] does it. Answers the thread as it is now,
+    /// what the resolve changed, and whether its status changed here.
+    ///
+    /// # Errors
+    /// `NotFound` when the thread is gone.
+    pub fn mirror_status(
+        &self,
+        ctx: &AuditCtx,
+        tid: &str,
+        status: &str,
+    ) -> Result<(Thread, clax_core::feedback::Touched, bool)> {
+        let (touched, flipped) = self.with_tx(|tx| {
+            let t = thread_in(tx, tid)?.ok_or(CoreError::NotFound)?;
+            let mut touched = clax_core::feedback::Touched::default();
+            let flipped = if status == "resolved" && t.status != "resolved" {
+                touched =
+                    self.resolve_thread_in(tx, ctx, tid, "viewer:anonymous", None, |_, _| {
+                        Ok(None)
+                    })?;
+                true
+            } else if status == "open" && t.status == "resolved" {
+                self.reopen_thread_in(tx, ctx, tid)?;
+                true
+            } else {
+                false
+            };
+            tx.execute(
+                "UPDATE linked_threads SET synced_status = ?2 WHERE thread_id = ?1",
+                params![tid, status],
+            )?;
+            Ok((touched, flipped))
+        })?;
+        let t = self.get_thread(tid)?.ok_or(CoreError::NotFound)?;
+        Ok((t, touched, flipped))
+    }
+
     /// Records that both sides agree thread `tid` is `status`.
     pub fn set_synced_status(&self, tid: &str, status: &str) -> Result<()> {
         self.with_tx(|tx| {
@@ -972,7 +1042,9 @@ impl Store {
                        JOIN linked_threads lt ON lt.thread_id = t.id
                      WHERE lt.remote_id = ?1 AND lt.artifact_id = ?2 AND lt.unlinked_at IS NULL
                        AND t.status != lt.synced_status
-                       AND (t.status = 'open'
+                       AND ((t.status = 'open'
+                             AND COALESCE(t.reopened_by_person, '*owner') IN
+                                 ('*owner', (SELECT public_id FROM viewers WHERE owner = 1)))
                             OR (t.resolved_by LIKE 'agent:%'
                                 AND COALESCE(t.resolved_by_person, '*owner') = '*owner')
                             OR t.resolved_by = 'viewer:' ||
@@ -1003,11 +1075,15 @@ impl Store {
         })
     }
 
-    /// Remote `rid`'s unacknowledged writes, oldest first.
+    /// Remote `rid`'s unacknowledged writes whose link has not ended,
+    /// oldest first: those of a thread whose pairing an unlink or the
+    /// remote's removal ended are [`Store::unsent_of`]'s, even once the
+    /// artifact is linked to the remote again.
     pub fn outbox_of(&self, rid: &str) -> Result<Vec<OutboxRow>> {
         self.with_read(|c| {
             let mut stmt = c.prepare(&format!(
-                "SELECT {OUT_COLS} FROM linked_outbox o WHERE o.remote_id = ?1 ORDER BY o.seq"
+                "SELECT {OUT_COLS} FROM linked_outbox o WHERE o.remote_id = ?1 AND NOT {ENDED}
+                 ORDER BY o.seq"
             ))?;
             Ok(stmt
                 .query_map(params![rid], row_out)?
@@ -1015,15 +1091,14 @@ impl Store {
         })
     }
 
-    /// The writes on artifact `aid` not sent to a remote it is no longer
-    /// linked to (unlinked, or the remote removed), oldest first: what the
-    /// owner confirms dropping.
+    /// The writes on artifact `aid` not sent before its link ended
+    /// (unlinked, or the remote removed), oldest first, whether or not it
+    /// is linked to that remote again: what the owner confirms dropping.
+    /// They are never sent.
     pub fn unsent_of(&self, aid: &str) -> Result<Vec<OutboxRow>> {
         self.with_read(|c| {
             let mut stmt = c.prepare(&format!(
-                "SELECT {OUT_COLS} FROM linked_outbox o WHERE o.artifact_id = ?1
-                   AND NOT EXISTS (SELECT 1 FROM remote_links l
-                                   WHERE l.artifact_id = o.artifact_id AND l.remote_id = o.remote_id)
+                "SELECT {OUT_COLS} FROM linked_outbox o WHERE o.artifact_id = ?1 AND {ENDED}
                  ORDER BY o.seq"
             ))?;
             Ok(stmt
@@ -1036,10 +1111,7 @@ impl Store {
     pub fn drop_unsent(&self, aid: &str) -> Result<usize> {
         self.with_tx(|tx| {
             Ok(tx.execute(
-                "DELETE FROM linked_outbox WHERE artifact_id = ?1
-                   AND NOT EXISTS (SELECT 1 FROM remote_links l
-                                   WHERE l.artifact_id = linked_outbox.artifact_id
-                                     AND l.remote_id = linked_outbox.remote_id)",
+                &format!("DELETE FROM linked_outbox AS o WHERE o.artifact_id = ?1 AND {ENDED}"),
                 params![aid],
             )?)
         })
@@ -1107,13 +1179,17 @@ impl Store {
     }
 
     /// Records the remote's acknowledgement of outbox row `seq` and deletes
-    /// it: for a `thread`, its twin `rtid` there, on public version
-    /// `remote_version`; for a `thread` or `comment`, the comment `rcid` it
-    /// made there.
+    /// it: for a `thread` (local thread `tid` of `made`), its twin `rtid`
+    /// there, on public version `remote_version`; for a `thread` or
+    /// `comment`, the comment `rcid` it made there.
+    ///
+    /// A `thread` whose row is gone (the thread was deleted here while its
+    /// answer was out) still records its twin on the ended pairing, so the
+    /// next read does not mirror the twin here as a new thread.
     pub fn ack_outbox(
         &self,
         seq: i64,
-        rtid: Option<&str>,
+        made: Option<(&str, &str)>,
         rcid: Option<&str>,
         remote_version: Option<u32>,
     ) -> Result<()> {
@@ -1126,9 +1202,17 @@ impl Store {
                 )
                 .optional()?;
             let Some((tid, cid)) = row else {
+                if let Some((tid, rtid)) = made {
+                    tx.execute(
+                        "UPDATE linked_threads SET remote_thread_id = ?2,
+                            remote_version = COALESCE(?3, remote_version)
+                         WHERE thread_id = ?1 AND remote_thread_id IS NULL",
+                        params![tid, rtid, remote_version],
+                    )?;
+                }
                 return Ok(());
             };
-            if let Some(rtid) = rtid {
+            if let Some((_, rtid)) = made {
                 tx.execute(
                     "UPDATE linked_threads SET remote_thread_id = ?2,
                         remote_version = COALESCE(?3, remote_version) WHERE thread_id = ?1",
@@ -1449,9 +1533,22 @@ impl Store {
     /// (`answered_there`: the remote's answer or decline closed it here).
     pub fn linked_question_done(&self, qid: &str, answered_there: bool) -> Result<()> {
         self.lq_update(
-            "UPDATE linked_questions SET done_at = ?3, answered_there = ?2, failed_at = NULL
+            "UPDATE linked_questions SET done_at = ?3, answered_there = ?2, failed_at = NULL,
+                last_error = NULL
              WHERE question_id = ?1 AND done_at IS NULL",
             params![qid, answered_there, self.now()],
+        )
+    }
+
+    /// Marks question `qid`'s copy done with the remote's answer refused
+    /// here (`why`: it does not fit the questions): the question stays open
+    /// here and its view's `linked.error` says why.
+    pub fn linked_question_refused(&self, qid: &str, why: &str) -> Result<()> {
+        self.lq_update(
+            "UPDATE linked_questions SET done_at = COALESCE(done_at, ?3), answered_there = 0,
+                failed_at = NULL, last_error = ?2
+             WHERE question_id = ?1",
+            params![qid, format!("Not answered: {why}"), self.now()],
         )
     }
 
@@ -1505,7 +1602,13 @@ impl Store {
                             remote_origin: origin,
                             sent: rqid.is_some(),
                             state,
-                            error: if state.is_some() { r.get(6)? } else { None },
+                            // Once done, an error is why the remote's answer
+                            // was refused here ([`Store::linked_question_refused`]).
+                            error: if state.is_some() || done.is_some() {
+                                r.get(6)?
+                            } else {
+                                None
+                            },
                             answered_there: r.get(7)?,
                             unlinked,
                         })
@@ -1777,6 +1880,102 @@ mod tests {
     }
 
     #[test]
+    fn a_status_mirrored_from_the_remote_is_never_queued_back_up() {
+        let w = world();
+        let l = link(&w, (1, 1));
+        let mt = MirrorThread {
+            remote_thread_id: "rt1".into(),
+            remote_version: 1,
+            anchor: whole(),
+            first: mirror("make it bluer", "rc1"),
+        };
+        let remote = ("clax.example", "https://clax.example");
+        let t =
+            w.st.mirror_thread(&AuditCtx::DAEMON, &l, remote, 1, true, mt)
+                .unwrap();
+        let synced = || w.st.linked_thread(&t.id).unwrap().unwrap().synced_status;
+        let (r, _, flipped) =
+            w.st.mirror_status(&AuditCtx::DAEMON, &t.id, "resolved")
+                .unwrap();
+        assert_eq!((r.status.as_str(), flipped), ("resolved", true));
+        assert_eq!(r.resolved_by.as_deref(), Some("viewer:anonymous"));
+        assert_eq!(synced(), "resolved");
+        // The status and its synced status are one write: a scan right
+        // after it sees them agree, so neither change goes back up.
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0);
+        let (r, _, flipped) =
+            w.st.mirror_status(&AuditCtx::DAEMON, &t.id, "open")
+                .unwrap();
+        assert_eq!((r.status.as_str(), flipped), ("open", true));
+        assert_eq!(synced(), "open");
+        assert_eq!(
+            w.st.scan_linked(&w.rid).unwrap(),
+            0,
+            "the reopen is not echoed"
+        );
+        let (_, _, flipped) =
+            w.st.mirror_status(&AuditCtx::DAEMON, &t.id, "open")
+                .unwrap();
+        assert!(!flipped, "already open");
+    }
+
+    #[test]
+    fn only_the_owners_reopen_goes_up() {
+        let w = world();
+        let l = link(&w, (1, 1));
+        let t =
+            w.st.mirror_thread(
+                &AuditCtx::DAEMON,
+                &l,
+                ("clax.example", "https://clax.example"),
+                1,
+                true,
+                MirrorThread {
+                    remote_thread_id: "rt1".into(),
+                    remote_version: 1,
+                    anchor: whole(),
+                    first: mirror("make it bluer", "rc1"),
+                },
+            )
+            .unwrap();
+        w.st.mirror_status(&AuditCtx::DAEMON, &t.id, "resolved")
+            .unwrap();
+        // Another local person's comment reopens it here: not theirs to
+        // reopen there as the owner's person.
+        w.clock.advance(1);
+        w.st.add_comment(
+            &AuditCtx::DAEMON,
+            &t.id,
+            NewComment {
+                author_kind: AUTHOR_VIEWER,
+                author_name: "Sam".into(),
+                author_public_id: Some("pub_local_sam".into()),
+                via_session_id: None,
+                body: "still too dark".into(),
+                via_page: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(w.st.get_thread(&t.id).unwrap().unwrap().status, "open");
+        assert_eq!(
+            w.st.scan_linked(&w.rid).unwrap(),
+            0,
+            "Sam's reopen stays here"
+        );
+        // Resolved again there, then reopened here by the owner: it goes up.
+        w.st.mirror_status(&AuditCtx::DAEMON, &t.id, "resolved")
+            .unwrap();
+        let mut owner = AuditCtx::DAEMON;
+        owner.actor = clax_core::audit::Actor::Owner {
+            public_id: w.owner.clone(),
+        };
+        w.st.reopen_thread(&owner, &t.id).unwrap();
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
+        let out = w.st.outbox_of(&w.rid).unwrap();
+        assert_eq!(out.last().unwrap().kind, "reopen");
+    }
+
+    #[test]
     fn a_mirrored_comment_is_keyed_unless_an_agent_token_read_it() {
         use crate::remotes::{CLIENT_KIND_AGENT, CLIENT_KIND_APP};
         for (kind, keyed) in [
@@ -1941,6 +2140,51 @@ mod tests {
     }
 
     #[test]
+    fn writes_left_unsent_by_an_unlink_wait_for_the_owner_after_a_new_link() {
+        let w = world();
+        let l = link(&w, (1, 1));
+        let t =
+            w.st.mirror_thread(
+                &AuditCtx::DAEMON,
+                &l,
+                ("clax.example", "https://clax.example"),
+                1,
+                true,
+                MirrorThread {
+                    remote_thread_id: "rt1".into(),
+                    remote_version: 1,
+                    anchor: whole(),
+                    first: mirror("hi", "rc1"),
+                },
+            )
+            .unwrap();
+        w.clock.advance(1);
+        w.st.add_comment(
+            &AuditCtx::DAEMON,
+            &t.id,
+            NewComment {
+                author_kind: AUTHOR_VIEWER,
+                author_name: "Owner".into(),
+                author_public_id: Some(w.owner.clone()),
+                via_session_id: None,
+                body: "unsent".into(),
+                via_page: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
+        w.st.unlink_remote(&w.aid, &w.rid).unwrap();
+        assert_eq!(w.st.unsent_of(&w.aid).unwrap().len(), 1);
+        // Pushed to the same remote again: the old write is still the
+        // owner's to retry or drop, never sent on its own.
+        link(&w, (1, 2));
+        assert!(w.st.outbox_of(&w.rid).unwrap().is_empty(), "not drained");
+        assert_eq!(w.st.unsent_of(&w.aid).unwrap().len(), 1);
+        assert_eq!(w.st.drop_unsent(&w.aid).unwrap(), 1);
+        assert!(w.st.unsent_of(&w.aid).unwrap().is_empty());
+    }
+
+    #[test]
     fn an_up_sent_comments_echo_maps_to_the_same_row() {
         let w = world();
         let l = link(&w, (1, 1));
@@ -1999,6 +2243,41 @@ mod tests {
                 .is_none()
         );
         assert_eq!(w.st.get_thread(&t.id).unwrap().unwrap().comments.len(), 2);
+    }
+
+    #[test]
+    fn a_thread_deleted_while_its_up_send_was_out_keeps_its_twin_there() {
+        let w = world();
+        link(&w, (1, 1));
+        w.clock.advance(1);
+        let id = ArtifactId::parse(&w.aid).unwrap();
+        let t =
+            w.st.create_thread(
+                &AuditCtx::DAEMON,
+                &id,
+                NewThread {
+                    version_n: 1,
+                    anchor: whole(),
+                    author_name: "Owner".into(),
+                    author_public_id: Some(w.owner.clone()),
+                    body: "first".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
+        let seq = w.st.outbox_of(&w.rid).unwrap()[0].seq;
+        // Deleted here while the up-send is out; then its answer arrives.
+        w.st.delete_thread(&AuditCtx::DAEMON, &t.id).unwrap();
+        w.st.ack_outbox(seq, Some((&t.id, "rt5")), Some("rc5"), Some(1))
+            .unwrap();
+        let lt =
+            w.st.linked_thread_by_remote(&w.rid, "rt5")
+                .unwrap()
+                .expect("the ended pairing names its twin there");
+        assert_eq!(lt.thread_id, t.id);
+        assert!(lt.unlinked_at.is_some(), "so the read writes nothing here");
     }
 
     #[test]
@@ -2108,8 +2387,13 @@ mod tests {
         assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
         let out = w.st.outbox_of(&w.rid).unwrap();
         assert_eq!(out.last().unwrap().thread_id, later.id);
-        w.st.ack_outbox(out.last().unwrap().seq, Some("rt9"), Some("rc9"), Some(1))
-            .unwrap();
+        w.st.ack_outbox(
+            out.last().unwrap().seq,
+            Some((&later.id, "rt9")),
+            Some("rc9"),
+            Some(1),
+        )
+        .unwrap();
         // Unlinked: unsent rows wait for the owner, then go.
         w.st.unlink_remote(&w.aid, &w.rid).unwrap();
         assert_eq!(w.st.unsent_of(&w.aid).unwrap().len(), 4);
@@ -2343,13 +2627,22 @@ mod tests {
         let held = ask(&owners, Some(&w.aid));
         assert_eq!(w.st.scan_linked_questions(&w.rid).unwrap(), 0);
         assert!(w.st.linked_question(&held).unwrap().is_none());
+        // A read while the remote was out leaves an error behind, which
+        // the copy's end clears.
+        w.st.linked_question_attempted(&mine, "cannot reach clax.example")
+            .unwrap();
         w.st.linked_question_done(&mine, true).unwrap();
         assert!(w.st.live_linked_questions(&w.rid).unwrap().is_empty());
-        assert!(
-            w.st.linked_question_view(&mine)
-                .unwrap()
-                .unwrap()
-                .answered_there
+        let v = w.st.linked_question_view(&mine).unwrap().unwrap();
+        assert!(v.answered_there);
+        assert_eq!(v.error, None);
+        // A refused answer there says why, once the copy is done.
+        w.st.linked_question_refused(&mine, "no option named C")
+            .unwrap();
+        let v = w.st.linked_question_view(&mine).unwrap().unwrap();
+        assert_eq!(
+            (v.state, v.error.as_deref(), v.answered_there),
+            (None, Some("Not answered: no option named C"), false)
         );
     }
 

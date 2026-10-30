@@ -17,6 +17,9 @@ export type Sync = { unreachable_since: string | null; last_error: string | null
 /** An artifact's public twin on one remote; its threads follow it (linked threads). */
 export type Link = {
   remote_id: string; remote_name: string | null; origin: string | null; url: string;
+  /** Its remote's status: `signed_out` while the remote refuses this Clax's
+   * token; its pushes and comments wait for a new sign-in, which keeps the link. */
+  remote_status?: string | null;
   pushed_n: number; remote_n: number; auto: boolean; behind: number;
   /** Local threads stay local; replies and resolves on linked threads still go up. */
   download_only?: boolean;

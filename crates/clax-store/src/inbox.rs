@@ -1677,6 +1677,18 @@ pub(crate) fn connection_decided(c: &Connection, gid: &str, now: &str) -> Result
     Ok(())
 }
 
+/// The `connection` items whose requests ended without the owner's answer
+/// (expired, or gone since) are read: nothing is left to decide. How many.
+pub(crate) fn connections_lapsed(c: &Connection, now: &str) -> Result<usize> {
+    Ok(c.execute(
+        "UPDATE inbox_items SET read_at = ?1
+         WHERE kind = 'connection' AND read_at IS NULL AND grant_id IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM grants g
+                           WHERE g.id = inbox_items.grant_id AND g.status = 'pending')",
+        params![now],
+    )?)
+}
+
 /// Viewer `viewer_id` looked at `tids` of `aid` at `at`: when it is the
 /// owner or a connected person, their `reply` items made by then are read.
 pub(crate) fn read_by_look(
@@ -2758,6 +2770,28 @@ mod tests {
         st.deny_grant(DAEMON, &b.id).unwrap();
         assert!(!unread(&b.id), "denied");
         assert_eq!(st.inbox_unread(None).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_connection_request_that_lapses_unanswered_is_read() {
+        use crate::people::tests::{KEY_A, KEY_B, pending};
+        let (_d, clock, st) = crate::people::tests::store();
+        let (a, _, _) = pending(&st, KEY_A);
+        let unread = |gid: &str| -> Option<bool> {
+            inbox_of(&st, None)
+                .iter()
+                .find(|i| i.grant_id.as_deref() == Some(gid))
+                .map(|i| i.read_at.is_none())
+        };
+        assert_eq!(unread(&a.id), Some(true));
+        clock.advance(crate::people::PENDING_TTL_SECS + 1);
+        // A newer request, still waiting, stays unread.
+        let (b, _, _) = pending(&st, KEY_B);
+        st.expire_grants().unwrap();
+        assert_eq!(st.grant(&a.id).unwrap().status, "expired");
+        assert_eq!(unread(&a.id), Some(false), "nothing left to decide");
+        assert_eq!(unread(&b.id), Some(true));
+        assert_eq!(st.inbox_unread(None).unwrap(), 1);
     }
 
     #[test]

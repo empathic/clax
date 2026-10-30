@@ -425,7 +425,8 @@ impl Store {
     /// signed out again, with its links, linked threads, mirrors, push
     /// approvals and assets, and answered; a remote that never connected
     /// is forgotten ([`Store::remove_remote`]), `None`. A remote no longer
-    /// waiting is left as it is; `None` for none.
+    /// waiting is left as it is; `None` for none. What it finds and what it
+    /// does are one transaction.
     pub fn abandon_sign_in(&self, id: &str) -> Result<Option<Remote>> {
         let restored = self.with_tx(|tx| {
             let row: Option<(String, bool)> = tx
@@ -436,7 +437,7 @@ impl Store {
                 )
                 .optional()?;
             match row {
-                None => Ok(Some(None)),
+                None => Ok(Some(())),
                 Some((status, _)) if status != "pending" => Ok(None),
                 Some((_, true)) => {
                     tx.execute(
@@ -448,14 +449,16 @@ impl Store {
                     )?;
                     Ok(None)
                 }
-                Some((_, false)) => Ok(Some(Some(()))),
+                // Never connected: forgotten.
+                Some((_, false)) => {
+                    self.remove_remote_in(tx, id)?;
+                    Ok(Some(()))
+                }
             }
         })?;
         match restored {
-            // Gone already.
-            Some(None) => Ok(None),
-            // Never connected: forgotten.
-            Some(Some(())) => self.remove_remote(id).map(|_| None),
+            // Gone already, or forgotten.
+            Some(()) => Ok(None),
             None => self.find_remote(id).map(|r| r.filter(|x| x.id == id)),
         }
     }
@@ -510,38 +513,41 @@ impl Store {
     /// # Errors
     /// `NotFound` for no such remote.
     pub fn remove_remote(&self, id: &str) -> Result<Remote> {
-        self.with_tx(|tx| {
-            let r = tx
-                .query_row(
-                    &format!("SELECT {REMOTE_COLS} FROM remotes WHERE id = ?1"),
-                    params![id],
-                    row_remote,
-                )
-                .optional()?
-                .ok_or(CoreError::NotFound)?;
-            tx.execute(
-                "UPDATE linked_threads SET unlinked_at = ?2 WHERE remote_id = ?1 AND unlinked_at IS NULL",
-                params![id, self.now()],
-            )?;
-            // Its followed artifacts' mirrors go with it.
-            tx.execute(
-                "UPDATE artifacts SET deleted_at = ?2
-                 WHERE remote_mirror = 1 AND deleted_at IS NULL AND id IN
-                    (SELECT artifact_id FROM remote_links WHERE remote_id = ?1 AND followed = 1)",
-                params![id, self.now()],
-            )?;
-            tx.execute("DELETE FROM remote_links WHERE remote_id = ?1", params![id])?;
-            tx.execute(
-                "DELETE FROM remote_assets WHERE remote_id = ?1",
+        self.with_tx(|tx| self.remove_remote_in(tx, id))
+    }
+
+    /// [`Store::remove_remote`] inside the caller's transaction.
+    fn remove_remote_in(&self, tx: &rusqlite::Transaction<'_>, id: &str) -> Result<Remote> {
+        let r = tx
+            .query_row(
+                &format!("SELECT {REMOTE_COLS} FROM remotes WHERE id = ?1"),
                 params![id],
-            )?;
-            tx.execute(
-                "DELETE FROM push_approvals WHERE remote_id = ?1",
-                params![id],
-            )?;
-            tx.execute("DELETE FROM remotes WHERE id = ?1", params![id])?;
-            Ok(r)
-        })
+                row_remote,
+            )
+            .optional()?
+            .ok_or(CoreError::NotFound)?;
+        tx.execute(
+            "UPDATE linked_threads SET unlinked_at = ?2 WHERE remote_id = ?1 AND unlinked_at IS NULL",
+            params![id, self.now()],
+        )?;
+        // Its followed artifacts' mirrors go with it.
+        tx.execute(
+            "UPDATE artifacts SET deleted_at = ?2
+             WHERE remote_mirror = 1 AND deleted_at IS NULL AND id IN
+                (SELECT artifact_id FROM remote_links WHERE remote_id = ?1 AND followed = 1)",
+            params![id, self.now()],
+        )?;
+        tx.execute("DELETE FROM remote_links WHERE remote_id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM remote_assets WHERE remote_id = ?1",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM push_approvals WHERE remote_id = ?1",
+            params![id],
+        )?;
+        tx.execute("DELETE FROM remotes WHERE id = ?1", params![id])?;
+        Ok(r)
     }
 
     /// Every link, oldest first.
