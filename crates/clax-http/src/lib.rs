@@ -34,6 +34,7 @@ pub mod jobs_owner;
 pub mod limits;
 pub mod live_access;
 pub mod local_trust;
+pub mod peer_user;
 pub mod loopback;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod net;

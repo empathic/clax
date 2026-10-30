@@ -4,7 +4,7 @@ import { createServer as createHttpServer, request as httpRequest } from "node:h
 import { createServer } from "node:net";
 import { validateToolArguments, type Tool } from "@mariozechner/pi-ai";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { artifactRef, claxExtension, handedOver, handoverOf, htmlTitle, INJECT_RETRY_MS, isText, RENEW_EVERY_MS, START_BUDGET_MS, target, textPrefix, ToolError, waitingLine } from "../src/clax.ts";
@@ -461,7 +461,7 @@ describe("clax Pi extension", () => {
     // loaded machine; one that lingers is given up on after `openWaitMs`.
     const openWith = async (script: string, openWaitMs = 30_000, extra: NodeJS.ProcessEnv = {}) => {
       const bin = mkdtempSync(join(scratch, "opener-"));
-      for (const name of ["open", "xdg-open"]) {
+      for (const name of ["osascript", "xdg-open"]) {
         fakeExe(join(bin, name), `#!/bin/sh\n${script}\n`);
       }
       const env: NodeJS.ProcessEnv = { ...process.env, ...extra, CLAX_BIN: claxBin, PATH: `${bin}:${process.env.PATH}` };
@@ -473,17 +473,17 @@ describe("clax Pi extension", () => {
     expect(await openWith("exit 1")).toMatchObject({ url: p.url, opened: false });
     expect(await openWith("exit 0")).toMatchObject({ url: p.url, opened: true });
     // The browser is handed a one-use login link to the artifact, which the
-    // result never names.
+    // result never names. On macOS it reaches `osascript` on its standard
+    // input, never in its arguments, which every user of the machine can
+    // read; elsewhere `xdg-open` takes it as its one argument.
     const opened = join(scratch, `opened-${Math.random().toString(36).slice(2)}.txt`);
-    expect(await openWith('printf %s "$1" > "$OPENED_FILE"', 30_000, { OPENED_FILE: opened })).toMatchObject({ url: p.url, opened: true });
-    // The opener is given the path of a private page that carries the
-    // link, never the link: a command line is every user's to read.
-    const given = readFileSync(opened, "utf8");
-    expect(given).not.toContain("cxi_");
-    expect(dirname(given)).toBe(join(daemon.home, "login"));
-    expect(statSync(dirname(given)).mode & 0o777).toBe(0o700);
-    expect(statSync(given).mode & 0o777).toBe(0o600);
-    const link = readFileSync(given, "utf8");
+    expect(await openWith('printf "%s:%s|" "$#" "$1" > "$OPENED_FILE"; cat >> "$OPENED_FILE"', 30_000, { OPENED_FILE: opened })).toMatchObject({ url: p.url, opened: true });
+    const link = readFileSync(opened, "utf8");
+    if (process.platform === "darwin") {
+      expect(link.startsWith("0:|open location \"")).toBe(true);
+    } else {
+      expect(link.startsWith("1:")).toBe(true);
+    }
     expect(link).toContain("/login?code=cxi_");
     expect(link).toContain(`next=${encodeURIComponent(`/a/${p.artifact_id}`)}`);
     // This opener never exits on its own, so `opened: true` comes from giving

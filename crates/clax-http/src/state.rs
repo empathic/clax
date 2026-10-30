@@ -168,6 +168,11 @@ pub struct AppState {
     /// The live owner browser sessions of a local daemon, by hash
     /// ([`crate::local_trust`]).
     pub owner_sessions: Arc<crate::local_trust::OwnerSessions>,
+    /// Where `GET /login` reads which user owns a redeeming connection's
+    /// socket ([`crate::peer_user`]): `/proc` on Linux, where the opener
+    /// takes a login link on its command line; None elsewhere, where the
+    /// link reaches no command line and the check is skipped.
+    pub proc_root: Option<std::path::PathBuf>,
     /// The extension ID in effect for this daemon's home (spec L15): the only
     /// extension that may pair.
     pub extension_id: String,
@@ -408,6 +413,7 @@ impl AppState {
             live_ids,
             ext_creds,
             owner_sessions,
+            proc_root: crate::peer_user::default_proc_root(),
             extension_id: p.extension_id,
             questions: Arc::new(Default::default()),
             question_grace: Duration::from_secs(5),

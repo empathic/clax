@@ -2377,7 +2377,11 @@ redeeming a one-use login code a holder of the token made:
   gets a new one as its owner and events cookies; one carrying exactly one
   `clax_viewer` cookie has that viewer claimed (above). 400 for a `next`
   that is not a path of this daemon, before the code is spent; 410 for a
-  code used before, past its time, or never made.
+  code used before, past its time, or never made. On Linux, 403
+  `not_this_user` (the code not spent) when the connection's socket
+  belongs to another user than the daemon's, or when that cannot be told
+  (`/proc/self/status` and `/proc/net/tcp{,6}` unreadable, or no row for
+  the connection).
 
 Every opener passes a code: `clax open` (the gallery without an
 artifact), the MCP and Pi `open` tools, `just watch`'s printed link, and
@@ -2386,14 +2390,14 @@ the extension's "Open in Clax" and inbox links (through its native host's
 link for a browser on its own. A browser that already holds a session
 never notices; a fresh browser profile needs one `clax open`.
 
-`clax open` and the MCP and Pi `open` tools never put a link that carries
-a code on the platform opener's command line, which every user of the
-machine can read. They write a page that sends the browser on to the link
-(a meta refresh and `location.replace`, nothing else loaded) to
-`<home>/login/<sha256 of the code>.html` (directory mode 0700, file mode
-0600, created anew) and give the opener its path. Each write first removes
-the pages older than 120 s, and `GET /login` removes the page of the code
-it is given. When the page cannot be written, nothing is opened.
+A link that carries a code must not be readable by another user of the
+machine. On macOS, `clax open`, `clax connect`'s and `clax remotes`'
+openers, and the MCP and Pi `open` tools run `osascript` with
+`open location "<url>"` on its standard input, so the URL appears in no
+process's arguments. Only a plain `http(s)` URL is opened that way, and a
+non-zero exit counts as not opened. On Linux, `xdg-open <url>` takes the
+link as an argument, and `GET /login` redeems it only for a browser of the
+daemon's own user.
 
 ### Versions, seen marks and attention
 

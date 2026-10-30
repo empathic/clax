@@ -1030,10 +1030,6 @@ pub struct ClaxTools {
     channel: Option<crate::channel::ChannelState>,
     opener: Opener,
     open_wait: std::time::Duration,
-    /// Where `open` writes the page that hands its browser a login link
-    /// ([`clax_core::login_page`]); without one, `open` gives the opener
-    /// the artifact's plain URL.
-    login_dir: Option<PathBuf>,
     /// Paths name files of the machine the tools run on, read for the
     /// agent; false for an agent of another machine
     /// ([`ClaxTools::for_remote_agent`]).
@@ -1115,7 +1111,6 @@ impl ClaxTools {
             channel: None,
             opener: Opener::default(),
             open_wait: open_wait(),
-            login_dir: None,
             local_files: true,
             ask_surface: Default::default(),
             git: None,
@@ -1203,15 +1198,6 @@ impl ClaxTools {
     /// These tools with `opener` showing the URLs `open` returns.
     pub fn with_opener(mut self, opener: Opener) -> ClaxTools {
         self.opener = opener;
-        self
-    }
-
-    /// These tools' `open` handing the local daemon's browser a one-use
-    /// login link through a page in `dir` (the home's
-    /// [`clax_core::home::Home::login_dir`]), never on the opener's command
-    /// line.
-    pub fn with_login_dir(mut self, dir: PathBuf) -> ClaxTools {
-        self.login_dir = Some(dir);
         self
     }
 
@@ -2006,33 +1992,24 @@ impl ClaxTools {
         let opened = match program {
             Some(program) => {
                 // The local daemon's browser opens through a one-use login
-                // link, so a browser not yet the owner's becomes one. The
-                // link reaches the opener in a page of the login directory
-                // ([`opener_target`]), never on its command line, and the
+                // link, so a browser not yet the owner's becomes one; the
                 // result names the artifact's own URL, never the link. A
                 // remote Clax's browsers sign in there.
-                let login = match (&self.login_dir, self.client.is_remote()) {
-                    (Some(dir), false) => {
-                        match self.client.browser_login(&format!("/a/{id}")).await {
-                            Ok(v) => v["path"]
-                                .as_str()
-                                .map(|p| (dir.clone(), format!("{}{p}", self.browser_base()))),
-                            Err(_) => None,
-                        }
-                    }
-                    _ => None,
+                let target = match self.client.is_remote() {
+                    true => url.clone(),
+                    false => match self.client.browser_login(&format!("/a/{id}")).await {
+                        Ok(v) => match v["path"].as_str() {
+                            Some(p) => format!("{}{p}", self.browser_base()),
+                            None => url.clone(),
+                        },
+                        Err(_) => url.clone(),
+                    },
                 };
                 let wait = self.open_wait;
-                let url = url.clone();
-                clax_rt::spawn_blocking(move || {
-                    let target = match login {
-                        Some((dir, link)) => opener_target(&dir, &link),
-                        None => Some(url),
-                    };
-                    target.is_some_and(|t| run_opener(&program, &t, wait))
-                })
-                .await
-                .unwrap_or(false)
+                let url = target;
+                clax_rt::spawn_blocking(move || run_opener(&program, &url, wait))
+                    .await
+                    .unwrap_or(false)
             }
             None => false,
         };
@@ -3321,13 +3298,19 @@ fn open_wait() -> std::time::Duration {
     OPEN_WAIT
 }
 
-/// Runs the platform opener (`open` on macOS, `xdg-open` elsewhere) on `url`
-/// with stdio detached and waits up to [`OPEN_WAIT`] for it. True when it
-/// exits successfully in time, or is still running then (best effort: some
-/// openers hand off and linger; it is reaped in the background); false when it
-/// cannot start or exits unsuccessfully. Blocks the calling thread. Always
-/// false on iOS, which lets an app start no other program: the app opens
-/// links itself.
+/// Runs the platform opener on `url` with its output detached and waits up
+/// to [`OPEN_WAIT`] for it. On macOS that is `osascript`, given
+/// `open location "<url>"` on its standard input, so the URL (a one-use
+/// login link among them) appears in no process's arguments, which every
+/// user of the machine can read, and opens in the default browser for
+/// `http`. There only a plain `http(s)` URL (printable ASCII) is opened.
+/// Elsewhere it is `xdg-open <url>`: a login link on its command line is
+/// useless to another user, whose browser `GET /login` refuses
+/// (`not_this_user`). True when the opener exits successfully in time, or
+/// is still running then (best effort: some openers hand off and linger;
+/// it is reaped in the background); false when it cannot start or exits
+/// unsuccessfully. Blocks the calling thread. Always false on iOS, which
+/// lets an app start no other program: the app opens links itself.
 pub fn open_in_browser(url: &str) -> bool {
     if cfg!(target_os = "ios") {
         return false;
@@ -3340,46 +3323,55 @@ pub fn open_in_browser(url: &str) -> bool {
     run_opener(Path::new(platform_opener()), url, open_wait())
 }
 
-/// What an opener is given for `url`: `url` itself, unless it carries a
-/// login code, which a command line would show every user of the machine
-/// (`ps`). Then the path of a page in `login_dir` that sends the browser on
-/// to it ([`clax_core::login_page::write`]), or None when that page cannot
-/// be written: such a link is never handed over any other way.
-pub fn opener_target(login_dir: &Path, url: &str) -> Option<String> {
-    if clax_core::login_page::code_of(url).is_none() {
-        return Some(url.to_string());
-    }
-    clax_core::login_page::write(login_dir, url)
-        .ok()
-        .map(|p| p.to_string_lossy().into_owned())
-}
-
-/// [`open_in_browser`] for a login link `url`, through its page in
-/// `login_dir` ([`opener_target`]); false when the page cannot be written.
-pub fn open_login_in_browser(login_dir: &Path, url: &str) -> bool {
-    opener_target(login_dir, url).is_some_and(|t| open_in_browser(&t))
-}
-
-/// `open` on macOS, `xdg-open` elsewhere.
+/// `osascript` on macOS, `xdg-open` elsewhere.
 fn platform_opener() -> &'static str {
     if cfg!(target_os = "macos") {
-        "open"
+        "osascript"
     } else {
         "xdg-open"
     }
 }
 
-/// [`open_in_browser`] with `program` as the opener, waiting up to `wait`.
+/// The AppleScript that opens `url` in the default browser, or None for
+/// anything but a plain `http(s)` URL of printable ASCII (never a file, an
+/// option, or a string that could end the script's quoted literal).
+pub fn open_location_script(url: &str) -> Option<String> {
+    let plain = (url.starts_with("http://") || url.starts_with("https://"))
+        && url.bytes().all(|b| b.is_ascii_graphic());
+    plain.then(|| {
+        let quoted = url.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("open location \"{quoted}\"\n")
+    })
+}
+
+/// [`open_in_browser`] with `program` as the opener, waiting up to `wait`:
+/// on macOS `program` reads [`open_location_script`] on its standard input
+/// and takes no argument; elsewhere it takes `url` as its one argument.
 fn run_opener(program: &Path, url: &str, wait: std::time::Duration) -> bool {
-    let Ok(mut child) = std::process::Command::new(program)
-        .arg(url)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    else {
+    let mut cmd = std::process::Command::new(program);
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let script = if cfg!(target_os = "macos") {
+        let Some(script) = open_location_script(url) else {
+            return false;
+        };
+        cmd.stdin(std::process::Stdio::piped());
+        Some(script)
+    } else {
+        cmd.arg(url).stdin(std::process::Stdio::null());
+        None
+    };
+    let Ok(mut child) = cmd.spawn() else {
         return false;
     };
+    if let Some(script) = script {
+        use std::io::Write as _;
+        // Dropping the pipe after the write ends the script. A write the
+        // opener did not read (it exited first) is judged by its exit.
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(script.as_bytes());
+        }
+    }
     let deadline = std::time::Instant::now() + wait;
     loop {
         match child.try_wait() {
@@ -4122,6 +4114,28 @@ impl ServerHandler for ClaxTools {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_plain_http_url_becomes_an_open_location_script() {
+        assert_eq!(
+            open_location_script("http://localhost:7/login?code=cxi_a&next=%2F").as_deref(),
+            Some("open location \"http://localhost:7/login?code=cxi_a&next=%2F\"\n")
+        );
+        assert_eq!(
+            open_location_script("https://x.test/a\"b\\c").as_deref(),
+            Some("open location \"https://x.test/a\\\"b\\\\c\"\n")
+        );
+        for bad in [
+            "/tmp/page.html",
+            "file:///etc/passwd",
+            "-a Calculator",
+            "http://x.test/a b",
+            "http://x.test/\"\nend",
+            "http://x.test/é",
+        ] {
+            assert_eq!(open_location_script(bad), None, "{bad}");
+        }
+    }
 
     /// The server instructions give the where-to-ask rule: read the
     /// suggestion, ask on the one surface it names, tell the other, and

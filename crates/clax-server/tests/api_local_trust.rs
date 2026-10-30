@@ -290,6 +290,28 @@ async fn an_owner_session_fetched_by_another_site_is_no_credential() {
         }
     }
     assert_eq!(viewers(), before, "no viewer was made");
+    // A browser too old to send `Sec-Fetch-Site` still names the page's
+    // origin: another one's is no credential either.
+    for origin in ["http://localhost:3000", "null"] {
+        let res = ts
+            .client
+            .get(format!("{}/api/token", ts.base))
+            .header("cookie", ts.owner_cookie())
+            .header("origin", origin)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(code_of(res).await, (401, "no_credential".into()), "{origin}");
+    }
+    let res = ts
+        .client
+        .get(format!("{}/api/token", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .header("origin", &ts.base)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "the daemon's own origin");
     // The shell's own fetches, the same cookie, are the owner's.
     let res = ts
         .client
@@ -753,4 +775,133 @@ async fn a_cold_browser_gets_the_open_from_your_terminal_page() {
             .unwrap()
             .contains("Open Clax from your terminal")
     );
+}
+
+#[tokio::test]
+async fn the_daemons_own_mcp_open_hands_the_opener_a_login_link() {
+    use clax_mcp::tools::{Opener, PublishArgs, TargetArgs};
+    use rmcp::handler::server::wrapper::Parameters;
+    let dir = tempfile::tempdir().unwrap();
+    let opener = clax_fake_exe::install(
+        &dir.path().join("open"),
+        clax_testkit::opener::RECORDING_OPENER,
+    );
+    let ts = TestServer::spawn().await;
+    // The `/mcp` adapter's tool set, acting for a caller with the token.
+    let tools = clax_server::routes::mcp_http::tools(&ts.state)
+        .with_opener(Opener::Program(opener))
+        .with_open_wait(std::time::Duration::from_secs(30))
+        .for_caller(Some(format!("Bearer {}", ts.token).parse().unwrap()));
+    let text = |r: rmcp::model::CallToolResult| -> Value {
+        serde_json::from_str(&r.content[0].as_text().unwrap().text).unwrap()
+    };
+    let published = text(
+        tools
+            .publish(Parameters(PublishArgs {
+                html: Some("<title>Open me</title>".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap(),
+    );
+    let id = published["artifact_id"].as_str().unwrap().to_string();
+    let o = text(
+        tools
+            .open(Parameters(TargetArgs {
+                url_or_id: id.clone(),
+            }))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(o["opened"], true, "{o}");
+    let got = std::fs::read_to_string(dir.path().join("got")).unwrap();
+    let link = clax_testkit::opener::recorded_url(&got);
+    assert!(link.contains("/login?code=cxi_"), "{link}");
+    assert!(link.ends_with(&format!("next=%2Fa%2F{id}")), "{link}");
+}
+
+/// A `/proc/net/tcp` row for the socket from `local` to `remote` owned by
+/// `uid`, as the kernel prints it on this machine.
+fn tcp_row(local: std::net::SocketAddr, remote: std::net::SocketAddr, uid: u32) -> String {
+    let hex = |a: std::net::SocketAddr| match a.ip() {
+        IpAddr::V4(ip) => format!("{:08X}:{:04X}", u32::from_ne_bytes(ip.octets()), a.port()),
+        IpAddr::V6(_) => unreachable!("the test connects over IPv4"),
+    };
+    format!(
+        "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   0: {} {} 01 00000000:00000000 00:00000000 00000000  {uid}        0 1 1\n",
+        hex(local),
+        hex(remote)
+    )
+}
+
+/// The status line of `GET <path>` sent on a connection of its own, after
+/// `before` is given the connection's two ends (the browser's, the
+/// daemon's).
+async fn redeem_on_own_socket(
+    ts: &TestServer,
+    path: &str,
+    before: impl FnOnce(std::net::SocketAddr, std::net::SocketAddr) + Send + 'static,
+) -> String {
+    let addr = ts.addr;
+    let req = format!(
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        addr.port()
+    );
+    tokio::task::spawn_blocking(move || {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(addr).unwrap();
+        before(s.local_addr().unwrap(), s.peer_addr().unwrap());
+        s.write_all(req.as_bytes()).unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).unwrap();
+        out.lines().next().unwrap_or("").to_string()
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_login_code_redeems_only_for_the_daemons_own_user() {
+    let proc = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(proc.path().join("self")).unwrap();
+    std::fs::create_dir_all(proc.path().join("net")).unwrap();
+    std::fs::write(
+        proc.path().join("self/status"),
+        "Name:\tclax\nUid:\t1000\t1000\t1000\t1000\n",
+    )
+    .unwrap();
+    let root = proc.path().to_path_buf();
+    let ts = TestServer::spawn_with(move |s| s.proc_root = Some(root)).await;
+    let path = login_path(&ts, "/").await;
+    // No row lists the connection: who opened it cannot be told, so it is
+    // refused, and the error says how in.
+    let line = redeem_on_own_socket(&ts, &path, |_, _| {}).await;
+    assert!(line.contains(" 403 "), "{line}");
+    let res = ts
+        .client
+        .get(format!("{}{path}", ts.base))
+        .send()
+        .await
+        .unwrap();
+    let (status, body): (u16, Value) = (res.status().as_u16(), res.json().await.unwrap());
+    assert_eq!(status, 403);
+    assert_eq!(body["error"]["code"], "not_this_user");
+    assert!(
+        body["error"]["message"].as_str().unwrap().contains("clax login"),
+        "{body}"
+    );
+    // Another user's socket is refused.
+    let tcp = proc.path().join("net/tcp");
+    let t = tcp.clone();
+    let line = redeem_on_own_socket(&ts, &path, move |browser, daemon| {
+        std::fs::write(&t, tcp_row(browser, daemon, 1001)).unwrap();
+    })
+    .await;
+    assert!(line.contains(" 403 "), "{line}");
+    // The daemon's user's is redeemed: the refusals spent nothing.
+    let line = redeem_on_own_socket(&ts, &path, move |browser, daemon| {
+        std::fs::write(&tcp, tcp_row(browser, daemon, 1000)).unwrap();
+    })
+    .await;
+    assert!(line.contains(" 303 "), "{line}");
 }

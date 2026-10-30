@@ -121,7 +121,11 @@ fn page(status: StatusCode, title: &str, line: &str) -> Response {
 /// `GET /login?code=<code>&next=<next>`: redeems a login code in the
 /// browser that opened it, from this machine
 /// ([`clax_http::identity::from_this_machine`]; 403 `forbidden_host`
-/// otherwise, and for a `Host` the API does not answer to). The browser
+/// otherwise, and for a `Host` the API does not answer to), and, where
+/// the state names a `proc_root` (Linux), from a socket of the daemon's own
+/// user ([`clax_http::peer_user::redeemer_is_this_user`]; 403
+/// `not_this_user` otherwise, and when that cannot be told, the code
+/// unspent). The browser
 /// becomes a browser of the owner's: unless it already holds a live owner
 /// browser session, one is opened and set as its owner and events cookies
 /// ([`session_cookies`]); and when it carries exactly one `clax_viewer`
@@ -153,6 +157,24 @@ pub async fn redeem(
         )
         .into_response();
     }
+    // Where the opener took the link on its command line (Linux), another
+    // user of the machine may have read it there: only a connection of the
+    // daemon's own user redeems it, and one whose user cannot be told is
+    // refused. The code is not spent either way.
+    if let (Some(proc), Some(c)) = (&s.proc_root, clax_http::auth::conn_of(&extensions)) {
+        let refused = match clax_http::peer_user::redeemer_is_this_user(proc, c.peer, c.local) {
+            Ok(true) => None,
+            Ok(false) => Some(
+                "this login link opens only in a browser of the user Clax runs as".to_string(),
+            ),
+            Err(why) => Some(format!(
+                "could not tell which user's browser opened this login link ({why}); run `clax login` as the user Clax runs as and open the link it prints"
+            )),
+        };
+        if let Some(message) = refused {
+            return ApiError::forbidden("not_this_user", message).into_response();
+        }
+    }
     let (code, next) = match q {
         Ok(Query(q)) => (
             q.code.unwrap_or_default(),
@@ -166,11 +188,6 @@ pub async fn redeem(
             "Not a Clax address",
             "This login link sends the browser somewhere other than this Clax.",
         );
-    }
-    // The page an opener handed this link over in has done its work,
-    // whatever the code's fate (`clax_core::login_page`).
-    if !code.is_empty() {
-        clax_core::login_page::remove(&s.home.login_dir(), &code);
     }
     let redeemed = s.store_call(move |st| st.redeem_login_code(&code)).await;
     match redeemed {

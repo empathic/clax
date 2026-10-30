@@ -732,6 +732,7 @@ impl TestServer {
             live_ids,
             ext_creds,
             owner_sessions,
+            proc_root: clax_http::peer_user::default_proc_root(),
             extension_id: clax_core::extension::extension_id_in_effect(home.root()),
             questions: Arc::new(Default::default()),
             question_grace: Duration::from_secs(5),

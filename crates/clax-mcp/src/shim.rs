@@ -234,7 +234,6 @@ pub async fn run(
         None => tracing::info!("plugin root unknown; plugin version not checked"),
     }
     let mut tools = ClaxTools::new(client.clone(), String::new(), None, home.log_path())
-        .with_login_dir(home.login_dir())
         .with_plugin_version(plugin_version)
         .with_git(git);
     if let Some(probe) = upgrade_hold {

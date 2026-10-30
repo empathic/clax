@@ -15,6 +15,7 @@ mod events;
 pub mod fake_messages;
 mod fixture;
 pub mod mcp;
+pub mod opener;
 pub mod people;
 pub mod remotes;
 mod server;

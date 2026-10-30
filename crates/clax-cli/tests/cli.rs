@@ -945,7 +945,7 @@ fn open_fails_when_the_opener_fails() {
         std::env::var("PATH").unwrap_or_default()
     );
     let fake = |code: u8| {
-        for name in ["open", "xdg-open"] {
+        for name in ["osascript", "xdg-open"] {
             clax_fake_exe::install(&bin.join(name), &format!("#!/bin/sh\nexit {code}\n"));
         }
     };
@@ -990,12 +990,9 @@ fn open_hands_the_browser_a_login_link_and_prints_none() {
         .to_string();
     let bin = e.dir.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    let opened = e.dir.path().join("opened.txt");
-    for name in ["open", "xdg-open"] {
-        clax_fake_exe::install(
-            &bin.join(name),
-            &format!("#!/bin/sh\nprintf '%s' \"$1\" > '{}'\n", opened.display()),
-        );
+    let opened = bin.join("got");
+    for name in ["osascript", "xdg-open"] {
+        clax_fake_exe::install(&bin.join(name), clax_testkit::opener::RECORDING_OPENER);
     }
     let path = format!(
         "{}:{}",
@@ -1018,36 +1015,12 @@ fn open_hands_the_browser_a_login_link_and_prints_none() {
         !printed.contains("code="),
         "the link is never printed: {printed}"
     );
-    // The opener is given the path of a private page that carries the link,
-    // never the link: a command line is every user's to read.
-    let given = std::fs::read_to_string(&opened).unwrap();
-    assert!(!given.contains("cxi_"), "{given}");
-    let page = std::path::PathBuf::from(&given);
-    let login_dir = e.dir.path().join("ax").join("login");
-    assert_eq!(page.parent(), Some(login_dir.as_path()), "{given}");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode(&login_dir), 0o700);
-        assert_eq!(mode(&page), 0o600);
-    }
-    let html = std::fs::read_to_string(&page).unwrap();
-    let link = html
-        .split("href=\"")
-        .nth(1)
-        .and_then(|s| s.split('"').next())
-        .unwrap()
-        .replace("&amp;", "&");
+    // On macOS the link reaches `osascript` on its standard input, never in
+    // its arguments, which every user of the machine can read; elsewhere
+    // `xdg-open` takes it as its one argument.
+    let link = clax_testkit::opener::recorded_url(&std::fs::read_to_string(&opened).unwrap());
     assert!(link.contains("/login?code=cxi_"), "{link}");
     assert!(link.ends_with(&format!("next=%2Fa%2F{id}")), "{link}");
-    // Redeeming the code removes its page.
-    let browser = reqwest::blocking::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .unwrap();
-    assert_eq!(browser.get(&link).send().unwrap().status(), 303);
-    assert!(!page.exists(), "the page is gone once its code is spent");
     // `clax login` prints a fresh link, the gallery's without a path, that
     // signs a browser in once.
     let out = e
