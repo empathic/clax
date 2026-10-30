@@ -1192,63 +1192,63 @@ async fn the_apps_shell_samples_as_the_owners_browser() {
     embed.close();
 }
 
-/// The Clax app confirms a held decision through its own shell, relayed in
-/// process (an `owner-browser` frame), which no agent can reach: the app's
-/// own code (`owner`, the token) opening a site to the world while an agent
-/// is live waits for it; the same confirmation from an `owner` frame is
-/// refused, as the token alone is.
+/// The Clax app keeps its own trust: browser confirmation guards external
+/// drivers (a localhost daemon's token, the extension's credential), and
+/// none reaches the in-process core. While agent sessions are live there
+/// (an outside harness's and the app's own), the app's own code (`owner`,
+/// the token) and its shell (`owner-browser`) decide at once: opening a
+/// site to the world and answering a question open no confirmation.
 #[tokio::test]
-async fn the_apps_shell_confirms_a_held_decision_in_process() {
+async fn the_apps_own_calls_decide_at_once_while_an_agent_is_live() {
     let dir = tempfile::tempdir().unwrap();
     let (embed, _rx) = open(dir.path());
     let aid = publish(&embed, "<title>t</title>", None).await;
-    let (status, v) = call_json(
-        &embed,
-        head("POST", "/api/sessions", As::Owner),
-        Some(json!({"harness": "claude", "harness_session_id": "h1", "cwd": "/w"})),
-    )
-    .await;
-    assert_eq!(status, 201, "{v}");
-    let patch = |confirm: Option<&str>| {
-        let mut h = head("PATCH", &format!("/api/artifacts/{aid}"), As::Owner);
-        if let Some(id) = confirm {
-            h.headers
-                .push(("x-clax-confirmation".into(), id.to_string()));
+    let mut sid = String::new();
+    for (harness, hsid) in [("claude", "h1"), ("app", "install-1")] {
+        let (status, v) = call_json(
+            &embed,
+            head("POST", "/api/sessions", As::Owner),
+            Some(json!({"harness": harness, "harness_session_id": hsid, "cwd": "/w"})),
+        )
+        .await;
+        assert_eq!(status, 201, "{v}");
+        if harness == "claude" {
+            sid = v["session"]["id"].as_str().unwrap().to_string();
         }
-        h
-    };
-    let world = || Some(json!({"site_access": "world"}));
-    let (status, v) = call_json(&embed, patch(None), world()).await;
-    assert_eq!(
-        (status, v["status"].as_str()),
-        (202, Some("confirmation_pending")),
-        "{v}"
-    );
-    let id = v["confirmation_id"].as_str().unwrap().to_string();
-    let confirm = format!("/api/confirmations/{id}");
+    }
     let (status, v) = call_json(
         &embed,
-        head("POST", &confirm, As::Owner),
-        Some(json!({"approve": true})),
+        head("PATCH", &format!("/api/artifacts/{aid}"), As::Owner),
+        Some(json!({"site_access": "world"})),
     )
     .await;
-    assert_eq!(
-        (status, v["error"]["code"].as_str()),
-        (403, Some("browser_required")),
-        "{v}"
-    );
-    let (status, v) = call_json(
-        &embed,
-        head("POST", &confirm, As::OwnerBrowser),
-        Some(json!({"approve": true})),
-    )
-    .await;
-    assert_eq!(
-        (status, v["confirmation"]["status"].as_str()),
-        (200, Some("approved")),
-        "{v}"
-    );
-    let (status, v) = call_json(&embed, patch(Some(&id)), world()).await;
     assert_eq!(status, 200, "{v}");
+    for (n, by) in [(0, As::Owner), (1, As::OwnerBrowser)] {
+        let (status, v) = call_json(
+            &embed,
+            head("POST", &format!("/api/sessions/{sid}/questions"), As::Owner),
+            Some(json!({"source": "ask", "artifact_id": aid, "questions": [{"question": format!("Which {n}?"), "header": "Pick", "options": [{"label": "A"}, {"label": "B"}]}]})),
+        )
+        .await;
+        assert_eq!(status, 201, "{v}");
+        let qid = v["question"]["id"].as_str().unwrap().to_string();
+        let (status, v) = call_json(
+            &embed,
+            head("POST", &format!("/api/questions/{qid}/answer"), by),
+            Some(json!({"answers": [{"selected": ["A"]}]})),
+        )
+        .await;
+        assert_eq!(
+            (status, v["question"]["status"].as_str()),
+            (200, Some("answered")),
+            "{v}"
+        );
+    }
+    let (status, v) = call_json(&embed, head("GET", "/api/confirmations", As::Owner), None).await;
+    assert_eq!(
+        (status, v["confirmations"].as_array().map(Vec::len)),
+        (200, Some(0)),
+        "{v}"
+    );
     embed.close();
 }

@@ -45,6 +45,17 @@
 //! before: this adds no power to anyone. A hosted daemon, whose token no
 //! local agent reads, asks for none.
 //!
+//! **External drivers only.** Confirmation guards the drivers outside the
+//! Clax app: the localhost daemon's token (`<home>/daemon.json`, read by
+//! the CLI, the plugins and agents) and the extension's minted credential.
+//! The Clax app keeps its own trust: its core runs in the app's process
+//! with no listener and no `daemon.json` (`clax-embed`), so no external
+//! driver reaches it, and every request it serves ([`AppState::embed`]) is
+//! the app's own code or its WebViews'. It asks for none, whatever sessions
+//! are live there, the app's own agent's included. On a localhost daemon a
+//! session named `app` counts like any other: only a holder of the token,
+//! an external driver, can register one there.
+//!
 //! **Passkeys** (opt-in, [`clax_store::passkeys`]): the owner may require
 //! a passkey to confirm (Touch ID, or any passkey: WebAuthn with user
 //! verification, [`clax_core::webauthn`]). While that is on and a passkey
@@ -253,8 +264,10 @@ pub async fn require_confirmation(
     what: Decision,
 ) -> Result<Confirmed, ApiError> {
     // Who may ask at all, before any store read: the owner, outside the
-    // in-process frame, on a local daemon.
+    // in-process frame, on a local daemon that external drivers reach (not
+    // a hosted one, nor the Clax app's in-process core).
     if s.hosted.is_some()
+        || s.embed.is_some()
         || !matches!(who, Caller::Owner { .. })
         || by.browser == Browser::InProcess
     {

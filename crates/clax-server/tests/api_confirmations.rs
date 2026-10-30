@@ -210,6 +210,21 @@ async fn a_token_answer_waits_for_the_browser_while_an_agent_is_live() {
     assert_eq!(code(&v), "not_for_agents");
 }
 
+/// On a localhost daemon the token is an external driver's, and a session
+/// named `app` is one only a holder of the token could register: it makes
+/// the token's decisions wait like any other agent's. (The Clax app's own
+/// core is in process and asks for none: crates/clax-embed/tests/embed.rs
+/// the_apps_own_calls_decide_at_once_while_an_agent_is_live.)
+#[tokio::test]
+async fn on_a_localhost_daemon_the_token_still_waits_while_an_app_session_is_live() {
+    let ts = TestServer::spawn().await;
+    ts.register_session("app", "install-1").await;
+    let aid = page(&ts, "Site").await;
+    let first = open_world(&ts, &aid, None).await;
+    pending(&ts, &first);
+    assert!(!site_is_open(&ts, &aid).await, "nothing changed");
+}
+
 #[tokio::test]
 async fn with_no_agent_live_the_token_answers_at_once() {
     let ts = TestServer::spawn().await;

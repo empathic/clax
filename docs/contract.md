@@ -2775,6 +2775,18 @@ once, as does everyone while no agent session is live, unless passkeys are
 required (below). The owner's agents, people and
 their agents keep what each route answers them already.
 
+Confirmation guards external drivers only: the localhost daemon's token
+(what the CLI, the plugins and agents read from `daemon.json`) and the
+extension's credential. The Clax app keeps its own trust. Its core runs in
+the app's process, with no listener and no `daemon.json`, so no external
+driver reaches it: every call there (the app's own code, its screens and
+its shell) decides at once and never answers 202, whatever sessions are
+live, the app's own agent's included. The app's own screens make a
+person's decisions (answering a question, connecting, pushing, sharing,
+widening) as the person, as the shell does. On a localhost daemon a
+session with harness `app` counts like any other agent's: only a holder
+of the token can register one there.
+
 The call that waits answers 202, changes nothing, and names the
 confirmation in its `X-Clax-Confirmation` response header:
 
