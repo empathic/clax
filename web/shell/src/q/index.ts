@@ -94,7 +94,8 @@ export type QuestionsChange = { open: string[]; closed: string[] };
  * (its `.thread-q-slot`), and the dot on the threads controls. In app mode
  * (`html.app`) the sidebar's questions go in the app's sheet
  * (`.app-questions`, its slot announced the same way) instead of the hidden
- * sidebar. Each change of the questions about `aid` is told as a
+ * sidebar, every question as a card there, those asked in a thread too:
+ * the thread cards are in the hidden sidebar, so none is mounted in them. Each change of the questions about `aid` is told as a
  * `clax-questions` event (`QuestionsChange`). `trail` is the view's keyboard
  * trail, which its cards follow. The result removes them and stops the
  * feeds (`stop`). */
@@ -105,10 +106,11 @@ export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Do
   const fill = (el: Element | null) => {
     if (!el || side?.el === el) return;
     if (side) void unmount(side.c);
-    side = { el, c: mount(SidebarQuestions, { target: el, props: { aid } }) };
+    side = { el, c: mount(SidebarQuestions, { target: el, props: { aid, cardsOnly: el.matches(APP_SLOT) } }) };
   };
+  const appMode = () => doc.documentElement.classList.contains("app");
   // In app mode the sheet's slot, whichever slot announced itself; else the one that did.
-  const slot = (from: Element | null) => (doc.documentElement.classList.contains("app") ? doc.querySelector(APP_SLOT) : null) ?? from;
+  const slot = (from: Element | null) => (appMode() ? doc.querySelector(APP_SLOT) : null) ?? from;
   const onSlot = (e: Event) => fill(slot(e.target as Element));
   const { questions } = shared();
   const tell = (c: QuestionsChange) => doc.dispatchEvent(new CustomEvent<QuestionsChange>("clax-questions", { detail: c }));
@@ -131,7 +133,7 @@ export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Do
   let slots: (() => void) | null = null;
   let live = true;
   const check = () => {
-    if (slots || !questions.byArtifact(aid).some(inThread)) return;
+    if (slots || appMode() || !questions.byArtifact(aid).some(inThread)) return;
     slots = () => {};
     void need().then(m => { if (live) slots = m ? m.followSlots(doc, aid) : null; });
   };
