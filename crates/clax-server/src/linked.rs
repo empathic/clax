@@ -1919,12 +1919,8 @@ impl Sync {
                         );
                         let q2 = qid.clone();
                         self.s
-                            .store_call(move |st| {
-                                st.linked_question_attempted(&q2, &format!("Not answered: {why}"))?;
-                                st.linked_question_done(&q2, false)
-                            })
-                            .await
-                            .map_err(|e| e.message)?;
+                            .store_call(move |st| st.linked_question_refused(&q2, &why))
+                            .await?;
                     }
                 }
                 Ok(true)

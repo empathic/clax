@@ -233,6 +233,9 @@ pub struct LinkedQuestionView {
     /// `pending` until the copy is acknowledged, `failed` when it was not
     /// sent (Retry); `None` once sent or both sides closed.
     pub state: Option<&'static str>,
+    /// Why the copy is not sent, while `state` is set; once the copy is
+    /// done, why the remote's answer was refused here (the question then
+    /// stays open here); else `None`.
     pub error: Option<String>,
     /// Whether the answer or decline came from the remote.
     pub answered_there: bool,
@@ -1458,9 +1461,22 @@ impl Store {
     /// (`answered_there`: the remote's answer or decline closed it here).
     pub fn linked_question_done(&self, qid: &str, answered_there: bool) -> Result<()> {
         self.lq_update(
-            "UPDATE linked_questions SET done_at = ?3, answered_there = ?2, failed_at = NULL
+            "UPDATE linked_questions SET done_at = ?3, answered_there = ?2, failed_at = NULL,
+                last_error = NULL
              WHERE question_id = ?1 AND done_at IS NULL",
             params![qid, answered_there, self.now()],
+        )
+    }
+
+    /// Marks question `qid`'s copy done with the remote's answer refused
+    /// here (`why`: it does not fit the questions): the question stays open
+    /// here and its view's `linked.error` says why.
+    pub fn linked_question_refused(&self, qid: &str, why: &str) -> Result<()> {
+        self.lq_update(
+            "UPDATE linked_questions SET done_at = COALESCE(done_at, ?3), answered_there = 0,
+                failed_at = NULL, last_error = ?2
+             WHERE question_id = ?1",
+            params![qid, format!("Not answered: {why}"), self.now()],
         )
     }
 
@@ -1514,7 +1530,13 @@ impl Store {
                             remote_origin: origin,
                             sent: rqid.is_some(),
                             state,
-                            error: if state.is_some() { r.get(6)? } else { None },
+                            // Once done, an error is why the remote's answer
+                            // was refused here ([`Store::linked_question_refused`]).
+                            error: if state.is_some() || done.is_some() {
+                                r.get(6)?
+                            } else {
+                                None
+                            },
                             answered_there: r.get(7)?,
                             unlinked,
                         })
@@ -2397,13 +2419,22 @@ mod tests {
         let held = ask(&owners, Some(&w.aid));
         assert_eq!(w.st.scan_linked_questions(&w.rid).unwrap(), 0);
         assert!(w.st.linked_question(&held).unwrap().is_none());
+        // A read while the remote was out leaves an error behind, which
+        // the copy's end clears.
+        w.st.linked_question_attempted(&mine, "cannot reach clax.example")
+            .unwrap();
         w.st.linked_question_done(&mine, true).unwrap();
         assert!(w.st.live_linked_questions(&w.rid).unwrap().is_empty());
-        assert!(
-            w.st.linked_question_view(&mine)
-                .unwrap()
-                .unwrap()
-                .answered_there
+        let v = w.st.linked_question_view(&mine).unwrap().unwrap();
+        assert!(v.answered_there);
+        assert_eq!(v.error, None);
+        // A refused answer there says why, once the copy is done.
+        w.st.linked_question_refused(&mine, "no option named C")
+            .unwrap();
+        let v = w.st.linked_question_view(&mine).unwrap().unwrap();
+        assert_eq!(
+            (v.state, v.error.as_deref(), v.answered_there),
+            (None, Some("Not answered: no option named C"), false)
         );
     }
 
