@@ -451,6 +451,25 @@ describe("remote retries", () => {
     }
   });
 
+  it("cuts a busy backoff short when the request's signal aborts, failing it cancelled", async () => {
+    const d = await daemonAnswering((_, res) => error(res, 503, "busy"));
+    try {
+      const r = loadRemote(connectedHome(d.url).home)!;
+      let slept!: () => void;
+      const asleep = new Promise<void>(done => { slept = done; });
+      // A backoff that never ends on its own.
+      r.sleep = () => { slept(); return new Promise<void>(() => {}); };
+      const ac = new AbortController();
+      const res = sendRemote(r, "/api/artifacts", { method: "GET", signal: ac.signal });
+      await asleep;
+      ac.abort();
+      await expect(res).rejects.toMatchObject({ error: { kind: "unreachable", message: "request cancelled" } });
+      expect(d.count()).toBe(1);
+    } finally {
+      d.close();
+    }
+  });
+
   it("retries a stale request once, with the daemon's clock, and only once", async () => {
     const ahead = new Date(Date.now() + 100_000).toUTCString();
     const once = await daemonAnswering((n, res) => (n === 1 ? error(res, 401, "stale_request", ahead) : res.end("{}")));

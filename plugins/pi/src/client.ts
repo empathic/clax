@@ -188,10 +188,31 @@ function errorOf(res: RawResponse): Record<string, unknown> {
   return { code: "http_error", message: `daemon answered HTTP ${res.status}` };
 }
 
+/** Resolves once `signal` aborts (never without one). */
+function abortOf(signal: AbortSignal | undefined): Promise<void> {
+  return new Promise<void>(done => {
+    if (!signal) return;
+    if (signal.aborted) return done();
+    signal.addEventListener("abort", () => done(), { once: true });
+  });
+}
+
+/** The failure of a request cancelled through its signal, as [`send`] fails it. */
+const cancelled = () => new Failure(new ClientError("unreachable", "request cancelled"), false);
+
+/** Waits `ms` (with `r`'s sleep when it has one), or until `signal` aborts. */
+async function pause(r: Remote, ms: number, signal: AbortSignal | undefined): Promise<void> {
+  if (r.sleep) return Promise.race([r.sleep(ms), abortOf(signal)]);
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([new Promise<void>(done => { timer = setTimeout(done, ms); }), abortOf(signal)]);
+  clearTimeout(timer);
+}
+
 /** Sends a request to the remote daemon `r` (spec §6.6): signed now, and
  * signed anew for each retry: one on `stale_request`, after learning the
  * daemon's clock from its `Date`; three on `limit_reached` (429) and
- * `busy` (503), after 1, 2 and 4 s with up to a quarter more. At most
+ * `busy` (503), after 1, 2 and 4 s with up to a quarter more, a wait
+ * `opts.signal` cuts short (the request then fails cancelled). At most
  * [`MAX_RESPONSE_BYTES`] of an answer are read. A `stale_request` whose
  * `Date` is further off than a signature may be moved answers 401
  * `clock_skew`, saying so, as the Rust clients do. */
@@ -214,7 +235,8 @@ export async function sendRemote(r: Remote, path: string, opts: RequestOptions):
     }
     if (((res.status === 429 && code === "limit_reached") || (res.status === 503 && code === "busy")) && backoffs < BACKOFF_S.length) {
       const ms = BACKOFF_S[backoffs++]! * 1000;
-      await (r.sleep ?? (t => new Promise<void>(done => setTimeout(done, t))))(ms + Math.random() * ms / 4);
+      await pause(r, ms + Math.random() * ms / 4, opts.signal);
+      if (opts.signal?.aborted) throw cancelled();
       continue;
     }
     return res;
@@ -505,9 +527,16 @@ export class DaemonClient {
    * refreshes and retries once. When the refresh fails, the original error is
    * thrown. With `keepSession`, a refusal of the session it names
    * ([`sessionRefused`]) is thrown as it is, never cured by registering a
-   * new session. */
+   * new session. `opts.signal` bounds the ensuring too: once it aborts, the
+   * request fails cancelled (`unreachable`). */
   private async request(path: Path, opts: RequestOptions, find: Find = this.refreshFn, deadline?: number, keepSession = false): Promise<RawResponse> {
-    await this.ensure(find, deadline);
+    if (opts.signal) {
+      const ensuring = this.ensure(find, deadline);
+      // Left to finish on its own when cancelled: its failure is not this request's.
+      ensuring.catch(() => {});
+      await Promise.race([ensuring, abortOf(opts.signal)]);
+      if (opts.signal.aborted) throw cancelled().error;
+    } else await this.ensure(find, deadline);
     const endpoint = this.endpoint;
     if (!endpoint) throw new ClientError("unreachable", "no daemon found");
     const stale = this.stale();
