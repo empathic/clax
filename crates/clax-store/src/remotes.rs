@@ -166,6 +166,16 @@ impl RemoteLink {
 /// ([`Store::mirrors_to_drop`]).
 pub const MIRROR_KEPT: chrono::Duration = chrono::Duration::days(7);
 
+/// The remote artifact a mirror holds the threads of ([`Store::mirror_of`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MirrorOf {
+    pub remote_artifact_id: String,
+    /// Its address there.
+    pub url: String,
+    pub origin: String,
+    pub name: String,
+}
+
 /// A live local session watching the mirror of a followed link: whom the
 /// sync opens a session there for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -545,68 +555,99 @@ impl Store {
         url: &str,
         title: &str,
     ) -> Result<String> {
+        self.with_tx(|tx| self.follow_in(tx, rid, remote_aid, url, title))
+    }
+
+    /// [`Store::follow_remote`], then session `sid` watches the mirror
+    /// (`replies_armed`, recorded under `ctx` as [`Store::watch`] records
+    /// it), in one transaction: no reader sees the link followed again
+    /// with its watch not yet made. The mirror and the watch.
+    ///
+    /// # Errors
+    /// As [`Store::follow_remote`] and [`Store::watch`]; nothing is
+    /// written then.
+    #[allow(clippy::too_many_arguments)]
+    pub fn follow_and_watch(
+        &self,
+        ctx: &clax_core::audit::AuditCtx,
+        sid: &str,
+        (rid, remote_aid): (&str, &str),
+        url: &str,
+        title: &str,
+        replies_armed: bool,
+    ) -> Result<(String, clax_core::model::Watch)> {
+        self.with_tx(|tx| {
+            let m = self.follow_in(tx, rid, remote_aid, url, title)?;
+            let id = clax_core::ArtifactId::parse(&m)?;
+            let w = super::watches::watch_in(self, tx, ctx, sid, &id, replies_armed)?;
+            Ok((m, w))
+        })
+    }
+
+    /// [`Store::follow_remote`] in `tx`.
+    fn follow_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        rid: &str,
+        remote_aid: &str,
+        url: &str,
+        title: &str,
+    ) -> Result<String> {
         let title = if title.trim().is_empty() {
             remote_aid
         } else {
             title
         };
-        self.with_tx(|tx| {
-            let now = self.now();
-            let pushed: Option<String> = tx
-                .query_row(
-                    "SELECT artifact_id FROM remote_links
-                     WHERE remote_id = ?1 AND remote_artifact_id = ?2 AND followed = 0",
-                    params![rid, remote_aid],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if let Some(aid) = pushed {
-                return Err(CoreError::invalid(
-                    "pushed_here",
-                    format!("{url} is this Clax's artifact {aid}, pushed there: watch {aid}"),
-                ));
-            }
-            let mirror: Option<String> = tx
-                .query_row(
-                    "SELECT l.artifact_id FROM remote_links l JOIN artifacts a ON a.id = l.artifact_id
-                     WHERE l.remote_id = ?1 AND l.remote_artifact_id = ?2 AND l.followed = 1
-                       AND a.deleted_at IS NULL",
-                    params![rid, remote_aid],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if let Some(m) = mirror {
-                tx.execute(
-                    "UPDATE remote_links SET unwatched_at = NULL, url = ?3
-                     WHERE artifact_id = ?1 AND remote_id = ?2",
-                    params![m, rid, url],
-                )?;
-                tx.execute(
-                    "UPDATE artifacts SET title = ?2 WHERE id = ?1",
-                    params![m, title],
-                )?;
-                return Ok(m);
-            }
-            let id = clax_core::ArtifactId::generate();
+        let now = self.now();
+        let pushed: Option<String> = tx
+            .query_row(
+                "SELECT artifact_id FROM remote_links
+                 WHERE remote_id = ?1 AND remote_artifact_id = ?2 AND followed = 0",
+                params![rid, remote_aid],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(aid) = pushed {
+            return Err(CoreError::invalid(
+                "pushed_here",
+                format!("{url} is this Clax's artifact {aid}, pushed there: watch {aid}"),
+            ));
+        }
+        let mirror: Option<String> = tx
+            .query_row(
+                "SELECT l.artifact_id FROM remote_links l JOIN artifacts a ON a.id = l.artifact_id
+                 WHERE l.remote_id = ?1 AND l.remote_artifact_id = ?2 AND l.followed = 1
+                   AND a.deleted_at IS NULL",
+                params![rid, remote_aid],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(m) = mirror {
             tx.execute(
-                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, pinned,
-                    capabilities_json, contract_version, owner_session_id, remote_mirror)
-                 VALUES (?1, ?2, ?3, ?3, 0, 0, '{}', ?4, NULL, 1)",
-                params![
-                    id.as_str(),
-                    title,
-                    now,
-                    clax_core::model::CONTRACT_VERSION
-                ],
+                "UPDATE remote_links SET unwatched_at = NULL, url = ?3
+                 WHERE artifact_id = ?1 AND remote_id = ?2",
+                params![m, rid, url],
             )?;
             tx.execute(
-                "INSERT INTO remote_links (artifact_id, remote_id, remote_artifact_id, url,
-                    pushed_n, remote_n, auto, created_at, pushed_at, followed)
-                 VALUES (?1, ?2, ?3, ?4, 0, 0, 0, ?5, ?5, 1)",
-                params![id.as_str(), rid, remote_aid, url, now],
+                "UPDATE artifacts SET title = ?2 WHERE id = ?1",
+                params![m, title],
             )?;
-            Ok(id.as_str().to_string())
-        })
+            return Ok(m);
+        }
+        let id = clax_core::ArtifactId::generate();
+        tx.execute(
+            "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, pinned,
+                capabilities_json, contract_version, owner_session_id, remote_mirror)
+             VALUES (?1, ?2, ?3, ?3, 0, 0, '{}', ?4, NULL, 1)",
+            params![id.as_str(), title, now, clax_core::model::CONTRACT_VERSION],
+        )?;
+        tx.execute(
+            "INSERT INTO remote_links (artifact_id, remote_id, remote_artifact_id, url,
+                pushed_n, remote_n, auto, created_at, pushed_at, followed)
+             VALUES (?1, ?2, ?3, ?4, 0, 0, 0, ?5, ?5, 1)",
+            params![id.as_str(), rid, remote_aid, url, now],
+        )?;
+        Ok(id.as_str().to_string())
     }
 
     /// The mirror of artifact `remote_aid` of remote `rid`, while this
@@ -624,15 +665,18 @@ impl Store {
         })
     }
 
-    /// Stops following the remote artifact mirror `mirror_id` holds: no
-    /// local session watches it from now (`unwatched_at`), so the sync
+    /// Stops following the remote artifact mirror `mirror_id` holds, while
+    /// no live local session watches it: from now (`unwatched_at`) the sync
     /// leaves it alone, and [`Store::mirrors_to_drop`] names it once
-    /// [`MIRROR_KEPT`] has passed. Whether it was followed and watched.
+    /// [`MIRROR_KEPT`] has passed. A live watch (one made since the caller
+    /// looked) keeps it followed. Whether it stopped following it.
     pub fn unfollow_remote(&self, mirror_id: &str) -> Result<bool> {
         self.with_tx(|tx| {
             Ok(tx.execute(
                 "UPDATE remote_links SET unwatched_at = ?2
-                 WHERE artifact_id = ?1 AND followed = 1 AND unwatched_at IS NULL",
+                 WHERE artifact_id = ?1 AND followed = 1 AND unwatched_at IS NULL
+                   AND NOT EXISTS (SELECT 1 FROM watches w JOIN sessions s ON s.id = w.session_id
+                                   WHERE w.artifact_id = ?1 AND s.ended_at IS NULL)",
                 params![mirror_id, self.now()],
             )? > 0)
         })
@@ -656,11 +700,26 @@ impl Store {
         })
     }
 
-    /// Drops mirror `mirror_id`: its followed link goes, its threads end
-    /// as history, and the mirror is deleted. Whether it was one.
-    pub fn drop_mirror(&self, mirror_id: &str) -> Result<bool> {
+    /// Drops mirror `mirror_id` while [`Store::mirrors_to_drop`] would
+    /// still name it by `now` (no live watch, unwatched for
+    /// [`MIRROR_KEPT`]): its followed link goes, its threads end as
+    /// history, and the mirror is deleted. Whether it dropped it.
+    pub fn drop_mirror(&self, mirror_id: &str, now: chrono::DateTime<chrono::Utc>) -> Result<bool> {
+        let before = clax_core::time::stamp(now - MIRROR_KEPT);
         self.with_tx(|tx| {
             let now = self.now();
+            let due: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM remote_links l
+                    WHERE l.artifact_id = ?1 AND l.followed = 1
+                      AND l.unwatched_at IS NOT NULL AND l.unwatched_at <= ?2
+                      AND NOT EXISTS (SELECT 1 FROM watches w JOIN sessions s ON s.id = w.session_id
+                                      WHERE w.artifact_id = l.artifact_id AND s.ended_at IS NULL))",
+                params![mirror_id, before],
+                |r| r.get(0),
+            )?;
+            if !due {
+                return Ok(false);
+            }
             let n = tx.execute(
                 "UPDATE artifacts SET deleted_at = ?2
                  WHERE id = ?1 AND remote_mirror = 1 AND deleted_at IS NULL",
@@ -702,6 +761,29 @@ impl Store {
                     })
                 })?
                 .collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// What mirror `aid` mirrors, when it is a followed remote artifact's
+    /// mirror: the artifact there (its ID and address) and its remote's
+    /// origin and name.
+    pub fn mirror_of(&self, aid: &str) -> Result<Option<MirrorOf>> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT l.remote_artifact_id, l.url, r.origin, r.name
+                 FROM remote_links l JOIN remotes r ON r.id = l.remote_id
+                 WHERE l.artifact_id = ?1 AND l.followed = 1",
+                params![aid],
+                |r| {
+                    Ok(MirrorOf {
+                        remote_artifact_id: r.get(0)?,
+                        url: r.get(1)?,
+                        origin: r.get(2)?,
+                        name: r.get(3)?,
+                    })
+                },
+            )
+            .optional()?)
         })
     }
 
@@ -962,15 +1044,6 @@ impl Store {
     }
 }
 
-/// Records, in `tx` (the transaction recording the version), that the
-/// publish keyed `key` made version `n` of `aid`. A key whose recorded
-/// artifact is gone (deleted, or never recorded) is taken over: the
-/// publish it names is made again, as [`Store::publish_key`]'s callers
-/// replay only a version that still exists.
-///
-/// # Errors
-/// `publish_key_used` when the key is recorded for a live artifact
-/// already (another process's publish with the key made a version first).
 /// Whether `aid` is a followed remote artifact's mirror, on `c`.
 pub(crate) fn is_mirror_in(c: &rusqlite::Connection, aid: &str) -> Result<bool> {
     Ok(c.query_row(
@@ -982,6 +1055,15 @@ pub(crate) fn is_mirror_in(c: &rusqlite::Connection, aid: &str) -> Result<bool> 
     .unwrap_or(false))
 }
 
+/// Records, in `tx` (the transaction recording the version), that the
+/// publish keyed `key` made version `n` of `aid`. A key whose recorded
+/// artifact is gone (deleted, or never recorded) is taken over: the
+/// publish it names is made again, as [`Store::publish_key`]'s callers
+/// replay only a version that still exists.
+///
+/// # Errors
+/// `publish_key_used` when the key is recorded for a live artifact
+/// already (another process's publish with the key made a version first).
 pub(super) fn record_publish_key_in(
     tx: &rusqlite::Connection,
     key: &PublishKey,
@@ -1297,5 +1379,124 @@ mod tests {
         assert!(clax_core::content::ready(st.lock_publish_key("g2", "k")).is_some());
         drop(held);
         assert!(clax_core::content::ready(st.lock_publish_key("g1", "k")).is_some());
+    }
+
+    /// A followed remote artifact's mirror, which never has a version, is
+    /// no crashed create: the start-up sweep and `clax doctor` leave it,
+    /// with or without threads, and no listing names it.
+    #[test]
+    fn a_mirror_survives_the_zero_version_sweeps_and_is_in_no_listing() {
+        let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+        let (_d, st) = crate::test_util::store_with_clock(clock.clone());
+        let r = st
+            .add_pending_remote("https://clax.example", "pub", &sign_in("cxd_1"))
+            .unwrap();
+        let rid = r.id.as_str();
+        let bare = st
+            .follow_remote(rid, "b1", "https://clax.example/a/b1", "Bare")
+            .unwrap();
+        let threaded = st
+            .follow_remote(rid, "b2", "https://clax.example/a/b2", "Threaded")
+            .unwrap();
+        let link = st.remote_link(&threaded, rid).unwrap().unwrap();
+        st.mirror_thread(
+            &clax_core::audit::AuditCtx::DAEMON,
+            &link,
+            ("pub", "https://clax.example"),
+            1,
+            false,
+            crate::linked::MirrorThread {
+                remote_thread_id: "01J9Z3K4M5N6P7Q8R9S0T1V2W3".into(),
+                remote_version: 1,
+                anchor: serde_json::from_value(serde_json::json!({"kind": "artifact"})).unwrap(),
+                first: crate::linked::MirrorComment {
+                    remote_comment_id: "c1".into(),
+                    author: crate::linked::RemoteAuthor {
+                        kind: "viewer".into(),
+                        public_id: None,
+                        name: "Ada".into(),
+                    },
+                    body: "there".into(),
+                },
+            },
+        )
+        .unwrap();
+        // A crashed create beside them is still found and swept.
+        st.with_tx(|tx| {
+            tx.execute(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, pinned,
+                    capabilities_json, contract_version)
+                 VALUES ('7q3k9mzx2b4t', 'Crashed', ?1, ?1, 0, 0, '{}', '1')",
+                params![st.now()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(st.zero_version_artifacts().unwrap(), ["7q3k9mzx2b4t"]);
+        clock.advance(3600);
+        let swept = st
+            .block_on(st.sweep_zero_version_artifacts(chrono::Duration::seconds(60)))
+            .unwrap();
+        assert_eq!(swept, 1);
+        assert_eq!(st.delete_zero_version_artifacts().unwrap(), 0);
+        for (m, raid) in [(&bare, "b1"), (&threaded, "b2")] {
+            assert!(st.is_remote_mirror(m).unwrap(), "{m}");
+            assert_eq!(st.remote_mirror(rid, raid).unwrap().as_ref(), Some(m));
+        }
+        assert!(st.list_artifacts().unwrap().is_empty());
+    }
+
+    /// Unfollowing keeps a link followed while a live session watches its
+    /// mirror (a watch made after the caller looked), and a mirror is
+    /// dropped only while it is still unwatched past the week.
+    #[test]
+    fn unfollowing_and_dropping_a_mirror_wait_for_no_live_watch() {
+        let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+        let (_d, st) = crate::test_util::store_with_clock(clock.clone());
+        let sid = crate::test_util::session(&st, "claude", "h1");
+        let follow = || {
+            st.follow_and_watch(
+                &clax_core::audit::AuditCtx::DAEMON,
+                &sid,
+                ("r1", "b1"),
+                "https://clax.example/a/b1",
+                "Theirs",
+                true,
+            )
+            .unwrap()
+        };
+        let (m, w) = follow();
+        assert!(w.replies_armed);
+        assert!(
+            !st.unfollow_remote(&m).unwrap(),
+            "a live watch keeps it followed"
+        );
+        assert!(
+            st.remote_link(&m, "r1")
+                .unwrap()
+                .unwrap()
+                .unwatched_at
+                .is_none()
+        );
+        let id = clax_core::ArtifactId::parse(&m).unwrap();
+        st.unwatch(&clax_core::audit::AuditCtx::DAEMON, &sid, &id)
+            .unwrap();
+        assert!(st.unfollow_remote(&m).unwrap());
+        clock.advance(7 * 24 * 3600 + 1);
+        assert_eq!(st.mirrors_to_drop(st.now_utc()).unwrap(), std::slice::from_ref(&m));
+        // Watched again before the drop: the drop leaves it.
+        assert_eq!(follow().0, m);
+        assert!(!st.drop_mirror(&m, st.now_utc()).unwrap());
+        assert!(st.is_remote_mirror(&m).unwrap());
+        st.unwatch(&clax_core::audit::AuditCtx::DAEMON, &sid, &id)
+            .unwrap();
+        assert!(st.unfollow_remote(&m).unwrap());
+        assert!(
+            !st.drop_mirror(&m, st.now_utc()).unwrap(),
+            "unwatched for under a week"
+        );
+        clock.advance(7 * 24 * 3600 + 1);
+        assert!(st.drop_mirror(&m, st.now_utc()).unwrap());
+        assert_eq!(st.remote_mirror("r1", "b1").unwrap(), None);
     }
 }

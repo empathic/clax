@@ -506,3 +506,203 @@ async fn a_pushed_artifacts_public_url_is_never_followed() {
 fn enc(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
+
+/// The comments' bodies of the remote's threads on `raid`, as its owner's
+/// CLI reads them.
+async fn bodies_there(public: &Public, raid: &str) -> Vec<String> {
+    let (s, v) = public
+        .cli(
+            Method::GET,
+            &format!("/api/artifacts/{raid}/threads?include_resolved=true"),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    v["threads"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|t| t["comments"].as_array().cloned().unwrap_or_default())
+        .filter_map(|c| c["body"].as_str().map(str::to_string))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_refused_follower_is_held_back_alone_while_pushed_links_sync() {
+    let t = There::new().await;
+    let v = t.local.publish("Mine", &[("index.html", PAGE)]).await;
+    let aid = v["artifact"]["id"].as_str().unwrap().to_string();
+    let (s, v) = post(&t.local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
+    assert_eq!(s, 200, "{v}");
+    let pushed = v["link"]["remote_artifact_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The remote refuses the follower's watch there, as one at its limit.
+    t.local.state.linked.set_refuse_follows(true);
+    let sid = t.agent("refused").await;
+    t.watch(&sid).await;
+    t.agent_there("refused").await;
+    // The owner's thread on the pushed artifact still goes up, and the
+    // remote is not taken for unreachable.
+    let res = t
+        .local
+        .authed(
+            t.local
+                .client
+                .post(format!("{}/api/artifacts/{aid}/threads", t.local.base)),
+        )
+        .multipart(
+            reqwest::multipart::Form::new()
+                .text("anchor", json!({"kind": "artifact"}).to_string())
+                .text("body", "Pushed and synced")
+                .text("version", "1"),
+        )
+        .send()
+        .await
+        .unwrap();
+    let (s, v) = json_of(res).await;
+    assert_eq!(s, 201, "{v}");
+    until("the pushed artifact's thread goes up", || async {
+        bodies_there(&t.public, &pushed)
+            .await
+            .iter()
+            .any(|b| b == "Pushed and synced")
+            .then_some(())
+    })
+    .await;
+    let st = t.local.state.linked.status(&t.rid);
+    assert!(st.unreachable_since.is_none(), "{st:?}");
+}
+
+#[tokio::test]
+async fn a_late_hand_over_to_a_session_no_longer_watching_is_dropped() {
+    let t = There::new().await;
+    let alpha = t.agent("alpha").await;
+    let beta = t.agent("beta").await;
+    t.watch(&alpha).await;
+    t.watch(&beta).await;
+    t.agent_there("alpha").await;
+    t.agent_there("beta").await;
+    // Alpha is handed a thread there, which waits to be sent here...
+    t.local.state.linked.hold_routes(true);
+    let rtid = t.thread_there("For alpha, late").await;
+    let (s, v) = t.send_there(&rtid, Some("alpha")).await;
+    assert_eq!(s, 200, "{v}");
+    until("alpha's hand-over waits", || async {
+        (t.local
+            .state
+            .linked
+            .routes_waiting
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == 1)
+            .then_some(())
+    })
+    .await;
+    // ...while alpha stops watching the mirror here (beta keeps it followed).
+    let m = t.mirror().unwrap();
+    let (s, v) = local_req(
+        &t.local,
+        Method::DELETE,
+        &format!("/api/sessions/{alpha}/watches/{m}"),
+        json!(null),
+        Some(&alpha),
+    )
+    .await;
+    assert_eq!(s, 204, "{v}");
+    until("alpha's session there ends", || async {
+        (!t.sessions_there().iter().any(|n| n == "alpha")).then_some(())
+    })
+    .await;
+    t.local.state.linked.hold_routes(false);
+    t.local.state.linked.kick(Some(&t.rid));
+    until("the late hand-over is dropped", || async {
+        (t.local
+            .state
+            .linked
+            .routes_waiting
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == 0)
+            .then_some(())
+    })
+    .await;
+    t.settled().await;
+    for sid in [&alpha, &beta] {
+        assert_eq!(t.notices(sid, 0).await["notices"], json!([]), "{sid}");
+        assert_eq!(
+            t.wait_for_feedback(sid, 0).await["feedback"],
+            json!([]),
+            "{sid}"
+        );
+    }
+}
+
+/// A send there to every agent watching reaches, as a local send to every
+/// watcher does, the one whose session takes it first: the remote hands
+/// the thread to that session alone (the first delivery takes it, and the
+/// other agents' rows there go). Here that local session gets it; the
+/// other was never handed it, so nothing here tells it of a take.
+#[tokio::test]
+async fn a_send_to_every_agent_there_reaches_the_session_that_takes_it() {
+    let t = There::new().await;
+    let alpha = t.agent("alpha").await;
+    let beta = t.agent("beta").await;
+    t.watch(&alpha).await;
+    t.watch(&beta).await;
+    let raid = clax_core::ArtifactId::parse(&t.raid).unwrap();
+    until("both sessions watch it there", || async {
+        (t.public.ts.store.watchers(&raid).unwrap().len() == 2).then_some(())
+    })
+    .await;
+    let rtid = t.thread_there("For everyone").await;
+    let (s, v) = t.send_there(&rtid, None).await;
+    assert_eq!(s, 200, "{v}");
+    let (taker, other) = until("one session here gets it", || async {
+        for (a, b) in [(&alpha, &beta), (&beta, &alpha)] {
+            let n = t.notices(a, 0).await;
+            if n["notices"][0]["thread_id"] == json!(rtid) {
+                return Some((a.clone(), b.clone()));
+            }
+        }
+        None
+    })
+    .await;
+    t.settled().await;
+    assert_eq!(t.notices(&other, 0).await["notices"], json!([]));
+    assert_eq!(t.wait_for_feedback(&other, 0).await["feedback"], json!([]));
+    // The taker's notice is not withdrawn: it is handed over.
+    let fb = t.wait_for_feedback(&taker, 0).await;
+    assert_eq!(fb["feedback"][0]["thread_id"], json!(rtid), "{fb}");
+}
+
+#[tokio::test]
+async fn the_watch_list_names_the_remote_artifact_not_its_mirror() {
+    let t = There::new().await;
+    let sid = t.agent("lister").await;
+    let other = t.agent("other").await;
+    t.watch(&sid).await;
+    let (s, v) = local_req(
+        &t.local,
+        Method::GET,
+        &format!("/api/sessions/{sid}/watches"),
+        json!(null),
+        Some(&sid),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let w = &v["watches"][0];
+    assert_eq!(w["artifact_id"], json!(t.raid), "{v}");
+    assert_eq!(w["url"], json!(t.url), "{v}");
+    assert_eq!(w["remote"]["origin"], json!(t.public.origin), "{v}");
+    assert!(!v.to_string().contains(&t.mirror().unwrap()), "{v}");
+    // Another session's list is its own: it watches nothing.
+    let (s, v) = local_req(
+        &t.local,
+        Method::GET,
+        &format!("/api/sessions/{other}/watches"),
+        json!(null),
+        Some(&other),
+    )
+    .await;
+    assert_eq!((s, &v["watches"]), (200, &json!([])), "{v}");
+}

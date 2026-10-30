@@ -244,13 +244,14 @@ impl Store {
     }
 
     /// Live artifacts (not deleted, at least one version, not hidden
-    /// drafts): pinned first, then most recently updated, ties broken by ID.
+    /// drafts, not followed remote artifacts' mirrors): pinned first, then most recently updated, ties broken by ID.
     /// Rows with a malformed JSON column are logged and left out (see
     /// [`Store::corrupt_rows`]).
     pub fn list_artifacts(&self) -> Result<Vec<Artifact>> {
         self.with_read(|c| {
             let mut stmt = c.prepare(&format!(
                 "{SELECT} WHERE deleted_at IS NULL AND current_version > 0 AND hidden = 0
+                   AND remote_mirror = 0
                  ORDER BY pinned DESC, updated_at DESC, id"
             ))?;
             let rows = stmt.query_map([], row_to_artifact)?;
@@ -660,14 +661,16 @@ impl Store {
     }
 
     /// IDs of live-looking artifact rows that never recorded a version (a
-    /// creation that died before version 1), sorted.
+    /// creation that died before version 1), sorted. A followed remote
+    /// artifact's mirror, which never has one, is not among them.
     ///
     /// # Errors
     /// Database errors only.
     pub fn zero_version_artifacts(&self) -> Result<Vec<String>> {
         self.with_read(|c| {
             let mut stmt = c.prepare(
-                "SELECT id FROM artifacts WHERE current_version = 0 AND deleted_at IS NULL ORDER BY id",
+                "SELECT id FROM artifacts WHERE current_version = 0 AND deleted_at IS NULL
+                   AND remote_mirror = 0 ORDER BY id",
             )?;
             Ok(stmt
                 .query_map([], |r| r.get(0))?
@@ -704,7 +707,8 @@ impl Store {
     /// artifact's row and its first version's transaction (a create, or
     /// ClaxBot's `artifacts.create`). A younger one may be a create under
     /// way, and is kept, as is a live page (`kind` `live`), which has no
-    /// version until its first snapshot. A driver runs it when it starts.
+    /// version until its first snapshot, and a followed remote artifact's
+    /// mirror (`remote_mirror`), which never has one. A driver runs it when it starts.
     /// Returns how many it removed.
     ///
     /// # Errors
@@ -717,7 +721,7 @@ impl Store {
         let ids: Vec<String> = self.with_read(|c| {
             let mut stmt = c.prepare(
                 "SELECT id FROM artifacts WHERE current_version = 0 AND deleted_at IS NULL
-                   AND kind <> 'live' AND created_at < ?1 ORDER BY id",
+                   AND kind <> 'live' AND remote_mirror = 0 AND created_at < ?1 ORDER BY id",
             )?;
             Ok(stmt
                 .query_map(params![before], |r| r.get(0))?
@@ -741,42 +745,44 @@ impl Store {
             None => None,
         };
         let removed = self.with_tx(|tx| {
-                let still: bool = tx.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM artifacts
-                        WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL)",
-                    params![id],
-                    |r| r.get(0),
-                )?;
-                if !still {
-                    return Ok(0);
-                }
-                // A raise naming it goes with it (spec §14).
-                super::elevations::drop_artifact_in(self, tx, &AuditCtx::DAEMON, id)?;
-                self.artifact_going_tx(tx, id)?;
-                // Every row naming it: a live page's creation writes its
-                // scope watches before its first version.
-                for sql in [
-                    "DELETE FROM page_authors WHERE kind = 'asset' AND id IN
+            let still: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM artifacts
+                        WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL
+                          AND remote_mirror = 0)",
+                params![id],
+                |r| r.get(0),
+            )?;
+            if !still {
+                return Ok(0);
+            }
+            // A raise naming it goes with it (spec §14).
+            super::elevations::drop_artifact_in(self, tx, &AuditCtx::DAEMON, id)?;
+            self.artifact_going_tx(tx, id)?;
+            // Every row naming it: a live page's creation writes its
+            // scope watches before its first version.
+            for sql in [
+                "DELETE FROM page_authors WHERE kind = 'asset' AND id IN
                         (SELECT artifact_id || '/' || id FROM assets WHERE artifact_id = ?1)",
-                    "DELETE FROM assets WHERE artifact_id = ?1",
-                    "DELETE FROM versions WHERE artifact_id = ?1",
-                    "DELETE FROM docs WHERE artifact_id = ?1",
-                    "DELETE FROM doc_authors WHERE artifact_id = ?1",
-                    "DELETE FROM leases WHERE artifact_id = ?1",
-                    "DELETE FROM watches WHERE artifact_id = ?1",
-                    "DELETE FROM live_pages WHERE artifact_id = ?1",
-                    "DELETE FROM live_merged_pages WHERE artifact_id = ?1",
-                    "UPDATE live_merged_pages SET merged_into = NULL WHERE merged_into = ?1",
-                    "DELETE FROM live_pending WHERE artifact_id = ?1",
-                    "DELETE FROM live_picks WHERE artifact_id = ?1",
-                ] {
-                    tx.execute(sql, params![id])?;
-                }
-                Ok(tx.execute(
-                    "DELETE FROM artifacts WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL",
-                    params![id],
-                )?)
-            })?;
+                "DELETE FROM assets WHERE artifact_id = ?1",
+                "DELETE FROM versions WHERE artifact_id = ?1",
+                "DELETE FROM docs WHERE artifact_id = ?1",
+                "DELETE FROM doc_authors WHERE artifact_id = ?1",
+                "DELETE FROM leases WHERE artifact_id = ?1",
+                "DELETE FROM watches WHERE artifact_id = ?1",
+                "DELETE FROM live_pages WHERE artifact_id = ?1",
+                "DELETE FROM live_merged_pages WHERE artifact_id = ?1",
+                "UPDATE live_merged_pages SET merged_into = NULL WHERE merged_into = ?1",
+                "DELETE FROM live_pending WHERE artifact_id = ?1",
+                "DELETE FROM live_picks WHERE artifact_id = ?1",
+            ] {
+                tx.execute(sql, params![id])?;
+            }
+            Ok(tx.execute(
+                "DELETE FROM artifacts WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL
+                       AND remote_mirror = 0",
+                params![id],
+            )?)
+        })?;
         if removed > 0
             && let Some(aid) = &aid
         {

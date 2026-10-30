@@ -161,14 +161,32 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// The session's watches. Token-gated like every `/api/sessions*` read.
+/// The session's watches. Token-gated like every `/api/sessions*` read. A
+/// watch of a followed remote artifact names it as there: `artifact_id`
+/// its ID there, with its `url` there and `remote: {origin, name}`, never
+/// the local mirror.
 pub async fn list(
     State(s): State<AppState>,
     _a: TokenOrAgent<clax_http::agent::WatchesList>,
     sid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let sid = path(sid)?;
-    let watches = s.store_call(move |st| st.list_watches(&sid)).await?;
+    let watches = s
+        .store_call(move |st| {
+            st.list_watches(&sid)?
+                .into_iter()
+                .map(|w| {
+                    let mut v = json!(w);
+                    if let Some(m) = st.mirror_of(&w.artifact_id)? {
+                        v["artifact_id"] = json!(m.remote_artifact_id);
+                        v["url"] = json!(m.url);
+                        v["remote"] = json!({"origin": m.origin, "name": m.name});
+                    }
+                    Ok(v)
+                })
+                .collect::<clax_core::Result<Vec<Value>>>()
+        })
+        .await?;
     Ok(Json(json!({"watches": watches})))
 }
 
@@ -313,6 +331,19 @@ pub struct RemoteWatchBody {
     replies_armed: Option<bool>,
 }
 
+/// 403 `forbidden` when an agent of the owner's names, in `X-Clax-Session`,
+/// another session than the path's `sid`: an agent watches for its own
+/// session, as the other routes under `/api/sessions/<sid>` hold it to.
+fn own_session(asker: &super::remotes::Asker, sid: &str) -> Result<(), ApiError> {
+    match asker {
+        super::remotes::Asker::Agent(Some(own)) if own != sid => Err(ApiError::forbidden(
+            "forbidden",
+            "an agent watches for its own session (X-Clax-Session names another)",
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// A followed remote artifact as the remote-watch routes answer it.
 fn remote_view(r: &clax_store::remotes::Remote, raid: &str) -> Value {
     json!({
@@ -332,7 +363,8 @@ fn remote_view(r: &clax_store::remotes::Remote, raid: &str) -> Value {
 /// linked threads' sync opens a session there named as the session's agent
 /// (`crate::linked`). Answers `{watch, mirror, artifact_id, url, remote:
 /// {origin, name}}`, `url` the artifact's address there. The owner and the
-/// owner's agents alone, on a local daemon (404 on a hosted one); errors
+/// owner's agents alone, on a local daemon (404 on a hosted one), an
+/// agent for its own session alone (403 `forbidden` otherwise); errors
 /// as `crate::routes::remote_artifacts`'s, the remote's own refusal of
 /// the artifact passed on, and 400 `pushed_here` naming `artifact_id`
 /// here for the public copy of an artifact this home pushed: its local
@@ -351,6 +383,7 @@ pub async fn remote_put(
     super::remotes::local_only(&s)?;
     who.require_owner(REMOTE_WHAT)?;
     let r = super::remote_artifacts::reach(&s, &d, &b.remote).await?;
+    own_session(&r.asker, &sid)?;
     let raid = super::remote_apps::remote_artifact(&b.artifact_id)?;
     let (rid, r2) = (r.remote.id.clone(), raid.clone());
     let pushed = s
@@ -389,8 +422,7 @@ pub async fn remote_put(
     let (mirror, watch) = s
         .store_call(move |st| {
             let audit = audit.for_session(st, &sid)?;
-            let m = st.follow_remote(&rid, &r2, &url, &title)?;
-            let w = st.watch(&audit, &sid, &ArtifactId::parse(&m)?, armed)?;
+            let (m, w) = st.follow_and_watch(&audit, &sid, (&rid, &r2), &url, &title, armed)?;
             // The sync names the session's agent there.
             ctx.events.publish(Event::Agents {
                 artifacts: vec![m.clone()],
@@ -412,7 +444,7 @@ pub async fn remote_put(
 /// is no longer followed (`Store::unfollow_remote`), and its mirror is
 /// dropped a week later. 204, whether or not it was watched; 404
 /// `no_remote` for no such remote. The owner and the owner's agents alone,
-/// on a local daemon. A watch that existed records `watch.stop` as the
+/// on a local daemon, an agent for its own session alone. A watch that existed records `watch.stop` as the
 /// session's agent.
 pub async fn remote_delete(
     State(s): State<AppState>,
@@ -426,7 +458,7 @@ pub async fn remote_delete(
     let b = body(b)?;
     super::remotes::local_only(&s)?;
     who.require_owner(REMOTE_WHAT)?;
-    super::remotes::asker(&s, &d).await?;
+    own_session(&super::remotes::asker(&s, &d).await?, &sid)?;
     let raid = super::remote_apps::remote_artifact(&b.artifact_id)?;
     let key = b.remote.trim().trim_end_matches('/').to_string();
     let remote = s
@@ -449,9 +481,8 @@ pub async fn remote_delete(
         };
         let audit = audit.for_session(st, &sid)?;
         st.unwatch(&audit, &sid, &ArtifactId::parse(&m)?)?;
-        if !st.follow_watchers(&rid)?.iter().any(|w| w.artifact_id == m) {
-            st.unfollow_remote(&m)?;
-        }
+        // No longer followed once no live session watches it.
+        st.unfollow_remote(&m)?;
         ctx.events.publish(Event::Agents { artifacts: vec![m] });
         Ok(())
     })

@@ -1325,17 +1325,32 @@ anchors and versions as given there, and opens a session there for each
 local agent session watching it, named as that agent (its name, else its
 harness), which watches the artifact there: a person there can send a
 thread to that agent by name. What that session is sent there is sent
-here to that local session alone; a send there to every agent reaches each
-watching local session through its own session there. Answers `{watch,
+here to that local session alone; a send there to every agent goes, as the
+remote hands it, to the session there that takes it first, and so to that
+local session (one already sent it keeps it: another local session handed
+it too gets it as well, and neither is told it was taken). A session there
+the remote refuses (its watch, or the session itself) holds back that
+local session's follower alone, its next try doubling from 1 s to 300 s;
+its feedback poll waits out failures on the same session the same way
+and opens a new one only after 4 in a row (or at once when the remote no
+longer knows it). Answers `{watch,
 mirror, artifact_id, url, remote: {origin, name}}`, `url` the artifact's
 address there. 400 `pushed_here` `{artifact_id}` for the public copy of
 an artifact this home pushed: its local artifact (which the resolver
-names) is the one to watch. `DELETE /api/sessions/<sid>/remote-watches
+names) is the one to watch. An agent acts for its own session alone (403
+`forbidden` when the session it acts for is not `sid`). `GET
+/api/sessions/<sid>/watches` names such a watch as there: `artifact_id`
+its ID there, with `url` and `remote: {origin, name}`, never the mirror.
+A mirror is never a session's artifact (where it asks), and neither the
+start-up sweep of versionless rows nor `clax doctor` takes it for a crashed
+create. `DELETE /api/sessions/<sid>/remote-watches
 {remote, artifact_id, url?}` stops the watch (204, watched or not; 404
 `no_remote`); the session's session there ends, as it does when the local
 session ends. Once no live session watches it, the artifact is no longer
 followed (the sync leaves it alone) and its mirror is dropped a week
-later; watched again within the week, the same mirror is followed again.
+later; watched again within the week, the same mirror is followed again
+(the follow and the watch are one transaction, and neither the unfollow
+nor the drop happens while a live session watches it).
 
 A comment on a followed artifact takes every route a local comment takes
 (notices, `wait_for_feedback`, tool results, hooks, push, acknowledgement

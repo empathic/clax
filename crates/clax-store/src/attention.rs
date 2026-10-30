@@ -98,7 +98,7 @@ macro_rules! arts_one {
 }
 macro_rules! arts_live {
     () => {
-        "SELECT id, owner_session_id FROM artifacts WHERE deleted_at IS NULL AND current_version > 0 AND hidden = 0"
+        "SELECT id, owner_session_id FROM artifacts WHERE deleted_at IS NULL AND current_version > 0 AND hidden = 0 AND remote_mirror = 0"
     };
 }
 

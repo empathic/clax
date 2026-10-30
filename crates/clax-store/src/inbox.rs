@@ -1214,10 +1214,11 @@ fn stamp(c: &Connection, now: &str) -> Result<String> {
 
 /// Inserts the item and its index entry unless its key (for its recipient,
 /// [`keyed`]) exists, stamped `now` (see [`stamp`]); its `seq`. A hidden
-/// artifact (a draft) gets no item.
+/// artifact (a draft) and a followed remote artifact's mirror (whose page
+/// is the remote's) get no item.
 fn insert_at(c: &Connection, n: New<'_>, now: &str) -> Result<Option<i64>> {
     if let Some(aid) = n.artifact_id
-        && super::drafts::is_hidden_in(c, aid)?
+        && (super::drafts::is_hidden_in(c, aid)? || super::remotes::is_mirror_in(c, aid)?)
     {
         return Ok(None);
     }

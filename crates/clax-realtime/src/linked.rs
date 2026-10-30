@@ -40,6 +40,15 @@ pub struct Linked {
     pub read_errors: Mutex<HashMap<(String, String), String>>,
     /// Tests: requests to remotes fail as unreachable while set.
     pub offline: AtomicBool,
+    /// Tests: while set, the threads followers' sessions were handed there
+    /// wait to be sent here ([`Linked::hold_routes`]).
+    pub hold_routes: AtomicBool,
+    /// How many threads followers' sessions were handed there wait to be
+    /// sent here, as the last cycle left them.
+    pub routes_waiting: AtomicUsize,
+    /// Tests: a followed artifact's session there is refused each watch it
+    /// asks for there, as a remote at its limit (429) refuses one.
+    pub refuse_follows: AtomicBool,
     /// Tests: the answers to this many up-sends are lost after the remote
     /// acted on them.
     pub lose_answers: AtomicUsize,
@@ -70,6 +79,9 @@ impl Linked {
             status: Mutex::default(),
             read_errors: Mutex::default(),
             offline: AtomicBool::new(false),
+            refuse_follows: AtomicBool::new(false),
+            hold_routes: AtomicBool::new(false),
+            routes_waiting: AtomicUsize::new(0),
             lose_answers: AtomicUsize::new(0),
             read_limits: Default::default(),
             hold_resumed: AtomicBool::new(false),
@@ -128,6 +140,23 @@ impl Linked {
     #[cfg(debug_assertions)]
     pub fn set_offline(&self, on: bool) {
         self.offline.store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Tests: while `on`, the threads followers' sessions are handed there
+    /// wait (counted in [`Linked::routes_waiting`]) instead of being sent
+    /// here.
+    #[cfg(debug_assertions)]
+    pub fn hold_routes(&self, on: bool) {
+        self.hold_routes
+            .store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Tests: refuses, while `on`, each watch a followed artifact's session
+    /// there asks for, as a remote at its limit does (429).
+    #[cfg(debug_assertions)]
+    pub fn set_refuse_follows(&self, on: bool) {
+        self.refuse_follows
+            .store(on, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Tests: loses the answers to the next `n` up-sends after the remote

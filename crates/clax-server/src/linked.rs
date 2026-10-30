@@ -110,6 +110,10 @@ pub const WAIT_S: u64 = 25;
 /// How often the supervisor drops the mirrors of followed links no local
 /// session has watched for a week, whatever else wakes it.
 pub const MIRROR_SWEEP: Duration = Duration::from_secs(3600);
+/// How many failed feedback polls in a row (each after a backoff) a
+/// follower's session takes before it is given up and a new one opened
+/// ([`poll_failed`]).
+const POLL_TRIES: u32 = 4;
 /// How many cycles a thread a follower's session was handed there waits
 /// to be read here before it is dropped (withheld from the token's agents,
 /// or deleted there since).
@@ -240,7 +244,7 @@ async fn drop_mirrors(s: &AppState) {
         .store_call(move |st| {
             let mut n = 0;
             for m in st.mirrors_to_drop(now)? {
-                n += usize::from(st.drop_mirror(&m)?);
+                n += usize::from(st.drop_mirror(&m, now)?);
             }
             Ok(n)
         })
@@ -395,6 +399,7 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
         reading: HashMap::new(),
         more: false,
         followers: HashMap::new(),
+        held: HashMap::new(),
         routed: Arc::new(std::sync::Mutex::new(Vec::new())),
         to_route: Vec::new(),
     };
@@ -584,6 +589,11 @@ struct Sync {
     /// Each local session watching a followed artifact of this remote, by
     /// its ID here, with its own session there.
     followers: HashMap<String, Follower>,
+    /// The local sessions whose session there failed (could not be opened,
+    /// refused a watch, or its poll gave up without an answer), each with
+    /// when it is tried again and the wait it last had: a refusal there
+    /// holds back that follower alone, doubling to [`BACKOFF_CAP`].
+    held: HashMap<String, Held>,
     /// The threads (by ID there) the followers' sessions there were handed,
     /// each with the local session it goes to: their polls add to it.
     routed: Arc<std::sync::Mutex<Vec<(String, String)>>>,
@@ -616,6 +626,68 @@ struct Follower {
     /// The artifacts there its session watches.
     watched: HashSet<String>,
     poll: clax_rt::JoinHandle<()>,
+    /// How its poll stands, which the poll task writes before it wakes a
+    /// cycle.
+    polled: Arc<Polled>,
+}
+
+/// How a follower's feedback poll stands.
+#[derive(Default)]
+struct Polled {
+    /// The poll gave up: its session there is gone or keeps failing.
+    ended: std::sync::atomic::AtomicBool,
+    /// Some poll was answered.
+    answered: std::sync::atomic::AtomicBool,
+}
+
+/// When a held-back follower is tried again, and the wait that was.
+#[derive(Clone, Copy, Debug)]
+struct Held {
+    until: chrono::DateTime<chrono::Utc>,
+    wait: Duration,
+}
+
+/// The wait after `last` (none: the first): [`BACKOFF_FIRST`], then
+/// doubling to [`BACKOFF_CAP`].
+fn next_wait(last: Option<Duration>) -> Duration {
+    match last {
+        None => BACKOFF_FIRST,
+        Some(w) => (w * 2).min(BACKOFF_CAP),
+    }
+}
+
+/// What a follower's poll does after a failure of status `status` (none:
+/// not reached), its `fails`-th in a row, the last wait `wait`: `None`
+/// gives the session up (a new one is opened, on the follower's own
+/// backoff), `Some(w)` polls the same session again after `w`. A session
+/// the remote no longer knows or takes (400, 401, 404) is given up at
+/// once; anything else is waited out, doubling, [`POLL_TRIES`] times.
+fn poll_failed(status: Option<u16>, fails: u32, wait: Option<Duration>) -> Option<Duration> {
+    if matches!(status, Some(400 | 401 | 404)) || fails >= POLL_TRIES {
+        None
+    } else {
+        Some(next_wait(wait))
+    }
+}
+
+/// Why a follower could not be brought in step.
+enum FollowFail {
+    /// The remote did not answer: the cycle backs off as for any outage.
+    Out(String),
+    /// The remote is gone here, or signed out.
+    Gone,
+    /// The remote refused it: that follower alone is held back.
+    Refused(String),
+}
+
+impl FollowFail {
+    /// What failed request `f` means for a follower.
+    fn of(f: &RemoteFail) -> FollowFail {
+        match f.status {
+            None => FollowFail::Out(classify(f).unwrap_or_else(|| f.message.clone())),
+            _ => FollowFail::Refused(format!("{}: {}", f.code, f.message)),
+        }
+    }
 }
 
 /// Where a read that ran out of pages goes on: its `since`, the page
@@ -964,39 +1036,73 @@ impl Sync {
                 .2
                 .insert(w.remote_artifact_id);
         }
+        self.held.retain(|sid, _| want.contains_key(sid));
         let gone: Vec<String> = self
             .followers
             .iter()
             .filter(|(sid, f)| match want.get(*sid) {
                 None => true,
                 Some((name, harness, _)) => {
-                    name != &f.name || harness != &f.harness || f.poll.is_finished()
+                    name != &f.name
+                        || harness != &f.harness
+                        || f.polled.ended.load(Ordering::SeqCst)
                 }
             })
             .map(|(sid, _)| sid.clone())
             .collect();
         for sid in gone {
             if let Some(f) = self.followers.remove(&sid) {
+                // A poll that gave up having never been answered holds
+                // the follower back before its next session there.
+                let failed = f.polled.ended.load(Ordering::SeqCst)
+                    && !f.polled.answered.load(Ordering::SeqCst);
                 self.end_follower(&sid, f).await;
+                if failed && want.contains_key(&sid) {
+                    self.hold(&sid, "its feedback poll there gave up");
+                }
             }
         }
+        let now = self.s.store.now_utc();
         for (sid, (name, harness, raids)) in want {
+            if self.held.get(&sid).is_some_and(|h| h.until > now) {
+                continue;
+            }
             if !self.followers.contains_key(&sid) {
-                let f = self.open_follower(&sid, &name, &harness).await?;
-                self.followers.insert(sid.clone(), f);
+                match self.open_follower(&sid, &name, &harness).await {
+                    Ok(f) => {
+                        self.followers.insert(sid.clone(), f);
+                    }
+                    Err(FollowFail::Out(why)) => return Err(Stop::Unreachable(why)),
+                    Err(FollowFail::Gone) => return Err(Stop::Gone),
+                    Err(FollowFail::Refused(why)) => {
+                        self.hold(&sid, &why);
+                        continue;
+                    }
+                }
+            }
+            let f = self.followers.get_mut(&sid).expect("opened");
+            if f.polled.answered.load(Ordering::SeqCst) {
+                self.held.remove(&sid);
             }
             let f = self.followers.get_mut(&sid).expect("opened");
             let rsid = f.client.session().map(|x| x.0.clone()).unwrap_or_default();
             let add: Vec<String> = raids.difference(&f.watched).cloned().collect();
+            let mut refused = None;
             for raid in add {
                 let path = format!("/api/sessions/{rsid}/watches/{raid}");
-                match clax_rt::sendable(f.client.call(
-                    reqwest::Method::PUT,
-                    &path,
-                    Some(&json!({})),
-                ))
-                .await
-                {
+                let answer = if self.s.linked.refuse_follows.load(Ordering::SeqCst) {
+                    Err(RemoteFail {
+                        origin: String::new(),
+                        status: Some(429),
+                        code: "limit_reached".into(),
+                        message: "refused (tests)".into(),
+                        body: Value::Null,
+                    })
+                } else {
+                    clax_rt::sendable(f.client.call(reqwest::Method::PUT, &path, Some(&json!({}))))
+                        .await
+                };
+                match answer {
                     Ok(_) => {
                         f.watched.insert(raid);
                     }
@@ -1009,11 +1115,14 @@ impl Sync {
                             "a followed artifact cannot be watched there"
                         );
                     }
-                    Err(e) => {
-                        return Err(Stop::Unreachable(
-                            classify(&e).unwrap_or_else(|| e.message.clone()),
-                        ));
-                    }
+                    Err(e) => match FollowFail::of(&e) {
+                        FollowFail::Out(why) => return Err(Stop::Unreachable(why)),
+                        FollowFail::Gone => return Err(Stop::Gone),
+                        FollowFail::Refused(why) => {
+                            refused = Some(why);
+                            break;
+                        }
+                    },
                 }
             }
             let drop: Vec<String> = f.watched.difference(&raids).cloned().collect();
@@ -1023,34 +1132,62 @@ impl Sync {
                     clax_rt::sendable(f.client.call(reqwest::Method::DELETE, &path, None)).await;
                 f.watched.remove(&raid);
             }
+            // A refused watch holds this follower back; the cycle goes on.
+            if let Some(why) = refused {
+                self.hold(&sid, &why);
+            }
         }
         Ok(())
     }
 
+    /// Holds local session `sid`'s follower back after failure `why`: it
+    /// is tried again after its next wait ([`next_wait`]).
+    fn hold(&mut self, sid: &str, why: &str) {
+        let wait = next_wait(self.held.get(sid).map(|h| h.wait));
+        let until = self.s.store.now_utc()
+            + chrono::Duration::from_std(wait).unwrap_or_else(|_| chrono::Duration::seconds(300));
+        tracing::warn!(
+            remote = self.rid.as_str(),
+            session = sid,
+            error = why,
+            wait_s = wait.as_secs(),
+            "a followed artifact's session there is held back"
+        );
+        self.held.insert(sid.to_string(), Held { until, wait });
+    }
+
     /// A session there for local session `sid`, named `name` of `harness`,
     /// recorded as the one `sid` speaks in there, its feedback polled.
-    async fn open_follower(&self, sid: &str, name: &str, harness: &str) -> Result<Follower, Stop> {
+    async fn open_follower(
+        &self,
+        sid: &str,
+        name: &str,
+        harness: &str,
+    ) -> Result<Follower, FollowFail> {
         let rid = self.rid.clone();
         let (remote, token) = self
             .s
             .store_call(move |st| Ok((st.find_remote(&rid)?, st.remote_token(&rid)?)))
-            .await?;
+            .await
+            .map_err(|e| FollowFail::Refused(format!("{}: {}", e.code, e.message)))?;
         let (Some(remote), Some(token)) = (remote, token) else {
-            return Err(Stop::Gone);
+            return Err(FollowFail::Gone);
         };
         let mut c = Client::new(&remote.origin, Some(token));
         clax_rt::sendable(c.session_for(harness, name))
             .await
-            .map_err(|f| Stop::Unreachable(classify(&f).unwrap_or_else(|| f.message.clone())))?;
+            .map_err(|f| FollowFail::of(&f))?;
         let there = c.session().cloned();
         self.s.linked.set_session_there(&self.rid, sid, there);
-        let poll = self.poll_there(sid, c.clone());
+        let polled = Arc::new(Polled::default());
+        let poll = self.poll_there(sid, c.clone(), polled.clone());
         Ok(Follower {
             client: c,
             name: name.to_string(),
             harness: harness.to_string(),
             watched: HashSet::new(),
             poll,
+            polled,
         })
     }
 
@@ -1064,9 +1201,11 @@ impl Sync {
 
     /// Long-polls the feedback of `c`'s session there, for local session
     /// `sid`: each thread it is handed is queued for [`Sync::route`] and
-    /// wakes a cycle. A poll that fails ends (after [`BACKOFF_FIRST`]) and
-    /// wakes a cycle, which opens a new session there.
-    fn poll_there(&self, sid: &str, c: Client) -> clax_rt::JoinHandle<()> {
+    /// wakes a cycle. A failed poll is tried again on the same session
+    /// after a backoff, or given up ([`poll_failed`]): `polled` says so
+    /// before the cycle it wakes looks, and that cycle opens a new session
+    /// there on the follower's own backoff ([`Sync::hold`]).
+    fn poll_there(&self, sid: &str, c: Client, polled: Arc<Polled>) -> clax_rt::JoinHandle<()> {
         let (s, rid, sid, routed) = (
             self.s.clone(),
             self.rid.clone(),
@@ -1076,10 +1215,24 @@ impl Sync {
         clax_rt::spawn(async move {
             let rsid = c.session().map(|x| x.0.clone()).unwrap_or_default();
             let path = format!("/api/sessions/{rsid}/feedback?tier=wait&wait={WAIT_S}");
+            let (mut fails, mut wait) = (0, None);
             while !s.linked.offline.load(Ordering::SeqCst) {
-                let Ok(v) = clax_rt::sendable(c.get(&path)).await else {
-                    break;
+                let v = match clax_rt::sendable(c.get(&path)).await {
+                    Ok(v) => v,
+                    Err(f) => {
+                        fails += 1;
+                        match poll_failed(f.status, fails, wait) {
+                            Some(w) => {
+                                wait = Some(w);
+                                s.linked.sleeper.sleep(w).await;
+                                continue;
+                            }
+                            None => break,
+                        }
+                    }
                 };
+                (fails, wait) = (0, None);
+                polled.answered.store(true, Ordering::SeqCst);
                 let handed: Vec<(String, String)> = v["feedback"]
                     .as_array()
                     .into_iter()
@@ -1095,13 +1248,15 @@ impl Sync {
                     s.linked.kick(Some(&rid));
                 }
             }
-            s.linked.sleeper.sleep(BACKOFF_FIRST).await;
+            polled.ended.store(true, Ordering::SeqCst);
             s.linked.kick(Some(&rid));
         })
     }
 
     /// Sends here each thread a follower's session was handed there to
-    /// that follower's local session alone, once read here: a thread not
+    /// that follower's local session, once read here (a thread already
+    /// sent here to another watching local session stays that one's, and
+    /// this one gets it too: neither is displaced): a thread not
     /// read yet waits for the next cycles' reads ([`ROUTE_TRIES`]). One
     /// whose local session no longer watches the mirror is dropped.
     async fn route(&mut self) -> Result<(), Stop> {
@@ -1113,7 +1268,12 @@ impl Sync {
                 .drain(..)
                 .map(|(sid, rtid)| (sid, rtid, 0)),
         );
-        if items.is_empty() {
+        if items.is_empty() || self.s.linked.hold_routes.load(Ordering::SeqCst) {
+            self.s
+                .linked
+                .routes_waiting
+                .store(items.len(), Ordering::SeqCst);
+            self.to_route = items;
             return Ok(());
         }
         let (rid, ctx) = (self.rid.clone(), self.s.feedback_ctx());
@@ -1131,13 +1291,36 @@ impl Sync {
                     if lt.unlinked_at.is_some() || !st.is_remote_mirror(&lt.artifact_id)? {
                         continue;
                     }
-                    match st.send_routed(
-                        &AuditCtx::DAEMON,
-                        &lt.thread_id,
-                        SendTarget::Agent(&sid),
-                        Route::Send,
-                        false,
-                    ) {
+                    // Sent there to another local session's session as well
+                    // (a send to every agent there): this one gets it too,
+                    // and the thread stays the first one's, whose rows stay.
+                    let also = match st.thread_target(&lt.thread_id)? {
+                        Some(t) if t != sid => Some(t),
+                        _ => None,
+                    };
+                    let sent = match also {
+                        Some(first) => match st.send_to_named(
+                            &AuditCtx::DAEMON,
+                            &lt.thread_id,
+                            &[first, sid.clone()],
+                        ) {
+                            // The first is no longer a watcher here.
+                            Err(clax_core::CoreError::Invalid { .. }) => None,
+                            r => Some(r.map(|(t, touched)| (t, touched, Vec::new()))),
+                        },
+                        None => None,
+                    };
+                    let sent = match sent {
+                        Some(r) => r,
+                        None => st.send_routed(
+                            &AuditCtx::DAEMON,
+                            &lt.thread_id,
+                            SendTarget::Agent(&sid),
+                            Route::Send,
+                            false,
+                        ),
+                    };
+                    match sent {
                         Ok((t, touched, _)) => {
                             apply(&ctx, st, &touched);
                             crate::routes::threads::publish_thread(&ctx, st, &t)?;
@@ -1153,6 +1336,10 @@ impl Sync {
                 Ok(wait)
             })
             .await?;
+        self.s
+            .linked
+            .routes_waiting
+            .store(self.to_route.len(), Ordering::SeqCst);
         Ok(())
     }
 
@@ -2358,6 +2545,38 @@ mod tests {
         ] {
             assert_eq!(heartbeat(&gone), Heartbeat::Replace, "{gone:?}");
         }
+    }
+
+    #[test]
+    fn a_followers_poll_backs_off_on_its_session_then_gives_it_up() {
+        // An outage or a refusal is waited out on the same session,
+        // doubling, up to POLL_TRIES failures in a row.
+        assert_eq!(poll_failed(None, 1, None), Some(BACKOFF_FIRST));
+        assert_eq!(
+            poll_failed(Some(503), 2, Some(BACKOFF_FIRST)),
+            Some(BACKOFF_FIRST * 2)
+        );
+        assert_eq!(
+            poll_failed(Some(429), 3, Some(Duration::from_secs(2))),
+            Some(Duration::from_secs(4))
+        );
+        assert_eq!(
+            poll_failed(Some(503), POLL_TRIES, Some(Duration::from_secs(4))),
+            None
+        );
+        // A session the remote no longer knows or takes is given up at once.
+        for gone in [400, 401, 404] {
+            assert_eq!(poll_failed(Some(gone), 1, None), None, "{gone}");
+        }
+        // A follower held back waits longer each time, up to the cap.
+        let mut w = None;
+        let mut seen = Vec::new();
+        for _ in 0..12 {
+            let n = next_wait(w);
+            seen.push(n.as_secs());
+            w = Some(n);
+        }
+        assert_eq!(seen, [1, 2, 4, 8, 16, 32, 64, 128, 256, 300, 300, 300]);
     }
 
     #[test]

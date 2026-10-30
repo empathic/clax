@@ -977,6 +977,19 @@ impl Store {
         Ok((thread, touched, requests))
     }
 
+    /// The session thread `thread_id` is sent to (its target), if one.
+    pub fn thread_target(&self, thread_id: &str) -> Result<Option<String>> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT target_session_id FROM threads WHERE id = ?1",
+                params![thread_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten())
+        })
+    }
+
     /// Sends the thread to each of the live sessions `sids` (`@name`, spec
     /// §11), each of which must own or watch the artifact: the first
     /// becomes the thread's target, the thread's undelivered untargeted
