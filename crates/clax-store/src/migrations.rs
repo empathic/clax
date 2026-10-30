@@ -1849,6 +1849,19 @@ pub const MIGRATIONS: &[&str] = &[
     // that browser's owner and events cookies. Both are kept by their
     // SHA-256 alone, and name no viewer row: a session is the owner's
     // whatever row the owner is. A hosted daemon writes neither.
+    //
+    // It also adds connection requests (`crate::remote_requests`): an
+    // agent's ask that the owner connect this home to a Clax instance, at
+    // most one open per origin (`remote_requests_open`), each asking
+    // session with the URL it wanted; the origins the owner muted ("Never
+    // for this instance") and those held off a day by "Not now". The
+    // inbox gains their kind, `remote_request`, rebuilt as migration 30
+    // rebuilt it, keeping every `seq`. And it adds what following a remote
+    // artifact keeps: `remote_links.followed`, a link that mirrors a
+    // remote artifact's threads rather than pushes one, and
+    // `artifacts.remote_mirror`, the local artifact holding those threads
+    // (a column, as `artifacts.kind`'s CHECK cannot be altered without
+    // rebuilding the table every other table names).
     "CREATE TABLE login_codes (
         sha256 TEXT PRIMARY KEY,
         created_at TEXT NOT NULL,
@@ -1860,7 +1873,72 @@ pub const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL,
         ended_at TEXT
-    ) WITHOUT ROWID;",
+    ) WITHOUT ROWID;
+    CREATE TABLE remote_requests (
+        id TEXT PRIMARY KEY,
+        origin TEXT NOT NULL,
+        name TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('open', 'connected', 'dismissed', 'muted', 'expired')),
+        opened_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        answered_at TEXT,
+        remote_id TEXT
+    );
+    CREATE UNIQUE INDEX remote_requests_open ON remote_requests(origin) WHERE status = 'open';
+    CREATE INDEX remote_requests_by_opener ON remote_requests(opened_by, created_at);
+    CREATE TABLE remote_request_askers (
+        request_id TEXT NOT NULL REFERENCES remote_requests(id) ON DELETE CASCADE,
+        session_id TEXT NOT NULL,
+        url TEXT,
+        reason TEXT,
+        asked_at TEXT NOT NULL,
+        PRIMARY KEY (request_id, session_id)
+    ) WITHOUT ROWID;
+    CREATE TABLE remote_mutes (
+        origin TEXT PRIMARY KEY,
+        muted_at TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TABLE remote_dismissals (
+        origin TEXT PRIMARY KEY,
+        until TEXT NOT NULL
+    ) WITHOUT ROWID;
+    ALTER TABLE remote_links ADD COLUMN followed INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE artifacts ADD COLUMN remote_mirror INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE inbox_items_60 (
+        seq INTEGER PRIMARY KEY,
+        id TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL CHECK (kind IN ('reply', 'version', 'published', 'question', 'finished',
+                                           'approval', 'connection', 'ended', 'push', 'remote_request')),
+        key TEXT NOT NULL UNIQUE,
+        recipient TEXT,
+        artifact_id TEXT,
+        thread_id TEXT,
+        comment_id TEXT,
+        version_n INTEGER,
+        question_id TEXT,
+        session_id TEXT,
+        harness TEXT,
+        request_id TEXT,
+        grant_id TEXT,
+        detail_json TEXT,
+        created_at TEXT NOT NULL,
+        read_at TEXT
+    );
+    INSERT INTO inbox_items_60 SELECT seq, id, kind, key, recipient, artifact_id, thread_id,
+        comment_id, version_n, question_id, session_id, harness, request_id, grant_id, detail_json,
+        created_at, read_at FROM inbox_items;
+    DROP TABLE inbox_items;
+    ALTER TABLE inbox_items_60 RENAME TO inbox_items;
+    CREATE INDEX inbox_unread ON inbox_items(COALESCE(recipient, ''), seq) WHERE read_at IS NULL;
+    CREATE INDEX inbox_by_recipient ON inbox_items(COALESCE(recipient, ''), seq);
+    CREATE INDEX inbox_by_artifact ON inbox_items(COALESCE(recipient, ''), artifact_id, seq);
+    CREATE INDEX inbox_by_kind ON inbox_items(COALESCE(recipient, ''), kind, seq);
+    CREATE INDEX inbox_by_harness ON inbox_items(COALESCE(recipient, ''), harness, seq);
+    CREATE INDEX inbox_by_session ON inbox_items(COALESCE(recipient, ''), session_id, seq);
+    CREATE INDEX inbox_by_created ON inbox_items(created_at, seq);
+    CREATE INDEX inbox_by_thread ON inbox_items(thread_id) WHERE thread_id IS NOT NULL;
+    CREATE INDEX inbox_by_question ON inbox_items(question_id) WHERE question_id IS NOT NULL;
+    CREATE INDEX inbox_by_request ON inbox_items(request_id) WHERE request_id IS NOT NULL;",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -1906,7 +1984,10 @@ pub const CAPABILITY_APPROVALS_MIGRATION: u32 = QUICKSTART_MIGRATION + 1;
 pub const QUEUES_MIGRATION: u32 = CAPABILITY_APPROVALS_MIGRATION + 1;
 
 /// The migration that adds a local daemon's browser login (`login_codes`,
-/// `owner_browser_sessions`), as a schema version, and this build's last.
+/// `owner_browser_sessions`), connection requests (`remote_requests` and
+/// the tables beside it, the inbox's `remote_request` kind) and followed
+/// remote links (`remote_links.followed`, `artifacts.remote_mirror`), as a
+/// schema version, and this build's last.
 pub const BROWSER_LOGIN_MIGRATION: u32 = QUEUES_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
