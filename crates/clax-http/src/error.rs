@@ -1,4 +1,6 @@
-//! JSON error responses: `{"error": {"code", "message", ...}}`.
+//! JSON error responses: `{"error": {"code", "message", ...}}`; and the
+//! one answer a handler gives up on before it changes anything without
+//! failing, 202 (`ApiError::accepted`): `{"status": <code>, ...}`.
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -62,6 +64,23 @@ impl ApiError {
     }
     pub fn bad_request(code: &'static str, msg: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, code, msg)
+    }
+    /// 202 `{"status": status, ...fields}`: the call changed nothing yet
+    /// and waits on something else (a browser confirmation,
+    /// [`crate::confirm`]). It travels as an error so a handler returns it
+    /// with `?` before it acts; it is answered as no error is. A
+    /// `confirmation_id` among `fields` is also sent as the
+    /// [`crate::confirm::CONFIRMATION_HEADER`] response header.
+    pub fn accepted(
+        status: &'static str,
+        fields: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
+        ApiError {
+            status: StatusCode::ACCEPTED,
+            code: status,
+            message: String::new(),
+            extra: fields,
+        }
     }
 }
 
@@ -353,6 +372,22 @@ impl From<CoreError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        if self.status == StatusCode::ACCEPTED {
+            let id = self
+                .extra
+                .get("confirmation_id")
+                .and_then(|v| v.as_str())
+                .and_then(|v| axum::http::HeaderValue::from_str(v).ok());
+            let mut body = serde_json::Map::new();
+            body.insert("status".into(), json!(self.code));
+            body.extend(self.extra);
+            let mut res = (self.status, axum::Json(body)).into_response();
+            if let Some(id) = id {
+                res.headers_mut()
+                    .insert(crate::confirm::CONFIRMATION_HEADER, id);
+            }
+            return res;
+        }
         let mut err = serde_json::Map::new();
         err.insert("code".into(), json!(self.code));
         err.insert("message".into(), json!(self.message));

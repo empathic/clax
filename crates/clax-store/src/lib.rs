@@ -109,6 +109,7 @@ pub mod briefs;
 pub mod browser_login;
 pub mod capability_approvals;
 pub mod changelog;
+pub mod confirmations;
 pub mod credits;
 pub mod device;
 pub mod docs;

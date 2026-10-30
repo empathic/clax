@@ -11,6 +11,8 @@ use std::future::Future;
 /// when the CLI is one ([`Client::agent`]), naming the CLI as its channel
 /// (audit spec §6.9), and signing every request for a remote daemon. The
 /// one `DaemonClient` the CLI makes (`crates/clax-commands/clippy.toml`).
+/// A decision the daemon holds for the owner's browser is waited out as
+/// the CLI's own client waits ([`DaemonClient::waiting_for_confirmations`]).
 #[allow(clippy::disallowed_methods)]
 fn daemon_client(c: &Client) -> DaemonClient {
     let d = DaemonClient::with_channel(c.base.clone(), c.token.clone(), None, c.agent);
@@ -19,6 +21,7 @@ fn daemon_client(c: &Client) -> DaemonClient {
         None => d,
     }
     .with_via("cli")
+    .waiting_for_confirmations(crate::client::tell_stderr)
 }
 
 /// Runs `f` with the tool set for the daemon (started if needed) and returns

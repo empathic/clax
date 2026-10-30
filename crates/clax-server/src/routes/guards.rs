@@ -184,6 +184,9 @@ mod l10 {
         ("extension::status", Token),
         ("extension::mint", Token),
         ("login::create", Token),
+        ("confirmations::get_one", Token),
+        ("confirmations::list", Owner),
+        ("confirmations::answer", NoArtifact),
         ("extension::revoke", Token),
         ("stream::open", Filtered),
         ("stream::open_socket", Filtered),
@@ -356,6 +359,7 @@ mod l10 {
             "room" => include_str!("room.rs"),
             "live_layers" => include_str!("live_layers.rs"),
             "login" => include_str!("login.rs"),
+            "confirmations" => include_str!("confirmations.rs"),
             "sample" => include_str!("sample.rs"),
             "sessions" => include_str!("sessions.rs"),
             "settings" => include_str!("settings.rs"),
@@ -550,6 +554,10 @@ mod l10 {
         (
             "login::create",
             "mints a one-use login code a browser of this machine redeems at GET /login; changes no one's content",
+        ),
+        (
+            "confirmations::answer",
+            "answers a browser confirmation; the decision it lets through is audited when its call is made again",
         ),
         (
             "app_bundles::record_install",
@@ -1738,6 +1746,8 @@ mod agents {
         "questions::decline",
         "questions::release_owner",
         "questions::pull",
+        "confirmations::list",
+        "confirmations::answer",
         "live::site",
         "events::events",
         "stream::open",

@@ -41,11 +41,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, PoisonError, RwLock};
 
 /// The live owner browser sessions, by their cookie's SHA-256 (lowercase
-/// hex), each with its expiry. A panic while the lock is held does not
-/// poison later requests: every change inserts or removes one entry.
+/// hex), each with its expiry and whether its login code was minted while
+/// an agent session was live ([`OwnerSessions::minted_while_agent`]). A
+/// panic while the lock is held does not poison later requests: every
+/// change inserts or removes one entry.
 pub struct OwnerSessions {
     clock: Arc<dyn Clock>,
-    map: RwLock<HashMap<String, DateTime<Utc>>>,
+    map: RwLock<HashMap<String, (DateTime<Utc>, bool)>>,
 }
 
 impl OwnerSessions {
@@ -66,7 +68,7 @@ impl OwnerSessions {
         let mut map = s.map.write().unwrap_or_else(PoisonError::into_inner);
         for live in st.live_owner_sessions()? {
             if let Some(at) = parse(&live.expires_at) {
-                map.insert(live.sha256, at);
+                map.insert(live.sha256, (at, live.minted_while_agent));
             }
         }
         drop(map);
@@ -81,20 +83,34 @@ impl OwnerSessions {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .get(sha256)
-            .is_some_and(|at| *at > now)
+            .is_some_and(|(at, _)| *at > now)
     }
 
-    /// Opens a session in `st` and counts it live: its cookie value.
+    /// Whether the session whose cookie's SHA-256 is `sha256` was opened by
+    /// a login code minted while an agent session was live: an agent
+    /// holding the token could have minted it for a browser it drives, so
+    /// such a session confirms no decision ([`crate::confirm`]). False for
+    /// a session not held here.
+    pub fn minted_while_agent(&self, sha256: &str) -> bool {
+        self.map
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(sha256)
+            .is_some_and(|(_, minted)| *minted)
+    }
+
+    /// Opens a session in `st`, marked `minted_while_agent` when its login
+    /// code was, and counts it live: its cookie value.
     ///
     /// # Errors
     /// The store's.
-    pub fn open(&self, st: &Store) -> clax_core::Result<Secret> {
-        let (secret, live) = st.open_owner_session()?;
+    pub fn open(&self, st: &Store, minted_while_agent: bool) -> clax_core::Result<Secret> {
+        let (secret, live) = st.open_owner_session(minted_while_agent)?;
         if let Some(at) = parse(&live.expires_at) {
             self.map
                 .write()
                 .unwrap_or_else(PoisonError::into_inner)
-                .insert(live.sha256, at);
+                .insert(live.sha256, (at, live.minted_while_agent));
         }
         Ok(secret)
     }
@@ -123,7 +139,8 @@ fn parse(at: &str) -> Option<DateTime<Utc>> {
 /// Marks a request that carries an owner browser credential: a live
 /// session's cookie (`session` is its SHA-256), as the owner cookie
 /// (`owner`) or the events cookie (`events`, which stands for the token on
-/// the event streams alone) or both; or the app's key cookie or the
+/// the event streams alone) or both; or the app's key cookie
+/// ([`OwnerSession::key`], `key`: its value is the token itself) or the
 /// in-process app's own frame ([`OwnerSession::browser`]). Only
 /// [`sessions`] and the in-process app's request builder insert it.
 #[derive(Clone, Debug)]
@@ -131,16 +148,29 @@ pub struct OwnerSession {
     pub session: Option<String>,
     pub owner: bool,
     pub events: bool,
+    pub key: bool,
 }
 
 impl OwnerSession {
-    /// The mark of a browser of the owner's that holds no session of its
-    /// own: the key cookie's, or the in-process app's frame.
+    /// The mark of the in-process app's own frame: a browser of the
+    /// owner's that holds no session of its own, and that no request from
+    /// the network can carry.
     pub fn browser() -> OwnerSession {
         OwnerSession {
             session: None,
             owner: true,
             events: false,
+            key: false,
+        }
+    }
+
+    /// The mark of the app's key cookie, whose value is the daemon token:
+    /// anyone holding the token can send it, so it confirms no decision
+    /// ([`crate::confirm`]).
+    pub fn key() -> OwnerSession {
+        OwnerSession {
+            key: true,
+            ..OwnerSession::browser()
         }
     }
 }
@@ -177,6 +207,7 @@ pub fn live_session(headers: &HeaderMap, sessions: &OwnerSessions) -> Option<Own
         owner: owner.is_some(),
         events: events.is_some(),
         session: Some(owner.or(events)?),
+        key: false,
     })
 }
 
@@ -188,7 +219,7 @@ pub fn live_session(headers: &HeaderMap, sessions: &OwnerSessions) -> Option<Own
 pub async fn sessions(State(s): State<AppState>, mut req: Request, next: Next) -> Response {
     if s.hosted.is_none() {
         let mark = live_session(req.headers(), &s.owner_sessions).or_else(|| {
-            crate::auth::has_key_cookie(req.headers(), &s.token).then(OwnerSession::browser)
+            crate::auth::has_key_cookie(req.headers(), &s.token).then(OwnerSession::key)
         });
         if let Some(m) = mark {
             req.extensions_mut().insert(m);
@@ -468,11 +499,10 @@ mod tests {
         let clock = Arc::new(ManualClock::at("2026-10-29T10:00:00Z"));
         let sessions = OwnerSessions::new(clock.clone());
         let live = "cxb_live";
-        sessions
-            .map
-            .write()
-            .unwrap()
-            .insert(sha256_hex(live), parse("2026-10-30T10:00:00Z").unwrap());
+        sessions.map.write().unwrap().insert(
+            sha256_hex(live),
+            (parse("2026-10-30T10:00:00Z").unwrap(), false),
+        );
         let mut h = HeaderMap::new();
         h.insert(header::HOST, "localhost:7480".parse().unwrap());
         h.insert(

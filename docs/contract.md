@@ -2470,6 +2470,85 @@ non-zero exit counts as not opened. On Linux, `xdg-open <url>` takes the
 link as an argument, and `GET /login` redeems it only for a browser of the
 daemon's own user.
 
+A login code made while an agent session is live says so, and so does the
+session it opens: an agent holding the token could have made it for a
+browser it drives, so that session confirms no decision (below).
+
+### Browser confirmations
+
+An agent running as the owner's OS user can read the daemon token. So
+while any agent session has not ended, a short list of decisions made
+without a browser the owner opened waits for the owner's click in one:
+
+1. answering a question an agent asked (`POST /api/questions/<qid>/answer`);
+2. pushing an artifact to a public Clax (`POST /api/artifacts/<aid>/push`,
+   the owner's own push);
+3. connecting a public Clax (`POST /api/remotes`);
+4. widening who may open a page: its site to the world (`PATCH
+   /api/artifacts/<aid>` `{site_access: "world"}` for a site not open
+   yet), and its public copy's link access (`PUT
+   /api/remotes/<rid>/artifacts/<raid>/sharing/link` with an `access`,
+   or `listed: true`);
+5. approving a machine's connection (`POST /api/grants/<gid>/approve`),
+   setting a person's rights (`PUT /api/people/<id>/rights`) and revoking
+   a person (`DELETE /api/people/<id>`).
+
+Who waits: the owner calling with the token and no browser credential,
+with the app's key cookie (its value is the token), or from a browser
+session whose login code was made while an agent session was live
+(decisions 1 to 4; decision 5 refuses the token alone as before, 403
+`browser_required`). An owner browser session opened otherwise, the
+in-process app's frame and the extension decide at once, as does
+everyone while no agent session is live. The owner's agents, people and
+their agents keep what each route answers them already.
+
+The call that waits answers 202, changes nothing, and names the
+confirmation in its `X-Clax-Confirmation` response header:
+
+```json
+{"status": "confirmation_pending", "confirmation_id": "cf_…",
+ "confirm_url": "http://localhost:7480/inbox?confirm=cf_…",
+ "decision": "push “Plan” to https://clax.dev", "expires_at": "…"}
+```
+
+The same call made again while it is open answers the same confirmation.
+Made again with `X-Clax-Confirmation: <confirmation_id>`, it goes ahead
+once the owner approved, and the confirmation is spent; it answers 202
+again while it is open, 403 `declined` once declined, 410
+`confirmation_expired` ten minutes after it was made (answered or not,
+unused), 409 `confirmation_used` once spent, 403
+`confirmation_mismatch` for a confirmation of another decision (another
+question, answer, page, remote, mode, person or rights), and 404
+`unknown_confirmation` for an ID none has.
+
+- `GET /api/confirmations` (the owner) → `{confirmations}`: the open ones,
+  oldest first, each `{id, status, created_at, expires_at, answered_at,
+  used_at, decision, words, confirm_url, agents}`: `decision` as recorded,
+  `words` the decision in words, `agents` the agent sessions live now
+  (`{name, harness, handle, cwd, started_at}`). 403 `not_for_agents` for
+  the owner's agents.
+- `GET /api/confirmations/<id>?wait=<s>` (the token) → `{confirmation}`;
+  while it is open, the answer waits up to `s` seconds (at most 50) for
+  the owner's answer. 404 for none with that ID.
+- `POST /api/confirmations/<id> {approve}` (the owner's browser: an owner
+  browser session whose login code was made while no agent session was
+  live, or the in-process app's frame; `SameOrigin`) → `{confirmation}`.
+  403 `browser_required` for the token, the key cookie, the extension
+  and a session made while an agent was live; 410 `confirmation_expired`;
+  409 `confirmation_answered`.
+
+Every change publishes a `confirmation` event `{confirmation}` on the
+owner's `inbox` stream topic. The shell shows each open one as a card in
+the inbox and as a toast on every page of the owner's: "Confirm: <words>",
+the agent sessions live now, and **Confirm** / **Decline**.
+
+The CLI waits on every such call the same way: it prints one line,
+`Confirm in your browser: <confirm_url>`, to stderr, long-polls `GET
+/api/confirmations/<id>?wait=50` until the owner answers, and makes its
+call again with the confirmation's ID. The MCP tools hand the 202 to the
+agent as an error, code `confirmation_pending`, message `Confirm in your
+browser: <confirm_url>`, with `confirmation_id` and `confirm_url`.
+
 ### Versions, seen marks and attention
 
 Every thread view carries `addressed_in`: the versions linked to the thread
@@ -5032,6 +5111,9 @@ event.
   sent instead when one transaction changed more than 50 items. It means
   "refetch what you show". `ids` is always null, and `read` is always true,
   even after a bulk unread mark.
+- **`confirmation`**, `{topic: "inbox", confirmation: <view>}`, the
+  owner's streams alone: a browser confirmation was asked for or
+  answered ("Browser confirmations").
 
 The changes of transactions that commit concurrently may be announced out
 of commit order. Clients order items by `seq` and upsert by `id`. While no
@@ -5601,6 +5683,9 @@ router), and a test fails when it differs:
 | `GET /api/bot/runs/{id}/events` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/browser-login` | Denied | no |
 | `POST /api/client-imports/{key}` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/confirmations` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/confirmations/{id}` | Denied | no |
+| `POST /api/confirmations/{id}` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/core/trim` | Denied | no |
 | `GET /api/drafts` | Denied | no |
 | `POST /api/drafts` | Denied | no |

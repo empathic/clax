@@ -6,7 +6,7 @@
 
 use clax_core::ArtifactId;
 use clax_testkit::TestServer;
-use clax_testkit::remotes::{Public, connect, connect_with, json_of, local_req, post};
+use clax_testkit::remotes::{Public, connect, connect_with, json_of, local_req, owner_post, post};
 use reqwest::header::HOST;
 use serde_json::{Value, json};
 
@@ -97,7 +97,7 @@ async fn a_push_publishes_every_version_with_its_authorship_and_later_ones_follo
         .await;
     assert_eq!(toks["tokens"][0]["id"], remote["grant_id"], "{toks}");
     let aid = three_versions(&local).await;
-    let (s, v) = post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
+    let (s, v) = owner_post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["status"], "pushed");
     assert_eq!(v["pushed"].as_array().unwrap().len(), 3, "{v}");
@@ -166,7 +166,7 @@ async fn a_push_publishes_every_version_with_its_authorship_and_later_ones_follo
     assert_eq!(a.title, "Plan");
     assert_eq!(a.authors.creator.as_deref(), Some(sam.as_str()));
     // Nothing new: nothing pushed.
-    let (s, v) = post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
+    let (s, v) = owner_post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
     assert_eq!(
         (s, v["pushed"].as_array().map(Vec::len)),
         (200, Some(0)),
@@ -190,7 +190,7 @@ async fn a_push_publishes_every_version_with_its_authorship_and_later_ones_follo
     )
     .await;
     assert_eq!((s, v["links"][0]["behind"].as_u64()), (200, Some(1)), "{v}");
-    let (s, v) = post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
+    let (s, v) = owner_post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["pushed"], json!([{"n": 4, "remote_n": 4}]));
     let (_, pv) = public
@@ -209,7 +209,7 @@ async fn a_push_is_refused_when_the_public_copy_moved_and_goes_new_or_onto_a_for
     let local = TestServer::spawn().await;
     connect(&local, &public).await;
     let aid = three_versions(&local).await;
-    let (s, v) = post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
+    let (s, v) = owner_post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
     assert_eq!(s, 200, "{v}");
     let rid = v["link"]["remote_artifact_id"]
         .as_str()
@@ -232,7 +232,7 @@ async fn a_push_is_refused_when_the_public_copy_moved_and_goes_new_or_onto_a_for
         None,
     )
     .await;
-    let (s, v) = post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
+    let (s, v) = owner_post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
     assert_eq!((s, code(&v)), (409, "remote_moved"), "{v}");
     assert_eq!(
         (
@@ -248,7 +248,7 @@ async fn a_push_is_refused_when_the_public_copy_moved_and_goes_new_or_onto_a_for
         .await;
     assert_eq!(pv["artifact"]["current_version"], 4);
     // Onto a fork of the public copy at the version pushed last.
-    let (s, v) = post(
+    let (s, v) = owner_post(
         &local,
         &format!("/api/artifacts/{aid}/push"),
         json!({"mode": "fork"}),
@@ -274,7 +274,7 @@ async fn a_push_is_refused_when_the_public_copy_moved_and_goes_new_or_onto_a_for
         "{fv}"
     );
     // As a new public artifact: every version again.
-    let (s, v) = post(
+    let (s, v) = owner_post(
         &local,
         &format!("/api/artifacts/{aid}/push"),
         json!({"mode": "new"}),
@@ -324,16 +324,25 @@ async fn an_agents_push_waits_for_the_owners_approval_in_the_browser() {
         (202, Some("approval_pending")),
         "{v}"
     );
-    // An answer through the daemon token (what an agent holds too) does not count.
-    let (s, _) = post(
+    // An answer through the daemon token (what an agent holds too) waits
+    // for the owner's browser while the agent is live, and answers nothing.
+    let (s, v) = post(
         &local,
         &format!("/api/questions/{qid}/answer"),
         json!({"answers": [{"selected": ["Publish and push new versions"]}]}),
     )
     .await;
-    assert_eq!(s, 200);
+    assert_eq!(
+        (s, v["status"].as_str()),
+        (202, Some("confirmation_pending")),
+        "{v}"
+    );
     let (s, v) = push(json!({"question_id": qid})).await;
-    assert_eq!((s, code(&v)), (403, "not_approved"), "{v}");
+    assert_eq!(
+        (s, v["status"].as_str()),
+        (202, Some("approval_pending")),
+        "{v}"
+    );
     // Asked anew, answered in the owner's browser: pushed, and new versions follow.
     let (s, v) = push(json!({})).await;
     assert_eq!(s, 202, "{v}");
@@ -428,16 +437,16 @@ async fn remotes_are_the_owners_and_a_hosted_daemon_has_none() {
     )
     .await;
     assert_eq!((s, code(&v)), (403, "not_for_agents"), "{v}");
-    let (s, v) = post(&local, "/api/remotes", json!({"url": "http://example.com"})).await;
+    let (s, v) = owner_post(&local, "/api/remotes", json!({"url": "http://example.com"})).await;
     assert_eq!((s, code(&v)), (400, "invalid_args"), "{v}");
     let aid = local.publish("P", &[("index.html", "x")]).await["artifact"]["id"]
         .as_str()
         .unwrap()
         .to_string();
-    let (s, v) = post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
+    let (s, v) = owner_post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
     assert_eq!((s, code(&v)), (404, "no_remote"), "{v}");
     // A remote denied there is forgotten here.
-    let (s, v) = post(
+    let (s, v) = owner_post(
         &local,
         "/api/remotes",
         json!({"url": public.origin, "name": "pub"}),
@@ -453,7 +462,7 @@ async fn remotes_are_the_owners_and_a_hosted_daemon_has_none() {
         )
         .await;
     assert_eq!(s, 204);
-    let (s, v) = post(&local, "/api/remotes/pub/poll", json!({})).await;
+    let (s, v) = owner_post(&local, "/api/remotes/pub/poll", json!({})).await;
     assert_eq!((s, v["status"].as_str()), (200, Some("denied")), "{v}");
     let (_, v) = local_req(
         &local,
@@ -568,7 +577,7 @@ async fn a_push_whose_answer_was_lost_is_answered_the_version_it_made() {
         (201, Some(rid.as_str())),
         "{again}"
     );
-    let (s, v) = post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
+    let (s, v) = owner_post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["link"]["remote_artifact_id"], rid.as_str(), "{v}");
     assert_eq!(v["pushed"], json!([{"n": 1, "remote_n": 1}]));
@@ -591,7 +600,7 @@ async fn a_push_whose_answer_was_lost_is_answered_the_version_it_made() {
     )
     .await;
     assert_eq!(s, 201, "{v}");
-    let (s, v) = post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
+    let (s, v) = owner_post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["pushed"], json!([{"n": 2, "remote_n": 2}]));
     let (_, pv) = public
@@ -667,7 +676,7 @@ async fn a_pages_assets_are_uploaded_and_its_references_rewritten() {
     )
     .await;
     // A new public artifact whose first version loads an asset.
-    let (s, v) = post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
+    let (s, v) = owner_post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(
         v["pushed"],
@@ -704,13 +713,13 @@ async fn a_pages_assets_are_uploaded_and_its_references_rewritten() {
         None,
     )
     .await;
-    let (s, v) = post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
+    let (s, v) = owner_post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["pushed"], json!([{"n": 3, "remote_n": 3}]));
     assert_eq!(public.ts.store.list_assets(&rid_id).unwrap().len(), 1);
     // The by-hand harness is another Clax's alone: not the daemon token's,
     // nor an agent token minted on People for an agent.
-    let (s, v) = post(
+    let (s, v) = owner_post(
         &local,
         "/api/sessions",
         json!({"harness": "clax", "cwd": ""}),
@@ -747,7 +756,7 @@ async fn a_refused_automatic_push_reaches_the_owners_inbox() {
     let local = TestServer::spawn().await;
     connect(&local, &public).await;
     let aid = three_versions(&local).await;
-    let (s, v) = post(
+    let (s, v) = owner_post(
         &local,
         &format!("/api/artifacts/{aid}/push"),
         json!({"auto": true}),
@@ -915,7 +924,7 @@ async fn a_sign_in_names_the_page_to_return_to() {
     let port = local.addr.port();
     // A path on this daemon's own origin alone.
     for bad in ["https://evil.example/", "//evil.example/a", "a/x", "/a\\x"] {
-        let (s, v) = post(
+        let (s, v) = owner_post(
             &local,
             "/api/remotes",
             json!({"url": public.origin, "return_to": bad}),
@@ -968,14 +977,14 @@ async fn a_clax_app_sign_in_names_its_kind_to_the_remote() {
     let public = Public::new().await;
     let local = TestServer::spawn().await;
     // The Clax app's kind alone.
-    let (s, v) = post(
+    let (s, v) = owner_post(
         &local,
         "/api/remotes",
         json!({"url": public.origin, "kind": "clax-cli"}),
     )
     .await;
     assert_eq!((s, code(&v)), (400, "invalid_args"), "{v}");
-    let (s, v) = post(
+    let (s, v) = owner_post(
         &local,
         "/api/remotes",
         json!({"url": public.origin, "kind": "clax-app", "machine": "Clax on Pixel"}),
@@ -1007,7 +1016,7 @@ async fn a_clax_app_sign_in_names_its_kind_to_the_remote() {
         .await;
     assert_eq!((s, &v["token"]["kind"]), (200, &json!("device")), "{v}");
     public.clock.advance(5);
-    let (s, v) = post(&local, &format!("/api/remotes/{id}/poll"), json!({})).await;
+    let (s, v) = owner_post(&local, &format!("/api/remotes/{id}/poll"), json!({})).await;
     assert_eq!((s, v["status"].as_str()), (200, Some("connected")), "{v}");
     // Its token is the person's device's: it reaches their apps library.
     let token = token_of(&local);

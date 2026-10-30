@@ -859,6 +859,8 @@ fn routes_loud(ev: &Event) -> Vec<(Chan, Gate)> {
             v
         }
         Event::People { .. } => vec![(Chan::People, Gate::Any)],
+        // The owner's alone: the owner's inbox topic.
+        Event::Confirmation { .. } => vec![(Chan::Inbox(String::new()), Gate::Any)],
         // The switch, and what of the declaration is in force, are shown
         // to everyone who may open the artifact.
         Event::Comments { .. } | Event::Permissions { .. } => {

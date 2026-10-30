@@ -31,7 +31,10 @@
   // page, under its header: a chip filters the inbox by its agent; it is
   // fetched again with the list. Tags, beside Page, picks tags (a list with
   // a search, `ui/TagPicker.svelte`): the items about artifacts carrying
-  // every one picked.
+  // every one picked. Above everything, the decisions waiting for the
+  // owner's confirmation (`ConfirmationCard`: "Confirm: <decision>", with
+  // the agent sessions live now); `?confirm=<id>`, the address the CLI and
+  // the 202 name, focuses its card.
   import { onMount } from "svelte";
   import { type InboxFilter, type InboxItem, type InboxKind, type StripAgent, type TagRef, getToken, listArtifacts } from "../api";
   import TagPicker from "../ui/TagPicker.svelte";
@@ -47,6 +50,8 @@
   import { INBOX_KINDS, filterFromUrl, filterToUrl } from "./inbox-filter";
   import { GROUP_PAGE, GROUP_ROWS, type Group, MAX_GROUP_PAGE, MORE_ROWS, appendGroups, appendRows, fromWire, groupKey, mergeGroups, takeItem } from "./inbox-groups";
   import ApprovalCard from "../people/ApprovalCard.svelte";
+  import ConfirmationCard from "./ConfirmationCard.svelte";
+  import { confirmations } from "./confirm.svelte";
   import ConnectionCard from "../people/ConnectionCard.svelte";
   import InboxGroup from "./InboxGroup.svelte";
   import InboxRow from "./InboxRow.svelte";
@@ -66,6 +71,20 @@
   };
   const p: Props = $props();
   const inbox = $derived(p.inbox ?? shared().inbox);
+  const confirming = confirmations();
+  // `?confirm=<id>`: that confirmation's card takes focus once it is listed.
+  let confirmTarget = $state(new URLSearchParams(location.search).get("confirm"));
+  $effect(() => {
+    const id = confirmTarget;
+    if (!id || !confirming.open.some(c => c.id === id)) return;
+    queueMicrotask(() => {
+      const el = [...document.querySelectorAll<HTMLElement>(".ccard")].find(e => e.dataset.confirmation === id);
+      if (!el) return;
+      el.focus({ preventScroll: true });
+      el.scrollIntoView?.({ block: "center" });
+      confirmTarget = null;
+    });
+  });
   const questions = $derived(p.questions ?? shared().questions);
 
   /** How long typing waits before the search applies. */
@@ -372,6 +391,7 @@
     void getToken().then(t => { owner = !!t; });
     void listArtifacts().then(a => { artifacts = a.map(x => [x.id, x.title]); }, () => {});
     void loadTags();
+    void confirming.refresh();
     // The tags themselves changed (made, renamed, recoloured, deleted).
     const offTags = p.stream?.watch(["gallery"], e => { if (e.type === "tags" && e.artifact_id == null) void loadTags(); });
     // Fetched once on open: now, or when the inbox topic first goes live.
@@ -452,6 +472,13 @@
   </div>
 
   {#if error}<p class="err" role="alert">{error}</p>{/if}
+
+  {#if confirming.open.length}
+    <section class="sec" aria-label="Waiting for your confirmation">
+      <h3 class="pinned-h">Confirm in your browser<span class="c">{fmt(confirming.open.length)}</span></h3>
+      <div class="dlist">{#each confirming.open as c (c.id)}<ConfirmationCard {c} now={p.now} />{/each}</div>
+    </section>
+  {/if}
 
   <section class="sec" aria-label="Items">
     {#if !list}

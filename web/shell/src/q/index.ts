@@ -31,14 +31,24 @@ let started = false;
 // What `start` set up, undone by `stop`.
 let undo: (() => void)[] = [];
 
-/** Starts the page's feeds (once), the count in the title and icon, and
- * notifications. Only a browser with an inbox loads this module. */
+/** Starts the page's feeds (once), the count in the title and icon,
+ * notifications, and the toasts of the decisions waiting for the owner's
+ * confirmation (`confirm-live`, loaded once the inbox topic goes live).
+ * Only a browser with an inbox loads this module. */
 export function start(stream: EventStream): void {
   if (started) return;
   started = true;
   const { inbox, questions } = shared();
   inbox.start(stream);
   questions.start(stream);
+  // The confirmations' feed and toasts load once the inbox topic goes live
+  // (`confirm-live`), which a browser that is not the owner's never fills.
+  let following = false;
+  const follow = (e: { type: string }) => {
+    if (following || !["ready", "resync", "confirmation"].includes(e.type)) return;
+    following = true;
+    void import("./confirm-live").then(m => { if (started) undo.push(m.follow(inbox)); }, () => { following = false; });
+  };
   // The notifier's code loads with the first notification asked for.
   let notifier: Notifier | undefined;
   undo.push(
@@ -51,6 +61,7 @@ export function start(stream: EventStream): void {
     // A bulk mark says only what is left: none left, none shows.
     inbox.onCount(n => { if (!n) notifier?.closeAll(); }),
     () => setBadge(document, 0),
+    inbox.hear(follow),
   );
 }
 

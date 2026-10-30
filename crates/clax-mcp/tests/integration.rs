@@ -13,6 +13,8 @@ mod calls;
 mod channel;
 #[cfg(any(not(clax_split), clax_split = "comments"))]
 mod comments;
+#[cfg(any(not(clax_split), clax_split = "confirmations"))]
+mod confirmations;
 #[cfg(any(not(clax_split), clax_split = "db"))]
 mod db;
 #[cfg(any(not(clax_split), clax_split = "live"))]

@@ -191,6 +191,7 @@ pub async fn events(
                 | Event::InboxRead { .. }
                 | Event::ApprovalRequest { .. }
                 | Event::People { .. }
+                | Event::Confirmation { .. }
                 | Event::Agents { .. }
                 | Event::Job { .. }
                 | Event::JobsOwner { .. }

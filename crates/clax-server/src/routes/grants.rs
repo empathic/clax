@@ -854,11 +854,16 @@ pub struct ApproveBody {
 /// GitHub members' own space, else the collaborator preset. 400 `wrong_code` for another code (the third denies the
 /// request); 400 `invalid_args` for a body naming an existing viewer or the
 /// owner, which take an invite; 409 `name_taken`; 409 `not_pending`.
+/// While an agent session is live, a browser session opened by a login
+/// code minted while one was live waits for a click in a browser the
+/// owner opened otherwise: 202 `confirmation_pending`
+/// ([`clax_http::confirm`]).
 pub async fn approve(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
+    by: clax_http::confirm::Confirming,
     audit: DeferredAudit,
     gid: Result<Path<String>, PathRejection>,
     req: Result<Json<ApproveBody>, JsonRejection>,
@@ -875,6 +880,12 @@ pub async fn approve(
     let (Some(code), Some(name)) = (b.user_code, b.name) else {
         return Err(invalid_args("send the request's user_code and a name"));
     };
+    let decision = clax_http::confirm::Decision::ApproveGrant {
+        grant_id: gid.clone(),
+        name: name.clone(),
+        rights: b.rights.clone().unwrap_or(Value::Null),
+    };
+    clax_http::confirm::require_confirmation(&s, &caller, &by, decision).await?;
     let rights = b.rights.as_ref().map(Rights::parse).transpose()?;
     // A hosted daemon's new person gets their own space, as an invitee's.
     let rights = match rights {

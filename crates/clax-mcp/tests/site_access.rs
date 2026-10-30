@@ -108,16 +108,15 @@ async fn an_agent_opening_to_the_world_waits_for_approval() {
     .await;
     assert!(err && v["error"]["code"] == "not_approved", "{v}");
     assert!(!open_to_anyone(&ts, &aid).await);
-    // The owner by hand opens it at once.
+    // The owner by hand opens it once they confirm in their browser, as
+    // the agent is live (`clax_http::confirm`).
     let res = ts
-        .authed(
-            ts.client
-                .patch(format!("{}/api/artifacts/{aid}", ts.base))
-                .json(&json!({"site_access": "world"})),
+        .confirmed(
+            reqwest::Method::PATCH,
+            &format!("/api/artifacts/{aid}"),
+            json!({"site_access": "world"}),
         )
-        .send()
-        .await
-        .unwrap();
+        .await;
     assert_eq!(res.status(), 200);
     assert!(open_to_anyone(&ts, &aid).await);
     // A remote or a mode is another kind of publishing.

@@ -41,6 +41,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::{ArtifactId, CoreError, Secret};
 use clax_http::agent::DeniedToGrants;
+use clax_http::confirm::{Confirming, Decision, require_confirmation};
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
 use clax_http::identity::Identity;
@@ -575,18 +576,40 @@ async fn put_sharing(
 
 /// `PUT /api/remotes/<rid>/artifacts/<raid>/sharing/link {access,
 /// listed?}` (the owner) → the remote's `PUT
-/// /api/hosted/artifacts/<raid>/link`.
+/// /api/hosted/artifacts/<raid>/link`. A change that may widen who opens
+/// the public copy (an `access`, so anyone with the link, or `listed:
+/// true`, so the public gallery) made with the token alone while an agent
+/// session is live waits for a click in the owner's browser first: 202
+/// `confirmation_pending` ([`clax_http::confirm`]).
 pub async fn put_link(
     State(s): State<AppState>,
     d: DeniedToGrants,
     who: Identity,
     _o: SameOrigin,
+    by: Confirming,
     p: Result<Path<(String, String)>, PathRejection>,
     sent: Bytes,
 ) -> Result<Response, ApiError> {
     super::remotes::local_only(&s)?;
     d.refuse_agents()?;
     who.require_owner("reaches a public Clax")?;
+    let change: Value = serde_json::from_slice(&sent)
+        .map_err(|_| ApiError::bad_request("invalid_json", "the body is not JSON"))?;
+    let widens = !change["access"].is_null() || change["listed"] == true;
+    if widens && let Ok(Path((rid, raid))) = &p {
+        let decision = Decision::Widen {
+            artifact_id: raid.clone(),
+            to: if change["listed"] == true {
+                "public"
+            } else {
+                "link"
+            }
+            .into(),
+            remote_id: Some(rid.clone()),
+            body: Some(change.clone()),
+        };
+        require_confirmation(&s, &d.caller(&s).await?, &by, decision).await?;
+    }
     put_sharing(&s, &d, p, "link", &sent).await
 }
 

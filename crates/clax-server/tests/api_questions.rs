@@ -883,15 +883,17 @@ async fn the_cli_token_answers_as_the_cli() {
         .as_str()
         .unwrap()
         .to_string();
-    let v: Value = post(
-        &ts,
-        &format!("/api/questions/{qid}/answer"),
-        json!({"answers": [{"selected": ["B"]}]}),
-    )
-    .await
-    .json()
-    .await
-    .unwrap();
+    let path = format!("/api/questions/{qid}/answer");
+    let answer = json!({"answers": [{"selected": ["B"]}]});
+    // While its agent is live, the token's answer waits for the owner's browser.
+    let held = post(&ts, &path, answer.clone()).await;
+    assert_eq!(held.status(), 202);
+    let v: Value = ts
+        .confirmed(reqwest::Method::POST, &path, answer)
+        .await
+        .json()
+        .await
+        .unwrap();
     assert_eq!(v["question"]["answered_via"], "cli");
 }
 
@@ -1690,12 +1692,13 @@ async fn each_question_route_records_its_transition_once() {
     )
     .await;
     assert_eq!(r.status(), 200);
-    let r = post(
-        &ts,
-        &format!("/api/questions/{by_cli}/answer"),
-        json!({"answers": [{"selected": ["B"]}]}),
-    )
-    .await;
+    let r = ts
+        .confirmed(
+            reqwest::Method::POST,
+            &format!("/api/questions/{by_cli}/answer"),
+            json!({"answers": [{"selected": ["B"]}]}),
+        )
+        .await;
     assert_eq!(r.status(), 200);
     assert_eq!(
         question_events(&ts, seq),

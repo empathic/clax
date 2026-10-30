@@ -1860,7 +1860,24 @@ pub const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL,
         ended_at TEXT
-    ) WITHOUT ROWID;",
+    ) WITHOUT ROWID;
+    -- Browser confirmation (`crate::confirmations`): a decision made with
+    -- the daemon token while an agent session is live waits for a click in
+    -- the owner's browser. A login code minted while an agent session was
+    -- live marks the browser session it opens, which then confirms
+    -- nothing. `decision_json` is the decision a confirmation is bound
+    -- to; `used_at` marks the one call it let through.
+    ALTER TABLE login_codes ADD COLUMN minted_while_agent INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE owner_browser_sessions ADD COLUMN minted_while_agent INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE confirmations (
+        id TEXT PRIMARY KEY,
+        decision_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('open','approved','declined','expired')),
+        created_at TEXT NOT NULL,
+        answered_at TEXT,
+        used_at TEXT
+    ) WITHOUT ROWID;
+    -- End of browser confirmation.",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -5149,6 +5166,7 @@ mod tests {
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
         }
+        assert_eq!(table_count(&c, "confirmations"), 1);
     }
 
     /// Migration 48 as builds before `linked_comments.author_key` made it.

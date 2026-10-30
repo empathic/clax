@@ -168,6 +168,13 @@ pub async fn post(ts: &TestServer, path: &str, body: Value) -> (u16, Value) {
     local_req(ts, reqwest::Method::POST, path, body, None).await
 }
 
+/// [`post`] as the owner by hand who confirms in their browser what the
+/// daemon holds for a confirmation while an agent is live
+/// ([`TestServer::confirmed`]).
+pub async fn owner_post(ts: &TestServer, path: &str, body: Value) -> (u16, Value) {
+    json_of(ts.confirmed(reqwest::Method::POST, path, body).await).await
+}
+
 /// Signs `local` in to `public` by device code, the public owner
 /// approving; the remote's view.
 pub async fn connect(local: &TestServer, public: &Public) -> Value {
@@ -197,17 +204,29 @@ pub async fn connect_with(
     body: Value,
     return_to: Option<&str>,
 ) -> Value {
-    let mut req = local
-        .authed(local.client.post(format!("{}/api/remotes", local.base)))
-        .json(&body);
-    if let Some(to) = return_to {
-        let host = to
-            .strip_prefix("http://")
-            .and_then(|r| r.split('/').next())
-            .expect("an http address");
-        req = req.header(HOST, host);
+    let req = |confirm: Option<&str>| {
+        let mut req = local
+            .authed(local.client.post(format!("{}/api/remotes", local.base)))
+            .json(&body);
+        if let Some(to) = return_to {
+            let host = to
+                .strip_prefix("http://")
+                .and_then(|r| r.split('/').next())
+                .expect("an http address");
+            req = req.header(HOST, host);
+        }
+        if let Some(id) = confirm {
+            req = req.header(clax_core::confirm::CONFIRMATION_HEADER, id);
+        }
+        req
+    };
+    let (mut s, mut v) = json_of(req(None).send().await.unwrap()).await;
+    // While an agent is live, the owner confirms in their browser first.
+    if s == 202 && v["status"] == "confirmation_pending" {
+        let id = v["confirmation_id"].as_str().unwrap().to_string();
+        local.confirm(&id, true).await;
+        (s, v) = json_of(req(Some(&id)).send().await.unwrap()).await;
     }
-    let (s, v) = json_of(req.send().await.unwrap()).await;
     assert_eq!(s, 201, "{v}");
     assert_eq!(v["return_to_kept"], json!(return_to.is_some()), "{v}");
     let uc = v["user_code"].as_str().unwrap().to_string();

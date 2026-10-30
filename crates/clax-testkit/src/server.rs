@@ -815,10 +815,12 @@ impl TestServer {
         let agent_gate = state.agent_gate.clone();
         let web = state.web.clone();
         let kept_state = state.clone();
+        // The owner's own browser, opened as the daemon starts: not by a
+        // code minted while an agent was live, so it confirms decisions.
         let owner_session = state.hosted.is_none().then(|| {
             state
                 .owner_sessions
-                .open(&state.store)
+                .open(&state.store, false)
                 .unwrap()
                 .expose()
                 .to_string()
@@ -1635,6 +1637,60 @@ impl TestServer {
         self.client
             .post(format!("{}/api/questions/{qid}/answer", self.base))
             .header("cookie", self.owner_cookie())
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+    }
+
+    /// Answers browser confirmation `id` in the owner's browser (the owner
+    /// cookie, a session opened before any agent's): `POST
+    /// /api/confirmations/<id> {approve}`.
+    pub async fn confirm_raw(&self, id: &str, approve: bool) -> reqwest::Response {
+        self.client
+            .post(format!("{}/api/confirmations/{id}", self.base))
+            .header("cookie", self.owner_cookie())
+            .json(&serde_json::json!({"approve": approve}))
+            .send()
+            .await
+            .unwrap()
+    }
+
+    /// [`TestServer::confirm_raw`], asserting a 200.
+    pub async fn confirm(&self, id: &str, approve: bool) {
+        let res = self.confirm_raw(id, approve).await;
+        assert_eq!(res.status(), 200, "{}", res.text().await.unwrap());
+    }
+
+    /// `method path` with the token and JSON `body`, as the owner by hand
+    /// who confirms in their browser: when the daemon holds the decision
+    /// for a browser confirmation (202 `confirmation_pending`, while an
+    /// agent session is live), the owner approves it ([`TestServer::confirm`])
+    /// and the call is made again with its ID. The final answer.
+    pub async fn confirmed(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: serde_json::Value,
+    ) -> reqwest::Response {
+        let url = format!("{}{path}", self.base);
+        let res = self
+            .authed(self.client.request(method.clone(), &url))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let held = res
+            .headers()
+            .get(clax_core::confirm::CONFIRMATION_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let Some(id) = held.filter(|_| res.status() == 202) else {
+            return res;
+        };
+        self.confirm(&id, true).await;
+        self.authed(self.client.request(method, &url))
+            .header(clax_core::confirm::CONFIRMATION_HEADER, &id)
             .json(&body)
             .send()
             .await

@@ -683,12 +683,16 @@ pub struct RightsBody {
 /// spec §7.4, M20) → `{person}`: the person's agents may do what `rights`
 /// allow (within each narrowing, beyond it where the owner elevated one)
 /// from their next request on. Recorded as `person.rights`. 400
-/// `invalid_rights`, `not_a_person`; 404 for an unknown public ID.
+/// `invalid_rights`, `not_a_person`; 404 for an unknown public ID. While
+/// an agent session is live, a browser session opened by a login code
+/// minted while one was live waits for a click in a browser the owner
+/// opened otherwise: 202 `confirmation_pending` ([`clax_http::confirm`]).
 pub async fn set_rights(
     State(s): State<AppState>,
     d: DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
+    by: clax_http::confirm::Confirming,
     audit: DeferredAudit,
     pid: Result<Path<String>, PathRejection>,
     req: Result<Json<RightsBody>, JsonRejection>,
@@ -698,6 +702,11 @@ pub async fn set_rights(
     let pid = path(pid)?;
     let b = body(req)?;
     let rights = rights_of(&b.rights)?;
+    let decision = clax_http::confirm::Decision::SetRights {
+        person: pid.clone(),
+        rights: b.rights.clone(),
+    };
+    clax_http::confirm::require_confirmation(&s, &caller, &by, decision).await?;
     let state = s.clone();
     let who = pid.clone();
     let (person, before, after) = s
@@ -726,18 +735,26 @@ pub async fn set_rights(
 /// room sockets on their sites close, a world visitor's included
 /// (`Event::SiteAccess`). Recorded as each `grant.revoke`,
 /// `invite.revoke`, then `person.revoke`. 400 `not_a_person`; 404 for an
-/// unknown public ID.
+/// unknown public ID. While an agent session is live, a browser session
+/// opened by a login code minted while one was live waits for a click in
+/// a browser the owner opened otherwise: 202 `confirmation_pending`
+/// ([`clax_http::confirm`]).
 pub async fn revoke_person(
     State(s): State<AppState>,
     d: DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
+    by: clax_http::confirm::Confirming,
     audit: DeferredAudit,
     pid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     owner_browser(&caller, "revokes a person")?;
     let pid = path(pid)?;
+    let decision = clax_http::confirm::Decision::RevokePerson {
+        person: pid.clone(),
+    };
+    clax_http::confirm::require_confirmation(&s, &caller, &by, decision).await?;
     let (state, ctx) = (s.clone(), s.feedback_ctx());
     let who = pid.clone();
     let (v, world) = s

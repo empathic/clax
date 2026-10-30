@@ -12,6 +12,7 @@ pub mod capabilities;
 pub mod changelog;
 pub mod clips;
 pub mod config;
+pub mod confirm;
 pub mod content;
 /// The daemon's discovery files and start lock: a native process's, never a
 /// Worker's.

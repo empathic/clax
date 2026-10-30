@@ -5,11 +5,11 @@
 
 use crate::routes::{
     admin, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot, client_imports,
-    connect, content, discovery, docs, drafts, extension, feedback, git_token, grants, health,
-    inbox, jobs, live, live_layers, login, mcp_http, people, perf, permissions, questions,
-    queue_agent, queue_reporter, queues, remote_apps, remotes, resolve, room, sample, sessions,
-    settings, site_signin, sites, snapshot, stream, surface, tags, threads, token, toolpath,
-    viewers, watches, working,
+    confirmations, connect, content, discovery, docs, drafts, extension, feedback, git_token,
+    grants, health, inbox, jobs, live, live_layers, login, mcp_http, people, perf, permissions,
+    questions, queue_agent, queue_reporter, queues, remote_apps, remotes, resolve, room, sample,
+    sessions, settings, site_signin, sites, snapshot, stream, surface, tags, threads, token,
+    toolpath, viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::routes::{events, mcp, net};
@@ -84,6 +84,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     let api_fast = Router::new()
         .route("/api/token", get(token::token))
         .route("/api/browser-login", post(login::create))
+        .route("/api/confirmations", get(confirmations::list))
         .route("/api/artifacts", get(artifacts::list))
         .route(
             "/api/sessions",
@@ -745,6 +746,11 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         // A long-poll: outside the request timeout, as the feedback poll.
         .route("/api/sessions/{id}/questions/{qid}", get(questions::poll))
         .route("/api/sessions/{id}/approvals/{rid}", get(approvals::poll))
+        // A long-poll while it is open, and the owner's browser's answer.
+        .route(
+            "/api/confirmations/{id}",
+            get(confirmations::get_one).post(confirmations::answer),
+        )
         .merge(api_fast)
         .merge(api_slow)
         .merge(shell_routes)

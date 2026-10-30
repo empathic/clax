@@ -5,7 +5,7 @@
 use clax_server::linked::{BACKOFF_CAP, BACKOFF_FIRST, BACKSTOP, Linked};
 use clax_testkit::ManualSleeper;
 use clax_testkit::TestServer;
-use clax_testkit::remotes::{Public, connect, connect_app, json_of, local_req, post};
+use clax_testkit::remotes::{Public, connect, connect_app, json_of, local_req, owner_post, post};
 use reqwest::header::{COOKIE, HOST, ORIGIN};
 use serde_json::{Value, json};
 use std::future::Future;
@@ -1881,7 +1881,7 @@ async fn a_question_closed_here_first_is_withdrawn_there() {
     // Answered here first.
     let q = p.ask(&sid, Some(&p.aid), "Answered here?").await;
     let there = p.hosted_question("Answered here?").await;
-    let (s, v) = post(
+    let (s, v) = owner_post(
         &p.local,
         &format!("/api/questions/{}/answer", q["id"].as_str().unwrap()),
         json!({"answers": [{"selected": ["Red"]}]}),

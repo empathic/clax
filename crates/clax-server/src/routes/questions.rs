@@ -25,6 +25,7 @@ use clax_http::audit::DeferredAudit;
 use clax_http::auth::Caller;
 #[cfg(debug_assertions)]
 use clax_http::auth::RequireToken;
+use clax_http::confirm::{Confirming, Decision, require_confirmation};
 use clax_http::error::ApiError;
 use clax_http::identity::Identity;
 use clax_http::state::AppState;
@@ -771,12 +772,15 @@ pub struct AnswerBody {
 /// the extension gateway, `cli` for the token from no browser of the
 /// owner's, else `shell` (a person's browser too). 400 `invalid_answer` for answers that do not fit the questions;
 /// 409 `question_closed`, with the question's view, when it is not open.
-/// Records `question.answer`.
+/// While an agent session is live, the owner's answer made with the token
+/// alone waits for a click in their browser: 202 `confirmation_pending`
+/// ([`clax_http::confirm`]). Records `question.answer`.
 pub async fn answer(
     State(s): State<AppState>,
     d: DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
+    by: Confirming,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<AnswerBody>, JsonRejection>,
@@ -785,6 +789,22 @@ pub async fn answer(
     let me = recipient_of(&s, &who).await?;
     let qid = path(p)?;
     let b = body(req)?;
+    // Another's question is not there (404) before anyone is asked to
+    // confirm answering it.
+    let (st, q2, me2) = (s.clone(), qid.clone(), me.clone());
+    s.store_call(move |db| {
+        let q = db.question_of(&q2, me2.as_deref())?;
+        if !clax_http::views::question::in_reach(&st, db, me2.as_deref(), &q)? {
+            return Err(CoreError::NotFound);
+        }
+        Ok(())
+    })
+    .await?;
+    let decision = Decision::Answer {
+        question_id: qid.clone(),
+        answers: serde_json::to_value(&b.answers).unwrap_or_default(),
+    };
+    require_confirmation(&s, &d.caller(&s).await?, &by, decision).await?;
     let via = if who.extension {
         "extension"
     } else if who.token && !who.owner_browser() {

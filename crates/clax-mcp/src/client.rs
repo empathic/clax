@@ -136,6 +136,11 @@ pub struct DaemonClient {
     /// The deadline of a publish or an asset upload ([`PUBLISH_TIMEOUT`]).
     publish_timeout: Duration,
     auth: Auth,
+    /// Set for the CLI's tool commands ([`DaemonClient::waiting_for_confirmations`]):
+    /// how a browser confirmation the daemon waits on is shown to the
+    /// person, who confirms it while the call waits. Unset, the call
+    /// answers [`ClientError::Api`] 202 `confirmation_pending` at once.
+    confirm: Option<fn(&str)>,
 }
 
 /// The credential a client's requests carry.
@@ -414,6 +419,7 @@ impl DaemonClient {
             clip_fetch_time: CLIP_FETCH_TIME,
             publish_timeout: PUBLISH_TIMEOUT,
             auth: Auth::Token,
+            confirm: None,
         }
     }
 
@@ -492,6 +498,18 @@ impl DaemonClient {
         self
     }
 
+    /// This client waiting out the browser confirmations the daemon holds
+    /// a call for, as the CLI's own client does: `tell` shows the person
+    /// one line ("Confirm in your browser: <url>"), the client long-polls
+    /// `GET /api/confirmations/<id>?wait=` until the owner answers, then
+    /// makes the call again with the confirmation's ID. The CLI's tool
+    /// commands use it; an agent's tools do not, and get the 202 as
+    /// [`ClientError::Api`] `confirmation_pending` to wait on.
+    pub fn waiting_for_confirmations(mut self, tell: fn(&str)) -> DaemonClient {
+        self.confirm = Some(tell);
+        self
+    }
+
     /// A client that finds its daemon with `refresh` (which may start one) or
     /// `discover` (which must not), and registers `registration` there before
     /// its first request; see [`DaemonClient`].
@@ -520,6 +538,7 @@ impl DaemonClient {
             clip_fetch_time: CLIP_FETCH_TIME,
             publish_timeout: PUBLISH_TIMEOUT,
             auth: Auth::Token,
+            confirm: None,
         }
     }
 
@@ -546,6 +565,7 @@ impl DaemonClient {
             clip_fetch_time: self.clip_fetch_time,
             publish_timeout: self.publish_timeout,
             auth: self.auth.clone(),
+            confirm: self.confirm,
         }
     }
 
@@ -598,6 +618,7 @@ impl DaemonClient {
             clip_fetch_time: self.clip_fetch_time,
             publish_timeout: self.publish_timeout,
             auth: self.auth.clone(),
+            confirm: self.confirm,
         }
     }
 
@@ -947,6 +968,58 @@ impl DaemonClient {
     }
 
     async fn send_with<F>(&self, mode: Mode, build: F) -> Result<Reply>
+    where
+        F: Fn(&Conn<'_>) -> reqwest::RequestBuilder,
+    {
+        let first = self.send_refreshing(mode, &build).await;
+        let (Some(tell), Err(ClientError::Api { status: 202, error })) = (self.confirm, &first)
+        else {
+            return first;
+        };
+        // Letters, digits, `_` and `-` alone: it goes in a path.
+        let Some(id) = error["confirmation_id"]
+            .as_str()
+            .filter(|v| {
+                !v.is_empty()
+                    && v.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            })
+            .map(str::to_string)
+        else {
+            return first;
+        };
+        tell(&clax_core::confirm::line(
+            error["confirm_url"].as_str().unwrap_or_default(),
+        ));
+        self.wait_for_answer(&id).await?;
+        self.send_refreshing(mode, &|c: &Conn<'_>| {
+            build(c).header(clax_core::confirm::CONFIRMATION_HEADER, id.as_str())
+        })
+        .await
+    }
+
+    /// Waits until confirmation `id` is no longer open, long-polling for at
+    /// most [`clax_core::confirm::MAX_WAIT_SECS`] a time; the daemon
+    /// expires it after ten minutes, which ends the wait.
+    async fn wait_for_answer(&self, id: &str) -> Result<()> {
+        let wait = clax_core::confirm::MAX_WAIT_SECS;
+        let path = format!("/api/confirmations/{id}?wait={wait}");
+        loop {
+            let v = body_json(
+                self.send_refreshing(Mode::DiscoverOnly, &|c: &Conn<'_>| {
+                    c.request(reqwest::Method::GET, &path)
+                        .timeout(Duration::from_secs(wait + 15))
+                })
+                .await?,
+            )
+            .await?;
+            if v["confirmation"]["status"] != "open" {
+                return Ok(());
+            }
+        }
+    }
+
+    async fn send_refreshing<F>(&self, mode: Mode, build: &F) -> Result<Reply>
     where
         F: Fn(&Conn<'_>) -> reqwest::RequestBuilder,
     {
@@ -2257,6 +2330,36 @@ async fn attempt_in_process(
 /// body's `error` object.
 async fn check(res: Reply) -> std::result::Result<Reply, Failure> {
     let status = res.status();
+    let held = status == reqwest::StatusCode::ACCEPTED
+        && res
+            .headers()
+            .contains_key(clax_core::confirm::CONFIRMATION_HEADER);
+    if held {
+        // A decision held for the owner's browser (`clax_core::confirm`):
+        // the 202's fields, with its one line as the message, for the
+        // agent to wait on.
+        let mut error = match res.bytes().await {
+            Ok(b) => serde_json::from_slice::<Value>(&b).unwrap_or(Value::Null),
+            Err(_) => Value::Null,
+        };
+        if let Some(o) = error.as_object_mut() {
+            o.remove("status");
+            let line = clax_core::confirm::line(
+                o.get("confirm_url")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            );
+            o.insert("code".into(), json!(clax_core::confirm::PENDING));
+            o.insert("message".into(), json!(line));
+        }
+        return Err(Failure {
+            refreshable: false,
+            error: ClientError::Api {
+                status: status.as_u16(),
+                error,
+            },
+        });
+    }
     if status.is_success() {
         return Ok(res);
     }

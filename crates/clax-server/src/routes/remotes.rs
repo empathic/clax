@@ -37,6 +37,7 @@ use clax_core::{ArtifactId, CoreError};
 use clax_http::agent::DeniedToGrants;
 use clax_http::audit::DeferredAudit;
 use clax_http::auth::Caller;
+use clax_http::confirm::{Confirming, Decision, require_confirmation};
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
 use clax_http::identity::Identity;
@@ -168,12 +169,16 @@ fn return_address(
 /// host, or at a public Clax that refused the field). 400 `invalid_args`
 /// for a URL that is not a public origin, another kind or a `return_to`
 /// that is not a path; 400 `remote_exists` for one signed in to already;
-/// 502 for a remote that refused or could not be reached.
+/// 502 for a remote that refused or could not be reached. While an agent
+/// session is live, the token's call waits for a click in the owner's
+/// browser before it reaches the remote: 202 `confirmation_pending`
+/// ([`clax_http::confirm`]).
 pub async fn add(
     State(s): State<AppState>,
     d: DeniedToGrants,
     who: Identity,
     _o: SameOrigin,
+    by: Confirming,
     headers: HeaderMap,
     req: Result<Json<AddBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
@@ -196,6 +201,10 @@ pub async fn add(
         None => None,
     };
     let origin = public::origin_of(&b.url)?;
+    let decision = Decision::Connect {
+        origin: origin.clone(),
+    };
+    require_confirmation(&s, &d.caller(&s).await?, &by, decision).await?;
     let name = b
         .name
         .filter(|n| !n.trim().is_empty())
@@ -663,22 +672,25 @@ pub(super) async fn push_target(s: &AppState, key: Option<String>) -> Result<Rem
 /// public artifact's ID there) the new public copy it makes records that
 /// lineage, and with `title` it takes that name (400 `invalid_args` for
 /// either with another mode or an app linked there, and for an empty
-/// title).
+/// title). While an agent session is live, the owner's push made with
+/// the token alone waits for a click in their browser: 202
+/// `confirmation_pending` ([`clax_http::confirm`]).
 pub async fn push(
     State(s): State<AppState>,
     d: DeniedToGrants,
     who: Identity,
     _o: SameOrigin,
+    by: Confirming,
     audit: DeferredAudit,
     aid: Result<Path<String>, PathRejection>,
     req: Result<Json<PushBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     local_only(&s)?;
     who.require_owner("publishes to a public Clax")?;
-    let by = asker(&s, &d).await?;
+    let asking = asker(&s, &d).await?;
     // An agent's CLI (an agent channel with no session) asks no one: it is
     // refused before anything else, and pointed at the tool that asks.
-    if let Asker::Agent(None) = by {
+    if let Asker::Agent(None) = asking {
         return Err(ApiError::bad_request(
             "no_session",
             "an agent publishes with the publish_public tool, which asks the owner first",
@@ -687,7 +699,7 @@ pub async fn push(
     let id = parse_id(&path(aid)?)?;
     let b = body(req)?;
     let mode = Mode::parse(b.mode.as_deref(), b.version)?;
-    if matches!(mode, Mode::App { .. }) && !matches!(by, Asker::Owner) {
+    if matches!(mode, Mode::App { .. }) && !matches!(asking, Asker::Owner) {
         return Err(ApiError::forbidden(
             "forbidden",
             "an app's publish is the owner's, in the Clax app",
@@ -711,7 +723,18 @@ pub async fn push(
         title: b.title.clone(),
     };
     let remote = push_target(&s, b.remote.clone()).await?;
-    let (auto, upto) = match by {
+    if let Asker::Owner = asking {
+        let decision = Decision::Push {
+            artifact_id: id.as_str().to_string(),
+            remote_id: remote.id.clone(),
+            mode: match b.version {
+                Some(n) => format!("{}@{n}", b.mode.as_deref().unwrap_or("update")),
+                None => b.mode.clone().unwrap_or_else(|| "update".into()),
+            },
+        };
+        require_confirmation(&s, &d.caller(&s).await?, &by, decision).await?;
+    }
+    let (auto, upto) = match asking {
         Asker::Owner => (b.auto, None),
         Asker::Agent(session) => {
             if b.auto.is_some() {
