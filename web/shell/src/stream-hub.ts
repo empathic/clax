@@ -32,8 +32,17 @@
 // requests `/api/token`. The host passes the core's closing `event: end`
 // block through: after `stream_refused` with 400, 403 or 404 the hub opens
 // nothing until a tab's topics change; after any other end, and after a
-// 5xx answer to a subscription, it opens the stream again after the backoff
-// (reset by `ready`), from its `Last-Event-ID`.
+// 5xx answer to a subscription, it opens the stream again after the backoff,
+// from its `Last-Event-ID`.
+//
+// The backoff resets once a stream carries every topic the tabs want (its
+// subscriptions answered, or none needed), not at `ready`: a stream that
+// opens and then fails its subscriptions waits longer each time. A stream
+// the daemon no longer holds (`unknown_stream`) is opened again at once the
+// first time and after the backoff while it keeps happening. A reopen asked
+// while a stream request is in flight waits for that stream's `ready`, so
+// the hub never aborts a stream request that has not answered (a browser
+// keeps such a socket open to drain it, and the daemon counts it attached).
 //
 // Notifications (a hub made with `notify`): tabs say whether they have focus.
 // For each new unread inbox item (an `inbox_item` event whose `seq` is above
@@ -176,6 +185,9 @@ export class Hub {
   /** The caller a tab asked for while no stream was up: the next `ready`
    * says whether its stream is opened as it. */
   private asked: string | null = null;
+  /** A tab asked for a new stream (naming no caller) while one was being
+   * opened: its `ready` opens another. */
+  private reopenAtReady = false;
   private seq = 0;
   private conn: AbortController | null = null;
   /** The server answered the plain stream request 426: it carries the
@@ -262,7 +274,9 @@ export class Hub {
           if (msg.caller === this.caller) break;
         }
         this.streamId = null;
-        if (this.conn) this.connect();
+        // A stream request in flight is left to answer: its `ready` reopens.
+        if (this.conn && !this.up) this.reopenAtReady = true;
+        else if (this.conn) this.connect();
         break;
       case "retry":
         for (const t of msg.topics) this.refused.delete(t);
@@ -352,6 +366,8 @@ export class Hub {
     clearTimeout(this.retry);
     this.retry = undefined;
     this.ended = null;
+    // A new stream request answers any reopen a tab asked for.
+    this.reopenAtReady = false;
     const ac = new AbortController();
     this.conn = ac;
     this.arm(ac, CONNECT_MS);
@@ -442,8 +458,11 @@ export class Hub {
       this.caller = callerKey(data.caller);
       const asked = this.asked;
       this.asked = null;
-      if (asked !== null && asked !== this.caller) {
-        // A tab asked for another caller while this stream was being opened.
+      const reopen = this.reopenAtReady;
+      this.reopenAtReady = false;
+      if (reopen || (asked !== null && asked !== this.caller)) {
+        // A tab asked for a new stream, or another caller, while this one
+        // was being opened.
         this.streamId = null;
         this.connect();
         return;
@@ -459,7 +478,6 @@ export class Hub {
         for (const c of this.clients.values()) c.live.clear();
       }
       this.up = true;
-      this.failures = 0;
       if (this.toldDown) {
         this.toldDown = false;
         if (this.clients.size) this.env.send([...this.clients.keys()], { t: "status", up: true });
@@ -632,7 +650,11 @@ export class Hub {
         const want = this.wanted();
         const add = [...want].filter(t => !this.server.has(t));
         const remove = [...this.server].filter(t => !want.has(t));
-        if (!add.length && !remove.length) return;
+        if (!add.length && !remove.length) {
+          // The stream carries what the tabs want: the backoff starts over.
+          this.failures = 0;
+          return;
+        }
         if (!(await this.update(add, remove))) return;
       }
     } finally {
@@ -703,8 +725,7 @@ export class Hub {
     if (code === "unknown_stream") {
       // The daemon no longer holds this stream for this caller (the viewer
       // changed, or it restarted): a new one, and every tab refetches.
-      this.streamId = null;
-      this.connect();
+      this.reopen();
       return false;
     }
     if (res.status >= 500) { this.fail(); return false; }
@@ -728,8 +749,19 @@ export class Hub {
       return true;
     }
     // Only removals, refused: start over on a new stream.
-    this.streamId = null;
-    this.connect();
+    this.reopen();
     return false;
+  }
+
+  /** Opens a new stream (no `Last-Event-ID`) in place of one the daemon
+   * refused to change: at once the first time since the stream last
+   * carried every wanted topic, after the backoff while it keeps
+   * happening. The tabs are not told the stream is down. */
+  private reopen(): void {
+    this.streamId = null;
+    if (this.failures === 0) { this.failures++; this.connect(); return; }
+    this.drop();
+    clearTimeout(this.retry);
+    this.retry = setTimeout(() => { this.retry = undefined; if (this.wanted().size) this.connect(); }, backoff(this.failures++));
   }
 }
