@@ -7,9 +7,9 @@ use crate::routes::{
     admin, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot, client_imports,
     connect, content, discovery, docs, drafts, extension, feedback, git_token, grants, health,
     inbox, jobs, live, live_layers, login, mcp_http, people, perf, permissions, questions,
-    queue_agent, queue_reporter, queues, remote_apps, remotes, room, sample, sessions, settings,
-    site_signin, sites, snapshot, stream, surface, tags, threads, token, toolpath, viewers,
-    watches, working,
+    queue_agent, queue_reporter, queues, remote_apps, remotes, resolve, room, sample, sessions,
+    settings, site_signin, sites, snapshot, stream, surface, tags, threads, token, toolpath,
+    viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::routes::{events, mcp, net};
@@ -247,6 +247,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             post(threads::reopen),
         )
         .route("/api/viewers", get(viewers::lookup))
+        .route("/api/resolve", get(resolve::get))
         .route("/api/live/pages", get(live::page))
         .route("/api/live/site", get(live::site))
         .route("/api/live/rules", get(live::rules))

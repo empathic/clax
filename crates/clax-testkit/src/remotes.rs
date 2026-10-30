@@ -3,6 +3,7 @@
 //! of linked threads share.
 
 use super::TestServer;
+use axum::response::IntoResponse;
 use clax_core::working::ManualClock;
 use reqwest::header::{COOKIE, HOST, ORIGIN, SET_COOKIE};
 use serde_json::{Value, json};
@@ -28,6 +29,20 @@ impl Public {
     pub async fn new() -> Public {
         let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
         let ts = TestServer::spawn_hosted(clock.clone(), Some(SECRET)).await;
+        Public::set_up(ts, clock).await
+    }
+
+    /// [`Public::new`] serving each artifact's site under `domain`
+    /// (`<id>.<domain>:<its port>`), which its discovery names.
+    pub async fn with_site_domain(domain: &str) -> Public {
+        let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+        let ts =
+            TestServer::spawn_hosted_with_site_domain(clock.clone(), Some(SECRET), domain).await;
+        Public::set_up(ts, clock).await
+    }
+
+    /// `ts` set up by its owner, Ada, whose browser this is.
+    async fn set_up(ts: TestServer, clock: Arc<ManualClock>) -> Public {
         let origin = format!("http://localhost:{}", ts.addr.port());
         let res = ts
             .client
@@ -244,4 +259,78 @@ pub async fn connect_with(
         assert_eq!(mode(&local.state.home.db_path()), 0o600);
     }
     v["remote"].clone()
+}
+
+/// A web server that is not a Clax until told it is: `GET
+/// /.well-known/clax` answers 404, then, after [`NotYetClax::become_clax`],
+/// a hosted Clax's discovery named `Late`. It counts the discovery
+/// requests it got.
+pub struct NotYetClax {
+    pub origin: String,
+    clax: Arc<std::sync::atomic::AtomicBool>,
+    asked: Arc<std::sync::atomic::AtomicUsize>,
+    serving: tokio::task::JoinHandle<()>,
+}
+
+impl NotYetClax {
+    pub async fn start() -> NotYetClax {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let clax = Arc::new(AtomicBool::new(false));
+        let asked = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let (c, a, o) = (clax.clone(), asked.clone(), origin.clone());
+        let app = axum::Router::new().route(
+            "/.well-known/clax",
+            axum::routing::get(move || {
+                let (c, a, o) = (c.clone(), a.clone(), o.clone());
+                async move {
+                    a.fetch_add(1, Ordering::SeqCst);
+                    if c.load(Ordering::SeqCst) {
+                        axum::Json(json!({"kind": "hosted", "contract_version": "1",
+                            "name": "Late", "origin": o, "api": "/api",
+                            "sign_in": ["device"], "capabilities": []}))
+                        .into_response()
+                    } else {
+                        reqwest::StatusCode::NOT_FOUND.into_response()
+                    }
+                }
+            }),
+        );
+        let serving = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        NotYetClax {
+            origin,
+            clax,
+            asked,
+            serving,
+        }
+    }
+
+    /// From now on its discovery says it is a Clax.
+    pub fn become_clax(&self) {
+        self.clax.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The discovery requests it got.
+    pub fn asked(&self) -> usize {
+        self.asked.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Drop for NotYetClax {
+    fn drop(&mut self) {
+        self.serving.abort();
+    }
+}
+
+/// A local port nothing listens on: one the system handed out and took
+/// back.
+pub fn closed_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }

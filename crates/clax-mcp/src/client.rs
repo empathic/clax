@@ -1438,6 +1438,16 @@ impl DaemonClient {
         .await
     }
 
+    /// `GET /api/resolve?url=`: what the URL names, `{kind, …}`
+    /// ([`crate::target::resolved`] reads it).
+    pub async fn resolve_url(&self, url: &str) -> Result<Value> {
+        self.json(|c| {
+            c.request(reqwest::Method::GET, "/api/resolve")
+                .query(&[("url", url)])
+        })
+        .await
+    }
+
     /// `PUT /api/sessions/<sid>/working/<id>`: `{working, message_truncated}`.
     pub async fn set_working(&self, id: &str, body: &Value) -> Result<Value> {
         self.json(|c| {

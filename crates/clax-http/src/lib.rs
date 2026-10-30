@@ -19,6 +19,7 @@ pub mod bot;
 pub mod conn;
 pub mod content_policy;
 pub mod db_caller;
+pub mod discovery_cache;
 pub mod error;
 pub mod exports;
 pub mod extension;

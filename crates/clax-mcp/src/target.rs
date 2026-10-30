@@ -1,18 +1,99 @@
 //! What a tool's `url_or_id` names (spec 2026-10-05 §6.2): an artifact (its
-//! ID, or a URL of this daemon's) or a page (any other http(s) URL).
+//! ID, or a URL of this daemon's), an artifact on another Clax, a Clax this
+//! home is not connected to, or a page. [`target`] reads an ID and a URL of
+//! the daemon's own; any other URL the daemon resolves (`GET
+//! /api/resolve`), whose answer [`resolved`] reads.
 
 use crate::render;
 use crate::tools::artifact_ref;
 use rmcp::model::CallToolResult;
-use serde_json::json;
+use serde_json::{Value, json};
 
 /// What a tool's `url_or_id` names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
     /// An artifact, and the version when the URL names one.
     Artifact { id: String, version: Option<u32> },
+    /// An artifact on a remote this home is connected to: the remote's ID
+    /// and origin, the artifact's ID there, the version the URL names, and
+    /// its address there.
+    Remote {
+        remote: String,
+        origin: String,
+        artifact_id: String,
+        version: Option<u32>,
+        url: String,
+    },
+    /// A Clax instance this home is not connected to, by its origin and
+    /// name.
+    SignInRequired { origin: String, name: String },
     /// A web page, by its URL as given.
     Page(String),
+}
+
+/// What the daemon's resolution `v` of `url` (`GET /api/resolve`) names.
+/// An answer of a kind this client does not know, or one missing a field,
+/// is the page `url`, as before the daemon resolved URLs.
+pub fn resolved(v: &Value, url: &str) -> Target {
+    let text = |k: &str| v[k].as_str().map(str::to_string);
+    let version = v["version"].as_u64().and_then(|n| u32::try_from(n).ok());
+    let page = || Target::Page(url.to_string());
+    match v["kind"].as_str() {
+        Some("local") => match text("artifact_id") {
+            Some(id) if clax_core::ArtifactId::parse(&id).is_ok() => {
+                Target::Artifact { id, version }
+            }
+            _ => page(),
+        },
+        Some("remote") => match (
+            text("remote"),
+            text("origin"),
+            text("artifact_id"),
+            text("url"),
+        ) {
+            (Some(remote), Some(origin), Some(artifact_id), Some(url)) => Target::Remote {
+                remote,
+                origin,
+                artifact_id,
+                version,
+                url,
+            },
+            _ => page(),
+        },
+        Some("sign_in_required") => match (text("origin"), text("name")) {
+            (Some(origin), Some(name)) => Target::SignInRequired { origin, name },
+            _ => page(),
+        },
+        _ => page(),
+    }
+}
+
+/// The error for a URL on a Clax instance this home is not connected to:
+/// `remote_sign_in_required`, naming it and the tool that connects it.
+pub fn sign_in_required(origin: &str, name: &str) -> CallToolResult {
+    render::error(
+        "remote_sign_in_required",
+        format!("{name} ({origin}) is a Clax instance this Clax is not connected to"),
+        json!({
+            "origin": origin,
+            "name": name,
+            "next": format!(
+                "Ask the person to connect it: call connect_instance with {origin}, then call this tool again"
+            ),
+        }),
+    )
+}
+
+/// The error for an artifact on a connected remote, which this tool does
+/// not reach yet: `remote_not_yet`.
+pub fn remote_not_yet(origin: &str, url: &str) -> CallToolResult {
+    render::error(
+        "remote_not_yet",
+        format!(
+            "{url} is on {origin}, a connected Clax instance: this tool does not reach artifacts there yet"
+        ),
+        json!({"origin": origin, "url": url}),
+    )
 }
 
 fn invalid(s: &str) -> CallToolResult {
@@ -112,13 +193,13 @@ mod tests {
     fn art(s: &str) -> Option<(String, Option<u32>)> {
         match target(s, BASE).ok()? {
             Target::Artifact { id, version } => Some((id, version)),
-            Target::Page(_) => None,
+            _ => None,
         }
     }
     fn page(s: &str) -> Option<String> {
         match target(s, BASE).ok()? {
             Target::Page(u) => Some(u),
-            Target::Artifact { .. } => None,
+            _ => None,
         }
     }
 
@@ -230,6 +311,87 @@ mod tests {
             target("http://localhost:7480/settings", BASE).is_err(),
             "the daemon's port names no page"
         );
+    }
+
+    #[test]
+    fn the_daemons_resolution_names_each_target() {
+        const U: &str = "https://clax.example/a/7q3k9mzx2b4t/get?v=2#t";
+        assert_eq!(
+            resolved(
+                &json!({"kind": "local", "artifact_id": "7q3k9mzx2b4t", "version": 3}),
+                U
+            ),
+            Target::Artifact {
+                id: "7q3k9mzx2b4t".into(),
+                version: Some(3)
+            }
+        );
+        assert_eq!(
+            resolved(
+                &json!({"kind": "remote", "remote": "r1", "origin": "https://clax.example",
+                        "name": "acme", "artifact_id": "7q3k9mzx2b4t",
+                        "url": "https://clax.example/a/7q3k9mzx2b4t"}),
+                U
+            ),
+            Target::Remote {
+                remote: "r1".into(),
+                origin: "https://clax.example".into(),
+                artifact_id: "7q3k9mzx2b4t".into(),
+                version: None,
+                url: "https://clax.example/a/7q3k9mzx2b4t".into(),
+            }
+        );
+        assert_eq!(
+            resolved(
+                &json!({"kind": "sign_in_required", "origin": "https://clax.example",
+                        "name": "Acme"}),
+                U
+            ),
+            Target::SignInRequired {
+                origin: "https://clax.example".into(),
+                name: "Acme".into()
+            }
+        );
+        assert_eq!(
+            resolved(&json!({"kind": "page", "url": U}), U),
+            Target::Page(U.into())
+        );
+        for odd in [
+            json!({"kind": "followed", "url": U}),
+            json!({"kind": "local", "artifact_id": "not an id"}),
+            json!({"kind": "remote", "origin": "https://clax.example"}),
+            json!({"kind": "sign_in_required", "origin": "https://clax.example"}),
+            json!(null),
+        ] {
+            assert_eq!(resolved(&odd, U), Target::Page(U.into()), "{odd}");
+        }
+    }
+
+    #[test]
+    fn the_remote_errors_name_the_instance() {
+        let body = |r: CallToolResult| -> Value {
+            assert_eq!(r.is_error, Some(true));
+            let t = r.content[0].as_text().unwrap().text.clone();
+            serde_json::from_str(&t).unwrap()
+        };
+        let v = body(sign_in_required("https://clax.example", "Acme"));
+        assert_eq!(v["error"]["code"], "remote_sign_in_required");
+        assert_eq!(v["error"]["origin"], "https://clax.example");
+        assert_eq!(v["error"]["name"], "Acme");
+        assert!(
+            v["error"]["next"]
+                .as_str()
+                .unwrap()
+                .contains("connect_instance"),
+            "{v}"
+        );
+        let v = body(remote_not_yet(
+            "https://clax.example",
+            "https://clax.example/a/7q3k9mzx2b4t",
+        ));
+        assert_eq!(v["error"]["code"], "remote_not_yet");
+        assert_eq!(v["error"]["origin"], "https://clax.example");
+        assert_eq!(v["error"]["url"], "https://clax.example/a/7q3k9mzx2b4t");
     }
 
     /// The shared fixture's cases (a case's own `daemon_base` overrides the

@@ -57,6 +57,11 @@ const BY_HAND: &str = crate::routes::sessions::BY_HAND_HARNESS;
 #[cfg(not(target_arch = "wasm32"))]
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// How long a discovery request ([`Client::discovery`]) may take: an agent
+/// waits on it to learn what a URL names.
+#[cfg(not(target_arch = "wasm32"))]
+const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// How a push treats the public copy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -348,7 +353,8 @@ impl Client {
                 .header("x-clax-session", sid)
                 .header(clax_core::remote::SESSION_SECRET_HEADER, secret.expose());
         }
-        r = with(r);
+        // The deadline first, so that `with` may narrow it.
+        r = with(timeout(r));
         let fail = |status, code: &str, message: String, body| RemoteFail {
             origin: self.origin.clone(),
             status,
@@ -356,7 +362,7 @@ impl Client {
             message,
             body,
         };
-        let res = timeout(r)
+        let res = r
             .send()
             .await
             .map_err(|e| fail(None, "unreachable", e.to_string(), Value::Null))?;
@@ -475,6 +481,23 @@ impl Client {
 
     pub(crate) async fn get(&self, path: &str) -> Result<Value, RemoteFail> {
         self.call(reqwest::Method::GET, path, None).await
+    }
+
+    /// `GET /.well-known/clax` with no credential, within
+    /// [`DISCOVERY_TIMEOUT`]: what this origin says it is
+    /// ([`crate::resolve`]).
+    pub(crate) async fn discovery(&self) -> Result<Value, RemoteFail> {
+        self.send(reqwest::Method::GET, "/.well-known/clax", |r| {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                r.timeout(DISCOVERY_TIMEOUT)
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                r
+            }
+        })
+        .await
     }
 
     /// The address of `segs` at this remote, each segment percent-encoded

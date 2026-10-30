@@ -737,6 +737,9 @@ impl TestServer {
             questions: Arc::new(Default::default()),
             question_grace: Duration::from_secs(5),
             question_sleeper: Arc::new(clax_realtime::questions::TokioSleeper),
+            discovery: Arc::new(clax_http::discovery_cache::DiscoveryCache::new(
+                clock.clone(),
+            )),
             question_clock: clock,
             terminal_after_s: clax_core::config::TERMINAL_AFTER_S,
             calibration: Arc::default(),

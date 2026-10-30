@@ -42,6 +42,7 @@ pub mod queue_reporter;
 pub mod queues;
 pub mod remote_apps;
 pub mod remotes;
+pub mod resolve;
 pub mod room;
 pub mod sample;
 pub mod sessions;

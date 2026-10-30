@@ -133,6 +133,8 @@ mod api_quickstart;
 mod api_remotes;
 #[cfg(any(not(clax_split), clax_split = "api_remotes_app"))]
 mod api_remotes_app;
+#[cfg(any(not(clax_split), clax_split = "api_resolve"))]
+mod api_resolve;
 #[cfg(any(not(clax_split), clax_split = "api_restore"))]
 mod api_restore;
 #[cfg(any(not(clax_split), clax_split = "api_room"))]

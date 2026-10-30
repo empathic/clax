@@ -160,6 +160,12 @@ These come from the tool layer itself, not the daemon:
 - `bad_response`: the daemon answered with a success status but a body that
   could not be read.
 - `internal` (Pi only): an unexpected exception inside the extension.
+- `remote_sign_in_required` (MCP tools): a `url_or_id` on a Clax instance this home is
+  not connected to (**Resolving a URL**). Extra fields `origin`, `name`
+  and `next`, which names the `connect_instance` tool.
+- `remote_not_yet` (MCP tools): a `url_or_id` naming an artifact on a connected
+  remote, which this tool does not reach yet. Extra fields `origin` and
+  `url`.
 
 Any error the daemon returns is passed through unchanged as `error`. The
 daemon codes a tool can surface in normal operation:
@@ -1161,6 +1167,48 @@ the same routes):
   under the key, and a publish naming the key again answers that version
   and publishes nothing (400 `invalid_args` when it was another artifact's).
   The daemon token's publishes ignore the header.
+
+**Resolving a URL.** `GET /api/resolve?url=<url>` (any credential, agents'
+included; 401 without one) says what an `http(s)` URL names, and changes
+nothing but the daemon's memory of other instances' discovery:
+
+- `{kind: "local", artifact_id, version?}`: one of this daemon's
+  artifacts, by a URL of its own (`<base>/a/<id>[/…][?…][#…]`,
+  `<base>/c/<id>/v/<n>/…`, its site host `<id>.<site domain>` with
+  `/_clax/v/<n>/…` naming a version; any local name on a local daemon's
+  port is its base), read from the URL alone with no lookup; or the public
+  copy of one it pushed, found among its links by that copy's URL or by
+  its remote and public artifact ID (no `version` then).
+- `{kind: "remote", remote, origin, name, artifact_id, version?, url}`: an
+  artifact on a connected remote, by a URL on its origin or on the
+  `site_domain` its discovery names; `remote` and `name` are the remote's
+  ID and name here, `artifact_id` its ID there, `url` its address there
+  (`<origin>/a/<artifact_id>`). A URL on the remote's origin that names no
+  artifact is a `page`.
+- `{kind: "sign_in_required", origin, name}`: a Clax instance this home is
+  not connected to, by its URL's origin, whose `GET /.well-known/clax`
+  (asked with no credential, following no redirect, of an `https` origin
+  or an `http` one on loopback only) answers `kind` `hosted` or `local`, a
+  `contract_version` and `api` `/api`; `name` is the one it gives, else its
+  host and port.
+- `{kind: "page", url}`: anything else, the URL as given (trimmed).
+
+`version` is the URL's `/v/<n>` (or `/_clax/v/<n>`); a query or fragment
+names none. Discovery answers are kept in memory: an instance's until a
+call to it fails, any other answer (or none, within 10 s) for 10 minutes.
+Only the owner and the owner's agents get `remote`, `sign_in_required`
+and the pushed-copy `local`; any other caller (a person's agent, a
+person), and every caller of a hosted daemon, gets only a `local` answer by
+the daemon's own URL, or `page`. 400 `invalid_query` without `url`; 400
+`invalid_url` for one that does not parse, is not `http(s)`, or is on this
+daemon and names no artifact.
+
+The MCP tools (not yet the Pi extension's) resolve every `url_or_id` that
+is not an ID or a URL on the daemon's own base through this route (an older daemon without it leaves
+the URL a page): `remote_sign_in_required` names an instance to connect
+(`origin`, `name`, and a `next` naming `connect_instance`), and
+`remote_not_yet` an artifact on a connected remote, which the tools do not
+reach yet (`origin`, `url`).
 
 **Pushing.** `clax push <artifact> [--to <remote>] [--new|--fork]
 [--follow|--no-follow]`, the shell's Publish button, or the
@@ -5447,6 +5495,7 @@ router), and a test fails when it differs:
 | `GET /api/approvals` | Own | none | 2 MiB | yes |
 | `GET /api/approvals/requests` | Own | none | 2 MiB | yes |
 | `GET /api/agents` | Own | none | 2 MiB | yes |
+| `GET /api/resolve` | Own | none | 2 MiB | yes |
 | `POST /api/sessions/{id}/tool-calls` | Own | none | 2 MiB | yes |
 | `POST /api/sessions/{id}/tool-call-ids` | Own | none | 2 MiB | yes |
 | `GET /api/sessions/{id}/where-to-ask` | Own | `clax-ask` `ask` | 2 MiB | yes |

@@ -295,6 +295,9 @@ mod l10 {
         ("people::reinstate_person", NoArtifact),
         ("people::set_rights", NoArtifact),
         ("people::list_agents", Filtered),
+        // Reads no artifact: a local answer is the URL's own ID, unlooked-up,
+        // and the pushed links it reads are the owner's and owner agents' alone.
+        ("resolve::get", NoArtifact),
         ("agent::test_gate", Token),
         ("agent::test_caller", NoArtifact),
     ];
@@ -348,6 +351,7 @@ mod l10 {
             "perf" => include_str!("perf.rs"),
             "questions" => include_str!("questions.rs"),
             "remotes" => include_str!("remotes.rs"),
+            "resolve" => include_str!("resolve.rs"),
             "remote_apps" => include_str!("remote_apps.rs"),
             "room" => include_str!("room.rs"),
             "live_layers" => include_str!("live_layers.rs"),
@@ -1590,6 +1594,7 @@ mod agents {
             ("GET", "/api/approvals", Own, None),
             ("GET", "/api/approvals/requests", Own, None),
             ("GET", "/api/agents", Own, None),
+            ("GET", "/api/resolve", Own, None),
             ("POST", "/api/sessions/{id}/tool-calls", Own, None),
             ("POST", "/api/sessions/{id}/tool-call-ids", Own, None),
             // Report queues (spec 2026-10-27-clax-sdk-design §7).

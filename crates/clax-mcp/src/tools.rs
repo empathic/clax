@@ -1347,7 +1347,10 @@ impl ClaxTools {
     /// What `url_or_id` names ([`crate::target::target`]), judged against
     /// the daemon's port: a managed client that has not found its daemon yet
     /// finds it first (a failure to find it is left to the request that
-    /// follows), so a Clax URL is not read as a page URL.
+    /// follows), so a Clax URL is not read as a page URL. A URL not on the
+    /// daemon's base is the daemon's to resolve (`GET /api/resolve`,
+    /// [`crate::target::resolved`]); a daemon that cannot answer leaves it
+    /// a page, as before it resolved URLs.
     async fn target(&self, url_or_id: &str) -> Result<crate::target::Target, CallToolResult> {
         if url_or_id.contains("://")
             && self.client.browser_base().is_none()
@@ -1355,7 +1358,16 @@ impl ClaxTools {
         {
             tracing::debug!(error = %e, "finding the daemon before reading a URL failed");
         }
-        crate::target::target(url_or_id, &self.browser_base())
+        match crate::target::target(url_or_id, &self.browser_base())? {
+            crate::target::Target::Page(url) => match self.client.resolve_url(&url).await {
+                Ok(v) => Ok(crate::target::resolved(&v, &url)),
+                Err(e) => {
+                    tracing::debug!(error = %e, "resolving a URL failed; reading it as a page");
+                    Ok(crate::target::Target::Page(url))
+                }
+            },
+            t => Ok(t),
+        }
     }
 
     /// The artifact `url_or_id` names ([`Self::target`]), and the
@@ -1369,6 +1381,12 @@ impl ClaxTools {
             crate::target::Target::Artifact { id, version } => {
                 self.client.note_artifact(&id);
                 Ok((id, version))
+            }
+            crate::target::Target::SignInRequired { origin, name } => {
+                Err(crate::target::sign_in_required(&origin, &name))
+            }
+            crate::target::Target::Remote { origin, url, .. } => {
+                Err(crate::target::remote_not_yet(&origin, &url))
             }
             crate::target::Target::Page(url) => {
                 let res = self
@@ -2493,6 +2511,12 @@ impl ClaxTools {
             crate::target::Target::Page(url) => url,
             crate::target::Target::Artifact { id, .. } => {
                 return self.do_watch_artifact(id, a).await;
+            }
+            crate::target::Target::SignInRequired { origin, name } => {
+                return Err(crate::target::sign_in_required(&origin, &name));
+            }
+            crate::target::Target::Remote { origin, url, .. } => {
+                return Err(crate::target::remote_not_yet(&origin, &url));
             }
         };
         self.require_session().await?;
