@@ -21,8 +21,6 @@ export class PairError extends Error {
   constructor(readonly code: string, message: string, readonly confirmation: string | null = null) { super(message); }
 }
 
-/** A confirmation's ID, as the native host names one. */
-const CONFIRMATION = /^cf_[A-Za-z0-9_-]{1,64}$/;
 
 type Area = { get(k: string): Promise<Record<string, unknown>>; set(v: Record<string, unknown>): Promise<void>; remove(k: string): Promise<void> };
 export interface PairEnv {
@@ -57,7 +55,8 @@ function parse(reply: unknown): Pairing {
     return { daemon: r.daemon, credential: r.credential, claxVersion: r.clax_version };
   }
   if (r.type === "error" && typeof r.code === "string") {
-    const held = r.code === "confirmation_pending" && typeof r.confirmation_id === "string" && CONFIRMATION.test(r.confirmation_id) ? r.confirmation_id : null;
+    // The host names a held pairing's confirmation, and checks the one sent back.
+    const held = r.code === "confirmation_pending" && typeof r.confirmation_id === "string" ? r.confirmation_id : null;
     throw new PairError(r.code, typeof r.message === "string" ? r.message : r.code, held);
   }
   throw new PairError("bad_reply", "the native host answered something other than a pairing");

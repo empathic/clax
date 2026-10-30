@@ -127,7 +127,7 @@ export const CLOSED_MS = 5 * 60_000;
 /** What the person is told while the native host is slow to answer. */
 export const HOST_SLOW = "Clax is taking a while to start. It carries on as soon as it has.";
 /** What the person is told while the pairing waits for their confirmation. */
-export const CONFIRM_PAIRING = "An agent is running, so Clax asks first: confirm pairing this extension in your Clax browser tab. Clax carries on once you have.";
+export const CONFIRM_PAIRING = "Confirm pairing in your Clax browser tab.";
 /** What the person is told when the overlay could not be put in a page between two documents. */
 export const PAGE_LOADING = "The page was still loading. Try again.";
 const failure = (e: unknown) => {
@@ -549,21 +549,23 @@ export class Tabs {
   /** The native host is slow to answer the pairing (`slow`), or answered:
    * each tab Clax is on with no other error says so, or stops saying so. */
   hostSlow(slow: boolean): void {
-    for (const s of [...this.tabs.values()]) {
-      if (!s.on) continue;
-      if (slow && !s.error) this.set(s.tabId, { ...s, error: { code: "host_slow", message: HOST_SLOW } });
-      else if (!slow && s.error?.code === "host_slow") this.set(s.tabId, { ...s, error: null });
-    }
+    this.notice("host_slow", HOST_SLOW, slow);
   }
 
   /** The pairing waits for the person to confirm it in their Clax browser
    * tab (`asking`), or no longer does: each tab Clax is on with no other
    * error (a slow host's notice aside) says so, or stops saying so. */
   hostConfirm(asking: boolean): void {
+    this.notice("confirm_pairing", CONFIRM_PAIRING, asking, "host_slow");
+  }
+
+  /** Each tab Clax is on with no error (or only the notice `over`) shows
+   * the notice `code` while `on`, and stops showing it once not. */
+  private notice(code: string, message: string, on: boolean, over?: string): void {
     for (const s of [...this.tabs.values()]) {
       if (!s.on) continue;
-      if (asking && (!s.error || s.error.code === "host_slow")) this.set(s.tabId, { ...s, error: { code: "confirm_pairing", message: CONFIRM_PAIRING } });
-      else if (!asking && s.error?.code === "confirm_pairing") this.set(s.tabId, { ...s, error: null });
+      if (on && (!s.error || s.error.code === over)) this.set(s.tabId, { ...s, error: { code, message } });
+      else if (!on && s.error?.code === code) this.set(s.tabId, { ...s, error: null });
     }
   }
 

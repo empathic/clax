@@ -82,8 +82,8 @@ describe("Pairer", () => {
     q.onConfirm = w => said.push(w);
     await expect(q.pair()).rejects.toMatchObject({ code: "daemon_unavailable" });
     expect(said).toEqual([true, false]);
-    // A held reply naming no valid confirmation is an error as it is.
-    const bad = env([{ ...held, confirmation_id: "cf_a/b" }]);
+    // A held reply naming no confirmation is an error as it is.
+    const bad = env([{ ...held, confirmation_id: null }]);
     await expect(new Pairer(bad as unknown as PairEnv).pair()).rejects.toMatchObject({ code: "confirmation_pending", confirmation: null });
     expect(bad.sent).toHaveLength(1);
   });
