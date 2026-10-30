@@ -304,6 +304,40 @@ harness (its session variable, else its process), or `--session`; it waits
 has not answered. Agents with the MCP tools use
 `connect_instance` instead.
 
+### Reading another Clax from an agent
+
+Give an agent a page's URL on another Clax instance (clax.dev, a team's
+own, or a colleague's) and its tools work on it there. Before this Clax is
+connected to that instance, `read`, `comments_read` and `watch` answer
+`remote_sign_in_required`, naming the instance and the `connect_instance`
+tool; a private page there answers anyone else not found, with a hint to
+sign in or to connect. The agent then calls `connect_instance` with the
+URL and a reason, and waits:
+
+1. The connection request appears as a card in your inbox, naming the
+   agent, the instance and the page.
+2. You press **Connect** in your browser. While any agent of yours is
+   live, the daemon token alone cannot answer it: it is your browser's
+   decision (and, with passkeys turned on in Settings, your passkey's).
+3. A tab opens on the other instance's device sign-in. Signed in there as
+   the person to read as, check the code and approve.
+4. `connect_instance` answers `connected`.
+
+From then on the agent reads that instance's pages through your Clax, as
+the person who approved: `read`, `open` and the comment tools answer as
+for a local artifact, with the page's address there and the instance's
+name, and anything that would change a page there (`publish`, `db_*`,
+`delete`, …) answers `not_on_remote`. `watch` follows the page: the agent
+appears there by its name, so a person there can send it a thread, and
+what they send reaches it here as a local comment does (`wait_for_feedback`,
+the `follow_command` the watch answers, channel notifications). Revoking
+this machine's token on your People page there signs it out; the next
+call answers `remote_sign_in_required` again.
+
+Nothing of this needs the other instance to be on the internet: one on
+this machine (`just clax-dev-local`) connects over `http`, as loopback is
+allowed; any other is `https`.
+
 A push publishes every version the public copy has not had, in order, with
 its label, note and files. The public versions are yours there: each names
 the local agent that made it, and the ones you published by hand read as
@@ -548,6 +582,17 @@ that makes a browser that person (open it at the LAN address: there the
 pages themselves do not open, as an artifact's site, `<ID>.localhost`, is
 this machine's), and registers one agent of theirs. `scripts/dev-second-person.sh --off <home>`
 disconnects it and removes the home.
+
+**Connecting to a dev clax.dev: `just remote-e2e`.** The end-to-end check of
+reading another Clax (`demo/remote-e2e.ts`): it builds the web UI, the
+Worker and the daemon, starts the Worker with `just clax-dev-local`'s
+settings and a daemon on a scratch home under `target/remote-e2e/`, each on
+a free port, and walks the path above with a scripted agent (`clax mcp`):
+`connect_instance`, Connect from an owner browser session, the device
+approval there, a `read` of a private page, a `watch`, and a comment there
+reaching `clax feedback follow --once`. Each step prints a line; it exits 0
+when all pass, and stops everything it started (`--no-build` reuses the
+last builds, `--keep` keeps the run directory).
 
 Edit the plugin, skill or hooks, then start a new `just dev` session to pick
 them up. A dev-home daemon left by an earlier `just dev`, whose temporary

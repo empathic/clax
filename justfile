@@ -286,6 +286,10 @@ crate-package: web
 hosted-demo *ARGS:
     node demo/local.ts "$@"
 
+# An agent of a local Clax connects to the dev Worker, reads a private page there and is told of a comment on it, end to end (demo/remote-e2e.ts): the Worker with clax-dev-local's settings and a scratch-home daemon on free ports, each step printed, exit 0 when every step passed; runs in target/remote-e2e/ (args: --no-build to use the last builds, --keep to keep the run directory)
+remote-e2e *ARGS:
+    node demo/remote-e2e.ts "$@"
+
 # Run clax.dev on this machine (demo/clax-dev-local.ts): the Worker under `wrangler dev --local` on the first free port of 8788-8797 with a production deploy's settings (GitHub sign-in against real GitHub, the bundled Terms and Privacy Policy) and nothing seeded, an owner of its own (a sign-in link printed each run) so that your GitHub sign-in is a new person's sign-up with the Terms and the quickstart, its data kept in target/clax-dev-local/; the first run on a machine registers a GitHub App in two clicks in the browser, kept in ~/.config/clax/local/github.env for every worktree rebuilding and restarting the Worker when web/ or crates/ change (args: --fresh to start over, --owner to make your GitHub account the owner, --setup to leave setup open, --port, --no-build to build nothing and watch nothing)
 clax-dev-local *ARGS:
     node demo/clax-dev-local.ts "$@"

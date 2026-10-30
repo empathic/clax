@@ -92,6 +92,14 @@ export function demoVars(port: number, secret: string, seats: string): Record<st
   };
 }
 
+/** The vars clax.dev's deploy gives the Worker over `demoVars`, as
+ * demo/clax-dev-local.ts runs it (crates/clax-worker/deploy.mjs writes
+ * them): GitHub sign-in's App, the key-encryption key CLAX_KEK (64 hex
+ * digits) and the bundled Terms of Service and Privacy Policy. */
+export function devLocalVars(o: { githubClientId: string; githubClientSecret: string; kek: string }): Record<string, string> {
+  return { GITHUB_CLIENT_ID: o.githubClientId, GITHUB_CLIENT_SECRET: o.githubClientSecret, CLAX_KEK: o.kek, LEGAL: "bundled" };
+}
+
 /** wrangler.jsonc without its custom build (built beforehand), with
  * absolute paths and `vars` set, written to `dir/wrangler.json`. */
 function writeConfig(dir: string, vars: Record<string, string>): string {

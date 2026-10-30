@@ -1400,8 +1400,7 @@ hosted one):
   `retry_after_s` (5), rather than 429. `status`: `open`,
   `connected` (with `remote`, its ID), `dismissed` (Not now, or a sign-in
   denied or expired there), `muted` (Never) or `expired` (an open request
-  expires 24 hours after it opened). 429 `limit_reached` past four polls of
-  one request at once.
+  expires 24 hours after it opened).
 - `POST /api/remotes/requests/<id>/answer {answer}`: the owner's browser
   session alone (403 `browser_required` for the token, an agent, or a
   browser on another origin). `connect` runs `POST /api/remotes`'s device
