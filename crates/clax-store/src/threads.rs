@@ -737,6 +737,64 @@ fn refuse_comments_off_in(c: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Refuses new thread `t` on `id` as its transaction would: `NotFound` for
+/// an artifact not live, `comments_off`, `invalid_anchor` (a route on a
+/// page that is not live, a file version `t.version_n` lacks or that is
+/// in `hidden`), `unknown_version`. Run again in the thread's
+/// transaction; run first, outside it, so a refused clipped thread writes
+/// no clip.
+fn admit_thread_in(c: &Connection, id: &ArtifactId, t: &NewThread, hidden: &[String]) -> Result<()> {
+    if !artifact_live(c, id.as_str())? {
+        return Err(CoreError::NotFound);
+    }
+    refuse_comments_off_in(c, id.as_str())?;
+    if t.anchor.route.is_some() {
+        let kind: String = c.query_row(
+            "SELECT kind FROM artifacts WHERE id = ?1",
+            params![id.as_str()],
+            |r| r.get(0),
+        )?;
+        if kind != clax_core::live::KIND_LIVE {
+            return Err(CoreError::invalid(
+                "invalid_anchor",
+                "route is only for live pages",
+            ));
+        }
+    }
+    let files: Option<String> = c
+        .query_row(
+            "SELECT files_json FROM versions WHERE artifact_id = ?1 AND n = ?2",
+            params![id.as_str(), t.version_n],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(files) = files else {
+        return Err(CoreError::invalid(
+            "unknown_version",
+            format!("artifact {id} has no version {}", t.version_n),
+        ));
+    };
+    let files: std::collections::BTreeMap<String, serde_json::Value> =
+        serde_json::from_str(&files).map_err(|_| CoreError::Corrupt {
+            artifact_id: id.to_string(),
+            column: "files_json",
+            version: Some(t.version_n),
+        })?;
+    // An `artifact` anchor is on no page; any version holds it.
+    if !t.anchor.is_whole()
+        && (!files.contains_key(&t.anchor.file) || hidden.contains(&t.anchor.file))
+    {
+        return Err(CoreError::invalid(
+            "invalid_anchor",
+            format!(
+                "version {} of artifact {id} has no file {}",
+                t.version_n, t.anchor.file
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Whether `id` takes threads, comments and watches: not deleted, and with
 /// a version, or a followed remote artifact's mirror (which has none).
 pub(crate) fn artifact_live(c: &Connection, id: &str) -> Result<bool> {
@@ -897,13 +955,29 @@ impl Store {
         let now = self.now();
         let anchor_json = serde_json::to_string(&t.anchor).expect("anchors serialise");
         // The clip goes first, under the lock a delete holds across its
-        // transaction and the content's removal.
+        // transaction and the content's removal, once the thread is known
+        // to be admitted (and not a key's repeat), so a refused request
+        // writes none.
         let _lock = match &t.clip {
             Some(bytes) => {
                 let lock = self.lock_content(id).await?;
-                if !self.with_read(|c| artifact_live(c, id.as_str()))? {
-                    return Err(CoreError::NotFound);
+                let repeat = self.with_read(|c| {
+                    if let Some(k) = key
+                        && let Some(found) = super::linked::comment_key_in(c, k)?
+                    {
+                        return Ok(Some(found));
+                    }
+                    admit_thread_in(c, id, &t, hidden)?;
+                    Ok(None)
+                })?;
+                if let Some((thread_id, comment_id)) = repeat {
+                    return Ok(Keyed::Before {
+                        thread_id,
+                        comment_id,
+                    });
                 }
+                #[cfg(test)]
+                self.point("thread.clip.put");
                 self.content.put_clip(id, &tid, bytes).await?;
                 Some(lock)
             }
@@ -917,55 +991,7 @@ impl Store {
                 before = Some(found);
                 return Ok(());
             }
-            if !artifact_live(tx, id.as_str())? {
-                return Err(CoreError::NotFound);
-            }
-            refuse_comments_off_in(tx, id.as_str())?;
-            if t.anchor.route.is_some() {
-                let kind: String = tx.query_row(
-                    "SELECT kind FROM artifacts WHERE id = ?1",
-                    params![id.as_str()],
-                    |r| r.get(0),
-                )?;
-                if kind != clax_core::live::KIND_LIVE {
-                    return Err(CoreError::invalid(
-                        "invalid_anchor",
-                        "route is only for live pages",
-                    ));
-                }
-            }
-            let files: Option<String> = tx
-                .query_row(
-                    "SELECT files_json FROM versions WHERE artifact_id = ?1 AND n = ?2",
-                    params![id.as_str(), t.version_n],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            let Some(files) = files else {
-                return Err(CoreError::invalid(
-                    "unknown_version",
-                    format!("artifact {id} has no version {}", t.version_n),
-                ));
-            };
-            let files: std::collections::BTreeMap<String, serde_json::Value> =
-                serde_json::from_str(&files).map_err(|_| CoreError::Corrupt {
-                    artifact_id: id.to_string(),
-                    column: "files_json",
-                    version: Some(t.version_n),
-                })?;
-
-            // An `artifact` anchor is on no page; any version holds it.
-            if !t.anchor.is_whole()
-                && (!files.contains_key(&t.anchor.file) || hidden.contains(&t.anchor.file))
-            {
-                return Err(CoreError::invalid(
-                    "invalid_anchor",
-                    format!(
-                        "version {} of artifact {id} has no file {}",
-                        t.version_n, t.anchor.file
-                    ),
-                ));
-            }
+            admit_thread_in(tx, id, &t, hidden)?;
 
             tx.execute(
                 "INSERT INTO threads (id, artifact_id, version_n, anchor_json, status, sent_to_agent, has_clip, created_at)
@@ -2322,6 +2348,36 @@ mod tests {
                     .next()
                     .is_none()
         );
+    }
+
+    /// A clipped thread the store refuses (no such version, no such file,
+    /// comments off, a key already used) never writes its clip.
+    #[test]
+    fn a_refused_clipped_thread_never_writes_its_clip() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        let put = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watch = |st: &Store| {
+            let put = put.clone();
+            st.at_point("thread.clip.put", move |_| {
+                put.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        };
+        let mut unknown = new_thread("x", Some(PNG.to_vec()));
+        unknown.version_n = 9;
+        let mut no_file = new_thread("x", Some(PNG.to_vec()));
+        no_file.anchor.file = "missing.html".into();
+        for (nt, code) in [(unknown, "unknown_version"), (no_file, "invalid_anchor")] {
+            watch(&st);
+            let e = st.create_thread(DAEMON, &aid, nt).unwrap_err();
+            assert!(matches!(e, CoreError::Invalid { code: c, .. } if c == code), "{e:?}");
+            assert!(!put.load(std::sync::atomic::Ordering::SeqCst), "{code}");
+        }
+        st.set_comments(DAEMON, &aid, false).unwrap();
+        watch(&st);
+        st.create_thread(DAEMON, &aid, new_thread("x", Some(PNG.to_vec())))
+            .unwrap_err();
+        assert!(!put.load(std::sync::atomic::Ordering::SeqCst), "comments off");
     }
 
     #[test]
