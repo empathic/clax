@@ -2806,7 +2806,12 @@ impl ClaxTools {
                 .map_err(|e| self.fail(e))?,
             Ref::Remote(r) => self
                 .client
-                .remote_resolve(&r.remote, &r.artifact_id, &a.thread_id)
+                .remote_resolve(
+                    &r.remote,
+                    &r.artifact_id,
+                    &a.thread_id,
+                    &clax_core::new_ulid(),
+                )
                 .await
                 .map_err(|e| self.remote_fail(e))?,
         };

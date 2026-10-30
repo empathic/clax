@@ -796,9 +796,11 @@ export class DaemonClient {
     return this.json(`${this.remotePath(rid, raid)}/threads/${encodeURIComponent(tid)}/comments`, opts);
   }
 
-  /** Resolves remote thread `tid` as the agent: `{thread}`, or `{guidance}`. */
-  remoteResolve(rid: string, raid: string, tid: string): Promise<any> {
-    return this.json(`${this.remotePath(rid, raid)}/threads/${encodeURIComponent(tid)}/resolve`, this.jsonBody("POST", { as: "agent" }));
+  /** Resolves remote thread `tid` as the agent under idempotency key `key`: `{thread}`, or `{guidance}`. */
+  remoteResolve(rid: string, raid: string, tid: string, key: string): Promise<any> {
+    const opts = this.jsonBody("POST", { as: "agent" });
+    opts.headers = { ...opts.headers, "idempotency-key": key };
+    return this.json(`${this.remotePath(rid, raid)}/threads/${encodeURIComponent(tid)}/resolve`, opts);
   }
 
   /** Hands remote thread `tid` to the agent `to` names there, or releases it: `{thread}`. */

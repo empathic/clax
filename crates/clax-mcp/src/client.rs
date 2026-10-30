@@ -1540,17 +1540,28 @@ impl DaemonClient {
         .await
     }
 
-    /// Resolves remote thread `tid` as the agent: the remote's `{thread}`,
-    /// or `{guidance}` on a thread not sent to an agent there.
-    pub async fn remote_resolve(&self, rid: &str, raid: &str, tid: &str) -> Result<Value> {
+    /// Resolves remote thread `tid` as the agent, under idempotency key
+    /// `key`: the remote's `{thread}`, or `{guidance}` on a thread not sent
+    /// to an agent there.
+    pub async fn remote_resolve(
+        &self,
+        rid: &str,
+        raid: &str,
+        tid: &str,
+        key: &str,
+    ) -> Result<Value> {
         let body = json!({"as": "agent"});
         let path = format!(
             "{}/threads/{}/resolve",
             Self::remote_artifact_path(rid, raid),
             encode_segment(tid)
         );
-        self.json(|c| c.request(reqwest::Method::POST, &path).json(&body))
-            .await
+        self.json(|c| {
+            c.request(reqwest::Method::POST, &path)
+                .header("idempotency-key", key)
+                .json(&body)
+        })
+        .await
     }
 
     /// Hands remote thread `tid` to the agent `to` names there, or

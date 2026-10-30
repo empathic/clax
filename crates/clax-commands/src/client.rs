@@ -1531,6 +1531,20 @@ impl Client {
         }
         self.finish(path, self.exec(req)?)
     }
+    /// [`Client::send`] naming idempotency key `key` (`Idempotency-Key`).
+    pub fn send_keyed(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+        key: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        let mut req = self.request(method, path).header("idempotency-key", key);
+        if let Some(b) = body {
+            req = req.json(b);
+        }
+        self.finish(path, self.exec(req)?)
+    }
     pub fn shutdown(&self) -> anyhow::Result<()> {
         self.post("/api/admin/shutdown", &serde_json::json!({}))
             .map(|_| ())

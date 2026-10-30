@@ -27,8 +27,10 @@
 //!   write is made in, once the remote has the thread on `raid`.
 //!
 //! A write is made in a session of its own there, ended once it is
-//! answered: named as the calling agent's session here (its name, else its
-//! harness, and its harness), or the owner's by-hand one for the owner.
+//! answered (or its request dropped): named as the calling agent's session
+//! here (its name, else its harness, and its harness), or the person's
+//! by-hand one for the owner. An agent with no session here writes nothing
+//! there (403 `no_session`): a by-hand write is the person's own.
 //!
 //! The owner and the owner's agents alone reach these routes, as they
 //! alone may push (`super::remotes::asker`), on a local daemon (404 on a
@@ -40,11 +42,14 @@
 //! (`super::remote_apps`). A remote not reached is 502 `remote_unreachable`
 //! `{origin, name}`, and its discovery answer is forgotten
 //! ([`clax_http::discovery_cache::DiscoveryCache::forget`]). A remote that
-//! refuses the token (401: revoked there) is marked `signed_out` and
+//! refuses the token (401 `invalid_token`, `grant_revoked` or
+//! `token_expired`: revoked or gone there) is marked `signed_out` and
 //! answers 502 `remote_sign_in_required` `{origin, name, request: {tool,
 //! command}}`, the connection request an agent makes to have the person
 //! connect it again ([`crate::resolve::SignInRequest`]); a signed-out
-//! remote answers it at once. No answer carries the token.
+//! remote answers it at once. Any other 401 (`invalid_session_proof`,
+//! `replayed_request`: one request refused) keeps the token and is 502
+//! `remote_refused` naming the remote's code. No answer carries the token.
 
 use super::artifacts::path;
 use super::remotes::Asker;
@@ -123,6 +128,26 @@ async fn signed_out(s: &AppState, r: &Remote) -> ApiError {
     sign_in_required(r)
 }
 
+/// Whether a remote's 401 with error `code` says the token itself is no
+/// longer good there (revoked, expired or unknown), rather than refusing
+/// one request (a session proof or a replay).
+fn token_refused(code: &str) -> bool {
+    matches!(code, "invalid_token" | "grant_revoked" | "token_expired")
+}
+
+/// 502 `remote_refused`: remote `r` refused one request with a 401 whose
+/// `code` does not say the token is gone; the token is kept.
+fn refused_once(r: &Remote, code: &str, message: &str) -> ApiError {
+    let mut e = ApiError::new(
+        StatusCode::BAD_GATEWAY,
+        "remote_refused",
+        format!("{} refused: {code}: {message}", r.origin),
+    );
+    e.extra.insert("remote_code".into(), json!(code));
+    e.extra.insert("remote_status".into(), json!(401));
+    e
+}
+
 /// A request to remote `r` that failed as [`RemoteFail`] `f`, answered as
 /// the module comment says.
 async fn failed(s: &AppState, r: &Remote, f: RemoteFail) -> ApiError {
@@ -131,7 +156,8 @@ async fn failed(s: &AppState, r: &Remote, f: RemoteFail) -> ApiError {
             s.discovery.forget(&r.origin);
             unreachable(r, &f.message)
         }
-        Some(401) => signed_out(s, r).await,
+        Some(401) if token_refused(&f.code) => signed_out(s, r).await,
+        Some(401) => refused_once(r, &f.code, &f.message),
         Some(_) if f.code == "too_large" => ApiError::new(
             StatusCode::BAD_GATEWAY,
             "remote_refused",
@@ -142,10 +168,17 @@ async fn failed(s: &AppState, r: &Remote, f: RemoteFail) -> ApiError {
 }
 
 /// Remote `r`'s answer `f`, passed on (`super::remote_apps::answer`); a
-/// refused token marks it signed out.
+/// refused token marks it signed out, and any other 401 is
+/// `remote_refused` naming the remote's code.
 async fn passed(s: &AppState, r: &Remote, f: Forwarded) -> Response {
     if f.status == 401 {
-        return signed_out(s, r).await.into_response();
+        let v = serde_json::from_slice::<serde_json::Value>(&f.body).unwrap_or_default();
+        let code = v["error"]["code"].as_str().unwrap_or("error");
+        if token_refused(code) {
+            return signed_out(s, r).await.into_response();
+        }
+        let message = v["error"]["message"].as_str().unwrap_or("HTTP 401");
+        return refused_once(r, code, message).into_response();
     }
     super::remote_apps::answer(&r.origin, f)
 }
@@ -227,7 +260,8 @@ async fn read(
 
 /// Makes `c` speak in a session of its own there for whoever asks
 /// ([`Asker`]): named as the calling agent's session here, or the owner's
-/// by-hand session.
+/// by-hand session for the owner. (An agent with no session is refused
+/// before, [`write`].)
 async fn speak_for(s: &AppState, c: &mut Client, asker: &Asker) -> Result<(), RemoteFail> {
     let sid = match asker {
         Asker::Agent(Some(sid)) => sid.clone(),
@@ -259,6 +293,15 @@ async fn write(
     headers: &HeaderMap,
     body: Bytes,
 ) -> Response {
+    // A write there is the person's own only when the owner makes it: an
+    // agent with no session here has none to be named for (as a push).
+    if let Asker::Agent(None) = r.asker {
+        return ApiError::forbidden(
+            "no_session",
+            "an agent writes on a connected Clax from a harness session (X-Clax-Session)",
+        )
+        .into_response();
+    }
     let mut c = Client::new(&r.remote.origin, Some(r.token.clone()));
     if let Some(check) = first {
         match clax_rt::sendable(c.forward(
@@ -287,6 +330,9 @@ async fn write(
         .collect();
     let out = clax_rt::sendable(async {
         speak_for(s, &mut c, &r.asker).await?;
+        // Ended there however this future ends: dropped mid-write, the
+        // guard ends it in a task of its own.
+        let mut guard = EndSession(Some(c.clone()));
         let sid = c.session().map(|x| x.0.clone()).unwrap_or_default();
         let segs: Vec<&str> = segs
             .iter()
@@ -303,6 +349,7 @@ async fn write(
                 public::MAX_ANSWER_BYTES,
             )
             .await;
+        guard.0 = None;
         c.end_session().await;
         f
     })
@@ -310,6 +357,18 @@ async fn write(
     match out {
         Ok(f) => passed(s, &r.remote, f).await,
         Err(f) => failed(s, &r.remote, f).await.into_response(),
+    }
+}
+
+/// Ends the remote session its client speaks for when dropped while still
+/// holding it: a write whose future is dropped mid-request.
+struct EndSession(Option<Client>);
+
+impl Drop for EndSession {
+    fn drop(&mut self) {
+        if let Some(mut c) = self.0.take() {
+            clax_rt::spawn(clax_rt::sendable(async move { c.end_session().await }));
+        }
     }
 }
 

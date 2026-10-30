@@ -311,7 +311,8 @@ fn threads_at(c: &Client, api: &str) -> anyhow::Result<Vec<Value>> {
     loop {
         let mut path = format!("{api}/threads?include_resolved=true&limit=200");
         if let Some(cur) = &cursor {
-            path.push_str(&format!("&cursor={cur}"));
+            // A remote's cursor is its own text: one query value here.
+            path.push_str(&format!("&cursor={}", super::remotes::encode(cur)));
         }
         let page = c.get(&path)?;
         threads.extend(page["threads"].as_array().cloned().unwrap_or_default());
@@ -819,8 +820,9 @@ fn reply(cli: &crate::Cli, home: &Home, r: &ReplyArgs) -> anyhow::Result<()> {
         None => owner(&c)?,
     };
     let tid = g.threads[i]["id"].as_str().unwrap_or_default();
-    let res = c.send(
-        Method::POST,
+    let res = write(
+        &c,
+        &g,
         &format!("{}/threads/{tid}/comments", g.art.api),
         Some(&json!({"body": text})),
     )?;
@@ -850,6 +852,16 @@ fn reply(cli: &crate::Cli, home: &Home, r: &ReplyArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A `POST` of `body` to `path`, a thread route of `g`'s artifact: on a
+/// remote one with an `Idempotency-Key` of its own, so the write sent again
+/// is answered there with what the first made.
+fn write(c: &Client, g: &Group, path: &str, body: Option<&Value>) -> anyhow::Result<Value> {
+    match &g.art.remote {
+        Some(_) => c.send_keyed(Method::POST, path, body, &clax_core::new_ulid()),
+        None => c.send(Method::POST, path, body),
+    }
+}
+
 enum Action {
     Resolve,
     Reopen,
@@ -863,11 +875,7 @@ fn act(cli: &crate::Cli, home: &Home, raw: &str, action: Action) -> anyhow::Resu
         Action::Resolve => ("resolve", "resolved"),
         Action::Reopen => ("reopen", "reopened"),
     };
-    let res = c.send(
-        Method::POST,
-        &format!("{}/threads/{tid}/{verb}", g.art.api),
-        None,
-    )?;
+    let res = write(&c, &g, &format!("{}/threads/{tid}/{verb}", g.art.api), None)?;
     let reference = format!("{}#{}", g.artifact_id, i + 1);
     let mut out = json!({"thread_id": tid, "ref": reference, "status": res["thread"]["status"]});
     out[key] = json!(true);

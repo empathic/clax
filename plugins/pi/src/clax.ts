@@ -1815,7 +1815,7 @@ class Tools {
     const t = await this.resolveAny(c, a.url_or_id);
     checkThreadId(a.thread_id);
     const r = t.kind === "remote"
-      ? await this.remoteCall(() => c.remoteResolve(t.remote, t.artifact_id, a.thread_id))
+      ? await this.remoteCall(() => c.remoteResolve(t.remote, t.artifact_id, a.thread_id, randomUUID()))
       : await this.call(() => c.resolve(t.id, a.thread_id));
     return typeof r.guidance === "string"
       ? { thread_id: a.thread_id, resolved: false, guidance: r.guidance }

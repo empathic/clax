@@ -631,3 +631,157 @@ async fn a_remote_on_this_daemons_port_resolves_as_the_remote() {
     .await;
     assert_eq!(v["kind"], "local", "{v}");
 }
+
+/// A connected remote row at `origin` here, named `name`, as a finished
+/// sign-in leaves it.
+fn connected_at(local: &TestServer, origin: &str, name: &str) -> clax_store::remotes::Remote {
+    let r = local
+        .store
+        .add_pending_remote(
+            origin,
+            name,
+            &clax_store::remotes::PendingSignIn {
+                device_code: clax_core::Secret::new(format!("cxd_{name}")),
+                user_code: "ABCD-1234".into(),
+                verification_url: format!("{origin}/device?code=ABCD-1234"),
+                expires_at: "2099-01-01T00:00:00.000Z".into(),
+                interval_s: 5,
+            },
+        )
+        .unwrap();
+    local
+        .store
+        .connect_remote(
+            &r.id,
+            &clax_store::remotes::SignedInAs {
+                token: clax_core::Secret::new(format!("cxa_{name}")),
+                person_public_id: "p1".into(),
+                person_name: None,
+                grant_id: format!("g_{name}"),
+            },
+        )
+        .unwrap()
+}
+
+/// A stand-in remote that answers every request 401 with error `code`:
+/// its origin, and the task serving it.
+async fn refusing(code: &'static str) -> (String, tokio::task::JoinHandle<()>) {
+    use axum::response::IntoResponse;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let app = axum::Router::new().fallback(move || async move {
+        (
+            reqwest::StatusCode::UNAUTHORIZED,
+            axum::Json(json!({"error": {"code": code, "message": "refused"}})),
+        )
+            .into_response()
+    });
+    let serving = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (origin, serving)
+}
+
+/// Only a 401 saying the token is gone signs a remote out; one refusing a
+/// request (a session proof, a replay) keeps the token and is passed on as
+/// `remote_refused` with the remote's code.
+#[tokio::test]
+async fn only_a_refused_token_signs_a_remote_out() {
+    let local = TestServer::spawn().await;
+    let raid = "7q3k9mzx2b4t";
+    for (code, signs_out) in [
+        ("invalid_session_proof", false),
+        ("replayed_request", false),
+        ("token_expired", true),
+        ("grant_revoked", true),
+    ] {
+        let (origin, serving) = refusing(code).await;
+        let r = connected_at(&local, &origin, &code.replace('_', "-"));
+        let (s, v) = local_req(
+            &local,
+            Method::GET,
+            &format!("/api/remotes/{}/artifacts/{raid}", r.id),
+            json!(null),
+            None,
+        )
+        .await;
+        let now = local.store.find_remote(&r.id).unwrap().unwrap();
+        if signs_out {
+            assert_eq!(
+                (s, v["error"]["code"].as_str()),
+                (502, Some("remote_sign_in_required")),
+                "{code}: {v}"
+            );
+            assert_eq!(now.status, "signed_out", "{code}");
+            assert!(local.store.remote_token(&r.id).unwrap().is_none(), "{code}");
+        } else {
+            assert_eq!(
+                (s, v["error"]["code"].as_str()),
+                (502, Some("remote_refused")),
+                "{code}: {v}"
+            );
+            assert_eq!(v["error"]["remote_code"], code, "{v}");
+            assert_eq!(now.status, "connected", "{code}");
+            assert!(local.store.remote_token(&r.id).unwrap().is_some(), "{code}");
+        }
+        serving.abort();
+    }
+}
+
+/// An agent with no session here writes nothing there: a write there in
+/// the person's by-hand session is the owner's alone.
+#[tokio::test]
+async fn an_agent_with_no_session_writes_nothing_there() {
+    let public = Public::new().await;
+    let local = TestServer::spawn().await;
+    let rid = connect(&local, &public).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let raid = remote_artifact(&public).await;
+    let t = browser_thread(&public, &raid, &public.cookie, "@agent look").await;
+    let tid = t["id"].as_str().unwrap().to_string();
+    let base = format!("/api/remotes/{rid}/artifacts/{raid}");
+    for (path, body) in [
+        (
+            format!("{base}/threads/{tid}/comments"),
+            json!({"body": "hi", "author_kind": "agent"}),
+        ),
+        (
+            format!("{base}/threads/{tid}/resolve"),
+            json!({"as": "agent"}),
+        ),
+        (format!("{base}/threads/{tid}/reopen"), json!({})),
+        (format!("{base}/threads/{tid}/handoff"), json!({})),
+    ] {
+        let (s, v) = json_of(
+            local
+                .authed(local.client.post(format!("{}{path}", local.base)))
+                .header("x-clax-channel", "agent")
+                .json(&body)
+                .send()
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            (s, v["error"]["code"].as_str()),
+            (403, Some("no_session")),
+            "{path}: {v}"
+        );
+    }
+    // It still reads.
+    let (s, _) = json_of(
+        local
+            .authed(local.client.get(format!("{}{base}/threads", local.base)))
+            .header("x-clax-channel", "agent")
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 200);
+    let there = thread_there(&public, &raid, &tid).await;
+    assert_eq!(there["comments"].as_array().unwrap().len(), 1, "{there}");
+    assert_eq!(there["status"], "open", "{there}");
+}

@@ -1262,26 +1262,35 @@ ID, 400 `invalid_args` otherwise):
   /api/sessions/<sid>/threads/<tid>/handoff`, once the remote has the
   thread on that artifact: `to` names a live agent there.
 
-A write is made in a session of its own there, ended once answered, named
-as the calling agent's session here (its name, else its harness, with its
-harness), or the person's by-hand session for the owner. The remote's
+A write is made in a session of its own there, ended once answered (or
+its request dropped), named as the calling agent's session here (its name,
+else its harness, with its harness), or the person's by-hand session for
+the owner alone: an agent of the owner's with no harness session here is
+refused 403 `no_session`, since a by-hand write there is the person's own.
+The MCP tools, Pi and `clax comments` send an `Idempotency-Key` of their
+own with every remote write (reply, resolve, reopen). The remote's
 answers come back with their status and body, with `content-security-policy:
 sandbox; default-src 'none'`, `x-content-type-options: nosniff` and
 `cache-control: no-store`. A remote not reached is 502
 `remote_unreachable` `{origin, name}`, and its discovery answer is
-forgotten. A remote that refuses the token (401: revoked there) is marked
+forgotten. A remote that refuses the token (401 `invalid_token`,
+`grant_revoked` or `token_expired`: revoked or gone there) is marked
 `signed_out` (`GET /api/remotes` shows it; its token is forgotten, its
 links kept for the sign-in that connects it again, which `POST
 /api/remotes` or a connection request's Connect starts as for a new one)
 and the route answers 502 `remote_sign_in_required` `{origin, name,
 request: {tool: "connect_instance", command: "clax remote request
 '<origin>/'"}}`, as does every later call until it is connected again.
+Any other 401 there (`invalid_session_proof`, `replayed_request`: one
+request refused) keeps the token and is 502 `remote_refused` with
+`remote_code`.
 
 On such an artifact, the MCP tools and Pi's `read`, `comments_read`,
 `comments_reply`, `comments_resolve`, `comments_handoff` and `open` answer
 as for a local artifact, with `artifact_id` its ID there, `url` its address
-there, and `remote: {origin, name}`; `comments_reply` sends an
-`Idempotency-Key` of its own and refuses `addressed` (a live page's), and
+there, and `remote: {origin, name}`; `comments_reply` and
+`comments_resolve` send an `Idempotency-Key` of their own, `comments_reply`
+refuses `addressed` (a live page's), and
 nothing is acknowledged here. `read` and `comments_read` add
 `withheld_comments: {count, note}` when the remote withholds comments from
 its agents, `note` reading "<n> comments from people you have not approved
