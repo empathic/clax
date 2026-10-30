@@ -3769,6 +3769,29 @@ async fn the_agent_channel_marker_makes_the_token_an_agent() {
     assert_eq!(v["actor"], json!({"type": "agent", "session_id": null}));
     let v = ctx(ts.authed(ts.client.get(&url)).header("x-clax-via", "hook")).await;
     assert_eq!(v["actor"], json!({"type": "owner", "public_id": owner}));
+    // The token naming a session that is not known, without the marker, is
+    // an agent as `Caller` counts it (`OwnerAgent`), never the owner.
+    for sid in ["01JB9S00000000000000000099", "not-a-ulid"] {
+        let v = ctx(ts
+            .authed(ts.client.get(&url))
+            .header("x-clax-session", sid))
+        .await;
+        assert_eq!(
+            v["actor"],
+            json!({"type": "agent", "session_id": null}),
+            "{sid}"
+        );
+        let v = ctx(ts
+            .authed(ts.client.get(&url))
+            .header("x-clax-session", sid)
+            .header("x-clax-via", "hook"))
+        .await;
+        assert_eq!(
+            v["actor"],
+            json!({"type": "agent", "session_id": null, "channel": "hook"}),
+            "{sid}"
+        );
+    }
 }
 
 /// A connected person's browser is a viewer marked `person`.
