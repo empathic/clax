@@ -1281,7 +1281,9 @@ answers come back with their status and body, with `content-security-policy:
 sandbox; default-src 'none'`, `x-content-type-options: nosniff` and
 `cache-control: no-store`. A remote not reached is 502
 `remote_unreachable` `{origin, name}`, and its discovery answer is
-forgotten. A remote that refuses the token (401 `invalid_token`,
+forgotten: one that does not connect within 5 s, or does not answer
+within 20 s (under the MCP shim's and the CLI's 30 s to the daemon),
+counts as not reached. A remote that refuses the token (401 `invalid_token`,
 `grant_revoked` or `token_expired`: revoked or gone there) is marked
 `signed_out` (`GET /api/remotes` shows it; its token is forgotten, its
 links kept for the sign-in that connects it again, which `POST

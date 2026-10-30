@@ -284,7 +284,13 @@ pub(super) async fn start_add(
         ));
     }
     let (sign_in, return_to_kept) =
-        clax_rt::sendable(public::start_sign_in(&origin, &machine, kind, return_to)).await?;
+        clax_rt::sendable(public::start_sign_in(
+            &origin,
+            &machine,
+            kind,
+            return_to,
+            s.remote_deadline,
+        )).await?;
     // What the token will read threads as there: a device's unfiltered,
     // an agent token's filtered by the person's approvals.
     let kind = match kind {
@@ -325,7 +331,8 @@ pub async fn poll(
     let r = remote_named(&s, path(id)?).await?;
     // One poll of a sign-in at a time, as a connection request's driver
     // polls (`super::remote_requests`): a second never spends a used code.
-    let _one = s.remote_drivers.connect.lock().await;
+    let lock = s.remote_drivers.connect_lock(&r.origin);
+    let _one = lock.lock().await;
     let (status, shown) = match clax_rt::sendable(public::poll_sign_in(&s, &r)).await? {
         SignIn::Waiting => ("pending", r),
         SignIn::Refused("access_denied") => ("denied", r),

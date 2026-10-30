@@ -390,12 +390,13 @@ fn closed(r: &Request) -> ApiError {
 }
 
 /// Connect: the owner's add for the request's origin, the daemon then
-/// polling its sign-in ([`drive`]). Connects take the daemon's Connect
-/// lock, so a second one, at once or later while the first's sign-in
+/// polling its sign-in ([`drive`]). Connects take the origin's Connect
+/// lock ([`clax_http::remote_drivers::RemoteDrivers::connect_lock`]), so a second one, at once or later while the first's sign-in
 /// waits, answers that sign-in again (driving it when no task of this
 /// daemon does, as after a restart) rather than starting another.
 async fn connect(s: &AppState, r: Request) -> Result<Response, ApiError> {
-    let _one = s.remote_drivers.connect.lock().await;
+    let lock = s.remote_drivers.connect_lock(&r.origin);
+    let _one = lock.lock().await;
     // Read again under the lock: another Connect may have started one.
     let id = r.id.clone();
     let r = s.store_call(move |st| st.remote_request(&id)).await?;
@@ -521,10 +522,18 @@ fn drive(s: AppState, id: String, remote: Remote) {
 /// One poll of request `id`'s sign-in on remote `rid`: the answer it ends
 /// with, or `None` while it waits.
 async fn step(s: &AppState, id: &str, rid: &str) -> Result<Option<Answer>, ApiError> {
-    // One poll at a time, under the Connect lock: a second driver of the
-    // same sign-in (a stranded one beside its replacement) reads what the
-    // first's poll left, rather than spending the used code again.
-    let _one = s.remote_drivers.connect.lock().await;
+    // One poll at a time, under the origin's Connect lock: a second driver
+    // of the same sign-in (a stranded one beside its replacement) reads
+    // what the first's poll left, rather than spending the used code again.
+    let rid0 = rid.to_string();
+    let origin = s
+        .store_call(move |st| Ok(st.find_remote(&rid0)?.map(|r| r.origin)))
+        .await?;
+    let lock = origin.map(|o| s.remote_drivers.connect_lock(&o));
+    let _one = match &lock {
+        Some(l) => Some(l.lock().await),
+        None => None,
+    };
     let (id1, rid1) = (id.to_string(), rid.to_string());
     let (req, remote) = s
         .store_call(move |st| Ok((st.remote_request(&id1)?, st.find_remote(&rid1)?)))

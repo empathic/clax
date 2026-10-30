@@ -7,6 +7,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+/// How long one request to a connected remote may take when an agent's
+/// call waits on it ([`AppState::remote_deadline`]): 20 s. The MCP shim
+/// and the CLI give the daemon 30 s (`clax_mcp::client`'s request
+/// timeout), so a remote that takes the connection and never answers is
+/// reported as `remote_unreachable` with 10 s to spare for the daemon's
+/// own work and the answer's way back, rather than as the daemon timing
+/// out. A remote of ours answers a read in well under a second; 20 s
+/// still covers a slow network or a cold Worker. Pushes, uploads and the
+/// linked threads' sync (whose long polls wait 25 s there) keep the
+/// public client's longer deadline (`clax_server::public`).
+pub const REMOTE_DEADLINE: Duration = Duration::from_secs(20);
+
 /// The visibility generation (spec 2026-10-08-multi-agent-multi-person
 /// M17): the store's counter, bumped by every committed change to what an
 /// agent may see, and a notification of each bump for waking the waiters
@@ -117,6 +129,10 @@ pub struct AppState {
     pub request_timeout: Duration,
     /// Deadline for the publish routes and asset upload.
     pub publish_timeout: Duration,
+    /// Deadline for each request an agent's call makes to a connected
+    /// remote through this daemon ([`REMOTE_DEADLINE`] in the daemon):
+    /// reads, comments, watches and sign-ins.
+    pub remote_deadline: Duration,
     /// Interval between SSE keep-alive comments on `/api/events` (15 s in the daemon).
     pub sse_keep_alive: Duration,
     /// Base URL (`http://<host>:<port>`, no trailing slash) at which this daemon
@@ -400,6 +416,7 @@ impl AppState {
             net: Arc::new(crate::net::Net::default()),
             request_timeout: Duration::from_secs(30),
             publish_timeout: Duration::from_secs(120),
+            remote_deadline: REMOTE_DEADLINE,
             sse_keep_alive: Duration::from_secs(15),
             self_base: p.self_base,
             browser_base: p.browser_base,

@@ -407,7 +407,7 @@ pub async fn remote_put(
     }
     // The artifact there, as the token's person's agents read it: that it
     // is there to follow, and its title.
-    let c = crate::public::Client::new(&r.remote.origin, Some(r.token.clone()));
+    let c = crate::public::Client::for_agent(&s, &r.remote.origin, Some(r.token.clone()));
     let there = match clax_rt::sendable(c.get(&format!("/api/artifacts/{raid}"))).await {
         Ok(v) => v,
         Err(f) => return Err(super::remote_artifacts::failed(&s, &r.remote, f).await),

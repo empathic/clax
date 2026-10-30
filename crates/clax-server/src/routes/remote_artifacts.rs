@@ -47,8 +47,10 @@
 //! artifact ID, `tid` a thread ID, a file path's segments neither empty,
 //! `.` nor `..` (400 `invalid_args` otherwise). The remote's answers come
 //! back with their status and body, sandboxed and unsniffed
-//! (`super::remote_apps`). A remote not reached is 502 `remote_unreachable`
-//! `{origin, name}`, and its discovery answer is forgotten
+//! (`super::remote_apps`). A remote not reached (not connected within
+//! 5 s, or not answering within the state's `remote_deadline`, 20 s in
+//! the daemon) is 502 `remote_unreachable` `{origin, name}`, and its
+//! discovery answer is forgotten
 //! ([`clax_http::discovery_cache::DiscoveryCache::forget`]). A remote that
 //! refuses the token (401 `invalid_token`, `grant_revoked` or
 //! `token_expired`: revoked or gone there) is marked `signed_out` and
@@ -264,7 +266,7 @@ async fn read(
     max: usize,
     ack: Option<HeaderMap>,
 ) -> Response {
-    let c = Client::new(&r.remote.origin, Some(r.token.clone()));
+    let c = Client::for_agent(s, &r.remote.origin, Some(r.token.clone()));
     let q: Vec<(&str, String)> = query.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
     match clax_rt::sendable(c.forward(Method::GET, segs, &q, Vec::new(), None, max)).await {
         Ok(f) => {
@@ -363,7 +365,7 @@ async fn write(
         )
         .into_response();
     }
-    let mut c = Client::new(&r.remote.origin, Some(r.token.clone()));
+    let mut c = Client::for_agent(s, &r.remote.origin, Some(r.token.clone()));
     // A local session watching a followed artifact there speaks in the
     // session the sync holds there for it.
     let held = match &r.asker {

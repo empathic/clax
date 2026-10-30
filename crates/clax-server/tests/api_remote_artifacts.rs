@@ -380,37 +380,45 @@ async fn replies_and_resolves_on_a_remote_thread_once_per_key() {
     );
 }
 
+/// A remote that takes the connection and never answers is unreachable
+/// once the proxy's deadline for agent calls passes (here a short one the
+/// state sets): the agent is told the remote is unreachable, not that the
+/// daemon timed out.
+#[tokio::test]
+async fn a_remote_that_never_answers_is_unreachable_within_the_deadline() {
+    let local = TestServer::spawn_with(|s| {
+        s.remote_deadline = std::time::Duration::from_millis(200);
+    })
+    .await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    // Accepts each connection and holds it, reading and answering nothing.
+    let held = tokio::spawn(async move {
+        let mut open = Vec::new();
+        while let Ok((sock, _)) = listener.accept().await {
+            open.push(sock);
+        }
+    });
+    let r = connected_at(&local, &origin, "stalled");
+    let raid = "7q3k9mzx2b4t";
+    for path in [
+        format!("/api/remotes/{}/artifacts/{raid}", r.id),
+        format!("/api/remotes/{}/artifacts/{raid}/threads", r.id),
+    ] {
+        let (s, v) = local_req(&local, Method::GET, &path, json!(null), None).await;
+        assert_eq!(s, 502, "{path}: {v}");
+        assert_eq!(v["error"]["code"], "remote_unreachable", "{path}: {v}");
+        assert_eq!(v["error"]["origin"], json!(origin), "{v}");
+    }
+    held.abort();
+}
+
 #[tokio::test]
 async fn an_unreachable_remote_answers_remote_unreachable() {
     let local = TestServer::spawn().await;
     // A remote connected once, at an origin nothing answers now.
     let origin = format!("http://127.0.0.1:{}", closed_port());
-    let r = local
-        .store
-        .add_pending_remote(
-            &origin,
-            "gone",
-            &clax_store::remotes::PendingSignIn {
-                device_code: clax_core::Secret::new("cxd_x".into()),
-                user_code: "ABCD-1234".into(),
-                verification_url: format!("{origin}/device?code=ABCD-1234"),
-                expires_at: "2099-01-01T00:00:00.000Z".into(),
-                interval_s: 5,
-            },
-        )
-        .unwrap();
-    local
-        .store
-        .connect_remote(
-            &r.id,
-            &clax_store::remotes::SignedInAs {
-                token: clax_core::Secret::new("cxa_gone".into()),
-                person_public_id: "p1".into(),
-                person_name: Some("Ada".into()),
-                grant_id: "g_1".into(),
-            },
-        )
-        .unwrap();
+    let r = connected_at(&local, &origin, "gone");
     let state = &local.state;
     state.discovery.put_clax(
         &origin,

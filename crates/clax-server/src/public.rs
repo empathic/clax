@@ -53,9 +53,20 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 /// The by-hand harness ([`crate::routes::sessions::BY_HAND_HARNESS`]).
 const BY_HAND: &str = crate::routes::sessions::BY_HAND_HARNESS;
 
-/// How long one request to a remote may take.
+/// How long one request to a remote may take unless the client was given
+/// a shorter deadline ([`Client::with_deadline`]): a push's version or
+/// asset, a bundle, and the linked threads' sync, whose long polls wait
+/// [`crate::linked::WAIT_S`] there. An agent's call waiting on a remote
+/// takes [`clax_http::state::REMOTE_DEADLINE`] instead.
 #[cfg(not(target_arch = "wasm32"))]
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// How long a connection to a remote may take to open, within any
+/// request's deadline: 5 s. A remote that drops the connection's packets
+/// fails here rather than at the request's deadline; a reachable one,
+/// even across an ocean, connects in well under a second.
+#[cfg(not(target_arch = "wasm32"))]
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How long a discovery request ([`Client::discovery`]) may take: an agent
 /// waits on it to learn what a URL names.
@@ -267,6 +278,10 @@ pub struct Client {
     token: Option<Secret>,
     /// The remote session requests speak for: its ID and secret.
     session: Option<(String, Secret)>,
+    /// How long each request may take ([`REQUEST_TIMEOUT`] unless given,
+    /// [`Client::with_deadline`]); not applied on wasm32, where the
+    /// Worker's own limits apply.
+    deadline: std::time::Duration,
 }
 
 /// The body of `res` while it is at most `max` bytes; `None` as soon as
@@ -289,33 +304,58 @@ async fn read_capped(
     Ok(Some(out))
 }
 
-fn timeout(r: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+/// `r` with deadline `d` (none on wasm32).
+fn timeout(r: reqwest::RequestBuilder, d: std::time::Duration) -> reqwest::RequestBuilder {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        r.timeout(REQUEST_TIMEOUT)
+        r.timeout(d)
     }
     #[cfg(target_arch = "wasm32")]
     {
+        let _ = d;
         r
     }
 }
 
 impl Client {
-    /// A client of `origin`, holding `token` when signed in.
+    /// A client of `origin`, holding `token` when signed in, its
+    /// connections opened within [`CONNECT_TIMEOUT`] and each request
+    /// given [`REQUEST_TIMEOUT`].
     pub fn new(origin: &str, token: Option<Secret>) -> Client {
         #[cfg(not(target_arch = "wasm32"))]
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .unwrap_or_default();
         #[cfg(target_arch = "wasm32")]
         let http = reqwest::Client::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        let deadline = REQUEST_TIMEOUT;
+        #[cfg(target_arch = "wasm32")]
+        let deadline = std::time::Duration::ZERO;
         Client {
             origin: origin.to_string(),
             http,
             token,
             session: None,
+            deadline,
         }
+    }
+
+    /// A client of `origin` for an agent's call that waits on it: each
+    /// request given `s`'s [`AppState::remote_deadline`], so a remote that
+    /// never answers fails as unreachable before the agent's own call to
+    /// this daemon times out.
+    pub fn for_agent(s: &AppState, origin: &str, token: Option<Secret>) -> Client {
+        Client::new(origin, token).with_deadline(s.remote_deadline)
+    }
+
+    /// This client, each of its requests given `d` from now on.
+    #[must_use]
+    pub fn with_deadline(mut self, d: std::time::Duration) -> Client {
+        self.deadline = d;
+        self
     }
 
     /// `method` `path` with `body`, answered as JSON; a 2xx answer's body,
@@ -354,7 +394,7 @@ impl Client {
                 .header(clax_core::remote::SESSION_SECRET_HEADER, secret.expose());
         }
         // The deadline first, so that `with` may narrow it.
-        r = with(timeout(r));
+        r = with(timeout(r, self.deadline));
         let fail = |status, code: &str, message: String, body| RemoteFail {
             origin: self.origin.clone(),
             status,
@@ -590,7 +630,7 @@ impl Client {
             message,
             body: Value::Null,
         };
-        let res = timeout(r)
+        let res = timeout(r, self.deadline)
             .send()
             .await
             .map_err(|e| fail(None, "unreachable", e.to_string()))?;
@@ -651,7 +691,7 @@ impl Client {
             message,
             body: Value::Null,
         };
-        let res = timeout(r)
+        let res = timeout(r, self.deadline)
             .send()
             .await
             .map_err(|e| fail(None, "unreachable", e.to_string()))?;
@@ -776,8 +816,8 @@ impl Client {
 /// marks the token it issues as the person's own device, which may manage
 /// the sharing of their artifacts there), naming `return_to` when given (a
 /// loopback page its approval page sends the person back to once they
-/// decide). Without a kind the body names none, as a remote that knows no
-/// kinds expects. The sign-in, and whether the remote took `return_to`: a
+/// decide), each request within `deadline`. Without a kind the body names
+/// none, as a remote that knows no kinds expects. The sign-in, and whether the remote took `return_to`: a
 /// remote that refuses it as a field it does not know is asked again
 /// without it.
 ///
@@ -791,8 +831,9 @@ pub async fn start_sign_in(
     name: &str,
     kind: Option<&str>,
     return_to: Option<&str>,
+    deadline: std::time::Duration,
 ) -> Result<(PendingSignIn, bool), ApiError> {
-    let c = Client::new(origin, None);
+    let c = Client::new(origin, None).with_deadline(deadline);
     let mut body = json!({"client_name": name});
     if let Some(k) = kind {
         body["client_kind"] = json!(k);
@@ -872,7 +913,7 @@ pub async fn poll_sign_in(s: &AppState, r: &Remote) -> Result<SignIn, ApiError> 
             "this remote is not waiting for a sign-in",
         ));
     };
-    let c = Client::new(&r.origin, None);
+    let c = Client::for_agent(s, &r.origin, None);
     let out = c
         .post(
             "/api/hosted/device/token",

@@ -715,6 +715,7 @@ impl TestServer {
             wrap_cache: Arc::new(WrapCache::new(clax_http::wrap_cache::DEFAULT_MAX_BYTES)),
             request_timeout: Duration::from_secs(30),
             publish_timeout: Duration::from_secs(120),
+            remote_deadline: clax_http::state::REMOTE_DEADLINE,
             sse_keep_alive: Duration::from_secs(15),
             self_base: format!("http://{}:{port}", probe_host(&bind.to_string())),
             browser_base: format!("http://{}:{port}", browser_host(&bind.to_string())),
