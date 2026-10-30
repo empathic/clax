@@ -17,7 +17,8 @@
 //!    a local agent watches, kept in a mirror here) is not one: its URL
 //!    stays the remote's, naming its mirror.
 //! 3. The URL is on a connected remote's origin, or under the site domain
-//!    its discovery names: that remote's artifact. On the origin of a
+//!    its discovery names, when no other connected remote's host or site
+//!    domain overlaps that domain: that remote's artifact. On the origin of a
 //!    remote that refused its token (`signed_out`): one to sign in to
 //!    again.
 //! 4. Its origin's `GET /.well-known/clax` says it is a Clax instance:
@@ -37,8 +38,10 @@
 //! Discovery asks with no credential and follows no redirect
 //! ([`crate::public::Client`]), only an `https` origin or an `http` one on
 //! loopback ([`clax_core::config::hosted_origin`]). Its answers are kept in
-//! [`DiscoveryCache`]: an answer naming a Clax until a call to it fails,
-//! anything else for ten minutes on the state's clock.
+//! [`DiscoveryCache`]: an answer naming a Clax, for a connected remote's
+//! origin, until a call to it fails, and for any other origin for an hour
+//! ([`clax_http::discovery_cache::POSITIVE_TTL_S`]); anything else for ten
+//! minutes; each on the state's clock.
 
 pub use clax_http::discovery_cache::DiscoveryCache;
 
@@ -317,8 +320,8 @@ fn artifact_in_path(u: &url::Url) -> Option<(String, Option<u32>)> {
 }
 
 /// Step 3: the connected remote `u` is on, by `origin` or the site domain
-/// its discovery names, and the artifact it names there (`None` for a
-/// page of the remote's that names none).
+/// its discovery names ([`claimable`]), and the artifact it names there
+/// (`None` for a page of the remote's that names none).
 async fn on_remote<'r>(
     s: &AppState,
     remotes: &'r [Remote],
@@ -331,24 +334,75 @@ async fn on_remote<'r>(
     // Only a host whose first label is an artifact ID can be a site's.
     let first = u.host_str()?.split('.').next()?;
     ArtifactId::parse(first).ok()?;
+    let mut claims: Vec<(&Remote, String, Option<String>)> = Vec::new();
     for r in remotes {
-        let Some(domain) = discover(s, &r.origin).await.and_then(|i| i.site_domain) else {
+        let host = url::Url::parse(&r.origin)
+            .ok()
+            .and_then(|b| b.host_str().map(str::to_ascii_lowercase))
+            .unwrap_or_default();
+        let domain = discover_connected(s, &r.origin, true)
+            .await
+            .and_then(|i| i.site_domain);
+        claims.push((r, host, domain));
+    }
+    for (i, (r, _, domain)) in claims.iter().enumerate() {
+        let Some(domain) = domain else {
             continue;
         };
+        let others: Vec<(&str, Option<&str>)> = claims
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, (_, h, d))| (h.as_str(), d.as_deref()))
+            .collect();
+        if !claimable(domain, &others) {
+            continue;
+        }
         let Ok(base) = url::Url::parse(&r.origin) else {
             continue;
         };
-        if let Some(at) = on_site(&domain, &base, u) {
+        if let Some(at) = on_site(domain, &base, u) {
             return Some((r, Some(at)));
         }
     }
     None
 }
 
+/// Whether `a` and `b` (lowercase host names) are the same name or one is
+/// under the other, label by label.
+fn overlap(a: &str, b: &str) -> bool {
+    a == b || a.ends_with(&format!(".{b}")) || b.ends_with(&format!(".{a}"))
+}
+
+/// Whether a connected remote may claim site domain `domain` (lowercase,
+/// as [`SiteHosts`] keeps it), its sites' URLs then resolving to it: a
+/// name of at least two labels, not `localhost` or under it (this
+/// daemon's own sites), and overlapping (the same name, or one under the
+/// other) neither the host nor the claimed site domain of any of the
+/// `others` connected remotes, each `(origin host, site domain)`. Two
+/// remotes claiming overlapping names both lose them, so neither takes
+/// the other's sites. A site domain need not be under its remote's own
+/// host: a public Clax serves its sites on a domain of their own.
+fn claimable(domain: &str, others: &[(&str, Option<&str>)]) -> bool {
+    domain.contains('.')
+        && !overlap(domain, clax_http::host::LOCAL_SITE_DOMAIN)
+        && others.iter().all(|(host, theirs)| {
+            !overlap(domain, host) && theirs.is_none_or(|t| !overlap(domain, t))
+        })
+}
+
 /// What `origin`'s discovery says, from [`AppState::discovery`] or asked
 /// now: the Clax instance it is, or `None` when it is none, did not
-/// answer, or may not be asked (not `https`, nor `http` on loopback).
+/// answer, or may not be asked (not `https`, nor `http` on loopback). An
+/// answer asked now is kept for an hour, `origin` being no connected
+/// remote's.
 pub async fn discover(s: &AppState, origin: &str) -> Option<Instance> {
+    discover_connected(s, origin, false).await
+}
+
+/// [`discover`], an answer asked now kept until forgotten when `connected`
+/// (`origin` a connected remote's).
+async fn discover_connected(s: &AppState, origin: &str, connected: bool) -> Option<Instance> {
     clax_core::config::hosted_origin(origin)?;
     match s.discovery.get(origin) {
         Cached::Clax(i) => return Some(i),
@@ -361,7 +415,8 @@ pub async fn discover(s: &AppState, origin: &str) -> Option<Instance> {
         .ok()
         .and_then(|v| instance(&v, origin));
     match &found {
-        Some(i) => s.discovery.put_clax(origin, i.clone()),
+        Some(i) if connected => s.discovery.put_clax(origin, i.clone()),
+        Some(i) => s.discovery.put_clax_unconnected(origin, i.clone()),
         None => s.discovery.put_not_clax(origin),
     }
     found
@@ -514,6 +569,32 @@ mod tests {
         assert_eq!(at("https://7q3k9mzx2b4t.sites.example:8443/"), None);
         assert_eq!(at("https://a.7q3k9mzx2b4t.sites.example/"), None);
         assert_eq!(at("https://sites.example/"), None);
+    }
+
+    #[test]
+    fn a_site_domain_is_claimed_only_when_no_other_remote_overlaps_it() {
+        assert!(claimable("sites.example", &[]));
+        assert!(claimable(
+            "sites.example",
+            &[("clax.other", Some("pages.other"))]
+        ));
+        // Its own host need not be its parent.
+        assert!(claimable("clax.run", &[("clax.example", None)]));
+        for bad in ["localhost", "a.localhost", "com", "example"] {
+            assert!(!claimable(bad, &[]), "{bad}");
+        }
+        for (domain, others) in [
+            // Another remote's origin host, or a name above or under it.
+            ("clax.other", vec![("clax.other", None)]),
+            ("other", vec![("clax.other", None)]),
+            ("a.clax.other", vec![("clax.other", None)]),
+            // Another remote's claimed site domain, or overlapping it.
+            ("sites.example", vec![("b.example", Some("sites.example"))]),
+            ("example", vec![("b.test", Some("sites.example"))]),
+            ("x.sites.example", vec![("b.test", Some("sites.example"))]),
+        ] {
+            assert!(!claimable(domain, &others), "{domain} {others:?}");
+        }
     }
 
     #[test]

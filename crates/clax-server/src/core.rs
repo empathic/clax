@@ -298,9 +298,18 @@ impl Core {
         }
         self.bot_driver.release_all();
         // The journal has closed its segment (it began to as shutdown
-        // began) before the store stops.
-        if let Some(stopped) = self.journal_stopped {
-            let _ = tokio::time::timeout(JOURNAL_STOP_TIMEOUT, stopped).await;
+        // began) before the store stops; meanwhile the followers' sessions
+        // the linked sync held on remotes are ended there, within the same
+        // wait.
+        let journal = async {
+            if let Some(stopped) = self.journal_stopped {
+                let _ = tokio::time::timeout(JOURNAL_STOP_TIMEOUT, stopped).await;
+            }
+        };
+        let followers = crate::linked::end_followers(&self.state, JOURNAL_STOP_TIMEOUT);
+        let ((), ended) = futures::future::join(journal, followers).await;
+        if !ended {
+            tracing::warn!("followers' sessions on remotes did not end in time; the remotes reap them");
         }
         let store = self.state.store.clone();
         #[cfg(test)]

@@ -584,35 +584,74 @@ pub async fn put_link(
 
 /// `PUT /api/remotes/<rid>/artifacts/<raid>/sharing/shares {github_login |
 /// person, access}` (the owner) → the remote's `PUT
-/// /api/hosted/artifacts/<raid>/shares`.
+/// /api/hosted/artifacts/<raid>/shares`. Naming a person widens who opens
+/// the public copy: made with the token alone while an agent session is
+/// live, it waits for a click in the owner's browser first, as `put_link`
+/// does (202 `confirmation_pending`, [`clax_http::confirm`]).
 pub async fn put_share(
     State(s): State<AppState>,
     d: DeniedToGrants,
     who: Identity,
     _o: SameOrigin,
+    by: Confirming,
     p: Result<Path<(String, String)>, PathRejection>,
     sent: Bytes,
 ) -> Result<Response, ApiError> {
     super::remotes::local_only(&s)?;
     d.refuse_agents()?;
     who.require_owner("reaches a public Clax")?;
+    let change: Value = serde_json::from_slice(&sent)
+        .map_err(|_| ApiError::bad_request("invalid_json", "the body is not JSON"))?;
+    widen(&s, &d, &by, &p, "person", &change).await?;
     put_sharing(&s, &d, p, "shares", &sent).await
 }
 
 /// `PUT /api/remotes/<rid>/artifacts/<raid>/sharing/comments {on}` (the
 /// owner) → the remote's `PUT /api/hosted/artifacts/<raid>/comments`.
+/// Turning comments on (`on` not `false`) widens what the public copy's
+/// readers may do: confirmed as `put_share` is.
 pub async fn put_comments(
     State(s): State<AppState>,
     d: DeniedToGrants,
     who: Identity,
     _o: SameOrigin,
+    by: Confirming,
     p: Result<Path<(String, String)>, PathRejection>,
     sent: Bytes,
 ) -> Result<Response, ApiError> {
     super::remotes::local_only(&s)?;
     d.refuse_agents()?;
     who.require_owner("reaches a public Clax")?;
+    let change: Value = serde_json::from_slice(&sent)
+        .map_err(|_| ApiError::bad_request("invalid_json", "the body is not JSON"))?;
+    if change["on"] != false {
+        widen(&s, &d, &by, &p, "comments", &change).await?;
+    }
     put_sharing(&s, &d, p, "comments", &sent).await
+}
+
+/// The browser confirmation of widening the public copy `p` names to
+/// `to` with `change` ([`Decision::Widen`]); nothing for a path that does
+/// not parse, which `put_sharing` refuses.
+async fn widen(
+    s: &AppState,
+    d: &DeniedToGrants,
+    by: &Confirming,
+    p: &Result<Path<(String, String)>, PathRejection>,
+    to: &str,
+    change: &Value,
+) -> Result<(), ApiError> {
+    let Ok(Path((rid, raid))) = p else {
+        return Ok(());
+    };
+    let decision = Decision::Widen {
+        artifact_id: raid.clone(),
+        to: to.into(),
+        remote_id: Some(rid.clone()),
+        body: Some(change.clone()),
+    };
+    require_confirmation(s, &d.caller(s).await?, by, decision).await?;
+    Ok(())
 }
 
 /// `DELETE /api/remotes/<rid>/artifacts/<raid>/sharing/shares/<sid>` (the

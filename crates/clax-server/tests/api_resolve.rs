@@ -280,7 +280,7 @@ async fn a_connected_persons_agent_resolves_remote_urls_as_pages() {
 }
 
 #[tokio::test]
-async fn a_negative_discovery_is_kept_ten_minutes() {
+async fn a_negative_discovery_is_kept_ten_minutes_and_an_unconnected_positive_an_hour() {
     let clock = Arc::new(ManualClock::at("2026-10-29T10:00:00Z"));
     let local = TestServer::spawn_with_clock(clock.clone()).await;
     let site = NotYetClax::start().await;
@@ -298,11 +298,12 @@ async fn a_negative_discovery_is_kept_ten_minutes() {
         "request": {"tool": "connect_instance", "command": format!("clax remote request '{url}'")}});
     assert_eq!(resolve(&local, &url).await, clax, "then asked again");
     assert_eq!(site.asked(), 2);
-    clock.advance(86_400 * 30);
+    // An instance this home is not connected to is asked again after an
+    // hour: nothing calls it, so no failed call would forget it.
+    clock.advance(3599);
     assert_eq!(resolve(&local, &url).await, clax);
-    assert_eq!(
-        site.asked(),
-        2,
-        "a Clax's answer is kept until a call fails"
-    );
+    assert_eq!(site.asked(), 2, "kept for an hour");
+    clock.advance(1);
+    assert_eq!(resolve(&local, &url).await, clax);
+    assert_eq!(site.asked(), 3, "then asked again");
 }

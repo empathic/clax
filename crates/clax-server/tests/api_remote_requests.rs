@@ -142,6 +142,29 @@ async fn an_agent_without_a_session_cannot_ask() {
     assert_eq!(cards(&ts).await.len(), 1);
 }
 
+/// An ask about a muted origin is answered `muted` before the daemon
+/// fetches that origin's discovery: nothing is asked of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_muted_origin_is_answered_without_fetching_its_discovery() {
+    let ts = TestServer::spawn().await;
+    let sid = session(&ts, "claude", "h-muted").await;
+    let site = NotYetClax::start().await;
+    ts.store.mute_origin(&site.origin).unwrap();
+    let (s, v) = ask(
+        &ts,
+        Some(&sid),
+        json!({"url": format!("{}/x", site.origin)}),
+    )
+    .await;
+    assert_eq!((s, v["status"].as_str()), (200, Some("muted")), "{v}");
+    assert_eq!(
+        ts.state.discovery.get(&site.origin),
+        clax_http::discovery_cache::Cached::Unknown,
+        "its discovery was not fetched"
+    );
+    assert!(cards(&ts).await.is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn two_agents_asking_at_once_make_one_card() {
     let ts = TestServer::spawn().await;

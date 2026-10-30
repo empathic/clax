@@ -533,3 +533,62 @@ async fn a_persons_ended_note_leaves_out_live_pages() {
         format!("/a/{}?thread={}", w.read.artifact, ids[0])
     );
 }
+
+/// A followed remote artifact's mirror holds threads the remote shared
+/// with the owner alone: the owner and the owner's agents reach it, and a
+/// connected person and their agent get 404 for it, as for an artifact
+/// that does not exist, whatever their rights.
+#[tokio::test]
+async fn a_mirror_is_the_owners_and_their_agents_alone() {
+    let r = roster().await;
+    let ts = &r.ts;
+    let origin = "https://clax.example";
+    let pending = ts
+        .store
+        .add_pending_remote(
+            origin,
+            "acme",
+            &clax_store::remotes::PendingSignIn {
+                device_code: clax_core::Secret::new("cxd_m".into()),
+                user_code: "ABCD-1234".into(),
+                verification_url: format!("{origin}/device?code=ABCD-1234"),
+                expires_at: "2099-01-01T00:00:00.000Z".into(),
+                interval_s: 5,
+            },
+        )
+        .unwrap();
+    ts.store
+        .connect_remote(
+            &pending.id,
+            &clax_store::remotes::SignedInAs {
+                token: clax_core::Secret::new("cxa_m".into()),
+                person_public_id: "p1".into(),
+                person_name: None,
+                grant_id: "g_m".into(),
+            },
+        )
+        .unwrap();
+    let mirror = ts
+        .store
+        .follow_remote(
+            &pending.id,
+            "7q3k9mzx2b4t",
+            &format!("{origin}/a/7q3k9mzx2b4t"),
+            "Theirs",
+        )
+        .unwrap();
+    let path = format!("/api/artifacts/{mirror}/threads");
+    let owner = ts.get_authed(&path).await;
+    assert_eq!(owner.status(), 200, "the owner");
+    let agent = ts
+        .authed(ts.client.get(format!("{}{path}", ts.base)))
+        .header("x-clax-session", &r.owner_session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(agent.status(), 200, "the owner's agent");
+    let sams_agent = r.sam.get(Some(&r.sam_session), &path).await;
+    assert_eq!(sams_agent.status(), 404, "a person's agent");
+    let (s, v) = r.sams_browser(&path).await;
+    assert_eq!(s, 404, "a person's browser: {v}");
+}

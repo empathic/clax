@@ -238,6 +238,63 @@ where
     unreachable!("the loop returns")
 }
 
+/// An agent manages the remote watches of its own session alone: one
+/// naming another session in `X-Clax-Session`, or none (the agent
+/// channel's marker alone), is refused, whatever session the path names.
+#[tokio::test]
+async fn an_agent_manages_only_its_own_sessions_remote_watches() {
+    let t = There::new().await;
+    let a = t.agent("alpha").await;
+    let b = t.agent("beta").await;
+    let path = format!("/api/sessions/{a}/remote-watches");
+    let body = json!({"remote": t.rid, "artifact_id": t.raid});
+    for method in [Method::PUT, Method::DELETE] {
+        let (s, v) = local_req(&t.local, method.clone(), &path, body.clone(), Some(&b)).await;
+        assert_eq!((s, v["error"]["code"].as_str()), (403, Some("forbidden")), "{v}");
+        let res = t
+            .local
+            .authed(
+                t.local
+                    .client
+                    .request(method.clone(), format!("{}{path}", t.local.base)),
+            )
+            .header("x-clax-channel", "agent")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let (s, v) = json_of(res).await;
+        assert_eq!((s, v["error"]["code"].as_str()), (403, Some("forbidden")), "{v}");
+    }
+    assert!(t.mirror().is_none(), "nothing was followed");
+    // Its own session's, it may.
+    t.watch(&a).await;
+}
+
+/// The daemon's stop ends each follower's session there before it
+/// returns: stopping the sync and waiting for its followers leaves none
+/// live on the remote.
+#[tokio::test]
+async fn stopping_the_sync_ends_the_followers_sessions_there() {
+    let t = There::new().await;
+    let sid = t.agent("stopper").await;
+    t.watch(&sid).await;
+    t.agent_there("stopper").await;
+    let tasks = clax_server::linked::stop(&t.local.state);
+    for h in tasks {
+        let _ = h.await;
+    }
+    assert!(
+        clax_server::linked::end_followers(&t.local.state, Duration::from_secs(30)).await,
+        "the followers' sessions ended"
+    );
+    assert!(
+        !t.sessions_there().iter().any(|n| n == "stopper"),
+        "{:?}",
+        t.sessions_there()
+    );
+}
+
 #[tokio::test]
 async fn a_comment_on_a_watched_remote_artifact_reaches_feedback() {
     let t = There::new().await;

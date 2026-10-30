@@ -246,23 +246,8 @@ impl Store {
         self.with_tx(|tx| {
             let now = stamp(now_utc);
             settle(tx, &now_utc)?;
-            let connected: Option<String> = tx
-                .query_row(
-                    "SELECT id FROM remotes WHERE origin = ?1 AND status = 'connected'",
-                    params![a.origin],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if let Some(rid) = connected {
-                return Ok(Asked::Connected(rid));
-            }
-            let muted: bool = tx.query_row(
-                "SELECT EXISTS (SELECT 1 FROM remote_mutes WHERE origin = ?1)",
-                params![a.origin],
-                |r| r.get(0),
-            )?;
-            if muted {
-                return Ok(Asked::Muted);
+            if let Some(early) = answered_before_asking(tx, &a.origin, &a.session, &now_utc)? {
+                return Ok(early);
             }
             let open: Option<String> = tx
                 .query_row(
@@ -280,24 +265,6 @@ impl Store {
                     params![id, a.session, a.url, a.reason, now],
                 )?;
                 return Ok(Asked::Joined(read(tx, &id)?.ok_or(CoreError::NotFound)?));
-            }
-            let until: Option<String> = tx
-                .query_row(
-                    "SELECT until FROM remote_dismissals WHERE origin = ?1 AND until > ?2",
-                    params![a.origin, now],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if let Some(until) = until {
-                return Ok(Asked::Backoff { until });
-            }
-            let opened: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM remote_requests WHERE opened_by = ?1 AND created_at > ?2",
-                params![a.session, shifted(&now_utc, -WINDOW_S)],
-                |r| r.get(0),
-            )?;
-            if opened >= MAX_NEW_PER_SESSION {
-                return Ok(Asked::Capped);
             }
             let id = new_ulid();
             tx.execute(
@@ -332,6 +299,23 @@ impl Store {
                 &now,
             )?;
             Ok(Asked::Opened(read(tx, &id)?.ok_or(CoreError::NotFound)?))
+        })
+    }
+
+    /// What session `session`'s ask about `origin` answers without a
+    /// request to open or join, as [`Store::ask_remote`] would answer it
+    /// now: `Connected`, `Muted`, and, while no request for it is open,
+    /// `Backoff` or `Capped`; `None` when the ask would open or join one.
+    /// The daemon asks this before it fetches the origin's discovery, so a
+    /// muted, held-off or capped ask fetches nothing.
+    ///
+    /// # Errors
+    /// The database's.
+    pub fn remote_ask_answer(&self, origin: &str, session: &str) -> Result<Option<Asked>> {
+        let now_utc = self.now_utc();
+        self.with_tx(|tx| {
+            settle(tx, &now_utc)?;
+            answered_before_asking(tx, origin, session, &now_utc)
         })
     }
 
@@ -492,6 +476,63 @@ impl Store {
                 .collect::<rusqlite::Result<_>>()?)
         })
     }
+}
+
+/// What an ask about `origin` by `session` answers in `tx` without opening
+/// or joining a request: the remote connected, the origin muted, and,
+/// while no request for it is open, its hold-off or the session's cap.
+fn answered_before_asking(
+    tx: &rusqlite::Connection,
+    origin: &str,
+    session: &str,
+    now_utc: &chrono::DateTime<chrono::Utc>,
+) -> Result<Option<Asked>> {
+    let now = stamp(*now_utc);
+    let connected: Option<String> = tx
+        .query_row(
+            "SELECT id FROM remotes WHERE origin = ?1 AND status = 'connected'",
+            params![origin],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(rid) = connected {
+        return Ok(Some(Asked::Connected(rid)));
+    }
+    let muted: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM remote_mutes WHERE origin = ?1)",
+        params![origin],
+        |r| r.get(0),
+    )?;
+    if muted {
+        return Ok(Some(Asked::Muted));
+    }
+    let open: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM remote_requests WHERE origin = ?1 AND status = 'open')",
+        params![origin],
+        |r| r.get(0),
+    )?;
+    if open {
+        return Ok(None);
+    }
+    let until: Option<String> = tx
+        .query_row(
+            "SELECT until FROM remote_dismissals WHERE origin = ?1 AND until > ?2",
+            params![origin, now],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(until) = until {
+        return Ok(Some(Asked::Backoff { until }));
+    }
+    let opened: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM remote_requests WHERE opened_by = ?1 AND created_at > ?2",
+        params![session, shifted(now_utc, -WINDOW_S)],
+        |r| r.get(0),
+    )?;
+    if opened >= MAX_NEW_PER_SESSION {
+        return Ok(Some(Asked::Capped));
+    }
+    Ok(None)
 }
 
 #[cfg(test)]

@@ -331,16 +331,27 @@ pub struct RemoteWatchBody {
     replies_armed: Option<bool>,
 }
 
-/// 403 `forbidden` when an agent of the owner's names, in `X-Clax-Session`,
-/// another session than the path's `sid`: an agent watches for its own
-/// session, as the other routes under `/api/sessions/<sid>` hold it to.
-fn own_session(asker: &super::remotes::Asker, sid: &str) -> Result<(), ApiError> {
-    match asker {
-        super::remotes::Asker::Agent(Some(own)) if own != sid => Err(ApiError::forbidden(
+/// 403 `forbidden` unless an agent of the owner's (the token with
+/// `X-Clax-Session` or the agent channel's marker) names, in
+/// `X-Clax-Session`, the path's `sid`: an agent watches for its own
+/// session alone, and one that names none (the agent channel's marker
+/// alone) has no session to watch for. The path's session alone does not
+/// say whose the call is. The owner by hand (the token alone) and the
+/// owner's browser manage any session's.
+fn own_session(who: &Identity, sid: &str) -> Result<(), ApiError> {
+    if !who.token || !(who.agent_marker || who.header_session.is_some()) {
+        return Ok(());
+    }
+    match who.header_session.as_deref() {
+        Some(own) if own == sid => Ok(()),
+        Some(_) => Err(ApiError::forbidden(
             "forbidden",
             "an agent watches for its own session (X-Clax-Session names another)",
         )),
-        _ => Ok(()),
+        None => Err(ApiError::forbidden(
+            "forbidden",
+            "an agent watches for its own session: send X-Clax-Session naming it",
+        )),
     }
 }
 
@@ -364,7 +375,8 @@ fn remote_view(r: &clax_store::remotes::Remote, raid: &str) -> Value {
 /// (`crate::linked`). Answers `{watch, mirror, artifact_id, url, remote:
 /// {origin, name}}`, `url` the artifact's address there. The owner and the
 /// owner's agents alone, on a local daemon (404 on a hosted one), an
-/// agent for its own session alone (403 `forbidden` otherwise); errors
+/// agent for its own session alone, named in `X-Clax-Session` (403
+/// `forbidden` otherwise, and for an agent that names none); errors
 /// as `crate::routes::remote_artifacts`'s, the remote's own refusal of
 /// the artifact passed on, and 400 `pushed_here` naming `artifact_id`
 /// here for the public copy of an artifact this home pushed: its local
@@ -383,7 +395,7 @@ pub async fn remote_put(
     super::remotes::local_only(&s)?;
     who.require_owner(REMOTE_WHAT)?;
     let r = super::remote_artifacts::reach(&s, &d, &b.remote).await?;
-    own_session(&r.asker, &sid)?;
+    own_session(&who, &sid)?;
     let raid = super::remote_apps::remote_artifact(&b.artifact_id)?;
     let (rid, r2) = (r.remote.id.clone(), raid.clone());
     let pushed = s
@@ -458,7 +470,8 @@ pub async fn remote_delete(
     let b = body(b)?;
     super::remotes::local_only(&s)?;
     who.require_owner(REMOTE_WHAT)?;
-    own_session(&super::remotes::asker(&s, &d).await?, &sid)?;
+    super::remotes::asker(&s, &d).await?;
+    own_session(&who, &sid)?;
     let raid = super::remote_apps::remote_artifact(&b.artifact_id)?;
     let key = b.remote.trim().trim_end_matches('/').to_string();
     let remote = s

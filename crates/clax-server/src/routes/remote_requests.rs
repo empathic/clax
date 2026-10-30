@@ -169,6 +169,15 @@ pub async fn ask(
     if !live {
         return Err(session_required("no live session has this ID"));
     }
+    // A connected, muted, held-off or capped ask is answered before any
+    // request leaves for the origin.
+    let (o, id) = (origin.clone(), sid.clone());
+    if let Some(early) = s
+        .store_call(move |st| st.remote_ask_answer(&o, &id))
+        .await?
+    {
+        return asked(early);
+    }
     // The gate before the person hears anything: a Clax, by its discovery.
     let Some(instance) = clax_rt::sendable(crate::resolve::discover(&s, &origin)).await else {
         return Err(not_a_clax(&format!(
@@ -177,7 +186,7 @@ pub async fn ask(
     };
     let page = working_page(&s, &sid).await?;
     let st = s.clone();
-    let asked = s
+    let asked_now = s
         .store_call(move |db| {
             let place = clax_http::surface::suggestion(&st, db, &sid, page.as_deref())?.r#where;
             db.ask_remote(&Ask {
@@ -191,6 +200,11 @@ pub async fn ask(
             })
         })
         .await?;
+    asked(asked_now)
+}
+
+/// The answer to an ask that the store answered `asked`.
+fn asked(asked: Asked) -> Result<Response, ApiError> {
     Ok(match asked {
         Asked::Opened(r) => (
             StatusCode::CREATED,

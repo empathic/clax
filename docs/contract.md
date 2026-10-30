@@ -1192,7 +1192,10 @@ nothing but the daemon's memory of other instances' discovery:
   its remote and public artifact ID (no `version` then).
 - `{kind: "remote", remote, origin, name, artifact_id, version?, url,
   mirror?}`: an artifact on a connected remote, by a URL on its origin or
-  on the `site_domain` its discovery names; `remote` and `name` are the
+  on the `site_domain` its discovery names (a name of two labels or more,
+  not `localhost` or under it, that overlaps neither the host nor the site
+  domain of any other connected remote, the same name or one under the
+  other; remotes whose names overlap claim none); `remote` and `name` are the
   remote's ID and name here, `artifact_id` its ID there, `url` its address
   there (`<origin>/a/<artifact_id>`), and `mirror` the local mirror of its
   threads while this home follows it (**Remote artifacts**, watching). A
@@ -1215,8 +1218,9 @@ origin of a remote this home connected (on the same port as a local
 daemon, under another name), is never the daemon's own. A remote that
 refused its token (`signed_out`) answers `sign_in_required` by its own
 origin and name, with no discovery. Discovery answers are kept in memory:
-an instance's until a call to it fails (unreachable, or refusing the
-token), any other answer (or none, within 10 s) for 10 minutes.
+a connected remote's instance until a call to it fails (unreachable, or
+refusing the token), any other origin's instance for an hour, any other
+answer (or none, within 10 s) for 10 minutes.
 
 Resolving or reading a page URL on an `https` origin (or an `http` one on
 loopback) not known here therefore makes the daemon ask that origin's
@@ -1341,11 +1345,16 @@ longer knows it). Answers `{watch,
 mirror, artifact_id, url, remote: {origin, name}}`, `url` the artifact's
 address there. 400 `pushed_here` `{artifact_id}` for the public copy of
 an artifact this home pushed: its local artifact (which the resolver
-names) is the one to watch. An agent acts for its own session alone (403
-`forbidden` when the session it acts for is not `sid`). `GET
+names) is the one to watch. An agent acts for its own session alone, named
+in `X-Clax-Session` (403 `forbidden` when that names another than `sid`,
+or when an agent names none). `GET
 /api/sessions/<sid>/watches` names such a watch as there: `artifact_id`
 its ID there, with `url` and `remote: {origin, name}`, never the mirror.
-A mirror is never a session's artifact (where it asks), and neither the
+A mirror is the owner's and the owner's agents' alone: its paths
+(`/api/artifacts/<mirror>…`, `/a/<mirror>`, a session's
+`/watches/<mirror>`) answer 404 to anyone else, a connected person or a
+person's agent whatever their rights, as for an artifact that does not
+exist. A mirror is never a session's artifact (where it asks), and neither the
 start-up sweep of versionless rows nor `clax doctor` takes it for a crashed
 create. `DELETE /api/sessions/<sid>/remote-watches
 {remote, artifact_id, url?}` stops the watch (204, watched or not; 404
@@ -1378,7 +1387,9 @@ hosted one):
   URL on the instance, or its origin; `reason` (at most 500 characters)
   is shown to the person. The instance must pass discovery as **Resolving
   a URL** says, before anyone is told: 422 `not_a_clax` otherwise (or for
-  an origin that is not `https`, nor `http` on loopback). Answers:
+  an origin that is not `https`, nor `http` on loopback). An ask answered
+  `connected`, `muted`, `not_now` or 429 is answered before discovery is
+  fetched: nothing is asked of that origin. Answers:
   - 201 `{status: "open", request}`: a new request. The person hears once:
     a `remote_request` item in the gallery's inbox, placed in the asking
     agent's thread when `where_to_ask` would place a question there.
@@ -2745,7 +2756,9 @@ harness may still be running. The decisions:
    /api/artifacts/<aid>` `{site_access: "world"}` for a site not open
    yet), and its public copy's link access (`PUT
    /api/remotes/<rid>/artifacts/<raid>/sharing/link` with an `access`,
-   or `listed: true`);
+   or `listed: true`), a share of the public copy with a person (`PUT
+   …/sharing/shares`), and its comments turned on (`PUT
+   …/sharing/comments` with `on` other than `false`);
 5. approving a machine's connection (`POST /api/grants/<gid>/approve`),
    setting a person's rights (`PUT /api/people/<id>/rights`) and revoking
    a person (`DELETE /api/people/<id>`);

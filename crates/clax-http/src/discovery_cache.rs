@@ -1,7 +1,9 @@
 //! What other Clax instances' `GET /.well-known/clax` said, in memory
-//! (`clax_server::resolve`): an answer naming a Clax is kept until a call
-//! to that origin fails ([`DiscoveryCache::forget`]); any other answer, or
-//! none, for [`NEGATIVE_TTL_S`] on the state's clock.
+//! (`clax_server::resolve`): an answer naming a Clax is kept, for a
+//! connected remote's origin, until a call to that origin fails
+//! ([`DiscoveryCache::forget`]), and for any other origin for
+//! [`POSITIVE_TTL_S`] (or until forgotten); any other answer, or none, for
+//! [`NEGATIVE_TTL_S`]; each on the state's clock.
 
 use chrono::{DateTime, Utc};
 use clax_core::working::Clock;
@@ -11,6 +13,15 @@ use std::sync::{Arc, Mutex};
 /// How long an origin that is not a Clax instance (or did not answer) is
 /// taken as one, before discovery asks it again: 10 minutes.
 pub const NEGATIVE_TTL_S: i64 = 600;
+
+/// How long an origin that is not a connected remote's, and said it is a
+/// Clax instance, is taken as one before discovery asks it again: an
+/// hour. Nothing calls such an origin, so no failed call forgets it; a site
+/// that once served a Clax-shaped `/.well-known/clax` and stopped makes
+/// its URLs `sign_in_required` for an hour at most, while an agent that
+/// reads several pages of an instance it is about to ask to connect asks
+/// its discovery about once.
+pub const POSITIVE_TTL_S: i64 = 3600;
 
 /// The most origins the cache holds. Past it, expired answers go first,
 /// then every negative one.
@@ -39,8 +50,24 @@ pub enum Cached {
 }
 
 enum Entry {
-    Clax(Instance),
-    NotClax { until: DateTime<Utc> },
+    /// `until`: `None` for a connected remote's origin, kept until
+    /// forgotten.
+    Clax {
+        instance: Instance,
+        until: Option<DateTime<Utc>>,
+    },
+    NotClax {
+        until: DateTime<Utc>,
+    },
+}
+
+impl Entry {
+    fn live(&self, now: DateTime<Utc>) -> bool {
+        match self {
+            Entry::Clax { until, .. } => until.is_none_or(|u| u > now),
+            Entry::NotClax { until } => *until > now,
+        }
+    }
 }
 
 /// The discovery answers of other origins, by origin
@@ -64,19 +91,39 @@ impl DiscoveryCache {
         let now = self.clock.now();
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         match entries.get(origin) {
-            Some(Entry::Clax(i)) => Cached::Clax(i.clone()),
-            Some(Entry::NotClax { until }) if *until > now => Cached::NotClax,
-            Some(Entry::NotClax { .. }) => {
+            Some(e) if !e.live(now) => {
                 entries.remove(origin);
                 Cached::Unknown
             }
+            Some(Entry::Clax { instance, .. }) => Cached::Clax(instance.clone()),
+            Some(Entry::NotClax { .. }) => Cached::NotClax,
             None => Cached::Unknown,
         }
     }
 
-    /// `origin` is the Clax instance `instance`, until [`Self::forget`].
+    /// `origin`, a connected remote's, is the Clax instance `instance`,
+    /// until [`Self::forget`].
     pub fn put_clax(&self, origin: &str, instance: Instance) {
-        self.put(origin, Entry::Clax(instance));
+        self.put(
+            origin,
+            Entry::Clax {
+                instance,
+                until: None,
+            },
+        );
+    }
+
+    /// `origin`, not a connected remote's, is the Clax instance
+    /// `instance`, for [`POSITIVE_TTL_S`] or until [`Self::forget`].
+    pub fn put_clax_unconnected(&self, origin: &str, instance: Instance) {
+        let until = self.clock.now() + chrono::Duration::seconds(POSITIVE_TTL_S);
+        self.put(
+            origin,
+            Entry::Clax {
+                instance,
+                until: Some(until),
+            },
+        );
     }
 
     /// `origin` is not a Clax instance, or did not answer, for
@@ -99,12 +146,9 @@ impl DiscoveryCache {
         let now = self.clock.now();
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         if entries.len() >= MAX_ENTRIES && !entries.contains_key(origin) {
-            entries.retain(|_, e| match e {
-                Entry::Clax(_) => true,
-                Entry::NotClax { until } => *until > now,
-            });
+            entries.retain(|_, e| e.live(now));
             if entries.len() >= MAX_ENTRIES {
-                entries.retain(|_, e| matches!(e, Entry::Clax(_)));
+                entries.retain(|_, e| matches!(e, Entry::Clax { .. }));
             }
             if entries.len() >= MAX_ENTRIES {
                 entries.clear();
@@ -142,6 +186,19 @@ mod tests {
         assert_eq!(c.get("https://b.example"), Cached::Clax(instance()));
         c.forget("https://b.example");
         assert_eq!(c.get("https://b.example"), Cached::Unknown);
+    }
+
+    #[test]
+    fn a_positive_answer_for_an_unconnected_origin_lasts_an_hour() {
+        let clock = Arc::new(ManualClock::at("2026-10-29T10:00:00Z"));
+        let c = DiscoveryCache::new(clock.clone());
+        c.put_clax_unconnected("https://c.example", instance());
+        c.put_clax("https://d.example", instance());
+        clock.advance(POSITIVE_TTL_S - 1);
+        assert_eq!(c.get("https://c.example"), Cached::Clax(instance()));
+        clock.advance(1);
+        assert_eq!(c.get("https://c.example"), Cached::Unknown);
+        assert_eq!(c.get("https://d.example"), Cached::Clax(instance()));
     }
 
     #[test]

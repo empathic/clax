@@ -66,6 +66,9 @@ pub struct Linked {
     /// Set under [`Linked::tasks`]'s lock once the sync stopped: no task is
     /// started after.
     pub stopped: AtomicBool,
+    /// The tasks ending followers' sessions there that a stopped sync task
+    /// left running ([`Linked::ending`]), for the daemon's stop to await.
+    pub ending: Mutex<Vec<clax_rt::JoinHandle<()>>>,
 }
 
 impl Linked {
@@ -88,7 +91,21 @@ impl Linked {
             started: AtomicBool::new(false),
             sessions_there: Mutex::default(),
             stopped: AtomicBool::new(false),
+            ending: Mutex::default(),
         }
+    }
+
+    /// Keeps `h`, a task ending a follower's session there, for
+    /// [`Linked::take_ending`]; those finished already are dropped.
+    pub fn ending(&self, h: clax_rt::JoinHandle<()>) {
+        let mut v = self.ending.lock().unwrap_or_else(|e| e.into_inner());
+        v.retain(|t| !t.is_finished());
+        v.push(h);
+    }
+
+    /// The tasks ending followers' sessions there not taken yet.
+    pub fn take_ending(&self) -> Vec<clax_rt::JoinHandle<()>> {
+        std::mem::take(&mut *self.ending.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// How remote `rid`'s sync stands.

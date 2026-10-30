@@ -13,7 +13,8 @@
 //! 2. pushing an artifact to a remote;
 //! 3. connecting a remote, and answering an agent's connection request;
 //! 4. widening who may open a page (its site to the world, its public
-//!    copy's link access);
+//!    copy's link access, a share of it with a person, its comments
+//!    turned on);
 //! 5. approving a machine's connection, setting a person's rights, and
 //!    revoking a person;
 //! 6. pairing the Clax extension (minting its credential), which then
@@ -107,8 +108,10 @@ pub enum Decision {
     /// extension then acts as the owner's browser, so pairing it while an
     /// agent is live is itself confirmed.
     ExtensionMint { extension_id: String },
-    /// Widening who may open `artifact_id`: `to` is `world` (its site), or
-    /// the public copy's link access change `body` on remote `remote_id`.
+    /// Widening who may open `artifact_id`: `to` is `world` (its site), or,
+    /// on remote `remote_id` with the change `body` as sent, the public
+    /// copy's link access (`link`, `public`), a share with a person
+    /// (`person`), or its comments turned on (`comments`).
     Widen {
         artifact_id: String,
         to: String,
@@ -435,6 +438,16 @@ pub fn words(st: &Store, d: &Value) -> clax_core::Result<String> {
             }
         }
         "widen" => match d["remote_id"].as_str() {
+            Some(rid) if d["to"] == "comments" => format!(
+                "let readers comment on the public copy {} on {}",
+                s("artifact_id"),
+                remote(rid)?
+            ),
+            Some(rid) if d["to"] == "person" => format!(
+                "share the public copy {} on {} with someone",
+                s("artifact_id"),
+                remote(rid)?
+            ),
             Some(rid) => format!(
                 "change who may open the public copy {} on {}",
                 s("artifact_id"),

@@ -910,7 +910,13 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     // The extension gateway runs first (the last layer is outermost): only
     // what it admits from the extension's origin reaches the rest (spec
     // 2026-10-05-chrome-overlay-design L5).
+    // A followed remote artifact's mirror answers 404 to every caller but
+    // the owner and the owner's agents (`live_access::hide_mirrors`).
     r.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        clax_http::live_access::hide_mirrors,
+    ))
+    .layer(axum::middleware::from_fn_with_state(
         state.clone(),
         clax_http::live_access::hide_live_pages,
     ))

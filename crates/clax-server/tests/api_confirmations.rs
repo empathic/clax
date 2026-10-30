@@ -855,6 +855,31 @@ async fn connecting_a_remote_and_widening_its_public_copy_ask_first() {
     // Narrowing asks no one (and fails here for the remote it names).
     let (s, v) = token(&ts, Method::PUT, link, json!({"access": null}), None).await;
     assert_eq!((s, code(&v)), (404, "no_remote"), "{v}");
+    // Sharing the public copy with a person, and turning its comments on,
+    // widen it too.
+    let share = "/api/remotes/r1/artifacts/7q3k9mzx2b4t/sharing/shares";
+    let first = token(
+        &ts,
+        Method::PUT,
+        share,
+        json!({"github_login": "octocat", "access": "viewer"}),
+        None,
+    )
+    .await;
+    pending(&ts, &first);
+    assert!(
+        first.1["decision"]
+            .as_str()
+            .unwrap()
+            .starts_with("share the public copy 7q3k9mzx2b4t"),
+        "{}",
+        first.1
+    );
+    let comments = "/api/remotes/r1/artifacts/7q3k9mzx2b4t/sharing/comments";
+    let first = token(&ts, Method::PUT, comments, json!({"on": true}), None).await;
+    pending(&ts, &first);
+    let (s, v) = token(&ts, Method::PUT, comments, json!({"on": false}), None).await;
+    assert_eq!((s, code(&v)), (404, "no_remote"), "{v}");
 }
 
 #[tokio::test]

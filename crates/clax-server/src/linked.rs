@@ -227,6 +227,21 @@ pub fn stop(s: &AppState) -> Vec<clax_rt::JoinHandle<()>> {
         .collect()
 }
 
+/// Waits, at most `within`, for the followers' sessions there that the
+/// stopped sync's tasks are ending: called once the tasks [`stop`]
+/// returned have ended, so a daemon that stops leaves no follower session
+/// live on a remote until the remote reaps it. Whether every one ended in
+/// time.
+pub async fn end_followers(s: &AppState, within: std::time::Duration) -> bool {
+    let ending = s.linked.take_ending();
+    if ending.is_empty() {
+        return true;
+    }
+    clax_rt::time::timeout(within, futures::future::join_all(ending))
+        .await
+        .is_ok()
+}
+
 /// Queues remote `rid`'s local writes and questions not queued yet;
 /// whether it queued any.
 async fn scan(s: &AppState, rid: &str) -> bool {
@@ -603,15 +618,18 @@ struct Sync {
 
 /// A task stopped by the supervisor (its remote's links gone or no longer
 /// watched) or by [`stop`] is dropped mid-cycle: its followers' sessions
-/// there are ended in a task of their own, as [`Sync::end`] ends them.
+/// there are ended in a task of their own, as [`Sync::end`] ends them,
+/// which the sync keeps ([`clax_realtime::linked::Linked::ending`]) so the
+/// daemon's stop waits for them ([`end_followers`]).
 impl Drop for Sync {
     fn drop(&mut self) {
         for (sid, mut f) in std::mem::take(&mut self.followers) {
             f.poll.abort();
             self.s.linked.set_session_there(&self.rid, &sid, None);
-            clax_rt::spawn(clax_rt::sendable(async move {
+            let h = clax_rt::spawn(clax_rt::sendable(async move {
                 f.client.end_session().await;
             }));
+            self.s.linked.ending(h);
         }
     }
 }
