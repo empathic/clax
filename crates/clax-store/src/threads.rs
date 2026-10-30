@@ -1960,25 +1960,33 @@ impl Store {
     /// # Errors
     /// `NotFound` when the thread or its artifact is gone.
     pub fn reopen_thread(&self, ctx: &AuditCtx, thread_id: &str) -> Result<Thread> {
-        self.with_tx(|tx| {
-            let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
-            tx.execute(
-                "UPDATE threads SET status = 'open', resolved_at = NULL, resolved_by = NULL,
-                        resolved_by_person = NULL WHERE id = ?1",
-                params![thread_id],
-            )?;
-            if t.status == "resolved" {
-                let rec = thread_record(
-                    AuditKind::ThreadReopen,
-                    &self.now(),
-                    &t.artifact_id,
-                    thread_id,
-                );
-                self.record_audit(tx, ctx, rec)?;
-            }
-            Ok(())
-        })?;
+        self.with_tx(|tx| self.reopen_thread_in(tx, ctx, thread_id))?;
         self.get_thread(thread_id)?.ok_or(CoreError::NotFound)
+    }
+
+    /// [`Store::reopen_thread`] inside the caller's transaction.
+    pub(crate) fn reopen_thread_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        ctx: &AuditCtx,
+        thread_id: &str,
+    ) -> Result<()> {
+        let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
+        tx.execute(
+            "UPDATE threads SET status = 'open', resolved_at = NULL, resolved_by = NULL,
+                    resolved_by_person = NULL WHERE id = ?1",
+            params![thread_id],
+        )?;
+        if t.status == "resolved" {
+            let rec = thread_record(
+                AuditKind::ThreadReopen,
+                &self.now(),
+                &t.artifact_id,
+                thread_id,
+            );
+            self.record_audit(tx, ctx, rec)?;
+        }
+        Ok(())
     }
 
     /// Deletes a thread with its comments and feedback rows in one

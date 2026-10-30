@@ -852,6 +852,48 @@ impl Store {
         })
     }
 
+    /// Writes status `status` (`open` or `resolved`) that thread `tid`'s
+    /// twin has on the remote here, and records that both sides agree on
+    /// it ([`Store::set_synced_status`]), in one transaction: a
+    /// [`Store::scan_linked`] never sees the change without its synced
+    /// status, so it never queues it back up. A resolve is by
+    /// `viewer:anonymous` ([`Store::resolve_thread_touched`]), a reopen as
+    /// [`Store::reopen_thread`] does it. Answers the thread as it is now,
+    /// what the resolve changed, and whether its status changed here.
+    ///
+    /// # Errors
+    /// `NotFound` when the thread is gone.
+    pub fn mirror_status(
+        &self,
+        ctx: &AuditCtx,
+        tid: &str,
+        status: &str,
+    ) -> Result<(Thread, clax_core::feedback::Touched, bool)> {
+        let (touched, flipped) = self.with_tx(|tx| {
+            let t = thread_in(tx, tid)?.ok_or(CoreError::NotFound)?;
+            let mut touched = clax_core::feedback::Touched::default();
+            let flipped = if status == "resolved" && t.status != "resolved" {
+                touched =
+                    self.resolve_thread_in(tx, ctx, tid, "viewer:anonymous", None, |_, _| {
+                        Ok(None)
+                    })?;
+                true
+            } else if status == "open" && t.status == "resolved" {
+                self.reopen_thread_in(tx, ctx, tid)?;
+                true
+            } else {
+                false
+            };
+            tx.execute(
+                "UPDATE linked_threads SET synced_status = ?2 WHERE thread_id = ?1",
+                params![tid, status],
+            )?;
+            Ok((touched, flipped))
+        })?;
+        let t = self.get_thread(tid)?.ok_or(CoreError::NotFound)?;
+        Ok((t, touched, flipped))
+    }
+
     /// Records that both sides agree thread `tid` is `status`.
     pub fn set_synced_status(&self, tid: &str, status: &str) -> Result<()> {
         self.with_tx(|tx| {
@@ -1805,6 +1847,46 @@ mod tests {
         assert_eq!(v.comments[&made.id].author_name.as_deref(), Some("Sam"));
         // Nothing mirrored goes back up.
         assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_status_mirrored_from_the_remote_is_never_queued_back_up() {
+        let w = world();
+        let l = link(&w, (1, 1));
+        let mt = MirrorThread {
+            remote_thread_id: "rt1".into(),
+            remote_version: 1,
+            anchor: whole(),
+            first: mirror("make it bluer", "rc1"),
+        };
+        let remote = ("clax.example", "https://clax.example");
+        let t =
+            w.st.mirror_thread(&AuditCtx::DAEMON, &l, remote, 1, true, mt)
+                .unwrap();
+        let synced = || w.st.linked_thread(&t.id).unwrap().unwrap().synced_status;
+        let (r, _, flipped) =
+            w.st.mirror_status(&AuditCtx::DAEMON, &t.id, "resolved")
+                .unwrap();
+        assert_eq!((r.status.as_str(), flipped), ("resolved", true));
+        assert_eq!(r.resolved_by.as_deref(), Some("viewer:anonymous"));
+        assert_eq!(synced(), "resolved");
+        // The status and its synced status are one write: a scan right
+        // after it sees them agree, so neither change goes back up.
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0);
+        let (r, _, flipped) =
+            w.st.mirror_status(&AuditCtx::DAEMON, &t.id, "open")
+                .unwrap();
+        assert_eq!((r.status.as_str(), flipped), ("open", true));
+        assert_eq!(synced(), "open");
+        assert_eq!(
+            w.st.scan_linked(&w.rid).unwrap(),
+            0,
+            "the reopen is not echoed"
+        );
+        let (_, _, flipped) =
+            w.st.mirror_status(&AuditCtx::DAEMON, &t.id, "open")
+                .unwrap();
+        assert!(!flipped, "already open");
     }
 
     #[test]

@@ -2333,23 +2333,22 @@ impl Sync {
                 let mut t = st.get_thread(&tid)?.ok_or(clax_core::CoreError::NotFound)?;
                 // Its status there, unless a change here waits to go up.
                 if status != lt.synced_status && !st.status_pending(&tid)? {
-                    if status == "resolved" && t.status != "resolved" {
-                        let (rt2, w) =
-                            st.resolve_thread_touched(&audit, &tid, "viewer:anonymous")?;
-                        touched.merge(w);
-                        ctx.events.publish(Event::ThreadResolved {
-                            artifact_id: rt2.artifact_id.clone(),
-                            thread_id: tid.clone(),
-                            resolved_by: rt2.resolved_by.clone().unwrap_or_default(),
-                            resolved_at: rt2.resolved_at.clone().unwrap_or_default(),
-                        });
-                        t = rt2;
-                        clax_http::views::question::announce_thread(&app, st, &tid);
-                    } else if status == "open" && t.status == "resolved" {
-                        t = st.reopen_thread(&audit, &tid)?;
+                    // With its synced status in one write, so a scan
+                    // between them does not queue it back up.
+                    let (t2, w, flipped) = st.mirror_status(&audit, &tid, &status)?;
+                    touched.merge(w);
+                    t = t2;
+                    if flipped {
+                        if t.status == "resolved" {
+                            ctx.events.publish(Event::ThreadResolved {
+                                artifact_id: t.artifact_id.clone(),
+                                thread_id: tid.clone(),
+                                resolved_by: t.resolved_by.clone().unwrap_or_default(),
+                                resolved_at: t.resolved_at.clone().unwrap_or_default(),
+                            });
+                        }
                         clax_http::views::question::announce_thread(&app, st, &tid);
                     }
-                    st.set_synced_status(&tid, &status)?;
                     changed = true;
                 }
                 // A send there is a send here: to the owner's agents and
