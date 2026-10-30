@@ -706,3 +706,66 @@ async fn the_watch_list_names_the_remote_artifact_not_its_mirror() {
     .await;
     assert_eq!((s, &v["watches"]), (200, &json!([])), "{v}");
 }
+
+/// A thread a person there sends to alpha and then re-sends to beta moves
+/// here as it moves there: its target is beta's local session, and a later
+/// comment there joins beta, not alpha.
+#[tokio::test]
+async fn a_re_send_there_to_another_agent_moves_the_thread_here() {
+    let t = There::new().await;
+    let alpha = t.agent("alpha").await;
+    let beta = t.agent("beta").await;
+    t.watch(&alpha).await;
+    t.watch(&beta).await;
+    t.agent_there("alpha").await;
+    t.agent_there("beta").await;
+    let rtid = t.thread_there("First for alpha").await;
+    let (s, v) = t.send_there(&rtid, Some("alpha")).await;
+    assert_eq!(s, 200, "{v}");
+    let fb = t.wait_for_feedback(&alpha, 20).await;
+    assert_eq!(fb["feedback"][0]["thread_id"], json!(rtid), "{fb}");
+    let (s, v) = t.send_there(&rtid, Some("beta")).await;
+    assert_eq!(s, 200, "{v}");
+    let fb = t.wait_for_feedback(&beta, 20).await;
+    assert_eq!(fb["feedback"][0]["thread_id"], json!(rtid), "{fb}");
+    let mirror = t.mirror().unwrap();
+    let tid = t
+        .local
+        .state
+        .store
+        .list_threads(
+            &clax_core::ArtifactId::parse(&mirror).unwrap(),
+            false,
+            None,
+            10,
+        )
+        .unwrap()
+        .0[0]
+        .id
+        .clone();
+    assert_eq!(
+        t.local.state.store.thread_target(&tid).unwrap(),
+        Some(beta.clone())
+    );
+    // A later comment there joins beta.
+    let ts = &t.public.ts;
+    let res = ts
+        .client
+        .post(format!(
+            "{}/api/artifacts/{}/threads/{rtid}/comments",
+            ts.base, t.raid
+        ))
+        .header(HOST, format!("localhost:{}", ts.addr.port()))
+        .header(COOKIE, format!("clax_session={}", t.public.cookie))
+        .header(ORIGIN, &t.public.origin)
+        .json(&json!({"body": "And one more"}))
+        .send()
+        .await
+        .unwrap();
+    let (s, v) = json_of(res).await;
+    assert_eq!(s, 201, "{v}");
+    let fb = t.wait_for_feedback(&beta, 20).await;
+    assert_eq!(fb["feedback"][0]["body"], "And one more", "{fb}");
+    t.settled().await;
+    assert_eq!(t.wait_for_feedback(&alpha, 0).await["feedback"], json!([]));
+}

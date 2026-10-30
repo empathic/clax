@@ -1327,8 +1327,8 @@ harness), which watches the artifact there: a person there can send a
 thread to that agent by name. What that session is sent there is sent
 here to that local session alone; a send there to every agent goes, as the
 remote hands it, to the session there that takes it first, and so to that
-local session (one already sent it keeps it: another local session handed
-it too gets it as well, and neither is told it was taken). A session there
+local session; a re-send there to another agent moves the thread here to
+that agent's local session, as it moves there. A session there
 the remote refuses (its watch, or the session itself) holds back that
 local session's follower alone, its next try doubling from 1 s to 300 s;
 its feedback poll waits out failures on the same session the same way

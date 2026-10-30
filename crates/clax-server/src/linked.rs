@@ -1254,9 +1254,9 @@ impl Sync {
     }
 
     /// Sends here each thread a follower's session was handed there to
-    /// that follower's local session, once read here (a thread already
-    /// sent here to another watching local session stays that one's, and
-    /// this one gets it too: neither is displaced): a thread not
+    /// that follower's local session, which becomes its target here as
+    /// the session there became its target there (a re-send there to
+    /// another agent moves it here too), once read here: a thread not
     /// read yet waits for the next cycles' reads ([`ROUTE_TRIES`]). One
     /// whose local session no longer watches the mirror is dropped.
     async fn route(&mut self) -> Result<(), Stop> {
@@ -1291,35 +1291,15 @@ impl Sync {
                     if lt.unlinked_at.is_some() || !st.is_remote_mirror(&lt.artifact_id)? {
                         continue;
                     }
-                    // Sent there to another local session's session as well
-                    // (a send to every agent there): this one gets it too,
-                    // and the thread stays the first one's, whose rows stay.
-                    let also = match st.thread_target(&lt.thread_id)? {
-                        Some(t) if t != sid => Some(t),
-                        _ => None,
-                    };
-                    let sent = match also {
-                        Some(first) => match st.send_to_named(
-                            &AuditCtx::DAEMON,
-                            &lt.thread_id,
-                            &[first, sid.clone()],
-                        ) {
-                            // The first is no longer a watcher here.
-                            Err(clax_core::CoreError::Invalid { .. }) => None,
-                            r => Some(r.map(|(t, touched)| (t, touched, Vec::new()))),
-                        },
-                        None => None,
-                    };
-                    let sent = match sent {
-                        Some(r) => r,
-                        None => st.send_routed(
-                            &AuditCtx::DAEMON,
-                            &lt.thread_id,
-                            SendTarget::Agent(&sid),
-                            Route::Send,
-                            false,
-                        ),
-                    };
+                    // As the remote's own send to one agent does, the last
+                    // session handed it is the thread's target here.
+                    let sent = st.send_routed(
+                        &AuditCtx::DAEMON,
+                        &lt.thread_id,
+                        SendTarget::Agent(&sid),
+                        Route::Send,
+                        false,
+                    );
                     match sent {
                         Ok((t, touched, _)) => {
                             apply(&ctx, st, &touched);

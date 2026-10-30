@@ -1444,6 +1444,50 @@ mod tests {
             assert_eq!(st.remote_mirror(rid, raid).unwrap().as_ref(), Some(m));
         }
         assert!(st.list_artifacts().unwrap().is_empty());
+        // No inbox item names a mirror: neither a mirrored agent reply nor
+        // any item made for it (`inbox::insert_at`).
+        let tid = st
+            .linked_thread_by_remote(rid, "01J9Z3K4M5N6P7Q8R9S0T1V2W3")
+            .unwrap()
+            .unwrap()
+            .thread_id;
+        let reply = crate::linked::MirrorComment {
+            remote_comment_id: "c2".into(),
+            author: crate::linked::RemoteAuthor {
+                kind: "agent".into(),
+                public_id: None,
+                name: "Their agent".into(),
+            },
+            body: "Done there".into(),
+        };
+        let made = st
+            .mirror_comment(&clax_core::audit::AuditCtx::DAEMON, &tid, rid, &reply)
+            .unwrap()
+            .unwrap();
+        let items = st
+            .with_tx(|tx| {
+                crate::inbox::note_reply(
+                    tx,
+                    &made.id,
+                    &tid,
+                    &threaded,
+                    None,
+                    "Done there",
+                    &st.now(),
+                )
+            })
+            .unwrap();
+        assert!(items.is_empty(), "{items:?}");
+        let named: i64 = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT count(*) FROM inbox_items WHERE artifact_id IN (?1, ?2)",
+                    params![bare, threaded],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(named, 0);
     }
 
     /// Unfollowing keeps a link followed while a live session watches its
@@ -1483,7 +1527,10 @@ mod tests {
             .unwrap();
         assert!(st.unfollow_remote(&m).unwrap());
         clock.advance(7 * 24 * 3600 + 1);
-        assert_eq!(st.mirrors_to_drop(st.now_utc()).unwrap(), std::slice::from_ref(&m));
+        assert_eq!(
+            st.mirrors_to_drop(st.now_utc()).unwrap(),
+            std::slice::from_ref(&m)
+        );
         // Watched again before the drop: the drop leaves it.
         assert_eq!(follow().0, m);
         assert!(!st.drop_mirror(&m, st.now_utc()).unwrap());
