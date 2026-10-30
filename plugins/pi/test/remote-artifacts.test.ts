@@ -73,6 +73,8 @@ beforeAll(async () => {
       if (route === `POST ${BASE}/threads/${TID}/comments`) return reply(201, { comment: { id: "c2" }, thread: thread("open") });
       if (route === `POST ${BASE}/threads/${TID}/resolve`) return reply(200, { thread: thread("resolved") });
       if (route === `POST ${BASE}/threads/${TID}/handoff`) return reply(200, { thread: thread("open") });
+      if (route === "PUT /api/sessions/s1/remote-watches") return reply(200, { watch: { replies_armed: true }, mirror: "5q3k9mzx2b4t", artifact_id: RAID, url: URL_THERE, remote: { origin: ORIGIN, name: "acme" } });
+      if (route === "DELETE /api/sessions/s1/remote-watches") { res.statusCode = 204; return res.end(); }
       if (u.pathname.endsWith("/feedback")) return reply(200, { feedback: [], answers: [], withheld: [], notes: [] });
       return reply(200, {});
     });
@@ -127,7 +129,7 @@ describe("a connected instance's artifact", () => {
     expect(h).toMatchObject({ artifact_id: RAID, url: URL_THERE, released: true, remote: { origin: ORIGIN, name: "acme" } });
   });
 
-  it("is refused by the tools that change an artifact, and not watched yet", async () => {
+  it("is refused by the tools that change an artifact, and watched through the daemon", async () => {
     const { pi, ctx } = load();
     for (const [tool, args] of [
       ["clax_delete", { url_or_id: URL_THERE }],
@@ -138,8 +140,15 @@ describe("a connected instance's artifact", () => {
       expect(out.isError, tool).toBe(true);
       expect(json(out).error, tool).toMatchObject({ code: "not_on_remote", name: "acme", origin: ORIGIN });
     }
-    const w = await pi.callTool("clax_watch", { url_or_id: URL_THERE }, ctx);
-    expect(json(w).error).toMatchObject({ code: "remote_not_yet", origin: ORIGIN });
+    const f = await pi.callTool("clax_wait_for_feedback", { url_or_id: URL_THERE, timeout_s: 1 }, ctx);
+    expect(json(f).error).toMatchObject({ code: "not_watching", origin: ORIGIN, name: "acme", url: URL_THERE });
+    const w = json(await pi.callTool("clax_watch", { url_or_id: URL_THERE }, ctx));
+    expect(w).toMatchObject({ artifact_id: RAID, url: URL_THERE, remote: { origin: ORIGIN, name: "acme" }, watching: true, replies_armed: true });
+    const put = seen.filter(x => x.method === "PUT" && x.url === "/api/sessions/s1/remote-watches").at(-1)!;
+    expect(JSON.parse(put.body)).toEqual({ remote: "r_1", artifact_id: RAID, url: URL_THERE, replies_armed: true });
+    const off = json(await pi.callTool("clax_watch", { url_or_id: URL_THERE, on: false }, ctx));
+    expect(off).toMatchObject({ artifact_id: RAID, watching: false });
+    expect(seen.some(x => x.method === "DELETE" && x.url === "/api/sessions/s1/remote-watches")).toBe(true);
   });
 
   it("names the instance to connect for an unconnected or revoked one", async () => {

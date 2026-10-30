@@ -409,7 +409,12 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
                 .await;
             match reaped {
                 Ok(r) if r.ended.is_empty() => {}
-                Ok(r) => tracing::info!(count = r.ended.len(), "ended idle sessions"),
+                Ok(r) => {
+                    tracing::info!(count = r.ended.len(), "ended idle sessions");
+                    // A followed remote artifact's session there ends with
+                    // its local session.
+                    reap_state.linked.kick(None);
+                }
                 Err(e) => tracing::warn!(error = %e, "session reaper failed"),
             }
         }

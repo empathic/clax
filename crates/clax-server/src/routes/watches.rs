@@ -14,6 +14,7 @@ use clax_http::agent::{DeniedToGrants, TokenOrAgent};
 use clax_http::audit::DeferredAudit;
 use clax_http::auth::RequireToken;
 use clax_http::error::ApiError;
+use clax_http::identity::Identity;
 use clax_http::state::AppState;
 use clax_realtime::feedback::apply;
 use serde::Deserialize;
@@ -292,4 +293,170 @@ pub async fn live_delete(
         })
         .await?;
     Ok(Json(json!({"page_url": page, "removed": removed})))
+}
+
+/// What only the owner and the owner's agents do here.
+const REMOTE_WHAT: &str = "watches an artifact on a connected Clax instance";
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteWatchBody {
+    /// The remote: its ID, name or origin.
+    remote: String,
+    /// The artifact's ID there.
+    artifact_id: String,
+    /// Its address there, as the resolver answered it. Taken and not
+    /// used: the remote's own (`<origin>/a/<artifact_id>`) is the one kept.
+    #[serde(default, rename = "url")]
+    _url: Option<String>,
+    #[serde(default)]
+    replies_armed: Option<bool>,
+}
+
+/// A followed remote artifact as the remote-watch routes answer it.
+fn remote_view(r: &clax_store::remotes::Remote, raid: &str) -> Value {
+    json!({
+        "artifact_id": raid,
+        "url": format!("{}/a/{raid}", r.origin),
+        "remote": {"origin": r.origin, "name": r.name},
+    })
+}
+
+/// `PUT /api/sessions/<sid>/remote-watches {remote, artifact_id, url?,
+/// replies_armed?}`: session `sid` watches artifact `artifact_id` of the
+/// connected remote `remote` (spec 2026-10-29-remote-instances §4). The
+/// artifact is followed (`Store::follow_remote`): its threads are kept in
+/// step in a local mirror, which the session watches as it watches a local
+/// artifact (replies armed unless `replies_armed: false`), so a comment
+/// there sent to it reaches it by every route a local one takes; the
+/// linked threads' sync opens a session there named as the session's agent
+/// (`crate::linked`). Answers `{watch, mirror, artifact_id, url, remote:
+/// {origin, name}}`, `url` the artifact's address there. The owner and the
+/// owner's agents alone, on a local daemon (404 on a hosted one); errors
+/// as `crate::routes::remote_artifacts`'s, the remote's own refusal of
+/// the artifact passed on, and 400 `pushed_here` naming `artifact_id`
+/// here for the public copy of an artifact this home pushed: its local
+/// artifact is the one to watch. Records `watch.start` as the session's
+/// agent.
+pub async fn remote_put(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    who: Identity,
+    audit: DeferredAudit,
+    p: Result<Path<String>, PathRejection>,
+    b: Result<Json<RemoteWatchBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let sid = path(p)?;
+    let b = body(b)?;
+    super::remotes::local_only(&s)?;
+    who.require_owner(REMOTE_WHAT)?;
+    let r = super::remote_artifacts::reach(&s, &d, &b.remote).await?;
+    let raid = super::remote_apps::remote_artifact(&b.artifact_id)?;
+    let (rid, r2) = (r.remote.id.clone(), raid.clone());
+    let pushed = s
+        .store_call(move |st| {
+            Ok(st
+                .all_remote_links()?
+                .into_iter()
+                .find(|l| l.remote_id == rid && l.remote_artifact_id == r2 && !l.followed))
+        })
+        .await?;
+    if let Some(l) = pushed {
+        let mut e = ApiError::bad_request(
+            "pushed_here",
+            format!(
+                "{} is the public copy of this Clax's artifact {}: watch {} instead",
+                l.url, l.artifact_id, l.artifact_id
+            ),
+        );
+        e.extra.insert("artifact_id".into(), json!(l.artifact_id));
+        return Err(e);
+    }
+    // The artifact there, as the token's person's agents read it: that it
+    // is there to follow, and its title.
+    let c = crate::public::Client::new(&r.remote.origin, Some(r.token.clone()));
+    let there = match clax_rt::sendable(c.get(&format!("/api/artifacts/{raid}"))).await {
+        Ok(v) => v,
+        Err(f) => return Err(super::remote_artifacts::failed(&s, &r.remote, f).await),
+    };
+    let title = there["artifact"]["title"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let url = format!("{}/a/{raid}", r.remote.origin);
+    let armed = b.replies_armed.unwrap_or(true);
+    let (rid, r2, ctx) = (r.remote.id.clone(), raid.clone(), s.feedback_ctx());
+    let (mirror, watch) = s
+        .store_call(move |st| {
+            let audit = audit.for_session(st, &sid)?;
+            let m = st.follow_remote(&rid, &r2, &url, &title)?;
+            let w = st.watch(&audit, &sid, &ArtifactId::parse(&m)?, armed)?;
+            // The sync names the session's agent there.
+            ctx.events.publish(Event::Agents {
+                artifacts: vec![m.clone()],
+            });
+            Ok((m, w))
+        })
+        .await?;
+    s.linked.links_changed();
+    s.linked.kick(Some(&r.remote.id));
+    let mut v = remote_view(&r.remote, &raid);
+    v["watch"] = json!(watch);
+    v["mirror"] = json!(mirror);
+    Ok(Json(v))
+}
+
+/// `DELETE /api/sessions/<sid>/remote-watches {remote, artifact_id,
+/// url?}`: session `sid` stops watching artifact `artifact_id` of remote
+/// `remote`; its session there ends. Once no live session watches it, it
+/// is no longer followed (`Store::unfollow_remote`), and its mirror is
+/// dropped a week later. 204, whether or not it was watched; 404
+/// `no_remote` for no such remote. The owner and the owner's agents alone,
+/// on a local daemon. A watch that existed records `watch.stop` as the
+/// session's agent.
+pub async fn remote_delete(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    who: Identity,
+    audit: DeferredAudit,
+    p: Result<Path<String>, PathRejection>,
+    b: Result<Json<RemoteWatchBody>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let sid = path(p)?;
+    let b = body(b)?;
+    super::remotes::local_only(&s)?;
+    who.require_owner(REMOTE_WHAT)?;
+    super::remotes::asker(&s, &d).await?;
+    let raid = super::remote_apps::remote_artifact(&b.artifact_id)?;
+    let key = b.remote.trim().trim_end_matches('/').to_string();
+    let remote = s
+        .store_call(move |st| st.find_remote(&key))
+        .await?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "no_remote",
+                format!(
+                    "no remote is named '{}': `clax remote list` names them",
+                    b.remote
+                ),
+            )
+        })?;
+    let (rid, ctx) = (remote.id.clone(), s.feedback_ctx());
+    s.store_call(move |st| {
+        let Some(m) = st.remote_mirror(&rid, &raid)? else {
+            return Ok(());
+        };
+        let audit = audit.for_session(st, &sid)?;
+        st.unwatch(&audit, &sid, &ArtifactId::parse(&m)?)?;
+        if !st.follow_watchers(&rid)?.iter().any(|w| w.artifact_id == m) {
+            st.unfollow_remote(&m)?;
+        }
+        ctx.events.publish(Event::Agents { artifacts: vec![m] });
+        Ok(())
+    })
+    .await?;
+    s.linked.links_changed();
+    s.linked.kick(Some(&remote.id));
+    Ok(StatusCode::NO_CONTENT)
 }

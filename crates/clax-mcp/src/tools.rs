@@ -1483,6 +1483,7 @@ impl ClaxTools {
                 artifact_id,
                 version,
                 url,
+                ..
             } => Ok(Ref::Remote(RemoteRef {
                 remote,
                 origin,
@@ -1498,13 +1499,24 @@ impl ClaxTools {
         }
     }
 
-    /// The local artifact of [`Self::resolve_ref`], for a tool that does not
-    /// wait on remote artifacts yet: a remote one is `remote_not_yet`.
-    async fn resolve_id_not_yet(&self, url_or_id: &str) -> Result<String, CallToolResult> {
+    /// The artifact `wait_for_feedback` waits on for `url_or_id`: the local
+    /// artifact of [`Self::resolve_ref`], or for a remote artifact the
+    /// local mirror of its threads, which exists while a session here
+    /// watches it (`not_watching` otherwise: watch it first).
+    async fn resolve_wait_id(&self, url_or_id: &str) -> Result<String, CallToolResult> {
         match self.target(url_or_id).await? {
-            crate::target::Target::Remote { origin, url, .. } => {
-                Err(crate::target::remote_not_yet(&origin, &url))
-            }
+            crate::target::Target::Remote {
+                mirror: Some(m), ..
+            } => Ok(m),
+            crate::target::Target::Remote {
+                origin, name, url, ..
+            } => Err(render::error(
+                "not_watching",
+                format!(
+                    "{url} is on {name} ({origin}), a connected Clax instance this Clax does not watch: call watch with it first"
+                ),
+                json!({"origin": origin, "name": name, "url": url}),
+            )),
             t => self.local_ref(t).await.map(|(id, _)| id),
         }
     }
@@ -2846,8 +2858,17 @@ impl ClaxTools {
             } => {
                 return Err(crate::target::sign_in_required(&origin, &name, &request));
             }
-            crate::target::Target::Remote { origin, url, .. } => {
-                return Err(crate::target::remote_not_yet(&origin, &url));
+            crate::target::Target::Remote {
+                remote,
+                origin,
+                name,
+                artifact_id,
+                url,
+                ..
+            } => {
+                return self
+                    .do_watch_remote(&remote, &origin, &name, &artifact_id, &url, a)
+                    .await;
             }
         };
         self.require_session().await?;
@@ -2875,6 +2896,52 @@ impl ClaxTools {
                 .await
                 .map_err(|e| self.fail(e))?;
             Ok(json!({"page_url": res["page_url"], "watching": false, "replies_armed": false}))
+        }
+    }
+
+    /// `watch` of artifact `artifact_id` on connected remote `remote`
+    /// (`origin`, `name`), at `url` there: the daemon follows it, so its
+    /// comments sent to this session arrive as a local artifact's do, and
+    /// opens a session there named as this one's agent. The result names
+    /// it by its address there, with `remote: {origin, name}`.
+    async fn do_watch_remote(
+        &self,
+        remote: &str,
+        origin: &str,
+        name: &str,
+        artifact_id: &str,
+        url: &str,
+        a: WatchArgs,
+    ) -> Outcome {
+        self.require_session().await?;
+        let instance = json!({"origin": origin, "name": name});
+        if a.on.unwrap_or(true) {
+            let res = self
+                .client
+                .remote_watch(remote, artifact_id, url, a.replies.unwrap_or(true))
+                .await
+                .map_err(|e| self.remote_fail(e))?;
+            let armed = res["watch"]["replies_armed"] == true;
+            Ok(json!({
+                "artifact_id": artifact_id,
+                "url": res["url"],
+                "remote": instance,
+                "watching": true,
+                "replies_armed": res["watch"]["replies_armed"],
+                "wake": self.wake(armed).await,
+            }))
+        } else {
+            self.client
+                .remote_unwatch(remote, artifact_id, url)
+                .await
+                .map_err(|e| self.remote_fail(e))?;
+            Ok(json!({
+                "artifact_id": artifact_id,
+                "url": url,
+                "remote": instance,
+                "watching": false,
+                "replies_armed": false,
+            }))
         }
     }
 
@@ -3633,7 +3700,7 @@ impl ClaxTools {
     /// Tier 4. Its own result carries the feedback, so no piggyback follows.
     async fn do_wait(&self, a: WaitArgs) -> CallToolResult {
         let artifact = match &a.url_or_id {
-            Some(r) => match self.resolve_id_not_yet(r).await {
+            Some(r) => match self.resolve_wait_id(r).await {
                 Ok(id) => Some(id),
                 Err(e) => return e,
             },

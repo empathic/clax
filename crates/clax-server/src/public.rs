@@ -743,6 +743,12 @@ impl Client {
         Ok(())
     }
 
+    /// Speaks in remote session `sid` (its secret `secret`) from now on:
+    /// one another client registered, which ends it.
+    pub(crate) fn speak_in(&mut self, sid: String, secret: Secret) {
+        self.session = Some((sid, secret));
+    }
+
     /// Speaks for the owner by hand from now on: a remote session of the
     /// by-hand harness, named for this machine ([`own_agent_name`]), as a
     /// change the person makes themselves.

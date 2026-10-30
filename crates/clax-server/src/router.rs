@@ -295,6 +295,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             axum::routing::put(watches::live_put).delete(watches::live_delete),
         )
         .route(
+            "/api/sessions/{id}/remote-watches",
+            axum::routing::put(watches::remote_put).delete(watches::remote_delete),
+        )
+        .route(
             "/api/sessions/{id}/watches/{aid}",
             axum::routing::put(watches::put).delete(watches::delete),
         )

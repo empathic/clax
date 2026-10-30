@@ -1475,6 +1475,43 @@ impl DaemonClient {
         .map(|_| ())
     }
 
+    /// `PUT /api/sessions/<sid>/remote-watches {remote, artifact_id, url,
+    /// replies_armed}`: watches artifact `raid` of connected remote `rid`
+    /// (at `url` there); `{watch, mirror, artifact_id, url, remote}`.
+    pub async fn remote_watch(
+        &self,
+        rid: &str,
+        raid: &str,
+        url: &str,
+        replies: bool,
+    ) -> Result<Value> {
+        let body =
+            json!({"remote": rid, "artifact_id": raid, "url": url, "replies_armed": replies});
+        self.json(|c| {
+            c.request(
+                reqwest::Method::PUT,
+                &format!("{}/remote-watches", c.session_path()),
+            )
+            .json(&body)
+        })
+        .await
+    }
+
+    /// `DELETE /api/sessions/<sid>/remote-watches {remote, artifact_id,
+    /// url}`: stops watching artifact `raid` of remote `rid`.
+    pub async fn remote_unwatch(&self, rid: &str, raid: &str, url: &str) -> Result<()> {
+        let body = json!({"remote": rid, "artifact_id": raid, "url": url});
+        self.send(|c| {
+            c.request(
+                reqwest::Method::DELETE,
+                &format!("{}/remote-watches", c.session_path()),
+            )
+            .json(&body)
+        })
+        .await
+        .map(|_| ())
+    }
+
     /// `PUT /api/sessions/<sid>/live-watches`: a scope watch on the page
     /// `url`; `{live_watch, page, covered}`.
     pub async fn live_watch(&self, url: &str, replies: bool) -> Result<Value> {

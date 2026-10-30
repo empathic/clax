@@ -215,10 +215,11 @@ async fn reads_a_private_remote_artifact_with_the_stored_token() {
         assert_eq!(e["error"]["code"], "not_on_remote", "{name}: {e}");
         assert_eq!(e["error"]["name"], remote["name"], "{name}: {e}");
     }
-    // Watching one waits for its thread mirror.
-    let (e, err) = tool(&local, "watch", json!({"url_or_id": url})).await;
+    // Waiting on one needs a watch of it first (api_remote_watch.rs).
+    let (e, err) = tool(&local, "wait_for_feedback", json!({"url_or_id": url})).await;
     assert!(err, "{e}");
-    assert_eq!(e["error"]["code"], "remote_not_yet", "{e}");
+    assert_eq!(e["error"]["code"], "not_watching", "{e}");
+    assert_eq!(e["error"]["url"], json!(url), "{e}");
 }
 
 /// A connected person's agent reaches no remote route: the token there

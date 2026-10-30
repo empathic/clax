@@ -217,6 +217,8 @@ mod l10 {
         ("watches::delete", AgentPath),
         ("watches::live_put", Token),
         ("watches::live_delete", Token),
+        ("watches::remote_put", Owner),
+        ("watches::remote_delete", Owner),
         ("feedback::ack", AgentPath),
         ("toolpath::session_tool_call", AgentPath),
         ("toolpath::tool_call", Token),

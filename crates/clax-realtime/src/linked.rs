@@ -49,6 +49,11 @@ pub struct Linked {
     /// Tests: a read to go on waits while set, its page cursor kept.
     pub hold_resumed: AtomicBool,
     pub started: AtomicBool,
+    /// The session there each local session watching a followed remote
+    /// artifact speaks in, by remote and local session: its ID and secret
+    /// there. The sync opens and ends them; that local session's writes
+    /// on that remote go up in it.
+    pub sessions_there: Mutex<HashMap<(String, String), (String, clax_core::Secret)>>,
     /// Set under [`Linked::tasks`]'s lock once the sync stopped: no task is
     /// started after.
     pub stopped: AtomicBool,
@@ -69,6 +74,7 @@ impl Linked {
             read_limits: Default::default(),
             hold_resumed: AtomicBool::new(false),
             started: AtomicBool::new(false),
+            sessions_there: Mutex::default(),
             stopped: AtomicBool::new(false),
         }
     }
@@ -178,6 +184,40 @@ impl Linked {
         match self.read_limits[i].load(std::sync::atomic::Ordering::SeqCst) {
             0 => default,
             n => n,
+        }
+    }
+
+    /// The session on remote `rid` that local session `sid` speaks in
+    /// there, while it watches a followed artifact there: its ID and
+    /// secret.
+    pub fn session_there(&self, rid: &str, sid: &str) -> Option<(String, clax_core::Secret)> {
+        self.sessions_there
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(rid.to_string(), sid.to_string()))
+            .cloned()
+    }
+
+    /// Records, or with `None` forgets, the session on remote `rid` that
+    /// local session `sid` speaks in there.
+    pub fn set_session_there(
+        &self,
+        rid: &str,
+        sid: &str,
+        there: Option<(String, clax_core::Secret)>,
+    ) {
+        let mut m = self
+            .sessions_there
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let k = (rid.to_string(), sid.to_string());
+        match there {
+            Some(t) => {
+                m.insert(k, t);
+            }
+            None => {
+                m.remove(&k);
+            }
         }
     }
 

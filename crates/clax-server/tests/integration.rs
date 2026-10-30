@@ -135,6 +135,8 @@ mod api_quickstart;
 mod api_remote_artifacts;
 #[cfg(any(not(clax_split), clax_split = "api_remote_requests"))]
 mod api_remote_requests;
+#[cfg(any(not(clax_split), clax_split = "api_remote_watch"))]
+mod api_remote_watch;
 #[cfg(any(not(clax_split), clax_split = "api_remotes"))]
 mod api_remotes;
 #[cfg(any(not(clax_split), clax_split = "api_remotes_app"))]

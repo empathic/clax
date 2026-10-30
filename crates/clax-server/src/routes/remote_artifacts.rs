@@ -29,8 +29,16 @@
 //! A write is made in a session of its own there, ended once it is
 //! answered (or its request dropped): named as the calling agent's session
 //! here (its name, else its harness, and its harness), or the person's
-//! by-hand one for the owner. An agent with no session here writes nothing
-//! there (403 `no_session`): a by-hand write is the person's own.
+//! by-hand one for the owner. An agent whose session here watches a
+//! followed artifact on that remote (`crate::linked`) writes in the session
+//! the sync holds there for it instead, which stays: the threads sent to
+//! it there are that session's. An agent with no session here writes
+//! nothing there (403 `no_session`): a by-hand write is the person's own.
+//!
+//! An agent's read of threads (`GET threads`, `GET threads/<tid>`) that
+//! answers 2xx acknowledges, for its session here, the comments it read
+//! that reached it from a followed artifact's mirror, as reading a local
+//! thread does: a notice of one is not resent.
 //!
 //! The owner and the owner's agents alone reach these routes, as they
 //! alone may push (`super::remotes::asker`), on a local daemon (404 on a
@@ -66,9 +74,11 @@ use clax_http::error::ApiError;
 use clax_http::identity::Identity;
 use clax_http::state::AppState;
 use clax_http::viewer::SameOrigin;
+use clax_realtime::feedback::apply;
 use clax_store::remotes::Remote;
+use clax_store::visibility::Visibility;
 use reqwest::Method;
-use serde_json::json;
+use serde_json::{Value, json};
 
 /// What only the owner and the owner's agents do here.
 const WHAT: &str = "reaches a connected Clax instance";
@@ -77,10 +87,10 @@ const WHAT: &str = "reaches a connected Clax instance";
 const WRITE_HEADERS: [&str; 2] = ["content-type", "idempotency-key"];
 
 /// A remote a route reaches: the remote, its token, and who asks.
-struct Reach {
-    remote: Remote,
-    token: Secret,
-    asker: Asker,
+pub(super) struct Reach {
+    pub(super) remote: Remote,
+    pub(super) token: Secret,
+    pub(super) asker: Asker,
 }
 
 /// 502 `remote_sign_in_required`: remote `r` refused this daemon's token
@@ -118,7 +128,7 @@ fn unreachable(r: &Remote, why: &str) -> ApiError {
 
 /// Remote `r` refused its token: it is marked signed out, its discovery
 /// answer forgotten, and its linked threads' sync stops.
-async fn signed_out(s: &AppState, r: &Remote) -> ApiError {
+pub(super) async fn signed_out(s: &AppState, r: &Remote) -> ApiError {
     let id = r.id.clone();
     if let Err(e) = s.store_call(move |st| st.sign_out_remote(&id)).await {
         tracing::warn!(error = %e.message, "marking a remote signed out failed");
@@ -150,7 +160,7 @@ fn refused_once(r: &Remote, code: &str, message: &str) -> ApiError {
 
 /// A request to remote `r` that failed as [`RemoteFail`] `f`, answered as
 /// the module comment says.
-async fn failed(s: &AppState, r: &Remote, f: RemoteFail) -> ApiError {
+pub(super) async fn failed(s: &AppState, r: &Remote, f: RemoteFail) -> ApiError {
     match f.status {
         None => {
             s.discovery.forget(&r.origin);
@@ -187,7 +197,7 @@ async fn passed(s: &AppState, r: &Remote, f: Forwarded) -> Response {
 /// token, for the owner or one of the owner's agents (each handler has
 /// refused anyone else, `who.require_owner`, and a hosted daemon,
 /// `local_only`).
-async fn reach(s: &AppState, d: &DeniedToGrants, key: &str) -> Result<Reach, ApiError> {
+pub(super) async fn reach(s: &AppState, d: &DeniedToGrants, key: &str) -> Result<Reach, ApiError> {
     let asker = super::remotes::asker(s, d).await?;
     let k = key.trim().trim_end_matches('/').to_string();
     let remote = s
@@ -242,19 +252,70 @@ fn query_pairs(raw: Option<String>) -> Vec<(String, String)> {
 }
 
 /// `GET segs` (with `query`) at `r`'s remote, at most `max` bytes back,
-/// answered as the module comment says.
+/// answered as the module comment says. With `ack` (the request's
+/// headers), a 2xx answer of threads acknowledges for the asking agent's
+/// session the comments of followed artifacts' mirrors it holds
+/// ([`ack_read`]).
 async fn read(
     s: &AppState,
     r: &Reach,
     segs: &[&str],
     query: &[(String, String)],
     max: usize,
+    ack: Option<HeaderMap>,
 ) -> Response {
     let c = Client::new(&r.remote.origin, Some(r.token.clone()));
     let q: Vec<(&str, String)> = query.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
     match clax_rt::sendable(c.forward(Method::GET, segs, &q, Vec::new(), None, max)).await {
-        Ok(f) => passed(s, &r.remote, f).await,
+        Ok(f) => {
+            if let (Some(headers), Asker::Agent(Some(sid))) = (ack, &r.asker)
+                && (200..300).contains(&f.status)
+            {
+                ack_read(s, &r.remote.id, sid, headers, &f.body).await;
+            }
+            passed(s, &r.remote, f).await
+        }
         Err(f) => failed(s, &r.remote, f).await.into_response(),
+    }
+}
+
+/// Acknowledges for local session `sid` (recorded as the request's
+/// `headers` name its agent, `clax_http::audit::session_ctx`) the
+/// comments of remote `rid`'s threads answer `body` that came to this
+/// home through a followed artifact's mirror, as reading a local thread
+/// acknowledges what it read. A failure is logged: the read stands.
+async fn ack_read(s: &AppState, rid: &str, sid: &str, headers: HeaderMap, body: &[u8]) {
+    let Ok(v) = serde_json::from_slice::<Value>(body) else {
+        return;
+    };
+    let threads = match v["threads"].as_array() {
+        Some(ts) => ts.clone(),
+        None => vec![v["thread"].clone()],
+    };
+    let ids: Vec<String> = threads
+        .iter()
+        .flat_map(|t| t["comments"].as_array().cloned().unwrap_or_default())
+        .filter_map(|c| c["id"].as_str().map(str::to_string))
+        .collect();
+    if ids.is_empty() {
+        return;
+    }
+    let (rid, sid, ctx) = (rid.to_string(), sid.to_string(), s.feedback_ctx());
+    let r = s
+        .store_call(move |st| {
+            let local = st.mirrored_comments(&rid, &ids)?;
+            if local.is_empty() {
+                return Ok(());
+            }
+            let audit = clax_http::audit::session_ctx(st, &headers, &sid)?;
+            let vis = Visibility::for_session(st, &sid)?;
+            let touched = st.acknowledge_comments(&audit, &sid, &local, &vis, None)?;
+            apply(&ctx, st, &touched);
+            Ok(())
+        })
+        .await;
+    if let Err(e) = r {
+        tracing::warn!(code = e.code, "acknowledging a remote read failed");
     }
 }
 
@@ -303,6 +364,12 @@ async fn write(
         .into_response();
     }
     let mut c = Client::new(&r.remote.origin, Some(r.token.clone()));
+    // A local session watching a followed artifact there speaks in the
+    // session the sync holds there for it.
+    let held = match &r.asker {
+        Asker::Agent(Some(sid)) => s.linked.session_there(&r.remote.id, sid),
+        _ => None,
+    };
     if let Some(check) = first {
         match clax_rt::sendable(c.forward(
             Method::GET,
@@ -329,10 +396,19 @@ async fn write(
         })
         .collect();
     let out = clax_rt::sendable(async {
-        speak_for(s, &mut c, &r.asker).await?;
-        // Ended there however this future ends: dropped mid-write, the
-        // guard ends it in a task of its own.
-        let mut guard = EndSession(Some(c.clone()));
+        let own = match held {
+            Some((sid, secret)) => {
+                c.speak_in(sid, secret);
+                false
+            }
+            None => {
+                speak_for(s, &mut c, &r.asker).await?;
+                true
+            }
+        };
+        // A session of its own is ended there however this future ends:
+        // dropped mid-write, the guard ends it in a task of its own.
+        let mut guard = EndSession(own.then(|| c.clone()));
         let sid = c.session().map(|x| x.0.clone()).unwrap_or_default();
         let segs: Vec<&str> = segs
             .iter()
@@ -350,7 +426,9 @@ async fn write(
             )
             .await;
         guard.0 = None;
-        c.end_session().await;
+        if own {
+            c.end_session().await;
+        }
         f
     })
     .await;
@@ -391,6 +469,7 @@ pub async fn get(
         &["api", "artifacts", &raid],
         &[],
         public::MAX_ANSWER_BYTES,
+        None,
     )
     .await)
 }
@@ -420,6 +499,7 @@ pub async fn file(
         &segs,
         &[],
         clax_core::publish::MAX_FILE_BYTES as usize,
+        None,
     )
     .await)
 }
@@ -430,6 +510,7 @@ pub async fn threads(
     State(s): State<AppState>,
     d: DeniedToGrants,
     who: Identity,
+    headers: HeaderMap,
     p: Result<Path<(String, String)>, PathRejection>,
     RawQuery(q): RawQuery,
 ) -> Result<Response, ApiError> {
@@ -444,6 +525,7 @@ pub async fn threads(
         &["api", "artifacts", &raid, "threads"],
         &query_pairs(q),
         public::MAX_ANSWER_BYTES,
+        Some(headers),
     )
     .await)
 }
@@ -454,6 +536,7 @@ pub async fn thread(
     State(s): State<AppState>,
     d: DeniedToGrants,
     who: Identity,
+    headers: HeaderMap,
     p: Result<Path<(String, String, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let (rid, raid, tid) = path(p)?;
@@ -468,6 +551,7 @@ pub async fn thread(
         &["api", "artifacts", &raid, "threads", &tid],
         &[],
         public::MAX_ANSWER_BYTES,
+        Some(headers),
     )
     .await)
 }

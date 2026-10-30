@@ -16,7 +16,8 @@ pub enum Target {
     Artifact { id: String, version: Option<u32> },
     /// An artifact on a remote this home is connected to: the remote's ID,
     /// origin and name, the artifact's ID there, the version the URL names,
-    /// and its address there.
+    /// its address there, and the local mirror of its threads while this
+    /// home follows it (a session here watches it).
     Remote {
         remote: String,
         origin: String,
@@ -24,6 +25,7 @@ pub enum Target {
         artifact_id: String,
         version: Option<u32>,
         url: String,
+        mirror: Option<String>,
     },
     /// A Clax instance this home is not connected to, by its origin and
     /// name, and the daemon's `request`: how to ask the person to connect
@@ -59,6 +61,7 @@ pub fn resolved(v: &Value, url: &str) -> Target {
         ) {
             (Some(remote), Some(origin), Some(artifact_id), Some(url)) => Target::Remote {
                 name: text("name").unwrap_or_else(|| origin.clone()),
+                mirror: text("mirror").filter(|m| clax_core::ArtifactId::parse(m).is_ok()),
                 remote,
                 origin,
                 artifact_id,
@@ -96,18 +99,6 @@ pub fn sign_in_required(origin: &str, name: &str, request: &Value) -> CallToolRe
                 "Ask the person to connect it: call {tool} with {origin}, then call this tool again"
             ),
         }),
-    )
-}
-
-/// The error for an artifact on a connected remote, which this tool does
-/// not reach yet: `remote_not_yet`.
-pub fn remote_not_yet(origin: &str, url: &str) -> CallToolResult {
-    render::error(
-        "remote_not_yet",
-        format!(
-            "{url} is on {origin}, a connected Clax instance: this tool does not reach artifacts there yet"
-        ),
-        json!({"origin": origin, "url": url}),
     )
 }
 
@@ -371,6 +362,7 @@ mod tests {
                 artifact_id: "7q3k9mzx2b4t".into(),
                 version: None,
                 url: "https://clax.example/a/7q3k9mzx2b4t".into(),
+                mirror: None,
             }
         );
         assert_eq!(
@@ -435,13 +427,6 @@ mod tests {
                 .contains("connect_instance"),
             "{v}"
         );
-        let v = body(remote_not_yet(
-            "https://clax.example",
-            "https://clax.example/a/7q3k9mzx2b4t",
-        ));
-        assert_eq!(v["error"]["code"], "remote_not_yet");
-        assert_eq!(v["error"]["origin"], "https://clax.example");
-        assert_eq!(v["error"]["url"], "https://clax.example/a/7q3k9mzx2b4t");
         let v = body(not_on_remote(
             "Acme",
             "https://clax.example",

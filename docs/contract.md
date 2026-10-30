@@ -166,9 +166,10 @@ These come from the tool layer itself, not the daemon:
   artifacts**). Extra fields `origin`, `name`, `request` (the daemon's
   `{tool, command}`: how to ask the person to connect it) and `next`,
   which names the `connect_instance` tool.
-- `remote_not_yet` (MCP tools and Pi): a `url_or_id` naming an artifact on
-  a connected remote, which this tool does not reach yet (`watch`,
-  `wait_for_feedback`). Extra fields `origin` and `url`.
+- `not_watching` (MCP tools and Pi): `wait_for_feedback` with a
+  `url_or_id` naming an artifact on a connected remote that no session
+  here watches (**Remote artifacts**): watch it first. Extra fields
+  `origin`, `name` and `url`.
 - `not_on_remote` (MCP tools and Pi): a `url_or_id` naming an artifact on a
   connected remote, which this tool does not change there (`publish` and
   its updates, `publish_public`, the `db_*` tools, `delete`, `tag`, `pin`
@@ -1187,12 +1188,14 @@ nothing but the daemon's memory of other instances' discovery:
   port is its base), read from the URL alone with no lookup; or the public
   copy of one it pushed, found among its links by that copy's URL or by
   its remote and public artifact ID (no `version` then).
-- `{kind: "remote", remote, origin, name, artifact_id, version?, url}`: an
-  artifact on a connected remote, by a URL on its origin or on the
-  `site_domain` its discovery names; `remote` and `name` are the remote's
-  ID and name here, `artifact_id` its ID there, `url` its address there
-  (`<origin>/a/<artifact_id>`). A URL on the remote's origin that names no
-  artifact is a `page`.
+- `{kind: "remote", remote, origin, name, artifact_id, version?, url,
+  mirror?}`: an artifact on a connected remote, by a URL on its origin or
+  on the `site_domain` its discovery names; `remote` and `name` are the
+  remote's ID and name here, `artifact_id` its ID there, `url` its address
+  there (`<origin>/a/<artifact_id>`), and `mirror` the local mirror of its
+  threads while this home follows it (**Remote artifacts**, watching). A
+  URL on the remote's origin that names no artifact is a `page`. A followed
+  artifact's URL is never resolved `local`: only a pushed copy's is.
 - `{kind: "sign_in_required", origin, name, request}`: a Clax instance this home is
   not connected to, by its URL's origin, whose `GET /.well-known/clax`
   (asked with no credential, following no redirect, of an `https` origin
@@ -1267,6 +1270,11 @@ its request dropped), named as the calling agent's session here (its name,
 else its harness, with its harness), or the person's by-hand session for
 the owner alone: an agent of the owner's with no harness session here is
 refused 403 `no_session`, since a by-hand write there is the person's own.
+An agent whose session here watches an artifact on that remote writes in
+the session the sync holds there for it instead (below), which stays open.
+An agent's `GET threads` or `GET threads/<tid>` that answers 2xx
+acknowledges, for its session here, the comments it read that reached it
+through a followed artifact's mirror, as reading a local thread does.
 The MCP tools, Pi and `clax comments` send an `Idempotency-Key` of their
 own with every remote write (reply, resolve, reopen). The remote's
 answers come back with their status and body, with `content-security-policy:
@@ -1295,8 +1303,47 @@ nothing is acknowledged here. `read` and `comments_read` add
 `withheld_comments: {count, note}` when the remote withholds comments from
 its agents, `note` reading "<n> comments from people you have not approved
 for agents on <name>" (`read` counts its open threads' first page,
-`comments_read` the threads it returns). `watch` and `wait_for_feedback`
-answer `remote_not_yet`; the tools that change an artifact `not_on_remote`.
+`comments_read` the threads it returns). `watch` follows it (below) and
+answers `{artifact_id, url, remote, watching, replies_armed, wake}` (`on:
+false`: `{artifact_id, url, remote, watching: false, replies_armed:
+false}`); `wait_for_feedback` waits on its mirror once it is watched
+(`not_watching` before); the tools that change an artifact answer
+`not_on_remote`.
+
+**Watching a remote artifact.** `PUT /api/sessions/<sid>/remote-watches
+{remote, artifact_id, url?, replies_armed?}` (the owner and the owner's
+agents alone, on a local daemon; 404 on a hosted one) has session `sid`
+watch artifact `artifact_id` of connected remote `remote` (its ID, name or
+origin; errors as the remote artifact routes'; the remote's own refusal
+of the artifact passed on). The daemon *follows* it: a local **mirror**
+(an artifact row with `remote_mirror` set, holding the remote artifact's
+threads and comments and nothing else: no version, page or file, in no
+listing, gallery, search or inbox) is made, or reused, and the session
+watches the mirror (replies armed unless `replies_armed: false`). The
+linked threads' sync keeps the mirror's threads in step with the remote's,
+anchors and versions as given there, and opens a session there for each
+local agent session watching it, named as that agent (its name, else its
+harness), which watches the artifact there: a person there can send a
+thread to that agent by name. What that session is sent there is sent
+here to that local session alone; a send there to every agent reaches each
+watching local session through its own session there. Answers `{watch,
+mirror, artifact_id, url, remote: {origin, name}}`, `url` the artifact's
+address there. 400 `pushed_here` `{artifact_id}` for the public copy of
+an artifact this home pushed: its local artifact (which the resolver
+names) is the one to watch. `DELETE /api/sessions/<sid>/remote-watches
+{remote, artifact_id, url?}` stops the watch (204, watched or not; 404
+`no_remote`); the session's session there ends, as it does when the local
+session ends. Once no live session watches it, the artifact is no longer
+followed (the sync leaves it alone) and its mirror is dropped a week
+later; watched again within the week, the same mirror is followed again.
+
+A comment on a followed artifact takes every route a local comment takes
+(notices, `wait_for_feedback`, tool results, hooks, push, acknowledgement
+and resend), named as it is there: a notice's or feedback item's
+`artifact_id`, `thread_id`, `comment_id` and `url` (and an item's
+`version`) are the remote's, and it carries `remote: {origin, name}`; a
+notice's line names the artifact by its `url` (`Call comments_read with
+url_or_id "<url>" …`), so the comment tools answer it there.
 `clax comments <url>` lists, shows, replies to, resolves and reopens its
 threads as the person whose token it is; `clax comments send` is not
 offered there.
@@ -6043,6 +6090,8 @@ router), and a test fails when it differs:
 | `PUT /api/sample/key` | Denied | no |
 | `DELETE /api/sessions/{id}/live-watches` | Denied | no |
 | `PUT /api/sessions/{id}/live-watches` | Denied | no |
+| `DELETE /api/sessions/{id}/remote-watches` | Denied | no |
+| `PUT /api/sessions/{id}/remote-watches` | Denied | no |
 | `GET /api/settings` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/settings` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/stream` | Denied | yes: 403 `not_for_agents` |

@@ -13,7 +13,9 @@
 //!    (on the same port, under another name), is not the daemon's.
 //! 2. The URL is the public copy of an artifact this daemon pushed, found
 //!    among the remote links by its URL or by its remote and public
-//!    artifact ID: the local artifact.
+//!    artifact ID: the local artifact. A followed link (a remote artifact
+//!    a local agent watches, kept in a mirror here) is not one: its URL
+//!    stays the remote's, naming its mirror.
 //! 3. The URL is on a connected remote's origin, or under the site domain
 //!    its discovery names: that remote's artifact. On the origin of a
 //!    remote that refused its token (`signed_out`): one to sign in to
@@ -72,6 +74,11 @@ pub enum Resolved {
         #[serde(skip_serializing_if = "Option::is_none")]
         version: Option<u32>,
         url: String,
+        /// The local mirror of its threads, while this home follows it
+        /// (a local session watches it, or did within the week): the
+        /// artifact `wait_for_feedback` waits on for it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mirror: Option<String>,
     },
     /// A Clax instance this home is not connected to: the URL's origin,
     /// the name its discovery gives, and how an agent asks the person to
@@ -130,7 +137,7 @@ pub async fn resolve(s: &AppState, url: &str) -> Result<Resolved, ApiError> {
     if let Some(own) = own(s, &raw, &u, &remotes)? {
         return Ok(own);
     }
-    if let Some(l) = links.iter().find(|l| same_url(&l.url, &u)) {
+    if let Some(l) = links.iter().find(|l| !l.followed && same_url(&l.url, &u)) {
         return Ok(local(l));
     }
     // A remote that refused its token is one to connect again.
@@ -152,10 +159,12 @@ pub async fn resolve(s: &AppState, url: &str) -> Result<Resolved, ApiError> {
         let Some((artifact_id, version)) = at else {
             return Ok(Resolved::Page { url: raw });
         };
-        if let Some(l) = links
-            .iter()
-            .find(|l| l.remote_id == r.id && l.remote_artifact_id == artifact_id)
-        {
+        let link = |followed: bool| {
+            links.iter().find(|l| {
+                l.followed == followed && l.remote_id == r.id && l.remote_artifact_id == artifact_id
+            })
+        };
+        if let Some(l) = link(false) {
             return Ok(local(l));
         }
         return Ok(Resolved::Remote {
@@ -163,6 +172,7 @@ pub async fn resolve(s: &AppState, url: &str) -> Result<Resolved, ApiError> {
             remote: r.id.clone(),
             origin: r.origin.clone(),
             name: r.name.clone(),
+            mirror: link(true).map(|l| l.artifact_id.clone()),
             artifact_id,
             version,
         });
@@ -434,6 +444,7 @@ mod tests {
                 artifact_id: "7q3k9mzx2b4t".into(),
                 version: Some(2),
                 url: "https://clax.example/a/7q3k9mzx2b4t".into(),
+                mirror: None,
             }),
             json!({"kind": "remote", "remote": "r1", "origin": "https://clax.example",
                    "name": "acme", "artifact_id": "7q3k9mzx2b4t", "version": 2,

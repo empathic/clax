@@ -318,6 +318,9 @@ pub fn sessions_ended(
 ) {
     crate::views::question::announce_ids(s, st, withdrawn_questions);
     sessions_stop(ctx, st, audit, touched, sessions);
+    // The linked threads' sync ends the sessions it holds on remotes for
+    // them (followed remote artifacts' followers).
+    s.linked.kick(None);
 }
 
 /// What a host decides about the state it serves from; [`AppState::assemble`]

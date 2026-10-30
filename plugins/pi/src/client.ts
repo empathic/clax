@@ -136,7 +136,12 @@ function send(base: string, path: string, opts: RequestOptions): Promise<RawResp
     // signs it as sent.
     const u = new URL(base);
     const target = { protocol: u.protocol, hostname: u.hostname.replace(/^\[|\]$/g, ""), port: u.port, path: path || "/" };
-    const req = httpRequest({ ...target, method: opts.method, headers: opts.headers, signal }, res => {
+    // A body always names its length: Node sends a DELETE's body neither
+    // chunked nor with one, which a server reads as the next request.
+    const headers = opts.body === undefined || opts.headers?.["content-length"] !== undefined
+      ? opts.headers
+      : { ...opts.headers, "content-length": String(Buffer.byteLength(opts.body)) };
+    const req = httpRequest({ ...target, method: opts.method, headers, signal }, res => {
       const chunks: Buffer[] = [];
       let size = 0;
       res.on("data", (c: Buffer) => {
@@ -738,6 +743,17 @@ export class DaemonClient {
   /** `DELETE /api/sessions/<sid>/watches/<id>`. */
   async unwatch(id: string): Promise<void> {
     await this.request(() => `${this.sessionPath()}/watches/${id}`, { method: "DELETE" });
+  }
+
+  /** `PUT /api/sessions/<sid>/remote-watches`: watches artifact `raid` of
+   * connected remote `rid` (at `url` there); `{watch, mirror, artifact_id, url, remote}`. */
+  remoteWatch(rid: string, raid: string, url: string, replies: boolean): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/remote-watches`, this.jsonBody("PUT", { remote: rid, artifact_id: raid, url, replies_armed: replies }));
+  }
+
+  /** `DELETE /api/sessions/<sid>/remote-watches`: stops watching artifact `raid` of remote `rid`. */
+  async remoteUnwatch(rid: string, raid: string, url: string): Promise<void> {
+    await this.request(() => `${this.sessionPath()}/remote-watches`, this.jsonBody("DELETE", { remote: rid, artifact_id: raid, url }));
   }
 
   /** `PUT /api/sessions/<sid>/live-watches`: a scope watch on the page `url`; `{live_watch, page, site, covered}`. */

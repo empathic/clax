@@ -611,8 +611,9 @@ function schemeOf(url: string): string | undefined {
   }
 }
 
-/** An artifact on a connected remote, as `GET /api/resolve` names it. */
-export type RemoteTarget = { kind: "remote"; remote: string; origin: string; name: string; artifact_id: string; version?: number; url: string };
+/** An artifact on a connected remote, as `GET /api/resolve` names it;
+ * `mirror` the local mirror of its threads while this home follows it. */
+export type RemoteTarget = { kind: "remote"; remote: string; origin: string; name: string; artifact_id: string; version?: number; url: string; mirror?: string };
 
 /** What a tool's `url_or_id` names once the daemon resolved it. */
 export type Resolved =
@@ -639,6 +640,8 @@ export function resolved(v: Json | null, url: string): Resolved {
       if (remote === undefined || origin === undefined || artifactId === undefined || at === undefined) return page;
       const r: RemoteTarget = { kind: "remote", remote, origin, name: text("name") ?? origin, artifact_id: artifactId, url: at };
       if (version !== undefined) r.version = version;
+      const mirror = text("mirror");
+      if (mirror !== undefined && ID_RE.test(mirror)) r.mirror = mirror;
       return r;
     }
     case "sign_in_required": {
@@ -664,11 +667,15 @@ export function signInRequired(origin: string, name: string, request: Json | nul
 }
 
 /** The error for an artifact on a connected remote that this tool does not
- * change there (`not_on_remote`), or does not reach yet (`remote_not_yet`). */
-function onRemote(r: RemoteTarget, code: "not_on_remote" | "remote_not_yet"): ToolError {
-  return code === "not_on_remote"
-    ? toolError("not_on_remote", `${r.url} is on ${r.name} (${r.origin}), a connected Clax instance: this tool works on this Clax's artifacts, not on a remote artifact yet`, { origin: r.origin, name: r.name, url: r.url })
-    : toolError("remote_not_yet", `${r.url} is on ${r.origin}, a connected Clax instance: this tool does not reach artifacts there yet`, { origin: r.origin, url: r.url });
+ * change there (`not_on_remote`). */
+function onRemote(r: RemoteTarget): ToolError {
+  return toolError("not_on_remote", `${r.url} is on ${r.name} (${r.origin}), a connected Clax instance: this tool works on this Clax's artifacts, not on a remote artifact yet`, { origin: r.origin, name: r.name, url: r.url });
+}
+
+/** The error for `wait_for_feedback` on a remote artifact no session here
+ * watches (`not_watching`), as `clax_mcp`'s words it. */
+function notWatching(r: RemoteTarget): ToolError {
+  return toolError("not_watching", `${r.url} is on ${r.name} (${r.origin}), a connected Clax instance this Clax does not watch: call watch with it first`, { origin: r.origin, name: r.name, url: r.url });
 }
 
 /** What a result about remote artifact `r` says of the comments the remote
@@ -1205,12 +1212,23 @@ class Tools {
 
   /** The artifact `urlOrId` names (`target`), and the version when it names
    * one; a page URL is resolved to its live page (`invalid_id` when it has
-   * none yet). A remote artifact is `not_on_remote`, or with `notYet`
-   * `remote_not_yet`. */
-  private async resolveRef(c: DaemonClient, urlOrId: string, notYet = false): Promise<{ id: string; version?: number }> {
+   * none yet). A remote artifact is `not_on_remote`. */
+  private async resolveRef(c: DaemonClient, urlOrId: string): Promise<{ id: string; version?: number }> {
     const t = await this.targetOf(c, urlOrId);
-    if (t.kind === "remote") throw onRemote(t, notYet ? "remote_not_yet" : "not_on_remote");
+    if (t.kind === "remote") throw onRemote(t);
     return this.localRef(c, t);
+  }
+
+  /** The artifact `wait_for_feedback` waits on for `urlOrId`: the local one
+   * `resolveRef` reads, or a remote artifact's local mirror while a session
+   * here watches it (`not_watching` otherwise). */
+  private async resolveWaitId(c: DaemonClient, urlOrId: string): Promise<string> {
+    const t = await this.targetOf(c, urlOrId);
+    if (t.kind === "remote") {
+      if (t.mirror === undefined) throw notWatching(t);
+      return t.mirror;
+    }
+    return (await this.localRef(c, t)).id;
   }
 
   /** The local artifact target `t` names, as `resolveRef` reads it. */
@@ -1846,7 +1864,17 @@ class Tools {
   async watch(ctx: ExtensionContext, a: Static<typeof WatchArgs>): Promise<Json> {
     const c = this.clientFor(ctx);
     const t = await this.targetOf(c, a.url_or_id);
-    if (t.kind === "remote") throw onRemote(t, "remote_not_yet");
+    if (t.kind === "remote") {
+      // Followed by the daemon: its comments sent to this session arrive
+      // as a local artifact's do, and it is an agent of its own there.
+      const remote = { origin: t.origin, name: t.name };
+      if (a.on ?? true) {
+        const r = await this.call(() => c.remoteWatch(t.remote, t.artifact_id, t.url, a.replies ?? true));
+        return { artifact_id: t.artifact_id, url: r.url ?? t.url, remote, watching: true, replies_armed: r.watch?.replies_armed ?? null, wake: this.wake(c, r.watch?.replies_armed === true) };
+      }
+      await this.call(() => c.remoteUnwatch(t.remote, t.artifact_id, t.url));
+      return { artifact_id: t.artifact_id, url: t.url, remote, watching: false, replies_armed: false };
+    }
     if (t.kind === "sign_in_required") throw signInRequired(t.origin, t.name, t.request);
     if (t.kind === "page") {
       if (a.on ?? true) {
@@ -2301,7 +2329,7 @@ class Tools {
    * handover, whose `text` is the trailing block. */
   async waitForFeedback(ctx: ExtensionContext, a: Static<typeof WaitArgs>, signal?: AbortSignal): Promise<{ result: Json } & Handover> {
     const c = this.clientFor(ctx);
-    const artifact = a.url_or_id === undefined ? undefined : (await this.resolveRef(c, a.url_or_id, true)).id;
+    const artifact = a.url_or_id === undefined ? undefined : await this.resolveWaitId(c, a.url_or_id);
     const secs = Math.min(Math.max(a.timeout_s ?? DEFAULT_WAIT_S, MIN_WAIT_S), MAX_WAIT_S);
     const r = await this.call(() => c.feedback("wait", secs, artifact, signal));
     const h = await this.handover(c, r);
