@@ -27,9 +27,10 @@
   // shows as a card in its group. A machine that connected with an invite
   // and an agent that ended are rows.
   // Only the owner's browser offers the Connections filter. At phone width
-  // the filters sit behind **Filters**. The agent strip (§13) opens the
-  // page, under its header: a chip filters the inbox by its agent; it is
-  // fetched again with the list. Tags, beside Page, picks tags (a list with
+  // the filters sit behind **Filters**; **Unread** stays beside the search.
+  // The agent strip (§13) opens the page, under its header: a chip filters
+  // the inbox by its agent; it is fetched again with the list, and on the
+  // page's stream's `agents` topic (an agent started, ended or renamed). Tags, beside Page, picks tags (a list with
   // a search, `ui/TagPicker.svelte`): the items about artifacts carrying
   // every one picked. Above everything, the decisions waiting for the
   // owner's confirmation (`ConfirmationCard`: "Confirm: <decision>", with
@@ -380,11 +381,12 @@
   // list is fetched again (debounced, so a burst is one fetch).
   let refetchSoon: (() => void) | undefined;
   const soon = () => { refetchSoon?.(); refetchSoon = after(DEBOUNCE_MS, () => { refetchSoon = undefined; void refresh(); }); };
-  // An item that changed may change a block: the strip is fetched again (debounced).
+  // An item that changed may change a block, and the agents topic says the
+  // roster changed: the strip is fetched again (debounced).
   let stripSoon: (() => void) | undefined;
+  const stripLater = () => { stripSoon?.(); stripSoon = after(DEBOUNCE_MS, () => { stripSoon = undefined; void loadStrip(); }); };
   function take(item: InboxItem): void {
-    stripSoon?.();
-    stripSoon = after(DEBOUNCE_MS, () => { stripSoon = undefined; void loadStrip(); });
+    stripLater();
     // An item shown that was read (a decision, a mark elsewhere), or unread
     // again, moves its group's count with it; it stays where it is.
     const was = cardItems.find(x => x.id === item.id) ?? list?.groups.flatMap(g => g.items).find(x => x.id === item.id);
@@ -405,10 +407,12 @@
     void confirming.refresh();
     // The tags themselves changed (made, renamed, recoloured, deleted).
     const offTags = p.stream?.watch(["gallery"], e => { if (e.type === "tags" && e.artifact_id == null) void loadTags(); });
+    // An agent started, ended or was renamed, with no inbox item for it.
+    const offAgents = p.stream?.watch(["agents"], e => { if (e.type === "agents") stripLater(); });
     // Fetched once on open: now, or when the inbox topic first goes live.
     const off = inbox.listen(c => { if ("item" in c) take(c.item); else if (list) soon(); else void load(); });
     if (!inbox.waiting) void load();
-    return () => { off(); offTags?.(); typing?.(); refetchSoon?.(); stripSoon?.(); };
+    return () => { off(); offTags?.(); offAgents?.(); typing?.(); refetchSoon?.(); stripSoon?.(); };
   });
 </script>
 
@@ -444,10 +448,10 @@
 
   <div class="find">
     <input type="search" class="isearch" placeholder="Search the inbox" aria-label="Search the inbox" value={search} oninput={e => onSearch(e.currentTarget.value)} />
+    <button type="button" class="kind unread-chip" aria-pressed={unreadOnly} onclick={toggleUnread}>Unread</button>
     <button type="button" class="filters-toggle" aria-expanded={filtersOpen} aria-controls="inbox-filters" onclick={() => { filtersOpen = !filtersOpen; }}>Filters</button>
   </div>
   <div class="filters" id="inbox-filters" data-open={filtersOpen ? "" : undefined}>
-    <button type="button" class="kind unread-chip" aria-pressed={unreadOnly} onclick={toggleUnread}>Unread</button>
     <div class="kinds" role="group" aria-label="Kinds">
       {#each INBOX_KINDS.filter(k => k !== "connection" || owner || filter.kind?.includes(k)) as k (k)}
         <button type="button" class="kind" aria-pressed={!!filter.kind?.includes(k)} onclick={() => toggleKind(k)}>{KIND_LABEL[k]}</button>
@@ -515,7 +519,8 @@
     .inbox .icnt { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
     .inbox .sp { flex: 1; }
     .inbox .quiet { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); }
-    .inbox .find { display: flex; gap: 8px; margin-top: 14px; }
+    .inbox .find { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+    .inbox .find .unread-chip { flex: none; min-height: 32px; }
     .inbox .isearch { flex: 1; min-width: 0; }
     .inbox .filters-toggle { display: none; }
     .inbox .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 10px; }
