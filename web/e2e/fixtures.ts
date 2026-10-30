@@ -98,12 +98,27 @@ function liveAt(base: string): Live | undefined {
   return [...liveDaemons].find(x => x.base === base || x.base === base.replace("127.0.0.1", "localhost"));
 }
 
+/** The owner browser session (cookie value and proof) each home's daemon
+ * started with: a daemon started again on the same home keeps it, as a
+ * restart keeps owner browser sessions, so open pages stay signed in. */
+const homeSessions = new Map<string, { session: string | null; proof: string | null }>();
+
 /** The owner browser session the worker's browsers hold on the daemon at
  * `base` (a login made it when the daemon started). */
 export function ownerSessionOf(base: string): string {
   const d = liveAt(base);
   if (!d?.session) throw new Error(`no owner browser session for ${base}`);
   return d.session;
+}
+
+/** The proof header a browser of the owner's shell sends to `origin`, for
+ * a test's own request from a browser context (`page.request`, whose
+ * requests carry the context's cookies but none of the page's storage):
+ * the session's proof on a daemon of the worker reached by `localhost` or
+ * `127.0.0.1`, else nothing. */
+export function proofHeaders(origin: string): Record<string, string> {
+  const proof = liveAt(origin)?.proof;
+  return proof ? { [PROOF_HEADER]: proof } : {};
 }
 
 /** The proof of that session, which a browser of the owner's sends beside
@@ -127,9 +142,11 @@ async function signIn(context: BrowserContext, d: { port: number; session: strin
     ...["/api/events", "/api/stream"].map(p => cookie(`clax_events_${d.port}`, p, "Strict", domain)),
   ])).catch((e: unknown) => { if (!String(e).includes("closed")) throw e; });
   if (d.proof) {
+    // Only where the origin has none: a login in the context (its page
+    // writes a new session's proof beside the new cookie) is not undone.
     await context.addInitScript(({ port, proof }) => {
       if (location.port === port && (location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
-        try { localStorage.setItem("clax.owner_proof", proof); } catch { /* storage refused */ }
+        try { if (!localStorage.getItem("clax.owner_proof")) localStorage.setItem("clax.owner_proof", proof); } catch { /* storage refused */ }
       }
     }, { port: String(d.port), proof: d.proof }).catch((e: unknown) => { if (!String(e).includes("closed")) throw e; });
   }
@@ -294,7 +311,10 @@ async function startOnce(opts: StartOpts) {
       if (!ended()) child.kill("SIGKILL");
       await Promise.race([exited, tick(5000)]);
     }
-    if (!o.keepHome) rmSync(home, { recursive: true, force: true });
+    if (!o.keepHome) {
+      rmSync(home, { recursive: true, force: true });
+      homeSessions.delete(home);
+    }
   };
   try {
     const deadline = Date.now() + (opts.startMs ?? 20_000);
@@ -322,7 +342,14 @@ async function startOnce(opts: StartOpts) {
       await tick(10);
     }
     // The worker's browsers are the owner's here too.
-    live = { base, port, token, ...(await ownerSession(base, token, port)) };
+    // A home emptied and used again holds none of its sessions: one is
+    // kept only while the daemon still counts it.
+    const kept = opts.home ? homeSessions.get(home) : undefined;
+    const stillLive = async (k: { session: string | null; proof: string | null }) => !!k.session && !!k.proof
+      && (await plainFetch(`${base}/api/token`, { headers: { cookie: `clax_owner_${port}=${k.session}`, [PROOF_HEADER]: k.proof } })).ok;
+    const session = kept && await stillLive(kept) ? kept : await ownerSession(base, token, port);
+    homeSessions.set(home, session);
+    live = { base, port, token, ...session };
     liveDaemons.add(live);
     for (const c of liveContexts) await signIn(c, live);
   } catch (e) { await stop({ keepHome: !!opts.home }); throw e; }
