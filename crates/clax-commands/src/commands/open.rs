@@ -23,9 +23,11 @@ pub fn id_from(s: &str) -> anyhow::Result<String> {
 /// or prints its URL (`--json`, which never opens). Text mode opens it
 /// through a one-use login link
 /// ([`Client::login_url`]), so a browser that is not yet one of the
-/// owner's becomes one, and prints the artifact's own URL, never the link;
-/// it fails when the opener fails, by the rule of
-/// [`clax_mcp::tools::open_in_browser`].
+/// owner's becomes one, and prints the artifact's own URL, never the link.
+/// The link reaches the opener in a page of the home's login directory,
+/// never on its command line ([`clax_mcp::tools::open_login_in_browser`]);
+/// it fails when the page cannot be written or the opener fails, by the
+/// rule of [`clax_mcp::tools::open_in_browser`].
 pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let id = a.target.as_deref().map(id_from).transpose()?;
     let c = Client::connect(home, cli.port_for(home)?)?;
@@ -37,7 +39,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         None => "/".to_string(),
     };
     let url = c.browser_url(&path);
-    if !cli.json && !clax_mcp::tools::open_in_browser(&c.login_url(&path)?) {
+    if !cli.json && !clax_mcp::tools::open_login_in_browser(&home.login_dir(), &c.login_url(&path)?) {
         anyhow::bail!("could not open a browser; run `clax login {path}` for a link to open");
     }
     super::print(cli, serde_json::json!({"url": url}), |j| {

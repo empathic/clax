@@ -167,6 +167,11 @@ pub async fn redeem(
             "This login link sends the browser somewhere other than this Clax.",
         );
     }
+    // The page an opener handed this link over in has done its work,
+    // whatever the code's fate (`clax_core::login_page`).
+    if !code.is_empty() {
+        clax_core::login_page::remove(&s.home.login_dir(), &code);
+    }
     let redeemed = s.store_call(move |st| st.redeem_login_code(&code)).await;
     match redeemed {
         Ok(true) => {}

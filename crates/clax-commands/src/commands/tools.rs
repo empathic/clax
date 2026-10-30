@@ -39,7 +39,8 @@ where
     F: FnOnce(ClaxTools) -> Fut,
     Fut: Future<Output = Result<CallToolResult, rmcp::ErrorData>>,
 {
-    let tools = ClaxTools::new(daemon_client(c), c.browser_url(""), None, home.log_path());
+    let tools = ClaxTools::new(daemon_client(c), c.browser_url(""), None, home.log_path())
+        .with_login_dir(home.login_dir());
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;

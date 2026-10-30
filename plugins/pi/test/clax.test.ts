@@ -4,7 +4,7 @@ import { createServer as createHttpServer, request as httpRequest } from "node:h
 import { createServer } from "node:net";
 import { validateToolArguments, type Tool } from "@mariozechner/pi-ai";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { artifactRef, claxExtension, handedOver, handoverOf, htmlTitle, INJECT_RETRY_MS, isText, RENEW_EVERY_MS, START_BUDGET_MS, target, textPrefix, ToolError, waitingLine } from "../src/clax.ts";
@@ -476,7 +476,14 @@ describe("clax Pi extension", () => {
     // result never names.
     const opened = join(scratch, `opened-${Math.random().toString(36).slice(2)}.txt`);
     expect(await openWith('printf %s "$1" > "$OPENED_FILE"', 30_000, { OPENED_FILE: opened })).toMatchObject({ url: p.url, opened: true });
-    const link = readFileSync(opened, "utf8");
+    // The opener is given the path of a private page that carries the
+    // link, never the link: a command line is every user's to read.
+    const given = readFileSync(opened, "utf8");
+    expect(given).not.toContain("cxi_");
+    expect(dirname(given)).toBe(join(daemon.home, "login"));
+    expect(statSync(dirname(given)).mode & 0o777).toBe(0o700);
+    expect(statSync(given).mode & 0o777).toBe(0o600);
+    const link = readFileSync(given, "utf8");
     expect(link).toContain("/login?code=cxi_");
     expect(link).toContain(`next=${encodeURIComponent(`/a/${p.artifact_id}`)}`);
     // This opener never exits on its own, so `opened: true` comes from giving

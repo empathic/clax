@@ -2386,6 +2386,15 @@ the extension's "Open in Clax" and inbox links (through its native host's
 link for a browser on its own. A browser that already holds a session
 never notices; a fresh browser profile needs one `clax open`.
 
+`clax open` and the MCP and Pi `open` tools never put a link that carries
+a code on the platform opener's command line, which every user of the
+machine can read. They write a page that sends the browser on to the link
+(a meta refresh and `location.replace`, nothing else loaded) to
+`<home>/login/<sha256 of the code>.html` (directory mode 0700, file mode
+0600, created anew) and give the opener its path. Each write first removes
+the pages older than 120 s, and `GET /login` removes the page of the code
+it is given. When the page cannot be written, nothing is opened.
+
 ### Versions, seen marks and attention
 
 Every thread view carries `addressed_in`: the versions linked to the thread

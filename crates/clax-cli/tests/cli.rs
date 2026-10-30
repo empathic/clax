@@ -1018,9 +1018,37 @@ fn open_hands_the_browser_a_login_link_and_prints_none() {
         !printed.contains("code="),
         "the link is never printed: {printed}"
     );
-    let link = std::fs::read_to_string(&opened).unwrap();
+    // The opener is given the path of a private page that carries the link,
+    // never the link: a command line is every user's to read.
+    let given = std::fs::read_to_string(&opened).unwrap();
+    assert!(!given.contains("cxi_"), "{given}");
+    let page = std::path::PathBuf::from(&given);
+    let login_dir = e.dir.path().join("ax").join("login");
+    assert_eq!(page.parent(), Some(login_dir.as_path()), "{given}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode =
+            |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&login_dir), 0o700);
+        assert_eq!(mode(&page), 0o600);
+    }
+    let html = std::fs::read_to_string(&page).unwrap();
+    let link = html
+        .split("href=\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .unwrap()
+        .replace("&amp;", "&");
     assert!(link.contains("/login?code=cxi_"), "{link}");
     assert!(link.ends_with(&format!("next=%2Fa%2F{id}")), "{link}");
+    // Redeeming the code removes its page.
+    let browser = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    assert_eq!(browser.get(&link).send().unwrap().status(), 303);
+    assert!(!page.exists(), "the page is gone once its code is spent");
     // `clax login` prints a fresh link, the gallery's without a path, that
     // signs a browser in once.
     let out = e

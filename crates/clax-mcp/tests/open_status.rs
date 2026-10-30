@@ -80,3 +80,59 @@ async fn open(t: &ClaxTools, id: &str) -> Value {
     assert_eq!(r.is_error, Some(false));
     text(&r)
 }
+
+#[tokio::test]
+async fn the_login_link_reaches_the_opener_in_a_private_page_not_its_argv() {
+    // A fake opener that writes the argument it was given beside itself.
+    let dir = tempfile::tempdir().unwrap();
+    let opener = clax_fake_exe::install(
+        &dir.path().join("open"),
+        "#!/bin/sh\nprintf '%s' \"$1\" > \"$(dirname \"$0\")/arg\"\n",
+    );
+    let arg = dir.path().join("arg");
+    let ts = TestServer::spawn().await;
+    let tools = ClaxTools::new(
+        DaemonClient::new(ts.base.clone(), ts.token.clone(), None),
+        format!("http://localhost:{}", ts.addr.port()),
+        None,
+        ts.home.log_path(),
+    )
+    .with_opener(Opener::Program(opener.clone()))
+    .with_open_wait(Duration::from_secs(30));
+    let published = tools
+        .publish(Parameters(PublishArgs {
+            html: Some("<title>Open me</title>".into()),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+    let id = text(&published)["artifact_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // Without a login directory the opener gets the artifact's plain URL.
+    assert_eq!(open(&tools, &id).await["opened"], true);
+    assert_eq!(
+        std::fs::read_to_string(&arg).unwrap(),
+        format!("http://localhost:{}/a/{id}", ts.addr.port())
+    );
+    // With one, the path of a page there that carries the link.
+    let login = ts.home.login_dir();
+    let tools = tools.with_login_dir(login.clone());
+    assert_eq!(open(&tools, &id).await["opened"], true);
+    let given = std::fs::read_to_string(&arg).unwrap();
+    assert!(!given.contains("cxi_"), "{given}");
+    let page = std::path::PathBuf::from(&given);
+    assert_eq!(page.parent(), Some(login.as_path()), "{given}");
+    let html = std::fs::read_to_string(&page).unwrap();
+    assert!(html.contains("/login?code=cxi_"), "{html}");
+    assert!(html.contains(&format!("next=%2Fa%2F{id}")), "{html}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode =
+            |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&login), 0o700);
+        assert_eq!(mode(&page), 0o600);
+    }
+}

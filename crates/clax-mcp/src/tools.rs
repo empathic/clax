@@ -1030,6 +1030,10 @@ pub struct ClaxTools {
     channel: Option<crate::channel::ChannelState>,
     opener: Opener,
     open_wait: std::time::Duration,
+    /// Where `open` writes the page that hands its browser a login link
+    /// ([`clax_core::login_page`]); without one, `open` gives the opener
+    /// the artifact's plain URL.
+    login_dir: Option<PathBuf>,
     /// Paths name files of the machine the tools run on, read for the
     /// agent; false for an agent of another machine
     /// ([`ClaxTools::for_remote_agent`]).
@@ -1111,6 +1115,7 @@ impl ClaxTools {
             channel: None,
             opener: Opener::default(),
             open_wait: open_wait(),
+            login_dir: None,
             local_files: true,
             ask_surface: Default::default(),
             git: None,
@@ -1198,6 +1203,15 @@ impl ClaxTools {
     /// These tools with `opener` showing the URLs `open` returns.
     pub fn with_opener(mut self, opener: Opener) -> ClaxTools {
         self.opener = opener;
+        self
+    }
+
+    /// These tools' `open` handing the local daemon's browser a one-use
+    /// login link through a page in `dir` (the home's
+    /// [`clax_core::home::Home::login_dir`]), never on the opener's command
+    /// line.
+    pub fn with_login_dir(mut self, dir: PathBuf) -> ClaxTools {
+        self.login_dir = Some(dir);
         self
     }
 
@@ -1992,24 +2006,33 @@ impl ClaxTools {
         let opened = match program {
             Some(program) => {
                 // The local daemon's browser opens through a one-use login
-                // link, so a browser not yet the owner's becomes one; the
+                // link, so a browser not yet the owner's becomes one. The
+                // link reaches the opener in a page of the login directory
+                // ([`opener_target`]), never on its command line, and the
                 // result names the artifact's own URL, never the link. A
                 // remote Clax's browsers sign in there.
-                let target = match self.client.is_remote() {
-                    true => url.clone(),
-                    false => match self.client.browser_login(&format!("/a/{id}")).await {
-                        Ok(v) => match v["path"].as_str() {
-                            Some(p) => format!("{}{p}", self.browser_base()),
-                            None => url.clone(),
-                        },
-                        Err(_) => url.clone(),
-                    },
+                let login = match (&self.login_dir, self.client.is_remote()) {
+                    (Some(dir), false) => {
+                        match self.client.browser_login(&format!("/a/{id}")).await {
+                            Ok(v) => v["path"]
+                                .as_str()
+                                .map(|p| (dir.clone(), format!("{}{p}", self.browser_base()))),
+                            Err(_) => None,
+                        }
+                    }
+                    _ => None,
                 };
                 let wait = self.open_wait;
-                let url = target;
-                clax_rt::spawn_blocking(move || run_opener(&program, &url, wait))
-                    .await
-                    .unwrap_or(false)
+                let url = url.clone();
+                clax_rt::spawn_blocking(move || {
+                    let target = match login {
+                        Some((dir, link)) => opener_target(&dir, &link),
+                        None => Some(url),
+                    };
+                    target.is_some_and(|t| run_opener(&program, &t, wait))
+                })
+                .await
+                .unwrap_or(false)
             }
             None => false,
         };
@@ -3315,6 +3338,26 @@ pub fn open_in_browser(url: &str) -> bool {
         return false;
     }
     run_opener(Path::new(platform_opener()), url, open_wait())
+}
+
+/// What an opener is given for `url`: `url` itself, unless it carries a
+/// login code, which a command line would show every user of the machine
+/// (`ps`). Then the path of a page in `login_dir` that sends the browser on
+/// to it ([`clax_core::login_page::write`]), or None when that page cannot
+/// be written: such a link is never handed over any other way.
+pub fn opener_target(login_dir: &Path, url: &str) -> Option<String> {
+    if clax_core::login_page::code_of(url).is_none() {
+        return Some(url.to_string());
+    }
+    clax_core::login_page::write(login_dir, url)
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// [`open_in_browser`] for a login link `url`, through its page in
+/// `login_dir` ([`opener_target`]); false when the page cannot be written.
+pub fn open_login_in_browser(login_dir: &Path, url: &str) -> bool {
+    opener_target(login_dir, url).is_some_and(|t| open_in_browser(&t))
 }
 
 /// `open` on macOS, `xdg-open` elsewhere.

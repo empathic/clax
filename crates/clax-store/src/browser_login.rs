@@ -21,7 +21,7 @@ use clax_core::secret::{self, Secret, sha256_hex};
 use rusqlite::{OptionalExtension, params};
 
 /// How long a login code may be redeemed, from when it was made.
-pub const LOGIN_CODE_TTL_SECS: i64 = 120;
+pub const LOGIN_CODE_TTL_SECS: i64 = clax_core::login_page::LOGIN_CODE_TTL_SECS;
 /// How long an owner browser session lasts, from when it opened.
 pub const OWNER_SESSION_TTL_SECS: i64 = 400 * 24 * 3600;
 /// Prefix of a login code.

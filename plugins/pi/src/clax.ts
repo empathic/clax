@@ -13,6 +13,7 @@ import { Type, type Static, type TSchema } from "typebox";
 import { beginCall, currentCall, inCall, type CallScope } from "./calls.ts";
 import { ClientError, DaemonClient, type Endpoint, type Registration } from "./client.ts";
 import { CAPTURE_DEADLINE_MS, captureCwd, repoAndBranch, type GitField } from "./git.ts";
+import { writeLoginPage } from "./login-page.ts";
 import { checkClip, CLIP_MAX_BYTES, loadRemote, rewriteClipItems, rewriteClipText, storeClip, type ClipFetch, type Remote } from "./remote.ts";
 
 /** The longest one remote clip fetch may take while feedback is handed
@@ -1430,7 +1431,7 @@ class Tools {
     const { id } = await this.resolveRef(c, a.url_or_id);
     await this.call(() => c.get(id));
     const url = this.artifactUrl(c, id);
-    const opened = this.env.CLAX_NO_OPEN === undefined && (await openInBrowser(await this.loginUrl(c, `/a/${id}`, url), this.env, this.opts.openWaitMs ?? OPEN_WAIT_MS));
+    const opened = this.env.CLAX_NO_OPEN === undefined && (await this.openSignedIn(c, `/a/${id}`, url));
     return { url, opened };
   }
 
@@ -1439,22 +1440,35 @@ class Tools {
     const c = this.clientFor(ctx);
     await this.call(() => (c.isRemote() ? c.ensureSession() : c.healthz()));
     const url = `${this.browserBase(c)}/`;
-    const opened = this.env.CLAX_NO_OPEN === undefined && (await openInBrowser(await this.loginUrl(c, "/", url), this.env, this.opts.openWaitMs ?? OPEN_WAIT_MS));
+    const opened = this.env.CLAX_NO_OPEN === undefined && (await this.openSignedIn(c, "/", url));
     return { url, opened };
   }
 
-  /** Where the browser opens `path` (`url` on the daemon): on the local
-   * daemon a one-use login link, so a browser not yet the owner's becomes
-   * one; `url` itself on a remote Clax, whose browsers sign in there, or
-   * when no link can be had. The result names `url`, never the link. */
-  private async loginUrl(c: DaemonClient, path: string, url: string): Promise<string> {
-    if (c.isRemote()) return url;
-    try {
-      const v = await c.browserLogin(path);
-      return typeof v?.path === "string" && v.path.startsWith("/login?") ? `${this.browserBase(c)}${v.path}` : url;
-    } catch {
-      return url;
+  /** Opens `path` (`url` on the daemon) in the browser: on the local
+   * daemon through a one-use login link, so a browser not yet the owner's
+   * becomes one, handed to the opener in a private page of the home's
+   * `login/` ([`writeLoginPage`]), never on its command line; `url` itself
+   * on a remote Clax, whose browsers sign in there, or when no link can be
+   * had. False when the page cannot be written or the opener fails. */
+  private async openSignedIn(c: DaemonClient, path: string, url: string): Promise<boolean> {
+    let target = url;
+    if (!c.isRemote()) {
+      let link: string | undefined;
+      try {
+        const v = await c.browserLogin(path);
+        if (typeof v?.path === "string" && v.path.startsWith("/login?")) link = `${this.browserBase(c)}${v.path}`;
+      } catch {
+        // no link: the plain address
+      }
+      if (link !== undefined) {
+        try {
+          target = writeLoginPage(join(this.home, "login"), link);
+        } catch {
+          return false;
+        }
+      }
     }
+    return openInBrowser(target, this.env, this.opts.openWaitMs ?? OPEN_WAIT_MS);
   }
 
   async assetUpload(ctx: ExtensionContext, a: Static<typeof AssetUploadArgs>): Promise<Json> {
