@@ -196,8 +196,11 @@ const tick = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
  * with `opts.args`, with those arguments added to `clax serve`'s.
  * `stop({ keepHome: true })` leaves the home; `ended()` says whether the daemon has exited.
  * It runs the binary daemon-setup.ts built, on a port the system picks, and
- * waits up to `opts.startMs` (20 s by default) for its daemon.json and its
- * health check; a start that fails says so with the end of the daemon's stderr.
+ * waits for its daemon.json and its health check until the daemon answers or
+ * exits, bounded only by the test's (or fixture's) own timeout, so a loaded
+ * machine's slow start is waited out; `opts.startMs` caps the wait for a
+ * caller that wants its own bound. A start that fails says so with the end
+ * of the daemon's stderr.
  * `localhost` resolves to `::1` first, and another process (a Bazel server)
  * may listen on `[::1]` at the port the system gave the daemon on
  * `127.0.0.1`, where every request to `http://localhost:<port>` would reach
@@ -259,7 +262,7 @@ async function startOnce(opts: StartOpts) {
     if (!o.keepHome) rmSync(home, { recursive: true, force: true });
   };
   try {
-    const deadline = Date.now() + (opts.startMs ?? 20_000);
+    const deadline = opts.startMs === undefined ? Infinity : Date.now() + opts.startMs;
     let gone = false;
     void exited.then(() => { gone = true; });
     while (!existsSync(infoPath)) {
@@ -280,6 +283,7 @@ async function startOnce(opts: StartOpts) {
     base = `http://localhost:${info.port}`;
     for (;;) {
       try { if ((await fetch(`${base}/healthz`)).ok) break; } catch { /* retry */ }
+      if (gone) throw failed(`the daemon exited (${child.exitCode ?? child.signalCode}) before it answered its health check`);
       if (Date.now() > deadline) throw failed("daemon did not become healthy");
       await tick(10);
     }
