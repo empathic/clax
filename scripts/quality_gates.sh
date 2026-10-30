@@ -52,7 +52,9 @@ export CLAX_GALLERY__QUICKSTART=false
 # --- lanes ------------------------------------------------------------------
 
 lane_web() {
+    run "web sdk build"         bash -c 'cd web && pnpm run build:sdk' &&
     run "web bundle size"       bash -c 'cd web && node scripts/bundle-size.mjs' &&
+    run "web sdk package"       bash -c 'cd web && pnpm run test:sdk --reporter=dot' &&
     run "web lint"              bash -c 'cd web && pnpm run lint' &&
     run "web typecheck"         bash -c 'cd web && pnpm run typecheck'
 }

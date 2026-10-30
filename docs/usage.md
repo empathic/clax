@@ -620,6 +620,45 @@ a scratch directory would fall inside your home, never reads or copies an
 auth file, and runs Clax on a scratch port. The Pi session check, which needs
 a model, runs only with `VERIFY_PI_SESSION=1` and a provider key you export.
 
+### The SDK package
+
+The reporter client, the embeddable overlay and the service client are
+also built as an npm package, `@empathic/clax-sdk`, into `web/dist-sdk`
+(`web/scripts/build-sdk.mjs`): ES modules with Svelte and the overlay's
+other dependencies bundled, and declarations under `types/`. It has three
+entries: `@empathic/clax-sdk` (`ReporterClient`, `ClaxError` and the queue
+routes' types), `@empathic/clax-sdk/overlay` (`overlay`, the same overlay
+as `/_clax/overlay.js`) and `@empathic/clax-sdk/service` (`ServiceClient`,
+for a backend only). Its license is LGPL-2.1-only, that of `web/sdk`,
+`web/overlay` and `web/bridge`.
+
+- `just web` builds it beside the web build (`//web:dist_sdk` under Bazel,
+  copied into `web/dist-sdk`); `pnpm run build:sdk` in `web/` builds it
+  alone. `pnpm run build`, the web UI the binary embeds, does not build it,
+  so a failure of the package's build fails no build of `clax`.
+- `node scripts/build-sdk.mjs --watch`, in `web/`, rebuilds it on every
+  change to its sources. `just watch` runs it natively; with Bazel it does
+  not, so run `just web` again after a change (or the watch command, with
+  `web/node_modules` installed).
+- `//web:sdk_package` (`pnpm run test:sdk` after a build) checks the
+  package as an app gets it, and `//web:bundle_size` holds its overlay
+  entry to the `sdkOverlay` ceiling.
+- A release publishes it to npm at the release's version
+  (`.github/workflows/publish-sdk.yml`, step 21 of `just release`;
+  "Releasing" below).
+
+To use the checkout's build from another app while developing, link the
+directory, which keeps the package's own name:
+
+```
+"@empathic/clax-sdk": "link:/path/to/clax/web/dist-sdk"
+```
+
+in that app's `package.json` `dependencies` (pnpm and bun both read
+`link:`), then install. A link is a symlink to the directory, so a rebuild
+reaches the app without reinstalling; reload it, or restart its dev server
+if that server cached the package.
+
 ### The Clax app
 
 `apps/clax_app` is a Flutter app for Android, macOS, iPhone and iPad. It
@@ -1371,14 +1410,15 @@ just release 0.6.0                              # a dry run: the checks, and eve
 just release 0.6.0 --i-know-what-i-am-doing     # prepare: the release branch and its pull request into prod
 # review the pull request; once CI passes, merge it on GitHub with a merge commit (this deploys clax.dev)
 git switch prod && git pull --ff-only
-just release 0.6.0 --i-know-what-i-am-doing     # cut: tag, release, pin, carry to main, Pi package
+just release 0.6.0 --i-know-what-i-am-doing     # cut: tag, release, pin, carry to main, Pi and SDK packages
 ```
 
 `just release` runs `scripts/release.sh` as it is (no build system in
 between), and releases Clax and all four plugins: the Claude Code, Codex
 and Grok plugins update through this repository's marketplaces once
 `main` carries the new version and its pin, and the Pi package is
-published to npm from the pin commit on `prod`.
+published to npm from the pin commit on `prod`, as is the SDK package,
+`@empathic/clax-sdk`, at the same version.
 
 Which half a run does follows from `origin/prod`. Until `prod`'s version
 is the release's, it **prepares** (steps 2-9), from any branch with a clean
@@ -1398,7 +1438,7 @@ clax.dev. The bump lives on the release branch, never on `main`, until its
 release exists: harnesses update a plugin when its version changes, so
 `main` must get the version and the pin to its release in one push.
 
-Once `prod` is at the release's version, a run **cuts** (steps 11-21),
+Once `prod` is at the release's version, a run **cuts** (steps 11-22),
 from a `prod` checkout at `origin/prod`'s tip: it signs the tag
 `v<version>` on `prod`'s tip and pushes the tag alone; waits for the
 Release workflow on it and checks that the release lists `SHA256SUMS` and
@@ -1414,7 +1454,8 @@ cherry-pick -S -x`) onto `origin/main`'s tip in a temporary worktree under
 merge commits. Last it waits for CI's gate (ci.yml's `bazel` job, not the
 perf-log job, which is cancelled when pushes pile up) on the pin commit on
 `prod`, runs Publish Pi package from that commit with `dry_run` off and
-waits for it, and prints what is left by hand: checking that the deploys
+waits for it, then Publish SDK package the same way, and prints what is
+left by hand: checking that the deploys
 of `prod` succeeded (`gh run list --workflow deploy-prod.yml`), and the
 crates.io package, which it does not publish. It deploys nothing itself.
 
@@ -1432,7 +1473,7 @@ behind `origin/prod` and ahead of it only by the pin commit, and
 pull request is refused). It also needs `gh` signed in (`gh auth status`);
 commit signing working (a signed commit written to a scratch object
 directory); `just`, Bazelisk or Bazel, `python3`, `curl` and `npm` on
-`PATH`; npm reachable (and signed in, with `pnpm`, for a first Pi
+`PATH`; npm reachable (and signed in, with `pnpm`, for a first Pi or SDK
 publish); and the `npm` environment set up (below). It signs every commit
 and the tag with your signing key, never force-pushes, never deletes a
 tag, and checks that each commit and the tag it pushes carries a
@@ -1473,8 +1514,8 @@ bazel-sync` there and amend the pin copy (`git commit -S -a --amend
 tip by the next run. A commit amended unsigned is refused with how to sign
 it (`git commit --amend -S --no-edit`). A failed workflow run is rerun on
 GitHub (`gh run rerun <ID> --failed`), then the command again picks it up;
-a failed Publish Pi package run is dispatched anew. Publish Pi package
-takes the pin commit as its `sha` input and titles its run after it,
+a failed Publish Pi package or Publish SDK package run is dispatched anew.
+Each takes the pin commit as its `sha` input and titles its run after it,
 which is how the script finds the run again. A wait gives up after
 `CLAX_RELEASE_MAX_POLLS` polls (270) `CLAX_RELEASE_POLL_SECONDS` apart
 (20), 90 minutes. The cut is known by its tag and its pin commit on
@@ -1507,6 +1548,7 @@ git push origin HEAD:refs/heads/main
 # once CI passes on the pin commit on prod: Actions, Publish Pi package, Run workflow
 # (on prod, dry_run off, sha the pin commit), or:
 gh workflow run publish-pi.yml --ref prod -f dry_run=false -f sha=<pin commit>
+gh workflow run publish-sdk.yml --ref prod -f dry_run=false -f sha=<pin commit>
 ```
 
 `scripts/test-release-script.sh` (gate "release command") runs the script
@@ -1522,12 +1564,12 @@ the version from another build; a refused push of `prod` and an unsigned
 pin commit; a refused push of `main`; a carry that conflicts, carried by
 hand; versions that disagree after the carry, bumped by hand; a failed
 CI run on the pin commit, also once `main` has moved on;
-and a failed Publish Pi package run. It also checks `bazel-sync` that
+and a failed Publish Pi package or Publish SDK package run. It also checks `bazel-sync` that
 never settles, `gh` failing during a wait, `main` moving during the
 Release wait, a release of the version from an earlier build of the same
-tree or of another tree, the Pi package's first version published from
-here (a fake `npm`), a package on npm published through the workflow, a
-version npm has already, and each preflight refusal but a missing Bazel,
+tree or of another tree, the Pi package's and the SDK package's first
+versions published from here (fakes of `npm` and `pnpm`), packages on npm
+published through their workflows, versions npm has already, and each preflight refusal but a missing Bazel,
 `python3`, `curl`, `npm` or `pnpm`: among them a cut from another branch
 than `prod` or behind `origin/prod`, a squashed pull request, and a
 release branch that `origin/prod` has moved past.
@@ -1565,13 +1607,29 @@ repos/empathic/clax/environments/npm`) and, until npm has the version,
 warns in a dry run and refuses to start a release when it is missing or
 allows more than `prod`; it never changes it.
 Step 20 is done whenever npm has the version. After that first publish,
-step 21 lists the trusted-publisher setup and switching `README.md` and
+step 22 lists the trusted-publisher setup and switching `README.md` and
 `plugins/pi/README.md` to lead their Pi install with `pi install
 npm:@empathic/clax-pi`; until the package exists they keep their current
 install instructions. `scripts/test-plugins.sh` keeps the package
 publishable: public, tagged `pi-package` for Pi's gallery, Pi's own
 modules as optional `"*"` peers (Pi provides them; installed, they would
 add a second Pi of about 200 MB), no `.qual` files, and a `LICENSE`.
+
+The SDK package, `@empathic/clax-sdk` ("The SDK package" above), is
+published by step 21 the same way, through
+`.github/workflows/publish-sdk.yml`: from the pin commit on `prod` with
+CI's `bazel` job passed on it, it builds `web/dist-sdk` (`pnpm run
+build:sdk`, at `Cargo.toml`'s version), runs its test (`pnpm run
+test:sdk`), refuses a version npm has already, and publishes
+`web/dist-sdk` with provenance through npm trusted publishing, in the same
+`npm` environment. While `npm view @empathic/clax-sdk` finds nothing, step
+21 publishes the first version from your machine instead: in a temporary
+worktree of the pin commit under `target/release/`, `pnpm install
+--frozen-lockfile`, `pnpm run build:sdk` and `pnpm run test:sdk` in
+`web/`, then `npm publish --access public` from `web/dist-sdk` on your
+terminal; step 22 then lists its trusted-publisher setup (workflow
+`publish-sdk.yml`, environment `npm`). The preflight's `npm` environment
+check stands until npm has both packages at the version.
 
 A plugin pins the release its wrapper names (`PINNED_VERSION` and one
 `SHA256_*` per target in `scripts/ensure-clax.sh`; `scripts/pin-release.sh`
@@ -1620,8 +1678,10 @@ become modules of it under `crates/<name>/src/`, their `crate::` and
 `clax-embedded` include are copied at their repository paths; the
 dependencies are the union of the crates' own, with the workspace's
 `Cargo.lock`; and `scripts/crate-package/build.rs` stands in for the
-crates' build scripts. Its license is `GPL-2.0-only AND AGPL-3.0-only`:
-GPL-2.0 Rust code with the AGPL-3.0 web UI embedded.
+crates' build scripts. Its license is `GPL-2.0-only AND AGPL-3.0-only AND
+LGPL-2.1-only`: GPL-2.0 Rust code with the AGPL-3.0 web UI embedded, whose
+bridge and overlay scripts are built from the LGPL-2.1 `web/bridge` and
+`web/overlay`.
 
 ```
 just crate-package                            # build the web UI, assemble, pack, and check the packed crate (uploads nothing)

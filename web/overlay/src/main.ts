@@ -1,16 +1,18 @@
 // The embeddable overlay, built as one classic script (`/_clax/overlay.js`,
-// global `Clax`): a deployer's page calls `Clax.overlay({instance, queue,
-// auth})` and its visitors file reports into the queue (spec 2026-10-27
-// §5.3). Its interface lives in a shadow root on <html>: the page's rules
-// do not reach it and its own do not reach the page. Keys typed into it stop
-// at that root, so the page's shortcuts do not hear them. Its styles are
-// set through the CSSOM (the host's `style`, the root's adopted sheets), so a
+// global `Clax`) and as the `./overlay` entry of the SDK package
+// (scripts/build-sdk.mjs): a deployer's page calls `Clax.overlay({instance,
+// queue, auth})` and its visitors file reports into the queue (spec 2026-10-27
+// §5.3). Its interface lives in a shadow root on <html>: the page's rules do
+// not reach it and its own do not reach the page. Keys typed into it stop at
+// that root, so the page's shortcuts do not hear them. Its styles are set
+// through the CSSOM (the host's `style`, the root's adopted sheets), so a
 // page whose CSP `style-src` lacks 'unsafe-inline' does not refuse them.
 import { mount, unmount } from "svelte";
 import { OVERLAY_TAG } from "../../bridge/src/anchor";
 import { addSheet } from "../../bridge/src/sheet";
 import { ReporterClient } from "../../sdk/src/reporter";
-import { externalIdOf, type OverlayOptions } from "./model";
+import { externalIdOf } from "./model";
+import type { OverlayOptions } from "./options";
 import Overlay from "./Overlay.svelte";
 import { commentPicker, type Picked } from "./picker";
 import TOKENS from "./tokens.css?inline";
@@ -24,8 +26,9 @@ export interface OverlayHandle {
 }
 
 /** The components' stylesheet: written in at build time from the CSS the
- * Svelte components compile to (`vite.overlay.config.ts`). Run from source,
- * the overlay keeps this placeholder, which styles nothing. */
+ * Svelte components compile to (`scripts/overlay-component-css.mjs`, in
+ * both builds). Run from source, the overlay keeps this placeholder, which
+ * styles nothing. */
 const COMPONENT_CSS: string = "__CLAX_OVERLAY_COMPONENT_CSS__";
 
 /** Inline style of the host: fixed, sized to nothing and passing every

@@ -35,9 +35,11 @@ nothing internal under a name of its own:
   answers ClaxBot's scripts `unavailable`). In the bundled sources a
   `feature = "<name>"` of a feature left out reads as `any()`, never true.
 
-The package is "GPL-2.0-only AND AGPL-3.0-only": its Rust code is GPL-2.0
-(the dual-licensed shared crates under that license) and the web UI it
-embeds is AGPL-3.0 (LICENSE). It never uploads anything; `just
+The package is "GPL-2.0-only AND AGPL-3.0-only AND LGPL-2.1-only": its
+Rust code is GPL-2.0 (the dual-licensed shared crates under that license),
+the web UI it embeds is AGPL-3.0, and that web UI's bridge and overlay
+scripts (/_clax/bridge.js, /_clax/overlay.js) are built from web/bridge and
+web/overlay, which are LGPL-2.1 (LICENSE). It never uploads anything; `just
 crate-package` runs this script, then `cargo package` to check that the
 package builds. Run from any directory.
 """
@@ -61,7 +63,7 @@ PACKAGE = {
     "readme": "README.md",
     "keywords": ["agents", "artifacts", "mcp", "claude", "codex"],
     "categories": ["command-line-utilities", "development-tools", "web-programming::http-server"],
-    "license": "GPL-2.0-only AND AGPL-3.0-only",
+    "license": "GPL-2.0-only AND AGPL-3.0-only AND LGPL-2.1-only",
 }
 
 # What never travels in the package.

@@ -9,6 +9,8 @@ whose full texts are in the LICENSES/ directory:
                    (LICENSES/GPL-2.0-only.txt)
   AGPL-3.0-only    GNU Affero General Public License, version 3 only
                    (LICENSES/AGPL-3.0-only.txt)
+  LGPL-2.1-only    GNU Lesser General Public License, version 2.1 only
+                   (LICENSES/LGPL-2.1-only.txt)
   0BSD             Zero-Clause BSD License
                    (LICENSES/0BSD.txt)
 
@@ -57,7 +59,16 @@ Which license covers which part:
 
   AGPL-3.0-only                   The web application and the hosted service:
     crates/clax-worker            (including crates/clax-worker/vfs)
-    web/                          except web/extension/
+    web/                          except web/extension/, web/bridge/,
+                                  web/overlay/ and web/sdk/
+
+  LGPL-2.1-only                   The SDK and the overlay a deployer's app
+                                  embeds, and the bridge code they are
+                                  built from, so the apps that use them
+                                  may be under any license:
+    web/sdk/
+    web/overlay/
+    web/bridge/
 
   0BSD                            The Clax app's starter kit, which the app
                                   copies into the apps people make with it,
@@ -70,7 +81,8 @@ Which license covers which part:
 
 A package's own metadata (the `license` field of its Cargo.toml or
 package.json) names the same license as this list. web/package.json covers
-both web/ and web/extension/, so it names both licenses. A Dart package's
+all of web/, including web/extension/, web/sdk/, web/overlay/ and
+web/bridge/, so it names all three of their licenses. A Dart package's
 pubspec.yaml has no license field (pub reads the package's LICENSE file):
 apps/clax_app/LICENSE carries the app's license.
 
