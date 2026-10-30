@@ -246,7 +246,7 @@ fn cbor_head(b: &[u8], at: &mut usize) -> Result<(u8, u64), Refusal> {
         27 => 8,
         _ => return Err(bad),
     };
-    let bytes = b.get(*at..*at + len).ok_or(bad)?;
+    let bytes = b.get(*at..at.checked_add(len).ok_or(bad)?).ok_or(bad)?;
     *at += len;
     Ok((
         major,
@@ -263,7 +263,7 @@ fn cbor_item<'a>(b: &'a [u8], at: &mut usize) -> Result<Cbor<'a>, Refusal> {
         1 => Ok(Cbor::Int(-1 - i64::try_from(n).map_err(|_| bad)?)),
         2 => {
             let n = usize::try_from(n).map_err(|_| bad)?;
-            let v = b.get(*at..*at + n).ok_or(bad)?;
+            let v = b.get(*at..at.checked_add(n).ok_or(bad)?).ok_or(bad)?;
             *at += n;
             Ok(Cbor::Bytes(v))
         }
@@ -430,6 +430,16 @@ mod tests {
             vec![7; 32]
         );
         assert!(cose_raw_key(&cose_key(&ed, EDDSA).unwrap(), ES256).is_err());
+    }
+
+    #[test]
+    fn a_cose_key_with_a_huge_byte_string_length_is_refused_not_a_panic() {
+        // A map of one entry, -2 => a byte string claiming 2^64 - 1 bytes.
+        let cose = [
+            0xa1, 0x21, 0x5b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        ];
+        assert!(cose_raw_key(&cose, ES256).is_err());
+        assert!(cose_raw_key(&cose, EDDSA).is_err());
     }
 
     #[test]
