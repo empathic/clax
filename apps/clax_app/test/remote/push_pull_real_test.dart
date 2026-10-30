@@ -128,12 +128,7 @@ class _Home {
       pid: pid,
       cwd: core.dir.path,
     );
-    // The app session is an agent's, so connecting and pushing, made by
-    // the app's code, wait for the person's confirmation in the app.
-    final remote = HttpRemoteApi(
-      CoreTransport(core.host.calls),
-      confirm: core.confirmAsPerson,
-    );
+    final remote = HttpRemoteApi(CoreTransport(core.host.calls));
     final signIn = await remote.addRemote(
       hosted.origin,
       machine: 'Clax on $name',

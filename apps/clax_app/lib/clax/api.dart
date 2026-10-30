@@ -461,57 +461,8 @@ class ClaxApiError implements Exception {
   bool get isUnknownSession => code == 'unknown_session';
   bool get isNotFound => status == 404;
 
-  /// [code] of a decision the core holds for the owner's click in a
-  /// browser of theirs ([confirmationPendingOf]).
-  static const confirmationPending = 'confirmation_pending';
-
-  /// Whether this is a decision held for a browser confirmation: [body] is
-  /// the 202's whole answer, its `confirmation_id` and `confirm_url` among
-  /// it.
-  bool get isConfirmationPending =>
-      status == 202 && code == confirmationPending;
-
-  /// A held decision's confirmation ID, which the same call presents in
-  /// [confirmationHeader] once the owner approved it.
-  String? get confirmationId => switch (body['confirmation_id']) {
-    final String id when id.isNotEmpty => id,
-    _ => null,
-  };
-
   @override
   String toString() => 'ClaxApiError($status $code: $message)';
-}
-
-/// The request header that presents a confirmation's ID with the call it
-/// confirms (docs/contract.md, "Browser confirmations").
-const confirmationHeader = 'x-clax-confirmation';
-
-/// Asks the owner to confirm the decision [pending] holds
-/// ([ClaxApiError.isConfirmationPending]) and answers whether they
-/// approved it: the call is then made again with its confirmation.
-typedef Confirmer = Future<bool> Function(ClaxApiError pending);
-
-/// The error for an answer of [status] with JSON object [j] that holds a
-/// decision for a browser confirmation: while an agent session of the
-/// owner's is live, a decision such as answering an agent's question,
-/// connecting or pushing to a public Clax, or widening who may open a page,
-/// made as the app rather than as the person at it, answers 202
-/// `{status: "confirmation_pending", confirmation_id, confirm_url,
-/// decision}` and changes nothing. Null for any other answer.
-ClaxApiError? confirmationPendingOf(int status, Map<String, Object?>? j) {
-  if (status != 202 || j == null) return null;
-  if (j['status'] != ClaxApiError.confirmationPending) return null;
-  final id = j['confirmation_id'];
-  if (id is! String || id.isEmpty) return null;
-  final url = j['confirm_url'];
-  return ClaxApiError(
-    status: 202,
-    code: ClaxApiError.confirmationPending,
-    message: url is String && url.isNotEmpty
-        ? 'Confirm in your browser: $url'
-        : 'Confirm in your browser',
-    body: j,
-  );
 }
 
 /// Undoing a change: version [n]'s files as a new version, with the

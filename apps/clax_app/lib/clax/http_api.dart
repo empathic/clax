@@ -21,14 +21,7 @@ class HttpClaxApi implements ClaxApi {
     this.publishTimeout = const Duration(seconds: 125),
     this.pollSlack = defaultPollSlack,
     this.eventRetryDelay,
-    this.confirm,
   });
-
-  /// Asks the owner to confirm a decision the core holds for a browser
-  /// confirmation; when they approve, the call is made again with its
-  /// confirmation. Without it, or when they do not, the call throws the
-  /// held decision ([ClaxApiError.isConfirmationPending]).
-  final Confirmer? confirm;
 
   /// What every call and event stream goes through.
   final ClaxTransport transport;
@@ -727,17 +720,24 @@ class HttpClaxApi implements ClaxApi {
     String qid,
     List<Map<String, Object?>> answers,
   ) async {
+    // The person's decision, made on the app's screen: as the person, as
+    // in their browser (the core's owner-browser caller).
     final j = await _json(
       'POST',
       '/api/questions/${_seg(qid)}/answer',
       body: {'answers': answers},
+      person: true,
     );
     return _question(j);
   }
 
   @override
   Future<QuestionView> declineQuestion(String qid) async {
-    final j = await _json('POST', '/api/questions/${_seg(qid)}/decline');
+    final j = await _json(
+      'POST',
+      '/api/questions/${_seg(qid)}/decline',
+      person: true,
+    );
     return _question(j);
   }
 
@@ -870,36 +870,17 @@ class HttpClaxApi implements ClaxApi {
     Map<String, String>? headers,
     bool person = false,
   }) async {
-    Future<TransportAnswer> send([String? confirmation]) => _send(
+    final r = await _send(
       method,
       path,
       query: query,
       body: body,
       agent: agent,
       timeout: timeout,
-      headers: {...?headers, confirmationHeader: ?confirmation},
+      headers: headers,
       person: person,
     );
-    final r = await send();
-    if (_pending(r) case final held?) {
-      final c = confirm;
-      if (c == null || !await c(held)) throw held;
-      final again = await send(held.confirmationId);
-      if (_pending(again) case final still?) throw still;
-      return _ok(again);
-    }
     return _ok(r);
-  }
-
-  /// The held decision a 202 `confirmation_pending` answer names
-  /// ([confirmationPendingOf]); null for any other answer.
-  static ClaxApiError? _pending(TransportAnswer r) {
-    if (r.status != 202) return null;
-    try {
-      return confirmationPendingOf(r.status, _ok(r));
-    } on ClaxApiError catch (_) {
-      return null;
-    }
   }
 
   /// The JSON object of a 2xx answer (`{}` for an empty one); otherwise
