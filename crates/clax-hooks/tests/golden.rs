@@ -1100,6 +1100,46 @@ impl Daemon {
         assert!(res.status().is_success(), "{path}: {}", res.status());
         res.json().unwrap()
     }
+    /// `POST path` with `body` from a browser of the owner's, as a person
+    /// answering in Clax: an owner browser session opened as `clax open`
+    /// opens one (a login code made with the token, redeemed at `GET
+    /// /login`). While an agent session is live the token alone would get
+    /// 202 `confirmation_pending` for a decision such as an answer.
+    fn post_as_owner_browser(&self, path: &str, body: Value) -> Value {
+        let plain = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let made: Value = plain
+            .post(format!("{}/api/browser-login", self.base()))
+            .bearer_auth(self.token())
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        let login = made["path"].as_str().expect("a login path");
+        let res = plain.get(format!("{}{login}", self.base())).send().unwrap();
+        assert_eq!(res.status(), 303, "the login code is redeemed");
+        let name = format!("clax_owner_{}=", self.info()["port"]);
+        let cookie = res
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .filter_map(|v| v.split(';').next())
+            .find(|kv| kv.starts_with(&name))
+            .expect("an owner cookie")
+            .to_string();
+        let res = plain
+            .post(format!("{}{path}", self.base()))
+            .header(reqwest::header::COOKIE, cookie)
+            .json(&body)
+            .send()
+            .unwrap();
+        assert_eq!(res.status(), 200, "{path}");
+        res.json().unwrap()
+    }
     fn get_authed(&self, path: &str) -> Value {
         self.http()
             .get(format!("{}{path}", self.base()))
@@ -1171,7 +1211,9 @@ fn asking(d: &Daemon) -> (Surface, std::thread::JoinHandle<Ran>, String) {
 fn ask_answered_in_clax_answers_the_tool_call() {
     let d = Daemon::start();
     let (_s, run, qid) = asking(&d);
-    d.post_authed(
+    // The person answers in their browser: with the agent's session live,
+    // the token alone would wait for a browser confirmation.
+    d.post_as_owner_browser(
         &format!("/api/questions/{qid}/answer"),
         serde_json::json!({"answers": [{"selected": ["Cards"]}]}),
     );
