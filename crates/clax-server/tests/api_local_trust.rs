@@ -301,7 +301,11 @@ async fn an_owner_session_fetched_by_another_site_is_no_credential() {
             .send()
             .await
             .unwrap();
-        assert_eq!(code_of(res).await, (401, "no_credential".into()), "{origin}");
+        assert_eq!(
+            code_of(res).await,
+            (401, "no_credential".into()),
+            "{origin}"
+        );
     }
     let res = ts
         .client
@@ -887,7 +891,10 @@ async fn a_login_code_redeems_only_for_the_daemons_own_user() {
     assert_eq!(status, 403);
     assert_eq!(body["error"]["code"], "not_this_user");
     assert!(
-        body["error"]["message"].as_str().unwrap().contains("clax login"),
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("clax login"),
         "{body}"
     );
     // Another user's socket is refused.

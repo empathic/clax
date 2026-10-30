@@ -143,7 +143,10 @@ mod tests {
         let table = format!(
             "{HEADER}   0: 00000000000000000000000001000000:C738 00000000000000000000000001000000:1D38 01 00000000:00000000 00:00000000 00000000  1002        0 3 1\n"
         );
-        assert_eq!(socket_uid(&table, a("[::1]:51000"), a("[::1]:7480")), Some(1002));
+        assert_eq!(
+            socket_uid(&table, a("[::1]:51000"), a("[::1]:7480")),
+            Some(1002)
+        );
     }
 
     #[cfg(target_endian = "little")]
@@ -154,9 +157,16 @@ mod tests {
         let table = format!(
             "{HEADER}   0: 0000000000000000FFFF00000100007F:C738 0000000000000000FFFF00000100007F:1D38 01 00000000:00000000 00:00000000 00000000  1003        0 3 1\n"
         );
-        assert_eq!(socket_uid(&table, a("127.0.0.1:51000"), a("127.0.0.1:7480")), Some(1003));
         assert_eq!(
-            socket_uid(&table, a("[::ffff:127.0.0.1]:51000"), a("[::ffff:127.0.0.1]:7480")),
+            socket_uid(&table, a("127.0.0.1:51000"), a("127.0.0.1:7480")),
+            Some(1003)
+        );
+        assert_eq!(
+            socket_uid(
+                &table,
+                a("[::ffff:127.0.0.1]:51000"),
+                a("[::ffff:127.0.0.1]:7480")
+            ),
             Some(1003)
         );
     }
@@ -167,9 +177,18 @@ mod tests {
         let table = format!(
             "{HEADER}   0: 0100007F:C738 0100007F:1D38 01 00000000:00000000 00:00000000 00000000  1001        0 3 1\n"
         );
-        assert_eq!(socket_uid(&table, a("127.0.0.1:51001"), a("127.0.0.1:7480")), None);
-        assert_eq!(socket_uid(HEADER, a("127.0.0.1:51000"), a("127.0.0.1:7480")), None);
-        assert_eq!(socket_uid("", a("127.0.0.1:51000"), a("127.0.0.1:7480")), None);
+        assert_eq!(
+            socket_uid(&table, a("127.0.0.1:51001"), a("127.0.0.1:7480")),
+            None
+        );
+        assert_eq!(
+            socket_uid(HEADER, a("127.0.0.1:51000"), a("127.0.0.1:7480")),
+            None
+        );
+        assert_eq!(
+            socket_uid("", a("127.0.0.1:51000"), a("127.0.0.1:7480")),
+            None
+        );
     }
 
     #[cfg(target_endian = "little")]
@@ -181,13 +200,22 @@ mod tests {
         let (daemon, browser) = (a("127.0.0.1:7480"), a("127.0.0.1:51000"));
         // Nothing to read: refused, saying why.
         assert!(redeemer_is_this_user(dir.path(), browser, daemon).is_err());
-        std::fs::write(dir.path().join("self/status"), "Uid:\t1000\t1000\t1000\t1000\n").unwrap();
+        std::fs::write(
+            dir.path().join("self/status"),
+            "Uid:\t1000\t1000\t1000\t1000\n",
+        )
+        .unwrap();
         assert!(redeemer_is_this_user(dir.path(), browser, daemon).is_err());
         let row = |uid: u32| {
-            format!("{HEADER}   0: 0100007F:C738 0100007F:1D38 01 00000000:00000000 00:00000000 00000000  {uid}        0 3 1\n")
+            format!(
+                "{HEADER}   0: 0100007F:C738 0100007F:1D38 01 00000000:00000000 00:00000000 00000000  {uid}        0 3 1\n"
+            )
         };
         std::fs::write(dir.path().join("net/tcp"), row(1001)).unwrap();
-        assert_eq!(redeemer_is_this_user(dir.path(), browser, daemon), Ok(false));
+        assert_eq!(
+            redeemer_is_this_user(dir.path(), browser, daemon),
+            Ok(false)
+        );
         std::fs::write(dir.path().join("net/tcp"), row(1000)).unwrap();
         assert_eq!(redeemer_is_this_user(dir.path(), browser, daemon), Ok(true));
         // A connection no row lists.

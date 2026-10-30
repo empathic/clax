@@ -105,7 +105,10 @@ async fn open_hands_the_opener_a_login_link_the_platforms_way() {
     let got = std::fs::read_to_string(dir.path().join("got")).unwrap();
     let link = clax_testkit::opener::recorded_url(&got);
     assert!(
-        link.starts_with(&format!("http://localhost:{}/login?code=cxi_", ts.addr.port())),
+        link.starts_with(&format!(
+            "http://localhost:{}/login?code=cxi_",
+            ts.addr.port()
+        )),
         "{link}"
     );
     assert!(link.ends_with(&format!("next=%2Fa%2F{id}")), "{link}");

@@ -482,7 +482,7 @@ async fn the_shell_keeps_its_own_origin_rules() {
         .send()
         .await
         .unwrap();
-// The owner's session with another origin is no credential at all
+    // The owner's session with another origin is no credential at all
     // (`local_trust::session_counts`): the gate refuses it before any route.
     assert_eq!(foreign.status(), 401);
     assert_eq!(code(foreign).await, "no_credential");

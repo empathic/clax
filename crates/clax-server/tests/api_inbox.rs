@@ -93,7 +93,7 @@ async fn inbox_is_owner_only_and_lan_looks_mark_nothing() {
         .send()
         .await
         .unwrap();
-// The owner's session with another origin is no credential at all
+    // The owner's session with another origin is no credential at all
     // (`local_trust::session_counts`): the gate refuses it before any route.
     assert_eq!(res.status(), 401, "a foreign origin");
     let res = ts

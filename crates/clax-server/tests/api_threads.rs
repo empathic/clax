@@ -1495,7 +1495,7 @@ async fn whole_artifact_threads_follow_the_comment_loop() {
         .send()
         .await
         .unwrap();
-// The owner's session with another origin is no credential at all
+    // The owner's session with another origin is no credential at all
     // (`local_trust::session_counts`): the gate refuses it before any route.
     assert_eq!(res.status(), 401, "a foreign origin");
     for (name, anchor, via_page) in [

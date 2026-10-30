@@ -164,9 +164,9 @@ pub async fn redeem(
     if let (Some(proc), Some(c)) = (&s.proc_root, clax_http::auth::conn_of(&extensions)) {
         let refused = match clax_http::peer_user::redeemer_is_this_user(proc, c.peer, c.local) {
             Ok(true) => None,
-            Ok(false) => Some(
-                "this login link opens only in a browser of the user Clax runs as".to_string(),
-            ),
+            Ok(false) => {
+                Some("this login link opens only in a browser of the user Clax runs as".to_string())
+            }
             Err(why) => Some(format!(
                 "could not tell which user's browser opened this login link ({why}); run `clax login` as the user Clax runs as and open the link it prints"
             )),

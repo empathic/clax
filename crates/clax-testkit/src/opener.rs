@@ -5,8 +5,7 @@
 /// argument and its standard input to `got` beside itself, as
 /// `<count>:<first>|<stdin>`. Its text is the same in every test, so the
 /// executable is assessed once.
-pub const RECORDING_OPENER: &str =
-    "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s:%s|' \"$#\" \"$1\" > \"$d/got\"\ncat >> \"$d/got\"\n";
+pub const RECORDING_OPENER: &str = "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s:%s|' \"$#\" \"$1\" > \"$d/got\"\ncat >> \"$d/got\"\n";
 
 /// The URL a [`RECORDING_OPENER`] was handed (`got`, its file's text),
 /// asserting it came the platform's way: on macOS on standard input as
