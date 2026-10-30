@@ -1420,25 +1420,24 @@ impl Sync {
         agents: &'a mut HashMap<String, (Client, String)>,
         name: &str,
         harness: &str,
-    ) -> Result<&'a (Client, String), String> {
+    ) -> Result<&'a (Client, String), Stop> {
         if !agents.contains_key(name) {
             let rid = self.rid.clone();
             let (remote, token) = self
                 .s
                 .store_call(move |st| Ok((st.find_remote(&rid)?, st.remote_token(&rid)?)))
-                .await
-                .map_err(|e| e.message)?;
+                .await?;
             let (Some(remote), Some(token)) = (remote, token) else {
-                return Err("the remote is gone".into());
+                return Err(Stop::Gone);
             };
             let mut c = Client::new(&remote.origin, Some(token));
             clax_rt::sendable(c.session_for(harness, name))
                 .await
-                .map_err(|f| classify(&f).unwrap_or(f.message))?;
+                .map_err(|f| Stop::Unreachable(classify(&f).unwrap_or(f.message)))?;
             let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
             let v = clax_rt::sendable(c.get(&format!("/api/sessions/{sid}")))
                 .await
-                .map_err(|f| classify(&f).unwrap_or(f.message))?;
+                .map_err(|f| Stop::Unreachable(classify(&f).unwrap_or(f.message)))?;
             let handle = v["session"]["agent_handle"]
                 .as_str()
                 .unwrap_or_default()
@@ -1474,7 +1473,7 @@ impl Sync {
         let (ac, handle) = self
             .agent_client(agents, name, harness)
             .await
-            .map_err(fail)?;
+            .map_err(|stop| fail(stop.reason().to_string()))?;
         let mut handed = false;
         loop {
             let wrote = match key {
@@ -1740,13 +1739,19 @@ impl Sync {
             match self.question(&row, links, &mut agents).await {
                 Ok(true) => changed.push(row.question_id.clone()),
                 Ok(false) => {}
-                Err(why) => {
+                Err(Stop::Unreachable(why)) => {
                     let (qid, w2) = (row.question_id.clone(), why.clone());
                     self.s
                         .store_call(move |st| st.linked_question_attempted(&qid, &w2))
                         .await?;
                     changed.push(row.question_id.clone());
                     out = Err(Stop::Unreachable(why));
+                    break;
+                }
+                // This daemon's store failed, or the remote is gone: the
+                // copy's attempts stay as they are, the reason named.
+                Err(stop) => {
+                    out = Err(stop);
                     break;
                 }
             }
@@ -1805,13 +1810,14 @@ impl Sync {
     }
 
     /// Brings question copy `row` in step; whether its view changed here.
-    /// `Err` when the remote could not be reached.
+    /// `Err` with [`Stop::Unreachable`] when the remote could not be
+    /// reached, [`Stop::Local`] when this daemon's store failed.
     async fn question(
         &mut self,
         row: &LinkedQuestion,
         links: &[RemoteLink],
         agents: &mut HashMap<String, (Client, String)>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, Stop> {
         let qid = row.question_id.clone();
         let linked = links.iter().any(|l| l.artifact_id == row.artifact_id);
         let mut rqid = row.remote_question_id.clone();
@@ -1834,8 +1840,7 @@ impl Sync {
                     let q2 = qid.clone();
                     self.s
                         .store_call(move |st| st.linked_question_failed(&q2, &why))
-                        .await
-                        .map_err(|e| e.message)?;
+                        .await?;
                     return Ok(true);
                 }
             }
@@ -1854,7 +1859,7 @@ impl Sync {
                 Ok(_) => {}
                 Err(f) => {
                     if let Some(why) = classify(&f) {
-                        return Err(why);
+                        return Err(Stop::Unreachable(why));
                     }
                 }
             }
@@ -1868,7 +1873,7 @@ impl Sync {
                 Ok(v) => v,
                 Err(f) => {
                     if let Some(why) = classify(&f) {
-                        return Err(why);
+                        return Err(Stop::Unreachable(why));
                     }
                     // No longer this token's to read there: asked again.
                     self.reask(&qid).await?;
@@ -1900,8 +1905,7 @@ impl Sync {
                             Err(e) => Err(e),
                         }
                     })
-                    .await
-                    .map_err(|e| e.message)?;
+                    .await?;
                 match r {
                     Ok(there) => self.question_done(&qid, there).await?,
                     Err(why) => {
@@ -1939,8 +1943,7 @@ impl Sync {
                         )
                         .map(|c| matches!(c, crate::routes::questions::Closed::Done(_)))
                     })
-                    .await
-                    .map_err(|e| e.message)?;
+                    .await?;
                 self.question_done(&qid, there).await?;
                 Ok(true)
             }
@@ -1955,7 +1958,8 @@ impl Sync {
 
     /// Asks question copy `row` there under its key: `Ok(Ok(id))` with the
     /// copy's ID there, `Ok(Err(why))` when the remote refused it, `Err`
-    /// when it could not be reached. It is asked in a session there named
+    /// when it could not be reached or this daemon's store failed
+    /// ([`Stop`]). It is asked in a session there named
     /// as the local agent that asked it (in `agents`), so the card there
     /// names that agent; the sync's own session reads and withdraws it, as
     /// a keyed question is any of the token's sessions'.
@@ -1963,7 +1967,7 @@ impl Sync {
         &mut self,
         row: &LinkedQuestion,
         agents: &mut HashMap<String, (Client, String)>,
-    ) -> Result<Result<String, String>, String> {
+    ) -> Result<Result<String, String>, Stop> {
         let qid = row.question_id.clone();
         let (q, asker) = self
             .s
@@ -1980,8 +1984,7 @@ impl Sync {
                 };
                 Ok((q, asker))
             })
-            .await
-            .map_err(|e| e.message)?;
+            .await?;
         let Some(q) = q else {
             return Ok(Err("the question is gone".into()));
         };
@@ -2002,8 +2005,7 @@ impl Sync {
         let q2 = row.question_id.clone();
         self.s
             .store_call(move |st| st.linked_question_trying(&q2))
-            .await
-            .map_err(|e| e.message)?;
+            .await?;
         let v = match clax_rt::sendable(c.post_keyed(
             &format!("/api/sessions/{sid}/questions"),
             &body,
@@ -2014,13 +2016,13 @@ impl Sync {
             Ok(v) => v,
             Err(f) => {
                 return match classify(&f) {
-                    Some(why) => Err(why),
+                    Some(why) => Err(Stop::Unreachable(why)),
                     None => Ok(Err(format!("{}: {}", f.code, f.message))),
                 };
             }
         };
         if self.lose_answer() {
-            return Err("the answer was lost".into());
+            return Err(Stop::Unreachable("the answer was lost".into()));
         }
         let Some(rqid) = v["question"]["id"]
             .as_str()
@@ -2032,25 +2034,24 @@ impl Sync {
         let (q2, r2) = (row.question_id.clone(), rqid.clone());
         self.s
             .store_call(move |st| st.linked_question_made(&q2, &r2))
-            .await
-            .map_err(|e| e.message)?;
+            .await?;
         Ok(Ok(rqid))
     }
 
-    async fn question_done(&self, qid: &str, answered_there: bool) -> Result<(), String> {
+    async fn question_done(&self, qid: &str, answered_there: bool) -> Result<(), Stop> {
         let q = qid.to_string();
-        self.s
+        Ok(self
+            .s
             .store_call(move |st| st.linked_question_done(&q, answered_there))
-            .await
-            .map_err(|e| e.message)
+            .await?)
     }
 
-    async fn reask(&self, qid: &str) -> Result<(), String> {
+    async fn reask(&self, qid: &str) -> Result<(), Stop> {
         let q = qid.to_string();
-        self.s
+        Ok(self
+            .s
             .store_call(move |st| st.linked_question_reask(&q))
-            .await
-            .map_err(|e| e.message)
+            .await?)
     }
 
     /// Reads link `l`'s public threads (those changed since its cursor,
