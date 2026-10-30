@@ -146,10 +146,41 @@ pub struct RemoteLink {
     pub download_only: bool,
     /// The newest activity time read from the public copy's threads.
     pub sync_cursor: Option<String>,
+    /// A followed link ([`Store::follow_remote`]): `artifact_id` is the
+    /// local mirror of a remote artifact's threads, not a pushed artifact.
+    pub followed: bool,
+    /// A followed link no local session watches, since when; `None`
+    /// while one does (and for a pushed link).
+    pub unwatched_at: Option<String>,
+}
+
+impl RemoteLink {
+    /// Whether the sync keeps this link: a pushed one, or a followed one
+    /// some local session watches.
+    pub fn synced(&self) -> bool {
+        !self.followed || self.unwatched_at.is_none()
+    }
+}
+
+/// How long a followed link no local session watches keeps its mirror
+/// ([`Store::mirrors_to_drop`]).
+pub const MIRROR_KEPT: chrono::Duration = chrono::Duration::days(7);
+
+/// A live local session watching the mirror of a followed link: whom the
+/// sync opens a session there for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FollowWatcher {
+    /// The mirror.
+    pub artifact_id: String,
+    pub remote_artifact_id: String,
+    pub session_id: String,
+    /// The session's name, else its harness.
+    pub name: String,
+    pub harness: String,
 }
 
 const LINK_COLS: &str = "artifact_id, remote_id, remote_artifact_id, url, pushed_n, remote_n,
-    auto, created_at, pushed_at, download_only, sync_cursor";
+    auto, created_at, pushed_at, download_only, sync_cursor, followed, unwatched_at";
 
 fn row_link(r: &Row<'_>) -> rusqlite::Result<RemoteLink> {
     Ok(RemoteLink {
@@ -164,6 +195,8 @@ fn row_link(r: &Row<'_>) -> rusqlite::Result<RemoteLink> {
         pushed_at: r.get(8)?,
         download_only: r.get(9)?,
         sync_cursor: r.get(10)?,
+        followed: r.get(11)?,
+        unwatched_at: r.get(12)?,
     })
 }
 
@@ -434,6 +467,13 @@ impl Store {
                 "UPDATE linked_threads SET unlinked_at = ?2 WHERE remote_id = ?1 AND unlinked_at IS NULL",
                 params![id, self.now()],
             )?;
+            // Its followed artifacts' mirrors go with it.
+            tx.execute(
+                "UPDATE artifacts SET deleted_at = ?2
+                 WHERE remote_mirror = 1 AND deleted_at IS NULL AND id IN
+                    (SELECT artifact_id FROM remote_links WHERE remote_id = ?1 AND followed = 1)",
+                params![id, self.now()],
+            )?;
             tx.execute("DELETE FROM remote_links WHERE remote_id = ?1", params![id])?;
             tx.execute(
                 "DELETE FROM remote_assets WHERE remote_id = ?1",
@@ -485,6 +525,189 @@ impl Store {
             )
             .optional()?)
         })
+    }
+
+    /// Follows artifact `remote_aid` of remote `rid` (at `url`, titled
+    /// `title` there): its local mirror's ID. A mirror holds the remote
+    /// artifact's threads and comments and nothing else (no version, no
+    /// page, no file; `artifacts.remote_mirror`), and is in no listing.
+    /// The mirror and its followed link are made the first time; later
+    /// they are reused, the link watched again (`unwatched_at` cleared)
+    /// and its address and the mirror's title brought up to date.
+    ///
+    /// # Errors
+    /// `pushed_here` when an artifact of this home is pushed as
+    /// `remote_aid` there: its local artifact is the one to watch.
+    pub fn follow_remote(
+        &self,
+        rid: &str,
+        remote_aid: &str,
+        url: &str,
+        title: &str,
+    ) -> Result<String> {
+        let title = if title.trim().is_empty() {
+            remote_aid
+        } else {
+            title
+        };
+        self.with_tx(|tx| {
+            let now = self.now();
+            let pushed: Option<String> = tx
+                .query_row(
+                    "SELECT artifact_id FROM remote_links
+                     WHERE remote_id = ?1 AND remote_artifact_id = ?2 AND followed = 0",
+                    params![rid, remote_aid],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(aid) = pushed {
+                return Err(CoreError::invalid(
+                    "pushed_here",
+                    format!("{url} is this Clax's artifact {aid}, pushed there: watch {aid}"),
+                ));
+            }
+            let mirror: Option<String> = tx
+                .query_row(
+                    "SELECT l.artifact_id FROM remote_links l JOIN artifacts a ON a.id = l.artifact_id
+                     WHERE l.remote_id = ?1 AND l.remote_artifact_id = ?2 AND l.followed = 1
+                       AND a.deleted_at IS NULL",
+                    params![rid, remote_aid],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(m) = mirror {
+                tx.execute(
+                    "UPDATE remote_links SET unwatched_at = NULL, url = ?3
+                     WHERE artifact_id = ?1 AND remote_id = ?2",
+                    params![m, rid, url],
+                )?;
+                tx.execute(
+                    "UPDATE artifacts SET title = ?2 WHERE id = ?1",
+                    params![m, title],
+                )?;
+                return Ok(m);
+            }
+            let id = clax_core::ArtifactId::generate();
+            tx.execute(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, pinned,
+                    capabilities_json, contract_version, owner_session_id, remote_mirror)
+                 VALUES (?1, ?2, ?3, ?3, 0, 0, '{}', ?4, NULL, 1)",
+                params![
+                    id.as_str(),
+                    title,
+                    now,
+                    clax_core::model::CONTRACT_VERSION
+                ],
+            )?;
+            tx.execute(
+                "INSERT INTO remote_links (artifact_id, remote_id, remote_artifact_id, url,
+                    pushed_n, remote_n, auto, created_at, pushed_at, followed)
+                 VALUES (?1, ?2, ?3, ?4, 0, 0, 0, ?5, ?5, 1)",
+                params![id.as_str(), rid, remote_aid, url, now],
+            )?;
+            Ok(id.as_str().to_string())
+        })
+    }
+
+    /// The mirror of artifact `remote_aid` of remote `rid`, while this
+    /// home follows it (watched or not).
+    pub fn remote_mirror(&self, rid: &str, remote_aid: &str) -> Result<Option<String>> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT l.artifact_id FROM remote_links l JOIN artifacts a ON a.id = l.artifact_id
+                 WHERE l.remote_id = ?1 AND l.remote_artifact_id = ?2 AND l.followed = 1
+                   AND a.deleted_at IS NULL",
+                params![rid, remote_aid],
+                |r| r.get(0),
+            )
+            .optional()?)
+        })
+    }
+
+    /// Stops following the remote artifact mirror `mirror_id` holds: no
+    /// local session watches it from now (`unwatched_at`), so the sync
+    /// leaves it alone, and [`Store::mirrors_to_drop`] names it once
+    /// [`MIRROR_KEPT`] has passed. Whether it was followed and watched.
+    pub fn unfollow_remote(&self, mirror_id: &str) -> Result<bool> {
+        self.with_tx(|tx| {
+            Ok(tx.execute(
+                "UPDATE remote_links SET unwatched_at = ?2
+                 WHERE artifact_id = ?1 AND followed = 1 AND unwatched_at IS NULL",
+                params![mirror_id, self.now()],
+            )? > 0)
+        })
+    }
+
+    /// The mirrors no local session has watched for [`MIRROR_KEPT`] by
+    /// `now`, oldest first.
+    pub fn mirrors_to_drop(&self, now: chrono::DateTime<chrono::Utc>) -> Result<Vec<String>> {
+        let before = clax_core::time::stamp(now - MIRROR_KEPT);
+        self.with_read(|c| {
+            let mut stmt = c.prepare(
+                "SELECT l.artifact_id FROM remote_links l
+                 WHERE l.followed = 1 AND l.unwatched_at IS NOT NULL AND l.unwatched_at <= ?1
+                   AND NOT EXISTS (SELECT 1 FROM watches w JOIN sessions s ON s.id = w.session_id
+                                   WHERE w.artifact_id = l.artifact_id AND s.ended_at IS NULL)
+                 ORDER BY l.unwatched_at, l.artifact_id",
+            )?;
+            Ok(stmt
+                .query_map(params![before], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// Drops mirror `mirror_id`: its followed link goes, its threads end
+    /// as history, and the mirror is deleted. Whether it was one.
+    pub fn drop_mirror(&self, mirror_id: &str) -> Result<bool> {
+        self.with_tx(|tx| {
+            let now = self.now();
+            let n = tx.execute(
+                "UPDATE artifacts SET deleted_at = ?2
+                 WHERE id = ?1 AND remote_mirror = 1 AND deleted_at IS NULL",
+                params![mirror_id, now],
+            )?;
+            tx.execute(
+                "UPDATE linked_threads SET unlinked_at = ?2 WHERE artifact_id = ?1 AND unlinked_at IS NULL",
+                params![mirror_id, now],
+            )?;
+            tx.execute(
+                "DELETE FROM remote_links WHERE artifact_id = ?1 AND followed = 1",
+                params![mirror_id],
+            )?;
+            Ok(n > 0)
+        })
+    }
+
+    /// The live local sessions watching the mirror of each watched
+    /// followed link of remote `rid`, by link then session.
+    pub fn follow_watchers(&self, rid: &str) -> Result<Vec<FollowWatcher>> {
+        self.with_read(|c| {
+            let mut stmt = c.prepare(
+                "SELECT l.artifact_id, l.remote_artifact_id, s.id, COALESCE(s.name, s.harness), s.harness
+                 FROM remote_links l
+                 JOIN watches w ON w.artifact_id = l.artifact_id
+                 JOIN sessions s ON s.id = w.session_id
+                 WHERE l.remote_id = ?1 AND l.followed = 1 AND l.unwatched_at IS NULL
+                   AND s.ended_at IS NULL
+                 ORDER BY l.created_at, l.artifact_id, s.id",
+            )?;
+            Ok(stmt
+                .query_map(params![rid], |r| {
+                    Ok(FollowWatcher {
+                        artifact_id: r.get(0)?,
+                        remote_artifact_id: r.get(1)?,
+                        session_id: r.get(2)?,
+                        name: r.get(3)?,
+                        harness: r.get(4)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// Whether `aid` is a followed remote artifact's mirror.
+    pub fn is_remote_mirror(&self, aid: &str) -> Result<bool> {
+        self.with_read(|c| is_mirror_in(c, aid))
     }
 
     /// Records that local version `pushed_n` of `aid` is public version
@@ -748,6 +971,17 @@ impl Store {
 /// # Errors
 /// `publish_key_used` when the key is recorded for a live artifact
 /// already (another process's publish with the key made a version first).
+/// Whether `aid` is a followed remote artifact's mirror, on `c`.
+pub(crate) fn is_mirror_in(c: &rusqlite::Connection, aid: &str) -> Result<bool> {
+    Ok(c.query_row(
+        "SELECT remote_mirror FROM artifacts WHERE id = ?1",
+        params![aid],
+        |r| r.get::<_, bool>(0),
+    )
+    .optional()?
+    .unwrap_or(false))
+}
+
 pub(super) fn record_publish_key_in(
     tx: &rusqlite::Connection,
     key: &PublishKey,

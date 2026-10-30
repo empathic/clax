@@ -34,6 +34,49 @@ fn ts(now: chrono::DateTime<chrono::Utc>, secs_ago: i64) -> String {
     clax_core::time::stamp(now - chrono::Duration::seconds(secs_ago))
 }
 
+/// How a comment on a followed remote artifact's mirror is named there.
+struct MirrorAt {
+    /// The remote artifact's address and ID there.
+    url: String,
+    artifact_id: String,
+    thread_id: String,
+    comment_id: Option<String>,
+    /// The version its thread is on there.
+    version: Option<u32>,
+    remote: clax_core::feedback::RemoteAt,
+}
+
+/// How comment `cid` of thread `tid` is named on the remote, when the
+/// thread is on a followed remote artifact's mirror; `None` otherwise.
+fn mirror_at_in(c: &Connection, tid: &str, cid: &str) -> Result<Option<MirrorAt>> {
+    let at = c
+        .query_row(
+            "SELECT l.url, lt.remote_artifact_id, lt.remote_thread_id, lt.remote_version,
+                    r.origin, r.name,
+                    (SELECT remote_comment_id FROM linked_comments WHERE comment_id = ?2)
+             FROM linked_threads lt
+             JOIN remote_links l ON l.artifact_id = lt.artifact_id AND l.remote_id = lt.remote_id
+             JOIN remotes r ON r.id = lt.remote_id
+             WHERE lt.thread_id = ?1 AND l.followed = 1 AND lt.remote_thread_id IS NOT NULL",
+            params![tid, cid],
+            |r| {
+                Ok(MirrorAt {
+                    url: r.get(0)?,
+                    artifact_id: r.get(1)?,
+                    thread_id: r.get(2)?,
+                    version: r.get(3)?,
+                    remote: clax_core::feedback::RemoteAt {
+                        origin: r.get(4)?,
+                        name: r.get(5)?,
+                    },
+                    comment_id: r.get(6)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(at)
+}
+
 /// Live sessions a sent thread on artifact `aid` goes to: the owner (first)
 /// and every watcher, without duplicates.
 fn live_targets(c: &Connection, aid: &str, owner: Option<&str>) -> Result<Vec<String>> {
@@ -600,6 +643,10 @@ impl<'a> Sight<'a> {
                         .vis
                         .sees(&visibility::authors_of_clip(&t, &v), aid, Some(tid));
             }
+            // A followed remote artifact's mirror has no version: its
+            // anchors and clips are the remote's, as the remote let its
+            // person's agents see them.
+            None if super::remotes::is_mirror_in(self.c, aid)? => {}
             None => {
                 if !anchor.is_whole() {
                     w.anchor = Some(self.names(&[])?);
@@ -1487,7 +1534,7 @@ impl Store {
             touched
                 .threads
                 .insert((p.artifact_id.clone(), p.thread_id.clone()));
-            items.push(FeedbackItem {
+            let mut item = FeedbackItem {
                 feedback_id: p.id,
                 thread_id: p.thread_id,
                 comment_id: p.comment_id,
@@ -1507,7 +1554,21 @@ impl Store {
                 live,
                 withheld,
                 queue_id: p.queue_id,
-            });
+                remote: None,
+            };
+            // A followed remote artifact's comment is named as there, for
+            // the comment tools to act on it there.
+            if let Some(m) =
+                self.with_read(|c| mirror_at_in(c, &item.thread_id, &item.comment_id))?
+            {
+                item.url = m.url;
+                item.artifact_id = m.artifact_id;
+                item.thread_id = m.thread_id;
+                item.comment_id = m.comment_id.unwrap_or(item.comment_id);
+                item.version = m.version.unwrap_or(item.version);
+                item.remote = Some(m.remote);
+            }
+            items.push(item);
         }
         Ok(Taken {
             items,
@@ -1905,7 +1966,7 @@ impl Store {
                 )?;
                 if changed == 1 {
                     let url = format!("{base}/a/{artifact_id}");
-                    out.push(Notice {
+                    let mut n = Notice {
                         feedback_id,
                         comment_id,
                         thread_id,
@@ -1913,7 +1974,17 @@ impl Store {
                         title,
                         url,
                         queue_id,
-                    });
+                        remote: None,
+                    };
+                    // A followed remote artifact's comment is named as there.
+                    if let Some(m) = mirror_at_in(tx, &n.thread_id, &n.comment_id)? {
+                        n.url = m.url;
+                        n.artifact_id = m.artifact_id;
+                        n.thread_id = m.thread_id;
+                        n.comment_id = m.comment_id.unwrap_or(n.comment_id);
+                        n.remote = Some(m.remote);
+                    }
+                    out.push(n);
                 }
             }
             Ok(Announced {

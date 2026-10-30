@@ -737,9 +737,12 @@ fn refuse_comments_off_in(c: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether `id` takes threads, comments and watches: not deleted, and with
+/// a version, or a followed remote artifact's mirror (which has none).
 pub(crate) fn artifact_live(c: &Connection, id: &str) -> Result<bool> {
     Ok(c.query_row(
-        "SELECT EXISTS(SELECT 1 FROM artifacts WHERE id = ?1 AND deleted_at IS NULL AND current_version > 0)",
+        "SELECT EXISTS(SELECT 1 FROM artifacts WHERE id = ?1 AND deleted_at IS NULL
+                         AND (current_version > 0 OR remote_mirror = 1))",
         params![id],
         |r| r.get(0),
     )?)

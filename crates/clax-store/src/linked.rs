@@ -487,12 +487,13 @@ impl Store {
         self.with_read(|c| remote_twin_in(c, rid, aid, raid, local_n))
     }
 
-    /// Every link on remote `rid`, oldest first.
+    /// Every link on remote `rid` the sync keeps ([`RemoteLink::synced`]:
+    /// not a followed one no local session watches), oldest first.
     pub fn links_of_remote(&self, rid: &str) -> Result<Vec<RemoteLink>> {
         Ok(self
             .all_remote_links()?
             .into_iter()
-            .filter(|l| l.remote_id == rid)
+            .filter(|l| l.remote_id == rid && l.synced())
             .collect())
     }
 
@@ -577,6 +578,26 @@ impl Store {
                 row_lt,
             )
             .optional()?)
+        })
+    }
+
+    /// The local twins of those of comments `rcids` of remote `rid` that
+    /// have one.
+    pub fn mirrored_comments(&self, rid: &str, rcids: &[String]) -> Result<Vec<String>> {
+        self.with_read(|c| {
+            let mut stmt = c.prepare_cached(
+                "SELECT comment_id FROM linked_comments WHERE remote_id = ?1 AND remote_comment_id = ?2",
+            )?;
+            let mut out = Vec::new();
+            for rcid in rcids {
+                if let Some(cid) = stmt
+                    .query_row(params![rid, rcid], |r| r.get::<_, String>(0))
+                    .optional()?
+                {
+                    out.push(cid);
+                }
+            }
+            Ok(out)
         })
     }
 
@@ -760,7 +781,9 @@ impl Store {
                 key
             ],
         )?;
-        if kind == super::threads::AUTHOR_AGENT {
+        // A followed remote artifact's mirror is in no inbox: its page is
+        // the remote's.
+        if kind == super::threads::AUTHOR_AGENT && !super::remotes::is_mirror_in(tx, aid)? {
             super::inbox::note_reply(tx, &cid, tid, aid, None, &c.body, &now)?;
         }
         Ok(Comment {

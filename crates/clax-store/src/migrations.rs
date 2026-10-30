@@ -1858,7 +1858,9 @@ pub const MIGRATIONS: &[&str] = &[
     // inbox gains their kind, `remote_request`, rebuilt as migration 30
     // rebuilt it, keeping every `seq`. And it adds what following a remote
     // artifact keeps: `remote_links.followed`, a link that mirrors a
-    // remote artifact's threads rather than pushes one, and
+    // remote artifact's threads rather than pushes one, with
+    // `remote_links.unwatched_at`, since when no local session has watched
+    // it (the sync leaves it alone then, and drops it a week on), and
     // `artifacts.remote_mirror`, the local artifact holding those threads
     // (a column, as `artifacts.kind`'s CHECK cannot be altered without
     // rebuilding the table every other table names). And a remote may be
@@ -1906,6 +1908,7 @@ pub const MIGRATIONS: &[&str] = &[
         until TEXT NOT NULL
     ) WITHOUT ROWID;
     ALTER TABLE remote_links ADD COLUMN followed INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE remote_links ADD COLUMN unwatched_at TEXT;
     ALTER TABLE artifacts ADD COLUMN remote_mirror INTEGER NOT NULL DEFAULT 0;
     CREATE TABLE remotes_60 (
         id TEXT PRIMARY KEY,
