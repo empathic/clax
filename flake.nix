@@ -37,7 +37,7 @@
             sourceRoot = "${finalAttrs.src.name}/web";
             pnpm = pkgs.pnpm_12;
             fetcherVersion = 4;
-            hash = "sha256-NRO29RzTLb8IR55yIhUBbd639nmby35QyNhBzBNgci4=";
+            hash = "sha256-jv+sWl/ctXoi0wLzE/5NXEOtr18x3zp6AnYrvADXBkI=";
           };
           nativeBuildInputs = [ pkgs.nodejs pkgs.pnpm_12 pkgs.pnpmConfigHook ];
           # `pnpm run build`: clean-dist, parts, bridge, shell, legal, extension.
