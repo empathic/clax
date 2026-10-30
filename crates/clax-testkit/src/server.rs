@@ -258,14 +258,56 @@ impl clax_core::content::ContentStore for Deferred {
 /// The handshake state [`TestServer::site_cookie`] binds its codes to.
 pub const SITE_STATE: &str = "testkit-site-state";
 
+/// A browser login's two halves: the owner cookie it set (`name=value`) and
+/// the proof its page wrote into the origin's storage, which a browser of
+/// the owner's sends beside the cookie
+/// ([`clax_http::local_trust::PROOF_HEADER`]).
+#[derive(Clone, Debug)]
+pub struct OwnerLogin {
+    pub cookie: String,
+    pub proof: String,
+}
+
+/// The proof a login's page (`clax_http::local_trust::login_page`) carries.
+///
+/// # Panics
+/// When the page carries none.
+pub fn login_page_proof(page: &str) -> String {
+    let (_, rest) = page
+        .split_once("data-proof=\"")
+        .expect("a login page with a proof");
+    rest.split('"').next().unwrap().to_string()
+}
+
+/// The owner cookie (`name=value`) and proof a login answered `res` with.
+///
+/// # Panics
+/// When the login did not answer 200 with an owner cookie and its page.
+pub async fn owner_login_of(base: &str, res: reqwest::Response) -> OwnerLogin {
+    assert_eq!(res.status(), 200);
+    let host = base.trim_start_matches("http://");
+    let name = clax_http::identity::owner_cookie_name(host);
+    let cookie = res
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .filter_map(|v| v.split(';').next())
+        .find(|kv| kv.starts_with(&format!("{name}=")))
+        .expect("an owner cookie")
+        .to_string();
+    let proof = login_page_proof(&res.text().await.unwrap());
+    OwnerLogin { cookie, proof }
+}
+
 /// Logs a browser in on the local daemon at `base` (`http://host:port`)
 /// whose token is `token`, as `clax open` does: a login code made with the
-/// token (`POST /api/browser-login`), redeemed without following its
-/// redirect (`GET /login`). Returns the owner cookie it set (`name=value`).
+/// token (`POST /api/browser-login`), redeemed at `GET /login`. Returns the
+/// owner cookie it set and the proof its page carries.
 ///
 /// # Panics
 /// When either step fails or no owner cookie is set.
-pub async fn browser_login(base: &str, token: &str) -> String {
+pub async fn browser_login(base: &str, token: &str) -> OwnerLogin {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -281,19 +323,8 @@ pub async fn browser_login(base: &str, token: &str) -> String {
         .unwrap();
     let path = made["path"].as_str().expect("a login path").to_string();
     let res = client.get(format!("{base}{path}")).send().await.unwrap();
-    assert_eq!(res.status(), 303);
-    let host = base.trim_start_matches("http://");
-    let name = clax_http::identity::owner_cookie_name(host);
-    res.headers()
-        .get_all("set-cookie")
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .filter_map(|v| v.split(';').next())
-        .find(|kv| kv.starts_with(&format!("{name}=")))
-        .expect("an owner cookie")
-        .to_string()
+    owner_login_of(base, res).await
 }
-
 /// A running test daemon with its own temporary home and the fixed token `test-token`.
 pub struct TestServer {
     pub base: String,
@@ -329,8 +360,9 @@ pub struct TestServer {
     /// (a socket's reopening).
     pub state: AppState,
     /// The owner browser session a browser of the owner's holds, opened
-    /// when the daemon started (`None` on a hosted daemon, which has none).
-    owner_session: Option<String>,
+    /// when the daemon started (`None` on a hosted daemon, which has none):
+    /// its cookie value and its proof.
+    owner_session: Option<(String, String)>,
     /// The `clax_viewer` cookie of [`TestServer::local_browser`]'s browser,
     /// minted on first use.
     browser: std::sync::OnceLock<String>,
@@ -338,6 +370,9 @@ pub struct TestServer {
     /// The owner's site session per artifact that [`TestServer::site_get`]
     /// made, as a browser keeps its cookie.
     site_sessions: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    /// The proof of each owner browser session [`TestServer::login`]
+    /// opened, by its owner cookie (`name=value`).
+    login_proofs: std::sync::Mutex<std::collections::HashMap<String, String>>,
     /// The IPv6 loopback twin of an IPv4 daemon's port ([`listen`]).
     _v6_twin: Option<tokio::net::TcpSocket>,
     _dir: Arc<tempfile::TempDir>,
@@ -825,13 +860,22 @@ impl TestServer {
         let web = state.web.clone();
         let kept_state = state.clone();
         let owner_session = state.hosted.is_none().then(|| {
-            state
-                .owner_sessions
-                .open(&state.store)
-                .unwrap()
-                .expose()
-                .to_string()
+            let o = state.owner_sessions.open(&state.store).unwrap();
+            (o.cookie.expose().to_string(), o.proof.expose().to_string())
         });
+        // Every request of the client carries the owner's proof, as a
+        // browser of the owner's shell sends it: beside the owner cookie it
+        // makes the browser the owner's, and alone it is nothing.
+        let client = {
+            let mut h = reqwest::header::HeaderMap::new();
+            if let Some((_, proof)) = &owner_session {
+                h.insert(
+                    clax_http::local_trust::PROOF_HEADER,
+                    reqwest::header::HeaderValue::from_str(proof).unwrap(),
+                );
+            }
+            reqwest::Client::builder().default_headers(h).build().unwrap()
+        };
         let app = if shutdown {
             clax_server::router::build_router_with_shutdown(
                 state,
@@ -853,7 +897,7 @@ impl TestServer {
             base: format!("http://{}:{port}", probe_host(&bind.to_string())),
             token,
             home,
-            client: reqwest::Client::new(),
+            client,
             events,
             store,
             working,
@@ -871,6 +915,7 @@ impl TestServer {
             browser: std::sync::OnceLock::new(),
             extension_id,
             site_sessions: std::sync::Mutex::default(),
+            login_proofs: std::sync::Mutex::default(),
             _v6_twin: v6_twin,
             _dir: dir,
         }
@@ -1489,16 +1534,54 @@ impl TestServer {
         format!(
             "{}={}",
             clax_http::identity::owner_cookie_name(host),
-            self.owner_session.as_deref().unwrap_or("none")
+            self.owner_session.as_ref().map_or("none", |(c, _)| c.as_str())
         )
+    }
+
+    /// The proof of the owner browser session [`TestServer::owner_cookie`]
+    /// names, which every request of [`TestServer::client`] carries
+    /// ([`clax_http::local_trust::PROOF_HEADER`]). On a hosted daemon it
+    /// proves nothing.
+    pub fn owner_proof(&self) -> String {
+        self.owner_session
+            .as_ref()
+            .map_or("none", |(_, p)| p.as_str())
+            .to_string()
+    }
+
+    /// A browser login in a browser holding `cookies` (a `Cookie` header's
+    /// value, maybe empty), as [`TestServer::login_with`] makes one: the
+    /// owner cookie it set and its proof, which
+    /// [`TestServer::proof_for`] gives for that cookie from then on.
+    pub async fn login(&self, cookies: &str) -> OwnerLogin {
+        let login = owner_login_of(&self.base, self.login_with(cookies).await).await;
+        self.login_proofs
+            .lock()
+            .unwrap()
+            .insert(login.cookie.clone(), login.proof.clone());
+        login
+    }
+
+    /// The proof a browser holding `cookies` (a `Cookie` header's value)
+    /// sends: that of the session [`TestServer::login`] opened whose owner
+    /// cookie it holds, else the daemon's own owner browser session's
+    /// ([`TestServer::owner_proof`]).
+    pub fn proof_for(&self, cookies: &str) -> String {
+        self.login_proofs
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(c, _)| cookies.contains(c.as_str()))
+            .map_or_else(|| self.owner_proof(), |(_, p)| p.clone())
     }
 
     /// A browser login in a browser holding `cookies` (a `Cookie` header's
     /// value, maybe empty): a login code made with the token, redeemed at
-    /// `GET /login`, its 303 unfollowed and returned.
+    /// `GET /login` by a client that carries no proof, its answer returned
+    /// (200: the login's page, [`login_page_proof`]).
     ///
     /// # Panics
-    /// When the code is not made or the login answers other than 303.
+    /// When the code is not made or the login answers other than 200.
     pub async fn login_with(&self, cookies: &str) -> reqwest::Response {
         let made: serde_json::Value = self
             .authed(self.client.post(format!("{}/api/browser-login", self.base)))
@@ -1518,7 +1601,7 @@ impl TestServer {
             req = req.header("cookie", cookies);
         }
         let res = req.send().await.unwrap();
-        assert_eq!(res.status(), 303);
+        assert_eq!(res.status(), 200);
         res
     }
 
@@ -1529,7 +1612,7 @@ impl TestServer {
         format!(
             "{}={}",
             clax_http::auth::events_cookie_name(host),
-            self.owner_session.as_deref().unwrap_or("none")
+            self.owner_session.as_ref().map_or("none", |(c, _)| c.as_str())
         )
     }
 

@@ -480,9 +480,11 @@ _OWNER_SESSIONS = {}
 
 
 def owner_cookie(port, token):
-    """The owner cookie a browser of the owner's holds: a browser login's
-    session (crates/clax-http/src/local_trust.rs), made once per daemon with
-    the token, as `clax open` makes one."""
+    """The headers of a browser of the owner's: a browser login's session
+    (crates/clax-http/src/local_trust.rs), made once per daemon with the
+    token, as `clax open` makes one: its owner cookie, and the proof its
+    page writes into the origin's storage, which the shell sends as
+    `X-Clax-Owner-Proof`."""
     if port not in _OWNER_SESSIONS:
         c = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
         c.request("POST", "/api/browser-login", body=b'{"next": "/"}',
@@ -491,12 +493,14 @@ def owner_cookie(port, token):
         path = json.loads(r.read())["path"]
         c.request("GET", path, headers={"host": f"localhost:{port}"})
         r = c.getresponse()
-        r.read()
+        page = r.read().decode()
         name = f"clax_owner_{port}="
         cookies = [v.split(";")[0] for k, v in r.getheaders() if k.lower() == "set-cookie"]
-        _OWNER_SESSIONS[port] = next(v for v in cookies if v.startswith(name))
+        proof = page.split('data-proof="', 1)[1].split('"', 1)[0]
+        _OWNER_SESSIONS[port] = (next(v for v in cookies if v.startswith(name)), proof)
         c.close()
-    return {"Cookie": _OWNER_SESSIONS[port]}
+    cookie, proof = _OWNER_SESSIONS[port]
+    return {"Cookie": cookie, "X-Clax-Owner-Proof": proof}
 
 
 def seed_inbox(port, token, cfg, made, sessions, client):
@@ -1056,12 +1060,15 @@ VIS_POLL = "GET /api/sessions/<id>/feedback"
 
 
 class Browser:
-    """A browser at `host` holding `cookie`: one connection per thread, and
+    """A browser at `host` holding `cookie` (and, for a browser of the
+    owner's, sending its session's `proof`): one connection per thread, and
     the `Origin` of a page at `host` on its writes."""
 
-    def __init__(self, port, host, cookie):
+    def __init__(self, port, host, cookie, proof=None):
         self.port, self.host = port, host
         self.h = {"Cookie": cookie, "Origin": f"http://{host}:{port}"}
+        if proof:
+            self.h["X-Clax-Owner-Proof"] = proof
         self.local = threading.local()
         self.clients = []
 
@@ -1125,7 +1132,7 @@ class Baseline:
         expect(st in (200, 201), f"register session: {st} {body[:200]!r}")
         self.sid = json.loads(body)["session"]["id"]
         self.handle = json.loads(body)["session"]["agent_handle"]
-        self.owner = Browser(d.port, "127.0.0.1", owner_cookie(d.port, d.token)["Cookie"])
+        self.owner = Browser(d.port, "127.0.0.1", *owner_cookie(d.port, d.token).values())
         st, _, _, _ = self.owner.req("GET", "/api/viewers/me")
         expect(st == 200, f"owner viewer: {st}")
         if viewer is None:
@@ -1202,7 +1209,7 @@ class People:
 
     def __init__(self, d, cfg, binary, scratch, st):
         self.d, self.cfg = d, cfg
-        self.owner = Browser(d.port, "127.0.0.1", owner_cookie(d.port, d.token)["Cookie"])
+        self.owner = Browser(d.port, "127.0.0.1", *owner_cookie(d.port, d.token).values())
         homes, links = {}, {}
         for name in ("Sam", "Mia"):
             s, body, _, _ = self.owner.req("POST", "/api/people/invites", {"name": name, "rights": "clax:collaborator"})

@@ -555,7 +555,7 @@ fn the_cli_is_the_owner_the_browsers_are() {
         .get(&link)
         .send()
         .unwrap();
-    assert_eq!(signed_in.status(), 303);
+    assert_eq!(signed_in.status(), 200);
     let host = d.base().trim_start_matches("http://").to_string();
     let cookie_name = clax_http::identity::owner_cookie_name(&host);
     let cookie = signed_in
@@ -566,10 +566,12 @@ fn the_cli_is_the_owner_the_browsers_are() {
         .find(|kv| kv.starts_with(&format!("{cookie_name}=")))
         .expect("the owner cookie")
         .to_string();
+    let proof = clax_testkit::login_page_proof(&signed_in.text().unwrap());
     let browser: Value = d
         .http()
         .get(format!("{}/api/viewers/me", d.base()))
         .header("cookie", cookie)
+        .header(clax_http::local_trust::PROOF_HEADER, proof)
         .send()
         .unwrap()
         .json()

@@ -535,11 +535,13 @@ describe("the stream hub", () => {
       },
     });
     const say = (s: Sock, text: string) => s.onmessage?.({ data: text } as MessageEvent);
+    hub.receive("t1", { t: "hello", proof: "cxp_s" });
     hub.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
     await tick();
     expect(plain).toHaveLength(1);
     expect(socks).toHaveLength(1);
-    expect(socks[0].url).toMatch(/^(ws:\/\/[^/]+)?\/api\/stream$/);
+    // A WebSocket sends no header: the proof rides its address.
+    expect(socks[0].url).toMatch(/^(ws:\/\/[^/]+)?\/api\/stream\?owner_proof=cxp_s$/);
     say(socks[0], `event: ready\ndata: ${JSON.stringify({ stream: S1, seq: 0, resumed: false, topics: [] })}\n\n`);
     await tick();
     expect(net.posts[0].url).toBe(`/api/stream/${S1}`);
@@ -556,7 +558,33 @@ describe("the stream hub", () => {
     expect(of("t1", "status")).toEqual([{ t: "status", up: false }]);
     expect(socks).toHaveLength(2);
     expect(plain).toHaveLength(1);
-    expect(socks[1].url).toMatch(new RegExp(`/api/stream\\?last_event_id=${S1}%3A4$`));
+    expect(socks[1].url).toMatch(new RegExp(`/api/stream\\?last_event_id=${S1}%3A4&owner_proof=cxp_s$`));
+  });
+
+  it("sends the owner browser session proof its tabs say on every request, and opens the stream again with a new one", async () => {
+    hub.receive("t1", { t: "hello", proof: "cxp_one" });
+    hub.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    expect(net.conns[0].headers["x-clax-owner-proof"]).toBe("cxp_one");
+    net.ready(net.conns[0], S1);
+    await tick();
+    expect(net.posts[0].headers["x-clax-owner-proof"]).toBe("cxp_one");
+    // The same proof again (another tab's hello) changes nothing.
+    hub.receive("t2", { t: "hello", proof: "cxp_one" });
+    await tick();
+    expect(net.conns).toHaveLength(1);
+    // A login in another tab: its new proof reopens the stream with it.
+    hub.receive("t2", { t: "hello", proof: "cxp_two" });
+    await tick();
+    expect(net.conns[0].aborted).toBe(true);
+    expect(net.conns.at(-1)!.headers["x-clax-owner-proof"]).toBe("cxp_two");
+  });
+
+  it("sends no proof header when no tab has one", async () => {
+    hub.receive("t1", { t: "hello" });
+    hub.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    expect(net.conns[0].headers["x-clax-owner-proof"]).toBeUndefined();
   });
 });
 

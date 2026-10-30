@@ -10,7 +10,10 @@ use axum::response::{IntoResponse, Response};
 use clax_core::audit::Via;
 use clax_http::auth::RequireToken;
 use clax_http::error::ApiError;
-use clax_http::local_trust::{LOGIN_PATH, OwnerSession, local_path, session_cookies};
+use clax_http::local_trust::{
+    LOGIN_PATH, OwnerSession, UnprovenSession, local_path, login_page, login_page_csp,
+    session_cookies,
+};
 use clax_http::state::AppState;
 use clax_store::browser_login::LOGIN_CODE_TTL_SECS;
 use clax_store::viewers::Claim;
@@ -78,8 +81,9 @@ pub async fn create(
 /// `DELETE /api/browser-login` (the token, by hand: 403 `not_for_agents`
 /// for the owner's agents) → `{ended}`: ends every owner browser session
 /// ([`clax_http::local_trust::OwnerSessions::end_all`]), so no browser's
-/// owner or events cookie stands for the owner from then on; `ended` is
-/// how many live ones there were. Each browser of the owner's then needs a
+/// owner or events cookie stands for the owner from then on, and every
+/// event stream, room socket and live socket opened with one ends; `ended`
+/// is how many live ones there were. Each browser of the owner's then needs a
 /// new login code (`clax open`, `clax login`). What `clax logout` calls.
 /// It narrows who acts as the owner, so it asks for no confirmation. 404
 /// on a hosted daemon.
@@ -153,13 +157,16 @@ fn page(status: StatusCode, title: &str, line: &str) -> Response {
 /// user ([`clax_http::peer_user::redeemer_is_this_user`]; 403
 /// `not_this_user` otherwise, and when that cannot be told, the code
 /// unspent). The browser
-/// becomes a browser of the owner's: unless it already holds a live owner
-/// browser session, one is opened and set as its owner and events cookies
-/// ([`session_cookies`]); and when it carries exactly one `clax_viewer`
+/// becomes a browser of the owner's: a new owner browser session is opened
+/// and set as its owner and events cookies ([`session_cookies`]), ending
+/// the live one it held, if any (with its proof or without); and when it
+/// carries exactly one `clax_viewer`
 /// cookie, the viewer that names is claimed for the owner
 /// ([`clax_store::Store::claim_for_owner`]: only a viewer minted on this
 /// machine), the cookie removed, and a viewer the claim retired leaves
-/// every presence list and room at once. Then 303 to `next`. 400 for a
+/// every presence list and room at once. Then 200 with the login's page
+/// ([`login_page`]), whose script writes the session's proof into the
+/// origin's `localStorage` and goes on to `next`. 400 for a
 /// `next` that is not a path of this daemon ([`local_path`]), before the
 /// code is spent; 410 for a code spent before, past its time, or never
 /// made. The answer is never cached and sends no referrer. 404 on a hosted
@@ -233,17 +240,30 @@ pub async fn redeem(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
+    // A session this browser held is replaced: its proof may be gone from
+    // the browser's storage, and the new one's is about to be written.
     let held = extensions
         .get::<OwnerSession>()
-        .is_some_and(|m| m.session.is_some());
-    let mut cookies = Vec::new();
-    if !held {
-        let sessions = s.owner_sessions.clone();
-        match s.store_call(move |st| sessions.open(st)).await {
-            Ok(secret) => cookies.extend(session_cookies(&host, &secret)),
-            Err(e) => return e.into_response(),
-        }
-    }
+        .and_then(|m| m.session.clone())
+        .or_else(|| {
+            extensions
+                .get::<UnprovenSession>()
+                .map(|u| u.session.clone())
+        });
+    let sessions = s.owner_sessions.clone();
+    let opened = s
+        .store_call(move |st| {
+            if let Some(old) = held {
+                sessions.end(st, &old)?;
+            }
+            sessions.open(st)
+        })
+        .await;
+    let opened = match opened {
+        Ok(o) => o,
+        Err(e) => return e.into_response(),
+    };
+    let mut cookies = session_cookies(&host, &opened.cookie);
     // Exactly one viewer cookie: with several, another page planted one
     // and none can be trusted to be this browser's.
     if let [cookie] = clax_http::viewer::read_all(&headers).as_slice() {
@@ -271,17 +291,19 @@ pub async fn redeem(
             s.rooms.evict_viewer(&old);
         }
     }
+    let nonce = clax_core::secret::token("").expose().to_string();
     let mut res = (
-        StatusCode::SEE_OTHER,
+        StatusCode::OK,
         [
-            (header::CACHE_CONTROL, "no-store"),
-            (header::REFERRER_POLICY, "no-referrer"),
+            (header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+            (header::REFERRER_POLICY, "no-referrer".to_string()),
+            (header::X_FRAME_OPTIONS, "DENY".to_string()),
+            (header::CONTENT_SECURITY_POLICY, login_page_csp(&nonce)),
         ],
+        login_page(opened.proof.expose(), &next, &nonce),
     )
         .into_response();
-    if let Ok(to) = header::HeaderValue::from_str(&next) {
-        res.headers_mut().insert(header::LOCATION, to);
-    }
     for c in cookies {
         res.headers_mut().append(header::SET_COOKIE, c);
     }

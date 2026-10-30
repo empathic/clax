@@ -46,19 +46,27 @@
 // and announces those newer than the newest item when a tab first wanted
 // `inbox` (fetched then) and not announced already, oldest first, at most
 // the newest `CATCH_UP_SHOWN` of them.
+//
+// A local daemon's owner browser session counts only beside its proof
+// (`owner-proof.ts`), which a shared worker cannot read from the origin's
+// storage: each tab's `hello` carries it, the hub sends the latest it heard
+// on every request (and in a WebSocket's address), and a new proof (a login
+// in another tab) opens the stream again.
 import { STUCK_MS, backoff } from "./lifecycle";
+import { PROOF_HEADER, withProof } from "./owner-proof";
 import { parseBlock } from "./sse";
 import { socketUrl } from "./socket-url";
 
 /** What a tab sends the hub. `hello` names the tab's Web Lock (held while
- * the tab lives), when it has one; `topics` is the tab's whole set;
+ * the tab lives), when it has one, and the origin's owner browser session
+ * proof, when there is one (`owner-proof.ts`); `topics` is the tab's whole set;
  * `focus` whether the tab has focus; `reconnect` opens a new stream, the
  * caller having changed to `caller` (a key: see `callerKey`), unless the
  * stream is already opened as that caller; `retry` asks again for topics
  * the daemon refused (the tab joins live after a live seat was refused or
  * released). */
 export type TabMsg =
-  | { t: "hello"; lock?: string }
+  | { t: "hello"; lock?: string; proof?: string }
   | { t: "topics"; topics: string[] }
   | { t: "focus"; focused: boolean }
   | { t: "reconnect"; caller?: string }
@@ -206,6 +214,8 @@ export class Hub {
    * which it skips (`seenSeq` stays its baseline until it ends). */
   private windowSeen: Set<number> | null = null;
   private focusSeq = 0;
+  /** The owner browser session proof the tabs last said, if any. */
+  private proof: string | null = null;
 
   constructor(private readonly env: HubEnv) {
     this.fetch = env.fetch ?? ((...a) => fetch(...a));
@@ -233,6 +243,13 @@ export class Hub {
           c.locked = true;
           const client = c;
           this.env.watchLock(msg.lock, () => { if (this.clients.get(id) === client) this.detach(id); });
+        }
+        if (msg.proof && msg.proof !== this.proof) {
+          const had = this.proof !== null;
+          this.proof = msg.proof;
+          // A new session (a login in another tab): the stream opened with
+          // the old one is reopened with it.
+          if (had && this.conn) this.connect();
         }
         break;
       case "topics": {
@@ -347,6 +364,11 @@ export class Hub {
 
   private url(path: string): string { return (this.env.base ?? "") + path; }
 
+  /** `h` with the owner browser session proof, when the hub has one. */
+  private proven(h: Record<string, string> = {}): Record<string, string> {
+    return this.proof ? { ...h, [PROOF_HEADER]: this.proof } : h;
+  }
+
   private connect(): void {
     this.drop();
     clearTimeout(this.retry);
@@ -362,7 +384,7 @@ export class Hub {
     // The events cookie is the browser's owner browser session, which
     // outlives a daemon restart and a new token: nothing renews it.
     if (this.socketMode) return this.runSocket(ac);
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = this.proven();
     if (this.streamId) headers["Last-Event-ID"] = `${this.streamId}:${this.seq}`;
     const res = await this.fetch(this.url("/api/stream"), { headers, signal: ac.signal, cache: "no-store", credentials: "same-origin" });
     if (res.status === 426) {
@@ -399,7 +421,8 @@ export class Hub {
     return new Promise<void>((_, reject) => {
       const q = this.streamId ? `?last_event_id=${encodeURIComponent(`${this.streamId}:${this.seq}`)}` : "";
       const origin = this.env.base ?? (globalThis as { location?: { origin: string } }).location?.origin ?? "";
-      const url = socketUrl(origin, `/api/stream${q}`, !!this.env.host);
+      const raw = socketUrl(origin, `/api/stream${q}`, !!this.env.host);
+      const url = raw === null ? null : withProof(raw, this.proof);
       if (url === null) return reject(new Error("no WebSocket here"));
       const ws = (this.env.socket ?? (u => new WebSocket(u)))(url);
       const ping = setInterval(() => { try { ws.send("ping"); } catch { /* closing */ } }, SOCKET_PING_MS);
@@ -524,7 +547,7 @@ export class Hub {
     const req = new AbortController();
     const stuck = this.env.host ? undefined : setTimeout(() => req.abort(), STUCK_MS);
     try {
-      const res = await this.fetch(this.url(path), { signal: req.signal, cache: "no-store", credentials: "same-origin" });
+      const res = await this.fetch(this.url(path), { headers: this.proven(), signal: req.signal, cache: "no-store", credentials: "same-origin" });
       if (res.status === 403) return "forbidden";
       if (!res.ok) return null;
       const body: unknown = await res.json();
@@ -676,7 +699,7 @@ export class Hub {
     try {
       res = await this.fetch(this.url(`/api/stream/${id}`), {
         method: "POST", signal: req.signal, credentials: "same-origin",
-        headers: { "content-type": "application/json" },
+        headers: this.proven({ "content-type": "application/json" }),
         body: JSON.stringify({ subscribe: add, unsubscribe: remove }),
       });
     } catch {

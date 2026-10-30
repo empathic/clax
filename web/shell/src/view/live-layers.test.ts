@@ -224,6 +224,8 @@ describe("LiveSocket", () => {
   it("is opened on the shell's own origin", () => {
     expect(liveUrl("7q3k9mzx2b4t", { protocol: "http:", host: "localhost:7480" })).toBe("ws://localhost:7480/api/artifacts/7q3k9mzx2b4t/live");
     expect(liveUrl("7q3k9mzx2b4t", { protocol: "https:", host: "clax.example" })).toBe("wss://clax.example/api/artifacts/7q3k9mzx2b4t/live");
+    // A local owner's browser: the session's proof rides the address.
+    expect(liveUrl("7q3k9mzx2b4t", { protocol: "http:", host: "localhost:7480" }, false, "cxp_a/b")).toBe("ws://localhost:7480/api/artifacts/7q3k9mzx2b4t/live?owner_proof=cxp_a%2Fb");
   });
 
   it("has no URL in the Clax app, nor on a scheme it would have to guess a WebSocket scheme for", () => {

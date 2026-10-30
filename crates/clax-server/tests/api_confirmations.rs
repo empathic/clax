@@ -53,7 +53,8 @@ async fn browser(
     let mut req = ts
         .client
         .request(method, format!("{}{path}", ts.base))
-        .header("cookie", cookie);
+        .header("cookie", cookie)
+        .header(clax_http::local_trust::PROOF_HEADER, ts.proof_for(cookie));
     if let Some(id) = confirm {
         req = req.header(HEADER, id);
     }
@@ -82,18 +83,10 @@ fn code(v: &Value) -> &str {
     v["error"]["code"].as_str().unwrap_or_default()
 }
 
-/// The owner cookie of a browser that logs in now (`name=value`).
+/// The owner cookie of a browser that logs in now (`name=value`); its
+/// proof is [`TestServer::proof_for`] it.
 async fn login_now(ts: &TestServer) -> String {
-    let res = ts.login_with("").await;
-    let name = clax_http::identity::owner_cookie_name(ts.base.trim_start_matches("http://"));
-    res.headers()
-        .get_all("set-cookie")
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .filter_map(|v| v.split(';').next())
-        .find(|kv| kv.starts_with(&format!("{name}=")))
-        .expect("an owner cookie")
-        .to_string()
+    ts.login("").await.cookie
 }
 
 async fn open_world(ts: &TestServer, aid: &str, confirm: Option<&str>) -> (u16, Value) {

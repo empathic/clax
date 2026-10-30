@@ -102,7 +102,7 @@
 import http from "node:http";
 import { randomBytes } from "node:crypto";
 import type { CDPSession, Page, Request, Route } from "@playwright/test";
-import { expect, ownerSessionOf, startDaemon, type Daemon } from "./fixtures";
+import { PROOF_HEADER, expect, ownerProofOf, ownerSessionOf, startDaemon, type Daemon } from "./fixtures";
 
 /** The app's shell origin (Android's), and an artifact's content origin. */
 export const SHELL = "https://app.clax.invalid";
@@ -456,7 +456,7 @@ export class AppHost {
     // The core adds the owner cookie for the shell document's path alone,
     // and a site's own cookies to its requests.
     const asked = (target: URL): [string, string][] => {
-      if (target.pathname.startsWith("/a/") && shell) return [...headers, ["cookie", ownerCookie(this.d)]];
+      if (target.pathname.startsWith("/a/") && shell) return [...headers, ["cookie", ownerCookie(this.d)], [PROOF_HEADER, ownerProofOf(this.d.base)]];
       const kept = id === null ? undefined : this.jar.get(id);
       return kept?.size ? [...headers, ["cookie", [...kept].map(([k, v]) => `${k}=${v}`).join("; ")]] : headers;
     };

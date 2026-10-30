@@ -220,10 +220,13 @@ pub async fn room(
         by: if declares_user { viewer.clone() } else { None },
         viewer,
     };
+    let ended = crate::routes::events::owner_session_ended(&s, &extensions);
     Ok(ws
         .max_message_size(MAX_ROOM_MESSAGE_BYTES)
         .max_frame_size(MAX_ROOM_MESSAGE_BYTES)
-        .on_upgrade(move |socket| session(s, aid, who, level, topics, seat, site, slot, socket)))
+        .on_upgrade(move |socket| {
+            session(s, aid, who, level, topics, seat, site, slot, ended, socket)
+        }))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -424,6 +427,7 @@ async fn session(
     seat: Option<clax_core::seats::Claim>,
     site: Option<SiteCredentials>,
     _slot: clax_http::socket_caps::SocketSlot,
+    mut ended: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
     mut socket: WebSocket,
 ) {
     use tokio::sync::broadcast::error::RecvError;
@@ -478,6 +482,12 @@ async fn session(
             () = claim.replaced.notified() => {
                 drop(conn);
                 let _ = socket.send(close(4409, "replaced")).await;
+                return;
+            }
+            // The owner browser session it was opened with ended.
+            () = &mut ended => {
+                drop(conn);
+                let _ = socket.send(close(4403, "revoked")).await;
                 return;
             }
             ev = events.recv() => {

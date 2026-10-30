@@ -11,10 +11,13 @@
 //! - an owner browser session ([`crate::local_trust`]): a random secret a
 //!   browser holds as its owner cookie ([`owner_cookie_name`]) and its events
 //!   cookie ([`crate::auth::events_cookie_name`]), set when it redeemed a
-//!   one-use login code a holder of the token made, so every browser of the
-//!   owner's is the owner on every route without the token.
-//!   [`crate::local_trust::sessions`] marks a request carrying one with
-//!   [`crate::local_trust::OwnerSession`];
+//!   one-use login code a holder of the token made, beside the session's
+//!   proof, which the browser keeps in its origin's storage and the shell
+//!   sends with every request ([`crate::local_trust::PROOF_HEADER`]), so
+//!   every browser of the owner's is the owner on every route without the
+//!   token. [`crate::local_trust::sessions`] marks a request carrying both
+//!   with [`crate::local_trust::OwnerSession`]; the cookie alone is no
+//!   owner credential;
 //! - the Clax Chrome extension's credential: the extension gateway
 //!   ([`crate::extension::gateway`]) checks it and marks the request it admits
 //!   with [`crate::extension::ViaExtension`], which counts as a browser of the

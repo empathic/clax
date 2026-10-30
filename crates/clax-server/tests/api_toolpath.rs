@@ -1679,7 +1679,7 @@ async fn a_claim_that_retires_the_cli_owner_resolves_its_records() {
     let res = ts
         .login_with(&format!("clax_viewer={}", chrome.cookie))
         .await;
-    assert_eq!(res.status(), 303);
+    assert_eq!(res.status(), 200);
     let claim = events_since(&ts, seq);
     assert_eq!(kinds(&claim), ["viewer.claim"]);
     assert_eq!(

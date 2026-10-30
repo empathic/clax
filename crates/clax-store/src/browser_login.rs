@@ -5,12 +5,15 @@
 //! - A **login code** ([`Store::create_login_code`]) is [`LOGIN_CODE_PREFIX`]
 //!   and 32 random bytes, good for [`LOGIN_CODE_TTL_SECS`] and redeemable
 //!   once ([`Store::redeem_login_code`]).
-//! - An **owner browser session** ([`Store::open_owner_session`]) is
-//!   [`OWNER_SESSION_PREFIX`] and 32 random bytes, the value of the owner
-//!   and events cookies, good for [`OWNER_SESSION_TTL_SECS`] from when it
-//!   opened unless ended first ([`Store::end_owner_session`], or every
-//!   one at once, [`Store::end_all_owner_sessions`]). It names no viewer
-//!   row: it is the owner's whatever row the owner is.
+//! - An **owner browser session** ([`Store::open_owner_session`]) is two
+//!   secrets: its cookie, [`OWNER_SESSION_PREFIX`] and 32 random bytes, the
+//!   value of the owner and events cookies; and its proof,
+//!   [`OWNER_PROOF_PREFIX`] and 32 random bytes, which the browser keeps in
+//!   its origin's storage (port included) and sends beside the cookie. It
+//!   is good for [`OWNER_SESSION_TTL_SECS`] from when it opened unless
+//!   ended first ([`Store::end_owner_session`], or every one at once,
+//!   [`Store::end_all_owner_sessions`]). It names no viewer row: it is the
+//!   owner's whatever row the owner is.
 //!
 //! Only each secret's SHA-256 is stored. A hosted daemon writes none of
 //! these: its browsers sign in through [`crate::hosted`].
@@ -29,13 +32,26 @@ pub const OWNER_SESSION_TTL_SECS: i64 = 400 * 24 * 3600;
 pub const LOGIN_CODE_PREFIX: &str = "cxi_";
 /// Prefix of an owner browser session's cookie value.
 pub const OWNER_SESSION_PREFIX: &str = "cxb_";
+/// Prefix of an owner browser session's proof, the half of the session a
+/// browser keeps in its origin's storage rather than in a cookie.
+pub const OWNER_PROOF_PREFIX: &str = "cxp_";
 
 /// A live owner browser session, as the daemon keeps it in memory: its
-/// cookie's SHA-256 (lowercase hex) and when it expires.
+/// cookie's and its proof's SHA-256 (lowercase hex) and when it expires.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LiveOwnerSession {
     pub sha256: String,
+    pub proof_sha256: String,
     pub expires_at: String,
+}
+
+/// A newly opened owner browser session: its cookie value, its proof, and
+/// its row's [`LiveOwnerSession`].
+#[derive(Debug)]
+pub struct OpenedOwnerSession {
+    pub cookie: Secret,
+    pub proof: Secret,
+    pub live: LiveOwnerSession,
 }
 
 impl Store {
@@ -94,16 +110,18 @@ impl Store {
         })
     }
 
-    /// Opens an owner browser session: its cookie value, and its row's
-    /// [`LiveOwnerSession`]. Sessions ended or past their time are dropped
-    /// first.
+    /// Opens an owner browser session: its cookie value, its proof, and its
+    /// row's [`LiveOwnerSession`]. Sessions ended or past their time are
+    /// dropped first.
     ///
     /// # Errors
     /// The store's.
-    pub fn open_owner_session(&self) -> Result<(Secret, LiveOwnerSession)> {
-        let session = secret::token(OWNER_SESSION_PREFIX);
+    pub fn open_owner_session(&self) -> Result<OpenedOwnerSession> {
+        let cookie = secret::token(OWNER_SESSION_PREFIX);
+        let proof = secret::token(OWNER_PROOF_PREFIX);
         let live = LiveOwnerSession {
-            sha256: session.sha256_hex(),
+            sha256: cookie.sha256_hex(),
+            proof_sha256: proof.sha256_hex(),
             expires_at: self.after(OWNER_SESSION_TTL_SECS),
         };
         self.with_tx(|tx| {
@@ -112,12 +130,17 @@ impl Store {
                 params![self.now()],
             )?;
             tx.execute(
-                "INSERT INTO owner_browser_sessions (sha256, created_at, expires_at) VALUES (?1, ?2, ?3)",
-                params![live.sha256, self.now(), live.expires_at],
+                "INSERT INTO owner_browser_sessions (sha256, proof_sha256, created_at, expires_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![live.sha256, live.proof_sha256, self.now(), live.expires_at],
             )?;
             Ok(())
         })?;
-        Ok((session, live))
+        Ok(OpenedOwnerSession {
+            cookie,
+            proof,
+            live,
+        })
     }
 
     /// Every owner browser session neither ended nor expired.
@@ -127,14 +150,15 @@ impl Store {
     pub fn live_owner_sessions(&self) -> Result<Vec<LiveOwnerSession>> {
         self.with_read(|c| {
             let mut stmt = c.prepare(
-                "SELECT sha256, expires_at FROM owner_browser_sessions
+                "SELECT sha256, proof_sha256, expires_at FROM owner_browser_sessions
                  WHERE ended_at IS NULL AND expires_at > ?1",
             )?;
             let rows = stmt
                 .query_map(params![self.now()], |r| {
                     Ok(LiveOwnerSession {
                         sha256: r.get(0)?,
-                        expires_at: r.get(1)?,
+                        proof_sha256: r.get(1)?,
+                        expires_at: r.get(2)?,
                     })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -213,11 +237,14 @@ mod tests {
     fn an_owner_session_lives_until_it_ends_or_expires() {
         let clock = Arc::new(ManualClock::at("2026-10-29T10:00:00Z"));
         let (_d, st) = store(clock.clone());
-        let (cookie, live) = st.open_owner_session().unwrap();
+        let opened = st.open_owner_session().unwrap();
+        let (cookie, proof, live) = (opened.cookie, opened.proof, opened.live);
         assert!(cookie.expose().starts_with(OWNER_SESSION_PREFIX));
+        assert!(proof.expose().starts_with(OWNER_PROOF_PREFIX));
         assert_eq!(live.sha256, cookie.sha256_hex());
+        assert_eq!(live.proof_sha256, proof.sha256_hex());
         assert_eq!(st.live_owner_sessions().unwrap(), vec![live.clone()]);
-        let (_, other) = st.open_owner_session().unwrap();
+        let other = st.open_owner_session().unwrap().live;
         assert!(st.end_owner_session(&live.sha256).unwrap());
         assert!(!st.end_owner_session(&live.sha256).unwrap());
         assert_eq!(st.live_owner_sessions().unwrap(), vec![other]);
@@ -229,7 +256,7 @@ mod tests {
     fn ending_every_owner_session_leaves_none_live() {
         let clock = Arc::new(ManualClock::at("2026-10-29T10:00:00Z"));
         let (_d, st) = store(clock);
-        let (_, a) = st.open_owner_session().unwrap();
+        let a = st.open_owner_session().unwrap().live;
         st.open_owner_session().unwrap();
         assert!(st.end_owner_session(&a.sha256).unwrap());
         assert_eq!(
