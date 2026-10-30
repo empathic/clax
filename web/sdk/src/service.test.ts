@@ -35,6 +35,27 @@ describe("ServiceClient", () => {
     expect(await crypto.subtle.verify("Ed25519", pub, fromBase64url(m![2]) as BufferSource, new TextEncoder().encode(message))).toBe(true);
   });
 
+  it("mint sends profile", async () => {
+    const bodies: unknown[] = [];
+    const client = new ServiceClient({
+      instance: "https://clax.example", queue: "q1", token: "cxq_grant", privateKey: PKCS8,
+      fetch: async (_url, init) => {
+        bodies.push(JSON.parse(new TextDecoder().decode(new Uint8Array(init.body as Uint8Array))));
+        return new Response(JSON.stringify({ token: "cxr_a", expires_at: "2026-10-27T12:15:00Z" }), { status: 200 });
+      },
+    });
+    const req = { reporter_id: "emp-7", origin: "https://app.example", public_key: "AAAA" };
+    const profile = { name: "Alex", email: "ahk@example.com", github: "ahk", avatar_url: "https://avatars.example/ahk.png" };
+    await client.mintReporterToken(req, profile);
+    await client.mintReporterToken({ ...req, profile: { name: "In the request" } });
+    await client.mintReporterToken({ ...req, profile: { name: "In the request" } }, { name: "Given" });
+    expect(bodies).toEqual([
+      { ...req, profile },
+      { ...req, profile: { name: "In the request" } },
+      { ...req, profile: { name: "Given" } },
+    ]);
+  });
+
   it("gives the instance's error", async () => {
     const client = new ServiceClient({
       instance: "https://clax.example", queue: "q1", token: "cxq_grant", privateKey: PKCS8,

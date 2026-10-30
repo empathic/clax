@@ -1494,7 +1494,7 @@ pub async fn publish(
             });
             for tid in &version.addresses {
                 if let Some(t) = st.get_thread(tid)? {
-                    crate::routes::threads::publish_thread(&ctx, st, &t)?;
+                    crate::routes::threads::publish_thread(&ctx, st, &t);
                 }
             }
             vis.filter_published(st, &artifact, &version)

@@ -838,6 +838,78 @@ impl HomeConfig {
         }
         Ok(t)
     }
+
+    /// `[feedback]`: the instance's own feedback integration (spec
+    /// 2026-10-29-feedback-loop-design §10.2), `None` when absent. A
+    /// relative `service_grant_file` is the home's (beside
+    /// `config.toml`).
+    ///
+    /// # Errors
+    /// `Invalid { code: "bad_config" }` naming the file and `[feedback]`
+    /// when it is not a table, has an unknown key or a mistyped value,
+    /// lacks `queue` or `service_grant_file`, either is empty, or `origin`
+    /// is not an https origin (http on localhost).
+    pub fn feedback(&self) -> Result<Option<FeedbackConfig>> {
+        if self.value("feedback").is_none() {
+            return Ok(None);
+        }
+        let t: FeedbackTable = self.table("feedback")?;
+        let bad = |key: &str, what: &str| self.bad(&format!("feedback.{key}"), "[feedback]", what);
+        let queue = t.queue.trim().to_string();
+        if queue.is_empty() {
+            return Err(bad("queue", "queue is empty"));
+        }
+        if t.service_grant_file.trim().is_empty() {
+            return Err(bad("service_grant_file", "service_grant_file is empty"));
+        }
+        let origin = match t.origin {
+            None => None,
+            Some(o) => Some(hosted_origin(&o).ok_or_else(|| {
+                bad(
+                    "origin",
+                    "origin must be an https:// origin with no path, or http:// on localhost, 127.0.0.1 or [::1]",
+                )
+            })?),
+        };
+        let file = PathBuf::from(t.service_grant_file.trim());
+        let service_grant_file = if file.is_absolute() {
+            file
+        } else {
+            self.path
+                .parent()
+                .map_or_else(|| file.clone(), |home| home.join(&file))
+        };
+        Ok(Some(FeedbackConfig {
+            queue,
+            service_grant_file,
+            origin,
+        }))
+    }
+}
+
+/// `[feedback]` as written.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeedbackTable {
+    queue: String,
+    service_grant_file: String,
+    origin: Option<String>,
+}
+
+/// `[feedback]`: the queue the instance's people report problems with Clax
+/// into, and its service grant ([`HomeConfig::feedback`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FeedbackConfig {
+    /// `queue`: the queue's ID.
+    pub queue: String,
+    /// `service_grant_file`: a JSON file `{token, private_key}` (the
+    /// service grant's token and its key's PKCS#8, unpadded base64url, as
+    /// `POST /api/queues/<qid>/service-grants` answers them), resolved
+    /// against the home.
+    pub service_grant_file: PathBuf,
+    /// `origin`: the origin reporter tokens are minted for; by default a
+    /// hosted daemon's public origin, else the daemon's browser address.
+    pub origin: Option<String>,
 }
 
 /// Logs `message` as a warning the first time this process sees it: the
@@ -2522,6 +2594,42 @@ mod tests {
         ] {
             let e = with(bad).toolpath().unwrap_err().to_string();
             assert!(e.contains("[toolpath]"), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn feedback_names_a_queue_and_a_grant_file_beside_the_config() {
+        assert_eq!(with("").feedback().unwrap(), None);
+        let c = under(
+            "[feedback]\nqueue = \"q1\"\nservice_grant_file = \"feedback-grant.json\"\n",
+            &[],
+        );
+        assert_eq!(
+            c.feedback().unwrap(),
+            Some(FeedbackConfig {
+                queue: "q1".into(),
+                service_grant_file: PathBuf::from("/h/feedback-grant.json"),
+                origin: None,
+            })
+        );
+        let c = under(
+            "[feedback]\nqueue = \"q1\"\nservice_grant_file = \"/etc/g.json\"\norigin = \"http://localhost:7481/\"\n",
+            &[],
+        );
+        let f = c.feedback().unwrap().unwrap();
+        assert_eq!(f.service_grant_file, PathBuf::from("/etc/g.json"));
+        assert_eq!(f.origin.as_deref(), Some("http://localhost:7481"));
+        for bad in [
+            "feedback = 1\n",
+            "[feedback]\nqueue = \"q1\"\n",
+            "[feedback]\nservice_grant_file = \"g.json\"\n",
+            "[feedback]\nqueue = \" \"\nservice_grant_file = \"g.json\"\n",
+            "[feedback]\nqueue = \"q1\"\nservice_grant_file = \"\"\n",
+            "[feedback]\nqueue = \"q1\"\nservice_grant_file = \"g.json\"\nother = 1\n",
+            "[feedback]\nqueue = \"q1\"\nservice_grant_file = \"g.json\"\norigin = \"http://example.com\"\n",
+        ] {
+            let e = under(bad, &[]).feedback().unwrap_err().to_string();
+            assert!(e.contains("[feedback]"), "{bad}: {e}");
         }
     }
 }

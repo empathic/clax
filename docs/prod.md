@@ -127,6 +127,96 @@ token named `smoke` (settings, Agent tokens) and set it as
 `CLAX_SMOKE_TOKEN`. The smoke runs every step an agent can and names each
 owner-only step it skips.
 
+## Feedback: clax.dev's own report queue
+
+clax.dev's people report problems with Clax itself through a report
+queue, as any product's users do (spec
+[`2026-10-29-feedback-loop-design`](superpowers/specs/2026-10-29-feedback-loop-design.md)
+§10): the shell asks `POST /_app/feedback/token` for a reporter token, and
+the instance mints it with the queue's service grant through the public
+`POST /api/queues/<qid>/reporter-tokens` route
+(`crates/clax-server/src/integrations/feedback.rs`). Every signed-in
+person may report, the owner and each connected person who is not
+revoked; no flag gates it.
+
+It needs no setup. With neither secret below set, the instance makes its
+own queue the first time a signed-in person's shell asks
+(`GET /_app/feedback/config`), once the owner exists: `clax-feedback`,
+the owner its admin, `https://clax.dev` (the public origin) its one
+origin, reporters seeing their own reports; and a service grant of it
+named `instance`. It keeps both in its store (`instance_feedback`; the
+grant's token and private key in the clear, as they mint reporter tokens
+on that queue alone) and mints with them through the public route, as an
+outside backend would. The owner finds the queue on the Queues page and
+adds the people who triage there (Members, or `PUT
+/api/queues/<qid>/members/<public ID> {"role": "triage"}`). Later starts
+reuse the kept queue and grant; a deleted queue is made again (a new
+one, with a new grant), a revoked grant is replaced on the same queue,
+and a public origin that moved is added to the queue's origins.
+
+To file into a queue of your choosing instead, once, signed in to
+clax.dev as the owner, with `CLAX_TOKEN` the owner's bearer token:
+
+1. Make the queue for `https://clax.dev` (the Queues page, or):
+
+   ```
+   curl -sf https://clax.dev/api/queues -H "authorization: Bearer $CLAX_TOKEN" \
+     -H 'content-type: application/json' \
+     -d '{"name": "clax-feedback", "origins": ["https://clax.dev"], "reporters_see": "own"}'
+   ```
+
+   Its answer's `queue.id` is the queue ID.
+2. Add the people who triage reports, as above.
+3. Make its service grant: `POST /api/queues/<qid>/service-grants
+   {"name": "clax.dev"}` answers `{grant, token, private_key}` once.
+4. Store both as Worker secrets, from `crates/clax-worker` (`clax` is the
+   Worker's name):
+
+   ```
+   printf %s "<queue ID>" | npx wrangler secret put CLAX_FEEDBACK_QUEUE --name clax
+   printf '{"token":"%s","private_key":"%s"}' "<token>" "<private_key>" \
+     | npx wrangler secret put CLAX_FEEDBACK_SERVICE_GRANT --name clax
+   ```
+
+   They are secrets, not vars: a deploy rewrites the Worker's vars from
+   `wrangler.jsonc` and keeps its secrets. The configured queue wins over
+   the instance's own. One secret without the other, or a grant that does
+   not read, is logged and leaves the integration off.
+
+In the shell (`web/shell/src/feedback/`), a signed-in person gets a
+feedback menu in the gallery's header and the artifact view's top bar:
+**Report a problem**, with its key F (a single letter like the shell's C
+and ?; the keys sheet lists it), and **My reports**, with the count of reports waiting on them,
+which the menu's button shows too. The shell embeds the overlay as any
+product does: it asks `GET /_app/feedback/config` first; only when that
+answers `enabled: true` does it load `<instance>/_clax/overlay.js`, start
+`Clax.diagnostics.install()` and then `Clax.overlay({launcher: false, auth,
+context})`, with `auth` the token route above. For anyone else that one
+request is all. F does nothing with a modifier but Shift, in a text field
+or in a dialog; pressed in the artifact's frame, the bridge forwards it as
+it does C (`clax:shortcut`) unless the page handles it.
+
+To check it: `GET https://clax.dev/_app/feedback/config` in a signed-in
+person's browser answers `enabled: true` with the queue's ID. To go back
+from a configured queue to the instance's own, delete both secrets (`npx
+wrangler secret delete … --name clax`). To rotate a configured grant,
+make a new one, put the secret again, and revoke the old one (`DELETE
+/api/queues/<qid>/service-grants/<gid>`), which ends every reporter token
+it minted; revoking the instance's own grant is enough, as it makes a new
+one at the next request.
+
+A daemon takes the same from `[feedback]` in its home's `config.toml`:
+`queue`, `service_grant_file` (a JSON file `{token, private_key}`,
+relative to the home; keep it 0600, as the daemon warns at start when
+its group or others may read it) and, optionally, `origin` (by default a hosted
+daemon's public origin, else its browser address). A hosted daemon with
+no `[feedback]` makes its own queue as clax.dev does (so does `just
+clax-dev-local`, which runs the Worker as clax.dev runs); a local daemon
+that is not hosted reports only with `[feedback]`. `just dev-feedback`
+(`scripts/dev-feedback.sh`) sets it up on the dev home (`~/.clax-dev`)
+with a queue `clax-feedback-dev` for `http://localhost:<port>`, so the
+loop runs locally end to end.
+
 ## The deploy workflow
 
 Deploy prod runs on every push to `prod` and by hand (Actions, Deploy

@@ -457,6 +457,9 @@ pub async fn static_file(
     let Some(f) = (!hidden).then(|| s.web.get(&file)).flatten() else {
         return Ok(ApiError::not_found().into_response());
     };
+    if let Some(ty) = embed_file(&path) {
+        return Ok(embed_answer(ty, f.data.into_owned()));
+    }
     let ct = if path.ends_with(".js") {
         "text/javascript".to_string()
     } else {
@@ -505,6 +508,34 @@ pub async fn static_file(
         f.data.into_owned(),
     )
         .into_response())
+}
+
+/// The embeddable overlay's files under `/_clax/` (`overlay.js`, its ES
+/// module `overlay.mjs`, and their type definitions `overlay.d.ts`), with
+/// each one's content type: a deployer's page on any origin loads them,
+/// so they are answered with `Access-Control-Allow-Origin: *` and never
+/// with credentials. `None` for every other file.
+pub fn embed_file(path: &str) -> Option<&'static str> {
+    match path {
+        "overlay.js" | "overlay.mjs" => Some("text/javascript"),
+        "overlay.d.ts" => Some("text/plain; charset=utf-8"),
+        _ => None,
+    }
+}
+
+/// An embeddable overlay file's answer (`embed_file`): `body` as type
+/// `ty`, cached for an hour, readable from any origin, not sniffed.
+fn embed_answer(ty: &'static str, body: Vec<u8>) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, ty),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 /// How [`static_file`] caches `/_clax/<path>` when another host serves the
@@ -697,5 +728,26 @@ mod tests {
         assert_eq!(asset_cache("bridge.js"), None);
         assert_eq!(asset_cache("transport.js"), None);
         assert_eq!(asset_cache("mark.svg"), Some("public, max-age=3600"));
+    }
+
+    #[test]
+    fn only_the_overlay_files_are_offered_to_other_origins_with_their_types() {
+        assert_eq!(embed_file("overlay.js"), Some("text/javascript"));
+        assert_eq!(embed_file("overlay.mjs"), Some("text/javascript"));
+        assert_eq!(
+            embed_file("overlay.d.ts"),
+            Some("text/plain; charset=utf-8")
+        );
+        for other in [
+            "bridge.js",
+            "transport.js",
+            "shell/a-12345678.js",
+            "overlay.css",
+            "x/overlay.js",
+        ] {
+            assert_eq!(embed_file(other), None, "{other}");
+        }
+        // The Worker serves them from its assets with their cache.
+        assert_eq!(asset_cache("overlay.mjs"), Some("public, max-age=3600"));
     }
 }

@@ -10,6 +10,8 @@ cargo_package(
     test_compile_data = [
         "tests/toolpath/args-hash-vectors.json",
         "tests/toolpath/git-capture-vectors.json",
+        # The scrubbing cases the SDK's tests run too (src/scrub.rs).
+        "//web:sdk_scrub_cases",
     ],
     test_data = [
         # The sources the delivery guard scans (src/feedback.rs).

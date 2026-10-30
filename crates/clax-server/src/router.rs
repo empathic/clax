@@ -3,6 +3,7 @@
 //! them all ([`build_router`]). The debug builds' test routes and the
 //! testkit's delay middleware are here too.
 
+use crate::integrations::feedback as feedback_integration;
 use crate::routes::{
     admin, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot, client_imports,
     connect, content, discovery, docs, drafts, extension, feedback, git_token, grants, health,
@@ -173,6 +174,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         )
         .route("/api/queues/{qid}/reports", get(queue_agent::list))
         .route(
+            "/api/queues/{qid}/watch",
+            post(queue_agent::watch).delete(queue_agent::unwatch),
+        )
+        .route(
             "/api/queues/{qid}/reports/{tid}",
             get(queue_agent::get).patch(queue_agent::patch),
         )
@@ -203,6 +208,26 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route(
             "/api/queues/{qid}/reports/{tid}/clip",
             get(queue_agent::clip),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/fix",
+            post(queue_agent::fix),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/verify",
+            post(queue_agent::verify),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/reopen",
+            post(queue_agent::reopen),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/diagnostics",
+            get(queue_agent::diagnostics),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/comments/{cid}/clip",
+            get(queue_agent::comment_clip),
         )
         .route("/api/artifacts/{aid}/assets", get(assets::list))
         .route(
@@ -528,6 +553,9 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     let api_fast = api_fast.layer(axum::middleware::from_fn(clax_http::http_cache::api_etag));
     let api_fast =
         with_timeout(api_fast, state.request_timeout).layer(clax_http::http_cache::compression());
+    // The instance the feedback integration mints through, its whole
+    // router built at the first mint.
+    let feedback_instance = crate::integrations::instance::Instance::new(state.clone());
     let api_slow = Router::new()
         .route(
             "/api/artifacts",
@@ -545,6 +573,17 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/me/bot", get(bot::me_get).put(bot::me_put))
         .route("/api/me/bot/key", put(bot::key_put).delete(bot::key_delete))
         .route("/api/me/usage", get(bot::usage))
+        .route("/api/me/flags", get(bot::me_flags))
+        // The instance's own feedback integration, as a product's backend
+        // routes behind its sign-in (`crate::integrations::feedback`).
+        .route(
+            "/_app/feedback/token",
+            post(feedback_integration::token).layer(axum::Extension(feedback_instance.clone())),
+        )
+        .route(
+            "/_app/feedback/config",
+            get(feedback_integration::config).layer(axum::Extension(feedback_instance)),
+        )
         .route("/api/bot/runs", get(bot::list).post(bot::create))
         .route("/api/bot/runs/{id}", get(bot::get))
         .route("/api/bot/runs/{id}/cancel", post(bot::cancel))
@@ -701,6 +740,8 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/inbox", get(shell::gallery_page))
         .route("/people", get(shell::gallery_page))
         .route("/queues", get(shell::gallery_page))
+        .route("/queues/{qid}", get(shell::gallery_page))
+        .route("/queues/{qid}/{tid}", get(shell::gallery_page))
         .route("/tags", get(shell::gallery_page))
         .route("/admin", get(shell::gallery_page))
         .route("/settings", get(shell::gallery_page))

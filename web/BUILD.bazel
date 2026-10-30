@@ -35,6 +35,7 @@ TEST_FILES = [
     "**/*.test.ts",
     "bridge/test/**",
     "extension/test/**",
+    "sdk/test/**",
     "shell/src/test/**",
     "shell/test-setup.ts",
 ]
@@ -70,6 +71,7 @@ copy_to_bin(
         [d + "/" + t for d in [x[:-len("/**")] for x in APP_DIRS] for t in ["**/*.test.ts"]] + [
             "bridge/test/**",
             "extension/test/**",
+            "sdk/test/**",
             "shell/src/test/**",
             "shell/test-setup.ts",
             "e2e/**",
@@ -163,6 +165,22 @@ filegroup(
     name = "extension_key",
     srcs = glob(["extension/key/key.pub.b64"], allow_empty = True) + ["extension/key/.gitkeep"],
     visibility = ["//crates/clax-core:__pkg__"],
+)
+
+# The scrubbing cases clax-core's tests include (src/scrub.rs) and the SDK's
+# tests run alike.
+filegroup(
+    name = "sdk_scrub_cases",
+    srcs = ["sdk/test/scrub-cases.json"],
+    visibility = ["//crates:__subpackages__"],
+)
+
+# The SDK's request signing, which the Worker's feedback check signs a
+# reporter's calls with (crates/clax-worker/test-feedback.mjs).
+copy_to_bin(
+    name = "sdk_sign",
+    srcs = ["sdk/src/sign.ts"],
+    visibility = ["//crates/clax-worker:__pkg__"],
 )
 
 # The extension's manifest, which clax-core embeds.

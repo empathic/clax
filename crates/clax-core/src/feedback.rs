@@ -143,6 +143,88 @@ pub struct FeedbackItem {
     /// any other thread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_id: Option<String>,
+    /// What happened to the report when the row is a queue's wake of a
+    /// session watching it, of the agent's session that proposed the fix
+    /// a reopen rejected (none when a person proposed it; spec
+    /// 2026-10-29-feedback-loop-design §6.3), or of the
+    /// session whose claim a triage person released: it is read with
+    /// `queue_get` and taken with `queue_claim`. Absent for a comment sent
+    /// to the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_event: Option<QueueEvent>,
+    /// For a `reopened` wake by a triage person on the reporter's behalf,
+    /// that person's name; absent when the reporter reopened it, and for
+    /// anything else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reopened_by: Option<String>,
+    /// For a `released` wake, the triage person who ended the session's
+    /// claim; absent for anything else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released_by: Option<String>,
+}
+
+/// Who reopened a report, as a wake's text says it: `its reporter`, or
+/// `<name> for its reporter` for a triage person on their behalf.
+fn reopener(by: Option<&str>) -> String {
+    match by {
+        Some(name) => format!("{} for its reporter", display_name(name)),
+        None => "its reporter".to_string(),
+    }
+}
+
+/// What a queue tells the sessions watching it (spec
+/// 2026-10-29-feedback-loop-design §7.3): a report was filed, or its
+/// reporter (or triage on their behalf) reopened it; and what it tells
+/// the session whose claim a triage person released (`released`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueEvent {
+    Filed,
+    Reopened,
+    Released,
+}
+
+impl QueueEvent {
+    /// Its stored and served name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            QueueEvent::Filed => "filed",
+            QueueEvent::Reopened => "reopened",
+            QueueEvent::Released => "released",
+        }
+    }
+
+    /// The event `s` names, `None` for any other string.
+    pub fn parse(s: &str) -> Option<QueueEvent> {
+        match s {
+            "filed" => Some(QueueEvent::Filed),
+            "reopened" => Some(QueueEvent::Reopened),
+            "released" => Some(QueueEvent::Released),
+            _ => None,
+        }
+    }
+}
+
+/// The tail of a queue wake's notice and delivery, after its `Call` or
+/// `call`: the tools that read and take report `tid` of queue `q`.
+fn queue_wake_tail(q: &str, tid: &str) -> String {
+    format!(
+        "queue_get with queue \"{q}\" and report_id \"{tid}\", then queue_claim to work on it; if you have already handled it, do nothing."
+    )
+}
+
+/// What a `released` wake tells the session whose claim ended, after its
+/// opening: stop, and how to take the report again.
+fn released_tail(q: &str, tid: &str) -> String {
+    format!(
+        "queue_renew and queue_fix now answer lease_lost. To take it again, call {}",
+        queue_wake_tail(q, tid)
+    )
+}
+
+/// Who released a claim, as a wake's text says it.
+fn releaser(by: Option<&str>) -> String {
+    by.map_or_else(|| "a triage person".to_string(), display_name)
 }
 
 /// The fields of a [`FeedbackItem`] withheld from its reader (spec
@@ -421,12 +503,28 @@ pub fn render_item(i: &FeedbackItem) -> String {
             body = quoted(&i.body),
         );
     }
-    let answer = match &i.queue_id {
-        Some(q) => format!(
+    let answer = match (&i.queue_id, i.queue_event) {
+        (Some(q), Some(QueueEvent::Filed)) => format!(
+            "This is a new report in queue {q}: call {}",
+            queue_wake_tail(q, &i.thread_id)
+        ),
+        (Some(q), Some(QueueEvent::Reopened)) => format!(
+            "Report {tid} in queue {q} was reopened by {by}: call {}",
+            queue_wake_tail(q, &i.thread_id),
+            tid = i.thread_id,
+            by = reopener(i.reopened_by.as_deref()),
+        ),
+        (Some(q), Some(QueueEvent::Released)) => format!(
+            "Your claim on report {tid} in queue {q} was released by {by}: stop working on it: {tail}",
+            tid = i.thread_id,
+            by = releaser(i.released_by.as_deref()),
+            tail = released_tail(q, &i.thread_id),
+        ),
+        (Some(q), None) => format!(
             "This thread is a report of queue {q}: reply with queue_reply, then queue_resolve when done (queue {q}, report_id {tid}).",
             tid = i.thread_id
         ),
-        None => "Reply with comments_reply, then comments_resolve when done.".to_string(),
+        (None, _) => "Reply with comments_reply, then comments_resolve when done.".to_string(),
     };
     format!(
         "[clax] Comment sent to you{resent} on {title} ({url}), thread {tid}\n\
@@ -533,6 +631,16 @@ pub struct Notice {
     /// tools; absent for any other thread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_id: Option<String>,
+    /// The queue's wake the row is, when it is one
+    /// ([`FeedbackItem::queue_event`]); absent for a comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<QueueEvent>,
+    /// As [`FeedbackItem::reopened_by`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reopened_by: Option<String>,
+    /// As [`FeedbackItem::released_by`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released_by: Option<String>,
 }
 
 /// Longest title a notice line quotes, in characters.
@@ -540,6 +648,8 @@ const NOTICE_TITLE_CHARS: usize = 80;
 
 /// The one line `clax feedback follow` prints for `n`: the artifact, the
 /// thread, and the tool call that reads it. It never includes the comment.
+/// A queue's wake names the queue, the report and the queue tools that
+/// read and take it.
 pub fn render_notice(n: &Notice) -> String {
     let title: String = n
         .title
@@ -550,13 +660,33 @@ pub fn render_notice(n: &Notice) -> String {
         .chars()
         .take(NOTICE_TITLE_CHARS)
         .collect();
-    match &n.queue_id {
-        Some(q) => format!(
+    match (&n.queue_id, n.event) {
+        (Some(q), Some(QueueEvent::Filed)) => format!(
+            "[clax] New report in queue {q}: \"{title}\" ({url}), report {tid}. Call {tail}",
+            url = n.url,
+            tid = n.thread_id,
+            tail = queue_wake_tail(q, &n.thread_id),
+        ),
+        (Some(q), Some(QueueEvent::Reopened)) => format!(
+            "[clax] Report {tid} in queue {q} was reopened by {by}: \"{title}\" ({url}). Call {tail}",
+            url = n.url,
+            tid = n.thread_id,
+            tail = queue_wake_tail(q, &n.thread_id),
+            by = reopener(n.reopened_by.as_deref()),
+        ),
+        (Some(q), Some(QueueEvent::Released)) => format!(
+            "[clax] Your claim on report {tid} in queue {q} was released by {by}: \"{title}\" ({url}). Stop working on it: {tail}",
+            url = n.url,
+            tid = n.thread_id,
+            by = releaser(n.released_by.as_deref()),
+            tail = released_tail(q, &n.thread_id),
+        ),
+        (Some(q), None) => format!(
             "[clax] New comment on \"{title}\" ({url}), thread {tid}, a report of queue {q}. Call queue_list with queue \"{q}\" to read it, and answer with queue_reply and queue_resolve; if you have already handled it, do nothing.",
             url = n.url,
             tid = n.thread_id,
         ),
-        None => format!(
+        (None, _) => format!(
             "[clax] New comment on \"{title}\" ({url}), thread {tid}. Call comments_read with url_or_id \"{aid}\" and thread_id \"{tid}\" to read it; if you have already handled it, do nothing.",
             url = n.url,
             tid = n.thread_id,
@@ -620,6 +750,9 @@ mod tests {
             live: None,
             withheld: None,
             queue_id: None,
+            queue_event: None,
+            reopened_by: None,
+            released_by: None,
         }
     }
 
@@ -1105,6 +1238,9 @@ mod tests {
             title: "Quarterly\nReview".into(),
             url: "http://localhost:7480/a/7q3k9mzx2b4t".into(),
             queue_id: None,
+            event: None,
+            reopened_by: None,
+            released_by: None,
         };
         assert_eq!(
             render_notice(&n),
@@ -1141,10 +1277,142 @@ mod tests {
             title: "Invoice".into(),
             url: "http://localhost:7480/a/7q3k9mzx2b4t".into(),
             queue_id: Some("01JQ".into()),
+            event: None,
+            reopened_by: None,
+            released_by: None,
         };
         let line = render_notice(&n);
         assert!(line.contains("a report of queue 01JQ"), "{line}");
         assert!(line.contains("queue_list with queue \"01JQ\""), "{line}");
         assert!(!line.contains("comments_read"), "{line}");
+    }
+
+    #[test]
+    fn a_released_wake_tells_the_holder_its_claim_ended() {
+        let n = Notice {
+            feedback_id: "f".into(),
+            comment_id: "c".into(),
+            thread_id: "01J9T".into(),
+            artifact_id: "7q3k9mzx2b4t".into(),
+            title: "Invoice".into(),
+            url: "http://localhost:7480/a/7q3k9mzx2b4t".into(),
+            queue_id: Some("01JQ".into()),
+            event: Some(QueueEvent::Released),
+            reopened_by: None,
+            released_by: Some("Ana\nLee".into()),
+        };
+        assert_eq!(
+            render_notice(&n),
+            "[clax] Your claim on report 01J9T in queue 01JQ was released by Ana Lee: \"Invoice\" (http://localhost:7480/a/7q3k9mzx2b4t). Stop working on it: queue_renew and queue_fix now answer lease_lost. To take it again, call queue_get with queue \"01JQ\" and report_id \"01J9T\", then queue_claim to work on it; if you have already handled it, do nothing."
+        );
+        assert_eq!(serde_json::to_value(&n).unwrap()["event"], "released");
+        assert_eq!(serde_json::to_value(&n).unwrap()["released_by"], "Ana\nLee");
+        let i = FeedbackItem {
+            queue_id: Some("01JQ".into()),
+            queue_event: Some(QueueEvent::Released),
+            released_by: Some("Ana".into()),
+            ..item()
+        };
+        let text = render_item(&i);
+        assert!(
+            text.ends_with(
+                "Your claim on report 01J9ZZZZZZZZZZZZZZZZZZZZZZ in queue 01JQ was released by Ana: stop working on it: queue_renew and queue_fix now answer lease_lost. To take it again, call queue_get with queue \"01JQ\" and report_id \"01J9ZZZZZZZZZZZZZZZZZZZZZZ\", then queue_claim to work on it; if you have already handled it, do nothing."
+            ),
+            "{text}"
+        );
+        assert_eq!(QueueEvent::parse("released"), Some(QueueEvent::Released));
+        assert_eq!(QueueEvent::Released.as_str(), "released");
+        assert!(
+            serde_json::to_value(item())
+                .unwrap()
+                .get("released_by")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_queue_event_notice_names_queue_get() {
+        let n = Notice {
+            feedback_id: "f".into(),
+            comment_id: "c".into(),
+            thread_id: "01J9T".into(),
+            artifact_id: "7q3k9mzx2b4t".into(),
+            title: "Invoice \"4821\"\n total".into(),
+            url: "http://localhost:7480/a/7q3k9mzx2b4t".into(),
+            queue_id: Some("01JQ".into()),
+            event: Some(QueueEvent::Filed),
+            reopened_by: None,
+            released_by: None,
+        };
+        assert_eq!(
+            render_notice(&n),
+            "[clax] New report in queue 01JQ: \"Invoice '4821' total\" (http://localhost:7480/a/7q3k9mzx2b4t), report 01J9T. Call queue_get with queue \"01JQ\" and report_id \"01J9T\", then queue_claim to work on it; if you have already handled it, do nothing."
+        );
+        let reopened = Notice {
+            event: Some(QueueEvent::Reopened),
+            ..n
+        };
+        assert_eq!(
+            render_notice(&reopened),
+            "[clax] Report 01J9T in queue 01JQ was reopened by its reporter: \"Invoice '4821' total\" (http://localhost:7480/a/7q3k9mzx2b4t). Call queue_get with queue \"01JQ\" and report_id \"01J9T\", then queue_claim to work on it; if you have already handled it, do nothing."
+        );
+        assert_eq!(
+            serde_json::to_value(&reopened).unwrap()["event"],
+            "reopened"
+        );
+        // Triage reopening on the reporter's behalf is named.
+        let by_triage = Notice {
+            reopened_by: Some("Ana\nLee".into()),
+            ..reopened.clone()
+        };
+        assert_eq!(
+            render_notice(&by_triage),
+            "[clax] Report 01J9T in queue 01JQ was reopened by Ana Lee for its reporter: \"Invoice '4821' total\" (http://localhost:7480/a/7q3k9mzx2b4t). Call queue_get with queue \"01JQ\" and report_id \"01J9T\", then queue_claim to work on it; if you have already handled it, do nothing."
+        );
+        // A delivery's text names the same tools, and the event travels
+        // with the item.
+        let i = FeedbackItem {
+            queue_id: Some("01JQ".into()),
+            queue_event: Some(QueueEvent::Filed),
+            ..item()
+        };
+        let text = render_item(&i);
+        assert!(
+            text.ends_with(
+                "This is a new report in queue 01JQ: call queue_get with queue \"01JQ\" and report_id \"01J9ZZZZZZZZZZZZZZZZZZZZZZ\", then queue_claim to work on it; if you have already handled it, do nothing."
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("queue_reply"), "{text}");
+        assert_eq!(serde_json::to_value(&i).unwrap()["queue_event"], "filed");
+        let i = FeedbackItem {
+            queue_event: Some(QueueEvent::Reopened),
+            ..i
+        };
+        let text = render_item(&i);
+        assert!(
+            text.ends_with(
+                "Report 01J9ZZZZZZZZZZZZZZZZZZZZZZ in queue 01JQ was reopened by its reporter: call queue_get with queue \"01JQ\" and report_id \"01J9ZZZZZZZZZZZZZZZZZZZZZZ\", then queue_claim to work on it; if you have already handled it, do nothing."
+            ),
+            "{text}"
+        );
+        let i = FeedbackItem {
+            reopened_by: Some("Ana".into()),
+            ..i
+        };
+        let text = render_item(&i);
+        assert!(
+            text.ends_with(
+                "Report 01J9ZZZZZZZZZZZZZZZZZZZZZZ in queue 01JQ was reopened by Ana for its reporter: call queue_get with queue \"01JQ\" and report_id \"01J9ZZZZZZZZZZZZZZZZZZZZZZ\", then queue_claim to work on it; if you have already handled it, do nothing."
+            ),
+            "{text}"
+        );
+        assert_eq!(serde_json::to_value(&i).unwrap()["reopened_by"], "Ana");
+        assert!(
+            serde_json::to_value(item())
+                .unwrap()
+                .get("queue_event")
+                .is_none()
+        );
     }
 }

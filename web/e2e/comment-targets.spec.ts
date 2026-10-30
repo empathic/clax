@@ -259,3 +259,30 @@ const RADIOS = `<!doctype html><html><head><title>Radios</title><style>body{marg
     expect((await tintStats(page, pick.pickId, [224, 83, 47], 0.16)).count).toBeGreaterThan(1000);
   });
 }
+
+// A card with a red block the page marks data-clax-redact (red text in it),
+// and a red canvas marked the same: neither's red may reach a clip.
+const REDACT = `<!doctype html><html><head><title>Redact</title><style>body{margin:0;background:#fff;font:16px sans-serif}#card{width:360px;padding:20px;background:#fff}#secret{width:200px;height:60px;background:#dc2626;color:#dc2626}</style></head><body><section id="card"><p>Account</p><div id="secret" data-clax-redact>4111 1111 1111 1111</div><canvas id="cv" data-clax-redact width="100" height="40"></canvas></section><script>const c = document.getElementById("cv").getContext("2d"); c.fillStyle = "#dc2626"; c.fillRect(0, 0, 100, 40);</script></body></html>`;
+
+{
+  test(`a clip draws what the page marks data-clax-redact as a solid block`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Redact`, { "index.html": REDACT });
+    await record(page);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
+    const fb = (await page.locator("iframe.frame").boundingBox())!;
+    // The card's padding, beside its children.
+    await page.mouse.click(fb.x + 394, fb.y + 6);
+    const pick = await last(page, "clax:pick");
+    expect(pick.anchor).toMatchObject({ kind: "element", selector: "#card" });
+    expect(pick.clipError).toBeUndefined();
+    await expectVisibleClip(page, pick.pickId);
+    const clip = await clipStats(page, pick.pickId);
+    // The clip's pixels per CSS px, from its width (the card is 400 px wide).
+    const k = clip.w / 400;
+    expect((await colorStats(page, pick.pickId, [220, 38, 38], 60)).count).toBe(0);
+    // Both blocks are black on this light page: 200 x 60 and 100 x 40 CSS px.
+    expect((await colorStats(page, pick.pickId, [0, 0, 0], 30)).count).toBeGreaterThan(0.9 * (200 * 60 + 100 * 40) * k * k);
+  });
+}

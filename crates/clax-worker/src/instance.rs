@@ -131,6 +131,7 @@
 //! reconnects with its `Last-Event-ID` and the new server replays the
 //! committed steps.
 
+use clax_http::state::InstanceFeedback;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
@@ -520,6 +521,45 @@ fn sites_of(
         .ok_or_else(|| format!("SITE_DOMAIN {domain:?} is not a site domain"))
 }
 
+/// The instance's own feedback integration
+/// (`clax_server::integrations::feedback`): the queue `CLAX_FEEDBACK_QUEUE`
+/// names and the service grant in `CLAX_FEEDBACK_SERVICE_GRANT` (JSON
+/// `{token, private_key}`), minting for the hosted public origin.
+/// Each is read as a secret, else a var of the name (a deploy rewrites the
+/// Worker's vars from its config, and keeps its secrets). With neither,
+/// it is the instance's own ([`InstanceFeedback::Own`]: a hosted instance
+/// makes its queue and grant itself, on the daemon's code path); with one
+/// alone, on an instance that is not hosted, or with a grant that does not
+/// check, it is off (logged when given), and the instance serves on.
+fn feedback_of(env: &Env, app: &AppState) -> InstanceFeedback {
+    let queue = secret(env, "CLAX_FEEDBACK_QUEUE");
+    let grant = secret(env, "CLAX_FEEDBACK_SERVICE_GRANT");
+    let (queue_set, grant_set) = (!queue.trim().is_empty(), !grant.trim().is_empty());
+    if !queue_set && !grant_set {
+        return InstanceFeedback::Own;
+    }
+    let Some(origin) = app.hosted.as_ref().map(|h| h.origin.clone()) else {
+        return InstanceFeedback::Off;
+    };
+    if !queue_set || !grant_set {
+        worker::console_error!(
+            "CLAX_FEEDBACK_QUEUE and CLAX_FEEDBACK_SERVICE_GRANT are set together or not at all; the feedback integration is off"
+        );
+        return InstanceFeedback::Off;
+    }
+    match clax_server::integrations::feedback::integration(&queue, &origin, &origin, &grant) {
+        Ok(i) => InstanceFeedback::Configured(Arc::new(i)),
+        Err(e) => {
+            let name = match e.input {
+                clax_server::integrations::feedback::Input::Queue => "CLAX_FEEDBACK_QUEUE",
+                clax_server::integrations::feedback::Input::Grant => "CLAX_FEEDBACK_SERVICE_GRANT",
+            };
+            worker::console_error!("{name}: {e}; the feedback integration is off");
+            InstanceFeedback::Off
+        }
+    }
+}
+
 /// What the instance says about the Clax app: its app links
 /// (`APPLE_TEAM_ID`; `ANDROID_PACKAGE` with `ANDROID_SHA256`) and store
 /// pages (`IOS_STORE_URL`, `ANDROID_STORE_URL`); none without them, and
@@ -691,6 +731,7 @@ impl Instance {
         // the deploy's build identity (the `CLAX_BUILD` var).
         clax_core::set_build_commit(build_commit(&var(env, "CLAX_BUILD_COMMIT")));
         app.build = Some(var(env, "CLAX_BUILD")).filter(|b| !b.is_empty());
+        app.feedback = feedback_of(env, &app);
         let bot = worker_bot(env, &mut app);
         app.seats
             .set_limits(clax_core::seats::SeatLimits::from_env(|k| {

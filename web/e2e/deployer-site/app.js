@@ -1,14 +1,40 @@
 /* global Clax */
 // The deployer page's own script: it starts the Clax overlay on its queue,
 // and gets each reporter token from its own backend (`POST /clax-token`),
-// which knows the signed-in user by their cookie.
-const { instance, queue } = document.documentElement.dataset;
+// which knows the signed-in user by their cookie. Each capture carries the
+// site's release and flags (a fixed release, as a build would stamp it),
+// and "Include recent errors" starts ticked.
+// The signed-in user's ID lets the overlay keep its reporter key and token
+// across page loads, so the backend mints once per token, not per load.
+const { instance, queue, nonce, user } = document.documentElement.dataset;
 Clax.overlay({
   instance,
   queue,
+  // The page's policy refuses inline style but for this nonce.
+  nonce,
+  user: user || undefined,
   auth: async publicKey => {
     const r = await fetch("/clax-token", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ public_key: publicKey }) });
-    if (!r.ok) throw new Error(`the site gave no reporter token: ${r.status} ${await r.text()}`);
+    if (!r.ok) {
+      const text = await r.text();
+      let code;
+      try { code = JSON.parse(text)?.error?.code; } catch { /* the status says it */ }
+      throw Object.assign(new Error(`the site gave no reporter token: ${r.status} ${text}`), { code });
+    }
     return r.json();
   },
+  context: () => ({
+    release: { version: "2.3.0", commit: "e2e0000", channel: "staging" },
+    flags: { single_day_requests: true, approvals: "v2" },
+    app: { repo: "example/leave" },
+  }),
+  diagnostics: { default: true },
 });
+
+// Approving a one-day request fails: the page logs the error the overlay records.
+for (const button of document.querySelectorAll(".request .approve")) {
+  button.addEventListener("click", () => {
+    const request = button.closest(".request");
+    if (request.id === "req-2") console.error(`approve ${request.id}: the request has no end date`);
+  });
+}

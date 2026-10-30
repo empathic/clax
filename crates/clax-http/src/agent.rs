@@ -284,6 +284,8 @@ need!(ToolCallIdReport, None, Own, DEFAULT_LIMIT);
 // below is held somewhere, as a path without an artifact asks.
 need!(QueuesList, None, Own, DEFAULT_LIMIT);
 need!(QueueReportsList, Comments, "read", Own, DEFAULT_LIMIT);
+need!(QueueWatch, Comments, "watch", Own, DEFAULT_LIMIT);
+need!(QueueUnwatch, Comments, "watch", Own, DEFAULT_LIMIT);
 need!(QueueReportGet, Comments, "read", Own, DEFAULT_LIMIT);
 need!(QueueClip, Comments, "read", Own, DEFAULT_LIMIT);
 need!(QueueClaim, Comments, "reply", Own, DEFAULT_LIMIT);
@@ -293,6 +295,9 @@ need!(QueueReply, Comments, "reply", Own, DEFAULT_LIMIT);
 need!(QueueResolve, Comments, "resolve", Own, DEFAULT_LIMIT);
 need!(QueueReportPatch, Comments, "reply", Own, DEFAULT_LIMIT);
 need!(QueueArtifactPatch, Artifacts, "update", Own, DEFAULT_LIMIT);
+need!(QueueFix, Comments, "reply", Own, DEFAULT_LIMIT);
+need!(QueueDiagnostics, Comments, "read", Own, DEFAULT_LIMIT);
+need!(QueueCommentClip, Comments, "read", Own, DEFAULT_LIMIT);
 
 /// Every route an agent of another machine may reach, by method and the
 /// path it is routed at (`MatchedPath`), with its need: [`verify_layer`]
@@ -514,6 +519,8 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
     ("POST", "/api/sessions/{id}/terminal", SessionTerminal::INFO),
     ("GET", "/api/queues", QueuesList::INFO),
     ("GET", "/api/queues/{qid}/reports", QueueReportsList::INFO),
+    ("POST", "/api/queues/{qid}/watch", QueueWatch::INFO),
+    ("DELETE", "/api/queues/{qid}/watch", QueueUnwatch::INFO),
     (
         "GET",
         "/api/queues/{qid}/reports/{tid}",
@@ -558,6 +565,21 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
         "PATCH",
         "/api/queues/{qid}/reports/{tid}/artifact",
         QueueArtifactPatch::INFO,
+    ),
+    (
+        "POST",
+        "/api/queues/{qid}/reports/{tid}/fix",
+        QueueFix::INFO,
+    ),
+    (
+        "GET",
+        "/api/queues/{qid}/reports/{tid}/diagnostics",
+        QueueDiagnostics::INFO,
+    ),
+    (
+        "GET",
+        "/api/queues/{qid}/reports/{tid}/comments/{cid}/clip",
+        QueueCommentClip::INFO,
     ),
 ];
 
@@ -652,6 +674,8 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("surface::terminal", SessionTerminal),
     route_need!("queues::list", QueuesList),
     route_need!("queue_agent::list", QueueReportsList),
+    route_need!("queue_agent::watch", QueueWatch),
+    route_need!("queue_agent::unwatch", QueueUnwatch),
     route_need!("queue_agent::get", QueueReportGet),
     route_need!("queue_agent::clip", QueueClip),
     route_need!("queue_agent::claim", QueueClaim),
@@ -661,6 +685,9 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("queue_agent::resolve", QueueResolve),
     route_need!("queue_agent::patch", QueueReportPatch),
     route_need!("queue_agent::patch_artifact", QueueArtifactPatch),
+    route_need!("queue_agent::fix", QueueFix),
+    route_need!("queue_agent::diagnostics", QueueDiagnostics),
+    route_need!("queue_agent::comment_clip", QueueCommentClip),
 ];
 
 /// The `Filtered` needs whose filter is live: a person's agent reaches
@@ -1033,6 +1060,16 @@ impl ReadRights {
                     _ => read(rights, &|x| x == a.id && a.authors.creator == *person),
                 }
             }
+        }
+    }
+
+    /// Whether the caller may read a report queue's reports, as the triage
+    /// routes ask of a member's agent: its rights hold Comments `read`
+    /// somewhere (every other caller may).
+    pub fn reads_reports(&self) -> bool {
+        match &self.rights {
+            None => true,
+            Some((rights, _)) => rights.allows_somewhere(RightType::Comments, "read"),
         }
     }
 

@@ -209,6 +209,10 @@ pub fn event_params(notice: &Value, line: &str) -> Value {
     if let Some(q) = notice["queue_id"].as_str() {
         v["meta"]["queue_id"] = json!(q);
     }
+    // A queue wake's notice says what woke it: `filed` or `reopened`.
+    if let Some(e) = notice["event"].as_str() {
+        v["meta"]["queue_event"] = json!(e);
+    }
     v
 }
 
@@ -350,6 +354,14 @@ mod tests {
             "artifact_id": "7q3k9mzx2b4t", "title": "T", "url": "http://h/a/7q3k9mzx2b4t",
             "queue_id": "01JQ"});
         assert_eq!(event_params(&report, "x")["meta"]["queue_id"], "01JQ");
+        assert!(
+            event_params(&report, "x")["meta"]
+                .get("queue_event")
+                .is_none()
+        );
+        let mut wake = report.clone();
+        wake["event"] = json!("reopened");
+        assert_eq!(event_params(&wake, "x")["meta"]["queue_event"], "reopened");
     }
 
     #[test]

@@ -244,6 +244,22 @@ pub enum Event {
     Permissions {
         artifact_id: String,
     },
+    /// Report `report_id` of queue `queue_id` changed: filed, claimed,
+    /// released, given a fix or a verdict, reopened, resolved or commented
+    /// on; `state` is its state after (`crate::queue::State`). It carries
+    /// IDs and the state alone: views refetch the report. Only the
+    /// `queue:<queue_id>` stream topic carries it, to the streams of the
+    /// queue's members at the change (`members`, by recipient key: empty
+    /// for the owner, a connected person's public ID); `/api/events` never
+    /// does.
+    Report {
+        queue_id: String,
+        report_id: String,
+        state: crate::queue::State,
+        /// The recipient keys of the queue's members; never serialised.
+        #[serde(skip)]
+        members: Vec<String>,
+    },
     /// Tags changed (`crate::tags`): the tags artifact `artifact_id` carries
     /// (`Some`), or the list itself (`None`: a tag made, renamed,
     /// recoloured or deleted, which every artifact carrying it shows).
@@ -288,6 +304,9 @@ impl Event {
             | Event::Agents { .. }
             | Event::Job { .. }
             | Event::JobsOwner { .. } => "",
+            // A report's artifact is its queue maker's: the event goes to
+            // the queue's topic alone.
+            Event::Report { .. } => "",
             // A change to the list itself belongs to no artifact.
             Event::Tags { artifact_id, .. } => artifact_id.as_deref().unwrap_or(""),
             // A change at every artifact belongs to none.
@@ -321,6 +340,7 @@ impl Event {
             Event::Agents { .. } => "agents",
             Event::Job { .. } => "job",
             Event::JobsOwner { .. } => "jobs_owner",
+            Event::Report { .. } => "report",
             Event::Comments { .. } => "comments",
             Event::Permissions { .. } => "permissions",
             Event::Tags { .. } => "tags",

@@ -239,7 +239,7 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("comment.add", "body") => Text,
         ("comment.add", "author_name") => Name,
         ("comment.add", "comment_id" | "author_kind" | "via_harness" | "via_page") => Safe,
-        ("thread.resolve", "resolved_by" | "addressed_version") => Safe,
+        ("thread.resolve", "resolved_by" | "addressed_version" | "reason") => Safe,
         ("thread.delete", "moved") => Safe,
         (
             "thread.send",
@@ -389,6 +389,11 @@ fn body_class(kind: &str, field: &str) -> Class {
         (
             "queue.claim" | "queue.release",
             "queue_id" | "thread_id" | "session" | "lease_id" | "fence" | "expires_at" | "reason",
+        ) => Safe,
+        ("queue.fix", "url") => Path,
+        (
+            "queue.fix" | "queue.verify" | "queue.reopen",
+            "queue_id" | "thread_id" | "n" | "commit" | "reopen_count" | "reason",
         ) => Safe,
         _ => Class::Unclassified,
     }

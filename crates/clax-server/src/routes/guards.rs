@@ -104,6 +104,9 @@ mod l10 {
         ("bot::key_put", Bot),
         ("bot::key_delete", Bot),
         ("bot::usage", Bot),
+        ("bot::me_flags", Bot),
+        ("feedback_integration::token", NoArtifact),
+        ("feedback_integration::config", NoArtifact),
         ("bot::list", Bot),
         ("bot::create", Bot),
         ("bot::get", Bot),
@@ -256,6 +259,8 @@ mod l10 {
         ("queues::create_grant", NoArtifact),
         ("queues::revoke_grant", NoArtifact),
         ("queue_agent::list", NoArtifact),
+        ("queue_agent::watch", NoArtifact),
+        ("queue_agent::unwatch", NoArtifact),
         ("queue_agent::get", NoArtifact),
         ("queue_agent::patch", NoArtifact),
         ("queue_agent::claim", NoArtifact),
@@ -265,6 +270,11 @@ mod l10 {
         ("queue_agent::resolve", NoArtifact),
         ("queue_agent::patch_artifact", NoArtifact),
         ("queue_agent::clip", NoArtifact),
+        ("queue_agent::fix", NoArtifact),
+        ("queue_agent::verify", NoArtifact),
+        ("queue_agent::reopen", NoArtifact),
+        ("queue_agent::diagnostics", NoArtifact),
+        ("queue_agent::comment_clip", NoArtifact),
         ("discovery::get", NoArtifact),
         ("grants::revoke", NoArtifact),
         ("grants::poll", NoArtifact),
@@ -372,6 +382,7 @@ mod l10 {
             "mcp" => include_str!("mcp.rs"),
             "people" => include_str!("people.rs"),
             "permissions" => include_str!("permissions.rs"),
+            "feedback_integration" => include_str!("../integrations/feedback.rs"),
             _ => return None,
         })
     }
@@ -536,6 +547,14 @@ mod l10 {
             "a heartbeat on the caller's own lease (spec 2026-10-27-clax-sdk-design §7.4)",
         ),
         (
+            "queue_agent::watch",
+            "the caller's own session's subscription to a queue's wakes, which ends with the session; it changes no content (spec 2026-10-29-feedback-loop-design §7.3)",
+        ),
+        (
+            "queue_agent::unwatch",
+            "ends the caller's own session's subscription to a queue's wakes; it changes no content",
+        ),
+        (
             "site_signin::site_code",
             "mints a one-use code for the caller's own browser to read a site it may read; changes nothing",
         ),
@@ -550,6 +569,10 @@ mod l10 {
         (
             "settings::put",
             "writes the home's config.toml, not the store; its changes are recorded as admin.settings by the SettingsAudit hook (clax_http::bot::SettingsRecorded)",
+        ),
+        (
+            "feedback_integration::token",
+            "mints a reporter token through the public reporter-tokens route, and minting is unaudited by design: that route records nothing for any backend's mint, this one's included (spec 2026-10-29-feedback-loop-design §10.2)",
         ),
         (
             "remotes::add",
@@ -1589,6 +1612,18 @@ mod agents {
                 Some((Comments, "read")),
             ),
             (
+                "POST",
+                "/api/queues/{qid}/watch",
+                Own,
+                Some((Comments, "watch")),
+            ),
+            (
+                "DELETE",
+                "/api/queues/{qid}/watch",
+                Own,
+                Some((Comments, "watch")),
+            ),
+            (
                 "GET",
                 "/api/queues/{qid}/reports/{tid}",
                 Own,
@@ -1641,6 +1676,24 @@ mod agents {
                 "/api/queues/{qid}/reports/{tid}/artifact",
                 Own,
                 Some((Artifacts, "update")),
+            ),
+            (
+                "POST",
+                "/api/queues/{qid}/reports/{tid}/fix",
+                Own,
+                Some((Comments, "reply")),
+            ),
+            (
+                "GET",
+                "/api/queues/{qid}/reports/{tid}/diagnostics",
+                Own,
+                Some((Comments, "read")),
+            ),
+            (
+                "GET",
+                "/api/queues/{qid}/reports/{tid}/comments/{cid}/clip",
+                Own,
+                Some((Comments, "read")),
             ),
         ]
     };

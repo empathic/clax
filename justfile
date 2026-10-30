@@ -38,7 +38,7 @@ check-wasm *ARGS:
 check-wasm-native *ARGS:
     CLAX_BUILD=native ./scripts/run.sh check-wasm "$@"
 
-# Run crates/clax-worker's checks: its and its VFS's format check, tests and clippy, deploy.mjs's generated config, and the wasm Worker under `wrangler dev --local` (test-wasm.mjs, test-sandbox.mjs, test-bot.mjs) and in browsers (e2e.mjs, e2e-hosted.mjs)
+# Run crates/clax-worker's checks: its and its VFS's format check, tests and clippy, deploy.mjs's generated config, and the wasm Worker under `wrangler dev --local` (test-wasm.mjs, test-sandbox.mjs, test-bot.mjs, test-feedback.mjs) and in browsers (e2e.mjs, e2e-hosted.mjs)
 worker-test:
     ./scripts/run.sh worker-test
 
@@ -80,6 +80,10 @@ stop:
 # Check the dev home and its daemon (~/.clax-dev)
 doctor:
     CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" ./scripts/run.sh clax doctor
+
+# Set up the instance's own feedback queue on the running dev daemon (~/.clax-dev, or $CLAX_HOME): queue clax-feedback-dev, its service grant and [feedback] in config.toml; restart the daemon after (docs/prod.md)
+dev-feedback:
+    ./scripts/dev-feedback.sh
 
 # The Clax app (apps/clax_app). With Bazel each builds or checks from the
 # shared cache (docs/bazel.md, "The Clax app"); each has a `-native` twin

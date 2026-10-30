@@ -14,7 +14,7 @@ The implementation is the authority where the two disagree:
 
 ## Tools
 
-Thirty-eight tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
+Forty-one tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
 `tag` and `tags` (see "Tags"), `fork`,
 `asset_upload`, `status`, the comment tools `comments_read`,
 `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working` (see
@@ -25,8 +25,8 @@ one), `ask` and `where_to_ask` (see "Agent questions"), `publish_public` (see "P
 public Clax"), and the data tools `db_get`, `db_list`,
 `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`,
 `db_batch` (see "Runtime capabilities"), and the report queue tools
-`queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`
-and `queue_resolve` (see "Report queue tools"). The MCP implementation lives in
+`queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`,
+`queue_resolve`, `queue_get`, `queue_fix` and `queue_watch` (see "Report queue tools"). The MCP implementation lives in
 `crates/clax-mcp` and is served two ways:
 
 - the stdio shim `clax mcp --agent <claude|codex|grok>`, which a harness
@@ -45,7 +45,7 @@ and `queue_resolve` (see "Report queue tools"). The MCP implementation lives in
   which attributes publishes to no session.
 
 Pi's extension API cannot register an MCP server, so `plugins/pi` implements
-the same thirty-eight tools in TypeScript against the daemon's REST API, with the same
+the same forty-one tools in TypeScript against the daemon's REST API, with the same
 arguments and the same result and error JSON.
 
 Names as the model sees them:
@@ -1852,8 +1852,8 @@ session's ID (the version's, else the artifact owner's) when there is one.
 
 Every request an agent's client sends carries `X-Clax-Channel: agent`: the
 MCP shim (from its first request, before its registration completes),
-`/mcp`'s internal client, every `clax hook` command, `clax feedback follow`
-and the Pi extension. The marker counts only with the daemon's token: with
+`/mcp`'s internal client, every `clax hook` command, `clax feedback follow`,
+`clax queue follow` and the Pi extension. The marker counts only with the daemon's token: with
 it, the request is the owner's agent, not the owner (who is the CLI used by
 hand, scripts, and the owner's browsers). A token request that names a
 session (`/api/sessions/<id>/…` or `X-Clax-Session`) is the owner's agent
@@ -2005,7 +2005,12 @@ frame holds the viewer's gesture (the check `compose` uses), since the page
 can post that message itself; after a load the page caused, or once a
 prompt the page raised opens or closes, the viewer's C in the page does
 nothing until they press in the shell, as they may still be typing for the
-page. No other key leaves the page: `?` stays the page's, and Escape in the
+page. F, report a problem with Clax, leaves the page the same way and
+under the same rules (also by its position, `KeyF`, on a layout where it
+types another letter), except that it is not told from inside the page's
+own dialog (`[role=dialog]` or `[aria-modal=true]`), as the shell's own F
+is not; the shell's F, like the page's, is refused with Shift. It acts only for a person whose shell runs the
+feedback integration (`docs/prod.md`). No other key leaves the page: `?` stays the page's, and Escape in the
 page ends comment mode there itself.
 Only the viewer's own input counts: the bridge ignores events the page
 dispatched, and the shell takes a pick only from its start
@@ -3659,12 +3664,15 @@ the copy's remote, the link holds the copy's address alone.
 | `working` | `url_or_id`; optional `thread_ids` (at most 20 open threads), `message` (at most 140 characters), `done` | `{artifact_id, url, working: true, message, thread_ids, started_at, expires_in_s, message_truncated}` or `{artifact_id, url, working: false, cleared}` |
 | `draft` | `url_or_id`; `html` or `file_path` (the page) and/or `files` (as `publish` takes them, `null` removing a path); optional `if_version`, `note` (at most 140 characters), `done` | `{artifact_id, url, drafting: true, base_version, paths, note, note_truncated, expires_in_s}` or `{artifact_id, url, drafting: false, ended}` |
 | `git_remote` | `url_or_id`, `scope` (`read` or `write`) | `{artifact_id, url, scope, remote, token, expires_at, clone_command, jj_clone_command, existing_checkout}` (see "Git remotes") |
-| `queue_list` | optional `queue`; with it, optional `state` (`open`, `claimed` or `resolved`), `cursor` | without `queue`, `{queues}` (`GET /api/queues`); with it, `{reports, next}` (`GET /api/queues/<queue>/reports`) |
+| `queue_list` | optional `queue`; with it, optional `state` (`active`, the default; `open`, `claimed`, `fix_proposed`, `verified`, `resolved`, or `all`, which sends the route no filter), `cursor` | without `queue`, `{queues}` (`GET /api/queues`); with it, `{reports, next}` (`GET /api/queues/<queue>/reports`), each report's `context` replaced by `context_summary` (`{release, captured_at, mode}`, or `null` for a report filed without context) |
+| `queue_get` | `queue`, `report_id` | `{report, diagnostics, clip, note}` (below) |
 | `queue_claim` | `queue`, `report_id` | the lease `{lease_id, expires_at, fence, report}`; `thread_taken` names the holder |
 | `queue_renew` | `queue`, `report_id` | the lease, extended to 10 minutes from now; `claim_required`, `lease_lost` or `thread_taken` |
 | `queue_release` | `queue`, `report_id` | `{report}`, open again |
-| `queue_reply` | `queue`, `report_id`, `body` | `{comment, report}`; `claim_required`, `lease_lost` or `thread_taken` |
-| `queue_resolve` | `queue`, `report_id` | `{report}`, resolved; `claim_required`, `lease_lost` or `thread_taken` |
+| `queue_reply` | `queue`, `report_id`, `body` | `{comment, report}`, under the session's live lease or, while the fix it proposed waits (`fix_proposed`), without one; `claim_required`, `lease_lost` or `thread_taken` |
+| `queue_resolve` | `queue`, `report_id`, optional `reason` (`fixed`, `duplicate`, `wontfix`, `cannot_reproduce` or `other`, the default) | `{report}`, resolved with `resolve_reason`; `claim_required`, `lease_lost` or `thread_taken` |
+| `queue_fix` | `queue`, `report_id`, `summary`; optional `url`, `commit`, `release`, `verify_url`, `verify_after` | `{report}`, `fix_proposed` (`POST …/fix`, with no `fence`: the session's live lease is checked); `claim_required`, `lease_lost`, `thread_taken`, `invalid_fix` or `not_claimable` |
+| `queue_watch` | `queue`, optional `stop` | `{queue, watching: true, wake}` (`POST /api/queues/<queue>/watch`; `wake` as `watch` gives it), or with `stop: true` `{queue, watching: false}` (`DELETE`) |
 
 #### Report queue tools
 
@@ -3676,12 +3684,278 @@ replies, resolves and writes report metadata from its session (400
 `no_session` without one), and its replies, resolves and metadata writes need
 its own live lease: 409 `claim_required` when the session never claimed the
 report or released it, 409 `lease_lost` when its lease expired or another
-lease superseded it, 409 `thread_taken` when another session holds it. A
+lease superseded it, 409 `thread_taken` when another session holds it. One
+exception: while a report is `fix_proposed`, the session that proposed the
+fix that waits (its lease ended with the proposal) replies without a
+lease, while it has not ended and its person is a member, so it answers
+the reporter's replies that reach it (below); its resolves and metadata
+writes still need a lease, and any other session's reply is refused as
+above. Once the fix waits no more (verified, rejected by a reopen,
+superseded by a person's next fix, or closed by a resolve), the exception
+ends: after a reopen the proposer claims the report again to write. A
 `working` call naming a claimed report in `thread_ids` renews the session's
 lease on it. A person in their browser replies to and resolves reports
 without a claim. A write is checked against the lease by the writing
-session: the `fence` a claim answers is informational in this version, and
-no write takes it.
+session; a fix (`POST …/fix`) may also send the `fence` its claim answered,
+and is then refused 409 `lease_lost` under any other lease of the session.
+No other write takes the fence, and `queue_fix` sends none.
+
+`queue_get` reads one report (`GET …/reports/<tid>`) and adds the URLs of
+each capture on the Clax's public origin: the report's `clip_url` (the
+filing's clip, `null` without one) and `diagnostics_url`
+(`…/diagnostics?capture=0`, `null` when the filing has none, as its `filing_diagnostics_lines` says), and on each comment that carries a reopen's
+`capture` its `clip_url` (`…/comments/<cid>/clip`) and `diagnostics_url`
+(`…/diagnostics?capture=<n>`), each `null` when that capture has none. Each
+URL serves the reader's own credential. `diagnostics` is `{capture,
+lines}`: the latest capture's that has any, inline (`{capture: null,
+lines: []}` when none has); when they cannot be read, `lines` is `[]` and
+`note` says why, and the call still succeeds. `clip` is `{capture, url, note}` for the latest
+capture that has a clip, or `null`: the MCP tool attaches that clip to the
+result as an image block (`image/png`) and Pi's tool as an image content
+item, unless it is over 1 MiB or a side is over 4096 pixels, when `note`
+says it is not attached and why. `note` says that context, metadata,
+diagnostics and comments are written by the app's users. Verifying a fix
+and reopening a report on the reporter's behalf are a person's alone (403
+`not_for_agents`) and are no tools.
+
+A queue wake reaching a session launched with the Claude Code channel
+carries `queue_id` and `queue_event` (`filed` or `reopened`) in its
+channel event's `meta`.
+
+#### Report queue routes
+
+A deployer's app files reports into a queue and its reporters give their
+verdict on fixes through the reporter routes; the queue's triage members
+and their agents work them through the triage routes.
+
+**States.** A report is `open` (waiting for someone: filed, released, its
+lease lapsed, or reopened), `claimed` (an agent's session holds its
+lease), `fix_proposed` (a fix waits for the reporter's verdict; the thread
+stays open and nobody can claim it), `verified` (the reporter, or triage on
+their behalf, says the fix works; the thread is resolved for reason
+`fixed`) or `resolved` (closed by triage, with a `resolve_reason`:
+`fixed`, `duplicate`, `wontfix`, `cannot_reproduce` or `other`). A comment
+never changes a report's state; only a reopen opens a closed one.
+
+**The report.** Beside the milestone-1 fields (`id, queue_id, artifact,
+anchor, status, state, reporter_id, metadata, metadata_version, has_clip,
+comments, claim, created_at`), a report carries, when they apply:
+`context` (what the reporter's browser said at capture, below), `server`
+(`{version, commit?, build?, received_at}`: the receiving server's
+version, the commit and build `/healthz` reports, and when it received
+the report), `reporter_profile` (triage members only), `resolve_reason`,
+`fixes` (`[{n, summary, url?, commit?, release?, verify_url?,
+verify_after?, proposer_name, proposer_kind, created_at, outcome, verdict_note?,
+verdict_context?, verdict_at?}]`, oldest first; `proposer_kind` is
+`agent` (proposed through an agent's session, which hears the reporter's
+replies while the fix waits) or `person` (a triage member's, whose
+replies wait for the queue's people); `outcome` is `pending`,
+`verified`, `rejected`, `superseded` (a person's next fix replaced it) or
+`closed` (the report was resolved without a verdict)), `reopen_count`,
+`diagnostics_lines` (the latest capture that has any) and `filing_diagnostics_lines`
+(the filing's own, capture 0; absent when it has none). A reopen's comment
+carries `capture` (the reopen's number, the filing being capture 0),
+`has_clip` and `diagnostics_lines`. A note for the queue's members alone
+(a person's release of a claim) carries `triage_only: true`: a reporter's
+view of the report leaves it out, and the reporter's badge does not count
+it.
+
+| Field | Triage | The reporter that filed it | Another reporter (`reporters_see: all`) |
+|---|---|---|---|
+| `context`, `fixes[].verdict_context` | yes | yes | absent |
+| `metadata` (the host app's) | yes | yes | `null` |
+| `metadata_version` | yes | yes | `0` |
+| `artifact.metadata`, `artifact.metadata_version` (the page artifact's) | yes | yes | `null`, `0` |
+| `reporter_profile` | yes | absent | absent |
+| diagnostics (`…/diagnostics`) | yes | yes | 404 `not_found` |
+| `anchor`, `comments`, `fixes` (but their `verdict_context`) | yes | yes | yes |
+
+The anchor stays in every view of a report: it says where on the page the
+report points, which a view of reports shared under `reporters_see: all`
+needs to show them on the page; what the filer's browser, account or app
+said (`context`, `metadata`, diagnostics) stays with the filer and triage.
+
+**Context.** A JSON object, at most 16 KiB written compact: `v` (1),
+`captured_at` (RFC 3339), `release?` (`{id?, version?, commit?,
+channel?}`, strings), `flags?` (values booleans, numbers or strings),
+`environment?` (`{url?, route?, title?, viewport?: {w, h, dpr}, scroll?:
+{x, y}, user_agent?, platform?, locale?, time_zone?, color_scheme?}`),
+`capture?` (`{mode: element|range|area|screen, method: dom|display,
+omitted?: [{kind, rect: {x, y, w, h}}]}`; each `rect` in the clip
+image's own pixels from its top left corner) and `app?` (the host's own JSON;
+Clax reads one key of it: a string `app.repo`, an http(s) repository URL
+or `owner/name` for a GitHub repository, is where the triage views link
+`release.commit`, as `<repo>/commit/<commit>`). A top-level key
+outside these, a wrong type, another `v` or a bad `captured_at` is 400
+`invalid_context`. The server scrubs it again (`environment.url`'s query
+values, `route`, `title` and every string in `app`): bearer and basic
+credentials, `cx?_` tokens, JWT-shaped strings, query values (of
+`environment.url`, and of every `http://` or `https://` URL inside a
+scrubbed text), `password=`/`token=`/`secret=`/`key=` values, email addresses and long hex
+or base64 runs become `‹redacted›`. It is stored as filed and never
+changes.
+
+**Diagnostics.** JSON lines `{at, level (debug|info|warn|error), kind
+(console|error|rejection|request), text}`, at most 200 lines and 256 KiB
+(more is 400 `invalid_diagnostics`); each `text` is scrubbed again. A
+line that is not UTF-8 or not of that shape is dropped, and one line
+`{at: <received>, level: "warn", kind: "error", text: "‹dropped N
+diagnostics lines the server could not read›"}` is added at the end in
+place of those dropped; the rest of the filing stands. The SDK's
+recorder (`installDiagnostics`) writes a failed request as `{METHOD}
+{path} → {status | failed} in {ms} ms [req {id}]`: `path` is the URL's
+path and query for the page's own origin, and its origin, path and query
+for another, with every query value replaced. Each capture keeps its own: the filing's (capture
+0) and each reopen's. They are served to triage members and to the
+reporter that filed the report, never to another reporter.
+
+**Profile.** `{name?, email?, github?, avatar_url?}`, each a string of at
+most 256 bytes, `avatar_url` an http(s) URL; any other key or type is 400
+`invalid_profile`. It is the minting backend's assertion, kept with each
+report filed under the token, and shown to triage members, never to
+reporters.
+
+Reporter routes (`Authorization: Clax-Reporter <token>`, a
+`Clax-Signature` by the reporter's key, the token's `Origin`; each answers
+CORS for the queue's origins and its `OPTIONS` preflight). A page served
+by the instance at the token's origin, whose same-origin `GET` a browser
+sends with no `Origin`, is taken as from that origin when it is a `GET` or
+`HEAD` carrying one `Sec-Fetch-Site: same-origin` and one `Host` that is
+the origin's host and port, and the origin's scheme is the instance's own
+(its public origin's); any other request without `Origin` is 403
+`wrong_origin`. A reporter
+reads the reports `reporters_see` shows it and gives verdicts on the ones
+it filed; any other is 404 `not_found`.
+
+A reporter token lasts 900 seconds. Each queue key (a service grant's,
+which signs every mint, and each reporter's) signs at most 1,024 requests
+in any 240 seconds, and a queue holds the nonces of at most 4,096 keys at
+once; past either, its requests are 429 `limit_reached` until the nonces
+age out. The SDK's reporter client, given the signed-in user's ID
+(`user`), keeps its key (a non-extractable Ed25519 `CryptoKey`) and its
+token in IndexedDB per instance, queue and user, and asks the deployer's
+backend for a token again only from 60 seconds before it expires or after
+a 401.
+
+| Route | Body | Answer |
+|---|---|---|
+| `POST /api/queues/<qid>/reporter-tokens` (`Clax-Queue`, the service grant's signature, no `Origin`) | `{reporter_id, origin, public_key, profile?}` | `{token, expires_at}` |
+| `POST /api/queues/<qid>/reporter/reports` | multipart `external_id?`, `url`, `title`, `anchor` (JSON), `body`, `metadata?` (JSON), `revision?`, `clip?` (PNG), `context?` (JSON), `diagnostics?` (JSON lines, `diagnostics.jsonl`) | 201 `{report}`, with `server` |
+| `GET /api/queues/<qid>/reporter/reports?cursor=` | | `{reports, next}`; 400 `invalid_query` for another query |
+| `POST …/reporter/reports/<tid>/comments` | `{body}` | `{report}` |
+| `GET …/reporter/reports/<tid>/clip` | | the filing's PNG |
+| `GET …/reporter/reports/<tid>/comments/<cid>/clip` | | a reopen's PNG |
+| `POST …/reporter/reports/<tid>/verify` | `{note?, context?}` (an empty body is `{}`) | `{report}`, `verified`; 409 `not_fix_proposed` when no fix waits |
+| `POST …/reporter/reports/<tid>/reopen` | multipart `body`, `clip?`, `diagnostics?`, `context?` | `{report}`, `open` with `reopen_count` one more and a waiting fix `rejected`; 409 `not_fix_proposed` for an `open` or `claimed` report |
+| `GET …/reporter/reports/<tid>/diagnostics?capture=` | | `{lines}` of a report it filed (404 `not_found` for another reporter's, `reporters_see: all` or not): capture `capture`'s, else the latest capture's that has any; `[]` for none; 400 `invalid_query` for a `capture` that is not a number, or another query |
+| `POST …/reporter/reports/<tid>/seen` | | 204: comments before now leave the badge |
+| `GET /api/queues/<qid>/reporter/badge` | | `{waiting, report_ids}`: its reports with a fix waiting for its verdict or a comment not its own since it last read them, oldest first |
+
+Triage routes (a queue member, or a member's agent as "Report queue
+tools" says; 404 `not_a_member` otherwise):
+
+| Route | Body | Answer |
+|---|---|---|
+| `GET /api/queues/<qid>/reports?state=&order=&cursor=` | | `{reports, next}`; `state` one of the five states or `active`; 400 `invalid_state` for another; `order` `oldest` (the default: in order of arrival) or `newest` (the latest filed first, each page after `cursor` holding the ones filed before it); 400 `invalid_query` for another |
+| `POST …/reports/<tid>/fix` | `{summary, url?, commit?, release?, verify_url?, verify_after?, fence?}` | `{report}`, `fix_proposed`: the summary is posted as the writer's comment, the lease ends (`queue.release`, reason `fix_proposed`); an agent needs its live lease, a person none; 400 `invalid_fix` (blank summary, summary over 4 KiB, a `url` or `verify_url` not http(s) or over 2048 bytes, `commit`, `release` or `verify_after` over 256 bytes); 409 `not_claimable` for a `verified` or `resolved` report |
+| `POST …/reports/<tid>/verify` | `{note?}` | `{report}`, `verified`, on the reporter's behalf and recorded as the person's; a person's alone (403 `not_for_agents`); 409 `not_fix_proposed` |
+| `POST …/reports/<tid>/reopen` | `{body}` | `{report}`, `open`, as the reporter's reopen; a person's alone (403 `not_for_agents`); 409 `not_fix_proposed` |
+| `POST …/reports/<tid>/resolve` | `{reason?}` (default `other`) | `{report}`, `resolved` with `resolve_reason`; 400 `invalid_args` for another reason |
+| `GET …/reports/<tid>/diagnostics?capture=` | | `{lines}`, of any report of the queue, read as the reporter's; 400 `invalid_query` |
+| `GET …/reports/<tid>/comments/<cid>/clip` | | a reopen's PNG |
+| `POST …/reports/<tid>/claim` | | the lease; 409 `not_claimable` for a `fix_proposed` report |
+| `POST …/reports/<tid>/release` | `{note?}` (a person's; an agent's body is not read) | `{report}`, `open`. An agent releases its own live lease (409 `claim_required`, `lease_lost` or `thread_taken` otherwise; `queue.release`, reason `explicit`). A person (not an agent) ends the report's live lease whoever holds it: the lease ends at once under its fence, so its holder's next `…/renew`, write or `…/fix` is 409 `lease_lost` (a new claim takes a larger fence); `note`, or `Released the claim: the report is open again.`, is posted as the person's comment with `triage_only`; the holder's session is woken (`queue_event` `released`, below); recorded as `queue.release` with reason `person` and the person as its actor; a person's answer is `{report, released}`, `released` true. A report no live lease holds (its claim lapsed, or was released already) is answered as it is with `released: false`, and nothing is written, journaled or woken. 400 `invalid_args` for another body |
+| `POST /api/queues/<qid>/watch` | | 204: the agent's session watches the queue until it unwatches it, ends, or its person leaves the queue (watching again changes nothing); 400 `no_session` without a session |
+| `DELETE /api/queues/<qid>/watch` | | 204: the session no longer watches it (one that did not is fine); it removes only the caller's own watch and needs no membership; 400 `no_session` without a session |
+
+**Queue wakes.** A report filed into a queue, and a report reopened (by
+its reporter, or by triage on their behalf), wakes every live session
+watching the queue; a reopen also wakes the agent's session that proposed
+the fix it rejects (the report's latest fix; its `proposer_kind` is
+`agent`) while that session has not ended, whether it watches the queue
+or not. When a person proposed that fix, no other session is woken,
+whoever claimed the report before (an agent whose claim was released or
+lapsed is not). Only a
+session whose person (or the owner) is still a member of the queue is
+woken; removing a member ends their sessions' watches of it. A wake is a
+feedback row for the filing's note or the reopen's comment, made in the
+filing's or reopen's transaction, one per session (a session with a row
+for that comment gets no second); it needs no watch of the report's
+artifact, and it reaches the session as any comment sent to it does:
+`wait_for_feedback` and the other tiers, and `clax feedback follow`. It
+is handed to a member's session whole exactly when that session's
+rights hold Comments `read` somewhere (as `queue_get` serves the report),
+whatever authors its person has approved and whatever artifacts its
+rights reach; a member's session whose rights do not is told of it as
+`no_access` ("you no longer have access to this page"), never given it;
+and a wake still undelivered when its session has ended, its person is
+no longer a member, or the queue is gone is never handed over or
+announced. A reporter's comment on a report (`…/reporter/reports/<tid>/comments`)
+is sent the same way to the session holding the report's live lease or,
+while a fix waits (`fix_proposed`, its lease ended with the proposal), to
+the session that proposed that fix (its summary comment's session; the
+fix's `proposer_kind` is `agent`) while that session has not ended, in
+each case while its person is a member: a feedback row for that comment,
+with no `queue_event`, delivered under the same rule. That session may
+answer it with `queue_reply` without a lease ("Report queue tools").
+When a person proposed the fix that waits, the comment reaches no agent's
+session, whoever claimed the report before; nor does any other
+reporter's comment. Triage reads every one on the report. It
+never makes the session the report's owner (a claim does) and is no
+part of the report's `feedback_state`: a wake does not show the report
+as sent to or delivered to an agent. A person's release of a claim
+(`…/release`) wakes the session that held it alone, the same way, for
+the release's note (`queue_event` `released`), while that session has not
+ended and its person is a member; the queue's watchers are not woken by
+it. Its item carries `queue_id`,
+`queue_event` (`filed`, `reopened` or `released`) and, for a reopen by a triage
+person, `reopened_by` (their name), for a release `released_by` (the
+person's name), and its text ends, in place of the
+queue-tools line of a comment:
+
+    This is a new report in queue <qid>: call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
+    Report <report ID> in queue <qid> was reopened by <who>: call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
+    Your claim on report <report ID> in queue <qid> was released by <name>: stop working on it: queue_renew and queue_fix now answer lease_lost. To take it again, call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
+
+where `<who>` is `its reporter`, or `<name> for its reporter` for a
+triage person's reopen on the reporter's behalf. Its notice (`GET
+/api/sessions/<sid>/notices`, with `event`, `reopened_by` and `released_by`) is one of:
+
+    [clax] New report in queue <qid>: "<title>" (<url>), report <report ID>. Call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
+    [clax] Report <report ID> in queue <qid> was reopened by <who>: "<title>" (<url>). Call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
+    [clax] Your claim on report <report ID> in queue <qid> was released by <name>: "<title>" (<url>). Stop working on it: queue_renew and queue_fix now answer lease_lost. To take it again, call queue_get with queue "<qid>" and report_id "<report ID>", then queue_claim to work on it; if you have already handled it, do nothing.
+
+An undelivered wake of a session that ends is deleted, never handed to
+another session: the report waits in its queue.
+
+Error codes besides the common ones: `invalid_context`,
+`invalid_diagnostics`, `invalid_profile`, `invalid_fix` (400);
+`not_fix_proposed`, `not_claimable`, `lease_lost` (409).
+
+**The instance's own feedback queue.** An instance files its people's
+reports about Clax itself into one of its queues, as an integrating
+product's backend does (`crates/clax-server/src/integrations/feedback.rs`,
+`docs/prod.md`): the queue and service grant configured (`[feedback]
+queue, service_grant_file, origin?` in `config.toml`, or the Worker
+secrets `CLAX_FEEDBACK_QUEUE` and `CLAX_FEEDBACK_SERVICE_GRANT`), or, on a
+hosted instance configured with neither, its own: the first time a person
+asks once the owner exists it makes the queue `clax-feedback` (the
+owner's, its public origin the one origin, `reporters_see: own`, recorded
+`queue.create`) and a service grant `instance` of it (`queue.update` `op:
+grant`), keeps both, and makes them again when the queue is deleted or
+the grant revoked, adding a moved public origin to the queue
+(`queue.update` `op: update`). A local instance that is not hosted files
+only when configured. Its two routes are the product's own, behind the
+instance's session, and are no part of the public API; the token route
+sends `POST /api/queues/<qid>/reporter-tokens` the signed request an
+outside backend sends, in process. Who files: every signed-in person, the
+owner and each connected person who is not revoked; agents 403
+`not_for_agents`.
+
+| Route | Body | Answer |
+|---|---|---|
+| `POST /_app/feedback/token` (same origin) | `{public_key}` (Ed25519, unpadded base64url) | `{token, expires_at}`: a reporter token for `reporter_id` = the person's public ID, the integration's origin and that key, with profile `{name?, github?}` from their GitHub account (`name` their Clax name without one); 404 `not_found` with the integration off; 401 without a credential; 403 `not_a_person` for a viewer; 400 as the public route answers the key (`invalid_key`, or `invalid_args` naming `public_key`); 429 `limit_reached` as it answers one, with its `Retry-After`; 503 `feedback_unavailable` for any other refusal of the public route, which is the integration's own (a revoked grant, an origin the queue no longer lists) and names no credential |
+| `GET /_app/feedback/config` | | `{enabled: true, instance, queue, user, context: {release: {version, commit?, id?, channel}, flags, app: {repo}}}` for a caller who may file: `instance` the instance's base URL to file to, `queue` its ID, `user` the caller's public ID (the reporter ID its tokens carry, and the overlay's `user`, which keeps its reporter key and token per person), `context` what the shell attaches to each report (`release` as `/healthz` reports it, `id` its `build`, `channel` `prod` on `https://clax.dev` and `dev` elsewhere; `flags` the caller's own, as `GET /api/me/flags`; `app.repo` `https://github.com/empathic/clax`); for anyone else, the integration off included, `{enabled: false, instance: null, queue: null, context: null}` |
 
 A report is read and written through its queue alone. The thread listings
 (`GET /api/artifacts/<id>/threads`, `GET /api/threads`, `comments_read`
@@ -4134,7 +4408,8 @@ prints one line per comment sent to the session, naming the artifact and
 thread and saying to call `comments_read`. It never prints the comment.
 The daemon announces a row only when no tier has delivered it, no
 follower has announced it to this session (`notified_at` unset), and the
-session watches the artifact with replies armed, and it sets
+session watches the artifact with replies armed (or the row is a queue's
+wake, "Queue wakes" above, which needs no watch), and it sets
 `notified_at` as it announces. A notice is not a delivery: the row still
 waits for tiers 1, 2 and 4, which deliver it once under the rules above,
 so a monitor never causes a second delivery. Retargeting a row clears
@@ -5386,6 +5661,8 @@ router), and a test fails when it differs:
 | `POST /api/sessions/{id}/terminal` | Own | none | 2 MiB | yes |
 | `GET /api/queues` | Own | none | 2 MiB | yes |
 | `GET /api/queues/{qid}/reports` | Own | `clax-comments` `read` | 2 MiB | yes |
+| `POST /api/queues/{qid}/watch` | Own | `clax-comments` `watch` | 2 MiB | yes |
+| `DELETE /api/queues/{qid}/watch` | Own | `clax-comments` `watch` | 2 MiB | yes |
 | `GET /api/queues/{qid}/reports/{tid}` | Own | `clax-comments` `read` | 2 MiB | yes |
 | `GET /api/queues/{qid}/reports/{tid}/clip` | Own | `clax-comments` `read` | 2 MiB | yes |
 | `POST /api/queues/{qid}/reports/{tid}/claim` | Own | `clax-comments` `reply` | 2 MiB | yes |
@@ -5395,6 +5672,9 @@ router), and a test fails when it differs:
 | `POST /api/queues/{qid}/reports/{tid}/resolve` | Own | `clax-comments` `resolve` | 2 MiB | yes |
 | `PATCH /api/queues/{qid}/reports/{tid}` | Own | `clax-comments` `reply` | 2 MiB | yes |
 | `PATCH /api/queues/{qid}/reports/{tid}/artifact` | Own | `clax-artifacts` `update` | 2 MiB | yes |
+| `POST /api/queues/{qid}/reports/{tid}/fix` | Own | `clax-comments` `reply` | 2 MiB | yes |
+| `GET /api/queues/{qid}/reports/{tid}/diagnostics` | Own | `clax-comments` `read` | 2 MiB | yes |
+| `GET /api/queues/{qid}/reports/{tid}/comments/{cid}/clip` | Own | `clax-comments` `read` | 2 MiB | yes |
 
 | Route | Class | Refuses the owner's agents |
 |---|---|---|
@@ -5402,6 +5682,8 @@ router), and a test fails when it differs:
 | `GET /.well-known/apple-app-site-association` | Denied | no |
 | `GET /.well-known/assetlinks.json` | Denied | no |
 | `GET /.well-known/clax` | Denied | no |
+| `GET /_app/feedback/config` | Denied | yes: 403 `not_for_agents` |
+| `POST /_app/feedback/token` | Denied | yes: 403 `not_for_agents` |
 | `GET /_blob/{aid}/{asset_id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /_blob/{asset_id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /_clax/blob/{asset_id}` | Denied | yes: 403 `not_for_agents` |
@@ -5534,6 +5816,7 @@ router), and a test fails when it differs:
 | `PUT /api/me/bot` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/me/bot/key` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/me/bot/key` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/me/flags` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/me/usage` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/people` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/people/invites` | Denied | yes: 403 `not_for_agents` |
@@ -5558,6 +5841,8 @@ router), and a test fails when it differs:
 | `GET /api/queues/{qid}/members` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/queues/{qid}/members/{public_id}` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/queues/{qid}/members/{public_id}` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/queues/{qid}/reports/{tid}/reopen` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/queues/{qid}/reports/{tid}/verify` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/queues/{qid}/service-grants` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/queues/{qid}/service-grants` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/queues/{qid}/service-grants/{gid}` | Denied | yes: 403 `not_for_agents` |
@@ -5608,6 +5893,8 @@ router), and a test fails when it differs:
 | `GET /me` | Denied | no |
 | `GET /people` | Denied | no |
 | `GET /queues` | Denied | no |
+| `GET /queues/{qid}` | Denied | no |
+| `GET /queues/{qid}/{tid}` | Denied | no |
 | `GET /settings` | Denied | no |
 | `GET /site-signin` | Denied | yes: 403 `not_for_agents` |
 | `GET /tags` | Denied | no |
@@ -7306,6 +7593,7 @@ except as noted:
 | `docs:<aid>` | Its `doc` events the caller may see, and `artifact_deleted`; needs `db` declared, or the token. |
 | `docs:<B>?reader=<A>` | B's `doc` events that `view` with no viewer may read, each only while app A may read B (checked as it is dispatched); subscribing needs A to exist and to be allowed to read B then (403 `not_granted` or `not_declared`). See "Reading another app's documents". |
 | `agents` | `agents` (`{topic}`, naming nothing) whenever the agents roster may have changed: an agent started, ended, was renamed or got watches back, a thread's owner changed, or a working record, question or approval request changed. Refetch `GET /api/agents`. Only the owner's and connected people's streams take it (403 `forbidden` otherwise). |
+| `queue:<qid>` | `report` whenever a report of report queue `<qid>` is filed, claimed, renewed, released (by its agent, or ended by a person), given a fix, verified, reopened, resolved, commented on, or given new metadata (its own or its page artifact's). A claim that lapses publishes none. Only a member of the queue takes it (404 `not_a_member` otherwise, as its triage routes answer, and 400 `invalid_topic` for a `<qid>` that is not a queue ID); each event reaches only the streams of the queue's members at the change, so a member removed hears no more though their stream still holds the topic. |
 | `site:<origin>` | What `artifact:<aid>` carries, for every live page of the origin's site (every origin joined to it, those joined later too: see "Joined sites"), those made later included, and `site` when an origin joins the site or is split off. `<origin>` is written as the daemon normalizes it (`http://localhost:5173`: scheme, lowercased host, port unless the scheme's default, no path), else 400 `invalid_topic`. Only a stream that may see live pages takes it (404 `not_found` otherwise, as for a live page's topic), and only an owner's (403 `forbidden` otherwise). The `thread_deleted` a move sends for older clients is not on it. |
 
 **Events.** Every event but `ready` and `resync` carries `id:
@@ -7374,6 +7662,10 @@ event's data names its `topic`. Events carry what changed:
   people whose entry is new or changed, and the public IDs no longer listed.
   A report that changed nothing is not sent. Seed the list from `GET
   /api/artifacts/<aid>/presence`.
+- `report` on `queue:<qid>`: `{topic, queue_id, report_id, state}`: the
+  report's state after the change, never its text, its reporter or who
+  changed it: refetch `GET /api/queues/<qid>/reports/<tid>` (or the
+  listing). `/api/events` does not carry it.
 - `doc`: `{topic, artifact_id, path, version}` (`version` is `null` after a
   delete), never a body. An event for a path in a viewer's private subtree
   reaches only that viewer's streams; any other reaches only callers whose
@@ -8126,6 +8418,47 @@ ID>`. An artifact URL whose `#` fragment is neither is the artifact.
   `file_path`s resolving against the working directory. Readable output
   prints the document (`get`), one line per document (`list`, `query`), or
   what was written and its new version.
+- `clax queue ls|show|clip|diagnostics|claim|renew|release|reply|fix|resolve|follow`
+  work a report queue on its triage routes ("Report queue routes"), as
+  the queue tools do. Each takes `--queue <ID>`, else `CLAX_QUEUE`; IDs
+  that are not ULIDs are `invalid_args`. `ls` and `show` run `queue_list`
+  and `queue_get` with no session, so their `--json` is those tools'
+  results (`show` without the empty `feedback`); the other subcommands
+  make the same daemon calls the tools make. `ls` lists the reports in
+  state `active` (`--state open|claimed|fix_proposed|verified|resolved|active|all`),
+  every page, as `ID  STATE  RELEASE  AGE  NOTE` columns (RELEASE the
+  context's release version, else its ID, else its commit's first 12
+  characters; NOTE the filing's text) or `--json` `{queue, reports}`;
+  without a queue it lists the caller's queues (`ID  ROLE  NAME`, `--json`
+  `{queues}`). `show <report>` prints the report, its context, its
+  conversation, its fixes and its latest capture's diagnostics count and
+  clip. `clip <report> [--capture N] [-o FILE]` writes a capture's PNG
+  (0 the filing's, `N` the `N`th reopen's, from `…/clip` or
+  `…/comments/<cid>/clip`; default the latest capture with a clip) to
+  `FILE`, default `<report>.png`, `-` for stdout (`--json` `{queue,
+  report_id, capture, path, bytes}`); a capture without one is `no_clip`.
+  `diagnostics <report> [--capture N]` prints a capture's lines (default
+  the latest capture with any) as `AT  LEVEL  KIND  TEXT`, `--json`
+  `{queue, report_id, capture, lines}`. `claim`, `renew`, `release`,
+  `reply <report> <body>` (`-` reads stdin), `fix <report> --summary S
+  [--url U] [--commit C] [--release R] [--verify-url V] [--verify-after
+  A]` and `resolve <report> [--reason fixed|duplicate|wontfix|cannot_reproduce|other]`
+  act in the agent session named as `clax feedback follow` names it
+  (`--session`, or `--agent` with `--harness-session`, or
+  `GROK_SESSION_ID`); with none they act as the CLI's credential, and the
+  route's `no_session` says to pass one. `--json` prints the route's
+  answer; no result carries the session's waiting feedback, which still
+  arrives through its delivery tiers. `follow [<queue>]` watches the queue
+  as that session (`POST /api/queues/<qid>/watch`, again whenever the
+  session is registered anew) and long-polls its notices, printing one
+  JSON line per notice of the queue: `{event, queue, report_id, title,
+  url}`, `event` being `filed`, `reopened` or `comment` (a comment on a
+  report sent to the session), with `reopened_by` when the notice has it.
+  It passes over notices of anything else (they still arrive through the
+  tiers), never starts a daemon, follows the session across daemon
+  restarts, exits 0 once the session has ended (or, with `--once`, after
+  the first poll that printed a line), exits 1 on a refused watch (such
+  as `not_a_member`), and exits 2 without a session.
 - `clax status` also lists the working roster: every agent working on an
   artifact now, newest first, with its harness and handle, the artifact's
   title and ID, the threads it named (by number), its message, how long it
@@ -8345,9 +8678,14 @@ the body below.
 | `doc.move` | `from, to, collection, doc_id, version, sha256` | a private document following a viewer claimed for the owner |
 | `viewer.claim` | `from_public_id, to_public_id` | a claim that retires a public ID; a record naming `from_public_id` resolves to `to_public_id` |
 | `thread.open` | `version_n, anchor{kind, selector, quote, prefix, suffix, html_hash, file, route}, live_path, has_clip, first_comment_id` | a new thread, followed by its first `comment.add`; a thread on the whole artifact has `anchor.kind` `artifact` and `anchor.file` `""`, and its step's description reads `Opened thread <ID> about the whole artifact on version <n> of …` |
-| `comment.add` | `comment_id, body, author_kind, author_name, via_harness, via_page` | every comment; a viewer comment that reopens a resolved thread records `comment.add` then `thread.reopen` |
-| `thread.resolve` | `resolved_by, addressed_version (n\|null)` | a resolve of an open thread |
+| `comment.add` | `comment_id, body, author_kind, author_name, via_harness, via_page` | every comment; a viewer comment that reopens a resolved thread records `comment.add` then `thread.reopen` (a comment never reopens a queue's report: its reopen does, recording `comment.add`, `thread.reopen` and `queue.reopen`) |
+| `thread.resolve` | `resolved_by, addressed_version (n\|null)`, and for a queue's report `reason` (`fixed\|duplicate\|wontfix\|cannot_reproduce\|other`) | a resolve of an open thread |
 | `thread.reopen` | none | a reopen of a resolved thread |
+| `queue.claim` | `queue_id, thread_id, session, lease_id, fence, expires_at` | a claim of a report that makes a new lease |
+| `queue.release` | `queue_id, thread_id, session, lease_id, reason (explicit\|member_removed\|fix_proposed\|person)` | a lease ended by its session, by its person's removal from the queue, by a fix, or by a triage person (`…/release`; the actor is the person) |
+| `queue.fix` | `queue_id, thread_id, n, url?, commit?` | a fix proposed on a report, after its summary's `comment.add` |
+| `queue.verify` | `queue_id, thread_id, n` | a verdict that a report's fix works, after its `thread.resolve` (`reason: fixed`) |
+| `queue.reopen` | `queue_id, thread_id, n?, reopen_count` (`n` the latest fix's, when there is one) | a report said still broken, after its `comment.add` and `thread.reopen` |
 | `thread.delete` | `moved` | delete |
 | `thread.send` | `target ("watchers" \| {session_id, agent_handle}), feedback_ids[], batch_id?, thread_ids[]` | a send that changes something, automatic forwards included |
 | `feedback.delivered` | `feedback_id, tier` | a feedback row's first hand-over; `session_id` is the receiving session |
@@ -8756,7 +9094,8 @@ owner's public ID is.
   A revoked person is a member, whatever row is left.
 - **Flags** (`person_flags`): `claxbot` (on for the owner, off for anyone
   else until set) and `claxbot_unenforced` (off); other names are refused
-  (`unknown_flag`). Each change is an `admin.flag`.
+  (`unknown_flag`), and a stored row of another name is ignored. Each
+  change is an `admin.flag`.
 - **Settings** (`bot_settings`): `base_url`, `models.default|quick|complex`,
   `max_tokens`, `max_steps`, `max_run_credits`, `max_run_minutes`,
   `concurrency`, `script.cpu_ms|memory_mib|max_calls`,
@@ -8906,6 +9245,7 @@ handle, `*system` as "Clax".
 |---|---|---|
 | `GET /api/me/bot`, `PUT /api/me/bot {use_own}`, `PUT`/`DELETE /api/me/bot/key` | the owner and connected people, their own | `admin.key` (scope `own`) |
 | `GET /api/me/usage?week=` | the same; on a hosted Clax a run's `artifact_title` is `null` once its artifact is out of the caller's reach (its cost rows stay) | `view.usage` |
+| `GET /api/me/flags` → `{flags: {claxbot, claxbot_unenforced}}` (each person's defaults filled in) | the same, their own; agents 403 `not_for_agents` | — |
 | `GET /api/agents` | as before; ClaxBot is listed first (`handle: "claxbot"`, `builtin: true`, `live`, or `unavailable: no_flag\|no_credits\|not_configured\|model_not_priced`) where the caller may send | — |
 | `POST /api/bot/runs {thread_ids, artifact_id}`; a send or batch with `to: "claxbot"`; `POST /api/artifacts:new` with `build: "claxbot"`; a person's comment on a thread whose last run ended | the sender (a person, or their agent: the run acts for that person); SameOrigin | `bot.run_start`, or `bot.refused` and 403 `no_flag`, `credits_exhausted`, `not_configured` or `model_not_priced` before any model call |
 | `GET /api/bot/runs?artifact=`, `GET /api/bot/runs/<id>`, `GET /api/bot/runs/<id>/events` | the person a run acts for, admins, and anyone who may read its artifact (read-only); a live page's runs the owner's alone; on a hosted Clax an admin as below | `view.run` |

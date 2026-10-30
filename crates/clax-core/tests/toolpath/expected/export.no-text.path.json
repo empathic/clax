@@ -3379,13 +3379,167 @@
             ],
             "timestamp": "2026-10-06T14:09:27.114Z"
           }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001": {
+              "structural": {
+                "commit": "f7e862ab0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f",
+                "n": 1,
+                "queue_id": "01JBQQ00000000000000000001",
+                "thread_id": "01JB9T00000000000000000001",
+                "type": "clax.queue.fix",
+                "url": "https://github.com/acme/app/pull/123"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "queue.fix",
+              "seq": 115,
+              "session_id": "01JB9S00000000000000000001",
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Proposed fix 1 on report 01JB9T00000000000000000001",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "file:///Users/alex/.claude/projects/-Users-alex-work-app/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44.jsonl",
+                "rel": "transcript"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000115",
+            "parents": [
+              "e000000000114"
+            ],
+            "timestamp": "2026-10-06T14:09:28.115Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001": {
+              "structural": {
+                "n": 1,
+                "queue_id": "01JBQQ00000000000000000001",
+                "reopen_count": 1,
+                "thread_id": "01JB9T00000000000000000001",
+                "type": "clax.queue.reopen"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "queue.reopen",
+              "seq": 116,
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "lan"
+            },
+            "description": "Reopened report 01JB9T00000000000000000001",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-reporter/01JBQQ00000000000000000001.user-4821",
+            "id": "e000000000116",
+            "parents": [
+              "e000000000115"
+            ],
+            "timestamp": "2026-10-06T14:09:29.116Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001": {
+              "structural": {
+                "n": 2,
+                "queue_id": "01JBQQ00000000000000000001",
+                "thread_id": "01JB9T00000000000000000001",
+                "type": "clax.queue.verify"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "queue.verify",
+              "seq": 117,
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "lan"
+            },
+            "description": "Verified the fix on report 01JB9T00000000000000000001",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-reporter/01JBQQ00000000000000000001.user-4821",
+            "id": "e000000000117",
+            "parents": [
+              "e000000000116"
+            ],
+            "timestamp": "2026-10-06T14:09:30.117Z"
+          }
         }
       ],
       "path": {
         "base": {
           "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab"
         },
-        "head": "e000000000114",
+        "head": "e000000000117",
         "id": "clax-artifact-k3m9q2w8x1ab"
       },
       "meta": {
@@ -3458,6 +3612,15 @@
               }
             ],
             "name": "Sam"
+          },
+          "human:clax-reporter/01JBQQ00000000000000000001.user-4821": {
+            "identities": [
+              {
+                "id": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697/01JBQQ00000000000000000001/user-4821",
+                "system": "clax-reporter"
+              }
+            ],
+            "name": "user-4821"
           },
           "human:clax-viewer/u_77c0zz": {
             "identities": [
@@ -6542,7 +6705,7 @@
       "clax_version": "0.3.1",
       "first_seq": 1,
       "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-      "last_seq": 114,
+      "last_seq": 117,
       "redaction": [
         "no-text"
       ],

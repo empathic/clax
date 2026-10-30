@@ -91,6 +91,57 @@ impl EmbedOrigins {
     }
 }
 
+/// Where the instance's own feedback integration (spec
+/// 2026-10-29-feedback-loop-design §10.2) takes what it files with.
+/// `clax_server::integrations::feedback` is the code that reads it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum InstanceFeedback {
+    /// None was configured: a hosted instance makes its own queue and
+    /// service grant and keeps them in its store
+    /// (`clax_store::Store::own_feedback`), for its public origin; on any
+    /// other the integration is off.
+    #[default]
+    Own,
+    /// The host configured it (`[feedback]` in `config.toml`, or the
+    /// Worker's `CLAX_FEEDBACK_QUEUE` and `CLAX_FEEDBACK_SERVICE_GRANT`).
+    Configured(Arc<FeedbackIntegration>),
+    /// Off: the host's configuration of it did not check.
+    Off,
+}
+
+/// What the instance's own feedback integration files with (spec
+/// 2026-10-29-feedback-loop-design §10.2): the queue its people report
+/// problems with Clax into, the service grant it mints their reporter
+/// tokens with, and the origin those tokens are bound to, as configured
+/// or as a hosted instance makes them for itself ([`InstanceFeedback`]).
+#[derive(Clone, PartialEq, Eq)]
+pub struct FeedbackIntegration {
+    /// The queue's ID.
+    pub queue_id: String,
+    /// The service grant's token (`cxq_…`).
+    pub grant_token: String,
+    /// The service grant's Ed25519 key, PKCS#8 v2.
+    pub grant_key_pkcs8: Vec<u8>,
+    /// The instance's base URL: the mint is sent to it and signed for its
+    /// host.
+    pub instance: String,
+    /// The page origin the reporter tokens are minted for, one of the
+    /// queue's origins (the instance's own, for its own shell).
+    pub origin: String,
+}
+
+impl std::fmt::Debug for FeedbackIntegration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FeedbackIntegration")
+            .field("queue_id", &self.queue_id)
+            .field("grant_token", &"…")
+            .field("grant_key_pkcs8", &"…")
+            .field("instance", &self.instance)
+            .field("origin", &self.origin)
+            .finish()
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<Store>,
@@ -250,6 +301,10 @@ pub struct AppState {
     /// ClaxBot's keys and run driver seam ([`crate::bot`]); the daemon
     /// and the Worker install theirs after [`AppState::assemble`].
     pub bot: Arc<crate::bot::Bot>,
+    /// Where the instance's own feedback integration comes from
+    /// ([`InstanceFeedback`]), which the host sets after
+    /// [`AppState::assemble`]; [`InstanceFeedback::Own`] by default.
+    pub feedback: InstanceFeedback,
 }
 
 /// [`AppState::sites`] without a site domain.
@@ -370,6 +425,7 @@ impl AppState {
         Ok(AppState {
             settings,
             bot: Arc::default(),
+            feedback: InstanceFeedback::Own,
             home: p.home,
             token: p.token,
             require_credential: p.require_credential,

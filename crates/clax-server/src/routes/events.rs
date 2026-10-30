@@ -194,6 +194,7 @@ pub async fn events(
                 | Event::Agents { .. }
                 | Event::Job { .. }
                 | Event::JobsOwner { .. }
+                | Event::Report { .. }
                 | Event::Tags { .. }
                 | Event::Comments { .. }
                 | Event::FeedbackState { .. }

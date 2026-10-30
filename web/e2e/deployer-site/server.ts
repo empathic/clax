@@ -12,8 +12,10 @@
 // for the cookie's user, bound to the key the overlay sends and to the
 // site's own origin. Until `grant` hands it the service grant, the backend
 // answers 503.
+import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { ClaxError } from "../../sdk/src/client";
 import { ServiceClient } from "../../sdk/src/service";
 import { freePort } from "../hosted-helpers";
 
@@ -43,12 +45,12 @@ const css = readFileSync(new URL("site.css", import.meta.url), "utf8");
  * inline script), requests to the site and the instance only, styles from
  * the site only (no <style> element or style attribute: the overlay styles
  * itself through the CSSOM). The overlay's clip preview is a `blob:` image. */
-export function policyFor(instance: string): string {
+export function policyFor(instance: string, nonce: string): string {
   return [
     "default-src 'self'",
     `script-src 'self' ${instance}`,
     `connect-src 'self' ${instance}`,
-    "style-src 'self' 'report-sample'",
+    `style-src 'self' 'nonce-${nonce}' 'report-sample'`,
     "img-src 'self' data: blob:",
     "frame-ancestors 'none'",
   ].join("; ");
@@ -91,8 +93,9 @@ export async function startDeployerSite(instance: string): Promise<DeployerSite>
       }
       if (req.method === "GET" && url.pathname === "/") {
         if (!service) return json(res, 503, { error: "no service grant yet" });
-        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": policyFor(instance), "cache-control": "no-store" });
-        return res.end(page.replaceAll("{{INSTANCE}}", instance).replaceAll("{{QUEUE}}", service.queue));
+        const nonce = randomBytes(18).toString("base64url");
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": policyFor(instance, nonce), "cache-control": "no-store" });
+        return res.end(page.replaceAll("{{INSTANCE}}", instance).replaceAll("{{QUEUE}}", service.queue).replaceAll("{{NONCE}}", nonce).replaceAll("{{USER}}", cookieUser(req) ?? ""));
       }
       if (req.method === "GET" && url.pathname === "/app.js") {
         res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
@@ -114,6 +117,11 @@ export async function startDeployerSite(instance: string): Promise<DeployerSite>
           minted.push(user);
           return json(res, 200, t);
         } catch (e) {
+          // The browser's key refused, or a limit reached: passed back with
+          // its code, as docs/feedback.md's route does.
+          if (e instanceof ClaxError && (e.code === "invalid_key" || e.code === "limit_reached")) {
+            return json(res, e.status, { error: { code: e.code, message: e.message } });
+          }
           return json(res, 502, { error: e instanceof Error ? e.message : String(e) });
         }
       }
