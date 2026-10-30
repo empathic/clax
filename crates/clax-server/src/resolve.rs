@@ -92,13 +92,21 @@ pub struct SignInRequest {
 }
 
 impl SignInRequest {
-    /// The request for `url`, a URL on the instance.
-    pub fn for_url(url: &str) -> SignInRequest {
+    /// The request for `url`, a URL on the instance: the command names it
+    /// as the URL parser wrote it (normalized and percent-encoded), quoted
+    /// for a POSIX shell ([`shell_quote`]), so nothing in it runs.
+    pub fn for_url(url: &url::Url) -> SignInRequest {
         SignInRequest {
             tool: "connect_instance".to_string(),
-            command: format!("clax remote request {url}"),
+            command: format!("clax remote request {}", shell_quote(url.as_str())),
         }
     }
+}
+
+/// `s` as one word of a POSIX shell: single-quoted, each single quote in
+/// it written `'\''`.
+pub fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// What `url` names, as the module comment orders it.
@@ -148,7 +156,7 @@ pub async fn resolve(s: &AppState, url: &str) -> Result<Resolved, ApiError> {
         Some(i) => Resolved::SignInRequired {
             origin,
             name: i.name,
-            request: SignInRequest::for_url(&raw),
+            request: SignInRequest::for_url(&u),
         },
         None => Resolved::Page { url: raw },
     })
@@ -344,6 +352,35 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// The command's URL is one quoted word whatever the agent's URL held:
+    /// an `&`, a `;`, a `$(…)`, a space or a single quote runs nothing.
+    #[test]
+    fn the_request_command_quotes_the_url_for_a_shell() {
+        assert_eq!(shell_quote("a'b"), "'a'\\''b'");
+        assert_eq!(shell_quote(""), "''");
+        let raw = "https://clax.example/a/7q3k9mzx2b4t?x=1&y=2;rm -rf $(whoami)#it's";
+        let u = url::Url::parse(raw).unwrap();
+        let cmd = SignInRequest::for_url(&u).command;
+        let arg = cmd.strip_prefix("clax remote request ").unwrap();
+        // One single-quoted word: quotes only at its ends, or as '\''.
+        assert!(arg.starts_with('\'') && arg.ends_with('\''), "{cmd}");
+        let inner = &arg[1..arg.len() - 1];
+        assert!(!inner.replace("'\\''", "").contains('\''), "{cmd}");
+        assert!(!inner.contains(' '), "a space is percent-encoded: {cmd}");
+        // Unquoted as a shell would, it is the parsed URL again.
+        assert_eq!(inner.replace("'\\''", "'"), u.as_str());
+        // A literal single quote that reaches the word is escaped.
+        let q = url::Url::parse("https://clax.example/a/x#a'b").unwrap();
+        let cmd = SignInRequest::for_url(&q).command;
+        assert_eq!(
+            cmd,
+            format!(
+                "clax remote request '{}'",
+                q.as_str().replace('\'', "'\\''")
+            )
+        );
+    }
+
     #[test]
     fn resolved_serialises_as_its_kind() {
         let v = |r: Resolved| serde_json::to_value(r).unwrap();
@@ -371,11 +408,13 @@ mod tests {
             v(Resolved::SignInRequired {
                 origin: "https://clax.example".into(),
                 name: "Acme".into(),
-                request: SignInRequest::for_url("https://clax.example/a/7q3k9mzx2b4t"),
+                request: SignInRequest::for_url(
+                    &url::Url::parse("https://clax.example/a/7q3k9mzx2b4t").unwrap()
+                ),
             }),
             json!({"kind": "sign_in_required", "origin": "https://clax.example", "name": "Acme",
                    "request": {"tool": "connect_instance",
-                               "command": "clax remote request https://clax.example/a/7q3k9mzx2b4t"}})
+                               "command": "clax remote request 'https://clax.example/a/7q3k9mzx2b4t'"}})
         );
         assert_eq!(
             v(Resolved::Page {

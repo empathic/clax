@@ -190,11 +190,34 @@ async fn connect_runs_the_device_flow_and_wakes_the_waiting_agent() {
     assert_eq!(v["request"]["status"], "open");
     let uc = user_code(&v);
     let every = Duration::from_secs(v["interval"].as_u64().unwrap());
-    // Pressed again while it waits: the same sign-in.
+    clock.wait_for(every, 1).await;
+    // Pressed again while it waits: the same sign-in, and still one driver.
     let (s, again) = answer(&ts, &id, "connect").await;
     assert_eq!((s, user_code(&again)), (200, uc.clone()), "{again}");
+    assert_eq!(ts.state.remote_drivers.count(), 1);
+    assert_eq!(clock.waiting(every), 1);
+    // The agents never see the code or the approval page; the owner does.
+    let (s, mine) = json_of(
+        waiting_as(
+            ts.client.get(format!("{}/api/remotes", ts.base)),
+            &ts.token,
+            &sid,
+        )
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 200, "{mine}");
+    let pending = &mine["remotes"][0];
+    assert_eq!(pending["status"], "pending", "{mine}");
+    assert!(
+        pending.get("user_code").is_none() && pending.get("verification_url").is_none(),
+        "{mine}"
+    );
+    let (_, owners) = json_of(ts.get_authed("/api/remotes").await).await;
+    assert_eq!(owners["remotes"][0]["user_code"], json!(uc), "{owners}");
     // The daemon polls while the person has not approved yet.
-    clock.wait_for(every, 1).await;
     public.clock.advance(5);
     clock.fire(every);
     clock.wait_for(every, 1).await;
@@ -210,6 +233,10 @@ async fn connect_runs_the_device_flow_and_wakes_the_waiting_agent() {
     clock.fire(every);
     let (s, v) = waiting.await.unwrap();
     assert_eq!((s, v["status"].as_str()), (200, Some("connected")), "{v}");
+    assert!(
+        v.get("user_code").is_none() && v.get("verification_url").is_none(),
+        "{v}"
+    );
     let remote = v["remote"].as_str().unwrap().to_string();
     let (_, rs) = json_of(ts.get_authed("/api/remotes").await).await;
     assert_eq!(rs["remotes"][0]["id"], json!(remote), "{rs}");
@@ -378,4 +405,116 @@ async fn answering_is_the_owners_browser_alone() {
     assert_eq!((s, &v["unmuted"]), (200, &json!(true)), "{v}");
     let (s, v) = ask(&ts, Some(&sid), json!({"url": public.origin})).await;
     assert_eq!((s, v["status"].as_str()), (201, Some("open")), "{v}");
+}
+
+/// Approves sign-in `uc` on `public`, then lets driver clock `clock` poll
+/// once (`every`); the request `id`'s answer to session `sid` on `ts`.
+async fn approve_and_poll(
+    ts: &TestServer,
+    public: &Public,
+    clock: &ManualSleeper,
+    every: Duration,
+    (sid, id, uc): (&str, &str, &str),
+) -> Value {
+    let (s, v) = public
+        .browser(
+            reqwest::Method::POST,
+            &format!("/api/hosted/device/{uc}/approve"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    public.clock.advance(5);
+    clock.fire(every);
+    let (s, v) = wait(ts, sid, id, 50).await;
+    assert_eq!(s, 200, "{v}");
+    v
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_connects_at_once_start_one_sign_in() {
+    let (ts, clock) = clocked().await;
+    let public = Public::new().await;
+    let (sid, id) = opened(&ts, &public).await;
+    let (a, b) = tokio::join!(answer(&ts, &id, "connect"), answer(&ts, &id, "connect"));
+    assert_eq!((a.0, b.0), (200, 200), "{a:?} {b:?}");
+    assert_eq!(user_code(&a.1), user_code(&b.1));
+    assert_eq!(a.1["remote"]["id"], b.1["remote"]["id"]);
+    let (_, rs) = json_of(ts.get_authed("/api/remotes").await).await;
+    assert_eq!(rs["remotes"].as_array().unwrap().len(), 1, "{rs}");
+    let every = Duration::from_secs(a.1["interval"].as_u64().unwrap());
+    clock.wait_for(every, 1).await;
+    assert_eq!(ts.state.remote_drivers.count(), 1);
+    let v = approve_and_poll(&ts, &public, &clock, every, (&sid, &id, &user_code(&a.1))).await;
+    assert_eq!(v["status"], "connected", "{v}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connect_again_drives_a_stranded_sign_in() {
+    let (ts, clock) = clocked().await;
+    let public = Public::new().await;
+    let (sid, id) = opened(&ts, &public).await;
+    let (_, v) = answer(&ts, &id, "connect").await;
+    let uc = user_code(&v);
+    let every = Duration::from_secs(v["interval"].as_u64().unwrap());
+    clock.wait_for(every, 1).await;
+    // As after a restart: no driver of this daemon's holds the request.
+    ts.state.remote_drivers.forget(&id);
+    let (s, again) = answer(&ts, &id, "connect").await;
+    assert_eq!((s, user_code(&again)), (200, uc.clone()), "{again}");
+    // A new driver polls it beside the stranded task.
+    clock.wait_for(every, 2).await;
+    assert!(ts.state.remote_drivers.drives(&id));
+    let v = approve_and_poll(&ts, &public, &clock, every, (&sid, &id, &uc)).await;
+    assert_eq!(v["status"], "connected", "{v}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restarted_daemon_resumes_a_waiting_sign_in() {
+    let (ts, clock) = clocked().await;
+    let public = Public::new().await;
+    let (sid, id) = opened(&ts, &public).await;
+    let (_, v) = answer(&ts, &id, "connect").await;
+    let uc = user_code(&v);
+    let every = Duration::from_secs(v["interval"].as_u64().unwrap());
+    clock.wait_for(every, 1).await;
+    // The same home, started again: its own clock, nothing in memory.
+    let later = Arc::new(ManualSleeper::default());
+    let l = later.clone();
+    let again = ts.reopened_with(move |s| s.question_sleeper = l).await;
+    later.wait_for(every, 1).await;
+    assert!(again.state.remote_drivers.drives(&id));
+    let v = approve_and_poll(&again, &public, &later, every, (&sid, &id, &uc)).await;
+    assert_eq!(v["status"], "connected", "{v}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wait_past_the_polls_one_request_holds_says_to_call_again() {
+    let (ts, clock) = clocked().await;
+    let public = Public::new().await;
+    let (sid, id) = opened(&ts, &public).await;
+    let mut held = Vec::new();
+    for _ in 0..4 {
+        let r = waiting_as(
+            ts.client
+                .get(format!("{}/api/remotes/requests/{id}?wait=50", ts.base)),
+            &ts.token,
+            &sid,
+        );
+        held.push(tokio::spawn(async move {
+            json_of(r.send().await.unwrap()).await
+        }));
+    }
+    clock.wait_for(Duration::from_secs(50), 4).await;
+    let (s, v) = wait(&ts, &sid, &id, 50).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        (&v["status"], &v["call_again"], &v["retry_after_s"]),
+        (&json!("open"), &json!(true), &json!(5)),
+        "{v}"
+    );
+    clock.fire(Duration::from_secs(50));
+    for h in held {
+        assert_eq!(h.await.unwrap().1["status"], "open");
+    }
 }

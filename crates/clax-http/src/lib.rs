@@ -20,6 +20,7 @@ pub mod conn;
 pub mod content_policy;
 pub mod db_caller;
 pub mod discovery_cache;
+pub mod remote_drivers;
 pub mod error;
 pub mod exports;
 pub mod extension;

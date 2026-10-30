@@ -94,7 +94,7 @@ async fn resolve_tells_local_remote_unconnected_and_page_apart() {
             json!({"kind": "sign_in_required", "origin": other.origin,
                    "name": format!("localhost:{}", other.ts.addr.port()),
                    "request": {"tool": "connect_instance",
-                               "command": format!("clax remote request {}/a/{raid}", other.origin)}}),
+                               "command": format!("clax remote request '{}/a/{raid}'", other.origin)}}),
         ),
         (free.clone(), json!({"kind": "page", "url": free})),
         (pushed.clone(), mine.clone()),
@@ -159,7 +159,7 @@ async fn resolve_tells_local_remote_unconnected_and_page_apart() {
     assert_eq!(
         e["request"],
         json!({"tool": "connect_instance",
-               "command": format!("clax remote request {}/a/{raid}", other.origin)}),
+               "command": format!("clax remote request '{}/a/{raid}'", other.origin)}),
         "{e}"
     );
     let res = mcp_post(&local, ADAPTER, &call(format!("{o}/a/{raid}")))
@@ -289,7 +289,7 @@ async fn a_negative_discovery_is_kept_ten_minutes() {
     assert_eq!(site.asked(), 1);
     clock.advance(1);
     let clax = json!({"kind": "sign_in_required", "origin": site.origin, "name": "Late",
-        "request": {"tool": "connect_instance", "command": format!("clax remote request {url}")}});
+        "request": {"tool": "connect_instance", "command": format!("clax remote request '{url}'")}});
     assert_eq!(resolve(&local, &url).await, clax, "then asked again");
     assert_eq!(site.asked(), 2);
     clock.advance(86_400 * 30);

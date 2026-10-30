@@ -521,6 +521,14 @@ describe("InboxPage", () => {
     expect(document.activeElement).toBe(m.root.querySelector(".acard"));
   });
 
+  it("goes to the connection request's card for `?remote_request=`, focused", async () => {
+    history.replaceState(null, "", "/inbox?remote_request=01J9Q0000000000000000000RR");
+    stubRoutes({ "": [item("remote_request", { id: "IRR", seq: 6 }), R] });
+    const { m } = page();
+    await settle();
+    expect(document.activeElement).toBe(m.root.querySelector(".rcard"));
+  });
+
   it("filters by the approval, connection and ended kinds", async () => {
     history.replaceState(null, "", "/inbox?kind=connection");
     const calls = stubRoutes();

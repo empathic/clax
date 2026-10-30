@@ -272,13 +272,88 @@ async fn an_agent_adding_a_remote_is_pointed_at_remote_request() {
         line.contains("not agents") && line.contains("agents: use `clax remote request <url>`"),
         "{line}"
     );
-    // Asking needs the agent's session.
-    let out = e
-        .cmd()
-        .env("CLAUDECODE", "1")
-        .args(["remote", "request", &origin, "--reason", "to read the plan"])
-        .assert()
-        .failure();
+    // The CLI asks as the harness's live session, found without a flag.
+    let ask = |envs: &[(&str, &str)]| {
+        let mut c = e.cmd();
+        // Only the variables the case names: never this run's own harness's.
+        for v in [
+            "CLAUDE_CODE_SESSION_ID",
+            "GROK_SESSION_ID",
+            "CODEX_THREAD_ID",
+        ] {
+            c.env_remove(v);
+        }
+        for (k, v) in envs {
+            c.env(k, v);
+        }
+        c.args([
+            "remote",
+            "request",
+            "--json",
+            &origin,
+            "--reason",
+            "to read the plan",
+            "--wait",
+            "0",
+        ]);
+        c
+    };
+    // With no live session of its harness, the daemon refuses it.
+    let out = ask(&[("CLAUDECODE", "1")]).assert().failure();
     let err = String::from_utf8_lossy(&out.get_output().stderr).to_string();
     assert!(err.contains("session_required"), "{err}");
+    let info: Value =
+        serde_json::from_slice(&std::fs::read(e.dir.path().join("ax/daemon.json")).unwrap())
+            .unwrap();
+    let base = format!("http://127.0.0.1:{}", info["port"]);
+    let token = info["token"].as_str().unwrap().to_string();
+    let register = |body: Value| {
+        let (base, token) = (base.clone(), token.clone());
+        async move {
+            let v: Value = reqwest::Client::new()
+                .post(format!("{base}/api/sessions"))
+                .bearer_auth(token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            v["session"]["id"].as_str().unwrap().to_string()
+        }
+    };
+    // Under Codex: the session its thread variable names.
+    let codex =
+        register(json!({"harness": "codex", "harness_session_id": "th-1", "cwd": "/w"})).await;
+    let out = ask(&[("CODEX_THREAD_ID", "th-1")]).assert().success();
+    let v = json_out(&out.get_output().stdout);
+    assert_eq!(v["status"], "open", "{v}");
+    let rid = v["request_id"].as_str().unwrap().to_string();
+    // Under Claude Code, with no session variable: the session whose
+    // harness process is an ancestor of the CLI (here, this test).
+    let claude = register(
+        json!({"harness": "claude", "harness_session_id": "cc-1", "cwd": "/w",
+        "parent_pid": std::process::id()}),
+    )
+    .await;
+    assert_ne!(claude, codex);
+    let out = ask(&[("CLAUDECODE", "1")]).assert().success();
+    let v = json_out(&out.get_output().stdout);
+    assert_eq!(
+        (v["status"].as_str(), v["request_id"].as_str()),
+        (Some("open"), Some(rid.as_str())),
+        "{v}"
+    );
+    // Both asked: one request, two askers.
+    let r: Value = reqwest::Client::new()
+        .get(format!("{base}/api/inbox?kind=remote_request&read=all"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["items"][0]["remote_request"]["askers"], 2, "{r}");
 }

@@ -111,7 +111,8 @@ pub enum Asked {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Answer {
     /// The owner chose Connect: remote `0`'s sign-in started. The request
-    /// stays open until it ends.
+    /// stays open until it ends. Recorded only when no sign-in of another
+    /// Connect still waits for it: the request read after says whose is.
     Connecting(String),
     /// The sign-in finished: remote `0` is connected.
     Connected(String),
@@ -406,7 +407,9 @@ impl Store {
             match &ans {
                 Answer::Connecting(rid) => {
                     tx.execute(
-                        "UPDATE remote_requests SET remote_id = ?2 WHERE id = ?1",
+                        "UPDATE remote_requests SET remote_id = ?2 WHERE id = ?1
+                            AND (remote_id IS NULL OR remote_id NOT IN
+                                (SELECT id FROM remotes WHERE status = 'pending'))",
                         params![id, rid],
                     )?;
                 }
@@ -739,6 +742,29 @@ mod tests {
             ("open", Some("r_1"))
         );
         assert_eq!(st.remote_request_of("r_1").unwrap(), Some(r.id.clone()));
+        // r_1 is no pending remote: a later Connect's sign-in replaces it.
+        let p = st
+            .add_pending_remote(
+                ORIGIN,
+                "example",
+                &crate::remotes::PendingSignIn {
+                    device_code: clax_core::secret::Secret::new("dc".into()),
+                    user_code: "ABCD-1234".into(),
+                    verification_url: format!("{ORIGIN}/device?code=ABCD-1234"),
+                    expires_at: "2026-10-29T10:10:00.000Z".into(),
+                    interval_s: 5,
+                },
+            )
+            .unwrap();
+        let c = st
+            .answer_remote_request(&r.id, Answer::Connecting(p.id.clone()))
+            .unwrap();
+        assert_eq!(c.remote_id.as_deref(), Some(p.id.as_str()));
+        // While that sign-in waits, a second Connect's records nothing.
+        let c = st
+            .answer_remote_request(&r.id, Answer::Connecting("r_2".into()))
+            .unwrap();
+        assert_eq!(c.remote_id.as_deref(), Some(p.id.as_str()));
         let d = st
             .answer_remote_request(&r.id, Answer::Dismissed { hold_off: false })
             .unwrap();

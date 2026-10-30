@@ -288,7 +288,7 @@ An agent cannot add a remote (`clax remote add` under a harness answers
 remote request <url>`."). It asks instead:
 
 ```bash
-clax remote request https://clax.example/a/7q3k9mzx2b4t --reason "to read the launch plan" --session <its Clax session>
+clax remote request https://clax.example/a/7q3k9mzx2b4t --reason "to read the launch plan"
 ```
 
 The person sees one card in the inbox (and in the agent's thread when it
@@ -296,8 +296,11 @@ was working in one): "<agent> wants to connect to <name> (<origin>) to
 read <url>", with **Connect** (this Clax's device sign-in, approved on the
 other instance in a new tab), **Not now** (no new request for a day) and
 **Never for this instance** (muted until unmuted in Settings, Remotes).
-The command waits and prints the answer: `connected`, `dismissed`,
-`muted`, `not_now` or `expired`. Agents with the MCP tools use
+The command asks as the agent's own Clax session, which it finds from the
+harness (its session variable, else its process), or `--session`; it waits
+(600 s, 50 s under Codex, or `--wait`) and prints the answer: `connected`,
+`dismissed`, `muted`, `not_now` or `expired`, or `open` while the person
+has not answered. Agents with the MCP tools use
 `connect_instance` instead.
 
 A push publishes every version the public copy has not had, in order, with

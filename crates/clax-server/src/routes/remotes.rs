@@ -85,7 +85,21 @@ fn remote_view(r: &Remote) -> Value {
     json!(r)
 }
 
-/// `GET /api/remotes` → `{remotes}`, oldest first.
+/// [`remote_view`] for `asker`: an agent never sees a waiting sign-in's
+/// user code or approval page, which are the person's to use.
+fn remote_view_for(r: &Remote, asker: &Asker) -> Value {
+    let mut v = remote_view(r);
+    if matches!(asker, Asker::Agent(_))
+        && let Some(o) = v.as_object_mut()
+    {
+        o.remove("user_code");
+        o.remove("verification_url");
+    }
+    v
+}
+
+/// `GET /api/remotes` → `{remotes}`, oldest first. An agent's list leaves
+/// out a waiting sign-in's `user_code` and `verification_url`.
 pub async fn list(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -93,10 +107,10 @@ pub async fn list(
 ) -> Result<Json<Value>, ApiError> {
     local_only(&s)?;
     who.require_owner("publishes to a public Clax")?;
-    asker(&s, &d).await?;
+    let by = asker(&s, &d).await?;
     let rs = s.store_call(|st| st.remotes()).await?;
     Ok(Json(
-        json!({"remotes": rs.iter().map(remote_view).collect::<Vec<_>>()}),
+        json!({"remotes": rs.iter().map(|r| remote_view_for(r, &by)).collect::<Vec<_>>()}),
     ))
 }
 

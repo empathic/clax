@@ -1193,7 +1193,8 @@ nothing but the daemon's memory of other instances' discovery:
   `contract_version` and `api` `/api`; `name` is the one it gives, else its
   host and port. `request` says how an agent asks the person to connect
   it (**Connection requests**): `{tool: "connect_instance", command:
-  "clax remote request <the URL>"}`.
+  "clax remote request '<the URL>'"}`, the URL as parsed (normalized and
+  percent-encoded) and single-quoted for a POSIX shell.
 - `{kind: "page", url}`: anything else, the URL as given (trimmed).
 
 `version` is the URL's `/v/<n>` (or `/_clax/v/<n>`); a query or fragment
@@ -1245,7 +1246,9 @@ hosted one):
 - `GET /api/remotes/requests/<id>?wait=<s>` (the owner or the owner's
   agents) → `{request_id, status, origin, name, remote?, waited_s,
   call_again}` as soon as the request is not `open`, or after `wait`
-  seconds (at most 50), or when the daemon stops. `status`: `open`,
+  seconds (at most 50), or when the daemon stops. A poll that finds four
+  polls waiting on the request already answers at once, with
+  `retry_after_s` (5), rather than 429. `status`: `open`,
   `connected` (with `remote`, its ID), `dismissed` (Not now, or a sign-in
   denied or expired there), `muted` (Never) or `expired` (an open request
   expires 24 hours after it opened). 429 `limit_reached` past four polls of
@@ -1260,7 +1263,10 @@ hosted one):
   itself, every `interval`, and settles the request `connected` when it
   is approved, `dismissed` when it is denied (holding the origin off as a
   Not now) or expires; the waiting agents are woken. A Connect pressed
-  again while its sign-in waits answers that sign-in again. `not_now` and
+  again, at once or while its sign-in waits, answers that sign-in again
+  (one sign-in per request; a daemon started again drives the sign-ins
+  its requests still wait on). `GET /api/remotes` shows an agent a waiting
+  remote without its `user_code` and `verification_url`. `not_now` and
   `never` answer `{request}`. 409 `request_closed` (with `request`) for a
   request no longer open; 400 `invalid_args` for another answer.
 - `GET /api/remotes/mutes` (the owner) → `{mutes: [{origin, muted_at}]}`,
@@ -1272,9 +1278,14 @@ The MCP tool `connect_instance {url_or_origin | request_id, reason?,
 timeout_s?}` posts the request and waits for its answer in polls of at
 most 50 s (up to `timeout_s`: 600 by default, 50 under Codex), returning
 the route's answer with `waited_s` and `call_again`; while it is open,
-`url` (`/inbox?remote_request=<id>`) and `tell_terminal`. `clax remote
-request <url> [--reason <text>] [--session <sid>]` does the same from the
-CLI. An agent never sees the device code or the token.
+`url` (`/inbox?remote_request=<id>`, which focuses the card) and
+`tell_terminal`; with `retry_after_s` it returns at once to be called
+again. `clax remote request <url> [--reason <text>] [--session <sid>]
+[--wait <s>]` does the same from the CLI, as the session `--session`
+names, else the live session its harness's variable names
+(`CODEX_THREAD_ID`, `GROK_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`), else the
+live session whose harness process is an ancestor of the CLI's; it waits
+as the tool does. An agent never sees the device code or the token.
 
 **Pushing.** `clax push <artifact> [--to <remote>] [--new|--fork]
 [--follow|--no-follow]`, the shell's Publish button, or the

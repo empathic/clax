@@ -2844,7 +2844,9 @@ impl ClaxTools {
                 .map_err(|e| {
                     render::client_error_with(e, self.daemon_log(), json!({"request_id": id}))
                 })?;
-            if v["status"] != "open" || left <= 50 {
+            // `retry_after_s`: every wait on the request is taken; the
+            // agent calls again rather than this call polling at once.
+            if v["status"] != "open" || left <= 50 || v.get("retry_after_s").is_some() {
                 let mut out = v.clone();
                 out["waited_s"] = json!(started.elapsed().as_secs());
                 if v["status"] == "open" {

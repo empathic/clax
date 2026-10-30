@@ -42,8 +42,10 @@ pub enum Cmd {
     /// The person sees one card in Clax and answers Connect (approving on
     /// the other instance), Not now or Never for this instance. Waits for
     /// the answer and prints it: connected, dismissed, muted, not_now (with
-    /// until) or expired. Needs the agent's Clax session (--session, as
-    /// `status` reports it).
+    /// until) or expired. Asks as the agent's Clax session: --session, else
+    /// the live session its harness's session variable names
+    /// (CODEX_THREAD_ID, GROK_SESSION_ID, CLAUDE_CODE_SESSION_ID), else the
+    /// live session whose harness process is an ancestor of this one.
     Request(RequestArgs),
 }
 
@@ -54,12 +56,71 @@ pub struct RequestArgs {
     /// Why, in a sentence the person reads.
     #[arg(long)]
     pub reason: Option<String>,
-    /// The asking agent's Clax session (`status` reports it as session.id).
+    /// The asking agent's Clax session (`status` reports it as session.id);
+    /// found from the harness when absent.
     #[arg(long)]
     pub session: Option<String>,
-    /// Seconds to wait for the answer (default: a day, a request's life).
-    #[arg(long, default_value_t = 24 * 3600)]
-    pub wait: u64,
+    /// Seconds to wait for the answer (default 600, 50 under Codex, as the
+    /// connect_instance tool waits).
+    #[arg(long)]
+    pub wait: Option<u64>,
+}
+
+/// The harness session variables, each with its harness: a CLI run in a
+/// harness's shell asks as the live session registered with that ID.
+const SESSION_VARIABLES: &[(&str, &str)] = &[
+    ("CODEX_THREAD_ID", "codex"),
+    ("GROK_SESSION_ID", "grok"),
+    ("CLAUDE_CODE_SESSION_ID", "claude"),
+];
+
+/// The live session among `sessions` (`GET /api/sessions?live=true`'s)
+/// this CLI runs for: the one a harness session variable `env` gives
+/// names, else the nearest of `ancestors` (this process's, nearest first)
+/// that is a session's harness process (`parent_pid`).
+fn session_among(
+    sessions: &[Value],
+    env: impl Fn(&str) -> Option<String>,
+    ancestors: &[u32],
+) -> Option<String> {
+    let id = |s: &Value| s["id"].as_str().map(str::to_string);
+    for (var, harness) in SESSION_VARIABLES {
+        let Some(hsid) = env(var).filter(|v| !v.is_empty()) else {
+            continue;
+        };
+        if let Some(s) = sessions
+            .iter()
+            .find(|s| s["harness"] == *harness && s["harness_session_id"].as_str() == Some(&hsid))
+        {
+            return id(s);
+        }
+    }
+    ancestors.iter().find_map(|pid| {
+        sessions
+            .iter()
+            .find(|s| s["parent_pid"].as_u64() == Some(u64::from(*pid)))
+            .and_then(id)
+    })
+}
+
+/// The session `clax remote request` asks as ([`session_among`]).
+fn own_session(c: &Client) -> anyhow::Result<Option<String>> {
+    let v = c.get("/api/sessions?live=true")?;
+    let sessions = v["sessions"].as_array().cloned().unwrap_or_default();
+    Ok(session_among(
+        &sessions,
+        |k| std::env::var(k).ok(),
+        &super::hook::ancestors(std::process::id()),
+    ))
+}
+
+/// The default wait of `clax remote request`: the connect_instance tool's,
+/// 50 s under Codex (whose tool calls end at 60 s) and 600 s elsewhere.
+fn default_wait(env: impl Fn(&str) -> Option<String>) -> u64 {
+    let codex = ["CODEX_THREAD_ID", "CODEX_CI", "CODEX_SANDBOX"]
+        .iter()
+        .any(|k| env(k).is_some_and(|v| !v.is_empty()));
+    if codex { 50 } else { 600 }
 }
 
 #[derive(clap::Args)]
@@ -227,11 +288,17 @@ fn encode(s: &str) -> String {
 /// `clax remote request`: asks, then waits in polls of at most 50 s until
 /// the request is answered or `a.wait` runs out.
 fn request(cli: &crate::Cli, c: &Client, a: &RequestArgs) -> anyhow::Result<()> {
-    let headers: Vec<(&str, &str)> = a
-        .session
+    let session = match &a.session {
+        Some(s) => Some(s.clone()),
+        None => own_session(c)?,
+    };
+    let headers: Vec<(&str, &str)> = session
         .as_deref()
         .map(|s| vec![("x-clax-session", s)])
         .unwrap_or_default();
+    let wait = a
+        .wait
+        .unwrap_or_else(|| default_wait(|k| std::env::var(k).ok()));
     let mut body = json!({"url": a.url});
     if let Some(r) = &a.reason {
         body["reason"] = json!(r);
@@ -255,7 +322,7 @@ fn request(cli: &crate::Cli, c: &Client, a: &RequestArgs) -> anyhow::Result<()> 
             v["request"]["origin"].as_str().unwrap_or_default()
         );
     }
-    let deadline = Instant::now() + Duration::from_secs(a.wait);
+    let deadline = Instant::now() + Duration::from_secs(wait);
     loop {
         let left = deadline.saturating_duration_since(Instant::now()).as_secs();
         let w = left.min(50);
@@ -270,6 +337,63 @@ fn request(cli: &crate::Cli, c: &Client, a: &RequestArgs) -> anyhow::Result<()> 
             super::print(cli, p, answer_line);
             return Ok(());
         }
+        // Every wait on the request is taken: call again when it says.
+        if let Some(after) = p["retry_after_s"].as_u64() {
+            std::thread::sleep(
+                Duration::from_secs(after).min(deadline.saturating_duration_since(Instant::now())),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        move |k| {
+            pairs
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
+    #[test]
+    fn the_session_is_the_harness_variables_else_an_ancestors() {
+        let sessions = [
+            json!({"id": "s_codex", "harness": "codex", "harness_session_id": "th-1", "parent_pid": 40}),
+            json!({"id": "s_claude", "harness": "claude", "harness_session_id": "cc-1", "parent_pid": 30}),
+            json!({"id": "s_far", "harness": "claude", "harness_session_id": "cc-2", "parent_pid": 20}),
+        ];
+        assert_eq!(
+            session_among(&sessions, env(&[("CODEX_THREAD_ID", "th-1")]), &[30]).as_deref(),
+            Some("s_codex")
+        );
+        assert_eq!(
+            session_among(&sessions, env(&[("CLAUDE_CODE_SESSION_ID", "cc-1")]), &[]).as_deref(),
+            Some("s_claude")
+        );
+        // A variable naming no live session falls back to the ancestors,
+        // the nearest first.
+        assert_eq!(
+            session_among(&sessions, env(&[("GROK_SESSION_ID", "g-9")]), &[99, 20, 30]).as_deref(),
+            Some("s_far")
+        );
+        assert_eq!(session_among(&sessions, env(&[]), &[7, 8]), None);
+        // The harness must match too.
+        assert_eq!(
+            session_among(&sessions, env(&[("GROK_SESSION_ID", "th-1")]), &[]),
+            None
+        );
+    }
+
+    #[test]
+    fn the_wait_is_the_tools() {
+        assert_eq!(default_wait(env(&[])), 600);
+        assert_eq!(default_wait(env(&[("CODEX_THREAD_ID", "t")])), 50);
+        assert_eq!(default_wait(env(&[("CODEX_CI", "1")])), 50);
     }
 }
 

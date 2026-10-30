@@ -16,7 +16,9 @@
 //! - `GET /api/remotes/requests/<id>?wait=<s>` (the owner or the owner's
 //!   agents) → `{request_id, status, origin, name, remote?, waited_s,
 //!   call_again}` as soon as the request is not open, or after `wait`
-//!   seconds (at most [`MAX_WAIT_SECS`]), or when the daemon stops.
+//!   seconds (at most [`MAX_WAIT_SECS`]), or when the daemon stops. A poll
+//!   that finds as many polls waiting on the request as may answers at
+//!   once, with `retry_after_s`.
 //! - `POST /api/remotes/requests/<id>/answer {answer}` (the owner's
 //!   browser alone, M20): `connect` → `{request, verification_url,
 //!   user_code, expires_at}`, the sign-in for the shell to open, which the
@@ -53,6 +55,10 @@ use std::time::Duration;
 /// Longest `wait` of a request poll, in seconds: under an MCP tool's
 /// timeout, as `wait_for_feedback`'s default.
 pub const MAX_WAIT_SECS: u64 = 50;
+
+/// When a poll that found every wait on its request taken should call
+/// again, in seconds (its answer's `retry_after_s`).
+pub const RETRY_AFTER_S: u64 = 5;
 
 /// The longest reason kept, in characters.
 const MAX_REASON_CHARS: usize = 500;
@@ -264,14 +270,16 @@ pub async fn poll(
     let id1 = id.clone();
     s.store_call(move |st| st.remote_request(&id1)).await?;
     let Some((notify, _hold)) = s.questions.hold(&id, None) else {
-        return Err(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "limit_reached",
-            format!(
-                "at most {} polls wait on one request at once",
-                clax_realtime::questions::MAX_POLLS
-            ),
-        ));
+        // As many polls as may wait on one request wait on it already:
+        // this one answers how it stands now, and when to call again.
+        let id1 = id.clone();
+        let r = s.store_call(move |st| st.remote_request(&id1)).await?;
+        let mut v = answer_view(&r);
+        v["waited_s"] = json!(0);
+        if r.status == "open" {
+            v["retry_after_s"] = json!(RETRY_AFTER_S);
+        }
+        return Ok(Json(v));
     };
     let mut shutdown = s.shutdown.clone();
     let stopping = async move {
@@ -363,22 +371,75 @@ fn closed(r: &Request) -> ApiError {
 }
 
 /// Connect: the owner's add for the request's origin, the daemon then
-/// polling its sign-in ([`drive`]). A Connect pressed again while its
-/// sign-in waits answers that sign-in again.
+/// polling its sign-in ([`drive`]). Connects take the daemon's Connect
+/// lock, so a second one, at once or later while the first's sign-in
+/// waits, answers that sign-in again (driving it when no task of this
+/// daemon does, as after a restart) rather than starting another.
 async fn connect(s: &AppState, r: Request) -> Result<Response, ApiError> {
-    if let Some(rid) = r.remote_id.clone() {
-        let pending = s.store_call(move |st| st.find_remote(&rid)).await?;
-        if let Some(p) = pending.filter(|p| p.status == "pending") {
-            return Ok(Json(connect_view(&r, &p)).into_response());
-        }
+    let _one = s.remote_drivers.connect.lock().await;
+    // Read again under the lock: another Connect may have started one.
+    let id = r.id.clone();
+    let r = s.store_call(move |st| st.remote_request(&id)).await?;
+    if r.status != "open" {
+        return Err(closed(&r));
+    }
+    if let Some(p) = pending_of(s, &r).await? {
+        drive(s.clone(), r.id.clone(), p.clone());
+        return Ok(Json(connect_view(&r, &p)).into_response());
     }
     let (remote, _) = start_add(s, r.origin.clone(), None, None, None, None).await?;
     let (id, rid) = (r.id.clone(), remote.id.clone());
     let r = s
         .store_call(move |st| st.answer_remote_request(&id, Answer::Connecting(rid)))
         .await?;
-    drive(s.clone(), r.id.clone(), remote.clone());
-    Ok(Json(connect_view(&r, &remote)).into_response())
+    // The store keeps a waiting sign-in another daemon recorded first.
+    let p = pending_of(s, &r).await?.unwrap_or(remote);
+    drive(s.clone(), r.id.clone(), p.clone());
+    Ok(Json(connect_view(&r, &p)).into_response())
+}
+
+/// The pending remote whose sign-in request `r`'s Connect started, while
+/// it waits.
+async fn pending_of(s: &AppState, r: &Request) -> Result<Option<Remote>, ApiError> {
+    let Some(rid) = r.remote_id.clone() else {
+        return Ok(None);
+    };
+    let found = s.store_call(move |st| st.find_remote(&rid)).await?;
+    Ok(found.filter(|p| p.status == "pending" && Some(&p.id) == r.remote_id.as_ref()))
+}
+
+/// Drives again the sign-ins a Connect left waiting when this daemon last
+/// stopped: each open request whose remote still waits for its sign-in.
+/// Nothing on a hosted daemon.
+pub fn resume(s: &AppState) {
+    if s.hosted.is_some() {
+        return;
+    }
+    let s = s.clone();
+    clax_rt::spawn(async move {
+        let waiting = s
+            .store_call(|st| {
+                let mut out = Vec::new();
+                for r in st.open_remote_requests()? {
+                    let Some(rid) = r.remote_id.clone() else {
+                        continue;
+                    };
+                    if let Some(p) = st.find_remote(&rid)?.filter(|p| p.status == "pending") {
+                        out.push((r.id, p));
+                    }
+                }
+                Ok(out)
+            })
+            .await;
+        match waiting {
+            Ok(w) => {
+                for (id, p) in w {
+                    drive(s.clone(), id, p);
+                }
+            }
+            Err(e) => tracing::warn!(code = e.code, "cannot resume connection requests' sign-ins"),
+        }
+    });
 }
 
 fn connect_view(r: &Request, remote: &Remote) -> Value {
@@ -394,9 +455,17 @@ fn connect_view(r: &Request, remote: &Remote) -> Value {
 /// remote forgotten by another poll, `dismissed`. Each end wakes the
 /// waiting agents. It stops when the daemon does, or when the request is
 /// no longer open.
+///
+/// At most one task of this daemon drives a request
+/// ([`clax_http::remote_drivers::RemoteDrivers`]): a second call while one
+/// runs does nothing.
 fn drive(s: AppState, id: String, remote: Remote) {
+    let Some(claim) = s.remote_drivers.claim(&id) else {
+        return;
+    };
     let every = Duration::from_secs(remote.poll_interval_s.unwrap_or(5).clamp(1, 60) as u64);
     clax_rt::spawn(async move {
+        let _claim = claim;
         let mut shutdown = s.shutdown.clone();
         loop {
             let stop = async {

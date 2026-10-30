@@ -1989,7 +1989,8 @@ class Tools {
       } catch (e) {
         throw new ToolError({ ...internal(e).error, request_id: id });
       }
-      if (v.status !== "open" || left <= 50) {
+      // `retry_after_s`: every wait on the request is taken; the agent calls again.
+      if (v.status !== "open" || left <= 50 || v.retry_after_s !== undefined) {
         const out: any = { ...v, waited_s: Math.floor((Date.now() - started) / 1000) };
         if (v.status === "open") {
           const url = `${this.browserBase(c)}/inbox?remote_request=${id}`;
