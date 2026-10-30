@@ -946,11 +946,7 @@ pub async fn poll_sign_in(s: &AppState, r: &Remote) -> Result<SignIn, ApiError> 
                 person_name: v["person"]["display_name"].as_str().map(str::to_string),
                 grant_id: v["grant_id"].as_str().unwrap_or_default().to_string(),
             };
-            let id = r.id.clone();
-            let r = s
-                .store_call(move |st| st.connect_remote(&id, &signed))
-                .await?;
-            Ok(SignIn::Connected(Box::new(r)))
+            finish_sign_in(s, r, signed).await
         }
         Err(f) if f.status == Some(400) => match f.code.as_str() {
             "authorization_pending" | "slow_down" => Ok(SignIn::Waiting),
@@ -959,6 +955,38 @@ pub async fn poll_sign_in(s: &AppState, r: &Remote) -> Result<SignIn, ApiError> 
             _ => Err(f.into()),
         },
         Err(f) => Err(f.into()),
+    }
+}
+
+/// Connects remote `r` with the token its approved sign-in was given
+/// (`signed`). A remote removed while the poll was out (no longer
+/// pending here) leaves that token held by no one: it is revoked there
+/// (a failure to is logged) and the answer is `not_found`.
+///
+/// # Errors
+/// The store's; `not_found` when the remote is no longer pending.
+pub async fn finish_sign_in(
+    s: &AppState,
+    r: &Remote,
+    signed: SignedInAs,
+) -> Result<SignIn, ApiError> {
+    let (id, token) = (r.id.clone(), signed.token.clone());
+    match s
+        .store_call(move |st| st.connect_remote(&id, &signed))
+        .await
+    {
+        Ok(r) => Ok(SignIn::Connected(Box::new(r))),
+        Err(e) if e.code == "not_found" => {
+            if let Err(why) = revoke(r, token).await {
+                tracing::warn!(
+                    remote = r.origin.as_str(),
+                    error = why.message.as_str(),
+                    "could not revoke the token of a sign-in whose remote was removed"
+                );
+            }
+            Err(e)
+        }
+        Err(e) => Err(e),
     }
 }
 

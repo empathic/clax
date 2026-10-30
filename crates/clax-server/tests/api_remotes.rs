@@ -925,6 +925,53 @@ async fn removing_a_remote_revokes_its_token_there_or_says_it_could_not() {
 }
 
 #[tokio::test]
+async fn a_sign_in_approved_after_its_remote_was_removed_revokes_its_token_there() {
+    let public = Public::new().await;
+    let local = TestServer::spawn().await;
+    let (s, v) = post(&local, "/api/remotes", json!({"url": public.origin})).await;
+    assert_eq!(s, 201, "{v}");
+    let id = v["remote"]["id"].as_str().unwrap().to_string();
+    let uc = v["user_code"].as_str().unwrap().to_string();
+    let (s, v) = public
+        .browser(
+            reqwest::Method::POST,
+            &format!("/api/hosted/device/{uc}/approve"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    public.clock.advance(5);
+    // The poll's token request is answered...
+    let r = local.store.find_remote(&id).unwrap().unwrap();
+    let code = local.store.remote_device_code(&id).unwrap().unwrap();
+    let (s, v) = public
+        .cli(
+            reqwest::Method::POST,
+            "/api/hosted/device/token",
+            Some(json!({"device_code": code.expose()})),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let gid = v["grant_id"].as_str().unwrap().to_string();
+    assert_eq!(public.ts.store.grant(&gid).unwrap().status, "approved");
+    // ...and the remote is removed before the poll connects it.
+    local.store.remove_remote(&id).unwrap();
+    let signed = clax_store::remotes::SignedInAs {
+        token: clax_core::Secret::new(v["token"].as_str().unwrap().to_string()),
+        person_public_id: v["person"]["public_id"].as_str().unwrap().to_string(),
+        person_name: None,
+        grant_id: gid.clone(),
+    };
+    let out = clax_server::public::finish_sign_in(&local.state, &r, signed).await;
+    assert_eq!(out.err().map(|e| e.code), Some("not_found"));
+    assert_ne!(
+        public.ts.store.grant(&gid).unwrap().status,
+        "approved",
+        "the token no one holds is revoked there"
+    );
+}
+
+#[tokio::test]
 async fn an_agents_cli_push_is_refused_and_pointed_at_publish_public() {
     let local = TestServer::spawn().await;
     let aid = local.publish("P", &[("index.html", "x")]).await["artifact"]["id"]
