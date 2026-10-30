@@ -321,6 +321,7 @@ npx wrangler queues subscription create clax-artifacts-events --source artifacts
 | `HOSTED` | `1` | A hosted Clax: browser sign-in, people's rights, guests, agent tokens |
 | `PUBLIC_ORIGIN` | `https://clax.example.com` | Where people reach Clax; every link the server writes names it |
 | `SITE_DOMAIN` | `clax.run` (`deploy.mjs --site-domain`) | Each artifact's site is served at `<artifact ID>.<SITE_DOMAIN>`; empty serves sites at `<artifact ID>.localhost` |
+| `INSTANCE_NAME` | `Studio Clax` | The name `/.well-known/clax` gives this Clax; empty names it by its host |
 | `RETIRED_CONTENT_ORIGIN` | the deploy record's old `content_origin`, if any (`https://content.clax.example.com`) | The content origin of before sites: kept as a custom domain, where an asset's old address (`/_blob/<id>?k=…`) answers 301 to its artifact's site and anything else 404; empty when there was none |
 | `REPO_STORE` | `artifacts` (or `memory`) | Where versions are kept |
 | `GIT_SMART_HTTP` | `0` with `artifacts` | `1` serves the stand-in over git smart HTTP at `/git/*` |

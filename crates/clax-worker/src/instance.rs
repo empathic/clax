@@ -475,6 +475,7 @@ fn hosted(env: &Env) -> Result<Option<Arc<clax_http::hosted::Hosted>>> {
         .with_github(github, max_artifacts)
         .with_public_gallery(public_gallery)
         .with_legal(legal)
+        .with_name(opt("INSTANCE_NAME"))
         .with_reel(reel);
     Ok(Some(Arc::new(h)))
 }

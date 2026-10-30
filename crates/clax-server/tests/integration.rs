@@ -49,6 +49,8 @@ mod api_client_imports;
 mod api_content;
 #[cfg(any(not(clax_split), clax_split = "api_db_read"))]
 mod api_db_read;
+#[cfg(any(not(clax_split), clax_split = "api_discovery"))]
+mod api_discovery;
 #[cfg(any(not(clax_split), clax_split = "api_docs"))]
 mod api_docs;
 #[cfg(any(not(clax_split), clax_split = "api_drafts"))]

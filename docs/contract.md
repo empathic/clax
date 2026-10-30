@@ -1127,6 +1127,18 @@ the same routes):
   after the last; 400 `access_denied` once denied (or the token revoked
   before the poll); 400 `expired_token` for a code unknown, expired or
   spent. At most 30 polls per client address at once, one back every 2 s.
+- `GET /.well-known/clax` (any caller, no credential) → `{kind, contract_version,
+  name, origin, api, site_domain?, sign_in, device?, capabilities}`: `kind`
+  is `local` or `hosted` (the Worker answers `hosted`); `name` is the
+  instance's own (`[hosted] name`, the Worker's `INSTANCE_NAME`) or, when it
+  has none, its host (a local daemon's is `localhost:<port>`); `origin` is
+  where it is reached (a hosted Clax's public origin, else
+  `http://localhost:<port>`); `api` is `/api`;
+  `site_domain` is the domain its artifacts' sites are served under, on a
+  hosted Clax that has one. A hosted Clax adds `"device"` to `sign_in` and
+  `device: {code: "/api/hosted/device/code", approve: "/device", token:
+  "/api/hosted/device/token"}`, the paths of this sign-in; a local daemon
+  offers neither.
 - `DELETE /api/hosted/agent-token` (an agent token) → 204: revokes the
   calling token itself, as its person would on People.
 - A session registered by an agent token may take the harness `clax`:

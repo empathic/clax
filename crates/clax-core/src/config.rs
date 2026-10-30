@@ -790,6 +790,10 @@ impl HomeConfig {
             public_gallery: t.public_gallery.unwrap_or(false),
             legal,
             site_domain,
+            name: t
+                .name
+                .map(|n| n.trim().to_string())
+                .filter(|n| !n.is_empty()),
             clax_app,
         }))
     }
@@ -1110,6 +1114,9 @@ pub struct HostedConfig {
     /// `<id>.<site_domain>` (`site_domain`, normalized by [`site_domain`]);
     /// `None` serves sites at `<id>.localhost` alone.
     pub site_domain: Option<String>,
+    /// The name discovery gives the instance (`name`, trimmed); `None`
+    /// names it by its host.
+    pub name: Option<String>,
     /// What the instance says about the Clax app (`app_links` and
     /// `stores`): none of it when absent.
     pub clax_app: ClaxApp,
@@ -1349,6 +1356,7 @@ struct HostedTable {
     privacy_url: Option<String>,
     legal_version: Option<String>,
     site_domain: Option<String>,
+    name: Option<String>,
     app_links: Option<AppLinksTable>,
     stores: Option<StoresTable>,
 }

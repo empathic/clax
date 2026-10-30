@@ -136,6 +136,9 @@ pub struct Hosted {
     /// The site domain ([`Hosted::with_sites`]); `None` serves sites at
     /// `<id>.localhost` alone ([`crate::host::SiteHosts::local`]).
     pub sites: Option<crate::host::SiteHosts>,
+    /// The name discovery gives the instance ([`Hosted::with_name`]);
+    /// `None` names it by its host.
+    pub name: Option<String>,
     /// Where the landing page's reel is served from ([`Hosted::with_reel`]);
     /// `None` serves it only if the quickstart release carries it.
     pub reel: Option<Reel>,
@@ -404,6 +407,7 @@ impl Hosted {
             public_gallery: false,
             legal: None,
             sites: None,
+            name: None,
             reel: None,
             proxy_noted: std::sync::atomic::AtomicBool::new(false),
         })
@@ -471,6 +475,12 @@ impl Hosted {
         Hosted { sites, ..self }
     }
 
+    /// This hosted mode naming itself `name` in discovery (`None`: its
+    /// host).
+    pub fn with_name(self, name: Option<String>) -> Hosted {
+        Hosted { name, ..self }
+    }
+
     /// This hosted mode sending the landing page's reel (`reel.mp4` and
     /// `reel-poster.jpg` under [`LANDING`]) to `reel`'s addresses (`None`:
     /// served from the quickstart release, if it carries them).
@@ -525,6 +535,7 @@ impl Hosted {
                         .as_deref()
                         .and_then(crate::host::SiteHosts::new),
                 )
+                .with_name(c.name.clone())
         })
     }
 
