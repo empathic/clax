@@ -68,6 +68,16 @@ describe("QuestionCard", () => {
     expect(failed.root.querySelector(".link-line")!.textContent).toBe("Not sent: clax.dev unreachable");
     expect(failed.root.querySelector(".link-line")!.hasAttribute("data-failed")).toBe(true);
     failed.unmount();
+    const refused = mount(QuestionCard, props(view({ linked: { ...link, state: "failed", error: "limit_reached: too many open questions" } })));
+    expect(refused.root.querySelector(".link-line")!.textContent).toBe("Not sent: refused by clax.dev (limit_reached: too many open questions)");
+    refused.unmount();
+    const away = mount(QuestionCard, props(view({ linked: { ...link, state: "failed", error: "Not sent: clax.dev unreachable" } })));
+    expect(away.root.querySelector(".link-line")!.textContent).toBe("Not sent: clax.dev unreachable");
+    away.unmount();
+    const notAnswered = mount(QuestionCard, props(view({ linked: { ...link, sent: true, state: null, error: "Not answered: no such option" } })));
+    expect(notAnswered.root.querySelector(".link-line")!.textContent).toBe("Not answered: no such option");
+    expect(notAnswered.root.querySelector(".link-line")!.hasAttribute("data-failed")).toBe(false);
+    notAnswered.unmount();
     const sent = mount(QuestionCard, props(view({ linked: { ...link, sent: true, state: null } })));
     expect(sent.root.querySelector(".link-line")).toBeNull();
     sent.unmount();
