@@ -41,7 +41,7 @@ async function siteBytes(url: URL, d: TestDaemon): Promise<Buffer> {
   const { cookie } = await siteGet(new URL((await code.json()).src), { cookie: start.cookie });
   return (await siteGet(url, { cookie })).body;
 }
-import { api, claxBin, ownerCookie, startDaemon, type TestDaemon, viewerCookie } from "./daemon-fixture.ts";
+import { api, claxBin, ownerBrowser, startDaemon, type TestDaemon, viewerCookie } from "./daemon-fixture.ts";
 import { FakePi, fakeContext, json } from "./fake-api.ts";
 import { fakeExe } from "./fake-exe.ts";
 
@@ -51,12 +51,12 @@ const TOOLS: string[] = FIXTURE.tools.map((t: { name: string }) => `clax_${t.nam
 
 let daemon: TestDaemon;
 let scratch: string;
-/** The owner's browser, logged in before any agent session. */
-let owner: string;
+/** The owner's browser's headers, logged in before any agent session. */
+let owner: Record<string, string>;
 
 beforeAll(async () => {
   daemon = await startDaemon();
-  owner = await ownerCookie(daemon);
+  owner = await ownerBrowser(daemon);
   scratch = mkdtempSync(join(tmpdir(), "clax-pi-scratch-"));
 }, 320_000);
 
@@ -808,7 +808,7 @@ function askBody(header: string) {
 async function answer(qid: string, label: string): Promise<void> {
   const res = await fetch(`${daemon.base}/api/questions/${qid}/answer`, {
     method: "POST",
-    headers: { cookie: owner, "content-type": "application/json" },
+    headers: { ...owner, "content-type": "application/json" },
     body: JSON.stringify({ answers: [{ selected: [label] }] }),
   });
   if (res.status !== 200) throw new Error(`answer: HTTP ${res.status} ${await res.text()}`);

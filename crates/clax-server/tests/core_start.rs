@@ -82,9 +82,10 @@ async fn an_owner_browser_session_survives_a_new_daemon_token() {
         .unwrap();
     let st = core.state().clone();
     let first = st.token.clone();
-    let cookie = st.owner_sessions.open(&st.store).unwrap();
-    let hash = cookie.sha256_hex();
-    assert!(st.owner_sessions.is_live(&hash));
+    let opened = st.owner_sessions.open(&st.store).unwrap();
+    let hash = opened.cookie.sha256_hex();
+    let proof = opened.proof.expose().to_string();
+    assert!(st.owner_sessions.proves(&hash, &proof));
     drop(st);
     core.stop().await;
     let again = Core::start(cfg(dir.path(), clax_testkit::web_ui(), false), &mut |_| {})
@@ -92,8 +93,8 @@ async fn an_owner_browser_session_survives_a_new_daemon_token() {
         .unwrap();
     assert_ne!(again.state().token, first, "a new token");
     assert!(
-        again.state().owner_sessions.is_live(&hash),
-        "the session survives"
+        again.state().owner_sessions.proves(&hash, &proof),
+        "the session survives, with its proof"
     );
     again.stop().await;
 }

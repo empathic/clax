@@ -84,6 +84,7 @@ pub async fn live(
     let aid = id.as_str().to_string();
     let a = aid.clone();
     let member = member_of(&extensions);
+    let ended = crate::routes::events::owner_session_ended(&s, &extensions);
     let (viewer, claim, text) = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
@@ -97,7 +98,9 @@ pub async fn live(
     Ok(ws
         .max_message_size(MAX_LIVE_MESSAGE_BYTES)
         .max_frame_size(MAX_LIVE_MESSAGE_BYTES)
-        .on_upgrade(move |socket| session(s, aid, viewer.public_id, claim, text, slot, socket)))
+        .on_upgrade(move |socket| {
+            session(s, aid, viewer.public_id, claim, text, slot, ended, socket)
+        }))
 }
 
 /// A hosted daemon's signed-in person's rights, as the gate set them.
@@ -137,6 +140,7 @@ async fn session(
     claim: Option<clax_core::seats::Claim>,
     text: bool,
     _slot: clax_http::socket_caps::SocketSlot,
+    mut ended: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
     mut socket: WebSocket,
 ) {
     let hub: std::sync::Arc<LiveLayers> = s.live_layers.clone();
@@ -223,6 +227,8 @@ async fn session(
                         break 'run Some(close(1001, "shutting down"));
                     }
                 }
+                // The owner browser session it was opened with ended.
+                () = &mut ended => break 'run Some(close(4403, "revoked")),
             }
         }
     };

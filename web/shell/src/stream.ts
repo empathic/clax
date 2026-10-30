@@ -20,8 +20,9 @@
 // hidden for good or in the back/forward cache. A hub that is lost again
 // before saying anything is joined again after a backoff, and a shared
 // worker that fails before saying anything is not asked for again. The
-// token never goes in a URL: the hub's requests carry the events cookie
-// that `GET /api/token` sets for the shell.
+// token never goes in a URL: on a local daemon the hub's requests carry the
+// events cookie a login set and the session's proof each tab's `hello`
+// hands the hub (`owner-proof.ts`).
 //
 // A background watcher (`questions` and `inbox`) keeps its topics while the
 // page is hidden: a hidden page releases only the other topics, and stays
@@ -34,6 +35,7 @@
 // front: there the app's host says (`app/host.ts`, `claxHost.setVisible`),
 // and calls `visibilityChanged` when it does.
 import { getToken } from "./api";
+import { PROOF_STORAGE_KEY, ownerProof } from "./owner-proof";
 import { after } from "./clock";
 import { STREAM_DOWN, connTrouble } from "./conn-notice";
 import { visibility } from "./visibility";
@@ -119,8 +121,15 @@ export const workerLink: LinkMaker = async (on, lost) => {
   port.start();
   const lock = `clax-tab:${newId()}`;
   const release = await holdLock(lock);
-  hello = { t: "hello", lock: release ? lock : undefined };
+  hello = helloOf(release ? lock : undefined);
   port.postMessage(hello);
+  // A login in another tab wrote a new proof: the hub hears it.
+  const stored = (e: StorageEvent) => {
+    if (closed || e.key !== PROOF_STORAGE_KEY) return;
+    hello = helloOf(release ? lock : undefined);
+    port.postMessage(hello);
+  };
+  addEventListener("storage", stored);
   return {
     pinged: true,
     send: m => {
@@ -133,11 +142,20 @@ export const workerLink: LinkMaker = async (on, lost) => {
       if (closed) return;
       port.postMessage({ t: "bye" } satisfies TabMsg);
       closed = true;
+      removeEventListener("storage", stored);
       port.close();
       release?.();
     },
   };
 };
+
+/** A tab's `hello`, naming its Web Lock `lock` (if any) and the origin's
+ * owner browser session proof (if any), which the hub sends with its
+ * requests. */
+function helloOf(lock: string | undefined): TabMsg {
+  const proof = ownerProof();
+  return proof ? { t: "hello", lock, proof } : { t: "hello", lock };
+}
 
 /** The name of the leader's Web Lock and BroadcastChannel. */
 export const LEADER = "clax-stream";
@@ -157,7 +175,7 @@ export const leaderLink: LinkMaker = async on => {
   let resign: (() => void) | null = null;
   let closed = false;
   // What a new leader needs to hear again: the hello and the latest topics.
-  const hello: TabMsg = { t: "hello", lock: releaseTab ? lock : undefined };
+  let hello: TabMsg = helloOf(releaseTab ? lock : undefined);
   let topics: TabMsg | null = null;
   let focus: TabMsg | null = null;
   const post = (m: TabMsg) => {
@@ -188,6 +206,13 @@ export const leaderLink: LinkMaker = async on => {
     return new Promise<void>(r => { resign = r; });
   }).catch(() => {});
   post(hello);
+  // A login in another tab wrote a new proof: the leader's hub hears it.
+  const stored = (e: StorageEvent) => {
+    if (closed || e.key !== PROOF_STORAGE_KEY) return;
+    hello = helloOf(releaseTab ? lock : undefined);
+    post(hello);
+  };
+  addEventListener("storage", stored);
   return {
     // Whether this tab holds the connection for the others.
     get leader() { return hub !== null; },
@@ -196,6 +221,7 @@ export const leaderLink: LinkMaker = async on => {
       if (closed) return;
       post({ t: "bye" });
       closed = true;
+      removeEventListener("storage", stored);
       hub?.close();
       hub = null;
       resign?.();
@@ -212,7 +238,7 @@ export const leaderLink: LinkMaker = async on => {
 export const localLink: LinkMaker = async on => {
   const { Hub } = await import("./stream-hub");
   const hub = new Hub({ notify: true, host: onHost(), send: (_ids, msg) => on(msg), watchLock: () => {} });
-  hub.receive("self", { t: "hello", lock: "self" });
+  hub.receive("self", helloOf("self"));
   return { send: m => hub.receive("self", m), close: () => hub.close() };
 };
 

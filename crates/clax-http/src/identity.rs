@@ -11,10 +11,13 @@
 //! - an owner browser session ([`crate::local_trust`]): a random secret a
 //!   browser holds as its owner cookie ([`owner_cookie_name`]) and its events
 //!   cookie ([`crate::auth::events_cookie_name`]), set when it redeemed a
-//!   one-use login code a holder of the token made, so every browser of the
-//!   owner's is the owner on every route without the token.
-//!   [`crate::local_trust::sessions`] marks a request carrying one with
-//!   [`crate::local_trust::OwnerSession`];
+//!   one-use login code a holder of the token made, beside the session's
+//!   proof, which the browser keeps in its origin's storage and the shell
+//!   sends with every request ([`crate::local_trust::PROOF_HEADER`]), so
+//!   every browser of the owner's is the owner on every route without the
+//!   token. [`crate::local_trust::sessions`] marks a request carrying both
+//!   with [`crate::local_trust::OwnerSession`]; the cookie alone is no
+//!   owner credential;
 //! - the Clax Chrome extension's credential: the extension gateway
 //!   ([`crate::extension::gateway`]) checks it and marks the request it admits
 //!   with [`crate::extension::ViaExtension`], which counts as a browser of the
@@ -672,7 +675,11 @@ impl Identity {
     ///   the agent-channel marker (`X-Clax-Channel: agent`: the shim, the
     ///   hooks, Pi, and the CLI under a harness) or names the `mcp`
     ///   channel. Such an agent records its channel unless it is `mcp`;
-    ///   a token request naming no channel is `cli`'s.
+    ///   a token request naming no channel is `cli`'s. A token request
+    ///   naming a session that is not known (an unknown ID, or one that is
+    ///   not a ULID) without the marker is an agent too, as
+    ///   [`Identity::caller`] counts it ([`Caller::OwnerAgent`]), with no
+    ///   session and the channel it names (none for `mcp` or no channel).
     /// - Otherwise the owner, or the viewer (`person` for a connected
     ///   person, as [`Caller::Person`] counts one)
     ///   [`Identity::viewer`] names, by public ID, its row made when
@@ -715,6 +722,12 @@ impl Identity {
             }
             if self.agent_marker || channel == Some(Via::Mcp) {
                 return Ok(Actor::Agent(sessionless(channel)));
+            }
+            if session.is_some() || self.header_session.is_some() {
+                return Ok(Actor::Agent(AgentActor {
+                    channel: channel.filter(|c| *c != Via::Mcp),
+                    ..AgentActor::default()
+                }));
             }
         }
         let viewer = match self.viewer(st)? {

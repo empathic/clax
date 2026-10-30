@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { test, expect, type Daemon, contentFrame, openArtifact, publish } from "./fixtures";
+import { test, expect, type Daemon, contentFrame, openArtifact, proofHeaders, publish } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -10,7 +10,7 @@ const PAGE = `<h1>Top</h1><p style="height:3000px">long</p><h2 id="part-2">Part 
 test("the frame in the HTML opens through its site's handshake, at the link's fragment, and comments at once", async ({ browser }) => {
   const { artifact } = await publish(d.base, d.token, "Boot", { "index.html": PAGE });
   const ctx = await browser.newContext();
-  const html = await (await ctx.request.get(`${d.base}/a/${artifact.id}`)).text();
+  const html = await (await ctx.request.get(`${d.base}/a/${artifact.id}`, { headers: proofHeaders(d.base) })).text();
   expect(html).toContain(`<iframe class="frame"`);
   expect(html).toContain(`/_clax/session/start?next=%2F_clax%2Fv%2F1%2F`);
   expect(html).not.toContain(d.token);

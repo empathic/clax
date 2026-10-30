@@ -657,3 +657,41 @@ async fn an_embedded_core_marks_every_shell_document_and_frames_content_on_its_o
         assert_eq!(again.status(), 304, "{stale}");
     }
 }
+
+/// A local owner's navigation carries the owner cookie but not its proof
+/// (a page load sends none of the shell's headers): the page is served
+/// bare of data, which the shell then reads with the proof; what another
+/// port's server replays with the cookie alone gets the same. A load that
+/// names the proof gets the bootstrap.
+#[tokio::test]
+async fn an_owner_cookie_without_its_proof_gets_the_bare_entry() {
+    let dist = dist();
+    let ts = TestServer::spawn_with_web(dist.path()).await;
+    let id = ts.publish("Secret plans", &[("index.html", "<p>x</p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = reqwest::Client::new()
+        .get(format!("{}/a/{id}", ts.base))
+        .header("accept", "text/html")
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let html = res.text().await.unwrap();
+    assert!(!html.contains(OPEN), "no bootstrap");
+    assert!(!html.contains("Secret plans"), "no title");
+    let html = ts
+        .client
+        .get(format!("{}/a/{id}", ts.base))
+        .header("accept", "text/html")
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(boot(&html).1["artifact"]["artifact"]["title"], "Secret plans");
+}

@@ -160,16 +160,45 @@ fn paired(port: u16, mint: &Value) -> Result<Value, HostError> {
     }))
 }
 
+/// The error for a pairing whose confirmation ended `status` without an
+/// approval: `pairing_declined` when the person declined it in their
+/// browser, `pairing_expired` when nobody answered in time; none for an
+/// approved one.
+fn refused_confirmation(status: &str) -> Option<HostError> {
+    match status {
+        "declined" => Some(HostError {
+            code: "pairing_declined",
+            message: "pairing was declined in the browser".into(),
+        }),
+        "expired" => Some(HostError {
+            code: "pairing_expired",
+            message: "the pairing confirmation expired before anyone answered it".into(),
+        }),
+        _ => None,
+    }
+}
+
 /// The error for a mint that failed with `e`. `probe` is the status of an
 /// unauthenticated `GET /api/extension`: 404 means the daemon, of version
 /// `daemon_version`, predates the extension (a held or failed upgrade kept it).
 fn mint_failed(e: anyhow::Error, probe: Option<u16>, daemon_version: &str) -> HostError {
+    // The confirmation it presented, refused at the mint itself (it was
+    // declined or expired between the wait and the mint).
+    let said = format!("{e:#}");
+    if let Some(refused) = said
+        .strip_prefix("declined: ")
+        .map(|_| "declined")
+        .or_else(|| said.strip_prefix("confirmation_expired: ").map(|_| "expired"))
+        .and_then(refused_confirmation)
+    {
+        return refused;
+    }
     let message = if probe == Some(404) {
         format!(
             "the running clax daemon v{daemon_version} predates the Chrome extension; run `clax stop` and try again"
         )
     } else {
-        format!("pairing failed: {e:#}")
+        format!("pairing failed: {said}")
     };
     HostError {
         code: "daemon_unavailable",
@@ -241,9 +270,14 @@ fn pair(cli: &crate::Cli, home: &Home, confirmation: Option<String>) -> Result<V
         .returning_held_decisions();
     let path = "/api/extension/credentials";
     let body = json!({"extension_id": extension_id_in_effect(home.root())});
+    let failed = |e| mint_failed(e, c.http_status("/api/extension"), &c.info.version);
     let mint = match &confirmation {
         None => c.post(path, &body),
-        Some(id) => c.wait_for_confirmation(id).and_then(|()| {
+        Some(id) => {
+            let status = c.wait_for_confirmation(id).map_err(failed)?;
+            if let Some(refused) = refused_confirmation(&status) {
+                return Err(refused);
+            }
             c.request_with(
                 reqwest::Method::POST,
                 path,
@@ -251,9 +285,9 @@ fn pair(cli: &crate::Cli, home: &Home, confirmation: Option<String>) -> Result<V
                 None,
                 &[(clax_core::confirm::CONFIRMATION_HEADER, id)],
             )
-        }),
+        }
     }
-    .map_err(|e| mint_failed(e, c.http_status("/api/extension"), &c.info.version))?;
+    .map_err(failed)?;
     if let Some(r) = held(&mint) {
         return Ok(r);
     }
@@ -580,6 +614,32 @@ mod tests {
         assert_eq!(v["type"], "error");
         assert_eq!(v["code"], "daemon_unavailable");
         assert!(out.len() <= MAX_MESSAGE + 4);
+    }
+
+    #[test]
+    fn a_declined_or_expired_pairing_confirmation_says_so() {
+        assert_eq!(
+            refused_confirmation("declined").unwrap().code,
+            "pairing_declined"
+        );
+        assert_eq!(
+            refused_confirmation("expired").unwrap().code,
+            "pairing_expired"
+        );
+        assert!(refused_confirmation("approved").is_none());
+        // Refused at the mint itself, between the wait and the mint.
+        let e = mint_failed(
+            anyhow::anyhow!("declined: the owner declined this in their browser"),
+            Some(401),
+            "9.9.9",
+        );
+        assert_eq!(e.code, "pairing_declined");
+        let e = mint_failed(
+            anyhow::anyhow!("confirmation_expired: this confirmation has expired"),
+            Some(401),
+            "9.9.9",
+        );
+        assert_eq!(e.code, "pairing_expired");
     }
 
     #[test]

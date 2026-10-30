@@ -8,6 +8,7 @@
 
 import type { FramePeer, LivePoint, LiveSelection } from "../../../bridge/src/protocol";
 import { after } from "../clock";
+import { ownerProof, withProof } from "../owner-proof";
 import { socketUrl } from "../socket-url";
 import { onHost } from "../transport";
 
@@ -383,6 +384,10 @@ export class LiveSocket {
 
 /** The live socket's URL for artifact `id` on this shell's origin, or null
  * where the shell opens no WebSocket (`socketUrl`: in the Clax app, or on
- * an origin neither `https:` nor `http:`). */
-export const liveUrl = (id: string, loc: { protocol: string; host: string } = location, app = onHost()): string | null =>
-  socketUrl(`${loc.protocol}//${loc.host}`, `/api/artifacts/${encodeURIComponent(id)}/live`, app);
+ * an origin neither `https:` nor `http:`). It carries the origin's owner
+ * browser session proof, when there is one (`owner-proof.ts`): a WebSocket
+ * sends no header of the page's. */
+export const liveUrl = (id: string, loc: { protocol: string; host: string } = location, app = onHost(), proof: string | null = ownerProof()): string | null => {
+  const url = socketUrl(`${loc.protocol}//${loc.host}`, `/api/artifacts/${encodeURIComponent(id)}/live`, app);
+  return url === null ? null : withProof(url, proof);
+};

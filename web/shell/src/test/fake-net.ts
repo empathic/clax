@@ -4,7 +4,7 @@
 const enc = new TextEncoder();
 
 export type Conn = { headers: Record<string, string>; aborted: boolean; push(text: string): void; end(): void };
-export type Post = { url: string; body: { subscribe: string[]; unsubscribe: string[] }; answer(status: number, json: unknown): void };
+export type Post = { url: string; body: { subscribe: string[]; unsubscribe: string[] }; headers: Record<string, string>; answer(status: number, json: unknown): void };
 
 /** The daemon as the hub sees it: streams it can write to, and the
  * subscription requests, answered at once (`auto`) or by the test. */
@@ -46,7 +46,7 @@ export class Net {
     const id = url.slice("/api/stream/".length);
     const body = JSON.parse(String(init.body));
     return new Promise<Response>(resolve => {
-      const p: Post = { url, body, answer: (status, json) => resolve(new Response(JSON.stringify(json), { status })) };
+      const p: Post = { url, body, headers: (init.headers ?? {}) as Record<string, string>, answer: (status, json) => resolve(new Response(JSON.stringify(json), { status })) };
       this.posts.push(p);
       if (!this.auto) return;
       for (const t of body.subscribe) {

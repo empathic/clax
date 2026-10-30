@@ -125,7 +125,8 @@ fn list(v: Option<String>) -> Option<BTreeSet<String>> {
 /// `event: resync` with `data: {"dropped": <n>}` and then continues from the oldest
 /// retained event; clients should refetch state on `resync`. A `: keep-alive`
 /// comment is sent every `AppState::sse_keep_alive` while idle. The stream ends
-/// when the daemon begins shutting down.
+/// when the daemon begins shutting down, and, for one opened with an owner
+/// browser session, when that session ends (`clax logout`).
 pub async fn events(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,
@@ -298,10 +299,17 @@ pub async fn events(
         }
     });
     let mut shutdown = s.shutdown.clone();
+    let session_ended = owner_session_ended(&s, &extensions);
     // A dropped sender means the state has no shutdown source; never end the stream then.
     let stop = async move {
-        if shutdown.wait_for(|v| *v).await.is_err() {
-            std::future::pending::<()>().await;
+        let down = async {
+            if shutdown.wait_for(|v| *v).await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        };
+        tokio::select! {
+            () = down => {}
+            () = session_ended => {}
         }
     };
     Ok(
@@ -311,6 +319,23 @@ pub async fn events(
                 .text("keep-alive"),
         ),
     )
+}
+
+/// What a stream or socket opened by the request whose `extensions` are
+/// given ends on besides shutdown: the end of the owner browser session it
+/// was opened with ([`clax_http::local_trust::OwnerSessions::ended`]), or
+/// never for one opened without.
+pub fn owner_session_ended(
+    s: &AppState,
+    extensions: &axum::http::Extensions,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+    match extensions
+        .get::<clax_http::local_trust::OwnerSession>()
+        .and_then(|m| m.session.clone())
+    {
+        Some(hash) => Box::pin(s.owner_sessions.ended(hash)),
+        None => Box::pin(std::future::pending()),
+    }
 }
 
 /// Whether `reader` may read `source`'s documents now; an error (an unknown

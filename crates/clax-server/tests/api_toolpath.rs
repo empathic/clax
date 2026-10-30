@@ -198,22 +198,30 @@ async fn ctx_session_header_is_agent_with_harness_ids() {
     let v = ctx(ts.authed(ts.client.get(&url)).header("x-clax-via", "mcp")).await;
     assert_eq!(v["actor"], json!({"type": "agent", "session_id": null}));
     assert_eq!(v["via"], "mcp");
-    // `hook` or `pi` without a known session is the owner, on that channel.
+    // `hook` or `pi` naming no session is the owner, on that channel; naming
+    // a session that is not known, the sessionless agent on that channel,
+    // as `Caller` counts it (docs/contract.md: a token request that names a
+    // session is the owner's agent).
     let owner = ts.owner_public_id().await;
     for via in ["hook", "pi"] {
-        for session in [None, Some("01JB0000000000000000000000")] {
-            let mut req = ts.authed(ts.client.get(&url)).header("x-clax-via", via);
-            if let Some(s) = session {
-                req = req.header("x-clax-session", s);
-            }
-            let v = ctx(req).await;
-            assert_eq!(
-                v["actor"],
-                json!({"type": "owner", "public_id": owner}),
-                "{via}"
-            );
-            assert_eq!(v["via"], via);
-        }
+        let v = ctx(ts.authed(ts.client.get(&url)).header("x-clax-via", via)).await;
+        assert_eq!(
+            v["actor"],
+            json!({"type": "owner", "public_id": owner}),
+            "{via}"
+        );
+        assert_eq!(v["via"], via);
+        let v = ctx(ts
+            .authed(ts.client.get(&url))
+            .header("x-clax-via", via)
+            .header("x-clax-session", "01JB0000000000000000000000"))
+        .await;
+        assert_eq!(
+            v["actor"],
+            json!({"type": "agent", "session_id": null, "channel": via}),
+            "{via}"
+        );
+        assert_eq!(v["via"], via);
     }
 }
 
@@ -230,19 +238,26 @@ async fn ctx_bad_headers_are_invalid_not_errors() {
         base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(serde_json::to_vec(&bad_call).unwrap())
     };
-    for (git, call, via, session) in [
+    // A readable session header that names no known session makes the
+    // token the sessionless agent (as `Caller` counts it); an unreadable one
+    // names none, and the token is the owner.
+    let agent = json!({"type": "agent", "session_id": null});
+    let as_owner = json!({"type": "owner", "public_id": owner});
+    for (git, call, via, session, actor) in [
         (
             "!!not base64!!".parse().unwrap(),
             "!!".parse().unwrap(),
             "bogus".parse().unwrap(),
             "not-a-ulid".parse().unwrap(),
+            &agent,
         ),
-        (bad.clone(), bad.clone(), bad.clone(), bad.clone()),
+        (bad.clone(), bad.clone(), bad.clone(), bad.clone(), &as_owner),
         (
             "A".repeat(4096).parse().unwrap(),
             bad_call.parse().unwrap(),
             "daemon".parse().unwrap(),
             "01JB0000000000000000000000".parse().unwrap(),
+            &agent,
         ),
     ] {
         let v = ctx(ts
@@ -252,11 +267,7 @@ async fn ctx_bad_headers_are_invalid_not_errors() {
             .header("x-clax-via", via)
             .header("x-clax-session", session))
         .await;
-        assert_eq!(
-            v["actor"],
-            json!({"type": "owner", "public_id": owner}),
-            "{v}"
-        );
+        assert_eq!(&v["actor"], actor, "{v}");
         assert_eq!(v["via"], "cli", "{v}");
         assert_eq!(
             (&v["git"], &v["git_capture"]),
@@ -1679,7 +1690,7 @@ async fn a_claim_that_retires_the_cli_owner_resolves_its_records() {
     let res = ts
         .login_with(&format!("clax_viewer={}", chrome.cookie))
         .await;
-    assert_eq!(res.status(), 303);
+    assert_eq!(res.status(), 200);
     let claim = events_since(&ts, seq);
     assert_eq!(kinds(&claim), ["viewer.claim"]);
     assert_eq!(
@@ -3769,6 +3780,29 @@ async fn the_agent_channel_marker_makes_the_token_an_agent() {
     assert_eq!(v["actor"], json!({"type": "agent", "session_id": null}));
     let v = ctx(ts.authed(ts.client.get(&url)).header("x-clax-via", "hook")).await;
     assert_eq!(v["actor"], json!({"type": "owner", "public_id": owner}));
+    // The token naming a session that is not known, without the marker, is
+    // an agent as `Caller` counts it (`OwnerAgent`), never the owner.
+    for sid in ["01JB9S00000000000000000099", "not-a-ulid"] {
+        let v = ctx(ts
+            .authed(ts.client.get(&url))
+            .header("x-clax-session", sid))
+        .await;
+        assert_eq!(
+            v["actor"],
+            json!({"type": "agent", "session_id": null}),
+            "{sid}"
+        );
+        let v = ctx(ts
+            .authed(ts.client.get(&url))
+            .header("x-clax-session", sid)
+            .header("x-clax-via", "hook"))
+        .await;
+        assert_eq!(
+            v["actor"],
+            json!({"type": "agent", "session_id": null, "channel": "hook"}),
+            "{sid}"
+        );
+    }
 }
 
 /// A connected person's browser is a viewer marked `person`.

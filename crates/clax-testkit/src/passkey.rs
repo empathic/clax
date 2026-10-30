@@ -103,6 +103,7 @@ impl TestServer {
             .client
             .request(method, format!("{}{path}", self.base))
             .header("cookie", cookie)
+            .header(clax_http::local_trust::PROOF_HEADER, self.proof_for(cookie))
             .json(&body)
             .send()
             .await

@@ -1044,7 +1044,7 @@ fn open_hands_the_browser_a_login_link_and_prints_none() {
         .build()
         .unwrap();
     let signed = browser.get(&url).send().unwrap();
-    assert_eq!(signed.status(), 303);
+    assert_eq!(signed.status(), 200);
     assert_eq!(browser.get(&url).send().unwrap().status(), 410);
     // `clax logout` ends every browser session: the cookie that login set
     // opens nothing after.
@@ -1056,11 +1056,13 @@ fn open_hands_the_browser_a_login_link_and_prints_none() {
         .map(|v| v.split(';').next().unwrap_or("").to_string())
         .find(|c| c.starts_with("clax_owner_"))
         .expect("an owner cookie");
+    let proof = clax_testkit::login_page_proof(&signed.text().unwrap());
     let base = url.split("/login?").next().unwrap().to_string();
     let token = |cookie: &str| {
         browser
             .get(format!("{base}/api/token"))
             .header("cookie", cookie)
+            .header(clax_http::local_trust::PROOF_HEADER, &proof)
             .send()
             .unwrap()
             .status()

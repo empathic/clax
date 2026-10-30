@@ -43,6 +43,23 @@ fn set_cookies(res: &reqwest::Response) -> Vec<String> {
         .collect()
 }
 
+/// The proof a login's page carries.
+async fn proof_of(res: reqwest::Response) -> String {
+    clax_testkit::login_page_proof(&res.text().await.unwrap())
+}
+
+/// `GET /api/token`'s status for a browser holding `cookie` that sends
+/// `proof` (none: `None`), from a client that carries nothing else.
+async fn token_status(ts: &TestServer, cookie: &str, proof: Option<&str>) -> u16 {
+    let mut req = reqwest::Client::new()
+        .get(format!("{}/api/token", ts.base))
+        .header("cookie", cookie);
+    if let Some(p) = proof {
+        req = req.header(clax_http::local_trust::PROOF_HEADER, p);
+    }
+    req.send().await.unwrap().status().as_u16()
+}
+
 /// The owner cookie among `cookies`.
 fn owner_cookie_of(ts: &TestServer, cookies: &[String]) -> String {
     let name = clax_http::identity::owner_cookie_name(ts.base.trim_start_matches("http://"));
@@ -119,10 +136,18 @@ async fn a_login_code_opens_one_browser_session_once() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), StatusCode::SEE_OTHER);
-    assert_eq!(res.headers()["location"], "/a/7q3k9mzx2b4t?thread=x");
+    // The login's page: it writes the session's proof into the origin's
+    // storage and goes on to `next`.
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(res.headers().get("location").is_none());
     assert_eq!(res.headers()["cache-control"], "no-store");
     assert_eq!(res.headers()["referrer-policy"], "no-referrer");
+    assert_eq!(res.headers()["x-frame-options"], "DENY");
+    let csp = res.headers()["content-security-policy"].to_str().unwrap();
+    assert!(
+        csp.starts_with("default-src 'none'; script-src 'nonce-"),
+        "{csp}"
+    );
     let set: Vec<String> = res
         .headers()
         .get_all("set-cookie")
@@ -145,15 +170,23 @@ async fn a_login_code_opens_one_browser_session_once() {
         );
     }
     let cookie = owner_cookie_of(&ts, &set_cookies(&res));
-    // The session is the owner's browser.
-    let res = ts
-        .client
-        .get(format!("{}/api/token", ts.base))
-        .header("cookie", &cookie)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
+    let page = res.text().await.unwrap();
+    assert!(
+        page.contains("data-next=\"/a/7q3k9mzx2b4t?thread=x\""),
+        "{page}"
+    );
+    assert!(page.contains("localStorage.setItem(\"clax.owner_proof\""));
+    let proof = clax_testkit::login_page_proof(&page);
+    assert!(proof.starts_with("cxp_"), "{proof}");
+    assert!(!cookie.contains(&proof), "the proof is never the cookie");
+    // The session with its proof is the owner's browser; its cookie alone,
+    // or with another proof, is no credential.
+    assert_eq!(token_status(&ts, &cookie, Some(&proof)).await, 200);
+    assert_eq!(token_status(&ts, &cookie, None).await, 401);
+    assert_eq!(
+        token_status(&ts, &cookie, Some(&ts.owner_proof())).await,
+        401
+    );
     // A second redemption is gone, and opens nothing.
     let again = browser
         .get(format!("{}{path}", ts.base))
@@ -209,12 +242,10 @@ async fn a_login_code_opens_one_browser_session_once() {
         .send()
         .await
         .unwrap();
-    assert_eq!(
-        res.status(),
-        StatusCode::SEE_OTHER,
-        "the code was not spent"
-    );
-    // A browser that already holds a session keeps it: no new one is set.
+    assert_eq!(res.status(), StatusCode::OK, "the code was not spent");
+    // A browser that already holds a session gets a new one in its place
+    // (its proof may be gone from the browser's storage); the one it held
+    // is left live.
     let path = login_path(&ts, "/").await;
     let res = browser
         .get(format!("{}{path}", ts.base))
@@ -222,8 +253,16 @@ async fn a_login_code_opens_one_browser_session_once() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), StatusCode::SEE_OTHER);
-    assert!(set_cookies(&res).is_empty());
+    assert_eq!(res.status(), StatusCode::OK);
+    let renewed = owner_cookie_of(&ts, &set_cookies(&res));
+    assert_ne!(renewed, cookie);
+    let renewed_proof = proof_of(res).await;
+    assert_eq!(token_status(&ts, &cookie, Some(&proof)).await, 200);
+    assert_eq!(token_status(&ts, &renewed, Some(&proof)).await, 401);
+    assert_eq!(
+        token_status(&ts, &renewed, Some(&renewed_proof)).await,
+        200
+    );
     // Only the token makes a code.
     for req in [
         ts.client.post(format!("{}/api/browser-login", ts.base)),
@@ -247,17 +286,12 @@ async fn an_owner_session_survives_a_restart_and_ends_when_revoked() {
         "{}={value}",
         clax_http::identity::owner_cookie_name(again.base.trim_start_matches("http://"))
     );
-    let token = |ts: &TestServer, cookie: String| {
-        let req = ts
-            .client
-            .get(format!("{}/api/token", ts.base))
-            .header("cookie", cookie);
-        async move { req.send().await.unwrap().status() }
-    };
-    assert_eq!(token(&again, cookie.clone()).await, 200);
+    // The proof the browser keeps survives with it.
+    let proof = ts.owner_proof();
+    assert_eq!(token_status(&again, &cookie, Some(&proof)).await, 200);
     let hash = clax_core::secret::sha256_hex(&value);
     assert!(again.state.owner_sessions.end(&again.store, &hash).unwrap());
-    assert_eq!(token(&again, cookie).await, 401);
+    assert_eq!(token_status(&again, &cookie, Some(&proof)).await, 401);
 }
 
 /// `DELETE /api/browser-login` (the token, by hand) ends every owner
@@ -276,15 +310,10 @@ async fn the_owner_ends_every_browser_session_at_once() {
         .await
         .unwrap();
     let second = owner_cookie_of(&ts, &set_cookies(&res));
-    let token = |cookie: String| {
-        let req = ts
-            .client
-            .get(format!("{}/api/token", ts.base))
-            .header("cookie", cookie);
-        async move { req.send().await.unwrap().status() }
-    };
-    assert_eq!(token(first.clone()).await, 200);
-    assert_eq!(token(second.clone()).await, 200);
+    let second_proof = proof_of(res).await;
+    let first_proof = ts.owner_proof();
+    assert_eq!(token_status(&ts, &first, Some(&first_proof)).await, 200);
+    assert_eq!(token_status(&ts, &second, Some(&second_proof)).await, 200);
     let end = || ts.client.delete(format!("{}/api/browser-login", ts.base));
     for (what, req, want) in [
         ("no credential", end(), (401, "")),
@@ -305,13 +334,17 @@ async fn the_owner_ends_every_browser_session_at_once() {
             assert_eq!(code, want.1, "{what}");
         }
     }
-    assert_eq!(token(first.clone()).await, 200, "nothing ended yet");
+    assert_eq!(
+        token_status(&ts, &first, Some(&first_proof)).await,
+        200,
+        "nothing ended yet"
+    );
     let res = ts.authed(end()).send().await.unwrap();
     assert_eq!(res.status(), 200);
     let v: Value = res.json().await.unwrap();
     assert_eq!(v["ended"], 2, "{v}");
-    assert_eq!(token(first).await, 401);
-    assert_eq!(token(second).await, 401);
+    assert_eq!(token_status(&ts, &first, Some(&first_proof)).await, 401);
+    assert_eq!(token_status(&ts, &second, Some(&second_proof)).await, 401);
     // A new login code opens a new session.
     let path = login_path(&ts, "/").await;
     let res = browser
@@ -319,7 +352,9 @@ async fn the_owner_ends_every_browser_session_at_once() {
         .send()
         .await
         .unwrap();
-    assert_eq!(token(owner_cookie_of(&ts, &set_cookies(&res))).await, 200);
+    let cookie = owner_cookie_of(&ts, &set_cookies(&res));
+    let proof = proof_of(res).await;
+    assert_eq!(token_status(&ts, &cookie, Some(&proof)).await, 200);
 }
 
 #[tokio::test]
@@ -575,7 +610,7 @@ async fn a_planted_viewer_is_claimed_only_at_login() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    assert_eq!(res.status(), StatusCode::OK);
     assert!(
         set_cookies(&res).iter().any(|c| c == "clax_viewer="),
         "the viewer cookie is cleared"
@@ -687,24 +722,27 @@ async fn a_lan_address_peer_is_held_to_the_loopback_rule() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    assert_eq!(res.status(), StatusCode::OK);
     let name = clax_http::identity::owner_cookie_name(&own);
     let cookie = set_cookies(&res)
         .into_iter()
         .find(|c| c.starts_with(&format!("{name}=")))
         .expect("an owner cookie for the LAN address");
+    let proof = proof_of(res).await;
     let res = from_own(client.get(format!("{}/api/token", ts.base)))
         .header("cookie", &cookie)
+        .header(clax_http::local_trust::PROOF_HEADER, &proof)
         .send()
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
-    // Another machine replaying the cookie is no one.
+    // Another machine replaying the cookie, its proof too, is no one.
     let res = client
         .get(format!("{}/api/token", ts.base))
         .header(LAN_HEADER, "1")
         .header("host", &own)
         .header("cookie", &cookie)
+        .header(clax_http::local_trust::PROOF_HEADER, &proof)
         .send()
         .await
         .unwrap();
@@ -972,5 +1010,197 @@ async fn a_login_code_redeems_only_for_the_daemons_own_user() {
         std::fs::write(&tcp, tcp_row(browser, daemon, 1000)).unwrap();
     })
     .await;
-    assert!(line.contains(" 303 "), "{line}");
+    assert!(line.contains(" 200 "), "{line}");
+}
+
+/// The owner cookie is sent to every port of the daemon's host name, so a
+/// server on another port can capture it and replay it from this machine
+/// with the daemon's `Host`. Without the proof the login's page wrote into
+/// the daemon's origin (which no other port reads) it is no credential: no
+/// token, no read, no write, no event stream. Only the realtime routes take
+/// the proof in their address.
+#[tokio::test]
+async fn an_owner_cookie_replayed_without_its_proof_is_no_credential() {
+    let ts = TestServer::spawn().await;
+    let aid = ts.publish("Roadmap", &[("index.html", "<p>hi</p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let host = ts.base.trim_start_matches("http://").to_string();
+    // What the other port's server holds: the cookies, and no proof.
+    let replay = || reqwest::Client::new();
+    for path in [
+        "/api/token".to_string(),
+        "/api/artifacts".to_string(),
+        format!("/api/artifacts/{aid}"),
+        format!("/api/artifacts/{aid}/threads"),
+        "/api/viewers/me".to_string(),
+        "/api/inbox".to_string(),
+    ] {
+        let res = replay()
+            .get(format!("{}{path}", ts.base))
+            .header("host", &host)
+            .header("cookie", ts.owner_cookie())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(code_of(res).await, (401, "no_credential".into()), "{path}");
+    }
+    let res = replay()
+        .patch(format!("{}/api/artifacts/{aid}", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"title": "Taken"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(code_of(res).await, (401, "no_credential".into()));
+    for path in ["/api/events", "/api/stream"] {
+        let res = replay()
+            .get(format!("{}{path}", ts.base))
+            .header("cookie", ts.events_cookie())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(code_of(res).await, (401, "no_credential".into()), "{path}");
+    }
+    // A wrong proof is no proof.
+    assert_eq!(
+        token_status(&ts, &ts.owner_cookie(), Some("cxp_guessed")).await,
+        401
+    );
+    // The proof in the address of a realtime route opens it, and in no
+    // other address counts.
+    let proof = ts.owner_proof();
+    let res = replay()
+        .get(format!("{}/api/events?owner_proof={proof}", ts.base))
+        .header("cookie", ts.events_cookie())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    drop(res);
+    let res = replay()
+        .get(format!("{}/api/token?owner_proof={proof}", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(code_of(res).await, (401, "no_credential".into()));
+    // The proof alone is nothing either.
+    let res = replay()
+        .get(format!("{}/api/token", ts.base))
+        .header(clax_http::local_trust::PROOF_HEADER, &proof)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(code_of(res).await, (401, "no_credential".into()));
+    // The browser holding both is the owner's.
+    assert_eq!(
+        token_status(&ts, &ts.owner_cookie(), Some(&proof)).await,
+        200
+    );
+}
+
+/// `clax logout` ends the event streams and sockets opened with an owner
+/// browser session, not only the requests made after it.
+#[tokio::test]
+async fn logging_out_ends_the_streams_and_sockets_opened_with_a_session() {
+    use futures::StreamExt;
+    use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+    let ts = TestServer::spawn().await;
+    let aid = ts
+        .post_json(
+            "/api/artifacts",
+            json!({"title": "Room", "capabilities": {"room": {}}, "files": {"index.html": {"content": "<main></main>", "encoding": "utf8"}}}),
+        )
+        .await
+        .json::<Value>()
+        .await
+        .unwrap()["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The owner's viewer row, made on first use, which a live socket needs.
+    ts.owner_public_id().await;
+    let proof = ts.owner_proof();
+    let wait = std::time::Duration::from_secs(20);
+    let mut streams = Vec::new();
+    for path in ["/api/events", "/api/stream"] {
+        let res = reqwest::Client::new()
+            .get(format!("{}{path}", ts.base))
+            .header("cookie", ts.events_cookie())
+            .header(clax_http::local_trust::PROOF_HEADER, &proof)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "{path}");
+        let mut body = res.bytes_stream();
+        let first = tokio::time::timeout(wait, body.next())
+            .await
+            .expect("the stream's ready within 20 s")
+            .expect("open")
+            .unwrap();
+        assert!(
+            std::str::from_utf8(&first).unwrap().contains("ready"),
+            "{path}"
+        );
+        streams.push((path, body));
+    }
+    let ws = ts.base.replacen("http://", "ws://", 1);
+    let mut sockets = Vec::new();
+    for (what, url) in [
+        (
+            "room",
+            format!("{ws}/api/artifacts/{aid}/room?peer=aaaaaaaaaaaaaaaa&owner_proof={proof}"),
+        ),
+        (
+            "live",
+            format!("{ws}/api/artifacts/{aid}/live?owner_proof={proof}"),
+        ),
+    ] {
+        let mut req = url.into_client_request().unwrap();
+        req.headers_mut()
+            .insert("cookie", ts.owner_cookie().parse().unwrap());
+        let (mut s, _) = tokio_tungstenite::connect_async(req)
+            .await
+            .unwrap_or_else(|e| panic!("{what}: {e}"));
+        let hello = tokio::time::timeout(wait, s.next())
+            .await
+            .expect("a welcome within 20 s")
+            .expect("open")
+            .unwrap();
+        assert!(hello.to_text().unwrap().contains("welcome"), "{what}");
+        sockets.push((what, s));
+    }
+    let res = ts
+        .authed(ts.client.delete(format!("{}/api/browser-login", ts.base)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    for (path, mut body) in streams {
+        let ended = tokio::time::timeout(wait, async {
+            while let Some(chunk) = body.next().await {
+                if chunk.is_err() {
+                    break;
+                }
+            }
+        })
+        .await;
+        assert!(ended.is_ok(), "{path} ends at logout");
+    }
+    for (what, mut s) in sockets {
+        let closed = tokio::time::timeout(wait, async {
+            loop {
+                match s.next().await {
+                    Some(Ok(Message::Close(c))) => return c.map(|c| u16::from(c.code)),
+                    Some(Ok(_)) => continue,
+                    _ => return None,
+                }
+            }
+        })
+        .await
+        .expect("closed within 20 s");
+        assert_eq!(closed, Some(4403), "{what}");
+    }
 }

@@ -1881,6 +1881,7 @@ pub const MIGRATIONS: &[&str] = &[
     ) WITHOUT ROWID;
     CREATE TABLE owner_browser_sessions (
         sha256 TEXT PRIMARY KEY,
+        proof_sha256 TEXT NOT NULL,
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL,
         ended_at TEXT

@@ -180,12 +180,14 @@ async function startDaemon(bin: string, home: string, port: number, log: string)
   }
 }
 
-/** A JSON call to the local daemon; `auth` is its token (bearer) or an
- * owner browser session's cookies, with the daemon's Origin. */
-async function local(d: Daemon, method: string, path: string, o: { body?: unknown; cookie?: string; headers?: Record<string, string> } = {}): Promise<{ status: number; headers: Headers; json: Record<string, unknown> }> {
+/** A JSON call to the local daemon; with its token (bearer), or as a
+ * browser of the owner's (`browser`: its session's cookies and proof), with
+ * the daemon's Origin. */
+async function local(d: Daemon, method: string, path: string, o: { body?: unknown; browser?: OwnerBrowser; headers?: Record<string, string> } = {}): Promise<{ status: number; headers: Headers; json: Record<string, unknown> }> {
   const headers: Record<string, string> = { accept: "application/json", ...o.headers };
-  if (o.cookie !== undefined) {
-    headers.cookie = o.cookie;
+  if (o.browser !== undefined) {
+    headers.cookie = o.browser.cookie;
+    headers["x-clax-owner-proof"] = o.browser.proof;
     headers.origin = d.base;
   } else headers.authorization = `Bearer ${d.token}`;
   if (o.body !== undefined) headers["content-type"] = "application/json";
@@ -200,16 +202,25 @@ async function local(d: Daemon, method: string, path: string, o: { body?: unknow
   return { status: res.status, headers: res.headers, json };
 }
 
+/** A browser of the owner's: the cookies its login set, as a `Cookie`
+ * header, and the proof its login's page wrote into the origin's storage,
+ * which it sends as `X-Clax-Owner-Proof`. */
+interface OwnerBrowser {
+  cookie: string;
+  proof: string;
+}
+
 /** A browser session of the owner's on the daemon, as `clax open` makes
  * one: a login code made with the token (`POST /api/browser-login`),
- * redeemed at `GET /login`; the cookies it set, as a `Cookie` header. */
-async function ownerBrowser(d: Daemon): Promise<string> {
+ * redeemed at `GET /login`. */
+async function ownerBrowser(d: Daemon): Promise<OwnerBrowser> {
   const made = await local(d, "POST", "/api/browser-login", { body: { next: "/" } });
   if (made.status !== 200 && made.status !== 201) throw new Error(`browser-login answered ${made.status}: ${JSON.stringify(made.json)}`);
   const res = await fetch(`${d.base}${made.json.path as string}`, { redirect: "manual" });
   const cookies = res.headers.getSetCookie().map((c) => c.split(";")[0]!);
-  if (res.status !== 303 || cookies.length === 0) throw new Error(`the login answered ${res.status} with no cookie`);
-  return cookies.join("; ");
+  const proof = /data-proof="([^"]+)"/.exec(await res.text())?.[1];
+  if (res.status !== 200 || cookies.length === 0 || !proof) throw new Error(`the login answered ${res.status} with no session`);
+  return { cookie: cookies.join("; "), proof };
 }
 
 // ── The agent: `clax mcp` over stdio ────────────────────────────────────────
@@ -423,19 +434,19 @@ try {
     return items.find((i) => i.remote_request?.status === "open")?.remote_request ?? null;
   });
   expect(card.origin === worker.base, "the card names the Worker's origin", card);
-  const cookie = await ownerBrowser(daemon);
+  const browser = await ownerBrowser(daemon);
   const answerPath = `/api/remotes/requests/${card.id}/answer`;
   // The answer is a decision the daemon confirms in a browser while an
   // agent is live (docs/contract.md, "Browser confirmations"): an owner
   // browser session is that browser and decides at once, unless passkeys
   // are required, when it answers 202 and the same session confirms.
-  let answered = await local(daemon, "POST", answerPath, { cookie, body: { answer: "connect" } });
+  let answered = await local(daemon, "POST", answerPath, { browser, body: { answer: "connect" } });
   let how = "decided at once, the browser session being the confirmation an agent's liveness asks for";
   if (answered.status === 202 && answered.json.status === "confirmation_pending") {
     const confirmation = answered.json.confirmation_id as string;
-    const confirmed = await local(daemon, "POST", `/api/confirmations/${confirmation}`, { cookie, body: { approve: true } });
+    const confirmed = await local(daemon, "POST", `/api/confirmations/${confirmation}`, { browser, body: { approve: true } });
     expect(confirmed.status === 200, "the owner's browser session confirms", { status: confirmed.status, ...confirmed.json });
-    answered = await local(daemon, "POST", answerPath, { cookie, body: { answer: "connect" }, headers: { "x-clax-confirmation": confirmation } });
+    answered = await local(daemon, "POST", answerPath, { browser, body: { answer: "connect" }, headers: { "x-clax-confirmation": confirmation } });
     how = `held for confirmation ${confirmation}, which the same browser session approved`;
   }
   expect(answered.status === 200 && typeof answered.json.verification_url === "string", "Connect starts the Worker's device sign-in", { status: answered.status, ...answered.json });
