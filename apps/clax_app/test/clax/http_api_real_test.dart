@@ -220,7 +220,16 @@ void main() {
     'queries, the owner thread calls, questions, the inbox and the stream',
     () async {
       final core = await RealCore.open();
-      final api = core.api(eventRetryDelay: (_) async {});
+      // The app's own session is an agent's, so a decision the app's code
+      // makes (answering a question) waits for the person's confirmation.
+      final confirmed = <String>[];
+      final api = core.api(
+        eventRetryDelay: (_) async {},
+        confirm: (held) {
+          confirmed.add(held.confirmationId!);
+          return core.confirmAsPerson(held);
+        },
+      );
       final s = await api.registerAppSession(
         installId: 'install-1',
         pid: pid,
@@ -348,6 +357,21 @@ void main() {
       );
       expect((await api.questions()).single.id, q.id);
 
+      // Without anyone to confirm, the answer is held, and nothing changes.
+      await expectLater(
+        core.api().answerQuestion(q.id, [
+          {
+            'selected': ['km'],
+            'text': null,
+          },
+        ]),
+        throwsA(
+          isA<ClaxApiError>()
+              .having((e) => e.isConfirmationPending, 'held', isTrue)
+              .having((e) => e.confirmationId, 'confirmation', isNotNull),
+        ),
+      );
+      expect((await api.questions()).single.isOpen, isTrue);
       // Answered with no wait holding it: a late answer on the next poll.
       final answered = await api.answerQuestion(q.id, [
         {
@@ -356,6 +380,7 @@ void main() {
         },
       ]);
       expect(answered.answers!.single.selected, ['mi']);
+      expect(confirmed, hasLength(1), reason: 'the person confirmed it once');
       final late = await api.pollFeedback(
         s.id,
         wait: const Duration(seconds: 5),

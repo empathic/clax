@@ -11,7 +11,8 @@ import 'dart:typed_data';
 
 import '../bundle/bundle_reader.dart' show maxBundleBytes;
 import '../bundle/exporter.dart' show bundleMime;
-import '../clax/api.dart' show ClaxApiError;
+import '../clax/api.dart'
+    show ClaxApiError, Confirmer, confirmationHeader, confirmationPendingOf;
 import '../clax/transport.dart';
 import 'models.dart';
 
@@ -173,9 +174,17 @@ class HttpRemoteApi implements RemoteApi {
     this.requestTimeout = const Duration(seconds: 35),
     this.bundleTimeout = const Duration(seconds: 125),
     this.bundleCap = maxBundleBytes,
+    this.confirm,
   }) : httpClient = httpClient ?? HttpClient.new;
 
   final ClaxTransport transport;
+
+  /// Asks the owner to confirm a decision the core holds for a browser
+  /// confirmation (connecting, pushing, widening a public copy's sharing);
+  /// when they approve, the call is made again with its confirmation.
+  /// Without it, or when they do not, the call throws the held decision
+  /// ([ClaxApiError.isConfirmationPending]).
+  final Confirmer? confirm;
 
   /// Makes the client of each call to a remote's public routes.
   final HttpClient Function() httpClient;
@@ -559,10 +568,14 @@ class HttpRemoteApi implements RemoteApi {
     String path, {
     Object? body,
     Duration? timeout,
+    String? confirmation,
   }) => transport.send(
     method,
     path,
-    headers: {if (body != null) 'content-type': 'application/json'},
+    headers: {
+      if (body != null) 'content-type': 'application/json',
+      confirmationHeader: ?confirmation,
+    },
     body: body == null ? null : utf8.encode(jsonEncode(body)),
     timeout: timeout ?? requestTimeout,
   );
@@ -573,10 +586,33 @@ class HttpRemoteApi implements RemoteApi {
     Object? body,
     Duration? timeout,
   }) async {
-    final r = await _send(method, path, body: body, timeout: timeout);
+    var r = await _send(method, path, body: body, timeout: timeout);
+    if (_pending(r) case final held?) {
+      final c = confirm;
+      if (c == null || !await c(held)) throw held;
+      r = await _send(
+        method,
+        path,
+        body: body,
+        timeout: timeout,
+        confirmation: held.confirmationId,
+      );
+      if (_pending(r) case final still?) throw still;
+    }
     _check(r);
     if (r.json case final j?) return j;
     return _parse(() => _decodeObject(r.body));
+  }
+
+  /// The held decision a 202 `confirmation_pending` answer names
+  /// ([confirmationPendingOf]); null for any other answer.
+  static ClaxApiError? _pending(TransportAnswer r) {
+    if (r.status != 202) return null;
+    try {
+      return confirmationPendingOf(r.status, r.json ?? _decodeObject(r.body));
+    } on FormatException catch (_) {
+      return null;
+    }
   }
 
   /// [method] [url] straight to a remote, without signing in: the 2xx

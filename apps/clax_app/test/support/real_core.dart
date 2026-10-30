@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 
+import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/http_api.dart';
 import 'package:clax_app/core/core_client.dart';
 import 'package:clax_app/core/core_host.dart';
@@ -69,12 +71,45 @@ class RealCore {
 
   /// [HttpClaxApi] over the core, as the app makes it ([CoreTransport]),
   /// closed in a tear-down.
-  HttpClaxApi api({Future<void> Function(Duration)? eventRetryDelay}) {
+  ///
+  /// [confirm] answers a decision the core holds for the owner's browser
+  /// confirmation (as [confirmAsPerson] does); without it such a call
+  /// throws the held decision.
+  HttpClaxApi api({
+    Future<void> Function(Duration)? eventRetryDelay,
+    Confirmer? confirm,
+  }) {
     final api = HttpClaxApi.over(
       CoreTransport(host.calls, retryDelay: eventRetryDelay),
       eventRetryDelay: eventRetryDelay,
+      confirm: confirm,
     );
     addTearDown(api.close);
     return api;
+  }
+
+  /// Approves the decision [pending] holds as the person at the app does,
+  /// in its shell's inbox: `POST /api/confirmations/<id> {approve: true}`
+  /// as the owner's browser (the core's owner-browser caller, the
+  /// transport's `person`). While an agent session is live (the app's own
+  /// included), a decision the app's code makes waits for this click.
+  Future<bool> confirmAsPerson(ClaxApiError pending) async {
+    final id = pending.confirmationId;
+    expect(id, isNotNull, reason: 'a held decision names its confirmation');
+    final t = CoreTransport(host.calls);
+    try {
+      final r = await t.send(
+        'POST',
+        '/api/confirmations/${Uri.encodeComponent(id!)}',
+        headers: {'content-type': 'application/json'},
+        body: utf8.encode(jsonEncode({'approve': true})),
+        timeout: const Duration(seconds: 30),
+        person: true,
+      );
+      expect(r.status, 200, reason: utf8.decode(r.body, allowMalformed: true));
+    } finally {
+      t.close();
+    }
+    return true;
   }
 }

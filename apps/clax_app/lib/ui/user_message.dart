@@ -26,6 +26,8 @@ import 'app_surface.dart';
 ///   answer that was not a whole message or not an edit, or another
 ///   exception's text): Claude couldn't answer.
 /// - Another [AgentError]: its own message, which is plain.
+/// - A decision the core holds for the owner's browser confirmation
+///   ([ClaxApiError.isConfirmationPending]): confirm it in the inbox.
 /// - Anything else: something went wrong.
 ///
 /// The raw text stays for the log and Developer tools ([rawError]).
@@ -41,6 +43,7 @@ String userMessage(Object e) {
     return e.detail.startsWith('net::ERR_') ? _noAnswer : _unknown;
   }
   if (e is ClaxApiError) {
+    if (e.isConfirmationPending) return _confirm;
     final code = e.code.toLowerCase();
     if (e.status == 529 || _busyCode.hasMatch(code)) return _busy;
     if (code == 'authentication_error') return _badKey;
@@ -88,6 +91,7 @@ const _tooLong = 'That took too long. Try again.';
 const _busy = 'Claude is busy right now. Try again in a minute.';
 const _badKey = 'Your Claude API key wasn’t accepted. Check it in Settings.';
 const _unknown = 'Something went wrong. Try again.';
+const _confirm = 'Confirm this in your inbox, then try again.';
 const _unreachable =
     'Claude couldn’t be reached. Check your connection and try again.';
 const _noReply = 'Claude couldn’t answer just now. Try again.';
