@@ -70,6 +70,9 @@ describe("webauthn in the shell", () => {
     expect(new TextDecoder().decode(pk.allowCredentials[0].id)).toBe("cred");
     const post = seen.find(s => s.url === req.assertion)!;
     expect(post.init?.method).toBe("POST");
+    // The shell's path as the Referer, same origin only, so the service can log where the approval came from.
+    expect(post.init?.referrer).toBe(location.origin + location.pathname);
+    expect(post.init?.referrerPolicy).toBe("same-origin");
     expect(JSON.parse(post.init!.body as string)).toEqual({ id: "cred", rawId: b64u("cred"), type: "public-key", response: { clientDataJSON: b64u("cd"), authenticatorData: b64u("ad"), signature: b64u("sig"), userHandle: null } });
   });
 

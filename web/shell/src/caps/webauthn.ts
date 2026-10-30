@@ -133,7 +133,9 @@ export const webauthnHandler: HandlerFactory = env => {
     };
     let res: Response;
     try {
-      res = await fetch(assertion, { method: "POST", cache: "no-store", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      // The service logs which page an approval came from by its Referer: the shell's path alone (no query, no fragment), and only to
+      // this origin, though the shell's own documents send none.
+      res = await fetch(assertion, { method: "POST", cache: "no-store", headers: { "content-type": "application/json" }, body: JSON.stringify(body), referrer: location.origin + location.pathname, referrerPolicy: "same-origin" });
     } catch {
       throw new CapError("unavailable", "the assertion could not be sent");
     }
