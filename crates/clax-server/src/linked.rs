@@ -1622,10 +1622,10 @@ impl Sync {
                 let Some(rtid) = rtid else {
                     return Ok(Sent::Refused("the remote answered no thread".into()));
                 };
-                let seq = row.seq;
+                let (seq, tid) = (row.seq, row.thread_id.clone());
                 self.s
                     .store_call(move |st| {
-                        st.ack_outbox(seq, Some(&rtid), rcid.as_deref(), Some(version))
+                        st.ack_outbox(seq, Some((&tid, &rtid)), rcid.as_deref(), Some(version))
                     })
                     .await?;
                 Ok(Sent::Acked)

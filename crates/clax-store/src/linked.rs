@@ -1161,13 +1161,17 @@ impl Store {
     }
 
     /// Records the remote's acknowledgement of outbox row `seq` and deletes
-    /// it: for a `thread`, its twin `rtid` there, on public version
-    /// `remote_version`; for a `thread` or `comment`, the comment `rcid` it
-    /// made there.
+    /// it: for a `thread` (local thread `tid` of `made`), its twin `rtid`
+    /// there, on public version `remote_version`; for a `thread` or
+    /// `comment`, the comment `rcid` it made there.
+    ///
+    /// A `thread` whose row is gone (the thread was deleted here while its
+    /// answer was out) still records its twin on the ended pairing, so the
+    /// next read does not mirror the twin here as a new thread.
     pub fn ack_outbox(
         &self,
         seq: i64,
-        rtid: Option<&str>,
+        made: Option<(&str, &str)>,
         rcid: Option<&str>,
         remote_version: Option<u32>,
     ) -> Result<()> {
@@ -1180,9 +1184,17 @@ impl Store {
                 )
                 .optional()?;
             let Some((tid, cid)) = row else {
+                if let Some((tid, rtid)) = made {
+                    tx.execute(
+                        "UPDATE linked_threads SET remote_thread_id = ?2,
+                            remote_version = COALESCE(?3, remote_version)
+                         WHERE thread_id = ?1 AND remote_thread_id IS NULL",
+                        params![tid, rtid, remote_version],
+                    )?;
+                }
                 return Ok(());
             };
-            if let Some(rtid) = rtid {
+            if let Some((_, rtid)) = made {
                 tx.execute(
                     "UPDATE linked_threads SET remote_thread_id = ?2,
                         remote_version = COALESCE(?3, remote_version) WHERE thread_id = ?1",
@@ -2160,6 +2172,41 @@ mod tests {
     }
 
     #[test]
+    fn a_thread_deleted_while_its_up_send_was_out_keeps_its_twin_there() {
+        let w = world();
+        link(&w, (1, 1));
+        w.clock.advance(1);
+        let id = ArtifactId::parse(&w.aid).unwrap();
+        let t =
+            w.st.create_thread(
+                &AuditCtx::DAEMON,
+                &id,
+                NewThread {
+                    version_n: 1,
+                    anchor: whole(),
+                    author_name: "Owner".into(),
+                    author_public_id: Some(w.owner.clone()),
+                    body: "first".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
+        let seq = w.st.outbox_of(&w.rid).unwrap()[0].seq;
+        // Deleted here while the up-send is out; then its answer arrives.
+        w.st.delete_thread(&AuditCtx::DAEMON, &t.id).unwrap();
+        w.st.ack_outbox(seq, Some((&t.id, "rt5")), Some("rc5"), Some(1))
+            .unwrap();
+        let lt =
+            w.st.linked_thread_by_remote(&w.rid, "rt5")
+                .unwrap()
+                .expect("the ended pairing names its twin there");
+        assert_eq!(lt.thread_id, t.id);
+        assert!(lt.unlinked_at.is_some(), "so the read writes nothing here");
+    }
+
+    #[test]
     fn the_outbox_keeps_each_threads_order() {
         let w = world();
         link(&w, (1, 1));
@@ -2266,8 +2313,13 @@ mod tests {
         assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
         let out = w.st.outbox_of(&w.rid).unwrap();
         assert_eq!(out.last().unwrap().thread_id, later.id);
-        w.st.ack_outbox(out.last().unwrap().seq, Some("rt9"), Some("rc9"), Some(1))
-            .unwrap();
+        w.st.ack_outbox(
+            out.last().unwrap().seq,
+            Some((&later.id, "rt9")),
+            Some("rc9"),
+            Some(1),
+        )
+        .unwrap();
         // Unlinked: unsent rows wait for the owner, then go.
         w.st.unlink_remote(&w.aid, &w.rid).unwrap();
         assert_eq!(w.st.unsent_of(&w.aid).unwrap().len(), 4);
