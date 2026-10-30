@@ -709,9 +709,20 @@ pub async fn set_rights(
     clax_http::confirm::require_confirmation(&s, &caller, &by, decision).await?;
     let state = s.clone();
     let who = pid.clone();
+    let hosted = s.hosted.is_some();
     let (person, before, after) = s
         .store_call(move |st| {
             let before = st.person_rights(&pid).ok();
+            // On hosted, People hides the locations out of the owner's
+            // reach, so the value sent keeps the stored ones.
+            let rights = match (rights, &before) {
+                (Some(r), Some(old)) if hosted => {
+                    let mut v = r.to_json();
+                    clax_http::hosted::keep_hidden_locations(st, &old.to_json(), &mut v)?;
+                    Some(clax_core::rights::Rights::parse(&v)?)
+                }
+                (r, _) => r,
+            };
             st.set_person_rights(&audit.resolve(st)?, &pid, rights)?;
             let after = st.person_rights(&pid).ok();
             let person = person_of(&state, st, &pid)?;

@@ -8850,6 +8850,66 @@ async fn the_owners_people_names_no_page_of_another_person() {
     assert!(me.to_string().contains(&mias), "{me}");
 }
 
+/// The owner saving a person's rights as People showed them (the
+/// locations out of the owner's reach hidden, only counted) keeps those
+/// locations: the owner never saw them, so cannot mean to drop them.
+#[tokio::test]
+async fn saving_a_persons_rights_as_people_shows_them_keeps_the_hidden_locations() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let (mia, mia_id) = site
+        .person_with(&owner, "Mia", json!("clax:collaborator"))
+        .await;
+    let mias = site.made_by(&mia, "Mia's secret plan").await;
+    let rights = |locations: Value| {
+        json!([
+            {"type": "clax-artifacts", "actions": ["create"], "locations": ["*"]},
+            {"type": "clax-artifacts", "actions": ["read", "update"], "locations": locations},
+        ])
+    };
+    let (s, v) = site
+        .put(
+            &owner,
+            &format!("/api/people/{mia_id}/rights"),
+            json!({"rights": rights(json!(["own", mias]))}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, people) = site.get(&owner, "/api/people").await;
+    assert_eq!(s, 200, "{people}");
+    let shown = people["people"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["public_id"] == json!(mia_id))
+        .unwrap()["rights"]
+        .clone();
+    assert!(!shown.to_string().contains(&mias), "{shown}");
+    assert!(shown.to_string().contains("hidden_locations"), "{shown}");
+    // The owner saves what People showed.
+    let mut edited = shown.clone();
+    for o in edited.as_array_mut().unwrap() {
+        o.as_object_mut().unwrap().remove("hidden_locations");
+    }
+    let (s, v) = site
+        .put(
+            &owner,
+            &format!("/api/people/{mia_id}/rights"),
+            json!({"rights": edited}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (_, me) = site.get(&mia, "/api/people/me").await;
+    let kept = me["person"]["rights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["actions"] == json!(["read", "update"]))
+        .cloned()
+        .unwrap_or_default();
+    assert!(kept["locations"].to_string().contains(&mias), "{me}");
+}
+
 #[tokio::test]
 async fn an_owner_row_grant_reaches_only_the_owners_reach() {
     let site = Site::new().await;

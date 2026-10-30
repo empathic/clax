@@ -5823,7 +5823,10 @@ value (a person's `rights`, a `narrow`, an `elevate`, an elevation's
 `access`, an agent's `rights`) the locations naming such an artifact are
 left out and counted in `hidden_locations`, and an approval in
 `approvals_of_yours` on such an artifact has `artifact_id`,
-`artifact_title` and `thread_id` `null`;
+`artifact_title` and `thread_id` `null`. Since the owner never sees those
+locations, `PUT /api/people/<public_id>/rights` keeps them: each is added
+back to the object of the new value with the same type, actions and level
+(or kept in an object of its own when there is none);
 anyone else, whatever cookie it sends (none, a LAN viewer's, or one that
 names no one), gets the same 403 `forbidden`, so the answer tells a guess
 nothing (a person's cookie is 32 random bytes, so there is no rate limit);
