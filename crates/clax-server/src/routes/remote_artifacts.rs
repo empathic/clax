@@ -347,7 +347,10 @@ async fn speak_for(s: &AppState, c: &mut Client, asker: &Asker) -> Result<(), Re
 /// `POST` `body` to `segs` at `r`'s remote, with the caller's `headers`
 /// of [`WRITE_HEADERS`], in a session of its own there
 /// ([`speak_for`]); with `first`, a `GET` of it first, whose refusal is the
-/// answer. `segs` may name the session (`{session}`).
+/// answer. `segs` may name the session (`{session}`). Its requests share
+/// one deadline, `s`'s [`AppState::remote_deadline`] from the start, so
+/// the write answers `remote_unreachable` before the agent's own call to
+/// this daemon times out however many requests it makes.
 async fn write(
     s: &AppState,
     r: &Reach,
@@ -365,6 +368,14 @@ async fn write(
         )
         .into_response();
     }
+    let until = clax_rt::time::Instant::now() + s.remote_deadline;
+    let late = || RemoteFail {
+        origin: r.remote.origin.clone(),
+        status: None,
+        code: "unreachable".into(),
+        message: format!("no answer within {} s", s.remote_deadline.as_secs()),
+        body: Value::Null,
+    };
     let mut c = Client::for_agent(s, &r.remote.origin, Some(r.token.clone()));
     // A local session watching a followed artifact there speaks in the
     // session the sync holds there for it.
@@ -373,16 +384,20 @@ async fn write(
         _ => None,
     };
     if let Some(check) = first {
-        match clax_rt::sendable(c.forward(
-            Method::GET,
-            check,
-            &[],
-            Vec::new(),
-            None,
-            public::MAX_ANSWER_BYTES,
-        ))
+        let checked = clax_rt::time::timeout_at(
+            until,
+            clax_rt::sendable(c.forward(
+                Method::GET,
+                check,
+                &[],
+                Vec::new(),
+                None,
+                public::MAX_ANSWER_BYTES,
+            )),
+        )
         .await
-        {
+        .unwrap_or_else(|_| Err(late()));
+        match checked {
             Ok(f) if (200..300).contains(&f.status) => {}
             Ok(f) => return passed(s, &r.remote, f).await,
             Err(f) => return failed(s, &r.remote, f).await.into_response(),
@@ -397,43 +412,47 @@ async fn write(
                 .map(|v| (*k, v.to_string()))
         })
         .collect();
-    let out = clax_rt::sendable(async {
-        let own = match held {
-            Some((sid, secret)) => {
-                c.speak_in(sid, secret);
-                false
+    let out = clax_rt::time::timeout_at(
+        until,
+        clax_rt::sendable(async {
+            let own = match held {
+                Some((sid, secret)) => {
+                    c.speak_in(sid, secret);
+                    false
+                }
+                None => {
+                    speak_for(s, &mut c, &r.asker).await?;
+                    true
+                }
+            };
+            // A session of its own is ended there however this future ends:
+            // dropped mid-write, the guard ends it in a task of its own.
+            let mut guard = EndSession(own.then(|| c.clone()));
+            let sid = c.session().map(|x| x.0.clone()).unwrap_or_default();
+            let segs: Vec<&str> = segs
+                .iter()
+                .map(|x| if *x == "{session}" { sid.as_str() } else { *x })
+                .collect();
+            let body = (!body.is_empty()).then(|| body.to_vec());
+            let f = c
+                .forward(
+                    Method::POST,
+                    &segs,
+                    &[],
+                    sent,
+                    body,
+                    public::MAX_ANSWER_BYTES,
+                )
+                .await;
+            guard.0 = None;
+            if own {
+                c.end_session().await;
             }
-            None => {
-                speak_for(s, &mut c, &r.asker).await?;
-                true
-            }
-        };
-        // A session of its own is ended there however this future ends:
-        // dropped mid-write, the guard ends it in a task of its own.
-        let mut guard = EndSession(own.then(|| c.clone()));
-        let sid = c.session().map(|x| x.0.clone()).unwrap_or_default();
-        let segs: Vec<&str> = segs
-            .iter()
-            .map(|x| if *x == "{session}" { sid.as_str() } else { *x })
-            .collect();
-        let body = (!body.is_empty()).then(|| body.to_vec());
-        let f = c
-            .forward(
-                Method::POST,
-                &segs,
-                &[],
-                sent,
-                body,
-                public::MAX_ANSWER_BYTES,
-            )
-            .await;
-        guard.0 = None;
-        if own {
-            c.end_session().await;
-        }
-        f
-    })
-    .await;
+            f
+        }),
+    )
+    .await
+    .unwrap_or_else(|_| Err(late()));
     match out {
         Ok(f) => passed(s, &r.remote, f).await,
         Err(f) => failed(s, &r.remote, f).await.into_response(),
