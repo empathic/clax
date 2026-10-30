@@ -860,11 +860,23 @@ pub async fn poll_sign_in(s: &AppState, r: &Remote) -> Result<SignIn, ApiError> 
             &json!({"device_code": code.expose()}),
         )
         .await;
+    // A sign-in another poll finished meanwhile (the remote answers a used
+    // code as expired) is that poll's: connected, not forgotten.
     let forget = |why: &'static str| async move {
         let id = r.id.clone();
-        s.store_call(move |st| st.remove_remote(&id).map(|_| ()))
+        let now = s
+            .store_call(
+                move |st| match st.find_remote(&id)?.filter(|x| x.id == id) {
+                    Some(x) if x.status == "connected" => Ok(Some(x)),
+                    Some(_) => st.remove_remote(&id).map(|_| None),
+                    None => Ok(None),
+                },
+            )
             .await?;
-        Ok::<_, ApiError>(SignIn::Refused(why))
+        Ok::<_, ApiError>(match now {
+            Some(x) => SignIn::Connected(Box::new(x)),
+            None => SignIn::Refused(why),
+        })
     };
     match out {
         Ok(v) => {

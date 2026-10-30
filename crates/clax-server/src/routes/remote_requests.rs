@@ -502,6 +502,10 @@ fn drive(s: AppState, id: String, remote: Remote) {
 /// One poll of request `id`'s sign-in on remote `rid`: the answer it ends
 /// with, or `None` while it waits.
 async fn step(s: &AppState, id: &str, rid: &str) -> Result<Option<Answer>, ApiError> {
+    // One poll at a time, under the Connect lock: a second driver of the
+    // same sign-in (a stranded one beside its replacement) reads what the
+    // first's poll left, rather than spending the used code again.
+    let _one = s.remote_drivers.connect.lock().await;
     let (id1, rid1) = (id.to_string(), rid.to_string());
     let (req, remote) = s
         .store_call(move |st| Ok((st.remote_request(&id1)?, st.find_remote(&rid1)?)))
@@ -528,8 +532,15 @@ async fn step(s: &AppState, id: &str, rid: &str) -> Result<Option<Answer>, ApiEr
             }
             Ok(SignIn::Refused("access_denied")) => Some(Answer::Dismissed { hold_off: true }),
             Ok(SignIn::Refused(_)) => Some(Answer::Dismissed { hold_off: false }),
-            // Forgotten by another poll between the read and this one.
-            Err(e) if e.code == "not_pending" => Some(Answer::Dismissed { hold_off: false }),
+            // Connected, or forgotten, by another poll between the read and
+            // this one (two drivers of a stranded sign-in poll at once).
+            Err(e) if e.code == "not_pending" => {
+                let rid = remote.id.clone();
+                match s.store_call(move |st| st.find_remote(&rid)).await? {
+                    Some(r) if r.status == "connected" => Some(Answer::Connected(r.id)),
+                    _ => Some(Answer::Dismissed { hold_off: false }),
+                }
+            }
             Err(e) => {
                 // Past its expiry by this daemon's clock, a sign-in the remote
                 // cannot be asked about is over.

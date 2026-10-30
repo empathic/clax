@@ -312,6 +312,9 @@ pub async fn poll(
     who.require_owner("publishes to a public Clax")?;
     asker(&s, &d).await?;
     let r = remote_named(&s, path(id)?).await?;
+    // One poll of a sign-in at a time, as a connection request's driver
+    // polls (`super::remote_requests`): a second never spends a used code.
+    let _one = s.remote_drivers.connect.lock().await;
     let (status, shown) = match clax_rt::sendable(public::poll_sign_in(&s, &r)).await? {
         SignIn::Waiting => ("pending", r),
         SignIn::Refused("access_denied") => ("denied", r),
