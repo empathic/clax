@@ -4218,6 +4218,23 @@ The line:
 The title is put on one line, double quotes become single quotes, and it is
 cut to 80 characters.
 
+### Chitin doorbells
+
+A local daemon started with `CLAX_CHITIN_AS` set to a chitin title (a
+declared daemon, e.g. `clax`) publishes each thread change as a content-free
+topic event, `chitin publish --as <title> [--dataref <ref>] <topic> <type>
+<subject>`. `chitin` comes from `CLAX_CHITIN_BIN` when that is set, else from
+the daemon's `PATH`. The topic is `clax.thread.<artifact id>` and the subject
+is `t-<thread id>`. The type is `comment` for a new thread, `reply` for a
+later comment and `resolved` for a resolve. The dataref of a comment or reply
+is `c:` plus the first 24 hex digits of the SHA-256 of the comment's ID; a
+resolve has none. No body, author or anchor is published: a seat woken by the
+event reads the thread through the routes above, with its own rights. After a
+restart, the daemon may announce a later change to a thread that still has
+one comment as `comment` again. Unset or empty `CLAX_CHITIN_AS`, a hosted
+daemon, or no `chitin` publishes nothing. A publish that fails or runs past
+5 s is logged and dropped; the delivery tiers above are unchanged.
+
 ### What the person sees
 
 The thread's waiting indicator follows the viewer's own `feedback_state`
