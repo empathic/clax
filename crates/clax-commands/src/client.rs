@@ -873,7 +873,8 @@ impl Client {
             .send()?)
     }
 
-    /// Waits until confirmation `id` is no longer open: long-polls `GET
+    /// Waits until confirmation `id` is no longer open, and answers its
+    /// status then (`approved`, `declined` or `expired`): long-polls `GET
     /// /api/confirmations/<id>?wait=` for at most
     /// [`clax_core::confirm::MAX_WAIT_SECS`] a time. The daemon expires it
     /// after ten minutes, which ends the wait.
@@ -881,7 +882,7 @@ impl Client {
     /// # Errors
     /// The daemon cannot be reached, or refuses the read (404 for an ID
     /// none has).
-    pub fn wait_for_confirmation(&self, id: &str) -> anyhow::Result<()> {
+    pub fn wait_for_confirmation(&self, id: &str) -> anyhow::Result<String> {
         let wait = clax_core::confirm::MAX_WAIT_SECS;
         // The ID is letters, digits, `_` and `-` ([`Client::send_confirming`]).
         let path = format!("/api/confirmations/{id}?wait={wait}");
@@ -890,8 +891,9 @@ impl Client {
                 .request(reqwest::Method::GET, &path)
                 .timeout(Duration::from_secs(wait + 15));
             let v = Self::check(req.send()?)?;
-            if v["confirmation"]["status"] != "open" {
-                return Ok(());
+            let status = v["confirmation"]["status"].as_str().unwrap_or_default();
+            if status != "open" {
+                return Ok(status.to_string());
             }
         }
     }

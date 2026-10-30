@@ -76,11 +76,11 @@ describe("Pairer", () => {
     ]);
     expect(told).toEqual([true, false]);
     // A declined or expired one ends the wait with the host's error.
-    const d = env([held, { type: "error", v: 1, code: "daemon_unavailable", message: "pairing failed: declined" }]);
+    const d = env([held, { type: "error", v: 1, code: "pairing_declined", message: "pairing was declined in the browser" }]);
     const q = new Pairer(d as unknown as PairEnv);
     const said: boolean[] = [];
     q.onConfirm = w => said.push(w);
-    await expect(q.pair()).rejects.toMatchObject({ code: "daemon_unavailable" });
+    await expect(q.pair()).rejects.toMatchObject({ code: "pairing_declined" });
     expect(said).toEqual([true, false]);
     // A held reply naming no confirmation is an error as it is.
     const bad = env([{ ...held, confirmation_id: null }]);
