@@ -134,6 +134,7 @@ pub mod linked;
 pub mod live;
 pub mod migrations;
 pub mod net_grants;
+pub mod passkeys;
 pub mod people;
 #[cfg(test)]
 mod plans;

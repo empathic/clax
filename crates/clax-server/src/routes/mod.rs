@@ -34,6 +34,7 @@ pub mod mcp;
 pub mod mcp_http;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod net;
+pub mod passkeys;
 pub mod people;
 pub mod perf;
 pub mod permissions;

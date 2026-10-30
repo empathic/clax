@@ -9,9 +9,15 @@
   // not confirm, one expired or answered elsewhere) shows the daemon's own
   // words and keeps the buttons. Every word shown is text. Its styles
   // travel with it (injected on mount): the inbox and the toasts both
-  // show it.
+  // show it. Where the owner requires a passkey, **Confirm** asks the
+  // browser for one (Touch ID, or another) first. On first use, where a
+  // passkey can be used here and none is set up, the card offers "Require
+  // Touch ID or a passkey to confirm" (**Set up** / **Not now**, which is
+  // remembered).
   import { relativeTime } from "../format";
   import { type ConfirmationView, agentLabel, answerConfirmation } from "./confirm.svelte";
+  import { type PasskeySettings, assertFor, passkeySettings, putSettings, unavailableHere } from "./passkey";
+  import PasskeySetup from "./PasskeySetup.svelte";
 
   let { c, now, onanswered }: {
     c: ConfirmationView;
@@ -24,6 +30,12 @@
   let busy = $state(false);
   let err = $state<string | null>(null);
   const status = $derived(c.status !== "open" ? c.status : made ?? c.status);
+  let keys = $state<PasskeySettings | null>(null);
+  void passkeySettings().then(s => { keys = s; });
+  // The first-use offer: passkeys can be used here, none is required, and it was not put off.
+  const offer = $derived(!!keys && keys.available && !keys.require_passkey && !keys.offer_dismissed && unavailableHere() === null);
+  let offered = $state<string | null>(null);
+  const notNow = () => { void putSettings({ offer_dismissed: true }).then(s => { keys = s; }, () => {}); };
   const OUTCOME: Record<string, string> = { approved: "Confirmed", declined: "Declined", expired: "Expired: make the call again for a new one" };
 
   /** The card's element, found by query, as the inbox's other cards find theirs. */
@@ -32,7 +44,10 @@
     if (busy) return;
     busy = true; err = null;
     try {
-      const after = await answerConfirmation(c.id, approve);
+      const s = approve ? await passkeySettings(true) : null;
+      if (s) keys = s;
+      const assertion = s?.required ? await assertFor({ purpose: "confirm", confirmation_id: c.id }) : undefined;
+      const after = await answerConfirmation(c.id, approve, assertion);
       made = after.status;
       onanswered?.(after);
       queueMicrotask(() => self()?.focus({ preventScroll: true }));
@@ -59,6 +74,15 @@
     <p class="outcome" role="status">{OUTCOME[status] ?? status}</p>
   {/if}
   {#if err}<p class="err" role="alert">{err}</p>{/if}
+  {#if offered}
+    <p class="coffer" role="status">{offered}</p>
+  {:else if offer}
+    <div class="coffer">
+      <span>Require Touch ID or a passkey to confirm</span>
+      <PasskeySetup onDone={s => { keys = s; offered = "Touch ID or a passkey now confirms these decisions."; }} />
+      <button type="button" class="ghost" onclick={notNow}>Not now</button>
+    </div>
+  {/if}
 </article>
 
 <style>
@@ -76,6 +100,7 @@
     .ccard .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
     .ccard .outcome { font-weight: 600; font-size: 13px; }
     .ccard .err { color: var(--danger); font-size: 13px; }
+    .ccard .coffer { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 12.5px; color: var(--muted); }
     @media (max-width: 520px) { .ccard .acts button { flex: 1 1 100%; } }
   }
 </style>

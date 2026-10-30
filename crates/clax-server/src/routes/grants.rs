@@ -854,10 +854,9 @@ pub struct ApproveBody {
 /// GitHub members' own space, else the collaborator preset. 400 `wrong_code` for another code (the third denies the
 /// request); 400 `invalid_args` for a body naming an existing viewer or the
 /// owner, which take an invite; 409 `name_taken`; 409 `not_pending`.
-/// While an agent session is live, a browser session opened by a login
-/// code minted while one was live waits for a click in a browser the
-/// owner opened otherwise: 202 `confirmation_pending`
-/// ([`clax_http::confirm`]).
+/// While an agent of the owner's is live and passkeys are required, the
+/// browser's call waits for a confirmation made with a passkey: 202
+/// `confirmation_pending` ([`clax_http::confirm`]).
 pub async fn approve(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,

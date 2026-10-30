@@ -46,7 +46,7 @@ describe("ConfirmationCard", () => {
       const m = mount(ConfirmationCard, { c: view(), now, onanswered: (c: ConfirmationView) => heard.push(c) });
       click(buttons(m.root)[n]);
       await settle();
-      expect(calls).toEqual([{ url: `/api/confirmations/${ID}`, method: "POST", body: { approve } }]);
+      expect(calls.filter(x => x.method === "POST")).toEqual([{ url: `/api/confirmations/${ID}`, method: "POST", body: { approve } }]);
       expect(m.root.querySelector(".outcome")!.textContent).toBe(said);
       expect(buttons(m.root)).toHaveLength(0);
       expect(heard.map(c => c.status)).toEqual([status]);

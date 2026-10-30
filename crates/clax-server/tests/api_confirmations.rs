@@ -5,8 +5,9 @@
 //! call made again with the confirmation's ID then goes ahead, once.
 
 use clax_core::working::ManualClock;
+use clax_testkit::TestServer;
+use clax_testkit::passkey::SoftPasskey;
 use clax_testkit::remotes::{self, Public};
-use clax_testkit::{TestClient, TestServer};
 use reqwest::Method;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -397,78 +398,180 @@ async fn a_declined_or_expired_confirmation_changes_nothing() {
     assert!(!site_is_open(&ts, &aid).await);
 }
 
+/// By default any owner browser session decides and confirms, one opened
+/// while an agent was live among them; the key cookie (the token itself),
+/// the token and the extension confirm nothing.
 #[tokio::test]
-async fn a_browser_session_minted_while_an_agent_was_live_cannot_confirm() {
+async fn any_owner_browser_session_confirms_by_default() {
     let ts = TestServer::spawn().await;
     let aid = page(&ts, "Mine").await;
-    // Minted before any agent: a browser the owner opened.
-    let clean = login_now(&ts).await;
     ts.register_session("claude", "c-5").await;
-    // Minted while one is live: an agent could have opened it.
     let minted = login_now(&ts).await;
     let path = format!("/api/artifacts/{aid}");
     let body = json!({"site_access": "world"});
     let key = format!("clax_key_{}={}", ts.addr.port(), ts.token);
-    // Neither that session nor the key cookie (the token itself) decides alone.
-    for cookie in [&minted, &key] {
-        let first = browser(&ts, cookie, Method::PATCH, &path, body.clone(), None).await;
-        let id = pending(&ts, &first);
-        let (s, v) = browser(
-            &ts,
-            cookie,
-            Method::POST,
-            &format!("/api/confirmations/{id}"),
-            json!({"approve": true}),
-            None,
-        )
-        .await;
-        assert_eq!((s, code(&v)), (403, "browser_required"), "{cookie}");
-        let (s, v) = token(
-            &ts,
-            Method::POST,
-            &format!("/api/confirmations/{id}"),
-            json!({"approve": true}),
-            None,
-        )
-        .await;
-        assert_eq!((s, code(&v)), (403, "browser_required"));
-        assert!(!site_is_open(&ts, &aid).await);
-    }
-    // Nor does the extension, whose credential a token holder can mint.
-    let id = pending(&ts, &open_world(&ts, &aid, None).await);
+    let id = pending(
+        &ts,
+        &browser(&ts, &key, Method::PATCH, &path, body.clone(), None).await,
+    );
+    let answer = format!("/api/confirmations/{id}");
+    let (s, v) = browser(
+        &ts,
+        &key,
+        Method::POST,
+        &answer,
+        json!({"approve": true}),
+        None,
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "browser_required"), "the key cookie");
+    let (s, v) = token(&ts, Method::POST, &answer, json!({"approve": true}), None).await;
+    assert_eq!((s, code(&v)), (403, "browser_required"), "the token");
     let ext = ts.extension().await;
-    let res = ext
-        .post(
-            &format!("/api/confirmations/{id}"),
-            json!({"approve": true}),
-        )
-        .await;
-    assert_ne!(res.status(), 200);
+    let res = ext.post(&answer, json!({"approve": true})).await;
+    assert_ne!(res.status(), 200, "the extension");
     assert!(!site_is_open(&ts, &aid).await);
-    // The browser opened before decides without asking.
-    let (s, v) = browser(&ts, &clean, Method::PATCH, &path, body, None).await;
+    // A session opened while the agent was live confirms it.
+    let (s, v) = browser(
+        &ts,
+        &minted,
+        Method::POST,
+        &answer,
+        json!({"approve": true}),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (s, v["confirmation"]["status"].as_str()),
+        (200, Some("approved")),
+        "{v}"
+    );
+    let (s, v) = browser(&ts, &key, Method::PATCH, &path, body.clone(), Some(&id)).await;
     assert_eq!(s, 200, "{v}");
     assert!(site_is_open(&ts, &aid).await);
+    // And decides at once.
+    let other = page(&ts, "Other").await;
+    let (s, v) = browser(
+        &ts,
+        &minted,
+        Method::PATCH,
+        &format!("/api/artifacts/{other}"),
+        body,
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
 }
 
-/// Decision 5 already needs the owner's browser; a session minted while an
-/// agent was live needs a confirmation besides.
+/// The assertion of `key` over a new challenge for `purpose` (with its
+/// IDs in `body`), at signature counter `count`.
+async fn assertion(ts: &TestServer, key: &SoftPasskey, body: Value, count: u32) -> Value {
+    let (origin, rp) = ts.passkey_rp().await;
+    let c = ts.passkey_challenge(&ts.owner_cookie(), body).await;
+    key.assertion(&c, &origin, &rp, count)
+}
+
+/// With a passkey registered and required, approving takes its assertion
+/// over a challenge bound to that very confirmation, used once, with a
+/// growing counter.
 #[tokio::test]
-async fn people_decisions_from_a_session_minted_while_an_agent_was_live_ask() {
-    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
-    let mia = ts.person("Mia").await;
-    let pending_grant = {
-        let c = TestClient::new(&ts);
-        let r = c
-            .grant_request(json!({"access_token": {"access": ["clax:reader"]}}))
-            .await;
-        (
-            c.grant_id(),
-            r["interact"]["user_code"].as_str().unwrap().to_string(),
-        )
+async fn with_passkeys_required_confirming_takes_a_valid_assertion() {
+    let ts = TestServer::spawn().await;
+    let key = SoftPasskey::new();
+    ts.require_passkey(&key).await;
+    let (a, b) = (page(&ts, "A").await, page(&ts, "B").await);
+    ts.register_session("claude", "c-p1").await;
+    let ida = pending(&ts, &open_world(&ts, &a, None).await);
+    let idb = pending(&ts, &open_world(&ts, &b, None).await);
+    let owner = ts.owner_cookie();
+    let post = |id: &str, body: Value| {
+        let (ts, owner, path) = (&ts, owner.clone(), format!("/api/confirmations/{id}"));
+        async move { browser(ts, &owner, Method::POST, &path, body, None).await }
     };
+    let (s, v) = post(&ida, json!({"approve": true})).await;
+    assert_eq!((s, code(&v)), (403, "passkey_required"), "{v}");
+    let good = assertion(
+        &ts,
+        &key,
+        json!({"purpose": "confirm", "confirmation_id": ida}),
+        1,
+    )
+    .await;
+    // A's assertion is not B's.
+    let (s, v) = post(&idb, json!({"approve": true, "assertion": good})).await;
+    assert_eq!((s, code(&v)), (403, "passkey_refused"), "{v}");
+    // Spent by that try, A's challenge answers nothing more either.
+    let (s, v) = post(&ida, json!({"approve": true, "assertion": good})).await;
+    assert_eq!((s, code(&v)), (403, "passkey_refused"), "{v}");
+    let good = assertion(
+        &ts,
+        &key,
+        json!({"purpose": "confirm", "confirmation_id": ida}),
+        1,
+    )
+    .await;
+    let (s, v) = post(&ida, json!({"approve": true, "assertion": good.clone()})).await;
+    assert_eq!(
+        (s, v["confirmation"]["status"].as_str()),
+        (200, Some("approved")),
+        "{v}"
+    );
+    let (s, v) = open_world(&ts, &a, Some(&ida)).await;
+    assert_eq!(s, 200, "{v}");
+    // Replayed for B: its challenge is A's, and spent.
+    let (s, v) = post(&idb, json!({"approve": true, "assertion": good})).await;
+    assert_eq!((s, code(&v)), (403, "passkey_refused"), "{v}");
+    // A counter that did not grow (a cloned key) is refused.
+    let stale = assertion(
+        &ts,
+        &key,
+        json!({"purpose": "confirm", "confirmation_id": idb}),
+        1,
+    )
+    .await;
+    let (s, v) = post(&idb, json!({"approve": true, "assertion": stale})).await;
+    assert_eq!((s, code(&v)), (403, "passkey_refused"), "{v}");
+    assert!(
+        v["error"]["message"].as_str().unwrap().contains("counter"),
+        "{v}"
+    );
+    let next = assertion(
+        &ts,
+        &key,
+        json!({"purpose": "confirm", "confirmation_id": idb}),
+        2,
+    )
+    .await;
+    let (s, v) = post(&idb, json!({"approve": true, "assertion": next})).await;
+    assert_eq!(s, 200, "{v}");
+    assert!(
+        !site_is_open(&ts, &b).await,
+        "B waits for its own call again"
+    );
+}
+
+/// While passkeys are required, a browser session's own decisions wait
+/// for a confirmation too: an agent holding the token can open a session
+/// of its own. Decision 5 refuses the token alone as before.
+#[tokio::test]
+async fn with_passkeys_required_a_browser_sessions_decisions_ask() {
+    let ts = TestServer::spawn().await;
+    let key = SoftPasskey::new();
+    ts.require_passkey(&key).await;
+    let mia = ts.person("Mia").await;
+    let aid = page(&ts, "Mine").await;
     ts.register_session("claude", "c-6").await;
     let minted = login_now(&ts).await;
+    let first = browser(
+        &ts,
+        &minted,
+        Method::PATCH,
+        &format!("/api/artifacts/{aid}"),
+        json!({"site_access": "world"}),
+        None,
+    )
+    .await;
+    pending(&ts, &first);
     let rights = format!("/api/people/{}/rights", mia.public_id);
     let first = browser(
         &ts,
@@ -481,7 +584,23 @@ async fn people_decisions_from_a_session_minted_while_an_agent_was_live_ask() {
     .await;
     let id = pending(&ts, &first);
     assert_eq!(first.1["decision"], "change a person's rights");
-    ts.confirm(&id, true).await;
+    let ok = assertion(
+        &ts,
+        &key,
+        json!({"purpose": "confirm", "confirmation_id": id}),
+        1,
+    )
+    .await;
+    let (s, v) = browser(
+        &ts,
+        &ts.owner_cookie(),
+        Method::POST,
+        &format!("/api/confirmations/{id}"),
+        json!({"approve": true, "assertion": ok}),
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
     let (s, v) = browser(
         &ts,
         &minted,
@@ -497,32 +616,107 @@ async fn people_decisions_from_a_session_minted_while_an_agent_was_live_ask() {
         &ts,
         &browser(&ts, &minted, Method::DELETE, &revoke, json!(null), None).await,
     );
-    let (gid, user_code) = pending_grant;
-    let approve = format!("/api/grants/{gid}/approve");
-    let first = browser(
-        &ts,
-        &minted,
-        Method::POST,
-        &approve,
-        json!({"user_code": user_code, "name": "Sam"}),
-        None,
-    )
-    .await;
-    assert_eq!(pending(&ts, &first).len(), 35);
-    // The token alone is refused as before.
     let (s, v) = token(&ts, Method::DELETE, &revoke, json!(null), None).await;
     assert_eq!((s, code(&v)), (403, "browser_required"));
-    // From the owner's own browser, none asks.
-    let (s, v) = browser(
+}
+
+/// Registering a passkey while an agent is live is a confirmed decision,
+/// from any browser.
+#[tokio::test]
+async fn registering_a_passkey_while_an_agent_is_live_is_confirmed() {
+    let ts = TestServer::spawn().await;
+    ts.register_session("claude", "c-p2").await;
+    let key = SoftPasskey::new();
+    let (origin, rp) = ts.passkey_rp().await;
+    let owner = ts.owner_cookie();
+    let c = ts
+        .passkey_challenge(&owner, json!({"purpose": "register"}))
+        .await;
+    let reg = key.registration(&c, &origin, &rp);
+    let first = browser(
         &ts,
-        &ts.owner_cookie(),
-        Method::DELETE,
-        &revoke,
-        json!(null),
+        &owner,
+        Method::POST,
+        "/api/passkeys",
+        reg.clone(),
         None,
     )
     .await;
-    assert_eq!(s, 200, "{v}");
+    let id = pending(&ts, &first);
+    assert_eq!(
+        first.1["decision"],
+        "add a passkey that confirms these decisions from now on"
+    );
+    ts.confirm(&id, true).await;
+    let (s, v) = browser(&ts, &owner, Method::POST, "/api/passkeys", reg, Some(&id)).await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["passkey"]["credential_id"], key.credential_id());
+    // A registration over another ceremony's challenge does not check.
+    let other = SoftPasskey::new();
+    let c = ts
+        .passkey_challenge(&owner, json!({"purpose": "disable"}))
+        .await;
+    let first = browser(
+        &ts,
+        &owner,
+        Method::POST,
+        "/api/passkeys",
+        other.registration(&c, &origin, &rp),
+        None,
+    )
+    .await;
+    let id = pending(&ts, &first);
+    ts.confirm(&id, true).await;
+    let (s, v) = browser(
+        &ts,
+        &owner,
+        Method::POST,
+        "/api/passkeys",
+        other.registration(&c, &origin, &rp),
+        Some(&id),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "passkey_refused"), "{v}");
+}
+
+/// Turning the requirement off, and removing a passkey, take an assertion.
+#[tokio::test]
+async fn turning_passkeys_off_takes_an_assertion() {
+    let ts = TestServer::spawn().await;
+    let key = SoftPasskey::new();
+    ts.require_passkey(&key).await;
+    let owner = ts.owner_cookie();
+    let (s, v) = browser(
+        &ts,
+        &owner,
+        Method::PUT,
+        "/api/passkeys/settings",
+        json!({"required": false}),
+        None,
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "passkey_required"), "{v}");
+    let remove = format!("/api/passkeys/{}/remove", key.credential_id());
+    let (s, v) = browser(&ts, &owner, Method::POST, &remove, json!({}), None).await;
+    assert_eq!((s, code(&v)), (403, "passkey_required"), "{v}");
+    let off = assertion(&ts, &key, json!({"purpose": "disable"}), 1).await;
+    let (s, v) = browser(
+        &ts,
+        &owner,
+        Method::PUT,
+        "/api/passkeys/settings",
+        json!({"required": false, "assertion": off}),
+        None,
+    )
+    .await;
+    assert_eq!((s, v["required"].as_bool()), (200, Some(false)), "{v}");
+    // Off, a passkey goes without one.
+    let (s, v) = browser(&ts, &owner, Method::POST, &remove, json!({}), None).await;
+    assert_eq!(
+        (s, v["passkeys"].as_array().map(Vec::len)),
+        (200, Some(0)),
+        "{v}"
+    );
 }
 
 #[tokio::test]

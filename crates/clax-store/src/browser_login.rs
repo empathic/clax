@@ -11,12 +11,6 @@
 //!   opened unless ended first ([`Store::end_owner_session`]). It names no
 //!   viewer row: it is the owner's whatever row the owner is.
 //!
-//! A code minted while an agent session was live
-//! ([`Store::agent_session_live`]) says so, and so does the session it
-//! opens ([`LiveOwnerSession::minted_while_agent`]): an agent holding the
-//! token could have minted it for a browser it drives, so such a session
-//! confirms no decision (`clax_http::confirm`).
-//!
 //! Only each secret's SHA-256 is stored. A hosted daemon writes none of
 //! these: its browsers sign in through [`crate::hosted`].
 
@@ -36,20 +30,11 @@ pub const LOGIN_CODE_PREFIX: &str = "cxi_";
 pub const OWNER_SESSION_PREFIX: &str = "cxb_";
 
 /// A live owner browser session, as the daemon keeps it in memory: its
-/// cookie's SHA-256 (lowercase hex), when it expires, and whether the
-/// login code that opened it was minted while an agent session was live.
+/// cookie's SHA-256 (lowercase hex) and when it expires.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LiveOwnerSession {
     pub sha256: String,
     pub expires_at: String,
-    pub minted_while_agent: bool,
-}
-
-/// A login code spent ([`Store::redeem_login_code`]): whether it was
-/// minted while an agent session was live.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Redeemed {
-    pub minted_while_agent: bool,
 }
 
 impl Store {
@@ -57,8 +42,7 @@ impl Store {
         clax_core::time::stamp(self.now_utc() + Duration::seconds(secs))
     }
 
-    /// A new login code, good for [`LOGIN_CODE_TTL_SECS`], marked as
-    /// minted while an agent session was live when one was. Codes past
+    /// A new login code, good for [`LOGIN_CODE_TTL_SECS`]. Codes past
     /// their time or spent are dropped first.
     ///
     /// # Errors
@@ -71,68 +55,55 @@ impl Store {
                 "DELETE FROM login_codes WHERE expires_at <= ?1 OR used_at IS NOT NULL",
                 params![now],
             )?;
-            let agent = crate::confirmations::agent_live_in(tx, self.now_utc())?;
             tx.execute(
-                "INSERT INTO login_codes (sha256, created_at, expires_at, minted_while_agent)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    code.sha256_hex(),
-                    now,
-                    self.after(LOGIN_CODE_TTL_SECS),
-                    agent
-                ],
+                "INSERT INTO login_codes (sha256, created_at, expires_at) VALUES (?1, ?2, ?3)",
+                params![code.sha256_hex(), now, self.after(LOGIN_CODE_TTL_SECS)],
             )?;
             Ok(())
         })?;
         Ok(code)
     }
 
-    /// Spends login code `code`: [`Redeemed`] when it was live (made,
-    /// unspent, and within [`LOGIN_CODE_TTL_SECS`]); `None` for one spent
-    /// before, past its time, or never made (one answer for all). A live
-    /// code presented is spent whatever happens next.
+    /// Spends login code `code`: true when it was live (made, unspent, and
+    /// within [`LOGIN_CODE_TTL_SECS`]); false for one spent before, past
+    /// its time, or never made (one answer for all). A live code presented
+    /// is spent whatever happens next.
     ///
     /// # Errors
     /// The store's.
-    pub fn redeem_login_code(&self, code: &str) -> Result<Option<Redeemed>> {
+    pub fn redeem_login_code(&self, code: &str) -> Result<bool> {
         let hash = sha256_hex(code);
         self.with_tx(|tx| {
             let now = self.now();
-            let found: Option<(String, bool)> = tx
+            let expires: Option<String> = tx
                 .query_row(
-                    "SELECT expires_at, minted_while_agent FROM login_codes
-                     WHERE sha256 = ?1 AND used_at IS NULL",
+                    "SELECT expires_at FROM login_codes WHERE sha256 = ?1 AND used_at IS NULL",
                     params![hash],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| r.get(0),
                 )
                 .optional()?;
-            let Some((expires, minted_while_agent)) = found else {
-                return Ok(None);
+            let Some(expires) = expires else {
+                return Ok(false);
             };
             tx.execute(
                 "UPDATE login_codes SET used_at = ?2 WHERE sha256 = ?1",
                 params![hash, now],
             )?;
-            Ok((expires > now).then_some(Redeemed { minted_while_agent }))
+            Ok(expires > now)
         })
     }
 
-    /// Opens an owner browser session, marked `minted_while_agent` when
-    /// the login code that opens it was: its cookie value, and its row's
+    /// Opens an owner browser session: its cookie value, and its row's
     /// [`LiveOwnerSession`]. Sessions ended or past their time are dropped
     /// first.
     ///
     /// # Errors
     /// The store's.
-    pub fn open_owner_session(
-        &self,
-        minted_while_agent: bool,
-    ) -> Result<(Secret, LiveOwnerSession)> {
+    pub fn open_owner_session(&self) -> Result<(Secret, LiveOwnerSession)> {
         let session = secret::token(OWNER_SESSION_PREFIX);
         let live = LiveOwnerSession {
             sha256: session.sha256_hex(),
             expires_at: self.after(OWNER_SESSION_TTL_SECS),
-            minted_while_agent,
         };
         self.with_tx(|tx| {
             tx.execute(
@@ -140,9 +111,8 @@ impl Store {
                 params![self.now()],
             )?;
             tx.execute(
-                "INSERT INTO owner_browser_sessions (sha256, created_at, expires_at, minted_while_agent)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![live.sha256, self.now(), live.expires_at, minted_while_agent],
+                "INSERT INTO owner_browser_sessions (sha256, created_at, expires_at) VALUES (?1, ?2, ?3)",
+                params![live.sha256, self.now(), live.expires_at],
             )?;
             Ok(())
         })?;
@@ -156,7 +126,7 @@ impl Store {
     pub fn live_owner_sessions(&self) -> Result<Vec<LiveOwnerSession>> {
         self.with_read(|c| {
             let mut stmt = c.prepare(
-                "SELECT sha256, expires_at, minted_while_agent FROM owner_browser_sessions
+                "SELECT sha256, expires_at FROM owner_browser_sessions
                  WHERE ended_at IS NULL AND expires_at > ?1",
             )?;
             let rows = stmt
@@ -164,7 +134,6 @@ impl Store {
                     Ok(LiveOwnerSession {
                         sha256: r.get(0)?,
                         expires_at: r.get(1)?,
-                        minted_while_agent: r.get(2)?,
                     })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -207,23 +176,12 @@ mod tests {
         let (_d, st) = store(clock.clone());
         let code = st.create_login_code().unwrap();
         assert!(code.expose().starts_with(LOGIN_CODE_PREFIX));
-        assert_eq!(
-            st.redeem_login_code(code.expose()).unwrap(),
-            Some(Redeemed {
-                minted_while_agent: false
-            })
-        );
-        assert!(
-            st.redeem_login_code(code.expose()).unwrap().is_none(),
-            "spent"
-        );
-        assert!(st.redeem_login_code("cxi_never-made").unwrap().is_none());
+        assert!(st.redeem_login_code(code.expose()).unwrap());
+        assert!(!st.redeem_login_code(code.expose()).unwrap(), "spent");
+        assert!(!st.redeem_login_code("cxi_never-made").unwrap());
         let late = st.create_login_code().unwrap();
         clock.advance(LOGIN_CODE_TTL_SECS);
-        assert!(
-            st.redeem_login_code(late.expose()).unwrap().is_none(),
-            "expired"
-        );
+        assert!(!st.redeem_login_code(late.expose()).unwrap(), "expired");
         // Only the hash is kept.
         let kept: Vec<String> = st
             .with_read(|c| {
@@ -236,51 +194,14 @@ mod tests {
     }
 
     #[test]
-    fn a_code_minted_while_an_agent_session_is_live_says_so() {
-        let clock = Arc::new(ManualClock::at("2026-10-29T10:00:00Z"));
-        let (_d, st) = store(clock.clone());
-        // Each code is redeemed at once: a code lives two minutes.
-        let minted = |st: &Store| {
-            let c = st.create_login_code().unwrap();
-            st.redeem_login_code(c.expose())
-                .unwrap()
-                .unwrap()
-                .minted_while_agent
-        };
-        assert!(!st.agent_session_live().unwrap());
-        assert!(!minted(&st));
-        let session = st
-            .register_session(
-                crate::test_util::DAEMON,
-                crate::RegisterSession {
-                    harness: "claude".into(),
-                    cwd: "/w".into(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        assert!(st.agent_session_live().unwrap());
-        assert!(minted(&st));
-        st.end_session(crate::test_util::DAEMON, &session.id)
-            .unwrap();
-        // Ended moments ago, it still counts until ten minutes pass.
-        assert!(st.agent_session_live().unwrap());
-        assert!(minted(&st));
-        clock.advance(crate::confirmations::CONFIRMATION_TTL_SECS);
-        assert!(!st.agent_session_live().unwrap());
-        assert!(!minted(&st));
-    }
-
-    #[test]
     fn an_owner_session_lives_until_it_ends_or_expires() {
         let clock = Arc::new(ManualClock::at("2026-10-29T10:00:00Z"));
         let (_d, st) = store(clock.clone());
-        let (cookie, live) = st.open_owner_session(false).unwrap();
+        let (cookie, live) = st.open_owner_session().unwrap();
         assert!(cookie.expose().starts_with(OWNER_SESSION_PREFIX));
         assert_eq!(live.sha256, cookie.sha256_hex());
         assert_eq!(st.live_owner_sessions().unwrap(), vec![live.clone()]);
-        let (_, other) = st.open_owner_session(true).unwrap();
-        assert!(other.minted_while_agent);
+        let (_, other) = st.open_owner_session().unwrap();
         assert!(st.end_owner_session(&live.sha256).unwrap());
         assert!(!st.end_owner_session(&live.sha256).unwrap());
         assert_eq!(st.live_owner_sessions().unwrap(), vec![other]);

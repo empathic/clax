@@ -815,12 +815,10 @@ impl TestServer {
         let agent_gate = state.agent_gate.clone();
         let web = state.web.clone();
         let kept_state = state.clone();
-        // The owner's own browser, opened as the daemon starts: not by a
-        // code minted while an agent was live, so it confirms decisions.
         let owner_session = state.hosted.is_none().then(|| {
             state
                 .owner_sessions
-                .open(&state.store, false)
+                .open(&state.store)
                 .unwrap()
                 .expose()
                 .to_string()

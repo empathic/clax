@@ -8,6 +8,7 @@
 // the open ones each time the topic goes live or resyncs. A browser that
 // is not the owner's is refused the list (403) and stops.
 import type { StreamEvent } from "../stream";
+import type { Assertion } from "./passkey";
 
 /** An agent session live as the confirmation was read. */
 export type ConfirmAgent = { name: string | null; harness: string; handle: string; cwd: string; started_at: string };
@@ -41,12 +42,13 @@ export async function listConfirmations(): Promise<ConfirmationView[] | "forbidd
   return Array.isArray(b.confirmations) ? (b.confirmations as ConfirmationView[]) : [];
 }
 
-/** Approves (`approve`) or declines confirmation `id`: it as it is after. */
-export async function answerConfirmation(id: string, approve: boolean): Promise<ConfirmationView> {
+/** Approves (`approve`) or declines confirmation `id`, with a passkey's
+ * `assertion` where passkeys are required: it as it is after. */
+export async function answerConfirmation(id: string, approve: boolean, assertion?: Assertion): Promise<ConfirmationView> {
   const res = await fetch(`/api/confirmations/${encodeURIComponent(id)}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ approve }),
+    body: JSON.stringify(assertion ? { approve, assertion } : { approve }),
   });
   let b: { confirmation?: ConfirmationView; error?: { code?: string; message?: string } } = {};
   try { b = await res.json(); } catch { /* not json */ }

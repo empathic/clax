@@ -41,13 +41,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, PoisonError, RwLock};
 
 /// The live owner browser sessions, by their cookie's SHA-256 (lowercase
-/// hex), each with its expiry and whether its login code was minted while
-/// an agent session was live ([`OwnerSessions::minted_while_agent`]). A
-/// panic while the lock is held does not poison later requests: every
-/// change inserts or removes one entry.
+/// hex), each with its expiry. A panic while the lock is held does not
+/// poison later requests: every change inserts or removes one entry.
 pub struct OwnerSessions {
     clock: Arc<dyn Clock>,
-    map: RwLock<HashMap<String, (DateTime<Utc>, bool)>>,
+    map: RwLock<HashMap<String, DateTime<Utc>>>,
 }
 
 impl OwnerSessions {
@@ -68,7 +66,7 @@ impl OwnerSessions {
         let mut map = s.map.write().unwrap_or_else(PoisonError::into_inner);
         for live in st.live_owner_sessions()? {
             if let Some(at) = parse(&live.expires_at) {
-                map.insert(live.sha256, (at, live.minted_while_agent));
+                map.insert(live.sha256, at);
             }
         }
         drop(map);
@@ -83,34 +81,20 @@ impl OwnerSessions {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .get(sha256)
-            .is_some_and(|(at, _)| *at > now)
+            .is_some_and(|at| *at > now)
     }
 
-    /// Whether the session whose cookie's SHA-256 is `sha256` was opened by
-    /// a login code minted while an agent session was live: an agent
-    /// holding the token could have minted it for a browser it drives, so
-    /// such a session confirms no decision ([`crate::confirm`]). False for
-    /// a session not held here.
-    pub fn minted_while_agent(&self, sha256: &str) -> bool {
-        self.map
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(sha256)
-            .is_some_and(|(_, minted)| *minted)
-    }
-
-    /// Opens a session in `st`, marked `minted_while_agent` when its login
-    /// code was, and counts it live: its cookie value.
+    /// Opens a session in `st` and counts it live: its cookie value.
     ///
     /// # Errors
     /// The store's.
-    pub fn open(&self, st: &Store, minted_while_agent: bool) -> clax_core::Result<Secret> {
-        let (secret, live) = st.open_owner_session(minted_while_agent)?;
+    pub fn open(&self, st: &Store) -> clax_core::Result<Secret> {
+        let (secret, live) = st.open_owner_session()?;
         if let Some(at) = parse(&live.expires_at) {
             self.map
                 .write()
                 .unwrap_or_else(PoisonError::into_inner)
-                .insert(live.sha256, (at, live.minted_while_agent));
+                .insert(live.sha256, at);
         }
         Ok(secret)
     }
@@ -499,10 +483,11 @@ mod tests {
         let clock = Arc::new(ManualClock::at("2026-10-29T10:00:00Z"));
         let sessions = OwnerSessions::new(clock.clone());
         let live = "cxb_live";
-        sessions.map.write().unwrap().insert(
-            sha256_hex(live),
-            (parse("2026-10-30T10:00:00Z").unwrap(), false),
-        );
+        sessions
+            .map
+            .write()
+            .unwrap()
+            .insert(sha256_hex(live), parse("2026-10-30T10:00:00Z").unwrap());
         let mut h = HeaderMap::new();
         h.insert(header::HOST, "localhost:7480".parse().unwrap());
         h.insert(

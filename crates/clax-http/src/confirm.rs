@@ -35,17 +35,29 @@
 //! lets its own decision through once, and no other.
 //!
 //! Who needs one ([`Confirming`]): the owner (`Caller::Owner`) calling with
-//! the token and no browser credential, with the app's key cookie (its
-//! value is the token), or from a browser session whose login code was
-//! minted while an agent session was live
-//! ([`crate::local_trust::OwnerSessions::minted_while_agent`]): an agent
-//! holding the token could have opened any of them. An owner browser
-//! session opened otherwise, the in-process app's frame (the Clax app's
-//! shell, relayed through `clax_embed_call`) and a paired extension need
-//! none, nor does any caller while no agent session is live. Every
-//! other caller (the owner's agents, people and their agents) is left to
-//! the route, as before: this adds no power to anyone. A hosted daemon,
-//! whose token no local agent reads, asks for none.
+//! the token and no browser credential, or with the app's key cookie (its
+//! value is the token). Any owner browser session, the in-process app's
+//! frame (the Clax app's shell, relayed through `clax_embed_call`) and a
+//! paired extension decide at once, and any owner browser session or the
+//! in-process frame may answer a confirmation. Every other caller (the
+//! owner's agents, people and their agents) is left to the route, as
+//! before: this adds no power to anyone. A hosted daemon, whose token no
+//! local agent reads, asks for none.
+//!
+//! **Passkeys** (opt-in, [`clax_store::passkeys`]): the owner may require
+//! a passkey to confirm (Touch ID, or any passkey: WebAuthn with user
+//! verification, [`clax_core::webauthn`]). While that is on and a passkey
+//! is registered ([`clax_store::Store::passkeys_required`]), approving a
+//! confirmation from a browser session also takes an assertion over a
+//! challenge bound to that confirmation ([`check_assertion`]), and a
+//! browser session's or the extension's own decisions wait for a
+//! confirmation too, since an agent holding the token can open a browser
+//! session of its own. The in-process frame stays exempt: no agent reaches
+//! it. Registering a passkey is itself confirmed from any browser while an
+//! agent is live ([`Decision::RegisterPasskey`]). Passkeys work only where
+//! the daemon's browser address is a secure context and a valid RP ID
+//! (`localhost`, [`passkey_rp`]); elsewhere none can be registered, and
+//! confirming stays as by default.
 
 use crate::auth::Caller;
 use crate::error::ApiError;
@@ -113,27 +125,38 @@ pub enum Decision {
     SetRights { person: String, rights: Value },
     /// Revoking person `person`.
     RevokePerson { person: String },
+    /// Registering passkey `credential_id` for confirmations: asked from
+    /// any browser but the in-process frame while an agent is live, since
+    /// a passkey becomes the authority on every confirmation.
+    RegisterPasskey { credential_id: String },
+}
+
+impl Decision {
+    /// Whether it waits for a confirmation whatever browser makes it.
+    fn asks_any_browser(&self) -> bool {
+        matches!(self, Decision::RegisterPasskey { .. })
+    }
 }
 
 /// Proof that a route's decision may go ahead ([`require_confirmation`]).
 #[derive(Debug)]
 pub struct Confirmed(());
 
-/// How far a request's browser credential is trusted to confirm.
+/// The request's browser credential, as confirmations read it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Browser {
     /// None: the token alone.
     None,
-    /// One an agent holding the token cannot have made: an owner browser
-    /// session whose login code was minted while no agent session was
-    /// live, or the in-process app's frame.
-    Trusted,
-    /// The extension's credential: it decides without asking, as before,
-    /// but answers no confirmation (a token holder can mint one).
+    /// The in-process app's frame, which no request from the network
+    /// carries.
+    InProcess,
+    /// An owner browser session.
+    Session,
+    /// A paired extension's credential: it decides without asking (unless
+    /// passkeys are required), and answers no confirmation.
     Extension,
-    /// One an agent holding the token could have made: the key cookie, or
-    /// a session minted while an agent session was live.
-    Untrusted,
+    /// The key cookie, whose value is the token.
+    Key,
 }
 
 /// What a request brings to [`require_confirmation`]: how far its browser
@@ -147,16 +170,20 @@ pub struct Confirming {
 
 impl Confirming {
     /// Whether the request's browser credential may answer a confirmation:
-    /// an owner browser session minted while no agent session was live, or
-    /// the in-process app's frame.
+    /// an owner browser session, or the in-process app's frame.
     pub fn may_answer(&self) -> bool {
-        self.browser == Browser::Trusted
+        matches!(self.browser, Browser::Session | Browser::InProcess)
+    }
+
+    /// Whether answering takes a passkey's assertion when passkeys are
+    /// required: a browser session's does; the in-process frame's does not.
+    pub fn answers_with_passkey(&self) -> bool {
+        self.browser == Browser::Session
     }
 }
 
-/// The trust of `parts`' browser credential, for a daemon whose live
-/// owner sessions `s` holds.
-fn browser_of(s: &AppState, parts: &Parts) -> Browser {
+/// `parts`' browser credential.
+fn browser_of(parts: &Parts) -> Browser {
     let counts = crate::local_trust::session_counts(&parts.headers, &parts.extensions);
     if let Some(m) = parts
         .extensions
@@ -164,10 +191,9 @@ fn browser_of(s: &AppState, parts: &Parts) -> Browser {
         .filter(|_| counts)
     {
         return match &m.session {
-            Some(sha) if s.owner_sessions.minted_while_agent(sha) => Browser::Untrusted,
-            Some(_) => Browser::Trusted,
-            None if m.key => Browser::Untrusted,
-            None => Browser::Trusted,
+            Some(_) => Browser::Session,
+            None if m.key => Browser::Key,
+            None => Browser::InProcess,
         };
     }
     if parts
@@ -184,10 +210,10 @@ impl FromRequestParts<AppState> for Confirming {
     type Rejection = std::convert::Infallible;
     async fn from_request_parts(
         parts: &mut Parts,
-        s: &AppState,
+        _s: &AppState,
     ) -> Result<Self, std::convert::Infallible> {
         Ok(Confirming {
-            browser: browser_of(s, parts),
+            browser: browser_of(parts),
             presented: parts
                 .headers
                 .get(CONFIRMATION_HEADER)
@@ -214,17 +240,27 @@ pub async fn require_confirmation(
     by: &Confirming,
     what: Decision,
 ) -> Result<Confirmed, ApiError> {
-    let needs = matches!(who, Caller::Owner { .. })
-        && !matches!(by.browser, Browser::Trusted | Browser::Extension);
-    if s.hosted.is_some() || !needs {
+    // Who may ask at all, before any store read: the owner, outside the
+    // in-process frame, on a local daemon.
+    if s.hosted.is_some()
+        || !matches!(who, Caller::Owner { .. })
+        || by.browser == Browser::InProcess
+    {
         return Ok(Confirmed(()));
     }
+    let browser = by.browser;
+    let always = what.asks_any_browser();
     let decision = json!(what);
     let presented = by.presented.clone();
     let (st, base) = (s.clone(), s.browser_base.clone());
     let (outcome, announce) = s
         .store_call(move |db| {
-            if !db.agent_session_live()? {
+            let needs = match browser {
+                Browser::None | Browser::Key => true,
+                Browser::Session | Browser::Extension => always || db.passkeys_required()?,
+                Browser::InProcess => false,
+            };
+            if !needs || !db.agent_session_live()? {
                 return Ok((Ok(()), None));
             }
             let c = match presented {
@@ -388,8 +424,96 @@ pub fn words(st: &Store, d: &Value) -> clax_core::Result<String> {
         },
         "approve_grant" => format!("connect a new machine as {}", s("name")),
         "extension_mint" => "pair the Clax extension, which then acts as your browser".to_string(),
+        "register_passkey" => "add a passkey that confirms these decisions from now on".to_string(),
         "set_rights" => "change a person's rights".to_string(),
         "revoke_person" => "revoke a person".to_string(),
         _ => "make a decision".to_string(),
     })
+}
+
+/// The RP ID and origin passkeys are registered and asserted for: the
+/// daemon's browser address (`http://localhost:<port>`), when it is a
+/// secure context with a valid RP ID (a `localhost` host). `None`
+/// elsewhere (a LAN address, an IP literal): no passkey can be used there.
+pub fn passkey_rp(s: &AppState) -> Option<(String, String)> {
+    let origin = s.browser_base.trim_end_matches('/').to_string();
+    let host = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))?;
+    let rp = host.rsplit_once(':').map_or(host, |(h, _)| h).to_string();
+    (rp == "localhost" || rp.ends_with(".localhost")).then_some((rp, origin))
+}
+
+/// A passkey's assertion, as the browser hands it over (each field
+/// base64url).
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Assertion {
+    pub credential_id: String,
+    pub authenticator_data: String,
+    pub client_data_json: String,
+    pub signature: String,
+}
+
+/// 403 `passkey_required`: confirming takes a passkey's assertion now.
+pub fn passkey_required() -> ApiError {
+    ApiError::forbidden(
+        "passkey_required",
+        "confirming needs your passkey (Touch ID or another): confirm in Clax's inbox",
+    )
+}
+
+/// Checks assertion `a` for `purpose` (`confirm:<id>`, `disable`,
+/// `remove:<credential ID>`): its challenge was issued for that purpose and
+/// is spent now, and the passkey's signature, user verification and
+/// counter check ([`clax_core::webauthn::verify_assertion`]). Runs on a
+/// store thread.
+///
+/// # Errors
+/// 403 `passkey_refused` with the reason, `passkey_required` where
+/// passkeys cannot be used; the store's.
+pub fn check_assertion(
+    s: &AppState,
+    st: &Store,
+    purpose: &str,
+    a: &Assertion,
+) -> clax_core::Result<()> {
+    use clax_core::webauthn::{Expect, challenge_of, from_b64url, verify_assertion};
+    let refused = |why: &str| clax_core::CoreError::invalid("passkey_refused", why.to_string());
+    let Some((rp_id, origin)) = passkey_rp(s) else {
+        return Err(refused("passkeys work only at http://localhost"));
+    };
+    let decode = |v: &str| from_b64url(v).map_err(refused);
+    let (ad, cdj, sig) = (
+        decode(&a.authenticator_data)?,
+        decode(&a.client_data_json)?,
+        decode(&a.signature)?,
+    );
+    let challenge = challenge_of(&cdj).map_err(refused)?;
+    if !st.take_passkey_challenge(&challenge, purpose)? {
+        return Err(refused(
+            "the challenge is not this one's, or was used or expired",
+        ));
+    }
+    let e = Expect {
+        origin: &origin,
+        rp_id: &rp_id,
+        challenge: &challenge,
+    };
+    st.use_passkey(&a.credential_id, |key, alg, n| {
+        verify_assertion(&e, key, alg, n, &ad, &cdj, &sig)
+    })
+    .map_err(|err| match err {
+        clax_core::CoreError::NotFound => refused("no passkey of this Clax has that ID"),
+        other => other,
+    })
+}
+
+/// The status a passkey refusal answers: 403.
+pub fn passkey_error(e: ApiError) -> ApiError {
+    match e.code {
+        "passkey_refused" | "passkey_required" => ApiError::forbidden(e.code, e.message),
+        "passkey_exists" => ApiError::new(StatusCode::CONFLICT, e.code, e.message),
+        _ => e,
+    }
 }

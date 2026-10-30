@@ -683,10 +683,10 @@ pub struct RightsBody {
 /// spec §7.4, M20) → `{person}`: the person's agents may do what `rights`
 /// allow (within each narrowing, beyond it where the owner elevated one)
 /// from their next request on. Recorded as `person.rights`. 400
-/// `invalid_rights`, `not_a_person`; 404 for an unknown public ID. While
-/// an agent session is live, a browser session opened by a login code
-/// minted while one was live waits for a click in a browser the owner
-/// opened otherwise: 202 `confirmation_pending` ([`clax_http::confirm`]).
+/// `invalid_rights`, `not_a_person`; 404 for an unknown public ID.
+/// While an agent of the owner's is live and passkeys are required, the
+/// browser's call waits for a confirmation made with a passkey: 202
+/// `confirmation_pending` ([`clax_http::confirm`]).
 pub async fn set_rights(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -735,10 +735,10 @@ pub async fn set_rights(
 /// room sockets on their sites close, a world visitor's included
 /// (`Event::SiteAccess`). Recorded as each `grant.revoke`,
 /// `invite.revoke`, then `person.revoke`. 400 `not_a_person`; 404 for an
-/// unknown public ID. While an agent session is live, a browser session
-/// opened by a login code minted while one was live waits for a click in
-/// a browser the owner opened otherwise: 202 `confirmation_pending`
-/// ([`clax_http::confirm`]).
+/// unknown public ID.
+/// While an agent of the owner's is live and passkeys are required, the
+/// browser's call waits for a confirmation made with a passkey: 202
+/// `confirmation_pending` ([`clax_http::confirm`]).
 pub async fn revoke_person(
     State(s): State<AppState>,
     d: DeniedToGrants,

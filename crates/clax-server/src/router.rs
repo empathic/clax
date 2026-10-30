@@ -6,10 +6,10 @@
 use crate::routes::{
     admin, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot, client_imports,
     confirmations, connect, content, discovery, docs, drafts, extension, feedback, git_token,
-    grants, health, inbox, jobs, live, live_layers, login, mcp_http, people, perf, permissions,
-    questions, queue_agent, queue_reporter, queues, remote_apps, remotes, resolve, room, sample,
-    sessions, settings, site_signin, sites, snapshot, stream, surface, tags, threads, token,
-    toolpath, viewers, watches, working,
+    grants, health, inbox, jobs, live, live_layers, login, mcp_http, passkeys, people, perf,
+    permissions, questions, queue_agent, queue_reporter, queues, remote_apps, remotes, resolve,
+    room, sample, sessions, settings, site_signin, sites, snapshot, stream, surface, tags, threads,
+    token, toolpath, viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::routes::{events, mcp, net};
@@ -85,6 +85,16 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/token", get(token::token))
         .route("/api/browser-login", post(login::create))
         .route("/api/confirmations", get(confirmations::list))
+        .route(
+            "/api/passkeys",
+            get(passkeys::list).post(passkeys::register),
+        )
+        .route("/api/passkeys/challenge", post(passkeys::challenge))
+        .route(
+            "/api/passkeys/settings",
+            axum::routing::put(passkeys::settings),
+        )
+        .route("/api/passkeys/{id}/remove", post(passkeys::remove))
         .route("/api/artifacts", get(artifacts::list))
         .route(
             "/api/sessions",

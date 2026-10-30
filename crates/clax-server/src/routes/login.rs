@@ -128,9 +128,7 @@ fn page(status: StatusCode, title: &str, line: &str) -> Response {
 /// unspent). The browser
 /// becomes a browser of the owner's: unless it already holds a live owner
 /// browser session, one is opened and set as its owner and events cookies
-/// ([`session_cookies`]), marked as minted while an agent session was live
-/// when its code was (such a session confirms no decision,
-/// [`clax_http::confirm`]); and when it carries exactly one `clax_viewer`
+/// ([`session_cookies`]); and when it carries exactly one `clax_viewer`
 /// cookie, the viewer that names is claimed for the owner
 /// ([`clax_store::Store::claim_for_owner`]: only a viewer minted on this
 /// machine), the cookie removed, and a viewer the claim retired leaves
@@ -192,9 +190,9 @@ pub async fn redeem(
         );
     }
     let redeemed = s.store_call(move |st| st.redeem_login_code(&code)).await;
-    let minted = match redeemed {
-        Ok(Some(r)) => r.minted_while_agent,
-        Ok(None) => {
+    match redeemed {
+        Ok(true) => {}
+        Ok(false) => {
             return page(
                 StatusCode::GONE,
                 "This login link was used or has expired",
@@ -202,7 +200,7 @@ pub async fn redeem(
             );
         }
         Err(e) => return e.into_response(),
-    };
+    }
     let host = headers
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
@@ -214,7 +212,7 @@ pub async fn redeem(
     let mut cookies = Vec::new();
     if !held {
         let sessions = s.owner_sessions.clone();
-        match s.store_call(move |st| sessions.open(st, minted)).await {
+        match s.store_call(move |st| sessions.open(st)).await {
             Ok(secret) => cookies.extend(session_cookies(&host, &secret)),
             Err(e) => return e.into_response(),
         }

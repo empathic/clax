@@ -10,6 +10,9 @@ import { describe, expect, it } from "vitest";
 // §8.2, M11). `db.artifact(id)`'s reads go through the page's own site,
 // which names the reader itself (`X-Clax-Reader`, server side): neither the
 // shell nor the bridge sends it.
+// The shell also names a browser confirmation the daemon handed it
+// (`x-clax-confirmation`, `q/passkey.ts`) when it makes a held passkey
+// registration again: an ID from the daemon's own answer, never a page's.
 function sources(dir: string): string[] {
   return readdirSync(dir).flatMap(name => {
     const p = join(dir, name);
@@ -43,7 +46,7 @@ describe("x-clax request headers", () => {
       }
     }
     expect(found.length).toBeGreaterThan(0);
-    expect(new Set(found)).toEqual(new Set([MARKER]));
+    expect(new Set(found)).toEqual(new Set([MARKER, `"x-clax-confirmation";`]));
   });
 
   it("mark every write a capability handler makes for a page", () => {

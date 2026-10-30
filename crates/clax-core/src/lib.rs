@@ -56,6 +56,7 @@ pub mod text;
 pub mod time;
 pub mod visibility;
 pub mod wake;
+pub mod webauthn;
 pub mod working;
 pub mod wrap;
 

@@ -130,16 +130,22 @@ async fn read(s: &AppState, id: String) -> Result<Value, ApiError> {
 #[serde(deny_unknown_fields)]
 pub struct AnswerBody {
     approve: bool,
+    /// A passkey's assertion over a challenge for `confirm:<id>`, when
+    /// passkeys are required.
+    #[serde(default)]
+    assertion: Option<confirm::Assertion>,
 }
 
-/// `POST /api/confirmations/<id> {approve}` (the owner's browser) →
-/// `{confirmation}`: approves (`true`) or declines confirmation `id`. Only
-/// an owner browser session opened by a login code minted while no agent
-/// session was live answers one (or the in-process app's frame): 403
-/// `browser_required` for the token, the key cookie, the extension and a
-/// session minted while an agent was live. 404 for none with that ID; 410
-/// `confirmation_expired` past its time; 409 `confirmation_answered` for
-/// one answered before.
+/// `POST /api/confirmations/<id> {approve, assertion?}` (the owner's
+/// browser) → `{confirmation}`: approves (`true`) or declines confirmation
+/// `id`. An owner browser session or the in-process app's frame answers
+/// one: 403 `browser_required` for the token, the key cookie and the
+/// extension. While passkeys are required, approving from a browser
+/// session takes `assertion`, over a challenge issued for `confirm:<id>`
+/// (`POST /api/passkeys/challenge`): 403 `passkey_required` without it, 403
+/// `passkey_refused` for one that does not check. 404 for none with that
+/// ID; 410 `confirmation_expired` past its time; 409
+/// `confirmation_answered` for one answered before.
 pub async fn answer(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -160,13 +166,23 @@ pub async fn answer(
     let id = id_of(p)?;
     let Json(b) = req.map_err(|e| ApiError::bad_request("invalid_json", e.body_text()))?;
     let st = s.clone();
+    let with_passkey = by.answers_with_passkey();
     let v = s
         .store_call(move |db| {
+            if b.approve && with_passkey && db.passkeys_required()? {
+                let Some(a) = &b.assertion else {
+                    return Err(clax_core::CoreError::invalid(
+                        "passkey_required",
+                        "confirming needs your passkey (Touch ID or another)",
+                    ));
+                };
+                confirm::check_assertion(&st, db, &format!("confirm:{id}"), a)?;
+            }
             let c = db.answer_confirmation(&id, b.approve)?;
             confirm::view(&st, db, &c)
         })
         .await
-        .map_err(answer_error)?;
+        .map_err(|e| confirm::passkey_error(answer_error(e)))?;
     s.events.publish(clax_core::Event::Confirmation {
         confirmation: v.clone(),
     });

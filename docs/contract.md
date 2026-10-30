@@ -2470,16 +2470,12 @@ non-zero exit counts as not opened. On Linux, `xdg-open <url>` takes the
 link as an argument, and `GET /login` redeems it only for a browser of the
 daemon's own user.
 
-A login code made while an agent session is live says so, and so does the
-session it opens: an agent holding the token could have made it for a
-browser it drives, so that session confirms no decision (below).
-
 ### Browser confirmations
 
 An agent running as the owner's OS user can read the daemon token. So
 while an agent of the owner's on this machine is live, a short list of
-decisions made without a browser the owner opened waits for the owner's
-click in one. An agent counts as live from its session's start until ten
+decisions made with the daemon token waits for the owner's click in a
+browser of theirs. An agent counts as live from its session's start until ten
 minutes after it ends, so ending every session with the token does not
 turn this off at once; an agent of another machine (a session with a
 grant) never holds the token and makes nothing wait. A session an open job
@@ -2499,16 +2495,18 @@ harness may still be running. The decisions:
    setting a person's rights (`PUT /api/people/<id>/rights`) and revoking
    a person (`DELETE /api/people/<id>`);
 6. pairing the Clax extension (`POST /api/extension/credentials`), whose
-   credential then acts as the owner's browser.
+   credential then acts as the owner's browser;
+7. registering a passkey for confirmations (`POST /api/passkeys`, below),
+   which waits for a confirmation from any browser but the in-process
+   app's frame.
 
-Who waits: the owner calling with the token and no browser credential,
-with the app's key cookie (its value is the token), or from a browser
-session whose login code was made while an agent session was live
-(decisions 1 to 4 and 6; decision 5 refuses the token alone as before,
-403 `browser_required`). An owner browser session opened otherwise, the
-in-process app's frame (the Clax app's shell, relayed through its embedded
-core) and a paired extension decide at once, as does
-everyone while no agent session is live. The owner's agents, people and
+Who waits: the owner calling with the token and no browser credential, or
+with the app's key cookie (its value is the token) (decisions 1 to 4 and
+6; decision 5 refuses the token alone as before, 403 `browser_required`).
+Any owner browser session, the in-process app's frame (the Clax app's
+shell, relayed through its embedded core) and a paired extension decide at
+once, as does everyone while no agent session is live, unless passkeys are
+required (below). The owner's agents, people and
 their agents keep what each route answers them already.
 
 The call that waits answers 202, changes nothing, and names the
@@ -2540,13 +2538,14 @@ question, answer, page, remote, push mode, `auto`, `forked_from` or
 - `GET /api/confirmations/<id>?wait=<s>` (the token) → `{confirmation}`;
   while it is open, the answer waits up to `s` seconds (at most 50) for
   the owner's answer. 404 for none with that ID.
-- `POST /api/confirmations/<id> {approve}` (the owner's browser: an owner
-  browser session whose login code was made while no agent session was
-  live, or the in-process app's frame; `SameOrigin`) → `{confirmation}`.
-  403 `browser_required` for the token, the key cookie, the extension
-  and a session made while an agent was live; 410 `confirmation_expired`;
-  the Clax app answers through its shell, relayed in process;
-  409 `confirmation_answered`.
+- `POST /api/confirmations/<id> {approve, assertion?}` (the owner's
+  browser: any owner browser session, or the in-process app's frame, which
+  the Clax app's shell answers through; `SameOrigin`) → `{confirmation}`.
+  403 `browser_required` for the token, the key cookie and the extension;
+  while passkeys are required, approving from a browser session takes
+  `assertion` (403 `passkey_required` without it, `passkey_refused` for one
+  that does not check); 410 `confirmation_expired`; 409
+  `confirmation_answered`.
 
 Every change publishes a `confirmation` event `{confirmation}` on the
 owner's `inbox` stream topic. The shell shows each open one as a card in
@@ -2559,9 +2558,55 @@ The CLI waits on every such call the same way: it prints one line,
 call again with the confirmation's ID. The MCP tools hand the 202 to the
 agent as an error, code `confirmation_pending`, message `Confirm in your
 browser: <confirm_url>`, with `confirmation_id` and `confirm_url`. The
-shell's own decisions made from a browser that may not decide alone (a
-session made while an agent was live) say where to confirm instead of
-showing a result.
+shell's own decisions that wait (a browser session's, while passkeys are
+required) say where to confirm instead of showing a result.
+
+#### Passkeys
+
+The owner may require Touch ID or another passkey to confirm: WebAuthn
+with user verification (`userVerification: "required"`), ES256 or EdDSA,
+no attestation. The first confirmation card offers it ("Require Touch ID or
+a passkey to confirm", **Set up** / **Not now**, remembered), and Settings'
+Confirmations section turns it on or off and lists and removes the
+passkeys. While it is on and a passkey is registered:
+
+- approving a confirmation from a browser session takes an assertion over
+  a challenge issued for that confirmation (`confirm:<id>`), spent once;
+  its origin is the daemon's browser address, its RP ID that address's
+  host, and its signature counter must grow (unless the authenticator
+  keeps none: 0 then and before);
+- a browser session's own listed decisions, and the extension's, wait for
+  a confirmation too, since an agent holding the token can open a browser
+  session of its own; the in-process app's frame decides and confirms as
+  before;
+- turning it off, and removing a passkey, take an assertion.
+
+Passkeys work only where the daemon's browser address is a secure context
+with a valid RP ID: `http://localhost:<port>`. On a LAN address none can
+be registered, the Settings switch says why, and confirming stays by any
+owner browser session.
+
+- `GET /api/passkeys` (the owner) → `{available, unavailable_reason, rp_id,
+  origin, require_passkey, required, offer_dismissed, passkeys:
+  [{credential_id, alg, created_at}]}`.
+- `POST /api/passkeys/challenge {purpose, confirmation_id?, credential_id?}`
+  (the owner's browser) → `{challenge, rp_id, user_id, timeout_ms, allow}`:
+  `purpose` is `register`, `confirm` (with `confirmation_id`), `disable`
+  or `remove` (with `credential_id`); a challenge is base64url, single
+  use, good for ten minutes. 403 `passkey_unavailable` where passkeys
+  cannot be used.
+- `POST /api/passkeys {credential_id, public_key, alg, authenticator_data,
+  client_data_json}` (the owner's browser; each binary field base64url,
+  `public_key` the SubjectPublicKeyInfo `getPublicKey()` gives) → 201
+  `{passkey, settings}`. A confirmed decision while an agent is live. 403
+  `passkey_refused`, 409 `passkey_exists`.
+- `PUT /api/passkeys/settings {required?, offer_dismissed?, assertion?}`
+  (the owner's browser) → the settings. 400 `no_passkey` for `required:
+  true` with none registered; 403 `passkey_required` to turn it off
+  without an assertion over a `disable` challenge.
+- `POST /api/passkeys/<credential_id>/remove {assertion?}` (the owner's
+  browser) → the settings; while required, an assertion over a `remove`
+  challenge for it. 404 for no such passkey.
 
 ### Versions, seen marks and attention
 
@@ -5751,6 +5796,11 @@ router), and a test fails when it differs:
 | `DELETE /api/me/bot/key` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/me/bot/key` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/me/usage` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/passkeys` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/passkeys` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/passkeys/challenge` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/passkeys/settings` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/passkeys/{id}/remove` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/people` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/people/invites` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/people/invites` | Denied | yes: 403 `not_for_agents` |

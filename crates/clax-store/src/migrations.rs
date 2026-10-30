@@ -1862,13 +1862,16 @@ pub const MIGRATIONS: &[&str] = &[
         ended_at TEXT
     ) WITHOUT ROWID;
     -- Browser confirmation (`crate::confirmations`): a decision made with
-    -- the daemon token while an agent session is live waits for a click in
-    -- the owner's browser. A login code minted while an agent session was
-    -- live marks the browser session it opens, which then confirms
-    -- nothing. `decision_json` is the decision a confirmation is bound
-    -- to; `used_at` marks the one call it let through.
-    ALTER TABLE login_codes ADD COLUMN minted_while_agent INTEGER NOT NULL DEFAULT 0;
-    ALTER TABLE owner_browser_sessions ADD COLUMN minted_while_agent INTEGER NOT NULL DEFAULT 0;
+    -- the daemon token while an agent of the owner's is live waits for a
+    -- click in the owner's browser. `decision_json` is the decision a
+    -- confirmation is bound to; `used_at` marks the one call it let
+    -- through. The owner may also require a passkey (WebAuthn with user
+    -- verification) to confirm: `passkeys` holds each one registered
+    -- (its SPKI public key, COSE algorithm and signature counter),
+    -- `passkey_challenges` each challenge handed out (single use, bound to
+    -- its purpose: a confirmation, a registration, turning the
+    -- requirement off, a removal), and `confirm_prefs` whether passkeys are
+    -- required and whether the first-use offer was put off.
     CREATE TABLE confirmations (
         id TEXT PRIMARY KEY,
         decision_json TEXT NOT NULL,
@@ -1877,6 +1880,23 @@ pub const MIGRATIONS: &[&str] = &[
         answered_at TEXT,
         used_at TEXT
     ) WITHOUT ROWID;
+    CREATE TABLE passkeys (
+        credential_id TEXT PRIMARY KEY,
+        public_key BLOB NOT NULL,
+        alg INTEGER NOT NULL,
+        sign_count INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TABLE passkey_challenges (
+        challenge TEXT PRIMARY KEY,
+        purpose TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TABLE confirm_prefs (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        require_passkey INTEGER NOT NULL DEFAULT 0,
+        offer_dismissed INTEGER NOT NULL DEFAULT 0
+    );
     -- End of browser confirmation.",
 ];
 
@@ -5166,7 +5186,14 @@ mod tests {
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
         }
-        assert_eq!(table_count(&c, "confirmations"), 1);
+        for table in [
+            "confirmations",
+            "passkeys",
+            "passkey_challenges",
+            "confirm_prefs",
+        ] {
+            assert_eq!(table_count(&c, table), 1, "{table}");
+        }
     }
 
     /// Migration 48 as builds before `linked_comments.author_key` made it.

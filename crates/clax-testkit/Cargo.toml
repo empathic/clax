@@ -21,6 +21,7 @@ async-trait = "0.1"
 axum = { workspace = true, features = ["http1", "tokio"] }
 futures = "0.3"
 reqwest = { workspace = true, features = ["stream"] }
+ring.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
