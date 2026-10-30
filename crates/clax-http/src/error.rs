@@ -5,6 +5,14 @@ use axum::response::{IntoResponse, Response};
 use clax_core::CoreError;
 use serde_json::json;
 
+/// The hint on every 404 of an artifact on the hosted instance at
+/// `origin` ([`ApiError::not_found_artifact`]).
+pub fn not_found_hint(origin: &str) -> String {
+    format!(
+        "This may be a private page. If it is yours, sign in at {origin}/signin. Agents: connect this Clax instance with the connect_instance tool or `clax remote request <url>`."
+    )
+}
+
 #[derive(Debug)]
 pub struct ApiError {
     pub status: StatusCode,
@@ -34,6 +42,23 @@ impl ApiError {
     }
     pub fn not_found() -> Self {
         Self::new(StatusCode::NOT_FOUND, "not_found", "not found")
+    }
+    /// The 404 of an artifact on a hosted instance whose public origin is
+    /// `origin`: [`ApiError::not_found`] with the one hint every such 404
+    /// carries, so it tells nothing of whether the artifact exists. It
+    /// names where to sign in (`sign_in`) and the instance's discovery
+    /// document (`instance`).
+    pub fn not_found_artifact(origin: &str) -> Self {
+        let mut err = Self::not_found();
+        err.extra
+            .insert("hint".into(), json!(not_found_hint(origin)));
+        err.extra
+            .insert("sign_in".into(), json!(format!("{origin}/signin")));
+        err.extra.insert(
+            "instance".into(),
+            json!(format!("{origin}/.well-known/clax")),
+        );
+        err
     }
     pub fn bad_request(code: &'static str, msg: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, code, msg)

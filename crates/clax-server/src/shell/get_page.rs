@@ -198,20 +198,27 @@ fn html_page(s: &AppState, status: StatusCode, title: &str, body: &str) -> Respo
 }
 
 /// 404 for a page that does not exist or that the caller may not read,
-/// alike: on a hosted Clax, with the sign-in link.
+/// alike: on a hosted Clax, the page of every 404 of an artifact there,
+/// with the hint ([`clax_http::error::not_found_hint`]) and a Sign in
+/// button to the instance's public origin.
 fn unavailable(s: &AppState) -> Response {
-    let sign_in = if s.hosted.is_some() {
-        "<p><a href=\"/signin\">Sign in</a></p>"
-    } else {
-        ""
-    };
+    if let Some(h) = &s.hosted {
+        return html_page(
+            s,
+            StatusCode::NOT_FOUND,
+            "Not found",
+            &format!(
+                "<section><h1>This page isn’t available</h1><p>{}</p><p class=\"actions\"><a class=\"btn primary\" href=\"{}/signin\">Sign in</a></p></section>",
+                escape(&clax_http::error::not_found_hint(&h.origin)),
+                escape(&h.origin)
+            ),
+        );
+    }
     html_page(
         s,
         StatusCode::NOT_FOUND,
         "Not found",
-        &format!(
-            "<section><h1>This page isn’t available</h1><p>It doesn’t exist, or you need to sign in to see it.</p>{sign_in}</section>"
-        ),
+        "<section><h1>This page isn’t available</h1><p>It doesn’t exist, or you need to sign in to see it.</p></section>",
     )
 }
 
@@ -362,15 +369,40 @@ fn is_get_path(path: &str) -> bool {
     )
 }
 
+/// Whether `path` is `/a/<id>` or below it.
+fn is_artifact_path(path: &str) -> bool {
+    path.strip_prefix("/a/")
+        .is_some_and(|rest| !rest.is_empty() && !rest.starts_with('/'))
+}
+
 /// A hosted Clax's layer outside its gate: a refusal of a Get in Clax
 /// page's `GET` (401, 403 or 404 that is not already a page: a restricted
 /// page, no such page, a malformed ID) becomes the one 404 page with the
 /// sign-in link, so a browser is shown a way in and learns nothing of
 /// which it was. A 403 `not_for_agents`, [`page`]'s refusal of an agent
 /// (whatever the ID), is passed on as it is, as `docs/contract.md` lists.
+///
+/// Every other 404 of `/a/<id>` and its subpaths there (no such page,
+/// another person's, a version or file that is not there, whoever asks)
+/// becomes the same answer, the hint of
+/// [`clax_http::error::ApiError::not_found_artifact`]: a page for a
+/// request that accepts `text/html`, else the JSON error. One layer, so a
+/// route cannot answer it differently.
 pub async fn refusals(State(s): State<AppState>, req: Request, next: Next) -> Response {
     let get = matches!(*req.method(), Method::GET | Method::HEAD) && is_get_path(req.uri().path());
+    let artifact = is_artifact_path(req.uri().path());
+    let html = req
+        .headers()
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("text/html"));
     let res = next.run(req).await;
+    if artifact && !get && res.status() == StatusCode::NOT_FOUND {
+        return match (&s.hosted, html) {
+            (Some(h), false) => ApiError::not_found_artifact(&h.origin).into_response(),
+            _ => unavailable(&s),
+        };
+    }
     let refused = matches!(
         res.status(),
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND

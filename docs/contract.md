@@ -164,7 +164,16 @@ These come from the tool layer itself, not the daemon:
 Any error the daemon returns is passed through unchanged as `error`. The
 daemon codes a tool can surface in normal operation:
 
-- `not_found` (404): no such artifact, version, file, or session.
+- `not_found` (404): no such artifact, version, file, or session. On a hosted
+  Clax every 404 of `/a/<id>` or below it (a missing artifact, another
+  person's private one, a version or file that is not there; the same for a
+  signed-in caller) carries one `hint`, so it tells nothing of whether the
+  artifact exists: "This may be a private page. If it is yours, sign in at
+  `<origin>/signin`. Agents: connect this Clax instance with the
+  connect_instance tool or `clax remote request <url>`.", with `sign_in`
+  (`<origin>/signin`) and `instance` (`<origin>/.well-known/clax`), `<origin>`
+  being the instance's public origin. A request that accepts `text/html`, and
+  `/a/<id>/get`, gets the same words as a page with a Sign in button.
 - `timeout` (408): the daemon's own request deadline passed (message
   `request exceeded ...`, no `log` field). On a write the outcome is unknown.
 - `unauthorized` (401): the bearer token was refused. The shim and the Pi
