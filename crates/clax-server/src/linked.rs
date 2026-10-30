@@ -2260,6 +2260,17 @@ impl Sync {
                 let audit = AuditCtx::DAEMON;
                 let mut fresh_thread = false;
                 let lt = match st.linked_thread_by_remote(&rid, &rtid)? {
+                    // Another public artifact's thread, listed under this
+                    // link's: not written into that artifact's twin here.
+                    Some(lt) if lt.remote_artifact_id != link.remote_artifact_id => {
+                        tracing::debug!(
+                            artifact = %link.artifact_id,
+                            remote = %rid,
+                            remote_thread = %rtid,
+                            "linked threads: not mirrored, the thread is another public artifact's"
+                        );
+                        return Ok(None);
+                    }
                     Some(lt) => lt,
                     None => {
                         let (Some(anchor), Some((_, first)), true) =
