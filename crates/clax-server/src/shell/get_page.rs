@@ -390,7 +390,14 @@ fn is_artifact_path(path: &str) -> bool {
 /// route cannot answer it differently.
 pub async fn refusals(State(s): State<AppState>, req: Request, next: Next) -> Response {
     let get = matches!(*req.method(), Method::GET | Method::HEAD) && is_get_path(req.uri().path());
-    let artifact = is_artifact_path(req.uri().path());
+    // A site's host serves the site's own paths (`/a/…` among them): its
+    // answers, 404 included, are the site's, never the instance's.
+    let site = req
+        .extensions()
+        .get::<clax_http::host::SiteRequest>()
+        .is_some();
+    let artifact = !site && is_artifact_path(req.uri().path());
+    let get = get && !site;
     let html = req
         .headers()
         .get(header::ACCEPT)

@@ -592,11 +592,88 @@ async fn a_missing_and_a_private_artifact_404_alike() {
     let r = ts
         .client
         .get(format!("{}/a/{missing}", ts.base))
-        .header("host", format!("127.0.0.1:{}", ts.addr.port()))
+        .header("host", "evil.example")
         .send()
         .await
         .unwrap();
-    assert_ne!(r.status(), 200);
-    let text = r.text().await.unwrap();
-    assert!(!text.contains("127.0.0.1"), "{text}");
+    // Another host never reaches the artifact routes: the host gate's 403.
+    assert_eq!(r.status(), 403);
+    let v: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(v["error"]["code"], "forbidden_host");
+    assert!(!v.to_string().contains("evil.example"), "{v}");
+}
+
+#[tokio::test]
+async fn a_site_host_answers_its_own_404_not_the_instances_hint() {
+    let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+    let ts = TestServer::spawn_hosted_with_site_domain(clock, Some("s3cret"), "clax.test").await;
+    let port = ts.addr.port();
+    let origin = format!("http://localhost:{port}");
+    let r = ts
+        .client
+        .post(format!("{}/api/hosted/setup", ts.base))
+        .header(ORIGIN, &origin)
+        .json(&json!({"secret": "s3cret", "name": "Ada"}))
+        .send()
+        .await
+        .unwrap();
+    let owner = r.headers()[SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let aid = ts.publish("Site", &[("index.html", "<h1>s</h1>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let host = format!("{aid}.clax.test:{port}");
+    let raw = unfollowed();
+    let r = ts
+        .client
+        .post(format!("{}/api/artifacts/{aid}/site-code", ts.base))
+        .header(ORIGIN, &origin)
+        .header(COOKIE, &owner)
+        .json(&json!({"partitioned": true, "state": "st"}))
+        .send()
+        .await
+        .unwrap();
+    let v: serde_json::Value = r.json().await.unwrap();
+    let src = v["src"].as_str().unwrap();
+    let r = raw
+        .get(format!(
+            "{}{}",
+            ts.base,
+            &src[src.find("/_clax/").unwrap()..]
+        ))
+        .header("host", &host)
+        .header(COOKIE, "clax_site_state=st")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 302);
+    let site_cookie = r.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let on_site = raw
+        .get(format!("{}/a/x", ts.base))
+        .header("host", &host)
+        .header(COOKIE, &site_cookie)
+        .send()
+        .await
+        .unwrap();
+    let status = on_site.status();
+    let text = on_site.text().await.unwrap();
+    assert_eq!(status, 404, "{text}");
+    assert!(!text.contains("private page"), "{text}");
+    // The same path on the instance's own host gets the hint.
+    let last = if aid.ends_with('a') { "b" } else { "a" };
+    let r = ts.get(&format!("/a/{}{last}", &aid[..aid.len() - 1])).await;
+    assert_eq!(r.status(), 404);
+    assert!(r.text().await.unwrap().contains("private page"));
 }
