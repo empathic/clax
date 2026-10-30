@@ -32,7 +32,9 @@ pub struct MetaPatch {
     pub via_page: bool,
 }
 
-/// The `artifact.create` record of `a` (spec §6.1), at `at`.
+/// The `artifact.create` record of `a` (spec §6.1), at `at`: with
+/// `forked_from {artifact_id, n}` (and the source as its second artifact)
+/// when `a` was made from another artifact.
 pub(super) fn create_record(a: &Artifact, at: &str) -> AuditRecord {
     let mut r = AuditRecord::new(AuditKind::ArtifactCreate, at)
         .with("title", a.title.as_str())
@@ -40,6 +42,13 @@ pub(super) fn create_record(a: &Artifact, at: &str) -> AuditRecord {
         .with("icon", a.icon.clone())
         .with("capabilities", a.capabilities.clone())
         .with("contract_version", a.contract_version.as_str());
+    if let Some(f) = &a.forked_from {
+        r = r.with(
+            "forked_from",
+            serde_json::json!({"artifact_id": f.artifact_id, "n": f.version}),
+        );
+        r.ids.artifact2 = Some(f.artifact_id.clone());
+    }
     r.ids.artifact = Some(a.id.clone());
     r
 }

@@ -629,6 +629,28 @@ mod tests {
         assert_eq!(rows[1].1["source"], source);
     }
 
+    /// A publish that makes an artifact from another (`forked_from`, as a
+    /// pushed app does) records where it came from in its `artifact.create`
+    /// record, as a fork does.
+    #[test]
+    fn a_create_from_another_artifact_names_it_in_its_creation_record() {
+        let (_d, st) = store();
+        let src = publish(&st, None, &[("index.html", "<p>one")]);
+        publish(&st, Some(&src), &[("index.html", "<p>two")]);
+        let req = serde_json::json!({"files": {"index.html": {"content": "<p>", "encoding": "utf8"}}});
+        let p = clax_core::publish::validate(serde_json::from_value(req).unwrap()).unwrap();
+        let (a, _) = st
+            .block_on(st.create_artifact_forked_from_async(DAEMON, p, None, true, Some(&src)))
+            .unwrap();
+        let rows = audit_of(&st, &a.id);
+        assert_eq!(rows[0].0, "artifact.create");
+        let source = serde_json::json!({"artifact_id": src.as_str(), "n": 2});
+        assert_eq!(rows[0].1["forked_from"], source);
+        let plain = publish(&st, None, &[("index.html", "<p>")]);
+        let rows = audit_of(&st, plain.as_str());
+        assert!(rows[0].1.get("forked_from").is_none(), "{:?}", rows[0]);
+    }
+
     /// Forks that race each other and publishes of their source each copy
     /// one whole version of it: the files of the version they name, and
     /// the source's lock keeps a publish from landing mid-copy.
