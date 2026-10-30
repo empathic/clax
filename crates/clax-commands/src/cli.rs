@@ -99,6 +99,11 @@ pub enum Cmd {
     Tags(commands::tags::TagsArgs),
     /// Check the installation and storage.
     Doctor(commands::doctor::Args),
+    /// The passkeys that browser confirmations may require: `reset` removes
+    /// them all and stops requiring one, with this home's daemon stopped
+    /// (the recovery when a passkey cannot be used).
+    #[command(subcommand)]
+    Passkeys(commands::passkeys::Cmd),
     /// Serve the MCP tools over stdin/stdout for one harness session.
     Mcp(commands::mcp::Args),
     /// Handle a harness lifecycle hook (reads the hook input from stdin).
@@ -280,6 +285,7 @@ fn remote_ok(cmd: &Cmd) -> bool {
         Cmd::Serve(_)
         | Cmd::Stop
         | Cmd::Doctor(_)
+        | Cmd::Passkeys(_)
         | Cmd::Init(_)
         | Cmd::Uninit(_)
         | Cmd::Bin { .. }
@@ -401,6 +407,7 @@ pub(crate) fn main() {
         Cmd::Tag(a) => commands::tags::run_tag(&cli, &home, a),
         Cmd::Tags(a) => commands::tags::run_tags(&cli, &home, a),
         Cmd::Doctor(a) => commands::doctor::run(&cli, &home, a),
+        Cmd::Passkeys(c) => commands::passkeys::run(&cli, &home, c),
         Cmd::Mcp(a) => commands::mcp::run(&cli, &home, a),
         Cmd::Hook(a) => commands::hook::run(&cli, &home, a),
         Cmd::Feedback(c) => commands::feedback::run(&cli, &home, c),

@@ -2584,11 +2584,20 @@ passkeys. While it is on and a passkey is registered:
 Passkeys work only where the daemon's browser address is a secure context
 with a valid RP ID: `http://localhost:<port>`. On a LAN address none can
 be registered, the Settings switch says why, and confirming stays by any
-owner browser session.
+owner browser session; passkeys required at localhost before stay
+required there, and nothing confirms until they are reset.
+
+`clax passkeys reset`, with the home's daemon stopped (it refuses while
+the daemon runs), removes every passkey and turns the requirement off,
+printing what it removed: the recovery from a passkey the owner cannot use
+(one an agent registered first, a lost authenticator, the LAN case).
 
 - `GET /api/passkeys` (the owner) → `{available, unavailable_reason, rp_id,
   origin, require_passkey, required, offer_dismissed, passkeys:
-  [{credential_id, alg, created_at}]}`.
+  [{credential_id, alg, created_at, added_by: {via, agents_live}}]}`:
+  `added_by` says from which browser each was added (`a browser session`
+  or `the Clax app`) and the owner's agents live then, which the first-use
+  offer, a confirmation that requires a passkey, and Settings show.
 - `POST /api/passkeys/challenge {purpose, confirmation_id?, credential_id?}`
   (the owner's browser) → `{challenge, rp_id, user_id, timeout_ms, allow}`:
   `purpose` is `register`, `confirm` (with `confirmation_id`), `disable`
@@ -2598,8 +2607,11 @@ owner browser session.
 - `POST /api/passkeys {credential_id, public_key, alg, authenticator_data,
   client_data_json}` (the owner's browser; each binary field base64url,
   `public_key` the SubjectPublicKeyInfo `getPublicKey()` gives) → 201
-  `{passkey, settings}`. A confirmed decision while an agent is live. 403
-  `passkey_refused`, 409 `passkey_exists`.
+  `{passkey, settings}`. The authenticator data's attested COSE key must be
+  that public key. A confirmed decision while an agent is live, bound to
+  the SHA-256 of the whole registration, so an approved registration lets
+  in no other key under its credential ID. 403 `passkey_refused`, 409
+  `passkey_exists`.
 - `PUT /api/passkeys/settings {required?, offer_dismissed?, assertion?}`
   (the owner's browser) → the settings. 400 `no_passkey` for `required:
   true` with none registered; 403 `passkey_required` to turn it off

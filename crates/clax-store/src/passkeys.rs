@@ -23,12 +23,15 @@ use serde::Serialize;
 /// How long a challenge may be answered, from when it was issued.
 pub const CHALLENGE_TTL_SECS: i64 = 600;
 
-/// A registered passkey: never its key.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// A registered passkey: never its key. `added_by` says how it was
+/// added (`{via, agents_live}`: from which browser, and the owner's agents
+/// live then), so one the owner did not add shows.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Passkey {
     pub credential_id: String,
     pub alg: i64,
     pub created_at: String,
+    pub added_by: serde_json::Value,
 }
 
 /// The owner's confirmation preferences.
@@ -48,30 +51,41 @@ impl Store {
     pub fn passkeys(&self) -> Result<Vec<Passkey>> {
         self.with_read(|c| {
             let mut stmt = c.prepare(
-                "SELECT credential_id, alg, created_at FROM passkeys ORDER BY created_at, credential_id",
+                "SELECT credential_id, alg, created_at, added_by_json FROM passkeys
+                 ORDER BY created_at, credential_id",
             )?;
             Ok(stmt
                 .query_map([], |r| {
+                    let by: String = r.get(3)?;
                     Ok(Passkey {
                         credential_id: r.get(0)?,
                         alg: r.get(1)?,
                         created_at: r.get(2)?,
+                        added_by: serde_json::from_str(&by).unwrap_or_default(),
                     })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?)
         })
     }
 
-    /// Registers the checked passkey `r`.
+    /// Registers the checked passkey `r`, added as `added_by` says.
     ///
     /// # Errors
     /// `passkey_exists` for a credential registered already; the store's.
-    pub fn add_passkey(&self, r: &Registered) -> Result<Passkey> {
+    pub fn add_passkey(&self, r: &Registered, added_by: &serde_json::Value) -> Result<Passkey> {
         self.with_tx(|tx| {
             let n = tx.execute(
-                "INSERT OR IGNORE INTO passkeys (credential_id, public_key, alg, sign_count, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![r.credential_id, r.public_key, r.alg, r.sign_count, self.now()],
+                "INSERT OR IGNORE INTO passkeys
+                   (credential_id, public_key, alg, sign_count, created_at, added_by_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    r.credential_id,
+                    r.public_key,
+                    r.alg,
+                    r.sign_count,
+                    self.now(),
+                    added_by.to_string()
+                ],
             )?;
             if n == 0 {
                 return Err(CoreError::invalid(
@@ -83,6 +97,7 @@ impl Store {
                 credential_id: r.credential_id.clone(),
                 alg: r.alg,
                 created_at: self.now(),
+                added_by: added_by.clone(),
             })
         })
     }
@@ -213,6 +228,23 @@ impl Store {
         })
     }
 
+    /// Removes every passkey and turns the requirement off: the offline
+    /// recovery (`clax passkeys reset`) for an owner locked out by a
+    /// passkey they cannot use. The passkeys removed.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn reset_passkeys(&self) -> Result<Vec<Passkey>> {
+        let removed = self.passkeys()?;
+        self.with_tx(|tx| {
+            tx.execute("DELETE FROM passkeys", [])?;
+            tx.execute("DELETE FROM passkey_challenges", [])?;
+            tx.execute("UPDATE confirm_prefs SET require_passkey = 0", [])?;
+            Ok(())
+        })?;
+        Ok(removed)
+    }
+
     /// Whether confirming takes a passkey's assertion now: required, and a
     /// passkey registered.
     ///
@@ -277,8 +309,10 @@ mod tests {
             alg: clax_core::webauthn::ES256,
             sign_count: 4,
         };
-        st.add_passkey(&r).unwrap();
-        assert!(st.add_passkey(&r).is_err(), "once");
+        let by = serde_json::json!({"via": "a browser session", "agents_live": []});
+        st.add_passkey(&r, &by).unwrap();
+        assert!(st.add_passkey(&r, &by).is_err(), "once");
+        assert_eq!(st.passkeys().unwrap()[0].added_by, by);
         assert!(st.passkeys_required().unwrap());
         st.use_passkey("c1", |key, alg, n| {
             assert_eq!((key, alg, n), (&[1u8, 2][..], -7, 4));

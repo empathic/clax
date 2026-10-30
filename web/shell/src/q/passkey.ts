@@ -21,7 +21,8 @@ export type PasskeySettings = {
   /** Confirming takes a passkey now (asked for, and one registered). */
   required: boolean;
   offer_dismissed: boolean;
-  passkeys: { credential_id: string; alg: number; created_at: string }[];
+  /** Each with how it was added: from which browser, and the agents running then. */
+  passkeys: { credential_id: string; alg: number; created_at: string; added_by?: { via?: string; agents_live?: string[] } }[];
 };
 
 /** A passkey's assertion, as the daemon takes it. */

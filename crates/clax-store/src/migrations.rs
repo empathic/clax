@@ -1867,7 +1867,8 @@ pub const MIGRATIONS: &[&str] = &[
     -- confirmation is bound to; `used_at` marks the one call it let
     -- through. The owner may also require a passkey (WebAuthn with user
     -- verification) to confirm: `passkeys` holds each one registered
-    -- (its SPKI public key, COSE algorithm and signature counter),
+    -- (its SPKI public key, COSE algorithm and signature counter, and how
+    -- it was added: from which browser, the owner's agents live then),
     -- `passkey_challenges` each challenge handed out (single use, bound to
     -- its purpose: a confirmation, a registration, turning the
     -- requirement off, a removal), and `confirm_prefs` whether passkeys are
@@ -1885,7 +1886,8 @@ pub const MIGRATIONS: &[&str] = &[
         public_key BLOB NOT NULL,
         alg INTEGER NOT NULL,
         sign_count INTEGER NOT NULL,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        added_by_json TEXT NOT NULL DEFAULT '{}'
     ) WITHOUT ROWID;
     CREATE TABLE passkey_challenges (
         challenge TEXT PRIMARY KEY,

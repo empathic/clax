@@ -87,13 +87,16 @@ describe("passkeys for confirmations", () => {
 
   it("confirms with an assertion where passkeys are required", async () => {
     const calls = stubFetch({
-      "GET /api/passkeys": settings({ require_passkey: true, required: true, passkeys: [{ credential_id: "AQ", alg: -7, created_at: "2026-10-30T10:00:00.000Z" }] }),
+      "GET /api/passkeys": settings({ require_passkey: true, required: true, passkeys: [{ credential_id: "AQ", alg: -7, created_at: "2026-10-30T10:00:00.000Z", added_by: { via: "a browser session", agents_live: ["ada (claude)"] } }] }),
       "POST /api/passkeys/challenge": challenge,
       [`POST /api/confirmations/${ID}`]: { confirmation: { ...card(), status: "approved" } },
     });
+    await passkeySettings(true);
     const m = mount(ConfirmationCard, { c: card(), now });
     await settle();
     expect(m.root.querySelector(".coffer")).toBeNull();
+    // The passkeys it asks for say how each was added.
+    expect(m.root.querySelector(".ckeys")!.textContent).toContain("from a browser session; agents running then: ada (claude)");
     click(byText(m.root, "Confirm"));
     await settle();
     expect((got[0] as { publicKey: PublicKeyCredentialRequestOptions }).publicKey.userVerification).toBe("required");
@@ -106,7 +109,7 @@ describe("passkeys for confirmations", () => {
 });
 
 describe("the Settings switch", () => {
-  const on = settings({ require_passkey: true, required: true, passkeys: [{ credential_id: "AQ", alg: -7, created_at: "2026-10-30T09:00:00.000Z" }] });
+  const on = settings({ require_passkey: true, required: true, passkeys: [{ credential_id: "AQ", alg: -7, created_at: "2026-10-30T09:00:00.000Z", added_by: { via: "the Clax app", agents_live: [] } }] });
   const sw = (root: Element) => root.querySelector<HTMLButtonElement>('[role="switch"]')!;
 
   it("turns off only with a passkey's assertion", async () => {
@@ -118,7 +121,8 @@ describe("the Settings switch", () => {
     const m = mount(PasskeySettings, { now });
     await settle();
     expect(sw(m.root).getAttribute("aria-checked")).toBe("true");
-    expect(m.root.querySelector(".pk-list")!.textContent).toContain("Passkey added");
+    expect(m.root.querySelector(".pk-list")!.textContent).toContain("from the Clax app; agents running then: none");
+    expect(m.root.textContent).toContain("clax passkeys reset");
     click(sw(m.root));
     await settle();
     expect(calls.filter(c => c.method !== "GET").map(c => [c.method, c.url, c.body])).toEqual([

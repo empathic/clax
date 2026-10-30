@@ -17,6 +17,7 @@ pub mod login;
 pub mod mcp;
 pub mod native_host;
 pub mod open;
+pub mod passkeys;
 pub mod people;
 pub mod pin;
 pub mod publish;

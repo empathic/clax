@@ -127,8 +127,14 @@ pub enum Decision {
     RevokePerson { person: String },
     /// Registering passkey `credential_id` for confirmations: asked from
     /// any browser but the in-process frame while an agent is live, since
-    /// a passkey becomes the authority on every confirmation.
-    RegisterPasskey { credential_id: String },
+    /// a passkey becomes the authority on every confirmation. Bound to
+    /// `body_sha256`, the SHA-256 of the whole registration
+    /// ([`registration_sha256`]), so an approved registration lets in no
+    /// other key under its credential ID.
+    RegisterPasskey {
+        credential_id: String,
+        body_sha256: String,
+    },
 }
 
 impl Decision {
@@ -442,6 +448,20 @@ pub fn passkey_rp(s: &AppState) -> Option<(String, String)> {
         .or_else(|| origin.strip_prefix("https://"))?;
     let rp = host.rsplit_once(':').map_or(host, |(h, _)| h).to_string();
     (rp == "localhost" || rp.ends_with(".localhost")).then_some((rp, origin))
+}
+
+/// The SHA-256 (lowercase hex) of a registration's fields, each as sent,
+/// one per line: what [`Decision::RegisterPasskey`] binds.
+pub fn registration_sha256(
+    credential_id: &str,
+    public_key: &str,
+    alg: i64,
+    authenticator_data: &str,
+    client_data_json: &str,
+) -> String {
+    clax_core::secret::sha256_hex(&format!(
+        "{credential_id}\n{public_key}\n{alg}\n{authenticator_data}\n{client_data_json}"
+    ))
 }
 
 /// A passkey's assertion, as the browser hands it over (each field

@@ -216,9 +216,23 @@ pub async fn register(
     };
     let decision = Decision::RegisterPasskey {
         credential_id: b.credential_id.clone(),
+        body_sha256: confirm::registration_sha256(
+            &b.credential_id,
+            &b.public_key,
+            b.alg,
+            &b.authenticator_data,
+            &b.client_data_json,
+        ),
     };
     confirm::require_confirmation(&s, &caller, &by, decision).await?;
     let st = s.clone();
+    // Who added it, shown with it from now on: from which browser, and
+    // the owner's agents live then.
+    let via = if by.answers_with_passkey() {
+        "a browser session"
+    } else {
+        "the Clax app"
+    };
     let v = s
         .store_call(move |db| {
             let refused = |why: &str| CoreError::invalid("passkey_refused", why.to_string());
@@ -241,7 +255,15 @@ pub async fn register(
             };
             let r = verify_registration(&e, &b.credential_id, &spki, b.alg, &ad, &cdj)
                 .map_err(refused)?;
-            let passkey = db.add_passkey(&r)?;
+            let agents: Vec<String> = db
+                .live_agent_sessions()?
+                .iter()
+                .map(|a| match &a.name {
+                    Some(n) => format!("{n} ({})", a.harness),
+                    None => format!("{} {}", a.harness, a.agent_handle),
+                })
+                .collect();
+            let passkey = db.add_passkey(&r, &json!({"via": via, "agents_live": agents}))?;
             Ok(json!({"passkey": passkey, "settings": view(&st, db)?}))
         })
         .await

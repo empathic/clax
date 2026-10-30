@@ -620,6 +620,48 @@ async fn with_passkeys_required_a_browser_sessions_decisions_ask() {
     assert_eq!((s, code(&v)), (403, "browser_required"));
 }
 
+/// Approving a machine's connection, which already needs the owner's
+/// browser, waits for a confirmation too while passkeys are required: on
+/// a LAN-bound daemon, the passkey and the requirement written to its
+/// store.
+#[tokio::test]
+async fn with_passkeys_required_approving_a_machine_asks() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let key = clax_core::webauthn::Registered {
+        credential_id: "c1".into(),
+        public_key: vec![1],
+        alg: clax_core::webauthn::ES256,
+        sign_count: 0,
+    };
+    ts.store.add_passkey(&key, &json!({})).unwrap();
+    ts.store
+        .set_confirm_prefs(clax_store::passkeys::ConfirmPrefs {
+            require_passkey: true,
+            offer_dismissed: false,
+        })
+        .unwrap();
+    let c = clax_testkit::TestClient::new(&ts);
+    let r = c
+        .grant_request(json!({"access_token": {"access": ["clax:reader"]}}))
+        .await;
+    let code_ = r["interact"]["user_code"].as_str().unwrap().to_string();
+    ts.register_session("claude", "c-g1").await;
+    let minted = login_now(&ts).await;
+    let approve = format!("/api/grants/{}/approve", c.grant_id());
+    let first = browser(
+        &ts,
+        &minted,
+        Method::POST,
+        &approve,
+        json!({"user_code": code_, "name": "Sam"}),
+        None,
+    )
+    .await;
+    let id = pending(&ts, &first);
+    assert_eq!(first.1["decision"], "connect a new machine as Sam");
+    assert_eq!(id.len(), 35);
+}
+
 /// Registering a passkey while an agent is live is a confirmed decision,
 /// from any browser.
 #[tokio::test]
@@ -648,6 +690,26 @@ async fn registering_a_passkey_while_an_agent_is_live_is_confirmed() {
         "add a passkey that confirms these decisions from now on"
     );
     ts.confirm(&id, true).await;
+    // An agent holding the token reads the confirmation and the credential
+    // ID it names, and posts its own key under that ID with the approved
+    // confirmation: the registration it approved is another.
+    let agent = SoftPasskey::claiming(&key.id);
+    let minted = login_now(&ts).await;
+    let c2 = ts
+        .passkey_challenge(&minted, json!({"purpose": "register"}))
+        .await;
+    let forged = agent.registration(&c2, &origin, &rp);
+    assert_eq!(forged["credential_id"], reg["credential_id"]);
+    let (s, v) = browser(
+        &ts,
+        &minted,
+        Method::POST,
+        "/api/passkeys",
+        forged,
+        Some(&id),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "confirmation_mismatch"), "{v}");
     let (s, v) = browser(&ts, &owner, Method::POST, "/api/passkeys", reg, Some(&id)).await;
     assert_eq!(s, 201, "{v}");
     assert_eq!(v["passkey"]["credential_id"], key.credential_id());
@@ -677,6 +739,56 @@ async fn registering_a_passkey_while_an_agent_is_live_is_confirmed() {
     )
     .await;
     assert_eq!((s, code(&v)), (403, "passkey_refused"), "{v}");
+}
+
+/// A registration whose authenticator data attests another key than the
+/// one sent is refused, and every passkey says how it was added.
+#[tokio::test]
+async fn a_registration_must_send_the_key_its_authenticator_attests() {
+    let ts = TestServer::spawn().await;
+    let (a, b) = (SoftPasskey::new(), SoftPasskey::new());
+    let (origin, rp) = ts.passkey_rp().await;
+    let owner = ts.owner_cookie();
+    let c = ts
+        .passkey_challenge(&owner, json!({"purpose": "register"}))
+        .await;
+    let mut reg = a.registration(&c, &origin, &rp);
+    reg["public_key"] = b.registration(&c, &origin, &rp)["public_key"].clone();
+    let (s, v) = browser(&ts, &owner, Method::POST, "/api/passkeys", reg, None).await;
+    assert_eq!((s, code(&v)), (403, "passkey_refused"), "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("another public key"),
+        "{v}"
+    );
+    ts.register_session("claude", "c-p3").await;
+    let c = ts
+        .passkey_challenge(&owner, json!({"purpose": "register"}))
+        .await;
+    let reg = a.registration(&c, &origin, &rp);
+    let id = pending(
+        &ts,
+        &browser(
+            &ts,
+            &owner,
+            Method::POST,
+            "/api/passkeys",
+            reg.clone(),
+            None,
+        )
+        .await,
+    );
+    ts.confirm(&id, true).await;
+    let (s, v) = browser(&ts, &owner, Method::POST, "/api/passkeys", reg, Some(&id)).await;
+    assert_eq!(s, 201, "{v}");
+    let by = &v["settings"]["passkeys"][0]["added_by"];
+    assert_eq!(by["via"], "a browser session", "{v}");
+    assert!(
+        by["agents_live"][0].as_str().unwrap().contains("claude"),
+        "{v}"
+    );
 }
 
 /// Turning the requirement off, and removing a passkey, take an assertion.

@@ -4,7 +4,7 @@
 //! hardware, and its signature counter is set by the test.
 
 use super::TestServer;
-use clax_core::webauthn::{P256_SPKI_PREFIX, auth_data, b64url, client_data};
+use clax_core::webauthn::{P256_SPKI_PREFIX, auth_data, b64url, client_data, cose_key};
 use ring::digest::{SHA256, digest};
 use ring::rand::SystemRandom;
 use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
@@ -39,6 +39,15 @@ impl SoftPasskey {
         }
     }
 
+    /// A new key that claims credential ID `id`: what an agent forges to
+    /// stand in for another passkey.
+    pub fn claiming(id: &[u8]) -> SoftPasskey {
+        SoftPasskey {
+            id: id.to_vec(),
+            ..SoftPasskey::new()
+        }
+    }
+
     /// Its credential ID, base64url.
     pub fn credential_id(&self) -> String {
         b64url(&self.id)
@@ -53,7 +62,12 @@ impl SoftPasskey {
             "credential_id": self.credential_id(),
             "public_key": b64url(&spki),
             "alg": clax_core::webauthn::ES256,
-            "authenticator_data": b64url(&auth_data(rp_id, UP_UV | 0x40, 0, Some(&self.id))),
+            "authenticator_data": b64url(&auth_data(
+                rp_id,
+                UP_UV | 0x40,
+                0,
+                Some((&self.id, &cose_key(&spki, clax_core::webauthn::ES256).unwrap())),
+            )),
             "client_data_json": b64url(&client_data("webauthn.create", challenge, origin)),
         })
     }

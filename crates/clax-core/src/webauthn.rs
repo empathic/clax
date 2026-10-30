@@ -18,7 +18,10 @@
 //!   issued it) and `origin` (the daemon's own) are the expected ones;
 //! - the authenticator data's RP ID hash is SHA-256 of the daemon's host,
 //!   and its flags say the user was present (UP) and verified (UV);
-//! - a registration's attested credential ID is the one the browser named;
+//! - a registration's attested credential ID is the one the browser named,
+//!   and its attested COSE public key is the key of the SubjectPublicKeyInfo
+//!   the browser handed over (so a key cannot be swapped in beside another
+//!   authenticator's data);
 //! - an assertion's signature verifies over the authenticator data and the
 //!   SHA-256 of the client data JSON, and its signature counter is greater
 //!   than the one stored, unless both are 0 (an authenticator that keeps
@@ -175,7 +178,13 @@ pub fn verify_registration(
     if id != from_b64url(credential_id)?.as_slice() {
         return Err("the authenticator data names another credential");
     }
-    raw_key(spki, alg)?;
+    let key = raw_key(spki, alg)?;
+    let cose = ad
+        .get(55 + n..)
+        .ok_or("the authenticator data is too short")?;
+    if cose_raw_key(cose, alg)? != key {
+        return Err("the authenticator data attests another public key");
+    }
     Ok(Registered {
         credential_id: b64url(id),
         public_key: spki.to_vec(),
@@ -216,17 +225,126 @@ pub fn verify_assertion(
     Ok(count)
 }
 
+/// One CBOR item of a COSE key map: an integer, or a byte string.
+#[derive(Debug, PartialEq)]
+enum Cbor<'a> {
+    Int(i64),
+    Bytes(&'a [u8]),
+}
+
+/// The CBOR head at `b[*at..]`: major type and argument; advances `at`.
+fn cbor_head(b: &[u8], at: &mut usize) -> Result<(u8, u64), Refusal> {
+    let bad = "the attested public key is not a COSE key";
+    let first = *b.get(*at).ok_or(bad)?;
+    *at += 1;
+    let (major, info) = (first >> 5, first & 0x1f);
+    let len = match info {
+        0..=23 => return Ok((major, u64::from(info))),
+        24 => 1,
+        25 => 2,
+        26 => 4,
+        27 => 8,
+        _ => return Err(bad),
+    };
+    let bytes = b.get(*at..*at + len).ok_or(bad)?;
+    *at += len;
+    Ok((
+        major,
+        bytes.iter().fold(0u64, |n, x| (n << 8) | u64::from(*x)),
+    ))
+}
+
+/// The integer or byte string at `b[*at..]`; advances `at`.
+fn cbor_item<'a>(b: &'a [u8], at: &mut usize) -> Result<Cbor<'a>, Refusal> {
+    let bad = "the attested public key is not a COSE key";
+    let (major, n) = cbor_head(b, at)?;
+    match major {
+        0 => Ok(Cbor::Int(i64::try_from(n).map_err(|_| bad)?)),
+        1 => Ok(Cbor::Int(-1 - i64::try_from(n).map_err(|_| bad)?)),
+        2 => {
+            let n = usize::try_from(n).map_err(|_| bad)?;
+            let v = b.get(*at..*at + n).ok_or(bad)?;
+            *at += n;
+            Ok(Cbor::Bytes(v))
+        }
+        _ => Err(bad),
+    }
+}
+
+/// The raw key the COSE key map at the start of `cose` holds for
+/// algorithm `alg`: an EC2 P-256 key's uncompressed point (`04 ‖ x ‖ y`),
+/// an OKP Ed25519 key's `x`. Its `alg`, when given, must be `alg`.
+fn cose_raw_key(cose: &[u8], alg: i64) -> Result<Vec<u8>, Refusal> {
+    let bad = "the attested public key is not a COSE key of its algorithm";
+    let mut at = 0;
+    let (major, n) = cbor_head(cose, &mut at)?;
+    if major != 5 || n > 16 {
+        return Err(bad);
+    }
+    let (mut kty, mut calg, mut crv, mut x, mut y) = (None, None, None, None, None);
+    for _ in 0..n {
+        let Cbor::Int(k) = cbor_item(cose, &mut at)? else {
+            return Err(bad);
+        };
+        let v = cbor_item(cose, &mut at)?;
+        match (k, v) {
+            (1, Cbor::Int(v)) => kty = Some(v),
+            (3, Cbor::Int(v)) => calg = Some(v),
+            (-1, Cbor::Int(v)) => crv = Some(v),
+            (-2, Cbor::Bytes(v)) => x = Some(v),
+            (-3, Cbor::Bytes(v)) => y = Some(v),
+            _ => {}
+        }
+    }
+    if calg.is_some_and(|a| a != alg) {
+        return Err(bad);
+    }
+    match (alg, kty, crv, x, y) {
+        (ES256, Some(2), Some(1), Some(x), Some(y)) if x.len() == 32 && y.len() == 32 => {
+            Ok([&[4u8][..], x, y].concat())
+        }
+        (EDDSA, Some(1), Some(6), Some(x), _) if x.len() == 32 => Ok(x.to_vec()),
+        _ => Err(bad),
+    }
+}
+
+/// The COSE key map of SubjectPublicKeyInfo `spki` of algorithm `alg`, as
+/// an authenticator attests it: EC2 P-256 `{1: 2, 3: -7, -1: 1, -2: x,
+/// -3: y}`, OKP Ed25519 `{1: 1, 3: -8, -1: 6, -2: x}`.
+///
+/// # Errors
+/// For a key not of its algorithm.
+pub fn cose_key(spki: &[u8], alg: i64) -> Result<Vec<u8>, Refusal> {
+    let key = raw_key(spki, alg)?;
+    let bstr = |v: &[u8]| [&[0x58, v.len() as u8][..], v].concat();
+    Ok(match alg {
+        ES256 => [
+            &[0xa5, 0x01, 0x02, 0x03, 0x26, 0x20, 0x01, 0x21][..],
+            &bstr(&key[1..33]),
+            &[0x22],
+            &bstr(&key[33..65]),
+        ]
+        .concat(),
+        _ => [
+            &[0xa4, 0x01, 0x01, 0x03, 0x27, 0x20, 0x06, 0x21][..],
+            &bstr(key),
+        ]
+        .concat(),
+    })
+}
+
 /// Authenticator data for `rp_id` with flags `flags`, counter `count` and,
-/// for a registration, the attested credential `id` (with an all-zero
-/// AAGUID and no COSE key, which these checks do not read).
-pub fn auth_data(rp_id: &str, flags: u8, count: u32, id: Option<&[u8]>) -> Vec<u8> {
+/// for a registration, the attested credential: its `id` and COSE key
+/// `cose` ([`cose_key`]), with an all-zero AAGUID.
+pub fn auth_data(rp_id: &str, flags: u8, count: u32, attested: Option<(&[u8], &[u8])>) -> Vec<u8> {
     let mut ad = digest(&SHA256, rp_id.as_bytes()).as_ref().to_vec();
     ad.push(flags);
     ad.extend_from_slice(&count.to_be_bytes());
-    if let Some(id) = id {
+    if let Some((id, cose)) = attested {
         ad.extend_from_slice(&[0; 16]);
         ad.extend_from_slice(&(id.len() as u16).to_be_bytes());
         ad.extend_from_slice(id);
+        ad.extend_from_slice(cose);
     }
     ad
 }
@@ -271,7 +389,8 @@ mod tests {
     fn a_registration_names_its_credential_origin_rp_and_verified_user() {
         let (_, spki) = p256();
         let id = b"cred-1";
-        let ad = auth_data("localhost", 0x45, 0, Some(id));
+        let cose = cose_key(&spki, ES256).unwrap();
+        let ad = auth_data("localhost", 0x45, 0, Some((id, &cose)));
         let cdj = client_data("webauthn.create", E.challenge, E.origin);
         let r = verify_registration(&E, &b64url(id), &spki, ES256, &ad, &cdj).unwrap();
         assert_eq!((r.credential_id, r.sign_count), (b64url(id), 0));
@@ -282,9 +401,35 @@ mod tests {
         assert!(wrong(&ad, &other, id).contains("origin"));
         let other = client_data("webauthn.create", "b3RoZXI", E.origin);
         assert!(wrong(&ad, &other, id).contains("challenge"));
-        assert!(wrong(&auth_data("evil.example", 0x45, 0, Some(id)), &cdj, id).contains("RP ID"));
-        assert!(wrong(&auth_data("localhost", 0x41, 0, Some(id)), &cdj, id).contains("verified"));
+        assert!(
+            wrong(
+                &auth_data("evil.example", 0x45, 0, Some((id, &cose))),
+                &cdj,
+                id
+            )
+            .contains("RP ID")
+        );
+        assert!(
+            wrong(
+                &auth_data("localhost", 0x41, 0, Some((id, &cose))),
+                &cdj,
+                id
+            )
+            .contains("verified")
+        );
         assert!(wrong(&ad, &cdj, b"cred-2").contains("another credential"));
+        // Another key beside this one's authenticator data.
+        let (_, other) = p256();
+        let swapped = verify_registration(&E, &b64url(id), &other, ES256, &ad, &cdj).unwrap_err();
+        assert!(swapped.contains("another public key"), "{swapped}");
+        // An Ed25519 COSE key decodes to its raw key too.
+        let mut ed = ED25519_SPKI_PREFIX.to_vec();
+        ed.extend_from_slice(&[7; 32]);
+        assert_eq!(
+            cose_raw_key(&cose_key(&ed, EDDSA).unwrap(), EDDSA).unwrap(),
+            vec![7; 32]
+        );
+        assert!(cose_raw_key(&cose_key(&ed, EDDSA).unwrap(), ES256).is_err());
     }
 
     #[test]
