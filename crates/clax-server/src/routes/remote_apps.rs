@@ -330,7 +330,8 @@ pub struct LinkBody {
 
 /// `POST /api/remotes/<rid>/links {artifact_id, remote_artifact_id, url,
 /// remote_n}` (the owner) → 201 `{link}`: links local app `artifact_id`,
-/// its current version, to public version `remote_n` of
+/// its current version (or the version a push of it made `remote_n`
+/// from, when one did), to public version `remote_n` of
 /// `remote_artifact_id` on `rid` without a push, as an app got from there
 /// is, or one linked again after a sign-in. Its next publish builds on
 /// `remote_n`. Agents may not push it without asking. 400 `invalid_args`
@@ -361,7 +362,14 @@ pub async fn link(
     let l = s
         .store_call(move |st| {
             let a = st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            st.link_remote(id.as_str(), &r2, &raid, &url, a.current_version, n)
+            // The local version a push of it made `remote_n` from, if one
+            // did (a link made again after a new sign-in): later local
+            // versions are not its twin.
+            let base = st
+                .pushed_twin(id.as_str(), &raid, n)?
+                .filter(|&b| b <= a.current_version)
+                .unwrap_or(a.current_version);
+            st.link_remote(id.as_str(), &r2, &raid, &url, base, n)
         })
         .await?;
     s.linked.links_changed();

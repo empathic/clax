@@ -460,6 +460,22 @@ impl Store {
         })
     }
 
+    /// The local version of `aid` a push of it made public version
+    /// `remote_n` of `raid` from, on any remote, connected now or removed
+    /// since: what a link made again after a new sign-in bases on.
+    pub fn pushed_twin(&self, aid: &str, raid: &str, remote_n: u32) -> Result<Option<u32>> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT local_n FROM remote_versions
+                 WHERE artifact_id = ?1 AND remote_artifact_id = ?2 AND remote_n = ?3
+                 ORDER BY local_n DESC LIMIT 1",
+                params![aid, raid, remote_n],
+                |r| r.get(0),
+            )
+            .optional()?)
+        })
+    }
+
     /// The local version that public version `remote_n` of `raid` on
     /// remote `rid` is the twin of: a recorded push, else the link's last
     /// push when it made that version; `None` for a version published there
