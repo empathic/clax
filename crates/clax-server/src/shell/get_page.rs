@@ -18,9 +18,11 @@
 //!   page, 404 with the sign-in link, the same whichever it was.
 //! - `GET /.well-known/apple-app-site-association` ([`apple_app_site_association`])
 //!   and `GET /.well-known/assetlinks.json` ([`assetlinks`]): the app links
-//!   that let iOS, macOS and Android open `/a/<id>/get` in the Clax app,
-//!   served on the hosted public host only, and only when [`ClaxApp`]
-//!   names the platform's app.
+//!   that let iOS and Android open `/a/<id>/get` in the Clax app, served
+//!   on the hosted public host only, and only when [`ClaxApp`] names the
+//!   platform's app. The Mac app takes no universal links (it carries no
+//!   associated-domains entitlement): on a Mac the link opens in the
+//!   browser, whose Open in Clax (`clax:`) reaches the app.
 
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, Request, State};
@@ -126,9 +128,15 @@ fn qr_svg(text: &str) -> String {
     )
 }
 
-const STYLE: &str = ":root{color-scheme:light dark;--bg:#fafaf9;--fg:#1c1917;--muted:#57534e;--card:#fff;--border:#e7e5e4;--tile:#f5f5f4}\
-@media (prefers-color-scheme:dark){:root{--bg:#1c1917;--fg:#f5f5f4;--muted:#a8a29e;--card:#292524;--border:#44403c;--tile:#44403c}}\
-body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}\
+/// The page's styles. Its colours are the web shell's tokens
+/// (`web/shell/src/theme.css`: `--bg`, `--fg`, `--muted`, `--card`,
+/// `--border`, and `--hover` as the tile's), light and dark, so the step
+/// from an app's page to this one keeps its background and ink. The page
+/// runs no script, so it follows the system's theme, not one chosen with
+/// the shell's theme switch (kept in the browser).
+const STYLE: &str = ":root{color-scheme:light dark;--bg:#f7f7f5;--fg:#1c1b19;--muted:#5f5d58;--card:#ffffff;--border:#e6e5e1;--tile:#f2f2ef}\
+@media (prefers-color-scheme:dark){:root{--bg:#141413;--fg:#ecebe7;--muted:#a9a69f;--card:#1c1c1a;--border:#2c2c29;--tile:#2a2a27}}\
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 ui-sans-serif,-apple-system,\"Segoe UI\",system-ui,sans-serif}\
 main{max-width:480px;margin:0 auto;padding:48px 16px}\
 section{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:22px 24px}\
 h1{margin:0 0 10px;font-size:22px;line-height:1.3;overflow-wrap:anywhere}p{margin:0 0 12px}a{color:var(--fg)}\
@@ -493,7 +501,8 @@ pub fn assetlinks_of(app: &ClaxApp) -> Option<serde_json::Value> {
 }
 
 /// `GET /.well-known/apple-app-site-association`: lets the Clax app on iOS
-/// and macOS (`<team>.dev.empathic.clax`) open `/a/<id>/get`. Served without
+/// (`<team>.dev.empathic.clax`) open `/a/<id>/get`. The Mac app, which
+/// takes `clax:` links only, does not read it. Served without
 /// a session, on the hosted public host, when [`ClaxApp::apple_team_id`]
 /// is set; else 404. An agent of another machine is refused, as on every
 /// route not declared for agents ([`DeniedToGrants`]).
@@ -589,6 +598,39 @@ mod tests {
         assert_eq!(byline(&a), "v8 by @junp · by @akesling");
         a.published_by = card("Kim", None);
         assert_eq!(byline(&a), "v8 by Kim · by @akesling");
+    }
+
+    /// The value of custom property `name` in `css` after the first `after`.
+    fn token<'a>(css: &'a str, after: &str, name: &str) -> &'a str {
+        let rest = &css[css.find(after).expect(after)..];
+        let at = rest.find(&format!("{name}:")).expect(name) + name.len() + 1;
+        rest[at..].split([';', '}']).next().unwrap_or("").trim()
+    }
+
+    #[test]
+    fn the_page_wears_the_shells_colours_light_and_dark() {
+        let theme = include_str!("../../../../web/shell/src/theme.css");
+        // The page's token and the shell's it copies.
+        let pairs = [
+            ("--bg", "--bg"),
+            ("--fg", "--fg"),
+            ("--muted", "--muted"),
+            ("--card", "--card"),
+            ("--border", "--border"),
+            ("--tile", "--hover"),
+        ];
+        for (mine, shell) in pairs {
+            assert_eq!(
+                token(STYLE, ":root{", mine),
+                token(theme, ":root {", shell),
+                "light {mine}"
+            );
+            assert_eq!(
+                token(STYLE, "prefers-color-scheme:dark", mine),
+                token(theme, "prefers-color-scheme: dark", shell),
+                "dark {mine}"
+            );
+        }
     }
 
     #[test]

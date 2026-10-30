@@ -335,7 +335,7 @@ npx wrangler queues subscription create clax-artifacts-events --source artifacts
 | `GITHUB_OAUTH_BASE`, `GITHUB_API_BASE` | empty | Tests only: a fake GitHub's bases |
 | `LEGAL` | `bundled` on Empathic's service (`deploy.mjs --legal bundled`), else empty | Serve `docs/legal`'s Terms of Service and Privacy Policy and ask people to agree ([below](#terms-of-service-and-privacy-policy)) |
 | `TERMS_URL`, `PRIVACY_URL`, `LEGAL_VERSION` | empty, or a deployment's own (`--terms-url`, `--privacy-url`, `--legal-version`) | Link your own documents instead; all three or none |
-| `APPLE_TEAM_ID` | the team that signs the Clax app, on clax.dev | Serve `/.well-known/apple-app-site-association` for `<team>.dev.empathic.clax`, so `/a/<id>/get` opens the iOS and macOS app; empty serves none |
+| `APPLE_TEAM_ID` | the team that signs the Clax app, on clax.dev | Serve `/.well-known/apple-app-site-association` for `<team>.dev.empathic.clax`, so `/a/<id>/get` opens the iOS app (the Mac app takes `clax:` links only); empty serves none |
 | `ANDROID_PACKAGE`, `ANDROID_SHA256` | `dev.empathic.clax` and the signing certificate's SHA-256 fingerprint, on clax.dev | Serve `/.well-known/assetlinks.json`, so `/a/<id>/get` opens the Android app; both or neither |
 | `IOS_STORE_URL`, `ANDROID_STORE_URL` | the app's store pages, once listed | Offered on `/a/<id>/get`; empty offers none |
 

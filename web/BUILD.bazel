@@ -197,6 +197,7 @@ filegroup(
         "shell/src/*-cases.json",
         "shell/src/view/frame-host.ts",
         "shell/src/view/haiku.json",
+        "shell/src/theme.css",
     ]) + [
         "bridge/src/protocol.ts",
         "shell/artifact.html",
