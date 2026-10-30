@@ -1552,7 +1552,10 @@ the threads changed since the link's cursor (`since`, below), and every
   origin ("remote" | "local"), remote_version, twin, unlinked, state
   (null | "pending" | "held" | "failed"), error}` and each linked comment
   `linked: {origin, remote, author_kind, author_name, state}`.
-- `GET /api/artifacts/<id>/remotes` adds, per link, `download_only`,
+- `GET /api/artifacts/<id>/remotes` adds, per link, `remote_status` (its
+  remote's: `signed_out` while the remote refuses this Clax's token, its
+  pushes and writes waiting for a new sign-in, which keeps the link),
+  `download_only`,
   `sync: {unreachable_since, last_error, synced_at}`, `pending` and `failed`
   counts, and `unsent`: the writes not sent before a link of the artifact
   ended, which are never sent, even once it is linked to that remote

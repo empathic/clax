@@ -621,6 +621,33 @@ async fn a_push_whose_answer_was_lost_is_answered_the_version_it_made() {
 }
 
 #[tokio::test]
+async fn a_link_says_when_its_remote_signed_this_clax_out() {
+    let public = Public::new().await;
+    let local = TestServer::spawn().await;
+    let rid = connect(&local, &public).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let aid = local
+        .publish("Plan", &[("index.html", "<h1>v1</h1>")])
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = owner_post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
+    assert_eq!(s, 200, "{v}");
+    let links = |v: &Value| v["links"][0]["remote_status"].as_str().map(str::to_string);
+    let path = format!("/api/artifacts/{aid}/remotes");
+    let (_, v) = local_req(&local, reqwest::Method::GET, &path, json!(null), None).await;
+    assert_eq!(links(&v).as_deref(), Some("connected"), "{v}");
+    // The remote refused the token: the link stays, saying why it waits.
+    assert!(local.store.sign_out_remote(&rid).unwrap());
+    let (_, v) = local_req(&local, reqwest::Method::GET, &path, json!(null), None).await;
+    assert_eq!(links(&v).as_deref(), Some("signed_out"), "{v}");
+    assert_eq!(v["remotes"], json!([]), "{v}");
+}
+
+#[tokio::test]
 async fn a_push_after_an_unlink_makes_a_new_public_copy() {
     let public = Public::new().await;
     let local = TestServer::spawn().await;
