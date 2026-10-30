@@ -5831,7 +5831,10 @@ value (a person's `rights`, a `narrow`, an `elevate`, an elevation's
 `access`, an agent's `rights`) the locations naming such an artifact are
 left out and counted in `hidden_locations`, and an approval in
 `approvals_of_yours` on such an artifact has `artifact_id`,
-`artifact_title` and `thread_id` `null`;
+`artifact_title` and `thread_id` `null`. Since the owner never sees those
+locations, `PUT /api/people/<public_id>/rights` keeps them: each is added
+back to the object of the new value with the same type, actions and level
+(or kept in an object of its own when there is none);
 anyone else, whatever cookie it sends (none, a LAN viewer's, or one that
 names no one), gets the same 403 `forbidden`, so the answer tells a guess
 nothing (a person's cookie is 32 random bytes, so there is no rate limit);
@@ -7726,7 +7729,9 @@ does not declare `room`) or `revoked` (the artifact was deleted, or a new
 version stopped declaring `room`, while the socket was open; or, on an
 artifact's site, the site was made private under a visitor's socket, or a
 holder no longer reads the artifact: their share removed, its link turned
-off, the person removed or their browser signed out) or `peer_taken` (a socket of another
+off, the person removed or their browser signed out; and likewise for a
+socket opened on the public host with a hosted browser session, once that
+session ends or no longer reads the artifact) or `peer_taken` (a socket of another
 viewer holds this label: a new socket gets it at once); 4409 `replaced` (a
 newer socket of the same viewer took this label); 1001 on shutdown.
 

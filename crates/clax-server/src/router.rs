@@ -15,8 +15,6 @@ use crate::routes::{
 use crate::routes::{events, mcp, net};
 use crate::shell;
 use crate::shell::get_page;
-#[cfg(not(target_arch = "wasm32"))]
-use axum::error_handling::HandleErrorLayer;
 use axum::{
     Router,
     extract::DefaultBodyLimit,
@@ -26,50 +24,31 @@ use axum::{
 };
 use clax_http::agent::{self, DeniedToGrants};
 use clax_http::auth::RequireToken;
-#[cfg(any(debug_assertions, not(target_arch = "wasm32")))]
 use clax_http::error::ApiError;
 use clax_http::limits;
 use clax_http::state::AppState;
 use clax_http::{auth, host};
 use std::time::Duration;
-#[cfg(not(target_arch = "wasm32"))]
-use tower::ServiceBuilder;
-#[cfg(not(target_arch = "wasm32"))]
-use tower::timeout::TimeoutLayer;
 use tower_http::cors::{Any, CorsLayer};
 
-#[cfg(not(target_arch = "wasm32"))]
-async fn timeout_error(err: tower::BoxError, limit: Duration) -> ApiError {
-    if err.is::<tower::timeout::error::Elapsed>() {
-        ApiError::new(
-            StatusCode::REQUEST_TIMEOUT,
-            "timeout",
-            format!("request exceeded {limit:?}"),
-        )
-    } else {
-        tracing::error!(error = %err, "request middleware failed");
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            "internal error",
-        )
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
+/// `router` with every request bounded by `d`: one that runs longer is
+/// dropped and answered 408 `timeout`. On the clock of the runtime it
+/// runs on (tokio's natively, the Worker's timers on wasm32).
 fn with_timeout(router: Router<AppState>, d: Duration) -> Router<AppState> {
-    router.layer(
-        ServiceBuilder::new()
-            .layer(HandleErrorLayer::new(move |e| timeout_error(e, d)))
-            .layer(TimeoutLayer::new(d)),
-    )
-}
-
-/// No deadline layer on wasm32: tower's timeout sleeps on tokio's timer, and
-/// a Worker's request is bounded by the platform.
-#[cfg(target_arch = "wasm32")]
-fn with_timeout(router: Router<AppState>, _d: Duration) -> Router<AppState> {
-    router
+    router.layer(axum::middleware::from_fn(
+        move |req: axum::extract::Request, next: axum::middleware::Next| {
+            clax_rt::sendable(async move {
+                match clax_rt::time::timeout(d, next.run(req)).await {
+                    Ok(res) => res,
+                    Err(_) => axum::response::IntoResponse::into_response(ApiError::new(
+                        StatusCode::REQUEST_TIMEOUT,
+                        "timeout",
+                        format!("request exceeded {d:?}"),
+                    )),
+                }
+            })
+        },
+    ))
 }
 
 /// Every route, unwrapped; `shutdown`, when given, mounts `/api/admin/shutdown`.

@@ -1553,6 +1553,70 @@ async fn removing_a_share_closes_the_holders_room_socket_and_no_one_elses() {
     stays_open(&mut owners).await;
 }
 
+/// A room socket opened on the public host with a hosted browser session
+/// is checked again as a site holder's is: removing the share closes it,
+/// signing the browser out closes the owner's.
+#[tokio::test]
+async fn a_public_host_room_socket_closes_when_its_session_stops_reading() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.room_artifact("Board").await;
+    let (sam, sam_pid) = site.member(&owner, "Sam").await;
+    let share = site.share(&owner, &aid, &sam_pid).await;
+    let public_room = |b: &Browser, peer: &str| {
+        let mut req = format!(
+            "{}/api/artifacts/{aid}/room?peer={peer}",
+            site.ts.base.replacen("http://", "ws://", 1)
+        )
+        .into_client_request()
+        .unwrap();
+        let h = req.headers_mut();
+        h.insert("host", site.public_host().parse().unwrap());
+        h.insert("origin", site.origin.parse().unwrap());
+        h.insert(
+            "cookie",
+            format!("clax_session={}", b.cookie.as_ref().unwrap())
+                .parse()
+                .unwrap(),
+        );
+        async move {
+            let mut ws = tokio_tungstenite::connect_async(req)
+                .await
+                .expect("upgrade")
+                .0;
+            let welcome = ws.next().await.unwrap().unwrap();
+            assert!(welcome.to_text().unwrap().contains("welcome"), "{welcome}");
+            ws
+        }
+    };
+    let mut sams = public_room(&sam, "000000000000000s").await;
+    let mut owners = public_room(&owner, "000000000000000o").await;
+    let (s, _) = site
+        .send(
+            &owner,
+            reqwest::Method::DELETE,
+            &format!("/api/hosted/artifacts/{aid}/shares/{share}"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(s, 200);
+    let (code, reason) = closed(&mut sams).await;
+    assert_eq!((code, reason.as_str()), REVOKED);
+    stays_open(&mut owners).await;
+    let (s, _) = site
+        .send(
+            &owner,
+            reqwest::Method::POST,
+            "/api/hosted/signout",
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, 204);
+    let (code, reason) = closed(&mut owners).await;
+    assert_eq!((code, reason.as_str()), REVOKED);
+}
+
 #[tokio::test]
 async fn turning_the_link_off_closes_a_link_viewers_room_socket() {
     let site = Site::new().await;

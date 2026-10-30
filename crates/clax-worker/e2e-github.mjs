@@ -146,7 +146,8 @@ async function main() {
     const theirs = await mp.request.get(`${origin}/api/artifacts/${aid}`);
     check(theirs.status() === 404, "the new person cannot read the owner's artifact", theirs.status());
     const list = await (await mp.request.get(`${origin}/api/artifacts`)).json();
-    check((list.artifacts ?? []).length === 0, "the new person's gallery holds nothing of the owner's", list);
+    // Their gallery may hold their own seeded quickstart, never the owner's page.
+    check(!(list.artifacts ?? []).some((a) => a.id === aid), "the new person's gallery holds nothing of the owner's", list);
 
     await op.goto(`${origin}/people`);
     await op.getByTestId("github-login").first().waitFor();

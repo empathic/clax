@@ -53,18 +53,23 @@ fn hook(home: &Path, agent: &str, event: &str, stdin: &[u8]) -> Ran {
     hook_env(home, agent, event, stdin, &[])
 }
 
+/// Runs the hook with `stdin` read from a file, so the whole input is
+/// there when it starts: its deadline never runs while this test waits to
+/// be scheduled to write it.
 fn hook_env(home: &Path, agent: &str, event: &str, stdin: &[u8], env: &[(&str, &str)]) -> Ran {
+    let mut input = tempfile::tempfile().unwrap();
+    input.write_all(stdin).unwrap();
+    std::io::Seek::rewind(&mut input).unwrap();
     let mut cmd = clax(home);
     cmd.args(["hook", "--agent", agent, event])
-        .stdin(Stdio::piped())
+        .stdin(Stdio::from(input))
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let mut child = cmd.spawn().unwrap();
+    let child = cmd.spawn().unwrap();
     let start = Instant::now();
-    child.stdin.take().unwrap().write_all(stdin).unwrap();
     let out = child.wait_with_output().unwrap();
     Ran {
         stdout: String::from_utf8(out.stdout).unwrap(),
@@ -348,7 +353,9 @@ fn no_daemon_prints_nothing_and_starts_none() {
             "{line}"
         );
     }
-    std::thread::sleep(Duration::from_millis(500));
+    // Starting a daemon takes the home's start lock before it spawns one,
+    // so a run that tried would have left daemon.lock behind it.
+    assert!(!home.join("daemon.lock").exists());
     assert!(!home.join("daemon.json").exists());
 }
 
@@ -457,16 +464,6 @@ fn stalled_daemon() -> tempfile::TempDir {
 fn session_end_gives_up_within_codexs_three_second_cap() {
     let dir = stalled_daemon();
     let home = dir.path().join("ax");
-    // The first run of a freshly built binary can be slow to start (macOS
-    // checks it); keep that out of the timing.
-    assert!(
-        clax(&home)
-            .arg("--version")
-            .output()
-            .unwrap()
-            .status
-            .success()
-    );
     let r = hook(
         &home,
         "codex",
@@ -475,7 +472,6 @@ fn session_end_gives_up_within_codexs_three_second_cap() {
     );
     assert_eq!(r.code, Some(0));
     assert_eq!(r.stdout, "");
-    assert!(r.elapsed < Duration::from_millis(2900), "{:?}", r.elapsed);
 
     // Session start keeps its longer budget.
     let r = hook(
@@ -485,11 +481,22 @@ fn session_end_gives_up_within_codexs_three_second_cap() {
         &fixture("codex-session-start.json"),
     );
     assert_eq!(r.code, Some(0));
-    assert!(
-        r.elapsed >= Duration::from_millis(2900) && r.elapsed < Duration::from_millis(4500),
-        "{:?}",
-        r.elapsed
-    );
+
+    // Each run gave up on its own bound, which hooks.log names: a request
+    // timeout, within the run's deadline. That the end hook's budget fits
+    // Codex's 3 s cap and session start's is longer is checked on the
+    // budgets themselves (crates/clax-commands/src/commands/hook.rs
+    // end_hooks_give_up_inside_their_harnesses_caps), not by timing runs.
+    let log = std::fs::read_to_string(home.join("logs/hooks.log")).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(lines.len(), 2, "{log}");
+    for (line, event) in lines.iter().zip(["session-end", "session-start"]) {
+        assert!(line.contains(&format!("event={event} ")), "{log}");
+        assert!(
+            line.ends_with("timed out\"") || line.contains("stderr=\"timed out after "),
+            "{log}"
+        );
+    }
 }
 
 /// Runs `agent`'s Stop hook with `input` once for a session that watches

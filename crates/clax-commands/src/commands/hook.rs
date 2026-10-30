@@ -1236,6 +1236,21 @@ mod tests {
         interactive_codex(&line.split_whitespace().collect::<Vec<_>>())
     }
 
+    /// Session-end hooks give up inside what their harness allows (Codex
+    /// kills one after 3 s, Grok Build after 1.5 s) with time to print and
+    /// exit, and every request fits inside its run's deadline.
+    #[test]
+    fn end_hooks_give_up_inside_their_harnesses_caps() {
+        let margin = Duration::from_millis(300);
+        let (codex, codex_req) = budget(Agent::Codex, Event::SessionEnd);
+        assert!(codex + margin <= Duration::from_secs(3), "{codex:?}");
+        let (grok, grok_req) = budget(Agent::Grok, Event::SessionEnd);
+        assert!(grok + margin <= Duration::from_millis(1500), "{grok:?}");
+        assert!(codex_req < codex && grok_req < grok);
+        // Session start keeps a longer budget than the end hook.
+        assert!(budget(Agent::Codex, Event::SessionStart).0 > codex);
+    }
+
     #[test]
     fn exact_arguments_keep_a_quoted_prompt_whole() {
         let argv = cmdline_args(b"/usr/bin/codex\0-m\0gpt-6\0exec the plan\0");

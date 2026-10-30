@@ -14,7 +14,8 @@ use tokio::sync::watch;
 /// A session unseen for this long, with no live process, is ended by the reaper.
 const SESSION_IDLE: Duration = Duration::from_secs(Store::SESSION_IDLE_SECS);
 /// How often the core deletes drafts older than
-/// [`clax_store::drafts::DRAFT_MAX_AGE`] (and once at start).
+/// [`clax_store::drafts::DRAFT_MAX_AGE`] and prunes ended ClaxBot runs
+/// ([`Store::prune_ended_runs`]), and once at start.
 const DRAFT_SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
 /// How long shutdown waits for the journal appender to close its segment.
 /// The appender stops as shutdown begins, beside the connection drain, and
@@ -473,6 +474,15 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
                 Ok(0) => {}
                 Ok(n) => tracing::info!(count = n, "removed old drafts"),
                 Err(e) => tracing::warn!(error = %e, "draft sweep failed"),
+            }
+            match drafts_store.call(|st| st.prune_ended_runs()).await {
+                Ok(p) if p == clax_store::bot_runs::Pruned::default() => {}
+                Ok(p) => tracing::info!(
+                    calls = p.calls,
+                    draft_files = p.draft_files,
+                    "pruned ended ClaxBot runs"
+                ),
+                Err(e) => tracing::warn!(error = %e, "ClaxBot run prune failed"),
             }
         }
     });
