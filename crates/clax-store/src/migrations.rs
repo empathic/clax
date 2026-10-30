@@ -1869,6 +1869,10 @@ pub const MIGRATIONS: &[&str] = &[
     // rebuilt for the status's CHECK, as no table names it, and gains
     // `reconnecting`, set while a signed-out remote's new sign-in waits, so
     // one that does not finish leaves it signed out rather than forgotten.
+    // `threads.reopened_by_person` is whose reopen left a thread open
+    // (`*owner`, a person's public ID, or `-` for anyone else; NULL for
+    // Clax itself and reopens before it): a linked thread's reopen goes up
+    // to its remote only when it is the owner's (`crate::linked`).
     "CREATE TABLE login_codes (
         sha256 TEXT PRIMARY KEY,
         created_at TEXT NOT NULL,
@@ -1912,6 +1916,7 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE remote_links ADD COLUMN followed INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE remote_links ADD COLUMN unwatched_at TEXT;
     ALTER TABLE artifacts ADD COLUMN remote_mirror INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE threads ADD COLUMN reopened_by_person TEXT;
     CREATE TABLE remotes_60 (
         id TEXT PRIMARY KEY,
         origin TEXT NOT NULL UNIQUE,

@@ -1042,7 +1042,9 @@ impl Store {
                        JOIN linked_threads lt ON lt.thread_id = t.id
                      WHERE lt.remote_id = ?1 AND lt.artifact_id = ?2 AND lt.unlinked_at IS NULL
                        AND t.status != lt.synced_status
-                       AND (t.status = 'open'
+                       AND ((t.status = 'open'
+                             AND COALESCE(t.reopened_by_person, '*owner') IN
+                                 ('*owner', (SELECT public_id FROM viewers WHERE owner = 1)))
                             OR (t.resolved_by LIKE 'agent:%'
                                 AND COALESCE(t.resolved_by_person, '*owner') = '*owner')
                             OR t.resolved_by = 'viewer:' ||
@@ -1915,6 +1917,62 @@ mod tests {
             w.st.mirror_status(&AuditCtx::DAEMON, &t.id, "open")
                 .unwrap();
         assert!(!flipped, "already open");
+    }
+
+    #[test]
+    fn only_the_owners_reopen_goes_up() {
+        let w = world();
+        let l = link(&w, (1, 1));
+        let t =
+            w.st.mirror_thread(
+                &AuditCtx::DAEMON,
+                &l,
+                ("clax.example", "https://clax.example"),
+                1,
+                true,
+                MirrorThread {
+                    remote_thread_id: "rt1".into(),
+                    remote_version: 1,
+                    anchor: whole(),
+                    first: mirror("make it bluer", "rc1"),
+                },
+            )
+            .unwrap();
+        w.st.mirror_status(&AuditCtx::DAEMON, &t.id, "resolved")
+            .unwrap();
+        // Another local person's comment reopens it here: not theirs to
+        // reopen there as the owner's person.
+        w.clock.advance(1);
+        w.st.add_comment(
+            &AuditCtx::DAEMON,
+            &t.id,
+            NewComment {
+                author_kind: AUTHOR_VIEWER,
+                author_name: "Sam".into(),
+                author_public_id: Some("pub_local_sam".into()),
+                via_session_id: None,
+                body: "still too dark".into(),
+                via_page: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(w.st.get_thread(&t.id).unwrap().unwrap().status, "open");
+        assert_eq!(
+            w.st.scan_linked(&w.rid).unwrap(),
+            0,
+            "Sam's reopen stays here"
+        );
+        // Resolved again there, then reopened here by the owner: it goes up.
+        w.st.mirror_status(&AuditCtx::DAEMON, &t.id, "resolved")
+            .unwrap();
+        let mut owner = AuditCtx::DAEMON;
+        owner.actor = clax_core::audit::Actor::Owner {
+            public_id: w.owner.clone(),
+        };
+        w.st.reopen_thread(&owner, &t.id).unwrap();
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
+        let out = w.st.outbox_of(&w.rid).unwrap();
+        assert_eq!(out.last().unwrap().kind, "reopen");
     }
 
     #[test]

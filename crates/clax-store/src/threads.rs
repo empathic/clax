@@ -701,6 +701,23 @@ pub(crate) fn threads_of_many(c: &Connection, ids: &[String]) -> Result<Vec<Thre
 }
 
 /// The thread `thread_id` of a live artifact, with its comments.
+/// Whose reopen `ctx` makes, as `threads.reopened_by_person` keeps it:
+/// `*owner` for the owner and the owner's agents, a person's public ID for
+/// a person, their agents and ClaxBot acting for them, `-` for anyone else,
+/// `None` for Clax itself.
+fn reopener(ctx: &AuditCtx) -> Option<String> {
+    use clax_core::audit::Actor;
+    let owner = || clax_core::visibility::OWNER.to_string();
+    match &ctx.actor {
+        Actor::Owner { .. } => Some(owner()),
+        Actor::Agent(a) => Some(a.person.clone().unwrap_or_else(owner)),
+        Actor::Viewer { public_id, .. } => Some(public_id.clone()),
+        Actor::Bot { on_behalf_of } => Some(on_behalf_of.clone()),
+        Actor::System { .. } => None,
+        _ => Some("-".to_string()),
+    }
+}
+
 pub(crate) fn thread_in(c: &Connection, thread_id: &str) -> Result<Option<Thread>> {
     let row = c
         .prepare_cached(&format!("{THREAD_SELECT} AND t.id = ?1"))?
@@ -1522,6 +1539,16 @@ impl Store {
             self.record_audit(tx, ctx, comment_record(&t.artifact_id, &comment))?;
             if comment.author_kind == AUTHOR_VIEWER {
                 insert_mentions(tx, &comment.id, &comment.body)?;
+                // A comment that reopens the thread: its author reopened it.
+                if t.status == "resolved" {
+                    tx.execute(
+                        "UPDATE threads SET reopened_by_person = ?2 WHERE id = ?1",
+                        params![
+                            thread_id,
+                            comment.author_public_id.as_deref().unwrap_or("-")
+                        ],
+                    )?;
+                }
                 tx.execute(
                     "UPDATE threads SET status = 'open', resolved_at = NULL, resolved_by = NULL,
                         resolved_by_person = NULL WHERE id = ?1",
@@ -1972,6 +1999,12 @@ impl Store {
         thread_id: &str,
     ) -> Result<()> {
         let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
+        if t.status == "resolved" {
+            tx.execute(
+                "UPDATE threads SET reopened_by_person = ?2 WHERE id = ?1",
+                params![thread_id, reopener(ctx)],
+            )?;
+        }
         tx.execute(
             "UPDATE threads SET status = 'open', resolved_at = NULL, resolved_by = NULL,
                     resolved_by_person = NULL WHERE id = ?1",
