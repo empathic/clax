@@ -177,12 +177,57 @@ fn mint_failed(e: anyhow::Error, probe: Option<u16>, daemon_version: &str) -> Ho
     }
 }
 
+/// The confirmation a `pair` message presents (`confirmation`): none, or
+/// a confirmation ID (`cf_` and up to 64 letters, digits, `_` or `-`);
+/// anything else is `bad_request`.
+pub fn confirmation_of(msg: &Value) -> Result<Option<String>, HostError> {
+    match msg.get("confirmation") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(id)) if is_confirmation_id(id) => Ok(Some(id.clone())),
+        Some(_) => Err(bad("confirmation is a confirmation ID")),
+    }
+}
+
+fn is_confirmation_id(id: &str) -> bool {
+    id.strip_prefix("cf_").is_some_and(|rest| {
+        (1..=64).contains(&rest.len())
+            && rest
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    })
+}
+
+/// The `confirmation_pending` reply for a mint the daemon `mint` answered
+/// with a decision held for a browser confirmation (while an agent session
+/// of the owner's is live, pairing waits for the owner's click: docs/contract.md
+/// "Browser confirmations"): `{type: "error", v: 1, code:
+/// "confirmation_pending", message, confirmation_id, confirm_url}`. The
+/// extension tells the person, and sends `pair` again with the
+/// confirmation, which waits for their answer. `None` for any other answer.
+pub fn held(mint: &Value) -> Option<Value> {
+    if mint["status"] != clax_core::confirm::PENDING {
+        return None;
+    }
+    let id = mint["confirmation_id"]
+        .as_str()
+        .filter(|id| is_confirmation_id(id))?;
+    let mut r = error(
+        "confirmation_pending",
+        "Confirm pairing the Clax extension in your Clax browser tab: an agent is running, so Clax asks you first.",
+    );
+    r["confirmation_id"] = json!(id);
+    r["confirm_url"] = json!(mint["confirm_url"].as_str().unwrap_or_default());
+    Some(r)
+}
+
 /// Ensures a daemon of this version, as `clax mcp` does (discovering it,
 /// replacing an older one or starting one), and mints a credential with the
 /// token, as the owner ([`Client::owner_channel`]): the mint route refuses
-/// agent channels.
+/// agent channels. A mint held for the owner's browser confirmation answers
+/// [`held`]'s reply at once; with `confirmation` (the one that reply named)
+/// it waits for the owner's answer, then mints presenting it.
 #[allow(clippy::disallowed_methods)] // the one owner_channel (clippy.toml)
-fn pair(cli: &crate::Cli, home: &Home) -> Result<Value, HostError> {
+fn pair(cli: &crate::Cli, home: &Home, confirmation: Option<String>) -> Result<Value, HostError> {
     let port = cli.port_for(home).map_err(|e| HostError {
         code: "daemon_unavailable",
         message: format!("{e:#}"),
@@ -192,13 +237,26 @@ fn pair(cli: &crate::Cli, home: &Home) -> Result<Value, HostError> {
             code: "daemon_unavailable",
             message: format!("{e:#}; see {}", home.log_path().display()),
         })?
-        .owner_channel();
-    let mint = c
-        .post(
-            "/api/extension/credentials",
-            &json!({"extension_id": extension_id_in_effect(home.root())}),
-        )
-        .map_err(|e| mint_failed(e, c.http_status("/api/extension"), &c.info.version))?;
+        .owner_channel()
+        .returning_held_decisions();
+    let path = "/api/extension/credentials";
+    let body = json!({"extension_id": extension_id_in_effect(home.root())});
+    let mint = match &confirmation {
+        None => c.post(path, &body),
+        Some(id) => c.wait_for_confirmation(id).and_then(|()| {
+            c.request_with(
+                reqwest::Method::POST,
+                path,
+                Some(&body),
+                None,
+                &[(clax_core::confirm::CONFIRMATION_HEADER, id)],
+            )
+        }),
+    }
+    .map_err(|e| mint_failed(e, c.http_status("/api/extension"), &c.info.version))?;
+    if let Some(r) = held(&mint) {
+        return Ok(r);
+    }
     paired(c.info.port, &mint)
 }
 
@@ -325,7 +383,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     }
     let r = match read_message(&mut std::io::stdin().lock()) {
         Ok(m) if m["type"] == "login" => answer_login(&m, |next| login(cli, home, next)),
-        Ok(m) => answer(&m, || pair(cli, home)),
+        Ok(m) => answer(&m, || pair(cli, home, confirmation_of(&m)?)),
         Err(e) => error(e.code, &e.message),
     };
     log(home, &log_line(&r));
@@ -458,6 +516,43 @@ mod tests {
         let e = answer(&json!({"type": "pair", "v": 1}), || panic!("boom"));
         assert_eq!(e["type"], "error");
         assert_eq!(e["code"], "daemon_unavailable");
+    }
+
+    #[test]
+    fn a_held_mint_names_its_confirmation_and_a_pair_may_present_one() {
+        let mint = json!({"status": "confirmation_pending", "confirmation_id": "cf_ab12",
+            "confirm_url": "http://localhost:7480/inbox?confirm=cf_ab12", "decision": "pair"});
+        let r = held(&mint).expect("held");
+        assert_eq!(
+            (
+                &r["type"],
+                &r["code"],
+                &r["confirmation_id"],
+                &r["confirm_url"]
+            ),
+            (
+                &json!("error"),
+                &json!("confirmation_pending"),
+                &json!("cf_ab12"),
+                &json!("http://localhost:7480/inbox?confirm=cf_ab12")
+            )
+        );
+        assert!(r["message"].as_str().unwrap().contains("Clax browser tab"));
+        assert!(held(&json!({"credential": "cxe_x"})).is_none());
+        let bad_id = json!({"status": "confirmation_pending", "confirmation_id": "../x"});
+        assert!(held(&bad_id).is_none());
+        let msg = |c: Value| json!({"type": "pair", "v": 1, "confirmation": c});
+        assert_eq!(
+            confirmation_of(&json!({"type": "pair", "v": 1})).unwrap(),
+            None
+        );
+        assert_eq!(
+            confirmation_of(&msg(json!("cf_ab12"))).unwrap().as_deref(),
+            Some("cf_ab12")
+        );
+        for bad in [json!("ab12"), json!("cf_"), json!("cf_a/b"), json!(7)] {
+            assert_eq!(confirmation_of(&msg(bad)).unwrap_err().code, "bad_request");
+        }
     }
 
     #[test]

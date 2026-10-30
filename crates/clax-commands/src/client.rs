@@ -195,6 +195,10 @@ pub struct Client {
     /// Shows the person the one line of a browser confirmation the daemon
     /// waits on ([`Client::send_confirming`]); stderr's by default.
     tell: fn(&str),
+    /// Whether a decision held for a browser confirmation is waited on
+    /// ([`Client::send_confirming`]); true but for
+    /// [`Client::returning_held_decisions`].
+    wait_held: bool,
 }
 
 /// Writes `line` to stderr: where the CLI says what it waits on, so its
@@ -735,6 +739,7 @@ impl Client {
             remote: None,
             signed: None,
             tell: tell_stderr,
+            wait_held: true,
         }
     }
 
@@ -767,6 +772,7 @@ impl Client {
             remote: None,
             signed: Some(crate::remote::SignedClient::new(signer)),
             tell: tell_stderr,
+            wait_held: true,
         }
     }
 
@@ -841,6 +847,9 @@ impl Client {
     ) -> anyhow::Result<reqwest::blocking::Response> {
         let again = req.try_clone();
         let res = req.send()?;
+        if !self.wait_held {
+            return Ok(res);
+        }
         let id = res
             .headers()
             .get(clax_core::confirm::CONFIRMATION_HEADER)
@@ -858,7 +867,7 @@ impl Client {
         let body: serde_json::Value = res.json().unwrap_or_default();
         let url = body["confirm_url"].as_str().unwrap_or_default();
         (self.tell)(&clax_core::confirm::line(&crate::term::clean_line(url)));
-        self.wait_for_answer(&id)?;
+        self.wait_for_confirmation(&id)?;
         Ok(again
             .header(clax_core::confirm::CONFIRMATION_HEADER, id)
             .send()?)
@@ -868,7 +877,11 @@ impl Client {
     /// /api/confirmations/<id>?wait=` for at most
     /// [`clax_core::confirm::MAX_WAIT_SECS`] a time. The daemon expires it
     /// after ten minutes, which ends the wait.
-    fn wait_for_answer(&self, id: &str) -> anyhow::Result<()> {
+    ///
+    /// # Errors
+    /// The daemon cannot be reached, or refuses the read (404 for an ID
+    /// none has).
+    pub fn wait_for_confirmation(&self, id: &str) -> anyhow::Result<()> {
         let wait = clax_core::confirm::MAX_WAIT_SECS;
         // The ID is letters, digits, `_` and `-` ([`Client::send_confirming`]).
         let path = format!("/api/confirmations/{id}?wait={wait}");
@@ -963,6 +976,17 @@ impl Client {
     /// a harness's environment or runs through the plugins' wrapper.
     pub fn owner_channel(mut self) -> Client {
         self.agent = false;
+        self
+    }
+
+    /// This client answering a decision the daemon holds for a browser
+    /// confirmation (202 `confirmation_pending`) with that answer, instead
+    /// of waiting for the owner's: for a caller that tells the person where
+    /// to confirm itself, as the extension's native host does (its one
+    /// reply cannot say so while it waits), and then waits with
+    /// [`Client::wait_for_confirmation`].
+    pub fn returning_held_decisions(mut self) -> Client {
+        self.wait_held = false;
         self
     }
 

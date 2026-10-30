@@ -63,6 +63,31 @@ describe("Pairer", () => {
     expect(told).toEqual([]);
   });
 
+  it("says while a pairing waits for the person's confirmation, then asks again with it and pairs", async () => {
+    const held = { type: "error", v: 1, code: "confirmation_pending", message: "Confirm pairing", confirmation_id: "cf_ab12", confirm_url: "http://localhost:7480/inbox?confirm=cf_ab12" };
+    const e = env([held, paired()]);
+    const p = new Pairer(e as unknown as PairEnv);
+    const told: boolean[] = [];
+    p.onConfirm = w => told.push(w);
+    expect((await p.pair()).daemon).toBe("http://localhost:7480");
+    expect(e.sent).toEqual([
+      { type: "pair", v: 1, extension_version: "0.9.0" },
+      { type: "pair", v: 1, extension_version: "0.9.0", confirmation: "cf_ab12" },
+    ]);
+    expect(told).toEqual([true, false]);
+    // A declined or expired one ends the wait with the host's error.
+    const d = env([held, { type: "error", v: 1, code: "daemon_unavailable", message: "pairing failed: declined" }]);
+    const q = new Pairer(d as unknown as PairEnv);
+    const said: boolean[] = [];
+    q.onConfirm = w => said.push(w);
+    await expect(q.pair()).rejects.toMatchObject({ code: "daemon_unavailable" });
+    expect(said).toEqual([true, false]);
+    // A held reply naming no valid confirmation is an error as it is.
+    const bad = env([{ ...held, confirmation_id: "cf_a/b" }]);
+    await expect(new Pairer(bad as unknown as PairEnv).pair()).rejects.toMatchObject({ code: "confirmation_pending", confirmation: null });
+    expect(bad.sent).toHaveLength(1);
+  });
+
   it("pairs once and keeps the pairing in session storage", async () => {
     const e = env([paired()]);
     const p = new Pairer(e as unknown as PairEnv);

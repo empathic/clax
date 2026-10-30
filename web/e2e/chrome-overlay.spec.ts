@@ -200,8 +200,11 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
   await until(async () => ((await h.state(tabId))?.commentMode ? true : null));
   console.log(`icon → comment mode on: ${Date.now() - t0} ms (reported, not judged)`);
   const panel = await SidePanel.open(live, page, tabId);
-  // An agent session is live, so the pairing this tab started waits for the person.
+  // An agent session is live, so the pairing this tab started waits for the
+  // person, and the panel tells them where to confirm it.
+  await expect.poll(() => panel.text()).toContain("confirm pairing this extension in your Clax browser tab");
   await confirmPairing(live);
+  await expect.poll(() => panel.text()).not.toContain("confirm pairing this extension");
 
   // A page script finds no shadow root to read.
   expect(await page.evaluate(() => (document.querySelector("clax-overlay") as HTMLElement | null)?.shadowRoot ?? null)).toBeNull();

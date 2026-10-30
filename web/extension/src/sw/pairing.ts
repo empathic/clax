@@ -16,8 +16,13 @@ export const PAIR_SLOW_MS = 15_000;
 export type Pairing = { daemon: string; credential: string; claxVersion: string };
 
 export class PairError extends Error {
-  constructor(readonly code: string, message: string) { super(message); }
+  /** `confirmation` names the browser confirmation a held pairing waits
+   * on (code `confirmation_pending`). */
+  constructor(readonly code: string, message: string, readonly confirmation: string | null = null) { super(message); }
 }
+
+/** A confirmation's ID, as the native host names one. */
+const CONFIRMATION = /^cf_[A-Za-z0-9_-]{1,64}$/;
 
 type Area = { get(k: string): Promise<Record<string, unknown>>; set(v: Record<string, unknown>): Promise<void>; remove(k: string): Promise<void> };
 export interface PairEnv {
@@ -51,7 +56,10 @@ function parse(reply: unknown): Pairing {
   if (r.type === "paired" && r.v === 1 && daemonUrl(r.daemon) && typeof r.credential === "string" && CREDENTIAL.test(r.credential) && typeof r.clax_version === "string") {
     return { daemon: r.daemon, credential: r.credential, claxVersion: r.clax_version };
   }
-  if (r.type === "error" && typeof r.code === "string") throw new PairError(r.code, typeof r.message === "string" ? r.message : r.code);
+  if (r.type === "error" && typeof r.code === "string") {
+    const held = r.code === "confirmation_pending" && typeof r.confirmation_id === "string" && CONFIRMATION.test(r.confirmation_id) ? r.confirmation_id : null;
+    throw new PairError(r.code, typeof r.message === "string" ? r.message : r.code, held);
+  }
   throw new PairError("bad_reply", "the native host answered something other than a pairing");
 }
 
@@ -63,6 +71,11 @@ export class Pairer {
   onSlow: ((slow: boolean) => void) | null = null;
   /** Called after each pairing that succeeds and is stored (the first one too). */
   onPaired: ((p: Pairing) => void) | null = null;
+  /** Told `true` when the pairing in flight waits for the person to
+   * confirm it in their Clax browser tab (the daemon holds an extension's
+   * pairing for that while an agent session is live), and `false` once
+   * that pairing ends, however it ends. */
+  onConfirm: ((waiting: boolean) => void) | null = null;
   constructor(private readonly env: PairEnv) {}
 
   /** The stored pairing, else a new one. */
@@ -89,9 +102,21 @@ export class Pairer {
     let slow = false;
     const after = this.env.after ?? ((ms, fn) => { const h = setTimeout(fn, ms); return () => clearTimeout(h); });
     const cancel = after(PAIR_SLOW_MS, () => { slow = true; this.onSlow?.(true); });
+    let confirming = false;
     this.inflight = (async () => {
       try {
-        const p = parse(await this.env.sendNative(HOST, { type: "pair", v: 1, extension_version: this.env.manifestVersion }));
+        const msg = { type: "pair", v: 1, extension_version: this.env.manifestVersion };
+        let p: Pairing;
+        try {
+          p = parse(await this.env.sendNative(HOST, msg));
+        } catch (e) {
+          // Held for the person's confirmation: say so, and ask again with
+          // it; the host waits for their answer, then pairs.
+          if (!(e instanceof PairError) || !e.confirmation) throw e;
+          confirming = true;
+          this.onConfirm?.(true);
+          p = parse(await this.env.sendNative(HOST, { ...msg, confirmation: e.confirmation }));
+        }
         await this.env.session.set({ pairing: p });
         this.onPaired?.(p);
         await this.reloadFor(p.claxVersion);
@@ -100,6 +125,7 @@ export class Pairer {
         this.inflight = null;
         cancel();
         if (slow) this.onSlow?.(false);
+        if (confirming) this.onConfirm?.(false);
       }
     })();
     return this.inflight;
