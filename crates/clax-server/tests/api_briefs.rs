@@ -205,8 +205,10 @@ async fn a_connected_person_starts_their_own_and_a_guest_or_a_reader_may_not() {
         .send()
         .await
         .unwrap();
+    // Another site's fetch with the owner's session is no credential at
+    // all: the gate refuses it before any route.
     let (s, v) = json_of(res).await;
-    assert_eq!((s, code(&v)), (403, "forbidden_origin"), "{v}");
+    assert_eq!((s, code(&v)), (401, "no_credential"), "{v}");
     // The owner's agents publish instead.
     let sid = ts.register_session("claude", "brief-1").await["id"]
         .as_str()

@@ -419,9 +419,17 @@ async fn a_page_cannot_decide_an_approval() {
                 ("sec-fetch-site", "same-site"),
             ] {
                 let r = who.req(m, p).header(h, v).json(body).send().await.unwrap();
+                // The owner's session fetched by another site is no
+                // credential at all (`local_trust::session_counts`): the
+                // gate refuses it before any route.
+                let want = if b == "owner" && h == "sec-fetch-site" {
+                    (401, "no_credential")
+                } else {
+                    (403, "forbidden_origin")
+                };
                 assert_eq!(
                     (r.status().as_u16(), code(r).await.as_str()),
-                    (403, "forbidden_origin"),
+                    want,
                     "{b}: {h}: {v} on {m} {p}"
                 );
             }

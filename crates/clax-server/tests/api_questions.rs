@@ -953,7 +953,9 @@ async fn lan_viewer_and_foreign_origin_are_refused() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 403);
+    // The owner's session fetched by another site is no credential at all:
+    // the gate refuses it before any route.
+    assert_eq!(res.status(), 401);
     assert_eq!(ts.question_status(qid).await, "open");
     // A named viewer's stream may not take the topic.
     assert_eq!(v.subscribe_status(&["questions"]).await, 403);
