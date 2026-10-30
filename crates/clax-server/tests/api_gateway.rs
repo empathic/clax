@@ -482,8 +482,10 @@ async fn the_shell_keeps_its_own_origin_rules() {
         .send()
         .await
         .unwrap();
-    assert_eq!(foreign.status(), 403);
-    assert_eq!(code(foreign).await, "forbidden_origin");
+// The owner's session with another origin is no credential at all
+    // (`local_trust::session_counts`): the gate refuses it before any route.
+    assert_eq!(foreign.status(), 401);
+    assert_eq!(code(foreign).await, "no_credential");
 }
 
 #[tokio::test]

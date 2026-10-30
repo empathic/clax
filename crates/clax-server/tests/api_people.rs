@@ -227,9 +227,10 @@ async fn rights_changes_need_a_browser() {
             r = r.json(b);
         }
         let (status, v) = json_of(r.send().await.unwrap()).await;
+        // No credential at all: the gate refuses it before any route.
         assert_eq!(
             (status, code(&v)),
-            (403, "forbidden_origin"),
+            (401, "no_credential"),
             "page: {m} {path}: {v}"
         );
     }

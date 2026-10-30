@@ -93,7 +93,9 @@ async fn inbox_is_owner_only_and_lan_looks_mark_nothing() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 403, "a foreign origin");
+// The owner's session with another origin is no credential at all
+    // (`local_trust::session_counts`): the gate refuses it before any route.
+    assert_eq!(res.status(), 401, "a foreign origin");
     let res = ts
         .client
         .post(format!("{}/api/inbox/read", ts.base))
@@ -454,7 +456,8 @@ async fn inbox_routes_refuse_lan_owner_cookies_artifact_origins_and_viewers() {
             .send()
             .await
             .unwrap();
-        assert_eq!(res.status(), 403, "artifact origin, {m} {path}");
+        // No credential at all: the gate refuses it before any route.
+        assert_eq!(res.status(), 401, "artifact origin, {m} {path}");
         // A local viewer cookie alone.
         let res = with_body(ts.client.request(m.clone(), format!("{}{path}", ts.base)))
             .header("cookie", &viewer)

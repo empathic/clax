@@ -203,13 +203,29 @@ pub async fn sessions(State(s): State<AppState>, mut req: Request, next: Next) -
 /// ([`crate::identity::from_this_machine`]), and was not fetched by
 /// another site's page ([`crate::viewer::fetched_from_elsewhere`]: an
 /// artifact's `<id>.localhost` page or another localhost port, which send
-/// the `SameSite=Lax` owner cookie as the same site). [`gate`] and
+/// the `SameSite=Lax` owner cookie as the same site), nor names an
+/// `Origin` other than the daemon's own. [`gate`] and
 /// [`crate::identity::Identity::from_parts`] both apply it, so a mark that
 /// does not count is no credential at all.
 pub fn session_counts(headers: &HeaderMap, extensions: &axum::http::Extensions) -> bool {
     !crate::auth::is_grant_request(headers)
         && crate::identity::from_this_machine(headers, crate::auth::conn_of(extensions))
         && !crate::viewer::fetched_from_elsewhere(headers)
+        && from_own_origin(headers)
+}
+
+/// Whether a request names no `Origin`, or the daemon's own
+/// (`http://<Host>`): a browser too old to send `Sec-Fetch-Site` still
+/// sends another page's origin with its cross-origin requests.
+fn from_own_origin(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return true;
+    };
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
+    match (origin.to_str().ok(), host) {
+        (Some(o), Some(h)) => o.strip_prefix("http://") == Some(h),
+        _ => false,
+    }
 }
 
 /// The owner cookie's paths: every path of the daemon's host, since a

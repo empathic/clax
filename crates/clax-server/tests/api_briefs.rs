@@ -194,8 +194,10 @@ async fn a_connected_person_starts_their_own_and_a_guest_or_a_reader_may_not() {
         .send()
         .await
         .unwrap();
+    // The owner's session with another origin is no credential at all
+    // (`local_trust::session_counts`): the gate refuses it before any route.
     let (s, v) = json_of(res).await;
-    assert_eq!((s, code(&v)), (403, "forbidden_origin"), "{v}");
+    assert_eq!((s, code(&v)), (401, "no_credential"), "{v}");
     let res = ts
         .client
         .post(format!("{}{NEW}", ts.base))

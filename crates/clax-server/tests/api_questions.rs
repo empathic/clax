@@ -943,7 +943,9 @@ async fn lan_viewer_and_foreign_origin_are_refused() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 403);
+    // The owner's session with another origin is no credential at all
+    // (`local_trust::session_counts`): the gate refuses it before any route.
+    assert_eq!(res.status(), 401);
     // Or a page's no-cors read.
     let res = ts
         .client
@@ -1006,7 +1008,8 @@ async fn owner_routes_refuse_lan_owner_cookies_artifact_origins_and_viewers() {
             .send()
             .await
             .unwrap();
-        assert_eq!(res.status(), 403, "artifact origin, {action}");
+        // No credential at all: the gate refuses it before any route.
+        assert_eq!(res.status(), 401, "artifact origin, {action}");
         // A local viewer cookie alone.
         let res = with_body(ts.client.post(format!("{}{path}", ts.base)))
             .header("cookie", &viewer)
@@ -1030,7 +1033,8 @@ async fn owner_routes_refuse_lan_owner_cookies_artifact_origins_and_viewers() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 403, "artifact origin, list");
+    // No credential at all: the gate refuses it before any route.
+    assert_eq!(res.status(), 401, "artifact origin, list");
     assert_eq!(ts.question_status(&qid).await, "open");
 }
 
