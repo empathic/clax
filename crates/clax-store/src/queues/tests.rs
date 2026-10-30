@@ -1971,3 +1971,82 @@ fn every_capture_keeps_its_clip_and_diagnostics() {
         );
     }
 }
+
+/// A hosted instance's own feedback queue and grant: none before the
+/// owner; then one queue of the owner's for the origin and one grant,
+/// kept and given again; a new grant of the same queue once the grant is
+/// revoked; a new queue and grant once the queue is deleted.
+#[test]
+fn own_feedback_is_made_once_kept_and_remade_when_gone() {
+    let (_d, st) = store();
+    let origin = "https://clax.test";
+    assert!(st.own_feedback(DAEMON, origin).unwrap().is_none());
+    assert!(st.queues_of(None).unwrap().is_empty());
+
+    st.owner_viewer(false).unwrap();
+    let first = st.own_feedback(DAEMON, origin).unwrap().unwrap();
+    let queues = st.queues_of(None).unwrap();
+    assert_eq!(queues.len(), 1, "{queues:?}");
+    assert_eq!(queues[0].id, first.queue_id);
+    assert_eq!(queues[0].name, super::OWN_FEEDBACK_QUEUE);
+    assert_eq!(queues[0].role, Role::Admin);
+    assert_eq!(queues[0].origins, vec![origin.to_string()]);
+    assert_eq!(queues[0].reporters_see, ReportersSee::Own);
+    let grants = st.service_grants(&first.queue_id).unwrap();
+    assert_eq!(grants.len(), 1);
+    assert_eq!(grants[0].id, first.grant_id);
+    // The kept grant is the one the store knows by its token, and its key
+    // is the grant's.
+    let by_token = st
+        .service_grant_by_token(&first.grant_token.sha256_hex())
+        .unwrap()
+        .unwrap();
+    assert_eq!(by_token.id, first.grant_id);
+    let key = clax_core::sig::KeyPair::from_pkcs8(&first.grant_key_pkcs8).unwrap();
+    assert_eq!(
+        clax_core::sig::encode_public(&key.public()),
+        by_token.public_key
+    );
+    assert!(!format!("{first:?}").contains(first.grant_token.expose()));
+
+    // Asked again, the same.
+    let again = st.own_feedback(DAEMON, origin).unwrap().unwrap();
+    assert_eq!(
+        (&again.queue_id, &again.grant_id),
+        (&first.queue_id, &first.grant_id)
+    );
+    assert_eq!(st.queues_of(None).unwrap().len(), 1);
+    assert_eq!(st.service_grants(&first.queue_id).unwrap().len(), 1);
+
+    // The instance's origin moved (another port): the same queue and
+    // grant, the queue listing the new origin too.
+    let moved = st
+        .own_feedback(DAEMON, "http://localhost:8790")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (&moved.queue_id, &moved.grant_id),
+        (&first.queue_id, &first.grant_id)
+    );
+    assert_eq!(
+        st.queue(&first.queue_id).unwrap().unwrap().origins,
+        vec![origin.to_string(), "http://localhost:8790".to_string()]
+    );
+
+    // A revoked grant: a new one, on the same queue.
+    st.revoke_service_grant(DAEMON, &first.queue_id, &first.grant_id)
+        .unwrap();
+    let regrant = st.own_feedback(DAEMON, origin).unwrap().unwrap();
+    assert_eq!(regrant.queue_id, first.queue_id);
+    assert_ne!(regrant.grant_id, first.grant_id);
+    assert_eq!(st.service_grants(&first.queue_id).unwrap().len(), 1);
+    assert_eq!(st.queues_of(None).unwrap().len(), 1);
+
+    // A deleted queue: a new queue and grant.
+    st.delete_queue(DAEMON, &first.queue_id).unwrap();
+    let remade = st.own_feedback(DAEMON, origin).unwrap().unwrap();
+    assert_ne!(remade.queue_id, first.queue_id);
+    let queues = st.queues_of(None).unwrap();
+    assert_eq!(queues.len(), 1, "{queues:?}");
+    assert_eq!(queues[0].id, remade.queue_id);
+}

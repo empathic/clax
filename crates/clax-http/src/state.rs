@@ -91,13 +91,29 @@ impl EmbedOrigins {
     }
 }
 
+/// Where the instance's own feedback integration (spec
+/// 2026-10-29-feedback-loop-design §10.2) takes what it files with.
+/// `clax_server::integrations::feedback` is the code that reads it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum InstanceFeedback {
+    /// None was configured: a hosted instance makes its own queue and
+    /// service grant and keeps them in its store
+    /// (`clax_store::Store::own_feedback`), for its public origin; on any
+    /// other the integration is off.
+    #[default]
+    Own,
+    /// The host configured it (`[feedback]` in `config.toml`, or the
+    /// Worker's `CLAX_FEEDBACK_QUEUE` and `CLAX_FEEDBACK_SERVICE_GRANT`).
+    Configured(Arc<FeedbackIntegration>),
+    /// Off: the host's configuration of it did not check.
+    Off,
+}
+
 /// What the instance's own feedback integration files with (spec
 /// 2026-10-29-feedback-loop-design §10.2): the queue its people report
 /// problems with Clax into, the service grant it mints their reporter
-/// tokens with, and the origin those tokens are bound to. A host sets it
-/// (`[feedback]` in `config.toml`, or the Worker's `CLAX_FEEDBACK_QUEUE`
-/// and `CLAX_FEEDBACK_SERVICE_GRANT`); with none the integration is off.
-/// `clax_server::integrations::feedback` is the code that uses it.
+/// tokens with, and the origin those tokens are bound to, as configured
+/// or as a hosted instance makes them for itself ([`InstanceFeedback`]).
 #[derive(Clone, PartialEq, Eq)]
 pub struct FeedbackIntegration {
     /// The queue's ID.
@@ -285,10 +301,10 @@ pub struct AppState {
     /// ClaxBot's keys and run driver seam ([`crate::bot`]); the daemon
     /// and the Worker install theirs after [`AppState::assemble`].
     pub bot: Arc<crate::bot::Bot>,
-    /// The instance's own feedback integration ([`FeedbackIntegration`]),
-    /// which the host sets after [`AppState::assemble`]; `None` (off) by
-    /// default.
-    pub feedback: Option<Arc<FeedbackIntegration>>,
+    /// Where the instance's own feedback integration comes from
+    /// ([`InstanceFeedback`]), which the host sets after
+    /// [`AppState::assemble`]; [`InstanceFeedback::Own`] by default.
+    pub feedback: InstanceFeedback,
 }
 
 /// [`AppState::sites`] without a site domain.
@@ -409,7 +425,7 @@ impl AppState {
         Ok(AppState {
             settings,
             bot: Arc::default(),
-            feedback: None,
+            feedback: InstanceFeedback::Own,
             home: p.home,
             token: p.token,
             require_credential: p.require_credential,

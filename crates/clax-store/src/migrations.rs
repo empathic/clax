@@ -1852,7 +1852,9 @@ pub const MIGRATIONS: &[&str] = &[
     // their verdicts; which comments are notes for the queue's members
     // alone (`triage_only`); the sessions watching a queue; and which
     // feedback rows are a queue's wake (`filed`, `reopened`, and
-    // `released`: a person ended the session's claim).
+    // `released`: a person ended the session's claim); and the instance's
+    // own feedback queue and service grant, kept when a hosted instance
+    // makes them for itself (`instance_feedback`, one row).
     "ALTER TABLE threads ADD COLUMN report_context_json TEXT CHECK (report_context_json IS NULL OR json_valid(report_context_json));
     ALTER TABLE threads ADD COLUMN report_server_json TEXT;
     ALTER TABLE threads ADD COLUMN reporter_profile_json TEXT;
@@ -1877,7 +1879,12 @@ pub const MIGRATIONS: &[&str] = &[
       verdict_note TEXT, verdict_context_json TEXT, verdict_at TEXT,
       PRIMARY KEY (thread_id, n)) WITHOUT ROWID;
     CREATE TABLE queue_watches (queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE, session_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (queue_id, session_id)) WITHOUT ROWID;
-    ALTER TABLE feedback ADD COLUMN queue_event TEXT CHECK (queue_event IS NULL OR queue_event IN ('filed', 'reopened', 'released'));",
+    ALTER TABLE feedback ADD COLUMN queue_event TEXT CHECK (queue_event IS NULL OR queue_event IN ('filed', 'reopened', 'released'));
+    CREATE TABLE instance_feedback (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      queue_id TEXT NOT NULL, grant_id TEXT NOT NULL,
+      grant_token TEXT NOT NULL, grant_key BLOB NOT NULL,
+      created_at TEXT NOT NULL);",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -1923,8 +1930,9 @@ pub const CAPABILITY_APPROVALS_MIGRATION: u32 = QUICKSTART_MIGRATION + 1;
 pub const QUEUES_MIGRATION: u32 = CAPABILITY_APPROVALS_MIGRATION + 1;
 
 /// The feedback loop's migration (`report_fixes`, `report_diagnostics`,
-/// `queue_watches`, the report columns of threads and the profile of
-/// reporter tokens), as a schema version, and this build's last.
+/// `queue_watches`, `instance_feedback`, the report columns of threads and
+/// the profile of reporter tokens), as a schema version, and this build's
+/// last.
 pub const FEEDBACK_LOOP_MIGRATION: u32 = QUEUES_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
@@ -5167,7 +5175,12 @@ mod tests {
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
         }
-        for table in ["report_fixes", "report_diagnostics", "queue_watches"] {
+        for table in [
+            "report_fixes",
+            "report_diagnostics",
+            "queue_watches",
+            "instance_feedback",
+        ] {
             assert_eq!(table_count(&c, table), 1, "{table}");
         }
         for column in [

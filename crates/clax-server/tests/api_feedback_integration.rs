@@ -1,17 +1,19 @@
 //! The instance's own feedback integration (spec
 //! 2026-10-29-feedback-loop-design §10): `POST /_app/feedback/token` mints
-//! a reporter token through the public reporter-tokens route, for people
-//! with the `feedback` flag; `GET /_app/feedback/config` says what the
-//! shell mounts the overlay with; `GET /api/me/flags` lists the caller's
-//! own flags.
+//! a reporter token through the public reporter-tokens route, for every
+//! signed-in person; `GET /_app/feedback/config` says what the shell
+//! mounts the overlay with; `GET /api/me/flags` lists the caller's own
+//! flags. A hosted instance configured with none makes its own queue and
+//! grant, keeps them and makes them again when they are gone.
 
 use base64::Engine as _;
 use clax_core::audit::AuditCtx;
 use clax_core::queue::ReportersSee;
 use clax_core::sig::{self, KeyPair, SignInput};
 use clax_core::working::ManualClock;
+use clax_http::state::InstanceFeedback;
 use clax_store::queues::NewQueue;
-use clax_store::roles::OWNER;
+use clax_testkit::remotes::{Public, SECRET};
 use clax_testkit::{TestServer, TestViewer};
 use serde_json::{Value, json};
 use sha2::Digest;
@@ -71,7 +73,7 @@ impl Setup {
                 &grant.to_string(),
             )
             .unwrap();
-            s.feedback = Some(Arc::new(i));
+            s.feedback = InstanceFeedback::Configured(Arc::new(i));
             *out.lock().unwrap() = Some((
                 qid,
                 service_grant.id,
@@ -90,14 +92,6 @@ impl Setup {
             grant_key,
             state,
         }
-    }
-
-    /// Sets person `person`'s (a person key) `feedback` flag.
-    fn flag(&self, person: &str, on: bool) {
-        self.ts
-            .store
-            .set_flag(&AuditCtx::DAEMON, person, "feedback", on)
-            .unwrap();
     }
 
     /// Links a GitHub account `login` named `name` to person `public_id`,
@@ -247,27 +241,26 @@ impl Setup {
 }
 
 #[tokio::test]
-async fn token_needs_the_feedback_flag() {
+async fn every_signed_in_person_reports_with_no_flag() {
     let s = Setup::new().await;
     let ana = s.ts.person("Ana").await;
     let key = KeyPair::generate();
 
+    // A connected person no admin has touched mints a token.
     let (status, v) = s.mint_as(&ana, &key).await;
-    assert_eq!(
-        (status, v["error"]["code"].as_str()),
-        (403, Some("no_flag")),
-        "{v}"
-    );
+    assert_eq!(status, 200, "{v}");
+    assert!(v["token"].as_str().unwrap().starts_with("cxr_"), "{v}");
+
+    // Without a credential, or as a viewer who is no person, none is minted,
+    // and the config is off.
     let (status, v) = s
-        .as_browser(Some(&ana), "GET", "/_app/feedback/config", None)
+        .as_browser(None, "GET", "/_app/feedback/config", None)
         .await;
     assert_eq!(status, 200);
     assert_eq!(
         v,
         json!({"enabled": false, "instance": null, "queue": null, "context": null})
     );
-
-    // Without a credential, or as a viewer who is no person, none is minted.
     let (status, _) = s
         .as_browser(
             None,
@@ -285,8 +278,12 @@ async fn token_needs_the_feedback_flag() {
         "{v}"
     );
 
-    // A person's flag on: the config says so, with the context to attach.
-    s.flag(&ana.public_id, true);
+    let (status, v) = s
+        .as_browser(Some(&viewer), "GET", "/_app/feedback/config", None)
+        .await;
+    assert_eq!((status, &v["enabled"]), (200, &json!(false)), "{v}");
+
+    // The person's config says it is on, with the context to attach.
     let (status, v) = s
         .as_browser(Some(&ana), "GET", "/_app/feedback/config", None)
         .await;
@@ -308,8 +305,11 @@ async fn token_needs_the_feedback_flag() {
         v["context"]["release"].get("id"),
         health.get("build").filter(|c| !c.is_null())
     );
-    assert_eq!(v["context"]["flags"]["feedback"], true);
-    assert_eq!(v["context"]["flags"]["claxbot"], false);
+    assert_eq!(
+        v["context"]["flags"],
+        json!({"claxbot": false, "claxbot_unenforced": false}),
+        "{v}"
+    );
     assert_eq!(
         v["context"]["app"]["repo"],
         "https://github.com/empathic/clax"
@@ -338,7 +338,6 @@ async fn token_needs_the_feedback_flag() {
 async fn token_is_minted_through_the_public_route() {
     let s = Setup::new().await;
     let ana = s.ts.person("Ana").await;
-    s.flag(&ana.public_id, true);
     s.github(&ana.public_id, "ana-gh", Some("Ana Lopez"));
 
     let before = s.audit_kinds();
@@ -391,7 +390,6 @@ async fn token_is_minted_through_the_public_route() {
 #[tokio::test]
 async fn the_owner_files_as_their_public_id() {
     let s = Setup::new().await;
-    s.flag(OWNER, true);
     let owner = s.ts.owner_public_id().await;
     let key = KeyPair::generate();
     let res = client()
@@ -407,13 +405,12 @@ async fn the_owner_files_as_their_public_id() {
     assert_eq!(filed["report"]["reporter_id"], owner.as_str());
 }
 
+/// A local daemon (not hosted) configured with none: the integration is
+/// off, and no queue is made.
 #[tokio::test]
 async fn unconfigured_is_404() {
     let ts = TestServer::spawn().await;
     let ana = ts.person("Ana").await;
-    ts.store
-        .set_flag(&AuditCtx::DAEMON, &ana.public_id, "feedback", true)
-        .unwrap();
     let res = client()
         .post(format!("{}/_app/feedback/token", ts.base))
         .header("cookie", format!("clax_viewer={}", ana.cookie))
@@ -432,6 +429,7 @@ async fn unconfigured_is_404() {
         .await
         .unwrap();
     assert_eq!(v["enabled"], false, "{v}");
+    assert!(ts.store.queues_of(None).unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -455,18 +453,15 @@ async fn me_flags_lists_own_flags() {
     assert_eq!(status, 200);
     assert_eq!(
         v,
-        json!({"flags": {"claxbot": false, "claxbot_unenforced": false, "feedback": false}})
+        json!({"flags": {"claxbot": false, "claxbot_unenforced": false}})
     );
-    ts.store
-        .set_flag(&AuditCtx::DAEMON, &ana.public_id, "feedback", true)
-        .unwrap();
-    let (_, v) = get(format!("clax_viewer={}", ana.cookie)).await;
-    assert_eq!(v["flags"]["feedback"], true, "{v}");
     // The owner's are the owner's defaults.
     let (status, v) = get(ts.owner_cookie()).await;
     assert_eq!(status, 200);
-    assert_eq!(v["flags"]["claxbot"], true, "{v}");
-    assert_eq!(v["flags"]["feedback"], false, "{v}");
+    assert_eq!(
+        v,
+        json!({"flags": {"claxbot": true, "claxbot_unenforced": false}})
+    );
     // Agents are refused.
     let res = client()
         .get(format!("{}/api/me/flags", ts.base))
@@ -481,7 +476,9 @@ async fn me_flags_lists_own_flags() {
 #[tokio::test]
 async fn the_in_process_mint_is_the_public_routes_request() {
     let s = Setup::new().await;
-    let i = s.state.feedback.clone().unwrap();
+    let InstanceFeedback::Configured(i) = s.state.feedback.clone() else {
+        panic!("the setup configures the integration");
+    };
     let pk = sig::encode_public(&KeyPair::generate().public());
     let req = clax_server::integrations::feedback::mint_request(
         &i,
@@ -526,7 +523,6 @@ async fn the_in_process_mint_is_the_public_routes_request() {
 async fn a_revoked_grant_is_unavailable() {
     let s = Setup::new().await;
     let ana = s.ts.person("Ana").await;
-    s.flag(&ana.public_id, true);
     s.ts.store
         .revoke_service_grant(&AuditCtx::DAEMON, &s.qid, &s.grant_id)
         .unwrap();
@@ -544,7 +540,6 @@ async fn a_revoked_grant_is_unavailable() {
 async fn only_the_shell_and_never_an_agent_mints() {
     let s = Setup::new().await;
     let ana = s.ts.person("Ana").await;
-    s.flag(&ana.public_id, true);
     let pk = sig::encode_public(&KeyPair::generate().public());
     let res = client()
         .post(format!("{}/_app/feedback/token", s.ts.base))
@@ -631,4 +626,261 @@ async fn the_guides_rust_backend_mints_over_http() {
     .unwrap();
     assert!(v["token"].as_str().unwrap().starts_with("cxr_"), "{v}");
     assert!(v["expires_at"].is_string(), "{v}");
+}
+
+/// The hosted daemon `ts` (setup secret [`SECRET`]) after its first
+/// person's setup, in the owner's browser.
+async fn set_up(ts: TestServer, clock: Arc<ManualClock>) -> Public {
+    let origin = format!("http://localhost:{}", ts.addr.port());
+    let res = ts
+        .client
+        .post(format!("{}/api/hosted/setup", ts.base))
+        .header("host", format!("localhost:{}", ts.addr.port()))
+        .header("origin", &origin)
+        .json(&json!({"secret": SECRET, "name": "Ada"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let cookie = res.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .strip_prefix("clax_session=")
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    Public {
+        ts,
+        clock,
+        origin,
+        cookie,
+    }
+}
+
+/// `p`'s browser at another daemon on the same store, `ts`: its own port
+/// and public origin, the same session.
+fn at(p: &Public, ts: TestServer) -> Public {
+    Public {
+        origin: format!("http://localhost:{}", ts.addr.port()),
+        ts,
+        clock: p.clock.clone(),
+        cookie: p.cookie.clone(),
+    }
+}
+
+/// The owner's queues, as the Queues page lists them.
+async fn owners_queues(p: &Public) -> Vec<Value> {
+    let (status, v) = p
+        .browser(reqwest::Method::GET, "/api/queues", Value::Null)
+        .await;
+    assert_eq!(status, 200, "{v}");
+    v["queues"].as_array().unwrap().clone()
+}
+
+/// A token for the browser of `p`, for a fresh key.
+async fn mint_in(p: &Public) -> (u16, Value) {
+    let pk = sig::encode_public(&KeyPair::generate().public());
+    p.browser(
+        reqwest::Method::POST,
+        "/_app/feedback/token",
+        json!({"public_key": pk}),
+    )
+    .await
+}
+
+/// clax.dev's path with nothing configured: the first config request of a
+/// person once the owner exists makes the instance's own queue (the
+/// owner's, for the public origin, reporters seeing their own) and one
+/// service grant; later requests, other people's included, and a second
+/// start on the same store reuse them; a revoked grant is replaced on the
+/// same queue.
+#[tokio::test]
+async fn a_hosted_instance_with_no_configuration_makes_its_own_queue_once() {
+    let clock = Arc::new(ManualClock::at("2026-10-29T10:00:00Z"));
+    let ts = TestServer::spawn_hosted(clock.clone(), Some(SECRET)).await;
+    // No one signed in: refused, and nothing made.
+    let res = ts
+        .client
+        .get(format!("{}/_app/feedback/config", ts.base))
+        .send()
+        .await
+        .unwrap();
+    let status = res.status().as_u16();
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(
+        (status, v["error"]["code"].as_str()),
+        (401, Some("sign_in_required")),
+        "{v}"
+    );
+    assert!(ts.store.queues_of(None).unwrap().is_empty());
+
+    let mut p = set_up(ts, clock.clone()).await;
+    assert!(owners_queues(&p).await.is_empty());
+    let (status, v) = p
+        .browser(reqwest::Method::GET, "/_app/feedback/config", Value::Null)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(v["enabled"], true, "{v}");
+    assert_eq!(v["instance"], p.origin.as_str(), "{v}");
+    let qid = v["queue"].as_str().unwrap().to_string();
+    // The owner sees it on the Queues page as its admin.
+    let queues = owners_queues(&p).await;
+    assert_eq!(queues.len(), 1, "{queues:?}");
+    assert_eq!(queues[0]["id"], qid.as_str());
+    assert_eq!(queues[0]["name"], "clax-feedback");
+    assert_eq!(queues[0]["role"], "admin");
+    assert_eq!(queues[0]["origins"], json!([p.origin]));
+    assert_eq!(queues[0]["reporters_see"], "own");
+    let grants = p.ts.store.service_grants(&qid).unwrap();
+    assert_eq!(grants.len(), 1);
+    let (status, v) = mint_in(&p).await;
+    assert_eq!(status, 200, "{v}");
+
+    // Asked again, and by a connected person, the same queue and grant.
+    let (_, v) = p
+        .browser(reqwest::Method::GET, "/_app/feedback/config", Value::Null)
+        .await;
+    assert_eq!(v["queue"], qid.as_str(), "{v}");
+    let owner = p.cookie.clone();
+    let ana = p.become_person("Ana").await;
+    let (_, v) = p
+        .browser(reqwest::Method::GET, "/_app/feedback/config", Value::Null)
+        .await;
+    assert_eq!(
+        (&v["enabled"], &v["queue"]),
+        (&json!(true), &json!(qid)),
+        "{v}"
+    );
+    assert_eq!(v["user"], ana.as_str(), "{v}");
+    let (status, v) = mint_in(&p).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(p.ts.store.queues_of(None).unwrap().len(), 1);
+    assert_eq!(p.ts.store.service_grants(&qid).unwrap(), grants);
+
+    // A second start on the same store (another port, so another public
+    // origin): the same queue and grant, the queue listing that origin.
+    let ts2 =
+        p.ts.reopened_hosted_with(clock.clone(), Some(SECRET), |_| {})
+            .await;
+    let mut p2 = at(&p, ts2);
+    p2.cookie = owner;
+    let (_, v) = p2
+        .browser(reqwest::Method::GET, "/_app/feedback/config", Value::Null)
+        .await;
+    assert_eq!(
+        (&v["enabled"], &v["queue"]),
+        (&json!(true), &json!(qid)),
+        "{v}"
+    );
+    assert_eq!(v["instance"], p2.origin.as_str(), "{v}");
+    let (status, v) = mint_in(&p2).await;
+    assert_eq!(status, 200, "{v}");
+    let queues = owners_queues(&p2).await;
+    assert_eq!(queues.len(), 1, "{queues:?}");
+    assert_eq!(queues[0]["origins"], json!([p.origin, p2.origin]));
+    assert_eq!(p2.ts.store.service_grants(&qid).unwrap(), grants);
+
+    // The grant revoked: a new one, on the same queue, and minting goes on.
+    p2.ts
+        .store
+        .revoke_service_grant(&AuditCtx::DAEMON, &qid, &grants[0].id)
+        .unwrap();
+    let (status, v) = mint_in(&p2).await;
+    assert_eq!(status, 200, "{v}");
+    let now = p2.ts.store.service_grants(&qid).unwrap();
+    assert_eq!(now.len(), 1);
+    assert_ne!(now[0].id, grants[0].id);
+    assert_eq!(owners_queues(&p2).await.len(), 1);
+
+    // An agent is still refused.
+    let res = p2
+        .ts
+        .client
+        .get(format!("{}/_app/feedback/config", p2.ts.base))
+        .header("authorization", format!("Bearer {}", p2.ts.token))
+        .header("x-clax-channel", "agent")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+}
+
+/// On a hosted instance an integration it was configured with wins: no
+/// queue of its own is made.
+#[tokio::test]
+async fn a_hosted_instances_configured_integration_wins() {
+    let clock = Arc::new(ManualClock::at("2026-10-29T10:00:00Z"));
+    let made = Arc::new(Mutex::new(None));
+    let out = made.clone();
+    let ts = TestServer::spawn_hosted_with(clock.clone(), Some(SECRET), move |s| {
+        let origin = format!("http://localhost:{}", s.port);
+        let qid = s
+            .store
+            .create_queue(
+                &AuditCtx::DAEMON,
+                None,
+                NewQueue {
+                    name: "configured".into(),
+                    origins: vec![origin.clone()],
+                    reporters_see: ReportersSee::Own,
+                },
+            )
+            .unwrap()
+            .id;
+        let (_, token, key) = s
+            .store
+            .create_service_grant(&AuditCtx::DAEMON, &qid, "configured")
+            .unwrap();
+        let grant = json!({
+            "token": token.expose(),
+            "private_key": base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(key.pkcs8().expose()),
+        });
+        let i = clax_server::integrations::feedback::integration(
+            &qid,
+            &origin,
+            &origin,
+            &grant.to_string(),
+        )
+        .unwrap();
+        s.feedback = InstanceFeedback::Configured(Arc::new(i));
+        *out.lock().unwrap() = Some(qid);
+    })
+    .await;
+    let qid = made.lock().unwrap().take().unwrap();
+    let p = set_up(ts, clock).await;
+    let (_, v) = p
+        .browser(reqwest::Method::GET, "/_app/feedback/config", Value::Null)
+        .await;
+    assert_eq!(
+        (&v["enabled"], &v["queue"]),
+        (&json!(true), &json!(qid)),
+        "{v}"
+    );
+    let (status, v) = mint_in(&p).await;
+    assert_eq!(status, 200, "{v}");
+    let queues = owners_queues(&p).await;
+    assert_eq!(queues.len(), 1, "{queues:?}");
+    assert_eq!(queues[0]["name"], "configured");
+}
+
+/// A hosted instance whose configuration did not check is off: it makes
+/// no queue of its own.
+#[tokio::test]
+async fn a_hosted_instance_whose_configuration_failed_is_off() {
+    let clock = Arc::new(ManualClock::at("2026-10-29T10:00:00Z"));
+    let ts = TestServer::spawn_hosted_with(clock.clone(), Some(SECRET), |s| {
+        s.feedback = InstanceFeedback::Off;
+    })
+    .await;
+    let p = set_up(ts, clock).await;
+    let (_, v) = p
+        .browser(reqwest::Method::GET, "/_app/feedback/config", Value::Null)
+        .await;
+    assert_eq!(v["enabled"], false, "{v}");
+    let (status, _) = mint_in(&p).await;
+    assert_eq!(status, 404);
+    assert!(owners_queues(&p).await.is_empty());
 }

@@ -6,6 +6,7 @@
 
 use clax_core::Home;
 use clax_http::state::AppState;
+use clax_http::state::InstanceFeedback;
 use clax_store::Store;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -154,11 +155,10 @@ impl Core {
             embed: cfg.embed,
         })?;
         state.clax_app = Arc::new(clax_app);
-        state.feedback = config
-            .as_ref()
-            .ok()
-            .and_then(|c| feedback_of(c, &state))
-            .map(Arc::new);
+        state.feedback = match config.as_ref() {
+            Ok(c) => feedback_of(c, &state),
+            Err(_) => clax_http::state::InstanceFeedback::Off,
+        };
         if cfg.quickstart {
             state.quickstart = clax_core::quickstart::Release::from_tree(&*state.web).map(Arc::new);
         }
@@ -321,18 +321,17 @@ impl Core {
 /// The instance's own feedback integration from `config`'s `[feedback]`
 /// ([`crate::integrations::feedback`]): its queue, the service grant in
 /// its `service_grant_file`, and its `origin` (by default a hosted core's
-/// public origin, else the daemon's browser address). `None`, and logged,
-/// when `[feedback]` is absent, does not check, or its grant file does not
-/// read: the integration is then off and the core serves on.
-fn feedback_of(
-    config: &clax_core::config::HomeConfig,
-    s: &AppState,
-) -> Option<clax_http::state::FeedbackIntegration> {
+/// public origin, else the daemon's browser address). Without `[feedback]`
+/// it is the instance's own ([`InstanceFeedback::Own`]: on for a hosted
+/// core, off for any other). Off, and logged, when `[feedback]` does not
+/// check or its grant file does not read; the core then serves on.
+fn feedback_of(config: &clax_core::config::HomeConfig, s: &AppState) -> InstanceFeedback {
     let f = match config.feedback() {
-        Ok(f) => f?,
+        Ok(Some(f)) => f,
+        Ok(None) => return InstanceFeedback::Own,
         Err(e) => {
             tracing::warn!(error = %e, "[feedback] is off");
-            return None;
+            return InstanceFeedback::Off;
         }
     };
     let instance = s
@@ -344,7 +343,7 @@ fn feedback_of(
         Ok(g) => g,
         Err(e) => {
             tracing::warn!(file = %f.service_grant_file.display(), error = %e, "[feedback] is off: its service_grant_file does not read");
-            return None;
+            return InstanceFeedback::Off;
         }
     };
     if let Some(mode) = loose_mode(&f.service_grant_file) {
@@ -357,7 +356,7 @@ fn feedback_of(
     match crate::integrations::feedback::integration(&f.queue, &instance, &origin, &grant) {
         Ok(i) => {
             tracing::info!(queue = %i.queue_id, origin = %i.origin, "feedback integration on");
-            Some(i)
+            InstanceFeedback::Configured(Arc::new(i))
         }
         Err(e) => {
             let input = match e.input {
@@ -367,7 +366,7 @@ fn feedback_of(
                 }
             };
             tracing::warn!(input, error = %e, "[feedback] is off");
-            None
+            InstanceFeedback::Off
         }
     }
 }

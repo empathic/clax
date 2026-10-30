@@ -19,22 +19,17 @@ pub enum Flag {
     Claxbot,
     /// ClaxBot meters the person's usage but never stops them for credits.
     ClaxbotUnenforced,
-    /// The person may report problems with Clax itself, through the
-    /// instance's feedback queue (spec 2026-10-29-feedback-loop-design
-    /// §10). Off for everyone, the owner too, until an admin sets it.
-    Feedback,
 }
 
 impl Flag {
     /// Every flag.
-    pub const ALL: &'static [Flag] = &[Flag::Claxbot, Flag::ClaxbotUnenforced, Flag::Feedback];
+    pub const ALL: &'static [Flag] = &[Flag::Claxbot, Flag::ClaxbotUnenforced];
 
     /// The flag's stored name.
     pub fn as_str(self) -> &'static str {
         match self {
             Flag::Claxbot => "claxbot",
             Flag::ClaxbotUnenforced => "claxbot_unenforced",
-            Flag::Feedback => "feedback",
         }
     }
 
@@ -50,16 +45,13 @@ impl Flag {
             .ok_or_else(|| {
                 CoreError::invalid(
                     "unknown_flag",
-                    format!(
-                        "no flag is named '{s}': the flags are claxbot, claxbot_unenforced and feedback"
-                    ),
+                    format!("no flag is named '{s}': the flags are claxbot and claxbot_unenforced"),
                 )
             })
     }
 
     /// The value of the flag for `person` (a person key) with no row:
-    /// `claxbot` is on for the owner alone; everything else, `feedback`
-    /// included, is off.
+    /// `claxbot` is on for the owner alone; everything else is off.
     pub fn default_for(self, person: &str) -> bool {
         matches!(self, Flag::Claxbot) && person == OWNER
     }
@@ -70,7 +62,6 @@ impl Flag {
 pub struct Flags {
     pub claxbot: bool,
     pub claxbot_unenforced: bool,
-    pub feedback: bool,
 }
 
 impl Flags {
@@ -79,7 +70,6 @@ impl Flags {
         match flag {
             Flag::Claxbot => self.claxbot,
             Flag::ClaxbotUnenforced => self.claxbot_unenforced,
-            Flag::Feedback => self.feedback,
         }
     }
 
@@ -87,18 +77,17 @@ impl Flags {
         match flag {
             Flag::Claxbot => self.claxbot = v,
             Flag::ClaxbotUnenforced => self.claxbot_unenforced = v,
-            Flag::Feedback => self.feedback = v,
         }
     }
 }
 
 /// `person`'s flags on `c`. A stored row whose name this build does not
-/// know is ignored.
+/// know is ignored: a `feedback` row an earlier build set (reporting
+/// problems with Clax now needs no flag) among them.
 pub(crate) fn flags_in(c: &Connection, person: &str) -> Result<Flags> {
     let mut flags = Flags {
         claxbot: Flag::Claxbot.default_for(person),
         claxbot_unenforced: Flag::ClaxbotUnenforced.default_for(person),
-        feedback: Flag::Feedback.default_for(person),
     };
     let mut q = c.prepare_cached("SELECT flag, value FROM person_flags WHERE person = ?1")?;
     let rows = q.query_map(params![person], |r| {
@@ -185,7 +174,6 @@ mod tests {
             Flags {
                 claxbot: true,
                 claxbot_unenforced: false,
-                feedback: false
             }
         );
         assert_eq!(
@@ -193,7 +181,6 @@ mod tests {
             Flags {
                 claxbot: false,
                 claxbot_unenforced: false,
-                feedback: false
             }
         );
     }
@@ -228,23 +215,33 @@ mod tests {
     }
 
     #[test]
-    fn feedback_flag_parses_and_defaults_off() {
+    fn an_earlier_builds_feedback_row_is_ignored_and_refused_as_a_name() {
         let (_d, st) = store();
         let sam = person(&st, "Sam", 1);
-        assert_eq!(Flag::parse("feedback").unwrap(), Flag::Feedback);
-        assert_eq!(Flag::Feedback.as_str(), "feedback");
-        assert!(Flag::ALL.contains(&Flag::Feedback));
-        for p in [OWNER, sam.as_str()] {
-            assert!(!Flag::Feedback.default_for(p), "{p}");
-            assert!(!st.flags_of(p).unwrap().feedback, "{p}");
-        }
-        let f = st.set_flag(DAEMON, &sam, "feedback", true).unwrap();
-        assert!(f.feedback && f.get(Flag::Feedback) && !f.claxbot);
-        assert!(!st.flags_of(OWNER).unwrap().feedback);
-        let Err(CoreError::Invalid { message, .. }) = Flag::parse("nope") else {
-            panic!("an unknown name is refused");
+        st.with_tx(|tx| {
+            tx.execute(
+                "INSERT INTO person_flags (person, flag, value, set_by, set_at)
+                 VALUES (?1, 'feedback', 1, '*daemon', '2026-10-29T00:00:00Z')",
+                params![sam],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            st.flags_of(&sam).unwrap(),
+            Flags {
+                claxbot: false,
+                claxbot_unenforced: false,
+            }
+        );
+        let Err(CoreError::Invalid { code, message }) = Flag::parse("feedback") else {
+            panic!("feedback is no flag");
         };
-        assert!(message.contains("feedback"), "{message}");
+        assert_eq!(code, "unknown_flag");
+        assert!(
+            message.ends_with("the flags are claxbot and claxbot_unenforced"),
+            "{message}"
+        );
     }
 
     #[test]

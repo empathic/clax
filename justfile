@@ -81,7 +81,7 @@ stop:
 doctor:
     CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" ./scripts/run.sh clax doctor
 
-# Set up the instance's own feedback queue on the running dev daemon (~/.clax-dev, or $CLAX_HOME): queue clax-feedback-dev, its service grant, [feedback] in config.toml and the owner's flag; restart the daemon after (docs/prod.md)
+# Set up the instance's own feedback queue on the running dev daemon (~/.clax-dev, or $CLAX_HOME): queue clax-feedback-dev, its service grant and [feedback] in config.toml; restart the daemon after (docs/prod.md)
 dev-feedback:
     ./scripts/dev-feedback.sh
 

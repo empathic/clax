@@ -10,7 +10,7 @@ export const meBot = (o: Partial<MeBot> = {}): MeBot => ({
   key: { own: null, use_own: false }, week: week(), role: "member", ...o,
 });
 export const adminPerson = (o: Partial<AdminPerson> = {}): AdminPerson => ({
-  person: "p_sam", name: "Sam", role: "member", flags: { claxbot: true, claxbot_unenforced: false, feedback: false }, key_source: "own",
+  person: "p_sam", name: "Sam", role: "member", flags: { claxbot: true, claxbot_unenforced: false }, key_source: "own",
   week: { weekly_milli: 2_500_000, lift_milli: 500_000, spent_milli: 440_000 }, tokens_week: 1_300_000, runs_week: 4, refused_week: 1, ...o,
 });
 export const provider = (o: Partial<Provider> = {}): Provider => ({

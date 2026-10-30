@@ -12,7 +12,7 @@ const CONFIG = {
   user: "p_ana",
   context: {
     release: { version: "0.6.0", commit: "abc123", id: "b42", channel: "prod" },
-    flags: { claxbot: true, claxbot_unenforced: false, feedback: true },
+    flags: { claxbot: true, claxbot_unenforced: false },
     app: { repo: "https://github.com/empathic/clax" },
   },
 };
@@ -142,8 +142,8 @@ describe("the shell's feedback", () => {
 
   it("a refused token fails the overlay's auth with the route's code", async () => {
     const { tokenAuth } = await import("./feedback");
-    stubFetch({ "POST /_app/feedback/token": [403, { error: { code: "no_flag", message: "…" } }] });
-    await expect(tokenAuth()("PUBKEY")).rejects.toThrow("no_flag");
+    stubFetch({ "POST /_app/feedback/token": [503, { error: { code: "feedback_unavailable", message: "…" } }] });
+    await expect(tokenAuth()("PUBKEY")).rejects.toThrow("feedback_unavailable");
     // A refused key's code rides on the error, so the overlay makes a new key.
     stubFetch({ "POST /_app/feedback/token": [400, { error: { code: "invalid_key", message: "…" } }] });
     await expect(tokenAuth()("PUBKEY")).rejects.toMatchObject({ code: "invalid_key" });
@@ -204,7 +204,7 @@ describe("the shell's feedback", () => {
     const context = hostContext({ ...CONFIG, instance: "https://clax.dev" } as FeedbackConfig, () => where);
     expect(context()).toEqual({
       release: { version: "0.6.0", commit: "abc123", id: "b42", channel: "prod" },
-      flags: { claxbot: true, claxbot_unenforced: false, feedback: true },
+      flags: { claxbot: true, claxbot_unenforced: false },
       app: { repo: "https://github.com/empathic/clax", view: "gallery", artifact: null },
     });
     where = viewOf("/a/a_9x/v/3/index.html");

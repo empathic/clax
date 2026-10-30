@@ -195,7 +195,7 @@ async fn people_list_flags_lifts_and_refusals() {
     assert_eq!(list[0]["role"], "owner");
     assert_eq!(
         list[0]["flags"],
-        json!({"claxbot": true, "claxbot_unenforced": false, "feedback": false})
+        json!({"claxbot": true, "claxbot_unenforced": false})
     );
     let sam = list.iter().find(|x| x["person"] == p.sam.1).unwrap();
     assert_eq!(sam["name"], "Sam");

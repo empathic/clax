@@ -3932,20 +3932,29 @@ Error codes besides the common ones: `invalid_context`,
 `invalid_diagnostics`, `invalid_profile`, `invalid_fix` (400);
 `not_fix_proposed`, `not_claimable`, `lease_lost` (409).
 
-**The instance's own feedback queue.** An instance may file its people's
+**The instance's own feedback queue.** An instance files its people's
 reports about Clax itself into one of its queues, as an integrating
-product's backend does (`crates/clax-server/src/integrations/feedback.rs`;
-`[feedback] queue, service_grant_file, origin?` in `config.toml`, or the
-Worker secrets `CLAX_FEEDBACK_QUEUE` and `CLAX_FEEDBACK_SERVICE_GRANT`,
-`docs/prod.md`). Its two routes are the product's own, behind the
+product's backend does (`crates/clax-server/src/integrations/feedback.rs`,
+`docs/prod.md`): the queue and service grant configured (`[feedback]
+queue, service_grant_file, origin?` in `config.toml`, or the Worker
+secrets `CLAX_FEEDBACK_QUEUE` and `CLAX_FEEDBACK_SERVICE_GRANT`), or, on a
+hosted instance configured with neither, its own: the first time a person
+asks once the owner exists it makes the queue `clax-feedback` (the
+owner's, its public origin the one origin, `reporters_see: own`, recorded
+`queue.create`) and a service grant `instance` of it (`queue.update` `op:
+grant`), keeps both, and makes them again when the queue is deleted or
+the grant revoked, adding a moved public origin to the queue
+(`queue.update` `op: update`). A local instance that is not hosted files
+only when configured. Its two routes are the product's own, behind the
 instance's session, and are no part of the public API; the token route
 sends `POST /api/queues/<qid>/reporter-tokens` the signed request an
-outside backend sends, in process. Who files: the owner and connected
-people whose `feedback` flag is on; agents 403 `not_for_agents`.
+outside backend sends, in process. Who files: every signed-in person, the
+owner and each connected person who is not revoked; agents 403
+`not_for_agents`.
 
 | Route | Body | Answer |
 |---|---|---|
-| `POST /_app/feedback/token` (same origin) | `{public_key}` (Ed25519, unpadded base64url) | `{token, expires_at}`: a reporter token for `reporter_id` = the person's public ID, the integration's origin and that key, with profile `{name?, github?}` from their GitHub account (`name` their Clax name without one); 404 `not_found` with the integration off; 401 without a credential; 403 `not_a_person` for a viewer, `no_flag` without the flag; 400 as the public route answers the key (`invalid_key`, or `invalid_args` naming `public_key`); 429 `limit_reached` as it answers one, with its `Retry-After`; 503 `feedback_unavailable` for any other refusal of the public route, which is the integration's own (a revoked grant, an origin the queue no longer lists) and names no credential |
+| `POST /_app/feedback/token` (same origin) | `{public_key}` (Ed25519, unpadded base64url) | `{token, expires_at}`: a reporter token for `reporter_id` = the person's public ID, the integration's origin and that key, with profile `{name?, github?}` from their GitHub account (`name` their Clax name without one); 404 `not_found` with the integration off; 401 without a credential; 403 `not_a_person` for a viewer; 400 as the public route answers the key (`invalid_key`, or `invalid_args` naming `public_key`); 429 `limit_reached` as it answers one, with its `Retry-After`; 503 `feedback_unavailable` for any other refusal of the public route, which is the integration's own (a revoked grant, an origin the queue no longer lists) and names no credential |
 | `GET /_app/feedback/config` | | `{enabled: true, instance, queue, user, context: {release: {version, commit?, id?, channel}, flags, app: {repo}}}` for a caller who may file: `instance` the instance's base URL to file to, `queue` its ID, `user` the caller's public ID (the reporter ID its tokens carry, and the overlay's `user`, which keeps its reporter key and token per person), `context` what the shell attaches to each report (`release` as `/healthz` reports it, `id` its `build`, `channel` `prod` on `https://clax.dev` and `dev` elsewhere; `flags` the caller's own, as `GET /api/me/flags`; `app.repo` `https://github.com/empathic/clax`); for anyone else, the integration off included, `{enabled: false, instance: null, queue: null, context: null}` |
 
 A report is read and written through its queue alone. The thread listings
@@ -8720,7 +8729,7 @@ the body below.
 | `view.audit` | `filters` | the audit view opened or filtered |
 | `view.usage` | `subject_person, week?` | a usage page opened |
 | `admin.role` | `person, role (admin), op (grant\|remove)` | the owner granted or removed admin |
-| `admin.flag` | `person, flag (claxbot\|claxbot_unenforced\|feedback), value` | a flag changed |
+| `admin.flag` | `person, flag (claxbot\|claxbot_unenforced), value` | a flag changed |
 | `admin.credits` | `person, lift_from, lift_to, reason` | a person's weekly lift changed |
 | `admin.provider` | `fields[]` (the setting keys that changed), `values{key: value}` (their new values; none is a secret) | ClaxBot's provider, models or caps changed |
 | `admin.key` | `scope (instance\|own), op (set\|clear\|use_own), last4, person?` (an own key's person), `value` (with `use_own`: whether the key is now in use) | a model key set or cleared, or an own key put in or out of use; never the key |
@@ -9084,10 +9093,9 @@ owner's public ID is.
   row; only the owner grants or removes `admin`, recorded as `admin.role`.
   A revoked person is a member, whatever row is left.
 - **Flags** (`person_flags`): `claxbot` (on for the owner, off for anyone
-  else until set), `claxbot_unenforced` (off) and `feedback` (off for
-  everyone, the owner too: whether the person may report problems with
-  Clax itself); other names are refused
-  (`unknown_flag`). Each change is an `admin.flag`.
+  else until set) and `claxbot_unenforced` (off); other names are refused
+  (`unknown_flag`), and a stored row of another name is ignored. Each
+  change is an `admin.flag`.
 - **Settings** (`bot_settings`): `base_url`, `models.default|quick|complex`,
   `max_tokens`, `max_steps`, `max_run_credits`, `max_run_minutes`,
   `concurrency`, `script.cpu_ms|memory_mib|max_calls`,
@@ -9237,7 +9245,7 @@ handle, `*system` as "Clax".
 |---|---|---|
 | `GET /api/me/bot`, `PUT /api/me/bot {use_own}`, `PUT`/`DELETE /api/me/bot/key` | the owner and connected people, their own | `admin.key` (scope `own`) |
 | `GET /api/me/usage?week=` | the same; on a hosted Clax a run's `artifact_title` is `null` once its artifact is out of the caller's reach (its cost rows stay) | `view.usage` |
-| `GET /api/me/flags` → `{flags: {claxbot, claxbot_unenforced, feedback}}` (each person's defaults filled in) | the same, their own; agents 403 `not_for_agents` | — |
+| `GET /api/me/flags` → `{flags: {claxbot, claxbot_unenforced}}` (each person's defaults filled in) | the same, their own; agents 403 `not_for_agents` | — |
 | `GET /api/agents` | as before; ClaxBot is listed first (`handle: "claxbot"`, `builtin: true`, `live`, or `unavailable: no_flag\|no_credits\|not_configured\|model_not_priced`) where the caller may send | — |
 | `POST /api/bot/runs {thread_ids, artifact_id}`; a send or batch with `to: "claxbot"`; `POST /api/artifacts:new` with `build: "claxbot"`; a person's comment on a thread whose last run ended | the sender (a person, or their agent: the run acts for that person); SameOrigin | `bot.run_start`, or `bot.refused` and 403 `no_flag`, `credits_exhausted`, `not_configured` or `model_not_priced` before any model call |
 | `GET /api/bot/runs?artifact=`, `GET /api/bot/runs/<id>`, `GET /api/bot/runs/<id>/events` | the person a run acts for, admins, and anyone who may read its artifact (read-only); a live page's runs the owner's alone; on a hosted Clax an admin as below | `view.run` |

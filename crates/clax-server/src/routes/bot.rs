@@ -6,9 +6,9 @@
 //!   /api/me/bot {use_own}`, `PUT /api/me/bot/key {key}` and `DELETE
 //!   /api/me/bot/key` change their own key and answer the same. A key is
 //!   write-only: no answer carries it.
-//! - `GET /api/me/flags` → `{flags: {claxbot, claxbot_unenforced,
-//!   feedback}}`: the caller's own flags, each person's defaults filled in
-//!   (spec 2026-10-29-feedback-loop-design §10.3).
+//! - `GET /api/me/flags` → `{flags: {claxbot, claxbot_unenforced}}`:
+//!   the caller's own flags, each person's defaults filled in (spec
+//!   2026-10-29-feedback-loop-design §10.3).
 //! - `GET /api/me/usage?week=<time>` → their runs and line totals of the
 //!   week the time falls in (this week without it); on a hosted daemon a
 //!   run's `artifact_title` only while its artifact is in their reach.
