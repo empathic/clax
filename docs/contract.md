@@ -1729,7 +1729,9 @@ app's versions with the bundle each carries.
   no session, declare the Clax app (`<team>.dev.empathic.clax`, and the
   Android package and certificate fingerprint) for the path `/a/<id>/get`
   alone, so that a phone opens that link in the app (the iOS app declares
-  `applinks:clax.dev`, the Android app `clax.dev` and that path); each is
+  `applinks:clax.dev`, the Android app `clax.dev` and that path; the Mac
+  app declares none, so on a Mac the link opens in the browser, whose
+  Open in Clax reaches the app by `clax:`); each is
   404 while the instance names no such app (`[hosted] app_links`, or the
   Worker's `APPLE_TEAM_ID`, `ANDROID_PACKAGE` and `ANDROID_SHA256`).
 - **The core's app mode** (the local side, the owner's alone by hand: an
