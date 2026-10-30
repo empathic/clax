@@ -1221,6 +1221,14 @@ impl MessagesClient {
         }
     }
 
+    /// This client connecting only to public addresses, whatever a base
+    /// URL's name resolves to ([`Transport::public_only`]): a hosted
+    /// daemon's, which sends the instance's key.
+    pub fn public_only(mut self) -> MessagesClient {
+        self.http = Transport::public_only();
+        self
+    }
+
     pub fn with_timeouts(mut self, timeouts: Timeouts) -> MessagesClient {
         self.timeouts = timeouts;
         self

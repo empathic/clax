@@ -1587,8 +1587,9 @@ const PRIVATE_SUFFIXES: &[&str] = &[
 /// unique-local addresses among them, and the instance's own metadata
 /// endpoints), not `localhost`, not a single label, and not under a suffix
 /// that names a private network ([`PRIVATE_SUFFIXES`]). A name can still
-/// resolve to a private address; the platform's own egress rules are the
-/// last word there. With `loopback_for_tests`, `http://` on a loopback
+/// resolve to a private address: a hosted native daemon's model client
+/// connects only to the [`public_address`]es a name resolves to, and on
+/// the Worker the platform's egress rules (no private networks) decide. With `loopback_for_tests`, `http://` on a loopback
 /// host is taken as on a local daemon, for a test's scripted provider; it
 /// is never a setting an admin can change.
 pub fn hosted_base_url_ok(url: &str, loopback_for_tests: bool) -> bool {
@@ -1626,9 +1627,82 @@ pub fn hosted_base_url_ok(url: &str, loopback_for_tests: bool) -> bool {
     host != "localhost" && !PRIVATE_SUFFIXES.iter().any(|s| host.ends_with(s))
 }
 
+/// Whether `ip` is an address on the public internet, where a hosted Clax
+/// may send a model key once a name passed [`hosted_base_url_ok`]: not
+/// unspecified, loopback, private (RFC 1918), shared (100.64/10),
+/// link-local, benchmarking (198.18/15), documentation, multicast,
+/// broadcast or reserved (240/4) for IPv4; not unspecified, loopback,
+/// unique-local (fc00::/7), link-local (fe80::/10), multicast or
+/// documentation (2001:db8::/32) for IPv6, and an IPv4-mapped or
+/// IPv4-compatible IPv6 address by its IPv4 rule.
+pub fn public_address(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, c, _] = v4.octets();
+            !(v4.is_unspecified()
+                || v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_multicast()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || a == 0
+                || a >= 240
+                || (a == 100 && (64..128).contains(&b))
+                || (a == 198 && (b == 18 || b == 19))
+                || (a == 192 && b == 0 && c == 0))
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4() {
+                return public_address(IpAddr::V4(v4));
+            }
+            let s = v6.segments();
+            !(v6.is_unspecified()
+                || v6.is_loopback()
+                || v6.is_multicast()
+                || (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80
+                || (s[0] == 0x2001 && s[1] == 0x0db8))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_public_addresses_take_a_hosted_key() {
+        for ok in ["1.1.1.1", "8.8.8.8", "2606:4700::1111", "100.128.0.1"] {
+            assert!(public_address(ok.parse().unwrap()), "{ok}");
+        }
+        for bad in [
+            "0.0.0.0",
+            "127.0.0.1",
+            "10.0.0.5",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "198.18.0.1",
+            "192.0.0.1",
+            "192.0.2.1",
+            "224.0.0.1",
+            "240.0.0.1",
+            "255.255.255.255",
+            "::",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+            "ff02::1",
+            "2001:db8::1",
+            "::ffff:10.0.0.5",
+            "::ffff:127.0.0.1",
+        ] {
+            assert!(!public_address(bad.parse().unwrap()), "{bad}");
+        }
+    }
 
     #[test]
     fn a_key_is_bound_to_its_urls_scheme_host_and_port() {
