@@ -131,7 +131,7 @@ async fn resolve_tells_local_remote_unconnected_and_page_apart() {
     assert_eq!(s, 400);
 
     // The MCP tools read through it: an unconnected Clax's URL names the
-    // instance to connect, a connected remote's is not reached yet.
+    // instance to connect, a connected remote's is read there.
     let call = |url: String| {
         json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {"name": "read", "arguments": {"url_or_id": url}}})
@@ -168,8 +168,14 @@ async fn resolve_tells_local_remote_unconnected_and_page_apart() {
         .send()
         .await
         .unwrap();
-    let e = tool_error(rpc_message(res).await);
-    assert_eq!(e["code"], "remote_not_yet", "{e}");
+    let v = rpc_message(res).await;
+    let text = v["result"]["content"][0]["text"].as_str().unwrap();
+    let read: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(
+        (read["artifact_id"].as_str(), read["content"].as_str()),
+        (Some(raid.as_str()), Some(PAGE)),
+        "{v}"
+    );
     let res = mcp_post(&local, ADAPTER, &call(pushed))
         .bearer_auth(&local.token)
         .header("mcp-protocol-version", "2025-06-18")

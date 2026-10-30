@@ -129,6 +129,8 @@ mod api_queue_reporter;
 mod api_queues;
 #[cfg(any(not(clax_split), clax_split = "api_quickstart"))]
 mod api_quickstart;
+#[cfg(any(not(clax_split), clax_split = "api_remote_artifacts"))]
+mod api_remote_artifacts;
 #[cfg(any(not(clax_split), clax_split = "api_remote_requests"))]
 mod api_remote_requests;
 #[cfg(any(not(clax_split), clax_split = "api_remotes"))]

@@ -160,13 +160,20 @@ These come from the tool layer itself, not the daemon:
 - `bad_response`: the daemon answered with a success status but a body that
   could not be read.
 - `internal` (Pi only): an unexpected exception inside the extension.
-- `remote_sign_in_required` (MCP tools): a `url_or_id` on a Clax instance this home is
-  not connected to (**Resolving a URL**). Extra fields `origin`, `name`,
-  `request` (the daemon's `{tool, command}`: how to ask the person to
-  connect it) and `next`, which names the `connect_instance` tool.
-- `remote_not_yet` (MCP tools): a `url_or_id` naming an artifact on a connected
-  remote, which this tool does not reach yet. Extra fields `origin` and
-  `url`.
+- `remote_sign_in_required` (MCP tools and Pi): a `url_or_id` on a Clax
+  instance this home is not connected to (**Resolving a URL**), or on a
+  connected one that refused this home's token (revoked there: **Remote
+  artifacts**). Extra fields `origin`, `name`, `request` (the daemon's
+  `{tool, command}`: how to ask the person to connect it) and `next`,
+  which names the `connect_instance` tool.
+- `remote_not_yet` (MCP tools and Pi): a `url_or_id` naming an artifact on
+  a connected remote, which this tool does not reach yet (`watch`,
+  `wait_for_feedback`). Extra fields `origin` and `url`.
+- `not_on_remote` (MCP tools and Pi): a `url_or_id` naming an artifact on a
+  connected remote, which this tool does not change there (`publish` and
+  its updates, `publish_public`, the `db_*` tools, `delete`, `tag`, `pin`
+  and `unpin`, `asset_upload`, `fork`, `git_remote`, `working`, `draft`,
+  `ask`). Extra fields `origin`, `name` and `url`.
 
 Any error the daemon returns is passed through unchanged as `error`. The
 daemon codes a tool can surface in normal operation:
@@ -1198,8 +1205,19 @@ nothing but the daemon's memory of other instances' discovery:
 - `{kind: "page", url}`: anything else, the URL as given (trimmed).
 
 `version` is the URL's `/v/<n>` (or `/_clax/v/<n>`); a query or fragment
-names none. Discovery answers are kept in memory: an instance's until a
-call to it fails, any other answer (or none, within 10 s) for 10 minutes.
+names none. A URL on another scheme than the daemon's base, or on the
+origin of a remote this home connected (on the same port as a local
+daemon, under another name), is never the daemon's own. A remote that
+refused its token (`signed_out`) answers `sign_in_required` by its own
+origin and name, with no discovery. Discovery answers are kept in memory:
+an instance's until a call to it fails (unreachable, or refusing the
+token), any other answer (or none, within 10 s) for 10 minutes.
+
+Resolving or reading a page URL on an `https` origin (or an `http` one on
+loopback) not known here therefore makes the daemon ask that origin's
+`GET /.well-known/clax`, at most once in 10 minutes per origin: the site
+learns that someone there uses Clax (the request names no person and
+carries no credential).
 Only the owner and the owner's agents get `remote`, `sign_in_required`
 and the pushed-copy `local`; any other caller (a person's agent, a
 person), and every caller of a hosted daemon, gets only a `local` answer by
@@ -1207,12 +1225,72 @@ the daemon's own URL, or `page`. 400 `invalid_query` without `url`; 400
 `invalid_url` for one that does not parse, is not `http(s)`, or is on this
 daemon and names no artifact.
 
-The MCP tools (not yet the Pi extension's) resolve every `url_or_id` that
-is not an ID or a URL on the daemon's own base through this route (an older daemon without it leaves
-the URL a page): `remote_sign_in_required` names an instance to connect
-(`origin`, `name`, and a `next` naming `connect_instance`), and
-`remote_not_yet` an artifact on a connected remote, which the tools do not
-reach yet (`origin`, `url`).
+The MCP tools, the Pi extension's and the CLI's `clax comments` resolve
+every `url_or_id` that is not an ID or a URL on the daemon's own scheme,
+host and port through this route (an older daemon without it leaves the
+URL a page): `remote_sign_in_required` names an instance to connect
+(`origin`, `name`, and a `next` naming `connect_instance`); an artifact on a
+connected remote is read and commented on there (**Remote artifacts**),
+and the tools that would change it answer `not_on_remote`.
+
+**Remote artifacts.** A local daemon reads and comments on a connected
+remote's artifacts through that remote's REST API, with the agent token
+it holds there (no redirect followed), for the owner and the owner's
+agents alone (a person's agent, a person: 403 `forbidden`; 404 on a hosted
+daemon). Under `/api/remotes/<remote>/artifacts/<public ID>` (`<remote>`
+its ID, name or origin, 404 `no_remote` otherwise and 400 `not_connected`
+while its sign-in waits; `<public ID>` an artifact ID and `<tid>` a thread
+ID, 400 `invalid_args` otherwise):
+
+- `GET` → the remote's `GET /api/artifacts/<public ID>`: `{artifact,
+  versions}`.
+- `GET versions/<n>/files/<path>` → that file's bytes, as the remote
+  answers them (at most 16 MiB). The Clax app reads its copies' files here
+  too.
+- `GET threads` (its query passed on: `include_resolved`, `cursor`,
+  `limit`) and `GET threads/<tid>` → the remote's `{threads,
+  next_cursor}` and `{thread}`, filtered there by its person's approvals
+  for agents: a thread whose comments it withholds carries `withheld:
+  {count, authors, approval}`.
+- `POST threads` (multipart, as the remote takes it), `POST
+  threads/<tid>/comments`, `POST threads/<tid>/resolve` and `POST
+  threads/<tid>/reopen` → the remote's same routes, the body and its
+  `content-type` passed on, and an `Idempotency-Key` with them: a write
+  the remote has seen under that key from this token answers what the
+  first made.
+- `POST threads/<tid>/handoff {to?}` → the remote's `POST
+  /api/sessions/<sid>/threads/<tid>/handoff`, once the remote has the
+  thread on that artifact: `to` names a live agent there.
+
+A write is made in a session of its own there, ended once answered, named
+as the calling agent's session here (its name, else its harness, with its
+harness), or the person's by-hand session for the owner. The remote's
+answers come back with their status and body, with `content-security-policy:
+sandbox; default-src 'none'`, `x-content-type-options: nosniff` and
+`cache-control: no-store`. A remote not reached is 502
+`remote_unreachable` `{origin, name}`, and its discovery answer is
+forgotten. A remote that refuses the token (401: revoked there) is marked
+`signed_out` (`GET /api/remotes` shows it; its token is forgotten, its
+links kept for the sign-in that connects it again, which `POST
+/api/remotes` or a connection request's Connect starts as for a new one)
+and the route answers 502 `remote_sign_in_required` `{origin, name,
+request: {tool: "connect_instance", command: "clax remote request
+'<origin>/'"}}`, as does every later call until it is connected again.
+
+On such an artifact, the MCP tools and Pi's `read`, `comments_read`,
+`comments_reply`, `comments_resolve`, `comments_handoff` and `open` answer
+as for a local artifact, with `artifact_id` its ID there, `url` its address
+there, and `remote: {origin, name}`; `comments_reply` sends an
+`Idempotency-Key` of its own and refuses `addressed` (a live page's), and
+nothing is acknowledged here. `read` and `comments_read` add
+`withheld_comments: {count, note}` when the remote withholds comments from
+its agents, `note` reading "<n> comments from people you have not approved
+for agents on <name>" (`read` counts its open threads' first page,
+`comments_read` the threads it returns). `watch` and `wait_for_feedback`
+answer `remote_not_yet`; the tools that change an artifact `not_on_remote`.
+`clax comments <url>` lists, shows, replies to, resolves and reopens its
+threads as the person whose token it is; `clax comments send` is not
+offered there.
 
 **Connection requests.** Adding a remote stays the owner's (`POST
 /api/remotes` refuses agents 403 `not_for_agents`); an agent of the
@@ -1605,7 +1683,9 @@ app's versions with the bundle each carries.
   linked to it). Every answer passed on carries `content-security-policy:
   sandbox; default-src 'none'` and `x-content-type-options: nosniff`: a
   copy's bytes are another author's. A remote that refuses the token is 502
-  `remote_signed_out`, one not reached 502 `remote_unreachable`.
+  `remote_signed_out`, one not reached 502 `remote_unreachable`. One
+  file's bytes (`GET versions/<n>/files/<path>`) is a route of **Remote
+  artifacts**, which the owner's agents reach too.
 - **A public Clax too old for the app.** Whenever a public Clax runs a
   release from before what the core asks of it, the core answers 502
   `remote_too_old`, its message naming the remote's origin, rather than
@@ -5765,6 +5845,7 @@ router), and a test fails when it differs:
 | `DELETE /api/remotes/{id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/remotes/{id}/apps` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/remotes/{id}/artifacts/{raid}` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/remotes/{id}/artifacts/{raid}` | Denied | no |
 | `POST /api/remotes/{id}/artifacts/{raid}/comments` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/remotes/{id}/artifacts/{raid}/head` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/remotes/{id}/artifacts/{raid}/installs` | Denied | yes: 403 `not_for_agents` |
@@ -5773,9 +5854,16 @@ router), and a test fails when it differs:
 | `PUT /api/remotes/{id}/artifacts/{raid}/sharing/link` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/remotes/{id}/artifacts/{raid}/sharing/shares` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/remotes/{id}/artifacts/{raid}/sharing/shares/{sid}` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/remotes/{id}/artifacts/{raid}/threads` | Denied | no |
+| `POST /api/remotes/{id}/artifacts/{raid}/threads` | Denied | no |
+| `GET /api/remotes/{id}/artifacts/{raid}/threads/{tid}` | Denied | no |
+| `POST /api/remotes/{id}/artifacts/{raid}/threads/{tid}/comments` | Denied | no |
+| `POST /api/remotes/{id}/artifacts/{raid}/threads/{tid}/handoff` | Denied | no |
+| `POST /api/remotes/{id}/artifacts/{raid}/threads/{tid}/reopen` | Denied | no |
+| `POST /api/remotes/{id}/artifacts/{raid}/threads/{tid}/resolve` | Denied | no |
 | `GET /api/remotes/{id}/artifacts/{raid}/versions/{n}/bundle` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/remotes/{id}/artifacts/{raid}/versions/{n}/files` | Denied | yes: 403 `not_for_agents` |
-| `GET /api/remotes/{id}/artifacts/{raid}/versions/{n}/files/{*path}` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/remotes/{id}/artifacts/{raid}/versions/{n}/files/{*path}` | Denied | no |
 | `POST /api/remotes/{id}/links` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/remotes/{id}/poll` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/sample` | Denied | no |

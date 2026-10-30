@@ -48,7 +48,9 @@ pub struct Remote {
     /// The public origin, normalized (`https://clax.example`).
     pub origin: String,
     pub name: String,
-    /// `pending` while the sign-in waits, then `connected`.
+    /// `pending` while the sign-in waits, then `connected`; `signed_out`
+    /// once the remote refused its token (revoked there,
+    /// [`Store::sign_out_remote`]), until a new sign-in.
     pub status: String,
     /// While pending: the code the person types, the page they approve
     /// on, and when the sign-in expires.
@@ -203,7 +205,8 @@ pub fn check_remote_name(name: &str) -> Result<String> {
 impl Store {
     /// Records a sign-in to `origin` (normalized) under `name`, waiting for
     /// the person's approval there. A remote of that origin still waiting
-    /// is replaced (a new sign-in); a connected one stays as it is.
+    /// is replaced (a new sign-in); a signed-out one waits again under its
+    /// own ID, keeping its links; a connected one stays as it is.
     ///
     /// # Errors
     /// `remote_exists` for an origin this daemon is signed in to already, or
@@ -223,18 +226,24 @@ impl Store {
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?;
+            let mut keep: Option<String> = None;
             if let Some((id, status)) = &existing {
-                if status == "connected" {
-                    return Err(CoreError::invalid(
-                        "remote_exists",
-                        format!("this Clax is signed in to {origin} already: remove it first to sign in again"),
-                    ));
+                match status.as_str() {
+                    "connected" => {
+                        return Err(CoreError::invalid(
+                            "remote_exists",
+                            format!("this Clax is signed in to {origin} already: remove it first to sign in again"),
+                        ));
+                    }
+                    "signed_out" => keep = Some(id.clone()),
+                    _ => {
+                        tx.execute("DELETE FROM remotes WHERE id = ?1", params![id])?;
+                    }
                 }
-                tx.execute("DELETE FROM remotes WHERE id = ?1", params![id])?;
             }
             let taken: bool = tx.query_row(
-                "SELECT EXISTS (SELECT 1 FROM remotes WHERE name = ?1)",
-                params![name],
+                "SELECT EXISTS (SELECT 1 FROM remotes WHERE name = ?1 AND id IS NOT ?2)",
+                params![name, keep],
                 |r| r.get(0),
             )?;
             if taken {
@@ -242,6 +251,28 @@ impl Store {
                     "remote_exists",
                     format!("a remote is named '{name}' already: give another name"),
                 ));
+            }
+            if let Some(id) = keep {
+                tx.execute(
+                    "UPDATE remotes SET name = ?2, status = 'pending', token = NULL,
+                        device_code = ?3, user_code = ?4, verification_url = ?5,
+                        sign_in_expires_at = ?6, poll_interval_s = ?7
+                     WHERE id = ?1",
+                    params![
+                        id,
+                        name,
+                        sign_in.device_code.expose(),
+                        sign_in.user_code,
+                        sign_in.verification_url,
+                        sign_in.expires_at,
+                        sign_in.interval_s
+                    ],
+                )?;
+                return Ok(tx.query_row(
+                    &format!("SELECT {REMOTE_COLS} FROM remotes WHERE id = ?1"),
+                    params![id],
+                    row_remote,
+                )?);
             }
             let id = format!("r_{}", new_ulid().to_lowercase());
             tx.execute(
@@ -323,6 +354,20 @@ impl Store {
                 params![id],
                 row_remote,
             )?)
+        })
+    }
+
+    /// Marks connected remote `id` signed out: the remote refused its
+    /// token (revoked there), which is forgotten. Its links stay, for the
+    /// sign-in that connects it again ([`Store::add_pending_remote`]).
+    /// Whether it was connected.
+    pub fn sign_out_remote(&self, id: &str) -> Result<bool> {
+        self.with_tx(|tx| {
+            Ok(tx.execute(
+                "UPDATE remotes SET status = 'signed_out', token = NULL
+                 WHERE id = ?1 AND status = 'connected'",
+                params![id],
+            )? > 0)
         })
     }
 
@@ -817,6 +862,47 @@ mod tests {
             code_of(st.add_pending_remote("https://b.example", "a b", &sign_in("cxd_4"))),
             "invalid_args"
         );
+    }
+
+    /// A revoked token signs a remote out: its token is forgotten and its
+    /// links stay; the next sign-in waits under the same ID, so the links
+    /// are the reconnected remote's.
+    #[test]
+    fn a_signed_out_remote_keeps_its_links_for_the_next_sign_in() {
+        let (_d, st) = store();
+        let signed = |t: &str| SignedInAs {
+            token: Secret::new(t.into()),
+            person_public_id: "p1".into(),
+            person_name: Some("Ada".into()),
+            grant_id: "g_1".into(),
+        };
+        let r = st
+            .add_pending_remote("https://clax.example", "pub", &sign_in("cxd_1"))
+            .unwrap();
+        st.connect_remote(&r.id, &signed("cxa_1")).unwrap();
+        st.link_remote("a1", &r.id, "b1", "https://clax.example/a/b1", 1, 1)
+            .unwrap();
+        assert!(st.sign_out_remote(&r.id).unwrap());
+        assert!(!st.sign_out_remote(&r.id).unwrap(), "only once");
+        let out = st.find_remote(&r.id).unwrap().unwrap();
+        assert_eq!(out.status, "signed_out");
+        assert!(st.remote_token(&r.id).unwrap().is_none());
+        assert_eq!(st.remote_links("a1").unwrap().len(), 1);
+        let again = st
+            .add_pending_remote("https://clax.example", "pub", &sign_in("cxd_2"))
+            .unwrap();
+        assert_eq!(
+            (again.id.as_str(), again.status.as_str()),
+            (r.id.as_str(), "pending")
+        );
+        st.connect_remote(&r.id, &signed("cxa_2")).unwrap();
+        assert_eq!(st.remote_token(&r.id).unwrap().unwrap().expose(), "cxa_2");
+        assert_eq!(st.remote_links("a1").unwrap()[0].remote_id, r.id);
+        // A pending remote is not signed out.
+        let p = st
+            .add_pending_remote("https://b.example", "b", &sign_in("cxd_3"))
+            .unwrap();
+        assert!(!st.sign_out_remote(&p.id).unwrap());
     }
 
     #[test]

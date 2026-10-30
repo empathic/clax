@@ -186,6 +186,10 @@
         "page": "http://localhost:80/a/7q3k9mzx2b4t"
       },
       {
+        "input": "https://localhost:7480/a/7q3k9mzx2b4t",
+        "page": "https://localhost:7480/a/7q3k9mzx2b4t"
+      },
+      {
         "input": "nope",
         "error": "invalid_id"
       },

@@ -227,6 +227,81 @@ async fn remote_add_signs_in_by_device_code_and_push_publishes_every_version() {
         String::from_utf8_lossy(&out.get_output().stderr).contains("no_link"),
         "{out:?}"
     );
+    // `clax comments` reads and answers an artifact there by its URL,
+    // through this Clax's token there.
+    let host = format!("localhost:{}", public.addr.port());
+    let res = public
+        .client
+        .post(format!("{}/api/artifacts", public.base))
+        .header("host", &host)
+        .bearer_auth(&public.token)
+        .json(&json!({"title": "Theirs",
+            "files": {"index.html": {"content": "<p>theirs</p>", "encoding": "utf8"}}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let theirs = res.json::<Value>().await.unwrap()["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = public
+        .client
+        .post(format!("{}/api/artifacts/{theirs}/threads", public.base))
+        .header("host", &host)
+        .header("origin", &origin)
+        .header("cookie", format!("clax_session={cookie}"))
+        .multipart(
+            reqwest::multipart::Form::new()
+                .text("anchor", json!({"kind": "artifact"}).to_string())
+                .text("body", "Shorter, please")
+                .text("version", "1"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let url = format!("{origin}/a/{theirs}");
+    let v = json_out(
+        &e.cmd()
+            .args(["comments", "--json", &url])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    );
+    assert_eq!(
+        (&v["artifact_id"], &v["url"]),
+        (&json!(theirs), &json!(url)),
+        "{v}"
+    );
+    assert_eq!(v["remote"]["origin"], json!(origin), "{v}");
+    assert_eq!(
+        v["threads"][0]["comments"][0]["body"], "Shorter, please",
+        "{v}"
+    );
+    e.cmd()
+        .args(["comments", "reply", &format!("{url}#1"), "Shortened."])
+        .assert()
+        .success();
+    e.cmd()
+        .args(["comments", "resolve", &format!("{url}#1")])
+        .assert()
+        .success();
+    let (threads, _) = public
+        .store
+        .list_threads(
+            &clax_core::ArtifactId::parse(&theirs).unwrap(),
+            true,
+            None,
+            10,
+        )
+        .unwrap();
+    assert_eq!(threads[0].status, "resolved");
+    assert_eq!(
+        threads[0].comments.last().map(|c| c.body.as_str()),
+        Some("Shortened.")
+    );
     let grant = public.store.list_grants().unwrap();
     let gid = grant.iter().find(|g| g.bearer).unwrap().id.clone();
     let text = String::from_utf8(

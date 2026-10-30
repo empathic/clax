@@ -755,6 +755,57 @@ export class DaemonClient {
     return this.json(`/api/live/pages?${new URLSearchParams({ url })}`, { method: "GET" });
   }
 
+  /** `GET /api/resolve?url=`: what the URL names, `{kind, …}` (`resolved`
+   * in `clax.ts` reads it). */
+  resolveUrl(url: string): Promise<any> {
+    return this.json(`/api/resolve?${new URLSearchParams({ url })}`, { method: "GET" });
+  }
+
+  /** The daemon's route of artifact `raid` on connected remote `rid`. */
+  private remotePath(rid: string, raid: string): string {
+    return `/api/remotes/${encodeURIComponent(rid)}/artifacts/${encodeURIComponent(raid)}`;
+  }
+
+  /** `GET /api/remotes/<rid>/artifacts/<raid>`: the remote's `{artifact, versions}`. */
+  remoteGet(rid: string, raid: string): Promise<any> {
+    return this.json(this.remotePath(rid, raid), { method: "GET" });
+  }
+
+  /** The bytes of `path` in version `n` of remote artifact `raid`. */
+  async remoteFileBytes(rid: string, raid: string, n: number, path: string): Promise<Buffer> {
+    return (await this.request(`${this.remotePath(rid, raid)}/versions/${n}/files/${encodePath(path)}`, { method: "GET" })).body;
+  }
+
+  /** The remote's `{threads, next_cursor}` of artifact `raid`. */
+  remoteThreads(rid: string, raid: string, includeResolved: boolean, cursor?: string): Promise<any> {
+    const q = new URLSearchParams({ include_resolved: String(includeResolved) });
+    if (cursor !== undefined) q.set("cursor", cursor);
+    return this.json(`${this.remotePath(rid, raid)}/threads?${q}`, { method: "GET" });
+  }
+
+  /** The remote's `{thread}` `tid` of artifact `raid`. */
+  remoteThread(rid: string, raid: string, tid: string): Promise<any> {
+    return this.json(`${this.remotePath(rid, raid)}/threads/${encodeURIComponent(tid)}`, { method: "GET" });
+  }
+
+  /** An agent reply on remote thread `tid` under idempotency key `key`: the
+   * remote's `{comment, thread}`, or `{guidance}`. */
+  remoteReply(rid: string, raid: string, tid: string, text: string, key: string): Promise<any> {
+    const opts = this.jsonBody("POST", { body: text, author_kind: "agent" });
+    opts.headers = { ...opts.headers, "idempotency-key": key };
+    return this.json(`${this.remotePath(rid, raid)}/threads/${encodeURIComponent(tid)}/comments`, opts);
+  }
+
+  /** Resolves remote thread `tid` as the agent: `{thread}`, or `{guidance}`. */
+  remoteResolve(rid: string, raid: string, tid: string): Promise<any> {
+    return this.json(`${this.remotePath(rid, raid)}/threads/${encodeURIComponent(tid)}/resolve`, this.jsonBody("POST", { as: "agent" }));
+  }
+
+  /** Hands remote thread `tid` to the agent `to` names there, or releases it: `{thread}`. */
+  remoteHandoff(rid: string, raid: string, tid: string, to?: string): Promise<any> {
+    return this.json(`${this.remotePath(rid, raid)}/threads/${encodeURIComponent(tid)}/handoff`, this.jsonBody("POST", to === undefined ? {} : { to }));
+  }
+
   /** `PUT /api/sessions/<sid>/working/<id>`: `{working, message_truncated}`. */
   setWorking(id: string, body: { thread_ids?: string[]; message?: string }): Promise<any> {
     return this.json(() => `${this.sessionPath()}/working/${id}`, this.jsonBody("PUT", body));

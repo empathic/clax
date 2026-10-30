@@ -8,12 +8,16 @@
 //! 1. The URL is one of this daemon's own artifact URLs: its base (any
 //!    local name on its port, for a local daemon, as
 //!    [`clax_mcp::target::target`] reads it) or its site domain. Read from
-//!    the URL alone: no artifact is looked up.
+//!    the URL alone: no artifact is looked up. A URL on another scheme
+//!    than the base's, or on the origin of a remote this home connected
+//!    (on the same port, under another name), is not the daemon's.
 //! 2. The URL is the public copy of an artifact this daemon pushed, found
 //!    among the remote links by its URL or by its remote and public
 //!    artifact ID: the local artifact.
 //! 3. The URL is on a connected remote's origin, or under the site domain
-//!    its discovery names: that remote's artifact.
+//!    its discovery names: that remote's artifact. On the origin of a
+//!    remote that refused its token (`signed_out`): one to sign in to
+//!    again.
 //! 4. Its origin's `GET /.well-known/clax` says it is a Clax instance:
 //!    one to sign in to.
 //! 5. Otherwise, a page.
@@ -116,23 +120,34 @@ pub fn shell_quote(s: &str) -> String {
 /// is on this daemon and names no artifact; the store's.
 pub async fn resolve(s: &AppState, url: &str) -> Result<Resolved, ApiError> {
     let (raw, u) = parse(url)?;
-    if let Some(own) = own(s, &raw, &u)? {
-        return Ok(own);
-    }
     if s.hosted.is_some() {
-        return Ok(Resolved::Page { url: raw });
+        return Ok(own(s, &raw, &u, &[])?.unwrap_or(Resolved::Page { url: raw }));
     }
     let origin = u.origin().ascii_serialization();
     let (remotes, links) = s
         .store_call(|st| Ok((st.remotes()?, st.all_remote_links()?)))
         .await?;
+    if let Some(own) = own(s, &raw, &u, &remotes)? {
+        return Ok(own);
+    }
+    if let Some(l) = links.iter().find(|l| same_url(&l.url, &u)) {
+        return Ok(local(l));
+    }
+    // A remote that refused its token is one to connect again.
+    if let Some(r) = remotes
+        .iter()
+        .find(|r| r.status == "signed_out" && r.origin == origin)
+    {
+        return Ok(Resolved::SignInRequired {
+            origin: r.origin.clone(),
+            name: r.name.clone(),
+            request: SignInRequest::for_url(&u),
+        });
+    }
     let remotes: Vec<Remote> = remotes
         .into_iter()
         .filter(|r| r.status == "connected")
         .collect();
-    if let Some(l) = links.iter().find(|l| same_url(&l.url, &u)) {
-        return Ok(local(l));
-    }
     if let Some((r, at)) = on_remote(s, &remotes, &u, &origin).await {
         let Some((artifact_id, version)) = at else {
             return Ok(Resolved::Page { url: raw });
@@ -167,9 +182,13 @@ pub async fn resolve(s: &AppState, url: &str) -> Result<Resolved, ApiError> {
 ///
 /// # Errors
 /// As [`resolve`]'s.
-pub fn resolve_local(s: &AppState, url: &str) -> Result<Resolved, ApiError> {
+pub async fn resolve_local(s: &AppState, url: &str) -> Result<Resolved, ApiError> {
     let (raw, u) = parse(url)?;
-    Ok(own(s, &raw, &u)?.unwrap_or(Resolved::Page { url: raw }))
+    let remotes = match s.hosted {
+        Some(_) => Vec::new(),
+        None => s.store_call(|st| st.remotes()).await?,
+    };
+    Ok(own(s, &raw, &u, &remotes)?.unwrap_or(Resolved::Page { url: raw }))
 }
 
 fn invalid(message: String) -> ApiError {
@@ -223,12 +242,28 @@ fn on_site(domain: &str, base: &url::Url, u: &url::Url) -> Option<(String, Optio
 }
 
 /// Step 1: `u` as one of this daemon's own artifact URLs, `None` when it is
-/// another's.
-fn own(s: &AppState, raw: &str, u: &url::Url) -> Result<Option<Resolved>, ApiError> {
+/// another's: one on another scheme than the daemon's base, or on the
+/// origin of one of `remotes` (connected or signed out), is another's,
+/// whatever its port (a local daemon owns every host on its port).
+fn own(
+    s: &AppState,
+    raw: &str,
+    u: &url::Url,
+    remotes: &[Remote],
+) -> Result<Option<Resolved>, ApiError> {
     let base = match &s.hosted {
         Some(h) => h.origin.clone(),
         None => s.browser_base.clone(),
     };
+    let origin = u.origin().ascii_serialization();
+    let scheme_differs = url::Url::parse(&base).is_ok_and(|b| b.scheme() != u.scheme());
+    if scheme_differs
+        || remotes
+            .iter()
+            .any(|r| r.status != "pending" && r.origin == origin)
+    {
+        return Ok(None);
+    }
     let local = |(artifact_id, version)| Resolved::Local {
         artifact_id,
         version,

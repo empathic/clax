@@ -95,7 +95,15 @@ mod l10 {
         ("remote_apps::head", Owner),
         ("remote_apps::bundle", Owner),
         ("remote_apps::version_files", Owner),
-        ("remote_apps::version_file", Owner),
+        ("remote_artifacts::get", Owner),
+        ("remote_artifacts::file", Owner),
+        ("remote_artifacts::threads", Owner),
+        ("remote_artifacts::thread", Owner),
+        ("remote_artifacts::create_thread", Owner),
+        ("remote_artifacts::comment", Owner),
+        ("remote_artifacts::resolve", Owner),
+        ("remote_artifacts::reopen", Owner),
+        ("remote_artifacts::handoff", Owner),
         ("remote_apps::get_sharing", Owner),
         ("remote_apps::put_link", Owner),
         ("remote_apps::put_share", Owner),
@@ -359,6 +367,7 @@ mod l10 {
             "remote_requests" => include_str!("remote_requests.rs"),
             "resolve" => include_str!("resolve.rs"),
             "remote_apps" => include_str!("remote_apps.rs"),
+            "remote_artifacts" => include_str!("remote_artifacts.rs"),
             "room" => include_str!("room.rs"),
             "live_layers" => include_str!("live_layers.rs"),
             "login" => include_str!("login.rs"),
@@ -640,6 +649,26 @@ mod l10 {
         (
             "remote_apps::record_install",
             "forwards an install count to a public Clax, which records it",
+        ),
+        (
+            "remote_artifacts::create_thread",
+            "forwards a new thread to a connected Clax, which records it",
+        ),
+        (
+            "remote_artifacts::comment",
+            "forwards a comment to a connected Clax, which records it",
+        ),
+        (
+            "remote_artifacts::resolve",
+            "forwards a resolve to a connected Clax, which records it",
+        ),
+        (
+            "remote_artifacts::reopen",
+            "forwards a reopen to a connected Clax, which records it",
+        ),
+        (
+            "remote_artifacts::handoff",
+            "forwards a handoff to a connected Clax, which records it",
         ),
         (
             "remotes::drop_unsent",

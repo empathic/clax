@@ -267,6 +267,9 @@ fn line(r: &Value) -> String {
             "{name}\t{origin}\tas {}",
             r["person_name"].as_str().unwrap_or("someone")
         ),
+        Some("signed_out") => format!(
+            "{name}\t{origin}\tsigned out: its token was revoked there (connect it again with `clax remote add {origin}`)"
+        ),
         _ => format!(
             "{name}\t{origin}\twaiting for approval (code {})",
             r["user_code"].as_str().unwrap_or("?")
@@ -274,7 +277,7 @@ fn line(r: &Value) -> String {
     }
 }
 
-fn encode(s: &str) -> String {
+pub(crate) fn encode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
@@ -346,57 +349,6 @@ fn request(cli: &crate::Cli, c: &Client, a: &RequestArgs) -> anyhow::Result<()> 
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
-        move |k| {
-            pairs
-                .iter()
-                .find(|(n, _)| *n == k)
-                .map(|(_, v)| v.to_string())
-        }
-    }
-
-    #[test]
-    fn the_session_is_the_harness_variables_else_an_ancestors() {
-        let sessions = [
-            json!({"id": "s_codex", "harness": "codex", "harness_session_id": "th-1", "parent_pid": 40}),
-            json!({"id": "s_claude", "harness": "claude", "harness_session_id": "cc-1", "parent_pid": 30}),
-            json!({"id": "s_far", "harness": "claude", "harness_session_id": "cc-2", "parent_pid": 20}),
-        ];
-        assert_eq!(
-            session_among(&sessions, env(&[("CODEX_THREAD_ID", "th-1")]), &[30]).as_deref(),
-            Some("s_codex")
-        );
-        assert_eq!(
-            session_among(&sessions, env(&[("CLAUDE_CODE_SESSION_ID", "cc-1")]), &[]).as_deref(),
-            Some("s_claude")
-        );
-        // A variable naming no live session falls back to the ancestors,
-        // the nearest first.
-        assert_eq!(
-            session_among(&sessions, env(&[("GROK_SESSION_ID", "g-9")]), &[99, 20, 30]).as_deref(),
-            Some("s_far")
-        );
-        assert_eq!(session_among(&sessions, env(&[]), &[7, 8]), None);
-        // The harness must match too.
-        assert_eq!(
-            session_among(&sessions, env(&[("GROK_SESSION_ID", "th-1")]), &[]),
-            None
-        );
-    }
-
-    #[test]
-    fn the_wait_is_the_tools() {
-        assert_eq!(default_wait(env(&[])), 600);
-        assert_eq!(default_wait(env(&[("CODEX_THREAD_ID", "t")])), 50);
-        assert_eq!(default_wait(env(&[("CODEX_CI", "1")])), 50);
-    }
-}
-
 /// A connection request's answer, as `clax remote request` prints it.
 fn answer_line(j: &Value) -> String {
     match j["status"].as_str() {
@@ -461,5 +413,56 @@ fn add(cli: &crate::Cli, c: &Client, a: &AddArgs) -> anyhow::Result<()> {
             Some("denied") => anyhow::bail!("access_denied: the sign-in was denied there"),
             _ => anyhow::bail!("expired_token: the sign-in expired: add the remote again"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        move |k| {
+            pairs
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
+    #[test]
+    fn the_session_is_the_harness_variables_else_an_ancestors() {
+        let sessions = [
+            json!({"id": "s_codex", "harness": "codex", "harness_session_id": "th-1", "parent_pid": 40}),
+            json!({"id": "s_claude", "harness": "claude", "harness_session_id": "cc-1", "parent_pid": 30}),
+            json!({"id": "s_far", "harness": "claude", "harness_session_id": "cc-2", "parent_pid": 20}),
+        ];
+        assert_eq!(
+            session_among(&sessions, env(&[("CODEX_THREAD_ID", "th-1")]), &[30]).as_deref(),
+            Some("s_codex")
+        );
+        assert_eq!(
+            session_among(&sessions, env(&[("CLAUDE_CODE_SESSION_ID", "cc-1")]), &[]).as_deref(),
+            Some("s_claude")
+        );
+        // A variable naming no live session falls back to the ancestors,
+        // the nearest first.
+        assert_eq!(
+            session_among(&sessions, env(&[("GROK_SESSION_ID", "g-9")]), &[99, 20, 30]).as_deref(),
+            Some("s_far")
+        );
+        assert_eq!(session_among(&sessions, env(&[]), &[7, 8]), None);
+        // The harness must match too.
+        assert_eq!(
+            session_among(&sessions, env(&[("GROK_SESSION_ID", "th-1")]), &[]),
+            None
+        );
+    }
+
+    #[test]
+    fn the_wait_is_the_tools() {
+        assert_eq!(default_wait(env(&[])), 600);
+        assert_eq!(default_wait(env(&[("CODEX_THREAD_ID", "t")])), 50);
+        assert_eq!(default_wait(env(&[("CODEX_CI", "1")])), 50);
     }
 }

@@ -7,9 +7,9 @@ use crate::routes::{
     admin, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot, client_imports,
     connect, content, discovery, docs, drafts, extension, feedback, git_token, grants, health,
     inbox, jobs, live, live_layers, login, mcp_http, people, perf, permissions, questions,
-    queue_agent, queue_reporter, queues, remote_apps, remote_requests, remotes, resolve, room,
-    sample, sessions, settings, site_signin, sites, snapshot, stream, surface, tags, threads,
-    token, toolpath, viewers, watches, working,
+    queue_agent, queue_reporter, queues, remote_apps, remote_artifacts, remote_requests, remotes,
+    resolve, room, sample, sessions, settings, site_signin, sites, snapshot, stream, surface, tags,
+    threads, token, toolpath, viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::routes::{events, mcp, net};
@@ -81,6 +81,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     let asset_limit = DefaultBodyLimit::max(clax_http::limits::UPLOAD_BODY_LIMIT);
     let ask_limit = DefaultBodyLimit::max(clax_http::limits::ASK_BODY_LIMIT);
     let draft_limit = DefaultBodyLimit::max(drafts::DRAFT_BODY_LIMIT);
+    let thread_limit = DefaultBodyLimit::max(limits::THREAD_BODY_LIMIT);
     let api_fast = Router::new()
         .route("/api/token", get(token::token))
         .route("/api/browser-login", post(login::create))
@@ -615,7 +616,31 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/remotes/{id}/apps", get(remote_apps::apps))
         .route(
             "/api/remotes/{id}/artifacts/{raid}",
-            delete(remote_apps::unpublish),
+            get(remote_artifacts::get).delete(remote_apps::unpublish),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/threads",
+            get(remote_artifacts::threads),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/threads/{tid}",
+            get(remote_artifacts::thread),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/threads/{tid}/comments",
+            post(remote_artifacts::comment),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/threads/{tid}/resolve",
+            post(remote_artifacts::resolve),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/threads/{tid}/reopen",
+            post(remote_artifacts::reopen),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/threads/{tid}/handoff",
+            post(remote_artifacts::handoff),
         )
         .route(
             "/api/remotes/{id}/artifacts/{raid}/head",
@@ -639,7 +664,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         )
         .route(
             "/api/remotes/{id}/artifacts/{raid}/versions/{n}/files/{*path}",
-            get(remote_apps::version_file),
+            get(remote_artifacts::file),
         )
         .route(
             "/api/remotes/{id}/artifacts/{raid}/sharing",
@@ -688,6 +713,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route(
             "/api/artifacts/{aid}/threads",
             post(threads::create.layer(DefaultBodyLimit::max(limits::THREAD_BODY_LIMIT))),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/threads",
+            post(remote_artifacts::create_thread.layer(thread_limit)),
         )
         .route(
             "/api/live/threads",

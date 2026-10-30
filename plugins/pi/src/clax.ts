@@ -6,6 +6,7 @@
 // tools. It appends feedback to its tool results and long-polls for pushed
 // feedback, which it hands to Pi as a follow-up user message.
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { extname, isAbsolute, join, basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
@@ -549,7 +550,7 @@ export function target(urlOrId: string, daemonBase: string): { kind: "artifact";
     }
     if (u.protocol !== "http:" && u.protocol !== "https:") throw invalidId();
     const daemonPort = portOf(daemonBase);
-    if (daemonPort === undefined || portOf(s) !== daemonPort || !sameHost(u, daemonBase)) {
+    if (daemonPort === undefined || portOf(s) !== daemonPort || schemeOf(daemonBase) !== u.protocol || !sameHost(u, daemonBase)) {
       return { kind: "page", url: s };
     }
   }
@@ -599,6 +600,84 @@ function isLocal(hostname: string): boolean {
     );
   }
   return hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local") || !hostname.includes(".");
+}
+
+/** The scheme of a URL (`http:`), `undefined` for one that does not parse. */
+function schemeOf(url: string): string | undefined {
+  try {
+    return new URL(url).protocol;
+  } catch {
+    return undefined;
+  }
+}
+
+/** An artifact on a connected remote, as `GET /api/resolve` names it. */
+export type RemoteTarget = { kind: "remote"; remote: string; origin: string; name: string; artifact_id: string; version?: number; url: string };
+
+/** What a tool's `url_or_id` names once the daemon resolved it. */
+export type Resolved =
+  | { kind: "artifact"; id: string; version?: number }
+  | RemoteTarget
+  | { kind: "sign_in_required"; origin: string; name: string; request: Json | null }
+  | { kind: "page"; url: string };
+
+/** What the daemon's resolution `v` of `url` (`GET /api/resolve`) names,
+ * as `clax_mcp::target::resolved` reads it: an answer of a kind this
+ * extension does not know, or one missing a field, is the page `url`. */
+export function resolved(v: Json | null, url: string): Resolved {
+  const text = (k: string): string | undefined => (typeof v?.[k] === "string" ? v[k] : undefined);
+  const version = typeof v?.version === "number" ? v.version : undefined;
+  const page: Resolved = { kind: "page", url };
+  switch (v?.kind) {
+    case "local": {
+      const id = text("artifact_id");
+      if (id === undefined || !ID_RE.test(id)) return page;
+      return version === undefined ? { kind: "artifact", id } : { kind: "artifact", id, version };
+    }
+    case "remote": {
+      const [remote, origin, artifactId, at] = [text("remote"), text("origin"), text("artifact_id"), text("url")];
+      if (remote === undefined || origin === undefined || artifactId === undefined || at === undefined) return page;
+      const r: RemoteTarget = { kind: "remote", remote, origin, name: text("name") ?? origin, artifact_id: artifactId, url: at };
+      if (version !== undefined) r.version = version;
+      return r;
+    }
+    case "sign_in_required": {
+      const [origin, name] = [text("origin"), text("name")];
+      if (origin === undefined || name === undefined) return page;
+      return { kind: "sign_in_required", origin, name, request: v.request ?? null };
+    }
+    default:
+      return page;
+  }
+}
+
+/** The error for a URL on a Clax instance this home is not connected to,
+ * as `clax_mcp::target::sign_in_required` words it. */
+export function signInRequired(origin: string, name: string, request: Json | null): ToolError {
+  const tool = typeof request?.tool === "string" ? request.tool : "connect_instance";
+  return toolError("remote_sign_in_required", `${name} (${origin}) is a Clax instance this Clax is not connected to`, {
+    origin,
+    name,
+    request: request ?? null,
+    next: `Ask the person to connect it: call ${tool} with ${origin}, then call this tool again`,
+  });
+}
+
+/** The error for an artifact on a connected remote that this tool does not
+ * change there (`not_on_remote`), or does not reach yet (`remote_not_yet`). */
+function onRemote(r: RemoteTarget, code: "not_on_remote" | "remote_not_yet"): ToolError {
+  return code === "not_on_remote"
+    ? toolError("not_on_remote", `${r.url} is on ${r.name} (${r.origin}), a connected Clax instance: this tool works on this Clax's artifacts, not on a remote artifact yet`, { origin: r.origin, name: r.name, url: r.url })
+    : toolError("remote_not_yet", `${r.url} is on ${r.origin}, a connected Clax instance: this tool does not reach artifacts there yet`, { origin: r.origin, url: r.url });
+}
+
+/** What a result about remote artifact `r` says of the comments the remote
+ * withholds from its agents in `threads`: `{count, note}`, or `undefined`
+ * when it withholds none. */
+export function withheldNote(threads: Json[], name: string): Json | undefined {
+  const n = threads.reduce((sum, t) => sum + (typeof t?.withheld?.count === "number" ? t.withheld.count : 0), 0);
+  if (n === 0) return undefined;
+  return { count: n, note: `${n} comment${n === 1 ? "" : "s"} from people you have not approved for agents on ${name}` };
 }
 
 /** The port of an http(s) URL, the scheme's default when none is written. */
@@ -1103,16 +1182,40 @@ class Tools {
 
   /** What `urlOrId` names (`target`), finding the daemon first when a URL
    * must be compared with its port. */
-  private async targetOf(c: DaemonClient, urlOrId: string): Promise<ReturnType<typeof target>> {
+  private async targetOf(c: DaemonClient, urlOrId: string): Promise<Resolved> {
     if (urlOrId.includes("://") && c.browserBase() === undefined) await this.call(() => c.ensureSession());
-    return target(urlOrId, this.browserBase(c));
+    const t = target(urlOrId, this.browserBase(c));
+    if (t.kind !== "page") return t;
+    // A URL off the daemon's base is the daemon's to resolve (`GET
+    // /api/resolve`); a daemon that cannot answer leaves it a page.
+    try {
+      return resolved(await c.resolveUrl(t.url), t.url);
+    } catch {
+      return t;
+    }
+  }
+
+  /** What `urlOrId` names for a tool that works on remote artifacts as well:
+   * a remote artifact, or the local one `resolveRef` reads. */
+  private async resolveAny(c: DaemonClient, urlOrId: string): Promise<{ kind: "local"; id: string; version?: number } | RemoteTarget> {
+    const t = await this.targetOf(c, urlOrId);
+    if (t.kind === "remote") return t;
+    return { kind: "local", ...(await this.localRef(c, t)) };
   }
 
   /** The artifact `urlOrId` names (`target`), and the version when it names
    * one; a page URL is resolved to its live page (`invalid_id` when it has
-   * none yet). */
-  private async resolveRef(c: DaemonClient, urlOrId: string): Promise<{ id: string; version?: number }> {
+   * none yet). A remote artifact is `not_on_remote`, or with `notYet`
+   * `remote_not_yet`. */
+  private async resolveRef(c: DaemonClient, urlOrId: string, notYet = false): Promise<{ id: string; version?: number }> {
     const t = await this.targetOf(c, urlOrId);
+    if (t.kind === "remote") throw onRemote(t, notYet ? "remote_not_yet" : "not_on_remote");
+    return this.localRef(c, t);
+  }
+
+  /** The local artifact target `t` names, as `resolveRef` reads it. */
+  private async localRef(c: DaemonClient, t: Exclude<Resolved, RemoteTarget>): Promise<{ id: string; version?: number }> {
+    if (t.kind === "sign_in_required") throw signInRequired(t.origin, t.name, t.request);
     if (t.kind === "artifact") {
       currentCall()?.noteArtifact(t.id);
       return t.version === undefined ? { id: t.id } : { id: t.id, version: t.version };
@@ -1124,6 +1227,20 @@ class Tools {
     }
     currentCall()?.noteArtifact(id);
     return { id };
+  }
+
+  /** `call` for a remote artifact's route: the daemon's
+   * `remote_sign_in_required` (the remote refused its token) is the error a
+   * URL on an instance this Clax is not connected to gets. */
+  private async remoteCall<T>(f: () => Promise<T>): Promise<T> {
+    try {
+      return await f();
+    } catch (e) {
+      if (e instanceof ClientError && e.kind === "api" && e.error?.code === "remote_sign_in_required") {
+        throw signInRequired(String(e.error.origin ?? ""), String(e.error.name ?? ""), e.error.request ?? null);
+      }
+      throw clientError(e, this.log);
+    }
   }
 
   /** Runs `f`, turning daemon failures into error results. */
@@ -1282,8 +1399,26 @@ class Tools {
 
   async read(ctx: ExtensionContext, a: Static<typeof ReadArgs>): Promise<Json> {
     const c = this.clientFor(ctx);
-    const { id, version: urlVersion } = await this.resolveRef(c, a.url_or_id);
-    const got = await this.call(() => c.get(id));
+    const t = await this.resolveAny(c, a.url_or_id);
+    if (t.kind === "local") {
+      const got = await this.call(() => c.get(t.id));
+      return this.readFile(a, t.id, t.version, got, (n, path) => this.call(() => c.fileBytes(t.id, n, path)));
+    }
+    const got = await this.remoteCall(() => c.remoteGet(t.remote, t.artifact_id));
+    const out = await this.readFile(a, t.artifact_id, t.version, got, (n, path) => this.remoteCall(() => c.remoteFileBytes(t.remote, t.artifact_id, n, path)));
+    out.url = t.url;
+    out.remote = { origin: t.origin, name: t.name };
+    // What the remote withholds from its agents, counted on its open
+    // threads (their first page).
+    const r = await this.remoteCall(() => c.remoteThreads(t.remote, t.artifact_id, false));
+    const w = withheldNote(r.threads ?? [], t.name);
+    if (w) out.withheld_comments = w;
+    return out;
+  }
+
+  /** `read`'s result for artifact `id`, whose `{artifact, versions}` are
+   * `got`, its files read by `bytes`. */
+  private async readFile(a: Static<typeof ReadArgs>, id: string, urlVersion: number | undefined, got: Json, bytesOf: (n: number, path: string) => Promise<Buffer>): Promise<Json> {
     const n = a.version ?? urlVersion ?? Number(got.artifact?.current_version ?? 0);
     const version = (got.versions ?? []).find((v: Json) => v.n === n);
     if (!version) throw notFound(`artifact ${id} has no version ${n}`);
@@ -1293,11 +1428,11 @@ class Tools {
       // A version that withholds files from this agent's person lists none
       // of them; the daemon answers a withheld file and a missing one alike
       // (403 `withheld`), which the agent is handed.
-      if (Number(version.files_withheld ?? 0) > 0) await this.call(() => c.fileBytes(id, n, path));
+      if (Number(version.files_withheld ?? 0) > 0) await bytesOf(n, path);
       throw notFound(`version ${n} of ${id} has no file '${path}'`);
     }
     const contentType: string = meta.content_type ?? "";
-    const bytes = await this.call(() => c.fileBytes(id, n, path));
+    const bytes = await bytesOf(n, path);
     const max = a.max_bytes ?? DEFAULT_READ_MAX_BYTES;
     const out: Json = { artifact_id: id, version: n, path, content_type: contentType, truncated: bytes.length > max, size: bytes.length };
     if (isText(contentType)) out.content = textPrefix(bytes, max);
@@ -1454,7 +1589,15 @@ class Tools {
 
   async open(ctx: ExtensionContext, a: Static<typeof TargetArgs>): Promise<Json> {
     const c = this.clientFor(ctx);
-    const { id } = await this.resolveRef(c, a.url_or_id);
+    const t = await this.resolveAny(c, a.url_or_id);
+    if (t.kind === "remote") {
+      // A remote artifact opens at its address there, where the person's
+      // browser signs in.
+      await this.remoteCall(() => c.remoteGet(t.remote, t.artifact_id));
+      const opened = this.env.CLAX_NO_OPEN === undefined && (await openInBrowser(t.url, this.env, this.opts.openWaitMs ?? OPEN_WAIT_MS));
+      return { url: t.url, opened, remote: { origin: t.origin, name: t.name } };
+    }
+    const id = t.id;
     await this.call(() => c.get(id));
     const url = this.artifactUrl(c, id);
     const opened = this.env.CLAX_NO_OPEN === undefined && (await openInBrowser(await this.loginUrl(c, `/a/${id}`, url), this.env, this.opts.openWaitMs ?? OPEN_WAIT_MS));
@@ -1565,7 +1708,9 @@ class Tools {
 
   async commentsRead(ctx: ExtensionContext, a: Static<typeof CommentsReadArgs>): Promise<Json> {
     const c = this.clientFor(ctx);
-    const { id } = await this.resolveRef(c, a.url_or_id);
+    const t = await this.resolveAny(c, a.url_or_id);
+    if (t.kind === "remote") return this.commentsReadRemote(c, t, a);
+    const id = t.id;
     let threads: Json[];
     let next: unknown = null;
     if (a.thread_id !== undefined) {
@@ -1595,14 +1740,49 @@ class Tools {
     };
   }
 
+  /** `comments_read` of remote artifact `r`: its threads as the remote shows
+   * them to its person's agents, with `url` its address there, `remote`, and
+   * `withheld_comments` when it withholds comments from them. Nothing is
+   * acknowledged here. */
+  private async commentsReadRemote(c: DaemonClient, r: RemoteTarget, a: Static<typeof CommentsReadArgs>): Promise<Json> {
+    let threads: Json[];
+    let next: unknown = null;
+    if (a.thread_id !== undefined) {
+      const tid = a.thread_id;
+      checkThreadId(tid);
+      threads = [(await this.remoteCall(() => c.remoteThread(r.remote, r.artifact_id, tid))).thread ?? {}];
+    } else {
+      const v = await this.remoteCall(() => c.remoteThreads(r.remote, r.artifact_id, a.include_resolved ?? false, a.cursor));
+      threads = v.threads ?? [];
+      next = v.next_cursor ?? null;
+    }
+    const out: Json = {
+      artifact_id: r.artifact_id,
+      url: r.url,
+      remote: { origin: r.origin, name: r.name },
+      threads: threads.map(threadSummary),
+      next_cursor: next,
+      note: UNTRUSTED_NOTE,
+    };
+    const w = withheldNote(threads, r.name);
+    if (w) out.withheld_comments = w;
+    return out;
+  }
+
   /** `comments_handoff` (spec §12): hands the thread to the live agent `to`
    * names, or without `to` releases it; the thread as the session now sees
    * it, with its `owner`. */
   async commentsHandoff(ctx: ExtensionContext, a: Static<typeof CommentsHandoffArgs>): Promise<Json> {
     const c = this.clientFor(ctx);
-    const { id } = await this.resolveRef(c, a.url_or_id);
+    const t = await this.resolveAny(c, a.url_or_id);
     checkThreadId(a.thread_id);
     if (a.to !== undefined && !a.to.trim()) throw invalid("to names a live agent; leave it out to release the thread");
+    if (t.kind === "remote") {
+      // There, `to` names a live agent of the remote's.
+      const r = await this.remoteCall(() => c.remoteHandoff(t.remote, t.artifact_id, a.thread_id, a.to));
+      return { artifact_id: t.artifact_id, url: t.url, remote: { origin: t.origin, name: t.name }, released: a.to === undefined, thread: threadSummary(r.thread ?? {}), note: UNTRUSTED_NOTE };
+    }
+    const id = t.id;
     await this.call(() => c.ensureSession());
     // The thread must be the artifact's: a thread of another artifact is
     // not found there.
@@ -1615,10 +1795,15 @@ class Tools {
 
   async commentsReply(ctx: ExtensionContext, a: Static<typeof CommentsReplyArgs>): Promise<Json> {
     const c = this.clientFor(ctx);
-    const { id } = await this.resolveRef(c, a.url_or_id);
+    const t = await this.resolveAny(c, a.url_or_id);
     checkThreadId(a.thread_id);
     if (!a.text.trim()) throw invalid("text must not be empty");
-    const r = await this.call(() => c.reply(id, a.thread_id, a.text, a.addressed ?? false));
+    if (t.kind === "remote" && a.addressed) throw invalid("addressed is for live pages; a remote artifact is not one");
+    // One key per reply: the request sent again (once the session is
+    // registered again) is answered there with the comment the first made.
+    const r = t.kind === "remote"
+      ? await this.remoteCall(() => c.remoteReply(t.remote, t.artifact_id, a.thread_id, a.text, randomUUID()))
+      : await this.call(() => c.reply(t.id, a.thread_id, a.text, a.addressed ?? false));
     if (typeof r.guidance === "string") return { thread_id: a.thread_id, replied: false, guidance: r.guidance };
     const out: Json = { thread_id: a.thread_id, replied: true, comment_id: r.comment?.id ?? null };
     if (r.addressed !== undefined) out.addressed = r.addressed;
@@ -1627,9 +1812,11 @@ class Tools {
 
   async commentsResolve(ctx: ExtensionContext, a: Static<typeof CommentsResolveArgs>): Promise<Json> {
     const c = this.clientFor(ctx);
-    const { id } = await this.resolveRef(c, a.url_or_id);
+    const t = await this.resolveAny(c, a.url_or_id);
     checkThreadId(a.thread_id);
-    const r = await this.call(() => c.resolve(id, a.thread_id));
+    const r = t.kind === "remote"
+      ? await this.remoteCall(() => c.remoteResolve(t.remote, t.artifact_id, a.thread_id))
+      : await this.call(() => c.resolve(t.id, a.thread_id));
     return typeof r.guidance === "string"
       ? { thread_id: a.thread_id, resolved: false, guidance: r.guidance }
       : { thread_id: a.thread_id, resolved: true, status: r.thread?.status ?? null };
@@ -1659,6 +1846,8 @@ class Tools {
   async watch(ctx: ExtensionContext, a: Static<typeof WatchArgs>): Promise<Json> {
     const c = this.clientFor(ctx);
     const t = await this.targetOf(c, a.url_or_id);
+    if (t.kind === "remote") throw onRemote(t, "remote_not_yet");
+    if (t.kind === "sign_in_required") throw signInRequired(t.origin, t.name, t.request);
     if (t.kind === "page") {
       if (a.on ?? true) {
         const r = await this.call(() => c.liveWatch(t.url, a.replies ?? true));
@@ -2112,7 +2301,7 @@ class Tools {
    * handover, whose `text` is the trailing block. */
   async waitForFeedback(ctx: ExtensionContext, a: Static<typeof WaitArgs>, signal?: AbortSignal): Promise<{ result: Json } & Handover> {
     const c = this.clientFor(ctx);
-    const artifact = a.url_or_id === undefined ? undefined : (await this.resolveRef(c, a.url_or_id)).id;
+    const artifact = a.url_or_id === undefined ? undefined : (await this.resolveRef(c, a.url_or_id, true)).id;
     const secs = Math.min(Math.max(a.timeout_s ?? DEFAULT_WAIT_S, MIN_WAIT_S), MAX_WAIT_S);
     const r = await this.call(() => c.feedback("wait", secs, artifact, signal));
     const h = await this.handover(c, r);

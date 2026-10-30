@@ -29,6 +29,8 @@ mod people;
 mod publish_public;
 #[cfg(any(not(clax_split), clax_split = "remote"))]
 mod remote;
+#[cfg(any(not(clax_split), clax_split = "remote_artifacts"))]
+mod remote_artifacts;
 #[cfg(any(not(clax_split), clax_split = "shim"))]
 mod shim;
 #[cfg(any(not(clax_split), clax_split = "site_access"))]

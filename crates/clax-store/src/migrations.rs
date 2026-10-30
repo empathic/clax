@@ -1861,7 +1861,10 @@ pub const MIGRATIONS: &[&str] = &[
     // remote artifact's threads rather than pushes one, and
     // `artifacts.remote_mirror`, the local artifact holding those threads
     // (a column, as `artifacts.kind`'s CHECK cannot be altered without
-    // rebuilding the table every other table names).
+    // rebuilding the table every other table names). And a remote may be
+    // `signed_out`: its token was refused there (revoked), so it is kept,
+    // with its links, until the person connects it again; `remotes` is
+    // rebuilt for the status's CHECK, as no table names it.
     "CREATE TABLE login_codes (
         sha256 TEXT PRIMARY KEY,
         created_at TEXT NOT NULL,
@@ -1904,6 +1907,29 @@ pub const MIGRATIONS: &[&str] = &[
     ) WITHOUT ROWID;
     ALTER TABLE remote_links ADD COLUMN followed INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE artifacts ADD COLUMN remote_mirror INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE remotes_60 (
+        id TEXT PRIMARY KEY,
+        origin TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'connected', 'signed_out')),
+        token TEXT,
+        device_code TEXT,
+        user_code TEXT,
+        verification_url TEXT,
+        sign_in_expires_at TEXT,
+        poll_interval_s INTEGER,
+        person_public_id TEXT,
+        person_name TEXT,
+        grant_id TEXT,
+        created_at TEXT NOT NULL,
+        connected_at TEXT,
+        client_kind TEXT
+    );
+    INSERT INTO remotes_60 SELECT id, origin, name, status, token, device_code, user_code,
+        verification_url, sign_in_expires_at, poll_interval_s, person_public_id, person_name,
+        grant_id, created_at, connected_at, client_kind FROM remotes;
+    DROP TABLE remotes;
+    ALTER TABLE remotes_60 RENAME TO remotes;
     CREATE TABLE inbox_items_60 (
         seq INTEGER PRIMARY KEY,
         id TEXT NOT NULL UNIQUE,

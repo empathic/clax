@@ -41,6 +41,7 @@ pub mod queue_agent;
 pub mod queue_reporter;
 pub mod queues;
 pub mod remote_apps;
+pub mod remote_artifacts;
 pub mod remote_requests;
 pub mod remotes;
 pub mod resolve;

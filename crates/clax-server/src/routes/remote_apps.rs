@@ -10,12 +10,15 @@
 //! - Under `/api/remotes/<rid>/artifacts/<raid>`: `GET head`, `GET
 //!   versions/<n>/bundle`, `GET versions/<n>/files` (the version, as the
 //!   remote's `GET /api/artifacts/<raid>/versions/<n>` answers it), `GET
-//!   versions/<n>/files/<path>` (one file's bytes), `GET sharing`, `PUT
+//!   sharing`, `PUT
 //!   sharing/link`, `PUT sharing/shares`, `DELETE sharing/shares/<sid>`,
 //!   `PUT sharing/comments` (the remote's `/api/hosted/artifacts/<raid>/…`
 //!   routes), `POST installs` (the remote's `POST
 //!   /api/artifacts/<raid>/installs`), and `DELETE` (Unpublish).
 //! - `GET /api/remotes/<rid>/apps`: the remote's `GET /api/hosted/apps`.
+//!
+//! One file's bytes (`GET versions/<n>/files/<path>`), which the owner's
+//! agents read as well, is `super::remote_artifacts`'.
 //!
 //! Each is the owner's alone, by hand (an agent is refused 403
 //! `not_for_agents`), on a daemon that is not hosted (404 there, as every
@@ -90,7 +93,7 @@ async fn owners_remote(
 }
 
 /// A public artifact's ID as a path names it.
-fn remote_artifact(raw: &str) -> Result<String, ApiError> {
+pub(super) fn remote_artifact(raw: &str) -> Result<String, ApiError> {
     ArtifactId::parse(raw)
         .map(|a| a.as_str().to_string())
         .map_err(|_| ApiError::bad_request("invalid_args", "not a public artifact's ID"))
@@ -110,7 +113,7 @@ fn share_id(raw: &str) -> Result<String, ApiError> {
 }
 
 /// A file's path as segments: none empty, `.` or `..`.
-fn file_segments(raw: &str) -> Result<Vec<String>, ApiError> {
+pub(super) fn file_segments(raw: &str) -> Result<Vec<String>, ApiError> {
     let segs: Vec<String> = raw.split('/').map(str::to_string).collect();
     if raw.is_empty()
         || segs
@@ -128,7 +131,7 @@ fn file_segments(raw: &str) -> Result<Vec<String>, ApiError> {
 /// and kept headers, never stored. Every answer passed on is sandboxed
 /// and unsniffed: a public copy's bytes are another author's, served here
 /// on this daemon's API origin.
-fn answer(origin: &str, f: Forwarded) -> Response {
+pub(super) fn answer(origin: &str, f: Forwarded) -> Response {
     if f.status == 401 || !(200..600).contains(&f.status) || (300..400).contains(&f.status) {
         return ApiError::from(RemoteFail {
             origin: origin.to_string(),
@@ -450,40 +453,6 @@ pub async fn version_files(
     let raid = remote_artifact(&raid)?;
     let n = n.to_string();
     Ok(get_json(&remote, token, &["api", "artifacts", &raid, "versions", &n]).await)
-}
-
-/// `GET /api/remotes/<rid>/artifacts/<raid>/versions/<n>/files/<path>` (the
-/// owner) → the bytes of that file of public version `n`, as the remote's
-/// `GET /api/artifacts/<raid>/versions/<n>/files/<path>` answers them, at
-/// most a file's 16 MiB.
-pub async fn version_file(
-    State(s): State<AppState>,
-    d: DeniedToGrants,
-    who: Identity,
-    p: Result<Path<(String, String, u32, String)>, PathRejection>,
-) -> Result<Response, ApiError> {
-    super::remotes::local_only(&s)?;
-    d.refuse_agents()?;
-    who.require_owner("reaches a public Clax")?;
-    let (rid, raid, n, file) = path(p)?;
-    let (remote, token) = owners_remote(&s, &d, rid).await?;
-    let raid = remote_artifact(&raid)?;
-    let file = file_segments(&file)?;
-    let n = n.to_string();
-    let mut segs = vec!["api", "artifacts", raid.as_str(), "versions", &n, "files"];
-    segs.extend(file.iter().map(String::as_str));
-    Ok(forward(
-        &remote,
-        token,
-        Method::GET,
-        &segs,
-        &[],
-        Vec::new(),
-        None,
-        clax_core::publish::MAX_FILE_BYTES as usize,
-        answer_too_large,
-    )
-    .await)
 }
 
 /// The remote's sharing route of `raid` for `what` (`sharing`, `link`,

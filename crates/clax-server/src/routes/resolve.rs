@@ -43,7 +43,7 @@ pub async fn get(
             // A discovery request is a JavaScript fetch on the Worker.
             clax_rt::sendable(crate::resolve::resolve(&s, &q.url)).await?
         }
-        _ => crate::resolve::resolve_local(&s, &q.url)?,
+        _ => crate::resolve::resolve_local(&s, &q.url).await?,
     };
     Ok(Json(serde_json::json!(resolved)))
 }
