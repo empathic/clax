@@ -299,6 +299,57 @@ Discovery answers are cached: negative ones for 10 minutes on the injected clock
 - [ ] Implement. Settle concern `7c8c51dd` for followed links by replying with the test's name.
 - [ ] Commit `feat(remotes): watch a connected instance's artifact, its comments arriving like local ones`.
 
+### Task 8: Confirm the decisions that matter in the owner's browser
+
+Owner's decision on qualifier `423720eb` (2026-10-29): take the narrower version.
+- **When it applies:** while any agent session is live on this daemon.
+- **What it does:** a short list of decisions made with the bare daemon token needs a click in the owner's browser before it takes effect.
+- **What it leaves alone:** every other owner call made with the token. When no agent session is live, nothing changes.
+
+**The decisions:**
+1. Answering a question an agent asked (`routes/questions.rs` answer, ~:775-800).
+2. Pushing to a remote, including the agent-approval path (`routes/remotes.rs` push).
+3. Connecting a remote (`routes/remotes.rs` add), and answering a connection request (Task 4).
+4. Widening a page's access: general access to `link` or `public`, the site to the world, or link access to `commenter` (the sharing routes).
+5. Approving a machine or grant (`grants::approve`), changing a person's rights, and revoking a person (`people.rs`).
+
+Decisions 5, and Task 4's answer, already require a browser session (Task 0's `require_owner_browser`). They also need the confirmation when the browser session was opened by a login code minted while an agent session was live. That is the path an agent holding the token would use to make its own browser session.
+
+**Files:**
+- Create: `crates/clax-http/src/confirm.rs`:
+  - `pub async fn require_confirmation(s: &AppState, who: &Caller, what: Decision) -> Result<Confirmed, ApiError>`
+  - `pub enum Decision { Answer{question_id}, Push{artifact_id, remote_id}, Connect{origin}, Widen{artifact_id, to}, People{…} }`
+- Modify: migration 60 (in place): `confirmations (id TEXT PK, decision_json TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('open','approved','declined','expired')), created_at, answered_at)`; `browser_sessions.minted_while_agent INTEGER NOT NULL DEFAULT 0`.
+- Create: `crates/clax-server/src/routes/confirmations.rs`:
+  - `GET /api/confirmations/<id>?wait=<s>` (long-poll, ≤50 s): token callers.
+  - `POST /api/confirmations/<id> {approve: bool}`: owner browser session only, `SameOrigin`, and the session must not be `minted_while_agent`.
+- Modify: each decision's route calls `require_confirmation` first.
+- Modify: shell. A card in the owner's inbox and toasts: "Confirm: <decision in words>", with the agent sessions live now listed and **Confirm** / **Decline** buttons.
+- Modify: the CLI and MCP clients. On 202 `confirmation_pending`, the CLI prints "Confirm in your browser: <url>" (one line) and waits. The MCP tools return the same status for the agent to wait on.
+- Test: `crates/clax-server/tests/api_confirmations.rs` (new), and shell vitest for the card.
+
+**Rules:**
+- A token call for a listed decision while any non-ended agent session exists answers 202 `{status: "confirmation_pending", confirmation_id, confirm_url}` and makes no change.
+- The same call repeated with `confirmation_id` performs the decision once it is approved. It answers 403 `declined` once declined, and 410 after 10 minutes (injected clock).
+- With no live agent session, the call proceeds as today.
+- An `OwnerAgent` caller keeps today's behaviour for these routes, refused or asking as now. This task adds no new power.
+- A confirmation is single-use and bound to its decision. Approving one does not approve a different decision.
+
+**Tests:**
+- `a_token_answer_waits_for_the_browser_while_an_agent_is_live`
+- `with_no_agent_live_the_token_answers_at_once`
+- `a_confirmation_approves_only_its_own_decision_once`
+- `a_declined_or_expired_confirmation_changes_nothing`
+- `a_browser_session_minted_while_an_agent_was_live_cannot_confirm`
+- one per listed decision, proving each route asks
+
+**Residual, recorded as a waiver on `confirm.rs`:**
+- An agent running as the owner's OS user can still drive a browser it controls, or redeem a login code minted while no agent session was live.
+- Only a confirmation that needs user presence the agent cannot script, such as a passkey or Touch ID (WebAuthn user verification), closes that. Record it as an `alternative` with `revisit:` if a scripted confirmation is seen.
+
+- [ ] Write the tests. Implement. Run the covering tests and `just check`.
+- [ ] Commit `feat(auth): confirm the decisions that matter in the owner's browser while an agent is live`.
+
 ### Task 7: End to end against the dev Worker, and docs
 
 **Files:**
