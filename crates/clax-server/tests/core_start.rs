@@ -72,11 +72,10 @@ async fn stopping_a_core_closes_its_store_and_ends_its_streams() {
     again.stop().await;
 }
 
-/// A core's start makes a new daemon token, and a new token ends every
-/// owner browser session: a cookie captured under the old token opens
-/// nothing after.
+/// A core's start makes a new daemon token, and an owner browser session
+/// survives it: only `clax logout` (`DELETE /api/browser-login`) ends one.
 #[tokio::test]
-async fn a_new_daemon_token_ends_every_owner_browser_session() {
+async fn an_owner_browser_session_survives_a_new_daemon_token() {
     let dir = tempfile::tempdir().unwrap();
     let core = Core::start(cfg(dir.path(), clax_testkit::web_ui(), false), &mut |_| {})
         .await
@@ -92,14 +91,9 @@ async fn a_new_daemon_token_ends_every_owner_browser_session() {
         .await
         .unwrap();
     assert_ne!(again.state().token, first, "a new token");
-    assert!(!again.state().owner_sessions.is_live(&hash));
     assert!(
-        again
-            .state()
-            .store
-            .live_owner_sessions()
-            .unwrap()
-            .is_empty()
+        again.state().owner_sessions.is_live(&hash),
+        "the session survives"
     );
     again.stop().await;
 }

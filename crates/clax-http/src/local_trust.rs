@@ -11,10 +11,10 @@
 //!
 //! - [`OwnerSessions`] keeps the live sessions in memory, loaded on start
 //!   and changed with every open and end, so checking a cookie reads no
-//!   store; the store keeps them ([`clax_store::browser_login`]). Every
-//!   session ends at once on `DELETE /api/browser-login` (`clax logout`,
-//!   [`OwnerSessions::end_all`]) and at every daemon start, whose token is
-//!   new.
+//!   store; the store keeps them across restarts
+//!   ([`clax_store::browser_login`]). Every session ends at once on
+//!   `DELETE /api/browser-login` (`clax logout`,
+//!   [`OwnerSessions::end_all`]).
 //! - Cookies ignore ports: a browser sends the owner cookie to every
 //!   server on the daemon's host name it is navigated to, and whoever
 //!   listens there can replay it from this machine as the owner. Ending

@@ -7,7 +7,7 @@ use clax_core::Home;
 /// Ends every owner browser session (`DELETE /api/browser-login`): no
 /// browser's cookie stands for the owner after, and each browser of the
 /// owner's needs a new login code (`clax open`, `clax login`). A daemon
-/// that starts again (a new token) ends them as well.
+/// restart does not end them: this does.
 pub fn run(cli: &crate::Cli, home: &Home) -> anyhow::Result<()> {
     let c = Client::connect(home, cli.port_for(home)?)?;
     let v = c.delete_json("/api/browser-login")?;

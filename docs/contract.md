@@ -2618,10 +2618,10 @@ request is the owner's when it carries an owner credential:
   on `Path=/`, so every page of the daemon is the owner's), and as the events cookie
   (only the event streams receive it). A browser gets one only by
   redeeming a one-use login code a holder of the token made (see "Browser
-  login"); it lasts 400 days unless it is ended first. `clax logout`
-  (`DELETE /api/browser-login`) ends every one, and so does every daemon
-  start, which makes a new token: a browser of the owner's then needs one
-  `clax open` again. Nothing in it derives from the token;
+  login"); it lasts 400 days, survives daemon restarts and new tokens, and
+  can be ended: `clax logout` (`DELETE /api/browser-login`) ends every one,
+  and a browser of the owner's then needs one `clax open` again. Nothing
+  in it derives from the token;
 - the Clax Chrome extension's credential, accepted only through the
   extension gateway (see "Security model"), which acts as one of the
   owner's browsers on live pages.
@@ -2644,8 +2644,7 @@ the machine, a container mapped to loopback, a sandboxed agent with
 loopback networking, a development server that logs headers) receives the
 cookie, and can replay it from this machine as the owner, `GET
 /api/token` included: the daemon cannot tell that replay from the owner's
-browser. Ending the sessions (`clax logout`, or a daemon restart) is the
-remedy today.
+browser. Ending the sessions (`clax logout`) is the remedy today.
 
 Everyone else (a LAN viewer, or a local browser that holds no session) is
 the viewer its `clax_viewer` cookie names. That cookie never names
@@ -2702,8 +2701,7 @@ redeeming a one-use login code a holder of the token made:
   for the owner's agents) → `{ended}`: ends every owner browser session
   (`ended`, how many were live); each browser then needs a new code. It
   narrows who acts as the owner, so it waits for no confirmation. `clax
-  logout` calls it. 404 on a hosted daemon. A daemon start, which makes a
-  new token, ends every session too.
+  logout` calls it. 404 on a hosted daemon. A daemon restart ends none.
 - `GET /login?code=<code>&next=<next>`, from a browser on this machine
   (else 403 `forbidden_host`): 303 to `next`, `Cache-Control: no-store`,
   `Referrer-Policy: no-referrer`. A browser that holds no live session
@@ -2722,7 +2720,7 @@ the extension's "Open in Clax" and inbox links (through its native host's
 `login` message, which holds the token). `clax login [path]` prints a fresh
 link for a browser on its own. A browser that already holds a session
 never notices; a fresh browser profile needs one `clax open`, and so
-does every browser after the daemon restarts or `clax logout`.
+does every browser after `clax logout`.
 
 A link that carries a code must not be readable by another user of the
 machine. On macOS, `clax open`, `clax connect`'s and `clax remotes`'

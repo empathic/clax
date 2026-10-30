@@ -88,8 +88,7 @@ pub enum Cmd {
     /// machine in as the owner's and opens a path, the gallery by default.
     Login(commands::login::Args),
     /// End every browser session of the owner's on this machine: each
-    /// browser needs `clax open` (or `clax login`) to sign in again. A
-    /// restart of the daemon ends them too.
+    /// browser needs `clax open` (or `clax login`) to sign in again.
     Logout,
     /// Delete an artifact.
     Delete(commands::delete::Args),
