@@ -9,8 +9,8 @@
 //!   from when it was made, after which it reads as `expired`.
 //! - An approved confirmation lets one call of its own decision through
 //!   ([`Store::use_confirmation`]), once: it is then spent (`used_at`).
-//! - [`Store::agent_session_live`] says whether any agent session has not
-//!   ended: what makes a token's decision wait at all.
+//! - [`Store::agent_session_live`] says whether an agent of the owner's
+//!   on this machine is live: what makes a token's decision wait at all.
 //!
 //! Times are the store's clock's, so tests move them with a manual clock.
 
@@ -60,19 +60,59 @@ pub enum Use {
 const SELECT: &str =
     "SELECT id, decision_json, status, created_at, answered_at, used_at FROM confirmations";
 
+/// The condition on `sessions` of an agent that counts as live for
+/// confirmations, `?1` being [`live_cutoff`]: one of the owner's on this
+/// machine (no `grant_id`: an agent of another machine never holds the
+/// daemon token), not ended, or ended at most [`CONFIRMATION_TTL_SECS`]
+/// ago, so ending every session with the token does not turn the
+/// confirmations off at once. A session an open job names is never reaped
+/// (`OPEN_JOB_SESSIONS`), so it counts while the job is open: its harness
+/// may still be running, and asking errs on the safe side.
+pub(crate) const LIVE_AGENT: &str = "grant_id IS NULL AND (ended_at IS NULL OR ended_at > ?1)";
+
+/// `?1` of [`LIVE_AGENT`] at `now`: [`CONFIRMATION_TTL_SECS`] before it.
+pub(crate) fn live_cutoff(now: chrono::DateTime<chrono::Utc>) -> String {
+    clax_core::time::stamp(now - Duration::seconds(CONFIRMATION_TTL_SECS))
+}
+
+/// Whether `c` holds a session that counts as a live agent ([`LIVE_AGENT`])
+/// at `now`.
+pub(crate) fn agent_live_in(
+    c: &rusqlite::Connection,
+    now: chrono::DateTime<chrono::Utc>,
+) -> rusqlite::Result<bool> {
+    c.query_row(
+        &format!("SELECT EXISTS (SELECT 1 FROM sessions WHERE {LIVE_AGENT})"),
+        params![live_cutoff(now)],
+        |r| r.get(0),
+    )
+}
+
 impl Store {
-    /// Whether any agent session has not ended.
+    /// Whether an agent of the owner's on this machine is live, or ended
+    /// less than [`CONFIRMATION_TTL_SECS`] ago ([`LIVE_AGENT`]).
     ///
     /// # Errors
     /// The store's.
     pub fn agent_session_live(&self) -> Result<bool> {
-        self.with_read(|c| {
-            Ok(c.query_row(
-                "SELECT EXISTS (SELECT 1 FROM sessions WHERE ended_at IS NULL)",
-                [],
-                |r| r.get(0),
-            )?)
-        })
+        self.with_read(|c| Ok(agent_live_in(c, self.now_utc())?))
+    }
+
+    /// The sessions that count as live agents ([`LIVE_AGENT`]), newest
+    /// first: what a confirmation lists as the agents that could have made
+    /// its call.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn live_agent_sessions(&self) -> Result<Vec<clax_core::model::Session>> {
+        let cutoff = live_cutoff(self.now_utc());
+        Ok(self
+            .list_sessions(false)?
+            .into_iter()
+            .filter(|s| {
+                s.grant_id.is_none() && s.ended_at.as_deref().is_none_or(|e| e > cutoff.as_str())
+            })
+            .collect())
     }
 
     fn confirmation_of(&self, r: &Row<'_>) -> rusqlite::Result<Confirmation> {

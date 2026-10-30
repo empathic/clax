@@ -1191,3 +1191,64 @@ async fn the_apps_shell_samples_as_the_owners_browser() {
     assert!(body.contains("echo: hello"), "{body}");
     embed.close();
 }
+
+/// The Clax app confirms a held decision through its own shell, relayed in
+/// process (an `owner-browser` frame), which no agent can reach: the app's
+/// own code (`owner`, the token) opening a site to the world while an agent
+/// is live waits for it; the same confirmation from an `owner` frame is
+/// refused, as the token alone is.
+#[tokio::test]
+async fn the_apps_shell_confirms_a_held_decision_in_process() {
+    let dir = tempfile::tempdir().unwrap();
+    let (embed, _rx) = open(dir.path());
+    let aid = publish(&embed, "<title>t</title>", None).await;
+    let (status, v) = call_json(
+        &embed,
+        head("POST", "/api/sessions", As::Owner),
+        Some(json!({"harness": "claude", "harness_session_id": "h1", "cwd": "/w"})),
+    )
+    .await;
+    assert_eq!(status, 201, "{v}");
+    let patch = |confirm: Option<&str>| {
+        let mut h = head("PATCH", &format!("/api/artifacts/{aid}"), As::Owner);
+        if let Some(id) = confirm {
+            h.headers
+                .push(("x-clax-confirmation".into(), id.to_string()));
+        }
+        h
+    };
+    let world = || Some(json!({"site_access": "world"}));
+    let (status, v) = call_json(&embed, patch(None), world()).await;
+    assert_eq!(
+        (status, v["status"].as_str()),
+        (202, Some("confirmation_pending")),
+        "{v}"
+    );
+    let id = v["confirmation_id"].as_str().unwrap().to_string();
+    let confirm = format!("/api/confirmations/{id}");
+    let (status, v) = call_json(
+        &embed,
+        head("POST", &confirm, As::Owner),
+        Some(json!({"approve": true})),
+    )
+    .await;
+    assert_eq!(
+        (status, v["error"]["code"].as_str()),
+        (403, Some("browser_required")),
+        "{v}"
+    );
+    let (status, v) = call_json(
+        &embed,
+        head("POST", &confirm, As::OwnerBrowser),
+        Some(json!({"approve": true})),
+    )
+    .await;
+    assert_eq!(
+        (status, v["confirmation"]["status"].as_str()),
+        (200, Some("approved")),
+        "{v}"
+    );
+    let (status, v) = call_json(&embed, patch(Some(&id)), world()).await;
+    assert_eq!(status, 200, "{v}");
+    embed.close();
+}

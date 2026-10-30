@@ -203,6 +203,8 @@ pub async fn add(
     let origin = public::origin_of(&b.url)?;
     let decision = Decision::Connect {
         origin: origin.clone(),
+        name: b.name.clone(),
+        machine: b.machine.clone(),
     };
     require_confirmation(&s, &d.caller(&s).await?, &by, decision).await?;
     let name = b
@@ -731,6 +733,9 @@ pub async fn push(
                 Some(n) => format!("{}@{n}", b.mode.as_deref().unwrap_or("update")),
                 None => b.mode.clone().unwrap_or_else(|| "update".into()),
             },
+            auto: b.auto,
+            forked_from: b.forked_from.clone(),
+            title: b.title.clone(),
         };
         require_confirmation(&s, &d.caller(&s).await?, &by, decision).await?;
     }

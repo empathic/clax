@@ -3,6 +3,7 @@
 // change is the browser's (M20): the page's cookie, never the token. A
 // refusal throws `Refused` with the daemon's own message, which the page
 // shows as it is.
+import { HELD, heldOf } from "../held";
 import type { InboxApproval, NewInvite, PeopleApproval, PeopleGrant, PeopleInvite, PeopleList, PeopleMe, PeopleRequest, Rights } from "../api";
 
 /** A route's refusal: its status, the daemon's message and code. */
@@ -15,6 +16,9 @@ export class Refused extends Error {
 
 async function call<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const res = await fetch(path, method === "GET" ? undefined : { method, ...body !== undefined && { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } });
+  // Held for the owner's confirmation (a browser opened while an agent was live): where to confirm.
+  const held = await heldOf(res);
+  if (held) throw new Refused(202, held.message, HELD);
   if (res.ok) return (res.status === 204 ? {} : await res.json()) as T;
   let b: { error?: { code?: string; message?: string } } = {};
   try { b = await res.json(); } catch { /* not json */ }

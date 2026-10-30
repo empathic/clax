@@ -2,8 +2,10 @@
 //! agent is live.
 //!
 //! An agent running as the owner's OS user can read the daemon token
-//! (`<home>/daemon.json`) and call as the owner by hand. So while any agent
-//! session has not ended ([`clax_store::Store::agent_session_live`]), a
+//! (`<home>/daemon.json`) and call as the owner by hand. So while an agent
+//! of the owner's on this machine is live, or ended less than
+//! [`CONFIRMATION_TTL_SECS`] ago (so ending every session with the token
+//! does not turn this off; [`clax_store::Store::agent_session_live`]), a
 //! short list of decisions ([`Decision`]) made without a browser the owner
 //! trusts waits for a click in that browser before it takes effect:
 //!
@@ -13,7 +15,14 @@
 //! 4. widening who may open a page (its site to the world, its public
 //!    copy's link access);
 //! 5. approving a machine's connection, setting a person's rights, and
-//!    revoking a person.
+//!    revoking a person;
+//! 6. pairing the Clax extension (minting its credential), which then
+//!    acts as the owner's browser.
+//!
+//! An agent of another machine (a session with a grant) never holds the
+//! token and makes nothing wait. A session an open job names is never
+//! reaped, so it counts for as long as the job is open: its harness may
+//! still be running.
 //!
 //! A route calls [`require_confirmation`] first, before it changes
 //! anything. For a caller that needs one, its first call answers 202
@@ -31,8 +40,9 @@
 //! minted while an agent session was live
 //! ([`crate::local_trust::OwnerSessions::minted_while_agent`]): an agent
 //! holding the token could have opened any of them. An owner browser
-//! session opened otherwise, the in-process app's frame and the extension
-//! need none, nor does any caller while no agent session is live. Every
+//! session opened otherwise, the in-process app's frame (the Clax app's
+//! shell, relayed through `clax_embed_call`) and a paired extension need
+//! none, nor does any caller while no agent session is live. Every
 //! other caller (the owner's agents, people and their agents) is left to
 //! the route, as before: this adds no power to anyone. A hosted daemon,
 //! whose token no local agent reads, asks for none.
@@ -60,14 +70,28 @@ pub use clax_core::confirm::{CONFIRMATION_HEADER, MAX_WAIT_SECS, PENDING};
 pub enum Decision {
     /// Answering question `question_id` with `answers`.
     Answer { question_id: String, answers: Value },
-    /// Pushing `artifact_id` to remote `remote_id` (its ID) in `mode`.
+    /// Pushing `artifact_id` to remote `remote_id` (its ID) in `mode`,
+    /// with the push's `auto` (letting agents push new versions without
+    /// asking), `forked_from` and `title` as sent.
     Push {
         artifact_id: String,
         remote_id: String,
         mode: String,
+        auto: Option<bool>,
+        forked_from: Option<String>,
+        title: Option<String>,
     },
-    /// Connecting this Clax to the Clax at `origin`.
-    Connect { origin: String },
+    /// Connecting this Clax to the Clax at `origin`, named `name`, as
+    /// machine `machine` (each as sent).
+    Connect {
+        origin: String,
+        name: Option<String>,
+        machine: Option<String>,
+    },
+    /// Minting a credential for the Clax extension `extension_id`: the
+    /// extension then acts as the owner's browser, so pairing it while an
+    /// agent is live is itself confirmed.
+    ExtensionMint { extension_id: String },
     /// Widening who may open `artifact_id`: `to` is `world` (its site), or
     /// the public copy's link access change `body` on remote `remote_id`.
     Widen {
@@ -279,15 +303,16 @@ fn unknown() -> ApiError {
 
 /// Confirmation `c` as the owner's browser and the token see it: its ID,
 /// status and times, the decision as recorded and in words, its
-/// `confirm_url`, and the agent sessions live now (`agents`: each one's
-/// name, harness, handle and start), which the owner checks before
-/// confirming.
+/// `confirm_url`, and the agent sessions that make it wait (`agents`: the
+/// owner's agents on this machine live now or ended within
+/// [`CONFIRMATION_TTL_SECS`], each one's name, harness, handle, start and
+/// end), which the owner checks before confirming.
 ///
 /// # Errors
 /// The store's.
 pub fn view(s: &AppState, st: &Store, c: &Confirmation) -> clax_core::Result<Value> {
     let agents: Vec<Value> = st
-        .list_sessions(true)?
+        .live_agent_sessions()?
         .iter()
         .map(|a| {
             json!({
@@ -296,6 +321,7 @@ pub fn view(s: &AppState, st: &Store, c: &Confirmation) -> clax_core::Result<Val
                 "handle": a.agent_handle,
                 "cwd": a.cwd,
                 "started_at": a.started_at,
+                "ended_at": a.ended_at,
             })
         })
         .collect();
@@ -361,6 +387,7 @@ pub fn words(st: &Store, d: &Value) -> clax_core::Result<String> {
             None => format!("open {}'s site to the world", title(&s("artifact_id"))?),
         },
         "approve_grant" => format!("connect a new machine as {}", s("name")),
+        "extension_mint" => "pair the Clax extension, which then acts as your browser".to_string(),
         "set_rights" => "change a person's rights".to_string(),
         "revoke_person" => "revoke a person".to_string(),
         _ => "make a decision".to_string(),

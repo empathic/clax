@@ -1828,15 +1828,15 @@ impl TestServer {
     /// A paired extension: a fresh credential for this server's extension
     /// ID, whose requests come from the extension's origin.
     pub async fn extension(&self) -> TestExtension {
+        // Paired by hand: confirmed in the owner's browser while an agent
+        // is live ([`TestServer::confirmed`]).
         let v: serde_json::Value = self
-            .authed(
-                self.client
-                    .post(format!("{}/api/extension/credentials", self.base)),
+            .confirmed(
+                reqwest::Method::POST,
+                "/api/extension/credentials",
+                serde_json::json!({"extension_id": self.extension_id}),
             )
-            .json(&serde_json::json!({"extension_id": self.extension_id}))
-            .send()
             .await
-            .unwrap()
             .json()
             .await
             .unwrap();

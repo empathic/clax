@@ -2477,8 +2477,14 @@ browser it drives, so that session confirms no decision (below).
 ### Browser confirmations
 
 An agent running as the owner's OS user can read the daemon token. So
-while any agent session has not ended, a short list of decisions made
-without a browser the owner opened waits for the owner's click in one:
+while an agent of the owner's on this machine is live, a short list of
+decisions made without a browser the owner opened waits for the owner's
+click in one. An agent counts as live from its session's start until ten
+minutes after it ends, so ending every session with the token does not
+turn this off at once; an agent of another machine (a session with a
+grant) never holds the token and makes nothing wait. A session an open job
+names is never reaped while the job is open, and counts for as long: its
+harness may still be running. The decisions:
 
 1. answering a question an agent asked (`POST /api/questions/<qid>/answer`);
 2. pushing an artifact to a public Clax (`POST /api/artifacts/<aid>/push`,
@@ -2491,14 +2497,17 @@ without a browser the owner opened waits for the owner's click in one:
    or `listed: true`);
 5. approving a machine's connection (`POST /api/grants/<gid>/approve`),
    setting a person's rights (`PUT /api/people/<id>/rights`) and revoking
-   a person (`DELETE /api/people/<id>`).
+   a person (`DELETE /api/people/<id>`);
+6. pairing the Clax extension (`POST /api/extension/credentials`), whose
+   credential then acts as the owner's browser.
 
 Who waits: the owner calling with the token and no browser credential,
 with the app's key cookie (its value is the token), or from a browser
 session whose login code was made while an agent session was live
-(decisions 1 to 4; decision 5 refuses the token alone as before, 403
-`browser_required`). An owner browser session opened otherwise, the
-in-process app's frame and the extension decide at once, as does
+(decisions 1 to 4 and 6; decision 5 refuses the token alone as before,
+403 `browser_required`). An owner browser session opened otherwise, the
+in-process app's frame (the Clax app's shell, relayed through its embedded
+core) and a paired extension decide at once, as does
 everyone while no agent session is live. The owner's agents, people and
 their agents keep what each route answers them already.
 
@@ -2518,14 +2527,15 @@ again while it is open, 403 `declined` once declined, 410
 `confirmation_expired` ten minutes after it was made (answered or not,
 unused), 409 `confirmation_used` once spent, 403
 `confirmation_mismatch` for a confirmation of another decision (another
-question, answer, page, remote, mode, person or rights), and 404
+question, answer, page, remote, push mode, `auto`, `forked_from` or
+`title`, remote name or machine, person or rights), and 404
 `unknown_confirmation` for an ID none has.
 
 - `GET /api/confirmations` (the owner) → `{confirmations}`: the open ones,
   oldest first, each `{id, status, created_at, expires_at, answered_at,
   used_at, decision, words, confirm_url, agents}`: `decision` as recorded,
-  `words` the decision in words, `agents` the agent sessions live now
-  (`{name, harness, handle, cwd, started_at}`). 403 `not_for_agents` for
+  `words` the decision in words, `agents` the agents that make it wait
+  (`{name, harness, handle, cwd, started_at, ended_at}`). 403 `not_for_agents` for
   the owner's agents.
 - `GET /api/confirmations/<id>?wait=<s>` (the token) → `{confirmation}`;
   while it is open, the answer waits up to `s` seconds (at most 50) for
@@ -2535,6 +2545,7 @@ question, answer, page, remote, mode, person or rights), and 404
   live, or the in-process app's frame; `SameOrigin`) → `{confirmation}`.
   403 `browser_required` for the token, the key cookie, the extension
   and a session made while an agent was live; 410 `confirmation_expired`;
+  the Clax app answers through its shell, relayed in process;
   409 `confirmation_answered`.
 
 Every change publishes a `confirmation` event `{confirmation}` on the
@@ -2547,7 +2558,10 @@ The CLI waits on every such call the same way: it prints one line,
 /api/confirmations/<id>?wait=50` until the owner answers, and makes its
 call again with the confirmation's ID. The MCP tools hand the 202 to the
 agent as an error, code `confirmation_pending`, message `Confirm in your
-browser: <confirm_url>`, with `confirmation_id` and `confirm_url`.
+browser: <confirm_url>`, with `confirmation_id` and `confirm_url`. The
+shell's own decisions made from a browser that may not decide alone (a
+session made while an agent was live) say where to confirm instead of
+showing a result.
 
 ### Versions, seen marks and attention
 

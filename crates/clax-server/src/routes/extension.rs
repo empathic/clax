@@ -26,11 +26,15 @@ pub struct MintBody {
 /// other ID. The extension counts as one of the owner's browsers, so this
 /// makes the owner viewer when there is none. The owner's agents get 403
 /// `not_for_agents`: the credential acts as the owner's browser, which no
-/// filter covers (spec §7.5).
+/// filter covers (spec §7.5). The credential acts as the owner's browser,
+/// so while an agent of the owner's is live the token's mint waits for a
+/// click in the owner's browser: 202 `confirmation_pending`
+/// ([`clax_http::confirm`]).
 pub async fn mint(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,
     _t: RequireToken,
+    by: clax_http::confirm::Confirming,
     b: Result<Json<MintBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
@@ -41,6 +45,10 @@ pub async fn mint(
             "only the Clax extension installed for this Clax home can pair",
         ));
     }
+    let decision = clax_http::confirm::Decision::ExtensionMint {
+        extension_id: b.extension_id.clone(),
+    };
+    clax_http::confirm::require_confirmation(&s, &d.caller(&s).await?, &by, decision).await?;
     let creds = s.ext_creds.clone();
     let id = s.extension_id.clone();
     let (m, owner) = s

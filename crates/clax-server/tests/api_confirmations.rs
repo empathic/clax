@@ -216,16 +216,126 @@ async fn with_no_agent_live_the_token_answers_at_once() {
     let (s, v) = open_world(&ts, &aid, None).await;
     assert_eq!(s, 200, "{v}");
     assert!(site_is_open(&ts, &aid).await);
-    // An agent that has ended holds nothing back either.
+}
+
+/// Ending every session with the token does not turn confirmations off:
+/// an agent ended less than ten minutes ago still counts.
+#[tokio::test]
+async fn ending_every_agent_keeps_confirmations_on_for_ten_minutes() {
+    let clock = Arc::new(ManualClock::at("2026-10-29T10:00:00Z"));
+    let ts = TestServer::spawn_with_clock(clock.clone()).await;
+    let aid = page(&ts, "Held").await;
     let sid = ts.register_session("claude", "c-2").await["id"]
         .as_str()
         .unwrap()
         .to_string();
     ts.end_session(&sid).await;
-    let other = page(&ts, "Other").await;
-    let (s, v) = open_world(&ts, &other, None).await;
+    let id = pending(&ts, &open_world(&ts, &aid, None).await);
+    // The card lists the agent that ended, as one that could have asked.
+    let (_, v) = browser(
+        &ts,
+        &ts.owner_cookie(),
+        Method::GET,
+        "/api/confirmations",
+        json!(null),
+        None,
+    )
+    .await;
+    assert!(
+        v["confirmations"][0]["agents"][0]["ended_at"].is_string(),
+        "{v}"
+    );
+    clock.advance(clax_http::confirm::CONFIRMATION_TTL_SECS - 1);
+    assert_eq!(pending(&ts, &open_world(&ts, &aid, None).await), id);
+    clock.advance(1);
+    let (s, v) = open_world(&ts, &aid, None).await;
     assert_eq!(s, 200, "{v}");
-    assert!(site_is_open(&ts, &other).await);
+    assert!(site_is_open(&ts, &aid).await);
+}
+
+/// Only the owner's own agents on this machine count: an agent of another
+/// machine never holds the daemon token.
+#[tokio::test]
+async fn a_connected_persons_agent_alone_makes_nothing_wait() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    sam.register("claude", "sam-1").await;
+    let aid = page(&ts, "Plain").await;
+    let (s, v) = open_world(&ts, &aid, None).await;
+    assert_eq!(s, 200, "{v}");
+    // The owner's own agent does.
+    ts.register_session("claude", "owner-1").await;
+    let other = page(&ts, "Other").await;
+    pending(&ts, &open_world(&ts, &other, None).await);
+    let (_, v) = browser(
+        &ts,
+        &ts.owner_cookie(),
+        Method::GET,
+        "/api/confirmations",
+        json!(null),
+        None,
+    )
+    .await;
+    let agents = v["confirmations"][0]["agents"].as_array().unwrap().clone();
+    assert_eq!(
+        agents.len(),
+        1,
+        "only the owner's agent is listed: {agents:?}"
+    );
+}
+
+/// Pairing the extension is itself confirmed while an agent is live; a
+/// paired extension then decides as the owner's browser.
+#[tokio::test]
+async fn pairing_the_extension_while_an_agent_is_live_asks_first() {
+    let ts = TestServer::spawn().await;
+    let sid = ts.register_session("claude", "c-9").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mint = json!({"extension_id": ts.extension_id()});
+    let first = token(
+        &ts,
+        Method::POST,
+        "/api/extension/credentials",
+        mint.clone(),
+        None,
+    )
+    .await;
+    let id = pending(&ts, &first);
+    assert!(
+        first.1.get("credential").is_none(),
+        "no credential before it is confirmed"
+    );
+    assert_eq!(
+        first.1["decision"],
+        "pair the Clax extension, which then acts as your browser"
+    );
+    ts.confirm(&id, true).await;
+    let (s, v) = token(
+        &ts,
+        Method::POST,
+        "/api/extension/credentials",
+        mint,
+        Some(&id),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert!(v["credential"].is_string());
+    // The paired extension answers a question without a further confirmation.
+    let ext = ts.extension().await;
+    let qid = ts.ask(&sid, ask_body()).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = ext
+        .post(
+            &format!("/api/questions/{qid}/answer"),
+            json!({"answers": [{"selected": ["Yes"]}]}),
+        )
+        .await;
+    assert_eq!(res.status(), 200, "{}", res.text().await.unwrap());
+    assert_eq!(ts.question_status(&qid).await, "answered");
 }
 
 #[tokio::test]
@@ -460,6 +570,16 @@ async fn a_token_push_waits_for_the_browser_while_an_agent_is_live() {
         first.1
     );
     local.confirm(&id, true).await;
+    // The approved push, resent asking for standing push power, is another decision.
+    let (s, v) = token(
+        &local,
+        Method::POST,
+        &path,
+        json!({"auto": true}),
+        Some(&id),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "confirmation_mismatch"), "{v}");
     let (s, v) = token(&local, Method::POST, &path, json!({}), Some(&id)).await;
     assert_eq!((s, v["status"].as_str()), (200, Some("pushed")), "{v}");
 }

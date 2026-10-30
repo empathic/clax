@@ -71,11 +71,7 @@ impl Store {
                 "DELETE FROM login_codes WHERE expires_at <= ?1 OR used_at IS NOT NULL",
                 params![now],
             )?;
-            let agent: bool = tx.query_row(
-                "SELECT EXISTS (SELECT 1 FROM sessions WHERE ended_at IS NULL)",
-                [],
-                |r| r.get(0),
-            )?;
+            let agent = crate::confirmations::agent_live_in(tx, self.now_utc())?;
             tx.execute(
                 "INSERT INTO login_codes (sha256, created_at, expires_at, minted_while_agent)
                  VALUES (?1, ?2, ?3, ?4)",
@@ -242,9 +238,17 @@ mod tests {
     #[test]
     fn a_code_minted_while_an_agent_session_is_live_says_so() {
         let clock = Arc::new(ManualClock::at("2026-10-29T10:00:00Z"));
-        let (_d, st) = store(clock);
+        let (_d, st) = store(clock.clone());
+        // Each code is redeemed at once: a code lives two minutes.
+        let minted = |st: &Store| {
+            let c = st.create_login_code().unwrap();
+            st.redeem_login_code(c.expose())
+                .unwrap()
+                .unwrap()
+                .minted_while_agent
+        };
         assert!(!st.agent_session_live().unwrap());
-        let before = st.create_login_code().unwrap();
+        assert!(!minted(&st));
         let session = st
             .register_session(
                 crate::test_util::DAEMON,
@@ -256,20 +260,15 @@ mod tests {
             )
             .unwrap();
         assert!(st.agent_session_live().unwrap());
-        let during = st.create_login_code().unwrap();
+        assert!(minted(&st));
         st.end_session(crate::test_util::DAEMON, &session.id)
             .unwrap();
+        // Ended moments ago, it still counts until ten minutes pass.
+        assert!(st.agent_session_live().unwrap());
+        assert!(minted(&st));
+        clock.advance(crate::confirmations::CONFIRMATION_TTL_SECS);
         assert!(!st.agent_session_live().unwrap());
-        let after = st.create_login_code().unwrap();
-        let minted = |c: &Secret| {
-            st.redeem_login_code(c.expose())
-                .unwrap()
-                .unwrap()
-                .minted_while_agent
-        };
-        assert!(!minted(&before));
-        assert!(minted(&during));
-        assert!(!minted(&after));
+        assert!(!minted(&st));
     }
 
     #[test]

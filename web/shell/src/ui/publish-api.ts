@@ -2,6 +2,7 @@
 // (docs/contract.md "Publishing to a public Clax"). Loaded with the button,
 // after the first paint. A hosted daemon answers none of them (404).
 import { ApiError, getToken } from "../api";
+import { HELD, heldOf } from "../held";
 
 /** A public Clax this Clax is signed in to (never its token); while its
  * sign-in waits, the code, the approval page and the seconds between polls. */
@@ -47,6 +48,9 @@ async function headers(json: boolean): Promise<Record<string, string>> {
 }
 
 async function answer<T>(res: Response): Promise<T> {
+  // Held for the owner's confirmation (a push or a sign-in): where to confirm.
+  const held = await heldOf(res);
+  if (held) throw new ApiError(202, held.message, HELD);
   if (!res.ok) {
     let msg = res.statusText;
     let code: string | null = null;
