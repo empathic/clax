@@ -591,8 +591,9 @@ a free port, and walks the path above with a scripted agent (`clax mcp`):
 `connect_instance`, Connect from an owner browser session, the device
 approval there, a `read` of a private page, a `watch`, and a comment there
 reaching `clax feedback follow --once`. Each step prints a line; it exits 0
-when all pass, and stops everything it started (`--no-build` reuses the
-last builds, `--keep` keeps the run directory).
+when all pass, and stops everything it started. A passing run removes its
+run directory (`--keep` keeps it), a failing one keeps it with its logs, and
+each run prunes all but the last two (`--no-build` reuses the last builds).
 
 Edit the plugin, skill or hooks, then start a new `just dev` session to pick
 them up. A dev-home daemon left by an earlier `just dev`, whose temporary

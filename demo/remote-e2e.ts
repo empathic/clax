@@ -14,7 +14,7 @@
 //  1. The owner of the Worker publishes a private page there.
 //  2. An agent of the local Clax (`clax mcp --agent claude`, its session
 //     registered by Claude Code's SessionStart hook) reads its URL: the
-//     answer is sign_in_required, naming connect_instance.
+//     answer is remote_sign_in_required, naming connect_instance.
 //  3. The agent calls connect_instance. The local owner answers its card
 //     with Connect from a browser session of theirs (made as `clax open`
 //     makes one), the decision an agent's liveness asks a browser to
@@ -107,6 +107,29 @@ function cleanEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
   return { ...env, ...extra };
 }
 
+/** Every server and CLI child this run starts, registered as it is
+ * spawned so that any exit, a signal's included, stops it by its PID;
+ * `group` for one started in a process group of its own (wrangler),
+ * stopped by that group. */
+const spawned: { child: ChildProcess; group: boolean }[] = [];
+
+/** Stops a child started detached, by its process group: SIGTERM, then SIGKILL after 10 s. */
+async function stopGroup(child: ChildProcess): Promise<void> {
+  const pid = child.pid;
+  if (pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+  const signal = (sig: NodeJS.Signals) => {
+    try {
+      process.kill(-pid, sig);
+    } catch {
+      // already gone
+    }
+  };
+  signal("SIGTERM");
+  if (await Promise.race([exited(child).then(() => true), sleep(10_000).then(() => false)])) return;
+  signal("SIGKILL");
+  await Promise.race([exited(child), sleep(10_000)]);
+}
+
 let step = 0;
 function say(line: string): void {
   step += 1;
@@ -133,8 +156,10 @@ async function startDaemon(bin: string, home: string, port: number, log: string)
     stdio: ["ignore", out, out],
     env: cleanEnv({ CLAX_HOME: home, CLAX_CODEX_BIN: "", CLAX_NO_OPEN: "1", CLAX_GALLERY__QUICKSTART: "false" }),
   });
-  const info = join(home, "daemon.json");
-  const { token } = await until(
+  spawned.push({ child, group: false });
+  try {
+    const info = join(home, "daemon.json");
+    const { token } = await until(
     "the daemon's daemon.json",
     async () => {
       if (child.exitCode !== null) throw new Error(`the daemon exited (${child.exitCode}); see ${log}`);
@@ -144,11 +169,15 @@ async function startDaemon(bin: string, home: string, port: number, log: string)
         return null;
       }
     },
-    60_000,
-  );
-  const base = `http://127.0.0.1:${port}`;
-  await until("the daemon's /healthz", () => fetch(`${base}/healthz`).then((r) => (r.ok ? true : null), () => null), 60_000);
-  return { base, token, child, log };
+      60_000,
+    );
+    const base = `http://127.0.0.1:${port}`;
+    await until("the daemon's /healthz", () => fetch(`${base}/healthz`).then((r) => (r.ok ? true : null), () => null), 60_000);
+    return { base, token, child, log };
+  } catch (e) {
+    await stopChild(child);
+    throw e;
+  }
 }
 
 /** A JSON call to the local daemon; `auth` is its token (bearer) or an
@@ -201,6 +230,7 @@ class Agent {
 
   constructor(bin: string, env: NodeJS.ProcessEnv, cwd: string) {
     this.child = spawn(bin, ["mcp", "--agent", "claude"], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+    spawned.push({ child: this.child, group: false });
     this.child.stderr!.on("data", (b: Buffer) => (this.stderr = (this.stderr + b.toString()).slice(-4000)));
     createInterface({ input: this.child.stdout! }).on("line", (line) => {
       let m: Record<string, unknown>;
@@ -270,6 +300,7 @@ class Agent {
 function cli(bin: string, args: string[], env: NodeJS.ProcessEnv, cwd: string, input: string | null, ms: number): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((ok) => {
     const child = spawn(bin, args, { cwd, env, stdio: [input === null ? "ignore" : "pipe", "pipe", "pipe"] });
+    spawned.push({ child, group: false });
     let stdout = "";
     let stderr = "";
     child.stdout!.on("data", (b: Buffer) => (stdout += b.toString()));
@@ -303,20 +334,22 @@ const builds = new BuildLog(dir);
 let worker: RunningWorker | undefined;
 let daemon: Daemon | undefined;
 let agent: Agent | undefined;
-let following: Promise<unknown> | undefined;
+let stopping: Promise<void> | undefined;
 
-async function stopAll(): Promise<void> {
-  await agent?.stop().catch(() => undefined);
-  if (daemon) {
-    await local(daemon, "POST", "/api/admin/shutdown").catch(() => undefined);
-    await stopChild(daemon.child);
-  }
-  await worker?.stop();
-  await following?.catch(() => undefined);
+/** Stops everything this run started, once however often it is called:
+ * the agent first (it ends its session), the daemon after asking it to
+ * shut down, then every other registered child by its PID or group. */
+function stopAll(): Promise<void> {
+  stopping ??= (async () => {
+    await agent?.stop().catch(() => undefined);
+    if (daemon) await local(daemon, "POST", "/api/admin/shutdown").catch(() => undefined);
+    await Promise.all(spawned.map(({ child, group }) => (group ? stopGroup(child) : stopChild(child)).catch(() => undefined)));
+  })();
+  return stopping;
 }
 
-process.on("SIGINT", () => void stopAll().then(() => process.exit(130)));
-process.on("SIGTERM", () => void stopAll().then(() => process.exit(143)));
+process.on("SIGINT", () => void stopAll().finally(() => process.exit(130)));
+process.on("SIGTERM", () => void stopAll().finally(() => process.exit(143)));
 
 try {
   console.log(`Run directory ${dir} (build log ${builds.path}).`);
@@ -336,6 +369,7 @@ try {
     port: wport,
     secret,
     seats: "",
+    onSpawn: (child) => spawned.push({ child, group: true }),
     vars: devLocalVars({ githubClientId: "remote-e2e-unused", githubClientSecret: "remote-e2e-unused", kek: randomBytes(32).toString("hex") }),
   });
   const owner: PersonSession = await setupFirstPerson(worker.base, secret, "Owner");
@@ -381,6 +415,8 @@ try {
 
   // 3. connect_instance: the owner answers here, confirms, and approves there.
   const connecting = agent.call("connect_instance", { url_or_origin: pageUrl, reason: "to read the private plan", timeout_s: 120 }, 150_000);
+  // Awaited below; handled now so a rejection while the owner acts is not unhandled.
+  connecting.catch(() => undefined);
   const card = await until("the connection request's card in the owner's inbox", async () => {
     const r = await local(daemon!, "GET", "/api/inbox?kind=remote_request&read=all");
     const items = (r.json.items ?? []) as { remote_request?: { id: string; origin: string; status: string } }[];
@@ -436,7 +472,6 @@ try {
   expect(wake!.follow_command!.includes(`feedback follow --agent claude --harness-session '${HARNESS_SESSION}'`), "the follow command follows this harness session", wake!.follow_command);
   const followArgs = ["feedback", "follow", "--once", "--agent", "claude", "--harness-session", HARNESS_SESSION];
   const follow = cli(bin, followArgs, agentEnv, project, null, 90_000);
-  following = follow;
   const thread = await owner.form<{ thread: { id: string } }>(`/api/artifacts/${raid}/threads`, {
     anchor: JSON.stringify({ kind: "artifact" }),
     body: COMMENT,
