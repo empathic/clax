@@ -743,7 +743,12 @@ fn refuse_comments_off_in(c: &Connection, id: &str) -> Result<()> {
 /// in `hidden`), `unknown_version`. Run again in the thread's
 /// transaction; run first, outside it, so a refused clipped thread writes
 /// no clip.
-fn admit_thread_in(c: &Connection, id: &ArtifactId, t: &NewThread, hidden: &[String]) -> Result<()> {
+fn admit_thread_in(
+    c: &Connection,
+    id: &ArtifactId,
+    t: &NewThread,
+    hidden: &[String],
+) -> Result<()> {
     if !artifact_live(c, id.as_str())? {
         return Err(CoreError::NotFound);
     }
@@ -774,8 +779,8 @@ fn admit_thread_in(c: &Connection, id: &ArtifactId, t: &NewThread, hidden: &[Str
             format!("artifact {id} has no version {}", t.version_n),
         ));
     };
-    let files: std::collections::BTreeMap<String, serde_json::Value> =
-        serde_json::from_str(&files).map_err(|_| CoreError::Corrupt {
+    let files: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_str(&files)
+        .map_err(|_| CoreError::Corrupt {
             artifact_id: id.to_string(),
             column: "files_json",
             version: Some(t.version_n),
@@ -2370,14 +2375,20 @@ mod tests {
         for (nt, code) in [(unknown, "unknown_version"), (no_file, "invalid_anchor")] {
             watch(&st);
             let e = st.create_thread(DAEMON, &aid, nt).unwrap_err();
-            assert!(matches!(e, CoreError::Invalid { code: c, .. } if c == code), "{e:?}");
+            assert!(
+                matches!(e, CoreError::Invalid { code: c, .. } if c == code),
+                "{e:?}"
+            );
             assert!(!put.load(std::sync::atomic::Ordering::SeqCst), "{code}");
         }
         st.set_comments(DAEMON, &aid, false).unwrap();
         watch(&st);
         st.create_thread(DAEMON, &aid, new_thread("x", Some(PNG.to_vec())))
             .unwrap_err();
-        assert!(!put.load(std::sync::atomic::Ordering::SeqCst), "comments off");
+        assert!(
+            !put.load(std::sync::atomic::Ordering::SeqCst),
+            "comments off"
+        );
     }
 
     #[test]

@@ -1794,7 +1794,10 @@ mod tests {
         assert_eq!((p.calls, p.draft_files), (0, 1));
         assert_eq!(drafts(&ended), 0);
         assert_eq!((calls(&going), drafts(&going)), (1, 1));
-        assert_eq!(st.run(&ended.id).unwrap().unwrap().status, RunStatus::GaveUp);
+        assert_eq!(
+            st.run(&ended.id).unwrap().unwrap().status,
+            RunStatus::GaveUp
+        );
     }
 
     #[test]

@@ -637,7 +637,8 @@ mod tests {
         let (_d, st) = store();
         let src = publish(&st, None, &[("index.html", "<p>one")]);
         publish(&st, Some(&src), &[("index.html", "<p>two")]);
-        let req = serde_json::json!({"files": {"index.html": {"content": "<p>", "encoding": "utf8"}}});
+        let req =
+            serde_json::json!({"files": {"index.html": {"content": "<p>", "encoding": "utf8"}}});
         let p = clax_core::publish::validate(serde_json::from_value(req).unwrap()).unwrap();
         let (a, _) = st
             .block_on(st.create_artifact_forked_from_async(DAEMON, p, None, true, Some(&src)))
