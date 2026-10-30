@@ -125,7 +125,10 @@ mod tests {
     #[test]
     fn the_code_is_read_from_the_query() {
         assert_eq!(code_of(LINK), Some("cxi_abc"));
-        assert_eq!(code_of("http://localhost:7/login?next=%2F&code=cxi_z#f"), Some("cxi_z"));
+        assert_eq!(
+            code_of("http://localhost:7/login?next=%2F&code=cxi_z#f"),
+            Some("cxi_z")
+        );
         assert_eq!(code_of("http://localhost:7/a/x"), None);
         assert_eq!(code_of("http://localhost:7/login?code="), None);
     }
@@ -133,7 +136,12 @@ mod tests {
     #[test]
     fn the_page_sends_the_browser_on_and_loads_nothing_else() {
         let p = page("http://localhost:7/login?code=c&next=\"</script>");
-        assert!(p.contains("content=\"0;url=http://localhost:7/login?code=c&amp;next=&quot;&lt;/script&gt;\""), "{p}");
+        assert!(
+            p.contains(
+                "content=\"0;url=http://localhost:7/login?code=c&amp;next=&quot;&lt;/script&gt;\""
+            ),
+            "{p}"
+        );
         assert!(p.contains("location.replace(\"http://localhost:7/login?code=c&next=\\\"\\u003c/script\\u003e\")"), "{p}");
         assert!(!p.contains("src="), "{p}");
     }
@@ -145,7 +153,11 @@ mod tests {
         let path = write(&login, LINK).unwrap();
         assert_eq!(path, login.join(page_name("cxi_abc")));
         assert!(!path.to_string_lossy().contains("cxi_"));
-        assert!(std::fs::read_to_string(&path).unwrap().contains("code=cxi_abc"));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("code=cxi_abc")
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

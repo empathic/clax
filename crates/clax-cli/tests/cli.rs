@@ -1028,8 +1028,7 @@ fn open_hands_the_browser_a_login_link_and_prints_none() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode =
-            |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&login_dir), 0o700);
         assert_eq!(mode(&page), 0o600);
     }

@@ -282,7 +282,11 @@ async fn an_owner_session_fetched_by_another_site_is_no_credential() {
                 .await
                 .unwrap();
             assert!(set_cookies(&res).is_empty(), "{site} {path}");
-            assert_eq!(code_of(res).await, (401, "no_credential".into()), "{site} {path}");
+            assert_eq!(
+                code_of(res).await,
+                (401, "no_credential".into()),
+                "{site} {path}"
+            );
         }
     }
     assert_eq!(viewers(), before, "no viewer was made");
@@ -421,10 +425,13 @@ async fn a_caller_without_a_credential_cannot_comment_or_mint_a_viewer() {
         assert_eq!(res.status(), 401);
         // Nor a `?token=` that is not the token, where a route takes one.
         for path in ["/api/events", &format!("/api/artifacts/{aid}/room")] {
-            let res = with(ts.client.get(format!("{}{path}?token=not-the-token", ts.base)))
-                .send()
-                .await
-                .unwrap();
+            let res = with(
+                ts.client
+                    .get(format!("{}{path}?token=not-the-token", ts.base)),
+            )
+            .send()
+            .await
+            .unwrap();
             assert_eq!(code_of(res).await, (401, "no_credential".into()), "{path}");
         }
     }

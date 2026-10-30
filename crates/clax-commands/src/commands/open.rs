@@ -39,7 +39,8 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         None => "/".to_string(),
     };
     let url = c.browser_url(&path);
-    if !cli.json && !clax_mcp::tools::open_login_in_browser(&home.login_dir(), &c.login_url(&path)?) {
+    if !cli.json && !clax_mcp::tools::open_login_in_browser(&home.login_dir(), &c.login_url(&path)?)
+    {
         anyhow::bail!("could not open a browser; run `clax login {path}` for a link to open");
     }
     super::print(cli, serde_json::json!({"url": url}), |j| {

@@ -130,8 +130,7 @@ async fn the_login_link_reaches_the_opener_in_a_private_page_not_its_argv() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode =
-            |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&login), 0o700);
         assert_eq!(mode(&page), 0o600);
     }
