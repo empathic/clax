@@ -93,7 +93,14 @@ async fn a_new_daemon_token_ends_every_owner_browser_session() {
         .unwrap();
     assert_ne!(again.state().token, first, "a new token");
     assert!(!again.state().owner_sessions.is_live(&hash));
-    assert!(again.state().store.live_owner_sessions().unwrap().is_empty());
+    assert!(
+        again
+            .state()
+            .store
+            .live_owner_sessions()
+            .unwrap()
+            .is_empty()
+    );
     again.stop().await;
 }
 

@@ -1304,10 +1304,7 @@ mod tests {
         assert_eq!(st.remote_links("a1").unwrap()[0].remote_id, r.id);
         // Not pending any more: nothing to abandon.
         assert!(st.abandon_sign_in(&r.id).unwrap().is_some());
-        assert_eq!(
-            st.find_remote(&r.id).unwrap().unwrap().status,
-            "signed_out"
-        );
+        assert_eq!(st.find_remote(&r.id).unwrap().unwrap().status, "signed_out");
         // A new remote's abandoned sign-in forgets it.
         let p = st
             .add_pending_remote("https://b.example", "b", &sign_in("cxd_4"))

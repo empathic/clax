@@ -283,14 +283,14 @@ pub(super) async fn start_add(
             ),
         ));
     }
-    let (sign_in, return_to_kept) =
-        clax_rt::sendable(public::start_sign_in(
-            &origin,
-            &machine,
-            kind,
-            return_to,
-            s.remote_deadline,
-        )).await?;
+    let (sign_in, return_to_kept) = clax_rt::sendable(public::start_sign_in(
+        &origin,
+        &machine,
+        kind,
+        return_to,
+        s.remote_deadline,
+    ))
+    .await?;
     // What the token will read threads as there: a device's unfiltered,
     // an agent token's filtered by the person's approvals.
     let kind = match kind {

@@ -250,7 +250,11 @@ async fn an_agent_manages_only_its_own_sessions_remote_watches() {
     let body = json!({"remote": t.rid, "artifact_id": t.raid});
     for method in [Method::PUT, Method::DELETE] {
         let (s, v) = local_req(&t.local, method.clone(), &path, body.clone(), Some(&b)).await;
-        assert_eq!((s, v["error"]["code"].as_str()), (403, Some("forbidden")), "{v}");
+        assert_eq!(
+            (s, v["error"]["code"].as_str()),
+            (403, Some("forbidden")),
+            "{v}"
+        );
         let res = t
             .local
             .authed(
@@ -264,7 +268,11 @@ async fn an_agent_manages_only_its_own_sessions_remote_watches() {
             .await
             .unwrap();
         let (s, v) = json_of(res).await;
-        assert_eq!((s, v["error"]["code"].as_str()), (403, Some("forbidden")), "{v}");
+        assert_eq!(
+            (s, v["error"]["code"].as_str()),
+            (403, Some("forbidden")),
+            "{v}"
+        );
     }
     assert!(t.mirror().is_none(), "nothing was followed");
     // Its own session's, it may.

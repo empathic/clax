@@ -309,7 +309,9 @@ impl Core {
         let followers = crate::linked::end_followers(&self.state, JOURNAL_STOP_TIMEOUT);
         let ((), ended) = futures::future::join(journal, followers).await;
         if !ended {
-            tracing::warn!("followers' sessions on remotes did not end in time; the remotes reap them");
+            tracing::warn!(
+                "followers' sessions on remotes did not end in time; the remotes reap them"
+            );
         }
         let store = self.state.store.clone();
         #[cfg(test)]

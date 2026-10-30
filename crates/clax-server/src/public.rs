@@ -928,11 +928,7 @@ pub async fn poll_sign_in(s: &AppState, r: &Remote) -> Result<SignIn, ApiError> 
     let forget = |why: &'static str| async move {
         let id = r.id.clone();
         let now = s
-            .store_call(move |st| {
-                Ok(st
-                    .abandon_sign_in(&id)?
-                    .filter(|x| x.status == "connected"))
-            })
+            .store_call(move |st| Ok(st.abandon_sign_in(&id)?.filter(|x| x.status == "connected")))
             .await?;
         Ok::<_, ApiError>(match now {
             Some(x) => SignIn::Connected(Box::new(x)),

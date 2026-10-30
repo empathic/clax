@@ -232,7 +232,11 @@ mod tests {
         let (_, a) = st.open_owner_session().unwrap();
         st.open_owner_session().unwrap();
         assert!(st.end_owner_session(&a.sha256).unwrap());
-        assert_eq!(st.end_all_owner_sessions().unwrap(), 1, "the one still live");
+        assert_eq!(
+            st.end_all_owner_sessions().unwrap(),
+            1,
+            "the one still live"
+        );
         assert!(st.live_owner_sessions().unwrap().is_empty());
         assert_eq!(st.end_all_owner_sessions().unwrap(), 0);
     }

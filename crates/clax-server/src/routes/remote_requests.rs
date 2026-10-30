@@ -405,8 +405,8 @@ fn closed(r: &Request) -> ApiError {
 
 /// Connect: the owner's add for the request's origin, the daemon then
 /// polling its sign-in ([`drive`]). Connects take the origin's Connect
-/// lock ([`clax_http::remote_drivers::RemoteDrivers::connect_lock`]), so a second one, at once or later while the first's sign-in
-/// waits, answers that sign-in again (driving it when no task of this
+/// lock ([`clax_http::remote_drivers::RemoteDrivers::connect_lock`]), so
+/// a second one, at once or later while the first's sign-in waits, answers that sign-in again (driving it when no task of this
 /// daemon does, as after a restart) rather than starting another.
 async fn connect(s: &AppState, r: Request) -> Result<Response, ApiError> {
     let lock = s.remote_drivers.connect_lock(&r.origin);
