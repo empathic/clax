@@ -1448,6 +1448,35 @@ impl DaemonClient {
         .await
     }
 
+    /// `POST /api/remotes/requests {url, reason?}` as this session: asks
+    /// the person to connect the Clax instance `url` is on: `{status,
+    /// request?, remote?, until?}`.
+    pub async fn remote_request(&self, url: &str, reason: Option<&str>) -> Result<Value> {
+        let mut body = json!({"url": url});
+        if let Some(r) = reason {
+            body["reason"] = json!(r);
+        }
+        self.json(|c| {
+            c.request(reqwest::Method::POST, "/api/remotes/requests")
+                .json(&body)
+        })
+        .await
+    }
+
+    /// `GET /api/remotes/requests/<id>?wait=<wait_s>`: `{request_id,
+    /// status, origin, name, remote?, waited_s, call_again}`; the deadline
+    /// is `wait_s` plus 10 s. `id` must be a ULID.
+    pub async fn remote_request_wait(&self, id: &str, wait_s: u64) -> Result<Value> {
+        let q = [("wait", wait_s.to_string())];
+        let deadline = Duration::from_secs(wait_s + 10);
+        self.json(|c| {
+            c.request(reqwest::Method::GET, &format!("/api/remotes/requests/{id}"))
+                .query(&q)
+                .timeout(deadline)
+        })
+        .await
+    }
+
     /// `PUT /api/sessions/<sid>/working/<id>`: `{working, message_truncated}`.
     pub async fn set_working(&self, id: &str, body: &Value) -> Result<Value> {
         self.json(|c| {

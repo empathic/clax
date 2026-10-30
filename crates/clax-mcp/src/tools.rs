@@ -1,4 +1,4 @@
-//! The Clax MCP tool set: thirty-two tools that call the daemon's REST API.
+//! The Clax MCP tool set: thirty-nine tools that call the daemon's REST API.
 
 use crate::client::{ClientError, DaemonClient};
 use crate::render;
@@ -406,6 +406,20 @@ pub struct QueueReplyArgs {
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WhereToAskArgs {}
+
+/// `connect_instance`'s arguments (spec 2026-10-29-remote-instances §3).
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectInstanceArgs {
+    /// A URL on the Clax instance (the page you want to read), or its origin.
+    pub url_or_origin: Option<String>,
+    /// Why you need it, in a sentence the person reads.
+    pub reason: Option<String>,
+    /// `request_id` from a previous call, to keep waiting on that request.
+    pub request_id: Option<String>,
+    /// Seconds to wait for the person's answer (default 600, 50 under Codex).
+    pub timeout_s: Option<u64>,
+}
 
 /// What `ask`'s `approval` asks to see (spec §9.2).
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -1382,9 +1396,11 @@ impl ClaxTools {
                 self.client.note_artifact(&id);
                 Ok((id, version))
             }
-            crate::target::Target::SignInRequired { origin, name } => {
-                Err(crate::target::sign_in_required(&origin, &name))
-            }
+            crate::target::Target::SignInRequired {
+                origin,
+                name,
+                request,
+            } => Err(crate::target::sign_in_required(&origin, &name, &request)),
             crate::target::Target::Remote { origin, url, .. } => {
                 Err(crate::target::remote_not_yet(&origin, &url))
             }
@@ -2512,8 +2528,12 @@ impl ClaxTools {
             crate::target::Target::Artifact { id, .. } => {
                 return self.do_watch_artifact(id, a).await;
             }
-            crate::target::Target::SignInRequired { origin, name } => {
-                return Err(crate::target::sign_in_required(&origin, &name));
+            crate::target::Target::SignInRequired {
+                origin,
+                name,
+                request,
+            } => {
+                return Err(crate::target::sign_in_required(&origin, &name, &request));
             }
             crate::target::Target::Remote { origin, url, .. } => {
                 return Err(crate::target::remote_not_yet(&origin, &url));
@@ -2779,6 +2799,65 @@ impl ClaxTools {
         }
         self.queue_action(&a.queue, &a.report_id, "comments", json!({"body": a.body}))
             .await
+    }
+
+    /// `connect_instance` (spec 2026-10-29-remote-instances §3): asks the
+    /// person to connect the Clax instance `url_or_origin` is on (or keeps
+    /// waiting on `request_id`), then waits for their answer in polls of at
+    /// most 50 s, up to `timeout_s`.
+    async fn do_connect_instance(&self, a: ConnectInstanceArgs) -> Outcome {
+        let session = self.require_session().await?;
+        let wait = a
+            .timeout_s
+            .unwrap_or_else(|| default_ask_wait(&session.harness))
+            .clamp(MIN_WAIT_S, max_ask_wait(&session.harness));
+        let id = match (a.url_or_origin.as_deref(), a.request_id) {
+            (Some(url), None) => {
+                let v = self
+                    .client
+                    .remote_request(url, a.reason.as_deref())
+                    .await
+                    .map_err(|e| self.fail(e))?;
+                if v["status"] != "open" {
+                    // Connected, muted or held off: nothing to wait for.
+                    let mut out = v.clone();
+                    out["call_again"] = json!(false);
+                    return Ok(out);
+                }
+                v["request"]["id"].as_str().unwrap_or_default().to_string()
+            }
+            (None, Some(id)) if clax_core::is_ulid(&id) => id,
+            (None, Some(id)) => return Err(invalid(format!("'{id}' is not a request ID"))),
+            _ => {
+                return Err(invalid(
+                    "pass `url_or_origin` to ask, or `request_id` to keep waiting on a request",
+                ));
+            }
+        };
+        let started = clax_rt::time::Instant::now();
+        loop {
+            let left = wait.saturating_sub(started.elapsed().as_secs());
+            let v = self
+                .client
+                .remote_request_wait(&id, left.min(50))
+                .await
+                .map_err(|e| {
+                    render::client_error_with(e, self.daemon_log(), json!({"request_id": id}))
+                })?;
+            if v["status"] != "open" || left <= 50 {
+                let mut out = v.clone();
+                out["waited_s"] = json!(started.elapsed().as_secs());
+                if v["status"] == "open" {
+                    let url = format!("{}/inbox?remote_request={id}", self.browser_base());
+                    out["tell_terminal"] = json!(format!(
+                        "Asked in Clax to connect {}: {url}",
+                        v["name"].as_str().unwrap_or("the instance")
+                    ));
+                    out["url"] = json!(url);
+                }
+                return Ok(out);
+            }
+        }
     }
 
     /// The daemon's suggestion of where to ask the session's person now:
@@ -3471,6 +3550,7 @@ direct_tools!(
     git_remote,
     ask,
     where_to_ask,
+    connect_instance,
     db_get,
     db_list,
     db_query,
@@ -3836,6 +3916,22 @@ impl ClaxTools {
         Parameters(args): Parameters<AskArgs>,
     ) -> Result<CallToolResult, McpError> {
         self.finish(self.do_ask(args).await).await
+    }
+
+    #[tool(
+        description = "Ask the person to connect this Clax to another Clax instance, so you can read a page there (a `url_or_id` another tool refused with `remote_sign_in_required`). Pass `url_or_origin` (the page's URL, or the instance's origin) and a short `reason`; the person sees one card, in the inbox and in your thread, and approves on the other instance, or answers Not now or Never. Waits for the answer (up to `timeout_s`): `status` is `connected` (with `remote`; call the refused tool again), `dismissed`, `muted`, `not_now` (with `until`), `expired`, or `open` with `call_again` (call again with `request_id`; write the `tell_terminal` line in chat). You never see a code or a token.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    pub async fn connect_instance(
+        &self,
+        Parameters(args): Parameters<ConnectInstanceArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.finish(self.do_connect_instance(args).await).await
     }
 
     #[tool(
@@ -4320,12 +4416,12 @@ mod tests {
         }
     }
 
-    /// Thirty-eight tools, `comments_handoff` (spec 2026-10-08 §16),
+    /// Thirty-nine tools, `connect_instance` (spec 2026-10-29 §3), `comments_handoff` (spec 2026-10-08 §16),
     /// `where_to_ask` (spec 2026-10-16 §1), `tag`, `tags` and the six queue
     /// tools (spec 2026-10-27 §7) among them.
     #[test]
-    fn tool_count_is_38() {
-        assert_eq!(ClaxTools::tool_count(), 38);
+    fn tool_count_is_39() {
+        assert_eq!(ClaxTools::tool_count(), 39);
         for name in [
             "comments_handoff",
             "where_to_ask",

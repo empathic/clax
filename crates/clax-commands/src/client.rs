@@ -265,16 +265,25 @@ pub struct NotForAgents {
     pub url: String,
     /// The refused route serves the inbox.
     pub inbox: bool,
+    /// What an agent does instead, when there is such a thing.
+    pub instead: Option<String>,
 }
 
 impl NotForAgents {
     /// The one line the CLI prints.
     pub fn line(&self) -> String {
+        let instead = self
+            .instead
+            .as_deref()
+            .map_or(String::new(), |i| format!("; agents: {i}"));
         if self.inbox {
-            format!("The inbox is for people: open {} in a browser.", self.url)
+            format!(
+                "The inbox is for people: open {} in a browser{instead}.",
+                self.url
+            )
         } else {
             format!(
-                "This is for people, not agents: open {} in a browser.",
+                "This is for people, not agents: open {} in a browser{instead}.",
                 self.url
             )
         }
@@ -938,9 +947,13 @@ impl Client {
                     (_, true) => "/people",
                     _ => "/",
                 };
+                // Adding a remote is the owner's; an agent asks for one.
+                let instead =
+                    (path == "/api/remotes").then(|| "use `clax remote request <url>`".to_string());
                 return Err(NotForAgents {
                     url: self.browser_url(page),
                     inbox,
+                    instead,
                 }
                 .into());
             }

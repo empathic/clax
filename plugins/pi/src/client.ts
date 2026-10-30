@@ -862,6 +862,20 @@ export class DaemonClient {
     return this.json(() => `${this.sessionPath()}/where-to-ask`, { method: "GET" });
   }
 
+  /** `POST /api/remotes/requests {url, reason?}` as this session: asks the
+   * person to connect the Clax instance `url` is on (spec
+   * 2026-10-29-remote-instances §3): `{status, request?, remote?, until?}`. */
+  remoteRequest(url: string, reason?: string): Promise<any> {
+    return this.json(() => "/api/remotes/requests", this.jsonBody("POST", reason === undefined ? { url } : { url, reason }));
+  }
+
+  /** `GET /api/remotes/requests/<id>?wait=<waitS>`: `{request_id, status,
+   * origin, name, remote?, waited_s, call_again}`. `id` must be a ULID. */
+  remoteRequestWait(id: string, waitS: number): Promise<any> {
+    const q = new URLSearchParams({ wait: String(waitS) });
+    return this.json(() => `/api/remotes/requests/${id}?${q}`, { method: "GET", timeoutMs: (waitS + 10) * 1000 });
+  }
+
   /** `POST /api/sessions/<sid>/terminal`: the person typed a prompt (spec
    * 2026-10-16-ask-where-attention-is-design §1). Only discovers a running
    * daemon, never starts one. */

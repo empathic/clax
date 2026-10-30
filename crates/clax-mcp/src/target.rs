@@ -25,8 +25,13 @@ pub enum Target {
         url: String,
     },
     /// A Clax instance this home is not connected to, by its origin and
-    /// name.
-    SignInRequired { origin: String, name: String },
+    /// name, and the daemon's `request`: how to ask the person to connect
+    /// it (`{tool, command}`; null from a daemon that gives none).
+    SignInRequired {
+        origin: String,
+        name: String,
+        request: Value,
+    },
     /// A web page, by its URL as given.
     Page(String),
 }
@@ -61,7 +66,11 @@ pub fn resolved(v: &Value, url: &str) -> Target {
             _ => page(),
         },
         Some("sign_in_required") => match (text("origin"), text("name")) {
-            (Some(origin), Some(name)) => Target::SignInRequired { origin, name },
+            (Some(origin), Some(name)) => Target::SignInRequired {
+                origin,
+                name,
+                request: v["request"].clone(),
+            },
             _ => page(),
         },
         _ => page(),
@@ -69,16 +78,20 @@ pub fn resolved(v: &Value, url: &str) -> Target {
 }
 
 /// The error for a URL on a Clax instance this home is not connected to:
-/// `remote_sign_in_required`, naming it and the tool that connects it.
-pub fn sign_in_required(origin: &str, name: &str) -> CallToolResult {
+/// `remote_sign_in_required`, naming it, the daemon's `request` (how to
+/// ask the person to connect it: the tool and the CLI command), and the
+/// tool that connects it.
+pub fn sign_in_required(origin: &str, name: &str, request: &Value) -> CallToolResult {
+    let tool = request["tool"].as_str().unwrap_or("connect_instance");
     render::error(
         "remote_sign_in_required",
         format!("{name} ({origin}) is a Clax instance this Clax is not connected to"),
         json!({
             "origin": origin,
             "name": name,
+            "request": request,
             "next": format!(
-                "Ask the person to connect it: call connect_instance with {origin}, then call this tool again"
+                "Ask the person to connect it: call {tool} with {origin}, then call this tool again"
             ),
         }),
     )
@@ -349,7 +362,22 @@ mod tests {
             ),
             Target::SignInRequired {
                 origin: "https://clax.example".into(),
-                name: "Acme".into()
+                name: "Acme".into(),
+                request: Value::Null,
+            }
+        );
+        let request = json!({"tool": "connect_instance",
+            "command": "clax remote request https://clax.example/a/7q3k9mzx2b4t"});
+        assert_eq!(
+            resolved(
+                &json!({"kind": "sign_in_required", "origin": "https://clax.example",
+                        "name": "Acme", "request": request}),
+                U
+            ),
+            Target::SignInRequired {
+                origin: "https://clax.example".into(),
+                name: "Acme".into(),
+                request: request.clone(),
             }
         );
         assert_eq!(
@@ -374,7 +402,10 @@ mod tests {
             let t = r.content[0].as_text().unwrap().text.clone();
             serde_json::from_str(&t).unwrap()
         };
-        let v = body(sign_in_required("https://clax.example", "Acme"));
+        let request = json!({"tool": "connect_instance",
+            "command": "clax remote request https://clax.example/a/7q3k9mzx2b4t"});
+        let v = body(sign_in_required("https://clax.example", "Acme", &request));
+        assert_eq!(v["error"]["request"], request);
         assert_eq!(v["error"]["code"], "remote_sign_in_required");
         assert_eq!(v["error"]["origin"], "https://clax.example");
         assert_eq!(v["error"]["name"], "Acme");

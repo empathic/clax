@@ -84,6 +84,11 @@ mod l10 {
         ("remotes::add", Owner),
         ("remotes::poll", Owner),
         ("remotes::remove", Owner),
+        ("remote_requests::ask", NoArtifact),
+        ("remote_requests::poll", NoArtifact),
+        ("remote_requests::answer", NoArtifact),
+        ("remote_requests::mutes", Owner),
+        ("remote_requests::unmute", NoArtifact),
         ("remote_apps::link", Owner),
         ("remote_apps::apps", Owner),
         ("remote_apps::unpublish", Owner),
@@ -351,6 +356,7 @@ mod l10 {
             "perf" => include_str!("perf.rs"),
             "questions" => include_str!("questions.rs"),
             "remotes" => include_str!("remotes.rs"),
+            "remote_requests" => include_str!("remote_requests.rs"),
             "resolve" => include_str!("resolve.rs"),
             "remote_apps" => include_str!("remote_apps.rs"),
             "room" => include_str!("room.rs"),
@@ -574,6 +580,18 @@ mod l10 {
         (
             "remotes::remove",
             "forgets a public Clax's token here; its revocation there is audited there",
+        ),
+        (
+            "remote_requests::ask",
+            "asks the owner to connect a Clax instance; nothing is connected until the owner's sign-in there, which audits the token it mints",
+        ),
+        (
+            "remote_requests::answer",
+            "the owner's answer to a connection request; a Connect's sign-in there audits the token it mints",
+        ),
+        (
+            "remote_requests::unmute",
+            "lets agents ask again to connect a Clax instance; no content changes",
         ),
         (
             "remotes::patch_link",

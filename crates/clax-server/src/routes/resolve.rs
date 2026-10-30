@@ -1,8 +1,8 @@
 //! `GET /api/resolve?url=<url>` → what the URL names ([`crate::resolve`]):
 //! `{kind: "local", artifact_id, version?}`, `{kind: "remote", remote,
 //! origin, name, artifact_id, version?, url}`, `{kind: "sign_in_required",
-//! origin, name}` or `{kind: "page", url}`. It changes nothing but the
-//! discovery cache.
+//! origin, name, request: {tool, command}}` or `{kind: "page", url}`. It
+//! changes nothing but the discovery cache.
 //!
 //! The owner and the owner's agents get every answer; any other caller
 //! (a person's agent, a person) only `local` or `page`

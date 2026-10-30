@@ -196,12 +196,54 @@ pub async fn add(
         None => None,
     };
     let origin = public::origin_of(&b.url)?;
-    let name = b
-        .name
+    let (r, return_to_kept) = start_add(
+        &s,
+        origin,
+        b.name,
+        b.machine,
+        b.kind.as_deref(),
+        return_to.as_deref(),
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(sign_in_view(&r, return_to_kept))).into_response())
+}
+
+/// What `POST /api/remotes` answers for the sign-in of pending remote `r`:
+/// `{remote, user_code, verification_url, expires_at, interval,
+/// return_to_kept}`.
+pub(super) fn sign_in_view(r: &Remote, return_to_kept: bool) -> Value {
+    json!({
+        "remote": remote_view(r),
+        "user_code": r.user_code,
+        "verification_url": r.verification_url,
+        "expires_at": r.sign_in_expires_at,
+        "interval": r.poll_interval_s,
+        "return_to_kept": return_to_kept,
+    })
+}
+
+/// The owner's add, once its caller is checked: starts a device sign-in
+/// at `origin` (normalized, [`public::origin_of`]) naming this machine
+/// `machine` (its host name when absent) and keeps the remote, named
+/// `name` (its host when absent), waiting for it. Also the Connect of a
+/// connection request (`crate::routes::remote_requests`). The pending
+/// remote, and whether the remote kept `return_to`.
+///
+/// # Errors
+/// 400 `remote_exists` for an origin signed in to already, or a name
+/// taken; the remote's ([`public::start_sign_in`]).
+pub(super) async fn start_add(
+    s: &AppState,
+    origin: String,
+    name: Option<String>,
+    machine: Option<String>,
+    kind: Option<&str>,
+    return_to: Option<&str>,
+) -> Result<(Remote, bool), ApiError> {
+    let name = name
         .filter(|n| !n.trim().is_empty())
         .unwrap_or_else(|| public::default_name(&origin));
-    let machine = b
-        .machine
+    let machine = machine
         .filter(|n| !n.trim().is_empty())
         .unwrap_or_else(public::machine_name);
     let o2 = origin.clone();
@@ -216,16 +258,11 @@ pub async fn add(
             ),
         ));
     }
-    let (sign_in, return_to_kept) = clax_rt::sendable(public::start_sign_in(
-        &origin,
-        &machine,
-        b.kind.as_deref(),
-        return_to.as_deref(),
-    ))
-    .await?;
+    let (sign_in, return_to_kept) =
+        clax_rt::sendable(public::start_sign_in(&origin, &machine, kind, return_to)).await?;
     // What the token will read threads as there: a device's unfiltered,
     // an agent token's filtered by the person's approvals.
-    let kind = match b.kind.as_deref() {
+    let kind = match kind {
         Some(clax_store::remotes::CLIENT_KIND_APP) => clax_store::remotes::CLIENT_KIND_APP,
         _ => clax_store::remotes::CLIENT_KIND_AGENT,
     };
@@ -236,18 +273,7 @@ pub async fn add(
             Ok(r)
         })
         .await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "remote": remote_view(&r),
-            "user_code": r.user_code,
-            "verification_url": r.verification_url,
-            "expires_at": r.sign_in_expires_at,
-            "interval": r.poll_interval_s,
-            "return_to_kept": return_to_kept,
-        })),
-    )
-        .into_response())
+    Ok((r, return_to_kept))
 }
 
 async fn remote_named(s: &AppState, key: String) -> Result<Remote, ApiError> {
@@ -289,7 +315,7 @@ pub async fn poll(
 /// Keeps the home that now holds an outbound agent token its user's alone:
 /// the root 0700 and the database's files 0600 (a home made by an older
 /// Clax, or copied in, may be readable by others). Native unix only.
-fn owner_only(home: &clax_core::Home) {
+pub(super) fn owner_only(home: &clax_core::Home) {
     #[cfg(all(unix, not(target_arch = "wasm32")))]
     {
         use std::os::unix::fs::PermissionsExt;

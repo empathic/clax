@@ -69,12 +69,36 @@ pub enum Resolved {
         version: Option<u32>,
         url: String,
     },
-    /// A Clax instance this home is not connected to: the URL's origin and
-    /// the name its discovery gives.
-    SignInRequired { origin: String, name: String },
+    /// A Clax instance this home is not connected to: the URL's origin,
+    /// the name its discovery gives, and how an agent asks the person to
+    /// connect it.
+    SignInRequired {
+        origin: String,
+        name: String,
+        request: SignInRequest,
+    },
     /// Not a Clax artifact this daemon can name: a web page, the URL as
     /// given.
     Page { url: String },
+}
+
+/// How an agent asks the person to connect an instance: a connection
+/// request (`POST /api/remotes/requests`), through the MCP tool `tool` or
+/// the CLI's `command`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SignInRequest {
+    pub tool: String,
+    pub command: String,
+}
+
+impl SignInRequest {
+    /// The request for `url`, a URL on the instance.
+    pub fn for_url(url: &str) -> SignInRequest {
+        SignInRequest {
+            tool: "connect_instance".to_string(),
+            command: format!("clax remote request {url}"),
+        }
+    }
 }
 
 /// What `url` names, as the module comment orders it.
@@ -124,6 +148,7 @@ pub async fn resolve(s: &AppState, url: &str) -> Result<Resolved, ApiError> {
         Some(i) => Resolved::SignInRequired {
             origin,
             name: i.name,
+            request: SignInRequest::for_url(&raw),
         },
         None => Resolved::Page { url: raw },
     })
@@ -270,7 +295,7 @@ async fn on_remote<'r>(
 /// What `origin`'s discovery says, from [`AppState::discovery`] or asked
 /// now: the Clax instance it is, or `None` when it is none, did not
 /// answer, or may not be asked (not `https`, nor `http` on loopback).
-async fn discover(s: &AppState, origin: &str) -> Option<Instance> {
+pub async fn discover(s: &AppState, origin: &str) -> Option<Instance> {
     clax_core::config::hosted_origin(origin)?;
     match s.discovery.get(origin) {
         Cached::Clax(i) => return Some(i),
@@ -345,9 +370,12 @@ mod tests {
         assert_eq!(
             v(Resolved::SignInRequired {
                 origin: "https://clax.example".into(),
-                name: "Acme".into()
+                name: "Acme".into(),
+                request: SignInRequest::for_url("https://clax.example/a/7q3k9mzx2b4t"),
             }),
-            json!({"kind": "sign_in_required", "origin": "https://clax.example", "name": "Acme"})
+            json!({"kind": "sign_in_required", "origin": "https://clax.example", "name": "Acme",
+                   "request": {"tool": "connect_instance",
+                               "command": "clax remote request https://clax.example/a/7q3k9mzx2b4t"}})
         );
         assert_eq!(
             v(Resolved::Page {

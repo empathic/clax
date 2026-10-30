@@ -252,3 +252,33 @@ async fn remote_add_signs_in_by_device_code_and_push_publishes_every_version() {
     );
     assert_eq!(v["remotes"], json!([]));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_adding_a_remote_is_pointed_at_remote_request() {
+    let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+    let public = TestServer::spawn_hosted(clock, Some(SECRET)).await;
+    let origin = format!("http://localhost:{}", public.addr.port());
+    let e = Env::new();
+    // Under a harness, adding is refused with one line naming what an
+    // agent does instead.
+    let out = e
+        .cmd()
+        .env("CLAUDECODE", "1")
+        .args(["remote", "add", &origin, "--no-open"])
+        .assert()
+        .code(2);
+    let line = String::from_utf8_lossy(&out.get_output().stdout).to_string();
+    assert!(
+        line.contains("not agents") && line.contains("agents: use `clax remote request <url>`"),
+        "{line}"
+    );
+    // Asking needs the agent's session.
+    let out = e
+        .cmd()
+        .env("CLAUDECODE", "1")
+        .args(["remote", "request", &origin, "--reason", "to read the plan"])
+        .assert()
+        .failure();
+    let err = String::from_utf8_lossy(&out.get_output().stderr).to_string();
+    assert!(err.contains("session_required"), "{err}");
+}

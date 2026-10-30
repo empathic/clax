@@ -110,6 +110,7 @@ async fn mcp_lists_the_tools(path: &str) {
             "comments_read",
             "comments_reply",
             "comments_resolve",
+            "connect_instance",
             "db_batch",
             "db_delete",
             "db_get",

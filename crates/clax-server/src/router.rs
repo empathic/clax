@@ -7,9 +7,9 @@ use crate::routes::{
     admin, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot, client_imports,
     connect, content, discovery, docs, drafts, extension, feedback, git_token, grants, health,
     inbox, jobs, live, live_layers, login, mcp_http, people, perf, permissions, questions,
-    queue_agent, queue_reporter, queues, remote_apps, remotes, resolve, room, sample, sessions,
-    settings, site_signin, sites, snapshot, stream, surface, tags, threads, token, toolpath,
-    viewers, watches, working,
+    queue_agent, queue_reporter, queues, remote_apps, remote_requests, remotes, resolve, room,
+    sample, sessions, settings, site_signin, sites, snapshot, stream, surface, tags, threads,
+    token, toolpath, viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::routes::{events, mcp, net};
@@ -581,6 +581,16 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/remotes", get(remotes::list).post(remotes::add))
         .route("/api/remotes/{id}", delete(remotes::remove))
         .route("/api/remotes/{id}/poll", post(remotes::poll))
+        .route("/api/remotes/requests", post(remote_requests::ask))
+        .route(
+            "/api/remotes/requests/{id}/answer",
+            post(remote_requests::answer),
+        )
+        .route("/api/remotes/mutes", get(remote_requests::mutes))
+        .route(
+            "/api/remotes/mutes/{origin}",
+            delete(remote_requests::unmute),
+        )
         .route("/api/artifacts/{aid}/remotes", get(remotes::for_artifact))
         .route(
             "/api/artifacts/{aid}/remotes/{rid}",
@@ -745,6 +755,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         // A long-poll: outside the request timeout, as the feedback poll.
         .route("/api/sessions/{id}/questions/{qid}", get(questions::poll))
         .route("/api/sessions/{id}/approvals/{rid}", get(approvals::poll))
+        .route("/api/remotes/requests/{id}", get(remote_requests::poll))
         .merge(api_fast)
         .merge(api_slow)
         .merge(shell_routes)

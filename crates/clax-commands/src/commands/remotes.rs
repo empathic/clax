@@ -1,9 +1,11 @@
-//! `clax remote add|list|remove|comments|unlink`: the public Clax instances this Clax
+//! `clax remote add|list|remove|comments|unlink|request`: the public Clax instances this Clax
 //! publishes to (the daemon's `/api/remotes`). Adding one signs this Clax
 //! in there by device code: the command opens the public instance's
 //! approval page, the person signed in there approves this machine, and
 //! the daemon receives an agent token of theirs. Not `clax connect`, which
-//! joins another machine's daemon as a person's machine.
+//! joins another machine's daemon as a person's machine. Adding is the
+//! owner's: an agent asks for one with `clax remote request`, which the
+//! person answers in Clax.
 
 use crate::client::Client;
 use clax_core::Home;
@@ -34,6 +36,30 @@ pub enum Cmd {
     /// End a pushed artifact's link to its public copy. The public copy
     /// stays; its threads stay here as read-only history.
     Unlink(UnlinkArgs),
+    /// Ask the person to connect this Clax to another Clax instance (for
+    /// agents): a URL on it, or its origin.
+    ///
+    /// The person sees one card in Clax and answers Connect (approving on
+    /// the other instance), Not now or Never for this instance. Waits for
+    /// the answer and prints it: connected, dismissed, muted, not_now (with
+    /// until) or expired. Needs the agent's Clax session (--session, as
+    /// `status` reports it).
+    Request(RequestArgs),
+}
+
+#[derive(clap::Args)]
+pub struct RequestArgs {
+    /// A URL on the Clax instance, or its origin.
+    pub url: String,
+    /// Why, in a sentence the person reads.
+    #[arg(long)]
+    pub reason: Option<String>,
+    /// The asking agent's Clax session (`status` reports it as session.id).
+    #[arg(long)]
+    pub session: Option<String>,
+    /// Seconds to wait for the answer (default: a day, a request's life).
+    #[arg(long, default_value_t = 24 * 3600)]
+    pub wait: u64,
 }
 
 #[derive(clap::Args)]
@@ -137,6 +163,7 @@ pub fn run(cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Add(a) => add(cli, &c, a),
+        Cmd::Request(a) => request(cli, &c, a),
         Cmd::List => {
             let v = c.get("/api/remotes")?;
             super::print(cli, v, |j| {
@@ -195,6 +222,77 @@ fn encode(s: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+/// `clax remote request`: asks, then waits in polls of at most 50 s until
+/// the request is answered or `a.wait` runs out.
+fn request(cli: &crate::Cli, c: &Client, a: &RequestArgs) -> anyhow::Result<()> {
+    let headers: Vec<(&str, &str)> = a
+        .session
+        .as_deref()
+        .map(|s| vec![("x-clax-session", s)])
+        .unwrap_or_default();
+    let mut body = json!({"url": a.url});
+    if let Some(r) = &a.reason {
+        body["reason"] = json!(r);
+    }
+    let v = c.request_with(
+        reqwest::Method::POST,
+        "/api/remotes/requests",
+        Some(&body),
+        None,
+        &headers,
+    )?;
+    if v["status"] != "open" {
+        super::print(cli, v, answer_line);
+        return Ok(());
+    }
+    let id = v["request"]["id"].as_str().unwrap_or_default().to_string();
+    if !cli.json {
+        eprintln!(
+            "Asked the person in Clax to connect {} ({}); waiting for the answer…",
+            v["request"]["name"].as_str().unwrap_or_default(),
+            v["request"]["origin"].as_str().unwrap_or_default()
+        );
+    }
+    let deadline = Instant::now() + Duration::from_secs(a.wait);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now()).as_secs();
+        let w = left.min(50);
+        let p = c.request_with(
+            reqwest::Method::GET,
+            &format!("/api/remotes/requests/{id}?wait={w}"),
+            None,
+            Some(Duration::from_secs(w + 10)),
+            &headers,
+        )?;
+        if p["status"] != "open" || left <= 50 {
+            super::print(cli, p, answer_line);
+            return Ok(());
+        }
+    }
+}
+
+/// A connection request's answer, as `clax remote request` prints it.
+fn answer_line(j: &Value) -> String {
+    match j["status"].as_str() {
+        Some("connected") => format!(
+            "connected: {} is remote {}",
+            j["origin"].as_str().unwrap_or("the instance"),
+            j["remote"].as_str().unwrap_or_default()
+        ),
+        Some("not_now") => format!(
+            "not_now: the person said not now; ask again after {}",
+            j["until"].as_str().unwrap_or("a day")
+        ),
+        Some("muted") => "muted: the person does not connect this instance".into(),
+        Some("dismissed") => "dismissed: the person did not connect it".into(),
+        Some("expired") => "expired: nobody answered within a day".into(),
+        _ => format!(
+            "open: still waiting for the person's answer (request {})",
+            j["request_id"].as_str().unwrap_or_default()
+        ),
+    }
 }
 
 fn add(cli: &crate::Cli, c: &Client, a: &AddArgs) -> anyhow::Result<()> {

@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn every_tool_that_changes_history_captures_git() {
         let tools = crate::ClaxTools::tools();
-        assert_eq!(tools.len(), 38);
+        assert_eq!(tools.len(), 39);
         for t in &tools {
             let name = t.name.as_ref();
             let read_only = t
@@ -262,7 +262,8 @@ mod tests {
                 header.call_header().is_some(),
                 "{name} is not a bare tool name"
             );
-            if read_only || name == "open" || name == "draft" || name == "git_remote" {
+            // connect_instance asks the person; it changes no artifact.
+            if read_only || ["open", "draft", "git_remote", "connect_instance"].contains(&name) {
                 assert!(!captures_git(name), "{name} is read-only");
             } else {
                 assert!(captures_git(name), "{name} changes history");
