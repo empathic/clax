@@ -8,8 +8,9 @@
 //! - An **owner browser session** ([`Store::open_owner_session`]) is
 //!   [`OWNER_SESSION_PREFIX`] and 32 random bytes, the value of the owner
 //!   and events cookies, good for [`OWNER_SESSION_TTL_SECS`] from when it
-//!   opened unless ended first ([`Store::end_owner_session`]). It names no
-//!   viewer row: it is the owner's whatever row the owner is.
+//!   opened unless ended first ([`Store::end_owner_session`], or every
+//!   one at once, [`Store::end_all_owner_sessions`]). It names no viewer
+//!   row: it is the owner's whatever row the owner is.
 //!
 //! Only each secret's SHA-256 is stored. A hosted daemon writes none of
 //! these: its browsers sign in through [`crate::hosted`].
@@ -155,6 +156,21 @@ impl Store {
             )? > 0)
         })
     }
+
+    /// Ends every live owner browser session: no owner or events cookie
+    /// any browser holds stands for anyone from then on. How many ended.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn end_all_owner_sessions(&self) -> Result<usize> {
+        self.with_tx(|tx| {
+            Ok(tx.execute(
+                "UPDATE owner_browser_sessions SET ended_at = ?1
+                 WHERE ended_at IS NULL AND expires_at > ?1",
+                params![self.now()],
+            )?)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -207,5 +223,17 @@ mod tests {
         assert_eq!(st.live_owner_sessions().unwrap(), vec![other]);
         clock.advance(OWNER_SESSION_TTL_SECS);
         assert!(st.live_owner_sessions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn ending_every_owner_session_leaves_none_live() {
+        let clock = Arc::new(ManualClock::at("2026-10-29T10:00:00Z"));
+        let (_d, st) = store(clock);
+        let (_, a) = st.open_owner_session().unwrap();
+        st.open_owner_session().unwrap();
+        assert!(st.end_owner_session(&a.sha256).unwrap());
+        assert_eq!(st.end_all_owner_sessions().unwrap(), 1, "the one still live");
+        assert!(st.live_owner_sessions().unwrap().is_empty());
+        assert_eq!(st.end_all_owner_sessions().unwrap(), 0);
     }
 }

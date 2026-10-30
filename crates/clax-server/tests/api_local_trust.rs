@@ -260,6 +260,68 @@ async fn an_owner_session_survives_a_restart_and_ends_when_revoked() {
     assert_eq!(token(&again, cookie).await, 401);
 }
 
+/// `DELETE /api/browser-login` (the token, by hand) ends every owner
+/// browser session: each browser's cookie opens nothing after, a new
+/// login code opens a new one. The owner's agents, a browser session
+/// alone and no credential are refused.
+#[tokio::test]
+async fn the_owner_ends_every_browser_session_at_once() {
+    let ts = TestServer::spawn().await;
+    let first = ts.owner_cookie();
+    let browser = unfollowed();
+    let path = login_path(&ts, "/").await;
+    let res = browser
+        .get(format!("{}{path}", ts.base))
+        .send()
+        .await
+        .unwrap();
+    let second = owner_cookie_of(&ts, &set_cookies(&res));
+    let token = |cookie: String| {
+        let req = ts
+            .client
+            .get(format!("{}/api/token", ts.base))
+            .header("cookie", cookie);
+        async move { req.send().await.unwrap().status() }
+    };
+    assert_eq!(token(first.clone()).await, 200);
+    assert_eq!(token(second.clone()).await, 200);
+    let end = || ts.client.delete(format!("{}/api/browser-login", ts.base));
+    for (what, req, want) in [
+        ("no credential", end(), (401, "")),
+        (
+            "a browser session alone",
+            end().header("cookie", &first),
+            (401, "unauthorized"),
+        ),
+        (
+            "an agent of the owner's",
+            ts.authed(end()).header("x-clax-channel", "agent"),
+            (403, "not_for_agents"),
+        ),
+    ] {
+        let (status, code) = code_of(req.send().await.unwrap()).await;
+        assert_eq!(status, want.0, "{what}");
+        if !want.1.is_empty() {
+            assert_eq!(code, want.1, "{what}");
+        }
+    }
+    assert_eq!(token(first.clone()).await, 200, "nothing ended yet");
+    let res = ts.authed(end()).send().await.unwrap();
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["ended"], 2, "{v}");
+    assert_eq!(token(first).await, 401);
+    assert_eq!(token(second).await, 401);
+    // A new login code opens a new session.
+    let path = login_path(&ts, "/").await;
+    let res = browser
+        .get(format!("{}{path}", ts.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(token(owner_cookie_of(&ts, &set_cookies(&res))).await, 200);
+}
+
 #[tokio::test]
 async fn an_owner_session_fetched_by_another_site_is_no_credential() {
     let ts = TestServer::spawn().await;

@@ -132,6 +132,7 @@ server cannot run `clax` at all, its one tool, `status`, says why, and
 clax publish index.html --dir site   # publish a directory; prints the artifact URL (--json gives the ID)
 clax open <ID>                       # open an artifact in the browser, signing it in
 clax login [path]                    # print a one-use sign-in link for a browser
+clax logout                          # end every browser's owner session (each needs clax open again)
 clax list                            # list artifacts (--tag <tag>, repeatable: only those carrying every tag)
 clax tags                            # list the tags; the owner makes them: clax tags create|edit|delete
 clax tag <ID> --add draft --remove x # add or remove an artifact's tags (existing tags only)

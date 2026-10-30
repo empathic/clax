@@ -14,6 +14,7 @@ pub mod inbox;
 pub mod init;
 pub mod list;
 pub mod login;
+pub mod logout;
 pub mod mcp;
 pub mod native_host;
 pub mod open;

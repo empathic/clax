@@ -75,6 +75,33 @@ pub async fn create(
         .into_response())
 }
 
+/// `DELETE /api/browser-login` (the token, by hand: 403 `not_for_agents`
+/// for the owner's agents) → `{ended}`: ends every owner browser session
+/// ([`clax_http::local_trust::OwnerSessions::end_all`]), so no browser's
+/// owner or events cookie stands for the owner from then on; `ended` is
+/// how many live ones there were. Each browser of the owner's then needs a
+/// new login code (`clax open`, `clax login`). What `clax logout` calls.
+/// It narrows who acts as the owner, so it asks for no confirmation. 404
+/// on a hosted daemon.
+pub async fn end_all(
+    State(s): State<AppState>,
+    d: clax_http::agent::DeniedToGrants,
+    _t: RequireToken,
+) -> Result<Response, ApiError> {
+    if s.hosted.is_some() {
+        return Err(ApiError::not_found());
+    }
+    d.refuse_agents()?;
+    let sessions = s.owner_sessions.clone();
+    let ended = s.store_call(move |st| sessions.end_all(st)).await?;
+    tracing::info!(ended, "ended every owner browser session");
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        axum::Json(json!({"ended": ended})),
+    )
+        .into_response())
+}
+
 /// Debug builds only: `POST /api/_test/viewers` (the token) → `{cookie,
 /// viewer}`: a viewer minted for a browser of this machine, with no name,
 /// and its `clax_viewer` cookie, for the browser tests of what such a

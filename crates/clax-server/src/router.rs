@@ -84,7 +84,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     let thread_limit = DefaultBodyLimit::max(limits::THREAD_BODY_LIMIT);
     let api_fast = Router::new()
         .route("/api/token", get(token::token))
-        .route("/api/browser-login", post(login::create))
+        .route(
+            "/api/browser-login",
+            post(login::create).delete(login::end_all),
+        )
         .route("/api/confirmations", get(confirmations::list))
         .route(
             "/api/passkeys",

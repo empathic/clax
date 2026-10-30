@@ -90,7 +90,8 @@ impl Core {
     /// state, the journal, the listeners and the background tasks: the
     /// session reaper, the grant sweeper, the planner statistics refresh,
     /// the drafts sweeper and the working sweeper. Runs on the caller's
-    /// Tokio runtime.
+    /// Tokio runtime. A local core makes a new daemon token, which ends
+    /// every owner browser session the store holds.
     ///
     /// # Errors
     /// When the store does not open or the state cannot be assembled.
@@ -126,6 +127,17 @@ impl Core {
             _ => clax_core::config::ClaxApp::default(),
         };
         let token = crate::serve::generate_token();
+        // A new token ends every owner browser session: one a process other
+        // than the owner's captured (its cookie reaches every server on the
+        // daemon's host, `clax_http::local_trust`) lasts no longer than the
+        // token it was opened beside. A browser of the owner's logs in
+        // again at its next `clax open`.
+        if cfg.hosted.is_none() {
+            let ended = store.end_all_owner_sessions()?;
+            if ended > 0 {
+                tracing::info!(ended, "a new daemon token ended the owner browser sessions");
+            }
+        }
         let started_at = store.now();
         let bind = cfg.bind.to_string();
         let port = cfg.port;

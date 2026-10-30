@@ -11,8 +11,15 @@
 //!
 //! - [`OwnerSessions`] keeps the live sessions in memory, loaded on start
 //!   and changed with every open and end, so checking a cookie reads no
-//!   store; the store keeps them across restarts
-//!   ([`clax_store::browser_login`]).
+//!   store; the store keeps them ([`clax_store::browser_login`]). Every
+//!   session ends at once on `DELETE /api/browser-login` (`clax logout`,
+//!   [`OwnerSessions::end_all`]) and at every daemon start, whose token is
+//!   new.
+//! - Cookies ignore ports: a browser sends the owner cookie to every
+//!   server on the daemon's host name it is navigated to, and whoever
+//!   listens there can replay it from this machine as the owner. Ending
+//!   the sessions is the remedy today (`docs/contract.md`, "The owner and
+//!   other viewers").
 //! - [`sessions`] marks a request carrying a live session's cookie (or the
 //!   app's key cookie, [`crate::auth::key_cookie_name`]) with
 //!   [`OwnerSession`]. [`crate::identity::Identity`] counts the mark as a
@@ -110,6 +117,21 @@ impl OwnerSessions {
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(sha256);
+        Ok(ended)
+    }
+
+    /// Ends every owner browser session, in `st` and here: how many live
+    /// ones ended. Every browser of the owner's needs a new login code
+    /// (`clax open`, `clax login`) after.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn end_all(&self, st: &Store) -> clax_core::Result<usize> {
+        let ended = st.end_all_owner_sessions()?;
+        self.map
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
         Ok(ended)
     }
 }

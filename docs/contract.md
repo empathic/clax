@@ -2603,8 +2603,10 @@ request is the owner's when it carries an owner credential:
   on `Path=/`, so every page of the daemon is the owner's), and as the events cookie
   (only the event streams receive it). A browser gets one only by
   redeeming a one-use login code a holder of the token made (see "Browser
-  login"); it lasts 400 days, survives daemon restarts and new tokens, and
-  can be ended. Nothing in it derives from the token;
+  login"); it lasts 400 days unless it is ended first. `clax logout`
+  (`DELETE /api/browser-login`) ends every one, and so does every daemon
+  start, which makes a new token: a browser of the owner's then needs one
+  `clax open` again. Nothing in it derives from the token;
 - the Clax Chrome extension's credential, accepted only through the
   extension gateway (see "Security model"), which acts as one of the
   owner's browsers on live pages.
@@ -2613,10 +2615,22 @@ A session counts only on a request from this machine (a loopback peer and
 a `Host` of `localhost`, `127.0.0.1` or `[::1]`, or a peer at the very
 address the connection arrived on naming that address, as a daemon bound
 to a LAN address is reached from its own machine) that the browser does
-not mark as made from another origin: cookies ignore ports, so a page of
-another local server may send them, and a copy replayed from another
-machine is no one's. Nothing a request says of itself (`Sec-Fetch-Site`,
-`Origin`, `Host`, `X-Clax-Channel`) makes it the owner's.
+not mark as made from another origin: a page of another local server may
+make the browser send the cookie, and such a request is refused. A copy
+replayed from another machine is no one's. Nothing a request says of
+itself (`Sec-Fetch-Site`, `Origin`, `Host`, `X-Clax-Channel`) makes it the
+owner's.
+
+What this does not close: cookies ignore ports, so the browser also sends
+the owner cookie to any server listening on another port of the daemon's
+host name whenever the browser is navigated there (a link, a redirect, a
+page's top-level navigation). Whoever runs that server (another user of
+the machine, a container mapped to loopback, a sandboxed agent with
+loopback networking, a development server that logs headers) receives the
+cookie, and can replay it from this machine as the owner, `GET
+/api/token` included: the daemon cannot tell that replay from the owner's
+browser. Ending the sessions (`clax logout`, or a daemon restart) is the
+remedy today.
 
 Everyone else (a LAN viewer, or a local browser that holds no session) is
 the viewer its `clax_viewer` cookie names. That cookie never names
@@ -2669,6 +2683,12 @@ redeeming a one-use login code a holder of the token made:
   browser address). `next`, `/` by default, must be a path of this
   daemon (one leading `/`, no `\`, no control character, at most 2048
   bytes): else 400 `invalid_next`. 404 on a hosted daemon.
+- `DELETE /api/browser-login` (the token, by hand: 403 `not_for_agents`
+  for the owner's agents) → `{ended}`: ends every owner browser session
+  (`ended`, how many were live); each browser then needs a new code. It
+  narrows who acts as the owner, so it waits for no confirmation. `clax
+  logout` calls it. 404 on a hosted daemon. A daemon start, which makes a
+  new token, ends every session too.
 - `GET /login?code=<code>&next=<next>`, from a browser on this machine
   (else 403 `forbidden_host`): 303 to `next`, `Cache-Control: no-store`,
   `Referrer-Policy: no-referrer`. A browser that holds no live session
@@ -2686,7 +2706,8 @@ artifact), the MCP and Pi `open` tools, `just watch`'s printed link, and
 the extension's "Open in Clax" and inbox links (through its native host's
 `login` message, which holds the token). `clax login [path]` prints a fresh
 link for a browser on its own. A browser that already holds a session
-never notices; a fresh browser profile needs one `clax open`.
+never notices; a fresh browser profile needs one `clax open`, and so
+does every browser after the daemon restarts or `clax logout`.
 
 A link that carries a code must not be readable by another user of the
 machine. On macOS, `clax open`, `clax connect`'s and `clax remotes`'
@@ -5982,6 +6003,7 @@ router), and a test fails when it differs:
 | `GET /api/bot/runs/{id}/draft/` | Denied | no |
 | `GET /api/bot/runs/{id}/draft/{*path}` | Denied | no |
 | `GET /api/bot/runs/{id}/events` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/browser-login` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/browser-login` | Denied | no |
 | `POST /api/client-imports/{key}` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/confirmations` | Denied | yes: 403 `not_for_agents` |

@@ -1577,11 +1577,14 @@ impl Client {
         )
     }
     pub fn delete(&self, path: &str) -> anyhow::Result<()> {
+        self.delete_json(path).map(|_| ())
+    }
+    /// DELETE `path`: the answer's JSON body.
+    pub fn delete_json(&self, path: &str) -> anyhow::Result<serde_json::Value> {
         self.finish(
             path,
             self.exec(self.request(reqwest::Method::DELETE, path))?,
         )
-        .map(|_| ())
     }
     /// A `method` request with the bearer token, with `body` as JSON when
     /// given. The token makes the request the owner's (or, as an agent

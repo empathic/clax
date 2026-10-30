@@ -1043,8 +1043,42 @@ fn open_hands_the_browser_a_login_link_and_prints_none() {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
-    assert_eq!(browser.get(&url).send().unwrap().status(), 303);
+    let signed = browser.get(&url).send().unwrap();
+    assert_eq!(signed.status(), 303);
     assert_eq!(browser.get(&url).send().unwrap().status(), 410);
+    // `clax logout` ends every browser session: the cookie that login set
+    // opens nothing after.
+    let cookie = signed
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .map(|v| v.split(';').next().unwrap_or("").to_string())
+        .find(|c| c.starts_with("clax_owner_"))
+        .expect("an owner cookie");
+    let base = url.split("/login?").next().unwrap().to_string();
+    let token = |cookie: &str| {
+        browser
+            .get(format!("{base}/api/token"))
+            .header("cookie", cookie)
+            .send()
+            .unwrap()
+            .status()
+    };
+    assert_eq!(token(&cookie), 200);
+    let out = e
+        .cmd()
+        .args(["logout", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let ended = serde_json::from_slice::<serde_json::Value>(&out).unwrap()["ended"]
+        .as_u64()
+        .unwrap();
+    assert!(ended >= 1, "{ended}");
+    assert_eq!(token(&cookie), 401);
     e.cmd()
         .args(["login", "a/x"])
         .assert()

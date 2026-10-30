@@ -197,6 +197,7 @@ mod l10 {
         ("extension::status", Token),
         ("extension::mint", Token),
         ("login::create", Token),
+        ("login::end_all", Token),
         ("confirmations::get_one", Token),
         ("confirmations::list", Owner),
         ("confirmations::answer", NoArtifact),
@@ -577,6 +578,10 @@ mod l10 {
         (
             "login::create",
             "mints a one-use login code a browser of this machine redeems at GET /login; changes no one's content",
+        ),
+        (
+            "login::end_all",
+            "ends the owner's own browser sessions; changes no one's content",
         ),
         (
             "confirmations::answer",

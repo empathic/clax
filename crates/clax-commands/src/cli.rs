@@ -87,6 +87,10 @@ pub enum Cmd {
     /// Print a one-use link (two minutes) that signs a browser on this
     /// machine in as the owner's and opens a path, the gallery by default.
     Login(commands::login::Args),
+    /// End every browser session of the owner's on this machine: each
+    /// browser needs `clax open` (or `clax login`) to sign in again. A
+    /// restart of the daemon ends them too.
+    Logout,
     /// Delete an artifact.
     Delete(commands::delete::Args),
     /// Pin an artifact to the top of the gallery.
@@ -305,7 +309,8 @@ fn remote_ok(cmd: &Cmd) -> bool {
         | Cmd::Toolpath(_)
         | Cmd::People { .. }
         | Cmd::NativeHost(_)
-        | Cmd::Login(_) => false,
+        | Cmd::Login(_)
+        | Cmd::Logout => false,
     }
 }
 
@@ -401,6 +406,7 @@ pub(crate) fn main() {
         Cmd::Db(c) => commands::db::run(&cli, &home, c),
         Cmd::Open(a) => commands::open::run(&cli, &home, a),
         Cmd::Login(a) => commands::login::run(&cli, &home, a),
+        Cmd::Logout => commands::logout::run(&cli, &home),
         Cmd::Delete(a) => commands::delete::run(&cli, &home, a),
         Cmd::Pin(a) => commands::pin::run(&cli, &home, a, true),
         Cmd::Unpin(a) => commands::pin::run(&cli, &home, a, false),
