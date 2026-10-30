@@ -1147,6 +1147,9 @@ impl Client {
     /// whatever the mode (`clax stop`, `clax doctor`), or None. Never
     /// starts one.
     pub fn discover_local(home: &Home) -> Option<Client> {
+        // No HTTP client (and its runtime thread) is built unless
+        // daemon.json names a live process.
+        read_daemon_info(home).filter(|i| pid_alive(i.pid))?;
         Client::discover_with(home, &probe_client()?)
     }
 
