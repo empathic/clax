@@ -11,7 +11,7 @@
 //!
 //! 1. answering a question an agent asked;
 //! 2. pushing an artifact to a remote;
-//! 3. connecting a remote;
+//! 3. connecting a remote, and answering an agent's connection request;
 //! 4. widening who may open a page (its site to the world, its public
 //!    copy's link access);
 //! 5. approving a machine's connection, setting a person's rights, and
@@ -93,6 +93,9 @@ pub enum Decision {
         forked_from: Option<String>,
         title: Option<String>,
     },
+    /// Answering connection request `request_id` with `answer`
+    /// (`connect`, `not_now` or `never`): a Connect connects this Clax.
+    AnswerConnection { request_id: String, answer: String },
     /// Connecting this Clax to the Clax at `origin`, named `name`, as
     /// machine `machine` (each as sent).
     Connect {
@@ -420,6 +423,17 @@ pub fn words(st: &Store, d: &Value) -> clax_core::Result<String> {
             remote(&s("remote_id"))?
         ),
         "connect" => format!("connect this Clax to {}", s("origin")),
+        "answer_connection" => {
+            let origin = st
+                .remote_request(&s("request_id"))
+                .map(|r| r.origin)
+                .unwrap_or_else(|_| "a Clax instance".into());
+            match s("answer").as_str() {
+                "connect" => format!("connect this Clax to {origin}, as an agent asked"),
+                "never" => format!("never connect this Clax to {origin}"),
+                _ => format!("put off connecting this Clax to {origin}"),
+            }
+        }
         "widen" => match d["remote_id"].as_str() {
             Some(rid) => format!(
                 "change who may open the public copy {} on {}",

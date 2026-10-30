@@ -518,3 +518,65 @@ async fn a_wait_past_the_polls_one_request_holds_says_to_call_again() {
         assert_eq!(h.await.unwrap().1["status"], "open");
     }
 }
+
+/// With a passkey required, answering a connection request is a decision
+/// that matters: it waits for a confirmation, which takes the passkey's
+/// assertion, and then the Connect proceeds.
+#[tokio::test(flavor = "multi_thread")]
+async fn with_passkeys_required_answering_connect_takes_an_assertion() {
+    let (ts, _clock) = clocked().await;
+    let key = clax_testkit::passkey::SoftPasskey::new();
+    ts.require_passkey(&key).await;
+    let public = Public::new().await;
+    let (_sid, id) = opened(&ts, &public).await;
+    let (s, v) = answer(&ts, &id, "connect").await;
+    assert_eq!(
+        (s, v["status"].as_str()),
+        (202, Some("confirmation_pending")),
+        "{v}"
+    );
+    let cid = v["confirmation_id"].as_str().unwrap().to_string();
+    assert!(
+        v["decision"]
+            .as_str()
+            .unwrap()
+            .starts_with("connect this Clax to "),
+        "{v}"
+    );
+    let owner = ts.owner_cookie();
+    let confirm = format!("/api/confirmations/{cid}");
+    let (s, v) = ts
+        .as_browser(
+            &owner,
+            reqwest::Method::POST,
+            &confirm,
+            json!({"approve": true}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (403, "passkey_required"), "{v}");
+    let (origin, rp) = ts.passkey_rp().await;
+    let c = ts
+        .passkey_challenge(
+            &owner,
+            json!({"purpose": "confirm", "confirmation_id": cid}),
+        )
+        .await;
+    let (s, v) = ts
+        .as_browser(
+            &owner,
+            reqwest::Method::POST,
+            &confirm,
+            json!({"approve": true, "assertion": key.assertion(&c, &origin, &rp, 1)}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let r = ts
+        .client
+        .post(format!("{}/api/remotes/requests/{id}/answer", ts.base))
+        .header("cookie", owner)
+        .header(clax_core::confirm::CONFIRMATION_HEADER, &cid)
+        .json(&json!({"answer": "connect"}));
+    let (s, v) = json_of(r.send().await.unwrap()).await;
+    assert_eq!(s, 200, "{v}");
+    assert!(!user_code(&v).is_empty());
+}

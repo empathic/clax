@@ -24,7 +24,10 @@
 //!   user_code, expires_at}`, the sign-in for the shell to open, which the
 //!   daemon then polls itself ([`drive`]) until it ends; `not_now` and
 //!   `never` → `{request}`. 409 `request_closed` with `request` for one no
-//!   longer open.
+//!   longer open. While an agent of the owner's is live and passkeys are
+//!   required, the answer waits for a confirmation made with a passkey
+//!   (202 `confirmation_pending`, [`clax_http::confirm`]), as every
+//!   decision that matters does.
 //! - `GET /api/remotes/mutes` (the owner) → `{mutes: [{origin, muted_at}]}`;
 //!   `DELETE /api/remotes/mutes/<origin>` (the owner's browser) →
 //!   `{origin, unmuted}`.
@@ -41,6 +44,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use clax_http::agent::DeniedToGrants;
 use clax_http::auth::Caller;
+use clax_http::confirm::{Confirming, Decision, require_confirmation};
 use clax_http::error::ApiError;
 use clax_http::identity::Identity;
 use clax_http::state::AppState;
@@ -322,19 +326,34 @@ pub async fn answer(
     State(s): State<AppState>,
     d: DeniedToGrants,
     _o: SameOrigin,
+    by: Confirming,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<AnswerBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     local_only(&s)?;
-    require_browser(&d.caller(&s).await?, "answering a connection request")?;
+    let caller = d.caller(&s).await?;
+    require_browser(&caller, "answering a connection request")?;
     let id = path(p)?;
     let b = body(req)?;
-    decide(&s, id, &b.answer).await
+    decide(&s, &caller, &by, id, &b.answer).await
 }
 
 /// The owner's answer `answer` to request `id`, its caller checked: the
-/// one place every answer is decided.
-async fn decide(s: &AppState, id: String, answer: &str) -> Result<Response, ApiError> {
+/// one place every answer is decided. First, the answer goes through the
+/// browser confirmation of the decisions that matter
+/// ([`Decision::AnswerConnection`]).
+async fn decide(
+    s: &AppState,
+    caller: &Caller,
+    by: &Confirming,
+    id: String,
+    answer: &str,
+) -> Result<Response, ApiError> {
+    let decision = Decision::AnswerConnection {
+        request_id: id.clone(),
+        answer: answer.to_string(),
+    };
+    require_confirmation(s, caller, by, decision).await?;
     let id1 = id.clone();
     let r = s.store_call(move |st| st.remote_request(&id1)).await?;
     if r.status != "open" {

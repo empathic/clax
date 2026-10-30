@@ -2651,7 +2651,10 @@ harness may still be running. The decisions:
 1. answering a question an agent asked (`POST /api/questions/<qid>/answer`);
 2. pushing an artifact to a public Clax (`POST /api/artifacts/<aid>/push`,
    the owner's own push);
-3. connecting a public Clax (`POST /api/remotes`);
+3. connecting a public Clax (`POST /api/remotes`), and answering an agent's
+   connection request (`POST /api/remotes/requests/<id>/answer`, already
+   the owner's browser's alone: it asks while passkeys are required, as
+   decision 5 does);
 4. widening who may open a page: its site to the world (`PATCH
    /api/artifacts/<aid>` `{site_access: "world"}` for a site not open
    yet), and its public copy's link access (`PUT
