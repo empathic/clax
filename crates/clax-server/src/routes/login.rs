@@ -11,8 +11,7 @@ use clax_core::audit::Via;
 use clax_http::auth::RequireToken;
 use clax_http::error::ApiError;
 use clax_http::local_trust::{
-    LOGIN_PATH, OwnerSession, UnprovenSession, local_path, login_page, login_page_csp,
-    session_cookies,
+    LOGIN_PATH, local_path, login_page, login_page_csp, session_cookies,
 };
 use clax_http::state::AppState;
 use clax_store::browser_login::LOGIN_CODE_TTL_SECS;
@@ -158,8 +157,9 @@ fn page(status: StatusCode, title: &str, line: &str) -> Response {
 /// `not_this_user` otherwise, and when that cannot be told, the code
 /// unspent). The browser
 /// becomes a browser of the owner's: a new owner browser session is opened
-/// and set as its owner and events cookies ([`session_cookies`]), ending
-/// the live one it held, if any (with its proof or without); and when it
+/// and set as its owner and events cookies ([`session_cookies`]), in
+/// place of any it held (which stays live, `clax logout` ending it with
+/// the rest); and when it
 /// carries exactly one `clax_viewer`
 /// cookie, the viewer that names is claimed for the owner
 /// ([`clax_store::Store::claim_for_owner`]: only a viewer minted on this
@@ -240,25 +240,12 @@ pub async fn redeem(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    // A session this browser held is replaced: its proof may be gone from
-    // the browser's storage, and the new one's is about to be written.
-    let held = extensions
-        .get::<OwnerSession>()
-        .and_then(|m| m.session.clone())
-        .or_else(|| {
-            extensions
-                .get::<UnprovenSession>()
-                .map(|u| u.session.clone())
-        });
+    // Always a new session, whose proof the page writes: the proof of one
+    // this browser held may be gone from its storage. The held one is left
+    // live: the browser's cookie and storage now hold the new one, so no
+    // copy of the old cookie is proven but by whoever already held both.
     let sessions = s.owner_sessions.clone();
-    let opened = s
-        .store_call(move |st| {
-            if let Some(old) = held {
-                sessions.end(st, &old)?;
-            }
-            sessions.open(st)
-        })
-        .await;
+    let opened = s.store_call(move |st| sessions.open(st)).await;
     let opened = match opened {
         Ok(o) => o,
         Err(e) => return e.into_response(),

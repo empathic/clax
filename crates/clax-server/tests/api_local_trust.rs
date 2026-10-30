@@ -243,8 +243,9 @@ async fn a_login_code_opens_one_browser_session_once() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK, "the code was not spent");
-    // A browser that already holds a session gets a new one, and the one it
-    // held ends: its proof may be gone from the browser's storage.
+    // A browser that already holds a session gets a new one in its place
+    // (its proof may be gone from the browser's storage); the one it held
+    // is left live.
     let path = login_path(&ts, "/").await;
     let res = browser
         .get(format!("{}{path}", ts.base))
@@ -256,7 +257,8 @@ async fn a_login_code_opens_one_browser_session_once() {
     let renewed = owner_cookie_of(&ts, &set_cookies(&res));
     assert_ne!(renewed, cookie);
     let renewed_proof = proof_of(res).await;
-    assert_eq!(token_status(&ts, &cookie, Some(&proof)).await, 401);
+    assert_eq!(token_status(&ts, &cookie, Some(&proof)).await, 200);
+    assert_eq!(token_status(&ts, &renewed, Some(&proof)).await, 401);
     assert_eq!(
         token_status(&ts, &renewed, Some(&renewed_proof)).await,
         200

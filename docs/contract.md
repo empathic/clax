@@ -2724,8 +2724,9 @@ redeeming a one-use login code a holder of the token made:
   `Content-Security-Policy` admitting its one script by nonce) whose script
   writes the session's proof into the origin's `localStorage` and replaces
   the page with `next` (a link to `next` stands in without scripts). The
-  browser gets a new session as its owner and events cookies; the live
-  session it held, if any, ends. One carrying exactly one
+  browser gets a new session as its owner and events cookies, in place of
+  any it held (which stays live until `clax logout`: the browser no longer
+  holds its cookie or its proof). One carrying exactly one
   `clax_viewer` cookie has that viewer claimed (above). 400 for a `next`
   that is not a path of this daemon, before the code is spent; 410 for a
   code used before, past its time, or never made. On Linux, 403

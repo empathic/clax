@@ -280,8 +280,7 @@ fn cookie_values<'a>(headers: &'a HeaderMap, name: &'a str) -> impl Iterator<Ite
 /// Marks a request that carries a live owner browser session's cookie
 /// without that session's proof (`session` is the cookie's SHA-256): no
 /// credential, except that [`gate`] lets a browser's page load through
-/// (the shell's routes serve it bare of data), and a login in that browser
-/// ends the session it replaces.
+/// (the shell's routes serve it bare of data).
 #[derive(Clone, Debug)]
 pub struct UnprovenSession {
     pub session: String,
@@ -425,7 +424,7 @@ fn from_own_origin(headers: &HeaderMap) -> bool {
 /// The owner cookie's paths: every path of the daemon's host, since a
 /// browser that holds no credential gets none of its pages ([`gate`]): the
 /// shell's pages, the API, and the login route ([`LOGIN_PATH`]), where a
-/// browser that already holds a session has it ended when it logs in again.
+/// browser that already holds a session gets a new one when it logs in again.
 pub const OWNER_COOKIE_PATHS: [&str; 1] = ["/"];
 
 /// The events cookie's paths: the event streams (`/api/stream` covers its
