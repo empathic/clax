@@ -112,6 +112,13 @@ export async function asLocalViewer(context: BrowserContext, d: { base: string; 
   await context.addCookies([{ name: "clax_viewer", value: cookie, domain: host, path: "/", httpOnly: true, sameSite: "Lax" }]);
 }
 
+/** Makes `context` a stranger to every daemon of the worker: it forgets
+ * every cookie, and is signed in to no daemon the worker starts later. */
+export async function asStranger(context: BrowserContext): Promise<void> {
+  liveContexts.delete(context);
+  await context.clearCookies();
+}
+
 /** Makes `context` a browser of the owner's on the daemon at `base`, as a
  * login link opened in it would. */
 export async function signInTo(context: BrowserContext, base: string): Promise<void> {
