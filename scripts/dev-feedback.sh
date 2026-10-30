@@ -7,8 +7,11 @@
 #   the home has one), made as the owner;
 # - a service grant for it, written to <home>/feedback-grant.json (0600)
 #   unless that file holds one already;
-# - `[feedback]` in <home>/config.toml naming both (replacing any there);
-# - the owner's `feedback` flag.
+# - `[feedback]` in <home>/config.toml naming both (replacing any there).
+#
+# Then every signed-in person of the home may report: no flag gates it.
+# (A hosted instance needs none of this: with no `[feedback]` it makes its
+# own queue and grant.)
 #
 # The home is $CLAX_HOME, else ~/.clax-dev; its daemon must be running
 # (`just watch`, `just dev` or `just serve`), and it reads `[feedback]` at
@@ -87,6 +90,4 @@ fi
 python3 scripts/lib/feedback-config.py write "$CONFIG" "$QID" "$ORIGIN"
 echo "wrote [feedback] to $CONFIG"
 
-api PUT /api/admin/people/%2Aowner/flags '{"feedback": true}' >/dev/null
-echo "turned on the owner's feedback flag"
 echo "restart the daemon of $HOME_DIR (it reads [feedback] at start); then GET $ORIGIN/_app/feedback/config answers enabled: true"

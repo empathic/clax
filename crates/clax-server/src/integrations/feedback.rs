@@ -23,17 +23,25 @@
 //!   integration's origin; `reporter_id` is the person's public ID and the
 //!   profile `{name?, github?}` comes from their GitHub account (their
 //!   name as Clax shows it when they have none). 404 when the integration
-//!   is off; 403 `no_flag` without the person's `feedback` flag; 400 as
-//!   the public route answers a bad `public_key`; 429 `limit_reached` as
-//!   it answers one (with its `Retry-After`); 503 `feedback_unavailable`
-//!   for any other refusal, which is the integration's own (a revoked
-//!   grant, an origin the queue no longer lists), logged.
+//!   is off; 400 as the public route answers a bad `public_key`; 429
+//!   `limit_reached` as it answers one (with its `Retry-After`); 503
+//!   `feedback_unavailable` for any other refusal, which is the
+//!   integration's own (a revoked grant, an origin the queue no longer
+//!   lists), logged.
 //! - `GET /_app/feedback/config` → what the shell mounts the overlay with
 //!   ([`config`]).
 //!
 //! Who files is the product's choice, made here as any backend makes it:
-//! the owner and connected people whose `feedback` flag is on. Agents are
-//! refused (403 `not_for_agents`).
+//! every signed-in person, the owner and each connected person who is not
+//! revoked. Agents are refused (403 `not_for_agents`), and so is anyone
+//! not signed in as a person.
+//!
+//! What the integration files with is the host's ([`InstanceFeedback`]):
+//! a queue and grant it configured, or, on a hosted instance given none,
+//! its own, which it makes the first time a person asks once its owner
+//! exists, keeps in its store and makes again when the queue is deleted
+//! or the grant revoked ([`own`], [`clax_store::Store::own_feedback`]).
+//! Either way the routes mint as an outside backend does.
 
 use super::instance::{Instance, json_body};
 use axum::Json;
@@ -43,11 +51,12 @@ use axum::extract::{Extension, State};
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
+use clax_core::audit::AuditCtx;
 use clax_core::sig::{self, KeyPair, SignInput};
 use clax_http::agent::DeniedToGrants;
 use clax_http::auth::Caller;
 use clax_http::error::ApiError;
-use clax_http::state::{AppState, FeedbackIntegration};
+use clax_http::state::{AppState, FeedbackIntegration, InstanceFeedback};
 use clax_http::viewer::SameOrigin;
 use clax_store::Store;
 use clax_store::roles::OWNER;
@@ -301,7 +310,7 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// The product's routes: clax.dev's sign-in, flags and shell.
+// The product's routes: clax.dev's sign-in and shell.
 // ---------------------------------------------------------------------------
 
 /// clax.dev's origin: reports filed from it are the `prod` channel's,
@@ -348,10 +357,9 @@ fn field(s: Option<&str>) -> Option<String> {
     Some(s[..end].to_string())
 }
 
-/// The reporter `person` (a person key) files as: whether their
-/// `feedback` flag is on, their public ID, and their profile.
-fn reporter(st: &Store, person: &str) -> clax_core::Result<(bool, String, Option<Profile>)> {
-    let may_file = st.flags_of(person)?.feedback;
+/// The reporter `person` (a person key) files as: their public ID and
+/// their profile.
+fn reporter(st: &Store, person: &str) -> clax_core::Result<(String, Option<Profile>)> {
     let public_id = if person == OWNER {
         st.owner_viewer(false)?.public_id
     } else {
@@ -366,7 +374,51 @@ fn reporter(st: &Store, person: &str) -> clax_core::Result<(bool, String, Option
         github: field(github.as_ref().map(|g| g.login.as_str())),
     };
     let profile = (profile != Profile::default()).then_some(profile);
-    Ok((may_file, public_id, profile))
+    Ok((public_id, profile))
+}
+
+/// The integration for a hosted instance's own queue and grant
+/// ([`clax_store::Store::own_feedback`]), minting for its public `origin`,
+/// to which the mint is sent too.
+pub fn own(origin: &str, kept: clax_store::queues::OwnFeedback) -> FeedbackIntegration {
+    let origin = origin.trim_end_matches('/').to_string();
+    FeedbackIntegration {
+        queue_id: kept.queue_id,
+        grant_token: kept.grant_token.expose().to_string(),
+        grant_key_pkcs8: kept.grant_key_pkcs8,
+        instance: origin.clone(),
+        origin,
+    }
+}
+
+/// Whether the integration may be on at all: configured, or the
+/// instance's own on a hosted instance.
+fn may_be_on(s: &AppState) -> bool {
+    match &s.feedback {
+        InstanceFeedback::Configured(_) => true,
+        InstanceFeedback::Own => s.hosted.is_some(),
+        InstanceFeedback::Off => false,
+    }
+}
+
+/// The integration in effect: the configured one; on a hosted instance
+/// configured with none, its own queue and grant, made first when there
+/// are none live; `None` when it is off, or before the owner exists.
+async fn current(s: &AppState) -> Result<Option<Arc<FeedbackIntegration>>, ApiError> {
+    match &s.feedback {
+        InstanceFeedback::Configured(i) => Ok(Some(i.clone())),
+        InstanceFeedback::Off => Ok(None),
+        InstanceFeedback::Own => {
+            let Some(origin) = s.hosted.as_ref().map(|h| h.origin.clone()) else {
+                return Ok(None);
+            };
+            let at = origin.clone();
+            let kept = s
+                .store_call(move |st| st.own_feedback(&AuditCtx::DAEMON, &at))
+                .await?;
+            Ok(kept.map(|k| Arc::new(own(&origin, k))))
+        }
+    }
 }
 
 fn unavailable(message: impl Into<String>) -> ApiError {
@@ -408,18 +460,15 @@ pub async fn token(
     req: Result<Json<TokenBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     d.refuse_agents()?;
-    let Some(i) = s.feedback.clone() else {
+    if !may_be_on(&s) {
         return Err(ApiError::not_found());
-    };
+    }
     let person = filer(&d.caller(&s).await?)?;
     let b = json_body(req)?;
-    let (may_file, reporter_id, profile) = s.store_call(move |st| reporter(st, &person)).await?;
-    if !may_file {
-        return Err(ApiError::forbidden(
-            "no_flag",
-            "reporting problems with Clax is not turned on for you: an admin turns on your feedback flag",
-        ));
-    }
+    let Some(i) = current(&s).await? else {
+        return Err(ApiError::not_found());
+    };
+    let (reporter_id, profile) = s.store_call(move |st| reporter(st, &person)).await?;
     let request = mint_request(
         &i,
         instance.now(),
@@ -456,8 +505,14 @@ pub async fn token(
         Minted::Refused { status, body, .. } => {
             let code = body["error"]["code"].as_str().unwrap_or("unknown");
             tracing::warn!(%status, code, queue = %i.queue_id, "the feedback queue refused the instance's mint");
+            let check = match s.feedback {
+                InstanceFeedback::Configured(_) => {
+                    "an admin checks [feedback] or CLAX_FEEDBACK_SERVICE_GRANT"
+                }
+                _ => "an admin checks that the queue still lists this instance's origin",
+            };
             Err(unavailable(format!(
-                "the feedback queue refused this instance's mint ({status} {code}): an admin checks [feedback] or CLAX_FEEDBACK_SERVICE_GRANT"
+                "the feedback queue refused this instance's mint ({status} {code}): {check}"
             )))
         }
     }
@@ -471,19 +526,21 @@ pub fn channel(origin: &str) -> &'static str {
 
 /// `GET /_app/feedback/config`: what the shell mounts the overlay with.
 /// For a caller who may file (the integration on, the owner or a connected
-/// person, their `feedback` flag on):
+/// person):
 ///
 /// ```json
 /// {"enabled": true, "instance": "<origin>", "queue": "<queue ID>",
 ///  "context": {"release": {"version": "…", "commit": "…", "id": "<build>", "channel": "prod"|"dev"},
-///              "flags": {"claxbot": true, "claxbot_unenforced": false, "feedback": true},
+///              "flags": {"claxbot": true, "claxbot_unenforced": false},
 ///              "app": {"repo": "https://github.com/empathic/clax"}}}
 /// ```
 ///
 /// `release.commit` and `release.id` are left out when `/healthz` reports
 /// them `null`. For anyone else (the integration off, no credential, a
-/// viewer, the flag off) `{"enabled": false, "instance": null, "queue":
-/// null, "context": null}`. Agents are refused 403 `not_for_agents`.
+/// viewer) `{"enabled": false, "instance": null, "queue": null,
+/// "context": null}`. Agents are refused 403 `not_for_agents`. On a hosted
+/// instance with no integration configured, the first such answer to a
+/// person makes the instance's own queue and grant ([`current`]).
 pub async fn config(
     State(s): State<AppState>,
     Extension(instance): Extension<Arc<Instance>>,
@@ -491,10 +548,13 @@ pub async fn config(
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     let off = Json(json!({"enabled": false, "instance": null, "queue": null, "context": null}));
-    let Some(i) = s.feedback.clone() else {
+    if !may_be_on(&s) {
+        return Ok(off);
+    }
+    let Ok(person) = filer(&d.caller(&s).await?) else {
         return Ok(off);
     };
-    let Ok(person) = filer(&d.caller(&s).await?) else {
+    let Some(i) = current(&s).await? else {
         return Ok(off);
     };
     let (flags, user) = s
@@ -508,9 +568,6 @@ pub async fn config(
             Ok((flags, user))
         })
         .await?;
-    if !flags.feedback {
-        return Ok(off);
-    }
     let mut release = instance.release();
     release["channel"] = json!(channel(&i.origin));
     Ok(Json(json!({

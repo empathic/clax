@@ -378,10 +378,11 @@ Documented in the integration guide, not built here:
 
 ### 10.1 Who files
 
-People with a new person flag `feedback` (`crates/clax-store/src/flags.rs`,
-set by an admin through the existing flags API), which clax.dev's
-operators turn on for Empathic's people. The flag is clax.dev's
-integration choice, the way any integrator decides in its backend.
+Every signed-in person: the owner and each connected person who is not
+revoked; agents and anyone not signed in are refused. No flag gates it.
+That is clax.dev's integration choice, the way any integrator decides in
+its backend. (An earlier draft gated it on a person flag `feedback` an
+admin turned on; the owner chose to open it to everyone.)
 
 ### 10.2 The integrator backend inside clax.dev
 
@@ -389,12 +390,18 @@ clax.dev plays both roles: Clax instance and integrating product. Its
 integrator half is one small module that does only what an outside
 backend would:
 
-- configuration: `CLAX_FEEDBACK_QUEUE` (queue ID) and
-  `CLAX_FEEDBACK_SERVICE_GRANT` (the service grant's credential and key,
-  a Worker secret); with either missing the feature is off and the shell
-  shows no entry point;
-- `POST /_app/feedback/token` (session-authenticated, same-origin): if the
-  person has `feedback`, mint a reporter token for `reporter_id` = their
+- configuration: none on a hosted instance (clax.dev, `just
+  clax-dev-local`): the first time a person asks once the owner exists,
+  the instance makes its own queue `clax-feedback` (the owner its admin,
+  the public origin its origin, `reporters_see: own`) and a service grant
+  of it, keeps both in its store, and makes them again when the queue is
+  deleted or the grant revoked. `CLAX_FEEDBACK_QUEUE` (queue ID) and
+  `CLAX_FEEDBACK_SERVICE_GRANT` (the service grant's credential and key, a
+  Worker secret), or `[feedback]` in a daemon's `config.toml`, name a queue
+  of the operator's choosing instead and win. A local daemon that is not
+  hosted is off without them, and the shell shows no entry point;
+- `POST /_app/feedback/token` (session-authenticated, same-origin): for a
+  signed-in person, mint a reporter token for `reporter_id` = their
   public ID and profile `{name, github}` from their GitHub identity, by a
   signed request to the public `reporter-tokens` route through the SDK's
   in-process transport (SDK §4.1), the same request an outside backend
@@ -417,11 +424,13 @@ backend would:
 
 ### 10.4 Setup on prod
 
-`docs/prod.md` gains the steps: create queue `clax-feedback` (origin
-`https://clax.dev`) as the owner, add triage members, create a service
-grant, store it as the Worker secret, set the flag on Empathic's people.
-`just dev` does the same against `~/.clax-dev` with a dev queue, so the
-loop runs locally end to end.
+None is needed: clax.dev makes its own queue (§10.2), which the owner
+finds on the Queues page and adds triage members to. `docs/prod.md` has
+the steps for a queue of the operator's choosing instead (create queue
+`clax-feedback` for `https://clax.dev` as the owner, add triage members,
+create a service grant, store it as the Worker secret). `just
+dev-feedback` does the same against `~/.clax-dev` with a dev queue, so
+the loop runs locally end to end on a daemon that is not hosted.
 
 ## 11. Documentation
 

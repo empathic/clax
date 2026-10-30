@@ -8,8 +8,8 @@ import type { HostContext } from "../../../overlay/overlay";
 import { type AppView, type FeedbackConfig, askConfig, configOnce } from "./config";
 
 /** The config route's body as a `FeedbackConfig`, or null when this person
- * may not report (the integration off, no session, no `feedback` flag) or
- * the body is not one: the shell then shows no entry point. */
+ * may not report (the integration off, or no person signed in) or the body
+ * is not one: the shell then shows no entry point. */
 export function readConfig(body: unknown): FeedbackConfig | null {
   const b = body as { enabled?: unknown; instance?: unknown; queue?: unknown; user?: unknown; context?: unknown } | null;
   if (b?.enabled !== true || typeof b.instance !== "string" || !b.instance || typeof b.queue !== "string" || !b.queue) return null;

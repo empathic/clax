@@ -1,18 +1,18 @@
 // clax.dev reports problems with itself (spec 2026-10-29-feedback-loop
-// §10): on a hosted daemon whose `[feedback]` names one of its own queues
-// and a service grant, the shell loads the overlay from the instance and
-// mints reporter tokens through its own backend route. A person with the
-// `feedback` flag opens the header's feedback menu, starts a report with the
-// shortcut, files the visible page, and the report carries their public ID
-// and the shell's context; the badge on the menu follows a proposed fix. A
-// person without the flag gets no menu and no overlay. No Content Security
-// Policy violation is reported on the way.
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+// §10): a hosted daemon configured with no `[feedback]` makes its own queue
+// (the owner's, for its public origin) and service grant the first time a
+// person's shell asks, and the shell loads the overlay from the instance
+// and mints reporter tokens through its own backend route. The owner opens
+// the header's feedback menu, starts a report with the shortcut, files the
+// visible page, and the report carries their public ID and the shell's
+// context; the badge on the menu follows a proposed fix; the queue is on
+// the owner's Queues page. A connected person, with no flag of any kind,
+// gets the menu too, from the same queue. No Content Security Policy
+// violation is reported on the way.
 import type { Page } from "@playwright/test";
 import type { Lease, Report, ReportPage } from "../sdk/src/types";
-import { NO_KEY_CONFIG, expect, startDaemon, test } from "./fixtures";
-import { SECRET, hostedDaemon, memberOf, ownerOf } from "./hosted-helpers";
+import { expect, test } from "./fixtures";
+import { hostedDaemon, memberOf, ownerOf } from "./hosted-helpers";
 
 /** Keeps every CSP violation `page` reports in `window.cspViolations`. */
 async function watchCsp(page: Page) {
@@ -32,31 +32,13 @@ const call = (page: Page, method: string, path: string, body?: unknown) => page.
   return { status: r.status, json: text ? JSON.parse(text) : null };
 }, [method, path, body] as const);
 
-test("a person with the feedback flag files a report about Clax from its shell; the menu's badge follows the fix", async ({ browser }) => {
+test("on a hosted instance with nothing configured everyone files a report about Clax from its shell; the menu's badge follows the fix", async ({ browser }) => {
   test.setTimeout(120_000);
-  const first = await hostedDaemon();
-  const origin = first.origin;
-  let d = first.d;
+  const { d, origin } = await hostedDaemon();
   try {
     const owner = await ownerOf(browser, origin);
-
-    // The instance's own queue, for its own origin, and a service grant: what
-    // `scripts/dev-feedback.sh` and docs/prod.md set up.
-    const q = await call(owner, "POST", "/api/queues", { name: "clax-feedback", origins: [origin], reporters_see: "own" });
-    expect(q.status, JSON.stringify(q.json)).toBeLessThan(300);
-    const qid = q.json.queue.id as string;
-    const g = await call(owner, "POST", `/api/queues/${qid}/service-grants`, { name: "clax feedback" });
-    expect(g.status, JSON.stringify(g.json)).toBeLessThan(300);
-    const flag = await call(owner, "PUT", "/api/admin/people/%2Aowner/flags", { feedback: true });
-    expect(flag.status, JSON.stringify(flag.json)).toBe(200);
     const agentToken = await call(owner, "POST", "/api/hosted/agent-tokens", { label: "triage" });
     expect(agentToken.status).toBeLessThan(300);
-
-    // The daemon reads [feedback] at start: it restarts on the same home and port.
-    writeFileSync(join(first.d.home, "feedback-grant.json"), JSON.stringify(g.json), { mode: 0o600 });
-    await first.d.stop({ keepHome: true });
-    const config = `${NO_KEY_CONFIG}[hosted]\npublic_origin = "${origin}"\nsetup_secret_env = "CLAX_E2E_SETUP_SECRET"\n[feedback]\nqueue = "${qid}"\nservice_grant_file = "feedback-grant.json"\n`;
-    d = await startDaemon({ config, home: first.d.home, port: first.d.port, env: { CLAX_E2E_SETUP_SECRET: SECRET } });
     const auth = { authorization: `Bearer ${agentToken.json.token}` };
     const agent = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
       const r = await fetch(`${origin}${path}`, { method, headers: { ...auth, ...(body === undefined ? {} : { "content-type": "application/json" }) }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -79,6 +61,13 @@ test("a person with the feedback flag files a report about Clax from its shell; 
     await expect(menuButton).toBeVisible();
     expect(requests).toContain("/_app/feedback/config");
     expect(requests).toContain("/_clax/overlay.js");
+
+    // The instance's own queue, made as the shell asked: the owner's, for the
+    // public origin, on their Queues page.
+    const config = (await call(owner, "GET", "/_app/feedback/config")).json;
+    expect(config).toMatchObject({ enabled: true, instance: origin });
+    const qid = config.queue as string;
+    expect((await call(owner, "GET", "/api/queues")).json.queues).toMatchObject([{ id: qid, name: "clax-feedback", role: "admin", origins: [origin], reporters_see: "own" }]);
 
     // The menu names the shortcut; the shortcut starts a report.
     await menuButton.click();
@@ -117,7 +106,7 @@ test("a person with the feedback flag files a report about Clax from its shell; 
     expect(filed.context).toMatchObject({
       v: 1,
       release: { version: health.version, channel: "dev" },
-      flags: { feedback: true },
+      flags: { claxbot: true, claxbot_unenforced: false },
       app: { repo: "https://github.com/empathic/clax", view: "gallery", artifact: null },
       capture: { mode: "screen" },
       environment: { url: `${origin}/` },
@@ -147,17 +136,12 @@ test("a person with the feedback flag files a report about Clax from its shell; 
     expect(await cspViolations(owner)).toEqual([]);
     expect(refused).toEqual([]);
 
-    // Someone without the flag: one config request, no menu, no overlay.
+    // A connected person no admin has touched: the menu, on the same queue.
     const ben = await memberOf(browser, owner, origin, "Ben", []);
-    const benRequests: string[] = [];
-    ben.on("request", r => { benRequests.push(new URL(r.url()).pathname); });
-    // On the Queues page the gallery's lazy module, which asks the config, loads at once.
-    await ben.goto(`${origin}/queues`);
-    await expect(ben.locator("header.gbar")).toBeVisible();
-    await expect.poll(() => benRequests.includes("/_app/feedback/config")).toBe(true);
-    expect((await call(ben, "GET", "/_app/feedback/config")).json).toEqual({ enabled: false, instance: null, queue: null, context: null });
-    await expect(ben.getByRole("button", { name: /^Feedback/ })).toHaveCount(0);
-    expect(benRequests.filter(p => p.startsWith("/_clax/overlay") || p.startsWith("/_app/feedback/token"))).toEqual([]);
+    await ben.goto(`${origin}/`);
+    await expect(ben.getByRole("button", { name: /^Feedback/ })).toBeVisible();
+    expect((await call(ben, "GET", "/_app/feedback/config")).json).toMatchObject({ enabled: true, instance: origin, queue: qid });
+    expect((await call(owner, "GET", "/api/queues")).json.queues).toHaveLength(1);
   } finally {
     await d.stop();
   }

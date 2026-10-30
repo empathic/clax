@@ -3,15 +3,13 @@
 // requests, under `wrangler dev --local` as a hosted Clax
 // (HOSTED=1, `http://localhost:<port>` its public origin):
 //
-// 1. the first person sets up with the secret; the owner token makes the
-//    instance's own queue for its public origin and a service grant;
-//    the person's session reads GET /api/me/flags, and the admin route
-//    turns their `feedback` flag on;
-// 2. wrangler restarts on the same state with CLAX_FEEDBACK_QUEUE and
-//    CLAX_FEEDBACK_SERVICE_GRANT (the Worker reads them as it builds the
-//    server); the session's GET /_app/feedback/config answers enabled, the
-//    instance, the queue, the person's public ID and the context, and
-//    POST /_app/feedback/token mints a reporter token for a fresh Ed25519
+// 1. with no CLAX_FEEDBACK_* secret set, the first person sets up with the
+//    secret; their session's GET /api/me/flags lists their flags, and its
+//    GET /_app/feedback/config answers enabled, the instance, a queue, the
+//    person's public ID and the context: the instance made its own queue
+//    (the owner's, for its public origin, reporters seeing their own) and
+//    service grant, which the owner token's GET /api/queues lists;
+// 2. POST /_app/feedback/token mints a reporter token for a fresh Ed25519
 //    key;
 // 3. a report is filed with the token, signed as the SDK signs
 //    (web/sdk/src/sign.ts) and carrying the page's `Origin`; the person's
@@ -22,8 +20,9 @@
 //    `Sec-Fetch-Site: same-origin`, the public `Host`), answer 200 with
 //    the report; the same reads with `Sec-Fetch-Site: cross-site`, or with
 //    neither header, are 403 `wrong_origin`;
-// 5. with the flag turned off the config answers disabled and the token
-//    route 403 `no_flag`.
+// 5. wrangler restarts on the same state, still with no secret: the
+//    config answers the same queue, a token is minted, and the owner still
+//    has that one queue; an agent is refused 403 `not_for_agents`.
 //
 // Requests go to wrangler's 127.0.0.1 with the public `Host` set
 // explicitly (node:http, the event stream's WebSocket upgrade too), so
@@ -253,38 +252,37 @@ async function main() {
     const shellWrite = (method, path, body) =>
       send(port, method, path, { host, cookie, origin, "sec-fetch-site": "same-origin", "content-type": "application/json" }, JSON.stringify(body));
 
-    const q = await owner("POST", "/api/queues", { name: "clax-feedback", origins: [origin], reporters_see: "own" });
-    check(q.status < 300 && q.json?.queue?.id, "the owner token makes the instance's own queue for its public origin", q.text.slice(0, 300));
-    const qid = q.json.queue.id;
-    const g = await owner("POST", `/api/queues/${qid}/service-grants`, { name: "clax.dev feedback" });
-    check(g.status < 300 && g.json?.token && g.json?.private_key, "and a service grant for it", { status: g.status });
-
-    const before = await shellGet("/api/me/flags");
-    check(before.status === 200 && before.json?.flags?.feedback === false, "GET /api/me/flags: the person's feedback flag starts off", before.text.slice(0, 300));
-    const on = await shellWrite("PUT", "/api/admin/people/%2Aowner/flags", { feedback: true });
-    check(on.status === 200, "the admin route turns the person's feedback flag on, from the shell's session", on.text.slice(0, 300));
-    const after = await shellGet("/api/me/flags");
-    check(after.json?.flags?.feedback === true, "GET /api/me/flags then says it is on", after.text.slice(0, 300));
-    const offBeforeGrant = await shellGet("/_app/feedback/config");
-    check(offBeforeGrant.json?.enabled === false, "with no feedback secrets the config is disabled", offBeforeGrant.text.slice(0, 300));
-
-    // 2. Restarted with the instance's feedback secrets.
-    await w.stop();
-    w = undefined;
-    const grant = JSON.stringify({ token: g.json.token, private_key: g.json.private_key });
-    w = await start(dir, writeConfig(dir, { ...vars, CLAX_FEEDBACK_QUEUE: qid, CLAX_FEEDBACK_SERVICE_GRANT: grant }), 2, port);
+    const before = await owner("GET", "/api/queues");
+    check(before.status === 200 && before.json?.queues?.length === 0, "before anyone asks, the owner has no queue", before.text.slice(0, 300));
+    const flags = await shellGet("/api/me/flags");
+    check(
+      flags.status === 200 && JSON.stringify(flags.json?.flags) === JSON.stringify({ claxbot: true, claxbot_unenforced: false }),
+      "GET /api/me/flags lists the person's flags, and no feedback flag",
+      flags.text.slice(0, 300),
+    );
     const me = await shellGet("/api/viewers/me");
     const publicId = me.json?.viewer?.public_id;
-    check(me.status === 200 && publicId, "the session outlives the restart", me.text.slice(0, 300));
+    check(me.status === 200 && publicId, "the session names the person", me.text.slice(0, 300));
     const config = await shellGet("/_app/feedback/config");
     const c = config.json ?? {};
+    const qid = c.queue;
     check(
-      config.status === 200 && c.enabled === true && c.instance === origin && c.queue === qid && c.user === publicId &&
-        c.context?.flags?.feedback === true && c.context?.app?.repo === "https://github.com/empathic/clax" &&
+      config.status === 200 && c.enabled === true && c.instance === origin && typeof qid === "string" && c.user === publicId &&
+        JSON.stringify(c.context?.flags) === JSON.stringify(flags.json?.flags) && c.context?.app?.repo === "https://github.com/empathic/clax" &&
         c.context?.release?.channel === "dev" && typeof c.context?.release?.version === "string",
-      "GET /_app/feedback/config: enabled, the public origin, the queue, the person's public ID and the context",
+      "with no feedback secrets, GET /_app/feedback/config: enabled, the public origin, a queue, the person's public ID and the context",
       c,
     );
+    const made = await owner("GET", "/api/queues");
+    const queues = made.json?.queues ?? [];
+    check(
+      made.status === 200 && queues.length === 1 && queues[0].id === qid && queues[0].name === "clax-feedback" && queues[0].role === "admin" &&
+        JSON.stringify(queues[0].origins) === JSON.stringify([origin]) && queues[0].reporters_see === "own",
+      "the instance made its own queue: the owner's, for its public origin, on their Queues page",
+      made.text.slice(0, 500),
+    );
+    const grants = await owner("GET", `/api/queues/${qid}/service-grants`);
+    check(grants.status === 200 && grants.json?.grants?.length === 1, "and one service grant of it", grants.text.slice(0, 300));
 
     const signer = await generateSigner();
     const minted = await shellWrite("POST", "/_app/feedback/token", { public_key: signer.publicKey });
@@ -347,17 +345,18 @@ async function main() {
       }
     }
 
-    // 5. The flag off: nothing for the person.
-    const off = await shellWrite("PUT", "/api/admin/people/%2Aowner/flags", { feedback: false });
-    check(off.status === 200, "the admin route turns the flag off", off.text.slice(0, 300));
-    const disabled = await shellGet("/_app/feedback/config");
-    check(
-      disabled.json?.enabled === false && disabled.json?.queue === null && (await shellGet("/api/me/flags")).json?.flags?.feedback === false,
-      "with the flag off the config is disabled and GET /api/me/flags says so",
-      disabled.text.slice(0, 300),
-    );
-    const refused = await shellWrite("POST", "/_app/feedback/token", { public_key: signer.publicKey });
-    check(refused.status === 403 && refused.json?.error?.code === "no_flag", "and the token route is 403 no_flag", refused.text.slice(0, 300));
+    // 5. Restarted on the same state, still with no secret: the kept queue.
+    await w.stop();
+    w = undefined;
+    w = await start(dir, writeConfig(dir, vars), 2, port);
+    const again = await shellGet("/_app/feedback/config");
+    check(again.status === 200 && again.json?.enabled === true && again.json?.queue === qid, "after a restart the config answers the same queue", again.text.slice(0, 300));
+    const reminted = await shellWrite("POST", "/_app/feedback/token", { public_key: (await generateSigner()).publicKey });
+    check(reminted.status === 200 && reminted.json?.token?.startsWith("cxr_"), "and a token is minted", { status: reminted.status, text: reminted.text.slice(0, 300) });
+    const still = await owner("GET", "/api/queues");
+    check(still.json?.queues?.length === 1 && still.json.queues[0].id === qid, "the owner still has that one queue", still.text.slice(0, 300));
+    const agent = await send(port, "GET", "/_app/feedback/config", { host, authorization: `Bearer ${TOKEN}`, "x-clax-channel": "agent" });
+    check(agent.status === 403 && agent.json?.error?.code === "not_for_agents", "an agent is refused 403 not_for_agents", agent.text.slice(0, 300));
 
     summary.ok = true;
     console.log(JSON.stringify(summary));

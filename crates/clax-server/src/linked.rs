@@ -1340,7 +1340,7 @@ impl Sync {
                     match sent {
                         Ok((t, touched, _)) => {
                             apply(&ctx, st, &touched);
-                            crate::routes::threads::publish_thread(&ctx, st, &t)?;
+                            crate::routes::threads::publish_thread(&ctx, st, &t);
                         }
                         // No longer a watcher here (a late hand-over), or
                         // the thread is resolved or gone here: dropped.

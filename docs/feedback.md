@@ -269,8 +269,9 @@ of the `use` line, and `axum`, `reqwest`, `serde_json` and `clax-core` as
 dependencies.
 
 clax.dev's route around it, `token`, does what yours will:
-- it refuses agents (403 `not_for_agents`) and anyone without the
-  `feedback` flag (403 `no_flag`);
+- it refuses agents (403 `not_for_agents`) and anyone not signed in as a
+  person (401, or 403 `not_a_person`), and lets every signed-in person
+  report: no flag of clax.dev's gates it (yours may well);
 - it uses the person's public ID as `reporter_id`, and their GitHub name
   and login as the profile;
 - it passes a 400 about the browser's key back as a 400, with its code
@@ -740,8 +741,9 @@ fix, and the report verified.
 clax.dev reports problems with Clax itself into its own queue,
 `clax-feedback`:
 
-- **Who files**: people, the owner included, whose `feedback` flag an
-  admin turned on. This is clax.dev's choice, made in its backend as yours is.
+- **Who files**: every signed-in person, the owner and each connected
+  person who is not revoked. This is clax.dev's choice, made in its
+  backend as yours is.
 - **The backend**: `POST /_app/feedback/token` (the route above) and
   `GET /_app/feedback/config`, which tells the shell whether to mount the
   overlay and with what (`{enabled, instance, queue, context}`; the
@@ -759,11 +761,20 @@ clax.dev reports problems with Clax itself into its own queue,
   is open, for `app.view`) and the `/_app/feedback/*` paths are also the
   shell's own: your backend's token route lives wherever you like, and
   your page knows its own views.
-- **Configuration**: the Worker secrets `CLAX_FEEDBACK_QUEUE` and
-  `CLAX_FEEDBACK_SERVICE_GRANT` on clax.dev, or a `[feedback]` table
-  (`queue`, `service_grant_file`, `origin`) in a daemon's `config.toml`.
-  The instance mints for itself: the integration's `instance` is the
-  daemon's public origin, and its `origin` is the `[feedback]` origin
-  (default: the same).
+- **Configuration**: none, on a hosted instance (clax.dev, and `just
+  clax-dev-local`): the first time a signed-in person's shell asks, once
+  the owner exists, the instance makes its own queue `clax-feedback` (the
+  owner its admin, its public origin the one origin, reporters seeing
+  their own reports) and a service grant of it, keeps both in its store,
+  and mints with them through the public route as above. Later starts
+  reuse them; a deleted queue or a revoked grant is made again, and a
+  moved public origin is added to the queue. The owner sees the queue on
+  the Queues page. To use a queue of your choosing instead, the Worker
+  secrets `CLAX_FEEDBACK_QUEUE` and `CLAX_FEEDBACK_SERVICE_GRANT`, or a
+  `[feedback]` table (`queue`, `service_grant_file`, `origin`) in a
+  daemon's `config.toml`, win; a local daemon that is not hosted
+  reports only with them. The instance mints for itself: the
+  integration's `instance` is the daemon's public origin, and its
+  `origin` is the `[feedback]` origin (default: the same).
   `docs/prod.md` has the steps; `just dev-feedback` sets up a dev queue
   on `~/.clax-dev`, so the loop runs locally.

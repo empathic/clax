@@ -111,6 +111,61 @@ pub struct ServiceGrant {
     pub created_at: String,
 }
 
+/// The name of the queue a hosted instance makes for its own feedback
+/// ([`Store::own_feedback`]).
+pub const OWN_FEEDBACK_QUEUE: &str = "clax-feedback";
+/// The name of the service grant it makes for that queue.
+pub const OWN_FEEDBACK_GRANT: &str = "instance";
+
+/// The instance's own feedback queue and the service grant it mints with
+/// ([`Store::own_feedback`]). Its `Debug` shows neither secret.
+#[derive(Clone)]
+pub struct OwnFeedback {
+    pub queue_id: String,
+    pub grant_id: String,
+    /// The grant's token (`cxq_…`).
+    pub grant_token: Secret,
+    /// The grant's Ed25519 key, PKCS#8 v2.
+    pub grant_key_pkcs8: Vec<u8>,
+}
+
+impl std::fmt::Debug for OwnFeedback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnFeedback")
+            .field("queue_id", &self.queue_id)
+            .field("grant_id", &self.grant_id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The kept [`OwnFeedback`] on `c`, when its queue is live and lists
+/// `origin` (normalized) and its grant is unrevoked.
+fn own_feedback_in(c: &Connection, origin: &str) -> Result<Option<OwnFeedback>> {
+    let kept = c
+        .query_row(
+            "SELECT k.queue_id, k.grant_id, k.grant_token, k.grant_key
+             FROM instance_feedback k
+             JOIN queue_service_grants g ON g.id = k.grant_id AND g.queue_id = k.queue_id
+               AND g.revoked_at IS NULL",
+            [],
+            |r| {
+                Ok(OwnFeedback {
+                    queue_id: r.get(0)?,
+                    grant_id: r.get(1)?,
+                    grant_token: Secret::new(r.get(2)?),
+                    grant_key_pkcs8: r.get(3)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(kept) = kept else {
+        return Ok(None);
+    };
+    let listed =
+        queue_in(c, &kept.queue_id)?.is_some_and(|q| q.origins.iter().any(|o| o == origin));
+    Ok(listed.then_some(kept))
+}
+
 /// A live reporter token ([`Store::reporter_by_token`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReporterToken {
@@ -918,29 +973,43 @@ impl Store {
     pub fn create_queue(&self, ctx: &AuditCtx, person: Option<&str>, q: NewQueue) -> Result<Queue> {
         let name = check_queue_name(&q.name)?;
         let origins = normalize_origins(&q.origins)?;
-        let id = new_ulid();
-        let now = self.now();
         self.with_tx(|tx| {
-            tx.execute(
-                "INSERT INTO queues (id, name, person, origins_json, reporters_see, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    id,
-                    name,
-                    person,
-                    serde_json::to_string(&origins).expect("strings serialise"),
-                    q.reporters_see.as_str(),
-                    now
-                ],
-            )?;
-            let rec = queue_record(AuditKind::QueueCreate, &now, &id)
-                .with("name", name.as_str())
-                .with("origins", origins.clone())
-                .with("reporters_see", q.reporters_see.as_str());
-            self.record_audit(tx, ctx, rec)?;
-            let row = queue_in(tx, &id)?.ok_or(CoreError::NotFound)?;
+            let row = self.create_queue_in(tx, ctx, person, &name, &origins, q.reporters_see)?;
             Ok(row.view(Role::Admin))
         })
+    }
+
+    /// [`Store::create_queue`] in `tx`, of a checked `name` and normalized
+    /// `origins`.
+    fn create_queue_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        person: Option<&str>,
+        name: &str,
+        origins: &[String],
+        reporters_see: ReportersSee,
+    ) -> Result<QueueRow> {
+        let id = new_ulid();
+        let now = self.now();
+        tx.execute(
+            "INSERT INTO queues (id, name, person, origins_json, reporters_see, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                id,
+                name,
+                person,
+                serde_json::to_string(origins).expect("strings serialise"),
+                reporters_see.as_str(),
+                now
+            ],
+        )?;
+        let rec = queue_record(AuditKind::QueueCreate, &now, &id)
+            .with("name", name)
+            .with("origins", origins.to_vec())
+            .with("reporters_see", reporters_see.as_str());
+        self.record_audit(tx, ctx, rec)?;
+        queue_in(tx, &id)?.ok_or(CoreError::NotFound)
     }
 
     /// The live queues `person` (`None`: the owner) made or is a member
@@ -1203,33 +1272,170 @@ impl Store {
         name: &str,
     ) -> Result<(ServiceGrant, Secret, KeyPair)> {
         let name = check_queue_name(name)?;
+        self.with_tx(|tx| self.create_service_grant_in(tx, ctx, qid, &name))
+    }
+
+    /// [`Store::create_service_grant`] in `tx`, of a checked `name`.
+    fn create_service_grant_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        qid: &str,
+        name: &str,
+    ) -> Result<(ServiceGrant, Secret, KeyPair)> {
         let token = clax_core::secret::token(SERVICE_TOKEN_PREFIX);
         let key = KeyPair::generate();
         let public = clax_core::sig::encode_public(&key.public());
         let id = new_ulid();
         let now = self.now();
+        queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+        tx.execute(
+            "INSERT INTO queue_service_grants (id, queue_id, name, token_sha256, public_key, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, qid, name, token.sha256_hex(), public, now],
+        )?;
+        let rec = queue_record(AuditKind::QueueUpdate, &now, qid)
+            .with("op", "grant")
+            .with("grant_id", id.as_str())
+            .with("grant_name", name);
+        self.record_audit(tx, ctx, rec)?;
         let grant = ServiceGrant {
-            id: id.clone(),
+            id,
             queue_id: qid.to_string(),
-            name: name.clone(),
-            public_key: public.clone(),
-            created_at: now.clone(),
+            name: name.to_string(),
+            public_key: public,
+            created_at: now,
         };
-        self.with_tx(|tx| {
-            queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
-            tx.execute(
-                "INSERT INTO queue_service_grants (id, queue_id, name, token_sha256, public_key, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![id, qid, name, token.sha256_hex(), public, now],
-            )?;
-            let rec = queue_record(AuditKind::QueueUpdate, &now, qid)
-                .with("op", "grant")
-                .with("grant_id", id.as_str())
-                .with("grant_name", name.as_str());
-            self.record_audit(tx, ctx, rec)?;
-            Ok(())
-        })?;
         Ok((grant, token, key))
+    }
+
+    /// The instance's own feedback queue and service grant (spec
+    /// 2026-10-29-feedback-loop-design §10.2), for a hosted instance given
+    /// none, minting for its public `origin`: the kept ones
+    /// (`instance_feedback`) while the queue is live, lists `origin` and the
+    /// grant is unrevoked. Otherwise, once the instance's owner exists, it
+    /// mends them and keeps what it made in place of the earlier:
+    ///
+    /// - a kept queue that is live but does not list `origin` (the
+    ///   instance's origin moved: a local instance on another port) gets
+    ///   it added, the earliest origins dropped past
+    ///   [`clax_core::queue::MAX_QUEUE_ORIGINS`];
+    /// - with no live kept queue, it makes a queue named
+    ///   [`OWN_FEEDBACK_QUEUE`] of the owner's (its admin) for `origin`
+    ///   alone, under which reporters see their own reports;
+    /// - with no live kept grant of that queue, it makes a grant named
+    ///   [`OWN_FEEDBACK_GRANT`] of it.
+    ///
+    /// Each change is recorded as its route records it, under `ctx`. `None`
+    /// while there is no owner.
+    ///
+    /// The grant's token and private key are kept in the clear: they mint
+    /// reporter tokens on this queue alone.
+    ///
+    /// # Errors
+    /// `invalid_origin` for an `origin` a queue may not list; the store's.
+    pub fn own_feedback(&self, ctx: &AuditCtx, origin: &str) -> Result<Option<OwnFeedback>> {
+        let origin = normalize_origin(origin)?;
+        if let Some(kept) = self.with_read(|c| own_feedback_in(c, &origin))? {
+            return Ok(Some(kept));
+        }
+        self.with_tx(|tx| {
+            if let Some(kept) = own_feedback_in(tx, &origin)? {
+                return Ok(Some(kept));
+            }
+            let owner: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM viewers WHERE owner = 1)",
+                [],
+                |r| r.get(0),
+            )?;
+            if !owner {
+                return Ok(None);
+            }
+            let kept: Option<(String, String, String, Vec<u8>)> = tx
+                .query_row(
+                    "SELECT queue_id, grant_id, grant_token, grant_key FROM instance_feedback",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .optional()?;
+            let queue = match &kept {
+                Some((qid, ..)) => queue_in(tx, qid)?,
+                None => None,
+            };
+            let qid = match queue {
+                Some(q) => {
+                    if !q.origins.contains(&origin) {
+                        let mut origins = q.origins.clone();
+                        origins.push(origin.clone());
+                        let past = origins
+                            .len()
+                            .saturating_sub(clax_core::queue::MAX_QUEUE_ORIGINS);
+                        origins.drain(..past);
+                        tx.execute(
+                            "UPDATE queues SET origins_json = ?2 WHERE id = ?1",
+                            params![
+                                q.id,
+                                serde_json::to_string(&origins).expect("strings serialise")
+                            ],
+                        )?;
+                        let rec = queue_record(AuditKind::QueueUpdate, &self.now(), &q.id)
+                            .with("op", "update")
+                            .with("origins", origins);
+                        self.record_audit(tx, ctx, rec)?;
+                    }
+                    q.id
+                }
+                None => {
+                    self.create_queue_in(
+                        tx,
+                        ctx,
+                        None,
+                        OWN_FEEDBACK_QUEUE,
+                        std::slice::from_ref(&origin),
+                        ReportersSee::Own,
+                    )?
+                    .id
+                }
+            };
+            if let Some((kept_qid, gid, token, key)) = kept {
+                let live: bool = tx.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM queue_service_grants
+                       WHERE id = ?1 AND queue_id = ?2 AND revoked_at IS NULL)",
+                    params![gid, qid],
+                    |r| r.get(0),
+                )?;
+                if live && kept_qid == qid {
+                    return Ok(Some(OwnFeedback {
+                        queue_id: qid,
+                        grant_id: gid,
+                        grant_token: Secret::new(token),
+                        grant_key_pkcs8: key,
+                    }));
+                }
+            }
+            let (grant, token, key) =
+                self.create_service_grant_in(tx, ctx, &qid, OWN_FEEDBACK_GRANT)?;
+            tx.execute(
+                "INSERT INTO instance_feedback (id, queue_id, grant_id, grant_token, grant_key, created_at)
+                 VALUES (1, ?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT (id) DO UPDATE SET queue_id = excluded.queue_id,
+                   grant_id = excluded.grant_id, grant_token = excluded.grant_token,
+                   grant_key = excluded.grant_key, created_at = excluded.created_at",
+                params![
+                    qid,
+                    grant.id,
+                    token.expose(),
+                    key.pkcs8().expose(),
+                    grant.created_at
+                ],
+            )?;
+            Ok(Some(OwnFeedback {
+                queue_id: qid,
+                grant_id: grant.id,
+                grant_token: token,
+                grant_key_pkcs8: key.pkcs8().expose().to_vec(),
+            }))
+        })
     }
 
     /// Queue `qid`'s service grants that are not revoked, oldest first.
