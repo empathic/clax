@@ -1159,11 +1159,25 @@ pub fn rewrite_assets(
 
 /// The idempotency key of local version `n` of `aid` published onto
 /// `target`: a public artifact's ID, or for a new public artifact `new:`
-/// and the artifact the link moves from (`-` for none), so a push sent
-/// again names the same key and a push as new again (`mode: new`) a fresh
-/// one.
+/// and the artifact the link moves from (for a push with no link,
+/// [`new_key_target`]), so a push sent again names the same key and a push
+/// as new again (`mode: new`) a fresh one.
 pub fn version_key(aid: &str, n: u32, target: &str) -> String {
     format!("clax-push:{aid}:{n}:{target}")
+}
+
+/// The target [`version_key`] names for a new public artifact made by a
+/// push with no link, after `made` public copies of the artifact on the
+/// remote ([`clax_store::Store::remote_copies`]): `new:-` for the first, so
+/// keys made before the count was named stay the same, and `new:-:<made>`
+/// after. A push after an unlink then makes a new public copy rather than
+/// replaying the first one, while a push sent again before its answer was
+/// recorded counts the same copies and replays its own.
+pub fn new_key_target(made: u32) -> String {
+    match made {
+        0 => "new:-".to_string(),
+        n => format!("new:-:{n}"),
+    }
 }
 
 /// The idempotency key of local version `n` of `aid` published in app mode
@@ -1639,10 +1653,15 @@ pub async fn push_from(
             l.pushed_n + 1
         }
     };
-    // A new public artifact's key names the one the link moves from.
+    // A new public artifact's key names the one the link moves from, or
+    // with no link the public copies made before it ([`new_key_target`]).
     let new_target = match (mode, &link) {
         (Mode::New, Some(l)) => format!("new:{}", l.remote_artifact_id),
-        _ => "new:-".to_string(),
+        _ => {
+            let (rid, a2) = (rid.clone(), aid.as_str().to_string());
+            let made = s.store_call(move |st| st.remote_copies(&rid, &a2)).await?;
+            new_key_target(made)
+        }
     };
     let (id, last_n) = (aid.clone(), end);
     let versions = if from <= last_n {

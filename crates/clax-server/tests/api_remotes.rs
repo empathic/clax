@@ -621,6 +621,43 @@ async fn a_push_whose_answer_was_lost_is_answered_the_version_it_made() {
 }
 
 #[tokio::test]
+async fn a_push_after_an_unlink_makes_a_new_public_copy() {
+    let public = Public::new().await;
+    let local = TestServer::spawn().await;
+    let rid = connect(&local, &public).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let aid = local
+        .publish("Plan", &[("index.html", "<h1>v1</h1>")])
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut made: Vec<String> = Vec::new();
+    for _ in 0..3 {
+        let (s, v) = owner_post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v["pushed"], json!([{"n": 1, "remote_n": 1}]), "{v}");
+        let raid = v["link"]["remote_artifact_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(!made.contains(&raid), "{raid} made again: {made:?}");
+        made.push(raid);
+        let (s, v) = local_req(
+            &local,
+            reqwest::Method::DELETE,
+            &format!("/api/artifacts/{aid}/remotes/{rid}"),
+            json!(null),
+            None,
+        )
+        .await;
+        assert!((200..300).contains(&s), "{s} {v}");
+    }
+}
+
+#[tokio::test]
 async fn a_pages_assets_are_uploaded_and_its_references_rewritten() {
     let public = Public::new().await;
     let local = TestServer::spawn().await;
