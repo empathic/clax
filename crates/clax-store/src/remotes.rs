@@ -249,7 +249,10 @@ impl Store {
     /// Records a sign-in to `origin` (normalized) under `name`, waiting for
     /// the person's approval there. A remote of that origin still waiting
     /// is replaced (a new sign-in); a signed-out one waits again under its
-    /// own ID, keeping its links; a connected one stays as it is.
+    /// own ID, keeping its links, and is marked reconnecting (as is one
+    /// still waiting that was), so a sign-in that does not finish leaves it
+    /// signed out again ([`Store::abandon_sign_in`]); a connected one stays
+    /// as it is.
     ///
     /// # Errors
     /// `remote_exists` for an origin this daemon is signed in to already, or
@@ -262,15 +265,15 @@ impl Store {
     ) -> Result<Remote> {
         let name = check_remote_name(name)?;
         self.with_tx(|tx| {
-            let existing: Option<(String, String)> = tx
+            let existing: Option<(String, String, bool)> = tx
                 .query_row(
-                    "SELECT id, status FROM remotes WHERE origin = ?1",
+                    "SELECT id, status, reconnecting FROM remotes WHERE origin = ?1",
                     params![origin],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()?;
             let mut keep: Option<String> = None;
-            if let Some((id, status)) = &existing {
+            if let Some((id, status, reconnecting)) = &existing {
                 match status.as_str() {
                     "connected" => {
                         return Err(CoreError::invalid(
@@ -279,6 +282,8 @@ impl Store {
                         ));
                     }
                     "signed_out" => keep = Some(id.clone()),
+                    // A reconnect replaced: still the signed-out remote's.
+                    "pending" if *reconnecting => keep = Some(id.clone()),
                     _ => {
                         tx.execute("DELETE FROM remotes WHERE id = ?1", params![id])?;
                     }
@@ -299,7 +304,7 @@ impl Store {
                 tx.execute(
                     "UPDATE remotes SET name = ?2, status = 'pending', token = NULL,
                         device_code = ?3, user_code = ?4, verification_url = ?5,
-                        sign_in_expires_at = ?6, poll_interval_s = ?7
+                        sign_in_expires_at = ?6, poll_interval_s = ?7, reconnecting = 1
                      WHERE id = ?1",
                     params![
                         id,
@@ -378,7 +383,8 @@ impl Store {
             let n = tx.execute(
                 "UPDATE remotes SET status = 'connected', token = ?2, person_public_id = ?3,
                     person_name = ?4, grant_id = ?5, connected_at = ?6, device_code = NULL,
-                    user_code = NULL, verification_url = NULL, sign_in_expires_at = NULL
+                    user_code = NULL, verification_url = NULL, sign_in_expires_at = NULL,
+                    reconnecting = 0
                  WHERE id = ?1 AND status = 'pending'",
                 params![
                     id,
@@ -412,6 +418,46 @@ impl Store {
                 params![id],
             )? > 0)
         })
+    }
+
+    /// Ends remote `id`'s sign-in that will not finish (denied there,
+    /// expired, or abandoned): a remote that was signed out before it is
+    /// signed out again, with its links, linked threads, mirrors, push
+    /// approvals and assets, and answered; a remote that never connected
+    /// is forgotten ([`Store::remove_remote`]), `None`. A remote no longer
+    /// waiting is left as it is; `None` for none.
+    pub fn abandon_sign_in(&self, id: &str) -> Result<Option<Remote>> {
+        let restored = self.with_tx(|tx| {
+            let row: Option<(String, bool)> = tx
+                .query_row(
+                    "SELECT status, reconnecting FROM remotes WHERE id = ?1",
+                    params![id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            match row {
+                None => Ok(Some(None)),
+                Some((status, _)) if status != "pending" => Ok(None),
+                Some((_, true)) => {
+                    tx.execute(
+                        "UPDATE remotes SET status = 'signed_out', token = NULL, device_code = NULL,
+                            user_code = NULL, verification_url = NULL, sign_in_expires_at = NULL,
+                            reconnecting = 0
+                         WHERE id = ?1",
+                        params![id],
+                    )?;
+                    Ok(None)
+                }
+                Some((_, false)) => Ok(Some(Some(()))),
+            }
+        })?;
+        match restored {
+            // Gone already.
+            Some(None) => Ok(None),
+            // Never connected: forgotten.
+            Some(Some(())) => self.remove_remote(id).map(|_| None),
+            None => self.find_remote(id).map(|r| r.filter(|x| x.id == id)),
+        }
     }
 
     /// Every remote, oldest first.
@@ -1219,6 +1265,55 @@ mod tests {
             .add_pending_remote("https://b.example", "b", &sign_in("cxd_3"))
             .unwrap();
         assert!(!st.sign_out_remote(&p.id).unwrap());
+    }
+
+    /// A sign-in that reconnects a signed-out remote and is denied,
+    /// expires or is abandoned leaves the remote signed out with its links,
+    /// even when a second sign-in replaced the first meanwhile; one that
+    /// would have connected a new remote forgets it.
+    #[test]
+    fn an_abandoned_reconnect_leaves_the_remote_signed_out_with_its_links() {
+        let (_d, st) = store();
+        let r = st
+            .add_pending_remote("https://clax.example", "pub", &sign_in("cxd_1"))
+            .unwrap();
+        st.connect_remote(
+            &r.id,
+            &SignedInAs {
+                token: Secret::new("cxa_1".into()),
+                person_public_id: "p1".into(),
+                person_name: Some("Ada".into()),
+                grant_id: "g_1".into(),
+            },
+        )
+        .unwrap();
+        st.link_remote("a1", &r.id, "b1", "https://clax.example/a/b1", 1, 1)
+            .unwrap();
+        assert!(st.sign_out_remote(&r.id).unwrap());
+        st.add_pending_remote("https://clax.example", "pub", &sign_in("cxd_2"))
+            .unwrap();
+        let again = st
+            .add_pending_remote("https://clax.example", "pub", &sign_in("cxd_3"))
+            .unwrap();
+        assert_eq!(again.id, r.id, "a replaced reconnect keeps the ID");
+        assert_eq!(st.remote_links("a1").unwrap().len(), 1);
+        let back = st.abandon_sign_in(&r.id).unwrap().expect("kept");
+        assert_eq!(back.status, "signed_out");
+        assert_eq!(back.user_code, None);
+        assert!(st.remote_device_code(&r.id).unwrap().is_none());
+        assert_eq!(st.remote_links("a1").unwrap()[0].remote_id, r.id);
+        // Not pending any more: nothing to abandon.
+        assert!(st.abandon_sign_in(&r.id).unwrap().is_some());
+        assert_eq!(
+            st.find_remote(&r.id).unwrap().unwrap().status,
+            "signed_out"
+        );
+        // A new remote's abandoned sign-in forgets it.
+        let p = st
+            .add_pending_remote("https://b.example", "b", &sign_in("cxd_4"))
+            .unwrap();
+        assert!(st.abandon_sign_in(&p.id).unwrap().is_none());
+        assert!(st.find_remote(&p.id).unwrap().is_none());
     }
 
     #[test]

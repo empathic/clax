@@ -307,6 +307,68 @@ async fn an_expired_device_flow_answers_dismissed() {
     assert_eq!((s, v["status"].as_str()), (201, Some("open")), "{v}");
 }
 
+/// A remote whose token was revoked there is connected again from an
+/// agent's request, and the person denies that sign-in there: the remote
+/// is signed out again, its pushed artifact's link kept, not forgotten.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denied_reconnect_leaves_the_remote_signed_out_with_its_links() {
+    let (ts, clock) = clocked().await;
+    let public = Public::new().await;
+    let r = ts
+        .store
+        .add_pending_remote(
+            &public.origin,
+            "pub",
+            &clax_store::remotes::PendingSignIn {
+                device_code: clax_core::Secret::new("cxd_old".into()),
+                user_code: "ABCD-1234".into(),
+                verification_url: format!("{}/device?code=ABCD-1234", public.origin),
+                expires_at: "2099-01-01T00:00:00.000Z".into(),
+                interval_s: 5,
+            },
+        )
+        .unwrap();
+    ts.store
+        .connect_remote(
+            &r.id,
+            &clax_store::remotes::SignedInAs {
+                token: clax_core::Secret::new("cxa_old".into()),
+                person_public_id: "p1".into(),
+                person_name: Some("Ada".into()),
+                grant_id: "g_old".into(),
+            },
+        )
+        .unwrap();
+    let url = format!("{}/a/7q3k9mzx2b4t", public.origin);
+    ts.store
+        .link_remote("7q3k9mzx2b4a", &r.id, "7q3k9mzx2b4t", &url, 1, 1)
+        .unwrap();
+    assert!(ts.store.sign_out_remote(&r.id).unwrap());
+    let (sid, id) = opened(&ts, &public).await;
+    let (s, v) = answer(&ts, &id, "connect").await;
+    assert_eq!(s, 200, "{v}");
+    let uc = user_code(&v);
+    let every = Duration::from_secs(v["interval"].as_u64().unwrap());
+    let (s, v) = public
+        .browser(
+            reqwest::Method::POST,
+            &format!("/api/hosted/device/{uc}/deny"),
+            json!({}),
+        )
+        .await;
+    assert!(matches!(s, 200 | 204), "{s}: {v}");
+    public.clock.advance(5);
+    clock.wait_for(every, 1).await;
+    clock.fire(every);
+    let (s, v) = wait(&ts, &sid, &id, 50).await;
+    assert_eq!((s, v["status"].as_str()), (200, Some("dismissed")), "{v}");
+    let back = ts.store.find_remote(&r.id).unwrap().expect("kept");
+    assert_eq!(back.status, "signed_out");
+    let links = ts.store.remote_links("7q3k9mzx2b4a").unwrap();
+    assert_eq!(links.len(), 1, "{links:?}");
+    assert_eq!(links[0].url, url);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn answering_is_the_owners_browser_alone() {
     let ts = TestServer::spawn().await;

@@ -1106,8 +1106,10 @@ expires_at, interval, return_to_kept}`, says with `return_to_kept` whether
 the approval page will send the person back. The CLI prints the user code and opens the approval page; the person,
 signed in there, checks the code and approves; the CLI polls (`POST
 /api/remotes/<id or name>/poll` → `{remote, status}`, status `pending`,
-`connected`, `denied` or `expired`; a denied or expired sign-in forgets the
-remote) and the daemon receives an agent token of that person's, which it
+`connected`, `denied` or `expired`; a denied or expired sign-in forgets a
+new remote, and leaves one that was `signed_out` signed out again, its
+links, linked threads, mirrors and push approvals kept; so does a
+connection request's Connect that is denied there or expires) and the daemon receives an agent token of that person's, which it
 keeps in its database and never shows. `GET /api/remotes` → `{remotes}`
 (`id`, `origin`, `name`, `status`, whose token it holds: `person_public_id`,
 `person_name`, `grant_id`); `DELETE /api/remotes/<id or name>` → `{remote,

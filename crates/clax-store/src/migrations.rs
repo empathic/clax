@@ -1866,7 +1866,9 @@ pub const MIGRATIONS: &[&str] = &[
     // rebuilding the table every other table names). And a remote may be
     // `signed_out`: its token was refused there (revoked), so it is kept,
     // with its links, until the person connects it again; `remotes` is
-    // rebuilt for the status's CHECK, as no table names it.
+    // rebuilt for the status's CHECK, as no table names it, and gains
+    // `reconnecting`, set while a signed-out remote's new sign-in waits, so
+    // one that does not finish leaves it signed out rather than forgotten.
     "CREATE TABLE login_codes (
         sha256 TEXT PRIMARY KEY,
         created_at TEXT NOT NULL,
@@ -1926,11 +1928,12 @@ pub const MIGRATIONS: &[&str] = &[
         grant_id TEXT,
         created_at TEXT NOT NULL,
         connected_at TEXT,
-        client_kind TEXT
+        client_kind TEXT,
+        reconnecting INTEGER NOT NULL DEFAULT 0
     );
     INSERT INTO remotes_60 SELECT id, origin, name, status, token, device_code, user_code,
         verification_url, sign_in_expires_at, poll_interval_s, person_public_id, person_name,
-        grant_id, created_at, connected_at, client_kind FROM remotes;
+        grant_id, created_at, connected_at, client_kind, 0 FROM remotes;
     DROP TABLE remotes;
     ALTER TABLE remotes_60 RENAME TO remotes;
     CREATE TABLE inbox_items_60 (

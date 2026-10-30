@@ -579,7 +579,7 @@ async fn step(s: &AppState, id: &str, rid: &str) -> Result<Option<Answer>, ApiEr
                     .is_some_and(|t| !t.is_empty() && t <= now.as_str())
                 {
                     let rid = remote.id.clone();
-                    s.store_call(move |st| st.remove_remote(&rid).map(|_| ()))
+                    s.store_call(move |st| st.abandon_sign_in(&rid).map(|_| ()))
                         .await?;
                     Some(Answer::Dismissed { hold_off: false })
                 } else {

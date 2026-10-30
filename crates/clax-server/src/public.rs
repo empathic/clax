@@ -893,14 +893,17 @@ pub async fn start_sign_in(
 pub enum SignIn {
     /// Still waiting (`authorization_pending` or `slow_down`).
     Waiting,
-    /// Denied there, or expired: the remote is forgotten.
+    /// Denied there, or expired: a remote that was signed out before is
+    /// signed out again, with its links; a new one is forgotten
+    /// ([`clax_store::Store::abandon_sign_in`]).
     Refused(&'static str),
     /// Approved: the remote is connected.
     Connected(Box<Remote>),
 }
 
-/// Polls remote `r`'s sign-in once, connecting it when approved and
-/// forgetting it when denied or expired.
+/// Polls remote `r`'s sign-in once, connecting it when approved and, when
+/// denied or expired, leaving it signed out again (one that was before)
+/// or forgetting it (a new one).
 ///
 /// # Errors
 /// The store's; the remote's for anything but the device flow's own
@@ -925,13 +928,11 @@ pub async fn poll_sign_in(s: &AppState, r: &Remote) -> Result<SignIn, ApiError> 
     let forget = |why: &'static str| async move {
         let id = r.id.clone();
         let now = s
-            .store_call(
-                move |st| match st.find_remote(&id)?.filter(|x| x.id == id) {
-                    Some(x) if x.status == "connected" => Ok(Some(x)),
-                    Some(_) => st.remove_remote(&id).map(|_| None),
-                    None => Ok(None),
-                },
-            )
+            .store_call(move |st| {
+                Ok(st
+                    .abandon_sign_in(&id)?
+                    .filter(|x| x.status == "connected"))
+            })
             .await?;
         Ok::<_, ApiError>(match now {
             Some(x) => SignIn::Connected(Box::new(x)),

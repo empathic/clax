@@ -315,8 +315,8 @@ async fn remote_named(s: &AppState, key: String) -> Result<Remote, ApiError> {
 
 /// `POST /api/remotes/<id or name>/poll` (the owner) → `{remote, status}`,
 /// `status` `pending` (poll again after the remote's interval),
-/// `connected`, or `denied` / `expired` (the remote is forgotten: add it
-/// again). 400 `not_pending` for a remote connected already.
+/// `connected`, or `denied` / `expired` (a new remote is forgotten: add it
+/// again; one that was signed out is signed out again, its links kept). 400 `not_pending` for a remote connected already.
 pub async fn poll(
     State(s): State<AppState>,
     d: DeniedToGrants,
