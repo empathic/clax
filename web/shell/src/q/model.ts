@@ -106,22 +106,26 @@ export function closedLabel(q: QuestionView): string {
 
 /** The tag on a question asked on a remote too (linked questions): the
  * remote's name, its title, and the line saying how its copy stands: while
- * open, sending, not sent (and why), or why its answer there was refused
- * here; once closed, "on <remote>" when the answer or decline came from
- * there. Null for none. */
-export function questionLink(q: QuestionView): { label: string; title: string; line: string | null; failed: boolean } | null {
+ * open, sending, not sent (and why, with `retry`: the line offers Retry,
+ * as a thread card's does), or why its answer there was refused here; once
+ * closed, "on <remote>" when the answer or decline came from there.
+ * `retried`: Retry was taken since this view of the question came, so a
+ * copy not sent reads as sending again. Null for none. */
+export function questionLink(q: QuestionView, retried = false): { label: string; title: string; line: string | null; failed: boolean; retry: boolean } | null {
   const l = q.linked;
   if (!l) return null;
-  if (l.unlinked) return { label: `${l.remote} · unlinked`, title: `Was also asked on ${l.remote}; no longer linked`, line: null, failed: false };
+  if (l.unlinked) return { label: `${l.remote} · unlinked`, title: `Was also asked on ${l.remote}; no longer linked`, line: null, failed: false, retry: false };
   const title = `Also asked on ${l.remote}`;
+  const sending = { label: l.remote, title, line: `Sending to ${l.remote}…`, failed: false, retry: false };
   if (q.status === "open") {
-    if (l.state === "pending") return { label: l.remote, title, line: `Sending to ${l.remote}…`, failed: false };
-    if (l.state === "failed") return { label: l.remote, title, line: notSent(l), failed: true };
+    if (l.state === "pending") return sending;
+    // Retry is the artifact's link's (`retryLink`): a question about no artifact has none.
+    if (l.state === "failed") return retried ? sending : { label: l.remote, title, line: notSent(l), failed: true, retry: !!q.artifact };
     // Its copy done while it is open here: the remote's answer was refused.
-    return { label: l.remote, title, line: l.error, failed: false };
+    return { label: l.remote, title, line: l.error, failed: false, retry: false };
   }
   // Closed: the closed label says "on <remote>" when the answer came from there.
-  return { label: l.remote, title, line: l.answered_there ? `on ${l.remote}` : null, failed: false };
+  return { label: l.remote, title, line: l.answered_there ? `on ${l.remote}` : null, failed: false, retry: false };
 }
 
 /** Why a copy was not sent: the sync's own "Not sent: …" when the remote

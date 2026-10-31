@@ -68,16 +68,24 @@
   const readOnly = $derived(ro || !!t.linked?.unlinked);
   const tag = $derived(linkTag(t));
   const elsewhere = $derived(remoteVersion(t));
+  // Retry on the line of what was not sent (`retryCopies`, loaded with the
+  // first press). The view of the thread Retry succeeded on: until a newer
+  // view comes, what was not sent reads as sending again (the retry moves no
+  // event). The view a Retry failed on, and why, said on the line until the
+  // next press or a newer view.
   let retrying = $state(false);
-  // The view of the thread Retry was taken on: until a newer view comes,
-  // what was not sent reads as sending again (the retry moves no event).
   let retriedOn = $state.raw<Thread | null>(null);
+  let retryFailed = $state.raw<{ on: Thread; text: string } | null>(null);
   const lines = $derived(cardLinkLines(t, retriedOn === t));
   const retry = async () => {
     if (!t.linked || retrying) return;
     retrying = true;
+    retryFailed = null;
     const on = t;
-    try { const { retryLink } = await import("./publish-api"); await retryLink(t.artifact_id, t.linked.remote_id); retriedOn = on; } catch { /* the card shows the state it is in */ } finally { retrying = false; }
+    try {
+      const failed = await (await import("./retry-request")).retryCopies(t.artifact_id, t.linked.remote_id);
+      if (failed) retryFailed = { on, text: failed }; else retriedOn = on;
+    } catch { retryFailed = { on, text: "Retry failed: Clax did not answer" }; } finally { retrying = false; }
   };
   // A thread about the whole artifact (anchor kind `artifact`) has no spot to name.
   const anchorLabel = (a: Thread["anchor"]) => (a.kind === "artifact" ? "The whole artifact" : pickLabel(a));
@@ -214,7 +222,7 @@
 
 {#snippet chip()}{#if tag}<span class={["link-tag", tag.unlinked && "unlinked"]} title={tag.title}>{tag.label}</span>{/if}{#if owner}<span class="owner-chip" title={`${owner.name ?? "agent"}, ${mine ? "your agent" : `${whose(owner.person_name ?? "")} agent`}`}><span class="on">{owner.name}</span>{#if !mine}<span class="op">{` · ${midName(owner.person_name ?? "")}`}</span>{/if}</span>{/if}{/snippet}
 
-{#snippet retryButton()}<button type="button" class="retry" disabled={retrying} onclick={e => { e.stopPropagation(); void retry(); }}>{retrying ? "Retrying…" : "Retry"}</button>{/snippet}
+{#snippet retryButton()}{#if retryFailed?.on === t}<span class="retry-err" role="status">{retryFailed.text}</span>{/if}<button type="button" class="retry" disabled={retrying} onclick={e => { e.stopPropagation(); void retry(); }}>{retrying ? "Retrying…" : "Retry"}</button>{/snippet}
 
 {#snippet actions()}
   <!-- Only stops a click on these controls from also selecting the card. -->

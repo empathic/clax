@@ -61,6 +61,7 @@
 // storage: each tab's `hello` carries it, the hub sends the latest it heard
 // on every request (and in a WebSocket's address), and a new proof (a login
 // in another tab) opens the stream again.
+import { after } from "./clock";
 import { STUCK_MS, backoff } from "./lifecycle";
 import { PROOF_HEADER, withProof } from "./owner-proof-wire";
 import { parseBlock } from "./sse";
@@ -120,6 +121,10 @@ export const CATCH_UP = 20;
 /** Most of those one catch-up announces: the newest, so a long outage
  * ends in a few notifications, not a burst (the count says the rest). */
 export const CATCH_UP_SHOWN = 3;
+/** The label of the wait before a reconnect: it runs on the shell's clock
+ * (`after`, clock.ts), so a browser test advances the hub's clock past it
+ * (`claxTestClock.dueIn`) rather than waiting out the backoff. */
+export const RETRY_LABEL = "stream-retry";
 
 type Timer = ReturnType<typeof setTimeout>;
 
@@ -208,7 +213,8 @@ export class Hub {
   /** The `end` block the open stream closed with (the app's host passes the
    * core's), else null. */
   private ended: { reason?: unknown; status?: unknown } | null = null;
-  private retry: Timer | undefined;
+  /** Cancels the pending reconnect after a backoff, if any. */
+  private retry: (() => void) | undefined;
   private linger: Timer | undefined;
   private watchdog: Timer | undefined;
   private pinger: ReturnType<typeof setInterval> | undefined;
@@ -346,7 +352,7 @@ export class Hub {
     else { clearInterval(this.pinger); this.pinger = undefined; }
     if (!want.size) {
       if (this.conn && this.linger === undefined) this.linger = setTimeout(() => { this.linger = undefined; if (!this.wanted().size) this.closeIdle(); }, LINGER_MS);
-      if (!this.conn) { clearTimeout(this.retry); this.retry = undefined; }
+      if (!this.conn) { this.retry?.(); this.retry = undefined; }
       else if (this.up) void this.flush();
       return;
     }
@@ -385,7 +391,7 @@ export class Hub {
 
   private connect(): void {
     this.drop();
-    clearTimeout(this.retry);
+    this.retry?.();
     this.retry = undefined;
     this.ended = null;
     // A new stream request answers any reopen a tab asked for.
@@ -631,21 +637,21 @@ export class Hub {
     this.drop();
     const final = this.env.host && this.ended?.reason === "stream_refused" && FINAL.has(this.ended.status as number);
     this.ended = null;
-    if (final) { clearTimeout(this.retry); this.retry = undefined; return; }
+    if (final) { this.retry?.(); this.retry = undefined; return; }
     if (!this.toldDown && !this.env.host) {
       this.toldDown = true;
       if (this.clients.size) this.env.send([...this.clients.keys()], { t: "status", up: false });
     }
     if (!this.wanted().size) return;
-    clearTimeout(this.retry);
-    this.retry = setTimeout(() => { this.retry = undefined; if (this.wanted().size) this.connect(); }, backoff(this.failures++));
+    this.retry?.();
+    this.retry = after(backoff(this.failures++), () => { this.retry = undefined; if (this.wanted().size) this.connect(); }, RETRY_LABEL);
   }
 
   /** No tab wants anything: the connection closes, and the next starts afresh. */
   private closeIdle(): void {
     clearTimeout(this.linger);
     this.linger = undefined;
-    clearTimeout(this.retry);
+    this.retry?.();
     this.retry = undefined;
     this.drop();
     this.streamId = null;
@@ -784,7 +790,7 @@ export class Hub {
     this.streamId = null;
     if (this.failures === 0) { this.failures++; this.connect(); return; }
     this.drop();
-    clearTimeout(this.retry);
-    this.retry = setTimeout(() => { this.retry = undefined; if (this.wanted().size) this.connect(); }, backoff(this.failures++));
+    this.retry?.();
+    this.retry = after(backoff(this.failures++), () => { this.retry = undefined; if (this.wanted().size) this.connect(); }, RETRY_LABEL);
   }
 }

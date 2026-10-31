@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CONNECT_MS, Hub, type HubMsg, LINGER_MS, PING_MS, SOCKET_PING_MS } from "./stream-hub";
+import { CONNECT_MS, Hub, type HubMsg, LINGER_MS, PING_MS, RETRY_LABEL, SOCKET_PING_MS } from "./stream-hub";
 import { Net } from "./test/fake-net";
+
+/** Longer than any backoff wait (lifecycle.ts: 30 s, spread up by 20%). */
+const BACKOFF_CAP = 36_000;
 
 const A = "7q3k9mzx2b4t";
 const B = "8r4m0nzy3c5v";
@@ -99,6 +102,40 @@ describe("the stream hub", () => {
     await tick();
     expect(of("t1", "status")).toEqual([{ t: "status", up: false }, { t: "status", up: true }]);
     expect(of("t1", "live")).toHaveLength(1);
+  });
+
+  it("waits out its backoff on the shell's clock, re-armed after each failure and cancelled once no tab wants a topic", async () => {
+    const clock = (globalThis as unknown as { claxTestClock: { advance(ms: number): number; dueIn(label: string): number | null } }).claxTestClock;
+    const due = () => clock.dueIn(RETRY_LABEL);
+    hub.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    net.ready(net.conns[0], S1);
+    await tick();
+    expect(due()).toBeNull();
+    // The daemon goes away: the hub waits the first backoff (500 ms, ±20%) on the clock.
+    net.conns[0].end();
+    await tick();
+    const first = due();
+    expect(first).not.toBeNull();
+    expect(first!).toBeLessThanOrEqual(600);
+    const opened = net.conns.length;
+    // Advancing the clock past it reconnects now, with no timer advanced.
+    clock.advance(first!);
+    await tick();
+    expect(net.conns.length).toBe(opened + 1);
+    expect(due()).toBeNull();
+    // That stream fails too: the wait is armed again, for the next backoff (1 s, ±20%).
+    net.conns.at(-1)!.end();
+    await tick();
+    expect(due()).not.toBeNull();
+    expect(due()!).toBeLessThanOrEqual(1200);
+    // No tab wants a topic: the wait is cancelled, and nothing reconnects.
+    hub.receive("t1", { t: "topics", topics: [] });
+    await tick();
+    expect(due()).toBeNull();
+    clock.advance(BACKOFF_CAP);
+    await tick();
+    expect(net.conns.length).toBe(opened + 1);
   });
 
   it("tells a tab that joined during an outage that its topics are live once the stream resumes with them", async () => {
