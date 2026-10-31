@@ -378,7 +378,82 @@ pub async fn create(
 #[derive(Deserialize)]
 pub struct WaitQuery {
     #[serde(default)]
-    wait: u64,
+    pub(crate) wait: u64,
+}
+
+/// How a long poll's read is called ([`long_poll`]).
+#[derive(Clone, Copy)]
+pub(crate) struct Ending {
+    /// The wait is over: its time passed, its polls were ended (debug
+    /// builds, `QuestionWaiters::expire`), or the daemon stops. The read
+    /// answers now.
+    pub(crate) done: bool,
+    /// The daemon stops.
+    pub(crate) stopped: bool,
+}
+
+/// The long poll a question's, an approval request's and a connection
+/// request's polls share: waits on `key` (held already, `notify` its
+/// waiters' notify, [`clax_realtime::questions::QuestionWaiters::hold`])
+/// until `read` answers. `read` is called at once and after each wake of
+/// `key`, with whether the wait is over ([`Ending`]), and answers `Some`
+/// once what it reads is final or the wait is over.
+pub(crate) async fn long_poll<T, F, Fut>(
+    s: &AppState,
+    key: &str,
+    notify: std::sync::Arc<tokio::sync::Notify>,
+    wait: Duration,
+    mut read: F,
+) -> Result<T, ApiError>
+where
+    F: FnMut(Ending) -> Fut,
+    Fut: std::future::Future<Output = Result<Option<T>, ApiError>>,
+{
+    let mut shutdown = s.shutdown.clone();
+    // A dropped sender means the state has no shutdown source; never end early then.
+    let stopping = async move {
+        if shutdown.wait_for(|v| *v).await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    tokio::pin!(stopping);
+    let expiry = s.question_sleeper.sleep(wait);
+    tokio::pin!(expiry);
+    let mut end = Ending {
+        done: wait.is_zero(),
+        stopped: false,
+    };
+    loop {
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        #[cfg(debug_assertions)]
+        if s.questions.take_expired(key) {
+            end.done = true;
+        }
+        if let Some(v) = read(end).await? {
+            return Ok(v);
+        }
+        let _parked = s.questions.park(key);
+        tokio::select! {
+            () = &mut notified => {}
+            () = &mut expiry, if !end.done => end.done = true,
+            () = &mut stopping, if !end.done => end = Ending { done: true, stopped: true },
+        }
+    }
+}
+
+/// 429 `limit_reached`: as many polls as may wait on one `what` wait on
+/// it already.
+pub(crate) fn polls_limit(what: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        "limit_reached",
+        format!(
+            "at most {} polls wait on one {what} at once",
+            clax_realtime::questions::MAX_POLLS
+        ),
+    )
 }
 
 /// `GET /api/sessions/<sid>/questions/<qid>?wait=<s>` (a question `sid`
@@ -430,36 +505,10 @@ pub async fn poll(
         }
     };
     let Some((notify, _hold)) = s.questions.hold(&qid, on_last) else {
-        return Err(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "limit_reached",
-            format!(
-                "at most {} polls wait on one question at once",
-                clax_realtime::questions::MAX_POLLS
-            ),
-        ));
+        return Err(polls_limit("question"));
     };
-    let mut shutdown = s.shutdown.clone();
-    // A dropped sender means the state has no shutdown source; never end early then.
-    let stopping = async move {
-        if shutdown.wait_for(|v| *v).await.is_err() {
-            std::future::pending::<()>().await;
-        }
-    };
-    tokio::pin!(stopping);
-    let expiry = s.question_sleeper.sleep(wait);
-    tokio::pin!(expiry);
-    let mut done = wait.is_zero();
-    let mut stopped = false;
     let page = clax_http::surface::page(&s, &a, &sid).await?;
-    loop {
-        let notified = notify.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
-        #[cfg(debug_assertions)]
-        if s.questions.take_expired(&qid) {
-            done = true;
-        }
+    let read = |Ending { done, stopped }| {
         let (sid1, qid1, st, vf1, g1, page1) = (
             sid.clone(),
             qid.clone(),
@@ -468,8 +517,9 @@ pub async fn poll(
             grant.clone(),
             page.clone(),
         );
-        let out = s
-            .store_call(move |db| {
+        let s = s.clone();
+        async move {
+            s.store_call(move |db| {
                 let mut row = db.session_or_keyed_question(&sid1, g1.as_deref(), &qid1)?;
                 if row.status == Status::Open && !done {
                     return Ok(None);
@@ -486,20 +536,14 @@ pub async fn poll(
                     clax_http::surface::suggestion(&st, db, &sid1, page1.as_deref())?;
                 Ok(Some((for_asker(db, &vf1, v)?, where_to_ask)))
             })
-            .await?;
-        if let Some((v, where_to_ask)) = out {
-            return Ok(Json(
-                json!({"question": v, "waited_s": started.elapsed().as_secs(),
-                "where_to_ask": where_to_ask}),
-            ));
+            .await
         }
-        let _parked = s.questions.park(&qid);
-        tokio::select! {
-            () = &mut notified => {}
-            () = &mut expiry, if !done => done = true,
-            () = &mut stopping, if !done => (done, stopped) = (true, true),
-        }
-    }
+    };
+    let (v, where_to_ask) = long_poll(&s, &qid, notify, wait, read).await?;
+    Ok(Json(
+        json!({"question": v, "waited_s": started.elapsed().as_secs(),
+        "where_to_ask": where_to_ask}),
+    ))
 }
 
 /// Applies `c` to session `sid`'s question `qid` (or one its agent token

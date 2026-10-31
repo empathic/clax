@@ -307,10 +307,24 @@ pub(super) async fn start_add(
     Ok((r, return_to_kept))
 }
 
-async fn remote_named(s: &AppState, key: String) -> Result<Remote, ApiError> {
-    s.store_call(move |st| st.find_remote(&key))
+/// The remote `key` names: its ID, name or origin.
+///
+/// # Errors
+/// 404 `no_remote`.
+pub(super) async fn remote_named(s: &AppState, key: &str) -> Result<Remote, ApiError> {
+    let k = key.trim().trim_end_matches('/').to_string();
+    s.store_call(move |st| st.find_remote(&k))
         .await?
-        .ok_or_else(ApiError::not_found)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "no_remote",
+                format!(
+                    "no remote is named '{}': `clax remote list` names them",
+                    key.trim()
+                ),
+            )
+        })
 }
 
 /// `POST /api/remotes/<id or name>/poll` (the owner) → `{remote, status}`,
@@ -328,7 +342,7 @@ pub async fn poll(
     d.refuse_agents()?;
     who.require_owner("publishes to a public Clax")?;
     asker(&s, &d).await?;
-    let r = remote_named(&s, path(id)?).await?;
+    let r = remote_named(&s, &path(id)?).await?;
     // One poll of a sign-in at a time, as a connection request's driver
     // polls (`super::remote_requests`): a second never spends a used code.
     let lock = s.remote_drivers.connect_lock(&r.origin);
@@ -390,7 +404,7 @@ pub async fn remove(
     d.refuse_agents()?;
     who.require_owner("publishes to a public Clax")?;
     asker(&s, &d).await?;
-    let r = remote_named(&s, path(id)?).await?;
+    let r = remote_named(&s, &path(id)?).await?;
     let id = r.id.clone();
     let token = s.store_call(move |st| st.remote_token(&id)).await?;
     let revoked = match token {
@@ -528,7 +542,7 @@ async fn owned_link(
     }
     let (aid, rid) = path(aid)?;
     let id = parse_id(&aid)?;
-    let r = remote_named(s, rid).await?;
+    let r = remote_named(s, &rid).await?;
     let (a2, r2) = (id.as_str().to_string(), r.id.clone());
     s.store_call(move |st| st.remote_link(&a2, &r2))
         .await?
@@ -666,25 +680,23 @@ pub struct PushBody {
 }
 
 /// The remote a push names, or the only connected one.
+///
+/// # Errors
+/// 404 `no_remote`; 400 `remote_required` for several connected and none
+/// named; 400 `not_connected` while its sign-in waits; 502
+/// `remote_signed_out` once it refused this Clax's token.
 pub(super) async fn push_target(s: &AppState, key: Option<String>) -> Result<Remote, ApiError> {
-    let remotes = s.store_call(|st| st.remotes()).await?;
-    let connected: Vec<&Remote> = remotes.iter().filter(|r| r.status == "connected").collect();
     let r = match key {
-        Some(k) => {
-            let k = k.trim().trim_end_matches('/').to_string();
-            remotes
-                .iter()
-                .find(|r| r.id == k || r.name == k || r.origin == k)
-                .ok_or_else(|| {
-                    ApiError::new(
-                        StatusCode::NOT_FOUND,
-                        "no_remote",
-                        format!("no remote is named '{k}': `clax remote list` names them"),
-                    )
-                })?
-        }
-        None => match connected.as_slice() {
-            [one] => *one,
+        Some(k) => remote_named(s, &k).await?,
+        None => match s
+            .store_call(|st| st.remotes())
+            .await?
+            .into_iter()
+            .filter(|r| r.status == "connected")
+            .collect::<Vec<_>>()
+            .as_slice()
+        {
+            [one] => one.clone(),
             [] => {
                 return Err(ApiError::new(
                     StatusCode::NOT_FOUND,
@@ -700,6 +712,9 @@ pub(super) async fn push_target(s: &AppState, key: Option<String>) -> Result<Rem
             }
         },
     };
+    if r.status == "signed_out" {
+        return Err(public::signed_out(&r.origin));
+    }
     if r.status != "connected" {
         return Err(ApiError::bad_request(
             "not_connected",
@@ -709,7 +724,7 @@ pub(super) async fn push_target(s: &AppState, key: Option<String>) -> Result<Rem
             ),
         ));
     }
-    Ok(r.clone())
+    Ok(r)
 }
 
 /// `POST /api/artifacts/<aid>/push {remote?, mode?, version?, auto?,
@@ -717,7 +732,9 @@ pub(super) async fn push_target(s: &AppState, key: Option<String>) -> Result<Rem
 /// remote_n}], assets_not_pushed}`, or for an agent waiting on the owner 202
 /// `{status: "approval_pending", question_id, inbox_url}` (see the module
 /// docs). Refusals: 404 `no_remote`; 400 `remote_required`,
-/// `not_connected`, `live_page`, `no_link`; 403 `not_approved` (the owner
+/// `not_connected` (its sign-in waits), `live_page`, `no_link`; 502
+/// `remote_signed_out` for a remote that refused this Clax's token (now or
+/// before); 403 `not_approved` (the owner
 /// declined, or answered outside Clax's browser and extension); 409
 /// `approval_used` for an approval spent already; 409 `remote_moved` when
 /// the public copy has versions this Clax did not push (push with `mode`

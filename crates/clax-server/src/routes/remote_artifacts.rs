@@ -128,48 +128,14 @@ fn unreachable(r: &Remote, why: &str) -> ApiError {
     e
 }
 
-/// Remote `r` refused its token: it is marked signed out, its discovery
-/// answer forgotten, and its linked threads' sync stops.
-pub(super) async fn signed_out(s: &AppState, r: &Remote) -> ApiError {
-    let id = r.id.clone();
-    if let Err(e) = s.store_call(move |st| st.sign_out_remote(&id)).await {
-        tracing::warn!(error = %e.message, "marking a remote signed out failed");
-    }
-    s.discovery.forget(&r.origin);
-    s.linked.links_changed();
-    sign_in_required(r)
-}
-
-/// Whether a remote's 401 with error `code` says the token itself is no
-/// longer good there (revoked, expired or unknown), rather than refusing
-/// one request (a session proof or a replay).
-fn token_refused(code: &str) -> bool {
-    matches!(code, "invalid_token" | "grant_revoked" | "token_expired")
-}
-
-/// 502 `remote_refused`: remote `r` refused one request with a 401 whose
-/// `code` does not say the token is gone; the token is kept.
-fn refused_once(r: &Remote, code: &str, message: &str) -> ApiError {
-    let mut e = ApiError::new(
-        StatusCode::BAD_GATEWAY,
-        "remote_refused",
-        format!("{} refused: {code}: {message}", r.origin),
-    );
-    e.extra.insert("remote_code".into(), json!(code));
-    e.extra.insert("remote_status".into(), json!(401));
-    e
-}
-
-/// A request to remote `r` that failed as [`RemoteFail`] `f`, answered as
-/// the module comment says.
+/// A request to remote `r` that failed as [`RemoteFail`] `f`, noted
+/// ([`public::note_failure`]: a refused token marks the remote signed
+/// out) and answered as the module comment says.
 pub(super) async fn failed(s: &AppState, r: &Remote, f: RemoteFail) -> ApiError {
+    public::note_failure(s, r, &f).await;
     match f.status {
-        None => {
-            s.discovery.forget(&r.origin);
-            unreachable(r, &f.message)
-        }
-        Some(401) if token_refused(&f.code) => signed_out(s, r).await,
-        Some(401) => refused_once(r, &f.code, &f.message),
+        None => unreachable(r, &f.message),
+        Some(_) if f.token_refused() => sign_in_required(r),
         Some(_) if f.code == "too_large" => ApiError::new(
             StatusCode::BAD_GATEWAY,
             "remote_refused",
@@ -180,17 +146,10 @@ pub(super) async fn failed(s: &AppState, r: &Remote, f: RemoteFail) -> ApiError 
 }
 
 /// Remote `r`'s answer `f`, passed on (`super::remote_apps::answer`); a
-/// refused token marks it signed out, and any other 401 is
-/// `remote_refused` naming the remote's code.
+/// 401 is [`failed`]'s.
 async fn passed(s: &AppState, r: &Remote, f: Forwarded) -> Response {
     if f.status == 401 {
-        let v = serde_json::from_slice::<serde_json::Value>(&f.body).unwrap_or_default();
-        let code = v["error"]["code"].as_str().unwrap_or("error");
-        if token_refused(code) {
-            return signed_out(s, r).await.into_response();
-        }
-        let message = v["error"]["message"].as_str().unwrap_or("HTTP 401");
-        return refused_once(r, code, message).into_response();
+        return failed(s, r, f.refusal(&r.origin)).await.into_response();
     }
     super::remote_apps::answer(&r.origin, f)
 }
@@ -201,17 +160,7 @@ async fn passed(s: &AppState, r: &Remote, f: Forwarded) -> Response {
 /// `local_only`).
 pub(super) async fn reach(s: &AppState, d: &DeniedToGrants, key: &str) -> Result<Reach, ApiError> {
     let asker = super::remotes::asker(s, d).await?;
-    let k = key.trim().trim_end_matches('/').to_string();
-    let remote = s
-        .store_call(move |st| st.find_remote(&k))
-        .await?
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::NOT_FOUND,
-                "no_remote",
-                format!("no remote is named '{key}': `clax remote list` names them"),
-            )
-        })?;
+    let remote = super::remotes::remote_named(s, key).await?;
     match remote.status.as_str() {
         "connected" => {}
         "signed_out" => return Err(sign_in_required(&remote)),
@@ -232,6 +181,18 @@ pub(super) async fn reach(s: &AppState, d: &DeniedToGrants, key: &str) -> Result
         token,
         asker,
     })
+}
+
+/// The remote `rid` names, reached ([`reach`]), and the public artifact
+/// ID `raid` there.
+async fn reach_artifact(
+    s: &AppState,
+    d: &DeniedToGrants,
+    rid: &str,
+    raid: &str,
+) -> Result<(Reach, String), ApiError> {
+    let r = reach(s, d, rid).await?;
+    Ok((r, super::remote_apps::remote_artifact(raid)?))
 }
 
 /// A thread ID as a path names it.
@@ -482,17 +443,9 @@ pub async fn get(
     let (rid, raid) = path(p)?;
     super::remotes::local_only(&s)?;
     who.require_owner(WHAT)?;
-    let r = reach(&s, &d, &rid).await?;
-    let raid = super::remote_apps::remote_artifact(&raid)?;
-    Ok(read(
-        &s,
-        &r,
-        &["api", "artifacts", &raid],
-        &[],
-        public::MAX_ANSWER_BYTES,
-        None,
-    )
-    .await)
+    let (r, raid) = reach_artifact(&s, &d, &rid, &raid).await?;
+    let segs = ["api", "artifacts", &raid];
+    Ok(read(&s, &r, &segs, &[], public::MAX_ANSWER_BYTES, None).await)
 }
 
 /// `GET /api/remotes/<rid>/artifacts/<raid>/versions/<n>/files/<path>` →
@@ -508,21 +461,13 @@ pub async fn file(
     let (rid, raid, n, file) = path(p)?;
     super::remotes::local_only(&s)?;
     who.require_owner(WHAT)?;
-    let r = reach(&s, &d, &rid).await?;
-    let raid = super::remote_apps::remote_artifact(&raid)?;
+    let (r, raid) = reach_artifact(&s, &d, &rid, &raid).await?;
     let file = super::remote_apps::file_segments(&file)?;
     let n = n.to_string();
     let mut segs = vec!["api", "artifacts", raid.as_str(), "versions", &n, "files"];
     segs.extend(file.iter().map(String::as_str));
-    Ok(read(
-        &s,
-        &r,
-        &segs,
-        &[],
-        clax_core::publish::MAX_FILE_BYTES as usize,
-        None,
-    )
-    .await)
+    let max = clax_core::publish::MAX_FILE_BYTES as usize;
+    Ok(read(&s, &r, &segs, &[], max, None).await)
 }
 
 /// `GET /api/remotes/<rid>/artifacts/<raid>/threads` → the remote's `GET
@@ -538,17 +483,10 @@ pub async fn threads(
     let (rid, raid) = path(p)?;
     super::remotes::local_only(&s)?;
     who.require_owner(WHAT)?;
-    let r = reach(&s, &d, &rid).await?;
-    let raid = super::remote_apps::remote_artifact(&raid)?;
-    Ok(read(
-        &s,
-        &r,
-        &["api", "artifacts", &raid, "threads"],
-        &query_pairs(q),
-        public::MAX_ANSWER_BYTES,
-        Some(headers),
-    )
-    .await)
+    let (r, raid) = reach_artifact(&s, &d, &rid, &raid).await?;
+    let segs = ["api", "artifacts", &raid, "threads"];
+    let max = public::MAX_ANSWER_BYTES;
+    Ok(read(&s, &r, &segs, &query_pairs(q), max, Some(headers)).await)
 }
 
 /// `GET /api/remotes/<rid>/artifacts/<raid>/threads/<tid>` → the remote's
@@ -563,18 +501,11 @@ pub async fn thread(
     let (rid, raid, tid) = path(p)?;
     super::remotes::local_only(&s)?;
     who.require_owner(WHAT)?;
-    let r = reach(&s, &d, &rid).await?;
-    let raid = super::remote_apps::remote_artifact(&raid)?;
+    let (r, raid) = reach_artifact(&s, &d, &rid, &raid).await?;
     let tid = thread_id(&tid)?;
-    Ok(read(
-        &s,
-        &r,
-        &["api", "artifacts", &raid, "threads", &tid],
-        &[],
-        public::MAX_ANSWER_BYTES,
-        Some(headers),
-    )
-    .await)
+    let segs = ["api", "artifacts", &raid, "threads", &tid];
+    let max = public::MAX_ANSWER_BYTES;
+    Ok(read(&s, &r, &segs, &[], max, Some(headers)).await)
 }
 
 /// `POST /api/remotes/<rid>/artifacts/<raid>/threads` (multipart, as the
@@ -591,17 +522,9 @@ pub async fn create_thread(
     let (rid, raid) = path(p)?;
     super::remotes::local_only(&s)?;
     who.require_owner(WHAT)?;
-    let r = reach(&s, &d, &rid).await?;
-    let raid = super::remote_apps::remote_artifact(&raid)?;
-    Ok(write(
-        &s,
-        &r,
-        None,
-        &["api", "artifacts", &raid, "threads"],
-        &headers,
-        body,
-    )
-    .await)
+    let (r, raid) = reach_artifact(&s, &d, &rid, &raid).await?;
+    let segs = ["api", "artifacts", &raid, "threads"];
+    Ok(write(&s, &r, None, &segs, &headers, body).await)
 }
 
 /// The thread action `verb` (`comments`, `resolve` or `reopen`) of thread
@@ -615,18 +538,10 @@ async fn act(
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let (rid, raid, tid) = path(p)?;
-    let r = reach(s, d, &rid).await?;
-    let raid = super::remote_apps::remote_artifact(&raid)?;
+    let (r, raid) = reach_artifact(s, d, &rid, &raid).await?;
     let tid = thread_id(&tid)?;
-    Ok(write(
-        s,
-        &r,
-        None,
-        &["api", "artifacts", &raid, "threads", &tid, verb],
-        headers,
-        body,
-    )
-    .await)
+    let segs = ["api", "artifacts", &raid, "threads", &tid, verb];
+    Ok(write(s, &r, None, &segs, headers, body).await)
 }
 
 /// `POST /api/remotes/<rid>/artifacts/<raid>/threads/<tid>/comments` →
@@ -694,16 +609,9 @@ pub async fn handoff(
     let (rid, raid, tid) = path(p)?;
     super::remotes::local_only(&s)?;
     who.require_owner(WHAT)?;
-    let r = reach(&s, &d, &rid).await?;
-    let raid = super::remote_apps::remote_artifact(&raid)?;
+    let (r, raid) = reach_artifact(&s, &d, &rid, &raid).await?;
     let tid = thread_id(&tid)?;
-    Ok(write(
-        &s,
-        &r,
-        Some(&["api", "artifacts", &raid, "threads", &tid]),
-        &["api", "sessions", "{session}", "threads", &tid, "handoff"],
-        &headers,
-        body,
-    )
-    .await)
+    let check = ["api", "artifacts", &raid, "threads", &tid];
+    let segs = ["api", "sessions", "{session}", "threads", &tid, "handoff"];
+    Ok(write(&s, &r, Some(&check[..]), &segs, &headers, body).await)
 }

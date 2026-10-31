@@ -136,17 +136,23 @@ impl Mode {
 /// 400 `invalid_args` otherwise.
 pub fn origin_of(raw: &str) -> Result<String, ApiError> {
     let raw = raw.trim();
-    let with_scheme = if raw.contains("://") {
-        raw.to_string()
-    } else {
-        format!("https://{raw}")
-    };
+    let with_scheme = with_scheme(raw);
     clax_core::config::hosted_origin(with_scheme.trim_end_matches('/')).ok_or_else(|| {
         ApiError::bad_request(
             "invalid_args",
             format!("'{raw}' is not a public Clax: give its https:// origin"),
         )
     })
+}
+
+/// `raw` (trimmed) with `https://` before it when it names no scheme, as
+/// an origin or URL a person or an agent typed is read.
+pub fn with_scheme(raw: &str) -> String {
+    if raw.contains("://") {
+        raw.to_string()
+    } else {
+        format!("https://{raw}")
+    }
 }
 
 /// A remote's default name: its origin's host (and port).
@@ -192,9 +198,10 @@ pub fn own_agent_name() -> String {
 
 /// A refusal or failure of a remote's, as this daemon answers it: 502
 /// `remote_unreachable` when it could not be reached, 502
-/// `remote_signed_out` when it refused the token (revoked there), else 502
-/// `remote_refused` naming the remote's own code and message
-/// (`remote_code`, `remote_status`).
+/// `remote_signed_out` when it refused the token itself
+/// ([`RemoteFail::token_refused`]), else 502 `remote_refused` naming the
+/// remote's own code and message (`remote_code`, `remote_status`). What
+/// the failure changes here is [`note_failure`]'s.
 #[derive(Debug)]
 pub struct RemoteFail {
     pub origin: String,
@@ -207,30 +214,76 @@ pub struct RemoteFail {
 
 impl From<RemoteFail> for ApiError {
     fn from(f: RemoteFail) -> ApiError {
-        let (code, message) = match f.status {
-            None => (
+        let mut e = match f.status {
+            None => ApiError::new(
+                StatusCode::BAD_GATEWAY,
                 "remote_unreachable",
                 format!("cannot reach {}: {}", f.origin, f.message),
             ),
-            Some(401) => (
-                "remote_signed_out",
-                format!(
-                    "{} refused this Clax's agent token (revoked there?): remove the remote and add it again",
-                    f.origin
-                ),
-            ),
-            Some(_) => (
+            Some(_) if f.token_refused() => signed_out(&f.origin),
+            Some(_) => ApiError::new(
+                StatusCode::BAD_GATEWAY,
                 "remote_refused",
                 format!("{} refused: {}: {}", f.origin, f.code, f.message),
             ),
         };
-        let mut e = ApiError::new(StatusCode::BAD_GATEWAY, code, message);
         e.extra.insert("remote_code".into(), json!(f.code));
         if let Some(s) = f.status {
             e.extra.insert("remote_status".into(), json!(s));
         }
         e
     }
+}
+
+/// 502 `remote_signed_out`: the remote at `origin` refused this Clax's
+/// token itself, now or before ([`note_failure`] marked it signed out).
+pub fn signed_out(origin: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::BAD_GATEWAY,
+        "remote_signed_out",
+        format!(
+            "{origin} refused this Clax's agent token (revoked there?): remove the remote and add it again"
+        ),
+    )
+}
+
+impl RemoteFail {
+    /// Whether the remote refused the token itself (401 `invalid_token`,
+    /// `grant_revoked` or `token_expired`: revoked, expired or unknown
+    /// there), rather than one request (a session proof or a replay).
+    pub fn token_refused(&self) -> bool {
+        self.status == Some(401)
+            && matches!(
+                self.code.as_str(),
+                "invalid_token" | "grant_revoked" | "token_expired"
+            )
+    }
+}
+
+/// What failure `f` of a request to remote `r` changes here, whoever made
+/// the request (an agent's read or write, a push, the Clax app's routes or
+/// the linked threads' sync): a remote not reached has its discovery
+/// answer forgotten; one that refused the token itself
+/// ([`RemoteFail::token_refused`]) is marked `signed_out`, its token
+/// forgotten, its discovery answer too, and its linked threads' sync
+/// stops until a new sign-in connects it again.
+pub async fn note_failure(s: &AppState, r: &Remote, f: &RemoteFail) {
+    if f.status.is_none() {
+        s.discovery.forget(&r.origin);
+    } else if f.token_refused() {
+        sign_out(s, r).await;
+    }
+}
+
+/// Marks remote `r` signed out, as [`note_failure`] does for a refused
+/// token.
+pub(crate) async fn sign_out(s: &AppState, r: &Remote) {
+    let id = r.id.clone();
+    if let Err(e) = s.store_call(move |st| st.sign_out_remote(&id)).await {
+        tracing::warn!(error = %e.message, "marking a remote signed out failed");
+    }
+    s.discovery.forget(&r.origin);
+    s.linked.links_changed();
 }
 
 /// 502 `remote_too_old`: the public Clax at `origin` runs a release from
@@ -260,6 +313,24 @@ pub struct Forwarded {
     /// Those of [`FORWARDED_HEADERS`] it named.
     pub headers: Vec<(reqwest::header::HeaderName, String)>,
     pub body: Vec<u8>,
+}
+
+impl Forwarded {
+    /// This answer of the remote at `origin` as a refusal: its status and
+    /// the error code and message its JSON body names.
+    pub fn refusal(&self, origin: &str) -> RemoteFail {
+        let v = serde_json::from_slice::<Value>(&self.body).unwrap_or_default();
+        RemoteFail {
+            origin: origin.to_string(),
+            status: Some(self.status),
+            code: v["error"]["code"].as_str().unwrap_or("refused").to_string(),
+            message: v["error"]["message"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("HTTP {}", self.status)),
+            body: Value::Null,
+        }
+    }
 }
 
 /// Header [`crate::routes::artifacts::IDEMPOTENCY_HEADER`] names on the
@@ -1558,8 +1629,34 @@ pub struct NewCopy {
 /// [`push`], whose app-mode push ([`Mode::App`]) that makes a new public
 /// copy records it as made from public artifact `new.forked_from` there
 /// and names it `new.title`. 400 `invalid_args` for either with another
-/// mode, or for an app already linked to a public copy there.
+/// mode, or for an app already linked to a public copy there. A remote
+/// that refuses the token (502 `remote_signed_out`) is marked signed out,
+/// as [`note_failure`] says.
 pub async fn push_from(
+    s: &AppState,
+    aid: &ArtifactId,
+    remote: &Remote,
+    mode: Mode,
+    auto: Option<bool>,
+    upto: Option<u32>,
+    new: NewCopy,
+) -> Result<Pushed, ApiError> {
+    let out = push_once(s, aid, remote, mode, auto, upto, new).await;
+    // A refusal converted by `From<RemoteFail>` (its `?`s) keeps the
+    // remote's status: `remote_signed_out` with `remote_status` 401 is a
+    // RemoteFail that `token_refused`, never `signed_out`'s own answer for
+    // a remote signed out before, which carries no `remote_status`.
+    if let Err(e) = &out
+        && e.code == "remote_signed_out"
+        && e.extra.get("remote_status") == Some(&json!(401))
+    {
+        sign_out(s, remote).await;
+    }
+    out
+}
+
+/// [`push_from`]'s push, its refusals as they come.
+async fn push_once(
     s: &AppState,
     aid: &ArtifactId,
     remote: &Remote,

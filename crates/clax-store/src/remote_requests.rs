@@ -19,13 +19,22 @@
 //!   A request also settles as `connected` once its origin is connected,
 //!   however that came about (its own Connect, or `clax remote add`).
 //!
+//! - **Audit.** Each change records its `remote_request.*` event in its own
+//!   transaction: `remote_request.ask` for an ask that opened or joined a
+//!   request (the asking session's agent), `remote_request.answer` for the
+//!   owner's Connect, "Not now" or "Never", and `remote_request.close`
+//!   when a request settles without them (connected, expired, or its
+//!   Connect's sign-in ended), as `system:daemon` unless the call names
+//!   its actor.
+//!
 //! Every time is the store's clock's.
 
 use super::Store;
 use crate::inbox;
+use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
 use clax_core::time::stamp;
 use clax_core::{CoreError, Result, new_ulid};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::Serialize;
 use serde_json::json;
 
@@ -39,6 +48,47 @@ pub const WINDOW_S: i64 = 24 * 3600;
 /// The most new requests one session opens in [`WINDOW_S`].
 pub const MAX_NEW_PER_SESSION: i64 = 3;
 
+/// Where a request is in its life: `Open` moves once to any other status,
+/// which is final.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Status {
+    Open,
+    Connected,
+    Dismissed,
+    Muted,
+    Expired,
+}
+
+impl Status {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Status::Open => "open",
+            Status::Connected => "connected",
+            Status::Dismissed => "dismissed",
+            Status::Muted => "muted",
+            Status::Expired => "expired",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Status> {
+        Some(match s {
+            "open" => Status::Open,
+            "connected" => Status::Connected,
+            "dismissed" => Status::Dismissed,
+            "muted" => Status::Muted,
+            "expired" => Status::Expired,
+            _ => return None,
+        })
+    }
+}
+
+impl std::fmt::Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A connection request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Request {
@@ -47,8 +97,7 @@ pub struct Request {
     pub origin: String,
     /// Its name, as its discovery gave it.
     pub name: String,
-    /// `open`, `connected`, `dismissed`, `muted` or `expired`.
-    pub status: String,
+    pub status: Status,
     /// The session that opened it.
     pub opened_by: String,
     pub created_at: String,
@@ -175,6 +224,13 @@ fn read(c: &Connection, id: &str) -> Result<Option<Request>> {
     else {
         return Ok(None);
     };
+    let status = Status::parse(&status).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            3,
+            rusqlite::types::Type::Text,
+            "remote_requests.status is not a value this store writes".into(),
+        )
+    })?;
     let expires_at = chrono::DateTime::parse_from_rfc3339(&created_at)
         .map(|t| shifted(&t.with_timezone(&chrono::Utc), REQUEST_LIFE_S))
         .unwrap_or_default();
@@ -193,41 +249,111 @@ fn read(c: &Connection, id: &str) -> Result<Option<Request>> {
     }))
 }
 
-/// Closes request `id` with `status` at `now` (and `remote` when given),
-/// and reads its inbox item.
-fn close(c: &Connection, id: &str, status: &str, remote: Option<&str>, now: &str) -> Result<()> {
-    c.execute(
-        "UPDATE remote_requests SET status = ?2, answered_at = ?3, remote_id = COALESCE(?4, remote_id)
-         WHERE id = ?1 AND status = 'open'",
-        params![id, status, now, remote],
-    )?;
-    c.execute(
-        "UPDATE inbox_items SET read_at = COALESCE(read_at, ?2) WHERE key = ?1",
-        params![inbox::remote_request_key(id), now],
-    )?;
-    Ok(())
+/// One request's change: the store and transaction it is made in, the
+/// actor it is recorded as, the request (`id`, of `origin`) and when
+/// (`now`).
+struct Change<'a> {
+    st: &'a Store,
+    tx: &'a Transaction<'a>,
+    ctx: &'a AuditCtx,
+    id: &'a str,
+    origin: &'a str,
+    now: &'a str,
 }
 
-/// Settles every open request that is no longer waiting: one whose origin
-/// is connected becomes `connected`, one older than [`REQUEST_LIFE_S`]
-/// `expired`.
-fn settle(c: &Connection, now: &chrono::DateTime<chrono::Utc>) -> Result<()> {
+impl Change<'_> {
+    /// Its `remote_request.*` event of `kind`.
+    fn record(&self, kind: AuditKind) -> AuditRecord {
+        AuditRecord::new(kind, self.now)
+            .with("request_id", self.id)
+            .with("origin", self.origin)
+    }
+
+    /// Records `rec`.
+    fn audit(&self, rec: AuditRecord) -> Result<()> {
+        self.st.record_audit(self.tx, self.ctx, rec).map(drop)
+    }
+
+    /// The owner's `answer` (`remote_request.answer`).
+    fn answered(&self, answer: &str) -> AuditRecord {
+        self.record(AuditKind::RemoteRequestAnswer)
+            .with("answer", answer)
+    }
+
+    /// Closes the request, while open, with `status` (and `remote` when
+    /// given), reads its inbox item, and records `rec`; nothing for a
+    /// request no longer open.
+    fn close(&self, status: Status, remote: Option<&str>, rec: AuditRecord) -> Result<()> {
+        let closed = self.tx.execute(
+            "UPDATE remote_requests SET status = ?2, answered_at = ?3, remote_id = COALESCE(?4, remote_id)
+             WHERE id = ?1 AND status = 'open'",
+            params![self.id, status.as_str(), self.now, remote],
+        )?;
+        if closed == 0 {
+            return Ok(());
+        }
+        self.tx.execute(
+            "UPDATE inbox_items SET read_at = COALESCE(read_at, ?2) WHERE key = ?1",
+            params![inbox::remote_request_key(self.id), self.now],
+        )?;
+        self.audit(rec)
+    }
+
+    /// [`Change::close`] recording `remote_request.close`: settled without
+    /// the owner.
+    fn settle(&self, status: Status, remote: Option<&str>) -> Result<()> {
+        let mut rec = self
+            .record(AuditKind::RemoteRequestClose)
+            .with("status", status.as_str());
+        if let Some(r) = remote {
+            rec = rec.with("remote_id", r);
+        }
+        self.close(status, remote, rec)
+    }
+
+    /// Holds new requests for the origin off for [`NOT_NOW_S`] from
+    /// `now_utc`.
+    fn hold_off(&self, now_utc: &chrono::DateTime<chrono::Utc>) -> Result<()> {
+        self.tx.execute(
+            "INSERT INTO remote_dismissals (origin, until) VALUES (?1, ?2)
+             ON CONFLICT (origin) DO UPDATE SET until = excluded.until",
+            params![self.origin, shifted(now_utc, NOT_NOW_S)],
+        )?;
+        Ok(())
+    }
+}
+
+/// Settles every open request that is no longer waiting, as
+/// `system:daemon`: one whose origin is connected becomes `connected`,
+/// one older than [`REQUEST_LIFE_S`] `expired`.
+fn settle(st: &Store, tx: &Transaction<'_>, now: &chrono::DateTime<chrono::Utc>) -> Result<()> {
+    let c: &Connection = tx;
     let at = stamp(*now);
     let cutoff = shifted(now, -REQUEST_LIFE_S);
-    let due: Vec<(String, Option<String>, bool)> = {
+    let due: Vec<(String, String, Option<String>, bool)> = {
         let mut stmt = c.prepare_cached(
-            "SELECT q.id,
+            "SELECT q.id, q.origin,
                 (SELECT r.id FROM remotes r WHERE r.origin = q.origin AND r.status = 'connected'),
                 q.created_at <= ?1
              FROM remote_requests q WHERE q.status = 'open'",
         )?;
-        stmt.query_map(params![cutoff], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-            .collect::<rusqlite::Result<_>>()?
+        stmt.query_map(params![cutoff], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?
     };
-    for (id, connected, old) in due {
+    for (id, origin, connected, old) in due {
+        let change = Change {
+            st,
+            tx,
+            ctx: &AuditCtx::DAEMON,
+            id: &id,
+            origin: &origin,
+            now: &at,
+        };
         match (connected, old) {
-            (Some(rid), _) => close(c, &id, "connected", Some(&rid), &at)?,
-            (None, true) => close(c, &id, "expired", None, &at)?,
+            (Some(rid), _) => change.settle(Status::Connected, Some(&rid))?,
+            (None, true) => change.settle(Status::Expired, None)?,
             (None, false) => {}
         }
     }
@@ -236,16 +362,17 @@ fn settle(c: &Connection, now: &chrono::DateTime<chrono::Utc>) -> Result<()> {
 
 impl Store {
     /// Folds `a` into the open request for its origin, or opens one, as the
-    /// module comment says. An opened request makes its inbox item, in
+    /// module comment says, recording `remote_request.ask` as `ctx` (the
+    /// asking session's agent). An opened request makes its inbox item, in
     /// `a`'s place.
     ///
     /// # Errors
     /// The database's.
-    pub fn ask_remote(&self, a: &Ask) -> Result<Asked> {
+    pub fn ask_remote(&self, ctx: &AuditCtx, a: &Ask) -> Result<Asked> {
         let now_utc = self.now_utc();
         self.with_tx(|tx| {
             let now = stamp(now_utc);
-            settle(tx, &now_utc)?;
+            settle(self, tx, &now_utc)?;
             if let Some(early) = answered_before_asking(tx, &a.origin, &a.session, &now_utc)? {
                 return Ok(early);
             }
@@ -264,6 +391,15 @@ impl Store {
                         url = COALESCE(excluded.url, url), reason = COALESCE(excluded.reason, reason)",
                     params![id, a.session, a.url, a.reason, now],
                 )?;
+                let change = Change {
+                    st: self,
+                    tx,
+                    ctx,
+                    id: &id,
+                    origin: &a.origin,
+                    now: &now,
+                };
+                change.audit(change.record(AuditKind::RemoteRequestAsk).with("opened", false))?;
                 return Ok(Asked::Joined(read(tx, &id)?.ok_or(CoreError::NotFound)?));
             }
             let id = new_ulid();
@@ -298,6 +434,15 @@ impl Store {
                 &text,
                 &now,
             )?;
+            let change = Change {
+                st: self,
+                tx,
+                ctx,
+                id: &id,
+                origin: &a.origin,
+                now: &now,
+            };
+            change.audit(change.record(AuditKind::RemoteRequestAsk).with("opened", true))?;
             Ok(Asked::Opened(read(tx, &id)?.ok_or(CoreError::NotFound)?))
         })
     }
@@ -314,7 +459,7 @@ impl Store {
     pub fn remote_ask_answer(&self, origin: &str, session: &str) -> Result<Option<Asked>> {
         let now_utc = self.now_utc();
         self.with_tx(|tx| {
-            settle(tx, &now_utc)?;
+            settle(self, tx, &now_utc)?;
             answered_before_asking(tx, origin, session, &now_utc)
         })
     }
@@ -326,7 +471,7 @@ impl Store {
     pub fn remote_request(&self, id: &str) -> Result<Request> {
         let now_utc = self.now_utc();
         self.with_tx(|tx| {
-            settle(tx, &now_utc)?;
+            settle(self, tx, &now_utc)?;
             read(tx, id)?.ok_or(CoreError::NotFound)
         })
     }
@@ -340,8 +485,8 @@ impl Store {
         let now = self.now();
         self.with_read(|c| {
             Ok(read(c, id)?.map(|mut r| {
-                if r.status == "open" && r.expires_at <= now {
-                    r.status = "expired".to_string();
+                if r.status == Status::Open && r.expires_at <= now {
+                    r.status = Status::Expired;
                 }
                 r
             }))
@@ -355,7 +500,7 @@ impl Store {
     pub fn open_remote_requests(&self) -> Result<Vec<Request>> {
         let now_utc = self.now_utc();
         self.with_tx(|tx| {
-            settle(tx, &now_utc)?;
+            settle(self, tx, &now_utc)?;
             let ids: Vec<String> = {
                 let mut stmt = tx.prepare_cached(
                     "SELECT id FROM remote_requests WHERE status = 'open' ORDER BY created_at, id",
@@ -371,23 +516,34 @@ impl Store {
         })
     }
 
-    /// Records answer `ans` to request `id`; the request after it.
+    /// Records answer `ans` to request `id` as `ctx`: the owner's
+    /// (`Connecting`, `NotNow`, `Never`) as `remote_request.answer`, the
+    /// end of its Connect's sign-in (`Connected`, `Dismissed`) as
+    /// `remote_request.close`. The request after it.
     ///
     /// # Errors
     /// `NotFound` for no such request; `request_closed` for one no longer
     /// open (answered, or settled as connected or expired).
-    pub fn answer_remote_request(&self, id: &str, ans: Answer) -> Result<Request> {
+    pub fn answer_remote_request(&self, ctx: &AuditCtx, id: &str, ans: Answer) -> Result<Request> {
         let now_utc = self.now_utc();
         self.with_tx(|tx| {
             let now = stamp(now_utc);
-            settle(tx, &now_utc)?;
+            settle(self, tx, &now_utc)?;
             let r = read(tx, id)?.ok_or(CoreError::NotFound)?;
-            if r.status != "open" {
+            if r.status != Status::Open {
                 return Err(CoreError::invalid(
                     "request_closed",
                     format!("this request is {} already", r.status),
                 ));
             }
+            let change = Change {
+                st: self,
+                tx,
+                ctx,
+                id,
+                origin: &r.origin,
+                now: &now,
+            };
             match &ans {
                 Answer::Connecting(rid) => {
                     tx.execute(
@@ -396,19 +552,21 @@ impl Store {
                                 (SELECT id FROM remotes WHERE status = 'pending'))",
                         params![id, rid],
                     )?;
+                    change.audit(change.answered("connect").with("remote_id", rid.as_str()))?;
                 }
-                Answer::Connected(rid) => close(tx, id, "connected", Some(rid), &now)?,
-                Answer::NotNow | Answer::Dismissed { hold_off: true } => {
-                    close(tx, id, "dismissed", None, &now)?;
-                    tx.execute(
-                        "INSERT INTO remote_dismissals (origin, until) VALUES (?1, ?2)
-                         ON CONFLICT (origin) DO UPDATE SET until = excluded.until",
-                        params![r.origin, shifted(&now_utc, NOT_NOW_S)],
-                    )?;
+                Answer::Connected(rid) => change.settle(Status::Connected, Some(rid))?,
+                Answer::NotNow => {
+                    change.close(Status::Dismissed, None, change.answered("not_now"))?;
+                    change.hold_off(&now_utc)?;
                 }
-                Answer::Dismissed { hold_off: false } => close(tx, id, "dismissed", None, &now)?,
+                Answer::Dismissed { hold_off } => {
+                    change.settle(Status::Dismissed, None)?;
+                    if *hold_off {
+                        change.hold_off(&now_utc)?;
+                    }
+                }
                 Answer::Never => {
-                    close(tx, id, "muted", None, &now)?;
+                    change.close(Status::Muted, None, change.answered("never"))?;
                     tx.execute(
                         "INSERT OR IGNORE INTO remote_mutes (origin, muted_at) VALUES (?1, ?2)",
                         params![r.origin, now],
@@ -585,14 +743,20 @@ mod tests {
         let (_d, st, _c) = clocked();
         let (s1, s2) = (session(&st, "claude", "h1"), session(&st, "codex", "h2"));
         let r = opened(
-            st.ask_remote(&ask(&s1, "https://clax.example/a/aaaaaaaaaaaa"))
-                .unwrap(),
+            st.ask_remote(
+                &AuditCtx::DAEMON,
+                &ask(&s1, "https://clax.example/a/aaaaaaaaaaaa"),
+            )
+            .unwrap(),
         );
-        assert_eq!(r.status, "open");
+        assert_eq!(r.status, Status::Open);
         assert_eq!(r.opened_by, s1);
         assert_eq!(items(&st), 1, "the owner hears once, when it opens");
         let Asked::Joined(j) = st
-            .ask_remote(&ask(&s2, "https://clax.example/a/bbbbbbbbbbbb"))
+            .ask_remote(
+                &AuditCtx::DAEMON,
+                &ask(&s2, "https://clax.example/a/bbbbbbbbbbbb"),
+            )
             .unwrap()
         else {
             panic!("a second ask joins the open request");
@@ -610,8 +774,11 @@ mod tests {
         );
         // The same session asking again joins too, and changes nothing else.
         assert!(matches!(
-            st.ask_remote(&ask(&s1, "https://clax.example/a/aaaaaaaaaaaa"))
-                .unwrap(),
+            st.ask_remote(
+                &AuditCtx::DAEMON,
+                &ask(&s1, "https://clax.example/a/aaaaaaaaaaaa")
+            )
+            .unwrap(),
             Asked::Joined(_)
         ));
         assert_eq!(st.open_remote_requests().unwrap().len(), 1);
@@ -619,7 +786,7 @@ mod tests {
         // Another origin is a request of its own.
         let mut other = ask(&s2, "https://other.example/a/cccccccccccc");
         other.origin = "https://other.example".into();
-        opened(st.ask_remote(&other).unwrap());
+        opened(st.ask_remote(&AuditCtx::DAEMON, &other).unwrap());
         assert_eq!(st.open_remote_requests().unwrap().len(), 2);
         assert_eq!(items(&st), 2);
     }
@@ -629,11 +796,13 @@ mod tests {
         let (_d, st, clock) = clocked();
         let s1 = session(&st, "claude", "h1");
         let r = opened(
-            st.ask_remote(&ask(&s1, "https://clax.example/a/x"))
+            st.ask_remote(&AuditCtx::DAEMON, &ask(&s1, "https://clax.example/a/x"))
                 .unwrap(),
         );
-        let a = st.answer_remote_request(&r.id, Answer::NotNow).unwrap();
-        assert_eq!(a.status, "dismissed");
+        let a = st
+            .answer_remote_request(&AuditCtx::DAEMON, &r.id, Answer::NotNow)
+            .unwrap();
+        assert_eq!(a.status, Status::Dismissed);
         let read: Option<String> = st
             .with_read(|c| {
                 Ok(c.query_row(
@@ -646,7 +815,7 @@ mod tests {
         assert!(read.is_some(), "an answered request's item is read");
         clock.advance(NOT_NOW_S - 1);
         assert_eq!(
-            st.ask_remote(&ask(&s1, "https://clax.example/a/x"))
+            st.ask_remote(&AuditCtx::DAEMON, &ask(&s1, "https://clax.example/a/x"))
                 .unwrap(),
             Asked::Backoff {
                 until: "2026-10-30T10:00:00.000Z".into()
@@ -654,11 +823,13 @@ mod tests {
         );
         clock.advance(1);
         opened(
-            st.ask_remote(&ask(&s1, "https://clax.example/a/x"))
+            st.ask_remote(&AuditCtx::DAEMON, &ask(&s1, "https://clax.example/a/x"))
                 .unwrap(),
         );
         // A closed request takes no second answer.
-        let e = st.answer_remote_request(&r.id, Answer::Never).unwrap_err();
+        let e = st
+            .answer_remote_request(&AuditCtx::DAEMON, &r.id, Answer::Never)
+            .unwrap_err();
         assert!(
             matches!(
                 e,
@@ -676,18 +847,18 @@ mod tests {
         let (_d, st, clock) = clocked();
         let s1 = session(&st, "claude", "h1");
         let r = opened(
-            st.ask_remote(&ask(&s1, "https://clax.example/a/x"))
+            st.ask_remote(&AuditCtx::DAEMON, &ask(&s1, "https://clax.example/a/x"))
                 .unwrap(),
         );
         assert_eq!(
-            st.answer_remote_request(&r.id, Answer::Never)
+            st.answer_remote_request(&AuditCtx::DAEMON, &r.id, Answer::Never)
                 .unwrap()
                 .status,
-            "muted"
+            Status::Muted
         );
         clock.advance(30 * 24 * 3600);
         assert_eq!(
-            st.ask_remote(&ask(&s1, "https://clax.example/a/x"))
+            st.ask_remote(&AuditCtx::DAEMON, &ask(&s1, "https://clax.example/a/x"))
                 .unwrap(),
             Asked::Muted
         );
@@ -698,13 +869,13 @@ mod tests {
         assert!(st.unmute_origin(ORIGIN).unwrap());
         assert!(!st.unmute_origin(ORIGIN).unwrap());
         opened(
-            st.ask_remote(&ask(&s1, "https://clax.example/a/x"))
+            st.ask_remote(&AuditCtx::DAEMON, &ask(&s1, "https://clax.example/a/x"))
                 .unwrap(),
         );
         st.mute_origin(ORIGIN).unwrap();
         // A mute set while a request is open stops new asks, joins included.
         assert_eq!(
-            st.ask_remote(&ask(&s1, "https://clax.example/a/x"))
+            st.ask_remote(&AuditCtx::DAEMON, &ask(&s1, "https://clax.example/a/x"))
                 .unwrap(),
             Asked::Muted
         );
@@ -720,20 +891,23 @@ mod tests {
             a
         };
         for n in 0..3 {
-            opened(st.ask_remote(&on(n, &s1)).unwrap());
+            opened(st.ask_remote(&AuditCtx::DAEMON, &on(n, &s1)).unwrap());
         }
-        assert_eq!(st.ask_remote(&on(3, &s1)).unwrap(), Asked::Capped);
+        assert_eq!(
+            st.ask_remote(&AuditCtx::DAEMON, &on(3, &s1)).unwrap(),
+            Asked::Capped
+        );
         // Joining another's request is not a new one.
-        opened(st.ask_remote(&on(4, &s2)).unwrap());
+        opened(st.ask_remote(&AuditCtx::DAEMON, &on(4, &s2)).unwrap());
         assert!(matches!(
-            st.ask_remote(&on(4, &s1)).unwrap(),
+            st.ask_remote(&AuditCtx::DAEMON, &on(4, &s1)).unwrap(),
             Asked::Joined(_)
         ));
         // Another session has its own three.
-        opened(st.ask_remote(&on(5, &s2)).unwrap());
+        opened(st.ask_remote(&AuditCtx::DAEMON, &on(5, &s2)).unwrap());
         // A day after the first three, the session may open more.
         clock.advance(WINDOW_S);
-        opened(st.ask_remote(&on(3, &s1)).unwrap());
+        opened(st.ask_remote(&AuditCtx::DAEMON, &on(3, &s1)).unwrap());
     }
 
     #[test]
@@ -741,16 +915,16 @@ mod tests {
         let (_d, st, clock) = clocked();
         let s1 = session(&st, "claude", "h1");
         let r = opened(
-            st.ask_remote(&ask(&s1, "https://clax.example/a/x"))
+            st.ask_remote(&AuditCtx::DAEMON, &ask(&s1, "https://clax.example/a/x"))
                 .unwrap(),
         );
         assert_eq!(r.expires_at, "2026-10-30T10:00:00.000Z");
         clock.advance(REQUEST_LIFE_S - 1);
-        assert_eq!(st.remote_request(&r.id).unwrap().status, "open");
+        assert_eq!(st.remote_request(&r.id).unwrap().status, Status::Open);
         clock.advance(1);
         assert_eq!(
             st.peek_remote_request(&r.id).unwrap().unwrap().status,
-            "expired",
+            Status::Expired,
             "a view reads it expired before anything settles it"
         );
         let e = st.remote_request(&r.id).unwrap();
@@ -758,10 +932,28 @@ mod tests {
             (e.status.as_str(), e.answered_at.as_deref()),
             ("expired", Some("2026-10-30T10:00:00.000Z"))
         );
+        // Settled as the daemon, its close recorded once.
+        let closes: Vec<_> = st
+            .events_after(0, 1000)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "remote_request.close")
+            .collect();
+        assert_eq!(closes.len(), 1, "{closes:?}");
+        let body: serde_json::Value = serde_json::from_str(&closes[0].body).unwrap();
+        assert_eq!(
+            (body["request_id"].as_str(), body["status"].as_str()),
+            (Some(r.id.as_str()), Some("expired"))
+        );
+        assert!(
+            closes[0].actor.contains("\"system\""),
+            "{}",
+            closes[0].actor
+        );
         assert!(st.open_remote_requests().unwrap().is_empty());
         // An expired request holds nothing off: the next ask opens anew.
         let n = opened(
-            st.ask_remote(&ask(&s1, "https://clax.example/a/x"))
+            st.ask_remote(&AuditCtx::DAEMON, &ask(&s1, "https://clax.example/a/x"))
                 .unwrap(),
         );
         assert_ne!(n.id, r.id);
@@ -772,11 +964,11 @@ mod tests {
         let (_d, st, _c) = clocked();
         let s1 = session(&st, "claude", "h1");
         let r = opened(
-            st.ask_remote(&ask(&s1, "https://clax.example/a/x"))
+            st.ask_remote(&AuditCtx::DAEMON, &ask(&s1, "https://clax.example/a/x"))
                 .unwrap(),
         );
         let c = st
-            .answer_remote_request(&r.id, Answer::Connecting("r_1".into()))
+            .answer_remote_request(&AuditCtx::DAEMON, &r.id, Answer::Connecting("r_1".into()))
             .unwrap();
         assert_eq!(
             (c.status.as_str(), c.remote_id.as_deref()),
@@ -798,21 +990,25 @@ mod tests {
             )
             .unwrap();
         let c = st
-            .answer_remote_request(&r.id, Answer::Connecting(p.id.clone()))
+            .answer_remote_request(&AuditCtx::DAEMON, &r.id, Answer::Connecting(p.id.clone()))
             .unwrap();
         assert_eq!(c.remote_id.as_deref(), Some(p.id.as_str()));
         // While that sign-in waits, a second Connect's records nothing.
         let c = st
-            .answer_remote_request(&r.id, Answer::Connecting("r_2".into()))
+            .answer_remote_request(&AuditCtx::DAEMON, &r.id, Answer::Connecting("r_2".into()))
             .unwrap();
         assert_eq!(c.remote_id.as_deref(), Some(p.id.as_str()));
         let d = st
-            .answer_remote_request(&r.id, Answer::Dismissed { hold_off: false })
+            .answer_remote_request(
+                &AuditCtx::DAEMON,
+                &r.id,
+                Answer::Dismissed { hold_off: false },
+            )
             .unwrap();
-        assert_eq!(d.status, "dismissed");
+        assert_eq!(d.status, Status::Dismissed);
         // An expired sign-in holds nothing off.
         opened(
-            st.ask_remote(&ask(&s1, "https://clax.example/a/x"))
+            st.ask_remote(&AuditCtx::DAEMON, &ask(&s1, "https://clax.example/a/x"))
                 .unwrap(),
         );
     }

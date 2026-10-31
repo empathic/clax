@@ -11,6 +11,22 @@ use std::sync::Arc;
 
 pub const SECRET: &str = "the setup secret";
 
+/// The page [`Public::publish`] publishes there.
+pub const PAGE: &str = "<h1>Their plan</h1>";
+
+/// `s` as a query value (`application/x-www-form-urlencoded`).
+pub fn enc(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'*' => {
+                (b as char).to_string()
+            }
+            b' ' => "+".to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 pub async fn json_of(r: reqwest::Response) -> (u16, Value) {
     let status = r.status().as_u16();
     let text = r.text().await.unwrap();
@@ -126,6 +142,38 @@ impl Public {
             .browser(reqwest::Method::GET, "/api/hosted/me", json!(null))
             .await;
         me["person"]["public_id"].as_str().unwrap().to_string()
+    }
+
+    /// Revokes there the agent token `local` holds for remote `rid`, as
+    /// the token's holder may (`DELETE /api/hosted/agent-token`); `local`
+    /// still holds it.
+    pub async fn revoke(&self, local: &TestServer, rid: &str) {
+        let token = local.store.remote_token(rid).unwrap().unwrap();
+        let res = self
+            .ts
+            .client
+            .delete(format!("{}/api/hosted/agent-token", self.ts.base))
+            .header(HOST, format!("localhost:{}", self.ts.addr.port()))
+            .bearer_auth(token.expose())
+            .send()
+            .await
+            .unwrap();
+        assert!(res.status().is_success(), "{}", res.status());
+    }
+
+    /// An artifact titled `Theirs` of [`PAGE`] that the owner's CLI
+    /// publishes there (private there): its ID.
+    pub async fn publish(&self) -> String {
+        let (s, v) = self
+            .cli(
+                reqwest::Method::POST,
+                "/api/artifacts",
+                Some(json!({"title": "Theirs",
+                    "files": {"index.html": {"content": PAGE, "encoding": "utf8"}}})),
+            )
+            .await;
+        assert_eq!(s, 201, "{v}");
+        v["artifact"]["id"].as_str().unwrap().to_string()
     }
 
     /// A request of the owner's CLI there (the daemon token).

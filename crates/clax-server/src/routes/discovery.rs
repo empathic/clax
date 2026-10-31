@@ -5,10 +5,10 @@
 
 use axum::Json;
 use axum::extract::State;
+use clax_core::discovery::{DevicePaths, Discovery};
 use clax_http::agent::DeniedToGrants;
 use clax_http::error::ApiError;
 use clax_http::state::AppState;
-use serde_json::{Value, json};
 
 /// The version of the contract (`docs/contract.md`) this Clax serves.
 pub const CONTRACT_VERSION: &str = "1";
@@ -34,39 +34,43 @@ pub const CONTRACT_VERSION: &str = "1";
 ///   `approve`, `token`).
 /// - `capabilities`: `queues` (report queues) and `db` (artifacts' app
 ///   data).
-pub async fn get(State(s): State<AppState>, _d: DeniedToGrants) -> Result<Json<Value>, ApiError> {
-    let mut v = match &s.hosted {
+pub async fn get(
+    State(s): State<AppState>,
+    _d: DeniedToGrants,
+) -> Result<Json<Discovery>, ApiError> {
+    let common = Discovery {
+        contract_version: CONTRACT_VERSION.into(),
+        api: "/api".into(),
+        capabilities: vec!["queues".into(), "db".into()],
+        ..Discovery::default()
+    };
+    Ok(Json(match &s.hosted {
         Some(h) => {
             let mut sign_in = vec!["invite", "sign_in_link", "device"];
             if h.github.is_some() {
                 sign_in.push("github");
             }
             sign_in.push("reporter_token");
-            let mut v = json!({
-                "kind": "hosted",
-                "name": h.name.clone().unwrap_or_else(|| h.host.clone()),
-                "origin": h.origin,
-                "sign_in": sign_in,
-                "device": {
-                    "code": "/api/hosted/device/code",
-                    "approve": "/device",
-                    "token": "/api/hosted/device/token",
-                },
-            });
-            if let Some(sites) = &h.sites {
-                v["site_domain"] = json!(sites.domain());
+            Discovery {
+                kind: "hosted".into(),
+                name: h.name.clone().unwrap_or_else(|| h.host.clone()),
+                origin: h.origin.clone(),
+                site_domain: h.sites.as_ref().map(|x| x.domain().to_string()),
+                sign_in: sign_in.into_iter().map(String::from).collect(),
+                device: Some(DevicePaths {
+                    code: "/api/hosted/device/code".into(),
+                    approve: "/device".into(),
+                    token: "/api/hosted/device/token".into(),
+                }),
+                ..common
             }
-            v
         }
-        None => json!({
-            "kind": "local",
-            "name": s.browser_base.split_once("://").map_or(s.browser_base.as_str(), |(_, h)| h),
-            "origin": s.browser_base,
-            "sign_in": ["invite", "reporter_token"],
-        }),
-    };
-    v["contract_version"] = json!(CONTRACT_VERSION);
-    v["api"] = json!("/api");
-    v["capabilities"] = json!(["queues", "db"]);
-    Ok(Json(v))
+        None => Discovery {
+            kind: "local".into(),
+            name: crate::public::default_name(&s.browser_base),
+            origin: s.browser_base.clone(),
+            sign_in: vec!["invite".into(), "reporter_token".into()],
+            ..common
+        },
+    }))
 }

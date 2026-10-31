@@ -6,16 +6,13 @@
 
 use clax_core::working::ManualClock;
 use clax_server::linked::{BACKSTOP, Linked, MIRROR_SWEEP};
-use clax_testkit::remotes::{Public, connect, json_of, local_req, post};
-use clax_testkit::{ManualSleeper, TestServer};
+use clax_testkit::remotes::{PAGE, Public, connect, enc, json_of, local_req, post};
+use clax_testkit::{ManualSleeper, TestServer, until};
 use reqwest::Method;
 use reqwest::header::{COOKIE, HOST, ORIGIN};
 use serde_json::{Value, json};
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
-
-const PAGE: &str = "<h1>Their plan</h1>";
 
 /// A local daemon connected to a hosted one, on whose owner's artifact
 /// `raid` its agents comment; the sync's timers on `sleeper`, the local
@@ -41,16 +38,7 @@ impl There {
         })
         .await;
         let remote = connect(&local, &public).await;
-        let (s, v) = public
-            .cli(
-                Method::POST,
-                "/api/artifacts",
-                Some(json!({"title": "Theirs",
-                    "files": {"index.html": {"content": PAGE, "encoding": "utf8"}}})),
-            )
-            .await;
-        assert_eq!(s, 201, "{v}");
-        let raid = v["artifact"]["id"].as_str().unwrap().to_string();
+        let raid = public.publish().await;
         let url = format!("{}/a/{raid}", public.origin);
         There {
             public,
@@ -106,25 +94,10 @@ impl There {
     /// A thread the hosted owner's browser starts on the artifact there:
     /// its ID there.
     async fn thread_there(&self, body: &str) -> String {
-        let ts = &self.public.ts;
-        let res = ts
-            .client
-            .post(format!("{}/api/artifacts/{}/threads", ts.base, self.raid))
-            .header(HOST, format!("localhost:{}", ts.addr.port()))
-            .header(COOKIE, format!("clax_session={}", self.public.cookie))
-            .header(ORIGIN, &self.public.origin)
-            .multipart(
-                reqwest::multipart::Form::new()
-                    .text("anchor", json!({"kind": "artifact"}).to_string())
-                    .text("body", body.to_string())
-                    .text("version", "1"),
-            )
-            .send()
-            .await
-            .unwrap();
-        let (s, v) = json_of(res).await;
-        assert_eq!(s, 201, "{v}");
-        v["thread"]["id"].as_str().unwrap().to_string()
+        let p = &self.public;
+        let anchor = json!({"kind": "artifact"});
+        let t = p.browser_thread(&self.raid, &p.cookie, anchor, body).await;
+        t["id"].as_str().unwrap().to_string()
     }
 
     /// The hosted owner sends thread `rtid` there to the agent `to` names
@@ -218,26 +191,6 @@ impl There {
     }
 }
 
-/// `f`'s value once it has one, checked again every 50 ms. No wall-clock
-/// limit: a condition that never holds is ended by the test runner's
-/// timeout, whose output names `what`.
-async fn until<T, F, Fut>(what: &str, mut f: F) -> T
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Option<T>>,
-{
-    for tries in 0u32.. {
-        if let Some(v) = f().await {
-            return v;
-        }
-        if tries == 200 {
-            eprintln!("still waiting: {what}");
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    unreachable!("the loop returns")
-}
-
 /// An agent manages the remote watches of its own session alone: one
 /// naming another session in `X-Clax-Session`, or none (the agent
 /// channel's marker alone), is refused, whatever session the path names.
@@ -288,6 +241,12 @@ async fn stopping_the_sync_ends_the_followers_sessions_there() {
     let sid = t.agent("stopper").await;
     t.watch(&sid).await;
     t.agent_there("stopper").await;
+    // The remote has the session before its answer reaches the follower:
+    // the sync is stopped once the follower holds it.
+    until("the follower holds its session there", || async {
+        t.local.state.linked.session_there(&t.rid, &sid).map(drop)
+    })
+    .await;
     let tasks = clax_server::linked::stop(&t.local.state);
     for h in tasks {
         let _ = h.await;
@@ -566,10 +525,6 @@ async fn a_pushed_artifacts_public_url_is_never_followed() {
             .iter()
             .all(|l| !l.followed)
     );
-}
-
-fn enc(s: &str) -> String {
-    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
 /// The comments' bodies of the remote's threads on `raid`, as its owner's

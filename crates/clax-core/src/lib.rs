@@ -20,6 +20,7 @@ pub mod content;
 pub mod daemon;
 pub mod db;
 pub mod digest;
+pub mod discovery;
 pub mod draft_diff;
 pub mod drafts;
 pub mod embedded;

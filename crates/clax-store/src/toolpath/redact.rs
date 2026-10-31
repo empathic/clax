@@ -313,6 +313,11 @@ fn body_class(kind: &str, field: &str) -> Class {
         ) => Safe,
         ("approval.decide", "request_id" | "scope") => Safe,
         ("approval.withdraw", "request_id" | "reason") => Safe,
+        // A connection request (`crate::remote_requests`): its instance's
+        // origin, never the asking agent's URL or reason.
+        ("remote_request.ask", "request_id" | "origin" | "opened") => Safe,
+        ("remote_request.answer", "request_id" | "origin" | "answer" | "remote_id") => Safe,
+        ("remote_request.close", "request_id" | "origin" | "status" | "remote_id") => Safe,
         ("thread.take", "thread_id" | "session" | "cause") => Safe,
         ("thread.release", "thread_id" | "session" | "reason") => Safe,
         ("backfill.skip", "reason") => Text,

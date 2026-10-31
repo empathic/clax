@@ -336,6 +336,11 @@ enum Stop {
     Local(String),
     /// The remote is gone here, or not signed in: the task ends.
     Gone,
+    /// The remote refused this Clax's token itself
+    /// ([`RemoteFail::token_refused`]): the remote is marked signed out
+    /// ([`crate::public::note_failure`]) and the task ends until a new
+    /// sign-in connects it again.
+    SignedOut,
 }
 
 /// A store call's error.
@@ -351,6 +356,7 @@ impl Stop {
         match self {
             Stop::Unreachable(why) | Stop::Local(why) => why,
             Stop::Gone => "the remote is gone",
+            Stop::SignedOut => "the remote refused this Clax's token",
         }
     }
 
@@ -364,14 +370,26 @@ impl Stop {
     }
 }
 
-/// What a failed request to the remote means for the cycle.
-fn classify(f: &RemoteFail) -> Option<String> {
-    match f.status {
-        None => Some(format!("cannot reach {}: {}", f.origin, f.message)),
-        Some(401) => Some(format!("{} refused this Clax's agent token", f.origin)),
-        Some(s) if s >= 500 || s == 429 => Some(format!("{} answered {s}", f.origin)),
-        _ => None,
+/// What a failed request to the remote means for the cycle: the remote
+/// signed this Clax out, or is out of reach; `None` when it refused that
+/// request alone.
+fn classify(f: &RemoteFail) -> Option<Stop> {
+    if f.token_refused() {
+        return Some(Stop::SignedOut);
     }
+    let why = match f.status {
+        None => format!("cannot reach {}: {}", f.origin, f.message),
+        Some(401) => format!("{} refused this Clax's agent token", f.origin),
+        Some(s) if s >= 500 || s == 429 => format!("{} answered {s}", f.origin),
+        _ => return None,
+    };
+    Some(Stop::Unreachable(why))
+}
+
+/// [`classify`], a refusal of that request alone stopping the cycle as an
+/// outage named by the remote's message.
+fn stop_of(f: &RemoteFail) -> Stop {
+    classify(f).unwrap_or_else(|| Stop::Unreachable(f.message.clone()))
 }
 
 /// What a heartbeat after an outage makes of the sync's session there.
@@ -392,8 +410,8 @@ fn heartbeat(answer: &Result<Value, RemoteFail>) -> Heartbeat {
     match answer {
         Ok(v) if v["session"]["ended_at"].is_null() => Heartbeat::Keep,
         Err(f) if f.status != Some(401) => match classify(f) {
-            Some(why) => Heartbeat::Out(why),
-            None => Heartbeat::Replace,
+            Some(Stop::Unreachable(why)) => Heartbeat::Out(why),
+            _ => Heartbeat::Replace,
         },
         _ => Heartbeat::Replace,
     }
@@ -433,6 +451,14 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
                 });
             }
             Err(Stop::Gone) => {
+                sync.end().await;
+                return;
+            }
+            Err(Stop::SignedOut) => {
+                let r2 = rid.clone();
+                if let Ok(Some(r)) = s.store_call(move |st| st.find_remote(&r2)).await {
+                    crate::public::sign_out(&s, &r).await;
+                }
                 sync.end().await;
                 return;
             }
@@ -690,10 +716,10 @@ fn poll_failed(status: Option<u16>, fails: u32, wait: Option<Duration>) -> Optio
 
 /// Why a follower could not be brought in step.
 enum FollowFail {
-    /// The remote did not answer: the cycle backs off as for any outage.
-    Out(String),
-    /// The remote is gone here, or signed out.
-    Gone,
+    /// The cycle stops: the remote did not answer (it backs off as for
+    /// any outage), this daemon's store failed, or the remote is gone here
+    /// or signed this Clax out.
+    Stop(Stop),
     /// The remote refused it: that follower alone is held back.
     Refused(String),
 }
@@ -702,7 +728,8 @@ impl FollowFail {
     /// What failed request `f` means for a follower.
     fn of(f: &RemoteFail) -> FollowFail {
         match f.status {
-            None => FollowFail::Out(classify(f).unwrap_or_else(|| f.message.clone())),
+            None => FollowFail::Stop(stop_of(f)),
+            _ if f.token_refused() => FollowFail::Stop(Stop::SignedOut),
             _ => FollowFail::Refused(format!("{}: {}", f.code, f.message)),
         }
     }
@@ -885,9 +912,7 @@ impl Sync {
             }
             clax_rt::sendable(c.session_for(SYNC_HARNESS, SYNC_NAME))
                 .await
-                .map_err(|f| {
-                    Stop::Unreachable(classify(&f).unwrap_or_else(|| f.message.clone()))
-                })?;
+                .map_err(|f| stop_of(&f))?;
             self.client = Some(c);
             self.watched.clear();
         }
@@ -934,11 +959,7 @@ impl Sync {
                         "a linked public copy cannot be watched"
                     );
                 }
-                Err(f) => {
-                    return Err(Stop::Unreachable(
-                        classify(&f).unwrap_or_else(|| f.message.clone()),
-                    ));
-                }
+                Err(f) => return Err(stop_of(&f)),
             }
         }
         Ok(())
@@ -1090,8 +1111,7 @@ impl Sync {
                     Ok(f) => {
                         self.followers.insert(sid.clone(), f);
                     }
-                    Err(FollowFail::Out(why)) => return Err(Stop::Unreachable(why)),
-                    Err(FollowFail::Gone) => return Err(Stop::Gone),
+                    Err(FollowFail::Stop(stop)) => return Err(stop),
                     Err(FollowFail::Refused(why)) => {
                         self.hold(&sid, &why);
                         continue;
@@ -1134,8 +1154,7 @@ impl Sync {
                         );
                     }
                     Err(e) => match FollowFail::of(&e) {
-                        FollowFail::Out(why) => return Err(Stop::Unreachable(why)),
-                        FollowFail::Gone => return Err(Stop::Gone),
+                        FollowFail::Stop(stop) => return Err(stop),
                         FollowFail::Refused(why) => {
                             refused = Some(why);
                             break;
@@ -1187,9 +1206,9 @@ impl Sync {
             .s
             .store_call(move |st| Ok((st.find_remote(&rid)?, st.remote_token(&rid)?)))
             .await
-            .map_err(|e| FollowFail::Refused(format!("{}: {}", e.code, e.message)))?;
+            .map_err(|e| FollowFail::Stop(Stop::from(e)))?;
         let (Some(remote), Some(token)) = (remote, token) else {
-            return Err(FollowFail::Gone);
+            return Err(FollowFail::Stop(Stop::Gone));
         };
         let mut c = Client::new(&remote.origin, Some(token));
         clax_rt::sendable(c.session_for(harness, name))
@@ -1433,11 +1452,11 @@ impl Sync {
             let mut c = Client::new(&remote.origin, Some(token));
             clax_rt::sendable(c.session_for(harness, name))
                 .await
-                .map_err(|f| Stop::Unreachable(classify(&f).unwrap_or(f.message)))?;
+                .map_err(|f| stop_of(&f))?;
             let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
             let v = clax_rt::sendable(c.get(&format!("/api/sessions/{sid}")))
                 .await
-                .map_err(|f| Stop::Unreachable(classify(&f).unwrap_or(f.message)))?;
+                .map_err(|f| stop_of(&f))?;
             let handle = v["session"]["agent_handle"]
                 .as_str()
                 .unwrap_or_default()
@@ -1543,7 +1562,7 @@ impl Sync {
         let raid = &link.remote_artifact_id;
         let fail = |f: RemoteFail| -> Result<Sent, Stop> {
             match classify(&f) {
-                Some(why) => Err(Stop::Unreachable(why)),
+                Some(stop) => Err(stop),
                 None => Ok(Sent::Refused(format!("{}: {}", f.code, f.message))),
             }
         };
@@ -1858,8 +1877,8 @@ impl Sync {
             match clax_rt::sendable(c.post(&path, &json!({}))).await {
                 Ok(_) => {}
                 Err(f) => {
-                    if let Some(why) = classify(&f) {
-                        return Err(Stop::Unreachable(why));
+                    if let Some(stop) = classify(&f) {
+                        return Err(stop);
                     }
                 }
             }
@@ -1872,8 +1891,8 @@ impl Sync {
             {
                 Ok(v) => v,
                 Err(f) => {
-                    if let Some(why) = classify(&f) {
-                        return Err(Stop::Unreachable(why));
+                    if let Some(stop) = classify(&f) {
+                        return Err(stop);
                     }
                     // No longer this token's to read there: asked again.
                     self.reask(&qid).await?;
@@ -2012,7 +2031,7 @@ impl Sync {
             Ok(v) => v,
             Err(f) => {
                 return match classify(&f) {
-                    Some(why) => Err(Stop::Unreachable(why)),
+                    Some(stop) => Err(stop),
                     None => Ok(Err(format!("{}: {}", f.code, f.message))),
                 };
             }
@@ -2102,7 +2121,7 @@ impl Sync {
             let v = match clax_rt::sendable(c.get(&q)).await {
                 Ok(v) => v,
                 Err(f) => match classify(&f) {
-                    Some(why) => return Err(Stop::Unreachable(why)),
+                    Some(stop) => return Err(stop),
                     None if f.status == Some(404) => return Ok(()),
                     // A refused page cursor of a read to go on: the read
                     // starts over.

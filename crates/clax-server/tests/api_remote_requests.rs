@@ -144,6 +144,60 @@ async fn an_agent_without_a_session_cannot_ask() {
 
 /// An ask about a muted origin is answered `muted` before the daemon
 /// fetches that origin's discovery: nothing is asked of it.
+/// Each ask and the owner's answer are recorded as their actor:
+/// `remote_request.ask` (opened, or joined) as each asking session's agent,
+/// `remote_request.answer` as the owner.
+#[tokio::test(flavor = "multi_thread")]
+async fn asks_and_the_owners_answer_are_audited() {
+    let ts = TestServer::spawn().await;
+    let public = Public::new().await;
+    let (first, id) = opened(&ts, &public).await;
+    let second = session(&ts, "codex", "h-join").await;
+    let (s, v) = ask(&ts, Some(&second), json!({"url": public.origin})).await;
+    assert_eq!((s, v["status"].as_str()), (200, Some("open")), "{v}");
+    let (s, v) = answer(&ts, &id, "not_now").await;
+    assert_eq!(s, 200, "{v}");
+    let events: Vec<(String, Value, Value)> = ts
+        .store
+        .events_after(0, 1000)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind.starts_with("remote_request."))
+        .map(|e| {
+            let body: Value = serde_json::from_str(&e.body).unwrap();
+            (e.kind, serde_json::from_str(&e.actor).unwrap(), body)
+        })
+        .collect();
+    let kinds: Vec<&str> = events.iter().map(|(k, _, _)| k.as_str()).collect();
+    assert_eq!(
+        kinds,
+        [
+            "remote_request.ask",
+            "remote_request.ask",
+            "remote_request.answer"
+        ],
+        "{events:?}"
+    );
+    let (_, a1, b1) = &events[0];
+    assert_eq!(
+        (a1["session_id"].as_str(), b1["opened"].as_bool()),
+        (Some(first.as_str()), Some(true))
+    );
+    assert_eq!(b1["request_id"], json!(id));
+    assert_eq!(b1["origin"], json!(public.origin));
+    let (_, a2, b2) = &events[1];
+    assert_eq!(
+        (a2["session_id"].as_str(), b2["opened"].as_bool()),
+        (Some(second.as_str()), Some(false))
+    );
+    let (_, a3, b3) = &events[2];
+    assert_eq!(
+        (a3["type"].as_str(), b3["answer"].as_str()),
+        (Some("owner"), Some("not_now")),
+        "{a3}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_muted_origin_is_answered_without_fetching_its_discovery() {
     let ts = TestServer::spawn().await;

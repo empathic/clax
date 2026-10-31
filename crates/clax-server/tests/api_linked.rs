@@ -4,14 +4,12 @@
 
 use clax_server::linked::{BACKOFF_CAP, BACKOFF_FIRST, BACKSTOP, Linked};
 use clax_testkit::ManualSleeper;
-use clax_testkit::TestServer;
 use clax_testkit::remotes::{Public, connect, connect_app, json_of, local_req, owner_post, post};
+use clax_testkit::{TestServer, until};
 use reqwest::header::{COOKIE, HOST, ORIGIN};
 use serde_json::{Value, json};
-use std::future::Future;
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// A local daemon linked to a hosted one: the artifact `aid` pushed there
 /// as `raid`, the sync's timers on `sleeper`.
@@ -228,28 +226,6 @@ impl Pair {
         assert_eq!(s, 200, "{v}");
         v
     }
-}
-
-/// Polls `f` until it answers `Some`, for up to 10 s.
-/// `f`'s value once it has one, checked again every 50 ms. No wall-clock
-/// limit: a load that slows the daemons only delays it, and a condition
-/// that never holds is ended by the test runner's timeout, whose output
-/// names `what`.
-async fn until<T, F, Fut>(what: &str, mut f: F) -> T
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Option<T>>,
-{
-    for tries in 0u32.. {
-        if let Some(v) = f().await {
-            return v;
-        }
-        if tries == 200 {
-            eprintln!("still waiting: {what}");
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    unreachable!("the loop returns")
 }
 
 fn whole() -> Value {
@@ -790,6 +766,24 @@ async fn a_resent_keyed_write_does_the_sends_its_first_write_did_not_reach() {
         bodies(&p.hosted_thread_by(otid).await),
         ["plain", "@agent this too", "on it"]
     );
+}
+
+/// A token revoked there signs the remote out at the sync's next cycle,
+/// rather than being backed off from as an outage.
+#[tokio::test]
+async fn a_cycle_meeting_a_revoked_token_signs_the_remote_out() {
+    let p = Pair::new().await;
+    p.public.revoke(&p.local, &p.remote).await;
+    // The sync's next cycle at once, whether it waits on its feedback poll
+    // or, that poll refused, on its backoff (the owner's Retry).
+    p.local.state.linked.retry(&p.remote);
+    until("the remote is signed out", || async {
+        let r = p.local.store.find_remote(&p.remote).unwrap().unwrap();
+        (r.status == "signed_out").then_some(())
+    })
+    .await;
+    assert!(p.local.store.remote_token(&p.remote).unwrap().is_none());
+    assert_eq!(p.sleeper.waiting(BACKOFF_FIRST), 0, "not backed off");
 }
 
 #[tokio::test]
