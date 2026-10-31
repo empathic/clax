@@ -78,8 +78,6 @@ const WORDS: Record<string, string> = {
   host_failed: "Clax could not reach its helper. Post again; if it fails again, run clax init.",
   daemon_unavailable: "Clax could not start. See ~/.clax/logs/daemon.log, then post again.",
   daemon_unreachable: "Clax is not answering. Post again in a moment.",
-  pairing_declined: "Pairing was declined in your browser. Post again to ask again.",
-  pairing_expired: "The pairing confirmation expired. Post again to try again.",
 };
 export function postFailure(e: unknown): string {
   const code = (e as { code?: unknown } | null)?.code;

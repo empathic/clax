@@ -62,7 +62,7 @@
 // on every request (and in a WebSocket's address), and a new proof (a login
 // in another tab) opens the stream again.
 import { STUCK_MS, backoff } from "./lifecycle";
-import { PROOF_HEADER, withProof } from "./owner-proof";
+import { PROOF_HEADER, withProof } from "./owner-proof-wire";
 import { parseBlock } from "./sse";
 import { socketUrl } from "./socket-url";
 

@@ -76,7 +76,7 @@ describe("Pairer", () => {
     ]);
     expect(told).toEqual([true, false]);
     // A declined or expired one ends the wait with the host's error.
-    const d = env([held, { type: "error", v: 1, code: "pairing_declined", message: "pairing was declined in the browser" }]);
+    const d = env([held, { type: "error", v: 1, code: "pairing_declined", message: "Pairing was declined in your browser. Post again to ask again." }]);
     const q = new Pairer(d as unknown as PairEnv);
     const said: boolean[] = [];
     q.onConfirm = w => said.push(w);

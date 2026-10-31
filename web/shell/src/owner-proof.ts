@@ -13,15 +13,13 @@
 // session ended while the page was open, `clax logout`) shows how to open
 // Clax from the terminal, as a page load without one does.
 import { isColdRefusal, showColdBrowser } from "./cold-browser";
+import { PROOF_HEADER, withProof as addProof } from "./owner-proof-wire";
+
+export { PROOF_HEADER, PROOF_PARAM } from "./owner-proof-wire";
 
 /** The `localStorage` key the login's page keeps the proof under
  * (`clax_http::local_trust::PROOF_STORAGE_KEY`). */
 export const PROOF_STORAGE_KEY = "clax.owner_proof";
-/** The header the proof rides in (`clax_http::local_trust::PROOF_HEADER`). */
-export const PROOF_HEADER = "x-clax-owner-proof";
-/** The query parameter the proof rides in on the realtime routes
- * (`clax_http::local_trust::PROOF_PARAM`). */
-export const PROOF_PARAM = "owner_proof";
 
 /** This origin's proof, or null for none (or storage that cannot be read). */
 export function ownerProof(storage: Pick<Storage, "getItem"> | null = safeStorage()): string | null {
@@ -40,11 +38,10 @@ function safeStorage(): Storage | null {
   }
 }
 
-/** `url` (a path or a `ws:`/`http:` address) with `proof` as its
- * `PROOF_PARAM`; unchanged without one. */
+/** `url` with `proof` (this origin's, by default) as its `PROOF_PARAM`
+ * (`owner-proof-wire.ts`); unchanged without one. */
 export function withProof(url: string, proof: string | null = ownerProof()): string {
-  if (!proof) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}${PROOF_PARAM}=${encodeURIComponent(proof)}`;
+  return addProof(url, proof);
 }
 
 /** Whether `url`, resolved against `origin`, is on `origin`. */

@@ -168,11 +168,11 @@ fn refused_confirmation(status: &str) -> Option<HostError> {
     match status {
         "declined" => Some(HostError {
             code: "pairing_declined",
-            message: "pairing was declined in the browser".into(),
+            message: "Pairing was declined in your browser. Post again to ask again.".into(),
         }),
         "expired" => Some(HostError {
             code: "pairing_expired",
-            message: "the pairing confirmation expired before anyone answered it".into(),
+            message: "The pairing confirmation expired. Post again to try again.".into(),
         }),
         _ => None,
     }
@@ -188,7 +188,10 @@ fn mint_failed(e: anyhow::Error, probe: Option<u16>, daemon_version: &str) -> Ho
     if let Some(refused) = said
         .strip_prefix("declined: ")
         .map(|_| "declined")
-        .or_else(|| said.strip_prefix("confirmation_expired: ").map(|_| "expired"))
+        .or_else(|| {
+            said.strip_prefix("confirmation_expired: ")
+                .map(|_| "expired")
+        })
         .and_then(refused_confirmation)
     {
         return refused;
