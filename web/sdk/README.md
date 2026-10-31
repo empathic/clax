@@ -9,6 +9,7 @@ instance, and read the replies.
 | `@empathic/clax-sdk` | `ReporterClient`, `ClaxError` and the queue routes' types | the page |
 | `@empathic/clax-sdk/overlay` | `overlay()`: a Report button, comment mode to point at what the report is about, and "Your reports" with their replies | the page |
 | `@empathic/clax-sdk/service` | `ServiceClient`, which mints reporter tokens with the queue's service grant | your backend only: it holds the grant |
+| `@empathic/clax-sdk/anchor` | anchors: build one from an element, a text range or an area, resolve it on a later load, and `CommentMode` to pick one | the page |
 
 Each entry is an ES module with its TypeScript declarations. The package
 has no dependencies: Svelte and the overlay's other packages are bundled.
@@ -62,6 +63,32 @@ const service = new ServiceClient({ instance: "https://clax.example.com", queue:
 // For the signed-in user, from the page's origin, for the key the page sent:
 const token = await service.mintReporterToken({ reporter_id: user.id, origin: "https://app.example.com", public_key: publicKey });
 ```
+
+## Anchors
+
+An anchor is how a comment holds on to what it is about: its element's
+selector and fingerprint, the quoted text with what comes before and after
+it, or an area as fractions of an element's box. It survives a reload and
+most edits to the page.
+
+```ts
+import { buildElementAnchor, buildRangeAnchor, resolveAnchor, placeArea, rectOf } from "@empathic/clax-sdk/anchor";
+
+const anchor = buildElementAnchor(document, someElement);
+// Or from what the person selected:
+const quoted = buildRangeAnchor(document, getSelection()!.getRangeAt(0));
+
+// Later, on a fresh load of the page:
+const found = resolveAnchor(document, anchor); // { method, element, range } or null
+if (found) {
+  // "exact", "selector", "quote" or "custom": how it was found.
+  const box = anchor.area ? placeArea(anchor, found.element) : rectOf(found.range ?? found.element);
+}
+```
+
+`CommentMode` is the pointer interaction the overlay uses to pick what a
+comment is about: it outlines the target under the pointer and reports the
+element, range or dragged area the person chooses.
 
 ## License
 

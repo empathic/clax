@@ -8,6 +8,8 @@
 //                                     (overlay-component-css.mjs) as in
 //                                     /_clax/overlay.js
 //   "./service"  sdk/src/service.ts   the service client, for a backend
+//   "./anchor"   sdk/src/anchor.ts    anchors (build, resolve, place) and
+//                                     comment mode, from web/bridge
 //
 // Each entry is an ES module; code two entries share is one chunk under
 // chunks/, so a class such as ClaxError is the same in every entry. Nothing
@@ -35,20 +37,15 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { cleanOut } from "./extension-clean.mjs";
 import { componentCssIntoScript } from "./overlay-component-css.mjs";
+import { ENTRIES, PACKAGE_NAME } from "./sdk-entries.mjs";
 
-/** The package's name on npm. */
-export const PACKAGE_NAME = "@empathic/clax-sdk";
+// The package's name and entries live in sdk-entries.mjs, which loads nothing.
+export { ENTRIES, PACKAGE_NAME };
+
 /** The package's license: web/bridge's, web/overlay's and web/sdk's in LICENSE. */
 const LICENSE = "LGPL-2.1-only";
 /** The directories, under web/, of the Clax sources the package may bundle: those LICENSE puts under `LICENSE`. */
 const LICENSED_DIRS = ["bridge", "overlay", "sdk"];
-
-/** The package's entries: its export, the file it builds to and the source. */
-export const ENTRIES = [
-  { path: ".", name: "index", src: "sdk/src/index.ts" },
-  { path: "./overlay", name: "overlay", src: "overlay/src/main.ts" },
-  { path: "./service", name: "service", src: "sdk/src/service.ts" },
-];
 
 const web = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repo = resolve(web, "..");

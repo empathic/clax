@@ -15,7 +15,7 @@
 // thread of a post retried after its answer was lost. A post fails, saying
 // why, rather than wait: for a page whose address is over MAX_URL, or whose
 // snapshot has not come SNAPSHOT_WAIT_MS after the person pressed Post.
-import type { Anchor } from "../../../bridge/src/protocol";
+import type { Anchor } from "@empathic/clax-sdk/anchor";
 import { bytesDataUrl } from "../data-url";
 import { type ComposerNote, type OverlayToWorker, type PageView, type Rect, type SnapshotError, URL_TOO_LONG, type WorkerToComposer, type WorkerToOverlay, isFromComposer } from "../messages";
 import type { Api } from "./api";

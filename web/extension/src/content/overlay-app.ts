@@ -8,11 +8,9 @@
 // menu); no key on the page starts it. The overlay hears only the worker,
 // every message checked by `isFromWorker`, and tells it only what §9.4
 // lists.
-import { buildElementAnchor, buildRangeAnchor, OVERLAY_TAG } from "../../../bridge/src/anchor";
-import { type AreaRect, buildAreaAnchor } from "../../../bridge/src/area";
-import { CommentMode } from "../../../bridge/src/comment-mode";
-import type { Anchor, AnchorResult } from "../../../bridge/src/protocol";
-import { rectOf } from "../../../bridge/src/target";
+import {
+  type Anchor, type AnchorResult, type AreaRect, buildAreaAnchor, buildElementAnchor, buildRangeAnchor, CommentMode, OVERLAY_TAG, rectOf,
+} from "@empathic/clax-sdk/anchor";
 import { isFromWorker, MAX_TITLE, type OverlayThread, type OverlayToWorker, PICK_ID, pageUrl, type Rect, type SnapshotError, URL_TOO_LONG, type WorkerToOverlay, waitsForSnapshot } from "../messages";
 import { PIN_CSS, Pins } from "./pins";
 import { BOOT, RUNNING, liveOverlay, stopStale } from "./presence";

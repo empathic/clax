@@ -6,7 +6,7 @@
 // type's (optional ones aside), each checked for type and bounds; an
 // unknown field, a field read through a prototype, or a symbol key refuses
 // it.
-import { type Anchor, type AnchorResult, MAX_NAME } from "../../bridge/src/protocol";
+import { type Anchor, type AnchorResult, MAX_NAME } from "@empathic/clax-sdk/anchor";
 import type { AnswerBody, InboxFilter, InboxItem, InboxKind, InboxPage, Participants, QuestionView, Version } from "../../shell/src/api";
 import type { Thread } from "../../shell/src/threads";
 import type { PresenceView } from "../../shell/src/view/presence-model";

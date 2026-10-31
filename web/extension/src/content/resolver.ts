@@ -6,10 +6,9 @@
 // (Detached). Scrolls and resizes only measure the elements found last time.
 // Mutations of Clax's own overlay hosts (every `clax-overlay` element, by
 // default) never start a resolution.
-import { OVERLAY_TAG, type Resolved, resolveAnchor, textIndex, type TextIndex } from "../../../bridge/src/anchor";
-import { placeArea } from "../../../bridge/src/area";
-import { type Box, INDEX_FILE, type ResolveMethod } from "../../../bridge/src/protocol";
-import { rectOf } from "../../../bridge/src/target";
+import {
+  type Box, INDEX_FILE, OVERLAY_TAG, placeArea, rectOf, type Resolved, type ResolveMethod, resolveAnchor, textIndex, type TextIndex,
+} from "@empathic/clax-sdk/anchor";
 import { MAX_FAR, type OverlayThread } from "../messages";
 
 export { MAX_FAR };

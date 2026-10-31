@@ -13,7 +13,7 @@
   // came or went; a read that failed says so beside Send, with Retry. Any number of cards may be
   // open at once. "Pinned here" says its anchor was found on this screen
   // too. Everything shown is text.
-  import type { AnchorResult } from "../../../bridge/src/protocol";
+  import type { AnchorResult } from "@empathic/clax-sdk/anchor";
   import { relativeTime } from "../../../shell/src/format";
   import { type Thread, type Viewer, resolvedByLabel } from "../../../shell/src/threads";
   import SendButton from "../../../shell/src/ui/SendButton.svelte";

@@ -13,7 +13,7 @@
 // parser reads as raw text or RCDATA are written as escaped text only, never
 // with child elements; and style text cannot open a tag. The daemon also
 // serves the snapshot with a policy that runs no page script (§8.4).
-import { OVERLAY_TAG } from "../../../bridge/src/anchor";
+import { OVERLAY_TAG } from "@empathic/clax-sdk/anchor";
 
 export const MAX_ELEMENTS = 100_000;
 export const MAX_BYTES = 8 * 1024 * 1024;

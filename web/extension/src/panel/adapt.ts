@@ -3,7 +3,7 @@
 // read "on ?tab=billing", and the route-less view is the index. A thread's
 // clip is served only with the credential, which the panel does not hold:
 // the worker fetches it for the panel (`PanelLink.clip`).
-import { INDEX_FILE } from "../../../bridge/src/protocol";
+import { INDEX_FILE } from "@empathic/clax-sdk/anchor";
 import type { Thread } from "../../../shell/src/threads";
 
 export const pageOfRoute = (route: string | null): string => route ?? INDEX_FILE;

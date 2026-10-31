@@ -6,7 +6,7 @@
 // again (its URL, its origin, whether the overlay is in it, comment mode,
 // activeTab) is kept in session storage; the tab's page and threads are
 // fetched again at its next message.
-import type { AnchorResult } from "../../../bridge/src/protocol";
+import type { AnchorResult } from "@empathic/clax-sdk/anchor";
 import type { Participants, Version } from "../../../shell/src/api";
 import type { HubMsg, TabMsg } from "../../../shell/src/stream-hub";
 import { type FeedbackState, type Thread, type Viewer, upsert } from "../../../shell/src/threads";

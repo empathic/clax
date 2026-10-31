@@ -7,5 +7,18 @@
   },
   "rules": {
     "no-underscore-dangle": ["warn", { "allow": ["__clax", "__claxEarly", "__CLAX_PARTS__", "__CLAX_TEST_CLOCK__", "__CLAX_EXT_TEST__"] }]
-  }
+  },
+  "overrides": [
+    {
+      "files": ["extension/**"],
+      "rules": {
+        "no-restricted-imports": ["error", {
+          "patterns": [
+            { "group": ["**/bridge/src/**", "**/bridge/src"], "message": "The extension reaches web/bridge only through @empathic/clax-sdk (its ./anchor entry); add what it needs there." },
+            { "group": ["**/overlay/src/**", "**/sdk/src/**"], "message": "The extension imports the SDK by its package name, @empathic/clax-sdk, as an app would." }
+          ]
+        }]
+      }
+    }
+  ]
 }

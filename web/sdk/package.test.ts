@@ -31,6 +31,9 @@ const RUNTIME: Record<string, string[]> = {
   ".": ["ClaxError", "ReporterClient"],
   "./overlay": ["overlay"],
   "./service": ["ServiceClient"],
+  "./anchor": [
+    "CommentMode", "INDEX_FILE", "MAX_NAME", "OVERLAY_TAG", "buildAreaAnchor", "buildElementAnchor", "buildRangeAnchor", "placeArea", "rectOf", "resolveAnchor", "textIndex",
+  ],
 };
 
 let manifest: Manifest;
@@ -77,9 +80,11 @@ describe("the SDK package", () => {
     expect(manifest.type).toBe("module");
     expect(manifest.sideEffects).toBe(false);
     for (const k of ["dependencies", "peerDependencies", "optionalDependencies", "bundleDependencies"]) expect(manifest).not.toHaveProperty(k);
-    expect(Object.keys(manifest.exports).sort()).toEqual([".", "./overlay", "./package.json", "./service"]);
+    expect(Object.keys(manifest.exports).sort()).toEqual([".", "./anchor", "./overlay", "./package.json", "./service"]);
     expect(manifest.types).toBe("./types/sdk/src/index.d.ts");
-    expect(manifest.typesVersions).toEqual({ "*": { overlay: ["./types/overlay/src/main.d.ts"], service: ["./types/sdk/src/service.d.ts"] } });
+    expect(manifest.typesVersions).toEqual({ "*": {
+      overlay: ["./types/overlay/src/main.d.ts"], service: ["./types/sdk/src/service.d.ts"], anchor: ["./types/sdk/src/anchor.d.ts"],
+    } });
     for (const k of Object.keys(RUNTIME)) {
       const e = manifest.exports[k];
       if (typeof e === "string") throw new Error(`${k} has no conditions`);
@@ -157,7 +162,11 @@ console.log(JSON.stringify(out));
       writeFileSync(file, `import { ClaxError, ReporterClient, type NewReport, type Report, type ReporterAuth, type ReporterToken } from "@empathic/clax-sdk";
 import { overlay, type OverlayHandle, type OverlayOptions } from "@empathic/clax-sdk/overlay";
 import { ServiceClient, type ServiceOptions } from "@empathic/clax-sdk/service";
+import { type Anchor, type AnchorResult, buildElementAnchor, CommentMode, resolveAnchor } from "@empathic/clax-sdk/anchor";
 
+export const anchorOf = (el: Element): Anchor => buildElementAnchor(document, el);
+export const found = (a: Anchor): AnchorResult["method"] => resolveAnchor(document, a)?.method ?? null;
+export type Mode = CommentMode;
 const auth: ReporterAuth = async (publicKey: string): Promise<ReporterToken> => ({ token: publicKey, expires_at: "" });
 const opts: OverlayOptions = { instance: "https://clax.example", queue: "q1", auth };
 const handle: OverlayHandle = overlay(opts);
