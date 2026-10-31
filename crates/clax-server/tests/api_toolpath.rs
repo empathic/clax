@@ -251,7 +251,13 @@ async fn ctx_bad_headers_are_invalid_not_errors() {
             "not-a-ulid".parse().unwrap(),
             &agent,
         ),
-        (bad.clone(), bad.clone(), bad.clone(), bad.clone(), &as_owner),
+        (
+            bad.clone(),
+            bad.clone(),
+            bad.clone(),
+            bad.clone(),
+            &as_owner,
+        ),
         (
             "A".repeat(4096).parse().unwrap(),
             bad_call.parse().unwrap(),
@@ -3783,10 +3789,7 @@ async fn the_agent_channel_marker_makes_the_token_an_agent() {
     // The token naming a session that is not known, without the marker, is
     // an agent as `Caller` counts it (`OwnerAgent`), never the owner.
     for sid in ["01JB9S00000000000000000099", "not-a-ulid"] {
-        let v = ctx(ts
-            .authed(ts.client.get(&url))
-            .header("x-clax-session", sid))
-        .await;
+        let v = ctx(ts.authed(ts.client.get(&url)).header("x-clax-session", sid)).await;
         assert_eq!(
             v["actor"],
             json!({"type": "agent", "session_id": null}),

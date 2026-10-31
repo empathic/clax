@@ -10,9 +10,7 @@ use axum::response::{IntoResponse, Response};
 use clax_core::audit::Via;
 use clax_http::auth::RequireToken;
 use clax_http::error::ApiError;
-use clax_http::local_trust::{
-    LOGIN_PATH, local_path, login_page, login_page_csp, session_cookies,
-};
+use clax_http::local_trust::{LOGIN_PATH, local_path, login_page, login_page_csp, session_cookies};
 use clax_http::state::AppState;
 use clax_store::browser_login::LOGIN_CODE_TTL_SECS;
 use clax_store::viewers::Claim;

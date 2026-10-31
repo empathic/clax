@@ -667,7 +667,9 @@ async fn an_embedded_core_marks_every_shell_document_and_frames_content_on_its_o
 async fn an_owner_cookie_without_its_proof_gets_the_bare_entry() {
     let dist = dist();
     let ts = TestServer::spawn_with_web(dist.path()).await;
-    let id = ts.publish("Secret plans", &[("index.html", "<p>x</p>")]).await["artifact"]["id"]
+    let id = ts
+        .publish("Secret plans", &[("index.html", "<p>x</p>")])
+        .await["artifact"]["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -693,5 +695,8 @@ async fn an_owner_cookie_without_its_proof_gets_the_bare_entry() {
         .text()
         .await
         .unwrap();
-    assert_eq!(boot(&html).1["artifact"]["artifact"]["title"], "Secret plans");
+    assert_eq!(
+        boot(&html).1["artifact"]["artifact"]["title"],
+        "Secret plans"
+    );
 }

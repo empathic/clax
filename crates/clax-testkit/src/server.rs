@@ -874,7 +874,10 @@ impl TestServer {
                     reqwest::header::HeaderValue::from_str(proof).unwrap(),
                 );
             }
-            reqwest::Client::builder().default_headers(h).build().unwrap()
+            reqwest::Client::builder()
+                .default_headers(h)
+                .build()
+                .unwrap()
         };
         let app = if shutdown {
             clax_server::router::build_router_with_shutdown(
@@ -1534,7 +1537,9 @@ impl TestServer {
         format!(
             "{}={}",
             clax_http::identity::owner_cookie_name(host),
-            self.owner_session.as_ref().map_or("none", |(c, _)| c.as_str())
+            self.owner_session
+                .as_ref()
+                .map_or("none", |(c, _)| c.as_str())
         )
     }
 
@@ -1612,7 +1617,9 @@ impl TestServer {
         format!(
             "{}={}",
             clax_http::auth::events_cookie_name(host),
-            self.owner_session.as_ref().map_or("none", |(c, _)| c.as_str())
+            self.owner_session
+                .as_ref()
+                .map_or("none", |(c, _)| c.as_str())
         )
     }
 

@@ -2010,7 +2010,10 @@ impl Conn {
     /// This connection, ending once `end` resolves (the owner browser
     /// session the stream was opened with ended), before anything more is
     /// delivered.
-    pub fn ending_on(mut self, end: impl std::future::Future<Output = ()> + Send + 'static) -> Conn {
+    pub fn ending_on(
+        mut self,
+        end: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> Conn {
         self.ending = Some(Box::pin(end));
         self
     }

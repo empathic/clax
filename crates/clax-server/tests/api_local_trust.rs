@@ -259,10 +259,7 @@ async fn a_login_code_opens_one_browser_session_once() {
     let renewed_proof = proof_of(res).await;
     assert_eq!(token_status(&ts, &cookie, Some(&proof)).await, 200);
     assert_eq!(token_status(&ts, &renewed, Some(&proof)).await, 401);
-    assert_eq!(
-        token_status(&ts, &renewed, Some(&renewed_proof)).await,
-        200
-    );
+    assert_eq!(token_status(&ts, &renewed, Some(&renewed_proof)).await, 200);
     // Only the token makes a code.
     for req in [
         ts.client.post(format!("{}/api/browser-login", ts.base)),

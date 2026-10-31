@@ -49,8 +49,8 @@ use chrono::{DateTime, Utc};
 use clax_core::secret::{Secret, sha256_hex};
 use clax_core::working::Clock;
 use clax_store::Store;
-use clax_store::browser_login::{OWNER_SESSION_PREFIX, OWNER_SESSION_TTL_SECS};
 use clax_store::browser_login::OpenedOwnerSession;
+use clax_store::browser_login::{OWNER_SESSION_PREFIX, OWNER_SESSION_TTL_SECS};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
@@ -346,9 +346,8 @@ pub fn live_session(
     };
     let owner = hashes(&crate::identity::owner_cookie_name(host));
     let events = hashes(&crate::auth::events_cookie_name(host));
-    let proven = |hs: &[String]| {
-        proof.and_then(|p| hs.iter().find(|h| sessions.proves(h, p)).cloned())
-    };
+    let proven =
+        |hs: &[String]| proof.and_then(|p| hs.iter().find(|h| sessions.proves(h, p)).cloned());
     let (owner_proven, events_proven) = (proven(&owner), proven(&events));
     if owner_proven.is_some() || events_proven.is_some() {
         return Some(Ok(OwnerSession {
@@ -764,7 +763,11 @@ mod tests {
                 "{proof:?}"
             );
         }
-        assert!(live_session(&h, Some("cxp_proof"), &sessions).unwrap().is_ok());
+        assert!(
+            live_session(&h, Some("cxp_proof"), &sessions)
+                .unwrap()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -845,7 +848,10 @@ mod tests {
         assert!(futures::poll!(ended_a.as_mut()).is_pending());
         sessions.end(&st, &a).unwrap();
         ended_a.await;
-        assert!(futures::poll!(ended_b.as_mut()).is_pending(), "another session's end");
+        assert!(
+            futures::poll!(ended_b.as_mut()).is_pending(),
+            "another session's end"
+        );
         sessions.end_all(&st).unwrap();
         ended_b.await;
         sessions.ended("not-a-session".into()).await;
