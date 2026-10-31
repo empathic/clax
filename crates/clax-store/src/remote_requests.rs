@@ -249,63 +249,78 @@ fn read(c: &Connection, id: &str) -> Result<Option<Request>> {
     }))
 }
 
-/// A `remote_request.*` event of request `id` (of `origin`) at `now`.
-fn record(kind: AuditKind, id: &str, origin: &str, now: &str) -> AuditRecord {
-    AuditRecord::new(kind, now)
-        .with("request_id", id)
-        .with("origin", origin)
+/// One request's change: the store and transaction it is made in, the
+/// actor it is recorded as, the request (`id`, of `origin`) and when
+/// (`now`).
+struct Change<'a> {
+    st: &'a Store,
+    tx: &'a Transaction<'a>,
+    ctx: &'a AuditCtx,
+    id: &'a str,
+    origin: &'a str,
+    now: &'a str,
 }
 
-/// Closes open request `id` with `status` at `now` (and `remote` when
-/// given), reads its inbox item, and records `rec` (its
-/// `remote_request.*` event) as `ctx`; nothing for a request no longer
-/// open.
-#[allow(clippy::too_many_arguments)]
-fn close(
-    st: &Store,
-    tx: &Transaction<'_>,
-    ctx: &AuditCtx,
-    id: &str,
-    status: Status,
-    remote: Option<&str>,
-    now: &str,
-    rec: AuditRecord,
-) -> Result<()> {
-    let closed = tx.execute(
-        "UPDATE remote_requests SET status = ?2, answered_at = ?3, remote_id = COALESCE(?4, remote_id)
-         WHERE id = ?1 AND status = 'open'",
-        params![id, status.as_str(), now, remote],
-    )?;
-    if closed == 0 {
-        return Ok(());
+impl Change<'_> {
+    /// Its `remote_request.*` event of `kind`.
+    fn record(&self, kind: AuditKind) -> AuditRecord {
+        AuditRecord::new(kind, self.now)
+            .with("request_id", self.id)
+            .with("origin", self.origin)
     }
-    tx.execute(
-        "UPDATE inbox_items SET read_at = COALESCE(read_at, ?2) WHERE key = ?1",
-        params![inbox::remote_request_key(id), now],
-    )?;
-    st.record_audit(tx, ctx, rec)?;
-    Ok(())
-}
 
-/// Request `id` (of `origin`) closed with `status` and `remote`, as
-/// [`close`] does, recording `remote_request.close`.
-#[allow(clippy::too_many_arguments)]
-fn settle_one(
-    st: &Store,
-    tx: &Transaction<'_>,
-    ctx: &AuditCtx,
-    id: &str,
-    origin: &str,
-    status: Status,
-    remote: Option<&str>,
-    now: &str,
-) -> Result<()> {
-    let mut rec =
-        record(AuditKind::RemoteRequestClose, id, origin, now).with("status", status.as_str());
-    if let Some(r) = remote {
-        rec = rec.with("remote_id", r);
+    /// Records `rec`.
+    fn audit(&self, rec: AuditRecord) -> Result<()> {
+        self.st.record_audit(self.tx, self.ctx, rec).map(drop)
     }
-    close(st, tx, ctx, id, status, remote, now, rec)
+
+    /// The owner's `answer` (`remote_request.answer`).
+    fn answered(&self, answer: &str) -> AuditRecord {
+        self.record(AuditKind::RemoteRequestAnswer)
+            .with("answer", answer)
+    }
+
+    /// Closes the request, while open, with `status` (and `remote` when
+    /// given), reads its inbox item, and records `rec`; nothing for a
+    /// request no longer open.
+    fn close(&self, status: Status, remote: Option<&str>, rec: AuditRecord) -> Result<()> {
+        let closed = self.tx.execute(
+            "UPDATE remote_requests SET status = ?2, answered_at = ?3, remote_id = COALESCE(?4, remote_id)
+             WHERE id = ?1 AND status = 'open'",
+            params![self.id, status.as_str(), self.now, remote],
+        )?;
+        if closed == 0 {
+            return Ok(());
+        }
+        self.tx.execute(
+            "UPDATE inbox_items SET read_at = COALESCE(read_at, ?2) WHERE key = ?1",
+            params![inbox::remote_request_key(self.id), self.now],
+        )?;
+        self.audit(rec)
+    }
+
+    /// [`Change::close`] recording `remote_request.close`: settled without
+    /// the owner.
+    fn settle(&self, status: Status, remote: Option<&str>) -> Result<()> {
+        let mut rec = self
+            .record(AuditKind::RemoteRequestClose)
+            .with("status", status.as_str());
+        if let Some(r) = remote {
+            rec = rec.with("remote_id", r);
+        }
+        self.close(status, remote, rec)
+    }
+
+    /// Holds new requests for the origin off for [`NOT_NOW_S`] from
+    /// `now_utc`.
+    fn hold_off(&self, now_utc: &chrono::DateTime<chrono::Utc>) -> Result<()> {
+        self.tx.execute(
+            "INSERT INTO remote_dismissals (origin, until) VALUES (?1, ?2)
+             ON CONFLICT (origin) DO UPDATE SET until = excluded.until",
+            params![self.origin, shifted(now_utc, NOT_NOW_S)],
+        )?;
+        Ok(())
+    }
 }
 
 /// Settles every open request that is no longer waiting, as
@@ -327,20 +342,18 @@ fn settle(st: &Store, tx: &Transaction<'_>, now: &chrono::DateTime<chrono::Utc>)
         })?
         .collect::<rusqlite::Result<_>>()?
     };
-    let ctx = &AuditCtx::DAEMON;
     for (id, origin, connected, old) in due {
+        let change = Change {
+            st,
+            tx,
+            ctx: &AuditCtx::DAEMON,
+            id: &id,
+            origin: &origin,
+            now: &at,
+        };
         match (connected, old) {
-            (Some(rid), _) => settle_one(
-                st,
-                tx,
-                ctx,
-                &id,
-                &origin,
-                Status::Connected,
-                Some(&rid),
-                &at,
-            )?,
-            (None, true) => settle_one(st, tx, ctx, &id, &origin, Status::Expired, None, &at)?,
+            (Some(rid), _) => change.settle(Status::Connected, Some(&rid))?,
+            (None, true) => change.settle(Status::Expired, None)?,
             (None, false) => {}
         }
     }
@@ -378,8 +391,15 @@ impl Store {
                         url = COALESCE(excluded.url, url), reason = COALESCE(excluded.reason, reason)",
                     params![id, a.session, a.url, a.reason, now],
                 )?;
-                let rec = record(AuditKind::RemoteRequestAsk, &id, &a.origin, &now).with("opened", false);
-                self.record_audit(tx, ctx, rec)?;
+                let change = Change {
+                    st: self,
+                    tx,
+                    ctx,
+                    id: &id,
+                    origin: &a.origin,
+                    now: &now,
+                };
+                change.audit(change.record(AuditKind::RemoteRequestAsk).with("opened", false))?;
                 return Ok(Asked::Joined(read(tx, &id)?.ok_or(CoreError::NotFound)?));
             }
             let id = new_ulid();
@@ -414,8 +434,15 @@ impl Store {
                 &text,
                 &now,
             )?;
-            let rec = record(AuditKind::RemoteRequestAsk, &id, &a.origin, &now).with("opened", true);
-            self.record_audit(tx, ctx, rec)?;
+            let change = Change {
+                st: self,
+                tx,
+                ctx,
+                id: &id,
+                origin: &a.origin,
+                now: &now,
+            };
+            change.audit(change.record(AuditKind::RemoteRequestAsk).with("opened", true))?;
             Ok(Asked::Opened(read(tx, &id)?.ok_or(CoreError::NotFound)?))
         })
     }
@@ -509,8 +536,13 @@ impl Store {
                     format!("this request is {} already", r.status),
                 ));
             }
-            let answered = |answer: &str| {
-                record(AuditKind::RemoteRequestAnswer, id, &r.origin, &now).with("answer", answer)
+            let change = Change {
+                st: self,
+                tx,
+                ctx,
+                id,
+                origin: &r.origin,
+                now: &now,
             };
             match &ans {
                 Answer::Connecting(rid) => {
@@ -520,62 +552,21 @@ impl Store {
                                 (SELECT id FROM remotes WHERE status = 'pending'))",
                         params![id, rid],
                     )?;
-                    self.record_audit(
-                        tx,
-                        ctx,
-                        answered("connect").with("remote_id", rid.as_str()),
-                    )?;
+                    change.audit(change.answered("connect").with("remote_id", rid.as_str()))?;
                 }
-                Answer::Connected(rid) => {
-                    settle_one(
-                        self,
-                        tx,
-                        ctx,
-                        id,
-                        &r.origin,
-                        Status::Connected,
-                        Some(rid),
-                        &now,
-                    )?;
+                Answer::Connected(rid) => change.settle(Status::Connected, Some(rid))?,
+                Answer::NotNow => {
+                    change.close(Status::Dismissed, None, change.answered("not_now"))?;
+                    change.hold_off(&now_utc)?;
                 }
-                Answer::NotNow | Answer::Dismissed { hold_off: true } => {
-                    match ans {
-                        Answer::NotNow => {
-                            close(
-                                self,
-                                tx,
-                                ctx,
-                                id,
-                                Status::Dismissed,
-                                None,
-                                &now,
-                                answered("not_now"),
-                            )?;
-                        }
-                        _ => {
-                            settle_one(self, tx, ctx, id, &r.origin, Status::Dismissed, None, &now)?
-                        }
+                Answer::Dismissed { hold_off } => {
+                    change.settle(Status::Dismissed, None)?;
+                    if *hold_off {
+                        change.hold_off(&now_utc)?;
                     }
-                    tx.execute(
-                        "INSERT INTO remote_dismissals (origin, until) VALUES (?1, ?2)
-                         ON CONFLICT (origin) DO UPDATE SET until = excluded.until",
-                        params![r.origin, shifted(&now_utc, NOT_NOW_S)],
-                    )?;
-                }
-                Answer::Dismissed { hold_off: false } => {
-                    settle_one(self, tx, ctx, id, &r.origin, Status::Dismissed, None, &now)?;
                 }
                 Answer::Never => {
-                    close(
-                        self,
-                        tx,
-                        ctx,
-                        id,
-                        Status::Muted,
-                        None,
-                        &now,
-                        answered("never"),
-                    )?;
+                    change.close(Status::Muted, None, change.answered("never"))?;
                     tx.execute(
                         "INSERT OR IGNORE INTO remote_mutes (origin, muted_at) VALUES (?1, ?2)",
                         params![r.origin, now],
