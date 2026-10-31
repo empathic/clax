@@ -124,6 +124,14 @@ describe("QuestionCard", () => {
       refused.update(props(view({ linked: link })));
       expect(refused.root.querySelector(".link-line .retry-err")).toBeNull();
       refused.unmount();
+      // A Retry whose request fails says Clax did not answer, and Retry can be pressed again.
+      fetch.mockImplementation(async () => { throw new TypeError("Failed to fetch"); });
+      const away = mount(QuestionCard, props(view({ linked: link })));
+      click(retry(away)!);
+      await vi.waitFor(() => { flush(); expect(away.root.querySelector(".link-line .retry-err")?.textContent).toBe("Retry failed: Clax did not answer"); });
+      expect(retry(away)!.disabled).toBe(false);
+      expect(retry(away)!.textContent).toBe("Retry");
+      away.unmount();
       // Only a copy not sent has one.
       const pending = mount(QuestionCard, props(view({ linked: { ...link, state: "pending" } })));
       expect(retry(pending)).toBeNull();
