@@ -16,13 +16,15 @@
     label?: string;
     class?: string;
     onclick?: (e: MouseEvent) => void;
+    /** The <button>, for a caller that gives focus back to it. */
+    ref?: HTMLButtonElement | null;
     children: Snippet;
   };
-  let { variant = "default", pill = false, type = "button", disabled = false, pressed, expanded, label, class: cls = "", onclick, children }: Props = $props();
+  let { variant = "default", pill = false, type = "button", disabled = false, pressed, expanded, label, class: cls = "", onclick, ref = $bindable(null), children }: Props = $props();
   const classes = $derived(`${cls} btn${variant === "default" ? "" : ` ${variant}`}${pill ? " pill" : ""}`.trim());
 </script>
 
-<button {type} class={classes} {disabled} aria-pressed={pressed} aria-expanded={expanded} aria-label={label} {onclick}>{@render children()}</button>
+<button {type} class={classes} {disabled} aria-pressed={pressed} aria-expanded={expanded} aria-label={label} {onclick} bind:this={ref}>{@render children()}</button>
 
 <style>
   .btn { font: 500 14px/1.15 var(--font); min-height: 32px; padding: 7px 12px; margin: 0; background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; transition: color var(--t), background-color var(--t), border-color var(--t); }

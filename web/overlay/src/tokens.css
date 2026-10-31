@@ -84,15 +84,9 @@
 .cx { font: 14px/1.5 var(--font); color: var(--fg); -webkit-font-smoothing: antialiased; text-align: left; letter-spacing: normal; }
 .cx :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .cx p { margin: 0; }
-.cx button { font: 500 14px/1.15 var(--font); min-height: 32px; padding: 7px 12px; margin: 0; background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; transition: color var(--t), background-color var(--t), border-color var(--t); }
-.cx button:not(:disabled):hover { background-color: var(--hover); border-color: var(--border-hover); }
-.cx button.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
-.cx button.primary:not(:disabled):hover { background: var(--primary-hover); border-color: var(--primary-hover); }
-.cx button.ghost { background: none; border-color: transparent; }
-.cx button:disabled { opacity: .5; cursor: default; }
+/* Buttons are the UI kit's (web/sdk/ui/Button.svelte). */
 .cx textarea { display: block; width: 100%; margin: 0; resize: vertical; font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 6px 10px; min-height: 32px; transition: border-color var(--t); }
 .cx textarea:focus { border-color: var(--focus); outline: none; }
 .cx textarea::placeholder { color: var(--muted); opacity: 1; }
 .cx .muted { color: var(--muted); }
 .cx .small { font-size: 12px; }
-@media (pointer: coarse) { .cx button { min-height: 40px; } }

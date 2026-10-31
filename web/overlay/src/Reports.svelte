@@ -3,7 +3,7 @@
   // with its state and its replies, and a box to answer on one that is open.
   // `reports` is null until the first page arrived.
   import type { Report } from "../../sdk/src/types";
-  import { Surface, Thread } from "../../sdk/src/ui";
+  import { Button, Surface, Thread } from "../../sdk/src/ui";
   import { failureText, repliesOf, summaryOf } from "./model";
 
   type Props = { reports: Report[] | null; error: string | null; onReply(id: string, body: string): Promise<void>; onClose(): void };
@@ -40,7 +40,7 @@
 <Surface as="section" class="panel" label="Your reports">
   <header>
     <h2>Your reports</h2>
-    <button type="button" class="ghost" onclick={onClose} aria-label="Close your reports">✕</button>
+    <Button variant="ghost" onclick={onClose} label="Close your reports">✕</Button>
   </header>
   {#if error}<p class="error small" role="alert">{error}</p>{/if}
   {#if reports === null}
@@ -64,7 +64,7 @@
                   <textarea rows={2} aria-label="Reply" placeholder="Reply…" bind:value={text}
                     onkeydown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); void reply(r.id); } }}></textarea>
                   {#if replyError}<p class="error small" role="alert">Not sent: {replyError}</p>{/if}
-                  <div class="actions"><button type="submit" class="primary" disabled={sending || !text.trim()}>{sending ? "Sending…" : "Reply"}</button></div>
+                  <div class="actions"><Button type="submit" variant="primary" disabled={sending || !text.trim()}>{sending ? "Sending…" : "Reply"}</Button></div>
                 </form>
               {/if}
             </div>
@@ -86,7 +86,9 @@
   ul { list-style: none; margin: 0; padding: 0; }
   li { border-bottom: 1px solid var(--border); }
   li:last-child { border-bottom: 0; }
-  .row { display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%; min-height: 0; padding: 10px 14px; border: 0; border-radius: 0; background: none; text-align: left; white-space: normal; }
+  /* A row is a list item that opens its report, not one of the kit's buttons. */
+  .row { display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%; min-height: 0; margin: 0; padding: 10px 14px; border: 0; border-radius: 0; background: none; color: var(--fg); font: 500 14px/1.3 var(--font); text-align: left; white-space: normal; cursor: pointer; transition: background-color var(--t); }
+  .row:hover { background-color: var(--hover); }
   .sum { overflow-wrap: anywhere; }
   .meta { display: flex; gap: 8px; align-items: center; color: var(--muted); font-weight: 400; }
   .state { padding: 0 6px; border-radius: 999px; background: var(--hover); color: var(--fg); font-weight: 500; }

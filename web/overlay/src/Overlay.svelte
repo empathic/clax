@@ -10,7 +10,7 @@
   // none over another; closing the composer gives focus back to Report.
   import { onDestroy, onMount, untrack } from "svelte";
   import type { Report } from "../../sdk/src/types";
-  import { Quote, Surface } from "../../sdk/src/ui";
+  import { Button, Quote, Surface } from "../../sdk/src/ui";
   import { type Clip, type Draft, POLL_MS, Poll, type ReporterApi, type Timers, canSend, clipStatus, failureText, newDraft, pageUrl, quoteOf, realTimers, reportOf, takeClip } from "./model";
   import type { Picked, Picker } from "./picker";
   import Reports from "./Reports.svelte";
@@ -171,7 +171,7 @@
   {#if picking}
     <Surface class="hint" accent role="status">
       <span>Click what your report is about, select text, or drag over an area. Esc cancels.</span>
-      <button type="button" onclick={stopPicking}>Cancel</button>
+      <Button onclick={stopPicking}>Cancel</Button>
     </Surface>
   {/if}
 
@@ -194,8 +194,8 @@
         }}></textarea>
       {#if draft.error}<p class="error small" role="alert">Not sent: {draft.error}</p>{/if}
       <div class="actions">
-        <button type="button" onclick={cancel}>Cancel</button>
-        <button type="submit" class="primary" disabled={!canSend(draft)}>{draft.sending ? "Sending…" : "Send"}</button>
+        <Button onclick={cancel}>Cancel</Button>
+        <Button type="submit" variant="primary" disabled={!canSend(draft)}>{draft.sending ? "Sending…" : "Send"}</Button>
       </div>
     </Surface>
   {/if}
@@ -207,11 +207,11 @@
   {#if notice}<p class="notice" role="status">{notice}</p>{/if}
 
   <div class="launcher">
-    <button type="button" class="reports-btn" aria-expanded={open} onclick={toggleReports}>Your reports</button>
-    <button type="button" class="primary report-btn" bind:this={reportBtn} aria-pressed={picking} onclick={() => (picking ? stopPicking() : startPicking())}>
+    <Button pill class="reports-btn" expanded={open} onclick={toggleReports}>Your reports</Button>
+    <Button pill variant="primary" class="report-btn" bind:ref={reportBtn} pressed={picking} onclick={() => (picking ? stopPicking() : startPicking())}>
       <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2.5h10a1.5 1.5 0 0 1 1.5 1.5v6A1.5 1.5 0 0 1 13 11.5H7l-3.5 2.5v-2.5H3A1.5 1.5 0 0 1 1.5 10V4A1.5 1.5 0 0 1 3 2.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
       {picking ? "Picking…" : "Report"}
-    </button>
+    </Button>
   </div>
   </div>
 </div>
@@ -221,10 +221,12 @@
   .dock { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; max-height: calc(100vh - 32px); pointer-events: none; }
   .dock > :global(*) { flex: 0 1 auto; min-height: 0; pointer-events: auto; }
   .launcher { display: flex; flex: none; gap: 6px; }
-  .launcher button { box-shadow: var(--elev-lg); border-radius: 999px; padding: 7px 14px; }
-  .launcher .reports-btn { background: var(--raised); border-color: var(--border-hover); }
-  .launcher .reports-btn[aria-expanded="true"] { background: var(--hover); }
-  .launcher .report-btn[aria-pressed="true"] { background: var(--you); color: var(--on-you); border-color: var(--you); }
+  /* The launcher's buttons are the UI kit's pills (web/sdk/ui); the overlay
+     raises them over the page and colours the two states. */
+  .launcher :global(.btn) { box-shadow: var(--elev-lg); }
+  .launcher :global(.reports-btn) { background: var(--raised); border-color: var(--border-hover); }
+  .launcher :global(.reports-btn[aria-expanded="true"]) { background: var(--hover); }
+  .launcher :global(.report-btn[aria-pressed="true"]) { background: var(--you); color: var(--on-you); border-color: var(--you); }
   /* The hint and the composer are the UI kit's surfaces (web/sdk/ui): their
      look is the kit's; their place is the overlay's. */
   .cx :global(.hint) { position: fixed; left: 50%; top: 12px; transform: translateX(-50%); max-width: calc(100vw - 32px); display: flex; gap: 10px; align-items: center; padding: 6px 6px 6px 14px; font-size: 13px; z-index: 3; }
