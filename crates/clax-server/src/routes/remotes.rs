@@ -680,6 +680,11 @@ pub struct PushBody {
 }
 
 /// The remote a push names, or the only connected one.
+///
+/// # Errors
+/// 404 `no_remote`; 400 `remote_required` for several connected and none
+/// named; 400 `not_connected` while its sign-in waits; 502
+/// `remote_signed_out` once it refused this Clax's token.
 pub(super) async fn push_target(s: &AppState, key: Option<String>) -> Result<Remote, ApiError> {
     let r = match key {
         Some(k) => remote_named(s, &k).await?,
@@ -727,7 +732,9 @@ pub(super) async fn push_target(s: &AppState, key: Option<String>) -> Result<Rem
 /// remote_n}], assets_not_pushed}`, or for an agent waiting on the owner 202
 /// `{status: "approval_pending", question_id, inbox_url}` (see the module
 /// docs). Refusals: 404 `no_remote`; 400 `remote_required`,
-/// `not_connected`, `live_page`, `no_link`; 403 `not_approved` (the owner
+/// `not_connected` (its sign-in waits), `live_page`, `no_link`; 502
+/// `remote_signed_out` for a remote that refused this Clax's token (now or
+/// before); 403 `not_approved` (the owner
 /// declined, or answered outside Clax's browser and extension); 409
 /// `approval_used` for an approval spent already; 409 `remote_moved` when
 /// the public copy has versions this Clax did not push (push with `mode`

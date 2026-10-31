@@ -1642,10 +1642,13 @@ pub async fn push_from(
     new: NewCopy,
 ) -> Result<Pushed, ApiError> {
     let out = push_once(s, aid, remote, mode, auto, upto, new).await;
-    // `From<RemoteFail>` answers `remote_signed_out` for a refused token
-    // alone.
+    // A refusal converted by `From<RemoteFail>` (its `?`s) keeps the
+    // remote's status: `remote_signed_out` with `remote_status` 401 is a
+    // RemoteFail that `token_refused`, never `signed_out`'s own answer for
+    // a remote signed out before, which carries no `remote_status`.
     if let Err(e) = &out
         && e.code == "remote_signed_out"
+        && e.extra.get("remote_status") == Some(&json!(401))
     {
         sign_out(s, remote).await;
     }

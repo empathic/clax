@@ -71,7 +71,9 @@ const BUNDLE_HEADERS: [&str; 4] = [
 /// the owner).
 ///
 /// # Errors
-/// 403 `forbidden` for an agent; 404 `no_remote`, 400 `not_connected`.
+/// 403 `forbidden` for an agent; 404 `no_remote`; 400 `not_connected`
+/// while its sign-in waits; 502 `remote_signed_out` once it refused the
+/// token ([`super::remotes::push_target`]).
 async fn owners_remote(
     s: &AppState,
     d: &DeniedToGrants,
@@ -91,7 +93,8 @@ async fn owners_remote(
     let token = s
         .store_call(move |st| st.remote_token(&id))
         .await?
-        .ok_or_else(|| ApiError::bad_request("not_connected", "this remote is not signed in"))?;
+        // Signed out since push_target read it.
+        .ok_or_else(|| public::signed_out(&r.origin))?;
     Ok((r, token))
 }
 

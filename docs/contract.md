@@ -1776,7 +1776,8 @@ app's versions with the bundle each carries.
   public version `remote_n` of a copy without a push (an app got from a
   copy; at the local version a push of it made `remote_n` from, when one
   did, as when it is linked again after a new sign-in): a local write that asks nothing of the remote, though it needs
-  the core signed in there (400 `not_connected`). `url` is required and unread: the link's
+  the core signed in there (400 `not_connected` while its sign-in waits,
+  502 `remote_signed_out` once the remote refused its token). `url` is required and unread: the link's
   address is always `<origin>/a/<remote_artifact_id>`, as a push makes
   it; 400 `invalid_args` for a malformed ID or `remote_n` 0, 404 for no
   such local app. Its other routes forward to the remote with the
