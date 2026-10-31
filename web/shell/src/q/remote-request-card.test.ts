@@ -72,6 +72,37 @@ describe("RemoteRequestCard", () => {
     expect(button(m.root, "Connect")).not.toBeNull();
   });
 
+  it("a held answer says where to confirm, and answering again presents the confirmation", async () => {
+    const URL = "http://localhost:7480/inbox?confirm=cf_01";
+    for (const [label, answer, done] of [["Connect", "connect", { request: { status: "open" }, verification_url: "https://clax.example/device?code=ABCD-1234" }], ["Not now", "not_now", { request: { status: "dismissed" } }], ["Never for this instance", "never", { request: { status: "muted" } }]] as const) {
+      const sent: { body: unknown; confirm: string | null }[] = [];
+      vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+        const confirm = new Headers(init?.headers).get("x-clax-confirmation");
+        sent.push({ body: JSON.parse(String(init?.body)), confirm });
+        return confirm === "cf_01"
+          ? new Response(JSON.stringify(done))
+          : new Response(JSON.stringify({ status: "confirmation_pending", confirmation_id: "cf_01", confirm_url: URL }), { status: 202 });
+      }));
+      const tab = { opener: {}, location: { href: "" }, close: vi.fn() };
+      vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
+      const m = mount(RemoteRequestCard, { item: item("remote_request"), now });
+      click(button(m.root, label)!);
+      await settle();
+      expect(m.root.querySelector('[role="alert"]')).toBeNull();
+      expect(m.root.querySelector(".rcard")!.getAttribute("data-status")).toBe("open");
+      expect(m.root.querySelector(".held")!.textContent).toContain(`Confirm in your browser: ${URL}`);
+      if (answer === "connect") expect(tab.close).toHaveBeenCalled();
+      click(button(m.root, label)!);
+      await settle();
+      expect(sent).toEqual([{ body: { answer }, confirm: null }, { body: { answer }, confirm: "cf_01" }]);
+      expect(m.root.querySelector(".acts")).toBeNull();
+      expect(m.root.querySelector(".held")).toBeNull();
+      if (answer === "connect") expect(tab.location.href).toBe("https://clax.example/device?code=ABCD-1234");
+      document.body.replaceChildren();
+      vi.restoreAllMocks();
+    }
+  });
+
   it("an answered or expired request says so, without the answers", () => {
     const base = item("remote_request").remote_request!;
     for (const [status, says] of [["connected", "Connected"], ["expired", "Expired"]] as const) {
