@@ -32,7 +32,7 @@ afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
 describe("ConfirmationCard", () => {
   it("asks to confirm the decision in words and lists the agents live now", () => {
     const m = mount(ConfirmationCard, { c: view(), now });
-    const card = m.root.querySelector(".ccard")!;
+    const card = m.root.querySelector(".cfcard")!;
     expect(card.getAttribute("data-confirmation")).toBe(ID);
     expect(card.querySelector(".cwhat")!.textContent).toBe("Confirm: push “Plan” to https://clax.dev");
     expect([...card.querySelectorAll(".cagents li")].map(l => l.textContent)).toEqual(["ada in /w/site", "codex a-9q2m"]);

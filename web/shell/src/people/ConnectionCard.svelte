@@ -66,7 +66,7 @@
   }
 </script>
 
-<article class="ccard" data-grant={g?.id ?? ""} data-status={status} tabindex="-1" aria-label="Connection request">
+<article class="ccard dcard" data-grant={g?.id ?? ""} data-status={status} tabindex="-1" aria-label="Connection request">
   {#if g}
     <header class="chead">
       <span>Connection request from {g.client.name} ({g.client.peer_ip})</span>
@@ -110,22 +110,10 @@
 
 <style>
   :global {
-    .ccard { position: relative; display: grid; gap: 6px; background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--agent); border-radius: var(--radius); padding: 11px 12px 10px 13px; min-width: 0; font-size: 13.5px; }
-    .ccard:focus { outline: none; }
-    .ccard:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-    .ccard:not([data-status="pending"]) { border-left-color: var(--border-strong); }
-    .ccard p { margin: 0; }
-    .ccard .chead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
-    .ccard .chead > span { min-width: 0; }
-    .ccard time { margin-left: auto; font: 400 11.5px var(--font); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .ccard[data-status="pending"] { border-left-color: var(--agent); }
     .ccard .meta { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
     .ccard a { color: var(--fg); text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 2px; }
     .ccard a:hover { text-decoration-color: currentColor; }
-    .ccard .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-    .ccard .acts button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: start; }
-    .ccard .outcome { font-weight: 600; font-size: 13px; }
-    .ccard .err { color: var(--danger); font-size: 13px; }
-    @media (max-width: 520px) { .ccard .acts button { flex: 1 1 100%; justify-content: flex-start; } }
     .ccard form { display: grid; gap: 8px; }
     .ccard .key { font: 12px var(--mono); }
     .ccard .row { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 14px; }
