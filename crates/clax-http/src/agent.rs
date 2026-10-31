@@ -210,6 +210,7 @@ need!(
 );
 need!(ThreadsList, Comments, "read", Filtered, DEFAULT_LIMIT);
 need!(ThreadGet, Comments, "read", Filtered, DEFAULT_LIMIT);
+need!(ThreadAnnotation, Comments, "read", Filtered, DEFAULT_LIMIT);
 need!(ThreadClip, Comments, "read", Filtered, DEFAULT_LIMIT);
 need!(
     ThreadsCreate,
@@ -364,6 +365,11 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
     ("GET", "/api/artifacts/{aid}/threads", ThreadsList::INFO),
     ("POST", "/api/artifacts/{aid}/threads", ThreadsCreate::INFO),
     ("GET", "/api/artifacts/{aid}/threads/{tid}", ThreadGet::INFO),
+    (
+        "GET",
+        "/api/artifacts/{aid}/threads/{tid}/annotation",
+        ThreadAnnotation::INFO,
+    ),
     (
         "DELETE",
         "/api/artifacts/{aid}/threads/{tid}",
@@ -606,6 +612,7 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("threads::list", ThreadsList),
     route_need!("threads::create", ThreadsCreate),
     route_need!("threads::get", ThreadGet),
+    route_need!("threads::annotation", ThreadAnnotation),
     route_need!("threads::delete", ThreadDelete),
     route_need!("threads::clip", ThreadClip),
     route_need!("threads::comment", ThreadComment),
@@ -670,6 +677,7 @@ pub const FILTERED_LIVE: &[&str] = &[
     "ThreadsAll",
     "ThreadsList",
     "ThreadGet",
+    "ThreadAnnotation",
     "ThreadClip",
     "ThreadsCreate",
     "ThreadComment",

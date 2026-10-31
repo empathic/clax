@@ -2428,3 +2428,37 @@ async fn the_threads_list_answers_on_a_home_an_older_build_migrated() {
         .unwrap();
     assert_eq!(me["viewer"]["public_id"], OLD_SAM_PUBLIC, "{me}");
 }
+
+#[tokio::test]
+async fn a_thread_reads_as_web_annotations() {
+    let ts = TestServer::spawn().await;
+    let (_, aid) = setup(&ts).await;
+    let t = ts.thread(&aid, 1, "plain").await;
+    let tid = t["id"].as_str().unwrap();
+    let res = ts
+        .get(&format!("/api/artifacts/{aid}/threads/{tid}/annotation"))
+        .await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(
+        res.headers()["content-type"],
+        "application/ld+json; profile=\"http://www.w3.org/ns/anno.jsonld\""
+    );
+    let page: Value = res.json().await.unwrap();
+    assert_eq!(page["type"], "AnnotationPage");
+    let first = &page["items"][0];
+    assert_eq!(first["motivation"], "commenting");
+    assert_eq!(first["body"]["value"], "plain");
+    assert_eq!(
+        first["target"],
+        json!({
+            "type": "SpecificResource",
+            "source": format!("/a/{aid}/v/1"),
+            "selector": {"type": "CssSelector", "value": "body > main > h2",
+                         "refinedBy": {"type": "TextQuoteSelector", "exact": "Quarterly goals"}},
+        })
+    );
+    let missing = ts
+        .get(&format!("/api/artifacts/{aid}/threads/nope/annotation"))
+        .await;
+    assert_eq!(missing.status(), 404);
+}

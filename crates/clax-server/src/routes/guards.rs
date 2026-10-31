@@ -1361,6 +1361,12 @@ mod agents {
             ),
             (
                 "GET",
+                "/api/artifacts/{aid}/threads/{tid}/annotation",
+                Filtered,
+                Some((Comments, "read")),
+            ),
+            (
+                "GET",
                 "/api/artifacts/{aid}/threads/{tid}/clip",
                 Filtered,
                 Some((Comments, "read")),

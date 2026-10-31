@@ -217,6 +217,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             get(threads::get).delete(threads::delete),
         )
         .route(
+            "/api/artifacts/{aid}/threads/{tid}/annotation",
+            get(threads::annotation),
+        )
+        .route(
             "/api/artifacts/{aid}/threads/{tid}/clip",
             get(threads::clip),
         )

@@ -2280,6 +2280,27 @@ artifact's Send reaches an agent once it watches. Every way out of the
 dialog once the artifact is made opens it, a Close while Create is in
 flight included, once Create answers.
 
+### Threads as Web Annotations
+
+`GET /api/artifacts/<aid>/threads/<tid>/annotation` serves the thread as
+W3C Web Annotations (<https://www.w3.org/TR/annotation-model/>), read-only,
+as `application/ld+json; profile="http://www.w3.org/ns/anno.jsonld"`. It is
+made from the thread's view as `GET …/threads/<tid>` serves it to the same
+reader, so it withholds what that view withholds. The thread is an
+`AnnotationPage` (`id` `/a/<aid>?thread=<tid>`); each comment is an item,
+oldest first, with `id` the page's and `#<comment ID>`, a `TextualBody`
+(none for a withheld comment), a `creator` (`Person` for a viewer,
+`Software` for an agent, by `author_name`) and `created`. The first is
+`commenting` on the anchor; each later one is `replying`, its `target` the
+first's `id`. The anchor's `target` is the anchored version's URL
+(`/a/<aid>/v/<n>`), which never changes, narrowed when the anchor names a
+place: a `CssSelector` of its `selector`, refined by a `TextQuoteSelector`
+of its `quote`, `prefix` and `suffix` when it quotes text, or by a
+media-fragment `FragmentSelector` (`xywh=percent:`) of a drawn `area`; a
+`FragmentSelector` of a custom anchor's `custom_name`. A page other than
+the version's `index.html` is named by `clax:file`. A whole-artifact anchor,
+or one whose selector is withheld, targets the version URL itself.
+
 ### Reopening and deleting threads
 
 `POST /api/artifacts/<aid>/threads/<tid>/reopen` sets a thread back to open
@@ -3727,7 +3748,7 @@ no write takes it.
 A report is read and written through its queue alone. The thread listings
 (`GET /api/artifacts/<id>/threads`, `GET /api/threads`, `comments_read`
 without `thread_id`) leave reports out, and every route of one thread
-(`GET`, `DELETE`, `/clip`, `/comments`, `/resolve`, `/reopen`, `/send`,
+(`GET`, `DELETE`, `/annotation`, `/clip`, `/comments`, `/resolve`, `/reopen`, `/send`,
 `/handoff`, and so `comments_read` with its `thread_id`, `comments_reply`
 and `comments_resolve`) answers 409 `queue_report` for a report, its `error`
 naming the report's `queue_id`. A comment on a report that is delivered to
@@ -5441,6 +5462,7 @@ router), and a test fails when it differs:
 | `GET /api/artifacts/{aid}/threads` | Filtered | `clax-comments` `read` | 2 MiB | yes |
 | `POST /api/artifacts/{aid}/threads` | Filtered | `clax-comments` `write` | 16 MiB | yes |
 | `GET /api/artifacts/{aid}/threads/{tid}` | Filtered | `clax-comments` `read` | 2 MiB | yes |
+| `GET /api/artifacts/{aid}/threads/{tid}/annotation` | Filtered | `clax-comments` `read` | 2 MiB | yes |
 | `DELETE /api/artifacts/{aid}/threads/{tid}` | Own | `clax-comments` `resolve` | 2 MiB | yes |
 | `GET /api/artifacts/{aid}/threads/{tid}/clip` | Filtered | `clax-comments` `read` | 2 MiB | yes |
 | `POST /api/artifacts/{aid}/threads/{tid}/comments` | Filtered | `clax-comments` `reply` | 2 MiB | yes |

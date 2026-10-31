@@ -29,6 +29,7 @@ use clax_http::headers::parse_id;
 use clax_http::identity::Identity;
 use clax_http::state::AppState;
 use clax_http::viewer::{SameOrigin, acting_viewer, author};
+use clax_http::views::annotation;
 use clax_http::views::thread::{VisFor, thread_event_views};
 use clax_realtime::feedback::apply;
 use clax_store::batches::SendBatch;
@@ -463,6 +464,30 @@ pub async fn get(
         })
         .await?;
     Ok(Json(json!({"thread": view})))
+}
+
+/// The thread as W3C Web Annotations ([`annotation::thread_annotations`]),
+/// made from its view as [`get`] serves it, so it withholds the same.
+pub async fn annotation(
+    State(s): State<AppState>,
+    a: Agent<clax_http::agent::ThreadAnnotation>,
+    p: Result<Path<(String, String)>, PathRejection>,
+) -> Result<Response, ApiError> {
+    let (aid, tid) = path(p)?;
+    let id = parse_id(&aid)?;
+    let codex = s.feedback_ctx().codex_push();
+    let vf = VisFor::of(&a.caller, &s);
+    let view = s
+        .store_call(move |st| {
+            let vis = vf.build(st)?;
+            vis.filter_thread(st, &thread_of(st, &id, &tid)?, codex, false)
+        })
+        .await?;
+    Ok((
+        [(header::CONTENT_TYPE, annotation::MEDIA_TYPE)],
+        Json(annotation::thread_annotations(&view)),
+    )
+        .into_response())
 }
 
 /// The clip PNG, sandboxed like `/_blob`. A clip an agent's visibility
