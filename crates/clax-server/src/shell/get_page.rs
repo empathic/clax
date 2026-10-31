@@ -337,20 +337,21 @@ fn app_page(s: &AppState, id: &ArtifactId, a: &App) -> Response {
 }
 
 /// What a local owner's browser runs on the bare Get in Clax page
-/// ([`bare_page`]): it presents the proofs its origin's storage holds
-/// (`clax_http::local_trust::PROOF_STORAGE_KEY` and the keys it begins,
-/// newest first, at most `clax_http::local_trust::MAX_PROOFS`, as
-/// `web/shell/src/owner-proof.ts` does) with a fetch of the same page, and
-/// puts the page that answers in place of its own; it follows a redirect
-/// there, and shows how to open Clax from the terminal when it holds no
-/// proof or the proof is refused. Its Download .clax, a link to `/api/…`
-/// that a navigation (a middle-click, Save link as) would reach without
-/// the proof, becomes a button: a click fetches the bundle with the proofs
-/// and saves it from the bytes, and a failed fetch says so under it.
+/// ([`bare_page`], [`bare_script`]): it presents the proofs its origin's
+/// storage holds, by the rule the login's page uses
+/// ([`clax_http::local_trust::proofs_kept_js`]: newest first, at most
+/// [`clax_http::local_trust::MAX_PROOFS`]), with a fetch of the same page,
+/// and puts the page that answers in place of its own; it follows a
+/// redirect there, and shows how to open Clax from the terminal when it
+/// holds no proof or the proof is refused. Its Download .clax, a link to
+/// `/api/…` that a navigation (a middle-click, Save link as) would reach
+/// without the proof, becomes a button: a click fetches the bundle with the
+/// proofs and saves it from the bytes, and a failed fetch says so under it.
+/// `__PROOFS__`, `__MAX__` and `__HEADER__` are filled in from
+/// `clax_http::local_trust` ([`bare_script`]).
 const BARE_SCRIPT: &str = r#"(function(){
-var H="x-clax-owner-proof",K="clax.owner_proof",ks=[],p=[],s,i,k,v,m=document.querySelector("main");
-try{s=localStorage;for(i=0;i<s.length;i++){k=s.key(i);if(k&&(k===K||k.indexOf(K+".")===0))ks.push(k)}
-ks.sort().reverse();for(i=0;i<ks.length&&p.length<16;i++){v=s.getItem(ks[i]);if(v&&v.indexOf(",")<0)p.push(v)}}catch(e){}
+var H=__HEADER__,P=__PROOFS__,p=[],i,m=document.querySelector("main");
+try{p=P(localStorage,null,__MAX__).map(function(x){return x[1]})}catch(e){}
 p=p.join(",");
 function cold(){var c=m.querySelector("section");if(c)c.innerHTML="<h1>Open Clax from your terminal</h1><p>Run <code>clax open</code> (or <code>clax login</code> for a link). This browser is not signed in to this machine’s Clax.</p>"}
 if(!p||typeof fetch!=="function"){cold();return}
@@ -371,15 +372,30 @@ return r.text().then(function(t){var d=new DOMParser().parseFromString(t,"text/h
 /// cookie alone ([`clax_http::local_trust::UnprovenSession`]) is no
 /// credential to read an app's title, icon or byline, nor whether the
 /// artifact exists. The page names nothing of the artifact; its script
-/// ([`BARE_SCRIPT`]) loads the app's page with the proof.
+/// ([`bare_script`]) loads the app's page with the proof.
 fn bare_page(s: &AppState) -> Response {
+    static SCRIPT: std::sync::LazyLock<String> = std::sync::LazyLock::new(bare_script);
     page_with(
         s,
         StatusCode::OK,
         "Get in Clax",
         "<section><h1>Get in Clax</h1><p>Opening…</p></section>",
-        Some(BARE_SCRIPT),
+        Some(SCRIPT.as_str()),
     )
+}
+
+/// [`BARE_SCRIPT`] with the proof rule, its cap and the header the daemon
+/// reads filled in from `clax_http::local_trust`, the constants the login's
+/// page is made from too.
+fn bare_script() -> String {
+    use clax_http::local_trust::{MAX_PROOFS, PROOF_HEADER, proofs_kept_js};
+    BARE_SCRIPT
+        .replace(
+            "__HEADER__",
+            &serde_json::to_string(PROOF_HEADER).expect("a string serialises"),
+        )
+        .replace("__MAX__", &MAX_PROOFS.to_string())
+        .replace("__PROOFS__", &proofs_kept_js())
 }
 
 /// `GET /a/<id>/get` (anyone who may read the artifact; on a hosted Clax
@@ -719,6 +735,22 @@ mod tests {
                 "dark {mine}"
             );
         }
+    }
+
+    #[test]
+    fn the_bare_pages_script_presents_proofs_by_the_login_pages_rule() {
+        use clax_http::local_trust::{MAX_PROOFS, PROOF_HEADER, proofs_kept_js};
+        let js = super::bare_script();
+        assert!(!js.contains("__"), "every placeholder filled: {js}");
+        assert!(js.contains(&format!("P={}", proofs_kept_js())), "{js}");
+        assert!(
+            js.contains(&format!("P(localStorage,null,{MAX_PROOFS})")),
+            "{js}"
+        );
+        assert!(js.contains(&format!("H=\"{PROOF_HEADER}\"")), "{js}");
+        // The login's page carries the same rule.
+        let page = clax_http::local_trust::login_page("cxp_a", "k", "/", "n");
+        assert!(page.contains(&format!("P={}", proofs_kept_js())));
     }
 
     #[test]

@@ -679,13 +679,11 @@ pub fn login_page(proof: &str, key: &str, next: &str, nonce: &str) -> String {
          <style>:root{{color-scheme:light dark}}\
          body{{font:16px/1.5 system-ui,sans-serif;margin:0;padding:2rem 16px;background:Canvas;color:CanvasText}}</style>\
          <script nonce=\"{nonce}\">(function(){{var d=document.querySelector('meta[name=\"clax-login\"]').dataset,\
-         K={key},o=[],ks,ps,s,i,k,v;\
+         P={kept},o=[],ks,ps,s;\
          function go(){{location.replace(d.next)}}\
-         try{{s=localStorage;s.setItem(d.key,d.proof);\
-         for(i=0;i<s.length;i++){{k=s.key(i);v=k&&s.getItem(k);\
-         if(v&&v.indexOf(',')<0&&k!==d.key&&(k===K||k.indexOf(K+'.')===0))o.push(k)}}}}catch(e){{}}\
-         o.sort().reverse();o=o.slice(0,{others});ks=[d.key].concat(o);\
-         ps=[d.proof].concat(o.map(function(k){{return s.getItem(k)}}));\
+         try{{s=localStorage;s.setItem(d.key,d.proof);o=P(s,d.key,{others})}}catch(e){{}}\
+         ks=[d.key].concat(o.map(function(x){{return x[0]}}));\
+         ps=[d.proof].concat(o.map(function(x){{return x[1]}}));\
          if(ps.length<2||typeof fetch!=='function'){{go();return}}\
          fetch({retire},{{method:'POST',credentials:'same-origin',cache:'no-store',headers:{{{header}:ps.join(',')}}}})\
          .then(function(r){{return r.ok?r.json():null}})\
@@ -696,10 +694,31 @@ pub fn login_page(proof: &str, key: &str, next: &str, nonce: &str) -> String {
         own = esc(key),
         next = esc(next),
         nonce = esc(nonce),
-        key = js(PROOF_STORAGE_KEY),
+        kept = proofs_kept_js(),
         others = MAX_PROOFS - 1,
         retire = js(RETIRE_PATH),
         header = js(PROOF_HEADER),
+    )
+}
+
+/// The one JavaScript statement of which proofs a page presents, which
+/// every page this daemon serves with an inline script of its own uses
+/// ([`login_page`]; the bare Get in Clax page,
+/// `clax-server`'s `shell::get_page`): a `function(s, skip, n)` answering
+/// the `[key, proof]` pairs `localStorage` `s` keeps under
+/// [`PROOF_STORAGE_KEY`] and the keys it begins, but `skip`, newest first
+/// (as text sorts [`proof_storage_key`]'s keys, last), with no value
+/// holding a `,`, at most `n`. `web/shell/src/owner-proof.ts` (`ownerProof`)
+/// keeps the same rule; `web/e2e/owner-login.spec.ts` checks the three send
+/// the same proofs.
+pub fn proofs_kept_js() -> String {
+    format!(
+        "function(s,skip,n){{var K={key},o=[],r=[],i,k,v;\
+         for(i=0;i<s.length;i++){{k=s.key(i);if(k&&k!==skip&&(k===K||k.indexOf(K+'.')===0))o.push(k)}}\
+         o.sort().reverse();\
+         for(i=0;i<o.length&&r.length<n;i++){{v=s.getItem(o[i]);if(v&&v.indexOf(',')<0)r.push([o[i],v])}}\
+         return r}}",
+        key = serde_json::to_string(PROOF_STORAGE_KEY).expect("a string serialises"),
     )
 }
 
@@ -1103,14 +1122,32 @@ mod tests {
         assert!(page.contains("<script nonce=\"n0nce\">"));
         assert!(page.contains("\"clax.owner_proof\""));
         assert!(page.contains("data-key=\"clax.owner_proof.k&quot;1\""));
+        // The shared rule of which proofs go, its own and the 15 newest
+        // others, in the header the daemon reads.
+        assert!(page.contains(&format!("P={}", proofs_kept_js())));
         assert!(
-            page.contains("o=o.slice(0,15)"),
+            page.contains("o=P(s,d.key,15)"),
             "its own and the 15 newest others"
         );
+        assert!(page.contains("{\"x-clax-owner-proof\":ps.join(',')}"));
         assert!(page.contains("\"/api/browser-login/retire\""));
         let csp = login_page_csp("n0nce");
         assert!(csp.contains("script-src 'nonce-n0nce'"));
         assert!(csp.contains("connect-src 'self'"));
+    }
+
+    #[test]
+    fn the_proof_rule_names_the_storage_key_and_its_order() {
+        let js = proofs_kept_js();
+        assert!(
+            js.starts_with("function(s,skip,n){var K=\"clax.owner_proof\","),
+            "{js}"
+        );
+        assert!(js.contains("k===K||k.indexOf(K+'.')===0"), "{js}");
+        assert!(js.contains("o.sort().reverse()"), "newest first: {js}");
+        assert!(js.contains("r.length<n"), "at most n: {js}");
+        assert!(js.contains("v.indexOf(',')<0"), "{js}");
+        assert_eq!(MAX_PROOFS, 16, "web/shell/src/owner-proof.ts MAX_PROOFS");
     }
 
     #[test]

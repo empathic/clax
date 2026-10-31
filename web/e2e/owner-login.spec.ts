@@ -41,7 +41,7 @@ test(`a login link opened in a signed-in browser keeps its new session there and
   await expect.poll(() => tokenStatus(page)).toBe(200);
   // Twice, as `clax open` and then an agent's `open` would: the second
   // login's page retires the first's session and drops its proof.
-  const seen: string[] = [];
+  const seen: { key: string; proof: string; cookie: string }[] = [];
   for (let i = 0; i < 2; i++) {
     const { path } = await api(d.base, d.token, "/api/browser-login", { method: "POST", body: JSON.stringify({ next: "/" }) });
     await page.goto(`${d.base}${path}`);
@@ -50,10 +50,16 @@ test(`a login link opened in a signed-in browser keeps its new session there and
     await expect.poll(() => proofKeys(page)).toHaveLength(1);
     const [key] = await proofKeys(page);
     expect(key).toMatch(/^clax\.owner_proof\.\d{15}\.[0-9a-f]{16}$/);
-    seen.push(key);
+    const proof = (await page.evaluate(k => localStorage.getItem(k), key))!;
+    const owner = (await page.context().cookies(d.base)).find(c => c.name === `clax_owner_${d.port}` && c.path === "/")!;
+    seen.push({ key, proof, cookie: `${owner.name}=${owner.value}` });
     expect(await tokenStatus(page)).toBe(200);
   }
-  expect(seen[1]).not.toBe(seen[0]);
+  expect(seen[1].key).not.toBe(seen[0].key);
+  // The first login's session ended with the second's retire; the second's is live.
+  const token = (s: { proof: string; cookie: string }) => fetch(`${d.base}/api/token`, { headers: { cookie: s.cookie, "x-clax-owner-proof": s.proof } }).then(r => r.status);
+  expect(await token(seen[0])).toBe(401);
+  expect(await token(seen[1])).toBe(200);
   // Another browser, holding the session every test browser shares, is
   // still the owner's.
   const other = await browser.newPage();
@@ -92,4 +98,39 @@ test(`the Get in Clax page follows the address's own page, and without a proof s
   await expect(cold.getByRole("heading", { name: "Open Clax from your terminal" })).toBeVisible();
   await expect(cold.getByText("Signed-out Calculator")).toHaveCount(0);
   await ctx.close();
+});
+
+test(`the login's page, the shell and the bare Get in Clax page present the same newest proofs, at most 16, in the same order`, async ({ page, freshDaemon: d }) => {
+  const id = await app(d, "Ordered Calculator");
+  // Twenty proofs of earlier logins, stored in no order.
+  await page.goto(`${d.base}/healthz`);
+  const seeded = Array.from({ length: 20 }, (_, i) => ({ key: `clax.owner_proof.${String(1_000_000 + i).padStart(15, "0")}.${i.toString(16).padStart(16, "0")}`, proof: `cxp_${String(i).padStart(43, "s")}` }));
+  const order = [3, 19, 0, 7, 12, 18, 1, 5, 9, 14, 16, 2, 4, 6, 8, 10, 11, 13, 15, 17];
+  await page.evaluate(entries => {
+    for (const k of Object.keys(localStorage)) if (k.startsWith("clax.owner_proof")) localStorage.removeItem(k);
+    for (const e of entries) localStorage.setItem(e.key, e.proof);
+  }, order.map(i => seeded[i]));
+  // What each request presents, by path.
+  const sent: { path: string; proof: string }[] = [];
+  page.on("request", r => {
+    const proof = r.headers()["x-clax-owner-proof"];
+    if (proof) sent.push({ path: new URL(r.url()).pathname, proof });
+  });
+  // The retire answers that nothing ended, so every seeded proof stays.
+  await page.route("**/api/browser-login/retire", r => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ kept: 0, ended: 0, dropped: [] }) }));
+  const { path } = await api(d.base, d.token, "/api/browser-login", { method: "POST", body: JSON.stringify({ next: "/" }) });
+  await page.goto(`${d.base}${path}`);
+  await page.waitForURL(`${d.base}/`);
+  await expect.poll(() => sent.some(s => s.path.startsWith("/api/") && s.path !== "/api/browser-login/retire")).toBe(true);
+  await page.goto(`${d.base}/a/${id}/get`);
+  await expect(page.getByRole("heading", { name: "Ordered Calculator" })).toBeVisible();
+  const retire = sent.find(s => s.path === "/api/browser-login/retire")!.proof;
+  const shell = sent.find(s => s.path.startsWith("/api/") && s.path !== "/api/browser-login/retire")!.proof;
+  const bare = sent.find(s => s.path === `/a/${id}/get`)!.proof;
+  // The login's own proof, newest, then the 15 newest seeded ones.
+  const own = await page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith("clax.owner_proof.")).sort().reverse()[0]).then(k => page.evaluate(key => localStorage.getItem(key), k));
+  const want = [own, ...Array.from({ length: 15 }, (_, i) => seeded[19 - i].proof)].join(",");
+  expect(retire).toBe(want);
+  expect(shell).toBe(want);
+  expect(bare).toBe(want);
 });
