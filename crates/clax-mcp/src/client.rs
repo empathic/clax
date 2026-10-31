@@ -1932,9 +1932,9 @@ impl DaemonClient {
 
     /// For a remote daemon: one payload's prose `text` and its `items`
     /// rewritten together, as [`DaemonClient::rewrite_clip_text`] and
-    /// [`DaemonClient::rewrite_clip_items`] rewrite them, with each clip
-    /// either names fetched once, all within one `CLIP_FETCH_TIME`. Returns
-    /// the rewritten text (the local daemon's as it is).
+    /// [`DaemonClient::rewrite_clip_items`] rewrite them: each clip that
+    /// either one names is fetched once, all within one `CLIP_FETCH_TIME`.
+    /// Returns the rewritten text (the local daemon's as it is).
     pub async fn rewrite_clip_payload(
         &self,
         text: Option<&str>,

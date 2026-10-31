@@ -84,10 +84,9 @@ const project = makeScratch(candidates({ env: process.env, cwd: process.cwd(), s
 // can be caught. A copy in a test's own temporary directory is the
 // exception: Bazel removes that itself (scratch.mjs, removedByBazel), and
 // removing tens of thousands of files here would only add to the test's
-// time. The marker names this
-// process, so that scripts/bazel-gc.sh can tell a copy still in use from
-// one left in the machine's temporary directory by a process that was
-// killed outright.
+// time. The marker names this process, so that scripts/bazel-gc.sh can
+// tell a copy still in use from one left in the machine's temporary
+// directory by a process that was killed outright.
 writeFileSync(join(project, '.npm-script-private'), `${process.pid}\n`);
 let child = null;
 let removed = removedByBazel(project, process.env);
