@@ -475,6 +475,7 @@ fn hosted(env: &Env) -> Result<Option<Arc<clax_http::hosted::Hosted>>> {
         .with_github(github, max_artifacts)
         .with_public_gallery(public_gallery)
         .with_legal(legal)
+        .with_name(opt("INSTANCE_NAME"))
         .with_reel(reel);
     Ok(Some(Arc::new(h)))
 }
@@ -1663,7 +1664,8 @@ impl DurableObject for InstanceDo {
 
 impl InstanceDo {
     /// The instance's timed work that is due (the module docs' Alarm):
-    /// the sweep, grants expired, sessions unseen, the planner refresh.
+    /// the sweep, grants expired, sessions unseen, the planner refresh and
+    /// the prune of ended ClaxBot runs.
     async fn timed_work(&self, inst: &Instance) {
         inst.app.sweep().await;
         let now = now_ms();
@@ -1694,6 +1696,9 @@ impl InstanceDo {
             self.last_optimize.set(now);
             self.wrote.set(false);
             let _ = inst.app.store.call(|st| st.optimize()).await;
+            // Ended ClaxBot runs' journals and drafts past their keep, at
+            // the planner refresh's pace (a run's end is a write).
+            let _ = inst.app.store.call(|st| st.prune_ended_runs()).await;
         }
     }
 }

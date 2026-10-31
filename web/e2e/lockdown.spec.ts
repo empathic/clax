@@ -9,7 +9,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { type Browser, type Frame, chromium, webkit } from "@playwright/test";
-import { test, expect, type Daemon, api, colorStats, last, openArtifact, publish, record } from "./fixtures";
+import { test, expect, type Daemon, api, colorStats, last, openArtifact, publish, record, trustBrowser } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -132,7 +132,7 @@ for (const engine of [chromium, webkit]) {
     test(`${engine.name()} ${mode}: neither a framed 404, /healthz or bridge, nor a service worker of the page's own, reaches another host`, async () => {
       test.skip(!existsSync(engine.executablePath()), `${engine.name()} is not installed`);
       const away = await elsewhere();
-      const browser: Browser = await engine.launch();
+      const browser: Browser = trustBrowser(await engine.launch());
       try {
         const { artifact } = await api(d.base, d.token, "/api/artifacts", {
           method: "POST",
@@ -208,7 +208,7 @@ for (const engine of [chromium, webkit]) {
     test(`${engine.name()} ${mode}: blob: and data: frames of text/html, and a blob: script, reach no other host`, async () => {
       test.skip(!existsSync(engine.executablePath()), `${engine.name()} is not installed`);
       const away = await elsewhere();
-      const browser: Browser = await engine.launch();
+      const browser: Browser = trustBrowser(await engine.launch());
       try {
         const { artifact } = await api(d.base, d.token, "/api/artifacts", {
           method: "POST",

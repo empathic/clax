@@ -171,6 +171,40 @@ describe("the Publish button", () => {
     m.unmount();
   });
 
+  it("says when the link's remote signed this Clax out, and signs in there again", async () => {
+    const added: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/token") return new Response(JSON.stringify({ token: "t-local" }));
+      if (url.endsWith("/remotes") && url.startsWith("/api/artifacts/")) return new Response(JSON.stringify({
+        links: [{ remote_id: "r_1", remote_name: "clax.example", origin: "https://clax.example", remote_status: "signed_out", url: "https://clax.example/a/b1", pushed_n: 2, remote_n: 2, auto: false, behind: 0 }],
+        // Another remote is connected: the link's pushes never go there.
+        remotes: [dev],
+      }));
+      if (url === "/api/remotes" && init?.method === "POST") {
+        added.push(JSON.parse(String(init.body)));
+        return new Response(JSON.stringify({
+          remote: { ...remote, status: "pending" }, user_code: "ABCD-1234", verification_url: "https://clax.example/device?code=ABCD-1234",
+          expires_at: "2026-10-26T19:00:00Z", interval: 5, return_to_kept: true,
+        }), { status: 201 });
+      }
+      return new Response("{}", { status: 404 });
+    }));
+    const m = mount(Publish, { id: "a1", title: "Plan", latest: 2 });
+    await settle();
+    const b = m.root.querySelector<HTMLButtonElement>("button.linked")!;
+    expect(b.querySelector(".warn-dot")!.getAttribute("aria-label")).toBe("Signed out of clax.example");
+    flush(() => b.click());
+    const pop = m.root.querySelector("[role=dialog]")!;
+    expect(pop.textContent).toContain("clax.example signed this Clax out");
+    const again = pop.querySelector<HTMLButtonElement>("button.primary")!;
+    expect(again.textContent).toBe("Sign in to clax.example again");
+    flush(() => again.click());
+    await settle();
+    expect(added).toEqual([{ url: "https://clax.example", return_to: "/a/a1?publish=1" }]);
+    expect(assign).toHaveBeenCalledWith("https://clax.example/device?code=ABCD-1234");
+    m.unmount();
+  });
+
   it("offers Push v<N> when behind, and a fork or a new artifact when the public copy moved", async () => {
     const pushes = daemon({
       links: [{ remote_id: "r_1", remote_name: "clax.example", origin: "https://clax.example", url: "https://clax.example/a/b1", pushed_n: 2, remote_n: 2, auto: false, behind: 1 }],

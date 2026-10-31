@@ -133,11 +133,82 @@ pub async fn hide_live_pages(
     next.run(req).await
 }
 
+/// Whether a request speaks for the owner or one of the owner's agents,
+/// read from its headers and marks alone: it carries the daemon token, an
+/// owner browser session that counts
+/// ([`crate::local_trust::session_counts`]: the in-process app's frame
+/// included), or the extension gateway admitted it
+/// ([`crate::extension::ViaExtension`]: the owner's browser); never with
+/// an agent credential of another machine.
+pub fn owners_own(headers: &HeaderMap, ext: &Extensions, token: &str) -> bool {
+    if crate::auth::is_grant_request(headers) {
+        return false;
+    }
+    has_token(headers, token)
+        || (ext.get::<crate::local_trust::OwnerSession>().is_some()
+            && crate::local_trust::session_counts(headers, ext))
+        || ext.get::<crate::extension::ViaExtension>().is_some()
+}
+
+/// The artifact a session's watch path names
+/// (`/api/sessions/<sid>/watches/<aid>`), decoded as [`artifact_in`]
+/// decodes one.
+fn watched_in(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("/api/sessions/")?;
+    let (_, rest) = rest.split_once('/')?;
+    let aid = rest.strip_prefix("watches/")?;
+    percent_decoded(aid.split('/').next().unwrap_or(""))
+}
+
+/// Middleware of a local daemon: a followed remote artifact's mirror
+/// (`artifacts.remote_mirror`, `clax_store::remotes`) holds threads a
+/// remote shared with the owner alone, so its API and shell paths, and a
+/// session's watch of it, answer
+/// 404, exactly as a missing artifact does, to every caller but the owner
+/// and the owner's agents ([`owners_own`]), whatever their rights. Only a
+/// request that is not the owner's and names an artifact reads the store.
+/// A hosted daemon keeps no mirrors.
+pub async fn hide_mirrors(
+    axum::extract::State(s): axum::extract::State<crate::state::AppState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if s.hosted.is_none()
+        && let Some(aid) = artifact_in(req.uri().path()).or_else(|| watched_in(req.uri().path()))
+        && !owners_own(req.headers(), req.extensions(), &s.token)
+    {
+        match s.store_call(move |st| st.is_remote_mirror(&aid)).await {
+            Ok(false) => {}
+            Ok(true) => {
+                return crate::error::ApiError::from(clax_core::CoreError::NotFound)
+                    .into_response();
+            }
+            Err(e) => return e.into_response(),
+        }
+    }
+    next.run(req).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::auth::Conn;
     use axum::extract::ConnectInfo;
+
+    #[test]
+    fn the_artifact_a_watch_path_names() {
+        assert_eq!(
+            watched_in("/api/sessions/s1/watches/7q3k9mzx2b4t").as_deref(),
+            Some("7q3k9mzx2b4t")
+        );
+        assert_eq!(
+            watched_in("/api/sessions/s1/watches/%37q3k9mzx2b4t").as_deref(),
+            Some("7q3k9mzx2b4t")
+        );
+        assert_eq!(watched_in("/api/sessions/s1/watches"), None);
+        assert_eq!(watched_in("/api/sessions/s1"), None);
+    }
 
     #[test]
     fn the_artifact_a_path_names() {

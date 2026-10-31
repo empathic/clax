@@ -649,7 +649,7 @@ async fn a_drafts_documents_are_the_owners_alone() {
             format!("/api/artifacts/{did}/docs?collection=notes"),
         ] {
             let anon = send(ts.client.get(format!("{}{path}", ts.base))).await;
-            assert_eq!(anon.0, 404, "no credentials: {path} {}", anon.1);
+            assert_eq!(anon.0, 401, "no credentials: {path} {}", anon.1);
             let named = send(
                 ts.client
                     .get(format!("{}{path}", ts.base))

@@ -715,7 +715,7 @@ async fn rules_are_checked_and_only_the_owner_changes_them() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 403);
+    assert_eq!(res.status(), 401, "no credential");
 }
 
 fn ext(ts: &TestServer, m: Method, path: &str, cred: &str) -> reqwest::RequestBuilder {

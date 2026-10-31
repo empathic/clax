@@ -635,9 +635,11 @@ async fn renaming_an_agent_is_its_persons_or_the_owners_from_a_browser_or_the_cl
             .header("origin", "http://evil.example")
     })
     .await;
+    // The owner's session with another origin is no credential at all
+    // (`local_trust::session_counts`): the gate refuses it before any route.
     assert_eq!(
         (st, code(&v).as_deref()),
-        (403, Some("forbidden_origin")),
+        (401, Some("no_credential")),
         "{v}"
     );
     let sam = ts.connect_person("Sam", "clax:collaborator").await;

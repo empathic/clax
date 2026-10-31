@@ -54,7 +54,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { BuildLog } from "./lib/build.ts";
 import { PersonSession, setupFirstPerson, signinLink, type PersonInfo } from "./lib/http.ts";
-import { startWorker, type RunningWorker } from "./lib/worker.ts";
+import { devLocalVars, startWorker, type RunningWorker } from "./lib/worker.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DIR = join(ROOT, "target/clax-dev-local");
@@ -352,11 +352,8 @@ const workerOptions = {
   secret: secrets.SETUP_SECRET,
   seats: "",
   vars: {
-    GITHUB_CLIENT_ID: github.GITHUB_CLIENT_ID,
-    GITHUB_CLIENT_SECRET: github.GITHUB_CLIENT_SECRET,
+    ...devLocalVars({ githubClientId: github.GITHUB_CLIENT_ID, githubClientSecret: github.GITHUB_CLIENT_SECRET, kek: secrets.CLAX_KEK }),
     ...(opts.owner ? { OWNER_GITHUB: github.OWNER_GITHUB } : {}),
-    CLAX_KEK: secrets.CLAX_KEK,
-    LEGAL: "bundled",
     REEL_URL: `${reelBase}/reel.mp4`,
     REEL_POSTER_URL: `${reelBase}/reel-poster.jpg`,
   },

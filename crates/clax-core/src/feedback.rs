@@ -143,6 +143,19 @@ pub struct FeedbackItem {
     /// any other thread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_id: Option<String>,
+    /// The Clax instance the comment is on, for a remote artifact this
+    /// home follows: `artifact_id`, `thread_id`, `comment_id`, `url` and
+    /// `version` are then the remote's, and the comment tools act on it
+    /// there. Absent for this Clax's own artifacts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<RemoteAt>,
+}
+
+/// The Clax instance a comment on a followed remote artifact is on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteAt {
+    pub origin: String,
+    pub name: String,
 }
 
 /// The fields of a [`FeedbackItem`] withheld from its reader (spec
@@ -533,6 +546,11 @@ pub struct Notice {
     /// tools; absent for any other thread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_id: Option<String>,
+    /// The Clax instance the comment is on, for a remote artifact this
+    /// home follows: `artifact_id`, `thread_id`, `comment_id` and `url`
+    /// are then the remote's, and the line names the artifact by `url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<RemoteAt>,
 }
 
 /// Longest title a notice line quotes, in characters.
@@ -557,10 +575,20 @@ pub fn render_notice(n: &Notice) -> String {
             tid = n.thread_id,
         ),
         None => format!(
-            "[clax] New comment on \"{title}\" ({url}), thread {tid}. Call comments_read with url_or_id \"{aid}\" and thread_id \"{tid}\" to read it; if you have already handled it, do nothing.",
+            "[clax] New comment on \"{title}\" ({url}{on}), thread {tid}. Call comments_read with url_or_id \"{aid}\" and thread_id \"{tid}\" to read it; if you have already handled it, do nothing.",
             url = n.url,
+            on = n
+                .remote
+                .as_ref()
+                .map(|r| format!(", on {}", one_line(&r.name)))
+                .unwrap_or_default(),
             tid = n.thread_id,
-            aid = n.artifact_id,
+            // A remote artifact is named by its address there.
+            aid = if n.remote.is_some() {
+                &n.url
+            } else {
+                &n.artifact_id
+            },
         ),
     }
 }
@@ -620,6 +648,7 @@ mod tests {
             live: None,
             withheld: None,
             queue_id: None,
+            remote: None,
         }
     }
 
@@ -1105,11 +1134,35 @@ mod tests {
             title: "Quarterly\nReview".into(),
             url: "http://localhost:7480/a/7q3k9mzx2b4t".into(),
             queue_id: None,
+            remote: None,
         };
         assert_eq!(
             render_notice(&n),
             "[clax] New comment on \"Quarterly Review\" (http://localhost:7480/a/7q3k9mzx2b4t), thread 01J9T. Call comments_read with url_or_id \"7q3k9mzx2b4t\" and thread_id \"01J9T\" to read it; if you have already handled it, do nothing."
         );
+    }
+
+    #[test]
+    fn a_remote_notice_names_the_artifact_by_its_address_there() {
+        let n = Notice {
+            feedback_id: "f".into(),
+            comment_id: "rc".into(),
+            thread_id: "01J9R".into(),
+            artifact_id: "8r4m2nzy3c5v".into(),
+            title: "Their plan".into(),
+            url: "https://clax.example/a/8r4m2nzy3c5v".into(),
+            queue_id: None,
+            remote: Some(RemoteAt {
+                origin: "https://clax.example".into(),
+                name: "acme".into(),
+            }),
+        };
+        assert_eq!(
+            render_notice(&n),
+            "[clax] New comment on \"Their plan\" (https://clax.example/a/8r4m2nzy3c5v, on acme), thread 01J9R. Call comments_read with url_or_id \"https://clax.example/a/8r4m2nzy3c5v\" and thread_id \"01J9R\" to read it; if you have already handled it, do nothing."
+        );
+        let v = serde_json::to_value(&n).unwrap();
+        assert_eq!(v["remote"]["name"], "acme");
     }
 
     #[test]
@@ -1141,6 +1194,7 @@ mod tests {
             title: "Invoice".into(),
             url: "http://localhost:7480/a/7q3k9mzx2b4t".into(),
             queue_id: Some("01JQ".into()),
+            remote: None,
         };
         let line = render_notice(&n);
         assert!(line.contains("a report of queue 01JQ"), "{line}");

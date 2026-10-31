@@ -226,6 +226,7 @@ async fn serves_the_tools_and_registers_the_harness_session() {
             "comments_read",
             "comments_reply",
             "comments_resolve",
+            "connect_instance",
             "db_batch",
             "db_delete",
             "db_get",
@@ -394,7 +395,7 @@ async fn a_daemon_that_cannot_start_is_reported_as_unreachable() {
     std::fs::write(dir.path().join("ax"), "not a directory").unwrap();
     let mut shim = Shim::start_in(dir, None).await;
 
-    assert_eq!(shim.client().list_all_tools().await.unwrap().len(), 38);
+    assert_eq!(shim.client().list_all_tools().await.unwrap().len(), 39);
     let r = tokio::time::timeout(Duration::from_secs(10), shim.call("list", json!({})))
         .await
         .expect("the tool answers within 10s instead of hanging");
@@ -490,12 +491,20 @@ async fn piggyback_and_wait_through_the_shim() {
     let aid = p["artifact_id"].as_str().unwrap().to_string();
     let base = shim.daemon_base();
     let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    // A browser of this machine's with no name: its viewer minted in the
+    // store (reaching the daemon's port alone mints none).
+    let cookie = clax_core::secret::viewer_cookie().expose().to_string();
+    clax_store::Store::open(&shim.home())
+        .unwrap()
+        .mint_viewer(&cookie, true)
+        .unwrap();
     let thread = |body: &'static str| {
         let form = reqwest::multipart::Form::new()
             .text("anchor", clax_testkit::element_anchor().to_string())
             .text("body", body)
             .text("version", "1");
         http.post(format!("{base}/api/artifacts/{aid}/threads"))
+            .header("cookie", format!("clax_viewer={cookie}"))
             .multipart(form)
             .send()
     };

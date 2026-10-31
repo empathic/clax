@@ -172,6 +172,7 @@ export class InboxFeed {
   declare private counted: Set<(n: number) => void>;
   declare private unwatch: (() => void) | null;
   declare private listeners: Set<(c: InboxChange) => void>;
+  declare private hearers: Set<(e: StreamEvent) => void>;
   declare private later: (() => void) | null;
   declare private readonly after: After;
   // How many events carrying the unread count have been heard.
@@ -182,6 +183,7 @@ export class InboxFeed {
     this.counted = new Set();
     this.unwatch = null;
     this.listeners = new Set();
+    this.hearers = new Set();
     this.later = null;
     this.waiting = false;
     this.after = opts.after ?? after;
@@ -235,6 +237,15 @@ export class InboxFeed {
   listen(f: (c: InboxChange) => void): () => void {
     this.listeners.add(f);
     return () => { this.listeners.delete(f); };
+  }
+
+  /** Hears every event of the topic, after the feed took it, until the
+   * returned function runs: what else the owner's inbox topic carries
+   * (browser confirmations, `confirm.svelte.ts`) follows it through the
+   * feed's one subscription. */
+  hear(f: (e: StreamEvent) => void): () => void {
+    this.hearers.add(f);
+    return () => { this.hearers.delete(f); };
   }
 
   /** Fetches the summary: the count and `latest`, and whether the caller has an inbox. */
@@ -318,5 +329,6 @@ export class InboxFeed {
       void this.summary();
       this.tell({ refetch: true });
     } else if (e.type === "refused") this.stop();
+    for (const f of [...this.hearers]) f(e);
   }
 }

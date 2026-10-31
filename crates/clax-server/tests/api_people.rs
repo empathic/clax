@@ -227,9 +227,10 @@ async fn rights_changes_need_a_browser() {
             r = r.json(b);
         }
         let (status, v) = json_of(r.send().await.unwrap()).await;
+        // No credential at all: the gate refuses it before any route.
         assert_eq!(
             (status, code(&v)),
-            (403, "forbidden_origin"),
+            (401, "no_credential"),
             "page: {m} {path}: {v}"
         );
     }
@@ -2879,15 +2880,19 @@ async fn a_planted_cookie_never_binds_to_a_viewer() {
         .await;
     let aid = a["artifact"]["id"].as_str().unwrap().to_string();
     let rows = viewer_rows(&ts);
-    let (set, v) = viewers_me_with(&ts, &planted).await;
-    let fresh = set.expect("a minted cookie replaces the planted one");
-    assert_ne!(fresh, planted);
+    // A planted value names no viewer, so it is no credential: it is
+    // refused and mints nothing.
+    let res = ts
+        .client
+        .get(format!("{}/api/viewers/me", ts.base))
+        .header("cookie", format!("clax_viewer={planted}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+    assert!(set_cookie_of(&res).is_none());
     assert!(ts.store.get_viewer(&planted).unwrap().is_none());
-    assert_eq!(
-        ts.store.get_viewer(&fresh).unwrap().unwrap().public_id,
-        v["public_id"].as_str().unwrap()
-    );
-    assert_eq!(viewer_rows(&ts), rows + 1);
+    assert_eq!(viewer_rows(&ts), rows);
     // A write carrying the planted value makes no viewer.
     let _ = ts
         .client
@@ -2898,5 +2903,5 @@ async fn a_planted_cookie_never_binds_to_a_viewer() {
         .await
         .unwrap();
     assert!(ts.store.get_viewer(&planted).unwrap().is_none());
-    assert_eq!(viewer_rows(&ts), rows + 1);
+    assert_eq!(viewer_rows(&ts), rows);
 }

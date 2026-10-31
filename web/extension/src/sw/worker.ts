@@ -81,6 +81,7 @@ export function createWorker(d: WorkerDeps): Worker {
   // Any pairing that lands, the first one too: an owner check that found none runs again.
   pairer.onPaired = () => ib.kick();
   pairer.onSlow = slow => t.hostSlow(slow);
+  pairer.onConfirm = waiting => t.hostConfirm(waiting);
   const picks = new Picks({
     api, capture: d.capture, toOverlay: d.toOverlay,
     pendingIds: tabId => t.pendingIds(tabId),

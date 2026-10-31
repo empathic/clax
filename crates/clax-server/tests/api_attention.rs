@@ -98,12 +98,12 @@ async fn attention_is_the_viewers_own_and_never_anyone_elses() {
         .to_string();
     look(&ts, &aid, &alex.cookie, &[&tid]).await;
     let anon: Value = ts
-        .get(&format!("/api/artifacts/{aid}"))
+        .get_authed(&format!("/api/artifacts/{aid}"))
         .await
         .json()
         .await
         .unwrap();
-    assert!(anon.get("attention").is_none(), "no cookie, no attention");
+    assert!(anon.get("attention").is_none(), "no viewer, no attention");
     let res = ts
         .client
         .get(format!("{}/api/artifacts/{aid}", ts.base))
@@ -128,7 +128,8 @@ async fn attention_is_the_viewers_own_and_never_anyone_elses() {
         !threads.to_string().contains("looked"),
         "thread views never carry looked-at marks"
     );
-    assert_eq!(look(&ts, &aid, "not-a-cookie", &[&tid]).await.status(), 400);
+    // A malformed cookie names no one: no credential.
+    assert_eq!(look(&ts, &aid, "not-a-cookie", &[&tid]).await.status(), 401);
     let foreign = ts
         .client
         .put(format!("{}/api/viewers/me/looked", ts.base))
@@ -208,7 +209,7 @@ async fn the_last_version_a_person_viewed_is_public_and_their_looks_are_not() {
     assert_eq!(res.status(), 200);
     look(&ts, &aid, &alex.cookie, &[&tid]).await;
     let anon: Value = ts
-        .get(&format!("/api/artifacts/{aid}"))
+        .get_authed(&format!("/api/artifacts/{aid}"))
         .await
         .json()
         .await
@@ -408,7 +409,7 @@ async fn one_artifacts_attention_and_list_entry_match_the_whole_answers() {
     );
 
     let no_cookie: Value = ts
-        .get(&format!("/api/viewers/me/attention?artifact={aid}"))
+        .get_authed(&format!("/api/viewers/me/attention?artifact={aid}"))
         .await
         .json()
         .await

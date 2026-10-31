@@ -6,20 +6,22 @@
   // here (ThreadLinks, loaded with the first: `later`). A closed one says what closed
   // it for 4 s, then leaves. The block is there (hidden) while nothing is
   // open, so a card leaving with focus can hand it on; its heading shows
-  // only with a card or a link. Its styles are QuestionList's.
+  // only with a card or a link. With `cardsOnly` (the app's question sheet,
+  // whose page hides the thread cards) every question is a card here,
+  // those in a thread too. Its styles are QuestionList's.
   import type { QuestionFeed } from "./feed.svelte";
   import QuestionList from "./QuestionList.svelte";
   import { later, need } from "./later.svelte";
   import { inThread } from "./model";
   import { shared } from "./shared";
 
-  const p: { aid: string; feed?: QuestionFeed; now?: Date } = $props();
+  const p: { aid: string; feed?: QuestionFeed; now?: Date; cardsOnly?: boolean } = $props();
   const feed = $derived(p.feed ?? shared().questions);
   const all = $derived(feed.byArtifact(p.aid));
-  const cards = $derived(all.filter(q => !inThread(q)));
+  const cards = $derived(p.cardsOnly ? all : all.filter(q => !inThread(q)));
   // A thread's question keeps its link while its card says what closed it,
   // so the block does not shrink above the card being answered.
-  const threaded = $derived(all.filter(q => inThread(q)));
+  const threaded = $derived(p.cardsOnly ? [] : all.filter(q => inThread(q)));
   const open = $derived(all.filter(q => q.status === "open").length);
   const shown = $derived(cards.length + threaded.length);
   $effect(() => { if (threaded.length) void need(); });

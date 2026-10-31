@@ -14,11 +14,14 @@ fn non_loopback_ipv4() -> Option<IpAddr> {
     (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
 }
 
+/// `GET <base><path>` naming `host`, from a browser of this machine's
+/// ([`TestServer::local_browser`]).
 async fn status_with_host(ts: &TestServer, base: &str, path: &str, host: &str) -> (u16, Value) {
     let res = ts
         .client
         .get(format!("{base}{path}"))
         .header("host", host)
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .send()
         .await
         .unwrap();
@@ -94,9 +97,17 @@ async fn local_hosts_are_admitted_with_or_without_the_port() {
         let (status, _) = status_with_host(&ts, &ts.base, "/api/artifacts", &host).await;
         assert_eq!(status, 200, "{host}");
     }
-    let (status, body) =
-        status_with_host(&ts, &ts.base, "/api/token", &format!("localhost:{port}")).await;
-    assert_eq!((status, body["token"].as_str()), (200, Some("test-token")));
+    let res = ts
+        .client
+        .get(format!("{}/api/token", ts.base))
+        .header("host", format!("localhost:{port}"))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["token"].as_str(), Some("test-token"));
 }
 
 #[tokio::test]
@@ -128,6 +139,7 @@ async fn content_and_the_shell_are_not_api_routes() {
         .client
         .get(format!("{}/a/{aid}", ts.base))
         .header("host", format!("localhost:{port}"))
+        .header("cookie", ts.owner_cookie())
         .send()
         .await
         .unwrap();
@@ -165,8 +177,8 @@ async fn a_daemon_bound_to_a_lan_address_admits_exactly_that_host() {
             status_with_host(&ts, &lan, "/api/token", &format!("{ip}:{port}")).await;
         assert_eq!(
             (status, body["error"]["code"].as_str()),
-            (403, Some("not_loopback")),
-            "bind {bind}: the token stays loopback-only"
+            (401, Some("unauthorized")),
+            "bind {bind}: the token is an owner browser session's alone"
         );
     }
 }

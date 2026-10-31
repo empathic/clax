@@ -12,6 +12,7 @@ pub mod capabilities;
 pub mod changelog;
 pub mod clips;
 pub mod config;
+pub mod confirm;
 pub mod content;
 /// The daemon's discovery files and start lock: a native process's, never a
 /// Worker's.
@@ -19,6 +20,7 @@ pub mod content;
 pub mod daemon;
 pub mod db;
 pub mod digest;
+pub mod discovery;
 pub mod draft_diff;
 pub mod drafts;
 pub mod embedded;
@@ -55,6 +57,7 @@ pub mod text;
 pub mod time;
 pub mod visibility;
 pub mod wake;
+pub mod webauthn;
 pub mod working;
 pub mod wrap;
 

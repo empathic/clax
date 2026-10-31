@@ -321,6 +321,7 @@ npx wrangler queues subscription create clax-artifacts-events --source artifacts
 | `HOSTED` | `1` | A hosted Clax: browser sign-in, people's rights, guests, agent tokens |
 | `PUBLIC_ORIGIN` | `https://clax.example.com` | Where people reach Clax; every link the server writes names it |
 | `SITE_DOMAIN` | `clax.run` (`deploy.mjs --site-domain`) | Each artifact's site is served at `<artifact ID>.<SITE_DOMAIN>`; empty serves sites at `<artifact ID>.localhost` |
+| `INSTANCE_NAME` | `Studio Clax` | The name `/.well-known/clax` gives this Clax; empty names it by its host |
 | `RETIRED_CONTENT_ORIGIN` | the deploy record's old `content_origin`, if any (`https://content.clax.example.com`) | The content origin of before sites: kept as a custom domain, where an asset's old address (`/_blob/<id>?k=…`) answers 301 to its artifact's site and anything else 404; empty when there was none |
 | `REPO_STORE` | `artifacts` (or `memory`) | Where versions are kept |
 | `GIT_SMART_HTTP` | `0` with `artifacts` | `1` serves the stand-in over git smart HTTP at `/git/*` |
@@ -334,7 +335,7 @@ npx wrangler queues subscription create clax-artifacts-events --source artifacts
 | `GITHUB_OAUTH_BASE`, `GITHUB_API_BASE` | empty | Tests only: a fake GitHub's bases |
 | `LEGAL` | `bundled` on Empathic's service (`deploy.mjs --legal bundled`), else empty | Serve `docs/legal`'s Terms of Service and Privacy Policy and ask people to agree ([below](#terms-of-service-and-privacy-policy)) |
 | `TERMS_URL`, `PRIVACY_URL`, `LEGAL_VERSION` | empty, or a deployment's own (`--terms-url`, `--privacy-url`, `--legal-version`) | Link your own documents instead; all three or none |
-| `APPLE_TEAM_ID` | the team that signs the Clax app, on clax.dev | Serve `/.well-known/apple-app-site-association` for `<team>.dev.empathic.clax`, so `/a/<id>/get` opens the iOS and macOS app; empty serves none |
+| `APPLE_TEAM_ID` | the team that signs the Clax app, on clax.dev | Serve `/.well-known/apple-app-site-association` for `<team>.dev.empathic.clax`, so `/a/<id>/get` opens the iOS app (the Mac app takes `clax:` links only); empty serves none |
 | `ANDROID_PACKAGE`, `ANDROID_SHA256` | `dev.empathic.clax` and the signing certificate's SHA-256 fingerprint, on clax.dev | Serve `/.well-known/assetlinks.json`, so `/a/<id>/get` opens the Android app; both or neither |
 | `IOS_STORE_URL`, `ANDROID_STORE_URL` | the app's store pages, once listed | Offered on `/a/<id>/get`; empty offers none |
 

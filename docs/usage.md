@@ -130,7 +130,9 @@ server cannot run `clax` at all, its one tool, `status`, says why, and
 
 ```
 clax publish index.html --dir site   # publish a directory; prints the artifact URL (--json gives the ID)
-clax open <ID>                       # open an artifact in the browser
+clax open <ID>                       # open an artifact in the browser, signing it in
+clax login [path]                    # print a one-use sign-in link for a browser
+clax logout                          # end every browser's owner session (each needs clax open again)
 clax list                            # list artifacts (--tag <tag>, repeatable: only those carrying every tag)
 clax tags                            # list the tags; the owner makes them: clax tags create|edit|delete
 clax tag <ID> --add draft --remove x # add or remove an artifact's tags (existing tags only)
@@ -147,6 +149,7 @@ clax status                          # show whether the daemon is running and wh
 clax doctor                          # check the home directory, daemon, database, and stored files
 clax doctor --fix                    # also remove stray temp files and stale rows (never live artifacts' rows)
 clax doctor --agent codex            # also check each layer of a harness's plugin: claude, codex, pi or grok
+clax passkeys reset                  # with the daemon stopped: remove every confirmation passkey and stop requiring one
 clax stop                            # stop the daemon
 clax serve --bind 0.0.0.0            # serve connected people on the LAN (stop a running daemon first)
 clax connect <invite URL>            # connect this machine to someone else's Clax as a person (--status, --off)
@@ -282,6 +285,60 @@ publish as, check the code and approve: this Clax receives an agent token of
 yours, which your People page there lists (named `Clax on <host name>`) and
 revokes. Codes last ten minutes and work once.
 
+An agent cannot add a remote (`clax remote add` under a harness answers
+"This is for people, not agents: open … in a browser; agents: use `clax
+remote request <url>`."). It asks instead:
+
+```bash
+clax remote request https://clax.example/a/7q3k9mzx2b4t --reason "to read the launch plan"
+```
+
+The person sees one card in the inbox (and in the agent's thread when it
+was working in one): "<agent> wants to connect to <name> (<origin>) to
+read <url>", with **Connect** (this Clax's device sign-in, approved on the
+other instance in a new tab), **Not now** (no new request for a day) and
+**Never for this instance** (muted until unmuted in Settings, Remotes).
+The command asks as the agent's own Clax session, which it finds from the
+harness (its session variable, else its process), or `--session`; it waits
+(600 s, 50 s under Codex, or `--wait`) and prints the answer: `connected`,
+`dismissed`, `muted`, `not_now` or `expired`, or `open` while the person
+has not answered. Agents with the MCP tools use
+`connect_instance` instead.
+
+### Reading another Clax from an agent
+
+Give an agent a page's URL on another Clax instance (clax.dev, a team's
+own, or a colleague's) and its tools work on it there. Before this Clax is
+connected to that instance, `read`, `comments_read` and `watch` answer
+`remote_sign_in_required`, naming the instance and the `connect_instance`
+tool; a private page there answers anyone else not found, with a hint to
+sign in or to connect. The agent then calls `connect_instance` with the
+URL and a reason, and waits:
+
+1. The connection request appears as a card in your inbox, naming the
+   agent, the instance and the page.
+2. You press **Connect** in your browser. While any agent of yours is
+   live, the daemon token alone cannot answer it: it is your browser's
+   decision (and, with passkeys turned on in Settings, your passkey's).
+3. A tab opens on the other instance's device sign-in. Signed in there as
+   the person to read as, check the code and approve.
+4. `connect_instance` answers `connected`.
+
+From then on the agent reads that instance's pages through your Clax, as
+the person who approved: `read`, `open` and the comment tools answer as
+for a local artifact, with the page's address there and the instance's
+name, and anything that would change a page there (`publish`, `db_*`,
+`delete`, …) answers `not_on_remote`. `watch` follows the page: the agent
+appears there by its name, so a person there can send it a thread, and
+what they send reaches it here as a local comment does (`wait_for_feedback`,
+the `follow_command` the watch answers, channel notifications). Revoking
+this machine's token on your People page there signs it out; the next
+call answers `remote_sign_in_required` again.
+
+Nothing of this needs the other instance to be on the internet: one on
+this machine (`just clax-dev-local`) connects over `http`, as loopback is
+allowed; any other is `https`.
+
 A push publishes every version the public copy has not had, in order, with
 its label, note and files. The public versions are yours there: each names
 the local agent that made it, and the ones you published by hand read as
@@ -388,7 +445,7 @@ published from the app, is not an app: its get page says so.
 
 ## Use from an agent
 
-Each harness gets the same thirty-eight tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `tag`, `tags`, `fork`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `publish_public`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`, `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`, `queue_resolve`) and the `clax` skill. Install the plugin for each harness (see Install); plugin details: [plugins/claude-code/README.md](../plugins/claude-code/README.md), [plugins/clax/README.md](../plugins/clax/README.md), [plugins/pi/README.md](../plugins/pi/README.md), [plugins/clax-grok/README.md](../plugins/clax-grok/README.md).
+Each harness gets the same thirty-nine tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `tag`, `tags`, `fork`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `connect_instance`, `publish_public`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`, `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`, `queue_resolve`) and the `clax` skill. Install the plugin for each harness (see Install); plugin details: [plugins/claude-code/README.md](../plugins/claude-code/README.md), [plugins/clax/README.md](../plugins/clax/README.md), [plugins/pi/README.md](../plugins/pi/README.md), [plugins/clax-grok/README.md](../plugins/clax-grok/README.md).
 
 The plugins run `CLAX_BIN`, else the `bin` setting, else the release they
 pin (see "Which clax the plugins run"). `status` and `clax doctor --agent`
@@ -526,6 +583,18 @@ that makes a browser that person (open it at the LAN address: there the
 pages themselves do not open, as an artifact's site, `<ID>.localhost`, is
 this machine's), and registers one agent of theirs. `scripts/dev-second-person.sh --off <home>`
 disconnects it and removes the home.
+
+**Connecting to a dev clax.dev: `just remote-e2e`.** The end-to-end check of
+reading another Clax (`demo/remote-e2e.ts`): it builds the web UI, the
+Worker and the daemon, starts the Worker with `just clax-dev-local`'s
+settings and a daemon on a scratch home under `target/remote-e2e/`, each on
+a free port, and walks the path above with a scripted agent (`clax mcp`):
+`connect_instance`, Connect from an owner browser session, the device
+approval there, a `read` of a private page, a `watch`, and a comment there
+reaching `clax feedback follow --once`. Each step prints a line; it exits 0
+when all pass, and stops everything it started. A passing run removes its
+run directory (`--keep` keeps it), a failing one keeps it with its logs, and
+each run prunes all but the last two (`--no-build` reuses the last builds).
 
 Edit the plugin, skill or hooks, then start a new `just dev` session to pick
 them up. A dev-home daemon left by an earlier `just dev`, whose temporary
@@ -1698,6 +1767,8 @@ assembled from in `BUILD_COMMIT`, so `clax --version` names it.
 
 Clax traffic on the LAN is not encrypted: serve on the LAN (`clax serve --bind 0.0.0.0`) only on a network you trust. A local daemon answers another machine only for a connected person (a signed request of their machine, or their browser's cookie); anyone else is refused with 403 `forbidden_host`.
 
-Writes, and reads of the session list (working directories, process IDs, harness session IDs), need the token in `~/.clax/daemon.json` (mode 0600, served only to localhost browsers), or a connected person's machine key. A connected person's agents publish, reply, resolve and write page data with that person's rights, as the owner set them. They sign every request with their machine's key, which never leaves that machine, so a request seen on the network cannot be replayed. Connecting machines, approvals, rights and raises change only in the owner's or the person's own browser: no agent, tool or CLI command can change them. What another person wrote reaches an agent only once that agent's person approves its author. An agent of the owner's that has a shell runs as the owner's OS user, and is trusted as the owner. Every `/api` route answers only to a `Host` of `localhost`, `127.0.0.1`, `[::1]`, or the exact IP and port the connection arrived on (403 `forbidden_host` otherwise), which defeats DNS rebinding. The comment routes need no token but refuse requests from another origin, including published pages. The viewer cookie never leaves the daemon; viewers are named by a public ID, comment threads carry no session IDs, and the daemon's `codex` path is served only with the token. Each artifact's content is served on a site of its own, `<id>.localhost`, never on the daemon's own host: a page runs on that origin alone, and only the owner's shell and the artifact's own pages may frame it. The site answers only a site session (made through the shell, `/_clax/session/start` and a one-use code), so a page reached under any other name, a rebound one among them, reads nothing.
+Writes, and reads of the session list (working directories, process IDs, harness session IDs), need the token in `~/.clax/daemon.json` (mode 0600, served only to a browser holding an owner browser session, which only a one-use login link opens), or a connected person's machine key. A connected person's agents publish, reply, resolve and write page data with that person's rights, as the owner set them. They sign every request with their machine's key, which never leaves that machine, so a request seen on the network cannot be replayed. Connecting machines, approvals, rights and raises change only in the owner's or the person's own browser: no agent, tool or CLI command can change them. What another person wrote reaches an agent only once that agent's person approves its author. An agent of the owner's that has a shell runs as the owner's OS user, and is trusted as the owner. Every `/api` route answers only to a `Host` of `localhost`, `127.0.0.1`, `[::1]`, or the exact IP and port the connection arrived on (403 `forbidden_host` otherwise), which defeats DNS rebinding. The comment routes need no token, but they need a credential (an owner browser session, or a viewer cookie the daemon minted) and refuse requests from another origin, including published pages: a request with no credential is refused before any route. The viewer cookie never leaves the daemon; viewers are named by a public ID, comment threads carry no session IDs, and the daemon's `codex` path is served only with the token. Each artifact's content is served on a site of its own, `<id>.localhost`, never on the daemon's own host: a page runs on that origin alone, and only the owner's shell and the artifact's own pages may frame it. The site answers only a site session (made through the shell, `/_clax/session/start` and a one-use code), so a page reached under any other name, a rebound one among them, reads nothing.
 
+
+While an agent of yours is running, the decisions that matter made with the daemon token (answering an agent's question, pushing, connecting a public Clax, widening who may open a page, pairing the extension) wait for your click in a browser of yours; `docs/contract.md`, "Browser confirmations", lists them. Any of your browser sessions may confirm. An agent running as you can open a browser session too, so you may also require Touch ID or another passkey to confirm (offered on the first confirmation, and in Settings, Confirmations); each passkey shows when it was added, from which browser, and which agents were running then. A passkey you did not add, or one you can no longer use (a lost authenticator, Clax now served at a LAN address, where passkeys do not work), can lock you out of confirming. To recover, stop Clax (`clax stop`) and run `clax passkeys reset`: it refuses while the daemon for the home runs, then removes every passkey, stops requiring one, and prints what it removed. An agent that runs as you could do the same, as it could stop Clax; the passkey keeps a running Clax's confirmations to your presence.
 Runtime capabilities arrive in a later phase.

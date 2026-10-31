@@ -1,5 +1,6 @@
 import type { Page, Request } from "@playwright/test";
-import { test, expect, type Daemon, api, openArtifact, publishWith } from "./fixtures";
+import { test, expect, type Daemon, api, asStranger, openArtifact, publishWith } from "./fixtures";
+import { ownerCookie } from "./questions-helpers";
 
 // The page runtime on the artifact's own origin (docs/contract.md, `/_clax/api/`):
 // the bridge reads and writes through its site, framed or top-level, and
@@ -47,11 +48,20 @@ test("a world-open site opened top-level writes and reads its db", async ({ brow
     db: { rules: [{ path: "data/guestbook", read: "public", write: "public" }] },
     user: {},
   });
-  await api(d.base, d.token, `/api/artifacts/${artifact.id}`, { method: "PATCH", body: JSON.stringify({ site_access: "world" }) });
+  // Opened to the world by the owner in their browser: with the token alone,
+  // while an agent session of another test is live, it would wait for a
+  // browser confirmation (202 confirmation_pending) and stay private.
+  const opened = await fetch(`${d.base}/api/artifacts/${artifact.id}`, {
+    method: "PATCH", headers: { cookie: ownerCookie(d.base), origin: d.base, "content-type": "application/json" },
+    body: JSON.stringify({ site_access: "world" }),
+  });
+  expect(opened.status, await opened.text()).toBe(200);
   const site = siteOf(artifact.id);
 
-  // A stranger: a browser with no cookie of this daemon at all.
+  // A stranger: a browser with no cookie of this daemon at all (the
+  // fixture's browser signs every context it opens in as the owner's).
   const ctx = await browser.newContext();
+  await asStranger(ctx);
   const page = await ctx.newPage();
   const seen = requests(page);
   await page.goto(`${site}/`);
@@ -68,7 +78,9 @@ test("a world-open site opened top-level writes and reads its db", async ({ brow
   await expect(page.locator("#err")).toHaveText("invalid_argument");
 
   // Another stranger reads what the first wrote, under a visitor ID of their own.
-  const other = await (await browser.newContext()).newPage();
+  const otherCtx = await browser.newContext();
+  await asStranger(otherCtx);
+  const other = await otherCtx.newPage();
   await other.goto(`${site}/`);
   await expect(other.locator("#list")).toHaveText("ada");
   await expect(other.locator("#me")).not.toHaveText("waiting");

@@ -1,4 +1,4 @@
-import { test as playwrightTest, expect as playwrightExpect, type Frame, type Locator, type Page, type Response } from "@playwright/test";
+import { test as playwrightTest, expect as playwrightExpect, type Browser, type BrowserContext, type Frame, type Locator, type Page, type Response } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import { createServer } from "node:net";
@@ -31,11 +31,218 @@ export const STUB_CONFIG = '[sample]\nprovider = "stub"\nstub_delay_ms = 150\n';
 
 export type Daemon = Awaited<ReturnType<typeof startDaemon>>;
 
+/** The daemons this worker runs, each with the owner browser session its
+ * browsers hold (its cookie value and its proof), and the browser contexts
+ * it opened. */
+type Live = { base: string; port: number; token: string; session: string | null; proof: string | null; browser?: Promise<string> };
+const liveDaemons = new Set<Live>();
+const liveContexts = new Set<BrowserContext>();
+
+/** The `clax_viewer` cookie value of a new browser of this machine's with
+ * no name on daemon `d`, minted by its debug-build test route (reaching the
+ * port alone mints no viewer). */
+async function mintViewer(d: { base: string; token: string }): Promise<string> {
+  const r = await plainFetch(`${d.base}/api/_test/viewers`, { method: "POST", headers: { authorization: `Bearer ${d.token}` } });
+  if (!r.ok) throw new Error(`a viewer for the tests: ${r.status} ${await r.text()}`);
+  return ((await r.json()) as { cookie: string }).cookie;
+}
+
+/** The `clax_viewer` cookie (`name=value`) of the browser of this machine's
+ * with no name on daemon `d` that the tests' own requests are, minted once. */
+function localBrowser(d: Live): Promise<string> {
+  d.browser ??= mintViewer(d).then(c => `clax_viewer=${c}`);
+  return d.browser;
+}
+
+/** The header a local owner browser session's proof rides in
+ * (`clax_http::local_trust::PROOF_HEADER`). */
+export const PROOF_HEADER = "x-clax-owner-proof";
+
+/** The tests' own requests to a daemon of this worker (`fetch` from Node)
+ * that carry no credential are a browser of this machine's with no name
+ * ([`localBrowser`]): the anonymous caller of before, whom a local daemon
+ * now refuses. A request with `Authorization` or a cookie of its own goes
+ * as it is, except that one carrying the owner browser session's cookie
+ * carries its proof too, as the owner's shell sends it. */
+const plainFetch = globalThis.fetch.bind(globalThis);
+globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+  if (input instanceof Request) return plainFetch(input, init);
+  const url = new URL(String(input));
+  const d = [...liveDaemons].find(x => String(x.port) === url.port && (url.hostname === "localhost" || url.hostname === "127.0.0.1"));
+  const headers = new Headers(init?.headers);
+  if (!d || headers.has("authorization")) return plainFetch(input, init);
+  const cookie = headers.get("cookie");
+  if (cookie !== null) {
+    if (d.session && d.proof && !headers.has(PROOF_HEADER) && cookie.includes(d.session)) {
+      headers.set(PROOF_HEADER, d.proof);
+      return plainFetch(input, { ...init, headers });
+    }
+    return plainFetch(input, init);
+  }
+  headers.set("cookie", await localBrowser(d));
+  return plainFetch(input, { ...init, headers });
+}) as typeof fetch;
+
+/** A browser login on the local daemon at `base` with `token`, as `clax
+ * open` makes one: the owner browser session's cookie value it set and the
+ * proof its page writes into the origin's storage, or nulls for a daemon
+ * that has none (a hosted one). */
+async function ownerSession(base: string, token: string, port: number): Promise<{ session: string | null; proof: string | null }> {
+  const none = { session: null, proof: null };
+  const made = await plainFetch(`${base}/api/browser-login`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ next: "/" }) });
+  if (!made.ok) return none;
+  const { path } = (await made.json()) as { path: string };
+  const res = await plainFetch(`${base}${path}`, { redirect: "manual" });
+  const kv = res.headers.getSetCookie().map(c => c.split(";")[0]).find(c => c.startsWith(`clax_owner_${port}=`));
+  const proof = /data-proof="([^"]+)"/.exec(await res.text())?.[1] ?? null;
+  return kv ? { session: kv.slice(kv.indexOf("=") + 1), proof } : none;
+}
+
+function liveAt(base: string): Live | undefined {
+  return [...liveDaemons].find(x => x.base === base || x.base === base.replace("127.0.0.1", "localhost"));
+}
+
+/** The owner browser session (cookie value and proof) each home's daemon
+ * started with: a daemon started again on the same home keeps it, as a
+ * restart keeps owner browser sessions, so open pages stay signed in. */
+const homeSessions = new Map<string, { session: string | null; proof: string | null }>();
+
+/** The owner browser session the worker's browsers hold on the daemon at
+ * `base` (a login made it when the daemon started). */
+export function ownerSessionOf(base: string): string {
+  const d = liveAt(base);
+  if (!d?.session) throw new Error(`no owner browser session for ${base}`);
+  return d.session;
+}
+
+/** The proof header a browser of the owner's shell sends to `origin`, for
+ * a test's own request from a browser context (`page.request`, whose
+ * requests carry the context's cookies but none of the page's storage):
+ * the session's proof on a daemon of the worker reached by `localhost` or
+ * `127.0.0.1`, else nothing. */
+export function proofHeaders(origin: string): Record<string, string> {
+  const proof = liveAt(origin)?.proof;
+  return proof ? { [PROOF_HEADER]: proof } : {};
+}
+
+/** The proof of that session, which a browser of the owner's sends beside
+ * its cookie ([`PROOF_HEADER`]). */
+export function ownerProofOf(base: string): string {
+  const d = liveAt(base);
+  if (!d?.proof) throw new Error(`no owner browser session proof for ${base}`);
+  return d.proof;
+}
+
+/** Makes `context` a browser of the owner's on daemon `d`: it holds the
+ * owner and events cookies of `d`'s session, as a login sets them, and the
+ * session's proof in the storage of each of `d`'s origins, as the login's
+ * page writes it.
+ *
+ * That session is shared by every context the worker signs in. A real
+ * login's page (`GET /login`) presents every proof the storage holds to
+ * `POST /api/browser-login/retire`, which ends the sessions of all but the
+ * new one: had it seen the shared proof, every other context of the worker
+ * would go cold. So on `/login` the init script takes the shared proof out
+ * of the storage instead of writing it, and once a login wrote a proof of
+ * its own (a key beginning `clax.owner_proof.`) it writes it no more. */
+async function signIn(context: BrowserContext, d: { port: number; session: string | null; proof: string | null }): Promise<void> {
+  if (!d.session) return;
+  const cookie = (name: string, path: string, sameSite: "Lax" | "Strict", domain: string) => ({ name, value: d.session!, domain, path, httpOnly: true, sameSite });
+  // For each name a test reaches this machine by: `localhost` and `127.0.0.1`.
+  await context.addCookies(["localhost", "127.0.0.1"].flatMap(domain => [
+    cookie(`clax_owner_${d.port}`, "/", "Lax", domain),
+    ...["/api/events", "/api/stream"].map(p => cookie(`clax_events_${d.port}`, p, "Strict", domain)),
+  ])).catch((e: unknown) => { if (!String(e).includes("closed")) throw e; });
+  if (d.proof) {
+    // Only where the origin holds no proof: a login in the context (its
+    // page writes a new session's proof, under a key of its own, beside the
+    // new cookie) is not undone, and never on the login's page itself.
+    await context.addInitScript(({ port, proof }) => {
+      if (location.port === port && (location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
+        try {
+          if (location.pathname === "/login") {
+            if (localStorage.getItem("clax.owner_proof") === proof) localStorage.removeItem("clax.owner_proof");
+            return;
+          }
+          const held = Object.keys(localStorage).some(k => k === "clax.owner_proof" || k.startsWith("clax.owner_proof."));
+          if (!held) localStorage.setItem("clax.owner_proof", proof);
+        } catch { /* storage refused */ }
+      }
+    }, { port: String(d.port), proof: d.proof }).catch((e: unknown) => { if (!String(e).includes("closed")) throw e; });
+  }
+}
+
+/** Makes `context` a browser of this machine's that holds no owner browser
+ * session, for tests of what a viewer may do: it forgets every cookie, holds
+ * instead a `clax_viewer` cookie the daemon `d` minted (its debug-build test
+ * route) for `host` (`localhost`, or the machine's LAN address where the
+ * test reaches `d` there), and is signed in to no daemon the worker starts
+ * later. */
+export async function asLocalViewer(context: BrowserContext, d: { base: string; token: string }, host = "localhost"): Promise<void> {
+  liveContexts.delete(context);
+  await context.clearCookies();
+  await context.addCookies([{ name: "clax_viewer", value: await mintViewer(d), domain: host, path: "/", httpOnly: true, sameSite: "Lax" }]);
+}
+
+/** Makes `context` a stranger to every daemon of the worker: it forgets
+ * every cookie, and is signed in to no daemon the worker starts later. */
+export async function asStranger(context: BrowserContext): Promise<void> {
+  liveContexts.delete(context);
+  await context.clearCookies();
+}
+
+/** Makes `context` a browser of the owner's on the daemon at `base`, as a
+ * login link opened in it would. */
+export async function signInTo(context: BrowserContext, base: string): Promise<void> {
+  const d = [...liveDaemons].find(x => x.base === base);
+  if (!d) throw new Error(`no daemon of this worker at ${base}`);
+  liveContexts.add(context);
+  await signIn(context, d);
+}
+
+/** Counts `context` among the worker's browsers: it is a browser of the
+ * owner's on every daemon the worker runs, now and later, as every browser
+ * of this machine was before a browser had to log in. */
+export async function trustContext(context: BrowserContext): Promise<void> {
+  liveContexts.add(context);
+  context.once("close", () => liveContexts.delete(context));
+  for (const d of liveDaemons) await signIn(context, d);
+}
+
+/** Makes every context `browser` opens (`newContext`, `newPage`) a
+ * browser of the owner's on the worker's daemons ([`trustContext`]): the
+ * fixture's browser, and one a test launches itself. */
+export function trustBrowser(browser: Browser): Browser {
+  const newContext = browser.newContext.bind(browser);
+  browser.newContext = (async (o?: Parameters<Browser["newContext"]>[0]) => {
+    const c = await newContext(o);
+    await trustContext(c);
+    return c;
+  }) as Browser["newContext"];
+  browser.newPage = (async (o?: Parameters<Browser["newPage"]>[0]) => {
+    const c = await browser.newContext(o);
+    const p = await c.newPage();
+    p.once("close", () => { c.close().catch(() => { /* its browser closed first */ }); });
+    return p;
+  }) as Browser["newPage"];
+  return browser;
+}
+
 /** The browser tests' `test`. `daemon` is the worker's daemon, shared by every
  * test the worker runs: each test publishes its own artifacts under its own
  * titles and judges only those. `freshDaemon` is a daemon of the test's own,
- * for a test that judges the daemon's global state (its open streams). */
+ * for a test that judges the daemon's global state (its open streams). Every
+ * browser context a test uses is a browser of the owner's on every daemon
+ * the worker runs ([`trustContext`]). */
 export const test = playwrightTest.extend<{ freshDaemon: Daemon }, { daemon: Daemon }>({
+  context: async ({ context }, use) => {
+    await trustContext(context);
+    await use(context);
+  },
+  browser: [async ({ browser }, use) => {
+    trustBrowser(browser);
+    await use(browser);
+  }, { scope: "worker" }],
   // Playwright reads a fixture's needs from its first parameter's pattern: none here.
   // oxlint-disable-next-line no-empty-pattern
   daemon: [async ({}, use) => {
@@ -61,8 +268,11 @@ const tick = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
  * with `opts.args`, with those arguments added to `clax serve`'s.
  * `stop({ keepHome: true })` leaves the home; `ended()` says whether the daemon has exited.
  * It runs the binary daemon-setup.ts built, on a port the system picks, and
- * waits up to `opts.startMs` (20 s by default) for its daemon.json and its
- * health check; a start that fails says so with the end of the daemon's stderr.
+ * waits for its daemon.json and its health check until the daemon answers or
+ * exits, bounded only by the test's (or fixture's) own timeout, so a loaded
+ * machine's slow start is waited out; `opts.startMs` caps the wait for a
+ * caller that wants its own bound. A start that fails says so with the end
+ * of the daemon's stderr.
  * `localhost` resolves to `::1` first, and another process (a Bazel server)
  * may listen on `[::1]` at the port the system gave the daemon on
  * `127.0.0.1`, where every request to `http://localhost:<port>` would reach
@@ -108,7 +318,9 @@ async function startOnce(opts: StartOpts) {
   let token = "";
   let port = 0;
   const ended = () => child.exitCode !== null || child.signalCode !== null;
+  let live: Live | null = null;
   const stop = async (o: { keepHome?: boolean } = {}) => {
+    if (live) liveDaemons.delete(live);
     if (base && token) await fetch(`${base}/api/admin/shutdown`, { method: "POST", headers: { authorization: `Bearer ${token}` } }).catch(() => {});
     if (!ended()) {
       // The shutdown lets the daemon end on its own; it is sent SIGTERM if it
@@ -119,10 +331,13 @@ async function startOnce(opts: StartOpts) {
       if (!ended()) child.kill("SIGKILL");
       await Promise.race([exited, tick(5000)]);
     }
-    if (!o.keepHome) rmSync(home, { recursive: true, force: true });
+    if (!o.keepHome) {
+      rmSync(home, { recursive: true, force: true });
+      homeSessions.delete(home);
+    }
   };
   try {
-    const deadline = Date.now() + (opts.startMs ?? 20_000);
+    const deadline = opts.startMs === undefined ? Infinity : Date.now() + opts.startMs;
     let gone = false;
     void exited.then(() => { gone = true; });
     while (!existsSync(infoPath)) {
@@ -143,9 +358,21 @@ async function startOnce(opts: StartOpts) {
     base = `http://localhost:${info.port}`;
     for (;;) {
       try { if ((await fetch(`${base}/healthz`)).ok) break; } catch { /* retry */ }
+      if (gone) throw failed(`the daemon exited (${child.exitCode ?? child.signalCode}) before it answered its health check`);
       if (Date.now() > deadline) throw failed("daemon did not become healthy");
       await tick(10);
     }
+    // The worker's browsers are the owner's here too.
+    // A home emptied and used again holds none of its sessions: one is
+    // kept only while the daemon still counts it.
+    const kept = opts.home ? homeSessions.get(home) : undefined;
+    const stillLive = async (k: { session: string | null; proof: string | null }) => !!k.session && !!k.proof
+      && (await plainFetch(`${base}/api/token`, { headers: { cookie: `clax_owner_${port}=${k.session}`, [PROOF_HEADER]: k.proof } })).ok;
+    const session = kept && await stillLive(kept) ? kept : await ownerSession(base, token, port);
+    homeSessions.set(home, session);
+    live = { base, port, token, ...session };
+    liveDaemons.add(live);
+    for (const c of liveContexts) await signIn(c, live);
   } catch (e) { await stop({ keepHome: !!opts.home }); throw e; }
   return { base, token, stop, home, port, ended };
 }
@@ -385,7 +612,11 @@ export async function colorStats(page: Page, pickId: string, rgb: [number, numbe
 
 /** A viewer named `name`, made through the daemon's API; its public ID. */
 export async function namedViewer(base: string, name: string): Promise<string> {
-  const res = await fetch(`${base}/api/viewers/me`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ display_name: name }) });
+  // A viewer of its own: one minted for a browser of this machine's.
+  const d = [...liveDaemons].find(x => x.base === base);
+  if (!d) throw new Error(`no daemon of this worker at ${base}`);
+  const cookie = `clax_viewer=${await mintViewer(d)}`;
+  const res = await fetch(`${base}/api/viewers/me`, { method: "PUT", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ display_name: name }) });
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return ((await res.json()) as { viewer: { public_id: string } }).viewer.public_id;
 }

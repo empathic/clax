@@ -277,6 +277,9 @@ need!(ApprovalsPoll, Ask, "ask", Own, DEFAULT_LIMIT);
 need!(ApprovalsList, None, Own, DEFAULT_LIMIT);
 need!(ApprovalRequestsList, None, Own, DEFAULT_LIMIT);
 need!(AgentsList, None, Own, DEFAULT_LIMIT);
+// What a URL names (`clax_server::resolve`): a local artifact or a page
+// for a person's agent; remote answers only for the owner's.
+need!(UrlResolve, None, Own, DEFAULT_LIMIT);
 need!(ToolCallReport, None, Own, DEFAULT_LIMIT);
 need!(ToolCallIdReport, None, Own, DEFAULT_LIMIT);
 // Report queues (spec 2026-10-27-clax-sdk-design §7): the queue's own
@@ -496,6 +499,7 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
     ("GET", "/api/approvals", ApprovalsList::INFO),
     ("GET", "/api/approvals/requests", ApprovalRequestsList::INFO),
     ("GET", "/api/agents", AgentsList::INFO),
+    ("GET", "/api/resolve", UrlResolve::INFO),
     (
         "POST",
         "/api/sessions/{id}/tool-calls",
@@ -646,6 +650,7 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("approvals::list", ApprovalsList),
     route_need!("approvals::requests", ApprovalRequestsList),
     route_need!("people::list_agents", AgentsList),
+    route_need!("resolve::get", UrlResolve),
     route_need!("toolpath::session_tool_call", ToolCallReport),
     route_need!("sessions::tool_call_ids", ToolCallIdReport),
     route_need!("surface::where_to_ask", SessionWhereToAsk),

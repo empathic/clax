@@ -66,10 +66,10 @@ https://clax.dev`, then Publish to clax.dev or the `publish_public` tool).
 
 ## What it adds
 
-- The `clax_grok` MCP server (`clax mcp --agent grok`): thirty-eight tools,
+- The `clax_grok` MCP server (`clax mcp --agent grok`): thirty-nine tools,
   `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `tag`, `tags`, `fork`,
   `asset_upload`, `status`, `comments_read`, `comments_reply`,
-  `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `publish_public`,
+  `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `connect_instance`, `publish_public`,
   and the data tools
   `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`,
   `db_str_replace`, `db_batch`, and the report queue tools

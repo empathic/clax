@@ -169,6 +169,23 @@ describe("LiveSocket", () => {
     expect(made[1].closed).toBe(1000);
   });
 
+  it("asks its URL again at every open, so a reopen carries the proof a later login wrote", () => {
+    const t = manual();
+    const urls: string[] = [];
+    const { made, make } = fakeSockets();
+    let proof = "cxp_old";
+    const ls = new LiveSocket(() => liveUrl("7q3k9mzx2b4t", { protocol: "http:", host: "localhost:7480" }, false, proof), { welcome() {}, batch() {}, opened() {}, closed() {} }, u => { urls.push(u); return make(u); }, t);
+    ls.start();
+    // `clax logout` closes it 4403; a `clax open` in another tab writes a new proof.
+    made[0].onclose!({ code: 4403, reason: "revoked" });
+    proof = "cxp_new";
+    t.advance(RECONNECT_MS[0]);
+    expect(urls).toEqual([
+      "ws://localhost:7480/api/artifacts/7q3k9mzx2b4t/live?owner_proof=cxp_old",
+      "ws://localhost:7480/api/artifacts/7q3k9mzx2b4t/live?owner_proof=cxp_new",
+    ]);
+  });
+
   it("does not reopen after a close the daemon means for good", () => {
     for (const code of [4410, 1008]) {
       const t = manual();
@@ -224,6 +241,8 @@ describe("LiveSocket", () => {
   it("is opened on the shell's own origin", () => {
     expect(liveUrl("7q3k9mzx2b4t", { protocol: "http:", host: "localhost:7480" })).toBe("ws://localhost:7480/api/artifacts/7q3k9mzx2b4t/live");
     expect(liveUrl("7q3k9mzx2b4t", { protocol: "https:", host: "clax.example" })).toBe("wss://clax.example/api/artifacts/7q3k9mzx2b4t/live");
+    // A local owner's browser: the session's proof rides the address.
+    expect(liveUrl("7q3k9mzx2b4t", { protocol: "http:", host: "localhost:7480" }, false, "cxp_a/b")).toBe("ws://localhost:7480/api/artifacts/7q3k9mzx2b4t/live?owner_proof=cxp_a%2Fb");
   });
 
   it("has no URL in the Clax app, nor on a scheme it would have to guess a WebSocket scheme for", () => {

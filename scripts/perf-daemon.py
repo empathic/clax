@@ -229,17 +229,27 @@ def expect(cond, what):
 COOKIE_RE = r"clax_viewer=([0-9A-Za-z_-]+)"
 
 
+_HOMES = {}
+
+
 def viewer_cookie(c, what):
-    """A new LAN viewer's cookie from `GET /api/viewers/me`, checked to name
-    that viewer: the same viewer again and no new cookie when presented. A
-    cookie read short (a `cxv_` secret cut at its `_`) names no one, and the
-    daemon would answer it with a new viewer; the seed then fails here
-    instead of measuring an anonymous caller."""
-    st, d, _, r = c.req("GET", "/api/viewers/me", auth=False)
-    m = re.search(COOKIE_RE, r.getheader("Set-Cookie") or "")
-    expect(st == 200 and m, f"{what}: no viewer cookie from /api/viewers/me ({st})")
-    cookie = m.group(1)
-    public = json.loads(d)["viewer"]["public_id"]
+    """A new viewer's cookie, minted as the daemon mints one for a browser of
+    this machine: a row and its cookie's SHA-256 in the scratch home's store
+    (`crates/clax-store/src/viewers.rs` mint_viewer), since reaching the port
+    alone mints no viewer. Checked to name that viewer: the same viewer and
+    no new cookie when presented."""
+    import hashlib, secrets, sqlite3
+    cookie = "cxv_" + secrets.token_urlsafe(32)
+    now = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+    alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+    vid = "".join(secrets.choice(alphabet) for _ in range(26))
+    public = "u_" + secrets.token_hex(11)
+    db = sqlite3.connect(os.path.join(_HOMES[c.port], "clax.db"), timeout=30)
+    with db:
+        db.execute("INSERT INTO viewers (id, public_id, created_at, minted_local) VALUES (?, ?, ?, 1)", (vid, public, now))
+        db.execute("INSERT INTO viewer_cookies (sha256, viewer_id, created_at, legacy) VALUES (?, ?, ?, 0)",
+                   (hashlib.sha256(cookie.encode()).hexdigest(), vid, now))
+    db.close()
     st, d2, _, r2 = c.req("GET", "/api/viewers/me", None, {"Cookie": "clax_viewer=" + cookie}, auth=False)
     expect(st == 200 and not r2.getheader("Set-Cookie") and json.loads(d2)["viewer"]["public_id"] == public,
            f"{what}: the viewer cookie {cookie[:8]}... does not name its viewer ({st})")
@@ -341,6 +351,7 @@ class Daemon:
                 try:
                     d = json.load(open(info))
                     self.port, self.token = int(d["port"]), d["token"]
+                    _HOMES[self.port] = self.home
                     break
                 except (ValueError, KeyError):
                     pass
@@ -465,10 +476,31 @@ def seed(port, token, cfg):
             "seconds": time.perf_counter() - t0, "inbox_seconds": time.perf_counter() - t_inbox, **inbox}
 
 
+_OWNER_SESSIONS = {}
+
+
 def owner_cookie(port, token):
-    """The owner cookie a browser of the owner's holds (identity.rs)."""
-    value = hashlib.sha256(b"clax owner cookie\n" + token.encode()).hexdigest()
-    return {"Cookie": f"clax_owner_{port}={value}"}
+    """The headers of a browser of the owner's: a browser login's session
+    (crates/clax-http/src/local_trust.rs), made once per daemon with the
+    token, as `clax open` makes one: its owner cookie, and the proof its
+    page writes into the origin's storage, which the shell sends as
+    `X-Clax-Owner-Proof`."""
+    if port not in _OWNER_SESSIONS:
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+        c.request("POST", "/api/browser-login", body=b'{"next": "/"}',
+                  headers={"authorization": f"Bearer {token}", "content-type": "application/json", "host": f"localhost:{port}"})
+        r = c.getresponse()
+        path = json.loads(r.read())["path"]
+        c.request("GET", path, headers={"host": f"localhost:{port}"})
+        r = c.getresponse()
+        page = r.read().decode()
+        name = f"clax_owner_{port}="
+        cookies = [v.split(";")[0] for k, v in r.getheaders() if k.lower() == "set-cookie"]
+        proof = page.split('data-proof="', 1)[1].split('"', 1)[0]
+        _OWNER_SESSIONS[port] = (next(v for v in cookies if v.startswith(name)), proof)
+        c.close()
+    cookie, proof = _OWNER_SESSIONS[port]
+    return {"Cookie": cookie, "X-Clax-Owner-Proof": proof}
 
 
 def seed_inbox(port, token, cfg, made, sessions, client):
@@ -1028,12 +1060,15 @@ VIS_POLL = "GET /api/sessions/<id>/feedback"
 
 
 class Browser:
-    """A browser at `host` holding `cookie`: one connection per thread, and
+    """A browser at `host` holding `cookie` (and, for a browser of the
+    owner's, sending its session's `proof`): one connection per thread, and
     the `Origin` of a page at `host` on its writes."""
 
-    def __init__(self, port, host, cookie):
+    def __init__(self, port, host, cookie, proof=None):
         self.port, self.host = port, host
         self.h = {"Cookie": cookie, "Origin": f"http://{host}:{port}"}
+        if proof:
+            self.h["X-Clax-Owner-Proof"] = proof
         self.local = threading.local()
         self.clients = []
 
@@ -1097,7 +1132,7 @@ class Baseline:
         expect(st in (200, 201), f"register session: {st} {body[:200]!r}")
         self.sid = json.loads(body)["session"]["id"]
         self.handle = json.loads(body)["session"]["agent_handle"]
-        self.owner = Browser(d.port, "127.0.0.1", owner_cookie(d.port, d.token)["Cookie"])
+        self.owner = Browser(d.port, "127.0.0.1", *owner_cookie(d.port, d.token).values())
         st, _, _, _ = self.owner.req("GET", "/api/viewers/me")
         expect(st == 200, f"owner viewer: {st}")
         if viewer is None:
@@ -1174,7 +1209,7 @@ class People:
 
     def __init__(self, d, cfg, binary, scratch, st):
         self.d, self.cfg = d, cfg
-        self.owner = Browser(d.port, "127.0.0.1", owner_cookie(d.port, d.token)["Cookie"])
+        self.owner = Browser(d.port, "127.0.0.1", *owner_cookie(d.port, d.token).values())
         homes, links = {}, {}
         for name in ("Sam", "Mia"):
             s, body, _, _ = self.owner.req("POST", "/api/people/invites", {"name": name, "rights": "clax:collaborator"})

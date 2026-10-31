@@ -92,6 +92,11 @@ async function post(page: Page, text: string) {
     const card = await post(page, "What is this red square?");
     await expect(card.locator(".anchor-label")).toHaveText("Area in #pic (40% × 50%)");
     await expect(card.locator("img.thumb")).toBeVisible();
+    // The thumbnail decoded: its bytes came, read with the session's proof
+    // (an `<img src>` of the clip's `/api/` path would carry the cookie
+    // alone, which the daemon refuses, and show a broken image).
+    await expect.poll(() => card.locator("img.thumb").evaluate((i: HTMLImageElement) => (i.complete ? i.naturalWidth : 0))).toBeGreaterThan(0);
+    expect(await card.locator("img.thumb").getAttribute("src")).toMatch(/^blob:/);
     const tid = (await card.getAttribute("data-thread"))!;
     const t = await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads/${tid}`);
     expect(t.thread.anchor).toMatchObject({ kind: "area", selector: "#pic", area: pick.anchor.area });

@@ -1,3 +1,4 @@
+import "./owner-proof-install";
 import { mount } from "svelte";
 import Gallery from "./ui/Gallery.svelte";
 

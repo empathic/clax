@@ -192,6 +192,19 @@ pub struct Client {
     remote: Option<Arc<Remote>>,
     /// Signs every request; set for a remote daemon and for `clax connect`.
     signed: Option<crate::remote::SignedClient>,
+    /// Shows the person the one line of a browser confirmation the daemon
+    /// waits on ([`Client::send_confirming`]); stderr's by default.
+    tell: fn(&str),
+    /// Whether a decision held for a browser confirmation is waited on
+    /// ([`Client::send_confirming`]); true but for
+    /// [`Client::returning_held_decisions`].
+    wait_held: bool,
+}
+
+/// Writes `line` to stderr: where the CLI says what it waits on, so its
+/// output on stdout stays the command's own.
+pub(crate) fn tell_stderr(line: &str) {
+    eprintln!("{line}");
 }
 
 /// A command that is the person's own act, run on an agent channel: worded
@@ -265,16 +278,25 @@ pub struct NotForAgents {
     pub url: String,
     /// The refused route serves the inbox.
     pub inbox: bool,
+    /// What an agent does instead, when there is such a thing.
+    pub instead: Option<String>,
 }
 
 impl NotForAgents {
     /// The one line the CLI prints.
     pub fn line(&self) -> String {
+        let instead = self
+            .instead
+            .as_deref()
+            .map_or(String::new(), |i| format!("; agents: {i}"));
         if self.inbox {
-            format!("The inbox is for people: open {} in a browser.", self.url)
+            format!(
+                "The inbox is for people: open {} in a browser{instead}.",
+                self.url
+            )
         } else {
             format!(
-                "This is for people, not agents: open {} in a browser.",
+                "This is for people, not agents: open {} in a browser{instead}.",
                 self.url
             )
         }
@@ -716,6 +738,8 @@ impl Client {
             agent: crate::channel::from_process(),
             remote: None,
             signed: None,
+            tell: tell_stderr,
+            wait_held: true,
         }
     }
 
@@ -747,6 +771,8 @@ impl Client {
             agent: crate::channel::from_process(),
             remote: None,
             signed: Some(crate::remote::SignedClient::new(signer)),
+            tell: tell_stderr,
+            wait_held: true,
         }
     }
 
@@ -802,7 +828,70 @@ impl Client {
         match (&self.signed, &self.remote) {
             (Some(s), Some(r)) => s.send(req, r.grant(), stream),
             (Some(_), None) => bail!("this client holds no grant: connect first"),
-            (None, _) => Ok(req.send()?),
+            (None, _) => self.send_confirming(req),
+        }
+    }
+
+    /// Sends `req` to the local daemon. While an agent session is live, a
+    /// decision that matters made with the token answers 202
+    /// `confirmation_pending` and changes nothing
+    /// ([`clax_core::confirm`]): this shows the person one line, "Confirm
+    /// in your browser: <url>", waits for the owner's answer (`GET
+    /// /api/confirmations/<id>?wait=`), and sends `req` again with the
+    /// confirmation's ID, whose answer is returned: the decision's own
+    /// once approved, 403 `declined` once declined, 410 once expired. Every
+    /// command's call takes this path, so none asks on its own.
+    fn send_confirming(
+        &self,
+        req: reqwest::blocking::RequestBuilder,
+    ) -> anyhow::Result<reqwest::blocking::Response> {
+        let again = req.try_clone();
+        let res = req.send()?;
+        if !self.wait_held {
+            return Ok(res);
+        }
+        let id = res
+            .headers()
+            .get(clax_core::confirm::CONFIRMATION_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .filter(|v| clax_core::confirm::is_id(v))
+            .map(str::to_string);
+        let (Some(id), Some(again), reqwest::StatusCode::ACCEPTED) = (id, again, res.status())
+        else {
+            return Ok(res);
+        };
+        let body: serde_json::Value = res.json().unwrap_or_default();
+        let url = body["confirm_url"].as_str().unwrap_or_default();
+        (self.tell)(&clax_core::confirm::line(url));
+        self.wait_for_confirmation(&id)?;
+        Ok(again
+            .header(clax_core::confirm::CONFIRMATION_HEADER, id)
+            .send()?)
+    }
+
+    /// Waits until confirmation `id` is no longer open, and answers its
+    /// status then (`approved`, `declined` or `expired`): long-polls `GET
+    /// /api/confirmations/<id>?wait=` for at most
+    /// [`clax_core::confirm::MAX_WAIT_SECS`] a time. The daemon expires it
+    /// after ten minutes, which ends the wait.
+    ///
+    /// # Errors
+    /// The daemon cannot be reached, or refuses the read (404 for an ID
+    /// none has).
+    pub fn wait_for_confirmation(&self, id: &str) -> anyhow::Result<String> {
+        let wait = clax_core::confirm::MAX_WAIT_SECS;
+        // The ID is `cf_` and letters, digits, `_` and `-`
+        // ([`clax_core::confirm::is_id`]).
+        let path = format!("/api/confirmations/{id}?wait={wait}");
+        loop {
+            let req = self
+                .request(reqwest::Method::GET, &path)
+                .timeout(Duration::from_secs(wait + 15));
+            let v = Self::check(req.send()?)?;
+            let status = v["confirmation"]["status"].as_str().unwrap_or_default();
+            if status != "open" {
+                return Ok(status.to_string());
+            }
         }
     }
 
@@ -889,6 +978,17 @@ impl Client {
         self
     }
 
+    /// This client answering a decision the daemon holds for a browser
+    /// confirmation (202 `confirmation_pending`) with that answer, instead
+    /// of waiting for the owner's: for a caller that tells the person where
+    /// to confirm itself, as the extension's native host does (its one
+    /// reply cannot say so while it waits), and then waits with
+    /// [`Client::wait_for_confirmation`].
+    pub fn returning_held_decisions(mut self) -> Client {
+        self.wait_held = false;
+        self
+    }
+
     /// A `method` request for `path` with the bearer token, the
     /// agent-channel marker when this client is an agent channel, and the
     /// channel it names (`x-clax-via`) when one is set.
@@ -938,9 +1038,13 @@ impl Client {
                     (_, true) => "/people",
                     _ => "/",
                 };
+                // Adding a remote is the owner's; an agent asks for one.
+                let instead =
+                    (path == "/api/remotes").then(|| "use `clax remote request <url>`".to_string());
                 return Err(NotForAgents {
                     url: self.browser_url(page),
                     inbox,
+                    instead,
                 }
                 .into());
             }
@@ -1042,6 +1146,9 @@ impl Client {
     /// whatever the mode (`clax stop`, `clax doctor`), or None. Never
     /// starts one.
     pub fn discover_local(home: &Home) -> Option<Client> {
+        // No HTTP client (and its runtime thread) is built unless
+        // daemon.json names a live process.
+        read_daemon_info(home).filter(|i| pid_alive(i.pid))?;
         Client::discover_with(home, &probe_client()?)
     }
 
@@ -1395,6 +1502,33 @@ impl Client {
         Ok(())
     }
 
+    /// The address a browser opens `path` (a path of this daemon) at, signed
+    /// in: on the local daemon a one-use login link, good for two minutes,
+    /// that makes the browser opening it a browser of the owner's first
+    /// (`POST /api/browser-login`); on a remote Clax, whose browsers sign in
+    /// there, [`Client::browser_url`]'s address.
+    ///
+    /// # Errors
+    /// The daemon's refusal of the login code.
+    pub fn login_url(&self, path: &str) -> anyhow::Result<String> {
+        if self.signed.is_some() {
+            return Ok(self.browser_url(path));
+        }
+        Ok(self.browser_url(&self.login_path(path)?))
+    }
+
+    /// `POST /api/browser-login` for `next`: the one-use login path the
+    /// daemon mints (`/login?…`), to join to a browser address of this
+    /// daemon.
+    pub fn login_path(&self, next: &str) -> anyhow::Result<String> {
+        let v = self.post("/api/browser-login", &serde_json::json!({"next": next}))?;
+        v["path"]
+            .as_str()
+            .filter(|p| p.starts_with("/login?"))
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("the clax daemon answered no login path"))
+    }
+
     pub fn browser_url(&self, path: &str) -> String {
         if self.signed.is_some() {
             return format!("{}{path}", self.base);
@@ -1420,11 +1554,12 @@ impl Client {
             let msg = body["error"]["message"]
                 .as_str()
                 .unwrap_or("request failed");
-            Err(anyhow!(
-                "{}: {}",
-                crate::term::clean_line(code),
-                crate::term::clean_line(msg)
-            ))
+            Err(crate::remote::Refused {
+                status: status.as_u16(),
+                code: crate::term::clean_line(code),
+                message: crate::term::clean_line(msg),
+            }
+            .into())
         }
     }
 
@@ -1477,11 +1612,14 @@ impl Client {
         )
     }
     pub fn delete(&self, path: &str) -> anyhow::Result<()> {
+        self.delete_json(path).map(|_| ())
+    }
+    /// DELETE `path`: the answer's JSON body.
+    pub fn delete_json(&self, path: &str) -> anyhow::Result<serde_json::Value> {
         self.finish(
             path,
             self.exec(self.request(reqwest::Method::DELETE, path))?,
         )
-        .map(|_| ())
     }
     /// A `method` request with the bearer token, with `body` as JSON when
     /// given. The token makes the request the owner's (or, as an agent
@@ -1494,6 +1632,20 @@ impl Client {
         body: Option<&serde_json::Value>,
     ) -> anyhow::Result<serde_json::Value> {
         let mut req = self.request(method, path);
+        if let Some(b) = body {
+            req = req.json(b);
+        }
+        self.finish(path, self.exec(req)?)
+    }
+    /// [`Client::send`] naming idempotency key `key` (`Idempotency-Key`).
+    pub fn send_keyed(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+        key: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        let mut req = self.request(method, path).header("idempotency-key", key);
         if let Some(b) = body {
             req = req.json(b);
         }
@@ -1541,6 +1693,79 @@ pub(crate) mod tests {
     /// from `exe` failed with `reason` just now.
     pub(crate) fn write_hold(home: &Home, version: &str, exe: &std::path::Path, reason: &str) {
         record_failed_upgrade(home, version, &canonical(exe), "0.0.0", reason);
+    }
+
+    static TOLD: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    fn told(line: &str) {
+        TOLD.lock().unwrap().push(line.to_string());
+    }
+
+    /// A decision the daemon holds for a browser confirmation: the CLI
+    /// says one line, long-polls the confirmation, and makes its call
+    /// again with the confirmation's ID, whatever command made it.
+    #[test]
+    fn a_held_decision_says_one_line_waits_and_is_made_again_confirmed() {
+        use crate::remote::tests::FakeDaemon;
+        let id = "cf_0123abcd";
+        let url = format!("http://localhost:7999/inbox?confirm={id}");
+        let d = FakeDaemon::start(vec![
+            (
+                202,
+                vec![(clax_core::confirm::CONFIRMATION_HEADER.into(), id.into())],
+                serde_json::json!({"status": "confirmation_pending", "confirmation_id": id, "confirm_url": url}),
+            ),
+            (
+                200,
+                vec![],
+                serde_json::json!({"confirmation": {"id": id, "status": "open"}}),
+            ),
+            (
+                200,
+                vec![],
+                serde_json::json!({"confirmation": {"id": id, "status": "approved"}}),
+            ),
+            (200, vec![], serde_json::json!({"status": "pushed"})),
+        ]);
+        let mut c = Client::from_info(info("0.1.0"));
+        c.agent = false;
+        c.base = d.base.clone();
+        c.tell = told;
+        let v = c
+            .post(
+                "/api/artifacts/7q3k9mzx2b4t/push",
+                &serde_json::json!({"mode": "update"}),
+            )
+            .unwrap();
+        assert_eq!(v["status"], "pushed");
+        assert_eq!(
+            *TOLD.lock().unwrap(),
+            vec![format!("Confirm in your browser: {url}")]
+        );
+        let seen = d.seen();
+        let lines: Vec<(String, String)> = seen
+            .iter()
+            .map(|s| (s.method.clone(), s.path.clone()))
+            .collect();
+        let poll = format!("/api/confirmations/{id}?wait=50");
+        assert_eq!(
+            lines,
+            vec![
+                ("POST".into(), "/api/artifacts/7q3k9mzx2b4t/push".into()),
+                ("GET".into(), poll.clone()),
+                ("GET".into(), poll),
+                ("POST".into(), "/api/artifacts/7q3k9mzx2b4t/push".into()),
+            ]
+        );
+        assert_eq!(
+            seen[0].header(clax_core::confirm::CONFIRMATION_HEADER),
+            None
+        );
+        assert_eq!(
+            seen[3].header(clax_core::confirm::CONFIRMATION_HEADER),
+            Some(id)
+        );
+        assert_eq!(seen[3].body, seen[0].body, "the same call, made again");
     }
 
     /// A client of a daemon that is not running (nothing is sent).

@@ -11,7 +11,9 @@
   // beside them. Save writes the fields changed to `config.toml` and shows
   // what the daemon reads back; a file that did not read when the daemon
   // started, and tables whose values do not check, are said at the top. A
-  // hosted daemon has no settings screen (404), and says so.
+  // hosted daemon has no settings screen (404), and says so. Below the
+  // fields, Confirmations: whether confirming requires Touch ID or a
+  // passkey, and the passkeys registered (`q/PasskeySettings.svelte`).
   import { onMount } from "svelte";
   import { refusal } from "../people/refusal";
   import { type ProviderModels, type Settings, providerModels, saveSettings, settings, testProvider } from "./api";
@@ -20,6 +22,8 @@
   import ModelSelect from "./ModelSelect.svelte";
   import SourceBadge from "./SourceBadge.svelte";
   import Switch from "./Switch.svelte";
+  import PasskeySettings from "../q/PasskeySettings.svelte";
+  import RemoteMutes from "./RemoteMutes.svelte";
 
   let s = $state<Settings | null>(null);
   let none = $state(false);
@@ -108,6 +112,8 @@
       {#if hasModels}<button type="button" onclick={runTest}>Test connection</button>{/if}
       <span role="status">{#if test}<span class={test.ok ? "ok" : "err"}>{test.text}</span>{:else if saved}<span class="ok">{saved}</span>{:else if changed.length}<span class="note">{changed.length} changed{restart ? ", takes effect after a restart" : ""}</span>{/if}</span>
     </div>
+    <PasskeySettings />
+    <RemoteMutes />
   {:else if !err}
     <p class="note" role="status">Loading the settings…</p>
   {/if}

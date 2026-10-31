@@ -46,4 +46,20 @@ describe("a linked thread's card", () => {
     expect(text(m.root)).toEqual(["Not sent: clax.dev unreachable"]);
     expect(m.root.querySelector(".thread-card button.retry")).not.toBeNull();
   });
+
+  it("says why a Retry failed on its line, keeping Retry, until a newer view of the thread comes", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => String(url).endsWith("/retry")
+      ? new Response(JSON.stringify({ error: { code: "forbidden", message: "retrying is the owner's" } }), { status: 403, headers: { "content-type": "application/json" } })
+      : new Response(JSON.stringify({ token: "t" }), { status: 200, headers: { "content-type": "application/json" } })));
+    const props = (threads: Thread[]) => ({ versions: [], shown: 1, agent: "claude", threads, resolved: {}, now: new Date("2026-10-09T10:05:00.000Z"),
+      selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() });
+    const m = render([thread()]);
+    m.root.querySelector<HTMLButtonElement>(".thread-card button.retry")!.click();
+    const err = () => m.root.querySelector(".thread-card .link-state .retry-err")?.textContent;
+    await vi.waitFor(() => { flush(); expect(err()).toBe("Retry failed: retrying is the owner's"); });
+    expect(text(m.root)).toEqual(["Not sent: clax.dev unreachable", "Retry failed: retrying is the owner's"]);
+    expect(m.root.querySelector<HTMLButtonElement>(".thread-card button.retry")!.disabled).toBe(false);
+    m.update(props([thread()]));
+    expect(err()).toBeUndefined();
+  });
 });

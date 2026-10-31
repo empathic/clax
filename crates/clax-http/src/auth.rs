@@ -1,7 +1,8 @@
 //! Who a request speaks for ([`Caller`]), the owner-only gate
-//! ([`RequireToken`]), the `Host` check on every `/api` route (DNS
-//! rebinding), the loopback check for /api/token, and the credential gate
-//! of a daemon that serves no one without one ([`require_credential`]).
+//! ([`RequireToken`]), the owner's-browser gate of the decisions only a
+//! person at the owner's browser makes ([`require_owner_browser`]), the
+//! `Host` check on every `/api` route (DNS rebinding), and the credential
+//! gate of a daemon that serves no one without one ([`require_credential`]).
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -207,6 +208,27 @@ impl FromRequestParts<AppState> for RequireToken {
     }
 }
 
+/// 403 `browser_required` unless the caller is a browser of the owner's
+/// ([`Caller::owner_browser`]: an owner browser session, never the bearer
+/// token alone): the gate of the decisions only a person at the owner's
+/// browser makes (M20), such as approving a connection, setting a
+/// person's rights, revoking a person, or answering another Clax's
+/// connection request. An agent holding the token reaches one only by
+/// opening a browser session itself, through the login route.
+///
+/// # Errors
+/// As above; `what` names the decision.
+pub fn require_owner_browser(caller: &Caller, what: &str) -> Result<(), ApiError> {
+    if caller.owner_browser() {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(
+            "browser_required",
+            format!("{what} needs the owner's browser: open People in Clax"),
+        ))
+    }
+}
+
 /// 403 `forbidden` for an agent of another machine on a route that is not
 /// theirs.
 pub fn grants_refused() -> ApiError {
@@ -245,8 +267,8 @@ pub fn token_matches(presented: &str, token: &str) -> bool {
     constant_time_eq(presented.as_bytes(), token.as_bytes())
 }
 
-/// The name of the cookie that stands for the token on the event streams
-/// (`/api/events`, `/api/stream`):
+/// The name of the events cookie, the owner browser session's cookie on the
+/// event streams (`/api/events`, `/api/stream`; [`crate::local_trust`]):
 /// `clax_events_<port>`, the port from the request's `Host` (80 when it
 /// names none), so daemons on one host name but different ports keep apart.
 pub fn events_cookie_name(host: &str) -> String {
@@ -261,65 +283,6 @@ pub fn events_cookie_name(host: &str) -> String {
         _ => "80",
     };
     format!("clax_events_{port}")
-}
-
-/// The events cookie's value for `token`: a SHA-256 of it (lowercase hex),
-/// so the cookie grants the event stream's token level and never reveals the token.
-pub fn events_cookie_value(token: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::new()
-        .chain_update(b"clax events cookie\n")
-        .chain_update(token.as_bytes())
-        .finalize();
-    digest.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// True when `headers` carry this port's events cookie with the value for
-/// `token` (compared in constant time). Only the event streams read it:
-/// `GET /api/events`, `GET /api/stream` and `POST /api/stream/<id>`.
-pub fn has_events_cookie(headers: &axum::http::HeaderMap, token: &str) -> bool {
-    let host = headers
-        .get(axum::http::header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let name = events_cookie_name(host);
-    let want = events_cookie_value(token);
-    headers
-        .get_all(axum::http::header::COOKIE)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(';'))
-        .filter_map(|kv| kv.trim().split_once('='))
-        .filter(|(k, _)| *k == name)
-        .any(|(_, v)| constant_time_eq(v.as_bytes(), want.as_bytes()))
-}
-
-/// The name of the key cookie: `clax_key_<port>`, the port from the
-/// request's `Host` as for the events cookie. Its value is the token itself.
-/// No response sets it: the app that starts a daemon with
-/// `require_credential` puts it in its own WebView's cookie store, so the
-/// shell there passes [`require_credential`] and fetches the token as on a
-/// desktop.
-pub fn key_cookie_name(host: &str) -> String {
-    events_cookie_name(host).replacen("clax_events_", "clax_key_", 1)
-}
-
-/// True when `headers` carry this port's key cookie with the token
-/// (compared in constant time).
-pub fn has_key_cookie(headers: &axum::http::HeaderMap, token: &str) -> bool {
-    let host = headers
-        .get(axum::http::header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let name = key_cookie_name(host);
-    headers
-        .get_all(axum::http::header::COOKIE)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(';'))
-        .filter_map(|kv| kv.trim().split_once('='))
-        .filter(|(k, _)| *k == name)
-        .any(|(_, v)| constant_time_eq(v.as_bytes(), token.as_bytes()))
 }
 
 /// Paths a daemon with `require_credential` serves without a credential on
@@ -340,10 +303,11 @@ pub fn open_without_credential(path: &str) -> bool {
 /// embedded daemon, whose loopback every other app on the device shares),
 /// a request answers 401 `unauthorized` unless its path is
 /// [`open_without_credential`] or it carries a credential: the bearer token,
-/// the key cookie ([`key_cookie_name`]), or the owner or events cookie that
-/// `GET /api/token` sets. `GET /api/token` is behind it like every other
-/// route, so a program that can only reach loopback never gets the token.
-/// A daemon without the option passes every request on.
+/// or an owner browser session ([`crate::local_trust::OwnerSession`], the
+/// in-process app's frame among them). `GET /api/token` is behind
+/// it like every other route, so a program that can only reach loopback
+/// never gets the token. A daemon without the option passes every request
+/// on.
 pub async fn require_credential(
     axum::extract::State(s): axum::extract::State<AppState>,
     req: axum::extract::Request,
@@ -354,9 +318,10 @@ pub async fn require_credential(
         || open_without_credential(req.uri().path())
         || req.extensions().get::<crate::host::SiteRequest>().is_some()
         || has_token(req.headers(), &s.token)
-        || has_key_cookie(req.headers(), &s.token)
-        || crate::identity::has_owner_cookie(req.headers(), &s.token)
-        || has_events_cookie(req.headers(), &s.token)
+        || req
+            .extensions()
+            .get::<crate::local_trust::OwnerSession>()
+            .is_some()
     {
         return next.run(req).await;
     }
@@ -577,31 +542,13 @@ pub fn is_local_host(host: &str) -> bool {
 mod tests {
 
     #[test]
-    fn the_events_cookie_is_named_for_the_port_and_never_holds_the_token() {
-        use super::{events_cookie_name, events_cookie_value, has_events_cookie};
+    fn the_events_cookie_is_named_for_the_port() {
+        use super::events_cookie_name;
         assert_eq!(events_cookie_name("localhost:7480"), "clax_events_7480");
         assert_eq!(events_cookie_name("127.0.0.1:61386"), "clax_events_61386");
         assert_eq!(events_cookie_name("[::1]:9000"), "clax_events_9000");
         assert_eq!(events_cookie_name("localhost"), "clax_events_80");
         assert_eq!(events_cookie_name("[::1]"), "clax_events_80");
-        let v = events_cookie_value("tok");
-        assert_eq!(v.len(), 64);
-        assert!(!v.contains("tok"));
-        let mut h = axum::http::HeaderMap::new();
-        h.insert("host", "localhost:7480".parse().unwrap());
-        h.insert(
-            "cookie",
-            format!("clax_viewer=x; clax_events_7480={v}")
-                .parse()
-                .unwrap(),
-        );
-        assert!(has_events_cookie(&h, "tok"));
-        assert!(!has_events_cookie(&h, "other"));
-        // Another port's cookie, or the token itself, is no token.
-        h.insert("host", "localhost:7481".parse().unwrap());
-        assert!(!has_events_cookie(&h, "tok"));
-        h.insert("cookie", "clax_events_7481=tok".parse().unwrap());
-        assert!(!has_events_cookie(&h, "tok"));
     }
     use super::*;
 
@@ -657,18 +604,6 @@ mod tests {
         ] {
             assert!(!api_host_allowed(h, local), "{h} {local:?}");
         }
-    }
-
-    #[test]
-    fn the_key_cookie_holds_the_token_under_its_ports_name() {
-        assert_eq!(key_cookie_name("127.0.0.1:41000"), "clax_key_41000");
-        let mut h = axum::http::HeaderMap::new();
-        h.insert("host", "127.0.0.1:41000".parse().unwrap());
-        h.insert("cookie", "a=b; clax_key_41000=tok".parse().unwrap());
-        assert!(has_key_cookie(&h, "tok"));
-        assert!(!has_key_cookie(&h, "other"));
-        h.insert("cookie", "clax_key_41001=tok".parse().unwrap());
-        assert!(!has_key_cookie(&h, "tok"));
     }
 
     #[test]

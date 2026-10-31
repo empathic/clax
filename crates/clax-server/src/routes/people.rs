@@ -397,8 +397,9 @@ pub fn listen(s: &AppState) {
 /// alone (the CLI by hand, scripts).
 fn owner_browser(caller: &Caller, what: &str) -> Result<(), ApiError> {
     match caller {
-        Caller::Owner { browser: true } => Ok(()),
-        Caller::Owner { browser: false } => Err(browser_required(what)),
+        Caller::Owner { .. } => {
+            clax_http::auth::require_owner_browser(caller, what).map_err(|_| browser_required(what))
+        }
         _ => Err(ApiError::forbidden(
             "forbidden",
             format!("only the owner {what}"),
@@ -683,11 +684,15 @@ pub struct RightsBody {
 /// allow (within each narrowing, beyond it where the owner elevated one)
 /// from their next request on. Recorded as `person.rights`. 400
 /// `invalid_rights`, `not_a_person`; 404 for an unknown public ID.
+/// While an agent of the owner's is live and passkeys are required, the
+/// browser's call waits for a confirmation made with a passkey: 202
+/// `confirmation_pending` ([`clax_http::confirm`]).
 pub async fn set_rights(
     State(s): State<AppState>,
     d: DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
+    by: clax_http::confirm::Confirming,
     audit: DeferredAudit,
     pid: Result<Path<String>, PathRejection>,
     req: Result<Json<RightsBody>, JsonRejection>,
@@ -697,11 +702,27 @@ pub async fn set_rights(
     let pid = path(pid)?;
     let b = body(req)?;
     let rights = rights_of(&b.rights)?;
+    let decision = clax_http::confirm::Decision::SetRights {
+        person: pid.clone(),
+        rights: b.rights.clone(),
+    };
+    clax_http::confirm::require_confirmation(&s, &caller, &by, decision).await?;
     let state = s.clone();
     let who = pid.clone();
+    let hosted = s.hosted.is_some();
     let (person, before, after) = s
         .store_call(move |st| {
             let before = st.person_rights(&pid).ok();
+            // On hosted, People hides the locations out of the owner's
+            // reach, so the value sent keeps the stored ones.
+            let rights = match (rights, &before) {
+                (Some(r), Some(old)) if hosted => {
+                    let mut v = r.to_json();
+                    clax_http::hosted::keep_hidden_locations(st, &old.to_json(), &mut v)?;
+                    Some(clax_core::rights::Rights::parse(&v)?)
+                }
+                (r, _) => r,
+            };
             st.set_person_rights(&audit.resolve(st)?, &pid, rights)?;
             let after = st.person_rights(&pid).ok();
             let person = person_of(&state, st, &pid)?;
@@ -726,17 +747,25 @@ pub async fn set_rights(
 /// (`Event::SiteAccess`). Recorded as each `grant.revoke`,
 /// `invite.revoke`, then `person.revoke`. 400 `not_a_person`; 404 for an
 /// unknown public ID.
+/// While an agent of the owner's is live and passkeys are required, the
+/// browser's call waits for a confirmation made with a passkey: 202
+/// `confirmation_pending` ([`clax_http::confirm`]).
 pub async fn revoke_person(
     State(s): State<AppState>,
     d: DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
+    by: clax_http::confirm::Confirming,
     audit: DeferredAudit,
     pid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     owner_browser(&caller, "revokes a person")?;
     let pid = path(pid)?;
+    let decision = clax_http::confirm::Decision::RevokePerson {
+        person: pid.clone(),
+    };
+    clax_http::confirm::require_confirmation(&s, &caller, &by, decision).await?;
     let (state, ctx) = (s.clone(), s.feedback_ctx());
     let who = pid.clone();
     let (v, world) = s

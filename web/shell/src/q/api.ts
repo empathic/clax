@@ -3,7 +3,10 @@
 // question module, after the first paint, so the eager entries carry none of
 // this. A 403 (the caller is not the owner) resolves to "forbidden"; a 409
 // on an answer, a skip or a move resolves to the question as it closed;
-// any other failure throws an `ApiError`.
+// a decision held for the owner's confirmation (202 `confirmation_pending`)
+// throws an `ApiError` coded so, saying where to confirm; any other
+// failure throws an `ApiError`.
+import { HELD, heldOf } from "../held";
 import { ApiError, type AnswerBody, type InboxFilter, type InboxGroupPage, type InboxItem, type InboxPage, type InboxSummary, type QuestionView, type StripAgent } from "../api";
 
 export type Forbidden = "forbidden";
@@ -15,6 +18,9 @@ const JSON_BODY = { "content-type": "application/json" };
 
 async function call<T>(path: string, init?: RequestInit, closed = false): Promise<T | Forbidden | { closed: QuestionView }> {
   const res = await fetch(path, init);
+  // Held for the owner's confirmation: where to confirm, not a result.
+  const held = await heldOf(res);
+  if (held) throw new ApiError(202, held.message, HELD);
   if (res.ok) return (await res.json()) as T;
   if (res.status === 403) return "forbidden";
   let body: { error?: { code?: string; message?: string }; question?: QuestionView } = {};

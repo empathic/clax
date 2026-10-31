@@ -4,14 +4,12 @@
 
 use clax_server::linked::{BACKOFF_CAP, BACKOFF_FIRST, BACKSTOP, Linked};
 use clax_testkit::ManualSleeper;
-use clax_testkit::TestServer;
-use clax_testkit::remotes::{Public, connect, connect_app, json_of, local_req, post};
+use clax_testkit::remotes::{Public, connect, connect_app, json_of, local_req, owner_post, post};
+use clax_testkit::{TestServer, until};
 use reqwest::header::{COOKIE, HOST, ORIGIN};
 use serde_json::{Value, json};
-use std::future::Future;
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// A local daemon linked to a hosted one: the artifact `aid` pushed there
 /// as `raid`, the sync's timers on `sleeper`.
@@ -228,28 +226,6 @@ impl Pair {
         assert_eq!(s, 200, "{v}");
         v
     }
-}
-
-/// Polls `f` until it answers `Some`, for up to 10 s.
-/// `f`'s value once it has one, checked again every 50 ms. No wall-clock
-/// limit: a load that slows the daemons only delays it, and a condition
-/// that never holds is ended by the test runner's timeout, whose output
-/// names `what`.
-async fn until<T, F, Fut>(what: &str, mut f: F) -> T
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Option<T>>,
-{
-    for tries in 0u32.. {
-        if let Some(v) = f().await {
-            return v;
-        }
-        if tries == 200 {
-            eprintln!("still waiting: {what}");
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    unreachable!("the loop returns")
 }
 
 fn whole() -> Value {
@@ -790,6 +766,24 @@ async fn a_resent_keyed_write_does_the_sends_its_first_write_did_not_reach() {
         bodies(&p.hosted_thread_by(otid).await),
         ["plain", "@agent this too", "on it"]
     );
+}
+
+/// A token revoked there signs the remote out at the sync's next cycle,
+/// rather than being backed off from as an outage.
+#[tokio::test]
+async fn a_cycle_meeting_a_revoked_token_signs_the_remote_out() {
+    let p = Pair::new().await;
+    p.public.revoke(&p.local, &p.remote).await;
+    // The sync's next cycle at once, whether it waits on its feedback poll
+    // or, that poll refused, on its backoff (the owner's Retry).
+    p.local.state.linked.retry(&p.remote);
+    until("the remote is signed out", || async {
+        let r = p.local.store.find_remote(&p.remote).unwrap().unwrap();
+        (r.status == "signed_out").then_some(())
+    })
+    .await;
+    assert!(p.local.store.remote_token(&p.remote).unwrap().is_none());
+    assert_eq!(p.sleeper.waiting(BACKOFF_FIRST), 0, "not backed off");
 }
 
 #[tokio::test]
@@ -1881,7 +1875,7 @@ async fn a_question_closed_here_first_is_withdrawn_there() {
     // Answered here first.
     let q = p.ask(&sid, Some(&p.aid), "Answered here?").await;
     let there = p.hosted_question("Answered here?").await;
-    let (s, v) = post(
+    let (s, v) = owner_post(
         &p.local,
         &format!("/api/questions/{}/answer", q["id"].as_str().unwrap()),
         json!({"answers": [{"selected": ["Red"]}]}),
@@ -2218,30 +2212,7 @@ async fn a_stopped_sync_ends_its_tasks_and_its_supervisor_starts_none() {
 /// A thread on the whole of version 1 of `raid` there, from the browser
 /// whose session cookie is `cookie`.
 async fn browser_thread(public: &Public, raid: &str, cookie: &str, body: &str) {
-    browser_thread_on(public, raid, cookie, whole(), body).await
-}
-
-/// A thread at `anchor` on version 1 of `raid` there, from the browser
-/// whose session cookie is `cookie`.
-async fn browser_thread_on(public: &Public, raid: &str, cookie: &str, anchor: Value, body: &str) {
-    let ts = &public.ts;
-    let res = ts
-        .client
-        .post(format!("{}/api/artifacts/{raid}/threads", ts.base))
-        .header(HOST, format!("localhost:{}", ts.addr.port()))
-        .header(COOKIE, format!("clax_session={cookie}"))
-        .header(ORIGIN, &public.origin)
-        .multipart(
-            reqwest::multipart::Form::new()
-                .text("anchor", anchor.to_string())
-                .text("body", body.to_string())
-                .text("version", "1"),
-        )
-        .send()
-        .await
-        .unwrap();
-    let (s, v) = json_of(res).await;
-    assert_eq!(s, 201, "{v}");
+    public.browser_thread(raid, cookie, whole(), body).await;
 }
 
 /// One full read of the sync's, ended.
@@ -2484,22 +2455,12 @@ async fn a_strangers_mirrored_anchor_is_withheld_from_her_agents_until_approved(
                "label": quote, "name": format!("{quote} by name"),
                "file": "index.html"})
     };
-    browser_thread_on(
-        &public,
-        &raid,
-        &bob,
-        anchor("Bob quoted this"),
-        "@agent see here",
-    )
-    .await;
-    browser_thread_on(
-        &public,
-        &raid,
-        &mia,
-        anchor("Mia quoted this"),
-        "Mia's note",
-    )
-    .await;
+    public
+        .browser_thread(&raid, &bob, anchor("Bob quoted this"), "@agent see here")
+        .await;
+    public
+        .browser_thread(&raid, &mia, anchor("Mia quoted this"), "Mia's note")
+        .await;
     sync_once(&sleeper).await;
     // Mia reads both anchors.
     let here = threads_here(&local, &aid, None).await;

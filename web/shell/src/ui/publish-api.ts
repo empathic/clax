@@ -2,6 +2,7 @@
 // (docs/contract.md "Publishing to a public Clax"). Loaded with the button,
 // after the first paint. A hosted daemon answers none of them (404).
 import { ApiError, getToken } from "../api";
+import { HELD, heldOf } from "../held";
 
 /** A public Clax this Clax is signed in to (never its token); while its
  * sign-in waits, the code, the approval page and the seconds between polls. */
@@ -16,6 +17,9 @@ export type Sync = { unreachable_since: string | null; last_error: string | null
 /** An artifact's public twin on one remote; its threads follow it (linked threads). */
 export type Link = {
   remote_id: string; remote_name: string | null; origin: string | null; url: string;
+  /** Its remote's status: `signed_out` while the remote refuses this Clax's
+   * token; its pushes and comments wait for a new sign-in, which keeps the link. */
+  remote_status?: string | null;
   pushed_n: number; remote_n: number; auto: boolean; behind: number;
   /** Local threads stay local; replies and resolves on linked threads still go up. */
   download_only?: boolean;
@@ -47,6 +51,9 @@ async function headers(json: boolean): Promise<Record<string, string>> {
 }
 
 async function answer<T>(res: Response): Promise<T> {
+  // Held for the owner's confirmation (a push or a sign-in): where to confirm.
+  const held = await heldOf(res);
+  if (held) throw new ApiError(202, held.message, HELD);
   if (!res.ok) {
     let msg = res.statusText;
     let code: string | null = null;

@@ -10,12 +10,15 @@
 //! - Under `/api/remotes/<rid>/artifacts/<raid>`: `GET head`, `GET
 //!   versions/<n>/bundle`, `GET versions/<n>/files` (the version, as the
 //!   remote's `GET /api/artifacts/<raid>/versions/<n>` answers it), `GET
-//!   versions/<n>/files/<path>` (one file's bytes), `GET sharing`, `PUT
+//!   sharing`, `PUT
 //!   sharing/link`, `PUT sharing/shares`, `DELETE sharing/shares/<sid>`,
 //!   `PUT sharing/comments` (the remote's `/api/hosted/artifacts/<raid>/…`
 //!   routes), `POST installs` (the remote's `POST
 //!   /api/artifacts/<raid>/installs`), and `DELETE` (Unpublish).
 //! - `GET /api/remotes/<rid>/apps`: the remote's `GET /api/hosted/apps`.
+//!
+//! One file's bytes (`GET versions/<n>/files/<path>`), which the owner's
+//! agents read as well, is `super::remote_artifacts`'.
 //!
 //! Each is the owner's alone, by hand (an agent is refused 403
 //! `not_for_agents`), on a daemon that is not hosted (404 there, as every
@@ -26,7 +29,9 @@
 //! file path's segments are neither empty, `.` nor `..` (400 `invalid_args`
 //! otherwise). The remote's answer comes back with its status, its JSON or
 //! bytes, and only its content type and a bundle's own headers; a remote
-//! that refuses the token is 502 `remote_signed_out`, one not reached 502
+//! that refuses the token itself (401 `invalid_token`, `grant_revoked` or
+//! `token_expired`) is marked `signed_out` and answers 502
+//! `remote_signed_out` (at once while it stays so), one not reached 502
 //! `remote_unreachable`, and one from before app publishing (its 404 or
 //! 403 `browser_required`, and no `GET /api/hosted/apps`) 502
 //! `remote_too_old`. No answer carries the token.
@@ -41,6 +46,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::{ArtifactId, CoreError, Secret};
 use clax_http::agent::DeniedToGrants;
+use clax_http::confirm::{Confirming, Decision, require_confirmation};
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
 use clax_http::identity::Identity;
@@ -65,7 +71,9 @@ const BUNDLE_HEADERS: [&str; 4] = [
 /// the owner).
 ///
 /// # Errors
-/// 403 `forbidden` for an agent; 404 `no_remote`, 400 `not_connected`.
+/// 403 `forbidden` for an agent; 404 `no_remote`; 400 `not_connected`
+/// while its sign-in waits; 502 `remote_signed_out` once it refused the
+/// token ([`super::remotes::push_target`]).
 async fn owners_remote(
     s: &AppState,
     d: &DeniedToGrants,
@@ -85,12 +93,13 @@ async fn owners_remote(
     let token = s
         .store_call(move |st| st.remote_token(&id))
         .await?
-        .ok_or_else(|| ApiError::bad_request("not_connected", "this remote is not signed in"))?;
+        // Signed out since push_target read it.
+        .ok_or_else(|| public::signed_out(&r.origin))?;
     Ok((r, token))
 }
 
 /// A public artifact's ID as a path names it.
-fn remote_artifact(raw: &str) -> Result<String, ApiError> {
+pub(super) fn remote_artifact(raw: &str) -> Result<String, ApiError> {
     ArtifactId::parse(raw)
         .map(|a| a.as_str().to_string())
         .map_err(|_| ApiError::bad_request("invalid_args", "not a public artifact's ID"))
@@ -110,7 +119,7 @@ fn share_id(raw: &str) -> Result<String, ApiError> {
 }
 
 /// A file's path as segments: none empty, `.` or `..`.
-fn file_segments(raw: &str) -> Result<Vec<String>, ApiError> {
+pub(super) fn file_segments(raw: &str) -> Result<Vec<String>, ApiError> {
     let segs: Vec<String> = raw.split('/').map(str::to_string).collect();
     if raw.is_empty()
         || segs
@@ -122,14 +131,14 @@ fn file_segments(raw: &str) -> Result<Vec<String>, ApiError> {
     Ok(segs)
 }
 
-/// The remote's answer `f` as this core gives it: a refusal of the token
-/// as 502 `remote_signed_out`, a redirect or other answer it does not
-/// pass on as 502 `remote_refused`, anything else with its status, body
-/// and kept headers, never stored. Every answer passed on is sandboxed
-/// and unsniffed: a public copy's bytes are another author's, served here
-/// on this daemon's API origin.
-fn answer(origin: &str, f: Forwarded) -> Response {
-    if f.status == 401 || !(200..600).contains(&f.status) || (300..400).contains(&f.status) {
+/// The remote's answer `f` as this core gives it, a 401 aside (each
+/// caller answers it as a failure first, [`passed`]): a redirect or other
+/// answer it does not pass on as 502 `remote_refused`, anything else with
+/// its status, body and kept headers, never stored. Every answer passed
+/// on is sandboxed and unsniffed: a public copy's bytes are another
+/// author's, served here on this daemon's API origin.
+pub(super) fn answer(origin: &str, f: Forwarded) -> Response {
+    if !(200..600).contains(&f.status) || (300..400).contains(&f.status) {
         return ApiError::from(RemoteFail {
             origin: origin.to_string(),
             status: Some(f.status),
@@ -159,11 +168,30 @@ fn answer(origin: &str, f: Forwarded) -> Response {
     res
 }
 
+/// A request to `remote` that failed as `f`: noted
+/// ([`public::note_failure`]: a refused token marks the remote signed
+/// out) and answered as `From<RemoteFail>` does.
+async fn failed(s: &AppState, remote: &Remote, f: RemoteFail) -> ApiError {
+    public::note_failure(s, remote, &f).await;
+    ApiError::from(f)
+}
+
+/// `remote`'s answer `f` as [`answer`] gives it, a 401 as [`failed`] does.
+async fn passed(s: &AppState, remote: &Remote, f: Forwarded) -> Response {
+    if f.status == 401 {
+        return failed(s, remote, f.refusal(&remote.origin))
+            .await
+            .into_response();
+    }
+    answer(&remote.origin, f)
+}
+
 /// `method` `segs` at `remote`, with `with`'s headers and body, at most
-/// `max` bytes back: its answer as [`answer`] gives it. An answer over
-/// `max` is `too_large`'s.
+/// `max` bytes back: its answer as [`answer_or_too_old`] gives it. An
+/// answer over `max` is `too_large`'s.
 #[allow(clippy::too_many_arguments)]
 async fn forward(
+    s: &AppState,
     remote: &Remote,
     token: Secret,
     method: Method,
@@ -176,19 +204,19 @@ async fn forward(
 ) -> Response {
     let c = public::Client::new(&remote.origin, Some(token.clone()));
     match clax_rt::sendable(c.forward(method, segs, query, headers, sent, max)).await {
-        Ok(f) => answer_or_too_old(remote, token, f).await,
+        Ok(f) => answer_or_too_old(s, remote, token, f).await,
         Err(f) if f.code == "too_large" => too_large().into_response(),
-        Err(f) => ApiError::from(f).into_response(),
+        Err(f) => failed(s, remote, f).await.into_response(),
     }
 }
 
-/// The remote's answer `f` as [`answer`] gives it, unless it is how a
+/// The remote's answer `f` as [`passed`] gives it, unless it is how a
 /// public Clax from before app publishing answers what it lacks (404 for
 /// a route it has not, 403 `browser_required` for its sharing routes
 /// with a token) and the remote lacks `GET /api/hosted/apps` too: then
 /// 502 `remote_too_old` ([`public::too_old`]), so a copy is not taken
 /// for gone, nor a person for refused.
-async fn answer_or_too_old(remote: &Remote, token: Secret, f: Forwarded) -> Response {
+async fn answer_or_too_old(s: &AppState, remote: &Remote, token: Secret, f: Forwarded) -> Response {
     let code = || {
         serde_json::from_slice::<Value>(&f.body)
             .ok()
@@ -199,7 +227,7 @@ async fn answer_or_too_old(remote: &Remote, token: Secret, f: Forwarded) -> Resp
     if suspect && lacks_app_routes(remote, token).await {
         return public::too_old(&remote.origin, "reach the Clax app's copies").into_response();
     }
-    answer(&remote.origin, f)
+    passed(s, remote, f).await
 }
 
 /// Whether `remote` answers `GET /api/hosted/apps` 404: a public Clax
@@ -289,6 +317,7 @@ pub async fn put_bundle(
         .collect();
     let n = q.remote_n.to_string();
     Ok(forward(
+        &s,
         &remote,
         token,
         Method::PUT,
@@ -326,7 +355,8 @@ pub struct LinkBody {
 
 /// `POST /api/remotes/<rid>/links {artifact_id, remote_artifact_id, url,
 /// remote_n}` (the owner) → 201 `{link}`: links local app `artifact_id`,
-/// its current version, to public version `remote_n` of
+/// its current version (or the version a push of it made `remote_n`
+/// from, when one did), to public version `remote_n` of
 /// `remote_artifact_id` on `rid` without a push, as an app got from there
 /// is, or one linked again after a sign-in. Its next publish builds on
 /// `remote_n`. Agents may not push it without asking. 400 `invalid_args`
@@ -357,7 +387,14 @@ pub async fn link(
     let l = s
         .store_call(move |st| {
             let a = st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            st.link_remote(id.as_str(), &r2, &raid, &url, a.current_version, n)
+            // The local version a push of it made `remote_n` from, if one
+            // did (a link made again after a new sign-in): later local
+            // versions are not its twin.
+            let base = st
+                .pushed_twin(id.as_str(), &raid, n)?
+                .filter(|&b| b <= a.current_version)
+                .unwrap_or(a.current_version);
+            st.link_remote(id.as_str(), &r2, &raid, &url, base, n)
         })
         .await?;
     s.linked.links_changed();
@@ -379,11 +416,12 @@ pub async fn head(
     let (rid, raid) = path(p)?;
     let (remote, token) = owners_remote(&s, &d, rid).await?;
     let raid = remote_artifact(&raid)?;
-    Ok(get_json(&remote, token, &["api", "artifacts", &raid, "head"]).await)
+    Ok(get_json(&s, &remote, token, &["api", "artifacts", &raid, "head"]).await)
 }
 
-async fn get_json(remote: &Remote, token: Secret, segs: &[&str]) -> Response {
+async fn get_json(s: &AppState, remote: &Remote, token: Secret, segs: &[&str]) -> Response {
     forward(
+        s,
         remote,
         token,
         Method::GET,
@@ -414,6 +452,7 @@ pub async fn bundle(
     let raid = remote_artifact(&raid)?;
     let n = n.to_string();
     Ok(forward(
+        &s,
         &remote,
         token,
         Method::GET,
@@ -449,39 +488,11 @@ pub async fn version_files(
     let (remote, token) = owners_remote(&s, &d, rid).await?;
     let raid = remote_artifact(&raid)?;
     let n = n.to_string();
-    Ok(get_json(&remote, token, &["api", "artifacts", &raid, "versions", &n]).await)
-}
-
-/// `GET /api/remotes/<rid>/artifacts/<raid>/versions/<n>/files/<path>` (the
-/// owner) → the bytes of that file of public version `n`, as the remote's
-/// `GET /api/artifacts/<raid>/versions/<n>/files/<path>` answers them, at
-/// most a file's 16 MiB.
-pub async fn version_file(
-    State(s): State<AppState>,
-    d: DeniedToGrants,
-    who: Identity,
-    p: Result<Path<(String, String, u32, String)>, PathRejection>,
-) -> Result<Response, ApiError> {
-    super::remotes::local_only(&s)?;
-    d.refuse_agents()?;
-    who.require_owner("reaches a public Clax")?;
-    let (rid, raid, n, file) = path(p)?;
-    let (remote, token) = owners_remote(&s, &d, rid).await?;
-    let raid = remote_artifact(&raid)?;
-    let file = file_segments(&file)?;
-    let n = n.to_string();
-    let mut segs = vec!["api", "artifacts", raid.as_str(), "versions", &n, "files"];
-    segs.extend(file.iter().map(String::as_str));
-    Ok(forward(
+    Ok(get_json(
+        &s,
         &remote,
         token,
-        Method::GET,
-        &segs,
-        &[],
-        Vec::new(),
-        None,
-        clax_core::publish::MAX_FILE_BYTES as usize,
-        answer_too_large,
+        &["api", "artifacts", &raid, "versions", &n],
     )
     .await)
 }
@@ -508,7 +519,7 @@ pub async fn get_sharing(
     let (rid, raid) = path(p)?;
     let (remote, token) = owners_remote(&s, &d, rid).await?;
     let raid = remote_artifact(&raid)?;
-    Ok(get_json(&remote, token, &sharing_path(&raid, &["sharing"])).await)
+    Ok(get_json(&s, &remote, token, &sharing_path(&raid, &["sharing"])).await)
 }
 
 /// `POST /api/remotes/<rid>/artifacts/<raid>/installs {install}` (the
@@ -533,6 +544,7 @@ pub async fn record_install(
     let raid = remote_artifact(&raid)?;
     let sent = json_body(&sent)?;
     Ok(forward(
+        &s,
         &remote,
         token,
         Method::POST,
@@ -560,6 +572,7 @@ async fn put_sharing(
     let raid = remote_artifact(&raid)?;
     let sent = json_body(sent)?;
     Ok(forward(
+        s,
         &remote,
         token,
         Method::PUT,
@@ -575,52 +588,113 @@ async fn put_sharing(
 
 /// `PUT /api/remotes/<rid>/artifacts/<raid>/sharing/link {access,
 /// listed?}` (the owner) → the remote's `PUT
-/// /api/hosted/artifacts/<raid>/link`.
+/// /api/hosted/artifacts/<raid>/link`. A change that may widen who opens
+/// the public copy (an `access`, so anyone with the link, or `listed:
+/// true`, so the public gallery) made with the token alone while an agent
+/// session is live waits for a click in the owner's browser first: 202
+/// `confirmation_pending` ([`clax_http::confirm`]).
 pub async fn put_link(
     State(s): State<AppState>,
     d: DeniedToGrants,
     who: Identity,
     _o: SameOrigin,
+    by: Confirming,
     p: Result<Path<(String, String)>, PathRejection>,
     sent: Bytes,
 ) -> Result<Response, ApiError> {
     super::remotes::local_only(&s)?;
     d.refuse_agents()?;
     who.require_owner("reaches a public Clax")?;
+    let change: Value = serde_json::from_slice(&sent)
+        .map_err(|_| ApiError::bad_request("invalid_json", "the body is not JSON"))?;
+    let widens = !change["access"].is_null() || change["listed"] == true;
+    if widens && let Ok(Path((rid, raid))) = &p {
+        let decision = Decision::Widen {
+            artifact_id: raid.clone(),
+            to: if change["listed"] == true {
+                "public"
+            } else {
+                "link"
+            }
+            .into(),
+            remote_id: Some(rid.clone()),
+            body: Some(change.clone()),
+        };
+        require_confirmation(&s, &d.caller(&s).await?, &by, decision).await?;
+    }
     put_sharing(&s, &d, p, "link", &sent).await
 }
 
 /// `PUT /api/remotes/<rid>/artifacts/<raid>/sharing/shares {github_login |
 /// person, access}` (the owner) → the remote's `PUT
-/// /api/hosted/artifacts/<raid>/shares`.
+/// /api/hosted/artifacts/<raid>/shares`. Naming a person widens who opens
+/// the public copy: made with the token alone while an agent session is
+/// live, it waits for a click in the owner's browser first, as `put_link`
+/// does (202 `confirmation_pending`, [`clax_http::confirm`]).
 pub async fn put_share(
     State(s): State<AppState>,
     d: DeniedToGrants,
     who: Identity,
     _o: SameOrigin,
+    by: Confirming,
     p: Result<Path<(String, String)>, PathRejection>,
     sent: Bytes,
 ) -> Result<Response, ApiError> {
     super::remotes::local_only(&s)?;
     d.refuse_agents()?;
     who.require_owner("reaches a public Clax")?;
+    let change: Value = serde_json::from_slice(&sent)
+        .map_err(|_| ApiError::bad_request("invalid_json", "the body is not JSON"))?;
+    widen(&s, &d, &by, &p, "person", &change).await?;
     put_sharing(&s, &d, p, "shares", &sent).await
 }
 
 /// `PUT /api/remotes/<rid>/artifacts/<raid>/sharing/comments {on}` (the
 /// owner) → the remote's `PUT /api/hosted/artifacts/<raid>/comments`.
+/// Turning comments on (`on` not `false`) widens what the public copy's
+/// readers may do: confirmed as `put_share` is.
 pub async fn put_comments(
     State(s): State<AppState>,
     d: DeniedToGrants,
     who: Identity,
     _o: SameOrigin,
+    by: Confirming,
     p: Result<Path<(String, String)>, PathRejection>,
     sent: Bytes,
 ) -> Result<Response, ApiError> {
     super::remotes::local_only(&s)?;
     d.refuse_agents()?;
     who.require_owner("reaches a public Clax")?;
+    let change: Value = serde_json::from_slice(&sent)
+        .map_err(|_| ApiError::bad_request("invalid_json", "the body is not JSON"))?;
+    if change["on"] != false {
+        widen(&s, &d, &by, &p, "comments", &change).await?;
+    }
     put_sharing(&s, &d, p, "comments", &sent).await
+}
+
+/// The browser confirmation of widening the public copy `p` names to
+/// `to` with `change` ([`Decision::Widen`]); nothing for a path that does
+/// not parse, which `put_sharing` refuses.
+async fn widen(
+    s: &AppState,
+    d: &DeniedToGrants,
+    by: &Confirming,
+    p: &Result<Path<(String, String)>, PathRejection>,
+    to: &str,
+    change: &Value,
+) -> Result<(), ApiError> {
+    let Ok(Path((rid, raid))) = p else {
+        return Ok(());
+    };
+    let decision = Decision::Widen {
+        artifact_id: raid.clone(),
+        to: to.into(),
+        remote_id: Some(rid.clone()),
+        body: Some(change.clone()),
+    };
+    require_confirmation(s, &d.caller(s).await?, by, decision).await?;
+    Ok(())
 }
 
 /// `DELETE /api/remotes/<rid>/artifacts/<raid>/sharing/shares/<sid>` (the
@@ -640,6 +714,7 @@ pub async fn delete_share(
     let raid = remote_artifact(&raid)?;
     let sid = share_id(&sid)?;
     Ok(forward(
+        &s,
         &remote,
         token,
         Method::DELETE,
@@ -666,7 +741,7 @@ pub async fn apps(
     d.refuse_agents()?;
     who.require_owner("reaches a public Clax")?;
     let (remote, token) = owners_remote(&s, &d, path(rid)?).await?;
-    Ok(get_json(&remote, token, &["api", "hosted", "apps"]).await)
+    Ok(get_json(&s, &remote, token, &["api", "hosted", "apps"]).await)
 }
 
 /// `DELETE /api/remotes/<rid>/artifacts/<raid>` (the owner; Unpublish) →
@@ -705,12 +780,15 @@ pub async fn unpublish(
         c.end_session().await;
         f
     })
-    .await
-    .map_err(ApiError::from)?;
+    .await;
+    let f = match f {
+        Ok(f) => f,
+        Err(f) => return Err(failed(&s, &remote, f).await),
+    };
     let deleted = match f.status {
         200..=299 => true,
         404 => false,
-        _ => return Ok(answer(&remote.origin, f)),
+        _ => return Ok(passed(&s, &remote, f).await),
     };
     let (r2, t2) = (remote.id.clone(), raid.clone());
     let unlinked = s
@@ -765,7 +843,7 @@ pub async fn comment(
         ));
     }
     let mut c = public::Client::new(&remote.origin, Some(token.clone()));
-    let head = clax_rt::sendable(c.forward(
+    let head = match clax_rt::sendable(c.forward(
         Method::GET,
         &["api", "artifacts", &raid, "head"],
         &[],
@@ -774,9 +852,12 @@ pub async fn comment(
         public::MAX_ANSWER_BYTES,
     ))
     .await
-    .map_err(ApiError::from)?;
+    {
+        Ok(f) => f,
+        Err(f) => return Err(failed(&s, &remote, f).await),
+    };
     if !(200..300).contains(&head.status) {
-        return Ok(answer_or_too_old(&remote, token, head).await);
+        return Ok(answer_or_too_old(&s, &remote, token, head).await);
     }
     let version = serde_json::from_slice::<Value>(&head.body)
         .ok()
@@ -805,9 +886,11 @@ pub async fn comment(
         c.end_session().await;
         f
     })
-    .await
-    .map_err(ApiError::from)?;
-    Ok(answer(&remote.origin, f))
+    .await;
+    Ok(match f {
+        Ok(f) => passed(&s, &remote, f).await,
+        Err(f) => failed(&s, &remote, f).await.into_response(),
+    })
 }
 
 #[cfg(test)]

@@ -1000,6 +1000,54 @@ async fn relink_moves_an_existing_links_base() {
     assert_eq!(texts(&public.ts, &raid, 3), texts(&local, &aid, 2));
 }
 
+#[tokio::test]
+async fn a_link_made_again_after_a_new_sign_in_bases_on_the_pushed_version() {
+    let public = Public::new().await;
+    let local = TestServer::spawn().await;
+    let rid = connect_app(&local, &public).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let aid = app(&local, "Tips", &[("index.html", "<h1>1</h1>")]).await;
+    let (s, v) = publish(&local, &aid, 1).await;
+    assert_eq!(s, 200, "{v}");
+    let raid = raid_of(&v);
+    // A local version not published yet, then a new sign-in.
+    version(&local, &aid, 1, &[("index.html", Some("<h1>2</h1>"))]).await;
+    let (s, v) = local_req(
+        &local,
+        reqwest::Method::DELETE,
+        &format!("/api/remotes/{rid}"),
+        json!(null),
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let rid = connect_app(&local, &public).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = post(
+        &local,
+        &format!("/api/remotes/{rid}/links"),
+        json!({"artifact_id": aid, "remote_artifact_id": raid, "url": "u", "remote_n": 1}),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(
+        (
+            v["link"]["pushed_n"].as_u64(),
+            v["link"]["remote_n"].as_u64()
+        ),
+        (Some(1), Some(1)),
+        "public version 1 is local version 1, not the newer 2: {v}"
+    );
+    // The unpublished version goes up on it.
+    let (s, v) = publish(&local, &aid, 2).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["pushed"], json!([{"n": 2, "remote_n": 2}]), "{v}");
+}
+
 /// `POST /api/remotes/<rid>/artifacts/<raid>/comments {body}`.
 async fn tell(local: &TestServer, rid: &str, raid: &str, body: Value) -> (u16, Value) {
     post(

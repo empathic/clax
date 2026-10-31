@@ -83,6 +83,18 @@ async function api(live: Live, path: string, init: RequestInit = {}, session?: s
   return res.json();
 }
 
+/** Approves, as the person would in their browser (an owner browser
+ * session), the extension's pairing the native host asked for. While an
+ * agent session of the owner's is live, its mint with the token waits for
+ * that click (docs/contract.md "Browser confirmations", decision 6); the
+ * host waits on the confirmation and mints again once it is approved. */
+async function confirmPairing(live: Live): Promise<void> {
+  const d = live.daemon;
+  const c = await until(async () => ((await api(live, "/api/confirmations")).confirmations as { id: string; decision: { kind: string } }[]).find(x => x.decision.kind === "extension_mint"));
+  const res = await fetch(`${d.base}/api/confirmations/${c.id}`, { method: "POST", headers: { cookie: ownerCookie(d.base), origin: d.base, "content-type": "application/json" }, body: JSON.stringify({ approve: true }) });
+  expect(res.status, await res.text()).toBe(200);
+}
+
 /** Chrome's own side panel, opened for the tab `tabId` (which Clax must be
  * on in: the panel is enabled only there) under a real click in an
  * extension page (`sidePanel.open` needs a gesture), then read and clicked
@@ -188,6 +200,11 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
   await until(async () => ((await h.state(tabId))?.commentMode ? true : null));
   console.log(`icon → comment mode on: ${Date.now() - t0} ms (reported, not judged)`);
   const panel = await SidePanel.open(live, page, tabId);
+  // An agent session is live, so the pairing this tab started waits for the
+  // person, and the panel tells them where to confirm it.
+  await expect.poll(() => panel.text()).toContain("Confirm pairing in your Clax browser tab");
+  await confirmPairing(live);
+  await expect.poll(() => panel.text()).not.toContain("Confirm pairing in your Clax browser tab");
 
   // A page script finds no shadow root to read.
   expect(await page.evaluate(() => (document.querySelector("clax-overlay") as HTMLElement | null)?.shadowRoot ?? null)).toBeNull();
@@ -444,6 +461,8 @@ test("the panel lists the site's other pages, answers and resolves their threads
   const tabId = await tabIdOf(live, home);
   await h.comment(tabId, home);
   const panel = await SidePanel.open(live, page, tabId);
+  // An agent session is live, so the pairing this tab started waits for the person.
+  await confirmPairing(live);
   // This page's thread, then both other pages under their paths.
   await expect.poll(() => panel.text()).toContain("Elsewhere on this site");
   const text = await panel.text();
@@ -567,6 +586,8 @@ test("two ports of one app join into one site: suggested, joined, listed and pin
     const tabId = await tabIdOf(live, `${O2}/`);
     await h.comment(tabId, `${O2}/`);
     const panel = await SidePanel.open(live, page, tabId);
+    // An agent session is live, so the pairing this tab started waits for the person.
+    await confirmPairing(live);
     // The suggestion waits for the site's listing, which waits for the worker's stream.
     // The first lookup waits for the worker to pair through the native host, which a loaded machine makes slow.
     await expect.poll(() => live.sw.evaluate(o => !!(globalThis as unknown as { claxTest: { site(o: string): unknown } }).claxTest.site(o), O2)).toBe(true);
@@ -1002,6 +1023,8 @@ test("the panel shows the live page's questions above its threads, answers one, 
   await h.comment(tabId, home);
   // Opened while the worker may still be pairing: the panel and the inbox join that pairing.
   const panel = await SidePanel.open(live, page, tabId);
+  // An agent session is live, so the pairing this tab started waits for the person.
+  await confirmPairing(live);
   // The side panel's width (spec §9.6: 360 px).
   await panel.send("Emulation.setDeviceMetricsOverride", { width: 360, height: 900, deviceScaleFactor: 2, mobile: false });
   const shot = async (name: string) => {
@@ -1151,6 +1174,8 @@ test.describe("with a person connected on the LAN", () => {
       const tabId = await tabIdOf(live, home);
       await h.comment(tabId, home);
       const panel = await SidePanel.open(live, page, tabId);
+      // An agent session is live, so the pairing this tab started waits for the person.
+      await confirmPairing(live);
       const scheme = (v: "light" | "dark") => panel.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: v }] });
       // At the side panel's narrowest, its usual (spec §9.6: 360 px) and a wide one, light and dark.
       const shots = async (name: string) => {

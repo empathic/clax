@@ -32,7 +32,9 @@ pub struct MetaPatch {
     pub via_page: bool,
 }
 
-/// The `artifact.create` record of `a` (spec §6.1), at `at`.
+/// The `artifact.create` record of `a` (spec §6.1), at `at`: with
+/// `forked_from {artifact_id, n}` (and the source as its second artifact)
+/// when `a` was made from another artifact.
 pub(super) fn create_record(a: &Artifact, at: &str) -> AuditRecord {
     let mut r = AuditRecord::new(AuditKind::ArtifactCreate, at)
         .with("title", a.title.as_str())
@@ -40,6 +42,13 @@ pub(super) fn create_record(a: &Artifact, at: &str) -> AuditRecord {
         .with("icon", a.icon.clone())
         .with("capabilities", a.capabilities.clone())
         .with("contract_version", a.contract_version.as_str());
+    if let Some(f) = &a.forked_from {
+        r = r.with(
+            "forked_from",
+            serde_json::json!({"artifact_id": f.artifact_id, "n": f.version}),
+        );
+        r.ids.artifact2 = Some(f.artifact_id.clone());
+    }
     r.ids.artifact = Some(a.id.clone());
     r
 }
@@ -244,13 +253,15 @@ impl Store {
     }
 
     /// Live artifacts (not deleted, at least one version, not hidden
-    /// drafts): pinned first, then most recently updated, ties broken by ID.
+    /// drafts, not followed remote artifacts' mirrors): pinned first, then
+    /// most recently updated, ties broken by ID.
     /// Rows with a malformed JSON column are logged and left out (see
     /// [`Store::corrupt_rows`]).
     pub fn list_artifacts(&self) -> Result<Vec<Artifact>> {
         self.with_read(|c| {
             let mut stmt = c.prepare(&format!(
                 "{SELECT} WHERE deleted_at IS NULL AND current_version > 0 AND hidden = 0
+                   AND remote_mirror = 0
                  ORDER BY pinned DESC, updated_at DESC, id"
             ))?;
             let rows = stmt.query_map([], row_to_artifact)?;
@@ -660,14 +671,16 @@ impl Store {
     }
 
     /// IDs of live-looking artifact rows that never recorded a version (a
-    /// creation that died before version 1), sorted.
+    /// creation that died before version 1), sorted. A followed remote
+    /// artifact's mirror, which never has one, is not among them.
     ///
     /// # Errors
     /// Database errors only.
     pub fn zero_version_artifacts(&self) -> Result<Vec<String>> {
         self.with_read(|c| {
             let mut stmt = c.prepare(
-                "SELECT id FROM artifacts WHERE current_version = 0 AND deleted_at IS NULL ORDER BY id",
+                "SELECT id FROM artifacts WHERE current_version = 0 AND deleted_at IS NULL
+                   AND remote_mirror = 0 ORDER BY id",
             )?;
             Ok(stmt
                 .query_map([], |r| r.get(0))?
@@ -704,7 +717,9 @@ impl Store {
     /// artifact's row and its first version's transaction (a create, or
     /// ClaxBot's `artifacts.create`). A younger one may be a create under
     /// way, and is kept, as is a live page (`kind` `live`), which has no
-    /// version until its first snapshot. A driver runs it when it starts.
+    /// version until its first snapshot, and a followed remote artifact's
+    /// mirror (`remote_mirror`), which never has one. A driver runs it when
+    /// it starts.
     /// Returns how many it removed.
     ///
     /// # Errors
@@ -717,7 +732,7 @@ impl Store {
         let ids: Vec<String> = self.with_read(|c| {
             let mut stmt = c.prepare(
                 "SELECT id FROM artifacts WHERE current_version = 0 AND deleted_at IS NULL
-                   AND kind <> 'live' AND created_at < ?1 ORDER BY id",
+                   AND kind <> 'live' AND remote_mirror = 0 AND created_at < ?1 ORDER BY id",
             )?;
             Ok(stmt
                 .query_map(params![before], |r| r.get(0))?
@@ -743,7 +758,8 @@ impl Store {
         let removed = self.with_tx(|tx| {
                 let still: bool = tx.query_row(
                     "SELECT EXISTS (SELECT 1 FROM artifacts
-                        WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL)",
+                        WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL
+                          AND remote_mirror = 0)",
                     params![id],
                     |r| r.get(0),
                 )?;
@@ -773,7 +789,7 @@ impl Store {
                     tx.execute(sql, params![id])?;
                 }
                 Ok(tx.execute(
-                    "DELETE FROM artifacts WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL",
+                    "DELETE FROM artifacts WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL AND remote_mirror = 0",
                     params![id],
                 )?)
             })?;

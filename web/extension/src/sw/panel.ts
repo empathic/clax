@@ -26,6 +26,10 @@ export type PanelDeps = {
   /** Opens tabs for inbox items: the paired daemon's origin, a new tab at a URL, and bringing a tab to the front. */
   open: {
     daemon(): Promise<string>; create(url: string): Promise<void>; focus(tabId: number): Promise<void>;
+    /** Where a new tab opens daemon path `path`: a one-use login link the
+     * native host makes with the token, so the tab's browser is the
+     * owner's there; the path on the paired daemon when none can be had. */
+    login(path: string): Promise<string>;
     /** A tab at `url` (any of them), among the tabs whose address the extension may read; null for none. */
     find(url: string): Promise<number | null>;
   };
@@ -73,13 +77,14 @@ export async function panelAction(d: PanelDeps, tabId: number | null, m: PanelTo
 }
 
 /** The question and inbox requests, which act on no tab. */
-const INBOX_ACTIONS = new Set<PanelToWorker["t"]>(["q-answer", "q-decline", "q-release", "q-pull", "inbox-page", "inbox-mark", "inbox-mark-all", "open-url"]);
+const INBOX_ACTIONS = new Set<PanelToWorker["t"]>(["q-answer", "q-decline", "q-release", "q-pull", "inbox-page", "inbox-mark", "inbox-mark-all", "open-url", "open-clax"]);
 const LIVE_ITEM = /^\/a\/([0-9a-hjkmnp-tv-z]{12})(?:[/?#]|$)/;
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
 /** Opens daemon path `path` (an inbox item's `url`, which `isFromPanel`
  * checked is a path): a tab showing that live page comes to the front, its
- * thread (`?thread=`) selected; otherwise a new tab opens it on the paired daemon. */
+ * thread (`?thread=`) selected; otherwise a new tab opens it on the paired
+ * daemon, through a login link (`open.login`). */
 export async function openPath(d: PanelDeps, path: string, pageUrl: string | null = null): Promise<void> {
   const aid = LIVE_ITEM.exec(path)?.[1];
   const tabId = aid ? d.tabs.onTabs().find(id => d.tabs.state(id)?.page?.artifact_id === aid) : undefined;
@@ -92,7 +97,7 @@ export async function openPath(d: PanelDeps, path: string, pageUrl: string | nul
   // A tab showing the live page with Clax off in it comes to the front as it is.
   const other = aid && pageUrl ? await d.open.find(pageUrl) : null;
   if (other !== null) { await d.open.focus(other); return; }
-  await d.open.create((await d.open.daemon()) + path);
+  await d.open.create(await d.open.login(path));
 }
 
 /** A question or inbox message: acted on, and its result told; false for any other message. */
@@ -120,6 +125,7 @@ async function inboxAction(d: PanelDeps, m: PanelToWorker, reply: (r: WorkerToPa
       return true;
     }
     case "open-url": await openPath(d, m.url, m.pageUrl); return true;
+    case "open-clax": await d.open.create(await d.open.login(m.path)); return true;
     default: return false;
   }
 }

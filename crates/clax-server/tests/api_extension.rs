@@ -129,12 +129,9 @@ async fn the_owners_agents_cannot_mint_an_extension_credential() {
     }
     let status: Value = ts.get_authed("/api/extension").await.json().await.unwrap();
     assert_eq!(status["live_credentials"], 0, "{status}");
-    // The CLI by hand (the native host, run by Chrome) still pairs.
-    let res = ts
-        .authed(ts.client.post(&url))
-        .json(&body)
-        .send()
-        .await
-        .unwrap();
+    // The CLI by hand (the native host, run by Chrome) still pairs, once the
+    // owner confirms in their browser while an agent is live.
+    let path = url.trim_start_matches(&ts.base).to_string();
+    let res = ts.confirmed(reqwest::Method::POST, &path, body).await;
     assert_eq!(res.status(), 200);
 }

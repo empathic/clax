@@ -20,7 +20,7 @@
 import { type OverlayToWorker, type WorkerToOverlay, isComposerNote, isFromOverlay, isFromPanel } from "../messages";
 import { captureClip, chromeCapture } from "./capture";
 import * as origins from "./origins";
-import { PairError } from "./pairing";
+import { HOST, PairError } from "./pairing";
 import { type PanelDeps, panelAction } from "./panel";
 import { composerFrameTab, composerTab, createWorker } from "./worker";
 
@@ -221,6 +221,11 @@ export function startBackground(c: typeof chrome) {
     api, tabs, pairer, sites, inbox,
     open: {
       daemon: async () => (await pairer.current()).daemon,
+      login: async path => {
+        const daemon = (await pairer.current()).daemon;
+        const r = await c.runtime.sendNativeMessage(HOST, { type: "login", v: 1, next: path }).catch(() => null) as { type?: unknown; url?: unknown } | null;
+        return r?.type === "login" && typeof r.url === "string" && r.url.startsWith(`${daemon}/login?`) ? r.url : daemon + path;
+      },
       create: async url => { await c.tabs.create({ url }); },
       // Matches only tabs whose address the extension may read (an origin it holds).
       find: async url => (await c.tabs.query({ url: url.split("#")[0] }).catch(() => []))[0]?.id ?? null,

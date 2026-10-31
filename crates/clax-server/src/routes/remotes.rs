@@ -37,6 +37,7 @@ use clax_core::{ArtifactId, CoreError};
 use clax_http::agent::DeniedToGrants;
 use clax_http::audit::DeferredAudit;
 use clax_http::auth::Caller;
+use clax_http::confirm::{Confirming, Decision, require_confirmation};
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
 use clax_http::identity::Identity;
@@ -85,7 +86,21 @@ fn remote_view(r: &Remote) -> Value {
     json!(r)
 }
 
-/// `GET /api/remotes` → `{remotes}`, oldest first.
+/// [`remote_view`] for `asker`: an agent never sees a waiting sign-in's
+/// user code or approval page, which are the person's to use.
+fn remote_view_for(r: &Remote, asker: &Asker) -> Value {
+    let mut v = remote_view(r);
+    if matches!(asker, Asker::Agent(_))
+        && let Some(o) = v.as_object_mut()
+    {
+        o.remove("user_code");
+        o.remove("verification_url");
+    }
+    v
+}
+
+/// `GET /api/remotes` → `{remotes}`, oldest first. An agent's list leaves
+/// out a waiting sign-in's `user_code` and `verification_url`.
 pub async fn list(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -93,10 +108,10 @@ pub async fn list(
 ) -> Result<Json<Value>, ApiError> {
     local_only(&s)?;
     who.require_owner("publishes to a public Clax")?;
-    asker(&s, &d).await?;
+    let by = asker(&s, &d).await?;
     let rs = s.store_call(|st| st.remotes()).await?;
     Ok(Json(
-        json!({"remotes": rs.iter().map(remote_view).collect::<Vec<_>>()}),
+        json!({"remotes": rs.iter().map(|r| remote_view_for(r, &by)).collect::<Vec<_>>()}),
     ))
 }
 
@@ -168,12 +183,16 @@ fn return_address(
 /// host, or at a public Clax that refused the field). 400 `invalid_args`
 /// for a URL that is not a public origin, another kind or a `return_to`
 /// that is not a path; 400 `remote_exists` for one signed in to already;
-/// 502 for a remote that refused or could not be reached.
+/// 502 for a remote that refused or could not be reached. While an agent
+/// session is live, the token's call waits for a click in the owner's
+/// browser before it reaches the remote: 202 `confirmation_pending`
+/// ([`clax_http::confirm`]).
 pub async fn add(
     State(s): State<AppState>,
     d: DeniedToGrants,
     who: Identity,
     _o: SameOrigin,
+    by: Confirming,
     headers: HeaderMap,
     req: Result<Json<AddBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
@@ -196,12 +215,60 @@ pub async fn add(
         None => None,
     };
     let origin = public::origin_of(&b.url)?;
-    let name = b
-        .name
+    let decision = Decision::Connect {
+        origin: origin.clone(),
+        name: b.name.clone(),
+        machine: b.machine.clone(),
+    };
+    require_confirmation(&s, &d.caller(&s).await?, &by, decision).await?;
+    let (r, return_to_kept) = start_add(
+        &s,
+        origin,
+        b.name,
+        b.machine,
+        b.kind.as_deref(),
+        return_to.as_deref(),
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(sign_in_view(&r, return_to_kept))).into_response())
+}
+
+/// What `POST /api/remotes` answers for the sign-in of pending remote `r`:
+/// `{remote, user_code, verification_url, expires_at, interval,
+/// return_to_kept}`.
+pub(super) fn sign_in_view(r: &Remote, return_to_kept: bool) -> Value {
+    json!({
+        "remote": remote_view(r),
+        "user_code": r.user_code,
+        "verification_url": r.verification_url,
+        "expires_at": r.sign_in_expires_at,
+        "interval": r.poll_interval_s,
+        "return_to_kept": return_to_kept,
+    })
+}
+
+/// The owner's add, once its caller is checked: starts a device sign-in
+/// at `origin` (normalized, [`public::origin_of`]) naming this machine
+/// `machine` (its host name when absent) and keeps the remote, named
+/// `name` (its host when absent), waiting for it. Also the Connect of a
+/// connection request (`crate::routes::remote_requests`). The pending
+/// remote, and whether the remote kept `return_to`.
+///
+/// # Errors
+/// 400 `remote_exists` for an origin signed in to already, or a name
+/// taken; the remote's ([`public::start_sign_in`]).
+pub(super) async fn start_add(
+    s: &AppState,
+    origin: String,
+    name: Option<String>,
+    machine: Option<String>,
+    kind: Option<&str>,
+    return_to: Option<&str>,
+) -> Result<(Remote, bool), ApiError> {
+    let name = name
         .filter(|n| !n.trim().is_empty())
         .unwrap_or_else(|| public::default_name(&origin));
-    let machine = b
-        .machine
+    let machine = machine
         .filter(|n| !n.trim().is_empty())
         .unwrap_or_else(public::machine_name);
     let o2 = origin.clone();
@@ -219,13 +286,14 @@ pub async fn add(
     let (sign_in, return_to_kept) = clax_rt::sendable(public::start_sign_in(
         &origin,
         &machine,
-        b.kind.as_deref(),
-        return_to.as_deref(),
+        kind,
+        return_to,
+        s.remote_deadline,
     ))
     .await?;
     // What the token will read threads as there: a device's unfiltered,
     // an agent token's filtered by the person's approvals.
-    let kind = match b.kind.as_deref() {
+    let kind = match kind {
         Some(clax_store::remotes::CLIENT_KIND_APP) => clax_store::remotes::CLIENT_KIND_APP,
         _ => clax_store::remotes::CLIENT_KIND_AGENT,
     };
@@ -236,30 +304,33 @@ pub async fn add(
             Ok(r)
         })
         .await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "remote": remote_view(&r),
-            "user_code": r.user_code,
-            "verification_url": r.verification_url,
-            "expires_at": r.sign_in_expires_at,
-            "interval": r.poll_interval_s,
-            "return_to_kept": return_to_kept,
-        })),
-    )
-        .into_response())
+    Ok((r, return_to_kept))
 }
 
-async fn remote_named(s: &AppState, key: String) -> Result<Remote, ApiError> {
-    s.store_call(move |st| st.find_remote(&key))
+/// The remote `key` names: its ID, name or origin.
+///
+/// # Errors
+/// 404 `no_remote`.
+pub(super) async fn remote_named(s: &AppState, key: &str) -> Result<Remote, ApiError> {
+    let k = key.trim().trim_end_matches('/').to_string();
+    s.store_call(move |st| st.find_remote(&k))
         .await?
-        .ok_or_else(ApiError::not_found)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "no_remote",
+                format!(
+                    "no remote is named '{}': `clax remote list` names them",
+                    key.trim()
+                ),
+            )
+        })
 }
 
 /// `POST /api/remotes/<id or name>/poll` (the owner) → `{remote, status}`,
 /// `status` `pending` (poll again after the remote's interval),
-/// `connected`, or `denied` / `expired` (the remote is forgotten: add it
-/// again). 400 `not_pending` for a remote connected already.
+/// `connected`, or `denied` / `expired` (a new remote is forgotten: add it
+/// again; one that was signed out is signed out again, its links kept). 400 `not_pending` for a remote connected already.
 pub async fn poll(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -271,7 +342,11 @@ pub async fn poll(
     d.refuse_agents()?;
     who.require_owner("publishes to a public Clax")?;
     asker(&s, &d).await?;
-    let r = remote_named(&s, path(id)?).await?;
+    let r = remote_named(&s, &path(id)?).await?;
+    // One poll of a sign-in at a time, as a connection request's driver
+    // polls (`super::remote_requests`): a second never spends a used code.
+    let lock = s.remote_drivers.connect_lock(&r.origin);
+    let _one = lock.lock().await;
     let (status, shown) = match clax_rt::sendable(public::poll_sign_in(&s, &r)).await? {
         SignIn::Waiting => ("pending", r),
         SignIn::Refused("access_denied") => ("denied", r),
@@ -289,7 +364,7 @@ pub async fn poll(
 /// Keeps the home that now holds an outbound agent token its user's alone:
 /// the root 0700 and the database's files 0600 (a home made by an older
 /// Clax, or copied in, may be readable by others). Native unix only.
-fn owner_only(home: &clax_core::Home) {
+pub(super) fn owner_only(home: &clax_core::Home) {
     #[cfg(all(unix, not(target_arch = "wasm32")))]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -329,7 +404,7 @@ pub async fn remove(
     d.refuse_agents()?;
     who.require_owner("publishes to a public Clax")?;
     asker(&s, &d).await?;
-    let r = remote_named(&s, path(id)?).await?;
+    let r = remote_named(&s, &path(id)?).await?;
     let id = r.id.clone();
     let token = s.store_call(move |st| st.remote_token(&id)).await?;
     let revoked = match token {
@@ -349,16 +424,20 @@ pub async fn remove(
 }
 
 /// `GET /api/artifacts/<aid>/remotes` → `{links: [{remote_id, remote_name,
-/// origin, url, pushed_n, remote_n, auto, behind, download_only, sync,
-/// read_error, pending, failed, failed_questions}], remotes, unsent}`: the
-/// artifact's public twins (`behind`: local versions not pushed yet;
+/// origin, remote_status, url, pushed_n, remote_n, auto, behind,
+/// download_only, sync, read_error, pending, failed, failed_questions}],
+/// remotes, unsent}`: the artifact's public twins (`remote_status`: its
+/// remote's, `signed_out` when the remote refused this Clax's token and
+/// pushes and linked threads wait for a new sign-in; `behind`: local
+/// versions not pushed yet;
 /// `download_only`: local threads stay local; `sync`: how its remote's
 /// linked-threads sync stands, with `unreachable_since`; `read_error`: what
 /// the last cycle could not read of this link's threads, `null` when it
 /// read them all; `pending` and `failed`: its writes waiting to go up, and
 /// those not sent; `failed_questions`: its open questions whose copies were
 /// not sent, which Retry sends too), every connected remote, and `unsent`:
-/// the writes not sent to a remote the artifact is no longer linked to, which
+/// the writes not sent before a link of the artifact ended (never sent, even
+/// once it is linked to that remote again), which
 /// the owner may drop (`POST /api/artifacts/<aid>/unsent:drop`).
 pub async fn for_artifact(
     State(s): State<AppState>,
@@ -417,6 +496,7 @@ pub async fn for_artifact(
                 "remote_id": l.remote_id,
                 "remote_name": r.map(|r| r.name.clone()),
                 "origin": r.map(|r| r.origin.clone()),
+                "remote_status": r.map(|r| r.status.clone()),
                 "remote_artifact_id": l.remote_artifact_id,
                 "url": l.url,
                 "pushed_n": l.pushed_n,
@@ -462,7 +542,7 @@ async fn owned_link(
     }
     let (aid, rid) = path(aid)?;
     let id = parse_id(&aid)?;
-    let r = remote_named(s, rid).await?;
+    let r = remote_named(s, &rid).await?;
     let (a2, r2) = (id.as_str().to_string(), r.id.clone());
     s.store_call(move |st| st.remote_link(&a2, &r2))
         .await?
@@ -548,7 +628,7 @@ pub async fn retry(
 }
 
 /// `POST /api/artifacts/<aid>/unsent:drop` (the owner) → `{dropped}`: drops
-/// the writes not sent to a remote the artifact is no longer linked to,
+/// the writes not sent before a link of the artifact ended,
 /// once the owner confirms.
 pub async fn drop_unsent(
     State(s): State<AppState>,
@@ -600,25 +680,23 @@ pub struct PushBody {
 }
 
 /// The remote a push names, or the only connected one.
+///
+/// # Errors
+/// 404 `no_remote`; 400 `remote_required` for several connected and none
+/// named; 400 `not_connected` while its sign-in waits; 502
+/// `remote_signed_out` once it refused this Clax's token.
 pub(super) async fn push_target(s: &AppState, key: Option<String>) -> Result<Remote, ApiError> {
-    let remotes = s.store_call(|st| st.remotes()).await?;
-    let connected: Vec<&Remote> = remotes.iter().filter(|r| r.status == "connected").collect();
     let r = match key {
-        Some(k) => {
-            let k = k.trim().trim_end_matches('/').to_string();
-            remotes
-                .iter()
-                .find(|r| r.id == k || r.name == k || r.origin == k)
-                .ok_or_else(|| {
-                    ApiError::new(
-                        StatusCode::NOT_FOUND,
-                        "no_remote",
-                        format!("no remote is named '{k}': `clax remote list` names them"),
-                    )
-                })?
-        }
-        None => match connected.as_slice() {
-            [one] => *one,
+        Some(k) => remote_named(s, &k).await?,
+        None => match s
+            .store_call(|st| st.remotes())
+            .await?
+            .into_iter()
+            .filter(|r| r.status == "connected")
+            .collect::<Vec<_>>()
+            .as_slice()
+        {
+            [one] => one.clone(),
             [] => {
                 return Err(ApiError::new(
                     StatusCode::NOT_FOUND,
@@ -634,6 +712,9 @@ pub(super) async fn push_target(s: &AppState, key: Option<String>) -> Result<Rem
             }
         },
     };
+    if r.status == "signed_out" {
+        return Err(public::signed_out(&r.origin));
+    }
     if r.status != "connected" {
         return Err(ApiError::bad_request(
             "not_connected",
@@ -643,7 +724,7 @@ pub(super) async fn push_target(s: &AppState, key: Option<String>) -> Result<Rem
             ),
         ));
     }
-    Ok(r.clone())
+    Ok(r)
 }
 
 /// `POST /api/artifacts/<aid>/push {remote?, mode?, version?, auto?,
@@ -651,7 +732,9 @@ pub(super) async fn push_target(s: &AppState, key: Option<String>) -> Result<Rem
 /// remote_n}], assets_not_pushed}`, or for an agent waiting on the owner 202
 /// `{status: "approval_pending", question_id, inbox_url}` (see the module
 /// docs). Refusals: 404 `no_remote`; 400 `remote_required`,
-/// `not_connected`, `live_page`, `no_link`; 403 `not_approved` (the owner
+/// `not_connected` (its sign-in waits), `live_page`, `no_link`; 502
+/// `remote_signed_out` for a remote that refused this Clax's token (now or
+/// before); 403 `not_approved` (the owner
 /// declined, or answered outside Clax's browser and extension); 409
 /// `approval_used` for an approval spent already; 409 `remote_moved` when
 /// the public copy has versions this Clax did not push (push with `mode`
@@ -663,22 +746,25 @@ pub(super) async fn push_target(s: &AppState, key: Option<String>) -> Result<Rem
 /// public artifact's ID there) the new public copy it makes records that
 /// lineage, and with `title` it takes that name (400 `invalid_args` for
 /// either with another mode or an app linked there, and for an empty
-/// title).
+/// title). While an agent session is live, the owner's push made with
+/// the token alone waits for a click in their browser: 202
+/// `confirmation_pending` ([`clax_http::confirm`]).
 pub async fn push(
     State(s): State<AppState>,
     d: DeniedToGrants,
     who: Identity,
     _o: SameOrigin,
+    by: Confirming,
     audit: DeferredAudit,
     aid: Result<Path<String>, PathRejection>,
     req: Result<Json<PushBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     local_only(&s)?;
     who.require_owner("publishes to a public Clax")?;
-    let by = asker(&s, &d).await?;
+    let asking = asker(&s, &d).await?;
     // An agent's CLI (an agent channel with no session) asks no one: it is
     // refused before anything else, and pointed at the tool that asks.
-    if let Asker::Agent(None) = by {
+    if let Asker::Agent(None) = asking {
         return Err(ApiError::bad_request(
             "no_session",
             "an agent publishes with the publish_public tool, which asks the owner first",
@@ -687,7 +773,7 @@ pub async fn push(
     let id = parse_id(&path(aid)?)?;
     let b = body(req)?;
     let mode = Mode::parse(b.mode.as_deref(), b.version)?;
-    if matches!(mode, Mode::App { .. }) && !matches!(by, Asker::Owner) {
+    if matches!(mode, Mode::App { .. }) && !matches!(asking, Asker::Owner) {
         return Err(ApiError::forbidden(
             "forbidden",
             "an app's publish is the owner's, in the Clax app",
@@ -711,7 +797,21 @@ pub async fn push(
         title: b.title.clone(),
     };
     let remote = push_target(&s, b.remote.clone()).await?;
-    let (auto, upto) = match by {
+    if let Asker::Owner = asking {
+        let decision = Decision::Push {
+            artifact_id: id.as_str().to_string(),
+            remote_id: remote.id.clone(),
+            mode: match b.version {
+                Some(n) => format!("{}@{n}", b.mode.as_deref().unwrap_or("update")),
+                None => b.mode.clone().unwrap_or_else(|| "update".into()),
+            },
+            auto: b.auto,
+            forked_from: b.forked_from.clone(),
+            title: b.title.clone(),
+        };
+        require_confirmation(&s, &d.caller(&s).await?, &by, decision).await?;
+    }
+    let (auto, upto) = match asking {
         Asker::Owner => (b.auto, None),
         Asker::Agent(session) => {
             if b.auto.is_some() {

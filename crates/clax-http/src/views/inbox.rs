@@ -477,6 +477,32 @@ fn render(
             });
             !live
         }
+        // A connection request (spec 2026-10-29-remote-instances §3): the
+        // instance, what the agent wanted to read and why, and how the
+        // request stands now; in the asking agent's thread when it was
+        // working in one.
+        Kind::RemoteRequest => {
+            let d = i.detail.clone().unwrap_or(Value::Null);
+            let rid = d["request_id"].as_str().unwrap_or_default().to_string();
+            v["url"] = json!(format!("/inbox?remote_request={rid}"));
+            if let (Some(t), Some(tid)) = (&s.thread, &i.thread_id) {
+                v["thread"] =
+                    json!({"id": tid, "summary": text(json!(t.summary)), "status": t.status});
+            }
+            let r = st.peek_remote_request(&rid)?;
+            v["remote_request"] = json!({
+                "id": rid,
+                "origin": d["origin"],
+                "name": d["name"],
+                "url": d["url"],
+                "reason": d["reason"],
+                "status": r.as_ref().map(|r| r.status),
+                "remote_id": r.as_ref().and_then(|r| r.remote_id.clone()),
+                "expires_at": r.as_ref().map(|r| r.expires_at.clone()),
+                "askers": r.as_ref().map_or(0, |r| r.askers.len()),
+            });
+            r.is_none()
+        }
     };
     v["gone"] = json!(gone);
     Ok(v)

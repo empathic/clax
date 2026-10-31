@@ -7,7 +7,7 @@ import type { InboxFilter, InboxKind } from "../api";
 import { tagsFromUrl, withTags } from "../view/tags-model";
 
 /** The kinds the inbox page filters by. */
-export const INBOX_KINDS: readonly InboxKind[] = ["reply", "version", "published", "question", "finished", "approval", "connection", "ended", "push"];
+export const INBOX_KINDS: readonly InboxKind[] = ["reply", "version", "published", "question", "finished", "approval", "connection", "ended", "push", "remote_request"];
 
 const PARAMS = ["search", "unread", "kind", "artifact", "agent", "since", "until"] as const;
 

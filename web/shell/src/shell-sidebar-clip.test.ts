@@ -15,8 +15,8 @@ const thread: Thread = {
 const OWNER: Viewer = { public_id: "u_alex", display_name: "Alex", created_at: at, owner: true };
 
 /** The artifact view's sidebar holding `thread`. */
-function shell() {
-  const s = { threads: [thread], resolved: {}, selected: null, file: "index.html", me: OWNER, data: { versions: [], artifact: { owner_harness: "claude" } }, working: [], commenting: false,
+function shell(t: Thread = thread) {
+  const s = { threads: [t], resolved: {}, selected: null, file: "index.html", me: OWNER, data: { versions: [], artifact: { owner_harness: "claude" } }, working: [], commenting: false,
     agents: [], attention: null, decided: null, selection: { ids: [], anchor: null }, batchNote: "", batchBusy: false, sendTo: null };
   return mount(ShellSidebar, { ctl: { holds: () => true, shown: () => 1 } as never, s: s as never });
 }
@@ -30,9 +30,18 @@ afterEach(() => {
 });
 
 describe("a thread's clip in the artifact view's sidebar", () => {
-  it("loads from its URL in a browser", () => {
-    const m = shell();
-    expect(thumb(m.root)?.getAttribute("src")).toBe(CLIP);
+  it("is fetched with the page's fetch and shown by object URL in a browser, never as an <img> of its /api/ path", async () => {
+    // A local owner's browser proves its session only on the page's fetch
+    // (`owner-proof.ts`); an image request carries the cookie alone, which
+    // the daemon refuses.
+    const clip = `/api/artifacts/7q3k9mzx2b4t/threads/01J9T0000000000000000000CD/clip`;
+    const fetch = vi.fn(async () => new Response(new Uint8Array([137, 80, 78, 71]), { headers: { "content-type": "image/png" } }));
+    vi.stubGlobal("fetch", fetch);
+    Object.defineProperty(URL, "createObjectURL", { value: () => "blob:browser-clip", configurable: true, writable: true });
+    const m = shell({ ...thread, id: "01J9T0000000000000000000CD", clip_url: clip, comments: thread.comments.map(c => ({ ...c, thread_id: "01J9T0000000000000000000CD" })) });
+    expect(thumb(m.root)).toBeNull();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledWith(clip));
+    await vi.waitFor(() => { flush(); expect(thumb(m.root)?.getAttribute("src")).toBe("blob:browser-clip"); });
   });
 
   it("is fetched over the transport and shown by object URL in the Clax app", async () => {

@@ -351,7 +351,9 @@ async fn a_token_request_is_refused_without_a_scope_an_artifact_or_the_same_orig
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status(), 403);
+    // The owner's session with another origin is no credential at all
+    // (`local_trust::session_counts`): the gate refuses it before any route.
+    assert_eq!(r.status(), 401);
     assert!(fake.rows().is_empty(), "{:?}", fake.rows());
 }
 

@@ -502,12 +502,12 @@ async fn an_in_process_request_has_only_its_callers_rights() {
     )
     .await;
     assert_eq!(status, 200, "{v}");
-    // Over loopback, a request without the token may see live pages and
-    // read the token.
+    // Over loopback, a request without a credential sees no live page and
+    // never reads the token.
     let local = format!("{}/api/live/pages?url=http%3A%2F%2Fexample.com%2F", ts.base);
-    assert_eq!(ts.client.get(&local).send().await.unwrap().status(), 200);
+    assert_eq!(ts.client.get(&local).send().await.unwrap().status(), 401);
     let token = format!("{}/api/token", ts.base);
-    assert_eq!(ts.client.get(&token).send().await.unwrap().status(), 200);
+    assert_eq!(ts.client.get(&token).send().await.unwrap().status(), 401);
     // In-process, it may not.
     for auth in [None, Some("Bearer not-the-token")] {
         let (status, v) = in_process(
@@ -518,7 +518,7 @@ async fn an_in_process_request_has_only_its_callers_rights() {
             "",
         )
         .await;
-        assert_eq!(status, 404, "{auth:?}: {v}");
+        assert_eq!(status, 401, "{auth:?}: {v}");
         let (status, v) = in_process(&lb, "GET", "/api/token", auth, "").await;
         assert_ne!(status, 200, "{auth:?}: {v}");
         let body = json!({"title": "No", "files": {"index.html": "<p>no</p>"}}).to_string();

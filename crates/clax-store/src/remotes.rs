@@ -48,7 +48,9 @@ pub struct Remote {
     /// The public origin, normalized (`https://clax.example`).
     pub origin: String,
     pub name: String,
-    /// `pending` while the sign-in waits, then `connected`.
+    /// `pending` while the sign-in waits, then `connected`; `signed_out`
+    /// once the remote refused its token (revoked there,
+    /// [`Store::sign_out_remote`]), until a new sign-in.
     pub status: String,
     /// While pending: the code the person types, the page they approve
     /// on, and when the sign-in expires.
@@ -144,10 +146,51 @@ pub struct RemoteLink {
     pub download_only: bool,
     /// The newest activity time read from the public copy's threads.
     pub sync_cursor: Option<String>,
+    /// A followed link ([`Store::follow_remote`]): `artifact_id` is the
+    /// local mirror of a remote artifact's threads, not a pushed artifact.
+    pub followed: bool,
+    /// A followed link no local session watches, since when; `None`
+    /// while one does (and for a pushed link).
+    pub unwatched_at: Option<String>,
+}
+
+impl RemoteLink {
+    /// Whether the sync keeps this link: a pushed one, or a followed one
+    /// some local session watches.
+    pub fn synced(&self) -> bool {
+        !self.followed || self.unwatched_at.is_none()
+    }
+}
+
+/// How long a followed link no local session watches keeps its mirror
+/// ([`Store::mirrors_to_drop`]).
+pub const MIRROR_KEPT: chrono::Duration = chrono::Duration::days(7);
+
+/// The remote artifact a mirror holds the threads of ([`Store::mirror_of`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MirrorOf {
+    pub remote_artifact_id: String,
+    /// Its address there.
+    pub url: String,
+    pub origin: String,
+    pub name: String,
+}
+
+/// A live local session watching the mirror of a followed link: whom the
+/// sync opens a session there for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FollowWatcher {
+    /// The mirror.
+    pub artifact_id: String,
+    pub remote_artifact_id: String,
+    pub session_id: String,
+    /// The session's name, else its harness.
+    pub name: String,
+    pub harness: String,
 }
 
 const LINK_COLS: &str = "artifact_id, remote_id, remote_artifact_id, url, pushed_n, remote_n,
-    auto, created_at, pushed_at, download_only, sync_cursor";
+    auto, created_at, pushed_at, download_only, sync_cursor, followed, unwatched_at";
 
 fn row_link(r: &Row<'_>) -> rusqlite::Result<RemoteLink> {
     Ok(RemoteLink {
@@ -162,6 +205,8 @@ fn row_link(r: &Row<'_>) -> rusqlite::Result<RemoteLink> {
         pushed_at: r.get(8)?,
         download_only: r.get(9)?,
         sync_cursor: r.get(10)?,
+        followed: r.get(11)?,
+        unwatched_at: r.get(12)?,
     })
 }
 
@@ -203,7 +248,11 @@ pub fn check_remote_name(name: &str) -> Result<String> {
 impl Store {
     /// Records a sign-in to `origin` (normalized) under `name`, waiting for
     /// the person's approval there. A remote of that origin still waiting
-    /// is replaced (a new sign-in); a connected one stays as it is.
+    /// is replaced (a new sign-in); a signed-out one waits again under its
+    /// own ID, keeping its links, and is marked reconnecting (as is one
+    /// still waiting that was), so a sign-in that does not finish leaves it
+    /// signed out again ([`Store::abandon_sign_in`]); a connected one stays
+    /// as it is.
     ///
     /// # Errors
     /// `remote_exists` for an origin this daemon is signed in to already, or
@@ -216,25 +265,33 @@ impl Store {
     ) -> Result<Remote> {
         let name = check_remote_name(name)?;
         self.with_tx(|tx| {
-            let existing: Option<(String, String)> = tx
+            let existing: Option<(String, String, bool)> = tx
                 .query_row(
-                    "SELECT id, status FROM remotes WHERE origin = ?1",
+                    "SELECT id, status, reconnecting FROM remotes WHERE origin = ?1",
                     params![origin],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()?;
-            if let Some((id, status)) = &existing {
-                if status == "connected" {
-                    return Err(CoreError::invalid(
-                        "remote_exists",
-                        format!("this Clax is signed in to {origin} already: remove it first to sign in again"),
-                    ));
+            let mut keep: Option<String> = None;
+            if let Some((id, status, reconnecting)) = &existing {
+                match status.as_str() {
+                    "connected" => {
+                        return Err(CoreError::invalid(
+                            "remote_exists",
+                            format!("this Clax is signed in to {origin} already: remove it first to sign in again"),
+                        ));
+                    }
+                    "signed_out" => keep = Some(id.clone()),
+                    // A reconnect replaced: still the signed-out remote's.
+                    "pending" if *reconnecting => keep = Some(id.clone()),
+                    _ => {
+                        tx.execute("DELETE FROM remotes WHERE id = ?1", params![id])?;
+                    }
                 }
-                tx.execute("DELETE FROM remotes WHERE id = ?1", params![id])?;
             }
             let taken: bool = tx.query_row(
-                "SELECT EXISTS (SELECT 1 FROM remotes WHERE name = ?1)",
-                params![name],
+                "SELECT EXISTS (SELECT 1 FROM remotes WHERE name = ?1 AND id IS NOT ?2)",
+                params![name, keep],
                 |r| r.get(0),
             )?;
             if taken {
@@ -242,6 +299,28 @@ impl Store {
                     "remote_exists",
                     format!("a remote is named '{name}' already: give another name"),
                 ));
+            }
+            if let Some(id) = keep {
+                tx.execute(
+                    "UPDATE remotes SET name = ?2, status = 'pending', token = NULL,
+                        device_code = ?3, user_code = ?4, verification_url = ?5,
+                        sign_in_expires_at = ?6, poll_interval_s = ?7, reconnecting = 1
+                     WHERE id = ?1",
+                    params![
+                        id,
+                        name,
+                        sign_in.device_code.expose(),
+                        sign_in.user_code,
+                        sign_in.verification_url,
+                        sign_in.expires_at,
+                        sign_in.interval_s
+                    ],
+                )?;
+                return Ok(tx.query_row(
+                    &format!("SELECT {REMOTE_COLS} FROM remotes WHERE id = ?1"),
+                    params![id],
+                    row_remote,
+                )?);
             }
             let id = format!("r_{}", new_ulid().to_lowercase());
             tx.execute(
@@ -304,7 +383,8 @@ impl Store {
             let n = tx.execute(
                 "UPDATE remotes SET status = 'connected', token = ?2, person_public_id = ?3,
                     person_name = ?4, grant_id = ?5, connected_at = ?6, device_code = NULL,
-                    user_code = NULL, verification_url = NULL, sign_in_expires_at = NULL
+                    user_code = NULL, verification_url = NULL, sign_in_expires_at = NULL,
+                    reconnecting = 0
                  WHERE id = ?1 AND status = 'pending'",
                 params![
                     id,
@@ -324,6 +404,63 @@ impl Store {
                 row_remote,
             )?)
         })
+    }
+
+    /// Marks connected remote `id` signed out: the remote refused its
+    /// token (revoked there), which is forgotten. Its links stay, for the
+    /// sign-in that connects it again ([`Store::add_pending_remote`]).
+    /// Whether it was connected.
+    pub fn sign_out_remote(&self, id: &str) -> Result<bool> {
+        self.with_tx(|tx| {
+            Ok(tx.execute(
+                "UPDATE remotes SET status = 'signed_out', token = NULL
+                 WHERE id = ?1 AND status = 'connected'",
+                params![id],
+            )? > 0)
+        })
+    }
+
+    /// Ends remote `id`'s sign-in that will not finish (denied there,
+    /// expired, or abandoned): a remote that was signed out before it is
+    /// signed out again, with its links, linked threads, mirrors, push
+    /// approvals and assets, and answered; a remote that never connected
+    /// is forgotten ([`Store::remove_remote`]), `None`. A remote no longer
+    /// waiting is left as it is; `None` for none. What it finds and what it
+    /// does are one transaction.
+    pub fn abandon_sign_in(&self, id: &str) -> Result<Option<Remote>> {
+        let restored = self.with_tx(|tx| {
+            let row: Option<(String, bool)> = tx
+                .query_row(
+                    "SELECT status, reconnecting FROM remotes WHERE id = ?1",
+                    params![id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            match row {
+                None => Ok(Some(())),
+                Some((status, _)) if status != "pending" => Ok(None),
+                Some((_, true)) => {
+                    tx.execute(
+                        "UPDATE remotes SET status = 'signed_out', token = NULL, device_code = NULL,
+                            user_code = NULL, verification_url = NULL, sign_in_expires_at = NULL,
+                            reconnecting = 0
+                         WHERE id = ?1",
+                        params![id],
+                    )?;
+                    Ok(None)
+                }
+                // Never connected: forgotten.
+                Some((_, false)) => {
+                    self.remove_remote_in(tx, id)?;
+                    Ok(Some(()))
+                }
+            }
+        })?;
+        match restored {
+            // Gone already, or forgotten.
+            Some(()) => Ok(None),
+            None => self.find_remote(id).map(|r| r.filter(|x| x.id == id)),
+        }
     }
 
     /// Every remote, oldest first.
@@ -376,31 +513,41 @@ impl Store {
     /// # Errors
     /// `NotFound` for no such remote.
     pub fn remove_remote(&self, id: &str) -> Result<Remote> {
-        self.with_tx(|tx| {
-            let r = tx
-                .query_row(
-                    &format!("SELECT {REMOTE_COLS} FROM remotes WHERE id = ?1"),
-                    params![id],
-                    row_remote,
-                )
-                .optional()?
-                .ok_or(CoreError::NotFound)?;
-            tx.execute(
-                "UPDATE linked_threads SET unlinked_at = ?2 WHERE remote_id = ?1 AND unlinked_at IS NULL",
-                params![id, self.now()],
-            )?;
-            tx.execute("DELETE FROM remote_links WHERE remote_id = ?1", params![id])?;
-            tx.execute(
-                "DELETE FROM remote_assets WHERE remote_id = ?1",
+        self.with_tx(|tx| self.remove_remote_in(tx, id))
+    }
+
+    /// [`Store::remove_remote`] inside the caller's transaction.
+    fn remove_remote_in(&self, tx: &rusqlite::Transaction<'_>, id: &str) -> Result<Remote> {
+        let r = tx
+            .query_row(
+                &format!("SELECT {REMOTE_COLS} FROM remotes WHERE id = ?1"),
                 params![id],
-            )?;
-            tx.execute(
-                "DELETE FROM push_approvals WHERE remote_id = ?1",
-                params![id],
-            )?;
-            tx.execute("DELETE FROM remotes WHERE id = ?1", params![id])?;
-            Ok(r)
-        })
+                row_remote,
+            )
+            .optional()?
+            .ok_or(CoreError::NotFound)?;
+        tx.execute(
+            "UPDATE linked_threads SET unlinked_at = ?2 WHERE remote_id = ?1 AND unlinked_at IS NULL",
+            params![id, self.now()],
+        )?;
+        // Its followed artifacts' mirrors go with it.
+        tx.execute(
+            "UPDATE artifacts SET deleted_at = ?2
+             WHERE remote_mirror = 1 AND deleted_at IS NULL AND id IN
+                (SELECT artifact_id FROM remote_links WHERE remote_id = ?1 AND followed = 1)",
+            params![id, self.now()],
+        )?;
+        tx.execute("DELETE FROM remote_links WHERE remote_id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM remote_assets WHERE remote_id = ?1",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM push_approvals WHERE remote_id = ?1",
+            params![id],
+        )?;
+        tx.execute("DELETE FROM remotes WHERE id = ?1", params![id])?;
+        Ok(r)
     }
 
     /// Every link, oldest first.
@@ -440,6 +587,261 @@ impl Store {
             )
             .optional()?)
         })
+    }
+
+    /// Follows artifact `remote_aid` of remote `rid` (at `url`, titled
+    /// `title` there): its local mirror's ID. A mirror holds the remote
+    /// artifact's threads and comments and nothing else (no version, no
+    /// page, no file; `artifacts.remote_mirror`), and is in no listing.
+    /// The mirror and its followed link are made the first time; later
+    /// they are reused, the link watched again (`unwatched_at` cleared)
+    /// and its address and the mirror's title brought up to date.
+    ///
+    /// # Errors
+    /// `pushed_here` when an artifact of this home is pushed as
+    /// `remote_aid` there: its local artifact is the one to watch.
+    pub fn follow_remote(
+        &self,
+        rid: &str,
+        remote_aid: &str,
+        url: &str,
+        title: &str,
+    ) -> Result<String> {
+        self.with_tx(|tx| self.follow_in(tx, rid, remote_aid, url, title))
+    }
+
+    /// [`Store::follow_remote`], then session `sid` watches the mirror
+    /// (`replies_armed`, recorded under `ctx` as [`Store::watch`] records
+    /// it), in one transaction: no reader sees the link followed again
+    /// with its watch not yet made. The mirror and the watch.
+    ///
+    /// # Errors
+    /// As [`Store::follow_remote`] and [`Store::watch`]; nothing is
+    /// written then.
+    #[allow(clippy::too_many_arguments)]
+    pub fn follow_and_watch(
+        &self,
+        ctx: &clax_core::audit::AuditCtx,
+        sid: &str,
+        (rid, remote_aid): (&str, &str),
+        url: &str,
+        title: &str,
+        replies_armed: bool,
+    ) -> Result<(String, clax_core::model::Watch)> {
+        self.with_tx(|tx| {
+            let m = self.follow_in(tx, rid, remote_aid, url, title)?;
+            let id = clax_core::ArtifactId::parse(&m)?;
+            let w = super::watches::watch_in(self, tx, ctx, sid, &id, replies_armed)?;
+            Ok((m, w))
+        })
+    }
+
+    /// [`Store::follow_remote`] in `tx`.
+    fn follow_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        rid: &str,
+        remote_aid: &str,
+        url: &str,
+        title: &str,
+    ) -> Result<String> {
+        let title = if title.trim().is_empty() {
+            remote_aid
+        } else {
+            title
+        };
+        let now = self.now();
+        let pushed: Option<String> = tx
+            .query_row(
+                "SELECT artifact_id FROM remote_links
+                 WHERE remote_id = ?1 AND remote_artifact_id = ?2 AND followed = 0",
+                params![rid, remote_aid],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(aid) = pushed {
+            return Err(CoreError::invalid(
+                "pushed_here",
+                format!("{url} is this Clax's artifact {aid}, pushed there: watch {aid}"),
+            ));
+        }
+        let mirror: Option<String> = tx
+            .query_row(
+                "SELECT l.artifact_id FROM remote_links l JOIN artifacts a ON a.id = l.artifact_id
+                 WHERE l.remote_id = ?1 AND l.remote_artifact_id = ?2 AND l.followed = 1
+                   AND a.deleted_at IS NULL",
+                params![rid, remote_aid],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(m) = mirror {
+            tx.execute(
+                "UPDATE remote_links SET unwatched_at = NULL, url = ?3
+                 WHERE artifact_id = ?1 AND remote_id = ?2",
+                params![m, rid, url],
+            )?;
+            tx.execute(
+                "UPDATE artifacts SET title = ?2 WHERE id = ?1",
+                params![m, title],
+            )?;
+            return Ok(m);
+        }
+        let id = clax_core::ArtifactId::generate();
+        tx.execute(
+            "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, pinned,
+                capabilities_json, contract_version, owner_session_id, remote_mirror)
+             VALUES (?1, ?2, ?3, ?3, 0, 0, '{}', ?4, NULL, 1)",
+            params![id.as_str(), title, now, clax_core::model::CONTRACT_VERSION],
+        )?;
+        tx.execute(
+            "INSERT INTO remote_links (artifact_id, remote_id, remote_artifact_id, url,
+                pushed_n, remote_n, auto, created_at, pushed_at, followed)
+             VALUES (?1, ?2, ?3, ?4, 0, 0, 0, ?5, ?5, 1)",
+            params![id.as_str(), rid, remote_aid, url, now],
+        )?;
+        Ok(id.as_str().to_string())
+    }
+
+    /// The mirror of artifact `remote_aid` of remote `rid`, while this
+    /// home follows it (watched or not).
+    pub fn remote_mirror(&self, rid: &str, remote_aid: &str) -> Result<Option<String>> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT l.artifact_id FROM remote_links l JOIN artifacts a ON a.id = l.artifact_id
+                 WHERE l.remote_id = ?1 AND l.remote_artifact_id = ?2 AND l.followed = 1
+                   AND a.deleted_at IS NULL",
+                params![rid, remote_aid],
+                |r| r.get(0),
+            )
+            .optional()?)
+        })
+    }
+
+    /// Stops following the remote artifact mirror `mirror_id` holds, while
+    /// no live local session watches it: from now (`unwatched_at`) the sync
+    /// leaves it alone, and [`Store::mirrors_to_drop`] names it once
+    /// [`MIRROR_KEPT`] has passed. A live watch (one made since the caller
+    /// looked) keeps it followed. Whether it stopped following it.
+    pub fn unfollow_remote(&self, mirror_id: &str) -> Result<bool> {
+        self.with_tx(|tx| {
+            Ok(tx.execute(
+                "UPDATE remote_links SET unwatched_at = ?2
+                 WHERE artifact_id = ?1 AND followed = 1 AND unwatched_at IS NULL
+                   AND NOT EXISTS (SELECT 1 FROM watches w JOIN sessions s ON s.id = w.session_id
+                                   WHERE w.artifact_id = ?1 AND s.ended_at IS NULL)",
+                params![mirror_id, self.now()],
+            )? > 0)
+        })
+    }
+
+    /// The mirrors no local session has watched for [`MIRROR_KEPT`] by
+    /// `now`, oldest first.
+    pub fn mirrors_to_drop(&self, now: chrono::DateTime<chrono::Utc>) -> Result<Vec<String>> {
+        let before = clax_core::time::stamp(now - MIRROR_KEPT);
+        self.with_read(|c| {
+            let mut stmt = c.prepare(
+                "SELECT l.artifact_id FROM remote_links l
+                 WHERE l.followed = 1 AND l.unwatched_at IS NOT NULL AND l.unwatched_at <= ?1
+                   AND NOT EXISTS (SELECT 1 FROM watches w JOIN sessions s ON s.id = w.session_id
+                                   WHERE w.artifact_id = l.artifact_id AND s.ended_at IS NULL)
+                 ORDER BY l.unwatched_at, l.artifact_id",
+            )?;
+            Ok(stmt
+                .query_map(params![before], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// Drops mirror `mirror_id` while [`Store::mirrors_to_drop`] would
+    /// still name it by `now` (no live watch, unwatched for
+    /// [`MIRROR_KEPT`]): its followed link goes, its threads end as
+    /// history, and the mirror is deleted. Whether it dropped it.
+    pub fn drop_mirror(&self, mirror_id: &str, now: chrono::DateTime<chrono::Utc>) -> Result<bool> {
+        let before = clax_core::time::stamp(now - MIRROR_KEPT);
+        self.with_tx(|tx| {
+            let now = self.now();
+            let due: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM remote_links l
+                    WHERE l.artifact_id = ?1 AND l.followed = 1
+                      AND l.unwatched_at IS NOT NULL AND l.unwatched_at <= ?2
+                      AND NOT EXISTS (SELECT 1 FROM watches w JOIN sessions s ON s.id = w.session_id
+                                      WHERE w.artifact_id = l.artifact_id AND s.ended_at IS NULL))",
+                params![mirror_id, before],
+                |r| r.get(0),
+            )?;
+            if !due {
+                return Ok(false);
+            }
+            let n = tx.execute(
+                "UPDATE artifacts SET deleted_at = ?2
+                 WHERE id = ?1 AND remote_mirror = 1 AND deleted_at IS NULL",
+                params![mirror_id, now],
+            )?;
+            tx.execute(
+                "UPDATE linked_threads SET unlinked_at = ?2 WHERE artifact_id = ?1 AND unlinked_at IS NULL",
+                params![mirror_id, now],
+            )?;
+            tx.execute(
+                "DELETE FROM remote_links WHERE artifact_id = ?1 AND followed = 1",
+                params![mirror_id],
+            )?;
+            Ok(n > 0)
+        })
+    }
+
+    /// The live local sessions watching the mirror of each watched
+    /// followed link of remote `rid`, by link then session.
+    pub fn follow_watchers(&self, rid: &str) -> Result<Vec<FollowWatcher>> {
+        self.with_read(|c| {
+            let mut stmt = c.prepare(
+                "SELECT l.artifact_id, l.remote_artifact_id, s.id, COALESCE(s.name, s.harness), s.harness
+                 FROM remote_links l
+                 JOIN watches w ON w.artifact_id = l.artifact_id
+                 JOIN sessions s ON s.id = w.session_id
+                 WHERE l.remote_id = ?1 AND l.followed = 1 AND l.unwatched_at IS NULL
+                   AND s.ended_at IS NULL
+                 ORDER BY l.created_at, l.artifact_id, s.id",
+            )?;
+            Ok(stmt
+                .query_map(params![rid], |r| {
+                    Ok(FollowWatcher {
+                        artifact_id: r.get(0)?,
+                        remote_artifact_id: r.get(1)?,
+                        session_id: r.get(2)?,
+                        name: r.get(3)?,
+                        harness: r.get(4)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// What mirror `aid` mirrors, when it is a followed remote artifact's
+    /// mirror: the artifact there (its ID and address) and its remote's
+    /// origin and name.
+    pub fn mirror_of(&self, aid: &str) -> Result<Option<MirrorOf>> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT l.remote_artifact_id, l.url, r.origin, r.name
+                 FROM remote_links l JOIN remotes r ON r.id = l.remote_id
+                 WHERE l.artifact_id = ?1 AND l.followed = 1",
+                params![aid],
+                |r| {
+                    Ok(MirrorOf {
+                        remote_artifact_id: r.get(0)?,
+                        url: r.get(1)?,
+                        origin: r.get(2)?,
+                        name: r.get(3)?,
+                    })
+                },
+            )
+            .optional()?)
+        })
+    }
+
+    /// Whether `aid` is a followed remote artifact's mirror.
+    pub fn is_remote_mirror(&self, aid: &str) -> Result<bool> {
+        self.with_read(|c| is_mirror_in(c, aid))
     }
 
     /// Records that local version `pushed_n` of `aid` is public version
@@ -694,6 +1096,17 @@ impl Store {
     }
 }
 
+/// Whether `aid` is a followed remote artifact's mirror, on `c`.
+pub(crate) fn is_mirror_in(c: &rusqlite::Connection, aid: &str) -> Result<bool> {
+    Ok(c.query_row(
+        "SELECT remote_mirror FROM artifacts WHERE id = ?1",
+        params![aid],
+        |r| r.get::<_, bool>(0),
+    )
+    .optional()?
+    .unwrap_or(false))
+}
+
 /// Records, in `tx` (the transaction recording the version), that the
 /// publish keyed `key` made version `n` of `aid`. A key whose recorded
 /// artifact is gone (deleted, or never recorded) is taken over: the
@@ -817,6 +1230,93 @@ mod tests {
             code_of(st.add_pending_remote("https://b.example", "a b", &sign_in("cxd_4"))),
             "invalid_args"
         );
+    }
+
+    /// A revoked token signs a remote out: its token is forgotten and its
+    /// links stay; the next sign-in waits under the same ID, so the links
+    /// are the reconnected remote's.
+    #[test]
+    fn a_signed_out_remote_keeps_its_links_for_the_next_sign_in() {
+        let (_d, st) = store();
+        let signed = |t: &str| SignedInAs {
+            token: Secret::new(t.into()),
+            person_public_id: "p1".into(),
+            person_name: Some("Ada".into()),
+            grant_id: "g_1".into(),
+        };
+        let r = st
+            .add_pending_remote("https://clax.example", "pub", &sign_in("cxd_1"))
+            .unwrap();
+        st.connect_remote(&r.id, &signed("cxa_1")).unwrap();
+        st.link_remote("a1", &r.id, "b1", "https://clax.example/a/b1", 1, 1)
+            .unwrap();
+        assert!(st.sign_out_remote(&r.id).unwrap());
+        assert!(!st.sign_out_remote(&r.id).unwrap(), "only once");
+        let out = st.find_remote(&r.id).unwrap().unwrap();
+        assert_eq!(out.status, "signed_out");
+        assert!(st.remote_token(&r.id).unwrap().is_none());
+        assert_eq!(st.remote_links("a1").unwrap().len(), 1);
+        let again = st
+            .add_pending_remote("https://clax.example", "pub", &sign_in("cxd_2"))
+            .unwrap();
+        assert_eq!(
+            (again.id.as_str(), again.status.as_str()),
+            (r.id.as_str(), "pending")
+        );
+        st.connect_remote(&r.id, &signed("cxa_2")).unwrap();
+        assert_eq!(st.remote_token(&r.id).unwrap().unwrap().expose(), "cxa_2");
+        assert_eq!(st.remote_links("a1").unwrap()[0].remote_id, r.id);
+        // A pending remote is not signed out.
+        let p = st
+            .add_pending_remote("https://b.example", "b", &sign_in("cxd_3"))
+            .unwrap();
+        assert!(!st.sign_out_remote(&p.id).unwrap());
+    }
+
+    /// A sign-in that reconnects a signed-out remote and is denied,
+    /// expires or is abandoned leaves the remote signed out with its links,
+    /// even when a second sign-in replaced the first meanwhile; one that
+    /// would have connected a new remote forgets it.
+    #[test]
+    fn an_abandoned_reconnect_leaves_the_remote_signed_out_with_its_links() {
+        let (_d, st) = store();
+        let r = st
+            .add_pending_remote("https://clax.example", "pub", &sign_in("cxd_1"))
+            .unwrap();
+        st.connect_remote(
+            &r.id,
+            &SignedInAs {
+                token: Secret::new("cxa_1".into()),
+                person_public_id: "p1".into(),
+                person_name: Some("Ada".into()),
+                grant_id: "g_1".into(),
+            },
+        )
+        .unwrap();
+        st.link_remote("a1", &r.id, "b1", "https://clax.example/a/b1", 1, 1)
+            .unwrap();
+        assert!(st.sign_out_remote(&r.id).unwrap());
+        st.add_pending_remote("https://clax.example", "pub", &sign_in("cxd_2"))
+            .unwrap();
+        let again = st
+            .add_pending_remote("https://clax.example", "pub", &sign_in("cxd_3"))
+            .unwrap();
+        assert_eq!(again.id, r.id, "a replaced reconnect keeps the ID");
+        assert_eq!(st.remote_links("a1").unwrap().len(), 1);
+        let back = st.abandon_sign_in(&r.id).unwrap().expect("kept");
+        assert_eq!(back.status, "signed_out");
+        assert_eq!(back.user_code, None);
+        assert!(st.remote_device_code(&r.id).unwrap().is_none());
+        assert_eq!(st.remote_links("a1").unwrap()[0].remote_id, r.id);
+        // Not pending any more: nothing to abandon.
+        assert!(st.abandon_sign_in(&r.id).unwrap().is_some());
+        assert_eq!(st.find_remote(&r.id).unwrap().unwrap().status, "signed_out");
+        // A new remote's abandoned sign-in forgets it.
+        let p = st
+            .add_pending_remote("https://b.example", "b", &sign_in("cxd_4"))
+            .unwrap();
+        assert!(st.abandon_sign_in(&p.id).unwrap().is_none());
+        assert!(st.find_remote(&p.id).unwrap().is_none());
     }
 
     #[test]
@@ -977,5 +1477,171 @@ mod tests {
         assert!(clax_core::content::ready(st.lock_publish_key("g2", "k")).is_some());
         drop(held);
         assert!(clax_core::content::ready(st.lock_publish_key("g1", "k")).is_some());
+    }
+
+    /// A followed remote artifact's mirror, which never has a version, is
+    /// no crashed create: the start-up sweep and `clax doctor` leave it,
+    /// with or without threads, and no listing names it.
+    #[test]
+    fn a_mirror_survives_the_zero_version_sweeps_and_is_in_no_listing() {
+        let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+        let (_d, st) = crate::test_util::store_with_clock(clock.clone());
+        let r = st
+            .add_pending_remote("https://clax.example", "pub", &sign_in("cxd_1"))
+            .unwrap();
+        let rid = r.id.as_str();
+        let bare = st
+            .follow_remote(rid, "b1", "https://clax.example/a/b1", "Bare")
+            .unwrap();
+        let threaded = st
+            .follow_remote(rid, "b2", "https://clax.example/a/b2", "Threaded")
+            .unwrap();
+        let link = st.remote_link(&threaded, rid).unwrap().unwrap();
+        st.mirror_thread(
+            &clax_core::audit::AuditCtx::DAEMON,
+            &link,
+            ("pub", "https://clax.example"),
+            1,
+            false,
+            crate::linked::MirrorThread {
+                remote_thread_id: "01J9Z3K4M5N6P7Q8R9S0T1V2W3".into(),
+                remote_version: 1,
+                anchor: serde_json::from_value(serde_json::json!({"kind": "artifact"})).unwrap(),
+                first: crate::linked::MirrorComment {
+                    remote_comment_id: "c1".into(),
+                    author: crate::linked::RemoteAuthor {
+                        kind: "viewer".into(),
+                        public_id: None,
+                        name: "Ada".into(),
+                    },
+                    body: "there".into(),
+                },
+            },
+        )
+        .unwrap();
+        // A crashed create beside them is still found and swept.
+        st.with_tx(|tx| {
+            tx.execute(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, pinned,
+                    capabilities_json, contract_version)
+                 VALUES ('7q3k9mzx2b4t', 'Crashed', ?1, ?1, 0, 0, '{}', '1')",
+                params![st.now()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(st.zero_version_artifacts().unwrap(), ["7q3k9mzx2b4t"]);
+        clock.advance(3600);
+        let swept = st
+            .block_on(st.sweep_zero_version_artifacts(chrono::Duration::seconds(60)))
+            .unwrap();
+        assert_eq!(swept, 1);
+        assert_eq!(st.delete_zero_version_artifacts().unwrap(), 0);
+        for (m, raid) in [(&bare, "b1"), (&threaded, "b2")] {
+            assert!(st.is_remote_mirror(m).unwrap(), "{m}");
+            assert_eq!(st.remote_mirror(rid, raid).unwrap().as_ref(), Some(m));
+        }
+        assert!(st.list_artifacts().unwrap().is_empty());
+        // No inbox item names a mirror: neither a mirrored agent reply nor
+        // any item made for it (`inbox::insert_at`).
+        let tid = st
+            .linked_thread_by_remote(rid, "01J9Z3K4M5N6P7Q8R9S0T1V2W3")
+            .unwrap()
+            .unwrap()
+            .thread_id;
+        let reply = crate::linked::MirrorComment {
+            remote_comment_id: "c2".into(),
+            author: crate::linked::RemoteAuthor {
+                kind: "agent".into(),
+                public_id: None,
+                name: "Their agent".into(),
+            },
+            body: "Done there".into(),
+        };
+        let made = st
+            .mirror_comment(&clax_core::audit::AuditCtx::DAEMON, &tid, rid, &reply)
+            .unwrap()
+            .unwrap();
+        let items = st
+            .with_tx(|tx| {
+                crate::inbox::note_reply(
+                    tx,
+                    &made.id,
+                    &tid,
+                    &threaded,
+                    None,
+                    "Done there",
+                    &st.now(),
+                )
+            })
+            .unwrap();
+        assert!(items.is_empty(), "{items:?}");
+        let named: i64 = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT count(*) FROM inbox_items WHERE artifact_id IN (?1, ?2)",
+                    params![bare, threaded],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(named, 0);
+    }
+
+    /// Unfollowing keeps a link followed while a live session watches its
+    /// mirror (a watch made after the caller looked), and a mirror is
+    /// dropped only while it is still unwatched past the week.
+    #[test]
+    fn unfollowing_and_dropping_a_mirror_wait_for_no_live_watch() {
+        let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+        let (_d, st) = crate::test_util::store_with_clock(clock.clone());
+        let sid = crate::test_util::session(&st, "claude", "h1");
+        let follow = || {
+            st.follow_and_watch(
+                &clax_core::audit::AuditCtx::DAEMON,
+                &sid,
+                ("r1", "b1"),
+                "https://clax.example/a/b1",
+                "Theirs",
+                true,
+            )
+            .unwrap()
+        };
+        let (m, w) = follow();
+        assert!(w.replies_armed);
+        assert!(
+            !st.unfollow_remote(&m).unwrap(),
+            "a live watch keeps it followed"
+        );
+        assert!(
+            st.remote_link(&m, "r1")
+                .unwrap()
+                .unwrap()
+                .unwatched_at
+                .is_none()
+        );
+        let id = clax_core::ArtifactId::parse(&m).unwrap();
+        st.unwatch(&clax_core::audit::AuditCtx::DAEMON, &sid, &id)
+            .unwrap();
+        assert!(st.unfollow_remote(&m).unwrap());
+        clock.advance(7 * 24 * 3600 + 1);
+        assert_eq!(
+            st.mirrors_to_drop(st.now_utc()).unwrap(),
+            std::slice::from_ref(&m)
+        );
+        // Watched again before the drop: the drop leaves it.
+        assert_eq!(follow().0, m);
+        assert!(!st.drop_mirror(&m, st.now_utc()).unwrap());
+        assert!(st.is_remote_mirror(&m).unwrap());
+        st.unwatch(&clax_core::audit::AuditCtx::DAEMON, &sid, &id)
+            .unwrap();
+        assert!(st.unfollow_remote(&m).unwrap());
+        assert!(
+            !st.drop_mirror(&m, st.now_utc()).unwrap(),
+            "unwatched for under a week"
+        );
+        clock.advance(7 * 24 * 3600 + 1);
+        assert!(st.drop_mirror(&m, st.now_utc()).unwrap());
+        assert_eq!(st.remote_mirror("r1", "b1").unwrap(), None);
     }
 }

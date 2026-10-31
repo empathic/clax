@@ -210,7 +210,9 @@ async fn the_owner_manages_the_list_and_each_change_is_announced() {
         Some(json!({"name": "csrf"})),
     )
     .await;
-    assert_eq!((s, code(&v)), (403, "forbidden_origin"), "{v}");
+    // The owner's session with another origin is no credential at all
+    // (`local_trust::session_counts`): the gate refuses it before any route.
+    assert_eq!((s, code(&v)), (401, "no_credential"), "{v}");
     let (s, v) = browser(
         &ts,
         &cookie,
@@ -220,7 +222,7 @@ async fn the_owner_manages_the_list_and_each_change_is_announced() {
         Some(json!({"tags": ["draft"]})),
     )
     .await;
-    assert_eq!((s, code(&v)), (403, "forbidden_origin"), "{v}");
+    assert_eq!((s, code(&v)), (401, "no_credential"), "{v}");
     // The audit journal holds each change.
     let st = ts.store.clone();
     let kinds: Vec<String> = tokio::task::spawn_blocking(move || {
@@ -613,6 +615,7 @@ async fn counts_follow_what_the_caller_sees_and_guests_see_only_tags_in_use() {
     let (s, v) = json_of(
         ts.client
             .get(format!("{}/api/tags", ts.base))
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
             .send()
             .await
             .unwrap(),

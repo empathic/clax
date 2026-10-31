@@ -945,7 +945,7 @@ fn open_fails_when_the_opener_fails() {
         std::env::var("PATH").unwrap_or_default()
     );
     let fake = |code: u8| {
-        for name in ["open", "xdg-open"] {
+        for name in ["osascript", "xdg-open"] {
             clax_fake_exe::install(&bin.join(name), &format!("#!/bin/sh\nexit {code}\n"));
         }
     };
@@ -968,6 +968,124 @@ fn open_fails_when_the_opener_fails() {
         .assert()
         .success()
         .stdout(predicate::str::contains(format!("/a/{id}")));
+    e.stop();
+}
+
+#[test]
+fn open_hands_the_browser_a_login_link_and_prints_none() {
+    let e = Env::new();
+    let page = write(e.dir.path(), "l.html", "<title>Login</title><p>hi");
+    let out = e
+        .cmd()
+        .args(["publish", "--json", "--port", "0"])
+        .arg(&page)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let id = serde_json::from_slice::<serde_json::Value>(&out).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let bin = e.dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let opened = bin.join("got");
+    for name in ["osascript", "xdg-open"] {
+        clax_fake_exe::install(&bin.join(name), clax_testkit::opener::RECORDING_OPENER);
+    }
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let printed = e
+        .cmd()
+        .env("PATH", &path)
+        .env("CLAX_TEST_OPEN_WAIT_MS", "30000")
+        .args(["open", &id])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let printed = String::from_utf8(printed).unwrap();
+    assert!(printed.trim().ends_with(&format!("/a/{id}")), "{printed}");
+    assert!(
+        !printed.contains("code="),
+        "the link is never printed: {printed}"
+    );
+    // On macOS the link reaches `osascript` on its standard input, never in
+    // its arguments, which every user of the machine can read; elsewhere
+    // `xdg-open` takes it as its one argument.
+    let link = clax_testkit::opener::recorded_url(&std::fs::read_to_string(&opened).unwrap());
+    assert!(link.contains("/login?code=cxi_"), "{link}");
+    assert!(link.ends_with(&format!("next=%2Fa%2F{id}")), "{link}");
+    // `clax login` prints a fresh link, the gallery's without a path, that
+    // signs a browser in once.
+    let out = e
+        .cmd()
+        .args(["login", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let url = serde_json::from_slice::<serde_json::Value>(&out).unwrap()["url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        url.contains("/login?code=cxi_") && url.ends_with("next=%2F"),
+        "{url}"
+    );
+    let browser = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let signed = browser.get(&url).send().unwrap();
+    assert_eq!(signed.status(), 200);
+    assert_eq!(browser.get(&url).send().unwrap().status(), 410);
+    // `clax logout` ends every browser session: the cookie that login set
+    // opens nothing after.
+    let cookie = signed
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .map(|v| v.split(';').next().unwrap_or("").to_string())
+        .find(|c| c.starts_with("clax_owner_"))
+        .expect("an owner cookie");
+    let proof = clax_testkit::login_page_proof(&signed.text().unwrap());
+    let base = url.split("/login?").next().unwrap().to_string();
+    let token = |cookie: &str| {
+        browser
+            .get(format!("{base}/api/token"))
+            .header("cookie", cookie)
+            .header(clax_http::local_trust::PROOF_HEADER, &proof)
+            .send()
+            .unwrap()
+            .status()
+    };
+    assert_eq!(token(&cookie), 200);
+    let out = e
+        .cmd()
+        .args(["logout", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let ended = serde_json::from_slice::<serde_json::Value>(&out).unwrap()["ended"]
+        .as_u64()
+        .unwrap();
+    assert!(ended >= 1, "{ended}");
+    assert_eq!(token(&cookie), 401);
+    e.cmd()
+        .args(["login", "a/x"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid_path"));
     e.stop();
 }
 

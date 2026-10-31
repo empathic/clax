@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HubMsg, TabMsg } from "../../../shell/src/stream-hub";
 import { MAX_FAR, type PageView, type SiteView, type WorkerToOverlay, type WorkerToPanel } from "../messages";
 import { FakeEvent } from "../../test/fake-chrome";
-import { type TabState, Tabs, applyEvent, emptyTab, type TabsApi, CLOSED_MS, HOST_SLOW } from "./tabs";
+import { type TabState, Tabs, applyEvent, emptyTab, type TabsApi, CLOSED_MS, CONFIRM_PAIRING, HOST_SLOW } from "./tabs";
 
 const AID = "7q3k9mzx2b4t";
 const AID2 = "8r4m0nzy3c5v";
@@ -468,6 +468,24 @@ describe("Tabs", () => {
     expect(h.tabs.state(4)?.error).toEqual({ code: "host_slow", message: HOST_SLOW });
     expect(h.tabs.state(5)?.error?.code).toBe("daemon_unreachable");
     h.tabs.hostSlow(false);
+    expect(h.tabs.state(4)?.error).toBeNull();
+    expect(h.tabs.state(5)?.error?.code).toBe("daemon_unreachable");
+  });
+
+  it("tells each tab Clax is on that the pairing waits for the person's confirmation, over a slow host's notice but not another failure", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    h.tabs.turnOn(4, URL1, "http://localhost:5173");
+    h.tabs.turnOn(5, URL1, "http://localhost:5173");
+    h.tabs.fail(5, Object.assign(new Error("down"), { code: "daemon_unreachable" }));
+    h.tabs.hostSlow(true);
+    h.tabs.hostConfirm(true);
+    expect(h.tabs.state(4)?.error).toEqual({ code: "confirm_pairing", message: CONFIRM_PAIRING });
+    expect(h.tabs.state(5)?.error?.code).toBe("daemon_unreachable");
+    // The slow host's end leaves the confirmation's notice; its own end clears it.
+    h.tabs.hostSlow(false);
+    expect(h.tabs.state(4)?.error?.code).toBe("confirm_pairing");
+    h.tabs.hostConfirm(false);
     expect(h.tabs.state(4)?.error).toBeNull();
     expect(h.tabs.state(5)?.error?.code).toBe("daemon_unreachable");
   });

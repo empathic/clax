@@ -199,6 +199,7 @@ pub async fn room(
         Ok(c) => clax_http::seats::write_claim(&s, &c, &id).await?,
         Err(_) => None,
     };
+    let kept = subscriber.credentials(&s.token, &extensions).session;
     let hosted = s.hosted.is_some();
     let (artifact, caller) = s
         .store_call(move |st| {
@@ -215,15 +216,33 @@ pub async fn room(
     let site = extensions
         .get::<SiteCaller>()
         .and_then(|c| SiteCredentials::of(c, &extensions));
+    // A public-host socket of a hosted browser session is checked again
+    // by that session.
+    let hosted_session = site.is_none().then_some(kept).flatten();
     let who = Who {
         peer: q.peer,
         by: if declares_user { viewer.clone() } else { None },
         viewer,
     };
+    let ended = crate::routes::events::owner_session_ended(&s, &extensions);
     Ok(ws
         .max_message_size(MAX_ROOM_MESSAGE_BYTES)
         .max_frame_size(MAX_ROOM_MESSAGE_BYTES)
-        .on_upgrade(move |socket| session(s, aid, who, level, topics, seat, site, slot, socket)))
+        .on_upgrade(move |socket| {
+            session(
+                s,
+                aid,
+                who,
+                level,
+                topics,
+                seat,
+                site,
+                hosted_session,
+                slot,
+                ended,
+                socket,
+            )
+        }))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -423,7 +442,9 @@ async fn session(
     topics: Option<Topics>,
     seat: Option<clax_core::seats::Claim>,
     site: Option<SiteCredentials>,
+    session: Option<String>,
     _slot: clax_http::socket_caps::SocketSlot,
+    mut ended: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
     mut socket: WebSocket,
 ) {
     use tokio::sync::broadcast::error::RecvError;
@@ -456,6 +477,7 @@ async fn session(
     let check = RoomCheck {
         aid: aid.clone(),
         site,
+        session,
     };
     let mut renewed = s.store.now_utc();
     let mut shutdown = s.shutdown.clone();
@@ -478,6 +500,12 @@ async fn session(
             () = claim.replaced.notified() => {
                 drop(conn);
                 let _ = socket.send(close(4409, "replaced")).await;
+                return;
+            }
+            // The owner browser session it was opened with ended.
+            () = &mut ended => {
+                drop(conn);
+                let _ = socket.send(close(4403, "revoked")).await;
                 return;
             }
             ev = events.recv() => {
@@ -544,19 +572,43 @@ async fn session(
 }
 
 /// What a room socket is checked again by ([`RoomStep::Recheck`]): its
-/// artifact, and on a site host the credentials its caller was let in by.
+/// artifact; on a site host the credentials its caller was let in by; on
+/// the public host the hosted browser session (its hash) it was opened
+/// with, if any.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoomCheck {
     pub aid: String,
     pub site: Option<SiteCredentials>,
+    pub session: Option<String>,
 }
 
 impl RoomCheck {
     /// Whether the socket may stay: its artifact still declares `room`
-    /// ([`still_declared`]) and, on a site host, its credentials still let
-    /// its caller in ([`SiteCredentials::check`]).
+    /// ([`still_declared`]); on a site host, its credentials still let
+    /// its caller in ([`SiteCredentials::check`]); opened with a hosted
+    /// session, that session is still live and still reads the artifact
+    /// ([`clax_http::hosted::session_reads`]).
     pub async fn stays(&self, s: &AppState) -> bool {
-        still_declared(s, &self.aid).await && self.site_stays(s).await
+        still_declared(s, &self.aid).await
+            && self.site_stays(s).await
+            && self.session_stays(s).await
+    }
+
+    /// Whether the hosted session the socket was opened with still reads
+    /// its artifact (a socket opened with none always does).
+    async fn session_stays(&self, s: &AppState) -> bool {
+        let Some(hash) = self.session.clone() else {
+            return true;
+        };
+        let aid = self.aid.clone();
+        matches!(
+            s.store_call(move |st| match st.browser_session_of_hash(&hash)? {
+                Some(sv) => clax_http::hosted::session_reads(st, &sv, &aid),
+                None => Ok(false),
+            })
+            .await,
+            Ok(true)
+        )
     }
 
     /// Whether the socket's site credentials still let its caller in (a
@@ -611,9 +663,11 @@ impl RoomCheck {
     /// visitor's; [`Ask::Recheck`] after a new version (it may drop `room`;
     /// a metadata edit emits no event and takes effect at the next
     /// connection), and, for a holder's socket on a site host, after its
-    /// site's access or who may read the artifact changed.
+    /// site's access or who may read the artifact changed; for a socket
+    /// opened with a hosted session, after who may read it changed.
     fn ask(&self, e: &Event) -> Ask {
         let holder = self.site.as_ref().is_some_and(|c| !c.visitor());
+        let reader = holder || self.session.is_some();
         match e {
             Event::ArtifactDeleted { artifact_id } if *artifact_id == self.aid => Ask::Close,
             Event::Version { artifact_id, .. } if *artifact_id == self.aid => Ask::Recheck,
@@ -625,7 +679,7 @@ impl RoomCheck {
                 }
             }
             Event::Access { artifact_id }
-                if holder && artifact_id.as_deref().is_none_or(|a| a == self.aid) =>
+                if reader && artifact_id.as_deref().is_none_or(|a| a == self.aid) =>
             {
                 Ask::Recheck
             }
@@ -722,6 +776,9 @@ pub struct RoomAdmission {
     /// What its site host's access let its caller in by, for a socket
     /// opened there.
     pub site: Option<SiteCredentials>,
+    /// The hosted browser session (its hash) a public-host socket was
+    /// opened with ([`RoomCheck::session`]).
+    pub session: Option<String>,
 }
 
 impl RoomSocket {
@@ -749,6 +806,7 @@ impl RoomSocket {
         let check = RoomCheck {
             aid: a.aid.clone(),
             site: a.site,
+            session: a.session,
         };
         let mut conn = Conn {
             rooms: s.rooms.clone(),
@@ -905,6 +963,7 @@ fn admission(
     caller: Option<&clax_http::auth::Caller>,
     resolved: Caller,
     site: Option<SiteCredentials>,
+    session: Option<String>,
 ) -> clax_core::Result<RoomAdmission> {
     let id = clax_core::ArtifactId::parse(aid).map_err(|_| CoreError::NotFound)?;
     let artifact = st.get_artifact(&id)?;
@@ -931,6 +990,7 @@ fn admission(
         topics,
         seat,
         site,
+        session,
     })
 }
 
@@ -994,11 +1054,12 @@ pub async fn room_socket(
     let site = extensions
         .get::<SiteCaller>()
         .and_then(|c| SiteCredentials::of(c, &extensions));
+    let session = site.is_none().then(|| creds.session.clone()).flatten();
     let hosted = s.hosted.is_some();
     let admitted = s
         .store_call(move |st| {
             let resolved = subscriber.resolve_at(st, hosted, &a)?;
-            admission(st, &a, peer, caller.as_ref(), resolved, site)
+            admission(st, &a, peer, caller.as_ref(), resolved, site, session)
         })
         .await?;
     let opened = RoomSocket::open(&s, admitted, &[]).map(|(r, f)| (r.holding(slot), f));
@@ -1053,7 +1114,7 @@ pub async fn reopen(
                     return Err(CoreError::NotFound);
                 }
                 let resolved = clax_http::db_caller::site_caller_at(st, hosted, &found, &a)?;
-                return admission(st, &a, peer, caller.as_ref(), resolved, Some(sc));
+                return admission(st, &a, peer, caller.as_ref(), resolved, Some(sc), None);
             }
             // On a hosted daemon only a session or the token opened it.
             if hosted && session.is_none() && !who.token {
@@ -1084,7 +1145,15 @@ pub async fn reopen(
                 return Err(CoreError::NotFound);
             }
             let resolved = clax_http::db_caller::base_caller_at(st, hosted, who.token, &who, &a)?;
-            admission(st, &a, peer, caller.as_ref(), resolved, None)
+            admission(
+                st,
+                &a,
+                peer,
+                caller.as_ref(),
+                resolved,
+                None,
+                creds.session.clone(),
+            )
         })
         .await
         .ok()?;

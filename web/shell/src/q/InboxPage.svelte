@@ -27,11 +27,15 @@
   // shows as a card in its group. A machine that connected with an invite
   // and an agent that ended are rows.
   // Only the owner's browser offers the Connections filter. At phone width
-  // the filters sit behind **Filters**. The agent strip (§13) opens the
-  // page, under its header: a chip filters the inbox by its agent; it is
-  // fetched again with the list. Tags, beside Page, picks tags (a list with
+  // the filters sit behind **Filters**; **Unread** stays beside the search.
+  // The agent strip (§13) opens the page, under its header: a chip filters
+  // the inbox by its agent; it is fetched again with the list, and on the
+  // page's stream's `agents` topic (an agent started, ended or renamed). Tags, beside Page, picks tags (a list with
   // a search, `ui/TagPicker.svelte`): the items about artifacts carrying
-  // every one picked.
+  // every one picked. Above everything, the decisions waiting for the
+  // owner's confirmation (`ConfirmationCard`: "Confirm: <decision>", with
+  // the agent sessions live now); `?confirm=<id>`, the address the CLI and
+  // the 202 name, focuses its card.
   import { onMount } from "svelte";
   import { type InboxFilter, type InboxItem, type InboxKind, type StripAgent, type TagRef, getToken, listArtifacts } from "../api";
   import TagPicker from "../ui/TagPicker.svelte";
@@ -47,7 +51,10 @@
   import { INBOX_KINDS, filterFromUrl, filterToUrl } from "./inbox-filter";
   import { GROUP_PAGE, GROUP_ROWS, type Group, MAX_GROUP_PAGE, MORE_ROWS, appendGroups, appendRows, fromWire, groupKey, mergeGroups, takeItem } from "./inbox-groups";
   import ApprovalCard from "../people/ApprovalCard.svelte";
+  import ConfirmationCard from "./ConfirmationCard.svelte";
+  import { confirmations } from "./confirm.svelte";
   import ConnectionCard from "../people/ConnectionCard.svelte";
+  import RemoteRequestCard from "./RemoteRequestCard.svelte";
   import InboxGroup from "./InboxGroup.svelte";
   import InboxRow from "./InboxRow.svelte";
   import { inboxAgents } from "./api";
@@ -66,14 +73,32 @@
   };
   const p: Props = $props();
   const inbox = $derived(p.inbox ?? shared().inbox);
+  const confirming = confirmations();
+  // `?confirm=<id>`: that confirmation's card takes focus once it is listed.
+  let confirmTarget = $state(new URLSearchParams(location.search).get("confirm"));
+  $effect(() => {
+    const id = confirmTarget;
+    if (!id || !confirming.open.some(c => c.id === id)) return;
+    queueMicrotask(() => {
+      const el = [...document.querySelectorAll<HTMLElement>(".cfcard")].find(e => e.dataset.confirmation === id);
+      if (!el) return;
+      el.focus({ preventScroll: true });
+      el.scrollIntoView?.({ block: "center" });
+      confirmTarget = null;
+    });
+  });
   const questions = $derived(p.questions ?? shared().questions);
 
   /** How long typing waits before the search applies. */
   const DEBOUNCE_MS = 250;
   /** The kinds shown as cards above the groups, and how many such items one fetch lists. */
-  const CARD_KINDS: InboxKind[] = ["question", "approval", "connection"];
+  const CARD_KINDS: InboxKind[] = ["question", "approval", "connection", "remote_request"];
   const MAX_CARDS = 200;
-  const KIND_LABEL: Record<InboxKind, string> = { reply: "Replies", version: "Versions", published: "Published", question: "Questions", finished: "Finished", approval: "Approvals", connection: "Connections", ended: "Ended", push: "Pushes" };
+  /** A card's data attribute: `data-question`, `data-approval` or `data-request`. */
+  type CardKind = "question" | "approval" | "request";
+  /** The `/inbox` query parameters naming a card to focus, and its kind. */
+  const CARD_PARAMS: [string, CardKind][] = [["q", "question"], ["approval", "approval"], ["remote_request", "request"]];
+  const KIND_LABEL: Record<InboxKind, string> = { reply: "Replies", version: "Versions", published: "Published", question: "Questions", finished: "Finished", approval: "Approvals", connection: "Connections", ended: "Ended", push: "Pushes", remote_request: "Connect a Clax" };
   const fmt = (n: number | "10000+") => (n === "10000+" ? "10,000+" : n.toLocaleString("en-US"));
   /** Says what failed: `what` ("load the inbox"), and why. */
   const oops = (what: string) => (e: unknown) => { error = `Could not ${what}: ${e instanceof Error ? e.message : String(e)}`; };
@@ -85,8 +110,13 @@
   let filter = $state<InboxFilter>(initial);
   let search = $state(initial.q ?? "");
   const asked = new URLSearchParams(location.search);
-  // The card to focus once listed: a question's (`?q=`) or an approval request's (`?approval=`).
-  let target: { q: string } | { approval: string } | null = asked.get("q") ? { q: asked.get("q")! } : asked.get("approval") ? { approval: asked.get("approval")! } : null;
+  // The card to focus once listed: a question's (`?q=`), an approval request's (`?approval=`) or a connection request's (`?remote_request=`).
+  type Target = { kind: CardKind; id: string };
+  const targetOf = (u: URLSearchParams): Target | null => {
+    for (const [param, kind] of CARD_PARAMS) { const id = u.get(param); if (id) return { kind, id }; }
+    return null;
+  };
+  let target: Target | null = targetOf(asked);
   let list = $state<List | null>(null);
   // The cards pinned above the groups: open questions and decisions, and those closed or decided here.
   let cardItems = $state<InboxItem[]>([]);
@@ -121,8 +151,8 @@
   // A card's view: the question feed's (live), else the item's.
   const qview = (i: InboxItem) => (i.question && (questions.get(i.question.id) ?? i.question))!;
   const cards = $derived(cardItems.filter(i => asCard.includes(i.id)).map(qview).sort((a, b) => a.created_at.localeCompare(b.created_at)));
-  /** Whether `i` is a decision's card: an approval request, or a machine's request to connect. */
-  const decision = (i: InboxItem) => i.kind === "approval" || (i.kind === "connection" && i.connection?.via !== "invite");
+  /** Whether `i` is a decision's card: an approval request, a machine's request to connect, or an agent's request to connect another Clax. */
+  const decision = (i: InboxItem) => i.kind === "approval" || i.kind === "remote_request" || (i.kind === "connection" && i.connection?.via !== "invite");
   const decisions = $derived(cardItems.filter(decision).sort((a, b) => a.seq - b.seq));
   // The cards pinned above the groups, under one heading: "Questions" when all are, else "Waiting on you".
   const pinned = $derived(cards.length + decisions.length);
@@ -195,9 +225,9 @@
       list = l;
       opening(l.groups, l.groups.length === 1);
       void fill(g);
-      // `?q=` or `?approval=`: that card takes focus, once.
+      // `?q=`, `?approval=` or `?remote_request=`: that card takes focus, once.
       const t = target;
-      if (t) queueMicrotask(() => { if ("q" in t ? toCard(t.q) : toCard(t.approval, "approval")) target = null; });
+      if (t) queueMicrotask(() => { if (toCard(t.id, t.kind)) target = null; });
     } catch (e) {
       if (g === gen) loadFailed(e);
     }
@@ -264,8 +294,8 @@
 
   const flip = (g: Group) => { toggled = { ...toggled, [g.key]: !isOpen(g) }; };
 
-  /** Scrolls to question `id`'s card (or approval request `id`'s) and focuses it; false when no card shows it. */
-  const toCard = (id: string, kind: "question" | "approval" = "question"): boolean => {
+  /** Scrolls to question `id`'s card (or approval or connection request `id`'s) and focuses it; false when no card shows it. */
+  const toCard = (id: string, kind: CardKind = "question"): boolean => {
     const el = [...document.querySelectorAll<HTMLElement>(`.inbox [data-${kind}]`)].find(e => e.dataset[kind] === id);
     el?.scrollIntoView?.({ block: "center" });
     el?.focus({ preventScroll: true });
@@ -337,8 +367,9 @@
 
   // Where an item leads; a question's (`/inbox?q=…`) is this page, whose card, if shown, takes focus.
   const go = (url: string) => {
-    const m = /^\/inbox\?(q|approval)=([^&]+)$/.exec(url);
-    if (m) toCard(decodeURIComponent(m[2]), m[1] === "q" ? "question" : "approval");
+    const m = /^\/inbox\?(q|approval|remote_request)=([^&]+)$/.exec(url);
+    const kind = m && CARD_PARAMS.find(([param]) => param === m[1])?.[1];
+    if (m && kind) toCard(decodeURIComponent(m[2]), kind);
     else (p.go ?? (u => location.assign(u)))(url);
   };
   const open = (i: InboxItem) => void openItem(inbox, i, go);
@@ -350,11 +381,12 @@
   // list is fetched again (debounced, so a burst is one fetch).
   let refetchSoon: (() => void) | undefined;
   const soon = () => { refetchSoon?.(); refetchSoon = after(DEBOUNCE_MS, () => { refetchSoon = undefined; void refresh(); }); };
-  // An item that changed may change a block: the strip is fetched again (debounced).
+  // An item that changed may change a block, and the agents topic says the
+  // roster changed: the strip is fetched again (debounced).
   let stripSoon: (() => void) | undefined;
+  const stripLater = () => { stripSoon?.(); stripSoon = after(DEBOUNCE_MS, () => { stripSoon = undefined; void loadStrip(); }); };
   function take(item: InboxItem): void {
-    stripSoon?.();
-    stripSoon = after(DEBOUNCE_MS, () => { stripSoon = undefined; void loadStrip(); });
+    stripLater();
     // An item shown that was read (a decision, a mark elsewhere), or unread
     // again, moves its group's count with it; it stays where it is.
     const was = cardItems.find(x => x.id === item.id) ?? list?.groups.flatMap(g => g.items).find(x => x.id === item.id);
@@ -372,18 +404,21 @@
     void getToken().then(t => { owner = !!t; });
     void listArtifacts().then(a => { artifacts = a.map(x => [x.id, x.title]); }, () => {});
     void loadTags();
+    void confirming.refresh();
     // The tags themselves changed (made, renamed, recoloured, deleted).
     const offTags = p.stream?.watch(["gallery"], e => { if (e.type === "tags" && e.artifact_id == null) void loadTags(); });
+    // An agent started, ended or was renamed, with no inbox item for it.
+    const offAgents = p.stream?.watch(["agents"], e => { if (e.type === "agents") stripLater(); });
     // Fetched once on open: now, or when the inbox topic first goes live.
     const off = inbox.listen(c => { if ("item" in c) take(c.item); else if (list) soon(); else void load(); });
     if (!inbox.waiting) void load();
-    return () => { off(); offTags?.(); typing?.(); refetchSoon?.(); stripSoon?.(); };
+    return () => { off(); offTags?.(); offAgents?.(); typing?.(); refetchSoon?.(); stripSoon?.(); };
   });
 </script>
 
 {#snippet decided(list: InboxItem[])}
   {#if list.length}
-    <div class="dlist">{#each list as i (i.id)}{#if i.kind === "approval"}<ApprovalCard item={i} now={p.now} />{:else}<ConnectionCard item={i} now={p.now} onRead={toggle} />{/if}{/each}</div>
+    <div class="dlist">{#each list as i (i.id)}{#if i.kind === "approval"}<ApprovalCard item={i} now={p.now} />{:else if i.kind === "remote_request"}<RemoteRequestCard item={i} now={p.now} />{:else}<ConnectionCard item={i} now={p.now} onRead={toggle} />{/if}{/each}</div>
   {/if}
 {/snippet}
 
@@ -413,10 +448,10 @@
 
   <div class="find">
     <input type="search" class="isearch" placeholder="Search the inbox" aria-label="Search the inbox" value={search} oninput={e => onSearch(e.currentTarget.value)} />
+    <button type="button" class="kind unread-chip" aria-pressed={unreadOnly} onclick={toggleUnread}>Unread</button>
     <button type="button" class="filters-toggle" aria-expanded={filtersOpen} aria-controls="inbox-filters" onclick={() => { filtersOpen = !filtersOpen; }}>Filters</button>
   </div>
   <div class="filters" id="inbox-filters" data-open={filtersOpen ? "" : undefined}>
-    <button type="button" class="kind unread-chip" aria-pressed={unreadOnly} onclick={toggleUnread}>Unread</button>
     <div class="kinds" role="group" aria-label="Kinds">
       {#each INBOX_KINDS.filter(k => k !== "connection" || owner || filter.kind?.includes(k)) as k (k)}
         <button type="button" class="kind" aria-pressed={!!filter.kind?.includes(k)} onclick={() => toggleKind(k)}>{KIND_LABEL[k]}</button>
@@ -453,6 +488,13 @@
 
   {#if error}<p class="err" role="alert">{error}</p>{/if}
 
+  {#if confirming.open.length}
+    <section class="sec" aria-label="Waiting for your confirmation">
+      <h3 class="pinned-h">Confirm in your browser<span class="c">{fmt(confirming.open.length)}</span></h3>
+      <div class="dlist">{#each confirming.open as c (c.id)}<ConfirmationCard {c} now={p.now} />{/each}</div>
+    </section>
+  {/if}
+
   <section class="sec" aria-label="Items">
     {#if !list}
       {#if !error}<p class="note">Loading…</p>{/if}
@@ -477,7 +519,8 @@
     .inbox .icnt { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
     .inbox .sp { flex: 1; }
     .inbox .quiet { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); }
-    .inbox .find { display: flex; gap: 8px; margin-top: 14px; }
+    .inbox .find { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+    .inbox .find .unread-chip { flex: none; min-height: 32px; }
     .inbox .isearch { flex: 1; min-width: 0; }
     .inbox .filters-toggle { display: none; }
     .inbox .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 10px; }

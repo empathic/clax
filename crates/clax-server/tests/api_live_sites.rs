@@ -465,6 +465,7 @@ async fn joins_are_refused_for_the_daemons_own_origin_unknown_sites_and_one_orig
     let res = ts
         .client
         .post(format!("{}/api/live/sites/join", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .json(&json!({"origin": B, "with": A}))
         .send()
         .await

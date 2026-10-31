@@ -3,9 +3,11 @@
 <script lang="ts">
   // A thread's clip: a thumbnail that opens the whole clip over the page,
   // closed by Escape, a click outside it or its Close button. `src` is the
-  // clip's URL; `load`, when given instead, fetches it once the thumbnail
-  // nears the view (the side panel's clips come through the worker, which
-  // holds the credential they are served with).
+  // clip's URL, for a page whose image requests carry its credential; `load`,
+  // when given instead, fetches it once the thumbnail nears the view: the
+  // shell's clips come through its `fetch` (`api-image.ts`), which carries a
+  // local owner's proof, and the side panel's through the worker, which
+  // holds the credential they are served with.
   let { src = null, load }: { src?: string | null; load?: () => Promise<string | null> } = $props();
   let url = $state<string | null>(null);
   let dlg: HTMLDialogElement | undefined = $state();

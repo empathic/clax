@@ -612,6 +612,7 @@ async fn a_local_daemons_owner_holds_the_site_and_no_one_else() {
     let r = ts
         .client
         .post(format!("{}/api/artifacts/{aid}/site-code", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .json(&json!({}))
         .send()
         .await
@@ -1552,6 +1553,70 @@ async fn removing_a_share_closes_the_holders_room_socket_and_no_one_elses() {
     stays_open(&mut owners).await;
 }
 
+/// A room socket opened on the public host with a hosted browser session
+/// is checked again as a site holder's is: removing the share closes it,
+/// signing the browser out closes the owner's.
+#[tokio::test]
+async fn a_public_host_room_socket_closes_when_its_session_stops_reading() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.room_artifact("Board").await;
+    let (sam, sam_pid) = site.member(&owner, "Sam").await;
+    let share = site.share(&owner, &aid, &sam_pid).await;
+    let public_room = |b: &Browser, peer: &str| {
+        let mut req = format!(
+            "{}/api/artifacts/{aid}/room?peer={peer}",
+            site.ts.base.replacen("http://", "ws://", 1)
+        )
+        .into_client_request()
+        .unwrap();
+        let h = req.headers_mut();
+        h.insert("host", site.public_host().parse().unwrap());
+        h.insert("origin", site.origin.parse().unwrap());
+        h.insert(
+            "cookie",
+            format!("clax_session={}", b.cookie.as_ref().unwrap())
+                .parse()
+                .unwrap(),
+        );
+        async move {
+            let mut ws = tokio_tungstenite::connect_async(req)
+                .await
+                .expect("upgrade")
+                .0;
+            let welcome = ws.next().await.unwrap().unwrap();
+            assert!(welcome.to_text().unwrap().contains("welcome"), "{welcome}");
+            ws
+        }
+    };
+    let mut sams = public_room(&sam, "000000000000000s").await;
+    let mut owners = public_room(&owner, "000000000000000o").await;
+    let (s, _) = site
+        .send(
+            &owner,
+            reqwest::Method::DELETE,
+            &format!("/api/hosted/artifacts/{aid}/shares/{share}"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(s, 200);
+    let (code, reason) = closed(&mut sams).await;
+    assert_eq!((code, reason.as_str()), REVOKED);
+    stays_open(&mut owners).await;
+    let (s, _) = site
+        .send(
+            &owner,
+            reqwest::Method::POST,
+            "/api/hosted/signout",
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, 204);
+    let (code, reason) = closed(&mut owners).await;
+    assert_eq!((code, reason.as_str()), REVOKED);
+}
+
 #[tokio::test]
 async fn turning_the_link_off_closes_a_link_viewers_room_socket() {
     let site = Site::new().await;
@@ -1677,6 +1742,56 @@ async fn narrowing_a_persons_rights_closes_their_room_socket() {
     let (code, reason) = closed(&mut sams).await;
     assert_eq!((code, reason.as_str()), REVOKED);
     stays_open(&mut owners).await;
+}
+
+/// On a hosted Clax a person reads a site only from a browser that redeemed
+/// their invite (or signed in another way that keeps them a person), so
+/// revoking that invite afterwards changes nothing: the invite is used, the
+/// person stays one, and the room socket the revocation has checked again
+/// stays open.
+#[tokio::test]
+async fn revoking_a_redeemed_invite_leaves_its_persons_room_socket_open() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.room_artifact("Board").await;
+    let (sam, sam_pid) = site.member(&owner, "Sam").await;
+    site.share(&owner, &aid, &sam_pid).await;
+    let sam_cookie = site.site_cookie(&sam, &aid).await;
+    let mut sams = site
+        .holder_room(&aid, &sam_cookie, "000000000000000s")
+        .await;
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::GET,
+            "/api/people/invites",
+            Value::Null,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let invites = v["invites"].as_array().unwrap();
+    let sams_invite = invites
+        .iter()
+        .find(|i| i["person"]["public_id"] == sam_pid.as_str())
+        .unwrap_or_else(|| panic!("{v}"));
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::DELETE,
+            &format!(
+                "/api/people/invites/{}",
+                sams_invite["id"].as_str().unwrap()
+            ),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert!(v["invite"]["used_at"].is_string(), "{v}");
+    assert!(
+        v["invite"]["revoked_at"].is_null(),
+        "used, so unchanged: {v}"
+    );
+    stays_open(&mut sams).await;
 }
 
 /// A site room socket in use renews its site session, so it outlives the

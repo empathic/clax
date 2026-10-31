@@ -88,6 +88,13 @@ export function item(kind: InboxKind, over: Partial<InboxItem> = {}): InboxItem 
         approval: approvalCard(), url: "/inbox?approval=01J9R0000000000000000000AA",
       });
       break;
+    case "remote_request":
+      Object.assign(base, {
+        artifact: null, url: "/inbox?remote_request=01J9Q0000000000000000000RR",
+        remote_request: { id: "01J9Q0000000000000000000RR", origin: "https://clax.example", name: "Acme Clax", url: "https://clax.example/a/7q3k9mzx2b4t",
+          reason: "to read the launch plan", status: "open", remote_id: null, expires_at: "2026-10-08T09:17:03.120Z", askers: 1 },
+      });
+      break;
     case "ended":
       Object.assign(base, { url: "/inbox", ended: { name: "clax-claude", reason: "idle", text: "clax-claude ended · released 1 thread · withdrew 1 question", questions: 1, requests: 0,
         threads: [{ id: "01J9R0000000000000000000T1", artifact_id: "7q3k9mzx2b4t", title: "Quarterly Review", url: "/a/7q3k9mzx2b4t?thread=01J9R0000000000000000000T1" }] } });

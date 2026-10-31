@@ -4,7 +4,10 @@
 //! first argument; it reads one length-prefixed JSON message from stdin,
 //! writes one reply to stdout, and exits. Nothing else ever goes to stdout:
 //! one line per run goes to `<home>/logs/native-host.log`, and the
-//! credential travels only in the reply.
+//! credential travels only in the reply. A `pair` message mints the
+//! extension's credential; a `login` message makes a one-use login link
+//! for a page of the daemon the extension opens, so the browser opening it
+//! is a browser of the owner's ([`answer_login`]).
 
 use crate::client::Client;
 use clax_core::Home;
@@ -79,19 +82,53 @@ pub fn error(code: &str, message: &str) -> Value {
 /// `type` other than `pair` is `bad_request`; `pair` runs `pair`, whose
 /// error, or panic, is an `error` reply.
 pub fn answer(msg: &Value, pair: impl FnOnce() -> Result<Value, HostError>) -> Value {
-    let Some(v) = msg.get("v").and_then(Value::as_u64) else {
-        return error("bad_request", "a message carries its protocol version, v");
-    };
-    if v != 1 {
-        return error(
-            "unsupported_version",
-            "this clax speaks version 1 of the pairing protocol",
-        );
+    if let Some(e) = unversioned(msg) {
+        return e;
     }
     if msg["type"] != "pair" {
         return error("bad_request", "unknown message type");
     }
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(pair)) {
+    run_guarded(pair)
+}
+
+/// The reply to a `login` message `msg` (`{type: "login", v: 1, next}`):
+/// [`answer`]'s version checks, then `bad_request` unless `next` is a path
+/// of the daemon (one leading `/`); else `login` runs on `next`, whose
+/// error, or panic, is an `error` reply. Its reply is `{type: "login", v:
+/// 1, url}`: a one-use login link that makes the browser opening it, in
+/// two minutes, a browser of the owner's, and opens `next`.
+pub fn answer_login(msg: &Value, login: impl FnOnce(&str) -> Result<Value, HostError>) -> Value {
+    if let Some(e) = unversioned(msg) {
+        return e;
+    }
+    let next = msg["next"].as_str().unwrap_or("/");
+    if !next.starts_with('/') || next.starts_with("//") || next.contains('\\') {
+        return error("bad_request", "next is a path of the daemon");
+    }
+    let next = next.to_string();
+    run_guarded(move || login(&next))
+}
+
+/// The `bad_request` or `unsupported_version` reply for a message that
+/// carries no protocol version, or one other than 1.
+fn unversioned(msg: &Value) -> Option<Value> {
+    let Some(v) = msg.get("v").and_then(Value::as_u64) else {
+        return Some(error(
+            "bad_request",
+            "a message carries its protocol version, v",
+        ));
+    };
+    (v != 1).then(|| {
+        error(
+            "unsupported_version",
+            "this clax speaks version 1 of the pairing protocol",
+        )
+    })
+}
+
+/// `f`'s reply; its error, or panic, as an `error` reply.
+fn run_guarded(f: impl FnOnce() -> Result<Value, HostError>) -> Value {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(Ok(reply)) => reply,
         Ok(Err(e)) => error(e.code, &e.message),
         Err(_) => error(
@@ -123,16 +160,47 @@ fn paired(port: u16, mint: &Value) -> Result<Value, HostError> {
     }))
 }
 
+/// The error for a pairing whose confirmation ended `status` without an
+/// approval: `pairing_declined` when the person declined it in their
+/// browser, `pairing_expired` when nobody answered in time; none for an
+/// approved one.
+fn refused_confirmation(status: &str) -> Option<HostError> {
+    match status {
+        "declined" => Some(HostError {
+            code: "pairing_declined",
+            message: "Pairing was declined in your browser. Post again to ask again.".into(),
+        }),
+        "expired" => Some(HostError {
+            code: "pairing_expired",
+            message: "The pairing confirmation expired. Post again to try again.".into(),
+        }),
+        _ => None,
+    }
+}
+
 /// The error for a mint that failed with `e`. `probe` is the status of an
 /// unauthenticated `GET /api/extension`: 404 means the daemon, of version
 /// `daemon_version`, predates the extension (a held or failed upgrade kept it).
 fn mint_failed(e: anyhow::Error, probe: Option<u16>, daemon_version: &str) -> HostError {
+    // The confirmation it presented, refused at the mint itself (it was
+    // declined or expired between the wait and the mint).
+    let refusal = e
+        .downcast_ref::<crate::remote::Refused>()
+        .and_then(|r| match r.code.as_str() {
+            "declined" => refused_confirmation("declined"),
+            "confirmation_expired" => refused_confirmation("expired"),
+            _ => None,
+        });
+    if let Some(refused) = refusal {
+        return refused;
+    }
+    let said = format!("{e:#}");
     let message = if probe == Some(404) {
         format!(
             "the running clax daemon v{daemon_version} predates the Chrome extension; run `clax stop` and try again"
         )
     } else {
-        format!("pairing failed: {e:#}")
+        format!("pairing failed: {said}")
     };
     HostError {
         code: "daemon_unavailable",
@@ -140,12 +208,43 @@ fn mint_failed(e: anyhow::Error, probe: Option<u16>, daemon_version: &str) -> Ho
     }
 }
 
+/// The confirmation a `pair` message presents (`confirmation`): none, or
+/// a confirmation ID (`cf_` and up to 64 letters, digits, `_` or `-`);
+/// anything else is `bad_request`.
+pub fn confirmation_of(msg: &Value) -> Result<Option<String>, HostError> {
+    match msg.get("confirmation") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(id)) if clax_core::confirm::is_id(id) => Ok(Some(id.clone())),
+        Some(_) => Err(bad("confirmation is a confirmation ID")),
+    }
+}
+
+/// The `confirmation_pending` reply for a mint the daemon `mint` answered
+/// with a decision held for a browser confirmation (while an agent session
+/// of the owner's is live, pairing waits for the owner's click: docs/contract.md
+/// "Browser confirmations"): `{type: "error", v: 1, code:
+/// "confirmation_pending", message, confirmation_id, confirm_url}`. The
+/// extension tells the person, and sends `pair` again with the
+/// confirmation, which waits for their answer. `None` for any other answer.
+pub fn held(mint: &Value) -> Option<Value> {
+    let (id, url) = clax_core::confirm::held(None, mint)?;
+    let mut r = error(
+        "confirmation_pending",
+        "Confirm pairing the Clax extension in your Clax browser tab: an agent is running, so Clax asks you first.",
+    );
+    r["confirmation_id"] = json!(id);
+    r["confirm_url"] = json!(url);
+    Some(r)
+}
+
 /// Ensures a daemon of this version, as `clax mcp` does (discovering it,
 /// replacing an older one or starting one), and mints a credential with the
 /// token, as the owner ([`Client::owner_channel`]): the mint route refuses
-/// agent channels.
+/// agent channels. A mint held for the owner's browser confirmation answers
+/// [`held`]'s reply at once; with `confirmation` (the one that reply named)
+/// it waits for the owner's answer, then mints presenting it.
 #[allow(clippy::disallowed_methods)] // the one owner_channel (clippy.toml)
-fn pair(cli: &crate::Cli, home: &Home) -> Result<Value, HostError> {
+fn pair(cli: &crate::Cli, home: &Home, confirmation: Option<String>) -> Result<Value, HostError> {
     let port = cli.port_for(home).map_err(|e| HostError {
         code: "daemon_unavailable",
         message: format!("{e:#}"),
@@ -155,22 +254,59 @@ fn pair(cli: &crate::Cli, home: &Home) -> Result<Value, HostError> {
             code: "daemon_unavailable",
             message: format!("{e:#}; see {}", home.log_path().display()),
         })?
-        .owner_channel();
-    let mint = c
-        .post(
-            "/api/extension/credentials",
-            &json!({"extension_id": extension_id_in_effect(home.root())}),
-        )
-        .map_err(|e| mint_failed(e, c.http_status("/api/extension"), &c.info.version))?;
+        .owner_channel()
+        .returning_held_decisions();
+    let path = "/api/extension/credentials";
+    let body = json!({"extension_id": extension_id_in_effect(home.root())});
+    let failed = |e| mint_failed(e, c.http_status("/api/extension"), &c.info.version);
+    let mint = match &confirmation {
+        None => c.post(path, &body),
+        Some(id) => {
+            let status = c.wait_for_confirmation(id).map_err(failed)?;
+            if let Some(refused) = refused_confirmation(&status) {
+                return Err(refused);
+            }
+            c.request_with(
+                reqwest::Method::POST,
+                path,
+                Some(&body),
+                None,
+                &[(clax_core::confirm::CONFIRMATION_HEADER, id)],
+            )
+        }
+    }
+    .map_err(failed)?;
+    if let Some(r) = held(&mint) {
+        return Ok(r);
+    }
     paired(c.info.port, &mint)
 }
 
+/// A login link for `next` from the daemon of this version (started or
+/// replaced as for [`pair`]), with the token: the daemon's login path on
+/// `http://localhost:<port>`, the address the extension talks to.
+fn login(cli: &crate::Cli, home: &Home, next: &str) -> Result<Value, HostError> {
+    let unavailable = |e: anyhow::Error| HostError {
+        code: "daemon_unavailable",
+        message: format!("{e:#}; see {}", home.log_path().display()),
+    };
+    let port = cli.port_for(home).map_err(unavailable)?;
+    let c = Client::connect_matching_version(home, port).map_err(unavailable)?;
+    let path = c.login_path(next).map_err(unavailable)?;
+    Ok(json!({
+        "type": "login",
+        "v": 1,
+        "url": format!("http://localhost:{}{path}", c.info.port),
+    }))
+}
+
 /// The log line for one run: the outcome's code, and an error's message.
-/// Never the credential.
+/// Never the credential, nor a login link.
 fn log_line(reply: &Value) -> String {
     let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     match reply["type"].as_str() {
         Some("paired") => format!("{at} native-host paired daemon={}", reply["daemon"]),
+        Some("login") => format!("{at} native-host login"),
         _ => format!(
             "{at} native-host error code={} message={}",
             reply["code"], reply["message"]
@@ -260,7 +396,8 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         anyhow::bail!("clax native-host was started for another origin");
     }
     let r = match read_message(&mut std::io::stdin().lock()) {
-        Ok(m) => answer(&m, || pair(cli, home)),
+        Ok(m) if m["type"] == "login" => answer_login(&m, |next| login(cli, home, next)),
+        Ok(m) => answer(&m, || pair(cli, home, confirmation_of(&m)?)),
         Err(e) => error(e.code, &e.message),
     };
     log(home, &log_line(&r));
@@ -351,6 +488,34 @@ mod tests {
     }
 
     #[test]
+    fn a_login_message_names_a_daemon_path() {
+        let seen = std::cell::RefCell::new(None);
+        let ok = |next: &str| {
+            *seen.borrow_mut() = Some(next.to_string());
+            Ok(json!({"type": "login", "v": 1, "url": "http://localhost:1/login?code=c"}))
+        };
+        let r = answer_login(&json!({"type": "login", "v": 1, "next": "/a/x"}), ok);
+        assert_eq!(
+            (r["type"].as_str(), seen.take().as_deref()),
+            (Some("login"), Some("/a/x"))
+        );
+        for next in ["https://evil.example/", "//evil.example", "/\\evil"] {
+            let r = answer_login(
+                &json!({"type": "login", "v": 1, "next": next}),
+                |_| unreachable!(),
+            );
+            assert_eq!(r["code"], "bad_request", "{next}");
+        }
+        let r = answer_login(&json!({"type": "login", "v": 2}), |_| unreachable!());
+        assert_eq!(r["code"], "unsupported_version");
+        // Its log line never holds the link.
+        let line = log_line(
+            &json!({"type": "login", "v": 1, "url": "http://localhost:1/login?code=cxi_x"}),
+        );
+        assert!(!line.contains("cxi_"), "{line}");
+    }
+
+    #[test]
     fn a_message_without_a_version_is_a_bad_request() {
         let paired = || Ok(json!({"type": "paired"}));
         assert_eq!(
@@ -365,6 +530,43 @@ mod tests {
         let e = answer(&json!({"type": "pair", "v": 1}), || panic!("boom"));
         assert_eq!(e["type"], "error");
         assert_eq!(e["code"], "daemon_unavailable");
+    }
+
+    #[test]
+    fn a_held_mint_names_its_confirmation_and_a_pair_may_present_one() {
+        let mint = json!({"status": "confirmation_pending", "confirmation_id": "cf_ab12",
+            "confirm_url": "http://localhost:7480/inbox?confirm=cf_ab12", "decision": "pair"});
+        let r = held(&mint).expect("held");
+        assert_eq!(
+            (
+                &r["type"],
+                &r["code"],
+                &r["confirmation_id"],
+                &r["confirm_url"]
+            ),
+            (
+                &json!("error"),
+                &json!("confirmation_pending"),
+                &json!("cf_ab12"),
+                &json!("http://localhost:7480/inbox?confirm=cf_ab12")
+            )
+        );
+        assert!(r["message"].as_str().unwrap().contains("Clax browser tab"));
+        assert!(held(&json!({"credential": "cxe_x"})).is_none());
+        let bad_id = json!({"status": "confirmation_pending", "confirmation_id": "../x"});
+        assert!(held(&bad_id).is_none());
+        let msg = |c: Value| json!({"type": "pair", "v": 1, "confirmation": c});
+        assert_eq!(
+            confirmation_of(&json!({"type": "pair", "v": 1})).unwrap(),
+            None
+        );
+        assert_eq!(
+            confirmation_of(&msg(json!("cf_ab12"))).unwrap().as_deref(),
+            Some("cf_ab12")
+        );
+        for bad in [json!("ab12"), json!("cf_"), json!("cf_a/b"), json!(7)] {
+            assert_eq!(confirmation_of(&msg(bad)).unwrap_err().code, "bad_request");
+        }
     }
 
     #[test]
@@ -392,6 +594,38 @@ mod tests {
         assert_eq!(v["type"], "error");
         assert_eq!(v["code"], "daemon_unavailable");
         assert!(out.len() <= MAX_MESSAGE + 4);
+    }
+
+    #[test]
+    fn a_declined_or_expired_pairing_confirmation_says_so() {
+        assert_eq!(
+            refused_confirmation("declined").unwrap().code,
+            "pairing_declined"
+        );
+        assert_eq!(
+            refused_confirmation("expired").unwrap().code,
+            "pairing_expired"
+        );
+        assert!(refused_confirmation("approved").is_none());
+        // Refused at the mint itself, between the wait and the mint.
+        let refused = |status, code: &str| {
+            anyhow::Error::new(crate::remote::Refused {
+                status,
+                code: code.into(),
+                message: "refused".into(),
+            })
+        };
+        let e = mint_failed(refused(403, "declined"), Some(401), "9.9.9");
+        assert_eq!(e.code, "pairing_declined");
+        let e = mint_failed(refused(410, "confirmation_expired"), Some(401), "9.9.9");
+        assert_eq!(e.code, "pairing_expired");
+        // Words alone are not a refusal.
+        let e = mint_failed(
+            anyhow::anyhow!("declined: the owner declined this in their browser"),
+            Some(401),
+            "9.9.9",
+        );
+        assert_eq!(e.code, "daemon_unavailable");
     }
 
     #[test]

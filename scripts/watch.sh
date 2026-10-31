@@ -88,7 +88,10 @@ fi
 (
     for _ in $(seq 1 600); do
         if curl -fsS "http://localhost:$PORT/healthz" >/dev/null 2>&1; then
-            echo "Clax watch: http://localhost:$PORT ($reload)"
+            # A one-use login link (two minutes): it signs the browser
+            # opening it in as the owner's. `clax login` prints a new one.
+            link="$("$stop_bin" login 2>/dev/null || true)"
+            echo "Clax watch: ${link:-http://localhost:$PORT} ($reload; \`CLAX_HOME=$CLAX_HOME $stop_bin login\` prints a new sign-in link)"
             exit 0
         fi
         sleep 1

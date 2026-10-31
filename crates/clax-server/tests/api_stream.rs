@@ -60,10 +60,8 @@ async fn open_with(
     ts: &TestServer,
     build: impl FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
 ) -> (Reader, Value) {
-    let res = build(ts.client.get(format!("{}/api/stream", ts.base)))
-        .send()
-        .await
-        .unwrap();
+    let req = as_browser(ts, build(ts.client.get(format!("{}/api/stream", ts.base))));
+    let res = ts.client.execute(req).await.unwrap();
     assert_eq!(res.status(), 200);
     assert_eq!(res.headers()["content-type"], "text/event-stream");
     let mut r = Reader {
@@ -81,20 +79,43 @@ async fn open(ts: &TestServer) -> (Reader, String) {
     (r, ready["stream"].as_str().unwrap().to_string())
 }
 
+/// `req` built, from [`TestServer::local_browser`]'s browser when it names
+/// no viewer and carries no `Authorization`: a request with no credential
+/// at all reaches no stream on a local daemon.
+fn as_browser(ts: &TestServer, req: reqwest::RequestBuilder) -> reqwest::Request {
+    let mut req = req.build().unwrap();
+    let h = req.headers_mut();
+    let cookie = h
+        .get("cookie")
+        .map(|v| v.to_str().unwrap().to_string())
+        .unwrap_or_default();
+    if !h.contains_key("authorization") && !cookie.contains("clax_viewer=") {
+        let browser = format!("clax_viewer={}", ts.local_browser());
+        let all = if cookie.is_empty() {
+            browser
+        } else {
+            format!("{cookie}; {browser}")
+        };
+        h.insert("cookie", all.parse().unwrap());
+    }
+    req
+}
+
 async fn update(
     ts: &TestServer,
     sid: &str,
     body: Value,
     build: impl FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
 ) -> (u16, Value) {
-    let res = build(
-        ts.client
-            .post(format!("{}/api/stream/{sid}", ts.base))
-            .json(&body),
-    )
-    .send()
-    .await
-    .unwrap();
+    let req = as_browser(
+        ts,
+        build(
+            ts.client
+                .post(format!("{}/api/stream/{sid}", ts.base))
+                .json(&body),
+        ),
+    );
+    let res = ts.client.execute(req).await.unwrap();
     (
         res.status().as_u16(),
         res.json().await.unwrap_or(Value::Null),
@@ -297,21 +318,8 @@ async fn subscriptions_are_checked_once_at_subscribe_time() {
 async fn the_events_cookie_stands_for_the_token_on_the_stream_and_its_subscriptions() {
     let ts = TestServer::spawn().await;
     let plain = aid_of(&ts.publish("A", &[("index.html", "a")]).await);
-    let shell = ts
-        .client
-        .get(format!("{}/api/token", ts.base))
-        .header("sec-fetch-site", "same-origin")
-        .send()
-        .await
-        .unwrap();
-    let cookie = shell
-        .headers()
-        .get_all("set-cookie")
-        .iter()
-        .map(|v| v.to_str().unwrap().to_string())
-        .find(|c| c.contains("Path=/api/stream"))
-        .expect("a cookie for /api/stream");
-    let pair = cookie.split(';').next().unwrap().to_string();
+    // The events cookie a browser login set.
+    let pair = ts.events_cookie();
     let with = |p: String| move |b: reqwest::RequestBuilder| b.header("cookie", p);
     // The token's level: a `docs` topic of an artifact that declares no `db`.
     let (_r, ready) = open_with(&ts, with(pair.clone())).await;
