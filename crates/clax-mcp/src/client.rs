@@ -983,21 +983,14 @@ impl DaemonClient {
         else {
             return first;
         };
-        // Letters, digits, `_` and `-` alone: it goes in a path.
-        let Some(id) = error["confirmation_id"]
-            .as_str()
-            .filter(|v| {
-                !v.is_empty()
-                    && v.bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-            })
-            .map(str::to_string)
-        else {
+        // The 202's body as `send_once` keeps it: `code` in place of
+        // `status`.
+        let mut body = error.clone();
+        body["status"] = clax_core::confirm::PENDING.into();
+        let Some((id, url)) = clax_core::confirm::held(None, &body) else {
             return first;
         };
-        tell(&clax_core::confirm::line(
-            error["confirm_url"].as_str().unwrap_or_default(),
-        ));
+        tell(&clax_core::confirm::line(&url));
         self.wait_for_answer(&id).await?;
         self.send_refreshing(mode, &|c: &Conn<'_>| {
             build(c).header(clax_core::confirm::CONFIRMATION_HEADER, id.as_str())
@@ -1068,15 +1061,21 @@ impl DaemonClient {
             .await
     }
 
-    /// `POST /api/browser-login {next}`: a one-use login code for the
-    /// browser the `open` tool opens, `{path, url, expires_in}`, `path`
-    /// being `/login?code=…&next=…` (the local daemon's alone).
-    pub async fn browser_login(&self, next: &str) -> Result<Value> {
-        self.json(|c| {
-            c.request(reqwest::Method::POST, "/api/browser-login")
-                .json(&serde_json::json!({"next": next}))
-        })
-        .await
+    /// `POST /api/browser-login {next}`: the one-use login path for the
+    /// browser the `open` tool opens, `/login?code=…&next=…` (the local
+    /// daemon's alone), or `None` when the daemon mints none.
+    pub async fn login_path(&self, next: &str) -> Option<String> {
+        let v = self
+            .json(|c| {
+                c.request(reqwest::Method::POST, "/api/browser-login")
+                    .json(&serde_json::json!({"next": next}))
+            })
+            .await
+            .ok()?;
+        v["path"]
+            .as_str()
+            .filter(|p| p.starts_with("/login?"))
+            .map(str::to_string)
     }
 
     /// `GET /api/artifacts/<id>`: `{artifact, versions}`.
@@ -1568,7 +1567,7 @@ impl DaemonClient {
     /// The daemon's address of artifact `raid` on connected remote `rid`
     /// (`/api/remotes/<rid>/artifacts/<raid>`), under which its remote
     /// artifact routes are.
-    fn remote_artifact_path(rid: &str, raid: &str) -> String {
+    pub fn remote_artifact_path(rid: &str, raid: &str) -> String {
         format!(
             "/api/remotes/{}/artifacts/{}",
             encode_segment(rid),

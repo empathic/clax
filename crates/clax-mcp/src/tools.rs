@@ -2247,12 +2247,9 @@ impl ClaxTools {
                 // remote Clax's browsers sign in there.
                 let target = match self.client.is_remote() || remote.is_some() {
                     true => url.clone(),
-                    false => match self.client.browser_login(&format!("/a/{id}")).await {
-                        Ok(v) => match v["path"].as_str() {
-                            Some(p) => format!("{}{p}", self.browser_base()),
-                            None => url.clone(),
-                        },
-                        Err(_) => url.clone(),
+                    false => match self.client.login_path(&format!("/a/{id}")).await {
+                        Some(p) => format!("{}{p}", self.browser_base()),
+                        None => url.clone(),
                     },
                 };
                 let wait = self.open_wait;
