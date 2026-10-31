@@ -1,25 +1,14 @@
 //! `connect_instance`: an agent asks its person to connect another Clax
 //! instance and waits for the answer; the person answers in their browser.
 
-use clax_core::model::Session;
-use clax_mcp::client::DaemonClient;
 use clax_mcp::tools::{ClaxTools, ConnectInstanceArgs};
 use clax_testkit::TestServer;
+use clax_testkit::mcp::agent_tools;
 use clax_testkit::remotes::{Public, json_of};
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
-
-async fn agent(ts: &TestServer) -> ClaxTools {
-    let s: Session = serde_json::from_value(ts.register_session("claude", "ci-1").await).unwrap();
-    ClaxTools::new(
-        DaemonClient::new(ts.base.clone(), ts.token.clone(), Some(s.id.clone())),
-        format!("http://localhost:{}", ts.addr.port()),
-        Some(s),
-        ts.home.log_path(),
-    )
-}
 
 async fn call(t: &ClaxTools, args: Value) -> (bool, Value) {
     let r = t
@@ -36,7 +25,7 @@ async fn call(t: &ClaxTools, args: Value) -> (bool, Value) {
 async fn connect_instance_asks_once_and_waits_for_the_answer() {
     let (local, clock) = TestServer::spawn_question_clock().await;
     let public = Public::new().await;
-    let t = Arc::new(agent(&local).await);
+    let t = Arc::new(agent_tools(&local, "ci-1").await);
     let url = format!("{}/a/7q3k9mzx2b4t", public.origin);
     // Unanswered within its wait: the agent is told to call again.
     let asking = {

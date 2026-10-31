@@ -18,6 +18,14 @@ const URL_THERE = `${ORIGIN}/a/${RAID}`;
 const UNCONNECTED = "https://other.example/a/8q3k9mzx2b4t";
 const REVOKED = "https://revoked.example/a/9q3k9mzx2b4t";
 const BASE = `/api/remotes/r_1/artifacts/${RAID}`;
+/** An artifact of the stand-in daemon's own, and URLs its resolver answers
+ * 404 (as a daemon from before it resolved URLs), 400 `invalid_url` and 503
+ * for. */
+const LOCAL = "6q3k9mzx2b4t";
+const OLD_DAEMON = `/a/${LOCAL}`;
+const NAMES_NOTHING = "/settings";
+const BUSY = "https://busy.example/a/8q3k9mzx2b4t";
+let port = 0;
 
 interface Seen { method: string; url: string; headers: IncomingMessage["headers"]; body: string }
 
@@ -50,13 +58,21 @@ beforeAll(async () => {
         const asked = u.searchParams.get("url");
         if (asked === URL_THERE) return reply(200, { kind: "remote", remote: "r_1", origin: ORIGIN, name: "acme", artifact_id: RAID, url: URL_THERE });
         if (asked === REVOKED) return reply(200, { kind: "remote", remote: "r_2", origin: "https://revoked.example", name: "gone", artifact_id: "9q3k9mzx2b4t", url: REVOKED });
+        if (asked === `http://localhost:${port}${OLD_DAEMON}`) return reply(404, { error: { code: "not_found", message: "no route" } });
+        if (asked === `http://localhost:${port}${NAMES_NOTHING}`) return reply(400, { error: { code: "invalid_url", message: "names no artifact" } });
+        if (asked === BUSY) return reply(503, { error: { code: "busy", message: "try again" } });
         if (asked === UNCONNECTED) {
           return reply(200, { kind: "sign_in_required", origin: "https://other.example", name: "Other", request: { tool: "connect_instance", command: `clax remote request '${UNCONNECTED}'` } });
         }
         return reply(200, { kind: "page", url: asked });
       }
-      if (u.pathname.startsWith("/api/remotes/r_2/")) {
+      if (u.pathname.startsWith("/api/remotes/r_2/") || (route === "PUT /api/sessions/s1/remote-watches" && body.includes('"r_2"'))) {
         return reply(502, { error: { code: "remote_sign_in_required", message: "gone no longer takes this Clax's token", origin: "https://revoked.example", name: "gone", request: { tool: "connect_instance", command: "clax remote request 'https://revoked.example/'" } } });
+      }
+      if (route === `GET /api/artifacts/${LOCAL}`) return reply(200, { artifact: { id: LOCAL, current_version: 1 }, versions: [{ n: 1, files: { "index.html": { content_type: "text/html" } } }] });
+      if (route === `GET /api/artifacts/${LOCAL}/versions/1/files/index.html`) {
+        res.setHeader("content-type", "text/html");
+        return res.end("<h1>Here</h1>");
       }
       if (route === `GET ${BASE}`) return reply(200, { artifact: { id: RAID, current_version: 1 }, versions: [{ n: 1, files: { "index.html": { content_type: "text/html" } } }] });
       if (route === `GET ${BASE}/versions/1/files/index.html`) {
@@ -80,7 +96,7 @@ beforeAll(async () => {
     });
   });
   await new Promise<void>(r => server.listen(0, "127.0.0.1", () => r()));
-  const port = (server.address() as { port: number }).port;
+  port = (server.address() as { port: number }).port;
   // The daemon.json the extension finds its daemon by.
   mkdirSync(home, { recursive: true });
   writeFileSync(join(home, "daemon.json"), JSON.stringify({
@@ -159,6 +175,26 @@ describe("a connected instance's artifact", () => {
     const r = json(await pi.callTool("clax_read", { url_or_id: REVOKED }, ctx)).error;
     expect(r).toMatchObject({ code: "remote_sign_in_required", origin: "https://revoked.example", name: "gone" });
     expect(r.next).toContain("connect_instance");
+    // Watching it is refused the same way.
+    const w = json(await pi.callTool("clax_watch", { url_or_id: REVOKED }, ctx)).error;
+    expect(w).toMatchObject({ code: "remote_sign_in_required", origin: "https://revoked.example", name: "gone" });
+    expect(w.next).toContain("connect_instance");
+  });
+});
+
+describe("a URL the daemon does not resolve", () => {
+  it("is read here only when the daemon has no resolver or names nothing", async () => {
+    const { pi, ctx } = load();
+    const r = json(await pi.callTool("clax_read", { url_or_id: `http://localhost:${port}${OLD_DAEMON}` }, ctx));
+    expect(r).toMatchObject({ artifact_id: LOCAL, content: "<h1>Here</h1>" });
+    const n = json(await pi.callTool("clax_read", { url_or_id: `http://localhost:${port}${NAMES_NOTHING}` }, ctx)).error;
+    expect(n.code).toBe("invalid_id");
+  });
+
+  it("is the tool's error on any other failure", async () => {
+    const { pi, ctx } = load();
+    const r = json(await pi.callTool("clax_read", { url_or_id: BUSY }, ctx)).error;
+    expect(r.code).toBe("busy");
   });
 });
 

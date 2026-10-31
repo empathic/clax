@@ -384,7 +384,8 @@ function oneLine(s: string): string {
 export type ClipFetch = (aid: string, tid: string) => Promise<{ path: string } | { why: string }>;
 
 /** The most clip fetches one payload runs at once
- * (`clax_mcp::client::CLIP_FETCHES_AT_ONCE`). */
+ * (`clax_core::clips::FETCHES_AT_ONCE`, as the contract fixture's
+ * `constants` holds it). */
 export const CLIP_FETCHES_AT_ONCE = 4;
 
 /** Fetches each distinct clip `refs` names once, together, with at most

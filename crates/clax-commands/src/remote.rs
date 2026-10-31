@@ -47,12 +47,14 @@ impl std::fmt::Display for Unreachable {
 
 impl std::error::Error for Unreachable {}
 
-/// A refusal [`SignedClient::send`] gave up on (`stale_request`,
-/// `limit_reached`, `busy`, `clock_skew`, or another 401, 429 or 503),
-/// worded as `Client` words every refusal, `<code>: <message>`, with the
-/// daemon's words made safe to print.
+/// A daemon's refusal: one [`SignedClient::send`] gave up on
+/// (`stale_request`, `limit_reached`, `busy`, `clock_skew`, or another 401,
+/// 429 or 503), or any error answer `Client` gets; worded `<code>:
+/// <message>`, with the daemon's words made safe to print.
 #[derive(Debug)]
 pub struct Refused {
+    /// The HTTP status of the answer.
+    pub status: u16,
     pub code: String,
     pub message: String,
 }
@@ -210,6 +212,7 @@ impl SignedClient {
                 Next::After(d) => (self.sleep)(d),
                 Next::ClockSkew(o) => {
                     return Err(Refused {
+                        status,
                         code: "clock_skew".into(),
                         message: clock_skew_message(o),
                     }
@@ -220,6 +223,7 @@ impl SignedClient {
                         .as_str()
                         .unwrap_or("request failed");
                     return Err(Refused {
+                        status,
                         message: clean_line(&refusal_message(&code, message, &self.signer)),
                         code: clean_line(&code),
                     }

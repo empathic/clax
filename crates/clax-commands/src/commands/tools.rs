@@ -3,6 +3,7 @@
 
 use crate::client::Client;
 use clax_core::Home;
+use clax_mcp::client::ClientError;
 use clax_mcp::{ClaxTools, DaemonClient};
 use rmcp::model::CallToolResult;
 use std::future::Future;
@@ -14,8 +15,8 @@ use std::future::Future;
 /// A decision the daemon holds for the owner's browser is waited out as
 /// the CLI's own client waits ([`DaemonClient::waiting_for_confirmations`]).
 #[allow(clippy::disallowed_methods)]
-fn daemon_client(c: &Client) -> DaemonClient {
-    let d = DaemonClient::with_channel(c.base.clone(), c.token.clone(), None, c.agent);
+fn daemon_client(c: &Client, session: Option<String>) -> DaemonClient {
+    let d = DaemonClient::with_channel(c.base.clone(), c.token.clone(), session, c.agent);
     match c.remote() {
         Some(r) => d.with_remote(r.clone()),
         None => d,
@@ -42,7 +43,12 @@ where
     F: FnOnce(ClaxTools) -> Fut,
     Fut: Future<Output = Result<CallToolResult, rmcp::ErrorData>>,
 {
-    let tools = ClaxTools::new(daemon_client(c), c.browser_url(""), None, home.log_path());
+    let tools = ClaxTools::new(
+        daemon_client(c, None),
+        c.browser_url(""),
+        None,
+        home.log_path(),
+    );
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -60,6 +66,31 @@ where
         return Err(tool_error(&value));
     }
     Ok(value)
+}
+
+/// Runs `f` with the tools' client for the daemon `c` reaches, asking as
+/// agent session `session` when given ([`daemon_client`]). A refusal is a
+/// [`crate::remote::Refused`], as the [`Client`]'s are.
+pub fn with_daemon<T, F, Fut>(c: &Client, session: Option<String>, f: F) -> anyhow::Result<T>
+where
+    F: FnOnce(DaemonClient) -> Fut,
+    Fut: Future<Output = Result<T, ClientError>>,
+{
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(f(daemon_client(c, session)))
+        .map_err(|e| match e {
+            ClientError::Api { status, error } => crate::remote::Refused {
+                status,
+                code: crate::term::clean_line(error["code"].as_str().unwrap_or("error")),
+                message: crate::term::clean_line(
+                    error["message"].as_str().unwrap_or("request failed"),
+                ),
+            }
+            .into(),
+            e => anyhow::anyhow!("{e}"),
+        })
 }
 
 /// The error an error result `value` becomes: `<code>: <message>`. Both
@@ -98,9 +129,9 @@ mod tests {
     fn the_tool_commands_follow_the_clis_channel() {
         let mut c = crate::client::tests::client_for_test();
         c.agent = true;
-        assert!(daemon_client(&c).agent_channel());
+        assert!(daemon_client(&c, None).agent_channel());
         c.agent = false;
-        assert!(!daemon_client(&c).agent_channel());
+        assert!(!daemon_client(&c, None).agent_channel());
     }
 
     /// Every command reaches the daemon through [`Client`] or

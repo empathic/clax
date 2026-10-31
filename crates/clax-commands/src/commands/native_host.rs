@@ -184,18 +184,17 @@ fn refused_confirmation(status: &str) -> Option<HostError> {
 fn mint_failed(e: anyhow::Error, probe: Option<u16>, daemon_version: &str) -> HostError {
     // The confirmation it presented, refused at the mint itself (it was
     // declined or expired between the wait and the mint).
-    let said = format!("{e:#}");
-    if let Some(refused) = said
-        .strip_prefix("declined: ")
-        .map(|_| "declined")
-        .or_else(|| {
-            said.strip_prefix("confirmation_expired: ")
-                .map(|_| "expired")
-        })
-        .and_then(refused_confirmation)
-    {
+    let refusal = e
+        .downcast_ref::<crate::remote::Refused>()
+        .and_then(|r| match r.code.as_str() {
+            "declined" => refused_confirmation("declined"),
+            "confirmation_expired" => refused_confirmation("expired"),
+            _ => None,
+        });
+    if let Some(refused) = refusal {
         return refused;
     }
+    let said = format!("{e:#}");
     let message = if probe == Some(404) {
         format!(
             "the running clax daemon v{daemon_version} predates the Chrome extension; run `clax stop` and try again"
@@ -215,18 +214,9 @@ fn mint_failed(e: anyhow::Error, probe: Option<u16>, daemon_version: &str) -> Ho
 pub fn confirmation_of(msg: &Value) -> Result<Option<String>, HostError> {
     match msg.get("confirmation") {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(id)) if is_confirmation_id(id) => Ok(Some(id.clone())),
+        Some(Value::String(id)) if clax_core::confirm::is_id(id) => Ok(Some(id.clone())),
         Some(_) => Err(bad("confirmation is a confirmation ID")),
     }
-}
-
-fn is_confirmation_id(id: &str) -> bool {
-    id.strip_prefix("cf_").is_some_and(|rest| {
-        (1..=64).contains(&rest.len())
-            && rest
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    })
 }
 
 /// The `confirmation_pending` reply for a mint the daemon `mint` answered
@@ -237,18 +227,13 @@ fn is_confirmation_id(id: &str) -> bool {
 /// extension tells the person, and sends `pair` again with the
 /// confirmation, which waits for their answer. `None` for any other answer.
 pub fn held(mint: &Value) -> Option<Value> {
-    if mint["status"] != clax_core::confirm::PENDING {
-        return None;
-    }
-    let id = mint["confirmation_id"]
-        .as_str()
-        .filter(|id| is_confirmation_id(id))?;
+    let (id, url) = clax_core::confirm::held(None, mint)?;
     let mut r = error(
         "confirmation_pending",
         "Confirm pairing the Clax extension in your Clax browser tab: an agent is running, so Clax asks you first.",
     );
     r["confirmation_id"] = json!(id);
-    r["confirm_url"] = json!(mint["confirm_url"].as_str().unwrap_or_default());
+    r["confirm_url"] = json!(url);
     Some(r)
 }
 
@@ -307,15 +292,7 @@ fn login(cli: &crate::Cli, home: &Home, next: &str) -> Result<Value, HostError> 
     };
     let port = cli.port_for(home).map_err(unavailable)?;
     let c = Client::connect_matching_version(home, port).map_err(unavailable)?;
-    let v = c
-        .post("/api/browser-login", &json!({"next": next}))
-        .map_err(unavailable)?;
-    let Some(path) = v["path"].as_str().filter(|p| p.starts_with("/login?")) else {
-        return Err(HostError {
-            code: "daemon_unavailable",
-            message: "the clax daemon answered no login path".into(),
-        });
-    };
+    let path = c.login_path(next).map_err(unavailable)?;
     Ok(json!({
         "type": "login",
         "v": 1,
@@ -631,18 +608,24 @@ mod tests {
         );
         assert!(refused_confirmation("approved").is_none());
         // Refused at the mint itself, between the wait and the mint.
+        let refused = |status, code: &str| {
+            anyhow::Error::new(crate::remote::Refused {
+                status,
+                code: code.into(),
+                message: "refused".into(),
+            })
+        };
+        let e = mint_failed(refused(403, "declined"), Some(401), "9.9.9");
+        assert_eq!(e.code, "pairing_declined");
+        let e = mint_failed(refused(410, "confirmation_expired"), Some(401), "9.9.9");
+        assert_eq!(e.code, "pairing_expired");
+        // Words alone are not a refusal.
         let e = mint_failed(
             anyhow::anyhow!("declined: the owner declined this in their browser"),
             Some(401),
             "9.9.9",
         );
-        assert_eq!(e.code, "pairing_declined");
-        let e = mint_failed(
-            anyhow::anyhow!("confirmation_expired: this confirmation has expired"),
-            Some(401),
-            "9.9.9",
-        );
-        assert_eq!(e.code, "pairing_expired");
+        assert_eq!(e.code, "daemon_unavailable");
     }
 
     #[test]

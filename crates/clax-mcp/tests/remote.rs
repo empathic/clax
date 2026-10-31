@@ -577,7 +577,7 @@ fn clip_lines(n: usize) -> String {
 }
 
 /// The shim fetches a handover's clips at once, and at most
-/// `CLIP_FETCHES_AT_ONCE` of them: each clip answer here waits until that
+/// `clax_core::clips::FETCHES_AT_ONCE` of them: each clip answer here waits until that
 /// many are in flight together (or every clip has been asked for), so
 /// clips fetched one at a time would each wait out the (long) fetch bound
 /// and read `timed out`, and more at once would show here.
@@ -586,7 +586,7 @@ async fn remote_clips_are_fetched_together_and_a_few_at_a_time() {
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
     let sam = ts.connect_person("Sam", "clax:collaborator").await;
     let dir = tempfile::tempdir().unwrap();
-    let at_once = clax_mcp::client::CLIP_FETCHES_AT_ONCE;
+    let at_once = clax_core::clips::FETCHES_AT_ONCE;
     let n = at_once + 2;
     let (proxy, seen) = clip_answering_proxy(
         format!("127.0.0.1:{}", ts.addr.port()),

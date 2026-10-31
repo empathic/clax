@@ -2,22 +2,11 @@
 //! to the world only once its person approves in Clax, and closes it at
 //! once.
 
-use clax_core::model::Session;
-use clax_mcp::client::DaemonClient;
 use clax_mcp::tools::{ClaxTools, PublishPublicArgs};
 use clax_testkit::TestServer;
+use clax_testkit::mcp::agent_tools;
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::{Value, json};
-
-async fn agent(ts: &TestServer) -> ClaxTools {
-    let s: Session = serde_json::from_value(ts.register_session("claude", "sa-1").await).unwrap();
-    ClaxTools::new(
-        DaemonClient::new(ts.base.clone(), ts.token.clone(), Some(s.id.clone())),
-        format!("http://localhost:{}", ts.addr.port()),
-        Some(s),
-        ts.home.log_path(),
-    )
-}
 
 async fn call(t: &ClaxTools, args: Value) -> (bool, Value) {
     let r = t
@@ -38,7 +27,7 @@ async fn open_to_anyone(ts: &TestServer, aid: &str) -> bool {
 #[tokio::test]
 async fn an_agent_opening_to_the_world_waits_for_approval() {
     let ts = TestServer::spawn().await;
-    let t = agent(&ts).await;
+    let t = agent_tools(&ts, "sa-1").await;
     let aid = ts.publish("Plan", &[("index.html", "<h1>Plan</h1>")]).await["artifact"]["id"]
         .as_str()
         .unwrap()

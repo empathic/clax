@@ -854,11 +854,7 @@ impl Client {
             .headers()
             .get(clax_core::confirm::CONFIRMATION_HEADER)
             .and_then(|v| v.to_str().ok())
-            .filter(|v| {
-                !v.is_empty()
-                    && v.bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-            })
+            .filter(|v| clax_core::confirm::is_id(v))
             .map(str::to_string);
         let (Some(id), Some(again), reqwest::StatusCode::ACCEPTED) = (id, again, res.status())
         else {
@@ -866,7 +862,7 @@ impl Client {
         };
         let body: serde_json::Value = res.json().unwrap_or_default();
         let url = body["confirm_url"].as_str().unwrap_or_default();
-        (self.tell)(&clax_core::confirm::line(&crate::term::clean_line(url)));
+        (self.tell)(&clax_core::confirm::line(url));
         self.wait_for_confirmation(&id)?;
         Ok(again
             .header(clax_core::confirm::CONFIRMATION_HEADER, id)
@@ -884,7 +880,8 @@ impl Client {
     /// none has).
     pub fn wait_for_confirmation(&self, id: &str) -> anyhow::Result<String> {
         let wait = clax_core::confirm::MAX_WAIT_SECS;
-        // The ID is letters, digits, `_` and `-` ([`Client::send_confirming`]).
+        // The ID is `cf_` and letters, digits, `_` and `-`
+        // ([`clax_core::confirm::is_id`]).
         let path = format!("/api/confirmations/{id}?wait={wait}");
         loop {
             let req = self
@@ -1517,11 +1514,19 @@ impl Client {
         if self.signed.is_some() {
             return Ok(self.browser_url(path));
         }
-        let v = self.post("/api/browser-login", &serde_json::json!({"next": path}))?;
-        let login = v["path"]
+        Ok(self.browser_url(&self.login_path(path)?))
+    }
+
+    /// `POST /api/browser-login` for `next`: the one-use login path the
+    /// daemon mints (`/login?…`), to join to a browser address of this
+    /// daemon.
+    pub fn login_path(&self, next: &str) -> anyhow::Result<String> {
+        let v = self.post("/api/browser-login", &serde_json::json!({"next": next}))?;
+        v["path"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("the daemon answered no login path"))?;
-        Ok(self.browser_url(login))
+            .filter(|p| p.starts_with("/login?"))
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("the clax daemon answered no login path"))
     }
 
     pub fn browser_url(&self, path: &str) -> String {
@@ -1549,11 +1554,12 @@ impl Client {
             let msg = body["error"]["message"]
                 .as_str()
                 .unwrap_or("request failed");
-            Err(anyhow!(
-                "{}: {}",
-                crate::term::clean_line(code),
-                crate::term::clean_line(msg)
-            ))
+            Err(crate::remote::Refused {
+                status: status.as_u16(),
+                code: crate::term::clean_line(code),
+                message: crate::term::clean_line(msg),
+            }
+            .into())
         }
     }
 
