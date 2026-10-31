@@ -19,7 +19,6 @@
 //! these: its browsers sign in through [`crate::hosted`].
 
 use super::Store;
-use chrono::Duration;
 use clax_core::Result;
 use clax_core::secret::{self, Secret, sha256_hex};
 use rusqlite::{OptionalExtension, params};
@@ -55,10 +54,6 @@ pub struct OpenedOwnerSession {
 }
 
 impl Store {
-    fn after(&self, secs: i64) -> String {
-        clax_core::time::stamp(self.now_utc() + Duration::seconds(secs))
-    }
-
     /// A new login code, good for [`LOGIN_CODE_TTL_SECS`]. Codes past
     /// their time or spent are dropped first.
     ///
@@ -74,7 +69,7 @@ impl Store {
             )?;
             tx.execute(
                 "INSERT INTO login_codes (sha256, created_at, expires_at) VALUES (?1, ?2, ?3)",
-                params![code.sha256_hex(), now, self.after(LOGIN_CODE_TTL_SECS)],
+                params![code.sha256_hex(), now, self.later(LOGIN_CODE_TTL_SECS)],
             )?;
             Ok(())
         })?;
@@ -122,7 +117,7 @@ impl Store {
         let live = LiveOwnerSession {
             sha256: cookie.sha256_hex(),
             proof_sha256: proof.sha256_hex(),
-            expires_at: self.after(OWNER_SESSION_TTL_SECS),
+            expires_at: self.later(OWNER_SESSION_TTL_SECS),
         };
         self.with_tx(|tx| {
             tx.execute(
