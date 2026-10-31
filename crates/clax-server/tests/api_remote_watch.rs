@@ -241,6 +241,12 @@ async fn stopping_the_sync_ends_the_followers_sessions_there() {
     let sid = t.agent("stopper").await;
     t.watch(&sid).await;
     t.agent_there("stopper").await;
+    // The remote has the session before its answer reaches the follower:
+    // the sync is stopped once the follower holds it.
+    until("the follower holds its session there", || async {
+        t.local.state.linked.session_there(&t.rid, &sid).map(drop)
+    })
+    .await;
     let tasks = clax_server::linked::stop(&t.local.state);
     for h in tasks {
         let _ = h.await;
