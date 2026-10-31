@@ -496,7 +496,7 @@ fn render(
                 "name": d["name"],
                 "url": d["url"],
                 "reason": d["reason"],
-                "status": r.as_ref().map(|r| r.status.clone()),
+                "status": r.as_ref().map(|r| r.status),
                 "remote_id": r.as_ref().and_then(|r| r.remote_id.clone()),
                 "expires_at": r.as_ref().map(|r| r.expires_at.clone()),
                 "askers": r.as_ref().map_or(0, |r| r.askers.len()),

@@ -1436,6 +1436,8 @@ hosted one):
   remote without its `user_code` and `verification_url`. `not_now` and
   `never` answer `{request}`. 409 `request_closed` (with `request`) for a
   request no longer open; 400 `invalid_args` for another answer.
+  Every ask, answer and settling is recorded in the audit journal
+  (`remote_request.ask`, `remote_request.answer`, `remote_request.close`).
 - `GET /api/remotes/mutes` (the owner) → `{mutes: [{origin, muted_at}]}`,
   newest first; `DELETE /api/remotes/mutes/<origin>` (the owner's browser
   alone; the origin percent-encoded) → `{origin, unmuted}`. The shell's
@@ -9042,6 +9044,9 @@ the body below.
 | `question.decline` | none | a decline (the owner) |
 | `question.release` | `reason (owner\|timer\|created)` | a release to the terminal |
 | `question.withdraw` | `reason (explicit\|unwaited\|session_end\|daemon_start\|daemon_stop\|pulled\|lapsed\|job_end)` | a withdrawal |
+| `remote_request.ask` | `request_id, origin, opened` (`false`: the ask joined the origin's open request) | an agent's connection request (the asking session's agent) |
+| `remote_request.answer` | `request_id, origin, answer (connect\|not_now\|never), remote_id?` (with `connect`: the remote its sign-in started) | the owner's answer to a connection request |
+| `remote_request.close` | `request_id, origin, status (connected\|dismissed\|expired), remote_id?` | a connection request settled without the owner: connected, its Connect's sign-in denied or expired, or its day past (`system:daemon`) |
 | `tool.call` | `call_id, tool, harness_tool?, args_sha256, started_at, ended_at, outcome (ok\|error), harness_call_id?, produced[seq]` | each Clax tool call's report (below) |
 | `tool.call_id` | `call_id (or null), harness_call_id, harness_tool, args_sha256` | Claude Code's PostToolUse report (below) |
 | `session.start` | `harness, harness_session_id, cwd, transcript_path, pid` (+ `git`) | a session's registration |

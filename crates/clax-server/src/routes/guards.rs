@@ -633,14 +633,6 @@ mod l10 {
             "forgets a public Clax's token here; its revocation there is audited there",
         ),
         (
-            "remote_requests::ask",
-            "asks the owner to connect a Clax instance; nothing is connected until the owner's sign-in there, which audits the token it mints",
-        ),
-        (
-            "remote_requests::answer",
-            "the owner's answer to a connection request; a Connect's sign-in there audits the token it mints",
-        ),
-        (
             "remote_requests::unmute",
             "lets agents ask again to connect a Clax instance; no content changes",
         ),
