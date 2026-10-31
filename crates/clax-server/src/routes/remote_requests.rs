@@ -58,13 +58,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
 
-/// Longest `wait` of a request poll, in seconds: under an MCP tool's
-/// timeout, as `wait_for_feedback`'s default.
-pub const MAX_WAIT_SECS: u64 = 50;
+/// Longest `wait` of a request poll, in seconds.
+pub const MAX_WAIT_SECS: u64 = clax_core::remote::REQUEST_MAX_WAIT_SECS;
 
 /// When a poll that found every wait on its request taken should call
 /// again, in seconds (its answer's `retry_after_s`).
-pub const RETRY_AFTER_S: u64 = 5;
+pub const RETRY_AFTER_S: u64 = clax_core::remote::REQUEST_RETRY_AFTER_S;
 
 /// The longest reason kept, in characters.
 const MAX_REASON_CHARS: usize = 500;

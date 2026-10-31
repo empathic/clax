@@ -95,7 +95,8 @@ impl There {
     /// its ID there.
     async fn thread_there(&self, body: &str) -> String {
         let p = &self.public;
-        let t = p.browser_thread(&self.raid, &p.cookie, body).await;
+        let anchor = json!({"kind": "artifact"});
+        let t = p.browser_thread(&self.raid, &p.cookie, anchor, body).await;
         t["id"].as_str().unwrap().to_string()
     }
 

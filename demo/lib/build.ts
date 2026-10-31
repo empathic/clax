@@ -4,20 +4,14 @@
 // what the run prints once it is up. A step that fails rejects with the
 // end of that log.
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import { openSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { exited } from "./proc.ts";
 import { buildWorker } from "./worker.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-
-function exited(child: ChildProcess): Promise<number | null> {
-  return new Promise((ok) => {
-    if (child.exitCode !== null || child.signalCode !== null) ok(child.exitCode);
-    else child.once("exit", (code) => ok(code));
-  });
-}
 
 export class BuildLog {
   readonly path: string;

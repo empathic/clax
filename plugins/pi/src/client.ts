@@ -627,10 +627,11 @@ export class DaemonClient {
     return this.json(`/api/artifacts/${id}/tags`, this.jsonBody("PATCH", body));
   }
 
-  /** `GET /api/artifacts/<id>`: `{artifact, versions}`; `artifact` carries
-   * `owner_session_id`, `owner_live` and `owner_harness`. */
-  get(id: string): Promise<any> {
-    return this.json(`/api/artifacts/${id}`, { method: "GET" });
+  /** `GET <api>` (`artifactPath` or `remoteArtifactPath`): `{artifact,
+   * versions}`; this daemon's `artifact` carries `owner_session_id`,
+   * `owner_live` and `owner_harness`. */
+  get(api: string): Promise<any> {
+    return this.json(api, { method: "GET" });
   }
 
   /** `POST /api/artifacts`: creates an artifact; `{artifact, version, url}`. */
@@ -667,9 +668,9 @@ export class DaemonClient {
   }
 
   /** The stored bytes of `path` in version `n`, unwrapped
-   * (`GET /api/artifacts/<id>/versions/<n>/files/<path>`). */
-  async fileBytes(id: string, n: number, path: string): Promise<Buffer> {
-    return (await this.request(`/api/artifacts/${id}/versions/${n}/files/${encodePath(path)}`, { method: "GET" })).body;
+   * (`GET <api>/versions/<n>/files/<path>`). */
+  async fileBytes(api: string, n: number, path: string): Promise<Buffer> {
+    return (await this.request(`${api}/versions/${n}/files/${encodePath(path)}`, { method: "GET" })).body;
   }
 
   /** `POST /api/artifacts/<id>/assets` (multipart field `file`): `{asset, url}`.
@@ -737,31 +738,34 @@ export class DaemonClient {
     return this.json(`/api/artifacts/${id}/docs:str_replace${q ? `?${q}` : ""}`, this.jsonBody("POST", body));
   }
 
-  /** `GET /api/artifacts/<id>/threads`: `{threads, next_cursor}`. */
-  threads(id: string, includeResolved: boolean, cursor?: string): Promise<any> {
+  /** `GET <api>/threads`: `{threads, next_cursor}`. */
+  threads(api: string, includeResolved: boolean, cursor?: string): Promise<any> {
     const q = new URLSearchParams({ include_resolved: String(includeResolved) });
     if (cursor !== undefined) q.set("cursor", cursor);
-    return this.json(`/api/artifacts/${id}/threads?${q}`, { method: "GET" });
+    return this.json(`${api}/threads?${q}`, { method: "GET" });
   }
 
-  /** `GET /api/artifacts/<id>/threads/<tid>`: `{thread}`. */
-  thread(id: string, tid: string): Promise<any> {
-    return this.json(`/api/artifacts/${id}/threads/${tid}`, { method: "GET" });
+  /** `GET <api>/threads/<tid>`: `{thread}`. */
+  thread(api: string, tid: string): Promise<any> {
+    return this.json(`${api}/threads/${encodeURIComponent(tid)}`, { method: "GET" });
   }
 
   /**
    * An agent reply: `{comment, thread}` (with `addressed: "pending"` when `addressed` marked a live page's
-   * thread), or `{guidance}` on a thread not sent to the agent. `addressed` is sent only when true.
+   * thread), or `{guidance}` on a thread not sent to the agent. `addressed` is sent only when true. Under
+   * idempotency key `key` (a remote artifact's reply), the request sent again is answered with the comment
+   * the first made.
    */
-  reply(id: string, tid: string, text: string, addressed = false): Promise<any> {
+  reply(api: string, tid: string, text: string, addressed = false, key?: string): Promise<any> {
     const body: Record<string, unknown> = { body: text, author_kind: "agent" };
     if (addressed) body.addressed = true;
-    return this.json(`/api/artifacts/${id}/threads/${tid}/comments`, this.jsonBody("POST", body));
+    return this.json(`${api}/threads/${encodeURIComponent(tid)}/comments`, idempotent(this.jsonBody("POST", body), key));
   }
 
-  /** Resolves a thread as the agent: `{thread}`, or `{guidance}` on a thread not sent to the agent. */
-  resolve(id: string, tid: string): Promise<any> {
-    return this.json(`/api/artifacts/${id}/threads/${tid}/resolve`, this.jsonBody("POST", { as: "agent" }));
+  /** Resolves a thread as the agent: `{thread}`, or `{guidance}` on a thread not sent to the agent; under
+   * idempotency key `key`, as `reply`. */
+  resolve(api: string, tid: string, key?: string): Promise<any> {
+    return this.json(`${api}/threads/${encodeURIComponent(tid)}/resolve`, idempotent(this.jsonBody("POST", { as: "agent" }), key));
   }
 
   /** `PUT /api/sessions/<sid>/watches/<id>`: `{watch}`. */
@@ -806,51 +810,11 @@ export class DaemonClient {
     return this.json(`/api/resolve?${new URLSearchParams({ url })}`, { method: "GET" });
   }
 
-  /** The daemon's route of artifact `raid` on connected remote `rid`. */
-  private remotePath(rid: string, raid: string): string {
-    return `/api/remotes/${encodeURIComponent(rid)}/artifacts/${encodeURIComponent(raid)}`;
-  }
-
-  /** `GET /api/remotes/<rid>/artifacts/<raid>`: the remote's `{artifact, versions}`. */
-  remoteGet(rid: string, raid: string): Promise<any> {
-    return this.json(this.remotePath(rid, raid), { method: "GET" });
-  }
-
-  /** The bytes of `path` in version `n` of remote artifact `raid`. */
-  async remoteFileBytes(rid: string, raid: string, n: number, path: string): Promise<Buffer> {
-    return (await this.request(`${this.remotePath(rid, raid)}/versions/${n}/files/${encodePath(path)}`, { method: "GET" })).body;
-  }
-
-  /** The remote's `{threads, next_cursor}` of artifact `raid`. */
-  remoteThreads(rid: string, raid: string, includeResolved: boolean, cursor?: string): Promise<any> {
-    const q = new URLSearchParams({ include_resolved: String(includeResolved) });
-    if (cursor !== undefined) q.set("cursor", cursor);
-    return this.json(`${this.remotePath(rid, raid)}/threads?${q}`, { method: "GET" });
-  }
-
-  /** The remote's `{thread}` `tid` of artifact `raid`. */
-  remoteThread(rid: string, raid: string, tid: string): Promise<any> {
-    return this.json(`${this.remotePath(rid, raid)}/threads/${encodeURIComponent(tid)}`, { method: "GET" });
-  }
-
-  /** An agent reply on remote thread `tid` under idempotency key `key`: the
-   * remote's `{comment, thread}`, or `{guidance}`. */
-  remoteReply(rid: string, raid: string, tid: string, text: string, key: string): Promise<any> {
-    const opts = this.jsonBody("POST", { body: text, author_kind: "agent" });
-    opts.headers = { ...opts.headers, "idempotency-key": key };
-    return this.json(`${this.remotePath(rid, raid)}/threads/${encodeURIComponent(tid)}/comments`, opts);
-  }
-
-  /** Resolves remote thread `tid` as the agent under idempotency key `key`: `{thread}`, or `{guidance}`. */
-  remoteResolve(rid: string, raid: string, tid: string, key: string): Promise<any> {
-    const opts = this.jsonBody("POST", { as: "agent" });
-    opts.headers = { ...opts.headers, "idempotency-key": key };
-    return this.json(`${this.remotePath(rid, raid)}/threads/${encodeURIComponent(tid)}/resolve`, opts);
-  }
-
-  /** Hands remote thread `tid` to the agent `to` names there, or releases it: `{thread}`. */
-  remoteHandoff(rid: string, raid: string, tid: string, to?: string): Promise<any> {
-    return this.json(`${this.remotePath(rid, raid)}/threads/${encodeURIComponent(tid)}/handoff`, this.jsonBody("POST", to === undefined ? {} : { to }));
+  /** Hands thread `tid` of the remote artifact at `api` (`remoteArtifactPath`) to the agent `to` names
+   * there, or releases it: `{thread}`. This daemon's own threads are handed off through the session
+   * (`handoff`). */
+  remoteHandoff(api: string, tid: string, to?: string): Promise<any> {
+    return this.json(`${api}/threads/${encodeURIComponent(tid)}/handoff`, this.jsonBody("POST", to === undefined ? {} : { to }));
   }
 
   /** `PUT /api/sessions/<sid>/working/<id>`: `{working, message_truncated}`. */
@@ -1060,4 +1024,22 @@ export class DaemonClient {
 
   /** The path of this client's session (`/api/sessions/<id>`), as of the attempt. */
   private readonly sessionPath = () => `/api/sessions/${this.sessionId ?? ""}`;
+}
+
+/** The daemon's route of its own artifact `id`, under which its artifact
+ * routes are. A connected remote's artifact has the same routes under
+ * `remoteArtifactPath`; the methods that take an `api` take either. */
+export function artifactPath(id: string): string {
+  return `/api/artifacts/${id}`;
+}
+
+/** The daemon's route of artifact `raid` on connected remote `rid`. */
+export function remoteArtifactPath(rid: string, raid: string): string {
+  return `/api/remotes/${encodeURIComponent(rid)}/artifacts/${encodeURIComponent(raid)}`;
+}
+
+/** `opts` with an `Idempotency-Key` of `key`, when there is one. */
+function idempotent<T extends { headers?: Record<string, string> }>(opts: T, key: string | undefined): T {
+  if (key !== undefined) opts.headers = { ...opts.headers, "idempotency-key": key };
+  return opts;
 }

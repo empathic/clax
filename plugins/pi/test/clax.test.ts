@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { artifactRef, claxExtension, handedOver, handoverOf, htmlTitle, INJECT_RETRY_MS, isText, RENEW_EVERY_MS, START_BUDGET_MS, target, textPrefix, ToolError, waitingLine } from "../src/clax.ts";
+import { artifactRef, claxExtension, handedOver, handoverOf, htmlTitle, INJECT_RETRY_MS, isText, REMOTE_REQUEST_MAX_WAIT_S, RENEW_EVERY_MS, START_BUDGET_MS, target, textPrefix, ToolError, waitingLine } from "../src/clax.ts";
+import { CLIP_FETCHES_AT_ONCE } from "../src/remote.ts";
 import { ClientError, DaemonClient, END_TIMEOUT_MS, MAX_ACK_IDS } from "../src/client.ts";
 import { discover, endpointOf, ensure } from "../src/daemon.ts";
 
@@ -1899,6 +1900,11 @@ describe("waitingLine", () => {
 });
 
 describe("helpers match the shared contract fixture", () => {
+  it("constants", () => {
+    expect(CLIP_FETCHES_AT_ONCE).toBe(FIXTURE.constants.clip_fetches_at_once);
+    expect(REMOTE_REQUEST_MAX_WAIT_S).toBe(FIXTURE.constants.remote_request_max_wait_s);
+  });
+
   it("artifactRef", () => {
     for (const c of FIXTURE.artifact_ref) {
       if (c.error) expect(() => artifactRef(c.input), c.input).toThrow(new RegExp(c.error));

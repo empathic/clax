@@ -176,30 +176,6 @@ impl Public {
         v["artifact"]["id"].as_str().unwrap().to_string()
     }
 
-    /// A thread on the whole of version 1 of `raid` there, saying `body`,
-    /// from the browser whose session cookie is `cookie`: the thread.
-    pub async fn browser_thread(&self, raid: &str, cookie: &str, body: &str) -> Value {
-        let res = self
-            .ts
-            .client
-            .post(format!("{}/api/artifacts/{raid}/threads", self.ts.base))
-            .header(HOST, format!("localhost:{}", self.ts.addr.port()))
-            .header(COOKIE, format!("clax_session={cookie}"))
-            .header(ORIGIN, &self.origin)
-            .multipart(
-                reqwest::multipart::Form::new()
-                    .text("anchor", json!({"kind": "artifact"}).to_string())
-                    .text("body", body.to_string())
-                    .text("version", "1"),
-            )
-            .send()
-            .await
-            .unwrap();
-        let (s, v) = json_of(res).await;
-        assert_eq!(s, 201, "{v}");
-        v["thread"].clone()
-    }
-
     /// A request of the owner's CLI there (the daemon token).
     pub async fn cli(
         &self,
@@ -217,6 +193,36 @@ impl Public {
             r = r.json(&b);
         }
         json_of(r.send().await.unwrap()).await
+    }
+
+    /// A thread at `anchor` on version 1 of `raid` here, from the browser
+    /// whose session cookie is `cookie`: the thread.
+    pub async fn browser_thread(
+        &self,
+        raid: &str,
+        cookie: &str,
+        anchor: Value,
+        body: &str,
+    ) -> Value {
+        let res = self
+            .ts
+            .client
+            .post(format!("{}/api/artifacts/{raid}/threads", self.ts.base))
+            .header(HOST, format!("localhost:{}", self.ts.addr.port()))
+            .header(COOKIE, format!("clax_session={cookie}"))
+            .header(ORIGIN, &self.origin)
+            .multipart(
+                reqwest::multipart::Form::new()
+                    .text("anchor", anchor.to_string())
+                    .text("body", body.to_string())
+                    .text("version", "1"),
+            )
+            .send()
+            .await
+            .unwrap();
+        let (s, v) = json_of(res).await;
+        assert_eq!(s, 201, "{v}");
+        v["thread"].clone()
     }
 }
 

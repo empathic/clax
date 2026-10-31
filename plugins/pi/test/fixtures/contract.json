@@ -1,5 +1,10 @@
 {
   "_comment": "Inputs and expected outputs shared by the Rust MCP tools (crates/clax-mcp/src/tools.rs and target.rs, clax-core html_title) and the Pi extension (plugins/pi/src/clax.ts). scripts/test-plugins.sh checks that each tool description appears verbatim in both sources. The Rust MCP server also declares each tool's MCP annotations as listed (crates/clax-mcp/src/tools.rs tests them); the Pi extension has no annotations.",
+  "constants": {
+    "_comment": "Numbers both clients follow: clip_fetches_at_once is clax_core::clips::FETCHES_AT_ONCE, remote_request_max_wait_s is clax_core::remote::REQUEST_MAX_WAIT_SECS (crates/clax-mcp/src/tools.rs checks them).",
+    "clip_fetches_at_once": 4,
+    "remote_request_max_wait_s": 50
+  },
   "artifact_ref": [
     {
       "input": "7q3k9mzx2b4t",

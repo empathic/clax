@@ -32,7 +32,8 @@
     if (busy || !waiting) return;
     busy = true; err = null;
     const { reg, held } = waiting;
-    try { await finish(await register(reg, held.id), reg); } catch (e) { err = e instanceof Error ? e.message : String(e); } finally { busy = false; }
+    // A refusal (the confirmation declined, expired or used) ends the wait: Set up starts again.
+    try { await finish(await register(reg, held.id), reg); } catch (e) { waiting = null; err = e instanceof Error ? e.message : String(e); } finally { busy = false; }
   }
 </script>
 

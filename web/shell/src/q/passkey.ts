@@ -4,11 +4,7 @@
 // the owner's browser's (`/api/passkeys…`); the ceremonies are the
 // browser's own (`navigator.credentials`), which only a secure context
 // (`http://localhost`) offers.
-import { type Held, heldOf } from "../held";
-
-/** The header that presents a confirmation's ID with the call it confirms:
- * an ID the daemon handed this shell, never a page's. */
-const CONFIRMATION_HEADER = "x-clax-confirmation";
+import { browserCall, type Held, Refused } from "../held";
 
 /** `GET /api/passkeys`. */
 export type PasskeySettings = {
@@ -30,14 +26,6 @@ export type Assertion = { credential_id: string; authenticator_data: string; cli
 
 /** A registration, as the daemon takes it. */
 export type Registration = { credential_id: string; public_key: string; alg: number; authenticator_data: string; client_data_json: string };
-
-/** A refusal: the daemon's words, or the browser's. */
-export class PasskeyRefused extends Error {
-  constructor(message: string, public code: string | null = null) {
-    super(message);
-    this.name = "PasskeyRefused";
-  }
-}
 
 /** `bytes` as unpadded base64url. */
 export function b64u(bytes: ArrayBuffer | Uint8Array): string {
@@ -62,17 +50,9 @@ export function unavailableHere(): string | null {
   return null;
 }
 
-async function call<T>(path: string, method = "GET", body?: unknown, confirm?: string): Promise<T> {
-  const headers: Record<string, string> = body === undefined ? {} : { "content-type": "application/json" };
-  if (confirm) headers[CONFIRMATION_HEADER] = confirm;
-  const res = await fetch(path, method === "GET" ? { cache: "no-store" } : { method, headers, body: JSON.stringify(body ?? {}) });
-  const held = await heldOf(res);
-  if (held) throw Object.assign(new PasskeyRefused(held.message, "confirmation_pending"), { held });
-  let b: { error?: { code?: string; message?: string } } & T = {} as never;
-  try { b = await res.json(); } catch { /* not json */ }
-  if (res.ok) return b;
-  throw new PasskeyRefused(b.error?.message ?? (res.statusText || `HTTP ${res.status}`), b.error?.code ?? null);
-}
+// Every write sends a JSON body, `{}` when it has none.
+const call = <T>(path: string, method = "GET", body?: unknown, confirm?: string) =>
+  browserCall<T>(path, method, method === "GET" ? undefined : body ?? {}, confirm);
 
 let cached: Promise<PasskeySettings | null> | null = null;
 
@@ -94,7 +74,7 @@ export async function assertFor(p: Purpose): Promise<Assertion> {
   const cred = (await navigator.credentials.get({
     publicKey: { challenge: fromB64u(c.challenge), rpId: c.rp_id, allowCredentials: allow(c.allow), userVerification: "required", timeout: c.timeout_ms },
   })) as PublicKeyCredential | null;
-  if (!cred) throw new PasskeyRefused("No passkey was used.");
+  if (!cred) throw new Error("No passkey was used.");
   const r = cred.response as AuthenticatorAssertionResponse;
   return { credential_id: b64u(cred.rawId), authenticator_data: b64u(r.authenticatorData), client_data_json: b64u(r.clientDataJSON), signature: b64u(r.signature) };
 }
@@ -114,10 +94,10 @@ export async function makePasskey(): Promise<Registration> {
       timeout: c.timeout_ms,
     },
   })) as PublicKeyCredential | null;
-  if (!cred) throw new PasskeyRefused("No passkey was made.");
+  if (!cred) throw new Error("No passkey was made.");
   const r = cred.response as AuthenticatorAttestationResponse;
   const key = r.getPublicKey();
-  if (!key) throw new PasskeyRefused("This passkey's algorithm is not one Clax checks.");
+  if (!key) throw new Error("This passkey's algorithm is not one Clax checks.");
   return { credential_id: b64u(cred.rawId), public_key: b64u(key), alg: r.getPublicKeyAlgorithm(), authenticator_data: b64u(r.getAuthenticatorData()), client_data_json: b64u(r.clientDataJSON) };
 }
 
@@ -131,8 +111,7 @@ export async function register(reg: Registration, confirm?: string): Promise<Reg
     cached = Promise.resolve(r.settings);
     return { settings: r.settings };
   } catch (e) {
-    const held = (e as { held?: Held }).held;
-    if (held) return { held };
+    if (e instanceof Refused && e.held) return { held: e.held };
     throw e;
   }
 }

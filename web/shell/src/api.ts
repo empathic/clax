@@ -1,5 +1,4 @@
 import type { Working } from "./view/working-model";
-import { isColdRefusal, showColdBrowser } from "./cold-browser";
 
 export type Artifact = {
   id: string; title: string; description: string | null; icon: string | null;
@@ -141,8 +140,9 @@ export const onToken = (fn: () => void) => { tokenHeard.add(fn); };
  * holder made, `clax open`), on a hosted daemon the owner's signed-in
  * browser, as a shell token (`cxo_…`) that stands for it; null for anyone
  * else (401 or 403). A local daemon's refusal of a browser that holds no
- * credential at all (401 `no_credential`) shows how to open Clax from the
- * terminal instead of the page. */
+ * credential at all (401 `no_credential`) has by then shown how to open
+ * Clax from the terminal: the page's `proofFetch` does so for every API
+ * call. */
 export function getToken(): Promise<string | null> {
   if (!tokenPromise) {
     const p: Promise<string | null> = fetch("/api/token").then(async r => {
@@ -151,7 +151,6 @@ export function getToken(): Promise<string | null> {
         if (tokenFailed) { tokenFailed = false; for (const f of tokenHeard) f(); }
         return t;
       }
-      if (r.status === 401 && (await isColdRefusal(r))) { showColdBrowser(); return null; }
       if (r.status === 403 || r.status === 401) return null;
       throw new Error(`token request failed: ${r.status}`);
     }).catch(() => {

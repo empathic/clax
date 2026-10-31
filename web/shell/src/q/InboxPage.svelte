@@ -80,7 +80,7 @@
     const id = confirmTarget;
     if (!id || !confirming.open.some(c => c.id === id)) return;
     queueMicrotask(() => {
-      const el = [...document.querySelectorAll<HTMLElement>(".ccard")].find(e => e.dataset.confirmation === id);
+      const el = [...document.querySelectorAll<HTMLElement>(".cfcard")].find(e => e.dataset.confirmation === id);
       if (!el) return;
       el.focus({ preventScroll: true });
       el.scrollIntoView?.({ block: "center" });

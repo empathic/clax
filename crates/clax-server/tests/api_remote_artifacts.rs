@@ -217,7 +217,12 @@ async fn replies_and_resolves_on_a_remote_thread_once_per_key() {
         .to_string();
     let raid = public.publish().await;
     let t = public
-        .browser_thread(&raid, &public.cookie, "@agent tighten the copy")
+        .browser_thread(
+            &raid,
+            &public.cookie,
+            json!({"kind": "artifact"}),
+            "@agent tighten the copy",
+        )
         .await;
     let tid = t["id"].as_str().unwrap().to_string();
     let sid = local.register_session("claude", "hs-reply").await["id"]
@@ -500,10 +505,19 @@ async fn withheld_comments_are_counted() {
         )
         .await;
     assert!((200..300).contains(&s), "{v}");
-    public.browser_thread(&raid, &bob, "Bob's first").await;
-    public.browser_thread(&raid, &bob, "Bob's second").await;
     public
-        .browser_thread(&raid, &public.cookie, "Ada's own")
+        .browser_thread(&raid, &bob, json!({"kind": "artifact"}), "Bob's first")
+        .await;
+    public
+        .browser_thread(&raid, &bob, json!({"kind": "artifact"}), "Bob's second")
+        .await;
+    public
+        .browser_thread(
+            &raid,
+            &public.cookie,
+            json!({"kind": "artifact"}),
+            "Ada's own",
+        )
         .await;
     let url = format!("{}/a/{raid}", public.origin);
     let note = format!(
@@ -698,7 +712,12 @@ async fn an_agent_with_no_session_writes_nothing_there() {
         .to_string();
     let raid = public.publish().await;
     let t = public
-        .browser_thread(&raid, &public.cookie, "@agent look")
+        .browser_thread(
+            &raid,
+            &public.cookie,
+            json!({"kind": "artifact"}),
+            "@agent look",
+        )
         .await;
     let tid = t["id"].as_str().unwrap().to_string();
     let base = format!("/api/remotes/{rid}/artifacts/{raid}");
