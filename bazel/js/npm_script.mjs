@@ -9,7 +9,7 @@
 //
 // The script runs in a private copy of the project, made here from exactly
 // the files Bazel declared for this action (its runfiles) and deleted
-// afterwards, however the run ends. Two reasons:
+// afterwards, however the run ends (by Bazel, for a test's). Two reasons:
 //
 // - Bazel hands an action its inputs as links to where the files really
 //   are. Vite's bundler and resolver are native code and follow the links;
@@ -47,7 +47,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative, resolve, sep } from 'node:path';
-import { candidates, makeScratch } from './scratch.mjs';
+import { candidates, makeScratch, removedByBazel } from './scratch.mjs';
 
 const argv = process.argv.slice(2);
 const outs = [];
@@ -81,12 +81,16 @@ const realRoot = real.slice(0, real.length - join(dir, 'package.json').length - 
 const project = makeScratch(candidates({ env: process.env, cwd: process.cwd(), systemTmp: realpathSync(tmpdir()) }));
 // The copy is a whole project with its packages, so it is also removed
 // here however this ends: at the end, on an error, and on a signal that
-// can be caught. The marker names this process, so that scripts/bazel-gc.sh
-// can tell a copy still in use from one left in the machine's temporary
-// directory by a process that was killed outright.
+// can be caught. A copy in a test's own temporary directory is the
+// exception: Bazel removes that itself (scratch.mjs, removedByBazel), and
+// removing tens of thousands of files here would only add to the test's
+// time. The marker names this
+// process, so that scripts/bazel-gc.sh can tell a copy still in use from
+// one left in the machine's temporary directory by a process that was
+// killed outright.
 writeFileSync(join(project, '.npm-script-private'), `${process.pid}\n`);
 let child = null;
-let removed = false;
+let removed = removedByBazel(project, process.env);
 function cleanup() {
   if (removed) return;
   removed = true;
