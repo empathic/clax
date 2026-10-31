@@ -3179,8 +3179,8 @@ impl ClaxTools {
 
     /// `connect_instance` (spec 2026-10-29-remote-instances §3): asks the
     /// person to connect the Clax instance `url_or_origin` is on (or keeps
-    /// waiting on `request_id`), then waits for their answer in polls of at
-    /// most 50 s, up to `timeout_s`.
+    /// waiting on `request_id`), then waits for their answer up to
+    /// `timeout_s` ([`DaemonClient::remote_request_wait_up_to`]).
     async fn do_connect_instance(&self, a: ConnectInstanceArgs) -> Outcome {
         let session = self.require_session().await?;
         let wait = a
@@ -3211,31 +3211,26 @@ impl ClaxTools {
             }
         };
         let started = clax_rt::time::Instant::now();
-        loop {
-            let left = wait.saturating_sub(started.elapsed().as_secs());
-            let v = self
-                .client
-                .remote_request_wait(&id, left.min(50))
-                .await
-                .map_err(|e| {
-                    render::client_error_with(e, self.daemon_log(), json!({"request_id": id}))
-                })?;
-            // `retry_after_s`: every wait on the request is taken; the
-            // agent calls again rather than this call polling at once.
-            if v["status"] != "open" || left <= 50 || v.get("retry_after_s").is_some() {
-                let mut out = v.clone();
-                out["waited_s"] = json!(started.elapsed().as_secs());
-                if v["status"] == "open" {
-                    let url = format!("{}/inbox?remote_request={id}", self.browser_base());
-                    out["tell_terminal"] = json!(format!(
-                        "Asked in Clax to connect {}: {url}",
-                        v["name"].as_str().unwrap_or("the instance")
-                    ));
-                    out["url"] = json!(url);
-                }
-                return Ok(out);
-            }
+        // `retry_after_s`: every wait on the request is taken; the agent
+        // calls again rather than this call polling on.
+        let v = self
+            .client
+            .remote_request_wait_up_to(&id, wait, false)
+            .await
+            .map_err(|e| {
+                render::client_error_with(e, self.daemon_log(), json!({"request_id": id}))
+            })?;
+        let mut out = v.clone();
+        out["waited_s"] = json!(started.elapsed().as_secs());
+        if v["status"] == "open" {
+            let url = format!("{}/inbox?remote_request={id}", self.browser_base());
+            out["tell_terminal"] = json!(format!(
+                "Asked in Clax to connect {}: {url}",
+                v["name"].as_str().unwrap_or("the instance")
+            ));
+            out["url"] = json!(url);
         }
+        Ok(out)
     }
 
     /// The daemon's suggestion of where to ask the session's person now:

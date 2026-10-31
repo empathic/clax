@@ -1731,6 +1731,37 @@ impl DaemonClient {
         .await
     }
 
+    /// Waits on connection request `id` for up to `total_s` seconds, in
+    /// [`Self::remote_request_wait`] polls of at most
+    /// [`clax_core::remote::REQUEST_MAX_WAIT_SECS`]: the last poll's answer,
+    /// once the request is not open or the time is up. A poll answering
+    /// `retry_after_s` (every wait on the request is taken) ends the wait
+    /// too, unless `retry` is set: then it waits that long and polls again.
+    pub async fn remote_request_wait_up_to(
+        &self,
+        id: &str,
+        total_s: u64,
+        retry: bool,
+    ) -> Result<Value> {
+        let cap = clax_core::remote::REQUEST_MAX_WAIT_SECS;
+        let started = clax_rt::time::Instant::now();
+        loop {
+            let left = total_s.saturating_sub(started.elapsed().as_secs());
+            let v = self.remote_request_wait(id, left.min(cap)).await?;
+            if v["status"] != "open" || left <= cap {
+                return Ok(v);
+            }
+            match v["retry_after_s"].as_u64() {
+                Some(_) if !retry => return Ok(v),
+                Some(after) => {
+                    let left = total_s.saturating_sub(started.elapsed().as_secs());
+                    clax_rt::time::sleep(Duration::from_secs(after.min(left))).await;
+                }
+                None => {}
+            }
+        }
+    }
+
     /// `PUT /api/sessions/<sid>/working/<id>`: `{working, message_truncated}`.
     pub async fn set_working(&self, id: &str, body: &Value) -> Result<Value> {
         self.json(|c| {

@@ -114,13 +114,14 @@ fn own_session(c: &Client) -> anyhow::Result<Option<String>> {
     ))
 }
 
-/// The default wait of `clax remote request`: the connect_instance tool's,
-/// 50 s under Codex (whose tool calls end at 60 s) and 600 s elsewhere.
+/// The default wait of `clax remote request`: the connect_instance tool's
+/// ([`clax_mcp::tools::default_ask_wait`]) under the harness the
+/// environment `env` names, Codex or another.
 fn default_wait(env: impl Fn(&str) -> Option<String>) -> u64 {
     let codex = ["CODEX_THREAD_ID", "CODEX_CI", "CODEX_SANDBOX"]
         .iter()
         .any(|k| env(k).is_some_and(|v| !v.is_empty()));
-    if codex { 50 } else { 600 }
+    clax_mcp::tools::default_ask_wait(if codex { "codex" } else { "" })
 }
 
 #[derive(clap::Args)]
@@ -288,31 +289,21 @@ pub(crate) fn encode(s: &str) -> String {
         .collect()
 }
 
-/// `clax remote request`: asks, then waits in polls of at most 50 s until
-/// the request is answered or `a.wait` runs out.
+/// `clax remote request`: asks, then waits until the request is answered
+/// or `a.wait` runs out, as the connect_instance tool does
+/// ([`clax_mcp::DaemonClient::remote_request_wait_up_to`]), but polling
+/// again when every wait on the request is taken.
 fn request(cli: &crate::Cli, c: &Client, a: &RequestArgs) -> anyhow::Result<()> {
     let session = match &a.session {
         Some(s) => Some(s.clone()),
         None => own_session(c)?,
     };
-    let headers: Vec<(&str, &str)> = session
-        .as_deref()
-        .map(|s| vec![("x-clax-session", s)])
-        .unwrap_or_default();
     let wait = a
         .wait
         .unwrap_or_else(|| default_wait(|k| std::env::var(k).ok()));
-    let mut body = json!({"url": a.url});
-    if let Some(r) = &a.reason {
-        body["reason"] = json!(r);
-    }
-    let v = c.request_with(
-        reqwest::Method::POST,
-        "/api/remotes/requests",
-        Some(&body),
-        None,
-        &headers,
-    )?;
+    let v = super::tools::with_daemon(c, session.clone(), |d| async move {
+        d.remote_request(&a.url, a.reason.as_deref()).await
+    })?;
     if v["status"] != "open" {
         super::print(cli, v, answer_line);
         return Ok(());
@@ -325,28 +316,14 @@ fn request(cli: &crate::Cli, c: &Client, a: &RequestArgs) -> anyhow::Result<()> 
             v["request"]["origin"].as_str().unwrap_or_default()
         );
     }
-    let deadline = Instant::now() + Duration::from_secs(wait);
-    loop {
-        let left = deadline.saturating_duration_since(Instant::now()).as_secs();
-        let w = left.min(50);
-        let p = c.request_with(
-            reqwest::Method::GET,
-            &format!("/api/remotes/requests/{id}?wait={w}"),
-            None,
-            Some(Duration::from_secs(w + 10)),
-            &headers,
-        )?;
-        if p["status"] != "open" || left <= 50 {
-            super::print(cli, p, answer_line);
-            return Ok(());
-        }
-        // Every wait on the request is taken: call again when it says.
-        if let Some(after) = p["retry_after_s"].as_u64() {
-            std::thread::sleep(
-                Duration::from_secs(after).min(deadline.saturating_duration_since(Instant::now())),
-            );
-        }
+    if !clax_core::is_ulid(&id) {
+        anyhow::bail!("the daemon answered no request ID");
     }
+    let p = super::tools::with_daemon(c, session, |d| async move {
+        d.remote_request_wait_up_to(&id, wait, true).await
+    })?;
+    super::print(cli, p, answer_line);
+    Ok(())
 }
 
 /// A connection request's answer, as `clax remote request` prints it.
