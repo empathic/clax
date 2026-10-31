@@ -112,6 +112,18 @@ describe("QuestionCard", () => {
       expect(line(m)).toBe("Not sent: refused by clax.dev (limit_reached: too many open questions)");
       expect(retry(m)).not.toBeNull();
       m.unmount();
+      // A Retry that fails says why on the line, keeping Retry, until a newer view.
+      fetch.mockImplementation(async (url: string) => String(url).endsWith("/retry")
+        ? new Response(JSON.stringify({ error: { code: "not_found", message: "no such link" } }), { status: 404, headers: { "content-type": "application/json" } })
+        : new Response(JSON.stringify({ token: "t" }), { status: 200, headers: { "content-type": "application/json" } }));
+      const refused = mount(QuestionCard, props(view({ linked: link })));
+      click(retry(refused)!);
+      await vi.waitFor(() => { flush(); expect(refused.root.querySelector(".link-line .retry-err")?.textContent).toBe("Retry failed: no such link"); });
+      expect(line(refused)).toBe("Not sent: clax.dev unreachable");
+      expect(retry(refused)!.disabled).toBe(false);
+      refused.update(props(view({ linked: link })));
+      expect(refused.root.querySelector(".link-line .retry-err")).toBeNull();
+      refused.unmount();
       // Only a copy not sent has one.
       const pending = mount(QuestionCard, props(view({ linked: { ...link, state: "pending" } })));
       expect(retry(pending)).toBeNull();

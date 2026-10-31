@@ -8,6 +8,8 @@
   import { type HistoryEvent, type VersionTag, addressedNote, commentVersion } from "../view/history-model";
   import Clip from "./Clip.svelte";
   import Markdown from "./Markdown.svelte";
+  import RetryButton from "./RetryButton.svelte";
+  import { retryLink } from "./retry-link.svelte";
   import { plainText } from "../view/md-load.svelte";
   import { SEEN_AFTER_MS, authorLabel, pageLabel } from "../view/sidebar-model";
   import { after } from "../clock";
@@ -68,17 +70,10 @@
   const readOnly = $derived(ro || !!t.linked?.unlinked);
   const tag = $derived(linkTag(t));
   const elsewhere = $derived(remoteVersion(t));
-  let retrying = $state(false);
-  // The view of the thread Retry was taken on: until a newer view comes,
-  // what was not sent reads as sending again (the retry moves no event).
-  let retriedOn = $state.raw<Thread | null>(null);
-  const lines = $derived(cardLinkLines(t, retriedOn === t));
-  const retry = async () => {
-    if (!t.linked || retrying) return;
-    retrying = true;
-    const on = t;
-    try { const { retryLink } = await import("./publish-api"); await retryLink(t.artifact_id, t.linked.remote_id); retriedOn = on; } catch { /* the card shows the state it is in */ } finally { retrying = false; }
-  };
+  // Retry on the line of what was not sent (`RetryLink`): until a newer view
+  // of the thread comes, what it retried reads as sending again.
+  const retrier = retryLink<Thread>();
+  const lines = $derived(cardLinkLines(t, retrier.retried(t)));
   // A thread about the whole artifact (anchor kind `artifact`) has no spot to name.
   const anchorLabel = (a: Thread["anchor"]) => (a.kind === "artifact" ? "The whole artifact" : pickLabel(a));
   let reply = $state("");
@@ -214,7 +209,7 @@
 
 {#snippet chip()}{#if tag}<span class={["link-tag", tag.unlinked && "unlinked"]} title={tag.title}>{tag.label}</span>{/if}{#if owner}<span class="owner-chip" title={`${owner.name ?? "agent"}, ${mine ? "your agent" : `${whose(owner.person_name ?? "")} agent`}`}><span class="on">{owner.name}</span>{#if !mine}<span class="op">{` · ${midName(owner.person_name ?? "")}`}</span>{/if}</span>{/if}{/snippet}
 
-{#snippet retryButton()}<button type="button" class="retry" disabled={retrying} onclick={e => { e.stopPropagation(); void retry(); }}>{retrying ? "Retrying…" : "Retry"}</button>{/snippet}
+{#snippet retryButton()}{#if t.linked}<RetryButton r={retrier} view={t} artifact={t.artifact_id} remote={t.linked.remote_id} />{/if}{/snippet}
 
 {#snippet actions()}
   <!-- Only stops a click on these controls from also selecting the card. -->
@@ -290,7 +285,6 @@
     .thread-card .link-state { margin: 0; color: var(--muted); font-style: italic; }
     .thread-card .link-state.failed, .thread-card .st.link.failed { color: var(--danger); font-style: normal; }
     .thread-card .link-state.failed { display: flex; align-items: center; gap: 8px; }
-    .thread-card .retry { margin-left: auto; min-height: 24px; padding: 2px 10px; font-size: 12px; font-style: normal; color: var(--fg); }
     .thread-check { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); flex: none; cursor: pointer; }
     .thread-card:has(.thread-check:checked) { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
   }

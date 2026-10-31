@@ -36,6 +36,8 @@
   import { aboutLink, agentLabel, answerLine, answerText, closedLabel, complete, cutHeader, emptyDraft, nextOpen, pick, previewOf, questionLink, shownLabel, toBody, typeOther } from "./model";
   import { trail } from "./trail";
   import Markdown from "../ui/Markdown.svelte";
+  import RetryButton from "../ui/RetryButton.svelte";
+  import { retryLink } from "../ui/retry-link.svelte";
 
   type Props = {
     q: QuestionView;
@@ -84,19 +86,10 @@
   const spec =$derived(p.q.questions[Math.min(tab, p.q.questions.length - 1)]);
   const preview = $derived(previewOf(spec, focused, draft[tab]));
   const open = $derived(p.q.status === "open");
-  let retrying = $state(false);
-  // The view of the question Retry was taken on: until a newer view comes,
-  // a copy not sent reads as sending again (the retry moves no event).
-  let retriedOn = $state.raw<QuestionView | null>(null);
-  const link = $derived(questionLink(p.q, retriedOn === p.q));
-  // Tries the copies not sent of the question's artifact's link again, as
-  // the Publish popover's Retry does (POST …/remotes/<remote>/retry).
-  const retry = async () => {
-    const q = p.q, l = q.linked, a = q.artifact;
-    if (!l || !a || retrying) return;
-    retrying = true;
-    try { const { retryLink } = await import("../ui/publish-api"); await retryLink(a.id, l.remote_id); retriedOn = q; } catch { /* the card shows the state it is in */ } finally { retrying = false; }
-  };
+  // Retry on the line of a copy not sent (`RetryLink`, as a thread card's):
+  // until a newer view of the question comes, the copy reads as sending again.
+  const retrier = retryLink<QuestionView>();
+  const link = $derived(questionLink(p.q, retrier.retried(p.q)));
   const about = $derived(aboutLink(p.q, p.here, p.thread));
   const base = $derived(`q-${p.q.id}`);
   // Takes focus back only when it went nowhere (<body>): focus the person
@@ -296,7 +289,7 @@
       </div>
       {/each}
     </div>
-    {#if link?.line}<p class="link-line" data-failed={link.failed ? "" : undefined}><span>{link.line}</span>{#if link.retry}<button type="button" class="retry" disabled={retrying} onclick={() => void retry()}>{retrying ? "Retrying…" : "Retry"}</button>{/if}</p>{/if}
+    {#if link?.line}<p class="link-line" data-failed={link.failed ? "" : undefined}><span>{link.line}</span>{#if link.retry && p.q.linked && p.q.artifact}<RetryButton r={retrier} view={p.q} artifact={p.q.artifact.id} remote={p.q.linked.remote_id} />{/if}</p>{/if}
     <footer class="acts">
       {#if n > 1}
         <!-- aria-disabled, not disabled: a button disabled under focus drops it. -->
@@ -379,7 +372,7 @@
     .qcard .link-tag[data-unlinked] { font-weight: 500; font-style: italic; }
     .qcard .link-line { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); }
     .qcard .link-line[data-failed] { color: var(--danger); }
-    .qcard .link-line .retry { margin-left: 8px; min-height: 24px; padding: 2px 10px; font-size: 12px; color: var(--fg); }
+    .qcard .link-line[data-failed] { display: flex; align-items: center; gap: 8px; }
     .qcard .closed .there { font-weight: 400; color: var(--muted); }
     .qcard .instead { margin: -2px 0 6px; font-size: 12.5px; color: var(--danger); }
     @media (pointer: coarse) { .qcard .opt input[data-opt] { width: 20px; height: 20px; } }
