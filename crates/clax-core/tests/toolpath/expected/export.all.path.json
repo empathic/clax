@@ -6299,13 +6299,122 @@
             ],
             "timestamp": "2026-10-06T14:09:21.108Z"
           }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001": {
+              "structural": {
+                "opened": true,
+                "origin": "https://clax.example",
+                "request_id": "01JBRR00000000000000000001",
+                "type": "clax.remote_request.ask"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "remote_request.ask",
+              "seq": 115,
+              "session_id": "01JB9S00000000000000000001",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Asked to connect to https://clax.example (request 01JBRR00000000000000000001)",
+            "refs": [
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000115",
+            "parents": [
+              "e000000000108"
+            ],
+            "timestamp": "2026-10-06T14:09:28.115Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697": {
+              "structural": {
+                "answer": "connect",
+                "origin": "https://clax.example",
+                "remote_id": "01JBRM00000000000000000001",
+                "request_id": "01JBRR00000000000000000001",
+                "type": "clax.remote_request.answer"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "remote_request.answer",
+              "seq": 116,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Answered connect to connecting to https://clax.example (request 01JBRR00000000000000000001)"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000116",
+            "parents": [
+              "e000000000115"
+            ],
+            "timestamp": "2026-10-06T14:09:29.116Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697": {
+              "structural": {
+                "origin": "https://clax.example",
+                "remote_id": "01JBRM00000000000000000001",
+                "request_id": "01JBRR00000000000000000001",
+                "status": "connected",
+                "type": "clax.remote_request.close"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "remote_request.close",
+              "seq": 117,
+              "system_reason": "daemon",
+              "v": 1,
+              "via": "daemon"
+            },
+            "description": "Closed the request to connect to https://clax.example as connected (request 01JBRR00000000000000000001)"
+          },
+          "step": {
+            "actor": "tool:clax/0.3.1",
+            "id": "e000000000117",
+            "parents": [
+              "e000000000116"
+            ],
+            "timestamp": "2026-10-06T14:09:30.117Z"
+          }
         }
       ],
       "path": {
         "base": {
           "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697"
         },
-        "head": "e000000000108",
+        "head": "e000000000117",
         "id": "clax-install-6a1f0c3e"
       },
       "meta": {
@@ -6490,7 +6599,7 @@
       "clax_version": "0.3.1",
       "first_seq": 1,
       "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-      "last_seq": 114,
+      "last_seq": 117,
       "redaction": [
         "no-text",
         "no-names",

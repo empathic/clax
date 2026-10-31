@@ -506,12 +506,6 @@ pub async fn ask(
     Ok((StatusCode::CREATED, Json(v)))
 }
 
-#[derive(Deserialize)]
-pub struct WaitQuery {
-    #[serde(default)]
-    wait: u64,
-}
-
 /// `GET /api/sessions/<sid>/approvals/<rid>?wait=<s>` (the session's agent)
 /// → `{approval_id, status, scope, request, waited_s}` as soon as the
 /// request is not open, or after `wait` seconds (at most an hour, as a
@@ -522,7 +516,7 @@ pub async fn poll(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<clax_http::agent::ApprovalsPoll>,
     p: Result<Path<(String, String)>, PathRejection>,
-    q: Result<Query<WaitQuery>, QueryRejection>,
+    q: Result<Query<super::questions::WaitQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let (sid, rid) = path(p)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
@@ -543,51 +537,22 @@ pub async fn poll(
         })
         .await?;
     let Some((notify, _hold)) = s.questions.hold(&rid, None) else {
-        return Err(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "limit_reached",
-            format!(
-                "at most {} polls wait on one request at once",
-                clax_realtime::questions::MAX_POLLS
-            ),
-        ));
+        return Err(super::questions::polls_limit("request"));
     };
-    let mut shutdown = s.shutdown.clone();
-    let stopping = async move {
-        if shutdown.wait_for(|v| *v).await.is_err() {
-            std::future::pending::<()>().await;
-        }
-    };
-    tokio::pin!(stopping);
-    let expiry = s.question_sleeper.sleep(wait);
-    tokio::pin!(expiry);
-    let mut done = wait.is_zero();
-    loop {
-        let notified = notify.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
-        #[cfg(debug_assertions)]
-        if s.questions.take_expired(&rid) {
-            done = true;
-        }
-        let (rid1, me) = (rid.clone(), approver.clone());
-        let out = s
-            .store_call(move |db| {
+    let read = |end: super::questions::Ending| {
+        let (rid1, me, s) = (rid.clone(), approver.clone(), s.clone());
+        async move {
+            s.store_call(move |db| {
                 let r = db.approval_request(&rid1, me.as_deref())?;
-                if r.status == RequestStatus::Open && !done {
+                if r.status == RequestStatus::Open && !end.done {
                     return Ok(None);
                 }
                 answer(db, &r).map(Some)
             })
-            .await?;
-        if let Some(mut v) = out {
-            v["waited_s"] = json!(started.elapsed().as_secs());
-            return Ok(Json(v));
+            .await
         }
-        tokio::select! {
-            () = &mut notified => {}
-            () = &mut expiry, if !done => done = true,
-            () = &mut stopping, if !done => done = true,
-        }
-    }
+    };
+    let mut v = super::questions::long_poll(&s, &rid, notify, wait, read).await?;
+    v["waited_s"] = json!(started.elapsed().as_secs());
+    Ok(Json(v))
 }

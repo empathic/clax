@@ -1575,6 +1575,23 @@ impl Event<'_> {
                 thread(),
                 self.show("reason")
             ),
+            Some(K::RemoteRequestAsk) => format!(
+                "Asked to connect to {} (request {})",
+                self.show("origin"),
+                self.show("request_id")
+            ),
+            Some(K::RemoteRequestAnswer) => format!(
+                "Answered {} to connecting to {} (request {})",
+                self.show("answer"),
+                self.show("origin"),
+                self.show("request_id")
+            ),
+            Some(K::RemoteRequestClose) => format!(
+                "Closed the request to connect to {} as {} (request {})",
+                self.show("origin"),
+                self.show("status"),
+                self.show("request_id")
+            ),
             Some(K::BackfillSkip) => {
                 return format!(
                     "Skipped {} row {} while recording earlier history",

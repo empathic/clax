@@ -729,7 +729,8 @@ name one), `not_connected` (its sign-in is not finished), `remote_moved`
 (someone published on the public copy since this Clax pushed:
 `remote_version` and `pushed_version` say where each is; pass `mode`
 `fork` or `new`), `remote_unreachable`, `remote_signed_out` (its token was
-revoked there), `remote_refused` (the public Clax's own refusal, in
+revoked there: the remote is marked `signed_out`, and every later push
+answers so until it is connected again), `remote_refused` (the public Clax's own refusal, in
 `remote_code`), `live_page`, `no_session`.
 
 ### asset_upload
@@ -1299,7 +1300,10 @@ request: {tool: "connect_instance", command: "clax remote request
 '<origin>/'"}}`, as does every later call until it is connected again.
 Any other 401 there (`invalid_session_proof`, `replayed_request`: one
 request refused) keeps the token and is 502 `remote_refused` with
-`remote_code`.
+`remote_code`. A push, the Clax app's routes and the linked threads'
+sync that meet such a refusal of the token mark the remote `signed_out`
+alike (a push and the app's routes answer 502 `remote_signed_out`; the
+sync stops until a sign-in connects the remote again).
 
 On such an artifact, the MCP tools and Pi's `read`, `comments_read`,
 `comments_reply`, `comments_resolve`, `comments_handoff` and `open` answer
@@ -1432,6 +1436,8 @@ hosted one):
   remote without its `user_code` and `verification_url`. `not_now` and
   `never` answer `{request}`. 409 `request_closed` (with `request`) for a
   request no longer open; 400 `invalid_args` for another answer.
+  Every ask, answer and settling is recorded in the audit journal
+  (`remote_request.ask`, `remote_request.answer`, `remote_request.close`).
 - `GET /api/remotes/mutes` (the owner) → `{mutes: [{origin, muted_at}]}`,
   newest first; `DELETE /api/remotes/mutes/<origin>` (the owner's browser
   alone; the origin percent-encoded) → `{origin, unmuted}`. The shell's
@@ -1770,7 +1776,8 @@ app's versions with the bundle each carries.
   public version `remote_n` of a copy without a push (an app got from a
   copy; at the local version a push of it made `remote_n` from, when one
   did, as when it is linked again after a new sign-in): a local write that asks nothing of the remote, though it needs
-  the core signed in there (400 `not_connected`). `url` is required and unread: the link's
+  the core signed in there (400 `not_connected` while its sign-in waits,
+  502 `remote_signed_out` once the remote refused its token). `url` is required and unread: the link's
   address is always `<origin>/a/<remote_artifact_id>`, as a push makes
   it; 400 `invalid_args` for a malformed ID or `remote_n` 0, 404 for no
   such local app. Its other routes forward to the remote with the
@@ -1786,8 +1793,12 @@ app's versions with the bundle each carries.
   copy shared with named people counts it) and `DELETE` (Unpublish: deletes the copy there and unlinks every local app
   linked to it). Every answer passed on carries `content-security-policy:
   sandbox; default-src 'none'` and `x-content-type-options: nosniff`: a
-  copy's bytes are another author's. A remote that refuses the token is 502
-  `remote_signed_out`, one not reached 502 `remote_unreachable`. One
+  copy's bytes are another author's. A remote that refuses the token
+  itself (401 `invalid_token`, `grant_revoked` or `token_expired`) is
+  marked `signed_out` and is 502 `remote_signed_out`, as is every later
+  call until it is connected again; any other 401 is 502
+  `remote_refused` with `remote_code`. One not reached is 502
+  `remote_unreachable`. One
   file's bytes (`GET versions/<n>/files/<path>`) is a route of **Remote
   artifacts**, which the owner's agents reach too.
 - **A public Clax too old for the app.** Whenever a public Clax runs a
@@ -9034,6 +9045,9 @@ the body below.
 | `question.decline` | none | a decline (the owner) |
 | `question.release` | `reason (owner\|timer\|created)` | a release to the terminal |
 | `question.withdraw` | `reason (explicit\|unwaited\|session_end\|daemon_start\|daemon_stop\|pulled\|lapsed\|job_end)` | a withdrawal |
+| `remote_request.ask` | `request_id, origin, opened` (`false`: the ask joined the origin's open request) | an agent's connection request (the asking session's agent) |
+| `remote_request.answer` | `request_id, origin, answer (connect\|not_now\|never), remote_id?` (with `connect`: the remote its sign-in started) | the owner's answer to a connection request |
+| `remote_request.close` | `request_id, origin, status (connected\|dismissed\|expired), remote_id?` | a connection request settled without the owner: connected, its Connect's sign-in denied or expired, or its day past (`system:daemon`) |
 | `tool.call` | `call_id, tool, harness_tool?, args_sha256, started_at, ended_at, outcome (ok\|error), harness_call_id?, produced[seq]` | each Clax tool call's report (below) |
 | `tool.call_id` | `call_id (or null), harness_call_id, harness_tool, args_sha256` | Claude Code's PostToolUse report (below) |
 | `session.start` | `harness, harness_session_id, cwd, transcript_path, pid` (+ `git`) | a session's registration |

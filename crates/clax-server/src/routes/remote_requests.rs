@@ -42,7 +42,9 @@ use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use clax_core::audit::AuditCtx;
 use clax_http::agent::DeniedToGrants;
+use clax_http::audit::DeferredAudit;
 use clax_http::auth::Caller;
 use clax_http::confirm::{Confirming, Decision, require_confirmation};
 use clax_http::error::ApiError;
@@ -50,7 +52,7 @@ use clax_http::identity::Identity;
 use clax_http::state::AppState;
 use clax_http::viewer::SameOrigin;
 use clax_rt::time::Instant;
-use clax_store::remote_requests::{Answer, Ask, Asked, Request};
+use clax_store::remote_requests::{Answer, Ask, Asked, Request, Status};
 use clax_store::remotes::Remote;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -81,17 +83,6 @@ fn for_agent(r: &Request) -> Value {
     })
 }
 
-/// A request as the owner's browser sees it.
-fn owner_view(r: &Request) -> Value {
-    json!(r)
-}
-
-/// 403 `browser_required` unless a browser of the owner's makes the
-/// request (M20; [`clax_http::auth::require_owner_browser`]).
-fn require_browser(caller: &Caller, what: &str) -> Result<(), ApiError> {
-    clax_http::auth::require_owner_browser(caller, what)
-}
-
 fn session_required(why: &str) -> ApiError {
     ApiError::forbidden(
         "session_required",
@@ -114,11 +105,7 @@ pub struct AskBody {
 /// and the URL to show (none for a bare origin).
 fn instance_of(raw: &str) -> Result<(String, Option<String>), ApiError> {
     let raw = raw.trim();
-    let with_scheme = if raw.contains("://") {
-        raw.to_string()
-    } else {
-        format!("https://{raw}")
-    };
+    let with_scheme = public::with_scheme(raw);
     let u = url::Url::parse(&with_scheme).map_err(|_| {
         ApiError::bad_request("invalid_url", format!("'{raw}' is not a URL or an origin"))
     })?;
@@ -139,6 +126,7 @@ fn not_a_clax(message: &str) -> ApiError {
 pub async fn ask(
     State(s): State<AppState>,
     d: DeniedToGrants,
+    audit: DeferredAudit,
     req: Result<Json<AskBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     local_only(&s)?;
@@ -188,15 +176,19 @@ pub async fn ask(
     let asked_now = s
         .store_call(move |db| {
             let place = clax_http::surface::suggestion(&st, db, &sid, page.as_deref())?.r#where;
-            db.ask_remote(&Ask {
-                origin,
-                name: instance.name,
-                session: sid,
-                url,
-                reason,
-                artifact_id: place.artifact_id,
-                thread_id: place.thread_id,
-            })
+            let ctx = audit.for_session(db, &sid)?;
+            db.ask_remote(
+                &ctx,
+                &Ask {
+                    origin,
+                    name: instance.name,
+                    session: sid,
+                    url,
+                    reason,
+                    artifact_id: place.artifact_id,
+                    thread_id: place.thread_id,
+                },
+            )
         })
         .await?;
     asked(asked_now)
@@ -246,12 +238,6 @@ async fn working_page(s: &AppState, sid: &str) -> Result<Option<String>, ApiErro
     Ok(raw.filter(|a| clax_core::ArtifactId::parse(a).is_ok()))
 }
 
-#[derive(Deserialize)]
-pub struct WaitQuery {
-    #[serde(default)]
-    wait: u64,
-}
-
 /// What a waiting agent is told of request `r`.
 fn answer_view(r: &Request) -> Value {
     let mut v = json!({
@@ -259,9 +245,9 @@ fn answer_view(r: &Request) -> Value {
         "status": r.status,
         "origin": r.origin,
         "name": r.name,
-        "call_again": r.status == "open",
+        "call_again": r.status == Status::Open,
     });
-    if r.status == "connected" {
+    if r.status == Status::Connected {
         v["remote"] = json!(r.remote_id);
     }
     v
@@ -272,7 +258,7 @@ pub async fn poll(
     State(s): State<AppState>,
     d: DeniedToGrants,
     p: Result<Path<String>, PathRejection>,
-    q: Result<Query<WaitQuery>, QueryRejection>,
+    q: Result<Query<super::questions::WaitQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     local_only(&s)?;
     match d.caller(&s).await? {
@@ -284,8 +270,6 @@ pub async fn poll(
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let started = Instant::now();
     let wait = Duration::from_secs(q.wait.min(MAX_WAIT_SECS));
-    let id1 = id.clone();
-    s.store_call(move |st| st.remote_request(&id1)).await?;
     let Some((notify, _hold)) = s.questions.hold(&id, None) else {
         // As many polls as may wait on one request wait on it already:
         // this one answers how it stands now, and when to call again.
@@ -293,38 +277,22 @@ pub async fn poll(
         let r = s.store_call(move |st| st.remote_request(&id1)).await?;
         let mut v = answer_view(&r);
         v["waited_s"] = json!(0);
-        if r.status == "open" {
+        if r.status == Status::Open {
             v["retry_after_s"] = json!(RETRY_AFTER_S);
         }
         return Ok(Json(v));
     };
-    let mut shutdown = s.shutdown.clone();
-    let stopping = async move {
-        if shutdown.wait_for(|v| *v).await.is_err() {
-            std::future::pending::<()>().await;
+    let read = |end: super::questions::Ending| {
+        let (id1, s) = (id.clone(), s.clone());
+        async move {
+            let r = s.store_call(move |st| st.remote_request(&id1)).await?;
+            Ok((r.status != Status::Open || end.done).then_some(r))
         }
     };
-    tokio::pin!(stopping);
-    let expiry = s.question_sleeper.sleep(wait);
-    tokio::pin!(expiry);
-    let mut done = wait.is_zero();
-    loop {
-        let notified = notify.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
-        let id1 = id.clone();
-        let r = s.store_call(move |st| st.remote_request(&id1)).await?;
-        if r.status != "open" || done {
-            let mut v = answer_view(&r);
-            v["waited_s"] = json!(started.elapsed().as_secs());
-            return Ok(Json(v));
-        }
-        tokio::select! {
-            () = &mut notified => {}
-            () = &mut expiry, if !done => done = true,
-            () = &mut stopping, if !done => done = true,
-        }
-    }
+    let r = super::questions::long_poll(&s, &id, notify, wait, read).await?;
+    let mut v = answer_view(&r);
+    v["waited_s"] = json!(started.elapsed().as_secs());
+    Ok(Json(v))
 }
 
 #[derive(Deserialize)]
@@ -340,25 +308,27 @@ pub async fn answer(
     d: DeniedToGrants,
     _o: SameOrigin,
     by: Confirming,
+    audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<AnswerBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     local_only(&s)?;
     let caller = d.caller(&s).await?;
-    require_browser(&caller, "answering a connection request")?;
+    clax_http::auth::require_owner_browser(&caller, "answering a connection request")?;
     let id = path(p)?;
     let b = body(req)?;
-    decide(&s, &caller, &by, id, &b.answer).await
+    decide(&s, &caller, &by, audit, id, &b.answer).await
 }
 
 /// The owner's answer `answer` to request `id`, its caller checked: the
 /// one place every answer is decided. First, the answer goes through the
 /// browser confirmation of the decisions that matter
-/// ([`Decision::AnswerConnection`]).
+/// ([`Decision::AnswerConnection`]). Recorded as `audit` resolves.
 async fn decide(
     s: &AppState,
     caller: &Caller,
     by: &Confirming,
+    audit: DeferredAudit,
     id: String,
     answer: &str,
 ) -> Result<Response, ApiError> {
@@ -368,12 +338,14 @@ async fn decide(
     };
     require_confirmation(s, caller, by, decision).await?;
     let id1 = id.clone();
-    let r = s.store_call(move |st| st.remote_request(&id1)).await?;
-    if r.status != "open" {
+    let (r, ctx) = s
+        .store_call(move |st| Ok((st.remote_request(&id1)?, audit.resolve(st)?)))
+        .await?;
+    if r.status != Status::Open {
         return Err(closed(&r));
     }
     let out = match answer {
-        "connect" => return connect(s, r).await,
+        "connect" => return connect(s, ctx, r).await,
         "not_now" => Answer::NotNow,
         "never" => Answer::Never,
         _ => {
@@ -385,10 +357,10 @@ async fn decide(
     };
     let id1 = id.clone();
     let r = s
-        .store_call(move |st| st.answer_remote_request(&id1, out))
+        .store_call(move |st| st.answer_remote_request(&ctx, &id1, out))
         .await?;
     s.questions.wake(&id);
-    Ok(Json(json!({"request": owner_view(&r)})).into_response())
+    Ok(Json(json!({"request": json!(r)})).into_response())
 }
 
 /// 409 `request_closed` with the request's view.
@@ -398,22 +370,22 @@ fn closed(r: &Request) -> ApiError {
         "request_closed",
         format!("this request is {} already", r.status),
     );
-    e.extra.insert("request".into(), owner_view(r));
+    e.extra.insert("request".into(), json!(r));
     e
 }
 
-/// Connect: the owner's add for the request's origin, the daemon then
+/// Connect, recorded as `ctx`: the owner's add for the request's origin, the daemon then
 /// polling its sign-in ([`drive`]). Connects take the origin's Connect
 /// lock ([`clax_http::remote_drivers::RemoteDrivers::connect_lock`]), so
 /// a second one, at once or later while the first's sign-in waits, answers that sign-in again (driving it when no task of this
 /// daemon does, as after a restart) rather than starting another.
-async fn connect(s: &AppState, r: Request) -> Result<Response, ApiError> {
+async fn connect(s: &AppState, ctx: AuditCtx, r: Request) -> Result<Response, ApiError> {
     let lock = s.remote_drivers.connect_lock(&r.origin);
     let _one = lock.lock().await;
     // Read again under the lock: another Connect may have started one.
     let id = r.id.clone();
     let r = s.store_call(move |st| st.remote_request(&id)).await?;
-    if r.status != "open" {
+    if r.status != Status::Open {
         return Err(closed(&r));
     }
     if let Some(p) = pending_of(s, &r).await? {
@@ -423,7 +395,7 @@ async fn connect(s: &AppState, r: Request) -> Result<Response, ApiError> {
     let (remote, _) = start_add(s, r.origin.clone(), None, None, None, None).await?;
     let (id, rid) = (r.id.clone(), remote.id.clone());
     let r = s
-        .store_call(move |st| st.answer_remote_request(&id, Answer::Connecting(rid)))
+        .store_call(move |st| st.answer_remote_request(&ctx, &id, Answer::Connecting(rid)))
         .await?;
     // The store keeps a waiting sign-in another daemon recorded first.
     let p = pending_of(s, &r).await?.unwrap_or(remote);
@@ -477,7 +449,7 @@ pub fn resume(s: &AppState) {
 
 fn connect_view(r: &Request, remote: &Remote) -> Value {
     let mut v = sign_in_view(remote, false);
-    v["request"] = owner_view(r);
+    v["request"] = json!(r);
     v
 }
 
@@ -515,7 +487,9 @@ fn drive(s: AppState, id: String, remote: Remote) {
                 Ok(Some(ans)) => {
                     let id1 = id.clone();
                     let _ = s
-                        .store_call(move |st| st.answer_remote_request(&id1, ans))
+                        .store_call(move |st| {
+                            st.answer_remote_request(&AuditCtx::DAEMON, &id1, ans)
+                        })
                         .await;
                     s.questions.wake(&id);
                     return;
@@ -551,7 +525,7 @@ async fn step(s: &AppState, id: &str, rid: &str) -> Result<Option<Answer>, ApiEr
     let (req, remote) = s
         .store_call(move |st| Ok((st.remote_request(&id1)?, st.find_remote(&rid1)?)))
         .await?;
-    if req.status != "open" || req.remote_id.as_deref() != Some(rid) {
+    if req.status != Status::Open || req.remote_id.as_deref() != Some(rid) {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
             "request_settled",
@@ -626,7 +600,7 @@ pub async fn unmute(
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     local_only(&s)?;
-    require_browser(&d.caller(&s).await?, "unmuting a Clax instance")?;
+    clax_http::auth::require_owner_browser(&d.caller(&s).await?, "unmuting a Clax instance")?;
     let origin = path(p)?;
     let o = origin.clone();
     let unmuted = s.store_call(move |st| st.unmute_origin(&o)).await?;

@@ -5,31 +5,10 @@
 
 use clax_testkit::TestServer;
 use clax_testkit::mcp::{ADAPTER, mcp_post, rpc_message};
-use clax_testkit::remotes::{Public, closed_port, connect, json_of, local_req};
+use clax_testkit::remotes::{PAGE, Public, closed_port, connect, enc, json_of, local_req};
 use reqwest::Method;
 use reqwest::header::HOST;
 use serde_json::{Value, json};
-
-const PAGE: &str = "<h1>Their plan</h1>";
-
-fn enc(s: &str) -> String {
-    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
-}
-
-/// An artifact the hosted owner's CLI publishes on `public` (private
-/// there): its ID.
-async fn remote_artifact(public: &Public) -> String {
-    let (s, v) = public
-        .cli(
-            Method::POST,
-            "/api/artifacts",
-            Some(json!({"title": "Theirs",
-                "files": {"index.html": {"content": PAGE, "encoding": "utf8"}}})),
-        )
-        .await;
-    assert_eq!(s, 201, "{v}");
-    v["artifact"]["id"].as_str().unwrap().to_string()
-}
 
 /// The public copy's thread `tid`, as its owner's CLI reads it.
 async fn thread_there(public: &Public, raid: &str, tid: &str) -> Value {
@@ -96,7 +75,7 @@ async fn reads_a_private_remote_artifact_with_the_stored_token() {
     let local = TestServer::spawn().await;
     let remote = connect(&local, &public).await;
     let rid = remote["id"].as_str().unwrap().to_string();
-    let raid = remote_artifact(&public).await;
+    let raid = public.publish().await;
     // Private there: no one signed out reads it.
     let anon = public
         .ts
@@ -208,7 +187,7 @@ async fn a_connected_persons_agent_reaches_no_remote_artifact() {
         .as_str()
         .unwrap()
         .to_string();
-    let raid = remote_artifact(&public).await;
+    let raid = public.publish().await;
     let sam = local.connect_person("Sam", "clax:collaborator").await;
     let sid = sam.register("claude", "sam-h1").await["id"]
         .as_str()
@@ -236,7 +215,7 @@ async fn replies_and_resolves_on_a_remote_thread_once_per_key() {
         .as_str()
         .unwrap()
         .to_string();
-    let raid = remote_artifact(&public).await;
+    let raid = public.publish().await;
     let t = public
         .browser_thread(
             &raid,
@@ -450,19 +429,9 @@ async fn a_revoked_token_asks_to_connect_again() {
     let local = TestServer::spawn().await;
     let remote = connect(&local, &public).await;
     let rid = remote["id"].as_str().unwrap().to_string();
-    let raid = remote_artifact(&public).await;
+    let raid = public.publish().await;
     // The person revokes this daemon's token there.
-    let token = local.store.remote_token(&rid).unwrap().unwrap();
-    let res = public
-        .ts
-        .client
-        .delete(format!("{}/api/hosted/agent-token", public.ts.base))
-        .header(HOST, format!("localhost:{}", public.ts.addr.port()))
-        .bearer_auth(token.expose())
-        .send()
-        .await
-        .unwrap();
-    assert!(res.status().is_success(), "{}", res.status());
+    public.revoke(&local, &rid).await;
     let base = format!("/api/remotes/{rid}/artifacts/{raid}");
     let url = format!("{}/a/{raid}", public.origin);
     let request = json!({"tool": "connect_instance",
@@ -521,7 +490,7 @@ async fn withheld_comments_are_counted() {
     let mut public = Public::new().await;
     let local = TestServer::spawn().await;
     let remote = connect(&local, &public).await;
-    let raid = remote_artifact(&public).await;
+    let raid = public.publish().await;
     // Bob, a person there whom Ada has not approved for her agents,
     // comments on her artifact twice.
     let ada = public.cookie.clone();
@@ -741,7 +710,7 @@ async fn an_agent_with_no_session_writes_nothing_there() {
         .as_str()
         .unwrap()
         .to_string();
-    let raid = remote_artifact(&public).await;
+    let raid = public.publish().await;
     let t = public
         .browser_thread(
             &raid,

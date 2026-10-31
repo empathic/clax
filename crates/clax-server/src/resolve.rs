@@ -48,6 +48,7 @@ pub use clax_http::discovery_cache::DiscoveryCache;
 use crate::public::Client;
 use axum::http::StatusCode;
 use clax_core::ArtifactId;
+use clax_core::discovery::Discovery;
 use clax_http::discovery_cache::{Cached, Instance};
 use clax_http::error::ApiError;
 use clax_http::host::SiteHosts;
@@ -416,7 +417,7 @@ async fn discover_connected(s: &AppState, origin: &str, connected: bool) -> Opti
         .discovery()
         .await
         .ok()
-        .and_then(|v| instance(&v, origin));
+        .and_then(|v| instance(v, origin));
     match &found {
         Some(i) if connected => s.discovery.put_clax(origin, i.clone()),
         Some(i) => s.discovery.put_clax_unconnected(origin, i.clone()),
@@ -425,26 +426,25 @@ async fn discover_connected(s: &AppState, origin: &str, connected: bool) -> Opti
     found
 }
 
-/// The Clax instance discovery answer `v` describes (`kind` `hosted` or
-/// `local`, a `contract_version`, `api` `/api`), named by its `name` or
-/// else `origin`'s host and port.
-fn instance(v: &Value, origin: &str) -> Option<Instance> {
-    let kind = v["kind"]
-        .as_str()
-        .filter(|k| matches!(*k, "hosted" | "local"))?;
-    v["contract_version"].as_str()?;
-    (v["api"] == "/api").then_some(())?;
-    let name = v["name"]
-        .as_str()
-        .map(str::trim)
-        .filter(|n| !n.is_empty())
-        .map_or_else(|| crate::public::default_name(origin), str::to_string);
-    let site_domain = v["site_domain"]
-        .as_str()
+/// The Clax instance discovery answer `v` describes
+/// ([`Discovery::is_clax`]), named by its `name` or else `origin`'s host
+/// and port.
+fn instance(v: Value, origin: &str) -> Option<Instance> {
+    let d: Discovery = serde_json::from_value(v).ok()?;
+    if !d.is_clax() {
+        return None;
+    }
+    let name = match d.name.trim() {
+        "" => crate::public::default_name(origin),
+        n => n.to_string(),
+    };
+    let site_domain = d
+        .site_domain
+        .as_deref()
         .and_then(SiteHosts::new)
-        .map(|d| d.domain().to_string());
+        .map(|h| h.domain().to_string());
     Some(Instance {
-        kind: kind.to_string(),
+        kind: d.kind,
         name,
         site_domain,
     })
@@ -534,7 +534,7 @@ mod tests {
         let ok = json!({"kind": "hosted", "contract_version": "1", "api": "/api",
                         "name": "Acme", "site_domain": "sites.example"});
         assert_eq!(
-            instance(&ok, o),
+            instance(ok, o),
             Some(Instance {
                 kind: "hosted".into(),
                 name: "Acme".into(),
@@ -542,18 +542,18 @@ mod tests {
             })
         );
         let unnamed = json!({"kind": "local", "contract_version": "1", "api": "/api"});
-        assert_eq!(instance(&unnamed, o).unwrap().name, "clax.example");
+        assert_eq!(instance(unnamed, o).unwrap().name, "clax.example");
         for bad in [
             json!({"kind": "worker", "contract_version": "1", "api": "/api"}),
             json!({"kind": "hosted", "api": "/api"}),
             json!({"kind": "hosted", "contract_version": "1", "api": "/v2"}),
             json!("<html>"),
         ] {
-            assert_eq!(instance(&bad, o), None, "{bad}");
+            assert_eq!(instance(bad.clone(), o), None, "{bad}");
         }
         let odd_domain = json!({"kind": "hosted", "contract_version": "1", "api": "/api",
                                 "site_domain": "https://x/"});
-        assert_eq!(instance(&odd_domain, o).unwrap().site_domain, None);
+        assert_eq!(instance(odd_domain, o).unwrap().site_domain, None);
     }
 
     #[test]

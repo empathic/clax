@@ -473,20 +473,7 @@ pub async fn remote_delete(
     super::remotes::asker(&s, &d).await?;
     own_session(&who, &sid)?;
     let raid = super::remote_apps::remote_artifact(&b.artifact_id)?;
-    let key = b.remote.trim().trim_end_matches('/').to_string();
-    let remote = s
-        .store_call(move |st| st.find_remote(&key))
-        .await?
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::NOT_FOUND,
-                "no_remote",
-                format!(
-                    "no remote is named '{}': `clax remote list` names them",
-                    b.remote
-                ),
-            )
-        })?;
+    let remote = super::remotes::remote_named(&s, &b.remote).await?;
     let (rid, ctx) = (remote.id.clone(), s.feedback_ctx());
     s.store_call(move |st| {
         let Some(m) = st.remote_mirror(&rid, &raid)? else {
