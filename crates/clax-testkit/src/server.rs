@@ -6,7 +6,6 @@ use clax_core::daemon::{browser_host, probe_host};
 use clax_core::working::{Clock, ManualClock, SystemClock};
 use clax_core::{EventBus, Home};
 use clax_http::AppState;
-use clax_http::wrap_cache::WrapCache;
 use clax_server::router::build_router;
 use clax_store::Store;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -300,31 +299,6 @@ pub async fn owner_login_of(base: &str, res: reqwest::Response) -> OwnerLogin {
     OwnerLogin { cookie, proof }
 }
 
-/// Logs a browser in on the local daemon at `base` (`http://host:port`)
-/// whose token is `token`, as `clax open` does: a login code made with the
-/// token (`POST /api/browser-login`), redeemed at `GET /login`. Returns the
-/// owner cookie it set and the proof its page carries.
-///
-/// # Panics
-/// When either step fails or no owner cookie is set.
-pub async fn browser_login(base: &str, token: &str) -> OwnerLogin {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .unwrap();
-    let made: serde_json::Value = client
-        .post(format!("{base}/api/browser-login"))
-        .bearer_auth(token)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let path = made["path"].as_str().expect("a login path").to_string();
-    let res = client.get(format!("{base}{path}")).send().await.unwrap();
-    owner_login_of(base, res).await
-}
 /// A running test daemon with its own temporary home and the fixed token `test-token`.
 pub struct TestServer {
     pub base: String,
@@ -723,105 +697,47 @@ impl TestServer {
         let (listener, v6_twin) = listen(bind).await;
         let addr = listener.local_addr().unwrap();
         let port = addr.port();
-        let live_ids = Arc::new(clax_realtime::live::LiveIds::load(&store).unwrap());
-        let ext_creds =
-            Arc::new(clax_http::extension::Credentials::load_with(&store, clock.clone()).unwrap());
-        let owner_sessions = Arc::new(clax_http::local_trust::OwnerSessions::load(&store).unwrap());
         let started_at = store.now();
-        let grant_auth = Arc::new(clax_http::grant_auth::GrantAuth::load(&store).unwrap());
-        let vis_gen = clax_http::state::VisGen::install(&store);
-        let app_data = clax_http::app_data_host::default_host(&store, &home);
-        let mut state = AppState {
-            settings: Arc::new(clax_http::settings::Settings::at_start(&home, false)),
-            // A fixed key-encryption key, so key routes work; no driver:
-            // runs stay queued unless a test installs one.
-            bot: Arc::new(clax_http::bot::Bot {
-                kek: Some(clax_store::secrets::Kek::from_bytes([7; 32])),
-                ..Default::default()
-            }),
+        let mut state = AppState::assemble(clax_http::state::StateParts {
             store,
             home: home.clone(),
             token: token.clone(),
             require_credential: false,
-            events: EventBus::new(),
             started_at,
             version: "test",
             shutdown: tokio::sync::watch::channel(false).1,
-            wrap_cache: Arc::new(WrapCache::new(clax_http::wrap_cache::DEFAULT_MAX_BYTES)),
-            request_timeout: Duration::from_secs(30),
-            publish_timeout: Duration::from_secs(120),
-            remote_deadline: clax_http::state::REMOTE_DEADLINE,
-            sse_keep_alive: Duration::from_secs(15),
             self_base: format!("http://{}:{port}", probe_host(&bind.to_string())),
             browser_base: format!("http://{}:{port}", browser_host(&bind.to_string())),
-            feedback_waiters: Arc::new(Default::default()),
-            followers: Arc::new(Default::default()),
-            feedback_states: Arc::new(Default::default()),
             // Push off; tests about push set it with `spawn_with`.
-            codex: Arc::new(Default::default()),
-            working: Arc::new(clax_core::working::Working::new(clock.clone())),
-            drafts: Arc::new(clax_core::drafts::Drafts::new(clock.clone())),
-            presence: Arc::new(clax_core::presence::Presence::new(clock.clone())),
-            rooms: Arc::new(clax_realtime::room::Rooms::default()),
-            live_layers: Arc::new(clax_realtime::live_layers::LiveLayers::new(clock.clone())),
+            codex: Default::default(),
             // Sampling off; tests that sample set their own with `spawn_with`.
             sample: Arc::new(clax_sample::Sampler::disabled()),
-            // The system resolver and reqwest; tests of `net` set their own.
-            net: Arc::new(clax_http::net::Net::default()),
-            stream: clax_realtime::stream::Hub::new(live_ids.clone()),
-            seats: clax_http::seats::LiveSeats::new(Default::default(), clock.clone()),
-            sockets: Arc::default(),
-            live_ids,
-            ext_creds,
-            owner_sessions,
-            proc_root: clax_http::peer_user::default_proc_root(),
-            extension_id: clax_core::extension::extension_id_in_effect(home.root()),
-            questions: Arc::new(Default::default()),
-            question_grace: Duration::from_secs(5),
+            clock: clock.clone(),
             question_sleeper: Arc::new(clax_realtime::questions::TokioSleeper),
-            discovery: Arc::new(clax_http::discovery_cache::DiscoveryCache::new(
-                clock.clone(),
-            )),
-            remote_drivers: Arc::default(),
-            question_clock: clock,
+            agent_timer: Arc::new(clax_http::agent::TokioTimer::default()),
+            extension_id: clax_core::extension::extension_id_in_effect(home.root()),
             terminal_after_s: clax_core::config::TERMINAL_AFTER_S,
-            calibration: Arc::default(),
-            verify_times: Arc::default(),
-            audit_wake: clax_http::audit::AuditWake::new(),
-            // No appender; tests of the journal start their own.
-            journal: clax_http::audit::JournalStatus::off(None),
-            exports: clax_http::exports::Exports::new(),
-            call_ids: Arc::new(clax_realtime::call_ids::CallIdWait::new(
-                clax_realtime::call_ids::CALL_ID_GRACE,
-                clax_realtime::call_ids::CALL_ID_CAP,
-            )),
             bind,
             port,
-            // Invites from a daemon on every interface name the address
-            // `lan()` requests arrive on.
-            lan_host: bind.is_unspecified().then_some(IpAddr::V4(LAN_LOCAL)),
-            grant_auth,
-            agent_gate: Arc::new(clax_http::agent::Gate::new(Arc::new(
-                clax_http::agent::TokioTimer::default(),
-            ))),
-            vis_gen,
-            test_daemon: true,
-            app_data,
+            hosted: None,
             // The checkout's web UI; tests of the shell serve their own
             // with `spawn_with_web`.
             web: web_ui(),
-            quickstart: None,
-            hosted: None,
-            // No app links or store pages; tests of them set their own.
-            clax_app: Arc::default(),
-            build: None,
             embed: None,
-            git_remotes: Arc::default(),
-            linked: Arc::new(clax_realtime::linked::Linked::new(Arc::new(
-                clax_realtime::questions::TokioSleeper,
-            ))),
-            jobs_owners: Arc::default(),
-        };
+        })
+        .unwrap();
+        // A fixed key-encryption key, so key routes work; no driver: runs
+        // stay queued unless a test installs one.
+        state.bot = Arc::new(clax_http::bot::Bot {
+            kek: Some(clax_store::secrets::Kek::from_bytes([7; 32])),
+            ..Default::default()
+        });
+        // The default seat limits, whatever the environment says.
+        state.seats = clax_http::seats::LiveSeats::new(Default::default(), clock);
+        // Invites from a daemon on every interface name the address `lan()`
+        // requests arrive on.
+        state.lan_host = bind.is_unspecified().then_some(IpAddr::V4(LAN_LOCAL));
+        state.test_daemon = true;
         f(&mut state);
         state.audit_wake.install(&state.store);
         state.stream.listen(&state.events);
@@ -1770,28 +1686,83 @@ impl TestServer {
         path: &str,
         body: serde_json::Value,
     ) -> reqwest::Response {
-        let url = format!("{}{path}", self.base);
-        let res = self
-            .authed(self.client.request(method.clone(), &url))
-            .json(&body)
-            .send()
-            .await
-            .unwrap();
-        let held = res
-            .headers()
-            .get(clax_core::confirm::CONFIRMATION_HEADER)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        let Some(id) = held.filter(|_| res.status() == 202) else {
+        let res = self.token_request(method.clone(), path, &body, None).await;
+        let Some(id) = held_confirmation(&res) else {
             return res;
         };
         self.confirm(&id, true).await;
-        self.authed(self.client.request(method, &url))
-            .header(clax_core::confirm::CONFIRMATION_HEADER, &id)
-            .json(&body)
-            .send()
+        self.token_request(method, path, &body, Some(&id)).await
+    }
+
+    /// `method path` with the token and JSON `body`, presenting
+    /// confirmation `confirm` when given: the status and the JSON answer.
+    /// A 202 `confirmation_pending` must name its confirmation in the
+    /// response's confirmation header too.
+    pub async fn token_call(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: serde_json::Value,
+        confirm: Option<&str>,
+    ) -> (u16, serde_json::Value) {
+        let res = self.token_request(method, path, &body, confirm).await;
+        let held = held_confirmation(&res);
+        let status = res.status().as_u16();
+        let v: serde_json::Value = res.json().await.unwrap_or_default();
+        if status == 202 && v["status"] == "confirmation_pending" {
+            assert_eq!(held.as_deref(), v["confirmation_id"].as_str(), "{v}");
+        }
+        (status, v)
+    }
+
+    async fn token_request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: &serde_json::Value,
+        confirm: Option<&str>,
+    ) -> reqwest::Response {
+        let mut req = self.authed(self.client.request(method, format!("{}{path}", self.base)));
+        if let Some(id) = confirm {
+            req = req.header(clax_core::confirm::CONFIRMATION_HEADER, id);
+        }
+        req.json(body).send().await.unwrap()
+    }
+
+    /// `method path` from the browser holding `cookie` (a `Cookie` header's
+    /// value) with its proof, with JSON `body`: the status and the answer.
+    pub async fn as_browser(
+        &self,
+        cookie: &str,
+        method: reqwest::Method,
+        path: &str,
+        body: serde_json::Value,
+    ) -> (u16, serde_json::Value) {
+        self.as_browser_confirming(cookie, method, path, body, None)
             .await
-            .unwrap()
+    }
+
+    /// [`TestServer::as_browser`], presenting confirmation `confirm` when
+    /// given.
+    pub async fn as_browser_confirming(
+        &self,
+        cookie: &str,
+        method: reqwest::Method,
+        path: &str,
+        body: serde_json::Value,
+        confirm: Option<&str>,
+    ) -> (u16, serde_json::Value) {
+        let mut req = self
+            .client
+            .request(method, format!("{}{path}", self.base))
+            .header("cookie", cookie)
+            .header(clax_http::local_trust::PROOF_HEADER, self.proof_for(cookie));
+        if let Some(id) = confirm {
+            req = req.header(clax_core::confirm::CONFIRMATION_HEADER, id);
+        }
+        let res = req.json(&body).send().await.unwrap();
+        let status = res.status().as_u16();
+        (status, res.json().await.unwrap_or_default())
     }
 
     /// Opens `/api/stream` as a browser of the owner's (the owner cookie)
@@ -2198,4 +2169,19 @@ pub fn quickstart_tree(mark: &str) -> clax_core::embedded::MemTree {
             .map(|(p, c)| (p.to_string(), c.into_bytes()))
             .collect(),
     )
+}
+
+/// The confirmation a 202 names in its confirmation header, if it is one.
+fn held_confirmation(res: &reqwest::Response) -> Option<String> {
+    res.headers()
+        .get(clax_core::confirm::CONFIRMATION_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .filter(|_| res.status() == 202)
+}
+
+/// An API error answer's code (`{"error": {"code"}}`), or `""` for an
+/// answer that is not one.
+pub fn error_code(v: &serde_json::Value) -> &str {
+    v["error"]["code"].as_str().unwrap_or_default()
 }

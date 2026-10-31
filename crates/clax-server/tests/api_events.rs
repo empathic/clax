@@ -375,7 +375,7 @@ async fn the_token_route_sets_no_cookie_and_the_login_sets_the_events_cookie() {
     assert!(shell.headers().get("set-cookie").is_none());
     // The login's events cookie is the session, never the token, and
     // stands for the token on the event stream.
-    let login = clax_testkit::browser_login(&ts.base, &ts.token).await;
+    let login = ts.login("").await;
     let session = login.cookie.split_once('=').unwrap().1;
     assert!(session.starts_with("cxb_") && !session.contains(&ts.token));
     let host = ts.base.trim_start_matches("http://");

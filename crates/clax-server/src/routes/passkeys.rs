@@ -170,7 +170,7 @@ pub async fn challenge(
         "challenge": challenge,
         "rp_id": rp_id,
         // One user handle for the owner of this Clax home.
-        "user_id": clax_core::webauthn::b64url(b"clax-owner"),
+        "user_id": clax_core::secret::base64url(b"clax-owner"),
         "timeout_ms": clax_store::passkeys::CHALLENGE_TTL_SECS * 1000,
         "allow": allow,
     })))

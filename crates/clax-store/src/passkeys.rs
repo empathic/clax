@@ -150,7 +150,7 @@ impl Store {
     /// # Errors
     /// The store's.
     pub fn new_passkey_challenge(&self, purpose: &str) -> Result<String> {
-        let challenge = clax_core::webauthn::b64url(&clax_core::secret::random_bytes::<32>());
+        let challenge = clax_core::secret::base64url(&clax_core::secret::random_bytes::<32>());
         self.with_tx(|tx| {
             let cutoff =
                 clax_core::time::stamp(self.now_utc() - Duration::seconds(CHALLENGE_TTL_SECS));
