@@ -5,15 +5,9 @@
 use clax_core::working::ManualClock;
 use clax_testkit::TestServer;
 use clax_testkit::mcp::{ADAPTER, mcp_post, rpc_message};
-use clax_testkit::remotes::{NotYetClax, Public, closed_port, connect, json_of, post};
+use clax_testkit::remotes::{NotYetClax, PAGE, Public, closed_port, connect, enc, json_of, post};
 use serde_json::{Value, json};
 use std::sync::Arc;
-
-const PAGE: &str = "<h1>Plan</h1>";
-
-fn enc(s: &str) -> String {
-    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
-}
 
 /// The owner's resolution of `url` (the daemon token, by hand).
 async fn resolve(ts: &TestServer, url: &str) -> Value {
@@ -26,20 +20,6 @@ async fn resolve(ts: &TestServer, url: &str) -> Value {
     v
 }
 
-/// An artifact the hosted owner's CLI publishes on `public`: its ID there.
-async fn remote_artifact(public: &Public) -> String {
-    let (s, v) = public
-        .cli(
-            reqwest::Method::POST,
-            "/api/artifacts",
-            Some(json!({"title": "Theirs",
-                "files": {"index.html": {"content": PAGE, "encoding": "utf8"}}})),
-        )
-        .await;
-    assert_eq!(s, 201, "{v}");
-    v["artifact"]["id"].as_str().unwrap().to_string()
-}
-
 #[tokio::test]
 async fn resolve_tells_local_remote_unconnected_and_page_apart() {
     let public = Public::with_site_domain("sites.test").await;
@@ -47,7 +27,7 @@ async fn resolve_tells_local_remote_unconnected_and_page_apart() {
     let local = TestServer::spawn().await;
     let remote = connect(&local, &public).await;
     let rid = remote["id"].as_str().unwrap();
-    let raid = remote_artifact(&public).await;
+    let raid = public.publish().await;
     let aid = local.publish("Mine", &[("index.html", PAGE)]).await["artifact"]["id"]
         .as_str()
         .unwrap()
@@ -195,7 +175,7 @@ async fn a_connected_persons_agent_resolves_remote_urls_as_pages() {
     unconnected.become_clax();
     let local = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
     connect(&local, &public).await;
-    let raid = remote_artifact(&public).await;
+    let raid = public.publish().await;
     let aid = local.publish("Mine", &[("index.html", PAGE)]).await["artifact"]["id"]
         .as_str()
         .unwrap()

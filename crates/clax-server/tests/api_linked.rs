@@ -4,14 +4,12 @@
 
 use clax_server::linked::{BACKOFF_CAP, BACKOFF_FIRST, BACKSTOP, Linked};
 use clax_testkit::ManualSleeper;
-use clax_testkit::TestServer;
 use clax_testkit::remotes::{Public, connect, connect_app, json_of, local_req, owner_post, post};
+use clax_testkit::{TestServer, until};
 use reqwest::header::{COOKIE, HOST, ORIGIN};
 use serde_json::{Value, json};
-use std::future::Future;
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// A local daemon linked to a hosted one: the artifact `aid` pushed there
 /// as `raid`, the sync's timers on `sleeper`.
@@ -228,28 +226,6 @@ impl Pair {
         assert_eq!(s, 200, "{v}");
         v
     }
-}
-
-/// Polls `f` until it answers `Some`, for up to 10 s.
-/// `f`'s value once it has one, checked again every 50 ms. No wall-clock
-/// limit: a load that slows the daemons only delays it, and a condition
-/// that never holds is ended by the test runner's timeout, whose output
-/// names `what`.
-async fn until<T, F, Fut>(what: &str, mut f: F) -> T
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Option<T>>,
-{
-    for tries in 0u32.. {
-        if let Some(v) = f().await {
-            return v;
-        }
-        if tries == 200 {
-            eprintln!("still waiting: {what}");
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    unreachable!("the loop returns")
 }
 
 fn whole() -> Value {
