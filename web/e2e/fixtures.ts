@@ -38,15 +38,19 @@ type Live = { base: string; port: number; token: string; session: string | null;
 const liveDaemons = new Set<Live>();
 const liveContexts = new Set<BrowserContext>();
 
-/** The `clax_viewer` cookie (`name=value`) of a browser of this machine's
- * with no name on daemon `d`, minted once by its debug-build test route
- * (reaching the port alone mints no viewer). */
+/** The `clax_viewer` cookie value of a new browser of this machine's with
+ * no name on daemon `d`, minted by its debug-build test route (reaching the
+ * port alone mints no viewer). */
+async function mintViewer(d: { base: string; token: string }): Promise<string> {
+  const r = await plainFetch(`${d.base}/api/_test/viewers`, { method: "POST", headers: { authorization: `Bearer ${d.token}` } });
+  if (!r.ok) throw new Error(`a viewer for the tests: ${r.status} ${await r.text()}`);
+  return ((await r.json()) as { cookie: string }).cookie;
+}
+
+/** The `clax_viewer` cookie (`name=value`) of the browser of this machine's
+ * with no name on daemon `d` that the tests' own requests are, minted once. */
 function localBrowser(d: Live): Promise<string> {
-  d.browser ??= plainFetch(`${d.base}/api/_test/viewers`, { method: "POST", headers: { authorization: `Bearer ${d.token}` } })
-    .then(async r => {
-      if (!r.ok) throw new Error(`a viewer for the tests: ${r.status} ${await r.text()}`);
-      return `clax_viewer=${((await r.json()) as { cookie: string }).cookie}`;
-    });
+  d.browser ??= mintViewer(d).then(c => `clax_viewer=${c}`);
   return d.browser;
 }
 
@@ -177,10 +181,7 @@ async function signIn(context: BrowserContext, d: { port: number; session: strin
 export async function asLocalViewer(context: BrowserContext, d: { base: string; token: string }, host = "localhost"): Promise<void> {
   liveContexts.delete(context);
   await context.clearCookies();
-  const minted = await plainFetch(`${d.base}/api/_test/viewers`, { method: "POST", headers: { authorization: `Bearer ${d.token}` } });
-  if (!minted.ok) throw new Error(`a viewer for the tests: ${minted.status} ${await minted.text()}`);
-  const { cookie } = (await minted.json()) as { cookie: string };
-  await context.addCookies([{ name: "clax_viewer", value: cookie, domain: host, path: "/", httpOnly: true, sameSite: "Lax" }]);
+  await context.addCookies([{ name: "clax_viewer", value: await mintViewer(d), domain: host, path: "/", httpOnly: true, sameSite: "Lax" }]);
 }
 
 /** Makes `context` a stranger to every daemon of the worker: it forgets
@@ -614,8 +615,7 @@ export async function namedViewer(base: string, name: string): Promise<string> {
   // A viewer of its own: one minted for a browser of this machine's.
   const d = [...liveDaemons].find(x => x.base === base);
   if (!d) throw new Error(`no daemon of this worker at ${base}`);
-  const minted = await plainFetch(`${base}/api/_test/viewers`, { method: "POST", headers: { authorization: `Bearer ${d.token}` } });
-  const cookie = `clax_viewer=${((await minted.json()) as { cookie: string }).cookie}`;
+  const cookie = `clax_viewer=${await mintViewer(d)}`;
   const res = await fetch(`${base}/api/viewers/me`, { method: "PUT", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ display_name: name }) });
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return ((await res.json()) as { viewer: { public_id: string } }).viewer.public_id;

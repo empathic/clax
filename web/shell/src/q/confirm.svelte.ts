@@ -7,6 +7,7 @@
 // through the inbox feed's subscription (`InboxFeed.hear`), and fetches
 // the open ones each time the topic goes live or resyncs. A browser that
 // is not the owner's is refused the list (403) and stops.
+import { browserCall, Refused } from "../held";
 import type { StreamEvent } from "../stream";
 import type { Assertion } from "./passkey";
 
@@ -25,35 +26,23 @@ export type ConfirmationView = {
   agents: ConfirmAgent[];
 };
 
-/** A refusal of an answer: the daemon's message, else the status. */
-export class ConfirmRefused extends Error {
-  constructor(public status: number, message: string, public code: string | null) {
-    super(message);
-    this.name = "ConfirmRefused";
+/** The open confirmations, oldest first; "forbidden" for a browser that is not the owner's. */
+export async function listConfirmations(): Promise<ConfirmationView[] | "forbidden"> {
+  try {
+    const b = await browserCall<{ confirmations?: unknown }>("/api/confirmations");
+    return Array.isArray(b.confirmations) ? (b.confirmations as ConfirmationView[]) : [];
+  } catch (e) {
+    if (e instanceof Refused && (e.status === 403 || e.status === 404)) return "forbidden";
+    throw e;
   }
 }
 
-/** The open confirmations, oldest first; "forbidden" for a browser that is not the owner's. */
-export async function listConfirmations(): Promise<ConfirmationView[] | "forbidden"> {
-  const res = await fetch("/api/confirmations");
-  if (res.status === 403 || res.status === 404) return "forbidden";
-  if (!res.ok) throw new ConfirmRefused(res.status, res.statusText || `HTTP ${res.status}`, null);
-  const b = (await res.json()) as { confirmations?: unknown };
-  return Array.isArray(b.confirmations) ? (b.confirmations as ConfirmationView[]) : [];
-}
-
 /** Approves (`approve`) or declines confirmation `id`, with a passkey's
- * `assertion` where passkeys are required: it as it is after. */
+ * `assertion` where passkeys are required: it as it is after. A refusal
+ * throws `Refused`. */
 export async function answerConfirmation(id: string, approve: boolean, assertion?: Assertion): Promise<ConfirmationView> {
-  const res = await fetch(`/api/confirmations/${encodeURIComponent(id)}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(assertion ? { approve, assertion } : { approve }),
-  });
-  let b: { confirmation?: ConfirmationView; error?: { code?: string; message?: string } } = {};
-  try { b = await res.json(); } catch { /* not json */ }
-  if (res.ok && b.confirmation) return b.confirmation;
-  throw new ConfirmRefused(res.status, b.error?.message ?? (res.statusText || `HTTP ${res.status}`), b.error?.code ?? null);
+  const b = await browserCall<{ confirmation: ConfirmationView }>(`/api/confirmations/${encodeURIComponent(id)}`, "POST", assertion ? { approve, assertion } : { approve });
+  return b.confirmation;
 }
 
 /** What a person reads for an agent session: its name, else its harness and handle, and where it runs. */

@@ -6,8 +6,7 @@
 // cookie, from the public origin. A refusal throws `Refused` with the
 // daemon's own message, which the page shows as it is. Names and titles
 // are people's and agents' text: untrusted, rendered as text.
-import { HELD, heldOf } from "../held";
-import { Refused } from "../people/api";
+import { browserCall, Refused } from "../held";
 
 export { Refused };
 
@@ -46,16 +45,8 @@ export type Sharing =
 /** An artifact in the public gallery. */
 export type PublicArtifact = { artifact_id: string; title: string; url: string };
 
-async function call<T>(path: string, method = "GET", body?: unknown): Promise<T> {
-  const res = await fetch(path, method === "GET" ? { cache: "no-store" } : { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
-  // Held for the owner's confirmation (opening a site to the world): where to confirm.
-  const held = await heldOf(res);
-  if (held) throw new Refused(202, held.message, HELD);
-  if (res.ok) return (res.status === 204 ? {} : await res.json()) as T;
-  let b: { error?: { code?: string; message?: string } } = {};
-  try { b = await res.json(); } catch { /* not json */ }
-  throw new Refused(res.status, b.error?.message ?? (res.statusText || `HTTP ${res.status}`), b.error?.code ?? null);
-}
+// Every write sends a JSON body, `{}` when it has none.
+const call = <T>(path: string, method = "GET", body?: unknown) => browserCall<T>(path, method, method === "GET" ? undefined : body ?? {});
 const e = encodeURIComponent;
 
 /** The browser's sign-in, or null on a local daemon (which has none). */

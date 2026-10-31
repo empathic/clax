@@ -29,7 +29,9 @@ function daemon(session: boolean) {
 
 let unmount: (() => void) | null = null;
 
+/** Mounts the gallery, its page's fetch wrapped as each shell entry wraps it (`owner-proof-install.ts`). */
 async function boot() {
+  (await import("./owner-proof")).installProofFetch();
   const { default: Gallery } = await import("./ui/Gallery.svelte");
   const { mount } = await import("./test/svelte");
   const m = mount(Gallery, {});

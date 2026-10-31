@@ -33,6 +33,6 @@
 <style>
   :global {
     .confirm-toasts { position: fixed; right: 16px; bottom: 16px; z-index: 60; display: grid; gap: 8px; width: min(380px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow-y: auto; }
-    .confirm-toasts .ccard { box-shadow: var(--shadow, 0 6px 24px rgb(0 0 0 / 0.18)); }
+    .confirm-toasts .cfcard { box-shadow: var(--shadow, 0 6px 24px rgb(0 0 0 / 0.18)); }
   }
 </style>
