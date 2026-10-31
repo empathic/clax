@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { PROOF_HEADER, PROOF_STORAGE_KEY, isProofKey, ownerProof, proofFetch, withProof } from "./owner-proof";
+import { MAX_PROOFS, PROOF_HEADER, PROOF_STORAGE_KEY, isProofKey, ownerProof, proofFetch, withProof } from "./owner-proof";
 
 const ORIGIN = "http://localhost:7480";
 const NO_CREDENTIAL = () => new Response(JSON.stringify({ error: { code: "no_credential", message: "this needs a credential" } }), { status: 401 });
@@ -29,13 +29,26 @@ describe("the owner browser session's proof", () => {
     expect(ownerProof(null)).toBeNull();
   });
 
-  it("presents every proof the logins kept, each under its own key, and nothing else", () => {
+  /** A login's key at millisecond `ms` (`clax_http::local_trust::proof_storage_key`). */
+  const keyAt = (ms: number, digest = "0123456789abcdef") => `${PROOF_STORAGE_KEY}.${String(ms).padStart(15, "0")}.${digest}`;
+
+  it("presents the proofs the logins kept, newest first, each under its own key, and nothing else", () => {
     // Two logins at once: the script cannot tell which one's cookie the
-    // browser kept, so both proofs go.
-    expect(ownerProof(storage({ "clax.owner_proof.0123456789abcdef": "cxp_a", theme: "dark", "clax.owner_proofx": "cxp_no", "clax.owner_proof.fedcba9876543210": "cxp_b" }))).toBe("cxp_a,cxp_b");
-    expect(ownerProof(storage({ [PROOF_STORAGE_KEY]: "cxp_old", "clax.owner_proof.0123456789abcdef": "cxp_new" }))).toBe("cxp_old,cxp_new");
+    // browser kept, so both proofs go, the later login's first.
+    expect(ownerProof(storage({ [keyAt(1000)]: "cxp_a", theme: "dark", "clax.owner_proofx": "cxp_no", [keyAt(2000)]: "cxp_b" }))).toBe("cxp_b,cxp_a");
+    expect(ownerProof(storage({ [PROOF_STORAGE_KEY]: "cxp_old", [keyAt(1000)]: "cxp_new" }))).toBe("cxp_new,cxp_old");
     // A value that would split into more than one proof is not one.
-    expect(ownerProof(storage({ "clax.owner_proof.0123456789abcdef": "cxp_a,cxp_b" }))).toBeNull();
+    expect(ownerProof(storage({ [keyAt(1000)]: "cxp_a,cxp_b" }))).toBeNull();
+  });
+
+  it("presents at most the daemon's MAX_PROOFS, so the newest login's is never past the cap", () => {
+    const held: Record<string, string> = {};
+    // Stored in no order, as the storage lists its keys.
+    for (const i of [3, 19, 0, 7, 12, 18, 1, 5, 9, 14, 16, 2, 4, 6, 8, 10, 11, 13, 15, 17]) held[keyAt(1000 + i)] = `cxp_${i}`;
+    const sent = ownerProof(storage(held))!.split(",");
+    expect(sent).toHaveLength(MAX_PROOFS);
+    expect(sent[0]).toBe("cxp_19");
+    expect(sent).toEqual(Array.from({ length: MAX_PROOFS }, (_, i) => `cxp_${19 - i}`));
   });
 
   it("tells the storage events that change it", () => {

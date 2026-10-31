@@ -132,7 +132,15 @@ export function ownerProofOf(base: string): string {
 /** Makes `context` a browser of the owner's on daemon `d`: it holds the
  * owner and events cookies of `d`'s session, as a login sets them, and the
  * session's proof in the storage of each of `d`'s origins, as the login's
- * page writes it. */
+ * page writes it.
+ *
+ * That session is shared by every context the worker signs in. A real
+ * login's page (`GET /login`) presents every proof the storage holds to
+ * `POST /api/browser-login/retire`, which ends the sessions of all but the
+ * new one: had it seen the shared proof, every other context of the worker
+ * would go cold. So on `/login` the init script takes the shared proof out
+ * of the storage instead of writing it, and once a login wrote a proof of
+ * its own (a key beginning `clax.owner_proof.`) it writes it no more. */
 async function signIn(context: BrowserContext, d: { port: number; session: string | null; proof: string | null }): Promise<void> {
   if (!d.session) return;
   const cookie = (name: string, path: string, sameSite: "Lax" | "Strict", domain: string) => ({ name, value: d.session!, domain, path, httpOnly: true, sameSite });
@@ -144,10 +152,14 @@ async function signIn(context: BrowserContext, d: { port: number; session: strin
   if (d.proof) {
     // Only where the origin holds no proof: a login in the context (its
     // page writes a new session's proof, under a key of its own, beside the
-    // new cookie) is not undone.
+    // new cookie) is not undone, and never on the login's page itself.
     await context.addInitScript(({ port, proof }) => {
       if (location.port === port && (location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
         try {
+          if (location.pathname === "/login") {
+            if (localStorage.getItem("clax.owner_proof") === proof) localStorage.removeItem("clax.owner_proof");
+            return;
+          }
           const held = Object.keys(localStorage).some(k => k === "clax.owner_proof" || k.startsWith("clax.owner_proof."));
           if (!held) localStorage.setItem("clax.owner_proof", proof);
         } catch { /* storage refused */ }

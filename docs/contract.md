@@ -1727,7 +1727,9 @@ app's versions with the bundle each carries.
   whether it exists included: its one script (admitted by nonce, its
   requests to this origin alone) fetches the same address with the
   origin's proofs and shows the page that answers, follows its redirect,
-  and fetches Download .clax with the proofs to save it from the bytes; it
+  and makes Download .clax a button (a link to `/api/…` would be opened by
+  a middle-click without the proof) that fetches the bundle with the proofs
+  and saves it from the bytes, saying under it when the fetch failed; it
   shows how to open Clax from the terminal when the browser holds no proof
   or the proof is refused. The owner's agents (the daemon token with a
   session, or the agent-channel marker) are refused 403 `not_for_agents`,
@@ -2635,12 +2637,15 @@ request is the owner's when it carries an owner credential:
   `SameSite=Lax`, on `Path=/`), and as the events cookie (only the event
   streams receive it). Its proof (`cxp_…`, 32 random bytes) is kept in the
   `localStorage` of the daemon's origin, which is scoped to the origin's
-  port as no cookie is, under a key of its own: `clax.owner_proof.`
-  followed by the first 16 hex digits of the proof's SHA-256 (the shell
-  also reads a proof kept under `clax.owner_proof` itself). The page's
-  script cannot read which session its `HttpOnly` cookie names, so the
-  shell presents every proof kept, comma-separated (at most 16 are read),
-  beside the cookie on every request its page makes with `fetch`, as
+  port as no cookie is, under a key of its own: `clax.owner_proof.`, the
+  login's time in milliseconds since the epoch as 15 digits, `.`, and the
+  first 16 hex digits of the proof's SHA-256 (the shell also reads a proof
+  kept under `clax.owner_proof` itself, as the oldest). The page's script
+  cannot read which session its `HttpOnly` cookie names, so the shell
+  presents the proofs kept, newest first, comma-separated, at most 16 (the
+  daemon reads no more, and of the owner and events cookies at most 8
+  values each, only those of a secret's form: the prefix and 43 base64url
+  characters), beside the cookie on every request its page makes with `fetch`, as
   `X-Clax-Owner-Proof`, and in the address of the realtime routes whose
   clients send no header (`?owner_proof=` on `GET /api/events`, `GET
   /api/stream`, and an artifact's `room` and `live` sockets; no other route
@@ -2749,10 +2754,15 @@ redeeming a one-use login code a holder of the token made:
   calls it. 404 on a hosted daemon. A daemon restart ends none.
 - `POST /api/browser-login/retire` (an owner browser session: its cookie
   and, among the proofs `X-Clax-Owner-Proof` presents, its own) →
-  `{kept, ended}`: ends every other live owner browser session whose proof
-  the header presents, with the streams and sockets opened with them;
-  `kept` is the place in the header's list of the proof that proves the
-  cookie, `ended` how many ended. A session whose proof is not presented,
+  `{kept, ended, dropped}`: keeps the session of the earliest presented
+  proof that proves one of the request's owner cookies (so a cookie another
+  server planted on a longer path, which the browser sends first, is not
+  the one kept; every request reads its proofs in that order), and ends
+  every other live owner browser session whose proof the header presents,
+  with the streams and sockets opened with them. `kept` is the kept
+  proof's place in the header's list, `ended` how many sessions ended, and
+  `dropped` the places of the presented proofs that prove no live session
+  now. A session whose proof is not presented,
   another browser's, stays live. 401 `no_credential` without a proven
   session (the cookie alone, or no presented proof proving it); 403
   `not_for_agents` for the owner's agents; 404 on a hosted daemon. The
@@ -2765,13 +2775,13 @@ redeeming a one-use login code a holder of the token made:
   owner and events cookies, in place of any it held. The page's script
   writes the session's proof into the origin's `localStorage` under the
   proof's own key, so two logins at once never overwrite each other's;
-  when the storage holds other proofs too, it presents them all, its own
-  first, to `POST /api/browser-login/retire` and removes the keys of every
-  proof but the one `kept` names, which ends the sessions this browser's
-  earlier logins opened (a session whose proof is gone from the storage
-  lapses at its expiry); then it replaces the page with `next` (a link to
-  `next` stands in without scripts). Two logins at once may leave the
-  browser with either one's cookie; the proof of that one is kept. The
+  when the storage holds other proofs too, it presents its own first and
+  then the 15 newest others to `POST /api/browser-login/retire` and removes
+  the keys of the proofs `dropped` names, which ends the sessions this
+  browser's earlier logins opened (a session whose proof is gone from the
+  storage lapses at its expiry); then it replaces the page with `next` (a
+  link to `next` stands in without scripts). Two logins at once may leave
+  the browser with either one's cookie; the proof of that one is kept. The
   cookie the request carries ends nothing by itself: a server on another
   port of the host can plant one, another browser's among them. Sessions
   past their expiry are dropped at each login. One carrying exactly one

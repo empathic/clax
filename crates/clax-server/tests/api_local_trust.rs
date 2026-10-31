@@ -1248,7 +1248,7 @@ async fn a_login_retires_the_sessions_its_browser_held() {
     assert_eq!(retire(&ts, &now, &[&old_proof]).await.0, 401);
     let (status, v) = retire(&ts, &now, &[&now_proof, &old_proof]).await;
     assert_eq!(status, 200, "{v}");
-    assert_eq!(v, json!({"kept": 0, "ended": 1}));
+    assert_eq!(v, json!({"kept": 0, "ended": 1, "dropped": [1]}));
     assert_eq!(token_status(&ts, &old, Some(&old_proof)).await, 401);
     assert_eq!(token_status(&ts, &now, Some(&now_proof)).await, 200);
     assert_eq!(
@@ -1283,9 +1283,49 @@ async fn two_logins_at_once_leave_the_cookie_the_browser_kept_proven() {
     assert_eq!(token_status(&ts, &a, Some(&both)).await, 200);
     let (status, v) = retire(&ts, &a, &[&b_proof, &a_proof]).await;
     assert_eq!(status, 200, "{v}");
-    assert_eq!(v, json!({"kept": 1, "ended": 1}));
+    assert_eq!(v, json!({"kept": 1, "ended": 1, "dropped": [0]}));
     assert_eq!(token_status(&ts, &a, Some(&a_proof)).await, 200);
     assert_eq!(token_status(&ts, &b, Some(&b_proof)).await, 401);
+}
+
+/// A server on another port planted the owner's older live cookie C1 on a
+/// longer path, so the browser sends it before the login's C2: the retire
+/// keeps the session of the proof the login's page presents first, its
+/// own, and ends the planted one, so every later `clax open` works.
+#[tokio::test]
+async fn a_cookie_planted_on_a_longer_path_is_retired_not_the_logins_own() {
+    let ts = TestServer::spawn().await;
+    let (c1, p1) = login_in(&ts, None).await;
+    let (c2, p2) = login_in(&ts, Some(&c1)).await;
+    let planted = format!("{c1}; {c2}");
+    let (status, v) = retire(&ts, &planted, &[&p2, &p1]).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v, json!({"kept": 0, "ended": 1, "dropped": [1]}));
+    assert_eq!(token_status(&ts, &c2, Some(&p2)).await, 200);
+    assert_eq!(token_status(&ts, &c1, Some(&p1)).await, 401);
+    // The browser's later requests, the planted cookie still sent first on
+    // /api/, are the login's session.
+    assert_eq!(token_status(&ts, &planted, Some(&p2)).await, 200);
+}
+
+/// The retire names, for the page to remove, the presented proofs that
+/// prove no live session after it (those it ended, and those of sessions
+/// ended before, by `clax logout`), and no other.
+#[tokio::test]
+async fn the_retire_names_the_dead_proofs_it_was_shown() {
+    let ts = TestServer::spawn().await;
+    let (old, old_proof) = login_in(&ts, None).await;
+    let res = ts
+        .authed(ts.client.delete(format!("{}/api/browser-login", ts.base)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let (_, before) = login_in(&ts, None).await;
+    let (now, now_proof) = login_in(&ts, Some(&old)).await;
+    let (status, v) = retire(&ts, &now, &[&now_proof, &old_proof, &before]).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v, json!({"kept": 0, "ended": 1, "dropped": [1, 2]}));
 }
 
 /// A thread's clip is read with the proof like any other API route: an
@@ -1309,7 +1349,10 @@ async fn a_clip_is_read_only_with_the_proof() {
         let mut req = reqwest::Client::new()
             .get(format!("{}{url}", ts.base))
             .header("cookie", ts.owner_cookie())
-            .header("accept", "image/avif,image/webp,image/png,image/*,*/*;q=0.8")
+            .header(
+                "accept",
+                "image/avif,image/webp,image/png,image/*,*/*;q=0.8",
+            )
             .header("sec-fetch-dest", "image");
         if let Some(p) = proof {
             req = req.header(clax_http::local_trust::PROOF_HEADER, p);
@@ -1344,10 +1387,10 @@ async fn the_get_page_is_bare_for_the_cookie_alone() {
         .unwrap();
     let content = v["version"]["content_sha256"].as_str().unwrap().to_string();
     let res = ts
-        .authed(ts.client.put(format!(
-            "{}/api/artifacts/{aid}/versions/1/bundle",
-            ts.base
-        )))
+        .authed(
+            ts.client
+                .put(format!("{}/api/artifacts/{aid}/versions/1/bundle", ts.base)),
+        )
         .header("content-type", "application/vnd.empathic.clax+zip")
         .header("clax-bundle-lineage", "l_abcdefghijklmnopqrstuvwxyz")
         .header("clax-bundle-version", "3")

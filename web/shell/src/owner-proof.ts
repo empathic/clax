@@ -28,20 +28,32 @@ export function isProofKey(key: string | null): boolean {
   return key === null || key === PROOF_STORAGE_KEY || key.startsWith(`${PROOF_STORAGE_KEY}.`);
 }
 
+/** How many proofs the daemon reads from one request
+ * (`clax_http::local_trust::MAX_PROOFS`). */
+export const MAX_PROOFS = 16;
+
 /** This origin's proofs, comma-separated as the daemon reads them
  * (`clax_http::local_trust::presented`), or null for none (or storage that
  * cannot be read). The script cannot read which session its `HttpOnly`
- * cookie names, so it presents every proof kept: after two logins at once
- * the browser may hold either's cookie. The login's page ends the sessions
- * of the proofs that are not its cookie's and removes them. */
+ * cookie names, so it presents the proofs kept, newest first (their keys
+ * carry the login's time, `proof_storage_key`), at most `MAX_PROOFS`: after
+ * two logins at once the browser may hold either's cookie, and the newest
+ * login's is the likeliest. The login's page ends the sessions of the
+ * proofs that are not its cookie's and removes them. */
 export function ownerProof(storage: Pick<Storage, "getItem" | "key" | "length"> | null = safeStorage()): string | null {
   try {
     if (!storage) return null;
-    const found: string[] = [];
+    const keys: string[] = [];
     for (let i = 0; i < storage.length; i++) {
       const k = storage.key(i);
-      const v = k !== null && k !== "" && isProofKey(k) ? storage.getItem(k) : null;
+      if (k !== null && k !== "" && isProofKey(k)) keys.push(k);
+    }
+    keys.sort().reverse();
+    const found: string[] = [];
+    for (const k of keys) {
+      const v = storage.getItem(k);
       if (v && !v.includes(",")) found.push(v);
+      if (found.length === MAX_PROOFS) break;
     }
     return found.length ? found.join(",") : null;
   } catch {

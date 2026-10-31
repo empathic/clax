@@ -12,7 +12,7 @@ use clax_http::auth::RequireToken;
 use clax_http::error::ApiError;
 use clax_http::local_trust::{
     LOGIN_PATH, OwnerSession, PROOF_HEADER, local_path, login_page, login_page_csp, presented,
-    session_counts, session_cookies,
+    proof_storage_key, session_cookies, session_counts,
 };
 use clax_http::state::AppState;
 use clax_store::browser_login::LOGIN_CODE_TTL_SECS;
@@ -108,15 +108,20 @@ pub async fn end_all(
 
 /// `POST /api/browser-login/retire` (an owner browser session, its cookie
 /// with its proof among those [`clax_http::local_trust::PROOF_HEADER`]
-/// presents) → `{kept, ended}`: ends every other live owner browser
-/// session whose proof the header presents
-/// ([`clax_http::local_trust::OwnerSessions::retire`]). `kept` is the place
-/// in the header's list of the proof that proves the cookie, `ended` how
-/// many sessions ended. The login's page calls it with every proof its
-/// origin's storage holds ([`login_page`]), so each login in a browser ends
-/// the sessions its earlier logins opened there, and two logins at once
-/// leave one live session paired with the cookie the browser kept. A
-/// session whose proof is not presented (another browser's) stays live.
+/// presents) → `{kept, ended, dropped}`: ends every other live owner
+/// browser session whose proof the header presents
+/// ([`clax_http::local_trust::OwnerSessions::retire`]). The session kept is
+/// the one the earliest presented proof proves among the request's cookies
+/// ([`clax_http::local_trust::live_session`]), so a cookie another server
+/// planted on a longer path is retired, not the login's own. `kept` is that
+/// proof's place in the header's list, `ended` how many sessions ended, and
+/// `dropped` the places of the presented proofs that prove no live session
+/// now, whose keys the page removes. The login's page calls it with its own
+/// proof first and the newest others its origin's storage holds
+/// ([`login_page`]), so each login in a browser ends the sessions its
+/// earlier logins opened there, and two logins at once leave one live
+/// session paired with the cookie the browser kept. A session whose proof
+/// is not presented (another browser's) stays live.
 /// 401 `no_credential` without a proven session, 403 `not_for_agents` for
 /// the owner's agents, 404 on a hosted daemon.
 pub async fn retire(
@@ -138,11 +143,9 @@ pub async fn retire(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     let proofs: Vec<&str> = presented(raw).collect();
-    let kept = proven.as_ref().and_then(|keep| {
-        proofs
-            .iter()
-            .position(|p| s.owner_sessions.proves(keep, p))
-    });
+    let kept = proven
+        .as_ref()
+        .and_then(|keep| proofs.iter().position(|p| s.owner_sessions.proves(keep, p)));
     let (Some(keep), Some(kept)) = (proven, kept) else {
         return Err(ApiError::new(
             StatusCode::UNAUTHORIZED,
@@ -164,11 +167,20 @@ pub async fn retire(
         })
         .await?;
     if ended > 0 {
-        tracing::info!(ended, "retired the owner browser sessions a login superseded");
+        tracing::info!(
+            ended,
+            "retired the owner browser sessions a login superseded"
+        );
     }
+    let dropped: Vec<usize> = proofs
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| !s.owner_sessions.holds_proof(p))
+        .map(|(i, _)| i)
+        .collect();
     Ok((
         [(header::CACHE_CONTROL, "no-store")],
-        axum::Json(json!({"kept": kept, "ended": ended})),
+        axum::Json(json!({"kept": kept, "ended": ended, "dropped": dropped})),
     )
         .into_response())
 }
@@ -359,7 +371,12 @@ pub async fn redeem(
             (header::X_FRAME_OPTIONS, "DENY".to_string()),
             (header::CONTENT_SECURITY_POLICY, login_page_csp(&nonce)),
         ],
-        login_page(opened.proof.expose(), &next, &nonce),
+        login_page(
+            opened.proof.expose(),
+            &proof_storage_key(opened.proof.expose(), s.owner_sessions.now()),
+            &next,
+            &nonce,
+        ),
     )
         .into_response();
     for c in cookies {

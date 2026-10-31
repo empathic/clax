@@ -150,6 +150,8 @@ svg.qr{display:block;margin:0 auto;width:184px;height:184px;border-radius:8px;bo
 .actions{display:flex;flex-wrap:wrap;gap:10px}\
 .btn{flex:1 1 180px;display:flex;justify-content:center;align-items:center;min-height:44px;padding:0 16px;box-sizing:border-box;border-radius:10px;border:1px solid var(--border);background:var(--card);color:var(--fg);font-weight:600;text-decoration:none}\
 .btn.primary{background:var(--fg);border-color:var(--fg);color:var(--bg)}\
+button.btn{font:inherit;cursor:pointer}button.btn:disabled{opacity:.6;cursor:progress}\
+.err{margin:12px 0 0;color:#c5221f;font-size:14px}@media (prefers-color-scheme:dark){.err{color:#f28b82}}\
 .stores,.more{margin:16px 0 0;font-size:14px;color:var(--muted)}\
 @media (max-width:600px) and (pointer:coarse){.scan{display:none}}\
 footer{margin-top:16px;text-align:center;font-size:12.5px;color:var(--muted)}footer a{color:inherit}";
@@ -336,26 +338,33 @@ fn app_page(s: &AppState, id: &ArtifactId, a: &App) -> Response {
 
 /// What a local owner's browser runs on the bare Get in Clax page
 /// ([`bare_page`]): it presents the proofs its origin's storage holds
-/// (`clax_http::local_trust::PROOF_STORAGE_KEY` and the keys it begins)
-/// with a fetch of the same page, and puts the page that answers in place
-/// of its own; it follows a redirect there, and shows how to open Clax
-/// from the terminal when it holds no proof or the proof is refused. Its
-/// Download .clax (a link to `/api/…`, which a navigation would reach
-/// without the proof) is fetched with the proofs and saved from the bytes.
+/// (`clax_http::local_trust::PROOF_STORAGE_KEY` and the keys it begins,
+/// newest first, at most `clax_http::local_trust::MAX_PROOFS`, as
+/// `web/shell/src/owner-proof.ts` does) with a fetch of the same page, and
+/// puts the page that answers in place of its own; it follows a redirect
+/// there, and shows how to open Clax from the terminal when it holds no
+/// proof or the proof is refused. Its Download .clax, a link to `/api/…`
+/// that a navigation (a middle-click, Save link as) would reach without
+/// the proof, becomes a button: a click fetches the bundle with the proofs
+/// and saves it from the bytes, and a failed fetch says so under it.
 const BARE_SCRIPT: &str = r#"(function(){
-var H="x-clax-owner-proof",K="clax.owner_proof",p=[],s,i,k,v,m=document.querySelector("main");
-try{s=localStorage;for(i=0;i<s.length;i++){k=s.key(i);v=k&&s.getItem(k);if(v&&(k===K||k.indexOf(K+".")===0))p.push(v)}}catch(e){}
+var H="x-clax-owner-proof",K="clax.owner_proof",ks=[],p=[],s,i,k,v,m=document.querySelector("main");
+try{s=localStorage;for(i=0;i<s.length;i++){k=s.key(i);if(k&&(k===K||k.indexOf(K+".")===0))ks.push(k)}
+ks.sort().reverse();for(i=0;i<ks.length&&p.length<16;i++){v=s.getItem(ks[i]);if(v&&v.indexOf(",")<0)p.push(v)}}catch(e){}
 p=p.join(",");
 function cold(){var c=m.querySelector("section");if(c)c.innerHTML="<h1>Open Clax from your terminal</h1><p>Run <code>clax open</code> (or <code>clax login</code> for a link). This browser is not signed in to this machine’s Clax.</p>"}
 if(!p||typeof fetch!=="function"){cold();return}
 var h={};h[H]=p;
-document.addEventListener("click",function(e){var a=e.target&&e.target.closest&&e.target.closest("a[download]"),u=a&&a.getAttribute("href")||"";if(u.indexOf("/api/")!==0)return;e.preventDefault();
-fetch(u,{headers:h,credentials:"same-origin"}).then(function(r){if(!r.ok)throw r.status;var n=(/filename="([^"]+)"/.exec(r.headers.get("content-disposition")||"")||[])[1]||"app.clax";return r.blob().then(function(b){var o=URL.createObjectURL(b),t=document.createElement("a");t.href=o;t.download=n;document.body.appendChild(t);t.click();t.remove();setTimeout(function(){URL.revokeObjectURL(o)},60000)})}).catch(function(){})});
+function say(b,t){var e=b.parentNode.parentNode.querySelector(".err");if(!e){e=document.createElement("p");e.className="err";e.setAttribute("role","alert");b.parentNode.after(e)}e.textContent=t}
+function save(b){var u=b.getAttribute("data-src");b.disabled=true;
+fetch(u,{headers:h,credentials:"same-origin",cache:"no-store"}).then(function(r){if(!r.ok)throw{t:r.status===401?"This browser is no longer signed in: run clax open, then try again.":"The download failed ("+r.status+"). Try again."};var n=(/filename="([^"]+)"/.exec(r.headers.get("content-disposition")||"")||[])[1]||"app.clax";return r.blob().then(function(x){var o=URL.createObjectURL(x),t=document.createElement("a");t.href=o;t.download=n;document.body.appendChild(t);t.click();t.remove();setTimeout(function(){URL.revokeObjectURL(o)},60000)})})
+.catch(function(e){say(b,e&&e.t||"The download failed. Try again.")}).then(function(){b.disabled=false})}
+function arm(){var as=m.querySelectorAll("a[download]");for(i=0;i<as.length;i++){var a=as[i],u=a.getAttribute("href")||"";if(u.indexOf("/api/")!==0)continue;var b=document.createElement("button");b.type="button";b.className=a.className;b.setAttribute("data-src",u);b.textContent=a.textContent;b.addEventListener("click",function(){save(this)});a.replaceWith(b)}}
 var q={accept:"text/html"};q[H]=p;
 fetch(location.pathname,{headers:q,credentials:"same-origin",cache:"no-store"}).then(function(r){
 if(r.redirected){location.replace(r.url);return}
 if(r.status===401){cold();return}
-return r.text().then(function(t){var d=new DOMParser().parseFromString(t,"text/html"),n=d.querySelector("main");if(!n){cold();return}document.title=d.title;n=document.adoptNode(n);m.replaceWith(n);m=n})}).catch(cold)})()"#;
+return r.text().then(function(t){var d=new DOMParser().parseFromString(t,"text/html"),n=d.querySelector("main");if(!n){cold();return}document.title=d.title;n=document.adoptNode(n);m.replaceWith(n);m=n;arm()})}).catch(cold)})()"#;
 
 /// The Get in Clax page a local owner's browser gets for a page load: a
 /// navigation carries the owner cookie but never the proof, and the
