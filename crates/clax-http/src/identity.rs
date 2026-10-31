@@ -180,11 +180,6 @@ pub enum Browser {
     /// A proven owner browser session, by its owner or events cookie
     /// ([`crate::local_trust::sessions`]).
     Session,
-    /// The key cookie ([`crate::auth::key_cookie_name`]), whose value is
-    /// the daemon token: it counts as the token ([`Identity::token`]) and
-    /// is no browser of the owner's, so it makes no decision only a
-    /// person at the owner's browser makes and answers no confirmation.
-    Key,
     /// A paired extension's credential ([`crate::extension::ViaExtension`]):
     /// a browser of the owner's that answers no confirmation.
     Extension,
@@ -193,10 +188,9 @@ pub enum Browser {
 }
 
 impl Browser {
-    /// Whether it is a browser of the owner's: every credential but none
-    /// and the key cookie.
+    /// Whether it is a browser of the owner's: every credential but none.
     pub fn is_owners(self) -> bool {
-        !matches!(self, Browser::None | Browser::Key)
+        self != Browser::None
     }
 
     /// Whether it may answer a confirmation: an owner browser session, or
@@ -305,7 +299,6 @@ impl Identity {
             .get::<crate::local_trust::OwnerSession>()
             .filter(|_| crate::local_trust::session_counts(headers, extensions));
         let browser = match session {
-            Some(m) if m.key => Browser::Key,
             Some(m) if m.session.is_some() => Browser::Session,
             Some(_) => Browser::InProcess,
             None if !id.grant_header
@@ -317,10 +310,7 @@ impl Identity {
         };
         let id = Identity {
             local,
-            // The key cookie's value is the token: it is the token, never a
-            // browser of the owner's.
-            token: id.token || browser == Browser::Key,
-            owner_cookie: session.is_some_and(|m| m.owner && !m.key),
+            owner_cookie: session.is_some_and(|m| m.owner),
             events_cookie: session.is_some_and(|m| m.events),
             browser,
             grant: extensions.get::<crate::agent::VerifiedGrant>().cloned(),
@@ -528,7 +518,7 @@ impl Identity {
     }
 
     /// Whether the request comes from a browser of the owner's
-    /// ([`Browser::is_owners`]): never the token alone, nor the key cookie.
+    /// ([`Browser::is_owners`]): never the token alone.
     pub fn owner_browser(&self) -> bool {
         !self.grant_header && self.browser.is_owners()
     }
@@ -992,13 +982,11 @@ mod tests {
         assert!(!Identity::from_parts(&host("localhost:7480"), &none, "tok").is_owner());
     }
 
-    /// One rule says which browser a request is: the key cookie's value is
-    /// the token, so it is the token and no browser of the owner's, for the
-    /// owner's identity and for confirmations alike; a proven session and
-    /// the in-process frame are browsers of the owner's that may answer a
-    /// confirmation.
+    /// One rule says which browser a request is: a proven session and the
+    /// in-process frame are browsers of the owner's that may answer a
+    /// confirmation; the token alone is neither.
     #[test]
-    fn the_key_cookie_is_the_token_and_no_browser_of_the_owners() {
+    fn a_session_and_the_frame_are_the_owners_browser_and_may_answer() {
         use crate::local_trust::OwnerSession;
         let lo = ("127.0.0.1:50000", "127.0.0.1:7480");
         let of = |mark: OwnerSession| {
@@ -1006,14 +994,6 @@ mod tests {
             ext.insert(mark);
             Identity::from_parts(&headers(&[("host", "localhost:7480")]), &ext, "tok")
         };
-        let key = of(OwnerSession::key());
-        assert_eq!(key.browser, Browser::Key);
-        assert!(key.token && key.is_owner());
-        assert!(!key.owner_browser() && !key.browser.may_answer());
-        assert_eq!(
-            key.quick_caller(None).map(|c| c.owner_browser()),
-            Some(false)
-        );
         let frame = of(OwnerSession::browser());
         assert_eq!(frame.browser, Browser::InProcess);
         assert!(frame.owner_browser() && frame.browser.may_answer() && !frame.token);
@@ -1021,7 +1001,6 @@ mod tests {
             session: Some("h".into()),
             owner: true,
             events: false,
-            key: false,
         });
         assert_eq!(session.browser, Browser::Session);
         assert!(session.owner_browser() && session.browser.may_answer());

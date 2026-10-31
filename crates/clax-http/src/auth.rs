@@ -285,35 +285,6 @@ pub fn events_cookie_name(host: &str) -> String {
     format!("clax_events_{port}")
 }
 
-/// The name of the key cookie: `clax_key_<port>`, the port from the
-/// request's `Host` as for the events cookie. Its value is the token itself.
-/// No response sets it: the app that starts a daemon with
-/// `require_credential` puts it in its own WebView's cookie store, where it
-/// stands for an owner browser session ([`crate::local_trust::sessions`]),
-/// so the shell there passes [`require_credential`] and fetches the token
-/// as on a desktop.
-pub fn key_cookie_name(host: &str) -> String {
-    events_cookie_name(host).replacen("clax_events_", "clax_key_", 1)
-}
-
-/// True when `headers` carry this port's key cookie with the token
-/// (compared in constant time).
-pub fn has_key_cookie(headers: &axum::http::HeaderMap, token: &str) -> bool {
-    let host = headers
-        .get(axum::http::header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let name = key_cookie_name(host);
-    headers
-        .get_all(axum::http::header::COOKIE)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(';'))
-        .filter_map(|kv| kv.trim().split_once('='))
-        .filter(|(k, _)| *k == name)
-        .any(|(_, v)| constant_time_eq(v.as_bytes(), token.as_bytes()))
-}
-
 /// Paths a daemon with `require_credential` serves without a credential on
 /// its own host: `/healthz`, `/.well-known/clax` (what this Clax is), the
 /// shell's static files (`/_clax/...`, code and no data), and the old
@@ -332,8 +303,8 @@ pub fn open_without_credential(path: &str) -> bool {
 /// embedded daemon, whose loopback every other app on the device shares),
 /// a request answers 401 `unauthorized` unless its path is
 /// [`open_without_credential`] or it carries a credential: the bearer token,
-/// or an owner browser session (the key cookie, [`key_cookie_name`], among
-/// them; [`crate::local_trust::OwnerSession`]). `GET /api/token` is behind
+/// or an owner browser session ([`crate::local_trust::OwnerSession`], the
+/// in-process app's frame among them). `GET /api/token` is behind
 /// it like every other route, so a program that can only reach loopback
 /// never gets the token. A daemon without the option passes every request
 /// on.
@@ -633,18 +604,6 @@ mod tests {
         ] {
             assert!(!api_host_allowed(h, local), "{h} {local:?}");
         }
-    }
-
-    #[test]
-    fn the_key_cookie_holds_the_token_under_its_ports_name() {
-        assert_eq!(key_cookie_name("127.0.0.1:41000"), "clax_key_41000");
-        let mut h = axum::http::HeaderMap::new();
-        h.insert("host", "127.0.0.1:41000".parse().unwrap());
-        h.insert("cookie", "a=b; clax_key_41000=tok".parse().unwrap());
-        assert!(has_key_cookie(&h, "tok"));
-        assert!(!has_key_cookie(&h, "other"));
-        h.insert("cookie", "clax_key_41001=tok".parse().unwrap());
-        assert!(!has_key_cookie(&h, "tok"));
     }
 
     #[test]

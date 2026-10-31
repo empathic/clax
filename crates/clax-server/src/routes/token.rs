@@ -8,8 +8,7 @@ use clax_http::identity::Identity;
 
 /// The bearer token, for the shell of a browser of the owner's: a request
 /// carrying a live owner browser session ([`clax_http::local_trust`]) from
-/// this machine, which only a redeemed login code opens, or the key cookie
-/// (whose value is the token, [`clax_http::identity::Browser::Key`]). Anyone else gets
+/// this machine, which only a redeemed login code opens. Anyone else gets
 /// 401 `unauthorized`, whatever its peer, `Host`, `Origin` or
 /// `Sec-Fetch-Site` say: reaching the port is no credential. It sets no
 /// cookie and claims no viewer (the login route does both, `GET /login`).
@@ -20,7 +19,7 @@ pub async fn token(
     _d: clax_http::agent::DeniedToGrants,
     who: Identity,
 ) -> Result<Response, ApiError> {
-    if !who.owner_cookie && who.browser != clax_http::identity::Browser::Key {
+    if !who.owner_cookie {
         return Err(ApiError::unauthorized());
     }
     Ok((

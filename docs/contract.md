@@ -2825,8 +2825,9 @@ names is never reaped while the job is open, and counts for as long: its
 harness may still be running. The decisions:
 
 1. answering a question an agent asked (`POST /api/questions/<qid>/answer`),
-   except the question an agent's push waits on (`approval_pending`),
-   whose answer counts only when made in the owner's browser anyway;
+   except a question an agent's push or site opening waits on
+   (`approval_pending`), whose answer counts only when made in the owner's
+   browser anyway;
 2. pushing an artifact to a public Clax (`POST /api/artifacts/<aid>/push`,
    the owner's own push);
 3. connecting a public Clax (`POST /api/remotes`), and answering an agent's
@@ -2849,11 +2850,9 @@ harness may still be running. The decisions:
    which waits for a confirmation from any browser but the in-process
    app's frame.
 
-Who waits: the owner calling with the token and no browser credential, or
-with the app's key cookie (decisions 1 to 4 and 6; decision 5 refuses the
-token alone as before, 403 `browser_required`). The key cookie's value is
-the token, so it counts as the token everywhere: it is no browser of the
-owner's, and a question answered with it is recorded `answered_via: cli`.
+Who waits: the owner calling with the token and no browser credential
+(decisions 1 to 4 and 6; decision 5 refuses the token alone as before, 403
+`browser_required`).
 Any owner browser session, the in-process app's frame (the Clax app's
 shell, relayed through its embedded core) and a paired extension decide at
 once, as does everyone while no agent session is live, unless passkeys are
@@ -2904,7 +2903,7 @@ question, answer, page, remote, push mode, `auto`, `forked_from` or
 - `POST /api/confirmations/<id> {approve, assertion?}` (the owner's
   browser: any owner browser session, or the in-process app's frame, which
   the Clax app's shell answers through; `SameOrigin`) → `{confirmation}`.
-  403 `browser_required` for the token, the key cookie and the extension;
+  403 `browser_required` for the token and the extension;
   while passkeys are required, approving from a browser session takes
   `assertion` (403 `passkey_required` without it, `passkey_refused` for one
   that does not check); 410 `confirmation_expired`; 409
@@ -10180,11 +10179,9 @@ it starts, the runs a previous process left. A build without the
   the Clax app's embedded core runs under the same rule). Every
   request without one answers 401 `unauthorized`, `GET /api/token`
   included, so a program that can only reach the port never gets the
-  token. A credential is the bearer token, an owner browser session, or
-  the **key cookie** `clax_key_<port>` (the port
-  from the request's `Host`), whose value is the token itself, compared in
-  constant time. No response sets the key cookie: the program that starts
-  the daemon puts it in its own browser's cookie store. Open without a
+  token. A credential is the bearer token or an owner browser session (the
+  embedded core's own frames among them); the token in a cookie is none.
+  Open without a
   credential: `/healthz`, the web UI's static files (`/_clax/...`), and
   content addressed by artifact ID (`/c/...`, artifact origins, and
   `/_blob/...`), since a content frame on `<id>.localhost` is cross-site to

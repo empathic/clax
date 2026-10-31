@@ -9,12 +9,6 @@ async fn locked() -> TestServer {
     TestServer::spawn_with(|s| s.require_credential = true).await
 }
 
-/// `clax_key_<port>=<token>`: the cookie the app sets in its WebView.
-fn key_cookie(ts: &TestServer) -> String {
-    let host = ts.base.trim_start_matches("http://");
-    format!("{}={}", clax_http::auth::key_cookie_name(host), ts.token)
-}
-
 async fn status(ts: &TestServer, path: &str, cookie: Option<&str>) -> u16 {
     let mut req = ts.client.get(format!("{}{path}", ts.base));
     if let Some(c) = cookie {
@@ -39,10 +33,9 @@ async fn the_token_route_answers_no_one_without_a_credential() {
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["error"]["code"], "no_credential");
     assert!(body.get("token").is_none());
-    // A wrong key cookie is no credential.
-    let host = ts.base.trim_start_matches("http://");
-    let wrong = format!("{}=nope", clax_http::auth::key_cookie_name(host));
-    assert_eq!(status(&ts, "/api/token", Some(&wrong)).await, 401);
+    // The token in a cookie (the retired `clax_key_<port>`) is no credential.
+    let old = format!("clax_key_{}={}", ts.addr.port(), ts.token);
+    assert_eq!(status(&ts, "/api/token", Some(&old)).await, 401);
 }
 
 #[tokio::test]
@@ -64,18 +57,18 @@ async fn reads_are_refused_without_a_credential_and_served_with_one() {
         let authed = ts.get_authed(path).await.status();
         assert!(authed.is_success(), "{path} with the token: {authed}");
     }
-    // The WebView's key cookie, which stands for an owner browser session,
-    // admits the shell page and its token request. (Documents ask the
-    // handler's own credential, which the shell sends as the token.)
-    let key = key_cookie(&ts);
+    // An owner browser session admits the shell page and its token
+    // request. (Documents ask the handler's own credential, which the shell
+    // sends as the token.)
+    let owner = ts.owner_cookie();
     for path in reads.iter().filter(|p| !p.contains("/docs")) {
-        let st = status(&ts, path, Some(&key)).await;
-        assert!((200..300).contains(&st), "{path} with the key cookie: {st}");
+        let st = status(&ts, path, Some(&owner)).await;
+        assert!((200..300).contains(&st), "{path} with a session: {st}");
     }
     let res = ts
         .client
         .get(format!("{}/api/token", ts.base))
-        .header("cookie", &key)
+        .header("cookie", &owner)
         .header("sec-fetch-site", "same-origin")
         .send()
         .await
@@ -87,11 +80,6 @@ async fn reads_are_refused_without_a_credential_and_served_with_one() {
     );
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["token"], ts.token);
-    // An owner browser session admits the API too.
-    assert_eq!(
-        status(&ts, "/api/artifacts", Some(&ts.owner_cookie())).await,
-        200
-    );
 }
 
 #[tokio::test]

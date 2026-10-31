@@ -344,8 +344,8 @@ async fn a_declined_or_expired_confirmation_changes_nothing() {
 }
 
 /// By default any owner browser session decides and confirms, one opened
-/// while an agent was live among them; the key cookie (the token itself),
-/// the token and the extension confirm nothing.
+/// while an agent was live among them; the token and the extension confirm
+/// nothing.
 #[tokio::test]
 async fn any_owner_browser_session_confirms_by_default() {
     let ts = TestServer::spawn().await;
@@ -354,17 +354,12 @@ async fn any_owner_browser_session_confirms_by_default() {
     let minted = ts.login("").await.cookie;
     let path = format!("/api/artifacts/{aid}");
     let body = json!({"site_access": "world"});
-    let key = format!("clax_key_{}={}", ts.addr.port(), ts.token);
     let id = pending(
         &ts,
-        &ts.as_browser_confirming(&key, Method::PATCH, &path, body.clone(), None)
+        &ts.token_call(Method::PATCH, &path, body.clone(), None)
             .await,
     );
     let answer = format!("/api/confirmations/{id}");
-    let (s, v) = ts
-        .as_browser_confirming(&key, Method::POST, &answer, json!({"approve": true}), None)
-        .await;
-    assert_eq!((s, code(&v)), (403, "browser_required"), "the key cookie");
     let (s, v) = ts
         .token_call(Method::POST, &answer, json!({"approve": true}), None)
         .await;
@@ -389,7 +384,7 @@ async fn any_owner_browser_session_confirms_by_default() {
         "{v}"
     );
     let (s, v) = ts
-        .as_browser_confirming(&key, Method::PATCH, &path, body.clone(), Some(&id))
+        .token_call(Method::PATCH, &path, body.clone(), Some(&id))
         .await;
     assert_eq!(s, 200, "{v}");
     assert!(site_is_open(&ts, &aid).await);
@@ -407,11 +402,11 @@ async fn any_owner_browser_session_confirms_by_default() {
     assert_eq!(s, 200, "{v}");
 }
 
-/// The key cookie's value is the token, so it is the token everywhere
-/// (`clax_http::identity::Browser::Key`): its answer waits for a
-/// confirmation and is recorded as the CLI's, not the shell's.
+/// A token answer the owner confirmed in the browser is recorded as the
+/// CLI's, not the shell's, and the browser's answer to the confirmation is
+/// in the audit.
 #[tokio::test]
-async fn the_key_cookie_answers_as_the_token() {
+async fn a_confirmed_token_answer_is_the_clis_and_the_confirmation_is_audited() {
     let ts = TestServer::spawn().await;
     let sid = ts.register_session("claude", "c-k").await["id"]
         .as_str()
@@ -421,18 +416,15 @@ async fn the_key_cookie_answers_as_the_token() {
         .as_str()
         .unwrap()
         .to_string();
-    let key = format!("clax_key_{}={}", ts.addr.port(), ts.token);
     let path = format!("/api/questions/{qid}/answer");
     let answer = json!({"answers": [{"selected": ["Yes"]}]});
     let id = pending(
         &ts,
-        &ts.as_browser_confirming(&key, Method::POST, &path, answer.clone(), None)
+        &ts.token_call(Method::POST, &path, answer.clone(), None)
             .await,
     );
     ts.confirm(&id, true).await;
-    let (s, v) = ts
-        .as_browser_confirming(&key, Method::POST, &path, answer, Some(&id))
-        .await;
+    let (s, v) = ts.token_call(Method::POST, &path, answer, Some(&id)).await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["question"]["answered_via"], "cli", "{v}");
     // The owner's browser's answer to the confirmation is in the audit.
@@ -444,8 +436,63 @@ async fn the_key_cookie_answers_as_the_token() {
         .filter(|r| r.kind == "confirmation.answer")
         .collect();
     assert_eq!(answered.len(), 1);
-    assert!(answered[0].body.contains("\"via\":\"shell\""), "{answered:?}");
+    assert!(
+        answered[0].body.contains("\"via\":\"shell\""),
+        "{answered:?}"
+    );
     assert!(answered[0].actor.contains("\"owner\""), "{answered:?}");
+}
+
+/// The question an agent's site opening waits on asks no browser
+/// confirmation of a token answer, since only an answer made in the
+/// browser approves it: the token's answer is the CLI's, and the opening is
+/// refused.
+#[tokio::test]
+async fn a_token_answer_to_a_site_openings_question_asks_nothing_and_approves_nothing() {
+    let ts = TestServer::spawn().await;
+    let aid = page(&ts, "Mine").await;
+    let sid = ts.register_session("claude", "c-w").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let open = |qid: Option<String>| {
+        let mut body = json!({"site_access": "world"});
+        if let Some(q) = qid {
+            body["question_id"] = json!(q);
+        }
+        let req = ts
+            .authed(ts.client.patch(format!("{}/api/artifacts/{aid}", ts.base)))
+            .header("x-clax-session", &sid)
+            .json(&body);
+        async move {
+            let res = req.send().await.unwrap();
+            let status = res.status().as_u16();
+            (status, res.json::<Value>().await.unwrap_or_default())
+        }
+    };
+    let (s, v) = open(None).await;
+    assert_eq!(
+        (s, v["status"].as_str()),
+        (202, Some("approval_pending")),
+        "{v}"
+    );
+    let qid = v["question_id"].as_str().unwrap().to_string();
+    let (s, v) = ts
+        .token_call(
+            Method::POST,
+            &format!("/api/questions/{qid}/answer"),
+            json!({"answers": [{"selected": ["Open to the world"]}]}),
+            None,
+        )
+        .await;
+    assert_eq!(
+        (s, v["question"]["answered_via"].as_str()),
+        (200, Some("cli")),
+        "{v}"
+    );
+    let (s, v) = open(Some(qid)).await;
+    assert_eq!((s, code(&v)), (403, "not_approved"), "{v}");
+    assert!(!site_is_open(&ts, &aid).await);
 }
 
 /// The assertion of `key` over a new challenge for `purpose` (with its

@@ -139,8 +139,8 @@ pub struct AnswerBody {
 /// `POST /api/confirmations/<id> {approve, assertion?}` (the owner's
 /// browser) → `{confirmation}`: approves (`true`) or declines confirmation
 /// `id`. An owner browser session or the in-process app's frame answers
-/// one: 403 `browser_required` for the token, the key cookie and the
-/// extension. While passkeys are required, approving from a browser
+/// one: 403 `browser_required` for the token and the extension. While
+/// passkeys are required, approving from a browser
 /// session takes `assertion`, over a challenge issued for `confirm:<id>`
 /// (`POST /api/passkeys/challenge`): 403 `passkey_required` without it, 403
 /// `passkey_refused` for one that does not check. 404 for none with that

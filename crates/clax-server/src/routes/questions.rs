@@ -774,9 +774,9 @@ pub struct AnswerBody {
 /// 409 `question_closed`, with the question's view, when it is not open.
 /// While an agent session is live, the owner's answer made with the token
 /// alone waits for a click in their browser: 202 `confirmation_pending`
-/// ([`clax_http::confirm`]), except for a question that decides a push
-/// approval, which counts only when answered in a browser anyway. Records
-/// `question.answer`.
+/// ([`clax_http::confirm`]), except for a question an agent's push or
+/// site opening waits on (`approval_pending`), which counts only when
+/// answered in a browser anyway. Records `question.answer`.
 pub async fn answer(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -803,9 +803,9 @@ pub async fn answer(
             Ok(db.push_approval(&q2)?.is_some())
         })
         .await?;
-    // A push approval's question counts only when answered in a browser
-    // (`routes::remotes`), so a token's answer to one asks no confirmation:
-    // it would buy nothing.
+    // A question an agent's push or site opening waits on counts only when
+    // answered in a browser (`routes::remotes`, `routes::world`), so a
+    // token's answer to one asks no confirmation: it would buy nothing.
     if !push {
         let decision = Decision::Answer {
             question_id: qid.clone(),

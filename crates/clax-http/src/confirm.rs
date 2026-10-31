@@ -37,8 +37,7 @@
 //!
 //! Who needs one ([`Confirming`], read from
 //! [`crate::identity::Browser`]): the owner (`Caller::Owner`) calling with
-//! the token and no browser credential, or with the app's key cookie (its
-//! value is the token, so it counts as the token). Any owner browser session, the in-process app's
+//! the token and no browser credential. Any owner browser session, the in-process app's
 //! frame (the Clax app's shell, relayed through `clax_embed_call`) and a
 //! paired extension decide at once, and any owner browser session or the
 //! in-process frame may answer a confirmation. Every other caller (the
@@ -243,7 +242,7 @@ pub async fn require_confirmation(
     let (outcome, announce) = s
         .store_call(move |db| {
             let needs = match browser {
-                Browser::None | Browser::Key => true,
+                Browser::None => true,
                 Browser::Session | Browser::Extension | Browser::HostedOwner => {
                     always || db.passkeys_required()?
                 }
