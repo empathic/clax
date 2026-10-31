@@ -164,6 +164,48 @@ pub fn clear_viewer_cookie() -> HeaderValue {
     HeaderValue::from_static("clax_viewer=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
 }
 
+/// A request's browser credential: the one place that says which browser,
+/// if any, a request is, and so whether it is a browser of the owner's
+/// ([`Browser::is_owners`]) and whether it may answer a confirmation
+/// ([`Browser::may_answer`], [`crate::confirm`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Browser {
+    /// None: the token alone, a viewer cookie, or nothing.
+    #[default]
+    None,
+    /// The in-process app's own frame
+    /// ([`crate::local_trust::OwnerSession::browser`]), which no request
+    /// from the network carries.
+    InProcess,
+    /// A proven owner browser session, by its owner or events cookie
+    /// ([`crate::local_trust::sessions`]).
+    Session,
+    /// The key cookie ([`crate::auth::key_cookie_name`]), whose value is
+    /// the daemon token: it counts as the token ([`Identity::token`]) and
+    /// is no browser of the owner's, so it makes no decision only a
+    /// person at the owner's browser makes and answers no confirmation.
+    Key,
+    /// A paired extension's credential ([`crate::extension::ViaExtension`]):
+    /// a browser of the owner's that answers no confirmation.
+    Extension,
+    /// A hosted daemon's session of the owner's row ([`crate::hosted`]).
+    HostedOwner,
+}
+
+impl Browser {
+    /// Whether it is a browser of the owner's: every credential but none
+    /// and the key cookie.
+    pub fn is_owners(self) -> bool {
+        !matches!(self, Browser::None | Browser::Key)
+    }
+
+    /// Whether it may answer a confirmation: an owner browser session, or
+    /// the in-process app's frame.
+    pub fn may_answer(self) -> bool {
+        matches!(self, Browser::Session | Browser::InProcess)
+    }
+}
+
 /// The credentials a request carries.
 #[derive(Clone, Debug, Default)]
 pub struct Identity {
@@ -184,9 +226,9 @@ pub struct Identity {
     /// The request comes from this machine ([`is_local`]; with its
     /// connection, [`from_this_machine`]).
     pub local: bool,
-    /// The extension gateway admitted the request with a live extension
-    /// credential ([`crate::extension::ViaExtension`]).
-    pub extension: bool,
+    /// The request's browser credential ([`Browser`]), decided here and
+    /// nowhere else.
+    pub browser: Browser,
     /// The request carries an agent credential of another machine
     /// (`Authorization: Clax-Grant`), verified or not: it is never the
     /// owner, a viewer or anonymous.
@@ -200,9 +242,6 @@ pub struct Identity {
     pub session_secret: Option<Result<Secret, ()>>,
     /// `X-Clax-Channel: agent`; counts only with the token.
     pub agent_marker: bool,
-    /// A hosted daemon's session of the owner's row: a browser of the
-    /// owner's ([`crate::hosted`]).
-    pub hosted_owner: bool,
     /// A hosted daemon's session of another viewer's row (a person's or a
     /// guest's): the viewer it signs in as, read with the session. It
     /// stands where a `clax_viewer` cookie's viewer would ([`cookie`] is
@@ -236,7 +275,7 @@ impl Identity {
                 .then(|| crate::viewer::read(headers))
                 .flatten(),
             local,
-            extension: false,
+            browser: Browser::None,
             grant_header,
             grant: None,
             header_session: headers
@@ -247,7 +286,6 @@ impl Identity {
             agent_marker: headers
                 .get(CHANNEL_HEADER)
                 .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"agent")),
-            hosted_owner: false,
             hosted_viewer: None,
             device: None,
         }
@@ -263,14 +301,28 @@ impl Identity {
     ) -> Identity {
         let id = Identity::of(headers, token, peer_of(extensions));
         let local = from_this_machine(headers, crate::auth::conn_of(extensions));
-        let session = extensions.get::<crate::local_trust::OwnerSession>();
-        let counts = crate::local_trust::session_counts(headers, extensions);
+        let session = extensions
+            .get::<crate::local_trust::OwnerSession>()
+            .filter(|_| crate::local_trust::session_counts(headers, extensions));
+        let browser = match session {
+            Some(m) if m.key => Browser::Key,
+            Some(m) if m.session.is_some() => Browser::Session,
+            Some(_) => Browser::InProcess,
+            None if !id.grant_header
+                && extensions.get::<crate::extension::ViaExtension>().is_some() =>
+            {
+                Browser::Extension
+            }
+            None => Browser::None,
+        };
         let id = Identity {
             local,
-            owner_cookie: counts && session.is_some_and(|m| m.owner),
-            events_cookie: counts && session.is_some_and(|m| m.events),
-            extension: !id.grant_header
-                && extensions.get::<crate::extension::ViaExtension>().is_some(),
+            // The key cookie's value is the token: it is the token, never a
+            // browser of the owner's.
+            token: id.token || browser == Browser::Key,
+            owner_cookie: session.is_some_and(|m| m.owner && !m.key),
+            events_cookie: session.is_some_and(|m| m.events),
+            browser,
             grant: extensions.get::<crate::agent::VerifiedGrant>().cloned(),
             device: extensions
                 .get::<crate::agent::PersonDevice>()
@@ -459,12 +511,7 @@ impl Identity {
     /// Whether the request speaks for the owner: any owner credential. An
     /// agent credential of another machine never does.
     pub fn is_owner(&self) -> bool {
-        !self.grant_header
-            && (self.token
-                || self.owner_cookie
-                || self.events_cookie
-                || self.extension
-                || self.hosted_owner)
+        !self.grant_header && (self.token || self.browser.is_owners())
     }
 
     /// 403 `forbidden` ("only the owner `what`") unless the request speaks
@@ -480,12 +527,10 @@ impl Identity {
         }
     }
 
-    /// Whether the request comes from a browser of the owner's: one holding
-    /// an owner browser session (only a redeemed login code opens one), the
-    /// extension, or a hosted daemon's session of the owner's.
+    /// Whether the request comes from a browser of the owner's
+    /// ([`Browser::is_owners`]): never the token alone, nor the key cookie.
     pub fn owner_browser(&self) -> bool {
-        !self.grant_header
-            && (self.owner_cookie || self.events_cookie || self.extension || self.hosted_owner)
+        !self.grant_header && self.browser.is_owners()
     }
 
     /// The viewer the request speaks for: the owner's row for the owner
@@ -947,6 +992,45 @@ mod tests {
         assert!(!Identity::from_parts(&host("localhost:7480"), &none, "tok").is_owner());
     }
 
+    /// One rule says which browser a request is: the key cookie's value is
+    /// the token, so it is the token and no browser of the owner's, for the
+    /// owner's identity and for confirmations alike; a proven session and
+    /// the in-process frame are browsers of the owner's that may answer a
+    /// confirmation.
+    #[test]
+    fn the_key_cookie_is_the_token_and_no_browser_of_the_owners() {
+        use crate::local_trust::OwnerSession;
+        let lo = ("127.0.0.1:50000", "127.0.0.1:7480");
+        let of = |mark: OwnerSession| {
+            let mut ext = parts(lo.0, lo.1, false);
+            ext.insert(mark);
+            Identity::from_parts(&headers(&[("host", "localhost:7480")]), &ext, "tok")
+        };
+        let key = of(OwnerSession::key());
+        assert_eq!(key.browser, Browser::Key);
+        assert!(key.token && key.is_owner());
+        assert!(!key.owner_browser() && !key.browser.may_answer());
+        assert_eq!(
+            key.quick_caller(None).map(|c| c.owner_browser()),
+            Some(false)
+        );
+        let frame = of(OwnerSession::browser());
+        assert_eq!(frame.browser, Browser::InProcess);
+        assert!(frame.owner_browser() && frame.browser.may_answer() && !frame.token);
+        let session = of(OwnerSession {
+            session: Some("h".into()),
+            owner: true,
+            events: false,
+            key: false,
+        });
+        assert_eq!(session.browser, Browser::Session);
+        assert!(session.owner_browser() && session.browser.may_answer());
+        assert_eq!(
+            session.quick_caller(None).map(|c| c.owner_browser()),
+            Some(true)
+        );
+    }
+
     #[test]
     fn the_extension_gateways_mark_is_a_browser_of_the_owners() {
         let h = headers(&[("host", "localhost:7480")]);
@@ -954,7 +1038,8 @@ mod tests {
         assert!(!Identity::from_parts(&h, &ext, "tok").is_owner());
         ext.insert(crate::extension::ViaExtension);
         let id = Identity::from_parts(&h, &ext, "tok");
-        assert!(id.extension && id.is_owner() && id.owner_browser() && !id.token);
+        assert!(id.browser == Browser::Extension && id.is_owner() && id.owner_browser());
+        assert!(!id.token);
     }
 
     #[test]

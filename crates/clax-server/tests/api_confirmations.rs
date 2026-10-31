@@ -471,6 +471,33 @@ async fn any_owner_browser_session_confirms_by_default() {
     assert_eq!(s, 200, "{v}");
 }
 
+/// The key cookie's value is the token, so it is the token everywhere
+/// (`clax_http::identity::Browser::Key`): its answer waits for a
+/// confirmation and is recorded as the CLI's, not the shell's.
+#[tokio::test]
+async fn the_key_cookie_answers_as_the_token() {
+    let ts = TestServer::spawn().await;
+    let sid = ts.register_session("claude", "c-k").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let qid = ts.ask(&sid, ask_body()).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let key = format!("clax_key_{}={}", ts.addr.port(), ts.token);
+    let path = format!("/api/questions/{qid}/answer");
+    let answer = json!({"answers": [{"selected": ["Yes"]}]});
+    let id = pending(
+        &ts,
+        &browser(&ts, &key, Method::POST, &path, answer.clone(), None).await,
+    );
+    ts.confirm(&id, true).await;
+    let (s, v) = browser(&ts, &key, Method::POST, &path, answer, Some(&id)).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["question"]["answered_via"], "cli", "{v}");
+}
+
 /// The assertion of `key` over a new challenge for `purpose` (with its
 /// IDs in `body`), at signature counter `count`.
 async fn assertion(ts: &TestServer, key: &SoftPasskey, body: Value, count: u32) -> Value {

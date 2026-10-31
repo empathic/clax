@@ -47,7 +47,7 @@ fn local_only(s: &AppState) -> Result<(), ApiError> {
 
 /// 403 `browser_required` unless the owner's browser makes the request.
 fn browser_only(caller: &Caller, by: &Confirming) -> Result<(), ApiError> {
-    if caller.owner_browser() && by.may_answer() {
+    if by.may_answer(caller) {
         Ok(())
     } else {
         Err(ApiError::forbidden(

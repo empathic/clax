@@ -157,7 +157,7 @@ pub async fn answer(
 ) -> Result<Json<Value>, ApiError> {
     local_only(&s)?;
     d.refuse_agents()?;
-    if !caller.owner_browser() || !by.may_answer() {
+    if !by.may_answer(&caller) {
         return Err(ApiError::forbidden(
             "browser_required",
             "a confirmation is answered in the owner's browser: open the inbox in Clax",

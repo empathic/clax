@@ -2848,8 +2848,10 @@ harness may still be running. The decisions:
    app's frame.
 
 Who waits: the owner calling with the token and no browser credential, or
-with the app's key cookie (its value is the token) (decisions 1 to 4 and
-6; decision 5 refuses the token alone as before, 403 `browser_required`).
+with the app's key cookie (decisions 1 to 4 and 6; decision 5 refuses the
+token alone as before, 403 `browser_required`). The key cookie's value is
+the token, so it counts as the token everywhere: it is no browser of the
+owner's, and a question answered with it is recorded `answered_via: cli`.
 Any owner browser session, the in-process app's frame (the Clax app's
 shell, relayed through its embedded core) and a paired extension decide at
 once, as does everyone while no agent session is live, unless passkeys are

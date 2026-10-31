@@ -35,9 +35,10 @@
 //! `confirmation_expired` after [`CONFIRMATION_TTL_SECS`]. A confirmation
 //! lets its own decision through once, and no other.
 //!
-//! Who needs one ([`Confirming`]): the owner (`Caller::Owner`) calling with
+//! Who needs one ([`Confirming`], read from
+//! [`crate::identity::Browser`]): the owner (`Caller::Owner`) calling with
 //! the token and no browser credential, or with the app's key cookie (its
-//! value is the token). Any owner browser session, the in-process app's
+//! value is the token, so it counts as the token). Any owner browser session, the in-process app's
 //! frame (the Clax app's shell, relayed through `clax_embed_call`) and a
 //! paired extension decide at once, and any owner browser session or the
 //! in-process frame may answer a confirmation. Every other caller (the
@@ -73,6 +74,7 @@
 
 use crate::auth::Caller;
 use crate::error::ApiError;
+use crate::identity::{Browser, Identity};
 use crate::state::AppState;
 use axum::extract::FromRequestParts;
 use axum::http::StatusCode;
@@ -165,26 +167,9 @@ impl Decision {
 #[derive(Debug)]
 pub struct Confirmed(());
 
-/// The request's browser credential, as confirmations read it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Browser {
-    /// None: the token alone.
-    None,
-    /// The in-process app's frame, which no request from the network
-    /// carries.
-    InProcess,
-    /// An owner browser session.
-    Session,
-    /// A paired extension's credential: it decides without asking (unless
-    /// passkeys are required), and answers no confirmation.
-    Extension,
-    /// The key cookie, whose value is the token.
-    Key,
-}
-
-/// What a request brings to [`require_confirmation`]: how far its browser
-/// credential is trusted, and the confirmation it presents
-/// ([`CONFIRMATION_HEADER`]).
+/// What a request brings to [`require_confirmation`]: its browser
+/// credential, as [`crate::identity::Identity`] decides it, and the
+/// confirmation it presents ([`CONFIRMATION_HEADER`]).
 #[derive(Clone, Debug)]
 pub struct Confirming {
     browser: Browser,
@@ -192,10 +177,11 @@ pub struct Confirming {
 }
 
 impl Confirming {
-    /// Whether the request's browser credential may answer a confirmation:
-    /// an owner browser session, or the in-process app's frame.
-    pub fn may_answer(&self) -> bool {
-        matches!(self.browser, Browser::Session | Browser::InProcess)
+    /// Whether `caller`, making this request, may answer a confirmation:
+    /// the owner ([`Caller::owner_browser`]) at an owner browser session or
+    /// the in-process app's frame ([`Browser::may_answer`]).
+    pub fn may_answer(&self, caller: &Caller) -> bool {
+        caller.owner_browser() && self.browser.may_answer()
     }
 
     /// Whether answering takes a passkey's assertion when passkeys are
@@ -205,38 +191,14 @@ impl Confirming {
     }
 }
 
-/// `parts`' browser credential.
-fn browser_of(parts: &Parts) -> Browser {
-    let counts = crate::local_trust::session_counts(&parts.headers, &parts.extensions);
-    if let Some(m) = parts
-        .extensions
-        .get::<crate::local_trust::OwnerSession>()
-        .filter(|_| counts)
-    {
-        return match &m.session {
-            Some(_) => Browser::Session,
-            None if m.key => Browser::Key,
-            None => Browser::InProcess,
-        };
-    }
-    if parts
-        .extensions
-        .get::<crate::extension::ViaExtension>()
-        .is_some()
-    {
-        return Browser::Extension;
-    }
-    Browser::None
-}
-
 impl FromRequestParts<AppState> for Confirming {
     type Rejection = std::convert::Infallible;
     async fn from_request_parts(
         parts: &mut Parts,
-        _s: &AppState,
+        s: &AppState,
     ) -> Result<Self, std::convert::Infallible> {
         Ok(Confirming {
-            browser: browser_of(parts),
+            browser: Identity::from_parts(&parts.headers, &parts.extensions, &s.token).browser,
             presented: parts
                 .headers
                 .get(CONFIRMATION_HEADER)
@@ -282,7 +244,9 @@ pub async fn require_confirmation(
         .store_call(move |db| {
             let needs = match browser {
                 Browser::None | Browser::Key => true,
-                Browser::Session | Browser::Extension => always || db.passkeys_required()?,
+                Browser::Session | Browser::Extension | Browser::HostedOwner => {
+                    always || db.passkeys_required()?
+                }
                 Browser::InProcess => false,
             };
             if !needs || !db.agent_session_live()? {

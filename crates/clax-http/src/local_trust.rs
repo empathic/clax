@@ -28,9 +28,10 @@
 //! - [`sessions`] marks a request carrying a live session's cookie and its
 //!   proof (or the app's key cookie, [`crate::auth::key_cookie_name`]) with
 //!   [`OwnerSession`], and one carrying the cookie alone with
-//!   [`UnprovenSession`]. [`crate::identity::Identity`] counts an
-//!   [`OwnerSession`] as a browser of the owner's on a request from this
-//!   machine that the browser does not say another origin made.
+//!   [`UnprovenSession`]. [`crate::identity::Identity`] reads the mark into
+//!   its [`crate::identity::Browser`] (the key cookie's as the token) on a
+//!   request from this machine that the browser does not say another
+//!   origin made.
 //! - [`gate`] lets a request with no credential reach only what anyone may:
 //!   the paths [`open_to_anyone`] names, and a site host's requests (its
 //!   access decides each). Anything else answers 401 `no_credential`; a

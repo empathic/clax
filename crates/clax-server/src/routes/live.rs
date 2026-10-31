@@ -655,7 +655,7 @@ impl axum::extract::FromRequestParts<AppState> for OwnerWrite {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let who = Identity::from_parts(&parts.headers, &parts.extensions, &state.token);
-        if who.token || who.extension {
+        if who.token || who.browser == clax_http::identity::Browser::Extension {
             Ok(OwnerWrite(who))
         } else {
             Err(ApiError::forbidden(

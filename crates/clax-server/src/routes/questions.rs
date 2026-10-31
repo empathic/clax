@@ -805,7 +805,7 @@ pub async fn answer(
         answers: serde_json::to_value(&b.answers).unwrap_or_default(),
     };
     require_confirmation(&s, &d.caller(&s).await?, &by, decision).await?;
-    let via = if who.extension {
+    let via = if who.browser == clax_http::identity::Browser::Extension {
         "extension"
     } else if who.token && !who.owner_browser() {
         "cli"
