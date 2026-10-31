@@ -390,6 +390,10 @@ fn body_class(kind: &str, field: &str) -> Class {
             "queue.claim" | "queue.release",
             "queue_id" | "thread_id" | "session" | "lease_id" | "fence" | "expires_at" | "reason",
         ) => Safe,
+        ("confirmation.answer", "confirmation_id" | "decision" | "answer") => Safe,
+        ("passkey.add", "credential_id" | "alg") => Safe,
+        ("passkey.remove", "credential_id" | "reason") => Safe,
+        ("passkey.require", "required") => Safe,
         _ => Class::Unclassified,
     }
 }

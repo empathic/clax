@@ -1575,6 +1575,29 @@ impl Event<'_> {
                 thread(),
                 self.show("reason")
             ),
+            Some(K::ConfirmationAnswer) => format!(
+                "{} confirmation {} ({})",
+                if self.str("answer") == Some("approve") {
+                    "Approved"
+                } else {
+                    "Declined"
+                },
+                self.show("confirmation_id"),
+                self.show("decision")
+            ),
+            Some(K::PasskeyAdd) => format!("Added passkey {}", self.show("credential_id")),
+            Some(K::PasskeyRemove) => format!(
+                "Removed passkey {} ({})",
+                self.show("credential_id"),
+                self.show("reason")
+            ),
+            Some(K::PasskeyRequire) => {
+                if self.body.get("required").and_then(Value::as_bool) == Some(true) {
+                    "Required a passkey to confirm".to_string()
+                } else {
+                    "Stopped requiring a passkey to confirm".to_string()
+                }
+            }
             Some(K::BackfillSkip) => {
                 return format!(
                     "Skipped {} row {} while recording earlier history",

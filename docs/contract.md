@@ -9041,6 +9041,10 @@ the body below.
 | `session.start` | `harness, harness_session_id, cwd, transcript_path, pid` (+ `git`) | a session's registration |
 | `session.join` | the same | a hook join or re-registration that changes one of them |
 | `session.end` | `reason (explicit\|ttl)` | an end (the reaper as `system:ttl`) |
+| `confirmation.answer` | `confirmation_id, decision` (the decision's kind), `answer (approve\|decline)` | the owner's browser answering a browser confirmation |
+| `passkey.add` | `credential_id, alg` | a passkey registered for confirmations |
+| `passkey.remove` | `credential_id, reason (owner\|reset)` | a passkey removed in the owner's browser, or by `clax passkeys reset` |
+| `passkey.require` | `required` | confirming starts or stops requiring a passkey (Settings, or `clax passkeys reset`) |
 | `backfill.skip` | `table, row_id, reason` (a fixed phrase) | a history row the backfill could not convert |
 | `tag.create` | `tag_id, name, colour, description` | a tag made |
 | `tag.update` | `tag_id, fields{name?, colour?, description?}` | a tag renamed, recoloured or redescribed |

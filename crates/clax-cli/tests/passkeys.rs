@@ -31,14 +31,18 @@ fn a_reset_refuses_while_the_daemon_runs_and_resets_once_it_stopped() {
             sign_count: 0,
         };
         st.add_passkey(
+            &clax_core::audit::AuditCtx::DAEMON,
             &key,
             &serde_json::json!({"via": "a browser session", "agents_live": ["ada (claude)"]}),
         )
         .unwrap();
-        st.set_confirm_prefs(ConfirmPrefs {
-            require_passkey: true,
-            offer_dismissed: false,
-        })
+        st.set_confirm_prefs(
+            &clax_core::audit::AuditCtx::DAEMON,
+            ConfirmPrefs {
+                require_passkey: true,
+                offer_dismissed: false,
+            },
+        )
         .unwrap();
     }
     // A daemon runs on the home: this test's own live process stands for it.

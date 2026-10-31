@@ -589,24 +589,8 @@ mod l10 {
             "ends the sessions the calling browser's own earlier logins opened; changes no one's content",
         ),
         (
-            "confirmations::answer",
-            "answers a browser confirmation; the decision it lets through is audited when its call is made again",
-        ),
-        (
             "passkeys::challenge",
             "hands out a one-use WebAuthn challenge; changes no one's content",
-        ),
-        (
-            "passkeys::register",
-            "registers the owner's own passkey for confirmations, a confirmed decision; changes no one's content",
-        ),
-        (
-            "passkeys::settings",
-            "the owner's own confirmation preferences; changes no one's content",
-        ),
-        (
-            "passkeys::remove",
-            "removes the owner's own passkey; changes no one's content",
         ),
         (
             "app_bundles::record_install",

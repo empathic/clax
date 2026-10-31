@@ -15,6 +15,7 @@
 
 use super::Store;
 use chrono::Duration;
+use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
 use clax_core::webauthn::{Refusal, Registered};
 use clax_core::{CoreError, Result};
 use rusqlite::{OptionalExtension, params};
@@ -68,11 +69,17 @@ impl Store {
         })
     }
 
-    /// Registers the checked passkey `r`, added as `added_by` says.
+    /// Registers the checked passkey `r`, added as `added_by` says,
+    /// recording `passkey.add` under `ctx`.
     ///
     /// # Errors
     /// `passkey_exists` for a credential registered already; the store's.
-    pub fn add_passkey(&self, r: &Registered, added_by: &serde_json::Value) -> Result<Passkey> {
+    pub fn add_passkey(
+        &self,
+        ctx: &AuditCtx,
+        r: &Registered,
+        added_by: &serde_json::Value,
+    ) -> Result<Passkey> {
         self.with_tx(|tx| {
             let n = tx.execute(
                 "INSERT OR IGNORE INTO passkeys
@@ -93,6 +100,10 @@ impl Store {
                     "this passkey is registered already",
                 ));
             }
+            let rec = AuditRecord::new(AuditKind::PasskeyAdd, self.now())
+                .with("credential_id", r.credential_id.as_str())
+                .with("alg", r.alg);
+            self.record_audit(tx, ctx, rec)?;
             Ok(Passkey {
                 credential_id: r.credential_id.clone(),
                 alg: r.alg,
@@ -102,13 +113,18 @@ impl Store {
         })
     }
 
-    /// Removes passkey `id`: true when one was registered.
+    /// Removes passkey `id`: true when one was registered, recording
+    /// `passkey.remove` (`reason: owner`) under `ctx`.
     ///
     /// # Errors
     /// The store's.
-    pub fn remove_passkey(&self, id: &str) -> Result<bool> {
+    pub fn remove_passkey(&self, ctx: &AuditCtx, id: &str) -> Result<bool> {
         self.with_tx(|tx| {
-            Ok(tx.execute("DELETE FROM passkeys WHERE credential_id = ?1", params![id])? > 0)
+            if tx.execute("DELETE FROM passkeys WHERE credential_id = ?1", params![id])? == 0 {
+                return Ok(false);
+            }
+            self.record_audit(tx, ctx, removed(&self.now(), id, "owner"))?;
+            Ok(true)
         })
     }
 
@@ -213,12 +229,20 @@ impl Store {
         })
     }
 
-    /// Sets the owner's confirmation preferences to `p`.
+    /// Sets the owner's confirmation preferences to `p`, recording
+    /// `passkey.require` under `ctx` when whether a passkey is required
+    /// changes.
     ///
     /// # Errors
     /// The store's.
-    pub fn set_confirm_prefs(&self, p: ConfirmPrefs) -> Result<()> {
+    pub fn set_confirm_prefs(&self, ctx: &AuditCtx, p: ConfirmPrefs) -> Result<()> {
+        let before = self.confirm_prefs()?.require_passkey;
         self.with_tx(|tx| {
+            if before != p.require_passkey {
+                let rec = AuditRecord::new(AuditKind::PasskeyRequire, self.now())
+                    .with("required", p.require_passkey);
+                self.record_audit(tx, ctx, rec)?;
+            }
             tx.execute(
                 "INSERT INTO confirm_prefs (id, require_passkey, offer_dismissed) VALUES (1, ?1, ?2)
                  ON CONFLICT (id) DO UPDATE SET require_passkey = ?1, offer_dismissed = ?2",
@@ -230,13 +254,25 @@ impl Store {
 
     /// Removes every passkey and turns the requirement off: the offline
     /// recovery (`clax passkeys reset`) for an owner locked out by a
-    /// passkey they cannot use. The passkeys removed.
+    /// passkey they cannot use. The passkeys removed, each recorded as
+    /// `passkey.remove` (`reason: reset`) under `ctx`, and the requirement's
+    /// end as `passkey.require` when it was on.
     ///
     /// # Errors
     /// The store's.
-    pub fn reset_passkeys(&self) -> Result<Vec<Passkey>> {
+    pub fn reset_passkeys(&self, ctx: &AuditCtx) -> Result<Vec<Passkey>> {
         let removed = self.passkeys()?;
+        let required = self.confirm_prefs()?.require_passkey;
         self.with_tx(|tx| {
+            let now = self.now();
+            for p in &removed {
+                self.record_audit(tx, ctx, self::removed(&now, &p.credential_id, "reset"))?;
+            }
+            if required {
+                let rec = AuditRecord::new(AuditKind::PasskeyRequire, now.as_str())
+                    .with("required", false);
+                self.record_audit(tx, ctx, rec)?;
+            }
             tx.execute("DELETE FROM passkeys", [])?;
             tx.execute("DELETE FROM passkey_challenges", [])?;
             tx.execute("UPDATE confirm_prefs SET require_passkey = 0", [])?;
@@ -253,6 +289,14 @@ impl Store {
     pub fn passkeys_required(&self) -> Result<bool> {
         Ok(self.confirm_prefs()?.require_passkey && !self.passkeys()?.is_empty())
     }
+}
+
+/// `passkey.remove` of passkey `id` at `at`, for `reason` (`owner`,
+/// `reset`).
+fn removed(at: &str, id: &str, reason: &str) -> AuditRecord {
+    AuditRecord::new(AuditKind::PasskeyRemove, at)
+        .with("credential_id", id)
+        .with("reason", reason)
 }
 
 #[cfg(test)]
@@ -297,10 +341,13 @@ mod tests {
         let clock = Arc::new(ManualClock::at("2026-10-30T10:00:00Z"));
         let (_d, st) = store(clock);
         assert_eq!(st.confirm_prefs().unwrap(), ConfirmPrefs::default());
-        st.set_confirm_prefs(ConfirmPrefs {
-            require_passkey: true,
-            offer_dismissed: true,
-        })
+        st.set_confirm_prefs(
+            &AuditCtx::DAEMON,
+            ConfirmPrefs {
+                require_passkey: true,
+                offer_dismissed: true,
+            },
+        )
         .unwrap();
         assert!(!st.passkeys_required().unwrap());
         let r = Registered {
@@ -310,8 +357,8 @@ mod tests {
             sign_count: 4,
         };
         let by = serde_json::json!({"via": "a browser session", "agents_live": []});
-        st.add_passkey(&r, &by).unwrap();
-        assert!(st.add_passkey(&r, &by).is_err(), "once");
+        st.add_passkey(&AuditCtx::DAEMON, &r, &by).unwrap();
+        assert!(st.add_passkey(&AuditCtx::DAEMON, &r, &by).is_err(), "once");
         assert_eq!(st.passkeys().unwrap()[0].added_by, by);
         assert!(st.passkeys_required().unwrap());
         st.use_passkey("c1", |key, alg, n| {
@@ -324,7 +371,29 @@ mod tests {
             Err("no")
         });
         assert!(refused.unwrap_err().to_string().contains("no"));
-        assert!(st.remove_passkey("c1").unwrap());
+        assert!(st.remove_passkey(&AuditCtx::DAEMON, "c1").unwrap());
+        assert!(!st.remove_passkey(&AuditCtx::DAEMON, "c1").unwrap());
         assert!(!st.passkeys_required().unwrap());
+        st.add_passkey(&AuditCtx::DAEMON, &r, &by).unwrap();
+        assert_eq!(st.reset_passkeys(&AuditCtx::DAEMON).unwrap().len(), 1);
+        // Each change is recorded once, in order; a refused one records nothing.
+        let kinds: Vec<String> = st
+            .events_after(0, 1000)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.kind)
+            .filter(|k| k.starts_with("passkey."))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "passkey.require",
+                "passkey.add",
+                "passkey.remove",
+                "passkey.add",
+                "passkey.remove",
+                "passkey.require",
+            ]
+        );
     }
 }

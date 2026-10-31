@@ -152,6 +152,7 @@ pub async fn answer(
     _o: SameOrigin,
     caller: Caller,
     by: Confirming,
+    audit: clax_http::audit::DeferredAudit,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<AnswerBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -178,7 +179,7 @@ pub async fn answer(
                 };
                 confirm::check_assertion(&st, db, &format!("confirm:{id}"), a)?;
             }
-            let c = db.answer_confirmation(&id, b.approve)?;
+            let c = db.answer_confirmation(&audit.resolve(db)?, &id, b.approve)?;
             confirm::view(&st, db, &c)
         })
         .await

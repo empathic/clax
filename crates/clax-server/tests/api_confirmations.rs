@@ -435,6 +435,17 @@ async fn the_key_cookie_answers_as_the_token() {
         .await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["question"]["answered_via"], "cli", "{v}");
+    // The owner's browser's answer to the confirmation is in the audit.
+    let answered: Vec<_> = ts
+        .store
+        .events_after(0, 10_000)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.kind == "confirmation.answer")
+        .collect();
+    assert_eq!(answered.len(), 1);
+    assert!(answered[0].body.contains("\"via\":\"shell\""), "{answered:?}");
+    assert!(answered[0].actor.contains("\"owner\""), "{answered:?}");
 }
 
 /// The assertion of `key` over a new challenge for `purpose` (with its
@@ -613,12 +624,17 @@ async fn with_passkeys_required_approving_a_machine_asks() {
         alg: clax_core::webauthn::ES256,
         sign_count: 0,
     };
-    ts.store.add_passkey(&key, &json!({})).unwrap();
     ts.store
-        .set_confirm_prefs(clax_store::passkeys::ConfirmPrefs {
-            require_passkey: true,
-            offer_dismissed: false,
-        })
+        .add_passkey(&clax_core::audit::AuditCtx::DAEMON, &key, &json!({}))
+        .unwrap();
+    ts.store
+        .set_confirm_prefs(
+            &clax_core::audit::AuditCtx::DAEMON,
+            clax_store::passkeys::ConfirmPrefs {
+                require_passkey: true,
+                offer_dismissed: false,
+            },
+        )
         .unwrap();
     let c = clax_testkit::TestClient::new(&ts);
     let r = c
