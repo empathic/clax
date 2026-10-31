@@ -1744,6 +1744,45 @@ async fn narrowing_a_persons_rights_closes_their_room_socket() {
     stays_open(&mut owners).await;
 }
 
+/// On a hosted Clax a person reads a site only from a browser that redeemed
+/// their invite (or signed in another way that keeps them a person), so
+/// revoking that invite afterwards changes nothing: the invite is used, the
+/// person stays one, and the room socket the revocation has checked again
+/// stays open.
+#[tokio::test]
+async fn revoking_a_redeemed_invite_leaves_its_persons_room_socket_open() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.room_artifact("Board").await;
+    let (sam, sam_pid) = site.member(&owner, "Sam").await;
+    site.share(&owner, &aid, &sam_pid).await;
+    let sam_cookie = site.site_cookie(&sam, &aid).await;
+    let mut sams = site
+        .holder_room(&aid, &sam_cookie, "000000000000000s")
+        .await;
+    let (s, v) = site
+        .send(&owner, reqwest::Method::GET, "/api/people/invites", Value::Null)
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let invites = v["invites"].as_array().unwrap();
+    let sams_invite = invites
+        .iter()
+        .find(|i| i["person"]["public_id"] == sam_pid.as_str())
+        .unwrap_or_else(|| panic!("{v}"));
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::DELETE,
+            &format!("/api/people/invites/{}", sams_invite["id"].as_str().unwrap()),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert!(v["invite"]["used_at"].is_string(), "{v}");
+    assert!(v["invite"]["revoked_at"].is_null(), "used, so unchanged: {v}");
+    stays_open(&mut sams).await;
+}
+
 /// A site room socket in use renews its site session, so it outlives the
 /// session's hour counted from its opening: an unrelated access change
 /// past that hour leaves it open, while one opened as long ago and unused

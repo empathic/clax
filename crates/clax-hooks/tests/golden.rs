@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(
@@ -46,7 +46,12 @@ fn clax(home: &Path) -> Command {
 struct Ran {
     stdout: String,
     code: Option<i32>,
-    elapsed: Duration,
+}
+
+/// That no run `log` (hooks.log) records gave up on a timeout: its
+/// deadline (`timed out after …`) or a request's.
+fn never_timed_out(log: &str) {
+    assert!(!log.contains("timed out"), "{log}");
 }
 
 fn hook(home: &Path, agent: &str, event: &str, stdin: &[u8]) -> Ran {
@@ -68,13 +73,10 @@ fn hook_env(home: &Path, agent: &str, event: &str, stdin: &[u8], env: &[(&str, &
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let child = cmd.spawn().unwrap();
-    let start = Instant::now();
-    let out = child.wait_with_output().unwrap();
+    let out = cmd.spawn().unwrap().wait_with_output().unwrap();
     Ran {
         stdout: String::from_utf8(out.stdout).unwrap(),
         code: out.status.code(),
-        elapsed: start.elapsed(),
     }
 }
 
@@ -317,9 +319,12 @@ fn unusable_stdin_prints_nothing() {
             let r = hook(&d.home(), "claude", event, &fixture(name));
             assert_eq!(r.code, Some(0), "{name} {event}");
             assert_eq!(r.stdout, "", "{name} {event}");
-            assert!(r.elapsed < Duration::from_secs(5), "{name} {event}");
         }
     }
+    // Every run ended on its own, none on its deadline.
+    let log = d.hooks_log();
+    assert_eq!(log.lines().count(), 10, "{log}");
+    never_timed_out(&log);
     assert!(d.sessions(false).is_empty());
 }
 
@@ -460,25 +465,32 @@ fn stalled_daemon() -> tempfile::TempDir {
     dir
 }
 
+/// Shortens each daemon request's timeout (debug builds of `clax hook` read
+/// it), so a run against [`stalled_daemon`] gives up on that timeout at once
+/// rather than after its budget of seconds.
+const SHORT_REQUESTS: [(&str, &str); 1] = [("CLAX_TEST_HOOK_REQUEST_TIMEOUT_MS", "100")];
+
 #[test]
-fn session_end_gives_up_within_codexs_three_second_cap() {
+fn session_hooks_give_up_on_their_request_timeout_against_a_stalled_daemon() {
     let dir = stalled_daemon();
     let home = dir.path().join("ax");
-    let r = hook(
+    let r = hook_env(
         &home,
         "codex",
         "session-end",
         &fixture("codex-session-end.json"),
+        &SHORT_REQUESTS,
     );
     assert_eq!(r.code, Some(0));
     assert_eq!(r.stdout, "");
 
-    // Session start keeps its longer budget.
-    let r = hook(
+    // Session start, whose own budget is longer, gives up the same way.
+    let r = hook_env(
         &home,
         "codex",
         "session-start",
         &fixture("codex-session-start.json"),
+        &SHORT_REQUESTS,
     );
     assert_eq!(r.code, Some(0));
 
@@ -567,7 +579,7 @@ fn stop_loop(agent: &str, hsid: &str) {
         reason.contains("Viewer (not connected): \"@agent make it two columns\""),
         "{reason}"
     );
-    assert!(r.elapsed < Duration::from_secs(5));
+    never_timed_out(&d.hooks_log());
 
     let r = hook(&d.home(), agent, "stop", &active);
     assert_eq!(r.stdout, "", "stop_hook_active with nothing new: allow");
@@ -939,14 +951,22 @@ fn grok_session_end_ends_the_row_within_its_budget() {
     let end = fixture("grok-session-end.json");
     let r = hook(&d.home(), "grok", "session-end", &end);
     assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
-    assert!(r.elapsed < Duration::from_millis(1500), "{:?}", r.elapsed);
     assert!(d.sessions(true).is_empty());
     assert!(d.session(&sid)["ended_at"].is_string());
+    // It ended the row before its deadline gave up on it. That the deadline
+    // fits Grok Build's 1.5 s is checked on the budget itself
+    // (crates/clax-commands/src/commands/hook.rs
+    // end_hooks_give_up_inside_their_harnesses_caps).
+    never_timed_out(&d.hooks_log());
 
+    // With no daemon it says so rather than waiting.
     let dir = tempfile::tempdir().unwrap();
-    let r = hook(&dir.path().join("ax"), "grok", "session-end", &end);
+    let home = dir.path().join("ax");
+    let r = hook(&home, "grok", "session-end", &end);
     assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
-    assert!(r.elapsed < Duration::from_millis(1500), "{:?}", r.elapsed);
+    let log = std::fs::read_to_string(home.join("logs/hooks.log")).unwrap();
+    assert!(log.contains("no clax daemon is running"), "{log}");
+    never_timed_out(&log);
 }
 
 #[test]
@@ -1337,7 +1357,7 @@ fn ask_without_a_surface_goes_to_the_terminal_at_once() {
         &fixture("claude-pre-tool-use-ask.json"),
     );
     assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
-    assert!(r.elapsed < Duration::from_secs(2), "{:?}", r.elapsed);
+    never_timed_out(&d.hooks_log());
     assert!(
         d.hooks_log()
             .contains(" ask mode=terminal outcome=terminal waited_s=0")
