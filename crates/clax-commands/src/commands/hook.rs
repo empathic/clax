@@ -126,6 +126,22 @@ fn budget(agent: Agent, event: Event) -> (Duration, Duration) {
     }
 }
 
+/// The variable a test sets to shorten each daemon request's timeout, in
+/// milliseconds; read by debug builds only.
+pub const REQUEST_TIMEOUT_VAR: &str = "CLAX_TEST_HOOK_REQUEST_TIMEOUT_MS";
+
+/// The timeout of each daemon request of `agent`'s `event` hook: its
+/// [`budget`], or, in debug builds only, `env`'s [`REQUEST_TIMEOUT_VAR`] in
+/// milliseconds when that is shorter, which tests set so a hook against a
+/// stalled daemon gives up on its request timeout without waiting seconds.
+fn request_timeout(agent: Agent, event: Event, env: impl Fn(&str) -> Option<String>) -> Duration {
+    let budgeted = budget(agent, event).1;
+    env(REQUEST_TIMEOUT_VAR)
+        .filter(|_| cfg!(debug_assertions))
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(budgeted, |ms| budgeted.min(Duration::from_millis(ms)))
+}
+
 impl Event {
     /// The event's name on the command line.
     fn name(self) -> &'static str {
@@ -1027,7 +1043,7 @@ fn handle(
     let client = Client::discover(home)
         .ok_or_else(|| anyhow::anyhow!("no clax daemon is running"))?
         .agent_channel()
-        .with_timeout(budget(agent, event).1)
+        .with_timeout(request_timeout(agent, event, |k| std::env::var(k).ok()))
         .with_via(VIA);
     let client = HookDaemon::new(&client, event, &input, agent, parent_pid, deadline);
     // Codex's `codex queue` finds its app-server socket under CODEX_HOME, which
@@ -1249,6 +1265,30 @@ mod tests {
         assert!(codex_req < codex && grok_req < grok);
         // Session start keeps a longer budget than the end hook.
         assert!(budget(Agent::Codex, Event::SessionStart).0 > codex);
+    }
+
+    /// The test setting only ever shortens a request's timeout, and only
+    /// in debug builds; a value that does not parse leaves the budget.
+    #[test]
+    fn the_test_request_timeout_only_shortens_the_budget() {
+        let budgeted = budget(Agent::Codex, Event::SessionEnd).1;
+        let with = |v: &'static str| {
+            request_timeout(Agent::Codex, Event::SessionEnd, move |k| {
+                (k == REQUEST_TIMEOUT_VAR).then(|| v.to_owned())
+            })
+        };
+        assert_eq!(
+            request_timeout(Agent::Codex, Event::SessionEnd, |_| None),
+            budgeted
+        );
+        assert_eq!(with("nope"), budgeted);
+        assert_eq!(with("600000"), budgeted);
+        let short = if cfg!(debug_assertions) {
+            Duration::from_millis(50)
+        } else {
+            budgeted
+        };
+        assert_eq!(with("50"), short);
     }
 
     #[test]

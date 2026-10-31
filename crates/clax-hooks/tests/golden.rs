@@ -460,25 +460,32 @@ fn stalled_daemon() -> tempfile::TempDir {
     dir
 }
 
+/// Shortens each daemon request's timeout (debug builds of `clax hook` read
+/// it), so a run against [`stalled_daemon`] gives up on that timeout at once
+/// rather than after its budget of seconds.
+const SHORT_REQUESTS: [(&str, &str); 1] = [("CLAX_TEST_HOOK_REQUEST_TIMEOUT_MS", "100")];
+
 #[test]
 fn session_end_gives_up_within_codexs_three_second_cap() {
     let dir = stalled_daemon();
     let home = dir.path().join("ax");
-    let r = hook(
+    let r = hook_env(
         &home,
         "codex",
         "session-end",
         &fixture("codex-session-end.json"),
+        &SHORT_REQUESTS,
     );
     assert_eq!(r.code, Some(0));
     assert_eq!(r.stdout, "");
 
     // Session start keeps its longer budget.
-    let r = hook(
+    let r = hook_env(
         &home,
         "codex",
         "session-start",
         &fixture("codex-session-start.json"),
+        &SHORT_REQUESTS,
     );
     assert_eq!(r.code, Some(0));
 
