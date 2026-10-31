@@ -144,13 +144,48 @@ export function cssValue(value: unknown, type: string | undefined): string {
 
 /** The tokens under the group at `path` as CSS custom properties, one
  * `--name: value;` per token, named by their path under the group joined
- * with `-` (`tag.red.bg` is `--tag-red-bg`). */
+ * with `-` (`tag.red.bg` is `--tag-red-bg`). A token that aliases another
+ * of the same group is `var()` of it, so a page that sets the one (a host's
+ * `--agent`) moves the other (`--accent`) too. */
 export function cssVariables(file: TokenGroup, path: string): string[] {
   let group: unknown = file;
   for (const part of path.split(".")) group = isGroup(group) ? group[part] : undefined;
   if (!isGroup(group)) throw new TokenError(`no group ${path}`);
+  const name = (p: string) => `--${p.replace(/\./g, "-")}`;
   return tokenPaths(group).map(p => {
     const full = `${path}.${p}`;
-    return `--${p.replace(/\./g, "-")}: ${cssValue(resolve(file, full), typeOf(file, full))};`;
+    const { token } = tokenAt(file, full);
+    const alias = typeof token.$value === "string" ? ALIAS.exec(token.$value)?.[1] : undefined;
+    if (alias?.startsWith(`${path}.`)) return `${name(p)}: var(${name(alias.slice(path.length + 1))});`;
+    return `${name(p)}: ${cssValue(resolve(file, full), typeOf(file, full))};`;
   });
+}
+
+/** The declarations a region of a stylesheet holds (`regionLines`): the
+ * groups `spec` names, space-separated, as `cssVariables` writes them; with
+ * ` over ` and more groups after it, only the lines that differ from
+ * theirs (a dark theme's overrides of the light one). */
+export function regionLines(file: TokenGroup, spec: string): string[] {
+  const [groups, base] = spec.split(" over ");
+  const lines = groups.trim().split(/\s+/).flatMap(p => cssVariables(file, p));
+  if (!base) return lines;
+  const under = new Set(base.trim().split(/\s+/).flatMap(p => cssVariables(file, p)));
+  return lines.filter(l => !under.has(l));
+}
+
+const REGION = /^([ \t]*)\/\* tokens:begin ([^*]+?) \*\/\n[\s\S]*?^[ \t]*\/\* tokens:end \*\//gm;
+
+/** `css` with every generated region written again from `file`. A region
+ * runs from a line `/* tokens:begin <spec> *\/` to a line
+ * `/* tokens:end *\/`; its declarations are `regionLines(file, spec)`, one
+ * per line, at the begin line's indent. Everything outside the regions is
+ * left as it is. */
+export function syncRegions(css: string, file: TokenGroup): string {
+  return css.replace(REGION, (_, indent: string, spec: string) =>
+    [`${indent}/* tokens:begin ${spec} */`, ...regionLines(file, spec).map(l => indent + l), `${indent}/* tokens:end */`].join("\n"));
+}
+
+/** The specs of `css`'s generated regions, in order. */
+export function regionSpecs(css: string): string[] {
+  return [...css.matchAll(REGION)].map(m => m[2]);
 }

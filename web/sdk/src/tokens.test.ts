@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { contrast, contrastFailures, cssValue, cssVariables, resolve, rgba, TokenError, type TokenGroup, typeOf } from "./tokens";
+import { contrast, contrastFailures, cssValue, cssVariables, regionLines, regionSpecs, resolve, rgba, syncRegions, TokenError, type TokenGroup, typeOf } from "./tokens";
 
 const file: TokenGroup = {
   color: {
@@ -67,8 +67,20 @@ describe("design tokens", () => {
 
   it("writes a theme's roles as CSS custom properties", () => {
     expect(cssVariables(file, "theme.light")).toEqual([
-      "--card: #ffffff;", "--fg: #1c1b19;", "--muted: #5f5d58;", "--faint: #e6e6e6;", "--tag-red-bg: #ffffff;", "--radius: 10px;", "--ease: cubic-bezier(0.4,0,0.2,1);",
+      "--card: #ffffff;", "--fg: #1c1b19;", "--muted: #5f5d58;", "--faint: #e6e6e6;", "--tag-red-bg: var(--card);", "--radius: 10px;", "--ease: cubic-bezier(0.4,0,0.2,1);",
     ]);
     expect(cssValue(["ui-sans-serif", "Segoe UI"], "fontFamily")).toBe(`ui-sans-serif, "Segoe UI"`);
+  });
+
+  it("writes a dark theme as its overrides of the light one, and leaves the rest of a stylesheet alone", () => {
+    const themes: TokenGroup = {
+      c: { $type: "color", a: { $value: "#111111" }, b: { $value: "#eeeeee" } },
+      light: { bg: { $value: "{c.b}" }, fg: { $value: "{c.a}" }, focus: { $value: "{light.fg}" } },
+      dark: { bg: { $value: "{c.a}" }, fg: { $value: "{c.a}" }, focus: { $value: "{dark.fg}" } },
+    };
+    expect(regionLines(themes, "dark over light")).toEqual(["--bg: #111111;"]);
+    const css = ":root {\n  /* tokens:begin light */\n  --bg: red;\n  /* tokens:end */\n  --other: 1px;\n}\n@media (x) {\n  :root {\n    /* tokens:begin dark over light */\n    /* tokens:end */\n  }\n}\n";
+    expect(regionSpecs(css)).toEqual(["light", "dark over light"]);
+    expect(syncRegions(css, themes)).toBe(":root {\n  /* tokens:begin light */\n  --bg: #eeeeee;\n  --fg: #111111;\n  --focus: var(--fg);\n  /* tokens:end */\n  --other: 1px;\n}\n@media (x) {\n  :root {\n    /* tokens:begin dark over light */\n    --bg: #111111;\n    /* tokens:end */\n  }\n}\n");
   });
 });

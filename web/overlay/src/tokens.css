@@ -1,27 +1,141 @@
 /* The overlay's root, in a shadow root on the deployer's page: no rule of
-   the page reaches in, and none of these reaches out. The tokens repeat the
-   shell's (shell/src/theme.css) that the overlay uses, with its dark values
-   under the system's dark scheme. */
+   the page reaches in, and none of these reaches out. The tokens between
+   tokens:begin and tokens:end are generated from
+   web/sdk/tokens/clax.tokens.json, as the shell's theme.css's are, with the
+   dark ones under the system's dark scheme; do not edit them (see
+   web/shell/src/theme.css). */
 :host {
   all: initial;
-  --bg: #f7f7f5; --card: #ffffff; --raised: #ffffff; --hover: #f2f2ef; --fg: #1c1b19; --muted: #5f5d58;
-  --border: #e6e5e1; --border-hover: #d6d4ce; --border-strong: #85827b;
-  --primary-hover: #3a3935; --danger: #b3261e; --danger-tint: #fbeceb; --focus: #2f6f2a;
-  --you: #e0532f; --on-you: #141413; --you-ink: #b5401f; --agent-ink: #2f6f2a; --accent-tint: #e8f1e6;
+  /* tokens:begin theme.light base */
+  --bg: #f7f7f5;
+  --card: #ffffff;
+  --raised: #ffffff;
+  --hover: #f2f2ef;
+  --fg: #1c1b19;
+  --muted: #5f5d58;
+  --border: #e6e5e1;
+  --border-hover: #d6d4ce;
+  --border-strong: #85827b;
+  --accent: var(--agent);
+  --accent-ink: var(--agent-ink);
+  --accent-hover: #285f24;
+  --on-accent: #ffffff;
+  --accent-tint: #e8f1e6;
+  --primary-hover: #3a3935;
+  --danger: #b3261e;
+  --danger-tint: #fbeceb;
+  --focus: var(--agent);
+  --you: #e0532f;
+  --on-you: #141413;
+  --you-ink: #b5401f;
+  --agent: #2f6f2a;
+  --agent-ink: #2f6f2a;
+  --pink: #f6d3c7;
+  --pin: #e0532f;
+  --on-pin: #141413;
+  --pin-ring: #ffffff;
+  --selection-bg: var(--pink);
+  --selection-fg: #1c1b19;
   --comment-hl: #fbe9e3;
-  --elev-lg: 0 2px 6px rgba(20,20,15,.06), 0 16px 40px rgba(20,20,15,.12);
+  --shadow: rgba(20,20,15,0.08);
+  --scrim: rgba(20,20,15,0.4);
+  --tag-gray-bg: #eeede9;
+  --tag-gray-fg: #4a4843;
+  --tag-gray-bd: #c9c6bf;
+  --tag-red-bg: #fbe4e2;
+  --tag-red-fg: #a3221b;
+  --tag-red-bd: #eba8a3;
+  --tag-orange-bg: #fde8d7;
+  --tag-orange-fg: #9a4410;
+  --tag-orange-bd: #f0b88c;
+  --tag-yellow-bg: #fbf1c7;
+  --tag-yellow-fg: #765600;
+  --tag-yellow-bd: #e3cc6e;
+  --tag-green-bg: #e2f1df;
+  --tag-green-fg: #2b6a26;
+  --tag-green-bd: #a6d19e;
+  --tag-teal-bg: #dcf1ef;
+  --tag-teal-fg: #1d6660;
+  --tag-teal-bd: #98d2cc;
+  --tag-blue-bg: #e1ecfb;
+  --tag-blue-fg: #1f56a3;
+  --tag-blue-bd: #a5c3ee;
+  --tag-purple-bg: #ece6fa;
+  --tag-purple-fg: #5b3aa6;
+  --tag-purple-bd: #c5b4ef;
+  --tag-pink-bg: #fbe3ef;
+  --tag-pink-fg: #9c2a63;
+  --tag-pink-bd: #eeaaca;
+  --tag-brown-bg: #f1e7dc;
+  --tag-brown-fg: #6e4a2a;
+  --tag-brown-bd: #d3b99c;
   --font: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --radius: 10px;
+  --radius-sm: 8px;
+  --radius-xs: 4px;
+  --gutter: 16px;
+  /* tokens:end */
+  --elev-lg: 0 2px 6px rgba(20,20,15,.06), 0 16px 40px rgba(20,20,15,.12);
   --t: .12s cubic-bezier(.4,0,.2,1);
-  --radius: 10px; --radius-sm: 8px; --radius-xs: 4px;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :host {
-    --bg: #141413; --card: #1c1c1a; --raised: #232321; --hover: #2a2a27; --fg: #ecebe7; --muted: #a9a69f;
-    --border: #2c2c29; --border-hover: #3a3a36; --border-strong: #7c7972;
-    --primary-hover: #d6d4ce; --danger: #ff8a80; --danger-tint: #3a1f1c; --focus: #7cc36f;
-    --you: #ff7a57; --you-ink: #ff7a57; --agent-ink: #7cc36f; --accent-tint: #1f2a1d;
+    /* tokens:begin theme.dark over theme.light */
+    --bg: #141413;
+    --card: #1c1c1a;
+    --raised: #232321;
+    --hover: #2a2a27;
+    --fg: #ecebe7;
+    --muted: #a9a69f;
+    --border: #2c2c29;
+    --border-hover: #3a3a36;
+    --border-strong: #7c7972;
+    --accent-hover: #8fd082;
+    --on-accent: #141413;
+    --accent-tint: #1f2a1d;
+    --primary-hover: #d6d4ce;
+    --danger: #ff8a80;
+    --danger-tint: #3a1f1c;
+    --you: #ff7a57;
+    --you-ink: #ff7a57;
+    --agent: #7cc36f;
+    --agent-ink: #7cc36f;
     --comment-hl: #2e1e19;
+    --shadow: rgba(0,0,0,0.5);
+    --scrim: rgba(0,0,0,0.6);
+    --tag-gray-bg: #2c2c29;
+    --tag-gray-fg: #d6d4ce;
+    --tag-gray-bd: #4a4945;
+    --tag-red-bg: #3d1f1d;
+    --tag-red-fg: #ffaaa3;
+    --tag-red-bd: #6e3430;
+    --tag-orange-bg: #3d2717;
+    --tag-orange-fg: #ffbd8a;
+    --tag-orange-bd: #6e4425;
+    --tag-yellow-bg: #36301a;
+    --tag-yellow-fg: #f2d675;
+    --tag-yellow-bd: #625626;
+    --tag-green-bg: #1f3320;
+    --tag-green-fg: #9fd894;
+    --tag-green-bd: #3a5c37;
+    --tag-teal-bg: #17332f;
+    --tag-teal-fg: #86d8cf;
+    --tag-teal-bd: #2d5c56;
+    --tag-blue-bg: #1c2b42;
+    --tag-blue-fg: #a4c6ff;
+    --tag-blue-bd: #34507a;
+    --tag-purple-bg: #2c2440;
+    --tag-purple-fg: #c9b5ff;
+    --tag-purple-bd: #4e4175;
+    --tag-pink-bg: #3b1e2e;
+    --tag-pink-fg: #ffa8d2;
+    --tag-pink-bd: #6b3553;
+    --tag-brown-bg: #33281f;
+    --tag-brown-fg: #dcbc9b;
+    --tag-brown-bd: #5c4836;
+    /* tokens:end */
     --elev-lg: 0 2px 6px rgba(0,0,0,.4), 0 16px 40px rgba(0,0,0,.5);
     color-scheme: dark;
   }

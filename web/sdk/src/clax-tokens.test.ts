@@ -1,10 +1,13 @@
 // web/sdk/tokens/clax.tokens.json, Clax's one token file: its contrast
-// contract holds, its two themes name the same roles, and it gives the
-// colours, fonts and radii the shell's theme.css and the overlay's
-// tokens.css declare by hand today (which the CSS will be generated from).
-import { readFileSync } from "node:fs";
+// contract holds, its two themes name the same roles, the shell's
+// theme.css and the overlay's tokens.css hold its tokens in their generated
+// regions as tokens.ts writes them, and every colour, font and radius they
+// declare is the token file's. With CLAX_WRITE_TOKENS=1 the regions test
+// writes the regions instead of failing:
+//   CLAX_WRITE_TOKENS=1 pnpm vitest run sdk/src/clax-tokens.test.ts
+import { readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { contrastFailures, contrastPairs, cssVariables, rgba, tokenPaths, type TokenGroup } from "./tokens";
+import { contrastFailures, contrastPairs, cssVariables, regionSpecs, rgba, syncRegions, tokenPaths, type TokenGroup } from "./tokens";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 const file: TokenGroup = JSON.parse(read("../tokens/clax.tokens.json"));
@@ -67,7 +70,19 @@ describe("clax.tokens.json", () => {
     expect(roles("dark")).toEqual(roles("light"));
   });
 
-  describe("matches what the CSS declares by hand", () => {
+  it.each([
+    ["shell/src/theme.css", ["theme.light base", "theme.dark over theme.light", "theme.dark over theme.light"]],
+    ["overlay/src/tokens.css", ["theme.light base", "theme.dark over theme.light"]],
+  ])("writes %s's generated regions", (rel, specs) => {
+    const path = new URL(`../../${rel}`, import.meta.url);
+    const css = readFileSync(path, "utf8");
+    expect(regionSpecs(css)).toEqual(specs);
+    const synced = syncRegions(css, file);
+    if (process.env.CLAX_WRITE_TOKENS === "1") { if (synced !== css) writeFileSync(path, synced); return; }
+    expect(synced, `${rel} differs from the token file: run with CLAX_WRITE_TOKENS=1`).toBe(css);
+  });
+
+  describe("matches what the CSS declares", () => {
     const shell = read("../../shell/src/theme.css");
     const shellLight = block(shell, ":root {", "}");
     const shellDark = new Map([...shellLight, ...block(shell, ':root[data-theme="dark"] {', "}")]);
@@ -82,7 +97,7 @@ describe("clax.tokens.json", () => {
       ["the overlay, dark", overlayDark, "theme.dark"],
     ])("%s: every colour", (_, css, path) => {
       const want = colours(resolved(css));
-      const got = colours(theme(path));
+      const got = colours(resolved(theme(path)));
       expect(want.size).toBeGreaterThan(10);
       for (const [name, c] of want) expect(got.get(name), `--${name}`).toBe(c);
     });
