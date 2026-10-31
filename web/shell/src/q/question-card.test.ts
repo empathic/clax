@@ -65,14 +65,14 @@ describe("QuestionCard", () => {
     expect(pending.root.querySelector(".link-line")!.textContent).toBe("Sending to clax.dev…");
     pending.unmount();
     const failed = mount(QuestionCard, props(view({ linked: { ...link, state: "failed" } })));
-    expect(failed.root.querySelector(".link-line")!.textContent).toBe("Not sent: clax.dev unreachable");
+    expect(failed.root.querySelector(".link-line > span")!.textContent).toBe("Not sent: clax.dev unreachable");
     expect(failed.root.querySelector(".link-line")!.hasAttribute("data-failed")).toBe(true);
     failed.unmount();
     const refused = mount(QuestionCard, props(view({ linked: { ...link, state: "failed", error: "limit_reached: too many open questions" } })));
-    expect(refused.root.querySelector(".link-line")!.textContent).toBe("Not sent: refused by clax.dev (limit_reached: too many open questions)");
+    expect(refused.root.querySelector(".link-line > span")!.textContent).toBe("Not sent: refused by clax.dev (limit_reached: too many open questions)");
     refused.unmount();
     const away = mount(QuestionCard, props(view({ linked: { ...link, state: "failed", error: "Not sent: clax.dev unreachable" } })));
-    expect(away.root.querySelector(".link-line")!.textContent).toBe("Not sent: clax.dev unreachable");
+    expect(away.root.querySelector(".link-line > span")!.textContent).toBe("Not sent: clax.dev unreachable");
     away.unmount();
     const notAnswered = mount(QuestionCard, props(view({ linked: { ...link, sent: true, state: null, error: "Not answered: no such option" } })));
     expect(notAnswered.root.querySelector(".link-line")!.textContent).toBe("Not answered: no such option");
@@ -88,6 +88,35 @@ describe("QuestionCard", () => {
     const plain = mount(QuestionCard, props(view()));
     expect(plain.root.querySelector(".link-tag")).toBeNull();
     plain.unmount();
+  });
+
+  it("offers Retry on a copy not sent, reading as sending again until a newer view of the question comes", async () => {
+    const link = { remote_id: "r1", remote: "clax.dev", remote_origin: "https://clax.dev", url: "https://clax.dev/a/p1",
+      sent: false, state: "failed" as const, error: null, answered_there: false, unlinked: false };
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ retried: 1 }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetch);
+    try {
+      const props = (q: ReturnType<typeof view>) => ({ q, onAnswer: vi.fn(), onDecline: vi.fn() });
+      const line = (m: { root: Element }) => m.root.querySelector(".link-line > span")?.textContent;
+      const retry = (m: { root: Element }) => m.root.querySelector<HTMLButtonElement>(".link-line button.retry");
+      const m = mount(QuestionCard, props(view({ linked: link })));
+      expect(line(m)).toBe("Not sent: clax.dev unreachable");
+      expect(retry(m)!.textContent).toBe("Retry");
+      click(retry(m)!);
+      await vi.waitFor(() => { flush(); expect(line(m)).toBe("Sending to clax.dev…"); });
+      expect(fetch.mock.calls.map(c => [String(c[0]), c[1]?.method])).toContainEqual(["/api/artifacts/7q3k9mzx2b4t/remotes/r1/retry", "POST"]);
+      expect(retry(m)).toBeNull();
+      expect(m.root.querySelector(".link-line")!.hasAttribute("data-failed")).toBe(false);
+      // A newer view saying it was not sent again shows Retry again.
+      m.update(props(view({ linked: { ...link, error: "limit_reached: too many open questions" } })));
+      expect(line(m)).toBe("Not sent: refused by clax.dev (limit_reached: too many open questions)");
+      expect(retry(m)).not.toBeNull();
+      m.unmount();
+      // Only a copy not sent has one.
+      const pending = mount(QuestionCard, props(view({ linked: { ...link, state: "pending" } })));
+      expect(retry(pending)).toBeNull();
+      pending.unmount();
+    } finally { vi.unstubAllGlobals(); }
   });
 
   describe("with several questions", () => {
