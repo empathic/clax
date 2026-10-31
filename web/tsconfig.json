@@ -10,8 +10,6 @@
       "@empathic/clax-sdk/*": ["sdk/src/*.ts"],
       "@empathic/clax-client/testing": ["shell/src/test/client.ts"],
       "@empathic/clax-client/theme.css": ["shell/src/theme.css"],
-      "@empathic/clax-client/roster": ["shell/src/ui/Roster.svelte"],
-      "@empathic/clax-client/send-menu": ["shell/src/ui/SendMenu.svelte"],
       "@empathic/clax-client/*": ["shell/client/*.ts"]
     }
   },

@@ -22,8 +22,8 @@ export const CLIENT_ENTRIES = [
   // The theme's stylesheet, which a client's page imports once.
   { path: "./theme.css", src: "shell/src/theme.css" },
   // Components a client loads lazily (`import()`), each its own chunk.
-  { path: "./roster", src: "shell/src/ui/Roster.svelte" },
-  { path: "./send-menu", src: "shell/src/ui/SendMenu.svelte" },
+  { path: "./roster", src: "shell/client/roster.ts" },
+  { path: "./send-menu", src: "shell/client/send-menu.ts" },
 ];
 
 /** Vite's `resolve.alias` from each entry's specifier, exactly, to its
