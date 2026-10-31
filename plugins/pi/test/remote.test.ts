@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { claxExtension } from "../src/clax.ts";
 import { sendRemote } from "../src/client.ts";
 import { repoAndBranch } from "../src/git.ts";
-import { AGENT_HEADERS, canonical, credentialFileName, encodeAgentHeaders, loadRemote, parseClipReference, rewriteClipText, MAX_RESPONSE_BYTES, SessionFiles } from "../src/remote.ts";
+import { AGENT_HEADERS, canonical, CLIP_FETCHES_AT_ONCE, credentialFileName, encodeAgentHeaders, loadRemote, parseClipReference, rewriteClipText, MAX_RESPONSE_BYTES, SessionFiles } from "../src/remote.ts";
 import { FakePi, fakeContext } from "./fake-api.ts";
 
 let scratch: string;
@@ -284,6 +284,76 @@ describe("remote clips while feedback is handed over", () => {
       expect(trailing).toContain('Sam: "SECOND"');
       expect(trailing).toContain("Clip: unavailable (timed out)");
       expect(trailing).toContain("Clip: unavailable (not a PNG)");
+    } finally {
+      for (const r of held) r.destroy();
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
+  // Each fetch is answered (on a later microtask, so that every fetch
+  // started at once is counted) only once CLIP_FETCHES_AT_ONCE of them are
+  // in flight together, or every clip has been asked for: one at a time,
+  // the first is never answered.
+  it("fetches a payload's clips together, a few at a time", async () => {
+    const aid = "7q3k9mzx2b4t";
+    const n = CLIP_FETCHES_AT_ONCE + 2;
+    const tids = Array.from({ length: n }, (_, i) => `01J9ZZZZZZZZZZZZZZZZZZZZZ${"ABCDEFGH"[i]}`);
+    let inFlight = 0, mostAtOnce = 0, seen = 0;
+    const held: (() => void)[] = [];
+    const fetch = (a: string, t: string) => new Promise<{ path: string }>(done => {
+      seen++;
+      mostAtOnce = Math.max(mostAtOnce, ++inFlight);
+      held.push(() => { inFlight--; done({ path: `/c/${a}-${t}.png` }); });
+      if (inFlight >= CLIP_FETCHES_AT_ONCE || seen === n) queueMicrotask(() => { for (const go of held.splice(0)) go(); });
+    });
+    const out = await rewriteClipText(tids.map(t => `Clip: clax-clip:${aid}/${t}`).join("\n"), fetch);
+    expect(out.split("\n")).toEqual(tids.map(t => `Clip: /c/${aid}-${t}.png`));
+    expect(seen).toBe(n);
+    expect(mostAtOnce).toBeGreaterThanOrEqual(2);
+    expect(mostAtOnce).toBeLessThanOrEqual(CLIP_FETCHES_AT_ONCE);
+  });
+
+  // The fetch bound counts from the start of the payload's fetches, a clip's
+  // wait for a turn included: clips beyond the first CLIP_FETCHES_AT_ONCE,
+  // behind ones that never come, read "timed out" unasked.
+  it("a clip waiting behind clips that never come times out unasked, within the same bound", async () => {
+    const AID = "7q3k9mzx2b4t";
+    const tids = Array.from({ length: CLIP_FETCHES_AT_ONCE + 1 }, (_, i) => `01J9ZZZZZZZZZZZZZZZZZZZZZ${"ABCDEFGH"[i]}`);
+    const asked: string[] = [];
+    const held: ServerResponse[] = [];
+    let handed = false;
+    const server = createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        const reply = (v: unknown) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(v)); };
+        if (req.method === "POST" && req.url === "/api/sessions") {
+          return reply({ session: { id: "S1", harness: "pi", harness_session_id: "pi-turns", cwd: "/", pid: null, parent_pid: null, started_at: "", last_seen_at: "", ended_at: null }, session_secret: `cxs_${"d".repeat(43)}` });
+        }
+        if (req.url?.includes("/feedback?tier=wait")) {
+          const text = `[clax] ${tids.length} comments sent to you:\n${tids.map(t => `Clip: clax-clip:${AID}/${t}\nSam: "${t}"`).join("\n\n")}`;
+          const once = !handed;
+          handed = true;
+          return reply(once ? { feedback: tids.map(t => ({ thread_id: t })), answers: [], text, waited_s: 0 } : { feedback: [], answers: [], text: null, waited_s: 0 });
+        }
+        if (req.url?.endsWith("/clip")) {
+          asked.push(req.url);
+          return void held.push(res);
+        }
+        return reply({});
+      });
+    });
+    await new Promise<void>(r => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as { port: number }).port;
+    const { home } = connectedHome(`http://127.0.0.1:${port}`);
+    try {
+      const pi = new FakePi();
+      claxExtension({ home, env: { ...process.env, CLAX_BIN: "/nonexistent" }, clipFetchMs: 1_000 })(pi.api);
+      const { ctx } = fakeContext(scratch, "pi-turns");
+      const out = await pi.callTool("clax_wait_for_feedback", { timeout_s: 1 }, ctx);
+      const trailing = out.content.at(-1)!.text!;
+      expect(trailing.match(/Clip: unavailable \(timed out\)/g)).toHaveLength(tids.length);
+      expect(asked.length).toBeLessThanOrEqual(CLIP_FETCHES_AT_ONCE);
     } finally {
       for (const r of held) r.destroy();
       server.closeAllConnections();

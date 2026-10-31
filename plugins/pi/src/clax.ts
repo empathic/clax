@@ -1132,14 +1132,18 @@ class Tools {
     return this.client;
   }
 
-  /** Fetches a remote daemon's clips, signed, into
-   * `<home>/remote-cache/clips/` (spec §16). */
+  /** Fetches one payload's remote clips, signed, into
+   * `<home>/remote-cache/clips/` (spec §16), all within [`CLIP_FETCH_MS`]
+   * of the first fetch. */
   private clipFetch(c: DaemonClient): ClipFetch {
     const home = c.remoteOf()?.home ?? this.home;
     const ms = this.opts.clipFetchMs ?? CLIP_FETCH_MS;
+    let bound: AbortSignal | undefined;
     return async (aid, tid) => {
-      // A slow clip never holds the feedback it came with.
-      const signal = AbortSignal.timeout(ms);
+      // A slow clip never holds the feedback it came with, nor do clips
+      // waiting for a turn behind it.
+      const signal = (bound ??= AbortSignal.timeout(ms));
+      if (signal.aborted) return { why: "timed out" };
       try {
         const got = await c.clipBytes(aid, tid, CLIP_MAX_BYTES, signal);
         const why = checkClip(got.contentType, got.bytes);
