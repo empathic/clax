@@ -7,9 +7,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, uti
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { claxExtension } from "../src/clax.ts";
-import { sendRemote } from "../src/client.ts";
+import { DaemonClient, sendRemote } from "../src/client.ts";
 import { repoAndBranch } from "../src/git.ts";
 import { AGENT_HEADERS, canonical, CLIP_FETCHES_AT_ONCE, credentialFileName, encodeAgentHeaders, loadRemote, parseClipReference, rewriteClipText, MAX_RESPONSE_BYTES, SessionFiles } from "../src/remote.ts";
 import { FakePi, fakeContext } from "./fake-api.ts";
@@ -17,6 +17,7 @@ import { FakePi, fakeContext } from "./fake-api.ts";
 let scratch: string;
 beforeAll(() => { scratch = mkdtempSync(join(tmpdir(), "clax-pi-remote-")); });
 afterAll(() => { rmSync(scratch, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); });
 
 const sha = (b: Buffer | string) => createHash("sha256").update(b).digest("hex");
 /** A clip's bytes: a PNG's signature, then anything. */
@@ -250,6 +251,23 @@ describe("remote clips while feedback is handed over", () => {
     const HTML = "01J9ZZZZZZZZZZZZZZZZZZZZZX";
     const held: ServerResponse[] = [];
     let handed = false;
+    // The fetch bound ends once the slow clip is held and the other's fetch
+    // has come back: no real time passes.
+    const bound = new AbortController();
+    let slowHeld!: () => void;
+    const slow = new Promise<void>(r => { slowHeld = r; });
+    let htmlAsked!: (fetched: Promise<unknown>) => void;
+    const html = new Promise<Promise<unknown>>(r => { htmlAsked = r; });
+    const realClipBytes = DaemonClient.prototype.clipBytes;
+    vi.spyOn(DaemonClient.prototype, "clipBytes").mockImplementation(function (this: DaemonClient, ...args: Parameters<DaemonClient["clipBytes"]>) {
+      const got = realClipBytes.apply(this, args);
+      if (args[1] === HTML) htmlAsked(got.catch(() => undefined));
+      return got;
+    });
+    void Promise.all([slow, html]).then(async ([, fetched]) => {
+      await fetched;
+      bound.abort();
+    });
     const server = createServer((req, res) => {
       req.resume();
       req.on("end", () => {
@@ -263,7 +281,10 @@ describe("remote clips while feedback is handed over", () => {
           handed = true;
           return reply(once ? { feedback: [{ thread_id: SLOW }, { thread_id: HTML }], answers: [], text, waited_s: 0 } : { feedback: [], answers: [], text: null, waited_s: 0 });
         }
-        if (req.url === `/api/artifacts/${AID}/threads/${SLOW}/clip`) return void held.push(res);
+        if (req.url === `/api/artifacts/${AID}/threads/${SLOW}/clip`) {
+          held.push(res);
+          return slowHeld();
+        }
         if (req.url === `/api/artifacts/${AID}/threads/${HTML}/clip`) {
           res.setHeader("content-type", "text/html");
           return res.end("<html>");
@@ -276,7 +297,7 @@ describe("remote clips while feedback is handed over", () => {
     const { home } = connectedHome(`http://127.0.0.1:${port}`);
     try {
       const pi = new FakePi();
-      claxExtension({ home, env: { ...process.env, CLAX_BIN: "/nonexistent" }, clipFetchMs: 200 })(pi.api);
+      claxExtension({ home, env: { ...process.env, CLAX_BIN: "/nonexistent" }, clipBound: () => bound.signal })(pi.api);
       const { ctx } = fakeContext(scratch, "pi-slow");
       const out = await pi.callTool("clax_wait_for_feedback", { timeout_s: 1 }, ctx);
       const trailing = out.content.at(-1)!.text!;
@@ -292,24 +313,28 @@ describe("remote clips while feedback is handed over", () => {
   });
 
   // Each fetch is answered (on a later microtask, so that every fetch
-  // started at once is counted) only once CLIP_FETCHES_AT_ONCE of them are
-  // in flight together, or every clip has been asked for: one at a time,
-  // the first is never answered.
+  // started at once is counted) once CLIP_FETCHES_AT_ONCE of them are in
+  // flight together, or every clip has been asked for. Fetches still held
+  // when the event loop turns are answered then, and counted as starved:
+  // fetches made one at a time starve every one.
   it("fetches a payload's clips together, a few at a time", async () => {
     const aid = "7q3k9mzx2b4t";
     const n = CLIP_FETCHES_AT_ONCE + 2;
     const tids = Array.from({ length: n }, (_, i) => `01J9ZZZZZZZZZZZZZZZZZZZZZ${"ABCDEFGH"[i]}`);
-    let inFlight = 0, mostAtOnce = 0, seen = 0;
+    let inFlight = 0, mostAtOnce = 0, seen = 0, starved = 0;
     const held: (() => void)[] = [];
+    const release = () => { for (const go of held.splice(0)) go(); };
     const fetch = (a: string, t: string) => new Promise<{ path: string }>(done => {
       seen++;
       mostAtOnce = Math.max(mostAtOnce, ++inFlight);
       held.push(() => { inFlight--; done({ path: `/c/${a}-${t}.png` }); });
-      if (inFlight >= CLIP_FETCHES_AT_ONCE || seen === n) queueMicrotask(() => { for (const go of held.splice(0)) go(); });
+      if (inFlight >= CLIP_FETCHES_AT_ONCE || seen === n) queueMicrotask(release);
+      else setImmediate(() => { starved += held.length; release(); });
     });
     const out = await rewriteClipText(tids.map(t => `Clip: clax-clip:${aid}/${t}`).join("\n"), fetch);
     expect(out.split("\n")).toEqual(tids.map(t => `Clip: /c/${aid}-${t}.png`));
     expect(seen).toBe(n);
+    expect(starved).toBe(0);
     expect(mostAtOnce).toBeGreaterThanOrEqual(2);
     expect(mostAtOnce).toBeLessThanOrEqual(CLIP_FETCHES_AT_ONCE);
   });
@@ -322,6 +347,7 @@ describe("remote clips while feedback is handed over", () => {
     const tids = Array.from({ length: CLIP_FETCHES_AT_ONCE + 1 }, (_, i) => `01J9ZZZZZZZZZZZZZZZZZZZZZ${"ABCDEFGH"[i]}`);
     const asked: string[] = [];
     const held: ServerResponse[] = [];
+    const bound = new AbortController();
     let handed = false;
     const server = createServer((req, res) => {
       req.resume();
@@ -338,7 +364,10 @@ describe("remote clips while feedback is handed over", () => {
         }
         if (req.url?.endsWith("/clip")) {
           asked.push(req.url);
-          return void held.push(res);
+          held.push(res);
+          // The bound ends once a full turn of clips is held: no real time passes.
+          if (asked.length === CLIP_FETCHES_AT_ONCE) bound.abort();
+          return;
         }
         return reply({});
       });
@@ -348,7 +377,7 @@ describe("remote clips while feedback is handed over", () => {
     const { home } = connectedHome(`http://127.0.0.1:${port}`);
     try {
       const pi = new FakePi();
-      claxExtension({ home, env: { ...process.env, CLAX_BIN: "/nonexistent" }, clipFetchMs: 1_000 })(pi.api);
+      claxExtension({ home, env: { ...process.env, CLAX_BIN: "/nonexistent" }, clipBound: () => bound.signal })(pi.api);
       const { ctx } = fakeContext(scratch, "pi-turns");
       const out = await pi.callTool("clax_wait_for_feedback", { timeout_s: 1 }, ctx);
       const trailing = out.content.at(-1)!.text!;
@@ -356,6 +385,61 @@ describe("remote clips while feedback is handed over", () => {
       expect(asked.length).toBeLessThanOrEqual(CLIP_FETCHES_AT_ONCE);
     } finally {
       for (const r of held) r.destroy();
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
+  // A clip both the payload's text and its feedback item name is fetched
+  // once, under one bound: the bound ends as soon as the clip has come, and
+  // the item still names the cached file.
+  it("fetches a clip the text and an item both name once, within one bound", async () => {
+    const AID = "7q3k9mzx2b4t";
+    const TID = "01J9ZZZZZZZZZZZZZZZZZZZZZV";
+    const asked: string[] = [];
+    const bound = new AbortController();
+    const realClipBytes = DaemonClient.prototype.clipBytes;
+    vi.spyOn(DaemonClient.prototype, "clipBytes").mockImplementation(function (this: DaemonClient, ...args: Parameters<DaemonClient["clipBytes"]>) {
+      const got = realClipBytes.apply(this, args);
+      void got.then(() => bound.abort(), () => undefined);
+      return got;
+    });
+    let handed = false;
+    const server = createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        const reply = (v: unknown) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(v)); };
+        if (req.method === "POST" && req.url === "/api/sessions") {
+          return reply({ session: { id: "S1", harness: "pi", harness_session_id: "pi-once", cwd: "/", pid: null, parent_pid: null, started_at: "", last_seen_at: "", ended_at: null }, session_secret: `cxs_${"e".repeat(43)}` });
+        }
+        if (req.url?.includes("/feedback?tier=wait")) {
+          const once = !handed;
+          handed = true;
+          return reply(once
+            ? { feedback: [{ thread_id: TID, clip_path: `clax-clip:${AID}/${TID}` }], answers: [], text: `[clax] 1 comment sent to you:\nClip: clax-clip:${AID}/${TID}\nSam: "x"`, waited_s: 0 }
+            : { feedback: [], answers: [], text: null, waited_s: 0 });
+        }
+        if (req.url === `/api/artifacts/${AID}/threads/${TID}/clip`) {
+          asked.push(req.url);
+          res.setHeader("content-type", "image/png");
+          return res.end(PNG);
+        }
+        return reply({});
+      });
+    });
+    await new Promise<void>(r => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as { port: number }).port;
+    const { home } = connectedHome(`http://127.0.0.1:${port}`);
+    try {
+      const pi = new FakePi();
+      claxExtension({ home, env: { ...process.env, CLAX_BIN: "/nonexistent" }, clipBound: () => bound.signal })(pi.api);
+      const { ctx } = fakeContext(scratch, "pi-once");
+      const out = await pi.callTool("clax_wait_for_feedback", { timeout_s: 1 }, ctx);
+      const cached = join(home, "remote-cache", "clips", `${AID}-${TID}.png`);
+      expect(out.content.at(-1)!.text!).toContain(`Clip: ${cached}`);
+      expect(JSON.parse(out.content[0]!.text!).feedback[0].clip_path).toBe(cached);
+      expect(asked).toHaveLength(1);
+    } finally {
       server.closeAllConnections();
       server.close();
     }

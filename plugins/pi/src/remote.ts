@@ -377,9 +377,10 @@ function oneLine(s: string): string {
 }
 
 /** A fetch of one clip: its cached file, or why there is none. One is made
- * per payload, and bounds every clip of it from its first fetch, as the
- * shim's `CLIP_FETCH_TIME` does, so a clip waiting for a turn behind slow
- * ones never holds the payload longer. */
+ * per payload: it fetches each clip once however often the payload names
+ * it, and bounds every clip of it from its first fetch, as the shim's
+ * `CLIP_FETCH_TIME` does, so a clip waiting for a turn behind slow ones
+ * never holds the payload longer. */
 export type ClipFetch = (aid: string, tid: string) => Promise<{ path: string } | { why: string }>;
 
 /** The most clip fetches one payload runs at once
