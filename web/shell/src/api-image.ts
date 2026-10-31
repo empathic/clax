@@ -1,8 +1,9 @@
-// Images the shell reads under `/api/` (a thread's clip), in the Clax app:
-// its scheme answers nothing under `/api/` (only the app's transport reaches
-// the core's API, `transport.ts`), so an `<img src>` there loads nothing.
-// The shell loads this module only in the app (`onHost`); a browser points
-// the image at its URL.
+// Images the shell reads under `/api/` (a thread's clip), fetched and shown
+// by object URL, since an `<img src>` there would load nothing: in the Clax
+// app its scheme answers nothing under `/api/` (only the app's transport
+// reaches the core's API, `transport.ts`), and a local owner's browser
+// proves its session only on a fetch (`owner-proof.ts` wraps `fetch`; an
+// image's request carries the cookie alone, which the daemon refuses).
 
 /** How many object URLs are kept: the most recently asked for. */
 export const CLIPS_KEPT = 32;

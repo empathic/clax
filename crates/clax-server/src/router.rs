@@ -67,6 +67,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/browser-login",
             post(login::create).delete(login::end_all),
         )
+        .route("/api/browser-login/retire", post(login::retire))
         .route("/api/confirmations", get(confirmations::list))
         .route(
             "/api/passkeys",

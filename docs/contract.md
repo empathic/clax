@@ -1720,7 +1720,16 @@ app's versions with the bundle each carries.
   which this address served before it was the Get in Clax page's: then it
   is 307 (`cache-control: no-store`) to that file's page,
   `/a/<id>/v/<n>/get` (`n` the current version) or
-  `/a/<id>/get/index.html`. The owner's agents (the daemon token with a
+  `/a/<id>/get/index.html`. On a local daemon, a page load whose only owner
+  credential is the owner cookie without its proof (every navigation of a
+  local owner's browser; see "The owner and other viewers") gets a bare
+  page instead, read from no store and naming nothing of the artifact,
+  whether it exists included: its one script (admitted by nonce, its
+  requests to this origin alone) fetches the same address with the
+  origin's proofs and shows the page that answers, follows its redirect,
+  and fetches Download .clax with the proofs to save it from the bytes; it
+  shows how to open Clax from the terminal when the browser holds no proof
+  or the proof is refused. The owner's agents (the daemon token with a
   session, or the agent-channel marker) are refused 403 `not_for_agents`,
   whatever the page; any other agent credential (`Bearer cxa_…`, or a
   signed grant) is refused 403 `forbidden`. On a hosted Clax a page the
@@ -2625,21 +2634,31 @@ request is the owner's when it carries an owner credential:
   browser as the owner cookie, `clax_owner_<port>` (`HttpOnly`, host-only,
   `SameSite=Lax`, on `Path=/`), and as the events cookie (only the event
   streams receive it). Its proof (`cxp_…`, 32 random bytes) is kept in the
-  `localStorage` of the daemon's origin (`clax.owner_proof`), which is
-  scoped to the origin's port as no cookie is; the shell sends it beside
-  the cookie on every request, as `X-Clax-Owner-Proof`, and in the address
-  of the realtime routes whose clients send no header (`?owner_proof=` on
-  `GET /api/events`, `GET /api/stream`, and an artifact's `room` and
-  `live` sockets; no other route reads it there). The cookie counts only
-  beside its proof: alone, it lets a browser's page load through, served
-  bare of data (the shell then loads the data with the proof), and is no
-  credential on any other request. A browser gets a session only by
-  redeeming a one-use login code a holder of the token made (see "Browser
-  login"), whose page writes the proof; it lasts 400 days, survives daemon
-  restarts and new tokens, and can be ended: `clax logout` (`DELETE
-  /api/browser-login`) ends every one, with every event stream and socket
-  opened with one, and a browser of the owner's then needs one `clax open`
-  again. Nothing in it derives from the token;
+  `localStorage` of the daemon's origin, which is scoped to the origin's
+  port as no cookie is, under a key of its own: `clax.owner_proof.`
+  followed by the first 16 hex digits of the proof's SHA-256 (the shell
+  also reads a proof kept under `clax.owner_proof` itself). The page's
+  script cannot read which session its `HttpOnly` cookie names, so the
+  shell presents every proof kept, comma-separated (at most 16 are read),
+  beside the cookie on every request its page makes with `fetch`, as
+  `X-Clax-Owner-Proof`, and in the address of the realtime routes whose
+  clients send no header (`?owner_proof=` on `GET /api/events`, `GET
+  /api/stream`, and an artifact's `room` and `live` sockets; no other route
+  reads it there). An image, a download link or any other request the
+  browser makes without the page's `fetch` carries the cookie alone, so the
+  shell fetches what it shows from `/api/` (a thread's clip) and shows it
+  by object URL. The cookie counts only beside its proof: alone, it lets a
+  browser's page load through, served bare of data (the shell then loads
+  the data with the proof), and is no credential on any other request. A
+  browser gets a session only by redeeming a one-use login code a holder
+  of the token made (see "Browser login"), whose page writes the proof and
+  ends the sessions that browser's earlier logins opened; it lasts 400
+  days, survives daemon restarts and new tokens, and can be ended: `clax
+  logout` (`DELETE /api/browser-login`) ends every one, with every event
+  stream and socket opened with one (`GET /api/events`, `GET /api/stream`,
+  `GET /api/bot/runs/<id>/events`, and an artifact's `room` and `live`
+  sockets), and a browser of the owner's then needs one `clax open` again.
+  Nothing in it derives from the token;
 - the Clax Chrome extension's credential, accepted only through the
   extension gateway (see "Security model"), which acts as one of the
   owner's browsers on live pages.
@@ -2663,9 +2682,11 @@ agent with loopback networking, a development server that logs headers)
 receives the cookie, and can replay it from this machine with the
 daemon's `Host`. The proof never reaches them: `localStorage` belongs to
 the daemon's origin, port included, and the shell sends it only to its
-own origin. The replayed cookie gets the bare shell page and nothing
-else: no token, no read, no write, no event stream. `clax logout` still
-revokes every session at once.
+own origin. The replayed cookie gets the bare pages and nothing else: the
+shell's entry with no data in it, and the bare Get in Clax page, which
+names nothing of the artifact (see "Get in Clax"); no token, no read, no
+write, no event stream. `clax logout` still revokes every session at
+once.
 
 Everyone else (a LAN viewer, or a local browser that holds no session) is
 the viewer its `clax_viewer` cookie names. That cookie never names
@@ -2721,20 +2742,39 @@ redeeming a one-use login code a holder of the token made:
 - `DELETE /api/browser-login` (the token, by hand: 403 `not_for_agents`
   for the owner's agents) → `{ended}`: ends every owner browser session
   (`ended`, how many were live); each browser then needs a new code. The
-  event streams (`GET /api/events`, `GET /api/stream`) opened with a
-  session end, and its `room` and `live` sockets close with code 4403
-  `revoked`. It narrows who acts as the owner, so it waits for no
-  confirmation. `clax logout` calls it. 404 on a hosted daemon. A daemon
-  restart ends none.
+  event streams opened with a session end (`GET /api/events`, `GET
+  /api/stream`, and a ClaxBot run's `GET /api/bot/runs/<id>/events`), and
+  its `room` and `live` sockets close with code 4403 `revoked`. It narrows
+  who acts as the owner, so it waits for no confirmation. `clax logout`
+  calls it. 404 on a hosted daemon. A daemon restart ends none.
+- `POST /api/browser-login/retire` (an owner browser session: its cookie
+  and, among the proofs `X-Clax-Owner-Proof` presents, its own) →
+  `{kept, ended}`: ends every other live owner browser session whose proof
+  the header presents, with the streams and sockets opened with them;
+  `kept` is the place in the header's list of the proof that proves the
+  cookie, `ended` how many ended. A session whose proof is not presented,
+  another browser's, stays live. 401 `no_credential` without a proven
+  session (the cookie alone, or no presented proof proving it); 403
+  `not_for_agents` for the owner's agents; 404 on a hosted daemon. The
+  login's page calls it.
 - `GET /login?code=<code>&next=<next>`, from a browser on this machine
   (else 403 `forbidden_host`): 200 with a small page (`Cache-Control:
   no-store`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, a
-  `Content-Security-Policy` admitting its one script by nonce) whose script
-  writes the session's proof into the origin's `localStorage` and replaces
-  the page with `next` (a link to `next` stands in without scripts). The
-  browser gets a new session as its owner and events cookies, in place of
-  any it held (which stays live until `clax logout`: the browser no longer
-  holds its cookie or its proof). One carrying exactly one
+  `Content-Security-Policy` admitting its one script by nonce and its
+  requests to this origin alone). The browser gets a new session as its
+  owner and events cookies, in place of any it held. The page's script
+  writes the session's proof into the origin's `localStorage` under the
+  proof's own key, so two logins at once never overwrite each other's;
+  when the storage holds other proofs too, it presents them all, its own
+  first, to `POST /api/browser-login/retire` and removes the keys of every
+  proof but the one `kept` names, which ends the sessions this browser's
+  earlier logins opened (a session whose proof is gone from the storage
+  lapses at its expiry); then it replaces the page with `next` (a link to
+  `next` stands in without scripts). Two logins at once may leave the
+  browser with either one's cookie; the proof of that one is kept. The
+  cookie the request carries ends nothing by itself: a server on another
+  port of the host can plant one, another browser's among them. Sessions
+  past their expiry are dropped at each login. One carrying exactly one
   `clax_viewer` cookie has that viewer claimed (above). 400 for a `next`
   that is not a path of this daemon, before the code is spent; 410 for a
   code used before, past its time, or never made. On Linux, 403
@@ -6066,6 +6106,7 @@ router), and a test fails when it differs:
 | `GET /api/bot/runs/{id}/events` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/browser-login` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/browser-login` | Denied | no |
+| `POST /api/browser-login/retire` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/client-imports/{key}` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/confirmations` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/confirmations/{id}` | Denied | no |

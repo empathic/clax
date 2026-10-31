@@ -2,7 +2,7 @@
 //!
 //! - `GET /a/<id>/get` ([`page`]): the page Get in Clax links to, for
 //!   anyone who may read the artifact. A self-contained HTML page with no
-//!   script: the app's title and byline, a QR code of the page's own link
+//!   script of its own: the app's title and byline, a QR code of the page's own link
 //!   for a phone (hidden on a touch screen of phone width, where the page
 //!   is already on the phone), **Open in Clax** as the
 //!   `clax:get?url=<artifact URL>` form the app takes on every platform,
@@ -12,7 +12,9 @@
 //!   page isn’t an app yet.", unless its current version has a file
 //!   `get` or `get/index.html`, which this address served before it was
 //!   reserved: then 307 to that file's page (`/a/<id>/v/<n>/get`, or
-//!   `/a/<id>/get/index.html`).
+//!   `/a/<id>/get/index.html`). A local owner's browser, whose page loads
+//!   carry its cookie without its proof, first gets a bare page whose one
+//!   script loads that page with the proof ([`bare_page`]).
 //! - On a hosted Clax, [`refusals`] gives the hosted gate's refusals of
 //!   that path (a restricted page, no such page, a malformed ID) as one
 //!   page, 404 with the sign-in link, the same whichever it was.
@@ -174,8 +176,25 @@ fn footer(s: &AppState) -> String {
 /// A whole page titled `title` (escaped here) around `body` (HTML), with
 /// `status`; not cached, framed by nothing, and running no script.
 fn html_page(s: &AppState, status: StatusCode, title: &str, body: &str) -> Response {
+    page_with(s, status, title, body, None)
+}
+
+/// [`html_page`], running `script` (JavaScript) when one is given, under a
+/// nonce of its own, with `connect-src 'self'`.
+fn page_with(
+    s: &AppState,
+    status: StatusCode,
+    title: &str,
+    body: &str,
+    script: Option<&str>,
+) -> Response {
+    let nonce = script.map(|_| clax_core::secret::token("").expose().to_string());
+    let tag = match (script, &nonce) {
+        (Some(js), Some(n)) => format!("<script nonce=\"{n}\">{js}</script>"),
+        _ => String::new(),
+    };
     let html = format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{} · Clax</title><style>{STYLE}</style></head><body><main>{body}{}</main></body></html>",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{} · Clax</title><style>{STYLE}</style></head><body><main>{body}{}</main>{tag}</body></html>",
         escape(title),
         footer(s)
     );
@@ -190,13 +209,21 @@ fn html_page(s: &AppState, status: StatusCode, title: &str, body: &str) -> Respo
         header::CACHE_CONTROL,
         HeaderValue::from_static("private, no-cache"),
     );
-    h.insert(header::VARY, HeaderValue::from_static("Cookie"));
+    // A local owner's browser gets the bare page without the proof and
+    // the app's with it ([`page`]).
     h.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(
-            "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
-        ),
+        header::VARY,
+        HeaderValue::from_static("Cookie, X-Clax-Owner-Proof"),
     );
+    let csp = match &nonce {
+        Some(n) => format!(
+            "default-src 'none'; script-src 'nonce-{n}'; connect-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'none'"
+        ),
+        None => "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'".into(),
+    };
+    if let Ok(v) = HeaderValue::from_str(&csp) {
+        h.insert(header::CONTENT_SECURITY_POLICY, v);
+    }
     h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     h.insert(
         header::REFERRER_POLICY,
@@ -307,16 +334,68 @@ fn app_page(s: &AppState, id: &ArtifactId, a: &App) -> Response {
     )
 }
 
+/// What a local owner's browser runs on the bare Get in Clax page
+/// ([`bare_page`]): it presents the proofs its origin's storage holds
+/// (`clax_http::local_trust::PROOF_STORAGE_KEY` and the keys it begins)
+/// with a fetch of the same page, and puts the page that answers in place
+/// of its own; it follows a redirect there, and shows how to open Clax
+/// from the terminal when it holds no proof or the proof is refused. Its
+/// Download .clax (a link to `/api/…`, which a navigation would reach
+/// without the proof) is fetched with the proofs and saved from the bytes.
+const BARE_SCRIPT: &str = r#"(function(){
+var H="x-clax-owner-proof",K="clax.owner_proof",p=[],s,i,k,v,m=document.querySelector("main");
+try{s=localStorage;for(i=0;i<s.length;i++){k=s.key(i);v=k&&s.getItem(k);if(v&&(k===K||k.indexOf(K+".")===0))p.push(v)}}catch(e){}
+p=p.join(",");
+function cold(){var c=m.querySelector("section");if(c)c.innerHTML="<h1>Open Clax from your terminal</h1><p>Run <code>clax open</code> (or <code>clax login</code> for a link). This browser is not signed in to this machine’s Clax.</p>"}
+if(!p||typeof fetch!=="function"){cold();return}
+var h={};h[H]=p;
+document.addEventListener("click",function(e){var a=e.target&&e.target.closest&&e.target.closest("a[download]"),u=a&&a.getAttribute("href")||"";if(u.indexOf("/api/")!==0)return;e.preventDefault();
+fetch(u,{headers:h,credentials:"same-origin"}).then(function(r){if(!r.ok)throw r.status;var n=(/filename="([^"]+)"/.exec(r.headers.get("content-disposition")||"")||[])[1]||"app.clax";return r.blob().then(function(b){var o=URL.createObjectURL(b),t=document.createElement("a");t.href=o;t.download=n;document.body.appendChild(t);t.click();t.remove();setTimeout(function(){URL.revokeObjectURL(o)},60000)})}).catch(function(){})});
+var q={accept:"text/html"};q[H]=p;
+fetch(location.pathname,{headers:q,credentials:"same-origin",cache:"no-store"}).then(function(r){
+if(r.redirected){location.replace(r.url);return}
+if(r.status===401){cold();return}
+return r.text().then(function(t){var d=new DOMParser().parseFromString(t,"text/html"),n=d.querySelector("main");if(!n){cold();return}document.title=d.title;n=document.adoptNode(n);m.replaceWith(n);m=n})}).catch(cold)})()"#;
+
+/// The Get in Clax page a local owner's browser gets for a page load: a
+/// navigation carries the owner cookie but never the proof, and the
+/// cookie alone ([`clax_http::local_trust::UnprovenSession`]) is no
+/// credential to read an app's title, icon or byline, nor whether the
+/// artifact exists. The page names nothing of the artifact; its script
+/// ([`BARE_SCRIPT`]) loads the app's page with the proof.
+fn bare_page(s: &AppState) -> Response {
+    page_with(
+        s,
+        StatusCode::OK,
+        "Get in Clax",
+        "<section><h1>Get in Clax</h1><p>Opening…</p></section>",
+        Some(BARE_SCRIPT),
+    )
+}
+
 /// `GET /a/<id>/get` (anyone who may read the artifact; on a hosted Clax
 /// the gate decides, as for `/a/<id>`): the Get in Clax page of the app
 /// (see the module docs). An agent is refused 403 `not_for_agents`: the
-/// page is for people.
+/// page is for people. On a local daemon, a page load whose only owner
+/// credential is the owner cookie without its proof gets the bare page
+/// ([`bare_page`]), read from no store, as `/a/<id>` gets the bare shell.
 pub async fn page(
     State(s): State<AppState>,
     d: DeniedToGrants,
+    extensions: axum::http::Extensions,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
     d.refuse_agents()?;
+    if s.hosted.is_none()
+        && extensions
+            .get::<clax_http::local_trust::UnprovenSession>()
+            .is_some()
+        && extensions
+            .get::<clax_http::local_trust::OwnerSession>()
+            .is_none()
+    {
+        return Ok(bare_page(&s));
+    }
     let Ok(id) = ArtifactId::parse(&path(aid)?) else {
         return Ok(unavailable(&s));
     };

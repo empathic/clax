@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { PROOF_HEADER, PROOF_STORAGE_KEY, ownerProof, proofFetch, withProof } from "./owner-proof";
+import { PROOF_HEADER, PROOF_STORAGE_KEY, isProofKey, ownerProof, proofFetch, withProof } from "./owner-proof";
 
 const ORIGIN = "http://localhost:7480";
 const NO_CREDENTIAL = () => new Response(JSON.stringify({ error: { code: "no_credential", message: "this needs a credential" } }), { status: 401 });
@@ -15,12 +15,35 @@ function recorder(answer: () => Response = () => new Response("{}")) {
 }
 
 describe("the owner browser session's proof", () => {
+  /** A storage holding `entries`, in order. */
+  const storage = (entries: Record<string, string>) => {
+    const keys = Object.keys(entries);
+    return { length: keys.length, key: (i: number) => keys[i] ?? null, getItem: (k: string) => entries[k] ?? null };
+  };
+
   it("is read from the origin's storage, and is none without it", () => {
-    expect(ownerProof({ getItem: k => (k === PROOF_STORAGE_KEY ? "cxp_x" : null) })).toBe("cxp_x");
-    expect(ownerProof({ getItem: () => null })).toBeNull();
-    expect(ownerProof({ getItem: () => "" })).toBeNull();
-    expect(ownerProof({ getItem: () => { throw new Error("blocked"); } })).toBeNull();
+    expect(ownerProof(storage({ [PROOF_STORAGE_KEY]: "cxp_x" }))).toBe("cxp_x");
+    expect(ownerProof(storage({}))).toBeNull();
+    expect(ownerProof(storage({ [PROOF_STORAGE_KEY]: "" }))).toBeNull();
+    expect(ownerProof({ length: 1, key: () => PROOF_STORAGE_KEY, getItem: () => { throw new Error("blocked"); } })).toBeNull();
     expect(ownerProof(null)).toBeNull();
+  });
+
+  it("presents every proof the logins kept, each under its own key, and nothing else", () => {
+    // Two logins at once: the script cannot tell which one's cookie the
+    // browser kept, so both proofs go.
+    expect(ownerProof(storage({ "clax.owner_proof.0123456789abcdef": "cxp_a", theme: "dark", "clax.owner_proofx": "cxp_no", "clax.owner_proof.fedcba9876543210": "cxp_b" }))).toBe("cxp_a,cxp_b");
+    expect(ownerProof(storage({ [PROOF_STORAGE_KEY]: "cxp_old", "clax.owner_proof.0123456789abcdef": "cxp_new" }))).toBe("cxp_old,cxp_new");
+    // A value that would split into more than one proof is not one.
+    expect(ownerProof(storage({ "clax.owner_proof.0123456789abcdef": "cxp_a,cxp_b" }))).toBeNull();
+  });
+
+  it("tells the storage events that change it", () => {
+    expect(isProofKey(PROOF_STORAGE_KEY)).toBe(true);
+    expect(isProofKey("clax.owner_proof.0123456789abcdef")).toBe(true);
+    expect(isProofKey(null)).toBe(true);
+    expect(isProofKey("clax.owner_proofs")).toBe(false);
+    expect(isProofKey("theme")).toBe(false);
   });
 
   it("rides every request to the shell's own origin, and no other", async () => {

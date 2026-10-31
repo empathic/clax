@@ -142,11 +142,15 @@ async function signIn(context: BrowserContext, d: { port: number; session: strin
     ...["/api/events", "/api/stream"].map(p => cookie(`clax_events_${d.port}`, p, "Strict", domain)),
   ])).catch((e: unknown) => { if (!String(e).includes("closed")) throw e; });
   if (d.proof) {
-    // Only where the origin has none: a login in the context (its page
-    // writes a new session's proof beside the new cookie) is not undone.
+    // Only where the origin holds no proof: a login in the context (its
+    // page writes a new session's proof, under a key of its own, beside the
+    // new cookie) is not undone.
     await context.addInitScript(({ port, proof }) => {
       if (location.port === port && (location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
-        try { if (!localStorage.getItem("clax.owner_proof")) localStorage.setItem("clax.owner_proof", proof); } catch { /* storage refused */ }
+        try {
+          const held = Object.keys(localStorage).some(k => k === "clax.owner_proof" || k.startsWith("clax.owner_proof."));
+          if (!held) localStorage.setItem("clax.owner_proof", proof);
+        } catch { /* storage refused */ }
       }
     }, { port: String(d.port), proof: d.proof }).catch((e: unknown) => { if (!String(e).includes("closed")) throw e; });
   }

@@ -198,6 +198,7 @@ mod l10 {
         ("extension::mint", Token),
         ("login::create", Token),
         ("login::end_all", Token),
+        ("login::retire", NoArtifact),
         ("confirmations::get_one", Token),
         ("confirmations::list", Owner),
         ("confirmations::answer", NoArtifact),
@@ -582,6 +583,10 @@ mod l10 {
         (
             "login::end_all",
             "ends the owner's own browser sessions; changes no one's content",
+        ),
+        (
+            "login::retire",
+            "ends the sessions the calling browser's own earlier logins opened; changes no one's content",
         ),
         (
             "confirmations::answer",

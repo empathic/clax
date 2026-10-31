@@ -324,18 +324,12 @@ pub async fn events(
 /// What a stream or socket opened by the request whose `extensions` are
 /// given ends on besides shutdown: the end of the owner browser session it
 /// was opened with ([`clax_http::local_trust::OwnerSessions::ended`]), or
-/// never for one opened without.
+/// never for one opened without ([`clax_http::local_trust::session_ended`]).
 pub fn owner_session_ended(
     s: &AppState,
     extensions: &axum::http::Extensions,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
-    match extensions
-        .get::<clax_http::local_trust::OwnerSession>()
-        .and_then(|m| m.session.clone())
-    {
-        Some(hash) => Box::pin(s.owner_sessions.ended(hash)),
-        None => Box::pin(std::future::pending()),
-    }
+    clax_http::local_trust::session_ended(&s.owner_sessions, extensions)
 }
 
 /// Whether `reader` may read `source`'s documents now; an error (an unknown

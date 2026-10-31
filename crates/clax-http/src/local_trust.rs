@@ -149,14 +149,19 @@ impl OwnerSessions {
     }
 
     /// Opens a session in `st` and counts it live: its cookie and its proof.
+    /// The sessions past their expiry leave the map here, as they leave the
+    /// store ([`Store::open_owner_session`]), so neither grows with logins.
     ///
     /// # Errors
     /// The store's.
     pub fn open(&self, st: &Store) -> clax_core::Result<OpenedOwnerSession> {
         let _w = self.writing();
         let opened = st.open_owner_session()?;
+        let now = self.clock.now();
+        let mut map = self.map_mut();
+        map.retain(|_, l| l.expires > now);
         if let Some(at) = parse(&opened.live.expires_at) {
-            self.map_mut().insert(
+            map.insert(
                 opened.live.sha256.clone(),
                 Live {
                     expires: at,
@@ -164,7 +169,62 @@ impl OwnerSessions {
                 },
             );
         }
+        drop(map);
         Ok(opened)
+    }
+
+    /// How many sessions the map holds, expired ones not yet dropped among
+    /// them.
+    pub fn len(&self) -> usize {
+        self.map.read().unwrap_or_else(PoisonError::into_inner).len()
+    }
+
+    /// Whether the map holds no session.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Ends, in `st` and here, every live session whose proof is among
+    /// `proofs`, except `keep` (a cookie's SHA-256): how many ended. Only
+    /// a request proven with `keep`'s cookie calls it, presenting the
+    /// proofs its origin's storage holds ([`login_page`]): those of the
+    /// sessions that browser's earlier logins opened, whose cookies it no
+    /// longer holds. A session whose proof the caller does not present (any
+    /// other browser's) is left alone. The streams opened with an ended
+    /// session end ([`OwnerSessions::ended`]).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn retire(&self, st: &Store, keep: &str, proofs: &[&str]) -> clax_core::Result<usize> {
+        let _w = self.writing();
+        let presented: Vec<String> = proofs.iter().map(|p| sha256_hex(p)).collect();
+        let gone: Vec<String> = self
+            .map
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|(k, l)| {
+                k.as_str() != keep
+                    && presented.iter().any(|p| {
+                        clax_core::secret::constant_time_eq(
+                            l.proof_sha256.as_bytes(),
+                            p.as_bytes(),
+                        )
+                    })
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        let mut ended = 0;
+        for k in &gone {
+            if st.end_owner_session(k)? {
+                ended += 1;
+            }
+            self.map_mut().remove(k);
+        }
+        if !gone.is_empty() {
+            self.ends.send_modify(|n| *n += 1);
+        }
+        Ok(ended)
     }
 
     /// Ends the session whose cookie's SHA-256 is `sha256`, in `st` and
@@ -216,6 +276,23 @@ impl OwnerSessions {
                 }
             }
         }
+    }
+}
+
+/// What a stream or socket opened by the request whose `extensions` are
+/// given ends on besides its own ends: the end of the owner browser session
+/// it was opened with ([`OwnerSessions::ended`]), or never for one opened
+/// without.
+pub fn session_ended(
+    sessions: &Arc<OwnerSessions>,
+    extensions: &axum::http::Extensions,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+    match extensions
+        .get::<OwnerSession>()
+        .and_then(|m| m.session.clone())
+    {
+        Some(hash) => Box::pin(sessions.ended(hash)),
+        None => Box::pin(std::future::pending()),
     }
 }
 
@@ -294,10 +371,24 @@ pub const PROOF_HEADER: &str = "x-clax-owner-proof";
 /// `EventSource`) send no header of their own.
 pub const PROOF_PARAM: &str = "owner_proof";
 
-/// The `localStorage` key the login's page ([`login_page`]) keeps the
-/// proof under, on the daemon's origin; `web/shell/src/owner-proof.ts`
-/// reads it.
+/// The `localStorage` key the proofs are kept under, on the daemon's
+/// origin: the login's page ([`login_page`]) keeps each under a key of its
+/// own, this one followed by `.` and a label of that proof
+/// ([`proof_storage_key`]), so two logins at once never overwrite each
+/// other's. `web/shell/src/owner-proof.ts` reads this key and every key
+/// it begins, and presents what they hold ([`presented`]).
 pub const PROOF_STORAGE_KEY: &str = "clax.owner_proof";
+
+/// The `localStorage` key the login's page keeps `proof` under:
+/// [`PROOF_STORAGE_KEY`], `.`, and the first 16 hex digits of the proof's
+/// SHA-256, which tell the proofs apart and give nothing of them away.
+pub fn proof_storage_key(proof: &str) -> String {
+    format!("{PROOF_STORAGE_KEY}.{}", &sha256_hex(proof)[..16])
+}
+
+/// The path the login's page retires the browser's superseded sessions at
+/// (`POST`, proven with the new session: [`OwnerSessions::retire`]).
+pub const RETIRE_PATH: &str = "/api/browser-login/retire";
 
 /// Whether a `GET` of `path` may carry the proof as [`PROOF_PARAM`]: the
 /// event streams (`/api/events`, `/api/stream`) and an artifact's room and
@@ -325,10 +416,23 @@ fn proof_of(method: &Method, uri: &axum::http::Uri, headers: &HeaderMap) -> Opti
         .map(|(_, v)| v.into_owned())
 }
 
+/// How many proofs one request may present ([`presented`]).
+pub const MAX_PROOFS: usize = 16;
+
+/// The proofs a [`PROOF_HEADER`] or [`PROOF_PARAM`] value presents: its
+/// comma-separated entries, trimmed, at most [`MAX_PROOFS`], each at its
+/// place in the value (an empty one proves nothing). A browser presents
+/// every proof its origin's storage holds, since its script cannot read
+/// which session its `HttpOnly` cookie names: two logins at once can leave
+/// it with one login's cookie and both logins' proofs ([`login_page`]).
+pub fn presented(raw: &str) -> impl Iterator<Item = &str> {
+    raw.split(',').map(str::trim).take(MAX_PROOFS)
+}
+
 /// The live session whose secret `headers`' owner or events cookies (named
 /// for the `Host`'s port) hold: `Ok` with its mark, naming which of the two
-/// held it, when `proof` is its proof; `Err` with the unproven mark when
-/// none of them is proven.
+/// held it, when one of the proofs `proof` presents ([`presented`]) is its
+/// proof; `Err` with the unproven mark when none of them is proven.
 pub fn live_session(
     headers: &HeaderMap,
     proof: Option<&str>,
@@ -346,8 +450,13 @@ pub fn live_session(
     };
     let owner = hashes(&crate::identity::owner_cookie_name(host));
     let events = hashes(&crate::auth::events_cookie_name(host));
-    let proven =
-        |hs: &[String]| proof.and_then(|p| hs.iter().find(|h| sessions.proves(h, p)).cloned());
+    let proven = |hs: &[String]| {
+        proof.and_then(|raw| {
+            hs.iter()
+                .find(|h| presented(raw).any(|p| sessions.proves(h, p)))
+                .cloned()
+        })
+    };
     let (owner_proven, events_proven) = (proven(&owner), proven(&events));
     if owner_proven.is_some() || events_proven.is_some() {
         return Some(Ok(OwnerSession {
@@ -457,10 +566,21 @@ pub fn session_cookies(host: &str, session: &Secret) -> Vec<HeaderValue> {
 pub const LOGIN_PATH: &str = "/login";
 
 /// The page a redeemed login answers with (200, beside the session's
-/// cookies): its script writes `proof` into the origin's `localStorage`
-/// under [`PROOF_STORAGE_KEY`] and replaces itself with `next` (a path of
-/// this daemon, [`local_path`]); a link to `next` stands in where scripts
-/// do not run. `nonce` is the script's, which [`login_page_csp`] names.
+/// cookies). Its script:
+///
+/// 1. writes `proof` into the origin's `localStorage` under its own key
+///    ([`proof_storage_key`]), never over another login's;
+/// 2. when the storage holds other proofs too ([`PROOF_STORAGE_KEY`] and
+///    the keys it begins), presents them all, its own first, to
+///    [`RETIRE_PATH`]: the server ends the sessions of every proof but the
+///    one that proves the browser's cookie ([`OwnerSessions::retire`]) and
+///    names that one's place (`{kept}`), and the script removes the other
+///    keys it presented. Two logins at once may leave the browser with
+///    either's cookie; whichever it is, its proof is among those kept;
+/// 3. replaces itself with `next` (a path of this daemon, [`local_path`]).
+///
+/// A link to `next` stands in where scripts do not run. `nonce` is the
+/// script's, which [`login_page_csp`] names.
 pub fn login_page(proof: &str, next: &str, nonce: &str) -> String {
     let esc = |s: &str| {
         s.replace('&', "&amp;")
@@ -469,29 +589,42 @@ pub fn login_page(proof: &str, next: &str, nonce: &str) -> String {
             .replace('>', "&gt;")
             .replace('\'', "&#39;")
     };
+    let js = |s: &str| serde_json::to_string(s).expect("a string serialises");
     format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <title>Opening Clax</title>\
-         <meta name=\"clax-login\" data-proof=\"{proof}\" data-next=\"{next}\">\
+         <meta name=\"clax-login\" data-proof=\"{proof}\" data-key=\"{own}\" data-next=\"{next}\">\
          <style>:root{{color-scheme:light dark}}\
          body{{font:16px/1.5 system-ui,sans-serif;margin:0;padding:2rem 16px;background:Canvas;color:CanvasText}}</style>\
-         <script nonce=\"{nonce}\">(function(){{var m=document.querySelector('meta[name=\"clax-login\"]');\
-         try{{localStorage.setItem({key},m.dataset.proof)}}catch(e){{}}\
-         location.replace(m.dataset.next)}})()</script>\
+         <script nonce=\"{nonce}\">(function(){{var d=document.querySelector('meta[name=\"clax-login\"]').dataset,\
+         K={key},ks=[d.key],ps=[d.proof],s,i,k,v;\
+         function go(){{location.replace(d.next)}}\
+         try{{s=localStorage;s.setItem(d.key,d.proof);\
+         for(i=0;i<s.length;i++){{k=s.key(i);v=k&&s.getItem(k);\
+         if(v&&k!==d.key&&(k===K||k.indexOf(K+'.')===0)){{ks.push(k);ps.push(v)}}}}}}catch(e){{}}\
+         if(ps.length<2||typeof fetch!=='function'){{go();return}}\
+         fetch({retire},{{method:'POST',credentials:'same-origin',cache:'no-store',headers:{{{header}:ps.join(',')}}}})\
+         .then(function(r){{return r.ok?r.json():null}})\
+         .then(function(a){{if(a&&typeof a.kept==='number')for(i=0;i<ks.length;i++)if(i!==a.kept)s.removeItem(ks[i])}})\
+         .catch(function(){{}}).then(go)}})()</script>\
          </head><body><p>Opening Clax… <a href=\"{next}\">Continue</a></p></body></html>",
         proof = esc(proof),
+        own = esc(&proof_storage_key(proof)),
         next = esc(next),
         nonce = esc(nonce),
-        key = serde_json::to_string(PROOF_STORAGE_KEY).expect("a string serialises"),
+        key = js(PROOF_STORAGE_KEY),
+        retire = js(RETIRE_PATH),
+        header = js(PROOF_HEADER),
     )
 }
 
 /// The `Content-Security-Policy` of [`login_page`] with script nonce
-/// `nonce`: its one script, inline styles, nothing framing it.
+/// `nonce`: its one script, which may reach this origin alone (to
+/// [`RETIRE_PATH`]), inline styles, nothing framing it.
 pub fn login_page_csp(nonce: &str) -> String {
     format!(
-        "default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; frame-ancestors 'none'"
+        "default-src 'none'; script-src 'nonce-{nonce}'; connect-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'none'"
     )
 }
 
@@ -864,7 +997,88 @@ mod tests {
         assert!(page.contains("data-next=\"/a/x?y=&lt;z&gt;&amp;w\""));
         assert!(page.contains("<script nonce=\"n0nce\">"));
         assert!(page.contains("\"clax.owner_proof\""));
-        assert!(login_page_csp("n0nce").contains("script-src 'nonce-n0nce'"));
+        assert!(page.contains(&format!("data-key=\"{}\"", proof_storage_key("cxp_a\"b"))));
+        assert!(page.contains("\"/api/browser-login/retire\""));
+        let csp = login_page_csp("n0nce");
+        assert!(csp.contains("script-src 'nonce-n0nce'"));
+        assert!(csp.contains("connect-src 'self'"));
+    }
+
+    #[test]
+    fn each_proof_has_a_storage_key_of_its_own() {
+        let a = proof_storage_key("cxp_a");
+        assert!(a.starts_with("clax.owner_proof."), "{a}");
+        assert_eq!(a.len(), "clax.owner_proof.".len() + 16);
+        assert_ne!(a, proof_storage_key("cxp_b"));
+        assert!(!a.contains("cxp_a"));
+    }
+
+    #[test]
+    fn any_proof_presented_proves_its_cookie() {
+        let clock = Arc::new(ManualClock::at("2026-10-29T10:00:00Z"));
+        let sessions = OwnerSessions::new(clock);
+        sessions.map.write().unwrap().insert(
+            sha256_hex("cxb_live"),
+            Live {
+                expires: parse("2026-10-30T10:00:00Z").unwrap(),
+                proof_sha256: sha256_hex("cxp_proof"),
+            },
+        );
+        let mut h = HeaderMap::new();
+        h.insert(header::HOST, "localhost:7480".parse().unwrap());
+        h.insert(header::COOKIE, "clax_owner_7480=cxb_live".parse().unwrap());
+        // Two logins at once: this browser kept one's cookie and holds
+        // both proofs, in either order.
+        for raw in ["cxp_other,cxp_proof", "cxp_proof, cxp_other", ",cxp_proof"] {
+            assert!(live_session(&h, Some(raw), &sessions).unwrap().is_ok(), "{raw}");
+        }
+        assert!(live_session(&h, Some("cxp_other,cxp_x"), &sessions).unwrap().is_err());
+        // Past MAX_PROOFS, nothing more is read.
+        let many = format!("{}cxp_proof", "cxp_x,".repeat(MAX_PROOFS));
+        assert!(live_session(&h, Some(&many), &sessions).unwrap().is_err());
+        assert_eq!(presented("a, b,,c").collect::<Vec<_>>(), ["a", "b", "", "c"]);
+    }
+
+    #[test]
+    fn retiring_ends_the_presented_sessions_but_the_callers() {
+        let (_d, st) = store();
+        let sessions = OwnerSessions::load(&st).unwrap();
+        let old = sessions.open(&st).unwrap();
+        let racing = sessions.open(&st).unwrap();
+        let now = sessions.open(&st).unwrap();
+        let other_browser = sessions.open(&st).unwrap();
+        let ended = sessions
+            .retire(
+                &st,
+                &now.live.sha256,
+                &[now.proof.expose(), old.proof.expose(), racing.proof.expose(), "cxp_gone"],
+            )
+            .unwrap();
+        assert_eq!(ended, 2);
+        assert!(sessions.is_live(&now.live.sha256));
+        assert!(sessions.is_live(&other_browser.live.sha256), "a proof not presented");
+        assert!(!sessions.is_live(&old.live.sha256));
+        assert!(!sessions.is_live(&racing.live.sha256));
+        let (map, kept) = both(&sessions, &st);
+        assert_eq!(map, kept);
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn an_expired_session_leaves_the_map_at_the_next_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualClock::at("2026-10-29T10:00:00Z"));
+        let st = Store::open_with_clock(&clax_core::Home::at(dir.path().join("ax")), clock.clone())
+            .unwrap();
+        let sessions = OwnerSessions::load(&st).unwrap();
+        let first = sessions.open(&st).unwrap();
+        assert_eq!(sessions.len(), 1);
+        clock.advance(OWNER_SESSION_TTL_SECS + 1);
+        let second = sessions.open(&st).unwrap();
+        assert_eq!(sessions.len(), 1, "the expired one left");
+        assert!(!sessions.is_live(&first.live.sha256));
+        assert!(sessions.is_live(&second.live.sha256));
+        assert_eq!(both(&sessions, &st), (vec![second.live.sha256.clone()], vec![second.live.sha256]));
     }
 
     #[test]

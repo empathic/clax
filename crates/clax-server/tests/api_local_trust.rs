@@ -175,7 +175,7 @@ async fn a_login_code_opens_one_browser_session_once() {
         page.contains("data-next=\"/a/7q3k9mzx2b4t?thread=x\""),
         "{page}"
     );
-    assert!(page.contains("localStorage.setItem(\"clax.owner_proof\""));
+    assert!(page.contains("data-key=\"clax.owner_proof."), "{page}");
     let proof = clax_testkit::login_page_proof(&page);
     assert!(proof.starts_with("cxp_"), "{proof}");
     assert!(!cookie.contains(&proof), "the proof is never the cookie");
@@ -244,8 +244,8 @@ async fn a_login_code_opens_one_browser_session_once() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK, "the code was not spent");
     // A browser that already holds a session gets a new one in its place
-    // (its proof may be gone from the browser's storage); the one it held
-    // is left live.
+    // (its proof may be gone from the browser's storage); the cookie it
+    // held ends nothing by itself (the page retires it with its proof).
     let path = login_path(&ts, "/").await;
     let res = browser
         .get(format!("{}{path}", ts.base))
@@ -1200,4 +1200,205 @@ async fn logging_out_ends_the_streams_and_sockets_opened_with_a_session() {
         .expect("closed within 20 s");
         assert_eq!(closed, Some(4403), "{what}");
     }
+}
+
+/// A browser's login, from a client that carries `cookie` (if any): its
+/// owner cookie and proof.
+async fn login_in(ts: &TestServer, cookie: Option<&str>) -> (String, String) {
+    let path = login_path(ts, "/").await;
+    let mut req = unfollowed().get(format!("{}{path}", ts.base));
+    if let Some(c) = cookie {
+        req = req.header("cookie", c);
+    }
+    let res = req.send().await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let cookie = owner_cookie_of(ts, &set_cookies(&res));
+    (cookie, proof_of(res).await)
+}
+
+/// `POST /api/browser-login/retire` from a browser holding `cookie` that
+/// presents `proofs`: the status and the answer.
+async fn retire(ts: &TestServer, cookie: &str, proofs: &[&str]) -> (u16, Value) {
+    let res = reqwest::Client::new()
+        .post(format!("{}/api/browser-login/retire", ts.base))
+        .header("cookie", cookie)
+        .header("origin", &ts.base)
+        .header("sec-fetch-site", "same-origin")
+        .header(clax_http::local_trust::PROOF_HEADER, proofs.join(","))
+        .send()
+        .await
+        .unwrap();
+    let status = res.status().as_u16();
+    (status, res.json().await.unwrap_or(Value::Null))
+}
+
+/// Each login opens a session; the login's page, presenting every proof
+/// its browser's storage holds, ends the sessions that browser's earlier
+/// logins opened, and leaves another browser's alone.
+#[tokio::test]
+async fn a_login_retires_the_sessions_its_browser_held() {
+    let ts = TestServer::spawn().await;
+    let (old, old_proof) = login_in(&ts, None).await;
+    let (elsewhere, elsewhere_proof) = login_in(&ts, None).await;
+    let (now, now_proof) = login_in(&ts, Some(&old)).await;
+    // Until the page retires it, the session the browser held stays live.
+    assert_eq!(token_status(&ts, &old, Some(&old_proof)).await, 200);
+    // The cookie alone, or with no proof of its own, retires nothing.
+    assert_eq!(retire(&ts, &now, &[]).await.0, 401);
+    assert_eq!(retire(&ts, &now, &[&old_proof]).await.0, 401);
+    let (status, v) = retire(&ts, &now, &[&now_proof, &old_proof]).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v, json!({"kept": 0, "ended": 1}));
+    assert_eq!(token_status(&ts, &old, Some(&old_proof)).await, 401);
+    assert_eq!(token_status(&ts, &now, Some(&now_proof)).await, 200);
+    assert_eq!(
+        token_status(&ts, &elsewhere, Some(&elsewhere_proof)).await,
+        200,
+        "a session whose proof was not presented"
+    );
+    // The owner's agents may not.
+    let res = ts
+        .authed(
+            ts.client
+                .post(format!("{}/api/browser-login/retire", ts.base)),
+        )
+        .header("x-clax-channel", "agent")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(code_of(res).await, (403, "not_for_agents".into()));
+}
+
+/// Two logins at once in one browser: whichever cookie it kept, the proofs
+/// its storage holds prove it, and the retire ends the other login's
+/// session, naming the proof that stays.
+#[tokio::test]
+async fn two_logins_at_once_leave_the_cookie_the_browser_kept_proven() {
+    let ts = TestServer::spawn().await;
+    let (a, a_proof) = login_in(&ts, None).await;
+    let (b, b_proof) = login_in(&ts, None).await;
+    // The browser applied A's cookie last but ran B's script last: it holds
+    // A's cookie and both proofs, B's written first.
+    let both = format!("{b_proof},{a_proof}");
+    assert_eq!(token_status(&ts, &a, Some(&both)).await, 200);
+    let (status, v) = retire(&ts, &a, &[&b_proof, &a_proof]).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v, json!({"kept": 1, "ended": 1}));
+    assert_eq!(token_status(&ts, &a, Some(&a_proof)).await, 200);
+    assert_eq!(token_status(&ts, &b, Some(&b_proof)).await, 401);
+}
+
+/// A thread's clip is read with the proof like any other API route: an
+/// image request (the cookie alone) is refused, so the shell fetches it.
+#[tokio::test]
+async fn a_clip_is_read_only_with_the_proof() {
+    let ts = TestServer::spawn().await;
+    let aid = ts.publish("Clipped", &[("index.html", "<p>hi</p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = ts
+        .create_thread(&aid, 1, "This part.", Some(clax_testkit::FAKE_PNG))
+        .await;
+    assert_eq!(res.status(), 201);
+    let url = res.json::<Value>().await.unwrap()["thread"]["clip_url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let get = |proof: Option<String>| {
+        let mut req = reqwest::Client::new()
+            .get(format!("{}{url}", ts.base))
+            .header("cookie", ts.owner_cookie())
+            .header("accept", "image/avif,image/webp,image/png,image/*,*/*;q=0.8")
+            .header("sec-fetch-dest", "image");
+        if let Some(p) = proof {
+            req = req.header(clax_http::local_trust::PROOF_HEADER, p);
+        }
+        req.send()
+    };
+    let res = get(None).await.unwrap();
+    assert_eq!(code_of(res).await, (401, "no_credential".into()));
+    let res = get(Some(ts.owner_proof())).await.unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.bytes().await.unwrap().as_ref(), clax_testkit::FAKE_PNG);
+}
+
+/// The Get in Clax page of a local daemon: a page load with the owner
+/// cookie and no proof (every navigation of the owner's browser) gets the
+/// bare page, which names nothing of the artifact and loads the app's page
+/// with the proof; the same request with the proof gets the app's page.
+#[tokio::test]
+async fn the_get_page_is_bare_for_the_cookie_alone() {
+    let ts = TestServer::spawn().await;
+    let aid = ts
+        .publish("Secret Calculator", &[("index.html", "<p>hi</p>")])
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let v: Value = ts
+        .get(&format!("/api/artifacts/{aid}/versions/1"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let content = v["version"]["content_sha256"].as_str().unwrap().to_string();
+    let res = ts
+        .authed(ts.client.put(format!(
+            "{}/api/artifacts/{aid}/versions/1/bundle",
+            ts.base
+        )))
+        .header("content-type", "application/vnd.empathic.clax+zip")
+        .header("clax-bundle-lineage", "l_abcdefghijklmnopqrstuvwxyz")
+        .header("clax-bundle-version", "3")
+        .header("clax-bundle-content-sha256", content)
+        .body(b"PK\x03\x04 a bundle".to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let load = |path: String, proof: Option<String>| {
+        let mut req = reqwest::Client::new()
+            .get(format!("{}{path}", ts.base))
+            .header("accept", "text/html")
+            .header("cookie", ts.owner_cookie());
+        if let Some(p) = proof {
+            req = req.header(clax_http::local_trust::PROOF_HEADER, p);
+        }
+        req.send()
+    };
+    for path in [format!("/a/{aid}/get"), "/a/7q3k9mzx2b4t/get".to_string()] {
+        let res = load(path.clone(), None).await.unwrap();
+        assert_eq!(res.status(), 200, "{path}");
+        let csp = res.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            csp.contains("script-src 'nonce-") && csp.contains("connect-src 'self'"),
+            "{csp}"
+        );
+        let html = res.text().await.unwrap();
+        assert!(!html.contains("Secret Calculator"), "{html}");
+        assert!(!html.contains("/bundle"), "{html}");
+        assert!(html.contains("x-clax-owner-proof"), "{html}");
+        assert!(html.contains("<h1>Get in Clax</h1>"), "{html}");
+    }
+    let res = load(format!("/a/{aid}/get"), Some(ts.owner_proof()))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let html = res.text().await.unwrap();
+    assert!(html.contains("Secret Calculator"), "{html}");
+    assert!(
+        html.contains(&format!("/api/artifacts/{aid}/versions/1/bundle")),
+        "{html}"
+    );
+    // Its Download .clax answers the proof alone, as the bare page's
+    // script fetches it.
+    let bundle = format!("/api/artifacts/{aid}/versions/1/bundle");
+    let res = load(bundle.clone(), None).await.unwrap();
+    assert_eq!(code_of(res).await, (401, "no_credential".into()));
+    let res = load(bundle, Some(ts.owner_proof())).await.unwrap();
+    assert_eq!(res.status(), 200);
 }
