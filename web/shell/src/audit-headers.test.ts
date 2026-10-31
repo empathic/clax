@@ -11,8 +11,9 @@ import { describe, expect, it } from "vitest";
 // which names the reader itself (`X-Clax-Reader`, server side): neither the
 // shell nor the bridge sends it.
 // The shell also names a browser confirmation the daemon handed it
-// (`x-clax-confirmation`, `q/passkey.ts`) when it makes a held passkey
-// registration again: an ID from the daemon's own answer, never a page's.
+// (`x-clax-confirmation`, `held.ts`) when it makes a held decision again
+// (a passkey registration, an answer to a connection request): an ID from
+// the daemon's own answer, never a page's.
 // And it sends a local owner browser session's proof (`x-clax-owner-proof`,
 // `owner-proof.ts`), read from the shell origin's own storage, which no
 // page reads: pages run on their sites' origins.
