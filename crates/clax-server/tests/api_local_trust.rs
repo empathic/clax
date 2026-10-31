@@ -691,8 +691,7 @@ async fn browser_only_decisions_refuse_the_bearer_token() {
 async fn a_lan_address_peer_is_held_to_the_loopback_rule() {
     // The LAN connection here is rewritten in the server, so no socket in
     // `/proc` matches it: the redeemer's user rule (Linux) is tested apart.
-    let ts =
-        TestServer::spawn_on(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |s| s.proc_root = None).await;
+    let ts = TestServer::spawn_on(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |s| s.proc_root = None).await;
     let port = ts.addr.port();
     let own = format!("{LAN_LOCAL}:{port}");
     // This machine reaching its own LAN address: peer and local alike.
