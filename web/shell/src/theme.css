@@ -171,21 +171,6 @@ button.tag:not(:disabled):hover { background: var(--tb); border-color: var(--tf)
 .tagbar .tb-x { min-height: 24px; padding: 2px 8px; font-size: 12.5px; color: var(--muted); }
 .tagbar .tb-m { margin-left: auto; text-decoration: underline; }
 .tagbar .tb-m:hover { color: var(--fg); }
-/* A decision card (people/ApprovalCard, people/ConnectionCard,
-   q/RemoteRequestCard, q/ConfirmationCard): the frame they share, in the
-   inbox and the toasts. Each card colours the accent while it waits. */
-.dcard { position: relative; display: grid; gap: 6px; background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--border-strong); border-radius: var(--radius); padding: 11px 12px 10px 13px; min-width: 0; font-size: 13.5px; }
-.dcard:focus { outline: none; }
-.dcard:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-.dcard p { margin: 0; }
-.dcard > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
-.dcard > header > span { min-width: 0; }
-.dcard time { margin-left: auto; font: 400 11.5px var(--font); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.dcard .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-.dcard .acts button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: start; }
-.dcard .outcome { font-weight: 600; font-size: 13px; }
-.dcard .err { color: var(--danger); font-size: 13px; }
-@media (max-width: 520px) { .dcard .acts button { flex: 1 1 100%; justify-content: flex-start; } }
 .card-tools { position: absolute; right: 6px; bottom: 4px; display: flex; gap: 2px; }
 .card-tools button { min-height: 28px; padding: 2px 8px; color: var(--muted); }
 .card-tools button:last-child:hover, .card-tools button:last-child:focus-visible { color: var(--danger); }

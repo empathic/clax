@@ -113,7 +113,7 @@
   }
 </script>
 
-<article class="acard dcard" data-approval={id} data-status={status} tabindex="-1" aria-label={a ? `${author} wants to reach your agent` : "An approval request"}>
+<article class="acard" data-approval={id} data-status={status} tabindex="-1" aria-label={a ? `${author} wants to reach your agent` : "An approval request"}>
   {#if a}
     <header class="ahead">
       <span><span class="aauthor">{author}</span> wants to reach your {#if a.agent}agent <span class="agent">{a.agent.name}</span>{:else}agents{/if}</span>
@@ -141,8 +141,15 @@
 
 <style>
   :global {
-    .acard[data-status="open"] { border-left-color: var(--agent); }
+    .acard { position: relative; display: grid; gap: 6px; background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--agent); border-radius: var(--radius); padding: 11px 12px 10px 13px; min-width: 0; font-size: 13.5px; }
+    .acard:focus { outline: none; }
+    .acard:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .acard:not([data-status="open"]) { border-left-color: var(--border-strong); }
+    .acard p { margin: 0; }
+    .acard .ahead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+    .acard .ahead > span { min-width: 0; }
     .acard .agent { color: var(--agent-ink); }
+    .acard time { margin-left: auto; font: 400 11.5px var(--font); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
     .acard .via, .acard .what { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
     .acard .what a { color: var(--fg); text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 2px; }
     .acard .what a:hover { text-decoration-color: currentColor; }
@@ -156,5 +163,10 @@
     .acard .hwho { float: left; font-weight: 600; white-space: pre; }
     .acard .hpart .md > :not(p) { clear: left; }
     .acard .show { justify-self: start; min-height: 28px; padding: 2px 8px; font-size: 12.5px; }
+    .acard .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+    .acard .acts button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: start; }
+    .acard .outcome { font-weight: 600; font-size: 13px; }
+    .acard .err { color: var(--danger); font-size: 13px; }
+    @media (max-width: 520px) { .acard .acts button { flex: 1 1 100%; justify-content: flex-start; } }
   }
 </style>

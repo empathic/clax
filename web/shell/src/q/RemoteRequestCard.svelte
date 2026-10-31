@@ -63,7 +63,7 @@
   }
 </script>
 
-<article class="rcard dcard" data-request={r?.id ?? ""} data-status={status ?? "gone"} tabindex="-1" aria-label="Request to connect a Clax">
+<article class="rcard" data-request={r?.id ?? ""} data-status={status ?? "gone"} tabindex="-1" aria-label="Request to connect a Clax">
   <header class="chead">
     <span>{remoteRequestText(item)}</span>
     <time datetime={item.created_at}>{relativeTime(item.created_at, now ?? new Date())}</time>
@@ -87,8 +87,20 @@
 
 <style>
   :global {
-    .rcard[data-status="open"] { border-left-color: var(--agent); }
+    .rcard { position: relative; display: grid; gap: 6px; background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--agent); border-radius: var(--radius); padding: 11px 12px 10px 13px; min-width: 0; font-size: 13.5px; }
+    .rcard:focus { outline: none; }
+    .rcard:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .rcard:not([data-status="open"]) { border-left-color: var(--border-strong); }
+    .rcard p { margin: 0; }
+    .rcard .chead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+    .rcard .chead > span { min-width: 0; }
+    .rcard time { margin-left: auto; font: 400 11.5px var(--font); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
     .rcard .meta { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
     .rcard a { color: var(--fg); text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 2px; overflow-wrap: anywhere; }
+    .rcard .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+    .rcard .acts button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: start; }
+    .rcard .outcome { font-weight: 600; font-size: 13px; }
+    .rcard .err { color: var(--danger); font-size: 13px; }
+    @media (max-width: 520px) { .rcard .acts button { flex: 1 1 100%; justify-content: flex-start; } }
   }
 </style>

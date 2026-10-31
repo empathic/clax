@@ -59,7 +59,7 @@
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-<article class="cfcard dcard" data-confirmation={c.id} data-status={status} tabindex="-1" aria-label={`Confirm: ${c.words}`}>
+<article class="cfcard" data-confirmation={c.id} data-status={status} tabindex="-1" aria-label={`Confirm: ${c.words}`}>
   <header class="chead">
     <span class="cwhat">Confirm: {c.words}</span>
     <time datetime={c.created_at}>{relativeTime(c.created_at, now ?? new Date())}</time>
@@ -93,10 +93,21 @@
 
 <style>
   :global {
-    .cfcard[data-status="open"] { border-left-color: var(--danger); }
+    .cfcard { position: relative; display: grid; gap: 6px; background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--danger); border-radius: var(--radius); padding: 11px 12px 10px 13px; min-width: 0; font-size: 13.5px; }
+    .cfcard:focus { outline: none; }
+    .cfcard:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .cfcard:not([data-status="open"]) { border-left-color: var(--border-strong); }
+    .cfcard p { margin: 0; }
+    .cfcard .chead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+    .cfcard .cwhat { min-width: 0; }
+    .cfcard time { margin-left: auto; font: 400 11.5px var(--font); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
     .cfcard .cwhy { color: var(--muted); font-size: 12.5px; }
     .cfcard .cagents { margin: 0; padding-left: 18px; font-size: 12.5px; overflow-wrap: anywhere; }
+    .cfcard .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+    .cfcard .outcome { font-weight: 600; font-size: 13px; }
+    .cfcard .err { color: var(--danger); font-size: 13px; }
     .cfcard .ckeys { display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); }
     .cfcard .coffer { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 12.5px; color: var(--muted); }
+    @media (max-width: 520px) { .cfcard .acts button { flex: 1 1 100%; } }
   }
 </style>
