@@ -1917,13 +1917,9 @@ impl DaemonClient {
     /// `<home>/remote-cache/clips/` ([`clax_core::clips::rewrite_text`]).
     /// The local daemon's text as it is.
     pub async fn rewrite_clip_text(&self, text: &str) -> String {
-        let Some(fetched) = self
-            .fetch_clips(&clax_core::clips::references_in(text))
+        self.rewrite_clip_payload(Some(text), &mut [])
             .await
-        else {
-            return text.to_string();
-        };
-        clax_core::clips::rewrite_text(text, &mut |a, t| lookup(&fetched, a, t))
+            .unwrap_or_default()
     }
 
     /// For a remote daemon: each of `items` (feedback items or thread
@@ -1931,17 +1927,35 @@ impl DaemonClient {
     /// [`DaemonClient::rewrite_clip_text`] rewrites a line
     /// ([`clax_core::clips::rewrite_json`]).
     pub async fn rewrite_clip_items(&self, items: &mut [Value]) {
-        let refs: Vec<(String, String)> = items
-            .iter()
-            .filter_map(|v| v["clip_path"].as_str())
-            .filter_map(clax_core::clips::parse_reference)
-            .collect();
+        self.rewrite_clip_payload(None, items).await;
+    }
+
+    /// For a remote daemon: one payload's prose `text` and its `items`
+    /// rewritten together, as [`DaemonClient::rewrite_clip_text`] and
+    /// [`DaemonClient::rewrite_clip_items`] rewrite them: each clip that
+    /// either one names is fetched once, all within one `CLIP_FETCH_TIME`.
+    /// Returns the rewritten text (the local daemon's as it is).
+    pub async fn rewrite_clip_payload(
+        &self,
+        text: Option<&str>,
+        items: &mut [Value],
+    ) -> Option<String> {
+        let mut refs = text
+            .map(clax_core::clips::references_in)
+            .unwrap_or_default();
+        refs.extend(
+            items
+                .iter()
+                .filter_map(|v| v["clip_path"].as_str())
+                .filter_map(clax_core::clips::parse_reference),
+        );
         let Some(fetched) = self.fetch_clips(&refs).await else {
-            return;
+            return text.map(str::to_string);
         };
         for v in items {
             clax_core::clips::rewrite_json(v, &mut |a, t| lookup(&fetched, a, t));
         }
+        text.map(|t| clax_core::clips::rewrite_text(t, &mut |a, t| lookup(&fetched, a, t)))
     }
 
     /// [`DaemonClient::fetch_clips`] on wasm32 (a hosted Worker), which is

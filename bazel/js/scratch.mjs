@@ -17,7 +17,20 @@
 //
 // The first place a directory can actually be made in wins.
 import { mkdtempSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
+
+/**
+ * Whether Bazel removes `scratch` itself: it lies inside the test's own
+ * temporary directory (TEST_TMPDIR). Under a sandbox that goes with the
+ * sandbox when the test ends; without one, Bazel empties it before the
+ * test's next attempt, so at most the last attempt's copy stays (until
+ * then, or `bazel clean`). The runner then leaves it, so its removal is
+ * off the test's time.
+ */
+export function removedByBazel(scratch, env) {
+  const tmp = env.TEST_TMPDIR;
+  return !!tmp && scratch.startsWith(tmp.endsWith(sep) ? tmp : tmp + sep);
+}
 
 /** The sandbox directory `cwd` is in (…/sandbox/<kind>/<number>), or null. */
 export function sandboxOf(cwd) {

@@ -1054,6 +1054,10 @@ export interface ClaxOptions {
   now?: () => number;
   /** How long one remote clip fetch may take; [`CLIP_FETCH_MS`] when absent. */
   clipFetchMs?: number;
+  /** Makes the bound of one payload's remote clip fetches, at its first
+   * fetch, from the fetch time; `AbortSignal.timeout` when absent (tests
+   * end the bound themselves). */
+  clipBound?: (ms: number) => AbortSignal;
   /** How long a git capture may run; [`CAPTURE_DEADLINE_MS`] when absent
    * (tests on a loaded machine lengthen it). */
   gitDeadlineMs?: number;
@@ -1132,14 +1136,22 @@ class Tools {
     return this.client;
   }
 
-  /** Fetches a remote daemon's clips, signed, into
-   * `<home>/remote-cache/clips/` (spec §16). */
+  /** Fetches one payload's remote clips, signed, into
+   * `<home>/remote-cache/clips/` (spec §16), all within [`CLIP_FETCH_MS`]
+   * of the first fetch. */
   private clipFetch(c: DaemonClient): ClipFetch {
     const home = c.remoteOf()?.home ?? this.home;
     const ms = this.opts.clipFetchMs ?? CLIP_FETCH_MS;
-    return async (aid, tid) => {
-      // A slow clip never holds the feedback it came with.
-      const signal = AbortSignal.timeout(ms);
+    let bound: AbortSignal | undefined;
+    // Each clip fetched once per payload: a pass that names it again (the
+    // items after the text) shares the first fetch, whatever the bound has
+    // done since.
+    const fetched = new Map<string, Promise<{ path: string } | { why: string }>>();
+    const fetchOnce = async (aid: string, tid: string): Promise<{ path: string } | { why: string }> => {
+      // A slow clip never holds the feedback it came with, nor do clips
+      // waiting for a turn behind it.
+      const signal = (bound ??= this.opts.clipBound ? this.opts.clipBound(ms) : AbortSignal.timeout(ms));
+      if (signal.aborted) return { why: "timed out" };
       try {
         const got = await c.clipBytes(aid, tid, CLIP_MAX_BYTES, signal);
         const why = checkClip(got.contentType, got.bytes);
@@ -1151,15 +1163,23 @@ class Tools {
         return { why: e instanceof Error ? e.message : String(e) };
       }
     };
+    return (aid, tid) => {
+      const key = `${aid}/${tid}`;
+      let got = fetched.get(key);
+      if (!got) fetched.set(key, (got = fetchOnce(aid, tid)));
+      return got;
+    };
   }
 
   /** The handover of feedback response `res`, its clips fetched and its
-   * `Clip:` lines rewritten when the daemon is remote (spec §16). */
+   * `Clip:` lines rewritten when the daemon is remote (spec §16): one
+   * fetch per clip for the text and the items together, within one bound. */
   async handover(c: DaemonClient, res: unknown): Promise<Handover> {
     const h = handoverOf(res);
     if (c.isRemote()) {
-      if (h.text !== null) h.text = await rewriteClipText(h.text, this.clipFetch(c));
-      await rewriteClipItems(h.feedback, this.clipFetch(c));
+      const fetch = this.clipFetch(c);
+      if (h.text !== null) h.text = await rewriteClipText(h.text, fetch);
+      await rewriteClipItems(h.feedback, fetch);
     }
     return h;
   }
