@@ -4,3 +4,6 @@
 /** A comment as `Thread` shows it: `kind` rules it (`reporter` or `you`
  * for a person writing here, `agent` for an agent, else a neutral). */
 export type ThreadComment = { id: string; kind: string; who: string; body: string };
+
+/** An action in a `Menu`: `danger` for one that destroys something. */
+export type MenuItem = { id: string; label: string; danger?: boolean; disabled?: boolean };

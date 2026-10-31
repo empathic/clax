@@ -1,4 +1,6 @@
-// The UI kit (web/sdk/ui): its components render, and they are styled only
+// The UI kit (web/sdk/ui): its components render and behave (a button's
+// states, a pin's place, a menu's keys, a dialog's focus and closing), and
+// they are styled only
 // through Clax's tokens: no colour literal in their styles, and every
 // custom property they read is a role of web/sdk/tokens/clax.tokens.json
 // (or the elevations and motion, which are not in it yet).
@@ -7,7 +9,7 @@ import { join } from "node:path";
 import { type Component, flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import { cssVariables, type TokenGroup } from "../src/tokens";
-import { Quote, Surface, Thread } from "@empathic/clax-sdk/ui";
+import { Button, Dialog, Menu, Pin, Quote, Surface, Thread } from "@empathic/clax-sdk/ui";
 
 // Paths from __dirname: under jsdom, import.meta.url is no file: URL.
 const dir = __dirname;
@@ -52,6 +54,79 @@ describe("the UI kit", () => {
     expect(cs.map(c => c.getAttribute("data-kind"))).toEqual(["reporter", "agent"]);
     expect(cs.map(c => c.querySelector(".who")?.textContent)).toEqual(["You", "Triage agent"]);
     expect(cs[1].querySelector(".body")?.textContent).toBe("Fixed, thanks");
+  });
+
+  it("gives a button its variant, its toggle state and its label, and calls it on a press", async () => {
+    const { createRawSnippet } = await import("svelte");
+    let pressed = 0;
+    const el = render(Button, { variant: "primary", pill: true, pressed: true, label: "Report", onclick: () => { pressed++; }, children: createRawSnippet(() => ({ render: () => "<span>Report</span>" })) });
+    const b = el.querySelector("button")!;
+    expect([...b.classList].filter(c => !c.startsWith("svelte-"))).toEqual(["btn", "primary", "pill"]);
+    expect(b.getAttribute("type")).toBe("button");
+    expect(b.getAttribute("aria-pressed")).toBe("true");
+    expect(b.getAttribute("aria-label")).toBe("Report");
+    b.click();
+    expect(pressed).toBe(1);
+  });
+
+  it("numbers a pin, names it, and places it where it is asked", () => {
+    const el = render(Pin, { n: 3, label: "Thread 3", left: 12, top: 40, addressed: true });
+    const p = el.querySelector("button")!;
+    expect(p.textContent).toBe("3");
+    expect(p.getAttribute("aria-label")).toBe("Thread 3");
+    expect(p.style.left).toBe("12px");
+    expect(p.style.top).toBe("40px");
+    expect(p.classList.contains("addressed")).toBe(true);
+  });
+
+  it("opens a menu on its first item, moves with the arrows, wraps, chooses and closes", () => {
+    const chosen: string[] = [];
+    let closed = 0;
+    const el = render(Menu, {
+      label: "Thread actions",
+      items: [{ id: "copy", label: "Copy link" }, { id: "off", label: "Off", disabled: true }, { id: "del", label: "Delete", danger: true }],
+      onselect: (id: string) => chosen.push(id), onclose: () => { closed++; },
+    });
+    const menu = el.querySelector("[role=menu]")!;
+    expect(menu.getAttribute("aria-label")).toBe("Thread actions");
+    const items = [...el.querySelectorAll<HTMLButtonElement>("[role=menuitem]")];
+    expect(document.activeElement).toBe(items[0]);
+    const key = (k: string) => { document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true })); flushSync(); };
+    key("ArrowDown");
+    expect(document.activeElement).toBe(items[2]);
+    key("ArrowDown");
+    expect(document.activeElement).toBe(items[0]);
+    key("ArrowUp");
+    expect(document.activeElement).toBe(items[2]);
+    expect(items[2].classList.contains("danger")).toBe(true);
+    items[2].click();
+    expect(chosen).toEqual(["del"]);
+    key("Escape");
+    expect(closed).toBe(1);
+  });
+
+  it("names a dialog by its title, focuses its first control, keeps Tab inside and closes on Escape or the scrim", async () => {
+    const { createRawSnippet } = await import("svelte");
+    let closed = 0;
+    const el = render(Dialog, {
+      title: "Delete this thread?", onclose: () => { closed++; },
+      children: createRawSnippet(() => ({ render: () => "<p>It cannot be undone.</p>" })),
+      actions: createRawSnippet(() => ({ render: () => "<span><button>Cancel</button><button>Delete</button></span>" })),
+    });
+    const dialog = el.querySelector("[role=dialog]")!;
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(document.getElementById(dialog.getAttribute("aria-labelledby")!)?.textContent).toBe("Delete this thread?");
+    const [cancel, del] = [...el.querySelectorAll("button")];
+    expect(document.activeElement).toBe(cancel);
+    del.focus();
+    del.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    expect(document.activeElement).toBe(cancel);
+    cancel.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(closed).toBe(1);
+    (el.querySelector(".scrim") as HTMLElement).click();
+    expect(closed).toBe(2);
+    dialog.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(closed).toBe(2);
   });
 
   it("renders a surface as the element asked for, with its classes and label", async () => {

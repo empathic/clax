@@ -7,4 +7,8 @@
 export { default as Surface } from "../ui/Surface.svelte";
 export { default as Quote } from "../ui/Quote.svelte";
 export { default as Thread } from "../ui/Thread.svelte";
-export type { ThreadComment } from "../ui/types";
+export { default as Button } from "../ui/Button.svelte";
+export { default as Pin } from "../ui/Pin.svelte";
+export { default as Menu } from "../ui/Menu.svelte";
+export { default as Dialog } from "../ui/Dialog.svelte";
+export type { MenuItem, ThreadComment } from "../ui/types";
