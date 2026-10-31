@@ -1425,30 +1425,31 @@ impl ClaxTools {
         }
     }
 
-    /// What `url_or_id` names ([`crate::target::target`]), judged against
-    /// the daemon's port: a managed client that has not found its daemon yet
-    /// finds it first (a failure to find it is left to the request that
-    /// follows), so a Clax URL is not read as a page URL. A URL not on the
-    /// daemon's base is the daemon's to resolve (`GET /api/resolve`,
-    /// [`crate::target::resolved`]); a daemon that cannot answer leaves it
-    /// a page, as before it resolved URLs.
+    /// What `url_or_id` names. Every http(s) URL is the daemon's to
+    /// resolve (`GET /api/resolve`, [`crate::target::resolved`]), which
+    /// answers `local` for a URL of its own artifacts, so the client keeps
+    /// no second reading of which URLs those are. An ID or a Clax path, and
+    /// a URL the daemon cannot resolve (one from before it resolved URLs,
+    /// or a URL of its own that names no artifact), are read here
+    /// ([`crate::target::target`]) against the daemon's port: a managed
+    /// client that has not found its daemon yet finds it first (a failure
+    /// to find it is left to the request that follows).
     async fn target(&self, url_or_id: &str) -> Result<crate::target::Target, CallToolResult> {
+        let raw = url_or_id.trim();
+        let lower = raw.to_ascii_lowercase();
+        if lower.starts_with("http://") || lower.starts_with("https://") {
+            match self.client.resolve_url(raw).await {
+                Ok(v) => return Ok(crate::target::resolved(&v, raw)),
+                Err(e) => tracing::debug!(error = %e, "resolving a URL failed; reading it here"),
+            }
+        }
         if url_or_id.contains("://")
             && self.client.browser_base().is_none()
             && let Err(e) = self.client.ensure_session().await
         {
             tracing::debug!(error = %e, "finding the daemon before reading a URL failed");
         }
-        match crate::target::target(url_or_id, &self.browser_base())? {
-            crate::target::Target::Page(url) => match self.client.resolve_url(&url).await {
-                Ok(v) => Ok(crate::target::resolved(&v, &url)),
-                Err(e) => {
-                    tracing::debug!(error = %e, "resolving a URL failed; reading it as a page");
-                    Ok(crate::target::Target::Page(url))
-                }
-            },
-            t => Ok(t),
-        }
+        crate::target::target(url_or_id, &self.browser_base())
     }
 
     /// The artifact `url_or_id` names ([`Self::target`]), and the

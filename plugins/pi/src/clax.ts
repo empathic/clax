@@ -1217,19 +1217,23 @@ class Tools {
     return `${this.browserBase(c)}/a/${id}`;
   }
 
-  /** What `urlOrId` names (`target`), finding the daemon first when a URL
-   * must be compared with its port. */
+  /** What `urlOrId` names. Every http(s) URL is the daemon's to resolve
+   * (`GET /api/resolve`, `resolved`), which answers `local` for a URL of its
+   * own artifacts. An ID or a Clax path, and a URL the daemon cannot
+   * resolve (one from before it resolved URLs, or a URL of its own that
+   * names no artifact), are read here (`target`) against the daemon's
+   * port, finding the daemon first. */
   private async targetOf(c: DaemonClient, urlOrId: string): Promise<Resolved> {
-    if (urlOrId.includes("://") && c.browserBase() === undefined) await this.call(() => c.ensureSession());
-    const t = target(urlOrId, this.browserBase(c));
-    if (t.kind !== "page") return t;
-    // A URL off the daemon's base is the daemon's to resolve (`GET
-    // /api/resolve`); a daemon that cannot answer leaves it a page.
-    try {
-      return resolved(await c.resolveUrl(t.url), t.url);
-    } catch {
-      return t;
+    const raw = urlOrId.trim();
+    if (/^https?:\/\//i.test(raw)) {
+      try {
+        return resolved(await c.resolveUrl(raw), raw);
+      } catch {
+        // read here
+      }
     }
+    if (urlOrId.includes("://") && c.browserBase() === undefined) await this.call(() => c.ensureSession());
+    return target(urlOrId, this.browserBase(c));
   }
 
   /** What `urlOrId` names for a tool that works on remote artifacts as well:
