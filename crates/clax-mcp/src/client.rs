@@ -1078,10 +1078,18 @@ impl DaemonClient {
             .map(str::to_string)
     }
 
-    /// `GET /api/artifacts/<id>`: `{artifact, versions}`.
-    pub async fn get(&self, id: &str) -> Result<Value> {
-        self.json(|c| c.request(reqwest::Method::GET, &format!("/api/artifacts/{id}")))
-            .await
+    /// The daemon's route of its own artifact `id`
+    /// (`/api/artifacts/<id>`), under which its artifact routes are. A
+    /// connected remote's artifact has the same routes under
+    /// [`Self::remote_artifact_path`]; the methods that take an `api`
+    /// take either.
+    pub fn artifact_path(id: &str) -> String {
+        format!("/api/artifacts/{id}")
+    }
+
+    /// `GET <api>`: the artifact's `{artifact, versions}`.
+    pub async fn get(&self, api: &str) -> Result<Value> {
+        self.json(|c| c.request(reqwest::Method::GET, api)).await
     }
 
     /// `POST /api/artifacts`: creates an artifact; `{artifact, version, url}`.
@@ -1230,12 +1238,9 @@ impl DaemonClient {
     }
 
     /// The stored bytes of `path` in version `n`, unwrapped
-    /// (`GET /api/artifacts/<id>/versions/<n>/files/<path>`).
-    pub async fn file_bytes(&self, id: &str, n: u32, path: &str) -> Result<Vec<u8>> {
-        let path = format!(
-            "/api/artifacts/{id}/versions/{n}/files/{}",
-            encode_path(path)
-        );
+    /// (`GET <api>/versions/<n>/files/<path>`).
+    pub async fn file_bytes(&self, api: &str, n: u32, path: &str) -> Result<Vec<u8>> {
+        let path = format!("{api}/versions/{n}/files/{}", encode_path(path));
         let res = self
             .send(|c| c.request(reqwest::Method::GET, &path))
             .await?;
@@ -1384,10 +1389,10 @@ impl DaemonClient {
             .await
     }
 
-    /// `GET /api/artifacts/<id>/threads`: `{threads, next_cursor}`.
+    /// `GET <api>/threads`: `{threads, next_cursor}`.
     pub async fn threads(
         &self,
-        id: &str,
+        api: &str,
         include_resolved: bool,
         cursor: Option<&str>,
     ) -> Result<Value> {
@@ -1395,65 +1400,49 @@ impl DaemonClient {
         if let Some(c) = cursor {
             q.push(("cursor", c.to_string()));
         }
-        self.json(|c| {
-            c.request(
-                reqwest::Method::GET,
-                &format!("/api/artifacts/{id}/threads"),
-            )
-            .query(&q)
-        })
-        .await
+        let path = format!("{api}/threads");
+        self.json(|c| c.request(reqwest::Method::GET, &path).query(&q))
+            .await
     }
 
-    /// `GET /api/artifacts/<id>/threads/<tid>`: `{thread}` (with `clip_path`,
-    /// since the token is sent).
-    pub async fn thread(&self, id: &str, tid: &str) -> Result<Value> {
-        self.json(|c| {
-            c.request(
-                reqwest::Method::GET,
-                &format!("/api/artifacts/{id}/threads/{}", encode_segment(tid)),
-            )
-        })
-        .await
+    /// `GET <api>/threads/<tid>`: `{thread}` (with `clip_path` for this
+    /// daemon's own artifact, since the token is sent).
+    pub async fn thread(&self, api: &str, tid: &str) -> Result<Value> {
+        let path = format!("{api}/threads/{}", encode_segment(tid));
+        self.json(|c| c.request(reqwest::Method::GET, &path)).await
     }
 
     /// An agent reply: `{comment, thread}` (with `addressed: "pending"` when
     /// `addressed` marked a live page's thread), or `{guidance}` on a thread
     /// not sent to the agent. `addressed` is sent only when true, so a reply
-    /// without it reads the same to a daemon that predates it.
-    pub async fn reply(&self, id: &str, tid: &str, text: &str, addressed: bool) -> Result<Value> {
+    /// without it reads the same to a daemon that predates it. Under
+    /// idempotency key `key` (a remote artifact's reply), the request sent
+    /// again is answered with the comment the first made.
+    pub async fn reply(
+        &self,
+        api: &str,
+        tid: &str,
+        text: &str,
+        addressed: bool,
+        key: Option<&str>,
+    ) -> Result<Value> {
         let mut body = json!({"body": text, "author_kind": "agent"});
         if addressed {
             body["addressed"] = json!(true);
         }
-        self.json(|c| {
-            c.request(
-                reqwest::Method::POST,
-                &format!(
-                    "/api/artifacts/{id}/threads/{}/comments",
-                    encode_segment(tid)
-                ),
-            )
-            .json(&body)
-        })
-        .await
+        let path = format!("{api}/threads/{}/comments", encode_segment(tid));
+        self.json(|c| idempotent(c.request(reqwest::Method::POST, &path), key).json(&body))
+            .await
     }
 
-    /// Resolves as the agent: `{thread}`, or `{guidance}` on a thread not sent
-    /// to the agent.
-    pub async fn resolve(&self, id: &str, tid: &str) -> Result<Value> {
+    /// Resolves as the agent: `{thread}`, or `{guidance}` on a thread not
+    /// sent to the agent; under idempotency key `key`, as
+    /// [`Self::reply`].
+    pub async fn resolve(&self, api: &str, tid: &str, key: Option<&str>) -> Result<Value> {
         let body = json!({"as": "agent"});
-        self.json(|c| {
-            c.request(
-                reqwest::Method::POST,
-                &format!(
-                    "/api/artifacts/{id}/threads/{}/resolve",
-                    encode_segment(tid)
-                ),
-            )
-            .json(&body)
-        })
-        .await
+        let path = format!("{api}/threads/{}/resolve", encode_segment(tid));
+        self.json(|c| idempotent(c.request(reqwest::Method::POST, &path), key).json(&body))
+            .await
     }
 
     /// `PUT /api/sessions/<sid>/watches/<id>`: `{watch}`.
@@ -1575,129 +1564,16 @@ impl DaemonClient {
         )
     }
 
-    /// `GET /api/remotes/<rid>/artifacts/<raid>`: the remote's `{artifact,
-    /// versions}`.
-    pub async fn remote_get(&self, rid: &str, raid: &str) -> Result<Value> {
-        let path = Self::remote_artifact_path(rid, raid);
-        self.json(|c| c.request(reqwest::Method::GET, &path)).await
-    }
-
-    /// The bytes of `path` in version `n` of remote artifact `raid`
-    /// (`GET /api/remotes/<rid>/artifacts/<raid>/versions/<n>/files/<path>`).
-    pub async fn remote_file_bytes(
-        &self,
-        rid: &str,
-        raid: &str,
-        n: u32,
-        path: &str,
-    ) -> Result<Vec<u8>> {
-        let path = format!(
-            "{}/versions/{n}/files/{}",
-            Self::remote_artifact_path(rid, raid),
-            encode_path(path)
-        );
-        let res = self
-            .send(|c| c.request(reqwest::Method::GET, &path))
-            .await?;
-        res.bytes().await.map(|b| b.to_vec()).map_err(|f| f.error)
-    }
-
-    /// `GET /api/remotes/<rid>/artifacts/<raid>/threads`: the remote's
-    /// `{threads, next_cursor}`.
-    pub async fn remote_threads(
-        &self,
-        rid: &str,
-        raid: &str,
-        include_resolved: bool,
-        cursor: Option<&str>,
-    ) -> Result<Value> {
-        let mut q: Vec<(&str, String)> = vec![("include_resolved", include_resolved.to_string())];
-        if let Some(c) = cursor {
-            q.push(("cursor", c.to_string()));
-        }
-        let path = format!("{}/threads", Self::remote_artifact_path(rid, raid));
-        self.json(|c| c.request(reqwest::Method::GET, &path).query(&q))
-            .await
-    }
-
-    /// `GET /api/remotes/<rid>/artifacts/<raid>/threads/<tid>`: the
-    /// remote's `{thread}`.
-    pub async fn remote_thread(&self, rid: &str, raid: &str, tid: &str) -> Result<Value> {
-        let path = format!(
-            "{}/threads/{}",
-            Self::remote_artifact_path(rid, raid),
-            encode_segment(tid)
-        );
-        self.json(|c| c.request(reqwest::Method::GET, &path)).await
-    }
-
-    /// An agent reply on remote thread `tid`, under idempotency key `key`:
-    /// the remote's `{comment, thread}`, or `{guidance}` on a thread not
-    /// sent to an agent there.
-    pub async fn remote_reply(
-        &self,
-        rid: &str,
-        raid: &str,
-        tid: &str,
-        text: &str,
-        key: &str,
-    ) -> Result<Value> {
-        let body = json!({"body": text, "author_kind": "agent"});
-        let path = format!(
-            "{}/threads/{}/comments",
-            Self::remote_artifact_path(rid, raid),
-            encode_segment(tid)
-        );
-        self.json(|c| {
-            c.request(reqwest::Method::POST, &path)
-                .header("idempotency-key", key)
-                .json(&body)
-        })
-        .await
-    }
-
-    /// Resolves remote thread `tid` as the agent, under idempotency key
-    /// `key`: the remote's `{thread}`, or `{guidance}` on a thread not sent
-    /// to an agent there.
-    pub async fn remote_resolve(
-        &self,
-        rid: &str,
-        raid: &str,
-        tid: &str,
-        key: &str,
-    ) -> Result<Value> {
-        let body = json!({"as": "agent"});
-        let path = format!(
-            "{}/threads/{}/resolve",
-            Self::remote_artifact_path(rid, raid),
-            encode_segment(tid)
-        );
-        self.json(|c| {
-            c.request(reqwest::Method::POST, &path)
-                .header("idempotency-key", key)
-                .json(&body)
-        })
-        .await
-    }
-
-    /// Hands remote thread `tid` to the agent `to` names there, or
-    /// releases it: the remote's `{thread}`.
-    pub async fn remote_handoff(
-        &self,
-        rid: &str,
-        raid: &str,
-        tid: &str,
-        to: Option<&str>,
-    ) -> Result<Value> {
+    /// Hands thread `tid` of the remote artifact at `api`
+    /// ([`Self::remote_artifact_path`]) to the agent `to` names there, or
+    /// releases it: the remote's `{thread}`. This daemon's own threads are
+    /// handed off through the session ([`Self::handoff`]).
+    pub async fn remote_handoff(&self, api: &str, tid: &str, to: Option<&str>) -> Result<Value> {
         let body = match to {
             Some(t) => json!({"to": t}),
             None => json!({}),
         };
-        let path = format!(
-            "{}/threads/{}/handoff",
-            Self::remote_artifact_path(rid, raid),
-            encode_segment(tid)
-        );
+        let path = format!("{api}/threads/{}/handoff", encode_segment(tid));
         self.json(|c| c.request(reqwest::Method::POST, &path).json(&body))
             .await
     }
@@ -2601,6 +2477,14 @@ async fn attempt_in_process(
         body,
     })
     .await
+}
+
+/// `req` with an `Idempotency-Key` of `key`, when there is one.
+fn idempotent(req: reqwest::RequestBuilder, key: Option<&str>) -> reqwest::RequestBuilder {
+    match key {
+        Some(k) => req.header("idempotency-key", k),
+        None => req,
+    }
 }
 
 /// `res` when its status is a success; else `ClientError::Api` with the
