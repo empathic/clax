@@ -17,14 +17,45 @@ import { PROOF_HEADER, withProof as addProof } from "./owner-proof-wire";
 
 export { PROOF_HEADER, PROOF_PARAM } from "./owner-proof-wire";
 
-/** The `localStorage` key the login's page keeps the proof under
- * (`clax_http::local_trust::PROOF_STORAGE_KEY`). */
+/** The `localStorage` key the proofs are kept under: this key, and the
+ * keys it begins followed by `.`, one for each login's proof
+ * (`clax_http::local_trust::PROOF_STORAGE_KEY`, `proof_storage_key`). */
 export const PROOF_STORAGE_KEY = "clax.owner_proof";
 
-/** This origin's proof, or null for none (or storage that cannot be read). */
-export function ownerProof(storage: Pick<Storage, "getItem"> | null = safeStorage()): string | null {
+/** Whether `key` (a `StorageEvent`'s; null when storage was cleared) may
+ * change this origin's proofs. */
+export function isProofKey(key: string | null): boolean {
+  return key === null || key === PROOF_STORAGE_KEY || key.startsWith(`${PROOF_STORAGE_KEY}.`);
+}
+
+/** How many proofs the daemon reads from one request
+ * (`clax_http::local_trust::MAX_PROOFS`). */
+export const MAX_PROOFS = 16;
+
+/** This origin's proofs, comma-separated as the daemon reads them
+ * (`clax_http::local_trust::presented`), or null for none (or storage that
+ * cannot be read). The script cannot read which session its `HttpOnly`
+ * cookie names, so it presents the proofs kept, newest first (their keys
+ * carry the login's time, `proof_storage_key`), at most `MAX_PROOFS`: after
+ * two logins at once the browser may hold either's cookie, and the newest
+ * login's is the likeliest. The login's page ends the sessions of the
+ * proofs that are not its cookie's and removes them. */
+export function ownerProof(storage: Pick<Storage, "getItem" | "key" | "length"> | null = safeStorage()): string | null {
   try {
-    return storage?.getItem(PROOF_STORAGE_KEY) || null;
+    if (!storage) return null;
+    const keys: string[] = [];
+    for (let i = 0; i < storage.length; i++) {
+      const k = storage.key(i);
+      if (k !== null && k !== "" && isProofKey(k)) keys.push(k);
+    }
+    keys.sort().reverse();
+    const found: string[] = [];
+    for (const k of keys) {
+      const v = storage.getItem(k);
+      if (v && !v.includes(",")) found.push(v);
+      if (found.length === MAX_PROOFS) break;
+    }
+    return found.length ? found.join(",") : null;
   } catch {
     return null;
   }

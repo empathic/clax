@@ -35,7 +35,7 @@
 // front: there the app's host says (`app/host.ts`, `claxHost.setVisible`),
 // and calls `visibilityChanged` when it does.
 import { getToken } from "./api";
-import { PROOF_STORAGE_KEY, ownerProof } from "./owner-proof";
+import { isProofKey, ownerProof } from "./owner-proof";
 import { after } from "./clock";
 import { STREAM_DOWN, connTrouble } from "./conn-notice";
 import { visibility } from "./visibility";
@@ -125,7 +125,7 @@ export const workerLink: LinkMaker = async (on, lost) => {
   port.postMessage(hello);
   // A login in another tab wrote a new proof: the hub hears it.
   const stored = (e: StorageEvent) => {
-    if (closed || e.key !== PROOF_STORAGE_KEY) return;
+    if (closed || !isProofKey(e.key)) return;
     hello = helloOf(release ? lock : undefined);
     port.postMessage(hello);
   };
@@ -208,7 +208,7 @@ export const leaderLink: LinkMaker = async on => {
   post(hello);
   // A login in another tab wrote a new proof: the leader's hub hears it.
   const stored = (e: StorageEvent) => {
-    if (closed || e.key !== PROOF_STORAGE_KEY) return;
+    if (closed || !isProofKey(e.key)) return;
     hello = helloOf(releaseTab ? lock : undefined);
     post(hello);
   };
