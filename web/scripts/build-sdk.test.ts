@@ -64,6 +64,9 @@ describe("keepDeclarations", () => {
     "sdk/src/service.d.ts": "export declare class ServiceClient {}\n",
     "overlay/src/main.d.ts": `export type { OverlayOptions } from "./options";\nexport declare function overlay(o: import("./options").OverlayOptions): void;\n`,
     "overlay/src/options.d.ts": `import type { ReporterAuth } from "../../sdk/src/reporter";\nexport interface OverlayOptions { auth: ReporterAuth }\n`,
+    "sdk/src/anchor.d.ts": `export { type Anchor } from "../../bridge/src/protocol";\nexport { resolveAnchor } from "../../bridge/src/anchor";\n`,
+    "bridge/src/protocol.d.ts": "export interface Anchor { file: string }\n",
+    "bridge/src/anchor.d.ts": `import type { Anchor } from "./protocol";\nexport declare function resolveAnchor(a: Anchor): Element | null;\n`,
   };
 
   it("keeps what the entries reach, with `.js` specifiers", () => {
@@ -72,6 +75,8 @@ describe("keepDeclarations", () => {
     expect(kept.get("sdk/src/index.d.ts")).toBe(`export { ReporterClient } from "./reporter.js";\nexport type * from "./types.js";\n`);
     expect(kept.get("overlay/src/main.d.ts")).toContain(`import("./options.js")`);
     expect(kept.get("overlay/src/options.d.ts")).toContain(`from "../../sdk/src/reporter.js"`);
+    expect(kept.get("sdk/src/anchor.d.ts")).toContain(`from "../../bridge/src/anchor.js"`);
+    expect(kept.get("bridge/src/anchor.d.ts")).toContain(`from "./protocol.js"`);
   });
 
   it("refuses a declaration of a source outside web/bridge, web/overlay and web/sdk", () => {
