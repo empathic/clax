@@ -55,6 +55,8 @@
   --pin: #e0532f;
   --on-pin: #141413;
   --pin-ring: #ffffff;
+  --pin-agent: #2f6f2a;
+  --pin-ink: #1c1b19;
   --selection-bg: var(--pink);
   --selection-fg: #1c1b19;
   --comment-hl: #fbe9e3;
@@ -409,18 +411,15 @@ input, select { line-height: 1.2; }
    travel with its lazy chunk (Sidebar.svelte). */
 .sidebar { width: 392px; flex: none; overflow: auto; border-left: 1px solid var(--border); background: var(--bg); padding: 12px 14px 18px; display: flex; flex-direction: column; gap: 10px; }
 @media (max-width: 700px) { .sidebar { position: absolute; inset: 0; width: auto; z-index: 10; border-left: 0; } }
-/* A thread's number, on a pin over the frame and on its card. */
-.thread-num, .thread-pin { display: inline-grid; place-items: center; width: 22px; height: 22px; min-height: 0; border-radius: 50%; background: var(--you); color: var(--on-you); font: 600 11.5px/1 var(--font); font-variant-numeric: tabular-nums; flex: none; padding: 0; }
+/* A thread's number on its card. Its pin over the frame is the UI kit's
+   (web/sdk/ui/Pin.svelte, class thread-pin, from ui/Pins.svelte). */
+.thread-num { display: inline-grid; place-items: center; width: 22px; height: 22px; min-height: 0; border-radius: 50%; background: var(--you); color: var(--on-you); font: 600 11.5px/1 var(--font); font-variant-numeric: tabular-nums; flex: none; padding: 0; }
 .composer .clip { display: block; max-width: 100%; min-height: 24px; object-fit: cover; object-position: left top; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg); }
 .composer .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }
 /* Said beside a consequential action a key asked for on a tainted trail (view/trail.ts). */
 .act-hint { margin: 6px 0 0; font-size: 12px; color: var(--muted); text-align: right; }
 .act-hint:empty { margin: 0; }
 .pins { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
-.thread-pin { position: absolute; pointer-events: auto; background: var(--pin); color: var(--on-pin); border: 2px solid var(--pin-ring); box-shadow: 0 1px 3px rgba(20,20,15,.45); }
-.thread-pin:not(:disabled):hover { background-color: var(--pin); border-color: var(--focus); }
-/* A pin that just appeared or moved takes no press (Pins.svelte). */
-.thread-pin.settling { pointer-events: none; }
 .composer { position: absolute; right: 16px; bottom: 16px; width: min(360px, calc(100% - 32px)); background: var(--raised); border: 1px solid var(--border-hover); border-top: 3px solid var(--you); border-radius: var(--radius); padding: 12px; box-shadow: var(--elev-lg); z-index: 5; }
 .composer-quote { margin: 0 0 8px; padding: 4px 8px; font-size: 13px; color: var(--muted); background: var(--comment-hl); border-left: 2px solid var(--you); border-radius: 0 var(--radius-xs) var(--radius-xs) 0; overflow-wrap: anywhere; }
 .composer .clip { max-height: 160px; margin-bottom: 8px; }
@@ -455,9 +454,6 @@ input, select { line-height: 1.2; }
 .vbtn { display: flex; align-items: baseline; gap: 5px; padding: 0 10px; height: 32px; position: relative; font: 600 14px/32px var(--font); }
 .vbtn span { font: 400 12.5px var(--font); color: var(--muted); }
 .vbtn .new { position: absolute; top: 5px; right: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--agent); }
-/* Pins sit over the artifact, whose colours Clax does not set: literal colours. */
-.thread-pin.addressed, .thread-pin.addressed:not(:disabled):hover { background-color: #fff; border-color: #2f6f2a; color: #1c1b19; }
-.thread-pin[data-v]::after { content: attr(data-v); position: absolute; left: 22px; top: 2px; font: 600 10.5px/14px var(--font); background: #fff; color: #1c1b19; border: 1px solid #2f6f2a; border-radius: var(--radius-xs); padding: 0 4px; white-space: nowrap; }
 .topbar a.latest { font: 600 14px var(--font); color: var(--accent-ink); padding: 0 6px; }
 /* Needs your eyes (spec §8): the rest group's swatch; the needs group's
    and the markers' styles load with them (ui/NeedsGroup.svelte, ui/Markers.svelte). */

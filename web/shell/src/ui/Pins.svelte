@@ -5,6 +5,9 @@
   // null, a document that did not greet). `onHover` hears the thread whose pin
   // the pointer is over, and null when it leaves.
   import { type AnchorResult, INDEX_FILE } from "../../../bridge/src/protocol";
+  // The UI kit's pin (web/sdk/ui), by its file: the kit's barrel would bring
+  // every kit component into the artifact page.
+  import Pin from "../../../sdk/ui/Pin.svelte";
   import type { Thread } from "../threads";
   import { pinPlaces } from "../view/pins-model";
   import { ALLOW_DELAY_MS } from "../view/prompt-queue";
@@ -73,7 +76,10 @@
 
 <div class="pins" {@attach measure}>
   {#each places as p (p.thread.id)}
-    <button class="thread-pin" class:settling={settling.has(p.thread.id)} class:onit={onit?.has(p.thread.id)} class:addressed={addressed?.has(p.thread.id)} data-v={addressed?.has(p.thread.id) ? `v${addressed.get(p.thread.id)}` : undefined} title={(b => (plain ? plain(b) : b))(p.thread.comments[0]?.body ?? "")} aria-label={`Thread ${p.n}`} style:left={`${p.left}px`} style:top={`${p.top}px`}
-      onclick={() => onSelect(p.thread)} onmouseenter={() => { titled(); onHover?.(p.thread); }} onmouseleave={() => onHover?.(null)}>{p.n}</button>
+    <Pin class="thread-pin" n={p.n} label={`Thread ${p.n}`} left={p.left} top={p.top}
+      title={(b => (plain ? plain(b) : b))(p.thread.comments[0]?.body ?? "")}
+      settling={settling.has(p.thread.id)} onit={onit?.has(p.thread.id)} addressed={addressed?.has(p.thread.id)}
+      flag={addressed?.has(p.thread.id) ? `v${addressed.get(p.thread.id)}` : undefined}
+      onclick={() => onSelect(p.thread)} onenter={() => { titled(); onHover?.(p.thread); }} onleave={() => onHover?.(null)} />
   {/each}
 </div>

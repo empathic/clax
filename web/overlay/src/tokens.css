@@ -6,7 +6,7 @@
    web/shell/src/theme.css). */
 :host {
   all: initial;
-  /* tokens:begin theme.light base except tag */
+  /* tokens:begin theme.light base except tag pin */
   --bg: #f7f7f5;
   --card: #ffffff;
   --raised: #ffffff;
@@ -31,9 +31,7 @@
   --agent: #2f6f2a;
   --agent-ink: #2f6f2a;
   --pink: #f6d3c7;
-  --pin: #e0532f;
   --on-pin: #141413;
-  --pin-ring: #ffffff;
   --selection-bg: var(--pink);
   --selection-fg: #1c1b19;
   --comment-hl: #fbe9e3;
@@ -52,7 +50,7 @@
 }
 @media (prefers-color-scheme: dark) {
   :host {
-    /* tokens:begin theme.dark over theme.light except tag */
+    /* tokens:begin theme.dark over theme.light except tag pin */
     --bg: #141413;
     --card: #1c1c1a;
     --raised: #232321;

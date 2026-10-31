@@ -74,7 +74,7 @@ describe("clax.tokens.json", () => {
 
   it.each([
     { rel: "shell/src/theme.css", specs: ["theme.light base", "theme.dark over theme.light", "theme.dark over theme.light"] },
-    { rel: "overlay/src/tokens.css", specs: ["theme.light base except tag", "theme.dark over theme.light except tag"] },
+    { rel: "overlay/src/tokens.css", specs: ["theme.light base except tag pin", "theme.dark over theme.light except tag pin"] },
   ])("writes $rel's generated regions", ({ rel, specs }) => {
     const path = join(__dirname, "../..", rel);
     const css = readFileSync(path, "utf8");
