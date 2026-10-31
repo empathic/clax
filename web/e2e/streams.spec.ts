@@ -1,6 +1,7 @@
 import { type Browser, type BrowserContext, type CDPSession, type Page } from "@playwright/test";
 import { asLocalViewer, test, expect, type Daemon, publish, setName, signInTo, startDaemon } from "./fixtures";
 import { advance, settle } from "./time";
+import { backoff } from "../shell/src/lifecycle";
 
 // As in Chrome: the new headless mode, with the back/forward cache on
 // (Playwright turns it off by default).
@@ -76,11 +77,13 @@ async function inHubs(browser: Browser, expression: string): Promise<unknown[]> 
   }
   return out;
 }
-/** How many of the browser's stream hubs wait out a backoff before they
- * reconnect: a wait labelled `stream-retry` on the hub's clock
- * (shell/src/clock.ts, shell/src/stream-hub.ts). */
-const hubsWaiting = async (browser: Browser) =>
-  (await inHubs(browser, `globalThis.claxTestClock?.dueIn("stream-retry") ?? null`)).filter(v => v !== null).length;
+/** The milliseconds left of each of the browser's stream hubs' wait before
+ * it reconnects: a wait labelled `stream-retry` on the hub's clock
+ * (shell/src/clock.ts, shell/src/stream-hub.ts); hubs with none are left out. */
+const hubWaits = async (browser: Browser) =>
+  (await inHubs(browser, `globalThis.claxTestClock?.dueIn("stream-retry") ?? null`)).filter((v): v is number => typeof v === "number");
+/** The longest wait the backoff gives (its cap, spread up by its 20%). */
+const BACKOFF_MAX = backoff(Infinity, () => 1);
 /** Runs each hub's pending reconnect now, by advancing its clock to the
  * wait, rather than waiting out the backoff; a hub with none is left as it is. */
 const hubRetryNow = (browser: Browser) =>
@@ -459,8 +462,12 @@ test("a daemon restart shows the notice in every tab, which reconnect with backo
       await expect(notice).toHaveText("Live updates paused. Reconnecting…");
       await expect(notice).toHaveAttribute("role", "status");
     }
-    // The hub retries with backoff: it is waiting, on its clock, to try again.
-    await expect.poll(() => hubsWaiting(browser), untilDone).toBe(1);
+    // The hub retries with backoff: it is waiting, on its clock, to try
+    // again, for no longer than the backoff's cap.
+    await expect.poll(async () => (await hubWaits(browser)).length, untilDone).toBe(1);
+    const [wait] = await hubWaits(browser);
+    expect(wait).toBeGreaterThan(0);
+    expect(wait).toBeLessThanOrEqual(BACKOFF_MAX);
     own = await startDaemon({ home, port });
     // The hub reconnects after its backoff: run each wait it has pending
     // until the stream is back and every tab's notice is gone.
