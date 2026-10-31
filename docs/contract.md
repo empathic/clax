@@ -729,7 +729,8 @@ name one), `not_connected` (its sign-in is not finished), `remote_moved`
 (someone published on the public copy since this Clax pushed:
 `remote_version` and `pushed_version` say where each is; pass `mode`
 `fork` or `new`), `remote_unreachable`, `remote_signed_out` (its token was
-revoked there), `remote_refused` (the public Clax's own refusal, in
+revoked there: the remote is marked `signed_out`, and every later push
+answers so until it is connected again), `remote_refused` (the public Clax's own refusal, in
 `remote_code`), `live_page`, `no_session`.
 
 ### asset_upload
@@ -1299,7 +1300,10 @@ request: {tool: "connect_instance", command: "clax remote request
 '<origin>/'"}}`, as does every later call until it is connected again.
 Any other 401 there (`invalid_session_proof`, `replayed_request`: one
 request refused) keeps the token and is 502 `remote_refused` with
-`remote_code`.
+`remote_code`. A push, the Clax app's routes and the linked threads'
+sync that meet such a refusal of the token mark the remote `signed_out`
+alike (a push and the app's routes answer 502 `remote_signed_out`; the
+sync stops until a sign-in connects the remote again).
 
 On such an artifact, the MCP tools and Pi's `read`, `comments_read`,
 `comments_reply`, `comments_resolve`, `comments_handoff` and `open` answer
@@ -1786,8 +1790,12 @@ app's versions with the bundle each carries.
   copy shared with named people counts it) and `DELETE` (Unpublish: deletes the copy there and unlinks every local app
   linked to it). Every answer passed on carries `content-security-policy:
   sandbox; default-src 'none'` and `x-content-type-options: nosniff`: a
-  copy's bytes are another author's. A remote that refuses the token is 502
-  `remote_signed_out`, one not reached 502 `remote_unreachable`. One
+  copy's bytes are another author's. A remote that refuses the token
+  itself (401 `invalid_token`, `grant_revoked` or `token_expired`) is
+  marked `signed_out` and is 502 `remote_signed_out`, as is every later
+  call until it is connected again; any other 401 is 502
+  `remote_refused` with `remote_code`. One not reached is 502
+  `remote_unreachable`. One
   file's bytes (`GET versions/<n>/files/<path>`) is a route of **Remote
   artifacts**, which the owner's agents reach too.
 - **A public Clax too old for the app.** Whenever a public Clax runs a

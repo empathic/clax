@@ -640,11 +640,52 @@ async fn a_link_says_when_its_remote_signed_this_clax_out() {
     let path = format!("/api/artifacts/{aid}/remotes");
     let (_, v) = local_req(&local, reqwest::Method::GET, &path, json!(null), None).await;
     assert_eq!(links(&v).as_deref(), Some("connected"), "{v}");
-    // The remote refused the token: the link stays, saying why it waits.
-    assert!(local.store.sign_out_remote(&rid).unwrap());
+    // The person revokes the token there: the next push meets the refusal
+    // and signs the remote out; the link stays, saying why it waits.
+    public.revoke(&local, &rid).await;
+    let push = format!("/api/artifacts/{aid}/push");
+    let (s, v) = owner_post(&local, &push, json!({})).await;
+    assert_eq!((s, code(&v)), (502, "remote_signed_out"), "{v}");
+    assert!(local.store.remote_token(&rid).unwrap().is_none());
     let (_, v) = local_req(&local, reqwest::Method::GET, &path, json!(null), None).await;
     assert_eq!(links(&v).as_deref(), Some("signed_out"), "{v}");
     assert_eq!(v["remotes"], json!([]), "{v}");
+    // A push names it signed out at once, as the Clax app's routes do.
+    let (s, v) = owner_post(&local, &push, json!({"remote": rid})).await;
+    assert_eq!((s, code(&v)), (502, "remote_signed_out"), "{v}");
+    let (s, v) = local_req(
+        &local,
+        reqwest::Method::GET,
+        &format!("/api/remotes/{rid}/apps"),
+        json!(null),
+        None,
+    )
+    .await;
+    assert_eq!((s, code(&v)), (502, "remote_signed_out"), "{v}");
+}
+
+#[tokio::test]
+async fn the_clax_apps_route_meeting_a_revoked_token_signs_the_remote_out() {
+    let public = Public::new().await;
+    let local = TestServer::spawn().await;
+    let rid = connect(&local, &public).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    public.revoke(&local, &rid).await;
+    let (s, v) = local_req(
+        &local,
+        reqwest::Method::GET,
+        &format!("/api/remotes/{rid}/apps"),
+        json!(null),
+        None,
+    )
+    .await;
+    assert_eq!((s, code(&v)), (502, "remote_signed_out"), "{v}");
+    assert_eq!(
+        local.store.find_remote(&rid).unwrap().unwrap().status,
+        "signed_out"
+    );
 }
 
 #[tokio::test]

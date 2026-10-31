@@ -128,6 +128,23 @@ impl Public {
         me["person"]["public_id"].as_str().unwrap().to_string()
     }
 
+    /// Revokes there the agent token `local` holds for remote `rid`, as
+    /// the token's holder may (`DELETE /api/hosted/agent-token`); `local`
+    /// still holds it.
+    pub async fn revoke(&self, local: &TestServer, rid: &str) {
+        let token = local.store.remote_token(rid).unwrap().unwrap();
+        let res = self
+            .ts
+            .client
+            .delete(format!("{}/api/hosted/agent-token", self.ts.base))
+            .header(HOST, format!("localhost:{}", self.ts.addr.port()))
+            .bearer_auth(token.expose())
+            .send()
+            .await
+            .unwrap();
+        assert!(res.status().is_success(), "{}", res.status());
+    }
+
     /// A request of the owner's CLI there (the daemon token).
     pub async fn cli(
         &self,

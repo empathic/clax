@@ -792,6 +792,24 @@ async fn a_resent_keyed_write_does_the_sends_its_first_write_did_not_reach() {
     );
 }
 
+/// A token revoked there signs the remote out at the sync's next cycle,
+/// rather than being backed off from as an outage.
+#[tokio::test]
+async fn a_cycle_meeting_a_revoked_token_signs_the_remote_out() {
+    let p = Pair::new().await;
+    p.public.revoke(&p.local, &p.remote).await;
+    // The sync's next cycle at once, whether it waits on its feedback poll
+    // or, that poll refused, on its backoff (the owner's Retry).
+    p.local.state.linked.retry(&p.remote);
+    until("the remote is signed out", || async {
+        let r = p.local.store.find_remote(&p.remote).unwrap().unwrap();
+        (r.status == "signed_out").then_some(())
+    })
+    .await;
+    assert!(p.local.store.remote_token(&p.remote).unwrap().is_none());
+    assert_eq!(p.sleeper.waiting(BACKOFF_FIRST), 0, "not backed off");
+}
+
 #[tokio::test]
 async fn an_outage_queues_marks_rows_not_sent_at_the_cap_then_drains_in_order() {
     let p = Pair::new().await;
