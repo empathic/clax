@@ -7,7 +7,7 @@ use clax_testkit::TestServer;
 use clax_testkit::mcp::{ADAPTER, mcp_post, rpc_message};
 use clax_testkit::remotes::{Public, closed_port, connect, json_of, local_req};
 use reqwest::Method;
-use reqwest::header::{COOKIE, HOST, ORIGIN};
+use reqwest::header::HOST;
 use serde_json::{Value, json};
 
 const PAGE: &str = "<h1>Their plan</h1>";
@@ -29,30 +29,6 @@ async fn remote_artifact(public: &Public) -> String {
         .await;
     assert_eq!(s, 201, "{v}");
     v["artifact"]["id"].as_str().unwrap().to_string()
-}
-
-/// A thread on the whole of version 1 of `raid` there, from the browser
-/// whose session cookie is `cookie`: the thread.
-async fn browser_thread(public: &Public, raid: &str, cookie: &str, body: &str) -> Value {
-    let ts = &public.ts;
-    let res = ts
-        .client
-        .post(format!("{}/api/artifacts/{raid}/threads", ts.base))
-        .header(HOST, format!("localhost:{}", ts.addr.port()))
-        .header(COOKIE, format!("clax_session={cookie}"))
-        .header(ORIGIN, &public.origin)
-        .multipart(
-            reqwest::multipart::Form::new()
-                .text("anchor", json!({"kind": "artifact"}).to_string())
-                .text("body", body.to_string())
-                .text("version", "1"),
-        )
-        .send()
-        .await
-        .unwrap();
-    let (s, v) = json_of(res).await;
-    assert_eq!(s, 201, "{v}");
-    v["thread"].clone()
 }
 
 /// The public copy's thread `tid`, as its owner's CLI reads it.
@@ -261,7 +237,14 @@ async fn replies_and_resolves_on_a_remote_thread_once_per_key() {
         .unwrap()
         .to_string();
     let raid = remote_artifact(&public).await;
-    let t = browser_thread(&public, &raid, &public.cookie, "@agent tighten the copy").await;
+    let t = public
+        .browser_thread(
+            &raid,
+            &public.cookie,
+            json!({"kind": "artifact"}),
+            "@agent tighten the copy",
+        )
+        .await;
     let tid = t["id"].as_str().unwrap().to_string();
     let sid = local.register_session("claude", "hs-reply").await["id"]
         .as_str()
@@ -553,9 +536,20 @@ async fn withheld_comments_are_counted() {
         )
         .await;
     assert!((200..300).contains(&s), "{v}");
-    browser_thread(&public, &raid, &bob, "Bob's first").await;
-    browser_thread(&public, &raid, &bob, "Bob's second").await;
-    browser_thread(&public, &raid, &public.cookie, "Ada's own").await;
+    public
+        .browser_thread(&raid, &bob, json!({"kind": "artifact"}), "Bob's first")
+        .await;
+    public
+        .browser_thread(&raid, &bob, json!({"kind": "artifact"}), "Bob's second")
+        .await;
+    public
+        .browser_thread(
+            &raid,
+            &public.cookie,
+            json!({"kind": "artifact"}),
+            "Ada's own",
+        )
+        .await;
     let url = format!("{}/a/{raid}", public.origin);
     let note = format!(
         "2 comments from people you have not approved for agents on {}",
@@ -748,7 +742,14 @@ async fn an_agent_with_no_session_writes_nothing_there() {
         .unwrap()
         .to_string();
     let raid = remote_artifact(&public).await;
-    let t = browser_thread(&public, &raid, &public.cookie, "@agent look").await;
+    let t = public
+        .browser_thread(
+            &raid,
+            &public.cookie,
+            json!({"kind": "artifact"}),
+            "@agent look",
+        )
+        .await;
     let tid = t["id"].as_str().unwrap().to_string();
     let base = format!("/api/remotes/{rid}/artifacts/{raid}");
     for (path, body) in [

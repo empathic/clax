@@ -2218,30 +2218,7 @@ async fn a_stopped_sync_ends_its_tasks_and_its_supervisor_starts_none() {
 /// A thread on the whole of version 1 of `raid` there, from the browser
 /// whose session cookie is `cookie`.
 async fn browser_thread(public: &Public, raid: &str, cookie: &str, body: &str) {
-    browser_thread_on(public, raid, cookie, whole(), body).await
-}
-
-/// A thread at `anchor` on version 1 of `raid` there, from the browser
-/// whose session cookie is `cookie`.
-async fn browser_thread_on(public: &Public, raid: &str, cookie: &str, anchor: Value, body: &str) {
-    let ts = &public.ts;
-    let res = ts
-        .client
-        .post(format!("{}/api/artifacts/{raid}/threads", ts.base))
-        .header(HOST, format!("localhost:{}", ts.addr.port()))
-        .header(COOKIE, format!("clax_session={cookie}"))
-        .header(ORIGIN, &public.origin)
-        .multipart(
-            reqwest::multipart::Form::new()
-                .text("anchor", anchor.to_string())
-                .text("body", body.to_string())
-                .text("version", "1"),
-        )
-        .send()
-        .await
-        .unwrap();
-    let (s, v) = json_of(res).await;
-    assert_eq!(s, 201, "{v}");
+    public.browser_thread(raid, cookie, whole(), body).await;
 }
 
 /// One full read of the sync's, ended.
@@ -2484,22 +2461,12 @@ async fn a_strangers_mirrored_anchor_is_withheld_from_her_agents_until_approved(
                "label": quote, "name": format!("{quote} by name"),
                "file": "index.html"})
     };
-    browser_thread_on(
-        &public,
-        &raid,
-        &bob,
-        anchor("Bob quoted this"),
-        "@agent see here",
-    )
-    .await;
-    browser_thread_on(
-        &public,
-        &raid,
-        &mia,
-        anchor("Mia quoted this"),
-        "Mia's note",
-    )
-    .await;
+    public
+        .browser_thread(&raid, &bob, anchor("Bob quoted this"), "@agent see here")
+        .await;
+    public
+        .browser_thread(&raid, &mia, anchor("Mia quoted this"), "Mia's note")
+        .await;
     sync_once(&sleeper).await;
     // Mia reads both anchors.
     let here = threads_here(&local, &aid, None).await;
