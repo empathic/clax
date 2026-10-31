@@ -1,8 +1,8 @@
 // A card's Retry of the writes and question copies its artifact's link did
 // not send (a thread card's, a question card's): the call the Publish
 // popover's Retry makes (`retryLink`, POST
-// /api/artifacts/<id>/remotes/<remote>/retry). Each card loads this module
-// with its first press, so none of it weighs on the cards' chunks.
+// /api/artifacts/<id>/remotes/<remote>/retry). `RetryButton` loads this
+// module with its first press, so none of it weighs on the cards' chunks.
 import { ApiError } from "../api";
 import { retryLink } from "./publish-api";
 

@@ -36,6 +36,7 @@
   import { aboutLink, agentLabel, answerLine, answerText, closedLabel, complete, cutHeader, emptyDraft, nextOpen, pick, previewOf, questionLink, shownLabel, toBody, typeOther } from "./model";
   import { trail } from "./trail";
   import Markdown from "../ui/Markdown.svelte";
+  import RetryButton from "../ui/RetryButton.svelte";
 
   type Props = {
     q: QuestionView;
@@ -84,25 +85,10 @@
   const spec =$derived(p.q.questions[Math.min(tab, p.q.questions.length - 1)]);
   const preview = $derived(previewOf(spec, focused, draft[tab]));
   const open = $derived(p.q.status === "open");
-  // Retry on the line of a copy not sent, as a thread card's
-  // (`retryCopies`, loaded with the first press). The view of the question
-  // Retry succeeded on: until a newer view comes, the copy reads as sending
-  // again (the retry moves no event). The view a Retry failed on, and why,
-  // said on the line until the next press or a newer view.
-  let retrying = $state(false);
+  // The view of the question a Retry of its copy succeeded on
+  // (`RetryButton`): until a newer view comes, the copy reads as sending again.
   let retriedOn = $state.raw<QuestionView | null>(null);
-  let retryFailed = $state.raw<{ on: QuestionView; text: string } | null>(null);
   const link = $derived(questionLink(p.q, retriedOn === p.q));
-  const retry = async () => {
-    const q = p.q, l = q.linked, a = q.artifact;
-    if (!l || !a || retrying) return;
-    retrying = true;
-    retryFailed = null;
-    try {
-      const failed = await (await import("../ui/retry-request")).retryCopies(a.id, l.remote_id);
-      if (failed) retryFailed = { on: q, text: failed }; else retriedOn = q;
-    } catch { retryFailed = { on: q, text: "Retry failed: Clax did not answer" }; } finally { retrying = false; }
-  };
   const about = $derived(aboutLink(p.q, p.here, p.thread));
   const base = $derived(`q-${p.q.id}`);
   // Takes focus back only when it went nowhere (<body>): focus the person
@@ -302,7 +288,7 @@
       </div>
       {/each}
     </div>
-    {#if link?.line}<p class="link-line" data-failed={link.failed ? "" : undefined}><span>{link.line}</span>{#if link.retry}{#if retryFailed?.on === p.q}<span class="retry-err" role="status">{retryFailed.text}</span>{/if}<button type="button" class="retry" disabled={retrying} onclick={() => void retry()}>{retrying ? "Retrying…" : "Retry"}</button>{/if}</p>{/if}
+    {#if link?.line}<p class="link-line" data-failed={link.failed ? "" : undefined}><span>{link.line}</span>{#if link.retry && p.q.linked && p.q.artifact}<RetryButton view={p.q} artifact={p.q.artifact.id} remote={p.q.linked.remote_id} onRetried={v => { retriedOn = v; }} />{/if}</p>{/if}
     <footer class="acts">
       {#if n > 1}
         <!-- aria-disabled, not disabled: a button disabled under focus drops it. -->
