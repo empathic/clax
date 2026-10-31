@@ -11,6 +11,7 @@ import { mount, unmount } from "svelte";
 import { OVERLAY_TAG } from "../../bridge/src/anchor";
 import { addSheet } from "../../bridge/src/sheet";
 import { ReporterClient } from "../../sdk/src/reporter";
+import { themeSheet } from "../../sdk/src/tokens";
 import { externalIdOf } from "./model";
 import type { OverlayOptions } from "./options";
 import Overlay from "./Overlay.svelte";
@@ -40,12 +41,15 @@ const HOST_CSS = "all:initial!important;position:fixed!important;left:0!importan
 export function overlay(opts: OverlayOptions, doc: Document = document): OverlayHandle {
   for (const k of ["instance", "queue"] as const) if (typeof opts?.[k] !== "string" || !opts[k]) throw new TypeError(`Clax.overlay: ${k} must be a non-empty string`);
   if (typeof opts.auth !== "function") throw new TypeError("Clax.overlay: auth must be a function");
+  // A page's theme is read before anything is added to it, so a bad one throws with nothing to undo.
+  const theme = opts.theme === undefined ? "" : themeSheet(opts.theme);
   const client = new ReporterClient({ instance: opts.instance.replace(/\/+$/, ""), queue: opts.queue, auth: opts.auth });
 
   const host = doc.createElement(OVERLAY_TAG);
   host.style.cssText = HOST_CSS;
   const root = host.attachShadow({ mode: "open" });
-  addSheet(root, [TOKENS, COMPONENT_CSS].join("\n"));
+  // The page's theme after Clax's tokens, so its roles win and those it leaves out stay Clax's.
+  addSheet(root, [TOKENS, theme, COMPONENT_CSS].join("\n"));
   const target = doc.createElement("div");
   root.append(target);
   for (const k of ["keydown", "keyup", "keypress"]) root.addEventListener(k, e => e.stopPropagation());

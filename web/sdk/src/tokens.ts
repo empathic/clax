@@ -185,6 +185,27 @@ export function syncRegions(css: string, file: TokenGroup): string {
     [`${indent}/* tokens:begin ${spec} */`, ...regionLines(file, spec).map(l => indent + l), `${indent}/* tokens:end */`].join("\n"));
 }
 
+const hasGroup = (file: TokenGroup, path: string) => {
+  let node: unknown = file;
+  for (const part of path.split(".")) node = isGroup(node) ? node[part] : undefined;
+  return isGroup(node);
+};
+
+/** A stylesheet that gives `selector` the themes of a token file in Clax's
+ * shape (`theme.light`, `theme.dark` and `base`, each optional, with the
+ * role names of web/sdk/tokens/clax.tokens.json): the light theme and the
+ * base on `selector`, and the dark theme's overrides of the light one under
+ * the system's dark scheme. A host's theme for the overlay, laid over its
+ * own tokens: a role it leaves out keeps Clax's. */
+export function themeSheet(file: TokenGroup, selector = ":host"): string {
+  const light = ["theme.light", "base"].filter(p => hasGroup(file, p)).flatMap(p => cssVariables(file, p));
+  const dark = !hasGroup(file, "theme.dark") ? [] : hasGroup(file, "theme.light") ? regionLines(file, "theme.dark over theme.light") : cssVariables(file, "theme.dark");
+  const out: string[] = [];
+  if (light.length) out.push(`${selector} {`, ...light.map(l => `  ${l}`), "}");
+  if (dark.length) out.push("@media (prefers-color-scheme: dark) {", `  ${selector} {`, ...dark.map(l => `    ${l}`), "  }", "}");
+  return out.join("\n");
+}
+
 /** The specs of `css`'s generated regions, in order. */
 export function regionSpecs(css: string): string[] {
   return [...css.matchAll(REGION)].map(m => m[2]);

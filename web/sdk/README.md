@@ -39,6 +39,28 @@ const handle = overlay({
 handle.close();
 ```
 
+### Theming the overlay
+
+The overlay draws in Clax's design tokens unless the page passes its own:
+a token file in the [W3C Design Tokens format](https://www.designtokens.org/tr/drafts/format/)
+with `theme.light`, `theme.dark` and `base` groups, each optional, in the
+roles of Clax's token file (`bg`, `card`, `fg`, `muted`, `border`,
+`accent`, `you`, `agent`, `danger`, `font`, `radius` and the rest; the
+full set is `tokens/clax.tokens.json` in the repository). A role the page
+leaves out keeps Clax's. A broken file (an alias to no token, a value that
+is not a colour) throws before the overlay is added.
+
+```ts
+overlay({
+  instance, queue, auth,
+  theme: {
+    palette: { $type: "color", paper: { $value: "#fdf6e3" }, ink: { $value: "#073642" }, violet: { $value: "#6c71c4" } },
+    theme: { light: { bg: { $value: "{palette.paper}" }, fg: { $value: "{palette.ink}" }, agent: { $value: "{palette.violet}" } } },
+    base: { radius: { $type: "dimension", $value: { value: 2, unit: "px" } } },
+  },
+});
+```
+
 ## The reporter client
 
 ```ts

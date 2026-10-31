@@ -1,6 +1,7 @@
 // `Clax.overlay`'s options, in a module of their own: the overlay's public
 // types (main.ts) reach the SDK's reporter types and nothing of the bridge.
 import type { ReporterAuth } from "../../sdk/src/reporter";
+import type { TokenGroup } from "../../sdk/src/tokens";
 
 /** `Clax.overlay`'s options. Every report carries the page's URL with its
  * query and without its fragment, and the page's title. */
@@ -16,4 +17,10 @@ export interface OverlayOptions {
   /** The page's artifact. Default: `<meta name="clax-artifact">`'s content,
    * else none, and the instance files the report on the page URL without its route. */
   externalId?: string;
+  /** The page's own look: a design token file (W3C Design Tokens format)
+   * with `theme.light`, `theme.dark` and `base` groups in the roles of
+   * Clax's token file (`bg`, `fg`, `card`, `accent`, `you`, `agent`, `font`,
+   * `radius` and the rest), each optional. The overlay draws in them; a role
+   * the page leaves out keeps Clax's. */
+  theme?: TokenGroup;
 }
