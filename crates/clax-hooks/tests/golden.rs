@@ -1110,7 +1110,7 @@ impl Daemon {
     /// `POST path` with `body` from a browser of the owner's, as a person
     /// answering in Clax: an owner browser session opened as `clax open`
     /// opens one (a login code made with the token, redeemed at `GET
-    /// /login`). While an agent session is live the token alone would get
+    /// /login`, whose page carries the session's proof). While an agent session is live the token alone would get
     /// 202 `confirmation_pending` for a decision such as an answer.
     fn post_as_owner_browser(&self, path: &str, body: Value) -> Value {
         let plain = reqwest::blocking::Client::builder()
@@ -1127,7 +1127,7 @@ impl Daemon {
             .unwrap();
         let login = made["path"].as_str().expect("a login path");
         let res = plain.get(format!("{}{login}", self.base())).send().unwrap();
-        assert_eq!(res.status(), 303, "the login code is redeemed");
+        assert_eq!(res.status(), 200, "the login code is redeemed");
         let name = format!("clax_owner_{}=", self.info()["port"]);
         let cookie = res
             .headers()
@@ -1138,9 +1138,16 @@ impl Daemon {
             .find(|kv| kv.starts_with(&name))
             .expect("an owner cookie")
             .to_string();
+        let page = res.text().unwrap();
+        let proof = page
+            .split_once("data-proof=\"")
+            .and_then(|(_, rest)| rest.split('"').next())
+            .expect("a login page with a proof")
+            .to_string();
         let res = plain
             .post(format!("{}{path}", self.base()))
             .header(reqwest::header::COOKIE, cookie)
+            .header("x-clax-owner-proof", proof)
             .json(&body)
             .send()
             .unwrap();
