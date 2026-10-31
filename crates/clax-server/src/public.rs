@@ -136,17 +136,23 @@ impl Mode {
 /// 400 `invalid_args` otherwise.
 pub fn origin_of(raw: &str) -> Result<String, ApiError> {
     let raw = raw.trim();
-    let with_scheme = if raw.contains("://") {
-        raw.to_string()
-    } else {
-        format!("https://{raw}")
-    };
+    let with_scheme = with_scheme(raw);
     clax_core::config::hosted_origin(with_scheme.trim_end_matches('/')).ok_or_else(|| {
         ApiError::bad_request(
             "invalid_args",
             format!("'{raw}' is not a public Clax: give its https:// origin"),
         )
     })
+}
+
+/// `raw` (trimmed) with `https://` before it when it names no scheme, as
+/// an origin or URL a person or an agent typed is read.
+pub fn with_scheme(raw: &str) -> String {
+    if raw.contains("://") {
+        raw.to_string()
+    } else {
+        format!("https://{raw}")
+    }
 }
 
 /// A remote's default name: its origin's host (and port).

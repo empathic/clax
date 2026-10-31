@@ -106,11 +106,7 @@ pub struct AskBody {
 /// and the URL to show (none for a bare origin).
 fn instance_of(raw: &str) -> Result<(String, Option<String>), ApiError> {
     let raw = raw.trim();
-    let with_scheme = if raw.contains("://") {
-        raw.to_string()
-    } else {
-        format!("https://{raw}")
-    };
+    let with_scheme = public::with_scheme(raw);
     let u = url::Url::parse(&with_scheme).map_err(|_| {
         ApiError::bad_request("invalid_url", format!("'{raw}' is not a URL or an origin"))
     })?;
