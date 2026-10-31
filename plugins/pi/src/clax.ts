@@ -615,14 +615,14 @@ function schemeOf(url: string): string | undefined {
   }
 }
 
-/** An artifact on a connected remote, as `GET /api/resolve` names it;
- * `mirror` the local mirror of its threads while this home follows it. */
 /** An artifact a tool that works on remote artifacts as well was handed:
  * its ID (on its remote, for a remote one), the version the reference
  * names, its route on the daemon, and on a remote its origin, name and
  * address there. */
 type Art = { id: string; version?: number; api: string; remote?: { origin: string; name: string; url: string } };
 
+/** An artifact on a connected remote, as `GET /api/resolve` names it;
+ * `mirror` the local mirror of its threads while this home follows it. */
 export type RemoteTarget = { kind: "remote"; remote: string; origin: string; name: string; artifact_id: string; version?: number; url: string; mirror?: string };
 
 /** What a tool's `url_or_id` names once the daemon resolved it. */
@@ -1219,17 +1219,20 @@ class Tools {
 
   /** What `urlOrId` names. Every http(s) URL is the daemon's to resolve
    * (`GET /api/resolve`, `resolved`), which answers `local` for a URL of its
-   * own artifacts. An ID or a Clax path, and a URL the daemon cannot
-   * resolve (one from before it resolved URLs, or a URL of its own that
-   * names no artifact), are read here (`target`) against the daemon's
-   * port, finding the daemon first. */
+   * own artifacts. An ID or a Clax path is read here (`target`) against the
+   * daemon's port, finding the daemon first, and so is a URL the daemon
+   * answers 404 for (a daemon from before it resolved URLs, which version
+   * skew between Pi's extension and the daemon leaves) or 400 `invalid_url`
+   * (a URL of its own that names no artifact, `invalid_id` here); any other
+   * failure is the tool's error. */
   private async targetOf(c: DaemonClient, urlOrId: string): Promise<Resolved> {
     const raw = urlOrId.trim();
     if (/^https?:\/\//i.test(raw)) {
       try {
         return resolved(await c.resolveUrl(raw), raw);
-      } catch {
-        // read here
+      } catch (e) {
+        const readHere = e instanceof ClientError && e.kind === "api" && (e.status === 404 || (e.status === 400 && e.error?.code === "invalid_url"));
+        if (!readHere) throw clientError(e, this.log);
       }
     }
     if (urlOrId.includes("://") && c.browserBase() === undefined) await this.call(() => c.ensureSession());

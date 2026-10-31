@@ -309,15 +309,15 @@ fn request(cli: &crate::Cli, c: &Client, a: &RequestArgs) -> anyhow::Result<()> 
         return Ok(());
     }
     let id = v["request"]["id"].as_str().unwrap_or_default().to_string();
+    if !clax_core::is_ulid(&id) {
+        anyhow::bail!("the daemon answered no request ID");
+    }
     if !cli.json {
         eprintln!(
             "Asked the person in Clax to connect {} ({}); waiting for the answer…",
             v["request"]["name"].as_str().unwrap_or_default(),
             v["request"]["origin"].as_str().unwrap_or_default()
         );
-    }
-    if !clax_core::is_ulid(&id) {
-        anyhow::bail!("the daemon answered no request ID");
     }
     let p = super::tools::with_daemon(c, session, |d| async move {
         d.remote_request_wait_up_to(&id, wait, true).await

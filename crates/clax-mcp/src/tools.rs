@@ -1428,19 +1428,23 @@ impl ClaxTools {
     /// What `url_or_id` names. Every http(s) URL is the daemon's to
     /// resolve (`GET /api/resolve`, [`crate::target::resolved`]), which
     /// answers `local` for a URL of its own artifacts, so the client keeps
-    /// no second reading of which URLs those are. An ID or a Clax path, and
-    /// a URL the daemon cannot resolve (one from before it resolved URLs,
-    /// or a URL of its own that names no artifact), are read here
-    /// ([`crate::target::target`]) against the daemon's port: a managed
-    /// client that has not found its daemon yet finds it first (a failure
-    /// to find it is left to the request that follows).
+    /// no second reading of which URLs those are. An ID or a Clax path is
+    /// read here ([`crate::target::target`]) against the daemon's port, and
+    /// so is a URL the daemon answers 404 for (a daemon from before it
+    /// resolved URLs: one an upgrade hold kept, an older Clax a remote
+    /// client reaches) or 400 `invalid_url` (a URL of its own that names
+    /// no artifact, `invalid_id` here); any other failure is the tool's
+    /// error. A managed client that has not found its daemon yet finds it
+    /// first (a failure to find it is left to the request that follows).
     async fn target(&self, url_or_id: &str) -> Result<crate::target::Target, CallToolResult> {
         let raw = url_or_id.trim();
         let lower = raw.to_ascii_lowercase();
         if lower.starts_with("http://") || lower.starts_with("https://") {
             match self.client.resolve_url(raw).await {
                 Ok(v) => return Ok(crate::target::resolved(&v, raw)),
-                Err(e) => tracing::debug!(error = %e, "resolving a URL failed; reading it here"),
+                Err(ClientError::Api { status: 404, .. }) => {}
+                Err(ClientError::Api { status: 400, error }) if error["code"] == "invalid_url" => {}
+                Err(e) => return Err(self.fail(e)),
             }
         }
         if url_or_id.contains("://")

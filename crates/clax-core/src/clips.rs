@@ -525,6 +525,9 @@ mod tests {
         let refs: Vec<(String, String)> = (0..10)
             .map(|i| (AID.to_string(), format!("01J9ZZZZZZZZZZZZZZZZZZZZ{i:02}")))
             .collect();
+        // fetch_within takes a bound; this one only stops a hang (fewer
+        // than FETCHES_AT_ONCE running together never meet), and no fetch
+        // here waits on anything else.
         let got = fetch_within(&refs, Duration::from_secs(600), fetch);
         assert_eq!(got.len(), 10);
         assert!(got.values().all(Result::is_ok), "{got:?}");
