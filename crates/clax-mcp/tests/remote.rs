@@ -693,3 +693,63 @@ async fn a_remote_clip_that_does_not_come_never_holds_the_feedback() {
         "{trailing}"
     );
 }
+
+/// A handover's clip that its text and its feedback item both name is
+/// fetched once, for the two together, within one fetch bound.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_clip_the_text_and_an_item_both_name_is_fetched_once() {
+    use clax_mcp::ClaxTools;
+    use clax_mcp::tools::WaitArgs;
+    use rmcp::handler::server::wrapper::Parameters;
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let dir = tempfile::tempdir().unwrap();
+    let (proxy, seen) = clip_answering_proxy(
+        format!("127.0.0.1:{}", ts.addr.port()),
+        1,
+        1,
+        "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: 45\r\nconnection: close\r\n\r\n{\"error\":{\"code\":\"not_found\",\"message\":\"no\"}}",
+    )
+    .await;
+    let client = client_through(&ts, &sam, &proxy, &dir)
+        .with_clip_fetch_time(std::time::Duration::from_secs(120));
+    let tools = ClaxTools::new(client.clone(), String::new(), None, ts.home.log_path());
+    let made = client
+        .create(&json!({"title": "Sam's notes",
+                        "files": {"index.html": {"content": "<p>notes</p>", "encoding": "utf8"}}}))
+        .await
+        .unwrap();
+    let aid = made["artifact"]["id"].as_str().unwrap().to_string();
+    let cookie = ts.browser_cookie(&ts.store.viewer_of_grant(&sam.grant_id()).unwrap().id);
+    let tid = thread_with_clip(&ts, &aid, &cookie, "ONECLIP").await;
+    let r = ts
+        .client
+        .post(format!(
+            "{}/api/artifacts/{aid}/threads/{tid}/send",
+            ts.base
+        ))
+        .header("cookie", format!("clax_viewer={cookie}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let r = tools
+        .wait_for_feedback(Parameters(WaitArgs {
+            url_or_id: None,
+            timeout_s: Some(1),
+        }))
+        .await
+        .unwrap();
+    let body: serde_json::Value =
+        serde_json::from_str(&r.content[0].as_text().unwrap().text).unwrap();
+    let trailing = r.content[1].as_text().unwrap().text.clone();
+    assert!(
+        trailing.contains("Clip: unavailable (not_found)"),
+        "{trailing}"
+    );
+    assert_eq!(
+        body["feedback"][0]["clip_unavailable"], "not_found",
+        "{body}"
+    );
+    assert_eq!(seen.lock().unwrap().seen, 1);
+}
