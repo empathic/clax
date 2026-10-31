@@ -2824,7 +2824,9 @@ grant) never holds the token and makes nothing wait. A session an open job
 names is never reaped while the job is open, and counts for as long: its
 harness may still be running. The decisions:
 
-1. answering a question an agent asked (`POST /api/questions/<qid>/answer`);
+1. answering a question an agent asked (`POST /api/questions/<qid>/answer`),
+   except the question an agent's push waits on (`approval_pending`),
+   whose answer counts only when made in the owner's browser anyway;
 2. pushing an artifact to a public Clax (`POST /api/artifacts/<aid>/push`,
    the owner's own push);
 3. connecting a public Clax (`POST /api/remotes`), and answering an agent's

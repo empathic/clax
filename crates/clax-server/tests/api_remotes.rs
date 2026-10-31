@@ -324,8 +324,9 @@ async fn an_agents_push_waits_for_the_owners_approval_in_the_browser() {
         (202, Some("approval_pending")),
         "{v}"
     );
-    // An answer through the daemon token (what an agent holds too) waits
-    // for the owner's browser while the agent is live, and answers nothing.
+    // An answer through the daemon token (what an agent holds too) asks
+    // no browser confirmation, since it could not approve the push anyway:
+    // the push is refused, asking the owner's browser.
     let (s, v) = post(
         &local,
         &format!("/api/questions/{qid}/answer"),
@@ -333,16 +334,12 @@ async fn an_agents_push_waits_for_the_owners_approval_in_the_browser() {
     )
     .await;
     assert_eq!(
-        (s, v["status"].as_str()),
-        (202, Some("confirmation_pending")),
+        (s, v["question"]["answered_via"].as_str()),
+        (200, Some("cli")),
         "{v}"
     );
     let (s, v) = push(json!({"question_id": qid})).await;
-    assert_eq!(
-        (s, v["status"].as_str()),
-        (202, Some("approval_pending")),
-        "{v}"
-    );
+    assert_eq!((s, code(&v)), (403, "not_approved"), "{v}");
     // Asked anew, answered in the owner's browser: pushed, and new versions follow.
     let (s, v) = push(json!({})).await;
     assert_eq!(s, 202, "{v}");
