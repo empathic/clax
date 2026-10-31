@@ -21,8 +21,11 @@
 //! token of. Sending a remote thread to an agent is not offered.
 
 use crate::client::Client;
+use crate::remote::Refused;
 use crate::term::{self, Paint};
 use clax_core::Home;
+use clax_mcp::client::DaemonClient;
+use clax_mcp::target::Target;
 use reqwest::Method;
 use serde_json::{Value, json};
 use std::io::Read;
@@ -110,33 +113,34 @@ impl Art {
         }
     }
 
-    /// The artifact `GET /api/resolve`'s answer `v` for `raw` names.
+    /// The artifact `GET /api/resolve`'s answer `v` for `raw` names, read
+    /// as the MCP tools read it ([`clax_mcp::target::resolved`]).
     fn resolved(raw: &str, v: &Value) -> anyhow::Result<Art> {
-        let text = |k: &str| v[k].as_str().unwrap_or_default();
-        match text("kind") {
-            "local" => Ok(Art::local(text("artifact_id"))),
-            "remote" => Ok(Art {
-                id: text("artifact_id").to_string(),
-                api: format!(
-                    "/api/remotes/{}/artifacts/{}",
-                    text("remote"),
-                    text("artifact_id")
-                ),
-                remote: Some((
-                    text("url").to_string(),
-                    json!({"origin": v["origin"], "name": v["name"]}),
-                )),
+        match clax_mcp::target::resolved(v, raw) {
+            Target::Artifact { id, .. } => Ok(Art::local(&id)),
+            Target::Remote {
+                remote,
+                origin,
+                name,
+                artifact_id,
+                url,
+                ..
+            } => Ok(Art {
+                api: DaemonClient::remote_artifact_path(&remote, &artifact_id),
+                id: artifact_id,
+                remote: Some((url, json!({"origin": origin, "name": name}))),
             }),
-            "sign_in_required" => anyhow::bail!(
-                "{raw} is on {} ({}), a Clax instance this Clax is not connected to: connect it with `{}`",
-                text("name"),
-                text("origin"),
-                v["request"]["command"].as_str().map_or_else(
-                    || format!("clax remote add {}", text("origin")),
-                    str::to_string
-                )
+            Target::SignInRequired {
+                origin,
+                name,
+                request,
+            } => anyhow::bail!(
+                "{raw} is on {name} ({origin}), a Clax instance this Clax is not connected to: connect it with `{}`",
+                request["command"]
+                    .as_str()
+                    .map_or_else(|| format!("clax remote add {origin}"), str::to_string)
             ),
-            _ => anyhow::bail!("'{raw}' is a web page, not a Clax artifact"),
+            Target::Page(_) => anyhow::bail!("'{raw}' is a web page, not a Clax artifact"),
         }
     }
 
@@ -225,7 +229,7 @@ fn artifact(c: &Client, raw: &str) -> anyhow::Result<Art> {
         let q = super::remotes::encode(&raw);
         match c.get(&format!("/api/resolve?url={q}")) {
             Ok(v) => return Art::resolved(&raw, &v),
-            Err(e) if e.to_string().contains("not_found") => {}
+            Err(e) if e.downcast_ref::<Refused>().is_some_and(|r| r.status == 404) => {}
             Err(e) => return Err(e),
         }
     }
@@ -1036,6 +1040,8 @@ mod tests {
             "{e}"
         );
         assert!(Art::resolved(raw, &json!({"kind": "page", "url": raw})).is_err());
+        // A local answer without a well-formed artifact ID names nothing.
+        assert!(Art::resolved(raw, &json!({"kind": "local"})).is_err());
     }
 
     #[test]
