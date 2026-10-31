@@ -55,7 +55,7 @@ beforeAll(async () => {
         }
         return reply(200, { kind: "page", url: asked });
       }
-      if (u.pathname.startsWith("/api/remotes/r_2/")) {
+      if (u.pathname.startsWith("/api/remotes/r_2/") || (route === "PUT /api/sessions/s1/remote-watches" && body.includes('"r_2"'))) {
         return reply(502, { error: { code: "remote_sign_in_required", message: "gone no longer takes this Clax's token", origin: "https://revoked.example", name: "gone", request: { tool: "connect_instance", command: "clax remote request 'https://revoked.example/'" } } });
       }
       if (route === `GET ${BASE}`) return reply(200, { artifact: { id: RAID, current_version: 1 }, versions: [{ n: 1, files: { "index.html": { content_type: "text/html" } } }] });
@@ -159,6 +159,10 @@ describe("a connected instance's artifact", () => {
     const r = json(await pi.callTool("clax_read", { url_or_id: REVOKED }, ctx)).error;
     expect(r).toMatchObject({ code: "remote_sign_in_required", origin: "https://revoked.example", name: "gone" });
     expect(r.next).toContain("connect_instance");
+    // Watching it is refused the same way.
+    const w = json(await pi.callTool("clax_watch", { url_or_id: REVOKED }, ctx)).error;
+    expect(w).toMatchObject({ code: "remote_sign_in_required", origin: "https://revoked.example", name: "gone" });
+    expect(w.next).toContain("connect_instance");
   });
 });
 
