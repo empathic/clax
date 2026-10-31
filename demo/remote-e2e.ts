@@ -44,7 +44,8 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { BuildLog } from "./lib/build.ts";
-import { setupFirstPerson, type PersonSession } from "./lib/http.ts";
+import { setupFirstPerson, toolAnswer, type PersonSession, type ToolAnswer } from "./lib/http.ts";
+import { exited, sleep, stopChild, stopGroup, until } from "./lib/proc.ts";
 import { devLocalVars, freePort, startWorker, type RunningWorker } from "./lib/worker.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -67,35 +68,6 @@ const PAGE = `<!doctype html><title>Private plan</title><main><h1>Private plan</
 const COMMENT = "Add the launch date to the plan.";
 const HARNESS_SESSION = `remote-e2e-${randomBytes(4).toString("hex")}`;
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-/** Polls `get` every 100 ms until it answers non-null, for at most `ms`. */
-async function until<T>(what: string, get: () => Promise<T | null | undefined>, ms = 30_000): Promise<T> {
-  const end = Date.now() + ms;
-  for (;;) {
-    const v = await get();
-    if (v !== null && v !== undefined) return v;
-    if (Date.now() > end) throw new Error(`${what}: not within ${ms / 1000} s`);
-    await sleep(100);
-  }
-}
-
-function exited(child: ChildProcess): Promise<void> {
-  return new Promise((ok) => {
-    if (child.exitCode !== null || child.signalCode !== null) ok();
-    else child.once("exit", () => ok());
-  });
-}
-
-/** Stops `child` by its PID: SIGTERM, then SIGKILL after 10 s. */
-async function stopChild(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  child.kill("SIGTERM");
-  if (await Promise.race([exited(child).then(() => true), sleep(10_000).then(() => false)])) return;
-  child.kill("SIGKILL");
-  await Promise.race([exited(child), sleep(10_000)]);
-}
-
 /** This process's environment without what names an agent, a harness or a
  * Clax home, so the children run outside the session this runs in. */
 function cleanEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
@@ -112,23 +84,6 @@ function cleanEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
  * `group` for one started in a process group of its own (wrangler),
  * stopped by that group. */
 const spawned: { child: ChildProcess; group: boolean }[] = [];
-
-/** Stops a child started detached, by its process group: SIGTERM, then SIGKILL after 10 s. */
-async function stopGroup(child: ChildProcess): Promise<void> {
-  const pid = child.pid;
-  if (pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
-  const signal = (sig: NodeJS.Signals) => {
-    try {
-      process.kill(-pid, sig);
-    } catch {
-      // already gone
-    }
-  };
-  signal("SIGTERM");
-  if (await Promise.race([exited(child).then(() => true), sleep(10_000).then(() => false)])) return;
-  signal("SIGKILL");
-  await Promise.race([exited(child), sleep(10_000)]);
-}
 
 let step = 0;
 function say(line: string): void {
@@ -225,12 +180,6 @@ async function ownerBrowser(d: Daemon): Promise<OwnerBrowser> {
 
 // ── The agent: `clax mcp` over stdio ────────────────────────────────────────
 
-interface ToolResult {
-  text: string;
-  data: Record<string, unknown>;
-  isError: boolean;
-}
-
 /** An MCP client of `clax mcp --agent claude` under the harness session
  * HARNESS_SESSION, as Claude Code runs it. */
 class Agent {
@@ -278,23 +227,13 @@ class Agent {
     this.send({ jsonrpc: "2.0", method: "notifications/initialized" });
   }
 
-  async call(tool: string, args: Record<string, unknown>, ms = 60_000): Promise<ToolResult> {
+  async call(tool: string, args: Record<string, unknown>, ms = 60_000): Promise<ToolAnswer> {
     const m = await this.request("tools/call", { name: tool, arguments: args }, ms);
     if (m.error !== undefined) throw new Error(`${tool}: ${JSON.stringify(m.error)}`);
-    const r = m.result as { content?: { type: string; text?: string }[]; structuredContent?: Record<string, unknown>; isError?: boolean };
-    const text = (r.content ?? []).filter((c) => c.type === "text").map((c) => c.text ?? "").join("\n");
-    let data = r.structuredContent;
-    if (data === undefined) {
-      try {
-        data = JSON.parse(r.content?.[0]?.text ?? "{}") as Record<string, unknown>;
-      } catch {
-        data = {};
-      }
-    }
-    return { text, data, isError: r.isError === true };
+    return toolAnswer(m.result as Parameters<typeof toolAnswer>[0]);
   }
 
-  async ok(tool: string, args: Record<string, unknown>, ms?: number): Promise<ToolResult> {
+  async ok(tool: string, args: Record<string, unknown>, ms?: number): Promise<ToolAnswer> {
     const r = await this.call(tool, args, ms);
     if (r.isError) throw new Error(`${tool} failed: ${r.text}`);
     return r;

@@ -157,6 +157,20 @@ export interface ToolAnswer {
   isError: boolean;
 }
 
+/** The answer in a `tools/call` result. */
+export function toolAnswer(result: { content?: { type: string; text?: string }[]; structuredContent?: Record<string, unknown>; isError?: boolean }): ToolAnswer {
+  const text = (result.content ?? []).filter((c) => c.type === "text").map((c) => c.text ?? "").join("\n");
+  let data = result.structuredContent;
+  if (data === undefined) {
+    try {
+      data = JSON.parse(result.content?.[0]?.text ?? "{}") as Record<string, unknown>;
+    } catch {
+      data = {};
+    }
+  }
+  return { text, data, isError: result.isError === true };
+}
+
 /** The error a tool result carries (`{code, message, …}`), or null. */
 export function toolError(a: ToolAnswer): { code: string; message: string; [k: string]: unknown } | null {
   if (!a.isError) return null;
@@ -230,17 +244,7 @@ export class McpAgent {
     if (r.status !== 200 || error !== undefined || r.body === null) {
       throw new ClaxApiError(r.status, "mcp_error", `${tool}: ${error?.message ?? r.text.slice(0, 200)}`);
     }
-    const result = r.body.result as { content?: { type: string; text?: string }[]; structuredContent?: Record<string, unknown>; isError?: boolean };
-    const text = (result.content ?? []).filter((c) => c.type === "text").map((c) => c.text ?? "").join("\n");
-    let data = result.structuredContent;
-    if (data === undefined) {
-      try {
-        data = JSON.parse(result.content?.[0]?.text ?? "{}") as Record<string, unknown>;
-      } catch {
-        data = {};
-      }
-    }
-    return { text, data, isError: result.isError === true };
+    return toolAnswer(r.body.result as Parameters<typeof toolAnswer>[0]);
   }
 
   /** Calls a tool that must succeed; throws ClaxApiError with the tool's code otherwise. */
