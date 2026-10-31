@@ -3,6 +3,7 @@
   // with its state and its replies, and a box to answer on one that is open.
   // `reports` is null until the first page arrived.
   import type { Report } from "../../sdk/src/types";
+  import { Surface, Thread } from "../../sdk/src/ui";
   import { failureText, repliesOf, summaryOf } from "./model";
 
   type Props = { reports: Report[] | null; error: string | null; onReply(id: string, body: string): Promise<void>; onClose(): void };
@@ -36,7 +37,7 @@
   }
 </script>
 
-<section class="panel" aria-label="Your reports">
+<Surface as="section" class="panel" aria-label="Your reports">
   <header>
     <h2>Your reports</h2>
     <button type="button" class="ghost" onclick={onClose} aria-label="Close your reports">✕</button>
@@ -57,12 +58,7 @@
           </button>
           {#if expanded === r.id}
             <div class="thread">
-              {#each r.comments as c (c.id)}
-                <div class="c" data-kind={c.author_kind}>
-                  <p class="who small">{c.author_kind === "reporter" ? "You" : c.author_name}</p>
-                  <p class="body">{c.body}</p>
-                </div>
-              {/each}
+              <Thread comments={r.comments.map(c => ({ id: c.id, kind: c.author_kind, who: c.author_kind === "reporter" ? "You" : c.author_name, body: c.body }))} />
               {#if r.status === "open"}
                 <form onsubmit={e => { e.preventDefault(); void reply(r.id); }}>
                   <textarea rows={2} aria-label="Reply" placeholder="Reply…" bind:value={text}
@@ -77,11 +73,12 @@
       {/each}
     </ul>
   {/if}
-</section>
+</Surface>
 
 <style>
-  /* Placed by the overlay's dock, above its notice and launcher. */
-  .panel { width: min(380px, calc(100vw - 32px)); max-height: 560px; overflow: auto; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius); box-shadow: var(--elev-lg); }
+  /* The UI kit's surface (web/sdk/ui), placed by the overlay's dock, above
+     its notice and launcher. */
+  :global(.panel.surface) { width: min(380px, calc(100vw - 32px)); max-height: 560px; overflow: auto; }
   header { position: sticky; top: 0; display: flex; align-items: center; justify-content: space-between; padding: 6px 6px 6px 14px; background: var(--raised); border-bottom: 1px solid var(--border); }
   h2 { margin: 0; font: 600 15px/1.3 var(--font); }
   .empty { padding: 16px 14px; }
@@ -96,11 +93,6 @@
   .state[data-state="claimed"] { background: var(--accent-tint); color: var(--agent-ink); }
   .state[data-state="resolved"] { background: none; border: 1px solid var(--border-strong); color: var(--muted); }
   .thread { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 12px; }
-  .c { padding-left: 8px; border-left: 2px solid var(--border-hover); }
-  .c[data-kind="reporter"] { border-left-color: var(--you); }
-  .c[data-kind="agent"] { border-left-color: var(--agent-ink); }
-  .who { color: var(--muted); font-weight: 600; }
-  .body { white-space: pre-wrap; overflow-wrap: anywhere; }
   .actions { display: flex; justify-content: flex-end; margin-top: 6px; }
   form .error { padding: 6px 0 0; }
 </style>

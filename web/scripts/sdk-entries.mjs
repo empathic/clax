@@ -17,11 +17,18 @@ export const ENTRIES = [
   { path: "./anchor", name: "anchor", src: "sdk/src/anchor.ts" },
 ];
 
+/** Entries Clax's own code imports by the package's name that the
+ * published package does not carry yet: the UI kit, whose components are
+ * .svelte files, which build-sdk.mjs's declarations cannot come from. */
+export const SOURCE_ONLY_ENTRIES = [
+  { path: "./ui", src: "sdk/src/ui.ts" },
+];
+
 /** The specifier an app imports `entry` by. */
 export const specifier = entry => (entry.path === "." ? PACKAGE_NAME : `${PACKAGE_NAME}/${entry.path.slice(2)}`);
 
 /** Vite's `resolve.alias` from each entry's specifier, exactly, to its
  * source under `web` (an absolute path). */
 export function sdkSourceAlias(web) {
-  return ENTRIES.map(e => ({ find: new RegExp(`^${specifier(e).replace(/[/.]/g, "\\$&")}$`), replacement: join(web, e.src) }));
+  return [...ENTRIES, ...SOURCE_ONLY_ENTRIES].map(e => ({ find: new RegExp(`^${specifier(e).replace(/[/.]/g, "\\$&")}$`), replacement: join(web, e.src) }));
 }

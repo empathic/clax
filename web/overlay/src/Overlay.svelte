@@ -10,6 +10,7 @@
   // none over another; closing the composer gives focus back to Report.
   import { onDestroy, onMount, untrack } from "svelte";
   import type { Report } from "../../sdk/src/types";
+  import { Quote, Surface } from "../../sdk/src/ui";
   import { type Clip, type Draft, POLL_MS, Poll, type ReporterApi, type Timers, canSend, clipStatus, failureText, newDraft, pageUrl, quoteOf, realTimers, reportOf, takeClip } from "./model";
   import type { Picked, Picker } from "./picker";
   import Reports from "./Reports.svelte";
@@ -168,16 +169,16 @@
 
 <div class="cx">
   {#if picking}
-    <div class="hint" role="status">
+    <Surface class="hint" accent role="status">
       <span>Click what your report is about, select text, or drag over an area. Esc cancels.</span>
       <button type="button" onclick={stopPicking}>Cancel</button>
-    </div>
+    </Surface>
   {/if}
 
   <div class="dock">
   {#if draft && !open}
-    <form class="composer" aria-label="New report" onsubmit={e => { e.preventDefault(); void send(); }}>
-      <p class="quote">{quoteOf(draft.anchor)}</p>
+    <Surface as="form" class="composer" accent aria-label="New report" onsubmit={e => { e.preventDefault(); void send(); }}>
+      <Quote text={quoteOf(draft.anchor)} />
       {#if clipUrl}
         <figure class="clip">
           <img src={clipUrl} alt="Screenshot of the picked part of the page" />
@@ -196,7 +197,7 @@
         <button type="button" onclick={cancel}>Cancel</button>
         <button type="submit" class="primary" disabled={!canSend(draft)}>{draft.sending ? "Sending…" : "Send"}</button>
       </div>
-    </form>
+    </Surface>
   {/if}
 
   {#if open}
@@ -224,17 +225,18 @@
   .launcher .reports-btn { background: var(--raised); border-color: var(--border-hover); }
   .launcher .reports-btn[aria-expanded="true"] { background: var(--hover); }
   .launcher .report-btn[aria-pressed="true"] { background: var(--you); color: var(--on-you); border-color: var(--you); }
-  .hint { position: fixed; left: 50%; top: 12px; transform: translateX(-50%); max-width: calc(100vw - 32px); display: flex; gap: 10px; align-items: center; padding: 6px 6px 6px 14px; background: var(--raised); border: 1px solid var(--border-hover); border-top: 3px solid var(--you); border-radius: var(--radius); box-shadow: var(--elev-lg); font-size: 13px; z-index: 3; }
-  .composer { width: min(360px, calc(100vw - 32px)); overflow: auto; background: var(--raised); border: 1px solid var(--border-hover); border-top: 3px solid var(--you); border-radius: var(--radius); padding: 12px; box-shadow: var(--elev-lg); z-index: 2; }
-  .quote { margin: 0 0 8px; padding: 4px 8px; font-size: 13px; color: var(--muted); background: var(--comment-hl); border-left: 2px solid var(--you); border-radius: 0 var(--radius-xs) var(--radius-xs) 0; overflow-wrap: anywhere; }
+  /* The hint and the composer are the UI kit's surfaces (web/sdk/ui): their
+     look is the kit's; their place is the overlay's. */
+  .cx :global(.hint) { position: fixed; left: 50%; top: 12px; transform: translateX(-50%); max-width: calc(100vw - 32px); display: flex; gap: 10px; align-items: center; padding: 6px 6px 6px 14px; font-size: 13px; z-index: 3; }
+  .dock :global(.composer) { width: min(360px, calc(100vw - 32px)); overflow: auto; padding: 12px; z-index: 2; }
   .clip { margin: 0 0 8px; padding: 4px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); background: var(--bg); }
   .clip img { display: block; max-width: 100%; min-height: 24px; max-height: 160px; object-fit: cover; object-position: left top; }
   .clip figcaption { margin-top: 2px; }
-  .composer > p[role="status"] { margin-bottom: 8px; }
+  .dock :global(.composer > p[role="status"]) { margin-bottom: 8px; }
   .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }
   .error { margin-top: 6px; color: var(--danger); }
   .notice { flex: none; margin: 0; max-width: min(360px, calc(100vw - 32px)); padding: 8px 12px; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius-sm); box-shadow: var(--elev-lg); font-size: 13px; }
   @media (max-width: 480px) {
-    .composer { position: fixed; left: 0; right: 0; bottom: 0; width: auto; max-height: 70vh; border-width: 3px 0 0; border-radius: var(--radius) var(--radius) 0 0; z-index: 4; }
+    .dock :global(.composer.surface) { position: fixed; left: 0; right: 0; bottom: 0; width: auto; max-height: 70vh; border-width: 3px 0 0; border-radius: var(--radius) var(--radius) 0 0; z-index: 4; }
   }
 </style>
