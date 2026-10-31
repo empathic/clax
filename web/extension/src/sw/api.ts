@@ -5,11 +5,10 @@
 // send) is not sent again after a network error: the person sees the
 // failure and retries. A new thread is sent again: it names its pick, which
 // the daemon makes one thread of.
-import type { AnswerBody, Artifact, InboxFilter, InboxItem, InboxPage, InboxSummary, QuestionView, Version } from "../../../shell/src/api";
-import { inboxQuery } from "../../../shell/src/q/api";
-import type { Thread, Viewer } from "../../../shell/src/threads";
-import type { PresenceView } from "../../../shell/src/view/presence-model";
-import type { Working } from "../../../shell/src/view/working-model";
+import {
+  type AnswerBody, type Artifact, type InboxFilter, type InboxItem, type InboxPage, type InboxSummary, inboxQuery, type PresenceView, type QuestionView,
+  type Thread, type Version, type Viewer, type Working,
+} from "@empathic/clax-client/sync";
 import type { PageView, SiteInfo, SiteRule, SiteView } from "../messages";
 import { bytesDataUrl } from "../data-url";
 import { MAX_CLIP } from "./capture";

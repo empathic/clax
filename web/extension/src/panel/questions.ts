@@ -3,8 +3,8 @@
 // lets a closed one say what closed it for a moment, filled from the
 // worker's messages instead of the shell's stream, and answering through
 // the worker, which alone talks to the daemon.
-import { ApiError, type AnswerBody, type QuestionView } from "../../../shell/src/api";
-import { QuestionFeed } from "../../../shell/src/q/feed.svelte";
+import { ApiError, type AnswerBody, type QuestionView } from "@empathic/clax-client/sync";
+import { QuestionFeed } from "@empathic/clax-client/ui";
 import type { PanelToWorker, WorkerToPanel } from "../messages";
 
 type Close<M = Extract<PanelToWorker, { t: "q-answer" | "q-decline" | "q-release" | "q-pull" }>> = M extends unknown ? Omit<M, "req"> : never;

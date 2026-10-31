@@ -2,7 +2,7 @@
 // it at a pick, its pick ID in the URL's fragment; it talks only to the
 // worker, over a port named for the pick.
 import { mount } from "svelte";
-import "../../../shell/src/theme.css";
+import "@empathic/clax-client/theme.css";
 import { PICK_ID } from "../messages";
 import ComposerFrame from "./ComposerFrame.svelte";
 

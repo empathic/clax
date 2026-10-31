@@ -11,7 +11,7 @@
 // inbox come over the same port (spec 2026-10-06-agent-questions-and-inbox
 // §9.6): the unread count, the open questions (kept by `questions`, whose
 // cards answer through the worker), and each item as it changes.
-import type { InboxItem } from "../../../shell/src/api";
+import type { InboxItem } from "@empathic/clax-client/sync";
 import { type FarPage, type PanelState, type PanelToWorker, type SiteChoice, type SiteView, type Suggestion, type WorkerToPanel, isToPanel } from "../messages";
 import { PanelQuestions } from "./questions";
 

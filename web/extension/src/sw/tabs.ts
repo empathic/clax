@@ -7,13 +7,11 @@
 // activeTab) is kept in session storage; the tab's page and threads are
 // fetched again at its next message.
 import type { AnchorResult } from "@empathic/clax-sdk/anchor";
-import type { Participants, Version } from "../../../shell/src/api";
-import type { HubMsg, TabMsg } from "../../../shell/src/stream-hub";
-import { type FeedbackState, type Thread, type Viewer, upsert } from "../../../shell/src/threads";
-import { type ThreadDelta, applyPresence, applyThread } from "../../../shell/src/view/deltas";
-import type { PresenceView } from "../../../shell/src/view/presence-model";
-import { type ThreadChange, ThreadSync } from "../../../shell/src/view/thread-sync";
-import type { Working } from "../../../shell/src/view/working-model";
+import type { HubMsg, TabMsg } from "@empathic/clax-client/stream";
+import {
+  applyPresence, applyThread, type FeedbackState, type Participants, type PresenceView, type Thread, type ThreadChange, type ThreadDelta, ThreadSync,
+  upsert, type Version, type Viewer, type Working,
+} from "@empathic/clax-client/sync";
 import { MAX_FAR, MAX_URL, type OverlayToWorker, type PageView, type PanelState, type PanelToWorker, URL_TOO_LONG, type WorkerToOverlay, type WorkerToPanel, isFromPanel, overlayThread, waitsForSnapshot } from "../messages";
 import type { Api } from "./api";
 import { originOf } from "./origins";

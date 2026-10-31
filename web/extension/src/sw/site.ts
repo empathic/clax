@@ -4,9 +4,8 @@
 // follows. A delta that does not add up (a page the listing lacks, a
 // comment count that does not match) fetches the listing again; deltas
 // heard while it is fetched are applied to it again when it answers.
-import type { HubMsg, TabMsg } from "../../../shell/src/stream-hub";
-import type { Thread } from "../../../shell/src/threads";
-import { type ThreadDelta, applyThread } from "../../../shell/src/view/deltas";
+import type { HubMsg, TabMsg } from "@empathic/clax-client/stream";
+import { applyThread, type Thread, type ThreadDelta } from "@empathic/clax-client/sync";
 import type { SiteView } from "../messages";
 
 type Ev = [string, Record<string, unknown>];

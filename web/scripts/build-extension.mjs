@@ -11,6 +11,7 @@ import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { build, transformWithEsbuild } from "vite";
+import { clientSourceAlias } from "./client-entries.mjs";
 import { sdkSourceAlias } from "./sdk-entries.mjs";
 import { cleanOut } from "./extension-clean.mjs";
 import { drawIcons } from "./extension-icons.mjs";
@@ -32,8 +33,8 @@ const root = `${web}extension/`;
 
 async function variant(out, test) {
   cleanOut(out);
-  // The extension imports the SDK by its package name, from its sources.
-  const shared = { configFile: false, logLevel: "warn", publicDir: false, resolve: { alias: sdkSourceAlias(web) }, define: { __CLAX_EXT_TEST__: JSON.stringify(test), __CLAX_TEST_CLOCK__: "false" } };
+  // The extension imports the SDK and the client package by their names, from their sources.
+  const shared = { configFile: false, logLevel: "warn", publicDir: false, resolve: { alias: [...sdkSourceAlias(web), ...clientSourceAlias(web)] }, define: { __CLAX_EXT_TEST__: JSON.stringify(test), __CLAX_TEST_CLOCK__: "false" } };
   const scripts = [["sw", "sw/main.ts", "es"], ["overlay", "content/overlay.ts", "iife"]];
   for (const [name, entry, format] of scripts) {
     await build({ ...shared, plugins: format === "es" ? [minifyWhole] : [], build: { outDir: out, emptyOutDir: false, minify: true, sourcemap: false,

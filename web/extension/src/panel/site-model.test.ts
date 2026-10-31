@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Thread } from "../../../shell/src/threads";
+import type { Thread } from "@empathic/clax-client/sync";
 import type { PageView, SiteView } from "../messages";
 import { checkPattern, counts, groups, lastActivity, matchPattern, matches, preview, statusOf } from "./site-model";
 

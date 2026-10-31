@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { InboxItem, QuestionView } from "../../../shell/src/api";
-import type { TabMsg } from "../../../shell/src/stream-hub";
+import type { TabMsg } from "@empathic/clax-client/stream";
+import type { InboxItem, QuestionView } from "@empathic/clax-client/sync";
 import type { WorkerToPanel } from "../messages";
 import { ApiFailure } from "./api";
 import { HUB_ID, RETRY_LIMIT, RETRY_MAX_MS, WorkerInbox } from "./inbox";

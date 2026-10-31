@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { HubMsg, TabMsg } from "../../../shell/src/stream-hub";
+import type { HubMsg, TabMsg } from "@empathic/clax-client/stream";
 import { MAX_FAR, type PageView, type SiteView, type WorkerToOverlay, type WorkerToPanel } from "../messages";
 import { FakeEvent } from "../../test/fake-chrome";
 import { type TabState, Tabs, applyEvent, emptyTab, type TabsApi, CLOSED_MS, HOST_SLOW } from "./tabs";

@@ -4,6 +4,7 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { svelteTesting } from "@testing-library/svelte/vite";
 import { MOUNT_TIMEOUT_MS } from "./shell/src/test/timeouts";
 import { sdkSourceAlias } from "./scripts/sdk-entries.mjs";
+import { clientSourceAlias } from "./scripts/client-entries.mjs";
 export default defineConfig({
   // svelteTesting() resolves Svelte's browser build under jsdom and unmounts after each test.
   plugins: [svelte(), svelteTesting()],
@@ -11,10 +12,12 @@ export default defineConfig({
   // the extension's worker test hook (__CLAX_EXT_TEST__) is off, as in its release build.
   define: { __CLAX_TEST_CLOCK__: "true", __CLAX_EXT_TEST__: "false" },
   // The bridge loads its lazy parts from source here (parts-static.ts).
-  // The extension imports the SDK by its package name, from its sources (scripts/build-sdk.mjs).
+  // The extension imports the SDK and the client package by their names, from
+  // their sources (scripts/sdk-entries.mjs, scripts/client-entries.mjs).
   resolve: { alias: [
     { find: "clax-bridge-parts", replacement: fileURLToPath(new URL("./bridge/src/parts-static.ts", import.meta.url)) },
     ...sdkSourceAlias(fileURLToPath(new URL(".", import.meta.url))),
+    ...clientSourceAlias(fileURLToPath(new URL(".", import.meta.url))),
   ] },
   // The home app's unit tests (apps/clax_app/home_unit) import its modules and the kit from outside web/.
   server: { fs: { allow: [fileURLToPath(new URL("..", import.meta.url))] } },

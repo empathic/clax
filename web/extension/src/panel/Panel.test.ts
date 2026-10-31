@@ -1,8 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PanelState, PanelToWorker, SiteView } from "../messages";
-import type { InboxItem } from "../../../shell/src/api";
-import * as fixtures from "../../../shell/src/q/fixtures";
+import type { InboxItem } from "@empathic/clax-client/sync";
+import { fixtures } from "@empathic/clax-client/testing";
 import type { InboxReq as InboxReqLike } from "./link.svelte";
 import Panel from "./Panel.svelte";
 import { PanelQuestions } from "./questions";
@@ -205,7 +205,7 @@ describe("Panel: the Send menu", () => {
     expect(l.sent).toContainEqual({ t: "send", threadId: thread.id, to: MINE });
     await fireEvent.click(screen.getByRole("button", { name: "Choose the agent" }));
     // The menu loads on first open (loaded first here, so a busy run does not outwait the query).
-    await import("../../../shell/src/ui/SendMenu.svelte");
+    await import("@empathic/clax-client/send-menu");
     const menu = await screen.findByRole("menu");
     expect(within(menu).getAllByRole("group").map(g => g.getAttribute("aria-label"))).toEqual(["Your agents", "Sam's agents"]);
     expect(within(menu).getByRole("menuitemradio", { name: "clax-main" }).getAttribute("aria-checked")).toBe("true");
@@ -229,7 +229,7 @@ describe("Panel: the Send menu", () => {
     const { l } = sendLink([both[1], codex]);
     const { rerender } = render(Panel, { props: { link: l as never, now: NOW } });
     await fireEvent.click(screen.getByRole("button", { name: "Choose the agent" }));
-    await import("../../../shell/src/ui/SendMenu.svelte");
+    await import("@empathic/clax-client/send-menu");
     await fireEvent.click(await screen.findByRole("menuitemradio", { name: "clax-docs" }));
     expect(screen.getByRole("button", { name: "Send to clax-docs" })).toBeTruthy();
     await rerender({ link: { ...l, state: state({ participants: { people: [], agents: [both[1], { ...codex, live: false }] } as never }) } as never, now: NOW });
@@ -243,7 +243,7 @@ describe("Panel: the Send menu", () => {
     const send = screen.getByRole("button", { name: "Send to …" });
     expect(send.getAttribute("aria-haspopup")).toBe("menu");
     await fireEvent.click(send, { detail: 1 });
-    await import("../../../shell/src/ui/SendMenu.svelte");
+    await import("@empathic/clax-client/send-menu");
     const menu = await screen.findByRole("menu");
     expect(within(menu).getAllByRole("group").map(g => g.getAttribute("aria-label"))).toEqual(["Sam's agents"]);
     expect(l.sent.filter(m => m.t === "send")).toEqual([]);
@@ -333,7 +333,7 @@ describe("Panel: the site's other pages", () => {
     await fireEvent.click(within(card).getByRole("button", { name: "Send to claude" }), { detail: 1 });
     await fireEvent.click(within(card).getByRole("button", { name: "Choose the agent" }));
     // The menu loads on first open (loaded first here, so a busy run does not outwait the query).
-    await import("../../../shell/src/ui/SendMenu.svelte");
+    await import("@empathic/clax-client/send-menu");
     await fireEvent.click(await within(card).findByRole("menuitemradio", { name: "codex" }));
     await fireEvent.click(within(card).getByRole("button", { name: "Send to codex" }), { detail: 1 });
     await fireEvent.click(within(card).getByRole("button", { name: "Resolve" }), { detail: 1 });
@@ -364,7 +364,7 @@ describe("Panel: the site's other pages", () => {
     await fireEvent.click(within(card).getByRole("button", { name: "Send to clax-main" }), { detail: 1 });
     expect(l.sent.filter(m => m.t === "send")).toEqual([{ t: "send", threadId: T3, to: A1 }]);
     await fireEvent.click(within(card).getByRole("button", { name: "Choose the agent" }));
-    await import("../../../shell/src/ui/SendMenu.svelte");
+    await import("@empathic/clax-client/send-menu");
     await vi.waitFor(() => expect(within(card).getByRole("menuitemradio", { name: /^clax-sam/ }).textContent).toBe("clax-sam Sam's agent Sam approves first"));
     expect(firsts).toEqual([[T3]]);
     await fireEvent.click(within(card).getByRole("menuitemradio", { name: /^clax-sam/ }));

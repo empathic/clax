@@ -16,10 +16,9 @@
   // request goes through the worker. The shell's rows and cards, and their
   // styles, are reused; their links to Clax pages open through the worker.
   import { onMount } from "svelte";
-  import type { InboxFilter, InboxItem, InboxPage } from "../../../shell/src/api";
-  import InboxRow from "../../../shell/src/q/InboxRow.svelte";
-  import QuestionList from "../../../shell/src/q/QuestionList.svelte";
-  import { approvalOf, newestSeq } from "../../../shell/src/q/inbox-model";
+  import { approvalOf, newestSeq } from "@empathic/clax-client/models";
+  import type { InboxFilter, InboxItem, InboxPage } from "@empathic/clax-client/sync";
+  import { InboxRow, QuestionList } from "@empathic/clax-client/ui";
   import type { PanelToWorker, WorkerToPanel } from "../messages";
   import type { InboxReq } from "./link.svelte";
   import type { PanelQuestions } from "./questions";

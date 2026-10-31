@@ -6,7 +6,8 @@ import type { Timers } from "./resolver";
 
 type Handlers = { pickElement(el: Element): void; cancel(): void };
 const mode = vi.hoisted(() => ({ handlers: null as Handlers | null, on: false, visible: true, captured: 0 }));
-vi.mock("../../../bridge/src/comment-mode", () => ({
+vi.mock("@empathic/clax-sdk/anchor", async orig => ({
+  ...await orig<typeof import("@empathic/clax-sdk/anchor")>(),
   CommentMode: class {
     constructor(_doc: Document, h: Handlers) { mode.handlers = h; }
     set(on: boolean) { mode.on = on; }

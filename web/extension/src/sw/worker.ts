@@ -6,7 +6,7 @@
 // client while a panel is open), and the picks. A new pairing reconnects the
 // hub: the old credential's stream cannot be changed or resumed by the new
 // one.
-import { Hub } from "../../../shell/src/stream-hub";
+import { Hub } from "@empathic/clax-client/stream";
 import type { OverlayToWorker, Rect, WorkerToOverlay } from "../messages";
 import { Api } from "./api";
 import { HUB_ID, WorkerInbox } from "./inbox";

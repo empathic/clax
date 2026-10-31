@@ -11,8 +11,7 @@
   // (`dismiss`). Cancel never throws on a closed port. The composer tells
   // the worker how tall its content is (`size`), whenever that changes, and
   // the overlay fits the frame to it.
-  import Composer from "../../../shell/src/ui/Composer.svelte";
-  import type { Draft } from "../../../shell/src/view/composer-model";
+  import { Composer, type Draft } from "@empathic/clax-client/composer";
   import { dataUrlBlob } from "../data-url";
   import { type ComposerNote, MAX_COMPOSER_HEIGHT, isToComposer } from "../messages";
   import { type Shortcut, readShortcut } from "../shortcut";

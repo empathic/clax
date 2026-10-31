@@ -7,8 +7,13 @@
       "clax-bridge-parts": ["bridge/src/parts-url.ts"],
       "@empathic/clax-sdk": ["sdk/src/index.ts"],
       "@empathic/clax-sdk/overlay": ["overlay/src/main.ts"],
-      "@empathic/clax-sdk/*": ["sdk/src/*.ts"]
+      "@empathic/clax-sdk/*": ["sdk/src/*.ts"],
+      "@empathic/clax-client/testing": ["shell/src/test/client.ts"],
+      "@empathic/clax-client/theme.css": ["shell/src/theme.css"],
+      "@empathic/clax-client/roster": ["shell/src/ui/Roster.svelte"],
+      "@empathic/clax-client/send-menu": ["shell/src/ui/SendMenu.svelte"],
+      "@empathic/clax-client/*": ["shell/client/*.ts"]
     }
   },
-  "include": ["shell/src", "shell/test-setup.ts", "bridge/src", "bridge/test", "extension", "sdk", "overlay", "e2e", "perf", "reel", "scripts"]
+  "include": ["shell/src", "shell/client","shell/test-setup.ts", "bridge/src", "bridge/test", "extension", "sdk", "overlay", "e2e", "perf", "reel", "scripts"]
 }

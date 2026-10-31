@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { HubMsg, TabMsg } from "../../../shell/src/stream-hub";
+import type { HubMsg, TabMsg } from "@empathic/clax-client/stream";
 import type { PageView, SiteView } from "../messages";
 import { Sites, applySite } from "./site";
 

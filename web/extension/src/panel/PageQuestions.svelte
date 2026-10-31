@@ -7,8 +7,7 @@
   // closed it for 4 s, then leaves; the block stays (hidden) while nothing
   // is open, so a card leaving with focus can hand it on. Its styles are
   // QuestionList's.
-  import type { QuestionFeed } from "../../../shell/src/q/feed.svelte";
-  import QuestionList from "../../../shell/src/q/QuestionList.svelte";
+  import { type QuestionFeed, QuestionList } from "@empathic/clax-client/ui";
 
   const p: { aid: string; feed: QuestionFeed; now?: Date } = $props();
   const list = $derived(p.feed.byArtifact(p.aid));

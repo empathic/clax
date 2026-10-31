@@ -14,8 +14,8 @@
       "rules": {
         "no-restricted-imports": ["error", {
           "patterns": [
-            { "group": ["**/bridge/src/**", "**/bridge/src"], "message": "The extension reaches web/bridge only through @empathic/clax-sdk (its ./anchor entry); add what it needs there." },
-            { "group": ["**/overlay/src/**", "**/sdk/src/**"], "message": "The extension imports the SDK by its package name, @empathic/clax-sdk, as an app would." }
+            { "group": ["**/bridge/**", "**/overlay/**", "**/sdk/**"], "message": "The extension reaches web/bridge, web/overlay and web/sdk only through @empathic/clax-sdk (scripts/sdk-entries.mjs); add what it needs to an entry there." },
+            { "group": ["**/shell/**"], "message": "The extension reaches web/shell only through @empathic/clax-client (scripts/client-entries.mjs); add what it needs to an entry there." }
           ]
         }]
       }

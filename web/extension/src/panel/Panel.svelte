@@ -18,14 +18,10 @@
   // (spec 2026-10-06-agent-questions-and-inbox §9.6): **Page**, with the open
   // questions about the live page above its threads, and **Inbox** with the
   // unread count.
-  import Sidebar from "../../../shell/src/ui/Sidebar.svelte";
-  import type { Thread } from "../../../shell/src/threads";
-  import { agentName } from "../../../shell/src/view/history-model";
-  import { presenceMap, roster } from "../../../shell/src/view/presence-model";
-  import { unsent } from "../../../shell/src/view/batch-model";
-  import { type AskFirsts, firstsVia, ownTarget } from "../../../shell/src/view/send-menu";
+  import { agentName, type AskFirsts, firstsVia, ownTarget, presenceMap, roster, sidebarSections, unsent } from "@empathic/clax-client/models";
+  import type { Thread } from "@empathic/clax-client/sync";
+  import { Sidebar } from "@empathic/clax-client/ui";
   import { ownerOf } from "./adapt";
-  import { sidebarSections } from "../../../shell/src/view/sidebar-model";
   import { type FarPage, type PanelState, type PanelToWorker, RETRYABLE, type SiteChoice, type SiteView, type Suggestion } from "../messages";
   import { asPages, pageOfRoute } from "./adapt";
   import Elsewhere from "./Elsewhere.svelte";
@@ -246,7 +242,7 @@
       {/if}
     </header>
     {#if s.page && (people.length || agents.length)}
-      <div class="who">{#await import("../../../shell/src/ui/Roster.svelte") then { default: Roster }}<Roster {people} {agents} working={s.working} me={s.viewer?.public_id ?? null} max={5} presence={presenceMap(s.presence ?? [])} />{/await}</div>
+      <div class="who">{#await import("@empathic/clax-client/roster") then { default: Roster }}<Roster {people} {agents} working={s.working} me={s.viewer?.public_id ?? null} max={5} presence={presenceMap(s.presence ?? [])} />{/await}</div>
     {/if}
     {#if owner}
       <div class="tabs" role="tablist" aria-label="Side panel">

@@ -1,6 +1,6 @@
 import { flushSync } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mount, type Mounted } from "../../../shell/src/test/svelte";
+import { mount, type Mounted } from "@empathic/clax-client/testing";
 import { clipMessage } from "./clip-message";
 import ComposerFrame from "./ComposerFrame.svelte";
 

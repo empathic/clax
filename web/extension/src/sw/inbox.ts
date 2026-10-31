@@ -14,8 +14,8 @@
 // or when the daemon or host cannot be reached, it waits for a pairing
 // (`kick`: a panel watching a tab or asking to retry, or a new pairing);
 // other failures are retried a few times with a backoff.
-import type { InboxFilter, InboxItem, InboxPage, QuestionView } from "../../../shell/src/api";
-import type { HubMsg, TabMsg } from "../../../shell/src/stream-hub";
+import type { HubMsg, TabMsg } from "@empathic/clax-client/stream";
+import type { InboxFilter, InboxItem, InboxPage, QuestionView } from "@empathic/clax-client/sync";
 import { RETRYABLE, type WorkerToPanel } from "../messages";
 import type { Api } from "./api";
 

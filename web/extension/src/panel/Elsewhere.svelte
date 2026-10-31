@@ -14,14 +14,9 @@
   // open at once. "Pinned here" says its anchor was found on this screen
   // too. Everything shown is text.
   import type { AnchorResult } from "@empathic/clax-sdk/anchor";
-  import { relativeTime } from "../../../shell/src/format";
-  import { type Thread, type Viewer, resolvedByLabel } from "../../../shell/src/threads";
-  import SendButton from "../../../shell/src/ui/SendButton.svelte";
-  import ThreadCard from "../../../shell/src/ui/ThreadCard.svelte";
-  import { ticker } from "../../../shell/src/ui/ticker.svelte";
-  import { agentName, historyOf } from "../../../shell/src/view/history-model";
-  import { ownTarget } from "../../../shell/src/view/send-menu";
-  import { agentNames } from "../../../shell/src/view/working-model";
+  import { agentName, agentNames, historyOf, ownTarget, relativeTime } from "@empathic/clax-client/models";
+  import { type Thread, type Viewer, resolvedByLabel } from "@empathic/clax-client/sync";
+  import { SendButton, ThreadCard, ticker } from "@empathic/clax-client/ui";
   import type { FarPage } from "../messages";
   import { ownerOf } from "./adapt";
   import MoveTo from "./MoveTo.svelte";

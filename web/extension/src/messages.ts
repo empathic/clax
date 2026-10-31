@@ -7,11 +7,9 @@
 // unknown field, a field read through a prototype, or a symbol key refuses
 // it.
 import { type Anchor, type AnchorResult, MAX_NAME } from "@empathic/clax-sdk/anchor";
-import type { AnswerBody, InboxFilter, InboxItem, InboxKind, InboxPage, Participants, QuestionView, Version } from "../../shell/src/api";
-import type { Thread } from "../../shell/src/threads";
-import type { PresenceView } from "../../shell/src/view/presence-model";
-import type { Working } from "../../shell/src/view/working-model";
-import type { VersionTag } from "../../shell/src/view/history-model";
+import type {
+  AnswerBody, InboxFilter, InboxItem, InboxKind, InboxPage, Participants, PresenceView, QuestionView, Thread, Version, VersionTag, Working,
+} from "@empathic/clax-client/sync";
 
 export const MAX_URL = 4096;
 export const MAX_BODY = 10_000;

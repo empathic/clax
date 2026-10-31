@@ -4,7 +4,7 @@ import { probeDocument, setBoot } from "../sw/origins";
 
 const hasOverlay = (boot: string) => probeDocument(boot).present;
 import { MAX_WAIT_MS, QUIET_MS, Resolver, type Timers } from "./resolver";
-import { dispatchTrusted } from "../../../bridge/test/trusted";
+import { dispatchTrusted } from "@empathic/clax-client/testing";
 
 type Listener = (m: unknown, sender: chrome.runtime.MessageSender) => void;
 const WORKER = { id: "test-extension" } as chrome.runtime.MessageSender;

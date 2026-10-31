@@ -3,7 +3,7 @@
 // by page, newest activity first, with each page's counts; the status
 // filter and the search, both run here on the listing; and merge rule
 // patterns, checked and matched as the daemon does, for the preview.
-import type { Thread } from "../../../shell/src/threads";
+import type { Thread } from "@empathic/clax-client/sync";
 import type { PageView, SiteView } from "../messages";
 
 export type Status = "open" | "addressed" | "resolved";
