@@ -1761,7 +1761,12 @@ async fn revoking_a_redeemed_invite_leaves_its_persons_room_socket_open() {
         .holder_room(&aid, &sam_cookie, "000000000000000s")
         .await;
     let (s, v) = site
-        .send(&owner, reqwest::Method::GET, "/api/people/invites", Value::Null)
+        .send(
+            &owner,
+            reqwest::Method::GET,
+            "/api/people/invites",
+            Value::Null,
+        )
         .await;
     assert_eq!(s, 200, "{v}");
     let invites = v["invites"].as_array().unwrap();
@@ -1773,13 +1778,19 @@ async fn revoking_a_redeemed_invite_leaves_its_persons_room_socket_open() {
         .send(
             &owner,
             reqwest::Method::DELETE,
-            &format!("/api/people/invites/{}", sams_invite["id"].as_str().unwrap()),
+            &format!(
+                "/api/people/invites/{}",
+                sams_invite["id"].as_str().unwrap()
+            ),
             Value::Null,
         )
         .await;
     assert_eq!(s, 200, "{v}");
     assert!(v["invite"]["used_at"].is_string(), "{v}");
-    assert!(v["invite"]["revoked_at"].is_null(), "used, so unchanged: {v}");
+    assert!(
+        v["invite"]["revoked_at"].is_null(),
+        "used, so unchanged: {v}"
+    );
     stays_open(&mut sams).await;
 }
 
