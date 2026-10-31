@@ -50,23 +50,7 @@ impl Store {
     /// # Errors
     /// The store's.
     pub fn passkeys(&self) -> Result<Vec<Passkey>> {
-        self.with_read(|c| {
-            let mut stmt = c.prepare(
-                "SELECT credential_id, alg, created_at, added_by_json FROM passkeys
-                 ORDER BY created_at, credential_id",
-            )?;
-            Ok(stmt
-                .query_map([], |r| {
-                    let by: String = r.get(3)?;
-                    Ok(Passkey {
-                        credential_id: r.get(0)?,
-                        alg: r.get(1)?,
-                        created_at: r.get(2)?,
-                        added_by: serde_json::from_str(&by).unwrap_or_default(),
-                    })
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?)
-        })
+        self.with_read(|c| Ok(passkeys_in(c)?))
     }
 
     /// Registers the checked passkey `r`, added as `added_by` says,
@@ -213,20 +197,7 @@ impl Store {
     /// # Errors
     /// The store's.
     pub fn confirm_prefs(&self) -> Result<ConfirmPrefs> {
-        self.with_read(|c| {
-            Ok(c.query_row(
-                "SELECT require_passkey, offer_dismissed FROM confirm_prefs WHERE id = 1",
-                [],
-                |r| {
-                    Ok(ConfirmPrefs {
-                        require_passkey: r.get(0)?,
-                        offer_dismissed: r.get(1)?,
-                    })
-                },
-            )
-            .optional()?
-            .unwrap_or_default())
-        })
+        self.with_read(|c| Ok(prefs_in(c)?))
     }
 
     /// Sets the owner's confirmation preferences to `p`, recording
@@ -236,9 +207,8 @@ impl Store {
     /// # Errors
     /// The store's.
     pub fn set_confirm_prefs(&self, ctx: &AuditCtx, p: ConfirmPrefs) -> Result<()> {
-        let before = self.confirm_prefs()?.require_passkey;
         self.with_tx(|tx| {
-            if before != p.require_passkey {
+            if prefs_in(tx)?.require_passkey != p.require_passkey {
                 let rec = AuditRecord::new(AuditKind::PasskeyRequire, self.now())
                     .with("required", p.require_passkey);
                 self.record_audit(tx, ctx, rec)?;
@@ -261,9 +231,9 @@ impl Store {
     /// # Errors
     /// The store's.
     pub fn reset_passkeys(&self, ctx: &AuditCtx) -> Result<Vec<Passkey>> {
-        let removed = self.passkeys()?;
-        let required = self.confirm_prefs()?.require_passkey;
         self.with_tx(|tx| {
+            let removed = passkeys_in(tx)?;
+            let required = prefs_in(tx)?.require_passkey;
             let now = self.now();
             for p in &removed {
                 self.record_audit(tx, ctx, self::removed(&now, &p.credential_id, "reset"))?;
@@ -276,9 +246,8 @@ impl Store {
             tx.execute("DELETE FROM passkeys", [])?;
             tx.execute("DELETE FROM passkey_challenges", [])?;
             tx.execute("UPDATE confirm_prefs SET require_passkey = 0", [])?;
-            Ok(())
-        })?;
-        Ok(removed)
+            Ok(removed)
+        })
     }
 
     /// Whether confirming takes a passkey's assertion now: required, and a
@@ -289,6 +258,40 @@ impl Store {
     pub fn passkeys_required(&self) -> Result<bool> {
         Ok(self.confirm_prefs()?.require_passkey && !self.passkeys()?.is_empty())
     }
+}
+
+/// The registered passkeys `c` holds, oldest first.
+fn passkeys_in(c: &rusqlite::Connection) -> rusqlite::Result<Vec<Passkey>> {
+    let mut stmt = c.prepare(
+        "SELECT credential_id, alg, created_at, added_by_json FROM passkeys
+         ORDER BY created_at, credential_id",
+    )?;
+    stmt.query_map([], |r| {
+        let by: String = r.get(3)?;
+        Ok(Passkey {
+            credential_id: r.get(0)?,
+            alg: r.get(1)?,
+            created_at: r.get(2)?,
+            added_by: serde_json::from_str(&by).unwrap_or_default(),
+        })
+    })?
+    .collect()
+}
+
+/// The owner's confirmation preferences `c` holds.
+fn prefs_in(c: &rusqlite::Connection) -> rusqlite::Result<ConfirmPrefs> {
+    Ok(c.query_row(
+        "SELECT require_passkey, offer_dismissed FROM confirm_prefs WHERE id = 1",
+        [],
+        |r| {
+            Ok(ConfirmPrefs {
+                require_passkey: r.get(0)?,
+                offer_dismissed: r.get(1)?,
+            })
+        },
+    )
+    .optional()?
+    .unwrap_or_default())
 }
 
 /// `passkey.remove` of passkey `id` at `at`, for `reason` (`owner`,
