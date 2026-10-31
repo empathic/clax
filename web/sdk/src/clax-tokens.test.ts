@@ -6,10 +6,12 @@
 // writes the regions instead of failing:
 //   CLAX_WRITE_TOKENS=1 pnpm vitest run sdk/src/clax-tokens.test.ts
 import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { contrastFailures, contrastPairs, cssVariables, regionSpecs, rgba, syncRegions, tokenPaths, type TokenGroup } from "./tokens";
 
-const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+// Paths from __dirname: under jsdom, import.meta.url is no file: URL.
+const read = (rel: string) => readFileSync(join(__dirname, rel), "utf8");
 const file: TokenGroup = JSON.parse(read("../tokens/clax.tokens.json"));
 
 /** The custom properties declared in the CSS block that starts at `opener`
@@ -71,10 +73,10 @@ describe("clax.tokens.json", () => {
   });
 
   it.each([
-    ["shell/src/theme.css", ["theme.light base", "theme.dark over theme.light", "theme.dark over theme.light"]],
-    ["overlay/src/tokens.css", ["theme.light base", "theme.dark over theme.light"]],
-  ])("writes %s's generated regions", (rel, specs) => {
-    const path = new URL(`../../${rel}`, import.meta.url);
+    { rel: "shell/src/theme.css", specs: ["theme.light base", "theme.dark over theme.light", "theme.dark over theme.light"] },
+    { rel: "overlay/src/tokens.css", specs: ["theme.light base except tag", "theme.dark over theme.light except tag"] },
+  ])("writes $rel's generated regions", ({ rel, specs }) => {
+    const path = join(__dirname, "../..", rel);
     const css = readFileSync(path, "utf8");
     expect(regionSpecs(css)).toEqual(specs);
     const synced = syncRegions(css, file);

@@ -164,10 +164,15 @@ export function cssVariables(file: TokenGroup, path: string): string[] {
 /** The declarations a region of a stylesheet holds (`regionLines`): the
  * groups `spec` names, space-separated, as `cssVariables` writes them; with
  * ` over ` and more groups after it, only the lines that differ from
- * theirs (a dark theme's overrides of the light one). */
+ * theirs (a dark theme's overrides of the light one); with ` except ` and
+ * names after it, none of the properties under those names (`except tag`
+ * leaves out `--tag-*`, for a stylesheet that draws no tags). */
 export function regionLines(file: TokenGroup, spec: string): string[] {
-  const [groups, base] = spec.split(" over ");
-  const lines = groups.trim().split(/\s+/).flatMap(p => cssVariables(file, p));
+  const [main, except = ""] = spec.split(" except ");
+  const [groups, base] = main.split(" over ");
+  const left = except.trim().split(/\s+/).filter(Boolean);
+  const kept = (l: string) => !left.some(n => l.startsWith(`--${n}:`) || l.startsWith(`--${n}-`));
+  const lines = groups.trim().split(/\s+/).flatMap(p => cssVariables(file, p)).filter(kept);
   if (!base) return lines;
   const under = new Set(base.trim().split(/\s+/).flatMap(p => cssVariables(file, p)));
   return lines.filter(l => !under.has(l));

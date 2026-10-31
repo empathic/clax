@@ -64,15 +64,16 @@ describe("a page's theme", () => {
     ].join("\n"));
   });
 
-  it("follows Clax's tokens in the overlay's sheet, so its roles win and the rest stay Clax's", () => {
+  it("is added to the overlay's sheet before its components' styles", () => {
     const handle = overlay({ ...opts, theme: host });
     const css = sheetOf();
-    // Clax's own agent green, then the page's violet after it.
-    expect(css.indexOf("--agent: #2f6f2a;")).toBeGreaterThanOrEqual(0);
-    expect(css.lastIndexOf("--agent: #6c71c4;")).toBeGreaterThan(css.lastIndexOf("--agent: #2f6f2a;"));
-    expect(css.lastIndexOf("--radius: 2px;")).toBeGreaterThan(css.lastIndexOf("--radius: 10px;"));
-    // A role the page leaves out keeps Clax's.
-    expect(css).toContain("--you: #e0532f;");
+    // Vitest gives tokens.css?inline as an empty string (it processes no
+    // CSS), so here the page's theme is checked to come before the
+    // components' sheet; sdk/package.test.ts checks it follows Clax's own
+    // tokens in the built overlay.
+    const at = css.indexOf(themeSheet(host));
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(css.indexOf("__CLAX_OVERLAY_COMPONENT_CSS__")).toBeGreaterThan(at);
     handle.close();
   });
 

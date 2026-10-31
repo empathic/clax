@@ -17,6 +17,7 @@ export const CLIENT_ENTRIES = [
   { path: "./stream", src: "shell/client/stream.ts" },
   { path: "./models", src: "shell/client/models.ts" },
   { path: "./ui", src: "shell/client/ui.ts" },
+  { path: "./inbox", src: "shell/client/inbox.ts" },
   { path: "./composer", src: "shell/client/composer.ts" },
   { path: "./testing", src: "shell/src/test/client.ts" },
   // The theme's stylesheet, which a client's page imports once.

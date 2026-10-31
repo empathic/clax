@@ -37,7 +37,7 @@
   }
 </script>
 
-<Surface as="section" class="panel" aria-label="Your reports">
+<Surface as="section" class="panel" label="Your reports">
   <header>
     <h2>Your reports</h2>
     <button type="button" class="ghost" onclick={onClose} aria-label="Close your reports">✕</button>

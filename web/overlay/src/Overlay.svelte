@@ -177,7 +177,7 @@
 
   <div class="dock">
   {#if draft && !open}
-    <Surface as="form" class="composer" accent aria-label="New report" onsubmit={e => { e.preventDefault(); void send(); }}>
+    <Surface as="form" class="composer" accent label="New report" onsubmit={e => { e.preventDefault(); void send(); }}>
       <Quote text={quoteOf(draft.anchor)} />
       {#if clipUrl}
         <figure class="clip">

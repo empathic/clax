@@ -131,6 +131,21 @@ console.log(JSON.stringify(out));
     expect(readFileSync(join(pkg, "overlay.js"), "utf8")).not.toContain("__CLAX_OVERLAY_COMPONENT_CSS__");
   });
 
+  it("lays a page's theme over Clax's own tokens in the built overlay, so the page's roles win and the rest stay Clax's", async () => {
+    const mod = await import(/* @vite-ignore */ pathToFileURL(join(pkg, "overlay.js")).href);
+    const theme = { theme: { light: { agent: { $type: "color", $value: "#6c71c4" } } } };
+    const handle = mod.overlay({ instance: "https://clax.example", queue: "q1", auth: async () => { throw new Error("no backend"); }, theme });
+    const root = document.querySelector("clax-overlay")?.shadowRoot;
+    if (!root) throw new Error("the overlay added no shadow root");
+    const css = [...(root.adoptedStyleSheets ?? []).flatMap(s => [...s.cssRules].map(r => r.cssText)), ...[...root.querySelectorAll("style")].map(s => s.textContent)].join("\n");
+    const clax = css.search(/--agent:\s*#2f6f2a/i);
+    const page = css.search(/--agent:\s*#6c71c4/i);
+    expect(clax, "Clax's agent green").toBeGreaterThanOrEqual(0);
+    expect(page, "the page's agent, after Clax's").toBeGreaterThan(clax);
+    expect(css).toMatch(/--you:\s*#e0532f/i);
+    handle.close();
+  });
+
   it("keeps class fields and private members as written, for the app's bundler to lower if it must", () => {
     for (const f of files(pkg).filter(p => p.endsWith(".js"))) expect(readFileSync(f, "utf8"), relative(pkg, f)).not.toMatch(/__private(Get|Set|Add|Method)\b|__publicField\b/);
   });

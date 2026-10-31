@@ -3,17 +3,19 @@
 // custom property they read is a role of web/sdk/tokens/clax.tokens.json
 // (or the elevations and motion, which are not in it yet).
 import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { type Component, flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import { cssVariables, type TokenGroup } from "../src/tokens";
 import { Quote, Surface, Thread } from "@empathic/clax-sdk/ui";
 
-const dir = new URL(".", import.meta.url);
-const file: TokenGroup = JSON.parse(readFileSync(new URL("../tokens/clax.tokens.json", import.meta.url), "utf8"));
+// Paths from __dirname: under jsdom, import.meta.url is no file: URL.
+const dir = __dirname;
+const file: TokenGroup = JSON.parse(readFileSync(join(dir, "../tokens/clax.tokens.json"), "utf8"));
 const roles = new Set(["theme.light", "base"].flatMap(p => cssVariables(file, p)).map(l => /^--([\w-]+):/.exec(l)![1]));
 const NOT_TOKENS_YET = new Set(["elev", "elev-lg", "t"]);
 
-const styleOf = (name: string) => /<style>([\s\S]*?)<\/style>/.exec(readFileSync(new URL(name, dir), "utf8"))?.[1] ?? "";
+const styleOf = (name: string) => /<style>([\s\S]*?)<\/style>/.exec(readFileSync(join(dir, name), "utf8"))?.[1] ?? "";
 const components = readdirSync(dir).filter(f => f.endsWith(".svelte"));
 
 let mounted: Record<string, unknown>[] = [];
@@ -52,14 +54,13 @@ describe("the UI kit", () => {
     expect(cs[1].querySelector(".body")?.textContent).toBe("Fixed, thanks");
   });
 
-  it("renders a surface as the element asked for, with its classes and attributes", async () => {
+  it("renders a surface as the element asked for, with its classes and label", async () => {
     const { createRawSnippet } = await import("svelte");
     const children = createRawSnippet(() => ({ render: () => "<span>inside</span>" }));
-    const el = render(Surface, { as: "section", class: "panel", accent: true, "aria-label": "Your reports", children });
+    const el = render(Surface, { as: "section", class: "panel", accent: true, label: "Your reports", children });
     const s = el.querySelector("section");
-    expect(s?.classList.contains("surface")).toBe(true);
-    expect(s?.classList.contains("accent")).toBe(true);
-    expect(s?.classList.contains("panel")).toBe(true);
+    // The caller's class first: it names what the surface is.
+    expect([...(s?.classList ?? [])].filter(c => !c.startsWith("svelte-"))).toEqual(["panel", "surface", "accent"]);
     expect(s?.getAttribute("aria-label")).toBe("Your reports");
     expect(s?.textContent).toBe("inside");
   });
