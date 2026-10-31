@@ -82,17 +82,6 @@ fn for_agent(r: &Request) -> Value {
     })
 }
 
-/// A request as the owner's browser sees it.
-fn owner_view(r: &Request) -> Value {
-    json!(r)
-}
-
-/// 403 `browser_required` unless a browser of the owner's makes the
-/// request (M20; [`clax_http::auth::require_owner_browser`]).
-fn require_browser(caller: &Caller, what: &str) -> Result<(), ApiError> {
-    clax_http::auth::require_owner_browser(caller, what)
-}
-
 fn session_required(why: &str) -> ApiError {
     ApiError::forbidden(
         "session_required",
@@ -247,12 +236,6 @@ async fn working_page(s: &AppState, sid: &str) -> Result<Option<String>, ApiErro
     Ok(raw.filter(|a| clax_core::ArtifactId::parse(a).is_ok()))
 }
 
-#[derive(Deserialize)]
-pub struct WaitQuery {
-    #[serde(default)]
-    wait: u64,
-}
-
 /// What a waiting agent is told of request `r`.
 fn answer_view(r: &Request) -> Value {
     let mut v = json!({
@@ -273,7 +256,7 @@ pub async fn poll(
     State(s): State<AppState>,
     d: DeniedToGrants,
     p: Result<Path<String>, PathRejection>,
-    q: Result<Query<WaitQuery>, QueryRejection>,
+    q: Result<Query<super::questions::WaitQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     local_only(&s)?;
     match d.caller(&s).await? {
@@ -285,8 +268,6 @@ pub async fn poll(
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let started = Instant::now();
     let wait = Duration::from_secs(q.wait.min(MAX_WAIT_SECS));
-    let id1 = id.clone();
-    s.store_call(move |st| st.remote_request(&id1)).await?;
     let Some((notify, _hold)) = s.questions.hold(&id, None) else {
         // As many polls as may wait on one request wait on it already:
         // this one answers how it stands now, and when to call again.
@@ -299,33 +280,17 @@ pub async fn poll(
         }
         return Ok(Json(v));
     };
-    let mut shutdown = s.shutdown.clone();
-    let stopping = async move {
-        if shutdown.wait_for(|v| *v).await.is_err() {
-            std::future::pending::<()>().await;
+    let read = |end: super::questions::Ending| {
+        let (id1, s) = (id.clone(), s.clone());
+        async move {
+            let r = s.store_call(move |st| st.remote_request(&id1)).await?;
+            Ok((r.status != "open" || end.done).then_some(r))
         }
     };
-    tokio::pin!(stopping);
-    let expiry = s.question_sleeper.sleep(wait);
-    tokio::pin!(expiry);
-    let mut done = wait.is_zero();
-    loop {
-        let notified = notify.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
-        let id1 = id.clone();
-        let r = s.store_call(move |st| st.remote_request(&id1)).await?;
-        if r.status != "open" || done {
-            let mut v = answer_view(&r);
-            v["waited_s"] = json!(started.elapsed().as_secs());
-            return Ok(Json(v));
-        }
-        tokio::select! {
-            () = &mut notified => {}
-            () = &mut expiry, if !done => done = true,
-            () = &mut stopping, if !done => done = true,
-        }
-    }
+    let r = super::questions::long_poll(&s, &id, notify, wait, read).await?;
+    let mut v = answer_view(&r);
+    v["waited_s"] = json!(started.elapsed().as_secs());
+    Ok(Json(v))
 }
 
 #[derive(Deserialize)]
@@ -346,7 +311,7 @@ pub async fn answer(
 ) -> Result<Response, ApiError> {
     local_only(&s)?;
     let caller = d.caller(&s).await?;
-    require_browser(&caller, "answering a connection request")?;
+    clax_http::auth::require_owner_browser(&caller, "answering a connection request")?;
     let id = path(p)?;
     let b = body(req)?;
     decide(&s, &caller, &by, id, &b.answer).await
@@ -389,7 +354,7 @@ async fn decide(
         .store_call(move |st| st.answer_remote_request(&id1, out))
         .await?;
     s.questions.wake(&id);
-    Ok(Json(json!({"request": owner_view(&r)})).into_response())
+    Ok(Json(json!({"request": json!(r)})).into_response())
 }
 
 /// 409 `request_closed` with the request's view.
@@ -399,7 +364,7 @@ fn closed(r: &Request) -> ApiError {
         "request_closed",
         format!("this request is {} already", r.status),
     );
-    e.extra.insert("request".into(), owner_view(r));
+    e.extra.insert("request".into(), json!(r));
     e
 }
 
@@ -478,7 +443,7 @@ pub fn resume(s: &AppState) {
 
 fn connect_view(r: &Request, remote: &Remote) -> Value {
     let mut v = sign_in_view(remote, false);
-    v["request"] = owner_view(r);
+    v["request"] = json!(r);
     v
 }
 
@@ -627,7 +592,7 @@ pub async fn unmute(
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     local_only(&s)?;
-    require_browser(&d.caller(&s).await?, "unmuting a Clax instance")?;
+    clax_http::auth::require_owner_browser(&d.caller(&s).await?, "unmuting a Clax instance")?;
     let origin = path(p)?;
     let o = origin.clone();
     let unmuted = s.store_call(move |st| st.unmute_origin(&o)).await?;
