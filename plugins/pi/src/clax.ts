@@ -345,6 +345,10 @@ export const MIN_WAIT_S = 1;
 export const DEFAULT_ASK_WAIT_S = 600;
 /** Largest `timeout_s` of `ask`; larger values are capped. */
 export const MAX_ASK_WAIT_S = 600;
+/** Longest `wait` of a connection-request poll
+ * (`clax_core::remote::REQUEST_MAX_WAIT_SECS`, as the contract fixture's
+ * `constants` holds it). */
+export const REMOTE_REQUEST_MAX_WAIT_S = 50;
 /** Most questions whose `surface_open` the tools remember; past it the
  * oldest (smallest ULID) is forgotten, and reads as the default, true. */
 const ASK_SURFACE_CAP = 32;
@@ -2200,7 +2204,7 @@ class Tools {
   /** `connect_instance` (spec 2026-10-29-remote-instances §3): asks the
    * person to connect the Clax instance `url_or_origin` is on (or keeps
    * waiting on `request_id`), then waits for their answer in polls of at
-   * most 50 s, up to `timeout_s`. */
+   * most [`REMOTE_REQUEST_MAX_WAIT_S`], up to `timeout_s`. */
   async connectInstance(ctx: ExtensionContext, a: Static<typeof ConnectInstanceArgs>): Promise<Json> {
     const c = this.clientFor(ctx);
     await this.call(() => c.ensureSession());
@@ -2222,12 +2226,12 @@ class Tools {
       const left = Math.max(0, wait - Math.floor((Date.now() - started) / 1000));
       let v: any;
       try {
-        v = await this.call(() => c.remoteRequestWait(id, Math.min(left, 50)));
+        v = await this.call(() => c.remoteRequestWait(id, Math.min(left, REMOTE_REQUEST_MAX_WAIT_S)));
       } catch (e) {
         throw new ToolError({ ...internal(e).error, request_id: id });
       }
       // `retry_after_s`: every wait on the request is taken; the agent calls again.
-      if (v.status !== "open" || left <= 50 || v.retry_after_s !== undefined) {
+      if (v.status !== "open" || left <= REMOTE_REQUEST_MAX_WAIT_S || v.retry_after_s !== undefined) {
         const out: any = { ...v, waited_s: Math.floor((Date.now() - started) / 1000) };
         if (v.status === "open") {
           const url = `${this.browserBase(c)}/inbox?remote_request=${id}`;

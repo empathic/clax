@@ -2008,10 +2008,13 @@ impl DaemonClient {
         let remote = self.inner.remote.as_ref()?;
         let dir = remote.clip_cache();
         // Every distinct clip given at most CLIP_FETCH_TIME from now, its
-        // wait for a turn included, with CLIP_FETCHES_AT_ONCE in flight at
-        // most: a slow clip never holds the feedback it came with, and the
-        // clips held in memory at once stay bounded.
-        let turns = Arc::new(tokio::sync::Semaphore::new(CLIP_FETCHES_AT_ONCE));
+        // wait for a turn included, with clax_core::clips::FETCHES_AT_ONCE
+        // in flight at most, as clax_core::clips::fetch_within fetches: a
+        // slow clip never holds the feedback it came with, and the clips
+        // held in memory at once stay bounded.
+        let turns = Arc::new(tokio::sync::Semaphore::new(
+            clax_core::clips::FETCHES_AT_ONCE,
+        ));
         let mut tasks = tokio::task::JoinSet::new();
         let mut out = HashMap::new();
         for r in refs {
@@ -2320,10 +2323,6 @@ fn session_gone(e: &ClientError) -> bool {
 /// (spec §16): a clip not fetched by then reads `Clip: unavailable (timed
 /// out)`.
 pub const CLIP_FETCH_TIME: Duration = Duration::from_secs(5);
-
-/// How many clips of one handover are fetched from a remote daemon at
-/// once; each holds at most [`clax_core::clips::MAX_BYTES`] in memory.
-pub const CLIP_FETCHES_AT_ONCE: usize = 4;
 
 /// The fetched clip of `(aid, tid)` in `fetched`, or why there is none.
 fn lookup(

@@ -4609,6 +4609,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_shared_constants_match_the_fixture() {
+        let c = &fixture()["constants"];
+        assert_eq!(
+            c["clip_fetches_at_once"].as_u64(),
+            Some(clax_core::clips::FETCHES_AT_ONCE as u64)
+        );
+        assert_eq!(
+            c["remote_request_max_wait_s"].as_u64(),
+            Some(clax_core::remote::REQUEST_MAX_WAIT_SECS)
+        );
+    }
+
+    #[test]
     fn only_a_plain_http_url_becomes_an_open_location_script() {
         assert_eq!(
             open_location_script("http://localhost:7/login?code=cxi_a&next=%2F").as_deref(),
