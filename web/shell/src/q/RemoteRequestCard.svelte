@@ -58,7 +58,9 @@
       }
     } catch (x) {
       tab?.close();
-      if (x instanceof Refused && x.held) waiting = { answer: a, held: x.held }; else err = refusal(x);
+      // Only a held answer waits; a confirmation declined, expired or used is gone, and the next press asks afresh.
+      waiting = x instanceof Refused && x.held ? { answer: a, held: x.held } : null;
+      if (!waiting) err = refusal(x);
     } finally { busy = false; }
   }
 </script>

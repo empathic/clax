@@ -103,6 +103,28 @@ describe("RemoteRequestCard", () => {
     }
   });
 
+  it("a held answer whose confirmation was declined says so, and the next press asks afresh", async () => {
+    const URL = "http://localhost:7480/inbox?confirm=cf_01";
+    const sent: (string | null)[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const confirm = new Headers(init?.headers).get("x-clax-confirmation");
+      sent.push(confirm);
+      if (confirm) return new Response(JSON.stringify({ error: { code: "declined", message: "the owner declined this decision" } }), { status: 403 });
+      return new Response(JSON.stringify({ status: "confirmation_pending", confirmation_id: `cf_0${sent.length}`, confirm_url: URL }), { status: 202 });
+    }));
+    const m = mount(RemoteRequestCard, { item: item("remote_request"), now });
+    click(button(m.root, "Not now")!);
+    await settle();
+    click(button(m.root, "Not now")!);
+    await settle();
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toContain("The owner declined this decision.");
+    expect(m.root.querySelector(".held")).toBeNull();
+    click(button(m.root, "Not now")!);
+    await settle();
+    expect(sent).toEqual([null, "cf_01", null]);
+    expect(m.root.querySelector(".held")!.textContent).toContain(`Confirm in your browser: ${URL}`);
+  });
+
   it("an answered or expired request says so, without the answers", () => {
     const base = item("remote_request").remote_request!;
     for (const [status, says] of [["connected", "Connected"], ["expired", "Expired"]] as const) {
