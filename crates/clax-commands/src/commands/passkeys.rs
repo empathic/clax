@@ -37,7 +37,15 @@ fn reset(cli: &crate::Cli, home: &Home) -> anyhow::Result<()> {
         );
     }
     let st = clax_store::Store::open(home)?;
-    let removed = st.reset_passkeys()?;
+    let ctx = clax_core::audit::AuditCtx {
+        actor: clax_core::audit::Actor::Owner {
+            public_id: st.owner_viewer(false)?.public_id,
+        },
+        via: clax_core::audit::Via::Cli,
+        git: clax_core::gitctx::GitField::Absent,
+        call: None,
+    };
+    let removed = st.reset_passkeys(&ctx)?;
     super::print(
         cli,
         serde_json::json!({"removed": removed, "require_passkey": false}),

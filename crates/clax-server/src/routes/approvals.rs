@@ -189,7 +189,7 @@ pub struct DecideBody {
 /// Where a browser's change was made: the extension's credential, or the
 /// shell.
 fn via(who: &Identity) -> Via {
-    if who.extension {
+    if who.browser == clax_http::identity::Browser::Extension {
         Via::Extension
     } else {
         Via::Shell

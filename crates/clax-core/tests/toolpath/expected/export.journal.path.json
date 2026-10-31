@@ -5866,13 +5866,141 @@
             ],
             "timestamp": "2026-10-06T14:09:30.117Z"
           }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697": {
+              "structural": {
+                "answer": "approve",
+                "confirmation_id": "cf_01JBQC00000000000000000001",
+                "decision": "push",
+                "type": "clax.confirmation.answer"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "confirmation.answer",
+              "seq": 118,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Approved confirmation cf_01JBQC00000000000000000001 (push)"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000118",
+            "parents": [
+              "e000000000117"
+            ],
+            "timestamp": "2026-10-06T14:09:27.118Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697": {
+              "structural": {
+                "alg": -7,
+                "credential_id": "Y3JlZC0x",
+                "type": "clax.passkey.add"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "passkey.add",
+              "seq": 119,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Added passkey Y3JlZC0x"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000119",
+            "parents": [
+              "e000000000118"
+            ],
+            "timestamp": "2026-10-06T14:09:27.119Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697": {
+              "structural": {
+                "required": true,
+                "type": "clax.passkey.require"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "passkey.require",
+              "seq": 120,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Required a passkey to confirm"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000120",
+            "parents": [
+              "e000000000119"
+            ],
+            "timestamp": "2026-10-06T14:09:27.120Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697": {
+              "structural": {
+                "credential_id": "Y3JlZC0x",
+                "reason": "owner",
+                "type": "clax.passkey.remove"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "passkey.remove",
+              "seq": 121,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Removed passkey Y3JlZC0x (owner)"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000121",
+            "parents": [
+              "e000000000120"
+            ],
+            "timestamp": "2026-10-06T14:09:27.121Z"
+          }
         }
       ],
       "path": {
         "base": {
           "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697"
         },
-        "head": "e000000000117",
+        "head": "e000000000121",
         "id": "clax-export-a375109d6c47"
       },
       "meta": {
@@ -6081,7 +6209,7 @@
       "clax_version": "0.3.1",
       "first_seq": 1,
       "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-      "last_seq": 117,
+      "last_seq": 121,
       "redaction": [],
       "selection": {
         "artifacts": [],

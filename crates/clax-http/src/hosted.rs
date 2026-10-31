@@ -1332,7 +1332,11 @@ impl HostedRequest {
             owner_cookie: false,
             cookie: None,
             hosted_viewer: s.filter(|s| !s.owner).map(|s| s.viewer.clone()),
-            hosted_owner: s.is_some_and(|s| s.owner),
+            browser: if s.is_some_and(|s| s.owner) {
+                crate::identity::Browser::HostedOwner
+            } else {
+                id.browser
+            },
             ..id
         }
     }

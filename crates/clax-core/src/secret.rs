@@ -85,7 +85,8 @@ pub fn random_bytes<const N: usize>() -> [u8; N] {
     b
 }
 
-fn base64url(bytes: &[u8]) -> String {
+/// `bytes` as unpadded base64url.
+pub fn base64url(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 

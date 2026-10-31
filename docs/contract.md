@@ -2835,7 +2835,10 @@ grant) never holds the token and makes nothing wait. A session an open job
 names is never reaped while the job is open, and counts for as long: its
 harness may still be running. The decisions:
 
-1. answering a question an agent asked (`POST /api/questions/<qid>/answer`);
+1. answering a question an agent asked (`POST /api/questions/<qid>/answer`),
+   except a question an agent's push or site opening waits on
+   (`approval_pending`), whose answer counts only when made in the owner's
+   browser anyway;
 2. pushing an artifact to a public Clax (`POST /api/artifacts/<aid>/push`,
    the owner's own push);
 3. connecting a public Clax (`POST /api/remotes`), and answering an agent's
@@ -2858,9 +2861,9 @@ harness may still be running. The decisions:
    which waits for a confirmation from any browser but the in-process
    app's frame.
 
-Who waits: the owner calling with the token and no browser credential, or
-with the app's key cookie (its value is the token) (decisions 1 to 4 and
-6; decision 5 refuses the token alone as before, 403 `browser_required`).
+Who waits: the owner calling with the token and no browser credential
+(decisions 1 to 4 and 6; decision 5 refuses the token alone as before, 403
+`browser_required`).
 Any owner browser session, the in-process app's frame (the Clax app's
 shell, relayed through its embedded core) and a paired extension decide at
 once, as does everyone while no agent session is live, unless passkeys are
@@ -2911,7 +2914,7 @@ question, answer, page, remote, push mode, `auto`, `forked_from` or
 - `POST /api/confirmations/<id> {approve, assertion?}` (the owner's
   browser: any owner browser session, or the in-process app's frame, which
   the Clax app's shell answers through; `SameOrigin`) → `{confirmation}`.
-  403 `browser_required` for the token, the key cookie and the extension;
+  403 `browser_required` for the token and the extension;
   while passkeys are required, approving from a browser session takes
   `assertion` (403 `passkey_required` without it, `passkey_refused` for one
   that does not check); 410 `confirmation_expired`; 409
@@ -9053,6 +9056,10 @@ the body below.
 | `session.start` | `harness, harness_session_id, cwd, transcript_path, pid` (+ `git`) | a session's registration |
 | `session.join` | the same | a hook join or re-registration that changes one of them |
 | `session.end` | `reason (explicit\|ttl)` | an end (the reaper as `system:ttl`) |
+| `confirmation.answer` | `confirmation_id, decision` (the decision's kind), `answer (approve\|decline)` | the owner's browser answering a browser confirmation |
+| `passkey.add` | `credential_id, alg` | a passkey registered for confirmations |
+| `passkey.remove` | `credential_id, reason (owner\|reset)` | a passkey removed in the owner's browser, or by `clax passkeys reset` |
+| `passkey.require` | `required` | confirming starts or stops requiring a passkey (Settings, or `clax passkeys reset`) |
 | `backfill.skip` | `table, row_id, reason` (a fixed phrase) | a history row the backfill could not convert |
 | `tag.create` | `tag_id, name, colour, description` | a tag made |
 | `tag.update` | `tag_id, fields{name?, colour?, description?}` | a tag renamed, recoloured or redescribed |
@@ -10186,11 +10193,9 @@ it starts, the runs a previous process left. A build without the
   the Clax app's embedded core runs under the same rule). Every
   request without one answers 401 `unauthorized`, `GET /api/token`
   included, so a program that can only reach the port never gets the
-  token. A credential is the bearer token, an owner browser session, or
-  the **key cookie** `clax_key_<port>` (the port
-  from the request's `Host`), whose value is the token itself, compared in
-  constant time. No response sets the key cookie: the program that starts
-  the daemon puts it in its own browser's cookie store. Open without a
+  token. A credential is the bearer token or an owner browser session (the
+  embedded core's own frames among them); the token in a cookie is none.
+  Open without a
   credential: `/healthz`, the web UI's static files (`/_clax/...`), and
   content addressed by artifact ID (`/c/...`, artifact origins, and
   `/_blob/...`), since a content frame on `<id>.localhost` is cross-site to

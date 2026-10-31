@@ -5,63 +5,12 @@
 //! call made again with the confirmation's ID then goes ahead, once.
 
 use clax_core::working::ManualClock;
-use clax_testkit::TestServer;
 use clax_testkit::passkey::SoftPasskey;
 use clax_testkit::remotes::{self, Public};
+use clax_testkit::{TestServer, error_code as code};
 use reqwest::Method;
 use serde_json::{Value, json};
 use std::sync::Arc;
-
-const HEADER: &str = clax_core::confirm::CONFIRMATION_HEADER;
-
-/// `method path` with the token and `body`, presenting confirmation
-/// `confirm` when given: the status and the JSON answer.
-async fn token(
-    ts: &TestServer,
-    method: Method,
-    path: &str,
-    body: Value,
-    confirm: Option<&str>,
-) -> (u16, Value) {
-    let mut req = ts.authed(ts.client.request(method, format!("{}{path}", ts.base)));
-    if let Some(id) = confirm {
-        req = req.header(HEADER, id);
-    }
-    let res = req.json(&body).send().await.unwrap();
-    let status = res.status().as_u16();
-    let held = res
-        .headers()
-        .get(HEADER)
-        .map(|v| v.to_str().unwrap().to_string());
-    let v: Value = res.json().await.unwrap_or(Value::Null);
-    if status == 202 && v["status"] == "confirmation_pending" {
-        assert_eq!(held.as_deref(), v["confirmation_id"].as_str(), "{v}");
-    }
-    (status, v)
-}
-
-/// `method path` from the browser holding `cookie` (a `Cookie` header's
-/// value), with `body` and the confirmation `confirm` when given.
-async fn browser(
-    ts: &TestServer,
-    cookie: &str,
-    method: Method,
-    path: &str,
-    body: Value,
-    confirm: Option<&str>,
-) -> (u16, Value) {
-    let mut req = ts
-        .client
-        .request(method, format!("{}{path}", ts.base))
-        .header("cookie", cookie)
-        .header(clax_http::local_trust::PROOF_HEADER, ts.proof_for(cookie));
-    if let Some(id) = confirm {
-        req = req.header(HEADER, id);
-    }
-    let res = req.json(&body).send().await.unwrap();
-    let status = res.status().as_u16();
-    (status, res.json().await.unwrap_or(Value::Null))
-}
 
 /// The confirmation a 202 asked for: its ID, after checking the answer's
 /// shape.
@@ -79,19 +28,8 @@ fn pending(ts: &TestServer, (status, v): &(u16, Value)) -> String {
     id
 }
 
-fn code(v: &Value) -> &str {
-    v["error"]["code"].as_str().unwrap_or_default()
-}
-
-/// The owner cookie of a browser that logs in now (`name=value`); its
-/// proof is [`TestServer::proof_for`] it.
-async fn login_now(ts: &TestServer) -> String {
-    ts.login("").await.cookie
-}
-
 async fn open_world(ts: &TestServer, aid: &str, confirm: Option<&str>) -> (u16, Value) {
-    token(
-        ts,
+    ts.token_call(
         Method::PATCH,
         &format!("/api/artifacts/{aid}"),
         json!({"site_access": "world"}),
@@ -129,35 +67,39 @@ async fn a_token_answer_waits_for_the_browser_while_an_agent_is_live() {
         .to_string();
     let path = format!("/api/questions/{qid}/answer");
     let answer = json!({"answers": [{"selected": ["Yes"]}]});
-    let first = token(&ts, Method::POST, &path, answer.clone(), None).await;
+    let first = ts
+        .token_call(Method::POST, &path, answer.clone(), None)
+        .await;
     let id = pending(&ts, &first);
     assert_eq!(first.1["decision"], "answer an agent's question “Ship it?”");
     assert_eq!(ts.question_status(&qid).await, "open", "nothing changed");
     // Asked again, it is the same confirmation, still waiting.
-    let again = token(&ts, Method::POST, &path, answer.clone(), None).await;
+    let again = ts
+        .token_call(Method::POST, &path, answer.clone(), None)
+        .await;
     assert_eq!(pending(&ts, &again), id);
     // The token reads it, and the owner's browser lists it with the agents live now.
-    let (s, v) = token(
-        &ts,
-        Method::GET,
-        &format!("/api/confirmations/{id}"),
-        json!(null),
-        None,
-    )
-    .await;
+    let (s, v) = ts
+        .token_call(
+            Method::GET,
+            &format!("/api/confirmations/{id}"),
+            json!(null),
+            None,
+        )
+        .await;
     assert_eq!(
         (s, v["confirmation"]["status"].as_str()),
         (200, Some("open"))
     );
-    let (s, v) = browser(
-        &ts,
-        &ts.owner_cookie(),
-        Method::GET,
-        "/api/confirmations",
-        json!(null),
-        None,
-    )
-    .await;
+    let (s, v) = ts
+        .as_browser_confirming(
+            &ts.owner_cookie(),
+            Method::GET,
+            "/api/confirmations",
+            json!(null),
+            None,
+        )
+        .await;
     assert_eq!(s, 200);
     let listed = &v["confirmations"][0];
     assert_eq!(listed["id"], id.as_str());
@@ -165,22 +107,22 @@ async fn a_token_answer_waits_for_the_browser_while_an_agent_is_live() {
     assert_eq!(listed["agents"][0]["harness"], "claude");
     // An answer that is not the one confirmed is not let through.
     let other = json!({"answers": [{"selected": ["No"]}]});
-    let (s, v) = token(&ts, Method::POST, &path, other, Some(&id)).await;
+    let (s, v) = ts.token_call(Method::POST, &path, other, Some(&id)).await;
     assert_eq!((s, code(&v)), (403, "confirmation_mismatch"));
     ts.confirm(&id, true).await;
-    let (s, v) = token(
-        &ts,
-        Method::GET,
-        &format!("/api/confirmations/{id}?wait=5"),
-        json!(null),
-        None,
-    )
-    .await;
+    let (s, v) = ts
+        .token_call(
+            Method::GET,
+            &format!("/api/confirmations/{id}?wait=5"),
+            json!(null),
+            None,
+        )
+        .await;
     assert_eq!(
         (s, v["confirmation"]["status"].as_str()),
         (200, Some("approved"))
     );
-    let (s, v) = token(&ts, Method::POST, &path, answer, Some(&id)).await;
+    let (s, v) = ts.token_call(Method::POST, &path, answer, Some(&id)).await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(ts.question_status(&qid).await, "answered");
     // The owner's agent answering is refused as before: no new power.
@@ -241,15 +183,15 @@ async fn ending_every_agent_keeps_confirmations_on_for_ten_minutes() {
     ts.end_session(&sid).await;
     let id = pending(&ts, &open_world(&ts, &aid, None).await);
     // The card lists the agent that ended, as one that could have asked.
-    let (_, v) = browser(
-        &ts,
-        &ts.owner_cookie(),
-        Method::GET,
-        "/api/confirmations",
-        json!(null),
-        None,
-    )
-    .await;
+    let (_, v) = ts
+        .as_browser_confirming(
+            &ts.owner_cookie(),
+            Method::GET,
+            "/api/confirmations",
+            json!(null),
+            None,
+        )
+        .await;
     assert!(
         v["confirmations"][0]["agents"][0]["ended_at"].is_string(),
         "{v}"
@@ -276,15 +218,15 @@ async fn a_connected_persons_agent_alone_makes_nothing_wait() {
     ts.register_session("claude", "owner-1").await;
     let other = page(&ts, "Other").await;
     pending(&ts, &open_world(&ts, &other, None).await);
-    let (_, v) = browser(
-        &ts,
-        &ts.owner_cookie(),
-        Method::GET,
-        "/api/confirmations",
-        json!(null),
-        None,
-    )
-    .await;
+    let (_, v) = ts
+        .as_browser_confirming(
+            &ts.owner_cookie(),
+            Method::GET,
+            "/api/confirmations",
+            json!(null),
+            None,
+        )
+        .await;
     let agents = v["confirmations"][0]["agents"].as_array().unwrap().clone();
     assert_eq!(
         agents.len(),
@@ -303,14 +245,14 @@ async fn pairing_the_extension_while_an_agent_is_live_asks_first() {
         .unwrap()
         .to_string();
     let mint = json!({"extension_id": ts.extension_id()});
-    let first = token(
-        &ts,
-        Method::POST,
-        "/api/extension/credentials",
-        mint.clone(),
-        None,
-    )
-    .await;
+    let first = ts
+        .token_call(
+            Method::POST,
+            "/api/extension/credentials",
+            mint.clone(),
+            None,
+        )
+        .await;
     let id = pending(&ts, &first);
     assert!(
         first.1.get("credential").is_none(),
@@ -321,14 +263,9 @@ async fn pairing_the_extension_while_an_agent_is_live_asks_first() {
         "pair the Clax extension, which then acts as your browser"
     );
     ts.confirm(&id, true).await;
-    let (s, v) = token(
-        &ts,
-        Method::POST,
-        "/api/extension/credentials",
-        mint,
-        Some(&id),
-    )
-    .await;
+    let (s, v) = ts
+        .token_call(Method::POST, "/api/extension/credentials", mint, Some(&id))
+        .await;
     assert_eq!(s, 200, "{v}");
     assert!(v["credential"].is_string());
     // The paired extension answers a question without a further confirmation.
@@ -362,14 +299,14 @@ async fn a_confirmation_approves_only_its_own_decision_once() {
     assert_eq!(s, 200, "{v}");
     assert!(site_is_open(&ts, &a).await);
     // Closed again (closing asks no one), it is not opened by the same confirmation twice.
-    let (s, _) = token(
-        &ts,
-        Method::PATCH,
-        &format!("/api/artifacts/{a}"),
-        json!({"site_access": "private"}),
-        None,
-    )
-    .await;
+    let (s, _) = ts
+        .token_call(
+            Method::PATCH,
+            &format!("/api/artifacts/{a}"),
+            json!({"site_access": "private"}),
+            None,
+        )
+        .await;
     assert_eq!(s, 200);
     let (s, v) = open_world(&ts, &a, Some(&id)).await;
     assert_eq!((s, code(&v)), (409, "confirmation_used"));
@@ -407,68 +344,155 @@ async fn a_declined_or_expired_confirmation_changes_nothing() {
 }
 
 /// By default any owner browser session decides and confirms, one opened
-/// while an agent was live among them; the key cookie (the token itself),
-/// the token and the extension confirm nothing.
+/// while an agent was live among them; the token and the extension confirm
+/// nothing.
 #[tokio::test]
 async fn any_owner_browser_session_confirms_by_default() {
     let ts = TestServer::spawn().await;
     let aid = page(&ts, "Mine").await;
     ts.register_session("claude", "c-5").await;
-    let minted = login_now(&ts).await;
+    let minted = ts.login("").await.cookie;
     let path = format!("/api/artifacts/{aid}");
     let body = json!({"site_access": "world"});
-    let key = format!("clax_key_{}={}", ts.addr.port(), ts.token);
     let id = pending(
         &ts,
-        &browser(&ts, &key, Method::PATCH, &path, body.clone(), None).await,
+        &ts.token_call(Method::PATCH, &path, body.clone(), None)
+            .await,
     );
     let answer = format!("/api/confirmations/{id}");
-    let (s, v) = browser(
-        &ts,
-        &key,
-        Method::POST,
-        &answer,
-        json!({"approve": true}),
-        None,
-    )
-    .await;
-    assert_eq!((s, code(&v)), (403, "browser_required"), "the key cookie");
-    let (s, v) = token(&ts, Method::POST, &answer, json!({"approve": true}), None).await;
+    let (s, v) = ts
+        .token_call(Method::POST, &answer, json!({"approve": true}), None)
+        .await;
     assert_eq!((s, code(&v)), (403, "browser_required"), "the token");
     let ext = ts.extension().await;
     let res = ext.post(&answer, json!({"approve": true})).await;
     assert_ne!(res.status(), 200, "the extension");
     assert!(!site_is_open(&ts, &aid).await);
     // A session opened while the agent was live confirms it.
-    let (s, v) = browser(
-        &ts,
-        &minted,
-        Method::POST,
-        &answer,
-        json!({"approve": true}),
-        None,
-    )
-    .await;
+    let (s, v) = ts
+        .as_browser_confirming(
+            &minted,
+            Method::POST,
+            &answer,
+            json!({"approve": true}),
+            None,
+        )
+        .await;
     assert_eq!(
         (s, v["confirmation"]["status"].as_str()),
         (200, Some("approved")),
         "{v}"
     );
-    let (s, v) = browser(&ts, &key, Method::PATCH, &path, body.clone(), Some(&id)).await;
+    let (s, v) = ts
+        .token_call(Method::PATCH, &path, body.clone(), Some(&id))
+        .await;
     assert_eq!(s, 200, "{v}");
     assert!(site_is_open(&ts, &aid).await);
     // And decides at once.
     let other = page(&ts, "Other").await;
-    let (s, v) = browser(
-        &ts,
-        &minted,
-        Method::PATCH,
-        &format!("/api/artifacts/{other}"),
-        body,
-        None,
-    )
-    .await;
+    let (s, v) = ts
+        .as_browser_confirming(
+            &minted,
+            Method::PATCH,
+            &format!("/api/artifacts/{other}"),
+            body,
+            None,
+        )
+        .await;
     assert_eq!(s, 200, "{v}");
+}
+
+/// A token answer the owner confirmed in the browser is recorded as the
+/// CLI's, not the shell's, and the browser's answer to the confirmation is
+/// in the audit.
+#[tokio::test]
+async fn a_confirmed_token_answer_is_the_clis_and_the_confirmation_is_audited() {
+    let ts = TestServer::spawn().await;
+    let sid = ts.register_session("claude", "c-k").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let qid = ts.ask(&sid, ask_body()).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let path = format!("/api/questions/{qid}/answer");
+    let answer = json!({"answers": [{"selected": ["Yes"]}]});
+    let id = pending(
+        &ts,
+        &ts.token_call(Method::POST, &path, answer.clone(), None)
+            .await,
+    );
+    ts.confirm(&id, true).await;
+    let (s, v) = ts.token_call(Method::POST, &path, answer, Some(&id)).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["question"]["answered_via"], "cli", "{v}");
+    // The owner's browser's answer to the confirmation is in the audit.
+    let answered: Vec<_> = ts
+        .store
+        .events_after(0, 10_000)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.kind == "confirmation.answer")
+        .collect();
+    assert_eq!(answered.len(), 1);
+    assert!(
+        answered[0].body.contains("\"via\":\"shell\""),
+        "{answered:?}"
+    );
+    assert!(answered[0].actor.contains("\"owner\""), "{answered:?}");
+}
+
+/// The question an agent's site opening waits on asks no browser
+/// confirmation of a token answer, since only an answer made in the
+/// browser approves it: the token's answer is the CLI's, and the opening is
+/// refused.
+#[tokio::test]
+async fn a_token_answer_to_a_site_openings_question_asks_nothing_and_approves_nothing() {
+    let ts = TestServer::spawn().await;
+    let aid = page(&ts, "Mine").await;
+    let sid = ts.register_session("claude", "c-w").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let open = |qid: Option<String>| {
+        let mut body = json!({"site_access": "world"});
+        if let Some(q) = qid {
+            body["question_id"] = json!(q);
+        }
+        let req = ts
+            .authed(ts.client.patch(format!("{}/api/artifacts/{aid}", ts.base)))
+            .header("x-clax-session", &sid)
+            .json(&body);
+        async move {
+            let res = req.send().await.unwrap();
+            let status = res.status().as_u16();
+            (status, res.json::<Value>().await.unwrap_or_default())
+        }
+    };
+    let (s, v) = open(None).await;
+    assert_eq!(
+        (s, v["status"].as_str()),
+        (202, Some("approval_pending")),
+        "{v}"
+    );
+    let qid = v["question_id"].as_str().unwrap().to_string();
+    let (s, v) = ts
+        .token_call(
+            Method::POST,
+            &format!("/api/questions/{qid}/answer"),
+            json!({"answers": [{"selected": ["Open to the world"]}]}),
+            None,
+        )
+        .await;
+    assert_eq!(
+        (s, v["question"]["answered_via"].as_str()),
+        (200, Some("cli")),
+        "{v}"
+    );
+    let (s, v) = open(Some(qid)).await;
+    assert_eq!((s, code(&v)), (403, "not_approved"), "{v}");
+    assert!(!site_is_open(&ts, &aid).await);
 }
 
 /// The assertion of `key` over a new challenge for `purpose` (with its
@@ -494,7 +518,10 @@ async fn with_passkeys_required_confirming_takes_a_valid_assertion() {
     let owner = ts.owner_cookie();
     let post = |id: &str, body: Value| {
         let (ts, owner, path) = (&ts, owner.clone(), format!("/api/confirmations/{id}"));
-        async move { browser(ts, &owner, Method::POST, &path, body, None).await }
+        async move {
+            ts.as_browser_confirming(&owner, Method::POST, &path, body, None)
+                .await
+        }
     };
     let (s, v) = post(&ida, json!({"approve": true})).await;
     assert_eq!((s, code(&v)), (403, "passkey_required"), "{v}");
@@ -569,27 +596,27 @@ async fn with_passkeys_required_a_browser_sessions_decisions_ask() {
     let mia = ts.person("Mia").await;
     let aid = page(&ts, "Mine").await;
     ts.register_session("claude", "c-6").await;
-    let minted = login_now(&ts).await;
-    let first = browser(
-        &ts,
-        &minted,
-        Method::PATCH,
-        &format!("/api/artifacts/{aid}"),
-        json!({"site_access": "world"}),
-        None,
-    )
-    .await;
+    let minted = ts.login("").await.cookie;
+    let first = ts
+        .as_browser_confirming(
+            &minted,
+            Method::PATCH,
+            &format!("/api/artifacts/{aid}"),
+            json!({"site_access": "world"}),
+            None,
+        )
+        .await;
     pending(&ts, &first);
     let rights = format!("/api/people/{}/rights", mia.public_id);
-    let first = browser(
-        &ts,
-        &minted,
-        Method::PUT,
-        &rights,
-        json!({"rights": "clax:reader"}),
-        None,
-    )
-    .await;
+    let first = ts
+        .as_browser_confirming(
+            &minted,
+            Method::PUT,
+            &rights,
+            json!({"rights": "clax:reader"}),
+            None,
+        )
+        .await;
     let id = pending(&ts, &first);
     assert_eq!(first.1["decision"], "change a person's rights");
     let ok = assertion(
@@ -599,32 +626,35 @@ async fn with_passkeys_required_a_browser_sessions_decisions_ask() {
         1,
     )
     .await;
-    let (s, v) = browser(
-        &ts,
-        &ts.owner_cookie(),
-        Method::POST,
-        &format!("/api/confirmations/{id}"),
-        json!({"approve": true, "assertion": ok}),
-        None,
-    )
-    .await;
+    let (s, v) = ts
+        .as_browser_confirming(
+            &ts.owner_cookie(),
+            Method::POST,
+            &format!("/api/confirmations/{id}"),
+            json!({"approve": true, "assertion": ok}),
+            None,
+        )
+        .await;
     assert_eq!(s, 200, "{v}");
-    let (s, v) = browser(
-        &ts,
-        &minted,
-        Method::PUT,
-        &rights,
-        json!({"rights": "clax:reader"}),
-        Some(&id),
-    )
-    .await;
+    let (s, v) = ts
+        .as_browser_confirming(
+            &minted,
+            Method::PUT,
+            &rights,
+            json!({"rights": "clax:reader"}),
+            Some(&id),
+        )
+        .await;
     assert_eq!(s, 200, "{v}");
     let revoke = format!("/api/people/{}", mia.public_id);
     pending(
         &ts,
-        &browser(&ts, &minted, Method::DELETE, &revoke, json!(null), None).await,
+        &ts.as_browser_confirming(&minted, Method::DELETE, &revoke, json!(null), None)
+            .await,
     );
-    let (s, v) = token(&ts, Method::DELETE, &revoke, json!(null), None).await;
+    let (s, v) = ts
+        .token_call(Method::DELETE, &revoke, json!(null), None)
+        .await;
     assert_eq!((s, code(&v)), (403, "browser_required"));
 }
 
@@ -641,12 +671,17 @@ async fn with_passkeys_required_approving_a_machine_asks() {
         alg: clax_core::webauthn::ES256,
         sign_count: 0,
     };
-    ts.store.add_passkey(&key, &json!({})).unwrap();
     ts.store
-        .set_confirm_prefs(clax_store::passkeys::ConfirmPrefs {
-            require_passkey: true,
-            offer_dismissed: false,
-        })
+        .add_passkey(&clax_core::audit::AuditCtx::DAEMON, &key, &json!({}))
+        .unwrap();
+    ts.store
+        .set_confirm_prefs(
+            &clax_core::audit::AuditCtx::DAEMON,
+            clax_store::passkeys::ConfirmPrefs {
+                require_passkey: true,
+                offer_dismissed: false,
+            },
+        )
         .unwrap();
     let c = clax_testkit::TestClient::new(&ts);
     let r = c
@@ -654,17 +689,17 @@ async fn with_passkeys_required_approving_a_machine_asks() {
         .await;
     let code_ = r["interact"]["user_code"].as_str().unwrap().to_string();
     ts.register_session("claude", "c-g1").await;
-    let minted = login_now(&ts).await;
+    let minted = ts.login("").await.cookie;
     let approve = format!("/api/grants/{}/approve", c.grant_id());
-    let first = browser(
-        &ts,
-        &minted,
-        Method::POST,
-        &approve,
-        json!({"user_code": code_, "name": "Sam"}),
-        None,
-    )
-    .await;
+    let first = ts
+        .as_browser_confirming(
+            &minted,
+            Method::POST,
+            &approve,
+            json!({"user_code": code_, "name": "Sam"}),
+            None,
+        )
+        .await;
     let id = pending(&ts, &first);
     assert_eq!(first.1["decision"], "connect a new machine as Sam");
     assert_eq!(id.len(), 35);
@@ -683,15 +718,9 @@ async fn registering_a_passkey_while_an_agent_is_live_is_confirmed() {
         .passkey_challenge(&owner, json!({"purpose": "register"}))
         .await;
     let reg = key.registration(&c, &origin, &rp);
-    let first = browser(
-        &ts,
-        &owner,
-        Method::POST,
-        "/api/passkeys",
-        reg.clone(),
-        None,
-    )
-    .await;
+    let first = ts
+        .as_browser_confirming(&owner, Method::POST, "/api/passkeys", reg.clone(), None)
+        .await;
     let id = pending(&ts, &first);
     assert_eq!(
         first.1["decision"],
@@ -702,23 +731,19 @@ async fn registering_a_passkey_while_an_agent_is_live_is_confirmed() {
     // ID it names, and posts its own key under that ID with the approved
     // confirmation: the registration it approved is another.
     let agent = SoftPasskey::claiming(&key.id);
-    let minted = login_now(&ts).await;
+    let minted = ts.login("").await.cookie;
     let c2 = ts
         .passkey_challenge(&minted, json!({"purpose": "register"}))
         .await;
     let forged = agent.registration(&c2, &origin, &rp);
     assert_eq!(forged["credential_id"], reg["credential_id"]);
-    let (s, v) = browser(
-        &ts,
-        &minted,
-        Method::POST,
-        "/api/passkeys",
-        forged,
-        Some(&id),
-    )
-    .await;
+    let (s, v) = ts
+        .as_browser_confirming(&minted, Method::POST, "/api/passkeys", forged, Some(&id))
+        .await;
     assert_eq!((s, code(&v)), (403, "confirmation_mismatch"), "{v}");
-    let (s, v) = browser(&ts, &owner, Method::POST, "/api/passkeys", reg, Some(&id)).await;
+    let (s, v) = ts
+        .as_browser_confirming(&owner, Method::POST, "/api/passkeys", reg, Some(&id))
+        .await;
     assert_eq!(s, 201, "{v}");
     assert_eq!(v["passkey"]["credential_id"], key.credential_id());
     // A registration over another ceremony's challenge does not check.
@@ -726,26 +751,26 @@ async fn registering_a_passkey_while_an_agent_is_live_is_confirmed() {
     let c = ts
         .passkey_challenge(&owner, json!({"purpose": "disable"}))
         .await;
-    let first = browser(
-        &ts,
-        &owner,
-        Method::POST,
-        "/api/passkeys",
-        other.registration(&c, &origin, &rp),
-        None,
-    )
-    .await;
+    let first = ts
+        .as_browser_confirming(
+            &owner,
+            Method::POST,
+            "/api/passkeys",
+            other.registration(&c, &origin, &rp),
+            None,
+        )
+        .await;
     let id = pending(&ts, &first);
     ts.confirm(&id, true).await;
-    let (s, v) = browser(
-        &ts,
-        &owner,
-        Method::POST,
-        "/api/passkeys",
-        other.registration(&c, &origin, &rp),
-        Some(&id),
-    )
-    .await;
+    let (s, v) = ts
+        .as_browser_confirming(
+            &owner,
+            Method::POST,
+            "/api/passkeys",
+            other.registration(&c, &origin, &rp),
+            Some(&id),
+        )
+        .await;
     assert_eq!((s, code(&v)), (403, "passkey_refused"), "{v}");
 }
 
@@ -762,7 +787,9 @@ async fn a_registration_must_send_the_key_its_authenticator_attests() {
         .await;
     let mut reg = a.registration(&c, &origin, &rp);
     reg["public_key"] = b.registration(&c, &origin, &rp)["public_key"].clone();
-    let (s, v) = browser(&ts, &owner, Method::POST, "/api/passkeys", reg, None).await;
+    let (s, v) = ts
+        .as_browser_confirming(&owner, Method::POST, "/api/passkeys", reg, None)
+        .await;
     assert_eq!((s, code(&v)), (403, "passkey_refused"), "{v}");
     assert!(
         v["error"]["message"]
@@ -778,18 +805,13 @@ async fn a_registration_must_send_the_key_its_authenticator_attests() {
     let reg = a.registration(&c, &origin, &rp);
     let id = pending(
         &ts,
-        &browser(
-            &ts,
-            &owner,
-            Method::POST,
-            "/api/passkeys",
-            reg.clone(),
-            None,
-        )
-        .await,
+        &ts.as_browser_confirming(&owner, Method::POST, "/api/passkeys", reg.clone(), None)
+            .await,
     );
     ts.confirm(&id, true).await;
-    let (s, v) = browser(&ts, &owner, Method::POST, "/api/passkeys", reg, Some(&id)).await;
+    let (s, v) = ts
+        .as_browser_confirming(&owner, Method::POST, "/api/passkeys", reg, Some(&id))
+        .await;
     assert_eq!(s, 201, "{v}");
     let by = &v["settings"]["passkeys"][0]["added_by"];
     assert_eq!(by["via"], "a browser session", "{v}");
@@ -806,32 +828,36 @@ async fn turning_passkeys_off_takes_an_assertion() {
     let key = SoftPasskey::new();
     ts.require_passkey(&key).await;
     let owner = ts.owner_cookie();
-    let (s, v) = browser(
-        &ts,
-        &owner,
-        Method::PUT,
-        "/api/passkeys/settings",
-        json!({"required": false}),
-        None,
-    )
-    .await;
+    let (s, v) = ts
+        .as_browser_confirming(
+            &owner,
+            Method::PUT,
+            "/api/passkeys/settings",
+            json!({"required": false}),
+            None,
+        )
+        .await;
     assert_eq!((s, code(&v)), (403, "passkey_required"), "{v}");
     let remove = format!("/api/passkeys/{}/remove", key.credential_id());
-    let (s, v) = browser(&ts, &owner, Method::POST, &remove, json!({}), None).await;
+    let (s, v) = ts
+        .as_browser_confirming(&owner, Method::POST, &remove, json!({}), None)
+        .await;
     assert_eq!((s, code(&v)), (403, "passkey_required"), "{v}");
     let off = assertion(&ts, &key, json!({"purpose": "disable"}), 1).await;
-    let (s, v) = browser(
-        &ts,
-        &owner,
-        Method::PUT,
-        "/api/passkeys/settings",
-        json!({"required": false, "assertion": off}),
-        None,
-    )
-    .await;
+    let (s, v) = ts
+        .as_browser_confirming(
+            &owner,
+            Method::PUT,
+            "/api/passkeys/settings",
+            json!({"required": false, "assertion": off}),
+            None,
+        )
+        .await;
     assert_eq!((s, v["required"].as_bool()), (200, Some(false)), "{v}");
     // Off, a passkey goes without one.
-    let (s, v) = browser(&ts, &owner, Method::POST, &remove, json!({}), None).await;
+    let (s, v) = ts
+        .as_browser_confirming(&owner, Method::POST, &remove, json!({}), None)
+        .await;
     assert_eq!(
         (s, v["passkeys"].as_array().map(Vec::len)),
         (200, Some(0)),
@@ -844,36 +870,40 @@ async fn connecting_a_remote_and_widening_its_public_copy_ask_first() {
     let ts = TestServer::spawn().await;
     ts.register_session("claude", "c-7").await;
     // Asked before any request leaves for the remote.
-    let first = token(
-        &ts,
-        Method::POST,
-        "/api/remotes",
-        json!({"url": "https://clax.example"}),
-        None,
-    )
-    .await;
+    let first = ts
+        .token_call(
+            Method::POST,
+            "/api/remotes",
+            json!({"url": "https://clax.example"}),
+            None,
+        )
+        .await;
     let id = pending(&ts, &first);
     assert_eq!(
         first.1["decision"],
         "connect this Clax to https://clax.example"
     );
     let link = "/api/remotes/r1/artifacts/7q3k9mzx2b4t/sharing/link";
-    let first = token(&ts, Method::PUT, link, json!({"access": "commenter"}), None).await;
+    let first = ts
+        .token_call(Method::PUT, link, json!({"access": "commenter"}), None)
+        .await;
     assert_ne!(pending(&ts, &first), id);
     // Narrowing asks no one (and fails here for the remote it names).
-    let (s, v) = token(&ts, Method::PUT, link, json!({"access": null}), None).await;
+    let (s, v) = ts
+        .token_call(Method::PUT, link, json!({"access": null}), None)
+        .await;
     assert_eq!((s, code(&v)), (404, "no_remote"), "{v}");
     // Sharing the public copy with a person, and turning its comments on,
     // widen it too.
     let share = "/api/remotes/r1/artifacts/7q3k9mzx2b4t/sharing/shares";
-    let first = token(
-        &ts,
-        Method::PUT,
-        share,
-        json!({"github_login": "octocat", "access": "viewer"}),
-        None,
-    )
-    .await;
+    let first = ts
+        .token_call(
+            Method::PUT,
+            share,
+            json!({"github_login": "octocat", "access": "viewer"}),
+            None,
+        )
+        .await;
     pending(&ts, &first);
     assert!(
         first.1["decision"]
@@ -884,9 +914,13 @@ async fn connecting_a_remote_and_widening_its_public_copy_ask_first() {
         first.1
     );
     let comments = "/api/remotes/r1/artifacts/7q3k9mzx2b4t/sharing/comments";
-    let first = token(&ts, Method::PUT, comments, json!({"on": true}), None).await;
+    let first = ts
+        .token_call(Method::PUT, comments, json!({"on": true}), None)
+        .await;
     pending(&ts, &first);
-    let (s, v) = token(&ts, Method::PUT, comments, json!({"on": false}), None).await;
+    let (s, v) = ts
+        .token_call(Method::PUT, comments, json!({"on": false}), None)
+        .await;
     assert_eq!((s, code(&v)), (404, "no_remote"), "{v}");
 }
 
@@ -898,7 +932,7 @@ async fn a_token_push_waits_for_the_browser_while_an_agent_is_live() {
     let aid = page(&local, "To push").await;
     local.register_session("claude", "c-8").await;
     let path = format!("/api/artifacts/{aid}/push");
-    let first = token(&local, Method::POST, &path, json!({}), None).await;
+    let first = local.token_call(Method::POST, &path, json!({}), None).await;
     let id = pending(&local, &first);
     assert!(
         first.1["decision"]
@@ -910,15 +944,12 @@ async fn a_token_push_waits_for_the_browser_while_an_agent_is_live() {
     );
     local.confirm(&id, true).await;
     // The approved push, resent asking for standing push power, is another decision.
-    let (s, v) = token(
-        &local,
-        Method::POST,
-        &path,
-        json!({"auto": true}),
-        Some(&id),
-    )
-    .await;
+    let (s, v) = local
+        .token_call(Method::POST, &path, json!({"auto": true}), Some(&id))
+        .await;
     assert_eq!((s, code(&v)), (403, "confirmation_mismatch"), "{v}");
-    let (s, v) = token(&local, Method::POST, &path, json!({}), Some(&id)).await;
+    let (s, v) = local
+        .token_call(Method::POST, &path, json!({}), Some(&id))
+        .await;
     assert_eq!((s, v["status"].as_str()), (200, Some("pushed")), "{v}");
 }

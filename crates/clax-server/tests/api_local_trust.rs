@@ -4,7 +4,9 @@
 //! (`Sec-Fetch-Site`, `Origin`, `Host`, `X-Clax-Channel`) stands for either.
 
 use clax_core::working::ManualClock;
-use clax_testkit::{LAN_HEADER, LAN_LOCAL, PEER_HEADER, TestServer, element_anchor};
+use clax_testkit::{
+    LAN_HEADER, LAN_LOCAL, OwnerLogin, PEER_HEADER, TestServer, element_anchor, owner_login_of,
+};
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 use std::net::{IpAddr, Ipv4Addr};
@@ -43,11 +45,6 @@ fn set_cookies(res: &reqwest::Response) -> Vec<String> {
         .collect()
 }
 
-/// The proof a login's page carries.
-async fn proof_of(res: reqwest::Response) -> String {
-    clax_testkit::login_page_proof(&res.text().await.unwrap())
-}
-
 /// `GET /api/token`'s status for a browser holding `cookie` that sends
 /// `proof` (none: `None`), from a client that carries nothing else.
 async fn token_status(ts: &TestServer, cookie: &str, proof: Option<&str>) -> u16 {
@@ -58,16 +55,6 @@ async fn token_status(ts: &TestServer, cookie: &str, proof: Option<&str>) -> u16
         req = req.header(clax_http::local_trust::PROOF_HEADER, p);
     }
     req.send().await.unwrap().status().as_u16()
-}
-
-/// The owner cookie among `cookies`.
-fn owner_cookie_of(ts: &TestServer, cookies: &[String]) -> String {
-    let name = clax_http::identity::owner_cookie_name(ts.base.trim_start_matches("http://"));
-    cookies
-        .iter()
-        .find(|c| c.starts_with(&format!("{name}=")))
-        .expect("an owner cookie")
-        .clone()
 }
 
 async fn code_of(res: reqwest::Response) -> (u16, String) {
@@ -169,7 +156,10 @@ async fn a_login_code_opens_one_browser_session_once() {
             "{name} {path}: {set:?}"
         );
     }
-    let cookie = owner_cookie_of(&ts, &set_cookies(&res));
+    let cookie = set_cookies(&res)
+        .into_iter()
+        .find(|c| c.starts_with(&format!("clax_owner_{port}=")))
+        .expect("an owner cookie");
     let page = res.text().await.unwrap();
     assert!(
         page.contains("data-next=\"/a/7q3k9mzx2b4t?thread=x\""),
@@ -254,9 +244,11 @@ async fn a_login_code_opens_one_browser_session_once() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    let renewed = owner_cookie_of(&ts, &set_cookies(&res));
+    let OwnerLogin {
+        cookie: renewed,
+        proof: renewed_proof,
+    } = owner_login_of(&ts.base, res).await;
     assert_ne!(renewed, cookie);
-    let renewed_proof = proof_of(res).await;
     assert_eq!(token_status(&ts, &cookie, Some(&proof)).await, 200);
     assert_eq!(token_status(&ts, &renewed, Some(&proof)).await, 401);
     assert_eq!(token_status(&ts, &renewed, Some(&renewed_proof)).await, 200);
@@ -306,8 +298,10 @@ async fn the_owner_ends_every_browser_session_at_once() {
         .send()
         .await
         .unwrap();
-    let second = owner_cookie_of(&ts, &set_cookies(&res));
-    let second_proof = proof_of(res).await;
+    let OwnerLogin {
+        cookie: second,
+        proof: second_proof,
+    } = owner_login_of(&ts.base, res).await;
     let first_proof = ts.owner_proof();
     assert_eq!(token_status(&ts, &first, Some(&first_proof)).await, 200);
     assert_eq!(token_status(&ts, &second, Some(&second_proof)).await, 200);
@@ -349,8 +343,7 @@ async fn the_owner_ends_every_browser_session_at_once() {
         .send()
         .await
         .unwrap();
-    let cookie = owner_cookie_of(&ts, &set_cookies(&res));
-    let proof = proof_of(res).await;
+    let OwnerLogin { cookie, proof } = owner_login_of(&ts.base, res).await;
     assert_eq!(token_status(&ts, &cookie, Some(&proof)).await, 200);
 }
 
@@ -725,7 +718,7 @@ async fn a_lan_address_peer_is_held_to_the_loopback_rule() {
         .into_iter()
         .find(|c| c.starts_with(&format!("{name}=")))
         .expect("an owner cookie for the LAN address");
-    let proof = proof_of(res).await;
+    let proof = clax_testkit::login_page_proof(&res.text().await.unwrap());
     let res = from_own(client.get(format!("{}/api/token", ts.base)))
         .header("cookie", &cookie)
         .header(clax_http::local_trust::PROOF_HEADER, &proof)
@@ -1202,20 +1195,6 @@ async fn logging_out_ends_the_streams_and_sockets_opened_with_a_session() {
     }
 }
 
-/// A browser's login, from a client that carries `cookie` (if any): its
-/// owner cookie and proof.
-async fn login_in(ts: &TestServer, cookie: Option<&str>) -> (String, String) {
-    let path = login_path(ts, "/").await;
-    let mut req = unfollowed().get(format!("{}{path}", ts.base));
-    if let Some(c) = cookie {
-        req = req.header("cookie", c);
-    }
-    let res = req.send().await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let cookie = owner_cookie_of(ts, &set_cookies(&res));
-    (cookie, proof_of(res).await)
-}
-
 /// `POST /api/browser-login/retire` from a browser holding `cookie` that
 /// presents `proofs`: the status and the answer.
 async fn retire(ts: &TestServer, cookie: &str, proofs: &[&str]) -> (u16, Value) {
@@ -1238,9 +1217,18 @@ async fn retire(ts: &TestServer, cookie: &str, proofs: &[&str]) -> (u16, Value) 
 #[tokio::test]
 async fn a_login_retires_the_sessions_its_browser_held() {
     let ts = TestServer::spawn().await;
-    let (old, old_proof) = login_in(&ts, None).await;
-    let (elsewhere, elsewhere_proof) = login_in(&ts, None).await;
-    let (now, now_proof) = login_in(&ts, Some(&old)).await;
+    let OwnerLogin {
+        cookie: old,
+        proof: old_proof,
+    } = ts.login("").await;
+    let OwnerLogin {
+        cookie: elsewhere,
+        proof: elsewhere_proof,
+    } = ts.login("").await;
+    let OwnerLogin {
+        cookie: now,
+        proof: now_proof,
+    } = ts.login(&old).await;
     // Until the page retires it, the session the browser held stays live.
     assert_eq!(token_status(&ts, &old, Some(&old_proof)).await, 200);
     // The cookie alone, or with no proof of its own, retires nothing.
@@ -1275,8 +1263,14 @@ async fn a_login_retires_the_sessions_its_browser_held() {
 #[tokio::test]
 async fn two_logins_at_once_leave_the_cookie_the_browser_kept_proven() {
     let ts = TestServer::spawn().await;
-    let (a, a_proof) = login_in(&ts, None).await;
-    let (b, b_proof) = login_in(&ts, None).await;
+    let OwnerLogin {
+        cookie: a,
+        proof: a_proof,
+    } = ts.login("").await;
+    let OwnerLogin {
+        cookie: b,
+        proof: b_proof,
+    } = ts.login("").await;
     // The browser applied A's cookie last but ran B's script last: it holds
     // A's cookie and both proofs, B's written first.
     let both = format!("{b_proof},{a_proof}");
@@ -1295,8 +1289,14 @@ async fn two_logins_at_once_leave_the_cookie_the_browser_kept_proven() {
 #[tokio::test]
 async fn a_cookie_planted_on_a_longer_path_is_retired_not_the_logins_own() {
     let ts = TestServer::spawn().await;
-    let (c1, p1) = login_in(&ts, None).await;
-    let (c2, p2) = login_in(&ts, Some(&c1)).await;
+    let OwnerLogin {
+        cookie: c1,
+        proof: p1,
+    } = ts.login("").await;
+    let OwnerLogin {
+        cookie: c2,
+        proof: p2,
+    } = ts.login(&c1).await;
     let planted = format!("{c1}; {c2}");
     let (status, v) = retire(&ts, &planted, &[&p2, &p1]).await;
     assert_eq!(status, 200, "{v}");
@@ -1314,15 +1314,21 @@ async fn a_cookie_planted_on_a_longer_path_is_retired_not_the_logins_own() {
 #[tokio::test]
 async fn the_retire_names_the_dead_proofs_it_was_shown() {
     let ts = TestServer::spawn().await;
-    let (old, old_proof) = login_in(&ts, None).await;
+    let OwnerLogin {
+        cookie: old,
+        proof: old_proof,
+    } = ts.login("").await;
     let res = ts
         .authed(ts.client.delete(format!("{}/api/browser-login", ts.base)))
         .send()
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
-    let (_, before) = login_in(&ts, None).await;
-    let (now, now_proof) = login_in(&ts, Some(&old)).await;
+    let OwnerLogin { proof: before, .. } = ts.login("").await;
+    let OwnerLogin {
+        cookie: now,
+        proof: now_proof,
+    } = ts.login(&old).await;
     let (status, v) = retire(&ts, &now, &[&now_proof, &old_proof, &before]).await;
     assert_eq!(status, 200, "{v}");
     assert_eq!(v, json!({"kept": 0, "ended": 1, "dropped": [1, 2]}));

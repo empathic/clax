@@ -26,11 +26,10 @@
 //!   cookie without its proof is no credential except for a page load
 //!   ([`gate`]), which the shell's routes serve bare of data.
 //! - [`sessions`] marks a request carrying a live session's cookie and its
-//!   proof (or the app's key cookie, [`crate::auth::key_cookie_name`]) with
-//!   [`OwnerSession`], and one carrying the cookie alone with
-//!   [`UnprovenSession`]. [`crate::identity::Identity`] counts an
-//!   [`OwnerSession`] as a browser of the owner's on a request from this
-//!   machine that the browser does not say another origin made.
+//!   proof with [`OwnerSession`], and one carrying the cookie alone with
+//!   [`UnprovenSession`]. [`crate::identity::Identity`] reads the mark into
+//!   its [`crate::identity::Browser`] on a request from this machine that
+//!   the browser does not say another origin made.
 //! - [`gate`] lets a request with no credential reach only what anyone may:
 //!   the paths [`open_to_anyone`] names, and a site host's requests (its
 //!   access decides each). Anything else answers 401 `no_credential`; a
@@ -329,16 +328,14 @@ fn parse(at: &str) -> Option<DateTime<Utc>> {
 /// session's cookie (`session` is its SHA-256) with that session's proof
 /// ([`PROOF_HEADER`], [`PROOF_PARAM`]), the cookie as the owner cookie
 /// (`owner`) or the events cookie (`events`, which stands for the token on
-/// the event streams alone) or both; or the app's key cookie
-/// ([`OwnerSession::key`], `key`: its value is the token itself) or the
-/// in-process app's own frame ([`OwnerSession::browser`]). Only
+/// the event streams alone) or both; or the in-process app's own frame
+/// ([`OwnerSession::browser`]). Only
 /// [`sessions`] and the in-process app's request builder insert it.
 #[derive(Clone, Debug)]
 pub struct OwnerSession {
     pub session: Option<String>,
     pub owner: bool,
     pub events: bool,
-    pub key: bool,
 }
 
 impl OwnerSession {
@@ -350,17 +347,6 @@ impl OwnerSession {
             session: None,
             owner: true,
             events: false,
-            key: false,
-        }
-    }
-
-    /// The mark of the app's key cookie, whose value is the daemon token:
-    /// anyone holding the token can send it, so it confirms no decision
-    /// ([`crate::confirm`]).
-    pub fn key() -> OwnerSession {
-        OwnerSession {
-            key: true,
-            ..OwnerSession::browser()
         }
     }
 }
@@ -542,7 +528,6 @@ fn live_session_hashing(
             owner: owner_proven.is_some(),
             events: events_proven.is_some(),
             session: owner_proven.or(events_proven),
-            key: false,
         }));
     }
     let live = |hs: &[String]| hs.iter().find(|h| sessions.is_live(h)).cloned();
@@ -552,8 +537,8 @@ fn live_session_hashing(
 }
 
 /// Middleware of a local daemon: marks a request carrying a live owner
-/// browser session's cookie and its proof ([`live_session`]), or the key
-/// cookie, with [`OwnerSession`], and one carrying the cookie alone with
+/// browser session's cookie and its proof ([`live_session`]) with
+/// [`OwnerSession`], and one carrying the cookie alone with
 /// [`UnprovenSession`]. A request from the network carries no mark of its
 /// own (marks are set in process); the in-process app's frames come
 /// marked. A hosted daemon's requests pass unmarked.
@@ -564,14 +549,10 @@ pub async fn sessions(State(s): State<AppState>, mut req: Request, next: Next) -
             Some(Ok(m)) => {
                 req.extensions_mut().insert(m);
             }
-            unproven => {
-                if crate::auth::has_key_cookie(req.headers(), &s.token) {
-                    req.extensions_mut().insert(OwnerSession::key());
-                }
-                if let Some(Err(u)) = unproven {
-                    req.extensions_mut().insert(u);
-                }
+            Some(Err(u)) => {
+                req.extensions_mut().insert(u);
             }
+            None => {}
         }
     }
     next.run(req).await

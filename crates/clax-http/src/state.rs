@@ -386,7 +386,10 @@ impl AppState {
     /// The store's.
     pub fn assemble(p: StateParts) -> clax_core::Result<AppState> {
         let live_ids = Arc::new(clax_realtime::live::LiveIds::load(&p.store)?);
-        let ext_creds = Arc::new(crate::extension::Credentials::load(&p.store)?);
+        let ext_creds = Arc::new(crate::extension::Credentials::load_with(
+            &p.store,
+            p.clock.clone(),
+        )?);
         let owner_sessions = Arc::new(crate::local_trust::OwnerSessions::load(&p.store)?);
         let grant_auth = Arc::new(crate::grant_auth::GrantAuth::load(&p.store)?);
         let vis_gen = VisGen::install(&p.store);

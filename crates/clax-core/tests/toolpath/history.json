@@ -4022,6 +4022,114 @@
     "remote_id": "01JBRM00000000000000000001"
    },
    "backfilled": false
+  },
+  {
+   "seq": 118,
+   "at": "2026-10-06T14:09:27.118Z",
+   "kind": "confirmation.answer",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "shell",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "confirmation_id": "cf_01JBQC00000000000000000001",
+    "decision": "push",
+    "answer": "approve"
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 119,
+   "at": "2026-10-06T14:09:27.119Z",
+   "kind": "passkey.add",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "shell",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "credential_id": "Y3JlZC0x",
+    "alg": -7
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 120,
+   "at": "2026-10-06T14:09:27.120Z",
+   "kind": "passkey.require",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "shell",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "required": true
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 121,
+   "at": "2026-10-06T14:09:27.121Z",
+   "kind": "passkey.remove",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "shell",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "credential_id": "Y3JlZC0x",
+    "reason": "owner"
+   },
+   "backfilled": false
   }
  ]
 }

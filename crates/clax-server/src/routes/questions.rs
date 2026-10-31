@@ -818,7 +818,9 @@ pub struct AnswerBody {
 /// 409 `question_closed`, with the question's view, when it is not open.
 /// While an agent session is live, the owner's answer made with the token
 /// alone waits for a click in their browser: 202 `confirmation_pending`
-/// ([`clax_http::confirm`]). Records `question.answer`.
+/// ([`clax_http::confirm`]), except for a question an agent's push or
+/// site opening waits on (`approval_pending`), which counts only when
+/// answered in a browser anyway. Records `question.answer`.
 pub async fn answer(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -836,20 +838,26 @@ pub async fn answer(
     // Another's question is not there (404) before anyone is asked to
     // confirm answering it.
     let (st, q2, me2) = (s.clone(), qid.clone(), me.clone());
-    s.store_call(move |db| {
-        let q = db.question_of(&q2, me2.as_deref())?;
-        if !clax_http::views::question::in_reach(&st, db, me2.as_deref(), &q)? {
-            return Err(CoreError::NotFound);
-        }
-        Ok(())
-    })
-    .await?;
-    let decision = Decision::Answer {
-        question_id: qid.clone(),
-        answers: serde_json::to_value(&b.answers).unwrap_or_default(),
-    };
-    require_confirmation(&s, &d.caller(&s).await?, &by, decision).await?;
-    let via = if who.extension {
+    let push = s
+        .store_call(move |db| {
+            let q = db.question_of(&q2, me2.as_deref())?;
+            if !clax_http::views::question::in_reach(&st, db, me2.as_deref(), &q)? {
+                return Err(CoreError::NotFound);
+            }
+            Ok(db.push_approval(&q2)?.is_some())
+        })
+        .await?;
+    // A question an agent's push or site opening waits on counts only when
+    // answered in a browser (`routes::remotes`, `routes::world`), so a
+    // token's answer to one asks no confirmation: it would buy nothing.
+    if !push {
+        let decision = Decision::Answer {
+            question_id: qid.clone(),
+            answers: serde_json::to_value(&b.answers).unwrap_or_default(),
+        };
+        require_confirmation(&s, &d.caller(&s).await?, &by, decision).await?;
+    }
+    let via = if who.browser == clax_http::identity::Browser::Extension {
         "extension"
     } else if who.token && !who.owner_browser() {
         "cli"

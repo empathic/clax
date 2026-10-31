@@ -139,8 +139,8 @@ pub struct AnswerBody {
 /// `POST /api/confirmations/<id> {approve, assertion?}` (the owner's
 /// browser) → `{confirmation}`: approves (`true`) or declines confirmation
 /// `id`. An owner browser session or the in-process app's frame answers
-/// one: 403 `browser_required` for the token, the key cookie and the
-/// extension. While passkeys are required, approving from a browser
+/// one: 403 `browser_required` for the token and the extension. While
+/// passkeys are required, approving from a browser
 /// session takes `assertion`, over a challenge issued for `confirm:<id>`
 /// (`POST /api/passkeys/challenge`): 403 `passkey_required` without it, 403
 /// `passkey_refused` for one that does not check. 404 for none with that
@@ -152,12 +152,13 @@ pub async fn answer(
     _o: SameOrigin,
     caller: Caller,
     by: Confirming,
+    audit: clax_http::audit::DeferredAudit,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<AnswerBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     local_only(&s)?;
     d.refuse_agents()?;
-    if !caller.owner_browser() || !by.may_answer() {
+    if !by.may_answer(&caller) {
         return Err(ApiError::forbidden(
             "browser_required",
             "a confirmation is answered in the owner's browser: open the inbox in Clax",
@@ -178,7 +179,7 @@ pub async fn answer(
                 };
                 confirm::check_assertion(&st, db, &format!("confirm:{id}"), a)?;
             }
-            let c = db.answer_confirmation(&id, b.approve)?;
+            let c = db.answer_confirmation(&audit.resolve(db)?, &id, b.approve)?;
             confirm::view(&st, db, &c)
         })
         .await

@@ -16,6 +16,7 @@
 
 use super::Store;
 use chrono::Duration;
+use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
 use clax_core::{CoreError, Result};
 use rusqlite::{OptionalExtension, Row, params};
 use serde::Serialize;
@@ -223,12 +224,17 @@ impl Store {
     }
 
     /// Approves (`approve`) or declines open confirmation `id`: it as it
-    /// is after.
+    /// is after. Records `confirmation.answer` under `ctx`.
     ///
     /// # Errors
     /// `NotFound` for no such confirmation; `confirmation_expired` for one
     /// past its time; `confirmation_answered` for one answered before.
-    pub fn answer_confirmation(&self, id: &str, approve: bool) -> Result<Confirmation> {
+    pub fn answer_confirmation(
+        &self,
+        ctx: &AuditCtx,
+        id: &str,
+        approve: bool,
+    ) -> Result<Confirmation> {
         self.with_tx(|tx| {
             self.expire_confirmations(tx)?;
             let c = tx
@@ -257,6 +263,11 @@ impl Store {
                 "UPDATE confirmations SET status = ?2, answered_at = ?3 WHERE id = ?1",
                 params![id, status, self.now()],
             )?;
+            let rec = AuditRecord::new(AuditKind::ConfirmationAnswer, self.now())
+                .with("confirmation_id", id)
+                .with("decision", c.decision["kind"].clone())
+                .with("answer", if approve { "approve" } else { "decline" });
+            self.record_audit(tx, ctx, rec)?;
             tx.query_row(&format!("{SELECT} WHERE id = ?1"), params![id], |r| {
                 self.confirmation_of(r)
             })
@@ -339,14 +350,28 @@ mod tests {
             Use::Pending(_)
         ));
         assert_eq!(st.open_confirmations().unwrap(), vec![c.clone()]);
-        st.answer_confirmation(&c.id, true).unwrap();
+        st.answer_confirmation(&AuditCtx::DAEMON, &c.id, true)
+            .unwrap();
         assert!(st.open_confirmations().unwrap().is_empty());
         assert_eq!(st.use_confirmation(&c.id, &other).unwrap(), Use::Mismatch);
         assert_eq!(st.use_confirmation(&c.id, &push).unwrap(), Use::Approved);
         assert_eq!(st.use_confirmation(&c.id, &push).unwrap(), Use::Used);
         assert_eq!(st.use_confirmation("cf_none", &push).unwrap(), Use::Unknown);
-        let err = st.answer_confirmation(&c.id, false).unwrap_err();
+        let err = st
+            .answer_confirmation(&AuditCtx::DAEMON, &c.id, false)
+            .unwrap_err();
         assert!(err.to_string().contains("answered"), "{err}");
+        // The answer is recorded once; a refused one records nothing.
+        let answers: Vec<String> = st
+            .events_after(0, 1000)
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.kind == "confirmation.answer")
+            .map(|r| r.body)
+            .collect();
+        assert_eq!(answers.len(), 1, "{answers:?}");
+        assert!(answers[0].contains("\"answer\":\"approve\""), "{answers:?}");
+        assert!(answers[0].contains("\"decision\":\"push\""), "{answers:?}");
     }
 
     #[test]
@@ -355,7 +380,8 @@ mod tests {
         let (_d, st) = store(clock.clone());
         let d = json!({"kind": "answer", "question_id": "q"});
         let declined = st.open_confirmation(&json!({"kind": "x"})).unwrap();
-        st.answer_confirmation(&declined.id, false).unwrap();
+        st.answer_confirmation(&AuditCtx::DAEMON, &declined.id, false)
+            .unwrap();
         assert_eq!(
             st.use_confirmation(&declined.id, &json!({"kind": "x"}))
                 .unwrap(),
@@ -367,12 +393,15 @@ mod tests {
         clock.advance(1);
         assert_eq!(st.confirmation(&c.id).unwrap().unwrap().status, "expired");
         assert_eq!(st.use_confirmation(&c.id, &d).unwrap(), Use::Expired);
-        let err = st.answer_confirmation(&c.id, true).unwrap_err();
+        let err = st
+            .answer_confirmation(&AuditCtx::DAEMON, &c.id, true)
+            .unwrap_err();
         assert!(err.to_string().contains("expired"), "{err}");
         // An approved one left unused expires too, and a new call asks anew.
         let again = st.open_confirmation(&d).unwrap();
         assert_ne!(again.id, c.id);
-        st.answer_confirmation(&again.id, true).unwrap();
+        st.answer_confirmation(&AuditCtx::DAEMON, &again.id, true)
+            .unwrap();
         clock.advance(CONFIRMATION_TTL_SECS);
         assert_eq!(st.use_confirmation(&again.id, &d).unwrap(), Use::Expired);
     }

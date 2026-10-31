@@ -47,7 +47,7 @@ fn local_only(s: &AppState) -> Result<(), ApiError> {
 
 /// 403 `browser_required` unless the owner's browser makes the request.
 fn browser_only(caller: &Caller, by: &Confirming) -> Result<(), ApiError> {
-    if caller.owner_browser() && by.may_answer() {
+    if by.may_answer(caller) {
         Ok(())
     } else {
         Err(ApiError::forbidden(
@@ -170,7 +170,7 @@ pub async fn challenge(
         "challenge": challenge,
         "rp_id": rp_id,
         // One user handle for the owner of this Clax home.
-        "user_id": clax_core::webauthn::b64url(b"clax-owner"),
+        "user_id": clax_core::secret::base64url(b"clax-owner"),
         "timeout_ms": clax_store::passkeys::CHALLENGE_TTL_SECS * 1000,
         "allow": allow,
     })))
@@ -202,6 +202,7 @@ pub async fn register(
     _o: SameOrigin,
     caller: Caller,
     by: Confirming,
+    audit: clax_http::audit::DeferredAudit,
     req: Result<Json<RegisterBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     local_only(&s)?;
@@ -263,7 +264,11 @@ pub async fn register(
                     None => format!("{} {}", a.harness, a.agent_handle),
                 })
                 .collect();
-            let passkey = db.add_passkey(&r, &json!({"via": via, "agents_live": agents}))?;
+            let passkey = db.add_passkey(
+                &audit.resolve(db)?,
+                &r,
+                &json!({"via": via, "agents_live": agents}),
+            )?;
             Ok(json!({"passkey": passkey, "settings": view(&st, db)?}))
         })
         .await
@@ -294,6 +299,7 @@ pub async fn settings(
     _o: SameOrigin,
     caller: Caller,
     by: Confirming,
+    audit: clax_http::audit::DeferredAudit,
     req: Result<Json<SettingsBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     local_only(&s)?;
@@ -329,7 +335,7 @@ pub async fn settings(
             if let Some(o) = b.offer_dismissed {
                 p.offer_dismissed = o;
             }
-            db.set_confirm_prefs(p)?;
+            db.set_confirm_prefs(&audit.resolve(db)?, p)?;
             view(&st, db)
         })
         .await
@@ -354,6 +360,7 @@ pub async fn remove(
     _o: SameOrigin,
     caller: Caller,
     by: Confirming,
+    audit: clax_http::audit::DeferredAudit,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<RemoveBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -377,7 +384,7 @@ pub async fn remove(
                 };
                 confirm::check_assertion(&st, db, &format!("remove:{id}"), a)?;
             }
-            if !db.remove_passkey(&id)? {
+            if !db.remove_passkey(&audit.resolve(db)?, &id)? {
                 return Err(CoreError::NotFound);
             }
             view(&st, db)

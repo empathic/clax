@@ -137,7 +137,7 @@ pub async fn hide_live_pages(
 /// read from its headers and marks alone: it carries the daemon token, an
 /// owner browser session that counts
 /// ([`crate::local_trust::session_counts`]: the in-process app's frame
-/// and the key cookie included), or the extension gateway admitted it
+/// included), or the extension gateway admitted it
 /// ([`crate::extension::ViaExtension`]: the owner's browser); never with
 /// an agent credential of another machine.
 pub fn owners_own(headers: &HeaderMap, ext: &Extensions, token: &str) -> bool {
