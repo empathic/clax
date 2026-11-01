@@ -35,7 +35,7 @@
 //! A hosted daemon has no remotes: every route answers 404 there.
 
 use super::artifacts::{body, path};
-use super::remotes::{local_only, owner_only, sign_in_view, start_add};
+use super::remotes::{local_only, owner_only, return_address, sign_in_view, start_add};
 use crate::public::{self, SignIn};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
@@ -309,6 +309,7 @@ pub async fn answer(
     _o: SameOrigin,
     by: Confirming,
     audit: DeferredAudit,
+    headers: axum::http::HeaderMap,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<AnswerBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
@@ -317,13 +318,16 @@ pub async fn answer(
     clax_http::auth::require_owner_browser(&caller, "answering a connection request")?;
     let id = path(p)?;
     let b = body(req)?;
-    decide(&s, &caller, &by, audit, id, &b.answer).await
+    // Once approved there, the person comes back to the card here.
+    let back = return_address(&s, &headers, &format!("/inbox?remote_request={id}"))?;
+    decide(&s, &caller, &by, audit, id, &b.answer, back).await
 }
 
 /// The owner's answer `answer` to request `id`, its caller checked: the
 /// one place every answer is decided. First, the answer goes through the
 /// browser confirmation of the decisions that matter
-/// ([`Decision::AnswerConnection`]). Recorded as `audit` resolves.
+/// ([`Decision::AnswerConnection`]). Recorded as `audit` resolves. A
+/// Connect's sign-in sends the person back to `back` once they decide.
 async fn decide(
     s: &AppState,
     caller: &Caller,
@@ -331,6 +335,7 @@ async fn decide(
     audit: DeferredAudit,
     id: String,
     answer: &str,
+    back: Option<String>,
 ) -> Result<Response, ApiError> {
     let decision = Decision::AnswerConnection {
         request_id: id.clone(),
@@ -345,7 +350,7 @@ async fn decide(
         return Err(closed(&r));
     }
     let out = match answer {
-        "connect" => return connect(s, ctx, r).await,
+        "connect" => return connect(s, ctx, r, back).await,
         "not_now" => Answer::NotNow,
         "never" => Answer::Never,
         _ => {
@@ -379,7 +384,12 @@ fn closed(r: &Request) -> ApiError {
 /// lock ([`clax_http::remote_drivers::RemoteDrivers::connect_lock`]), so
 /// a second one, at once or later while the first's sign-in waits, answers that sign-in again (driving it when no task of this
 /// daemon does, as after a restart) rather than starting another.
-async fn connect(s: &AppState, ctx: AuditCtx, r: Request) -> Result<Response, ApiError> {
+async fn connect(
+    s: &AppState,
+    ctx: AuditCtx,
+    r: Request,
+    back: Option<String>,
+) -> Result<Response, ApiError> {
     let lock = s.remote_drivers.connect_lock(&r.origin);
     let _one = lock.lock().await;
     // Read again under the lock: another Connect may have started one.
@@ -392,7 +402,7 @@ async fn connect(s: &AppState, ctx: AuditCtx, r: Request) -> Result<Response, Ap
         drive(s.clone(), r.id.clone(), p.clone());
         return Ok(Json(connect_view(&r, &p)).into_response());
     }
-    let (remote, _) = start_add(s, r.origin.clone(), None, None, None, None).await?;
+    let (remote, _) = start_add(s, r.origin.clone(), None, None, None, back.as_deref()).await?;
     let (id, rid) = (r.id.clone(), remote.id.clone());
     let r = s
         .store_call(move |st| st.answer_remote_request(&ctx, &id, Answer::Connecting(rid)))

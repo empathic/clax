@@ -266,6 +266,20 @@ async fn connect_runs_the_device_flow_and_wakes_the_waiting_agent() {
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["request"]["status"], "open");
     let uc = user_code(&v);
+    // Once approved there, the approval page sends the person back to the
+    // card here.
+    let (_, peek) = public
+        .browser(
+            reqwest::Method::GET,
+            &format!("/api/hosted/device/{uc}"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(
+        peek["return_to"],
+        json!(format!("{}/inbox?remote_request={id}", ts.base)),
+        "{peek}"
+    );
     let every = Duration::from_secs(v["interval"].as_u64().unwrap());
     clock.wait_for(every, 1).await;
     // Pressed again while it waits: the same sign-in, and still one driver.

@@ -146,7 +146,7 @@ pub struct AddBody {
 /// # Errors
 /// 400 `invalid_args` when `path` is not a path on this origin
 /// ([`clax_http::site_access::safe_next`]).
-fn return_address(
+pub(super) fn return_address(
     s: &AppState,
     headers: &HeaderMap,
     path: &str,

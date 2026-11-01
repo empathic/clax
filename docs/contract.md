@@ -1426,7 +1426,9 @@ hosted one):
   sign-in for the request's origin and answers `{request,
   verification_url, user_code, expires_at, interval, remote,
   return_to_kept}`: the shell opens `verification_url` in a new tab, where
-  the person approves as themselves. The daemon then polls the sign-in
+  the person approves as themselves, and the approval page then sends
+  them back to the card (`/inbox?remote_request=<id>` on the origin the
+  answer came to, as `POST /api/remotes`'s `return_to`). The daemon then polls the sign-in
   itself, every `interval`, and settles the request `connected` when it
   is approved, `dismissed` when it is denied (holding the origin off as a
   Not now) or expires; the waiting agents are woken. A Connect pressed
