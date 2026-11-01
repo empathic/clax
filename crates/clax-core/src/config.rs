@@ -1155,6 +1155,42 @@ impl ModelApi {
     pub fn parse(s: &str) -> Option<ModelApi> {
         ModelApi::ALL.into_iter().find(|a| a.as_str() == s)
     }
+
+    /// The price catalog's (tokenulator.dev's) provider ID for a provider
+    /// at `base_url` speaking this API, when the host is one it knows.
+    pub fn catalog_provider(self, base_url: &str) -> Option<&'static str> {
+        let host = url_host(base_url);
+        match (self, host.as_str()) {
+            (ModelApi::Anthropic, "api.anthropic.com") => Some("anthropic"),
+            (ModelApi::Gemini | ModelApi::OpenAi, "generativelanguage.googleapis.com") => {
+                Some("google")
+            }
+            (ModelApi::OpenAi, "api.openai.com") => Some("openai"),
+            (ModelApi::OpenAi, "api.mistral.ai") => Some("mistral"),
+            (ModelApi::OpenAi, "api.deepseek.com") => Some("deepseek"),
+            (ModelApi::OpenAi, "api.x.ai") => Some("xai"),
+            (ModelApi::OpenAi, "api.z.ai") => Some("zai"),
+            (ModelApi::OpenAi, "api.groq.com") => Some("groq"),
+            (ModelApi::OpenAi, "api.together.xyz") => Some("together"),
+            (ModelApi::OpenAi, "api.fireworks.ai") => Some("fireworks"),
+            (ModelApi::OpenAi, "openrouter.ai") => Some("openrouter"),
+            _ => None,
+        }
+    }
+}
+
+/// The host `url` names, lowercase, without its port, brackets or a
+/// trailing dot; empty when it names none.
+pub fn url_host(url: &str) -> String {
+    let lower = url.to_ascii_lowercase();
+    let rest = lower.split_once("://").map_or(lower.as_str(), |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority.rsplit('@').next().unwrap_or("");
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or(""),
+        None => authority.split(':').next().unwrap_or(""),
+    };
+    host.trim_end_matches('.').to_string()
 }
 
 /// `[bot.models]`: the model ID of each tier; none empty.
@@ -2183,6 +2219,30 @@ mod tests {
             assert_eq!(ModelApi::parse(a.as_str()), Some(a));
         }
         assert_eq!(ModelApi::parse("OpenAI"), None);
+    }
+
+    #[test]
+    fn known_hosts_name_their_catalog_provider() {
+        let g = "https://generativelanguage.googleapis.com/v1beta";
+        assert_eq!(ModelApi::Gemini.catalog_provider(g), Some("google"));
+        assert_eq!(
+            ModelApi::OpenAi.catalog_provider("https://API.mistral.ai./v1"),
+            Some("mistral")
+        );
+        assert_eq!(
+            ModelApi::Anthropic.catalog_provider("https://api.anthropic.com"),
+            Some("anthropic")
+        );
+        assert_eq!(
+            ModelApi::OpenAi.catalog_provider("https://api.subconscious.dev/v1"),
+            None
+        );
+        assert_eq!(
+            ModelApi::Anthropic.catalog_provider("https://api.mistral.ai/v1"),
+            None
+        );
+        assert_eq!(url_host("http://[::1]:8080/x"), "::1");
+        assert_eq!(url_host("https://u@Example.com:443/"), "example.com");
     }
 
     #[test]

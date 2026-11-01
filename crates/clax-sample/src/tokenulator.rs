@@ -148,28 +148,6 @@ pub fn find(site: &Value, provider_id: &str, model_id: &str) -> Result<Listing, 
     })
 }
 
-/// tokenulator.dev's provider ID for a provider at `base_url` speaking
-/// `api`, when the host is one it knows.
-pub fn provider_for(api: clax_core::config::ModelApi, base_url: &str) -> Option<&'static str> {
-    use clax_core::config::ModelApi;
-    let host = crate::messages::host_of(base_url);
-    match (api, host.as_str()) {
-        (ModelApi::Anthropic, "api.anthropic.com") => Some("anthropic"),
-        (ModelApi::Gemini, "generativelanguage.googleapis.com") => Some("google"),
-        (ModelApi::OpenAi, "generativelanguage.googleapis.com") => Some("google"),
-        (ModelApi::OpenAi, "api.openai.com") => Some("openai"),
-        (ModelApi::OpenAi, "api.mistral.ai") => Some("mistral"),
-        (ModelApi::OpenAi, "api.deepseek.com") => Some("deepseek"),
-        (ModelApi::OpenAi, "api.x.ai") => Some("xai"),
-        (ModelApi::OpenAi, "api.z.ai") => Some("zai"),
-        (ModelApi::OpenAi, "api.groq.com") => Some("groq"),
-        (ModelApi::OpenAi, "api.together.xyz") => Some("together"),
-        (ModelApi::OpenAi, "api.fireworks.ai") => Some("fireworks"),
-        (ModelApi::OpenAi, "openrouter.ai") => Some("openrouter"),
-        _ => None,
-    }
-}
-
 /// Dollars per million tokens as micro-USD per million tokens, rounded.
 #[must_use]
 pub fn micro_usd(dollars: f64) -> i64 {
@@ -179,7 +157,6 @@ pub fn micro_usd(dollars: f64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clax_core::config::ModelApi;
     use serde_json::json;
 
     fn site() -> Value {
@@ -231,28 +208,6 @@ mod tests {
             );
         }
         assert!(find(&json!({}), "google", "x").is_err());
-    }
-
-    #[test]
-    fn known_hosts_name_their_provider() {
-        let g = "https://generativelanguage.googleapis.com/v1beta";
-        assert_eq!(provider_for(ModelApi::Gemini, g), Some("google"));
-        assert_eq!(
-            provider_for(ModelApi::OpenAi, "https://API.mistral.ai/v1"),
-            Some("mistral")
-        );
-        assert_eq!(
-            provider_for(ModelApi::Anthropic, "https://api.anthropic.com"),
-            Some("anthropic")
-        );
-        assert_eq!(
-            provider_for(ModelApi::OpenAi, "https://api.subconscious.dev/v1"),
-            None
-        );
-        assert_eq!(
-            provider_for(ModelApi::Anthropic, "https://api.mistral.ai/v1"),
-            None
-        );
     }
 
     #[tokio::test]

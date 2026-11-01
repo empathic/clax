@@ -754,7 +754,7 @@ pub async fn set_pricing(
 pub struct TokenulatorBody {
     model: String,
     /// tokenulator.dev's provider ID; by default the one the API and base
-    /// URL in effect name (`clax_sample::tokenulator::provider_for`).
+    /// URL in effect name (`ModelApi::catalog_provider`).
     #[serde(default)]
     provider: Option<String>,
 }
@@ -798,7 +798,7 @@ pub async fn price_from_tokenulator(
                     ))
                 })
                 .await?;
-            tokenulator::provider_for(api, &base_url)
+            api.catalog_provider(&base_url)
                 .ok_or_else(|| {
                     ApiError::bad_request(
                         "no_provider",

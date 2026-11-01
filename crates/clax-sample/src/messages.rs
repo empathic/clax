@@ -1283,18 +1283,6 @@ fn endpoint(base_url: &str, path: &str) -> Result<String, MessagesError> {
     Ok(format!("{}{path}", base_url.trim_end_matches('/')))
 }
 
-/// The host `base_url` names, lowercase and without its port.
-pub(crate) fn host_of(base_url: &str) -> String {
-    let lower = base_url.to_ascii_lowercase();
-    let rest = lower.split_once("://").map_or(lower.as_str(), |(_, r)| r);
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host = match authority.strip_prefix('[') {
-        Some(v6) => v6.split(']').next().unwrap_or(""),
-        None => authority.split(':').next().unwrap_or(""),
-    };
-    host.trim_end_matches('.').to_string()
-}
-
 /// `s` with everything but unreserved characters percent-encoded.
 fn query_value(s: &str) -> String {
     s.bytes()

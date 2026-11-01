@@ -142,7 +142,7 @@ pub(super) fn body(req: &MessagesRequest, base_url: &str) -> Value {
     b.insert("messages".into(), Value::Array(messages));
     b.insert("max_tokens".into(), json!(req.max_tokens));
     b.insert("stream".into(), json!(true));
-    let host = super::host_of(base_url);
+    let host = clax_core::config::url_host(base_url);
     if !USAGE_UNASKED.contains(&host.as_str()) {
         b.insert("stream_options".into(), json!({"include_usage": true}));
     }
