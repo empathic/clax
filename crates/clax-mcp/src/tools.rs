@@ -1386,6 +1386,35 @@ impl ClaxTools {
         self.client.session().or_else(|| self.session.clone())
     }
 
+    /// Opens `url` in the person's browser with the opener, when one runs
+    /// here; whether it ran. `local`, a path of the local daemon (`/a/<id>`,
+    /// `/inbox?…`), opens through a one-use login link to it instead, so a
+    /// browser not yet the owner's becomes one, and no result names the
+    /// link. A remote Clax's browsers sign in there: `url` as it is.
+    async fn open_url(&self, url: &str, local: Option<&str>) -> bool {
+        let Some(program) = (match &self.opener {
+            Opener::Platform if std::env::var_os("CLAX_NO_OPEN").is_none() => {
+                Some(PathBuf::from(platform_opener()))
+            }
+            Opener::Platform | Opener::Off => None,
+            Opener::Program(p) => Some(p.clone()),
+        }) else {
+            return false;
+        };
+        let link = match local.filter(|_| !self.client.is_remote()) {
+            Some(path) => self.client.login_path(path).await,
+            None => None,
+        };
+        let target = link.map_or_else(
+            || url.to_string(),
+            |p| format!("{}{p}", self.browser_base()),
+        );
+        let wait = self.open_wait;
+        clax_rt::spawn_blocking(move || run_opener(&program, &target, wait))
+            .await
+            .unwrap_or(false)
+    }
+
     fn browser_base(&self) -> String {
         self.client
             .browser_base()
@@ -2188,37 +2217,16 @@ impl ClaxTools {
         self.client.get(&api).await.map_err(|e| self.fail(e))?;
         // A remote artifact opens at its address there, where the person's
         // browser signs in.
+        let opened = match &remote {
+            Some(r) => self.open_url(&r.url, None).await,
+            None => {
+                self.open_url(&self.artifact_url(&id), Some(&format!("/a/{id}")))
+                    .await
+            }
+        };
         let url = match &remote {
             Some(r) => r.url.clone(),
             None => self.artifact_url(&id),
-        };
-        let program = match &self.opener {
-            Opener::Platform if std::env::var_os("CLAX_NO_OPEN").is_none() => {
-                Some(PathBuf::from(platform_opener()))
-            }
-            Opener::Platform | Opener::Off => None,
-            Opener::Program(p) => Some(p.clone()),
-        };
-        let opened = match program {
-            Some(program) => {
-                // The local daemon's browser opens through a one-use login
-                // link, so a browser not yet the owner's becomes one; the
-                // result names the artifact's own URL, never the link. A
-                // remote Clax's browsers sign in there.
-                let target = match self.client.is_remote() || remote.is_some() {
-                    true => url.clone(),
-                    false => match self.client.login_path(&format!("/a/{id}")).await {
-                        Some(p) => format!("{}{p}", self.browser_base()),
-                        None => url.clone(),
-                    },
-                };
-                let wait = self.open_wait;
-                let url = target;
-                clax_rt::spawn_blocking(move || run_opener(&program, &url, wait))
-                    .await
-                    .unwrap_or(false)
-            }
-            None => false,
         };
         let mut out = json!({"url": url, "opened": opened});
         if let Some(r) = &remote {
@@ -3095,6 +3103,7 @@ impl ClaxTools {
             .timeout_s
             .unwrap_or_else(|| default_ask_wait(&session.harness))
             .clamp(MIN_WAIT_S, max_ask_wait(&session.harness));
+        let mut opened = None;
         let id = match (a.url_or_origin.as_deref(), a.request_id) {
             (Some(url), None) => {
                 let v = self
@@ -3108,7 +3117,15 @@ impl ClaxTools {
                     out["call_again"] = json!(false);
                     return Ok(out);
                 }
-                v["request"]["id"].as_str().unwrap_or_default().to_string()
+                let id = v["request"]["id"].as_str().unwrap_or_default().to_string();
+                // The card opens in the person's browser, signed in to this
+                // Clax, when the request is made: no terminal step.
+                let card = format!("/inbox?remote_request={id}");
+                opened = Some(
+                    self.open_url(&format!("{}{card}", self.browser_base()), Some(&card))
+                        .await,
+                );
+                id
             }
             (None, Some(id)) if clax_core::is_ulid(&id) => id,
             (None, Some(id)) => return Err(invalid(format!("'{id}' is not a request ID"))),
@@ -3130,6 +3147,9 @@ impl ClaxTools {
             })?;
         let mut out = v.clone();
         out["waited_s"] = json!(started.elapsed().as_secs());
+        if let Some(opened) = opened {
+            out["opened"] = json!(opened);
+        }
         if v["status"] == "open" {
             let url = format!("{}/inbox?remote_request={id}", self.browser_base());
             out["tell_terminal"] = json!(format!(

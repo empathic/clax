@@ -8,7 +8,8 @@ use clax_mcp::client::DaemonClient;
 use clax_mcp::tools::ClaxTools;
 use serde_json::{Value, json};
 
-/// The tool set of a `claude` agent registered on `ts` as session `name`.
+/// The tool set of a `claude` agent registered on `ts` as session `name`;
+/// it opens nothing in a browser.
 pub async fn agent_tools(ts: &TestServer, name: &str) -> ClaxTools {
     let s: Session = serde_json::from_value(ts.register_session("claude", name).await).unwrap();
     ClaxTools::new(
@@ -17,6 +18,7 @@ pub async fn agent_tools(ts: &TestServer, name: &str) -> ClaxTools {
         Some(s),
         ts.home.log_path(),
     )
+    .with_opener(clax_mcp::tools::Opener::Off)
 }
 
 pub const ACCEPT: &str = "application/json, text/event-stream";

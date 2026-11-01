@@ -2191,11 +2191,16 @@ class Tools {
     await this.call(() => c.ensureSession());
     const wait = Math.min(Math.max(a.timeout_s ?? DEFAULT_ASK_WAIT_S, MIN_WAIT_S), MAX_ASK_WAIT_S);
     let id: string;
+    let opened: boolean | undefined;
     if (a.url_or_origin !== undefined && a.request_id === undefined) {
       const v = await this.call(() => c.remoteRequest(a.url_or_origin!, a.reason));
       // Connected, muted or held off: nothing to wait for.
       if (v.status !== "open") return { ...v, call_again: false };
       id = String(v.request?.id ?? "");
+      // The card opens in the person's browser, signed in to this Clax,
+      // when the request is made: no terminal step.
+      const card = `/inbox?remote_request=${id}`;
+      opened = this.env.CLAX_NO_OPEN === undefined && (await openInBrowser(await this.loginUrl(c, card, `${this.browserBase(c)}${card}`), this.env, this.opts.openWaitMs ?? OPEN_WAIT_MS));
     } else if (a.url_or_origin === undefined && a.request_id !== undefined) {
       if (!ULID_RE.test(a.request_id)) throw invalid(`'${a.request_id}' is not a request ID`);
       id = a.request_id;
@@ -2214,6 +2219,7 @@ class Tools {
       // `retry_after_s`: every wait on the request is taken; the agent calls again.
       if (v.status !== "open" || left <= REMOTE_REQUEST_MAX_WAIT_S || v.retry_after_s !== undefined) {
         const out: any = { ...v, waited_s: Math.floor((Date.now() - started) / 1000) };
+        if (opened !== undefined) out.opened = opened;
         if (v.status === "open") {
           const url = `${this.browserBase(c)}/inbox?remote_request=${id}`;
           out.url = url;

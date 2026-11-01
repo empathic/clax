@@ -1449,7 +1449,11 @@ most 50 s (up to `timeout_s`: 600 by default, 50 under Codex), returning
 the route's answer with `waited_s` and `call_again`; while it is open,
 `url` (`/inbox?remote_request=<id>`, which focuses the card) and
 `tell_terminal`; with `retry_after_s` it returns at once to be called
-again. `clax remote request <url> [--reason <text>] [--session <sid>]
+again. The call that posts the request also opens the card in the
+person's browser, as `open` opens an artifact (on a local daemon through a
+one-use login link, so a browser not yet the owner's becomes one, never
+named in the result), and says whether it did (`opened`), so they answer
+it with no terminal step. `clax remote request <url> [--reason <text>] [--session <sid>]
 [--wait <s>]` does the same from the CLI, as the session `--session`
 names, else the live session its harness's variable names
 (`CODEX_THREAD_ID`, `GROK_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`), else the

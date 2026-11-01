@@ -347,7 +347,7 @@ try {
   const project = join(dir, "work", "remote-e2e");
   mkdirSync(join(project, ".git"), { recursive: true });
   writeFileSync(join(project, ".git", "HEAD"), "ref: refs/heads/main\n");
-  const agentEnv = cleanEnv({ CLAX_HOME: home, CLAUDE_CODE_SESSION_ID: HARNESS_SESSION, CLAX_CHANNEL: "agent" });
+  const agentEnv = cleanEnv({ CLAX_HOME: home, CLAUDE_CODE_SESSION_ID: HARNESS_SESSION, CLAX_CHANNEL: "agent", CLAX_NO_OPEN: "1" });
   const hook = await cli(
     bin,
     ["hook", "--agent", "claude", "session-start"],
