@@ -138,6 +138,7 @@ pub mod passkeys;
 pub mod people;
 #[cfg(test)]
 mod plans;
+pub mod price_catalog;
 pub mod pushes;
 pub mod questions;
 pub mod queues;

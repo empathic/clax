@@ -10,7 +10,10 @@
 //! recorded as `admin.provider {fields[], values{key: value}}` for the
 //! provider, model and cap keys (none of them a secret: the key is kept in
 //! [`crate::secrets`]), and as `admin.cost_line {line: "*instance", op: "update",
-//! fields}` for the credit price and the free tier.
+//! fields}` for the pricing keys: the credit price, the free tier, the
+//! default token rates (`default_rates.*`, milli-credits per million
+//! tokens, for a model with neither a cost line nor a catalog listing) and
+//! `require_explicit_price` (only cost lines price a model).
 
 use super::Store;
 use super::roles::set_by;
@@ -21,7 +24,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 /// The cost line ID that `admin.cost_line` names for an instance-wide
-/// pricing setting (the credit price, the free tier).
+/// pricing setting (the credit price, the free tier, the default rates).
 pub const INSTANCE_LINE: &str = "*instance";
 
 /// Declares [`Setting`] with each key's name, kind and default.
@@ -77,6 +80,11 @@ settings! {
     ScriptMaxCalls = "script.max_calls", Positive, 200;
     CreditPriceMicroUsd = "credit_price_micro_usd", Positive, 10_000;
     FreeWeeklyMilli = "free_weekly_milli", NonNegative, 2_000_000;
+    DefaultRateInput = "default_rates.input", NonNegative, 560_000;
+    DefaultRateCachedInput = "default_rates.cached_input", NonNegative, 28_000;
+    DefaultRateCacheWrite = "default_rates.cache_write", NonNegative, 700_000;
+    DefaultRateOutput = "default_rates.output", NonNegative, 2_800_000;
+    RequireExplicitPrice = "require_explicit_price", Bool, false;
 }
 
 /// What a setting's value is.
@@ -93,6 +101,8 @@ enum Kind {
     Positive,
     /// An integer from 0 to 10^15.
     NonNegative,
+    /// `true` or `false`.
+    Bool,
 }
 
 impl Setting {
@@ -115,7 +125,13 @@ impl Setting {
     pub fn is_pricing(self) -> bool {
         matches!(
             self,
-            Setting::CreditPriceMicroUsd | Setting::FreeWeeklyMilli
+            Setting::CreditPriceMicroUsd
+                | Setting::FreeWeeklyMilli
+                | Setting::DefaultRateInput
+                | Setting::DefaultRateCachedInput
+                | Setting::DefaultRateCacheWrite
+                | Setting::DefaultRateOutput
+                | Setting::RequireExplicitPrice
         )
     }
 
@@ -175,6 +191,10 @@ impl Setting {
                 Some(n) if (0..=1_000_000_000_000_000).contains(&n) => Ok(Value::from(n)),
                 _ => Err(bad("a whole number from 0")),
             },
+            Kind::Bool => value
+                .as_bool()
+                .map(Value::from)
+                .ok_or_else(|| bad("true or false")),
         }
     }
 }
@@ -312,6 +332,14 @@ pub(crate) fn int_setting_in(c: &Connection, ov: &Overrides, s: Setting) -> Resu
     Ok(setting_in(c, ov, s)?
         .as_i64()
         .or_else(|| s.default_value().as_i64())
+        .unwrap_or_default())
+}
+
+/// [`setting_in`] for a boolean setting.
+pub(crate) fn bool_setting_in(c: &Connection, ov: &Overrides, s: Setting) -> Result<bool> {
+    Ok(setting_in(c, ov, s)?
+        .as_bool()
+        .or_else(|| s.default_value().as_bool())
         .unwrap_or_default())
 }
 
@@ -644,6 +672,58 @@ mod tests {
             json!("claude-sonnet-5-5")
         );
         assert!(st.stored_bot_settings().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_default_rates_and_explicit_prices_are_pricing_settings() {
+        let (_d, st) = store();
+        assert_eq!(
+            st.bot_setting(Setting::RequireExplicitPrice).unwrap(),
+            json!(false)
+        );
+        assert_eq!(
+            st.bot_setting(Setting::DefaultRateOutput).unwrap(),
+            json!(2_800_000)
+        );
+        for bad in [json!(1), json!("true"), json!(null)] {
+            assert!(Setting::RequireExplicitPrice.check(&bad).is_err(), "{bad}");
+        }
+        assert!(Setting::DefaultRateInput.check(&json!(-1)).is_err());
+        assert_eq!(
+            Setting::parse("default_rates.cache_write").unwrap(),
+            Setting::DefaultRateCacheWrite
+        );
+        let changed = st
+            .set_bot_settings(
+                DAEMON,
+                &[
+                    (Setting::RequireExplicitPrice, Some(json!(true))),
+                    (Setting::DefaultRateInput, Some(json!(0))),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            changed,
+            [Setting::DefaultRateInput, Setting::RequireExplicitPrice]
+        );
+        let ov = st.bot_overrides();
+        assert!(
+            st.with_read(|c| bool_setting_in(c, &ov, Setting::RequireExplicitPrice))
+                .unwrap()
+        );
+        let ev = st
+            .events_after(0, 100)
+            .unwrap()
+            .into_iter()
+            .rfind(|e| e.kind.starts_with("admin."))
+            .unwrap();
+        assert_eq!(ev.kind, "admin.cost_line");
+        assert!(
+            ev.body.contains("\"require_explicit_price\":true")
+                && ev.body.contains("\"default_rates.input\":0"),
+            "{}",
+            ev.body
+        );
     }
 
     #[test]

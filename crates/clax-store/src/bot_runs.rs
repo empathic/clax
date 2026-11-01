@@ -441,8 +441,9 @@ impl Store {
     ///
     /// # Errors
     /// `NotFound` for an artifact that does not exist; `model_not_priced`
-    /// for a model without its token cost lines (an admin prices it with
-    /// [`Store::price_model`]); the store's.
+    /// for a model whose tokens resolve to no rate ([`Store::model_rate`]:
+    /// with `require_explicit_price`, one without its token cost lines,
+    /// which an admin sets with [`Store::set_model_rates`]); the store's.
     pub fn create_run(&self, ctx: &AuditCtx, new: NewRun) -> Result<Run> {
         self.with_tx(|tx| self.create_run_in(tx, ctx, new))
     }
@@ -598,7 +599,7 @@ impl Store {
                 )
                 .optional()?;
             exists.ok_or(CoreError::NotFound)?;
-            check_model_priced(tx, &new.model)?;
+            check_model_priced(tx, &self.bot_overrides(), &new.model)?;
             let id = clax_core::new_ulid();
             let now = self.now();
             tx.execute(
@@ -866,8 +867,8 @@ impl Store {
     /// `NotFound`; `run_not_claimed` when `driver` does not hold the run;
     /// `step_mismatch` when the run is at another step; `run_invalid` for a
     /// run that is not running or stopping, or a `stopping` run's step that
-    /// is not `stopped`; `model_not_priced` for a turn whose model lost its
-    /// cost lines; the store's.
+    /// is not `stopped`; `model_not_priced` for a turn whose model no longer
+    /// resolves to a token rate (`Store::model_rate`); the store's.
     pub fn begin_step(&self, id: &str, driver: &DriverId, n: i64, kind: StepKind) -> Result<Step> {
         let driver = driver.as_str();
         self.with_tx(|tx| {
@@ -875,7 +876,7 @@ impl Store {
             check_claim(&run, driver)?;
             check_step(tx, id, n)?;
             if kind == StepKind::Turn {
-                check_model_priced(tx, &run.model)?;
+                check_model_priced(tx, &self.bot_overrides(), &run.model)?;
             }
             match run.status {
                 RunStatus::Running => {}
@@ -1872,7 +1873,18 @@ mod tests {
     #[test]
     fn a_model_without_prices_cannot_run() {
         let (_d, st) = store();
-        assert_eq!(code(new_run_on(&st, "custom-model")), "model_not_priced");
+        // At the default rates any model runs; with explicit prices
+        // required, only one with its cost lines.
+        new_run_on(&st, "custom-model").unwrap();
+        st.set_bot_settings(
+            DAEMON,
+            &[(
+                crate::bot_settings::Setting::RequireExplicitPrice,
+                Some(json!(true)),
+            )],
+        )
+        .unwrap();
+        assert_eq!(code(new_run_on(&st, "other-model")), "model_not_priced");
         // A model whose lines go away while a run waits is refused at its
         // next turn, before anything is asked of the provider.
         let run = new_run_on(&st, "claude-opus-5-5").unwrap();
