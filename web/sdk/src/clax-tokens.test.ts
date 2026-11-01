@@ -112,7 +112,7 @@ describe("clax.tokens.json", () => {
     });
 
     it("pairs, for each light pair of the contract, two system colours the platform makes contrast", () => {
-      for (const p of contrastPairs(file).filter(p => p.fg.startsWith("theme.light.") && p.bg.startsWith("theme.light."))) {
+      for (const p of contrastPairs(file).filter(c => c.fg.startsWith("theme.light.") && c.bg.startsWith("theme.light."))) {
         const pair = `${forced(p.fg.slice(12))}/${forced(p.bg.slice(12))}`;
         expect(p.min >= 4.5 ? TEXT : UI, `${p.fg} on ${p.bg}: ${pair}`).toContain(pair);
       }
