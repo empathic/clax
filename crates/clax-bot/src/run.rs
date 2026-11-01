@@ -1705,14 +1705,14 @@ impl Tick<'_> {
     /// expected input (the week's and the run's credits, whichever is
     /// less), at most the settings'; or the stop when that is under
     /// [`RunSettings::min_turn_tokens`]. The input is priced as the
-    /// request's cache breakpoint ([`with_breakpoint`]) has the provider
-    /// bill it: the previous turn's cached prefix at the cached-input rate
-    /// and the rest written to cache, at the cache-write rate. Each token
+    /// provider bills it: the previous turn's cached prefix at the
+    /// cached-input rate, and the rest at the cache-write rate on the
+    /// Messages API (whose request carries the cache breakpoint,
+    /// [`with_breakpoint`]) or at the input rate on the others. Each token
     /// unit is priced at the model's rate ([`Store::model_rate`]); a unit
-    /// an own key is waived
-    /// (one that applies on the instance key) costs nothing. Unlimited for
-    /// an unenforced person and when no unit costs anything (an own key on
-    /// instance-key rates).
+    /// an own key is waived (one that applies on the instance key) costs
+    /// nothing. Unlimited for an unenforced person and when no unit costs
+    /// anything (an own key on instance-key rates).
     fn affordable(
         &self,
         ks: KeySource,
@@ -1726,8 +1726,14 @@ impl Tick<'_> {
                 .map(|r| r.rate)
                 .filter(|r| !(ks == KeySource::Own && r.applies == Applies::InstanceKey)))
         };
+        // Only the Messages API request carries the cache breakpoint.
+        let uncached = if self.settings.api == ModelApi::Anthropic {
+            Unit::MtokCacheWrite
+        } else {
+            Unit::MtokInput
+        };
         let rates = [
-            rate(Unit::MtokCacheWrite)?,
+            rate(uncached)?,
             rate(Unit::MtokCachedInput)?,
             rate(Unit::MtokOutput)?,
         ];
@@ -1745,7 +1751,7 @@ impl Tick<'_> {
             .saturating_sub(self.run.credits_milli)
             .max(0);
         let left = week_left.min(run_left);
-        let [write_rate, cached_rate, output_rate] = rates;
+        let [uncached_rate, cached_rate, output_rate] = rates;
         let credits = |rate: Option<Rate>, qty: u64| -> Result<i64> {
             let Some(r) = rate else {
                 return Ok(0);
@@ -1764,9 +1770,9 @@ impl Tick<'_> {
             Some(u) => {
                 let prefix = u.cache_read_input_tokens + u.cache_creation_input_tokens;
                 credits(cached_rate, prefix.min(tokens))?
-                    + credits(write_rate, tokens.saturating_sub(prefix))?
+                    + credits(uncached_rate, tokens.saturating_sub(prefix))?
             }
-            None => credits(write_rate, tokens)?,
+            None => credits(uncached_rate, tokens)?,
         };
         let per_mtok = credits(output_rate, 1_000_000)?.max(1);
         let n = (i128::from(left - input).max(0) * 1_000_000 / i128::from(per_mtok))

@@ -8,6 +8,7 @@ use crate::common::*;
 use clax_bot::run::CrashPoint;
 use clax_bot::{Next, Refusal, Wait};
 use clax_core::audit::AuditCtx;
+use clax_sample::messages::ModelApi;
 use clax_store::bot_runs::{DriverId, RunStatus, StepKind};
 use clax_store::bot_settings::{Overrides, Setting};
 use clax_store::credits::{Applies, CostLinePatch, KeySource, RateSource, UsageRow};
@@ -352,4 +353,43 @@ async fn an_own_key_is_bounded_by_a_token_line_that_always_applies() {
     let asked = env.api.requests()[0].body["max_tokens"].as_u64().unwrap();
     assert_eq!(asked, 21_428);
     assert_eq!(env.api.requests()[0].header("x-api-key"), Some(OWN_KEY));
+}
+
+#[tokio::test]
+async fn off_the_messages_api_the_input_bound_is_priced_at_the_input_rate() {
+    // Without the Messages API's cache breakpoint, the provider bills the
+    // uncached input as input: a dear cache-write rate does not bound the
+    // turn, a dear input rate does.
+    for api in [ModelApi::OpenAi, ModelApi::Gemini] {
+        let env = Env::new().await;
+        env.set(|s| s.api = api);
+        set(&env, Setting::FreeWeeklyMilli, json!(30_000));
+        set(&env, Setting::DefaultRateCacheWrite, json!(500_000_000));
+        let run = env.run_on(UNPRICED, KeySource::Instance);
+        let _ = env
+            .try_tick(&env.deps(), &run, &DriverId::mint(), None)
+            .await;
+        let body = &env.api.requests()[0].body;
+        let asked = match api {
+            ModelApi::Gemini => &body["generationConfig"]["maxOutputTokens"],
+            _ => &body["max_tokens"],
+        }
+        .as_u64()
+        .unwrap();
+        assert!((1024..=10_714).contains(&asked), "{api:?}: {asked}");
+
+        let env = Env::new().await;
+        env.set(|s| s.api = api);
+        set(&env, Setting::FreeWeeklyMilli, json!(30_000));
+        set(&env, Setting::DefaultRateInput, json!(500_000_000));
+        let run = env.run_on(UNPRICED, KeySource::Instance);
+        let out = env.drive(&env.deps(), &run, &DriverId::mint()).await;
+        assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Stopped));
+        assert_eq!(
+            env.run_row(&run).reason.as_deref(),
+            Some("credits_exhausted"),
+            "{api:?}"
+        );
+        assert!(env.api.requests().is_empty(), "{api:?}");
+    }
 }
