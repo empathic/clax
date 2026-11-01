@@ -19,6 +19,8 @@ describes shipping it with Clax.
 The page shows the reel, `reel.mp4` with `reel-poster.jpg` as its poster,
 at the top when those files are published beside it. They are build
 artifacts of `web/reel` (its composer writes `clax-reel.mp4`), kept out of
-the repository and out of the shipped copy, so a copy without them shows no
-video. A viewer can hide the video; the page remembers that in
+the repository and out of the shipped copy. On a hosted Clax that serves
+the landing page's reel (`REEL_URL`), the copy seeded into a gallery plays
+that reel: its site redirects the missing files there, as `/start/` does.
+Anywhere else a copy without them shows no video. A viewer can hide the video; the page remembers that in
 `localStorage` (`clax-quickstart-reel-hidden`) and offers it back.

@@ -217,15 +217,24 @@ async fn landing(
     if file.is_empty() {
         return crate::shell::gallery_page(State(s), d, req).await;
     }
-    let elsewhere = hosted_of(&s).reel.clone().and_then(|r| match file {
-        "reel.mp4" => Some(r.video),
-        "reel-poster.jpg" => r.poster,
-        _ => None,
-    });
-    if let Some(to) = elsewhere {
+    if let Some(to) = reel_elsewhere(&s, file) {
         return Ok(axum::response::Redirect::temporary(&to).into_response());
     }
     crate::shell::landing_file(&release, &req, file)
+}
+
+/// Where a hosted daemon serves the reel's file `file` (`reel.mp4`,
+/// `reel-poster.jpg`) from, when it names a place ([`Hosted::with_reel`]):
+/// the landing page's, and a seeded quickstart's (`crate::routes::site`).
+///
+/// [`Hosted::with_reel`]: clax_http::hosted::Hosted::with_reel
+pub(crate) fn reel_elsewhere(s: &AppState, file: &str) -> Option<String> {
+    let reel = s.hosted.as_ref()?.reel.clone()?;
+    match file {
+        "reel.mp4" => Some(reel.video),
+        "reel-poster.jpg" => reel.poster,
+        _ => None,
+    }
 }
 
 /// `GET /api/hosted/me` → `{origin, setup_open, github, signed_in, person,

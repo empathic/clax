@@ -35,7 +35,7 @@ use super::{assets, content, drafts, health};
 use axum::Router;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Extension, Path, Query, Request, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
@@ -276,7 +276,32 @@ async fn serve_current(
         return Ok(Redirect::permanent("./").into_response());
     }
     let n = current_of(s, &site.artifact).await?;
-    content::serve_version(s, site.artifact.clone(), n, rel, true, req).await
+    serve_file(s, &site.artifact, n, rel, true, req).await
+}
+
+/// File `rel` of version `n` ([`content::serve_version`]). A quickstart
+/// seeded into a gallery ships without the reel, so on a hosted daemon that
+/// serves the landing page's reel elsewhere, a reel file the version lacks
+/// redirects there, as the landing page's does
+/// ([`crate::hosted::reel_elsewhere`]): the page plays what `/start/` plays.
+async fn serve_file(
+    s: &AppState,
+    artifact: &ArtifactId,
+    n: u32,
+    rel: String,
+    current: bool,
+    req: &HeaderMap,
+) -> Result<Response, ApiError> {
+    let elsewhere = crate::hosted::reel_elsewhere(s, &rel);
+    let served = content::serve_version(s, artifact.clone(), n, rel, current, req).await;
+    let missing = matches!(&served, Err(e) if e.status == StatusCode::NOT_FOUND);
+    if let (true, Some(to)) = (missing, elsewhere) {
+        let id = artifact.as_str().to_string();
+        if s.store_call(move |st| st.is_quickstart(&id)).await? {
+            return Ok(Redirect::temporary(&to).into_response());
+        }
+    }
+    served
 }
 
 /// `/_clax/v/<n>`: the version's root, with its slash.
@@ -317,7 +342,7 @@ async fn version_file(
     if rel == INDEX {
         return Ok(Redirect::permanent("./").into_response());
     }
-    content::serve_version(&s, site.artifact.clone(), n, rel, false, &req).await
+    serve_file(&s, &site.artifact, n, rel, false, &req).await
 }
 
 /// `/_clax/draft/<agent>/<token>`: the draft's root, with its slash.

@@ -198,6 +198,77 @@ async fn the_landing_pages_reel_redirects_to_where_hosted_mode_serves_it() {
 }
 
 #[tokio::test]
+async fn a_seeded_quickstart_plays_the_landing_pages_reel() {
+    let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+    let release =
+        clax_core::quickstart::Release::from_tree(&clax_testkit::quickstart_tree("landing"))
+            .unwrap();
+    let reel = clax_http::hosted::Reel::new(
+        "https://videos.example/r/downloads/default.mp4",
+        Some("https://videos.example/r/thumbnails/thumbnail.jpg"),
+    )
+    .unwrap();
+    let ts = TestServer::spawn_hosted_with(clock, Some("s3cret"), move |s| {
+        s.hosted = s.hosted.take().map(|h| {
+            Arc::new(
+                Arc::try_unwrap(h)
+                    .expect("hosted is not shared yet")
+                    .with_reel(Some(reel)),
+            )
+        });
+    })
+    .await;
+    let clax_store::Seeded::Made { artifact, .. } = ts
+        .store
+        .seed_quickstart(&clax_core::audit::AuditCtx::DAEMON, None, &release)
+        .await
+        .unwrap()
+    else {
+        panic!("an empty gallery is seeded");
+    };
+    let id = artifact.id.to_string();
+    // As the owner's browser on the artifact's site, following no redirect.
+    let c = unfollowed();
+    let site = |id: String, path: &'static str| {
+        let ts = &ts;
+        let c = &c;
+        async move {
+            let cookie = ts.site_cookie(&id).await;
+            c.get(format!("{}{path}", ts.base))
+                .header(reqwest::header::HOST, ts.site_host(&id))
+                .header(COOKIE, cookie)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    // The shipped copy carries no reel: its site sends the page where the
+    // landing page's comes from, at its current version and at version 1.
+    for path in ["/reel.mp4", "/_clax/v/1/reel.mp4"] {
+        let r = site(id.clone(), path).await;
+        assert_eq!(r.status(), 307, "{path}");
+        assert_eq!(
+            r.headers()["location"],
+            "https://videos.example/r/downloads/default.mp4",
+            "{path}"
+        );
+    }
+    let r = site(id.clone(), "/_clax/v/1/reel-poster.jpg").await;
+    assert_eq!(r.status(), 307);
+    assert_eq!(
+        r.headers()["location"],
+        "https://videos.example/r/thumbnails/thumbnail.jpg"
+    );
+    // Another missing file is still 404, and another artifact has no reel.
+    assert_eq!(site(id, "/_clax/v/1/nope.mp4").await.status(), 404);
+    let other = ts
+        .publish("Other", &[("index.html", "<h1>Other</h1>")])
+        .await;
+    let other = other["artifact"]["id"].as_str().unwrap().to_string();
+    assert_eq!(site(other, "/reel.mp4").await.status(), 404);
+}
+
+#[tokio::test]
 async fn without_a_reel_elsewhere_the_landing_page_serves_none() {
     let dist = dist();
     let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
