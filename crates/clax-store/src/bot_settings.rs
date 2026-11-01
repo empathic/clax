@@ -80,10 +80,10 @@ settings! {
     ScriptMaxCalls = "script.max_calls", Positive, 200;
     CreditPriceMicroUsd = "credit_price_micro_usd", Positive, 10_000;
     FreeWeeklyMilli = "free_weekly_milli", NonNegative, 2_000_000;
-    DefaultRateInput = "default_rates.input", NonNegative, 560_000;
-    DefaultRateCachedInput = "default_rates.cached_input", NonNegative, 28_000;
-    DefaultRateCacheWrite = "default_rates.cache_write", NonNegative, 700_000;
-    DefaultRateOutput = "default_rates.output", NonNegative, 2_800_000;
+    DefaultRateInput = "default_rates.input", FixedCredits, 560_000;
+    DefaultRateCachedInput = "default_rates.cached_input", FixedCredits, 28_000;
+    DefaultRateCacheWrite = "default_rates.cache_write", FixedCredits, 700_000;
+    DefaultRateOutput = "default_rates.output", FixedCredits, 2_800_000;
     RequireExplicitPrice = "require_explicit_price", Bool, false;
 }
 
@@ -101,6 +101,9 @@ enum Kind {
     Positive,
     /// An integer from 0 to 10^15.
     NonNegative,
+    /// Milli-credits per line unit, bounded as a fixed cost line's are:
+    /// an integer from 0 to [`crate::credits::MAX_FIXED_CREDITS_MILLI`].
+    FixedCredits,
     /// `true` or `false`.
     Bool,
 }
@@ -190,6 +193,15 @@ impl Setting {
             Kind::NonNegative => match value.as_i64() {
                 Some(n) if (0..=1_000_000_000_000_000).contains(&n) => Ok(Value::from(n)),
                 _ => Err(bad("a whole number from 0")),
+            },
+            Kind::FixedCredits => match value.as_i64() {
+                Some(n) if (0..=crate::credits::MAX_FIXED_CREDITS_MILLI).contains(&n) => {
+                    Ok(Value::from(n))
+                }
+                _ => Err(bad(&format!(
+                    "a whole number from 0 to {}",
+                    crate::credits::MAX_FIXED_CREDITS_MILLI
+                ))),
             },
             Kind::Bool => value
                 .as_bool()
@@ -689,6 +701,27 @@ mod tests {
             assert!(Setting::RequireExplicitPrice.check(&bad).is_err(), "{bad}");
         }
         assert!(Setting::DefaultRateInput.check(&json!(-1)).is_err());
+        // Bounded as a fixed cost line is.
+        let max = crate::credits::MAX_FIXED_CREDITS_MILLI;
+        assert_eq!(
+            Setting::DefaultRateOutput.check(&json!(max)).unwrap(),
+            json!(max)
+        );
+        assert!(matches!(
+            st.set_bot_settings(
+                DAEMON,
+                &[(Setting::DefaultRateOutput, Some(json!(max + 1)))]
+            ),
+            Err(CoreError::Invalid {
+                code: "invalid_setting",
+                ..
+            })
+        ));
+        let mut ov = Overrides::default();
+        assert!(
+            ov.set(Setting::DefaultRateInput, &json!(max + 1), "file")
+                .is_err()
+        );
         assert_eq!(
             Setting::parse("default_rates.cache_write").unwrap(),
             Setting::DefaultRateCacheWrite

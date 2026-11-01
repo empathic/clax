@@ -2059,7 +2059,7 @@ pub const MIGRATIONS: &[&str] = &[
       grant_token TEXT NOT NULL, grant_key BLOB NOT NULL,
       created_at TEXT NOT NULL);",
     // 62: the cached price catalog (tokenulator.dev's listings,
-    // `crate::credits::CatalogListing`), one row per provider and model, in
+    // `crate::price_catalog::CatalogListing`), one row per provider and model, in
     // micro-USD per million tokens (a missing cache rate is NULL), replaced
     // whole on each fetch; and the source of the rates each usage row was
     // charged at (`crate::credits::RateSource`), every earlier row's a cost

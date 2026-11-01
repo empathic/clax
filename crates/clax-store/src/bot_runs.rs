@@ -599,7 +599,7 @@ impl Store {
                 )
                 .optional()?;
             exists.ok_or(CoreError::NotFound)?;
-            check_model_priced(tx, &self.bot_overrides(), &new.model)?;
+            check_model_priced(tx, &self.bot_overrides(), &new.model, new.key_source)?;
             let id = clax_core::new_ulid();
             let now = self.now();
             tx.execute(
@@ -876,7 +876,19 @@ impl Store {
             check_claim(&run, driver)?;
             check_step(tx, id, n)?;
             if kind == StepKind::Turn {
-                check_model_priced(tx, &self.bot_overrides(), &run.model)?;
+                // The key the turn runs on, as the run loop chooses it
+                // (`Store::key_source_of`).
+                let own = crate::secrets::meta_in(
+                    tx,
+                    &crate::secrets::SecretSlot::Own(run.person.clone()),
+                )?
+                .is_some_and(|m| m.use_own);
+                let key_source = if own {
+                    KeySource::Own
+                } else {
+                    KeySource::Instance
+                };
+                check_model_priced(tx, &self.bot_overrides(), &run.model, key_source)?;
             }
             match run.status {
                 RunStatus::Running => {}
@@ -1904,6 +1916,53 @@ mod tests {
         // Its stop is still possible.
         st.cancel_run(DAEMON, &run.id).unwrap();
         st.begin_step(&run.id, &DriverId::named("d"), 1, StepKind::Stopped)
+            .unwrap();
+    }
+
+    #[test]
+    fn an_own_key_run_is_never_refused_for_a_missing_price() {
+        use crate::secrets::{Kek, SecretSlot};
+        let (_d, st) = store();
+        st.set_bot_settings(
+            DAEMON,
+            &[(
+                crate::bot_settings::Setting::RequireExplicitPrice,
+                Some(json!(true)),
+            )],
+        )
+        .unwrap();
+        let aid = artifact(&st, None).to_string();
+        let new = |key_source| NewRun {
+            artifact_id: aid.clone(),
+            person: OWNER.into(),
+            request: RequestKind::Thread,
+            thread_ids: vec!["t1".into()],
+            model: "custom-model".into(),
+            key_source,
+            base_version: 1,
+            agent_grant: None,
+        };
+        assert_eq!(
+            code(st.create_run(&bot(), new(KeySource::Instance))),
+            "model_not_priced"
+        );
+        // On the person's own key its token rows are waived: it runs.
+        let run = st.create_run(&bot(), new(KeySource::Own)).unwrap();
+        st.claim_run(&run.id, &DriverId::named("d"), 60).unwrap();
+        // The turn runs on the key the person uses now: the instance's
+        // until they set their own, which refuses it.
+        assert_eq!(
+            code(st.begin_step(&run.id, &DriverId::named("d"), 1, StepKind::Turn)),
+            "model_not_priced"
+        );
+        st.set_secret(
+            DAEMON,
+            &Kek::from_bytes([7; 32]),
+            &SecretSlot::Own(OWNER.into()),
+            "sk-ant-api03-OWNKEYOWNKEYOWN-wxyz",
+        )
+        .unwrap();
+        st.begin_step(&run.id, &DriverId::named("d"), 1, StepKind::Turn)
             .unwrap();
     }
 

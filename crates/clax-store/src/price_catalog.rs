@@ -36,13 +36,18 @@ pub struct CatalogListing {
 }
 
 impl CatalogListing {
-    /// Whether the listing is one to keep: IDs of 1 to 200 characters, every
-    /// price from 0 to [`MAX_COST_MICRO_USD`].
+    /// Whether the listing is one to keep: IDs of 1 to 200 bytes, a name of
+    /// 1 to 200 characters, a source of at most 500 and an observation time
+    /// of at most 64, and every price from 0 to [`MAX_COST_MICRO_USD`].
     fn valid(&self) -> bool {
         let id = |s: &str| !s.is_empty() && s.len() <= 200;
+        let chars = |s: &str| s.chars().count();
         let price = |v: i64| (0..=MAX_COST_MICRO_USD).contains(&v);
         id(&self.provider_id)
             && id(&self.model_id)
+            && (1..=200).contains(&chars(&self.name))
+            && chars(&self.source) <= 500
+            && chars(&self.observed_at) <= 64
             && price(self.input_micro_usd)
             && price(self.output_micro_usd)
             && self.cache_read_micro_usd.is_none_or(price)
@@ -86,8 +91,9 @@ pub(crate) fn listing_in(
 impl Store {
     /// Replaces the whole catalog with `listings`, fetched at `fetched_at`,
     /// in one transaction, and returns how many rows it holds now. Listings
-    /// that are not valid (an empty or overlong ID, a price below 0 or
-    /// above [`MAX_COST_MICRO_USD`]) are left out, and of two with the same
+    /// that are not valid (an empty or overlong ID or name, an overlong
+    /// source or observation time, a price below 0 or above
+    /// [`MAX_COST_MICRO_USD`]) are left out, and of two with the same
     /// provider and model the later is kept. With nothing to keep, the
     /// catalog is left as it was (a failed or empty fetch never empties
     /// it) and 0 is returned.
@@ -238,6 +244,55 @@ pub(crate) mod tests {
             st.catalog_fetched_at().unwrap(),
             Some(t("2026-10-31T12:00:00Z"))
         );
+    }
+
+    #[test]
+    fn of_two_listings_of_one_model_the_later_is_kept() {
+        let (_d, st) = store();
+        let n = st
+            .replace_price_catalog(
+                &[
+                    listing("openai", "gpt-5", 1, 2),
+                    listing("openai", "gpt-5", 3, 4),
+                ],
+                t("2026-10-30T12:00:00Z"),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        let l = st.catalog_listing("openai", "gpt-5").unwrap().unwrap();
+        assert_eq!((l.input_micro_usd, l.output_micro_usd), (3, 4));
+    }
+
+    #[test]
+    fn a_listing_with_an_unbounded_field_is_left_out() {
+        let (_d, st) = store();
+        let with = |f: fn(&mut CatalogListing)| {
+            let mut l = listing("openai", "gpt-5", 1, 2);
+            f(&mut l);
+            l
+        };
+        let bad = [
+            with(|l| l.name = String::new()),
+            with(|l| l.name = "n".repeat(201)),
+            with(|l| l.source = "s".repeat(501)),
+            with(|l| l.observed_at = "o".repeat(65)),
+            with(|l| l.model_id = "m".repeat(201)),
+            with(|l| l.cache_read_micro_usd = Some(-1)),
+            with(|l| l.cache_write_micro_usd = Some(MAX_COST_MICRO_USD + 1)),
+        ];
+        for l in &bad {
+            assert!(!l.valid(), "{l:?}");
+        }
+        // 200 characters of a name in more bytes is within bounds; an ID is
+        // bounded in bytes.
+        assert!(with(|l| l.name = "é".repeat(200)).valid());
+        assert!(!with(|l| l.model_id = "é".repeat(101)).valid());
+        assert_eq!(
+            st.replace_price_catalog(&bad, t("2026-10-30T12:00:00Z"))
+                .unwrap(),
+            0
+        );
+        assert_eq!(st.catalog_fetched_at().unwrap(), None);
     }
 
     #[test]

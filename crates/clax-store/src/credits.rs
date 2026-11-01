@@ -698,8 +698,18 @@ pub(crate) fn rate_in(c: &Connection, ov: &Overrides, id: &str) -> Result<Option
 /// `model_not_priced` unless each of [`TOKEN_UNITS`] of `model` resolves
 /// to a rate on `c` under `ov` ([`model_rate_in`]), so a run on it can
 /// charge every turn. Only `require_explicit_price` makes a model without
-/// cost lines unpriced.
-pub(crate) fn check_model_priced(c: &Connection, ov: &Overrides, model: &str) -> Result<()> {
+/// cost lines unpriced. A run on the person's own key (`key_source`
+/// [`KeySource::Own`]) is never refused: token rates apply only to the
+/// instance key, so its token rows are not charged.
+pub(crate) fn check_model_priced(
+    c: &Connection,
+    ov: &Overrides,
+    model: &str,
+    key_source: KeySource,
+) -> Result<()> {
+    if key_source == KeySource::Own {
+        return Ok(());
+    }
     let mut missing = Vec::new();
     for u in TOKEN_UNITS {
         if model_rate_in(c, ov, model, u)?.is_none() {
@@ -998,7 +1008,9 @@ pub(crate) fn week_usage_in(
 /// free part what the person's allowance had left. Returns the rows.
 ///
 /// # Errors
-/// `unknown_cost_line` for an item whose line does not exist;
+/// `unknown_cost_line` for an item whose rate resolves to none ([`rate_in`]:
+/// a line that does not exist and is not a token line, or a token line
+/// without its line under `require_explicit_price`);
 /// `invalid_usage` for a negative quantity; the store's.
 pub(crate) fn charge_in(
     tx: &Transaction<'_>,
@@ -1982,7 +1994,7 @@ mod tests {
     /// [`check_model_priced`] of `model` on `st` now.
     fn priced(st: &Store, model: &str) -> Result<()> {
         let ov = st.bot_overrides();
-        st.with_read(|c| check_model_priced(c, &ov, model))
+        st.with_read(|c| check_model_priced(c, &ov, model, KeySource::Instance))
     }
 
     /// Sets `require_explicit_price` on `st`.
@@ -2147,6 +2159,28 @@ mod tests {
             &[(Setting::DefaultRateOutput, Some(json!(1_000_000)))],
         )
         .unwrap();
+        // The highest default a setting takes charges a billion tokens
+        // without leaving the integers.
+        st.set_bot_settings(
+            DAEMON,
+            &[(
+                Setting::DefaultRateInput,
+                Some(json!(MAX_FIXED_CREDITS_MILLI)),
+            )],
+        )
+        .unwrap();
+        let row = &st
+            .charge(
+                OWNER,
+                None,
+                &[Metered::new(
+                    "unlisted.input",
+                    1_000_000_000,
+                    KeySource::Instance,
+                )],
+            )
+            .unwrap()[0];
+        assert_eq!(row.credits_milli, 1_000 * MAX_FIXED_CREDITS_MILLI);
         assert_eq!(
             resolved(&st, "unlisted", Unit::MtokOutput),
             Some((RateSource::Default, 0, 0, Some(1_000_000)))
@@ -2220,6 +2254,10 @@ mod tests {
                 ..
             })
         ));
+        // On the person's own key the tokens are not charged: not refused.
+        let ov = st.bot_overrides();
+        st.with_read(|c| check_model_priced(c, &ov, "gpt-5", KeySource::Own))
+            .unwrap();
         assert!(matches!(
             st.charge(
                 OWNER,
@@ -2251,6 +2289,10 @@ mod tests {
                     Metered::new("gpt-5.input", 1_000_000, KeySource::Instance),
                     Metered::new("unlisted.output", 1_000_000, KeySource::Instance),
                     Metered::new(LINE_HARNESS_FEE, 1, KeySource::Instance),
+                    // On the person's own key, catalog and default rates
+                    // are waived as a line's are.
+                    Metered::new("gpt-5.input", 1_000_000, KeySource::Own),
+                    Metered::new("unlisted.output", 1_000_000, KeySource::Own),
                 ],
             )
             .unwrap();
@@ -2266,8 +2308,13 @@ mod tests {
                 (RateSource::Catalog, 1_250_000, 175_000),
                 (RateSource::Default, 0, 2_800_000),
                 (RateSource::Line, 0, 1_000),
+                (RateSource::Catalog, 0, 0),
+                (RateSource::Default, 0, 0),
             ]
         );
+        assert_eq!(rows[4].qty, 1_000_000, "visible, not charged");
+        assert_eq!(rows[4].rate_cost_micro_usd, 1_250_000);
+        assert_eq!(rows[5].fixed_credits_milli, Some(2_800_000));
         assert_eq!(st.usage_rows(OWNER, st.now_utc()).unwrap(), rows);
         // A snapshot keeps its source; one without (an older payload) is a
         // line's.
