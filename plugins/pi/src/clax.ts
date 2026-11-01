@@ -2091,6 +2091,10 @@ class Tools {
   /** For each open question `ask` created, whether an owner surface was
    * open when it was created (the create call's `surface_open`). */
   private readonly askSurface = new Map<string, boolean>();
+  /** For each connection request `connect_instance` made, the page it
+   * named, which it watches once the request is connected; at most
+   * `ASK_SURFACE_CAP`, the oldest forgotten first. */
+  private readonly connectPages = new Map<string, string>();
 
   /** Asks the person `questions` and waits up to `timeout_s` (clamped to
    * [`MIN_WAIT_S`]..[`MAX_ASK_WAIT_S`], default [`DEFAULT_ASK_WAIT_S`]) for
@@ -2195,8 +2199,14 @@ class Tools {
     if (a.url_or_origin !== undefined && a.request_id === undefined) {
       const v = await this.call(() => c.remoteRequest(a.url_or_origin!, a.reason));
       // Connected, muted or held off: nothing to wait for.
-      if (v.status !== "open") return { ...v, call_again: false };
+      if (v.status !== "open") {
+        const out: any = { ...v, call_again: false };
+        if (v.status === "connected") await this.watchConnected(ctx, a.url_or_origin, out);
+        return out;
+      }
       id = String(v.request?.id ?? "");
+      this.connectPages.set(id, a.url_or_origin);
+      while (this.connectPages.size > ASK_SURFACE_CAP) this.connectPages.delete(this.connectPages.keys().next().value!);
       // The card opens in the person's browser, signed in to this Clax,
       // when the request is made: no terminal step.
       const card = `/inbox?remote_request=${id}`;
@@ -2224,9 +2234,29 @@ class Tools {
           const url = `${this.browserBase(c)}/inbox?remote_request=${id}`;
           out.url = url;
           out.tell_terminal = `Asked in Clax to connect ${v.name ?? "the instance"}: ${url}`;
+        } else {
+          const page = this.connectPages.get(id);
+          this.connectPages.delete(id);
+          if (v.status === "connected" && page !== undefined) await this.watchConnected(ctx, page, out);
         }
         return out;
       }
+    }
+  }
+
+  /** Once this Clax is connected to the instance `page` is on, watches
+   * `page` when it is one of its artifacts (`/a/<id>`), as asking to
+   * connect to a page means listening there: the agent shows on it and
+   * what is sent to it there reaches the agent. `out.watch` is the watch's
+   * result, or `out.watch_error` says why there is none. */
+  private async watchConnected(ctx: ExtensionContext, page: string, out: any): Promise<void> {
+    let artifact = false;
+    try { artifact = new URL(page).pathname.startsWith("/a/"); } catch { /* an origin or no URL */ }
+    if (!artifact) return;
+    try {
+      out.watch = await this.watch(ctx, { url_or_id: page });
+    } catch (e) {
+      out.watch_error = e instanceof Error ? e.message : String(e);
     }
   }
 
@@ -2683,7 +2713,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       "Read where to ask the person now: in Clax or in the terminal",
       WhereToAskArgs, ctx => tools.whereToAsk(ctx));
     define("connect_instance", "Clax connect instance",
-      "Ask the person to connect this Clax to another Clax instance, so you can read a page there (a `url_or_id` another tool refused with `remote_sign_in_required`). Pass `url_or_origin` (the page's URL, or the instance's origin) and a short `reason`; the person sees one card, in the inbox and in your thread, and approves on the other instance, or answers Not now or Never. Waits for the answer (up to `timeout_s`): `status` is `connected` (with `remote`; call the refused tool again), `dismissed`, `muted`, `not_now` (with `until`), `expired`, or `open` with `call_again` (call again with `request_id`; write the `tell_terminal` line in chat). You never see a code or a token.",
+      "Ask the person to connect this Clax to another Clax instance, so you can read a page there (a `url_or_id` another tool refused with `remote_sign_in_required`). Pass `url_or_origin` (the page's URL, or the instance's origin) and a short `reason`; the person sees one card, in the inbox and in your thread, and approves on the other instance, or answers Not now or Never. Waits for the answer (up to `timeout_s`): `status` is `connected` (with `remote`, and for an artifact's URL `watch`: you are watching it, so you show there and what is sent to you there reaches you; call the refused tool again), `dismissed`, `muted`, `not_now` (with `until`), `expired`, or `open` with `call_again` (call again with `request_id`; write the `tell_terminal` line in chat). You never see a code or a token.",
       "Ask the person to connect another Clax instance, and wait for the answer",
       ConnectInstanceArgs, (ctx, a) => tools.connectInstance(ctx, a));
 

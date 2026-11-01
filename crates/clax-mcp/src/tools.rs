@@ -1106,6 +1106,10 @@ pub struct ClaxTools {
     /// At most [`ASK_SURFACE_CAP`] entries; an entry leaves when its
     /// answer is handed over by any tool.
     ask_surface: std::sync::Arc<std::sync::Mutex<BTreeMap<String, bool>>>,
+    /// For each connection request `connect_instance` made, the page it
+    /// named, which it watches once the request is connected. At most
+    /// [`ASK_SURFACE_CAP`] entries, the oldest forgotten first.
+    connect_pages: std::sync::Arc<std::sync::Mutex<BTreeMap<String, String>>>,
     /// Captures the agent's git state for calls that change history; `None`
     /// (the daemon's `/mcp`, which has no working directory) sends
     /// `no-cwd`.
@@ -1180,6 +1184,7 @@ impl ClaxTools {
             open_wait: open_wait(),
             local_files: true,
             ask_surface: Default::default(),
+            connect_pages: Default::default(),
             git: None,
             reports: Default::default(),
             clock: std::sync::Arc::new(clax_core::working::SystemClock),
@@ -3115,9 +3120,19 @@ impl ClaxTools {
                     // Connected, muted or held off: nothing to wait for.
                     let mut out = v.clone();
                     out["call_again"] = json!(false);
+                    if v["status"] == "connected" {
+                        self.watch_connected(url, &mut out).await;
+                    }
                     return Ok(out);
                 }
                 let id = v["request"]["id"].as_str().unwrap_or_default().to_string();
+                {
+                    let mut pages = self.connect_pages.lock().expect("connect_pages lock");
+                    pages.insert(id.clone(), url.to_string());
+                    while pages.len() > ASK_SURFACE_CAP {
+                        pages.pop_first();
+                    }
+                }
                 // The card opens in the person's browser, signed in to this
                 // Clax, when the request is made: no terminal step.
                 let card = format!("/inbox?remote_request={id}");
@@ -3157,8 +3172,47 @@ impl ClaxTools {
                 v["name"].as_str().unwrap_or("the instance")
             ));
             out["url"] = json!(url);
+        } else {
+            let page = self
+                .connect_pages
+                .lock()
+                .expect("connect_pages lock")
+                .remove(&id);
+            if v["status"] == "connected"
+                && let Some(page) = page
+            {
+                self.watch_connected(&page, &mut out).await;
+            }
         }
         Ok(out)
+    }
+
+    /// Once this Clax is connected to the instance `page` is on, watches
+    /// `page` when it is one of its artifacts (`/a/<id>`), as asking to
+    /// connect to a page means listening there: the agent shows on it and
+    /// what is sent to it there reaches the agent. `out["watch"]` is the
+    /// watch's result, or `out["watch_error"]` says why there is none.
+    async fn watch_connected(&self, page: &str, out: &mut Value) {
+        let artifact = url::Url::parse(page).is_ok_and(|u| u.path().starts_with("/a/"));
+        if !artifact {
+            return;
+        }
+        let watched = self
+            .do_watch(WatchArgs {
+                url_or_id: page.to_string(),
+                ..Default::default()
+            })
+            .await;
+        match watched {
+            Ok(w) => out["watch"] = w,
+            Err(e) => {
+                out["watch_error"] = e
+                    .content
+                    .first()
+                    .and_then(|c| c.as_text())
+                    .map_or_else(|| json!("the watch failed"), |t| json!(t.text));
+            }
+        }
     }
 
     /// The daemon's suggestion of where to ask the session's person now:
@@ -4220,7 +4274,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Ask the person to connect this Clax to another Clax instance, so you can read a page there (a `url_or_id` another tool refused with `remote_sign_in_required`). Pass `url_or_origin` (the page's URL, or the instance's origin) and a short `reason`; the person sees one card, in the inbox and in your thread, and approves on the other instance, or answers Not now or Never. Waits for the answer (up to `timeout_s`): `status` is `connected` (with `remote`; call the refused tool again), `dismissed`, `muted`, `not_now` (with `until`), `expired`, or `open` with `call_again` (call again with `request_id`; write the `tell_terminal` line in chat). You never see a code or a token.",
+        description = "Ask the person to connect this Clax to another Clax instance, so you can read a page there (a `url_or_id` another tool refused with `remote_sign_in_required`). Pass `url_or_origin` (the page's URL, or the instance's origin) and a short `reason`; the person sees one card, in the inbox and in your thread, and approves on the other instance, or answers Not now or Never. Waits for the answer (up to `timeout_s`): `status` is `connected` (with `remote`, and for an artifact's URL `watch`: you are watching it, so you show there and what is sent to you there reaches you; call the refused tool again), `dismissed`, `muted`, `not_now` (with `until`), `expired`, or `open` with `call_again` (call again with `request_id`; write the `tell_terminal` line in chat). You never see a code or a token.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

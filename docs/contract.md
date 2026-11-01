@@ -1455,7 +1455,12 @@ again. The call that posts the request also opens the card in the
 person's browser, as `open` opens an artifact (on a local daemon through a
 one-use login link, so a browser not yet the owner's becomes one, never
 named in the result), and says whether it did (`opened`), so they answer
-it with no terminal step. `clax remote request <url> [--reason <text>] [--session <sid>]
+it with no terminal step. Asking to connect to an artifact's page means
+listening there: once the request is `connected` (at once, or when a
+later call hears it), the tool watches that page as `watch` does, so the
+agent shows there and what is sent to it there reaches it, and returns
+the watch's result as `watch` (or why it failed as `watch_error`); an
+instance's origin alone watches nothing. `clax remote request <url> [--reason <text>] [--session <sid>]
 [--wait <s>]` does the same from the CLI, as the session `--session`
 names, else the live session its harness's variable names
 (`CODEX_THREAD_ID`, `GROK_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`), else the

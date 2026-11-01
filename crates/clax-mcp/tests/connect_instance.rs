@@ -91,6 +91,31 @@ async fn connect_instance_asks_once_and_waits_for_the_answer() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn connecting_to_an_artifact_watches_it() {
+    let local = TestServer::spawn().await;
+    let public = Public::new().await;
+    clax_testkit::remotes::connect(&local, &public).await;
+    let theirs = public.publish().await;
+    let t = agent_tools(&local, "ci-watch").await;
+    // Connected already: asking for a page there watches it at once, so
+    // the agent shows there and is reached there.
+    let page = format!("{}/a/{theirs}", public.origin);
+    let (err, v) = call(&t, json!({"url_or_origin": page})).await;
+    assert!(!err, "{v}");
+    assert_eq!(v["status"], "connected", "{v}");
+    assert_eq!(v["watch"]["watching"], true, "{v}");
+    assert_eq!(v["watch"]["artifact_id"], json!(theirs), "{v}");
+    // The instance's origin alone names no page: nothing is watched.
+    let (err, v) = call(&t, json!({"url_or_origin": public.origin})).await;
+    assert!(!err, "{v}");
+    assert_eq!(v["status"], "connected", "{v}");
+    assert!(
+        v.get("watch").is_none() && v.get("watch_error").is_none(),
+        "{v}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn connect_instance_opens_its_card_in_a_signed_in_browser() {
     let dir = tempfile::tempdir().unwrap();
     let opener = clax_fake_exe::install(
