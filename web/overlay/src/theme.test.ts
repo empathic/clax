@@ -50,18 +50,24 @@ const sheetOf = (): string => {
 afterEach(() => { for (const el of document.querySelectorAll(OVERLAY_TAG)) el.remove(); });
 
 describe("a page's theme", () => {
-  it("is written as the light roles and base on :host, and the dark roles that differ under the dark scheme", () => {
+  it("is written as the light roles and base on :host, and the dark roles that differ under the dark scheme, none of it under forced colours", () => {
     expect(themeSheet(host)).toBe([
-      ":host {",
-      "  --bg: #fdf6e3;", "  --card: #fdf6e3;", "  --fg: #073642;", "  --agent: #6c71c4;", "  --accent: var(--agent);",
-      "  --font: Inter, system-ui, sans-serif;", "  --radius: 2px;",
-      "}",
-      "@media (prefers-color-scheme: dark) {",
+      "@media not all and (forced-colors: active) {",
       "  :host {",
-      "    --bg: #002b36;", "    --card: #002b36;", "    --fg: #eee8d5;",
+      "    --bg: #fdf6e3;", "    --card: #fdf6e3;", "    --fg: #073642;", "    --agent: #6c71c4;", "    --accent: var(--agent);",
+      "    --font: Inter, system-ui, sans-serif;", "    --radius: 2px;",
+      "  }",
+      "  @media (prefers-color-scheme: dark) {",
+      "    :host {",
+      "      --bg: #002b36;", "      --card: #002b36;", "      --fg: #eee8d5;",
+      "    }",
       "  }",
       "}",
     ].join("\n"));
+  });
+
+  it("is nothing for a file with no theme or base", () => {
+    expect(themeSheet({ palette: { $type: "color", paper: { $value: "#fdf6e3" } } })).toBe("");
   });
 
   it("is added to the overlay's sheet before its components' styles", () => {

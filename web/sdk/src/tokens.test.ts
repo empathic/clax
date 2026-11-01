@@ -83,4 +83,20 @@ describe("design tokens", () => {
     expect(regionSpecs(css)).toEqual(["light", "dark over light"]);
     expect(syncRegions(css, themes)).toBe(":root {\n  /* tokens:begin light */\n  --bg: #eeeeee;\n  --fg: #111111;\n  --focus: var(--fg);\n  /* tokens:end */\n  --other: 1px;\n}\n@media (x) {\n  :root {\n    /* tokens:begin dark over light */\n    --bg: #111111;\n    /* tokens:end */\n  }\n}\n");
   });
+
+  it("writes a system colour as it is, and computes no contrast for one", () => {
+    expect(cssValue("CanvasText", "color")).toBe("CanvasText");
+    expect(() => cssValue("NotASystemColour", "color")).toThrow(TokenError);
+    expect(() => contrast("CanvasText", "Canvas")).toThrow(TokenError);
+  });
+
+  it("writes a public region: each value the fallback of the role's --clax- property", () => {
+    const themes: TokenGroup = {
+      c: { $type: "color", a: { $value: "#111111" }, b: { $value: "#eeeeee" } },
+      light: { bg: { $value: "{c.b}" }, fg: { $value: "{c.a}" }, focus: { $value: "{light.fg}" } },
+      dark: { bg: { $value: "{c.a}" }, fg: { $value: "{c.a}" }, focus: { $value: "{dark.fg}" } },
+    };
+    expect(regionLines(themes, "public light")).toEqual(["--bg: var(--clax-bg, #eeeeee);", "--fg: var(--clax-fg, #111111);", "--focus: var(--clax-focus, var(--fg));"]);
+    expect(regionLines(themes, "public dark over light except fg")).toEqual(["--bg: var(--clax-bg, #111111);"]);
+  });
 });

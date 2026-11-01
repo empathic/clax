@@ -138,11 +138,12 @@ console.log(JSON.stringify(out));
     const root = document.querySelector("clax-overlay")?.shadowRoot;
     if (!root) throw new Error("the overlay added no shadow root");
     const css = [...(root.adoptedStyleSheets ?? []).flatMap(s => [...s.cssRules].map(r => r.cssText)), ...[...root.querySelectorAll("style")].map(s => s.textContent)].join("\n");
-    const clax = css.search(/--agent:\s*#2f6f2a/i);
+    // Clax's own roles read the page's public property first: --agent: var(--clax-agent, #2f6f2a).
+    const clax = css.search(/--agent:\s*var\(--clax-agent,\s*#2f6f2a\)/i);
     const page = css.search(/--agent:\s*#6c71c4/i);
     expect(clax, "Clax's agent green").toBeGreaterThanOrEqual(0);
     expect(page, "the page's agent, after Clax's").toBeGreaterThan(clax);
-    expect(css).toMatch(/--you:\s*#e0532f/i);
+    expect(css).toMatch(/--you:\s*var\(--clax-you,\s*#e0532f\)/i);
     handle.close();
   });
 

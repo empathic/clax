@@ -1,6 +1,8 @@
 // Design tokens in the W3C Design Tokens Community Group format
 // (https://www.designtokens.org/tr/drafts/format/), written for Clax from
-// the spec: no token library. A token file is nested groups; a token is an
+// the spec: no token library at run time (the build of the public
+// stylesheet, web/scripts/build-tokens.mjs, uses Style Dictionary and this
+// module's cssValue). A token file is nested groups; a token is an
 // object with a `$value` (and an optional `$type`, inherited from its
 // groups). A value of the form "{group.token}" is an alias for another
 // token's value. Clax's contrast contract rides in the spec's
@@ -11,7 +13,10 @@
 //   ] } }
 //
 // `contrastFailures` checks each pair with WCAG 2.x's contrast ratio, and
-// `cssVariables` writes one theme's roles as CSS custom properties.
+// `cssVariables` writes one theme's roles as CSS custom properties. A
+// colour token may also be a CSS system colour (`SYSTEM_COLORS`), which the
+// spec does not allow: Clax's forced-colors profile (`theme.forced`) is
+// written in them, and no contrast is computed for one.
 
 /** A colour as the spec writes it: a hex string, or an sRGB object. */
 export type ColorValue = string | { colorSpace: "srgb"; components: [number, number, number]; alpha?: number; hex?: string };
@@ -25,6 +30,14 @@ export interface ContrastFailure extends ContrastPair { ratio: number }
 export class TokenError extends Error {}
 
 const EXTENSION = "dev.empathic.clax";
+
+/** CSS Color 4's system colours (https://www.w3.org/TR/css-color-4/#css-system-colors):
+ * the user's palette under forced colours. */
+export const SYSTEM_COLORS: readonly string[] = [
+  "AccentColor", "AccentColorText", "ActiveText", "ButtonBorder", "ButtonFace", "ButtonText", "Canvas", "CanvasText",
+  "Field", "FieldText", "GrayText", "Highlight", "HighlightText", "LinkText", "Mark", "MarkText", "SelectedItem",
+  "SelectedItemText", "VisitedText",
+];
 const ALIAS = /^\{([^{}]+)\}$/;
 
 const isToken = (v: unknown): v is Token => typeof v === "object" && v !== null && "$value" in v;
@@ -131,6 +144,7 @@ export function contrastFailures(file: TokenGroup): ContrastFailure[] {
  * font family list joined, and strings and numbers as they are. */
 export function cssValue(value: unknown, type: string | undefined): string {
   if (type === "color") {
+    if (typeof value === "string" && SYSTEM_COLORS.includes(value)) return value;
     const [r, g, b, a] = rgba(value);
     const h = (n: number) => Math.round(n).toString(16).padStart(2, "0");
     return a === 1 ? `#${h(r)}${h(g)}${h(b)}` : `rgba(${Math.round(r)},${Math.round(g)},${Math.round(b)},${+a.toFixed(3)})`;
@@ -166,8 +180,12 @@ export function cssVariables(file: TokenGroup, path: string): string[] {
  * ` over ` and more groups after it, only the lines that differ from
  * theirs (a dark theme's overrides of the light one); with ` except ` and
  * names after it, none of the properties under those names (`except tag`
- * leaves out `--tag-*`, for a stylesheet that draws no tags). */
+ * leaves out `--tag-*`, for a stylesheet that draws no tags); with
+ * `public ` before it all, each value as the fallback of the role's public
+ * property (`--bg: var(--clax-bg, #f7f7f5);`), so a page that sets
+ * `--clax-bg` on an ancestor of the overlay's host draws the overlay in it. */
 export function regionLines(file: TokenGroup, spec: string): string[] {
+  if (spec.startsWith("public ")) return regionLines(file, spec.slice("public ".length)).map(publicLine);
   const [main, except = ""] = spec.split(" except ");
   const [groups, base] = main.split(" over ");
   const left = except.trim().split(/\s+/).filter(Boolean);
@@ -177,6 +195,12 @@ export function regionLines(file: TokenGroup, spec: string): string[] {
   const under = new Set(base.trim().split(/\s+/).flatMap(p => cssVariables(file, p)));
   return lines.filter(l => !under.has(l));
 }
+
+/** `--name: value;` as `--name: var(--clax-name, value);`. */
+const publicLine = (line: string): string => line.replace(/^--([\w-]+): (.*);$/, (_, n: string, v: string) => `--${n}: var(${PUBLIC_PREFIX}${n}, ${v});`);
+
+/** The prefix of Clax's public custom properties, the ones a page sets. */
+export const PUBLIC_PREFIX = "--clax-";
 
 const REGION = /^([ \t]*)\/\* tokens:begin ([^*]+?) \*\/\n[\s\S]*?^[ \t]*\/\* tokens:end \*\//gm;
 
@@ -201,14 +225,16 @@ const hasGroup = (file: TokenGroup, path: string) => {
  * role names of web/sdk/tokens/clax.tokens.json): the light theme and the
  * base on `selector`, and the dark theme's overrides of the light one under
  * the system's dark scheme. A host's theme for the overlay, laid over its
- * own tokens: a role it leaves out keeps Clax's. */
+ * own tokens: a role it leaves out keeps Clax's. All of it sits in
+ * `@media not all and (forced-colors: active)`: under forced colours the
+ * overlay keeps its system colours (`theme.forced`), whatever the page's. */
 export function themeSheet(file: TokenGroup, selector = ":host"): string {
   const light = ["theme.light", "base"].filter(p => hasGroup(file, p)).flatMap(p => cssVariables(file, p));
   const dark = !hasGroup(file, "theme.dark") ? [] : hasGroup(file, "theme.light") ? regionLines(file, "theme.dark over theme.light") : cssVariables(file, "theme.dark");
   const out: string[] = [];
-  if (light.length) out.push(`${selector} {`, ...light.map(l => `  ${l}`), "}");
-  if (dark.length) out.push("@media (prefers-color-scheme: dark) {", `  ${selector} {`, ...dark.map(l => `    ${l}`), "  }", "}");
-  return out.join("\n");
+  if (light.length) out.push(`  ${selector} {`, ...light.map(l => `    ${l}`), "  }");
+  if (dark.length) out.push("  @media (prefers-color-scheme: dark) {", `    ${selector} {`, ...dark.map(l => `      ${l}`), "    }", "  }");
+  return out.length ? ["@media not all and (forced-colors: active) {", ...out, "}"].join("\n") : "";
 }
 
 /** The specs of `css`'s generated regions, in order. */

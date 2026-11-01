@@ -1,81 +1,159 @@
 /* The overlay's root, in a shadow root on the deployer's page: no rule of
-   the page reaches in, and none of these reaches out. The tokens between
-   tokens:begin and tokens:end are generated from
-   web/sdk/tokens/clax.tokens.json, as the shell's theme.css's are, with the
-   dark ones under the system's dark scheme; do not edit them (see
-   web/shell/src/theme.css). */
+   the page reaches in, and none of these reaches out, except the page's
+   public custom properties: each role reads --clax-<role> first (custom
+   properties inherit into a shadow root, and `all` resets none), so a page
+   maps its own design system onto the overlay by setting them
+   (web/sdk/tokens/README.md). The tokens between tokens:begin and
+   tokens:end are generated from web/sdk/tokens/clax.tokens.json, as the
+   shell's theme.css's are: the dark ones under the system's dark scheme,
+   the more-contrast ones under prefers-contrast: more, and under forced
+   colours the system colours, which no --clax-* property and no page theme
+   overrides; do not edit them (see web/shell/src/theme.css). */
 :host {
   all: initial;
-  /* tokens:begin theme.light base except tag pin */
-  --bg: #f7f7f5;
-  --card: #ffffff;
-  --raised: #ffffff;
-  --hover: #f2f2ef;
-  --fg: #1c1b19;
-  --muted: #5f5d58;
-  --border: #e6e5e1;
-  --border-hover: #d6d4ce;
-  --border-strong: #85827b;
-  --accent: var(--agent);
-  --accent-ink: var(--agent-ink);
-  --accent-hover: #285f24;
-  --on-accent: #ffffff;
-  --accent-tint: #e8f1e6;
-  --primary-hover: #3a3935;
-  --danger: #b3261e;
-  --danger-tint: #fbeceb;
-  --focus: var(--agent);
-  --you: #e0532f;
-  --on-you: #141413;
-  --you-ink: #b5401f;
-  --agent: #2f6f2a;
-  --agent-ink: #2f6f2a;
-  --pink: #f6d3c7;
-  --on-pin: #141413;
-  --selection-bg: var(--pink);
-  --selection-fg: #1c1b19;
-  --comment-hl: #fbe9e3;
-  --shadow: rgba(20,20,15,0.08);
-  --scrim: rgba(20,20,15,0.4);
-  --font: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --radius: 10px;
-  --radius-sm: 8px;
-  --radius-xs: 4px;
-  --gutter: 16px;
+  /* tokens:begin public theme.light base except tag pin */
+  --bg: var(--clax-bg, #f7f7f5);
+  --card: var(--clax-card, #ffffff);
+  --raised: var(--clax-raised, #ffffff);
+  --hover: var(--clax-hover, #f2f2ef);
+  --fg: var(--clax-fg, #1c1b19);
+  --muted: var(--clax-muted, #5f5d58);
+  --border: var(--clax-border, #e6e5e1);
+  --border-hover: var(--clax-border-hover, #d6d4ce);
+  --border-strong: var(--clax-border-strong, #85827b);
+  --accent: var(--clax-accent, var(--agent));
+  --accent-ink: var(--clax-accent-ink, var(--agent-ink));
+  --accent-hover: var(--clax-accent-hover, #285f24);
+  --on-accent: var(--clax-on-accent, #ffffff);
+  --accent-tint: var(--clax-accent-tint, #e8f1e6);
+  --primary-hover: var(--clax-primary-hover, #3a3935);
+  --danger: var(--clax-danger, #b3261e);
+  --danger-tint: var(--clax-danger-tint, #fbeceb);
+  --focus: var(--clax-focus, var(--agent));
+  --you: var(--clax-you, #e0532f);
+  --on-you: var(--clax-on-you, #141413);
+  --you-ink: var(--clax-you-ink, #b5401f);
+  --agent: var(--clax-agent, #2f6f2a);
+  --agent-ink: var(--clax-agent-ink, #2f6f2a);
+  --pink: var(--clax-pink, #f6d3c7);
+  --on-pin: var(--clax-on-pin, #141413);
+  --selection-bg: var(--clax-selection-bg, var(--pink));
+  --selection-fg: var(--clax-selection-fg, #1c1b19);
+  --comment-hl: var(--clax-comment-hl, #fbe9e3);
+  --shadow: var(--clax-shadow, rgba(20,20,15,0.08));
+  --scrim: var(--clax-scrim, rgba(20,20,15,0.4));
+  --font: var(--clax-font, ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif);
+  --mono: var(--clax-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  --radius: var(--clax-radius, 10px);
+  --radius-sm: var(--clax-radius-sm, 8px);
+  --radius-xs: var(--clax-radius-xs, 4px);
+  --gutter: var(--clax-gutter, 16px);
+  --space-1: var(--clax-space-1, 4px);
+  --space-2: var(--clax-space-2, 8px);
+  --space-3: var(--clax-space-3, 12px);
+  --space-4: var(--clax-space-4, 16px);
+  --space-6: var(--clax-space-6, 24px);
+  --text-sm: var(--clax-text-sm, 12px);
+  --text-md: var(--clax-text-md, 14px);
+  --text-lg: var(--clax-text-lg, 16px);
+  --text-xl: var(--clax-text-xl, 20px);
+  --leading: var(--clax-leading, 1.5);
+  --duration: var(--clax-duration, 120ms);
+  --ease: var(--clax-ease, cubic-bezier(0.4,0,0.2,1));
   /* tokens:end */
   --elev-lg: 0 2px 6px rgba(20,20,15,.06), 0 16px 40px rgba(20,20,15,.12);
-  --t: .12s cubic-bezier(.4,0,.2,1);
+  --t: var(--duration) var(--ease);
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :host {
-    /* tokens:begin theme.dark over theme.light except tag pin */
-    --bg: #141413;
-    --card: #1c1c1a;
-    --raised: #232321;
-    --hover: #2a2a27;
-    --fg: #ecebe7;
-    --muted: #a9a69f;
-    --border: #2c2c29;
-    --border-hover: #3a3a36;
-    --border-strong: #7c7972;
-    --accent-hover: #8fd082;
-    --on-accent: #141413;
-    --accent-tint: #1f2a1d;
-    --primary-hover: #d6d4ce;
-    --danger: #ff8a80;
-    --danger-tint: #3a1f1c;
-    --you: #ff7a57;
-    --you-ink: #ff7a57;
-    --agent: #7cc36f;
-    --agent-ink: #7cc36f;
-    --comment-hl: #2e1e19;
-    --shadow: rgba(0,0,0,0.5);
-    --scrim: rgba(0,0,0,0.6);
+    /* tokens:begin public theme.dark over theme.light except tag pin */
+    --bg: var(--clax-bg, #141413);
+    --card: var(--clax-card, #1c1c1a);
+    --raised: var(--clax-raised, #232321);
+    --hover: var(--clax-hover, #2a2a27);
+    --fg: var(--clax-fg, #ecebe7);
+    --muted: var(--clax-muted, #a9a69f);
+    --border: var(--clax-border, #2c2c29);
+    --border-hover: var(--clax-border-hover, #3a3a36);
+    --border-strong: var(--clax-border-strong, #7c7972);
+    --accent-hover: var(--clax-accent-hover, #8fd082);
+    --on-accent: var(--clax-on-accent, #141413);
+    --accent-tint: var(--clax-accent-tint, #1f2a1d);
+    --primary-hover: var(--clax-primary-hover, #d6d4ce);
+    --danger: var(--clax-danger, #ff8a80);
+    --danger-tint: var(--clax-danger-tint, #3a1f1c);
+    --you: var(--clax-you, #ff7a57);
+    --you-ink: var(--clax-you-ink, #ff7a57);
+    --agent: var(--clax-agent, #7cc36f);
+    --agent-ink: var(--clax-agent-ink, #7cc36f);
+    --comment-hl: var(--clax-comment-hl, #2e1e19);
+    --shadow: var(--clax-shadow, rgba(0,0,0,0.5));
+    --scrim: var(--clax-scrim, rgba(0,0,0,0.6));
     /* tokens:end */
     --elev-lg: 0 2px 6px rgba(0,0,0,.4), 0 16px 40px rgba(0,0,0,.5);
     color-scheme: dark;
+  }
+}
+@media (prefers-contrast: more) and (prefers-color-scheme: light) {
+  :host {
+    /* tokens:begin public theme.light-more over theme.light except tag pin */
+    --muted: var(--clax-muted, #4a4843);
+    --border: var(--clax-border, #85827b);
+    --border-hover: var(--clax-border-hover, #5f5d58);
+    /* tokens:end */
+  }
+}
+@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  :host {
+    /* tokens:begin public theme.dark-more over theme.dark except tag pin */
+    --muted: var(--clax-muted, #d6d4ce);
+    --border: var(--clax-border, #7c7972);
+    --border-hover: var(--clax-border-hover, #a9a69f);
+    /* tokens:end */
+  }
+}
+@media (forced-colors: active) {
+  :host {
+    /* tokens:begin theme.forced except tag pin */
+    --bg: Canvas;
+    --card: Canvas;
+    --raised: Canvas;
+    --hover: Canvas;
+    --fg: CanvasText;
+    --muted: CanvasText;
+    --border: CanvasText;
+    --border-hover: CanvasText;
+    --border-strong: CanvasText;
+    --accent: Highlight;
+    --accent-ink: LinkText;
+    --accent-hover: Highlight;
+    --on-accent: HighlightText;
+    --accent-tint: Canvas;
+    --primary-hover: Highlight;
+    --danger: CanvasText;
+    --danger-tint: Canvas;
+    --focus: Highlight;
+    --you: Highlight;
+    --on-you: HighlightText;
+    --you-ink: CanvasText;
+    --agent: Highlight;
+    --agent-ink: LinkText;
+    --pink: Highlight;
+    --on-pin: HighlightText;
+    --selection-bg: Highlight;
+    --selection-fg: HighlightText;
+    --comment-hl: Canvas;
+    --shadow: Canvas;
+    --scrim: Canvas;
+    /* tokens:end */
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  :host {
+    /* tokens:begin reduced-motion */
+    --duration: 0ms;
+    /* tokens:end */
   }
 }
 *, *::before, *::after { box-sizing: border-box; }
