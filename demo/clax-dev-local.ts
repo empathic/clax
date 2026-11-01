@@ -54,7 +54,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { BuildLog } from "./lib/build.ts";
 import { PersonSession, setupFirstPerson, signinLink, type PersonInfo } from "./lib/http.ts";
-import { devLocalVars, startWorker, type RunningWorker } from "./lib/worker.ts";
+import { InstanceCannotStart, devLocalVars, startWorker, type RunningWorker } from "./lib/worker.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DIR = join(ROOT, "target/clax-dev-local");
@@ -358,11 +358,17 @@ const workerOptions = {
     REEL_POSTER_URL: `${reelBase}/reel-poster.jpg`,
   },
 };
+/** Why the Worker did not start; for an instance that cannot open its data
+ * (one an earlier build of this branch migrated, say), how to start over. */
+function startFailure(e: unknown): string {
+  if (e instanceof InstanceCannotStart) return `The Worker is up, but ${e.message}\nIf an earlier build made this data, start over with \`just clax-dev-local --fresh\` (it deletes ${DIR}).`;
+  return e instanceof Error ? e.message : String(e);
+}
 let w: RunningWorker;
 try {
   w = await startWorker(workerOptions);
 } catch (e) {
-  console.error(e instanceof Error ? e.message : e);
+  console.error(startFailure(e));
   process.exit(1);
 }
 let stopping = false;
@@ -412,7 +418,7 @@ async function rebuildOnce(): Promise<boolean> {
     console.log(`Rebuilt: reload ${base} to see it.`);
     return true;
   } catch (e) {
-    console.error(`The rebuilt Worker did not start: ${e instanceof Error ? e.message : e}`);
+    console.error(`The rebuilt Worker did not start: ${startFailure(e)}`);
     return stop(1);
   } finally {
     restarting = false;

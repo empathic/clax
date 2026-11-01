@@ -110,8 +110,14 @@ function writeConfig(dir: string, vars: Record<string, string>): string {
   return path;
 }
 
+/** The Worker is up but its instance cannot open (its `/healthz` answers 500
+ * "the instance could not start: …"), for example over data an earlier
+ * build migrated: waiting longer changes nothing. */
+export class InstanceCannotStart extends Error {}
+
 /** Starts `wrangler dev --local` on `o.dir` with the demo's vars; resolves
- * once `/healthz` answers on the public origin. */
+ * once `/healthz` answers on the public origin, and rejects at once with
+ * [`InstanceCannotStart`] when it answers that the instance cannot start. */
 export async function startWorker(o: WorkerOptions, readyMs = 90_000): Promise<RunningWorker> {
   mkdirSync(o.dir, { recursive: true });
   const wrangler = join(WORKER_DIR, "node_modules/.bin/wrangler");
@@ -146,7 +152,10 @@ export async function startWorker(o: WorkerOptions, readyMs = 90_000): Promise<R
     for (;;) {
       if (gone) throw new Error(`wrangler dev exited before it was ready; see ${log}:\n${readFileSync(log, "utf8").slice(-2000)}`);
       if (Date.now() > until) throw new Error(`wrangler dev was not ready within ${readyMs / 1000} s; see ${log}`);
-      if (await fetch(`${base}/healthz`).then((r) => r.ok, () => false)) break;
+      const res = await fetch(`${base}/healthz`).catch(() => null);
+      if (res?.ok) break;
+      const body = res ? await res.text().catch(() => "") : "";
+      if (res?.status === 500 && body.startsWith("the instance could not start")) throw new InstanceCannotStart(body);
       await new Promise((r) => setTimeout(r, 200));
     }
   } catch (e) {
