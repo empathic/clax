@@ -560,6 +560,7 @@ fn usage_of(v: &Value) -> Usage {
         cache_creation_input_tokens: n("cache_creation_input_tokens"),
         cache_read_input_tokens: n("cache_read_input_tokens"),
         output_tokens: n("output_tokens"),
+        ..Usage::default()
     }
 }
 

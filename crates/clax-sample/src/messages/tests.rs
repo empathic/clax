@@ -259,6 +259,7 @@ async fn a_tool_use_turn_streams_in_small_pieces_into_deltas_and_one_message() {
             cache_creation_input_tokens: 3400,
             cache_read_input_tokens: 51000,
             output_tokens: 87,
+            billed_micro_usd: None,
         }
     );
     assert_eq!(msg.content, expected_content());

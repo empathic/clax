@@ -19,7 +19,8 @@
 //! `<think>…</think>` (models that reason inline) into thinking blocks with
 //! an empty signature; each tool call into a `tool_use` block whose
 //! arguments stream as `input_json_delta`s. `finish_reason` closes the
-//! blocks; `usage` (`prompt_tokens` counting cached ones) sets the usage;
+//! blocks; `usage` (`prompt_tokens` counting cached ones) sets the usage,
+//! its `cost` (US dollars, as OpenRouter reports it) the billed cost;
 //! `data: [DONE]` ends the message, which must have carried its usage.
 
 use super::{Block, MessagesError, MessagesRequest, ModelInfo, Role, ToolChoice};
@@ -53,6 +54,14 @@ fn text_of(content: &Value) -> String {
         Value::Null => String::new(),
         v => v.to_string(),
     }
+}
+
+/// A usage `cost` in US dollars as micro-USD, rounded: `None` unless a
+/// finite non-negative number.
+fn billed_micro_usd(cost: &Value) -> Option<u64> {
+    let dollars = cost.as_f64().filter(|d| d.is_finite() && *d >= 0.0)?;
+    // In range for any real bill; `as` saturates past u64::MAX.
+    Some((dollars * 1_000_000.0).round() as u64)
 }
 
 /// The message(s) `m` is in Chat Completions.
@@ -419,12 +428,16 @@ impl Translator {
             let prompt = n(&u["prompt_tokens"]);
             let cached = n(&u["prompt_tokens_details"]["cached_tokens"]).min(prompt);
             self.usage_seen = true;
-            out.push(json!({"type": "message_delta", "delta": {}, "usage": {
+            let mut usage = json!({
                 "input_tokens": prompt - cached,
                 "cache_read_input_tokens": cached,
                 "cache_creation_input_tokens": 0,
                 "output_tokens": n(&u["completion_tokens"]),
-            }}));
+            });
+            if let Some(billed) = billed_micro_usd(&u["cost"]) {
+                usage["billed_micro_usd"] = json!(billed);
+            }
+            out.push(json!({"type": "message_delta", "delta": {}, "usage": usage}));
         }
         Ok(out)
     }

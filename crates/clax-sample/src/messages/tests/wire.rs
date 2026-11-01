@@ -161,6 +161,7 @@ async fn a_chat_completions_stream_assembles_into_one_messages_turn() {
             cache_creation_input_tokens: 0,
             cache_read_input_tokens: 1000,
             output_tokens: 87,
+            billed_micro_usd: None,
         }
     );
     assert!(matches!(&msg.tool_calls()[..], [ToolCall::Valid { id, .. }] if id == "call_a"));
@@ -202,6 +203,49 @@ async fn reasoning_inside_think_tags_streams_as_thinking() {
         ]
     );
     assert_eq!(msg.stop_reason, Some(StopReason::EndTurn));
+}
+
+#[tokio::test]
+async fn a_usage_cost_is_the_billed_cost_in_micro_usd() {
+    let turn = |cost: Option<Value>| {
+        let mut usage = json!({"prompt_tokens": 1200, "completion_tokens": 87,
+                               "prompt_tokens_details": {"cached_tokens": 1000}});
+        if let Some(c) = cost {
+            usage["cost"] = c;
+        }
+        data(&[
+            chunk(json!({"content": "hi"}), Some("stop")),
+            json!({"choices": [], "usage": usage}),
+        ]) + "data: [DONE]\n\n"
+    };
+    let cases = [
+        (Some(json!(0.0012345)), Some(1235)),
+        (Some(json!(0)), Some(0)),
+        (None, None),
+        (Some(json!(-0.5)), None),
+        (Some(json!("0.25")), None),
+        (Some(Value::Null), None),
+    ];
+    let replies = cases.iter().map(|(c, _)| ok(turn(c.clone()), 9)).collect();
+    let (base, _) = serve(replies).await;
+    let client = MessagesClient::new();
+    for (cost, billed) in cases {
+        let msg = client
+            .stream(ModelApi::OpenAi, &base, &key(), &request(), |_| {})
+            .await
+            .unwrap();
+        assert_eq!(
+            msg.usage,
+            Usage {
+                input_tokens: 200,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 1000,
+                output_tokens: 87,
+                billed_micro_usd: billed,
+            },
+            "cost {cost:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -399,6 +443,7 @@ async fn a_gemini_stream_assembles_into_one_messages_turn() {
             cache_creation_input_tokens: 0,
             cache_read_input_tokens: 1000,
             output_tokens: 87,
+            billed_micro_usd: None,
         }
     );
     assert_eq!(msg.content.len(), 3, "{:?}", msg.content);

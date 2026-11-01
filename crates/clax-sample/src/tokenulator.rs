@@ -1,7 +1,8 @@
 //! Model prices from tokenulator.dev, which reconciles providers' own
 //! pricing pages with aggregators: [`fetch`] reads its catalog
-//! (`GET` [`SITE_DATA_URL`], no key) and [`find`] one provider's listing of
-//! a model in it, at its standard rates in US dollars per million tokens.
+//! (`GET` [`SITE_DATA_URL`], no key), [`listings`] every priced listing in
+//! it and [`find`] one provider's listing of a model, at their standard
+//! rates in US dollars per million tokens.
 //!
 //! The catalog is `{schema_version: 1, catalog: {models: [{provider_id,
 //! model_id, model, pricing: {standard: {input, output, cache_read,
@@ -75,8 +76,9 @@ impl std::fmt::Display for LookupError {
 
 impl std::error::Error for LookupError {}
 
-/// The catalog at `url` ([`SITE_DATA_URL`] in production), each wait
-/// within `timeout`.
+/// The catalog at `url`, each wait within `timeout`: [`SITE_DATA_URL`] in
+/// production; tests pass a local server's URL, so none reaches
+/// tokenulator.dev.
 ///
 /// # Errors
 /// [`LookupError::Unavailable`]: no answer, a non-2xx one, a body over 64
@@ -112,40 +114,57 @@ pub async fn fetch(url: &str, timeout: Duration) -> Result<Value, LookupError> {
     Ok(v)
 }
 
-/// `provider_id`'s listing of `model_id` in `site`, the IDs compared
-/// ignoring case.
-///
-/// # Errors
-/// [`LookupError::NotListed`] when there is none, or none with standard
-/// input and output rates.
-pub fn find(site: &Value, provider_id: &str, model_id: &str) -> Result<Listing, LookupError> {
-    let same = |v: &Value, s: &str| v.as_str().is_some_and(|x| x.eq_ignore_ascii_case(s));
-    let m = site["catalog"]["models"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|m| same(&m["provider_id"], provider_id) && same(&m["model_id"], model_id));
-    let not_listed = || LookupError::NotListed {
-        provider_id: provider_id.to_string(),
-        model_id: model_id.to_string(),
-    };
-    let m = m.ok_or_else(not_listed)?;
+/// `m` as a listing: `None` without finite non-negative standard input and
+/// output rates.
+fn listing(m: &Value) -> Option<Listing> {
     let std = &m["pricing"]["standard"];
     let rate = |k: &str| std[k].as_f64().filter(|r| r.is_finite() && *r >= 0.0);
     let s = |k: &str| m[k].as_str().unwrap_or("").to_string();
-    Ok(Listing {
+    Some(Listing {
         provider_id: s("provider_id"),
         model_id: s("model_id"),
         name: s("model"),
         rates: Rates {
-            input: rate("input").ok_or_else(not_listed)?,
-            output: rate("output").ok_or_else(not_listed)?,
+            input: rate("input")?,
+            output: rate("output")?,
             cache_read: rate("cache_read"),
             cache_write: rate("cache_write"),
         },
         source: s("source"),
         observed_at: s("observed_at"),
     })
+}
+
+/// Every listing in `site` with finite non-negative standard input and
+/// output rates, in catalog order; the rest are skipped.
+#[must_use]
+pub fn listings(site: &Value) -> Vec<Listing> {
+    site["catalog"]["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(listing)
+        .collect()
+}
+
+/// `provider_id`'s listing of `model_id` in `site`, the IDs compared
+/// ignoring case.
+///
+/// # Errors
+/// [`LookupError::NotListed`] when there is none with standard input and
+/// output rates.
+pub fn find(site: &Value, provider_id: &str, model_id: &str) -> Result<Listing, LookupError> {
+    let same = |v: &Value, s: &str| v.as_str().is_some_and(|x| x.eq_ignore_ascii_case(s));
+    site["catalog"]["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| same(&m["provider_id"], provider_id) && same(&m["model_id"], model_id))
+        .find_map(listing)
+        .ok_or_else(|| LookupError::NotListed {
+            provider_id: provider_id.to_string(),
+            model_id: model_id.to_string(),
+        })
 }
 
 /// Dollars per million tokens as micro-USD per million tokens, rounded.
@@ -208,6 +227,40 @@ mod tests {
             );
         }
         assert!(find(&json!({}), "google", "x").is_err());
+    }
+
+    #[test]
+    fn every_listing_with_standard_input_and_output_rates_is_listed() {
+        let mut site = site();
+        let models = site["catalog"]["models"].as_array_mut().unwrap();
+        models.push(
+            json!({"provider_id": "mistral", "model_id": "free-1", "model": "Free 1",
+            "pricing": {"standard": {"input": 0, "output": 0.0}}}),
+        );
+        models.push(
+            json!({"provider_id": "mistral", "model_id": "neg", "model": "Neg",
+            "pricing": {"standard": {"input": -1.0, "output": 2.0}}}),
+        );
+        models.push(
+            json!({"provider_id": "mistral", "model_id": "text", "model": "Text",
+            "pricing": {"standard": {"input": "1.0", "output": 2.0}}}),
+        );
+        models.push(json!({"provider_id": "mistral", "model_id": "bare", "model": "Bare"}));
+        let all = listings(&site);
+        let ids: Vec<&str> = all.iter().map(|l| l.model_id.as_str()).collect();
+        assert_eq!(ids, ["gemini-3.5-flash", "free-1"]);
+        assert_eq!(all[0], find(&site, "google", "gemini-3.5-flash").unwrap());
+        assert_eq!(
+            all[1].rates,
+            Rates {
+                input: 0.0,
+                output: 0.0,
+                cache_read: None,
+                cache_write: None
+            }
+        );
+        assert!(listings(&json!({})).is_empty());
+        assert!(listings(&json!({"catalog": {"models": {}}})).is_empty());
     }
 
     #[tokio::test]

@@ -389,10 +389,13 @@ pub struct Usage {
     pub cache_creation_input_tokens: u64,
     pub cache_read_input_tokens: u64,
     pub output_tokens: u64,
+    /// What the provider billed for the call, in micro-USD, when it says
+    /// (`billed_micro_usd` in a usage object; OpenRouter's `usage.cost`).
+    pub billed_micro_usd: Option<u64>,
 }
 
 impl Usage {
-    /// Overwrites each count `v` carries (`message_start`'s, then each
+    /// Overwrites each count (and the billed cost) `v` carries (`message_start`'s, then each
     /// `message_delta`'s cumulative counts).
     fn merge(&mut self, v: &Value) {
         let set = |slot: &mut u64, k: &str| {
@@ -407,6 +410,9 @@ impl Usage {
         );
         set(&mut self.cache_read_input_tokens, "cache_read_input_tokens");
         set(&mut self.output_tokens, "output_tokens");
+        if let Some(n) = v["billed_micro_usd"].as_u64() {
+            self.billed_micro_usd = Some(n);
+        }
     }
 }
 
