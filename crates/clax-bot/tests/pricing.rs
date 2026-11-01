@@ -10,7 +10,7 @@ use clax_bot::{Next, Refusal, Wait};
 use clax_core::audit::AuditCtx;
 use clax_store::bot_runs::{DriverId, RunStatus, StepKind};
 use clax_store::bot_settings::{Overrides, Setting};
-use clax_store::credits::{KeySource, RateSource, UsageRow};
+use clax_store::credits::{Applies, CostLinePatch, KeySource, RateSource, UsageRow};
 use clax_store::price_catalog::CatalogListing;
 use clax_store::roles::OWNER;
 use clax_store::secrets::SecretSlot;
@@ -245,7 +245,10 @@ async fn a_billed_turn_at_the_default_rates_keeps_their_credits() {
     assert_eq!(rows.iter().map(|r| r.cost_micro_usd).sum::<i64>(), 9_000);
     let credits: Vec<i64> = rows.iter().map(|r| r.credits_milli).collect();
     assert_eq!(credits, [560, 56, 350, 840], "the fixed credits");
-    assert!(rows.iter().all(|r| r.rate_source == RateSource::Provider));
+    assert!(
+        rows.iter().all(|r| r.rate_source == RateSource::Default),
+        "credit-based rows keep the source of their credits"
+    );
 }
 
 #[tokio::test]
@@ -282,7 +285,6 @@ async fn a_billed_cost_survives_a_resumed_run() {
 }
 
 #[tokio::test]
-#[ignore = "Store::begin_step refuses model_not_priced for any key until check_model_priced takes the key source"]
 async fn an_own_key_runs_an_unpriced_model_under_require_explicit_price() {
     let env = Env::new().await;
     own_key(&env);
@@ -298,4 +300,56 @@ async fn an_own_key_runs_an_unpriced_model_under_require_explicit_price() {
             && r.cost_micro_usd == 0
             && r.credits_milli == 0)
     );
+}
+
+#[tokio::test]
+async fn the_input_bound_is_priced_at_the_cache_write_rate() {
+    // The request's cache breakpoint has the provider bill a first turn's
+    // whole prompt as cache writes: a dear cache-write rate leaves 30
+    // credits short of the input, so no call is made.
+    let env = Env::new().await;
+    set(&env, Setting::FreeWeeklyMilli, json!(30_000));
+    set(&env, Setting::DefaultRateCacheWrite, json!(500_000_000));
+    let run = env.run_on(UNPRICED, KeySource::Instance);
+    let out = env.drive(&env.deps(), &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Stopped));
+    assert_eq!(
+        env.run_row(&run).reason.as_deref(),
+        Some("credits_exhausted")
+    );
+    assert!(env.api.requests().is_empty());
+    // The same price on uncached input does not bound the first turn.
+    let env = Env::new().await;
+    set(&env, Setting::FreeWeeklyMilli, json!(30_000));
+    set(&env, Setting::DefaultRateInput, json!(500_000_000));
+    env.api.push(finish_turn("done"));
+    let run = env.run_on(UNPRICED, KeySource::Instance);
+    env.tick(&env.deps(), &run, &DriverId::mint()).await;
+    let asked = env.api.requests()[0].body["max_tokens"].as_u64().unwrap();
+    assert!((1024..=10_714).contains(&asked), "{asked}");
+}
+
+#[tokio::test]
+async fn an_own_key_is_bounded_by_a_token_line_that_always_applies() {
+    let env = Env::new().await;
+    own_key(&env);
+    env.store
+        .put_cost_line(
+            &AuditCtx::DAEMON,
+            "claude-sonnet-5-5.output",
+            CostLinePatch {
+                applies: Some(Applies::Always),
+                ..CostLinePatch::default()
+            },
+        )
+        .unwrap();
+    // 30 credits buy at most 21 428 output tokens at $10 a million, 40 %
+    // margin and a $0.01 credit; the input lines are waived.
+    set(&env, Setting::FreeWeeklyMilli, json!(30_000));
+    env.api.push(finish_turn("done"));
+    let run = env.run_on("claude-sonnet-5-5", KeySource::Own);
+    env.tick(&env.deps(), &run, &DriverId::mint()).await;
+    let asked = env.api.requests()[0].body["max_tokens"].as_u64().unwrap();
+    assert_eq!(asked, 21_428);
+    assert_eq!(env.api.requests()[0].header("x-api-key"), Some(OWN_KEY));
 }

@@ -55,7 +55,8 @@ use clax_store::bot_runs::{
 use clax_store::bot_settings::Setting;
 use clax_store::credits::{
     Applies, KeySource, LINE_DO_REQUESTS, LINE_HARNESS_FEE, LINE_TOOLPATH_STORAGE, Metered, Rate,
-    RateSource, TOKEN_UNITS, Unit, row_credits_milli, token_line, week_end, week_start,
+    RateSource, TOKEN_UNITS, Unit, parse_token_line, row_credits_milli, token_line, week_end,
+    week_start,
 };
 use clax_store::secrets::{Kek, SecretSlot};
 use serde_json::{Value, json};
@@ -813,26 +814,45 @@ fn token_rows(model: &str, u: Usage, ks: KeySource, absorbed: bool) -> Vec<Meter
     .collect()
 }
 
-/// `rows` (one call's, from [`token_rows`]) at the `rates` snapshotted
-/// with the call (by part, `Tick::rates`), each row without a rate
-/// there charged at its line's when committed; and, when the provider
-/// billed the call `billed` micro-USD, at that cost ([`bill`]).
-fn priced(mut rows: Vec<Metered>, rates: &Value, billed: Option<u64>) -> Vec<Metered> {
+/// Resolves the rate of token line `line` on a `key` key now
+/// ([`token_rate`]), for a row whose call snapshotted none.
+type Resolve<'a> = &'a dyn Fn(&str, KeySource) -> Result<Option<Rate>>;
+
+/// `rows` (one call's on a `ks` key, from [`token_rows`]) at the `rates`
+/// snapshotted with the call (by part, `Tick::rates`), each row without a
+/// rate there charged at its line's when committed; and, when the
+/// provider billed the call `billed` micro-USD, at that cost ([`bill`]),
+/// each row without a snapshotted rate first priced by `resolve`, so none
+/// is charged on top of the billed cost.
+///
+/// # Errors
+/// `resolve`'s.
+fn priced(
+    mut rows: Vec<Metered>,
+    rates: &Value,
+    billed: Option<u64>,
+    ks: KeySource,
+    resolve: Resolve<'_>,
+) -> Result<Vec<Metered>> {
     for row in &mut rows {
         let part = row.line.rsplit('.').next().unwrap_or("");
         row.rate = serde_json::from_value(rates[part].clone()).ok();
     }
     if let Some(b) = billed {
+        for row in rows.iter_mut().filter(|r| r.rate.is_none()) {
+            row.rate = resolve(&row.line, ks)?;
+        }
         bill(&mut rows, b);
     }
-    rows
+    Ok(rows)
 }
 
 /// Scales the cost rates of `rows` (one call's token rows) so their costs
-/// sum to `billed` micro-USD, what the provider billed for the call, and
-/// sources them `provider`. Each row keeps its quantity, margin and fixed
-/// credits: a cost-based row charges its share of the billed cost at its
-/// margin, a credit-based one its fixed credits still.
+/// sum to `billed` micro-USD, what the provider billed for the call. Each
+/// row keeps its quantity, margin and fixed credits: a cost-based row
+/// charges its share of the billed cost at its margin and is sourced
+/// `provider`; a credit-based one charges its fixed credits still and
+/// keeps its source, its rescaled cost informational.
 ///
 /// The billed cost is shared in proportion to each row's cost at its
 /// resolved rate; when those are all 0 (rows priced in credits alone, as
@@ -892,7 +912,9 @@ fn bill(rows: &mut [Metered], billed: u64) {
                 share * i128::from(r.unit.base().max(1)) / qty
             };
             r.cost_micro_usd = i64::try_from(per_unit).unwrap_or(i64::MAX);
-            r.source = RateSource::Provider;
+            if r.fixed_credits_milli.is_none() {
+                r.source = RateSource::Provider;
+            }
         }
     }
 }
@@ -922,6 +944,18 @@ fn token_rate(store: &Store, model: &str, unit: Unit, ks: KeySource) -> Result<O
     Ok(None)
 }
 
+/// [`token_rate`] of token line `line` (`model.unit`) on a `ks` key;
+/// `None` for a line that names no token unit.
+///
+/// # Errors
+/// The store's.
+fn line_token_rate(store: &Store, line: &str, ks: KeySource) -> Result<Option<Rate>> {
+    match parse_token_line(line) {
+        Some((model, unit)) => token_rate(store, model, unit, ks),
+        None => Ok(None),
+    }
+}
+
 /// Which attempts' observed usage a commit writes how.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Observed {
@@ -934,10 +968,19 @@ pub(crate) struct Observed {
 }
 
 /// Rows for the usage `step`'s attempts observed, by `how`; every attempt
-/// neither charged nor skipped is absorbed.
-fn observed_rows(model: &str, step: &Step, how: Observed) -> Vec<Metered> {
+/// neither charged nor skipped is absorbed. A billed attempt's row
+/// without a snapshotted rate is priced by `resolve` ([`priced`]).
+///
+/// # Errors
+/// `resolve`'s.
+fn observed_rows(
+    model: &str,
+    step: &Step,
+    how: Observed,
+    resolve: Resolve<'_>,
+) -> Result<Vec<Metered>> {
     if how.none {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let mut out = Vec::new();
     for e in &step.observed {
@@ -955,13 +998,15 @@ fn observed_rows(model: &str, step: &Step, how: Observed) -> Vec<Metered> {
             token_rows(m, u, ks, Some(attempt) != how.charge),
             &e["rates"],
             u.billed_micro_usd,
-        );
+            ks,
+            resolve,
+        )?;
         for row in &mut rows {
             row.estimated = estimated && row.line.ends_with(".output");
         }
         out.extend(rows);
     }
-    out
+    Ok(out)
 }
 
 /// The output tokens a stream that streamed `bytes` of text, thinking and
@@ -1168,9 +1213,16 @@ impl Tick<'_> {
     }
 
     pub(crate) fn begin(&self, kind: StepKind) -> Result<Step> {
+        self.begin_on(kind, KeySource::Instance)
+    }
+
+    /// [`Tick::begin`] for a step whose turn runs on a `turn_key` key: a
+    /// turn on the person's own key is not refused for its model's price
+    /// ([`Store::begin_step_on`]).
+    pub(crate) fn begin_on(&self, kind: StepKind, turn_key: KeySource) -> Result<Step> {
         let s = self
             .store
-            .begin_step(&self.run.id, self.driver, self.n, kind)?;
+            .begin_step_on(&self.run.id, self.driver, self.n, kind, turn_key)?;
         self.emit(s.attempt, Event::StepStarted { kind });
         Ok(s)
     }
@@ -1248,9 +1300,12 @@ impl Tick<'_> {
             .open_step(&self.run.id)?
             .filter(|s| s.n == self.n)
         {
-            commit
-                .usage
-                .extend(observed_rows(&self.run.model, &open, observed));
+            commit.usage.extend(observed_rows(
+                &self.run.model,
+                &open,
+                observed,
+                &|line, ks| line_token_rate(self.store, line, ks),
+            )?);
         }
         let summary = step_summary(kind, &commit.payload);
         let c =
@@ -1321,17 +1376,20 @@ impl Tick<'_> {
 
     /// The run's model's token rates now on a `ks` key ([`token_rate`]),
     /// by part (`input`, `cached_input`, `cache_write`, `output`), to
-    /// snapshot with a call's usage.
-    fn rates(&self, ks: KeySource) -> Value {
+    /// snapshot with a call's usage; a unit without one is left out.
+    ///
+    /// # Errors
+    /// The store's.
+    fn rates(&self, ks: KeySource) -> Result<Value> {
         let mut out = serde_json::Map::new();
         for unit in TOKEN_UNITS {
             let line = token_line(&self.run.model, unit);
-            if let Ok(Some(r)) = token_rate(self.store, &self.run.model, unit, ks) {
+            if let Some(r) = token_rate(self.store, &self.run.model, unit, ks)? {
                 let part = line.rsplit('.').next().unwrap_or("").to_string();
                 out.insert(part, serde_json::to_value(r).expect("serialisable"));
             }
         }
-        Value::Object(out)
+        Ok(Value::Object(out))
     }
 
     pub(crate) fn key_source(&self) -> KeySource {
@@ -1646,8 +1704,12 @@ impl Tick<'_> {
     /// The `max_tokens` the person's credits pay for after the turn's
     /// expected input (the week's and the run's credits, whichever is
     /// less), at most the settings'; or the stop when that is under
-    /// [`RunSettings::min_turn_tokens`]. Each token unit is priced at the
-    /// model's rate ([`Store::model_rate`]); a unit an own key is waived
+    /// [`RunSettings::min_turn_tokens`]. The input is priced as the
+    /// request's cache breakpoint ([`with_breakpoint`]) has the provider
+    /// bill it: the previous turn's cached prefix at the cached-input rate
+    /// and the rest written to cache, at the cache-write rate. Each token
+    /// unit is priced at the model's rate ([`Store::model_rate`]); a unit
+    /// an own key is waived
     /// (one that applies on the instance key) costs nothing. Unlimited for
     /// an unenforced person and when no unit costs anything (an own key on
     /// instance-key rates).
@@ -1665,7 +1727,7 @@ impl Tick<'_> {
                 .filter(|r| !(ks == KeySource::Own && r.applies == Applies::InstanceKey)))
         };
         let rates = [
-            rate(Unit::MtokInput)?,
+            rate(Unit::MtokCacheWrite)?,
             rate(Unit::MtokCachedInput)?,
             rate(Unit::MtokOutput)?,
         ];
@@ -1683,7 +1745,7 @@ impl Tick<'_> {
             .saturating_sub(self.run.credits_milli)
             .max(0);
         let left = week_left.min(run_left);
-        let [input_rate, cached_rate, output_rate] = rates;
+        let [write_rate, cached_rate, output_rate] = rates;
         let credits = |rate: Option<Rate>, qty: u64| -> Result<i64> {
             let Some(r) = rate else {
                 return Ok(0);
@@ -1702,9 +1764,9 @@ impl Tick<'_> {
             Some(u) => {
                 let prefix = u.cache_read_input_tokens + u.cache_creation_input_tokens;
                 credits(cached_rate, prefix.min(tokens))?
-                    + credits(input_rate, tokens.saturating_sub(prefix))?
+                    + credits(write_rate, tokens.saturating_sub(prefix))?
             }
-            None => credits(input_rate, tokens)?,
+            None => credits(write_rate, tokens)?,
         };
         let per_mtok = credits(output_rate, 1_000_000)?.max(1);
         let n = (i128::from(left - input).max(0) * 1_000_000 / i128::from(per_mtok))
@@ -1801,7 +1863,9 @@ impl Tick<'_> {
             Ok(n) => n,
             Err(stop) => return self.stop_plain(stop).await,
         };
-        let mut s = self.begin(StepKind::Turn)?;
+        let mut s = self.begin_on(StepKind::Turn, ks)?;
+        // The rates the call that answers snapshotted, to charge it at.
+        let mut call_rates: Value;
         let lost = AtomicBool::new(false);
         let mut failed = 0;
         let cancel = &self.opts.cancel;
@@ -1822,7 +1886,8 @@ impl Tick<'_> {
             let events = self.opts.events;
             let (store, run_id, n, driver) = (self.store, self.run.id.clone(), self.n, self.driver);
             let model = self.run.model.clone();
-            let rates = self.rates(ks);
+            let rates = self.rates(ks)?;
+            call_rates = rates.clone();
             // What the call used so far: the provider's figures and the
             // bytes it streamed, also read once it ends without a message.
             let progress = Arc::new(std::sync::Mutex::new((Usage::default(), 0usize)));
@@ -1971,7 +2036,7 @@ impl Tick<'_> {
                         if !waited {
                             return self.stop_plain(Stop::cancelled()).await;
                         }
-                        s = self.begin(StepKind::Turn)?;
+                        s = self.begin_on(StepKind::Turn, ks)?;
                     }
                     _ => {
                         tracing::warn!("clax-bot: run {} waits for the model: {e}", self.run.id);
@@ -2050,9 +2115,11 @@ impl Tick<'_> {
         );
         let mut usage = priced(
             token_rows(&self.run.model, msg.usage, ks, false),
-            &self.rates(ks),
+            &call_rates,
             msg.usage.billed_micro_usd,
-        );
+            ks,
+            &|line, ks| line_token_rate(self.store, line, ks),
+        )?;
         usage.extend(step_usage(&self.settings, self.n, 0, &payload, ks));
         let c = self.commit(
             s.attempt,
@@ -2119,7 +2186,9 @@ mod tests {
                 skip: Some(3),
                 none: false,
             },
-        );
+            &|_, _| Ok(None),
+        )
+        .unwrap();
         let got: Vec<(String, i64, bool)> = rows
             .iter()
             .map(|r| (r.line.clone(), r.qty, r.absorbed))
@@ -2189,6 +2258,11 @@ mod tests {
         ];
         bill(&mut rows, 1_400);
         assert_eq!(costs(&rows), [560, 840]);
+        assert!(
+            rows.iter()
+                .all(|m| m.rate.unwrap().source == RateSource::Catalog),
+            "credit-based rows keep their source"
+        );
         assert_eq!(rows[0].rate.unwrap().fixed_credits_milli, Some(560_000));
         assert_eq!(rows[1].rate.unwrap().fixed_credits_milli, Some(2_800_000));
     }
@@ -2231,8 +2305,135 @@ mod tests {
             observed: vec![e],
             failures: 0,
         };
-        let rows = observed_rows("m", &step, Observed::default());
+        let rows = observed_rows("m", &step, Observed::default(), &|_, _| Ok(None)).unwrap();
         assert_eq!(costs(&rows), [4_000, 6_000]);
         assert!(rows.iter().all(|m| m.absorbed));
+    }
+
+    /// The credits `m` charges at its rate.
+    fn credits_of(m: &Metered) -> i64 {
+        let r = m.rate.unwrap();
+        row_credits_milli(
+            m.qty,
+            r.cost_micro_usd,
+            r.margin_bp,
+            r.fixed_credits_milli,
+            r.credit_price_micro_usd,
+            r.unit.base(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_mixed_card_bills_the_cost_based_rows_and_keeps_the_credit_based_ones() {
+        let mut rows = vec![
+            row("input", 1_000, rate(Unit::MtokInput, 3_000_000, None)),
+            row("output", 300, rate(Unit::MtokOutput, 0, Some(2_800_000))),
+        ];
+        bill(&mut rows, 5_000);
+        assert_eq!(costs(&rows), [5_000, 0]);
+        assert_eq!(rows[0].rate.unwrap().source, RateSource::Provider);
+        assert_eq!(rows[1].rate.unwrap().source, RateSource::Catalog);
+        // $0.005 at 40 % over a $0.01 credit; the fixed 840 unchanged.
+        assert_eq!(rows.iter().map(credits_of).collect::<Vec<_>>(), [700, 840]);
+    }
+
+    #[test]
+    fn a_row_over_a_million_tokens_falls_short_by_under_its_millions() {
+        let mut rows = vec![
+            row("input", 3_000_001, rate(Unit::MtokInput, 3_000_000, None)),
+            row("output", 300, rate(Unit::MtokOutput, 15_000_000, None)),
+        ];
+        bill(&mut rows, 10_000_007);
+        let sum: i64 = costs(&rows).iter().sum();
+        assert!((10_000_007 - 4..=10_000_007).contains(&sum), "{sum}");
+    }
+
+    #[test]
+    fn a_billed_cost_of_0_charges_no_credits_on_cost_based_rows() {
+        let mut rows = vec![
+            row("input", 1_000, rate(Unit::MtokInput, 3_000_000, None)),
+            row("output", 300, rate(Unit::MtokOutput, 15_000_000, None)),
+        ];
+        bill(&mut rows, 0);
+        assert_eq!(costs(&rows), [0, 0]);
+        assert_eq!(rows.iter().map(credits_of).collect::<Vec<_>>(), [0, 0]);
+    }
+
+    #[test]
+    fn a_billed_row_without_a_snapshotted_rate_is_resolved_before_billing() {
+        let u = Usage {
+            input_tokens: 1_000,
+            output_tokens: 300,
+            ..Usage::default()
+        };
+        // The snapshot lacks the output rate.
+        let rates = json!({"input": rate(Unit::MtokInput, 3_000_000, None)});
+        let resolve = |line: &str, _: KeySource| {
+            Ok(line
+                .ends_with(".output")
+                .then(|| rate(Unit::MtokOutput, 15_000_000, None)))
+        };
+        let rows = priced(
+            token_rows("m", u, KeySource::Instance, false),
+            &rates,
+            Some(10_000),
+            KeySource::Instance,
+            &resolve,
+        )
+        .unwrap();
+        assert_eq!(costs(&rows), [4_000, 6_000]);
+        assert!(
+            rows.iter()
+                .all(|m| m.rate.unwrap().source == RateSource::Provider)
+        );
+        // Unbilled, a row without a snapshot is left to the commit's line.
+        let rows = priced(
+            token_rows("m", u, KeySource::Instance, false),
+            &rates,
+            None,
+            KeySource::Instance,
+            &resolve,
+        )
+        .unwrap();
+        assert!(rows[1].rate.is_none());
+    }
+
+    #[test]
+    fn an_own_key_is_charged_nothing_for_a_model_without_a_rate() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&clax_core::Home::at(dir.path().join("ax"))).unwrap();
+        store
+            .set_bot_settings(
+                &AuditCtx::DAEMON,
+                &[(Setting::RequireExplicitPrice, Some(json!(true)))],
+            )
+            .unwrap();
+        let unit = Unit::MtokOutput;
+        assert_eq!(
+            token_rate(&store, "acme-model-1", unit, KeySource::Instance).unwrap(),
+            None
+        );
+        let r = token_rate(&store, "acme-model-1", unit, KeySource::Own)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                r.unit,
+                r.cost_micro_usd,
+                r.fixed_credits_milli,
+                r.applies,
+                r.source
+            ),
+            (unit, 0, None, Applies::InstanceKey, RateSource::Default)
+        );
+        assert_eq!(
+            line_token_rate(&store, "acme-model-1.output", KeySource::Own).unwrap(),
+            Some(r)
+        );
+        assert_eq!(
+            line_token_rate(&store, "script.compute", KeySource::Own).unwrap(),
+            None
+        );
     }
 }
