@@ -609,6 +609,7 @@ async fn a_serve_that_fails_after_its_core_started_stops_the_core() {
             port: 0,
             embed: None,
             quickstart: false,
+            catalog_url: None,
         },
         &mut |_| {},
     )
@@ -686,6 +687,7 @@ async fn a_stopped_core_leaves_no_task_of_its_linked_sync() {
             port: 0,
             embed: None,
             quickstart: false,
+            catalog_url: None,
         },
         &mut |_| {},
     )

@@ -72,6 +72,11 @@ pub struct CoreConfig {
     /// one to the web UI's release at start (`[gallery] quickstart`); a
     /// hosted core never does.
     pub quickstart: bool,
+    /// Where the price catalog is fetched from: `None` (`clax serve`'s),
+    /// as `[bot] price_catalog_url` in effect says
+    /// ([`crate::catalog::url_of`]); `Some(url)`, that (`Some(None)`:
+    /// never), for an embedder or a test that sets it itself.
+    pub catalog_url: Option<Option<String>>,
 }
 
 /// A started core: its state, its router, and the tasks it runs until
@@ -166,7 +171,7 @@ impl Core {
         }
         // The core's `net` keeps a shared disk cache in the home.
         state.net = Arc::new(clax_http::net_cache::daemon_net(cfg.home.root()));
-        state.bot = Arc::new(local_bot(&state));
+        state.bot = Arc::new(local_bot(&state, cfg.catalog_url));
         // ClaxBot's driver: the runs a previous process left, then every new one.
         let bot_driver = crate::bot::driver(&mut state);
         state.audit_wake.install(&state.store);
@@ -408,17 +413,21 @@ fn loose_mode(path: &std::path::Path) -> Option<u32> {
 /// made on first use; none when it cannot be read, so no key is stored),
 /// and the instance key in `[bot] api_key_env`'s variable, which takes
 /// precedence over a stored one. A hosted core reads no `[bot]` and no
-/// such variable. Either takes its price catalog's URL from `[bot]
-/// price_catalog_url` ([`crate::catalog::url_of`]).
-fn local_bot(s: &AppState) -> clax_http::bot::Bot {
-    // A hosted core reads its price catalog's URL from the file and the
-    // environment too, though no other `[bot]` key.
-    let read = match &s.settings.running {
-        Some(c) => Some(c.clone()),
-        None => clax_core::config::HomeConfig::load(s.home.root()).ok(),
-    };
+/// such variable. Either takes its price catalog's URL from `catalog_url`
+/// when given, else from `[bot] price_catalog_url`
+/// ([`crate::catalog::url_of`]).
+fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bot::Bot {
+    let catalog_url = catalog_url.unwrap_or_else(|| {
+        // A hosted core reads it from the file and the environment too,
+        // though no other `[bot]` key.
+        let read = match &s.settings.running {
+            Some(c) => Some(c.clone()),
+            None => clax_core::config::HomeConfig::load(s.home.root()).ok(),
+        };
+        crate::catalog::url_of(read.as_ref())
+    });
     let mut bot = clax_http::bot::Bot {
-        catalog_url: crate::catalog::url_of(read.as_ref()),
+        catalog_url,
         ..Default::default()
     };
     clax_store::secrets::sweep_leftovers(&s.home, s.store.now_utc());

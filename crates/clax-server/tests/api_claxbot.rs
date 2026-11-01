@@ -718,25 +718,42 @@ async fn pricing_round_trips_and_usage_reports_the_week() {
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["credit_price_micro_usd"], 10_000);
     assert_eq!(v["free_weekly_milli"], 2_000_000);
+    // `lines` leaves the token lines out: they are under `models`.
     let all = v["lines"].as_array().unwrap().clone();
+    assert!(all.iter().any(|l| l["id"] == "toolpath.storage"), "{v}");
     assert!(
-        all.iter().any(|l| l["id"] == "claude-sonnet-5-5.input"),
+        !all.iter().any(|l| l["id"] == "claude-sonnet-5-5.input"),
         "{v}"
     );
-    // A PUT takes the lines that are not a model's token lines.
-    let lines = without_token_lines(v.clone())["lines"]
-        .as_array()
-        .unwrap()
-        .clone();
+    let lines = all.clone();
+    let token_lines = || -> Vec<clax_store::credits::CostLine> {
+        ts.store
+            .cost_lines()
+            .unwrap()
+            .into_iter()
+            .filter(|l| clax_store::credits::parse_token_line(&l.id).is_some())
+            .collect()
+    };
+    let tokens_before = token_lines();
+    // What GET answered, PUT takes back as it is, changing nothing.
+    let (s, back) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::PUT,
+        "/api/admin/pricing",
+        v.clone(),
+    )
+    .await;
+    assert_eq!(s, 200, "{back}");
+    assert_eq!(back, v);
+    assert!(events(&ts, "admin.cost_line").is_empty());
     // A token line sent is refused, and nothing is written.
     let mut with_token = json!({"credit_price_micro_usd": 30_000, "free_weekly_milli": 1_000_000,
                                 "lines": lines.clone()});
-    with_token["lines"].as_array_mut().unwrap().push(
-        all.iter()
-            .find(|l| l["id"] == "claude-sonnet-5-5.input")
-            .unwrap()
-            .clone(),
-    );
+    with_token["lines"].as_array_mut().unwrap().push(json!({
+        "id": "claude-sonnet-5-5.input", "label": "Claude Sonnet 5.5 input tokens",
+        "unit": "mtok_input", "cost_micro_usd": 1, "margin_bp": 0, "fixed_credits_milli": null,
+        "applies": "instance_key", "source": "by hand", "model": "claude-sonnet-5-5"}));
     let (s, v) = call(
         &ts,
         &Who::OwnerBrowser,
@@ -806,15 +823,7 @@ async fn pricing_round_trips_and_usage_reports_the_week() {
             .any(|l| l["id"] == "toolpath.storage")
     );
     // The token lines it was not sent are kept, unchanged.
-    let tokens = |ls: &Value| -> Vec<Value> {
-        ls.as_array()
-            .unwrap()
-            .iter()
-            .filter(|l| l["unit"].as_str().unwrap().starts_with("mtok_"))
-            .cloned()
-            .collect()
-    };
-    assert_eq!(tokens(&v["lines"]), tokens(&json!(all)));
+    assert_eq!(token_lines(), tokens_before);
     let ops: Vec<String> = events(&ts, "admin.cost_line")
         .iter()
         .map(|(_, b)| {
@@ -1633,15 +1642,6 @@ async fn with_catalog(url: &str) -> TestServer {
     .await
 }
 
-/// `v`, a pricing view, without its token lines, as a PUT takes it.
-fn without_token_lines(mut v: Value) -> Value {
-    v["lines"]
-        .as_array_mut()
-        .unwrap()
-        .retain(|l| !l["unit"].as_str().unwrap().starts_with("mtok_"));
-    v
-}
-
 /// The owner's `GET /api/admin/pricing`.
 async fn pricing(ts: &TestServer) -> Value {
     let (s, v) = call(
@@ -1829,12 +1829,16 @@ async fn model_rates_are_set_and_deleted_by_hand() {
     assert_eq!(m["units"]["input"]["credits_milli_per_mtok"], 150_000);
     assert_eq!(m["units"]["output"]["fixed_credits_milli"], 900_000);
     assert_eq!(m["units"]["output"]["credits_milli_per_mtok"], 900_000);
-    let line = v["lines"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|l| l["id"] == "custom-1.output")
-        .unwrap();
+    // Its lines are under `models`, not `lines`; the store holds them.
+    assert!(
+        !v["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["id"] == "custom-1.output")
+    );
+    let line =
+        serde_json::to_value(ts.store.cost_line("custom-1.output").unwrap().unwrap()).unwrap();
     assert_eq!(line["label"], "Custom One output tokens");
     assert_eq!(line["source"], "set by an admin");
     assert_eq!(line["model"], "custom-1");
@@ -1933,13 +1937,7 @@ async fn model_rates_are_set_and_deleted_by_hand() {
             .iter()
             .any(|m| m["model"] == "custom-1")
     );
-    assert!(
-        !v["lines"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|l| l["model"] == "custom-1")
-    );
+    assert!(ts.store.cost_line("custom-1.input").unwrap().is_none());
     assert_eq!(events(&ts, "admin.cost_line").len(), base + 4);
     let (s, v) = call(
         &ts,
@@ -1986,7 +1984,7 @@ async fn model_rates_are_set_and_deleted_by_hand() {
     );
     // So does a PUT of the pricing that leaves out a line the run may
     // charge (one with no model), and it writes nothing.
-    let mut put = without_token_lines(pricing(&ts).await);
+    let mut put = pricing(&ts).await;
     put["credit_price_micro_usd"] = json!(20_000);
     put["lines"]
         .as_array_mut()
@@ -2017,7 +2015,7 @@ async fn model_rates_are_set_and_deleted_by_hand() {
 #[tokio::test]
 async fn default_rates_and_explicit_prices_round_trip_and_overrides_are_refused() {
     let ts = TestServer::spawn().await;
-    let mut put = without_token_lines(pricing(&ts).await);
+    let mut put = pricing(&ts).await;
     put["default_rates"]["output"] = json!(1_000_000);
     put["require_explicit_price"] = json!(true);
     let (s, v) = call(
@@ -2058,7 +2056,7 @@ async fn default_rates_and_explicit_prices_round_trip_and_overrides_are_refused(
                "credits_milli_per_mtok": null, "catalog_micro_usd": null, "drift": false})
     );
     // Both may be left out of a PUT: they are kept.
-    let mut short = without_token_lines(v.clone());
+    let mut short = v.clone();
     let o = short.as_object_mut().unwrap();
     o.remove("default_rates");
     o.remove("require_explicit_price");
@@ -2077,7 +2075,7 @@ async fn default_rates_and_explicit_prices_round_trip_and_overrides_are_refused(
         ("default_rates", json!({"input": -1})),
         ("require_explicit_price", json!("yes")),
     ] {
-        let mut b = without_token_lines(v.clone());
+        let mut b = v.clone();
         b[key] = bad;
         let (s, e) = call(
             &ts,
@@ -2095,7 +2093,7 @@ async fn default_rates_and_explicit_prices_round_trip_and_overrides_are_refused(
     ov.set(Setting::DefaultRateInput, &json!(10), "file")
         .unwrap();
     ts.store.set_bot_overrides(ov);
-    let v = without_token_lines(pricing(&ts).await);
+    let v = pricing(&ts).await;
     assert_eq!(v["sources"]["default_rates.input"], "file");
     assert_eq!(v["default_rates"]["input"], 10);
     let (s, _) = call(
@@ -2144,14 +2142,15 @@ async fn tokenulator_prices_a_model_from_the_refreshed_catalog() {
     let (s, v) = price(json!({"model": "claude-x"})).await;
     assert_eq!(s, 200, "{v}");
     assert!(v["catalog"]["fetched_at"].is_string(), "{v}");
-    let line = |v: &Value, id: &str| {
-        v["lines"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|l| l["id"] == id)
-            .unwrap_or_else(|| panic!("no line {id} in {v}"))
-            .clone()
+    // A token line as the store holds it (`lines` leaves them out).
+    let line = |_v: &Value, id: &str| {
+        serde_json::to_value(
+            ts.store
+                .cost_line(id)
+                .unwrap()
+                .unwrap_or_else(|| panic!("no line {id}")),
+        )
+        .unwrap()
     };
     let input = line(&v, "claude-x.input");
     assert_eq!(input["cost_micro_usd"], 1_500_000);

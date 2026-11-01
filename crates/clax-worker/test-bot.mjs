@@ -438,9 +438,7 @@ async function main() {
 
     // 5. Credits exhausted.
     const pricing = await ok(base, "GET", "/api/admin/pricing");
-    // A PUT takes the lines but the models' token lines (set per model).
-    const lines = pricing.lines.filter((l) => !l.unit.startsWith("mtok_"));
-    await ok(base, "PUT", "/api/admin/pricing", { ...pricing, lines, free_weekly_milli: 1 });
+    await ok(base, "PUT", "/api/admin/pricing", { ...pricing, free_weekly_milli: 1 });
     const tid3 = await thread(base, aid, "One more");
     r = await call(base, "POST", "/api/bot/runs", { thread_ids: [tid3], artifact_id: aid });
     check(r.status === 403 && r.json?.error?.code === "credits_exhausted", "with the week spent a send is 403 credits_exhausted", r);

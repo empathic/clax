@@ -10079,6 +10079,8 @@ token_margin_bp, default_rates: {input, cached_input, cache_write, output},
 require_explicit_price, lines: [line], models: [model], catalog:
 {fetched_at, provider}, sources}`:
 
+- `lines` are the cost lines that are not token lines (below): the
+  infrastructure lines, the harness fee and any other an admin made.
 - `token_margin_bp` is the margin the catalog's prices are charged at
   (4000), the one a new cost-based rate card starts from.
 - `default_rates` are milli-credits per million tokens (defaults 560000,
@@ -10113,14 +10115,15 @@ its four keys) and `require_explicit_price` may be left out, and are kept;
 `token_margin_bp`, `models`, `catalog` and `sources` are ignored. A value the configuration
 sets is refused 409 `setting_overridden` only when it differs from the
 value in effect; a value out of range 400 `invalid_setting`.
-Its `lines` are the lines that are not token lines (`unit`
-`mtok_input`, `mtok_cached_input`, `mtok_cache_write` or `mtok_output`,
-or a token line's ID): each is made or changed and one left out deleted
-(409 `cost_line_in_use` for one a run that has not ended may charge). A
-token line belongs to its model's rate card and changes only through
-`/api/admin/pricing/models`: one sent is refused 400 `invalid_cost_line`
-(and nothing is written), and every one is kept, sent or not. `GET`
-lists every line.
+A token line is one whose ID names a model's token unit
+(`<model>.input`, `.cached_input`, `.cache_write` or `.output`). It
+belongs to its model's rate card, shown under `models`, and changes only
+through `/api/admin/pricing/models`: `GET`'s `lines` leaves token lines
+out, so a `PUT` of exactly what `GET` answered changes nothing. A `PUT`'s
+`lines` are made or changed and every other line that is not a token
+line deleted (409 `cost_line_in_use` for one a run that has not ended
+may charge), whatever its unit; a token line sent is refused 400
+`invalid_cost_line` (and nothing is written), and every one is kept.
 
 `POST /api/admin/pricing/models {model, name?, input, cached_input,
 cache_write, output}`, each unit `{cost_micro_usd, margin_bp,

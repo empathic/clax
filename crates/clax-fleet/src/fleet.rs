@@ -560,6 +560,7 @@ impl Fleet {
             // Each person new to the instance is seeded with the web build's
             // quickstart, as on the Worker.
             quickstart: true,
+            catalog_url: None,
         };
         Ok(Running {
             core: Some(Core::start(core_cfg, &mut |_| {}).await?),

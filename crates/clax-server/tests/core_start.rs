@@ -21,6 +21,7 @@ fn cfg(
         port: 0,
         embed: None,
         quickstart,
+        catalog_url: None,
     }
 }
 
@@ -277,14 +278,15 @@ async fn a_core_takes_its_price_catalog_url_from_bot_and_fetches_it_at_start() {
                 .await;
         }
     });
+    // Left to the configuration, the core takes `[bot] price_catalog_url`
+    // in effect (the file's, unless the environment sets another, as the
+    // Bazel tests' `off` does).
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("config.toml"),
         format!("[bot]\nprice_catalog_url = \"{url}\"\n"),
     )
     .unwrap();
-    // The file's URL, unless the environment sets another
-    // (CLAX_BOT__PRICE_CATALOG_URL, `off` in the Bazel tests).
     let want = clax_server::catalog::url_of(Some(
         &clax_core::config::HomeConfig::load(dir.path()).unwrap(),
     ));
@@ -292,11 +294,16 @@ async fn a_core_takes_its_price_catalog_url_from_bot_and_fetches_it_at_start() {
         .await
         .unwrap();
     assert_eq!(core.state().bot.catalog_url, want);
-    if want.as_deref() == Some(url.as_str()) {
-        tokio::time::timeout(std::time::Duration::from_secs(30), hits.recv())
-            .await
-            .expect("a catalog request at start")
-            .unwrap();
-    }
+    core.stop().await;
+    // Given one, it fetches the empty cache's catalog at start.
+    let dir = tempfile::tempdir().unwrap();
+    let mut given = cfg(dir.path(), clax_testkit::web_ui(), false);
+    given.catalog_url = Some(Some(url.clone()));
+    let core = Core::start(given, &mut |_| {}).await.unwrap();
+    assert_eq!(core.state().bot.catalog_url.as_deref(), Some(url.as_str()));
+    tokio::time::timeout(std::time::Duration::from_secs(30), hits.recv())
+        .await
+        .expect("a catalog request at start")
+        .unwrap();
     core.stop().await;
 }

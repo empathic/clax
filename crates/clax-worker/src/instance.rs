@@ -110,8 +110,8 @@
 //! the last one once a request that may write was served. An alarm that
 //! fires for any of them also refreshes the price catalog once its cache
 //! is a day old (`clax_server::catalog::refresh_if_stale`, tried at most
-//! once an hour, within 45 s), after ClaxBot's drive; none is set for the
-//! catalog alone. After every
+//! once an hour, within 45 s), last, after ClaxBot's drive and the next
+//! alarm set; none is set for the catalog alone. After every
 //! request, socket event and alarm the object works that time out again and
 //! moves the alarm earlier when it must; with nothing due it holds no
 //! alarm, so an idle object, open sockets or not, sleeps until a request or
@@ -670,11 +670,12 @@ fn resume_after(env: &Env) -> std::time::Duration {
 /// Where the alarm and the pricing routes fetch the price catalog:
 /// tokenulator.dev's ([`clax_core::config::PRICE_CATALOG_URL`]); with the
 /// test routes on (`CLAX_TEST_ROUTES` = `1`), the var
-/// `CLAX_PRICE_CATALOG_URL` (none when it is unset, empty or `off`), so no
+/// `CLAX_BOT__PRICE_CATALOG_URL` (none when it is unset, empty or `off`), so no
 /// test instance reaches tokenulator.dev.
 fn catalog_url(env: &Env) -> Option<String> {
     if var(env, "CLAX_TEST_ROUTES") == "1" {
-        clax_core::config::catalog_url_of(&var(env, "CLAX_PRICE_CATALOG_URL")).map(String::from)
+        clax_core::config::catalog_url_of(&var(env, "CLAX_BOT__PRICE_CATALOG_URL"))
+            .map(String::from)
     } else {
         Some(clax_core::config::PRICE_CATALOG_URL.to_string())
     }
@@ -1729,10 +1730,11 @@ impl DurableObject for InstanceDo {
             futures_util::pin_mut!(timed);
             let _ = futures_util::future::select(drive, timed).await;
         }
-        // After the runs, never ahead of them or of the heartbeat.
-        self.refresh_catalog(&inst).await;
         inst.settle().await;
         self.schedule(&inst).await;
+        // Last: after the runs and with the next alarm already set, so a
+        // slow catalog delays neither.
+        self.refresh_catalog(&inst).await;
         Response::ok("")
     }
 }

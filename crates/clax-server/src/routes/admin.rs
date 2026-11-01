@@ -21,7 +21,8 @@
 //!   default token rates, `require_explicit_price` and the cost lines,
 //!   with each priced model's rates and where they come from (`models`)
 //!   and the price catalog's age (`catalog`); `PUT` takes the whole object
-//!   but the token lines (a line left out is deleted, a token line sent is
+//!   (its `lines` are the lines that are not token lines, whose rates are
+//!   under `models`; a line left out is deleted, a token line sent is
 //!   refused and every one kept; `default_rates` and
 //!   `require_explicit_price` may be left out). `POST
 //!   /api/admin/pricing/models` sets a model's rate card and `DELETE
@@ -776,9 +777,12 @@ fn lines_name(lines: &[CostLine], model: &str) -> Option<String> {
 
 /// The pricing as `GET /api/admin/pricing` shows it.
 fn pricing_view(st: &Store) -> clax_core::Result<Value> {
+    // The token lines are under `models`, their rate cards: `lines` is
+    // what a PUT takes back.
     let lines: Vec<Value> = st
         .cost_lines()?
         .into_iter()
+        .filter(|l| parse_token_line(&l.id).is_none())
         .map(|l| {
             json!({"id": l.id, "label": l.label, "unit": l.unit.as_str(),
                    "cost_micro_usd": l.cost_micro_usd, "margin_bp": l.margin_bp,
