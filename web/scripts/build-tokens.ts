@@ -67,7 +67,7 @@ export async function buildTokens(file: TokenGroup): Promise<Built> {
   });
   const { allTokens } = await sd.getPlatformTokens("clax");
 
-  const groups = new Map<string, { role: string; name: string; value: string; link: string | null; type: string | undefined }[]>();
+  const groups = new Map<string, { role: string; name: string; value: string; raw: unknown; link: string | null; type: string | undefined }[]>();
   for (const t of allTokens) {
     const at = place(t.path);
     if (!at) continue;
@@ -76,7 +76,7 @@ export async function buildTokens(file: TokenGroup): Promise<Built> {
     const alias = typeof t.original.$value === "string" ? /^\{([^{}]+)\}$/.exec(t.original.$value)?.[1].split(".") : undefined;
     const to = alias ? place(alias) : null;
     const list = groups.get(at.group) ?? [];
-    list.push({ role: at.role, name: t.name, value: String(t.$value), link: to && to.group === at.group ? `var(${PUBLIC_PREFIX}${to.role})` : null, type: typeOf(file, t.path.join(".")) });
+    list.push({ role: at.role, name: t.name, value: String(t.$value), raw: resolve(file, t.path.join(".")), link: to && to.group === at.group ? `var(${PUBLIC_PREFIX}${to.role})` : null, type: typeOf(file, t.path.join(".")) });
     groups.set(at.group, list);
   }
   const decls = (group: string) => (groups.get(group) ?? []).map(d => `--${d.name}: ${d.link ?? d.value};`);
@@ -103,7 +103,8 @@ export async function buildTokens(file: TokenGroup): Promise<Built> {
   ].join("\n");
 
   // The template: each token as { $type, $value } in its role's place, the
-  // value as CSS writes it (a host's own file may use any DTCG value).
+  // value as the token file holds it with every alias followed, so the SDK's
+  // theme option reads it as it reads any DTCG file.
   const tree: Record<string, unknown> = { $description: `${HEADER} Clax's roles in every profile, resolved: copy it, change the values, and pass it as the SDK's \`theme\` option (which reads theme.light, theme.dark and base).` };
   for (const [group, list] of groups) {
     const node: Record<string, unknown> = {};
@@ -111,7 +112,7 @@ export async function buildTokens(file: TokenGroup): Promise<Built> {
       const path = group === "base" || group === "reduced-motion" ? [d.role] : rolePath(file, group as Profile, d.role);
       let o = node;
       for (const p of path.slice(0, -1)) o = (o[p] ??= {}) as Record<string, unknown>;
-      o[path.at(-1)!] = d.type ? { $type: d.type, $value: d.value } : { $value: d.value };
+      o[path.at(-1)!] = d.type ? { $type: d.type, $value: d.raw } : { $value: d.raw };
     }
     if (group === "base" || group === "reduced-motion") tree[group] = node;
     else ((tree.theme ??= {}) as Record<string, unknown>)[group] = node;

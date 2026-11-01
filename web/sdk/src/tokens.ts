@@ -227,13 +227,20 @@ const hasGroup = (file: TokenGroup, path: string) => {
  * the system's dark scheme. A host's theme for the overlay, laid over its
  * own tokens: a role it leaves out keeps Clax's. All of it sits in
  * `@media not all and (forced-colors: active)`: under forced colours the
- * overlay keeps its system colours (`theme.forced`), whatever the page's. */
+ * overlay keeps its system colours (`theme.forced`), whatever the page's;
+ * and a duration of base's sits in `@media (prefers-reduced-motion:
+ * no-preference)`, so the overlay stays still for a reader who asks. */
 export function themeSheet(file: TokenGroup, selector = ":host"): string {
-  const light = ["theme.light", "base"].filter(p => hasGroup(file, p)).flatMap(p => cssVariables(file, p));
+  const paths = hasGroup(file, "base") ? tokenPaths(file.base as TokenGroup) : [];
+  const base = paths.length ? cssVariables(file, "base") : [];
+  const moves = (i: number) => typeOf(file, `base.${paths[i]}`) === "duration";
+  const light = [...(hasGroup(file, "theme.light") ? cssVariables(file, "theme.light") : []), ...base.filter((_, i) => !moves(i))];
+  const motion = base.filter((_, i) => moves(i));
   const dark = !hasGroup(file, "theme.dark") ? [] : hasGroup(file, "theme.light") ? regionLines(file, "theme.dark over theme.light") : cssVariables(file, "theme.dark");
   const out: string[] = [];
   if (light.length) out.push(`  ${selector} {`, ...light.map(l => `    ${l}`), "  }");
   if (dark.length) out.push("  @media (prefers-color-scheme: dark) {", `    ${selector} {`, ...dark.map(l => `      ${l}`), "    }", "  }");
+  if (motion.length) out.push("  @media (prefers-reduced-motion: no-preference) {", `    ${selector} {`, ...motion.map(l => `      ${l}`), "    }", "  }");
   return out.length ? ["@media not all and (forced-colors: active) {", ...out, "}"].join("\n") : "";
 }
 

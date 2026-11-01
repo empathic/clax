@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { OVERLAY_TAG } from "../../bridge/src/anchor";
 import { type TokenGroup, themeSheet } from "../../sdk/src/tokens";
+import { claxTheme } from "../../sdk/tokens/dist/clax.theme";
 import { overlay } from "./main";
 
 const opts = { instance: "https://clax.example", queue: "q1", auth: async () => { throw new Error("no backend"); } };
@@ -87,6 +88,12 @@ describe("a page's theme", () => {
     const broken: TokenGroup = { theme: { light: { bg: { $value: "{palette.nope}" } } } };
     expect(() => overlay({ ...opts, theme: broken })).toThrow("no token palette.nope");
     expect(document.querySelectorAll(OVERLAY_TAG)).toHaveLength(0);
+  });
+
+  it("takes Clax's own template (sdk/tokens/dist/clax.theme.ts) as a theme", () => {
+    const handle = overlay({ ...opts, theme: claxTheme });
+    expect(sheetOf()).toContain(themeSheet(claxTheme));
+    handle.close();
   });
 
   it("leaves the overlay as it was when there is none", () => {

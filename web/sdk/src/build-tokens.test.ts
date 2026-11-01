@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildTokens, OUTPUTS, PROFILES, type Profile } from "../../scripts/build-tokens";
-import { contrast, contrastPairs, SYSTEM_COLORS, type TokenGroup } from "./tokens";
+import { contrast, contrastPairs, cssValue, SYSTEM_COLORS, themeSheet, type TokenGroup } from "./tokens";
 
 const web = join(__dirname, "../..");
 const read = (rel: string) => readFileSync(join(web, rel), "utf8");
@@ -56,7 +56,8 @@ const template = JSON.parse(built.json) as { theme: Record<Profile, TokenGroup> 
 const valueIn = (p: Profile, role: string): string => {
   let node: unknown = template.theme[p];
   for (const part of role.split(".")) node = (node as Record<string, unknown>)[part];
-  return (node as { $value: string }).$value;
+  const t = node as { $value: unknown; $type?: string };
+  return cssValue(t.$value, t.$type);
 };
 
 describe("the public token build", () => {
@@ -104,6 +105,16 @@ describe("the public token build", () => {
     expect(pairs.length).toBeGreaterThan(30);
     const role = (path: string) => path.slice(`theme.${p}.`.length);
     for (const c of pairs) expect(contrast(valueIn(p, role(c.fg)), valueIn(p, role(c.bg))), `${c.fg} on ${c.bg}`).toBeGreaterThanOrEqual(c.min);
+  });
+
+  it("writes a template the SDK's theme option takes, its motion kept out of reduced motion", () => {
+    const sheet = themeSheet(JSON.parse(built.json));
+    expect(sheet).toContain("--bg: #f7f7f5;");
+    expect(sheet).toContain("--shadow: rgba(20,20,15,0.08);");
+    const still = sheet.indexOf("@media (prefers-reduced-motion: no-preference) {");
+    expect(still).toBeGreaterThan(0);
+    expect(sheet.indexOf("--duration: 120ms;")).toBeGreaterThan(still);
+    expect(sheet.slice(0, still)).not.toContain("--duration:");
   });
 
   it("stills motion under reduced motion", () => {

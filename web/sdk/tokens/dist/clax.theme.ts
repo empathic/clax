@@ -134,11 +134,27 @@ export const claxTheme = {
       },
       "shadow": {
         "$type": "color",
-        "$value": "rgba(20,20,15,0.08)"
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.0784313725490196,
+            0.0784313725490196,
+            0.058823529411764705
+          ],
+          "alpha": 0.08
+        }
       },
       "scrim": {
         "$type": "color",
-        "$value": "rgba(20,20,15,0.4)"
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.0784313725490196,
+            0.0784313725490196,
+            0.058823529411764705
+          ],
+          "alpha": 0.4
+        }
       },
       "tag": {
         "gray": {
@@ -414,11 +430,27 @@ export const claxTheme = {
       },
       "shadow": {
         "$type": "color",
-        "$value": "rgba(0,0,0,0.5)"
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0,
+            0,
+            0
+          ],
+          "alpha": 0.5
+        }
       },
       "scrim": {
         "$type": "color",
-        "$value": "rgba(0,0,0,0.6)"
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0,
+            0,
+            0
+          ],
+          "alpha": 0.6
+        }
       },
       "tag": {
         "gray": {
@@ -694,11 +726,27 @@ export const claxTheme = {
       },
       "shadow": {
         "$type": "color",
-        "$value": "rgba(20,20,15,0.08)"
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.0784313725490196,
+            0.0784313725490196,
+            0.058823529411764705
+          ],
+          "alpha": 0.08
+        }
       },
       "scrim": {
         "$type": "color",
-        "$value": "rgba(20,20,15,0.4)"
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.0784313725490196,
+            0.0784313725490196,
+            0.058823529411764705
+          ],
+          "alpha": 0.4
+        }
       },
       "tag": {
         "gray": {
@@ -974,11 +1022,27 @@ export const claxTheme = {
       },
       "shadow": {
         "$type": "color",
-        "$value": "rgba(0,0,0,0.5)"
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0,
+            0,
+            0
+          ],
+          "alpha": 0.5
+        }
       },
       "scrim": {
         "$type": "color",
-        "$value": "rgba(0,0,0,0.6)"
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0,
+            0,
+            0
+          ],
+          "alpha": 0.6
+        }
       },
       "tag": {
         "gray": {
@@ -1407,81 +1471,143 @@ export const claxTheme = {
   "base": {
     "font": {
       "$type": "fontFamily",
-      "$value": "ui-sans-serif, -apple-system, \"Segoe UI\", system-ui, sans-serif"
+      "$value": [
+        "ui-sans-serif",
+        "-apple-system",
+        "Segoe UI",
+        "system-ui",
+        "sans-serif"
+      ]
     },
     "mono": {
       "$type": "fontFamily",
-      "$value": "ui-monospace, \"SF Mono\", Menlo, Consolas, monospace"
+      "$value": [
+        "ui-monospace",
+        "SF Mono",
+        "Menlo",
+        "Consolas",
+        "monospace"
+      ]
     },
     "radius": {
       "$type": "dimension",
-      "$value": "10px"
+      "$value": {
+        "value": 10,
+        "unit": "px"
+      }
     },
     "radius-sm": {
       "$type": "dimension",
-      "$value": "8px"
+      "$value": {
+        "value": 8,
+        "unit": "px"
+      }
     },
     "radius-xs": {
       "$type": "dimension",
-      "$value": "4px"
+      "$value": {
+        "value": 4,
+        "unit": "px"
+      }
     },
     "gutter": {
       "$type": "dimension",
-      "$value": "16px"
+      "$value": {
+        "value": 16,
+        "unit": "px"
+      }
     },
     "space-1": {
       "$type": "dimension",
-      "$value": "4px"
+      "$value": {
+        "value": 4,
+        "unit": "px"
+      }
     },
     "space-2": {
       "$type": "dimension",
-      "$value": "8px"
+      "$value": {
+        "value": 8,
+        "unit": "px"
+      }
     },
     "space-3": {
       "$type": "dimension",
-      "$value": "12px"
+      "$value": {
+        "value": 12,
+        "unit": "px"
+      }
     },
     "space-4": {
       "$type": "dimension",
-      "$value": "16px"
+      "$value": {
+        "value": 16,
+        "unit": "px"
+      }
     },
     "space-6": {
       "$type": "dimension",
-      "$value": "24px"
+      "$value": {
+        "value": 24,
+        "unit": "px"
+      }
     },
     "text-sm": {
       "$type": "dimension",
-      "$value": "12px"
+      "$value": {
+        "value": 12,
+        "unit": "px"
+      }
     },
     "text-md": {
       "$type": "dimension",
-      "$value": "14px"
+      "$value": {
+        "value": 14,
+        "unit": "px"
+      }
     },
     "text-lg": {
       "$type": "dimension",
-      "$value": "16px"
+      "$value": {
+        "value": 16,
+        "unit": "px"
+      }
     },
     "text-xl": {
       "$type": "dimension",
-      "$value": "20px"
+      "$value": {
+        "value": 20,
+        "unit": "px"
+      }
     },
     "leading": {
       "$type": "number",
-      "$value": "1.5"
+      "$value": 1.5
     },
     "duration": {
       "$type": "duration",
-      "$value": "120ms"
+      "$value": {
+        "value": 120,
+        "unit": "ms"
+      }
     },
     "ease": {
       "$type": "cubicBezier",
-      "$value": "cubic-bezier(0.4,0,0.2,1)"
+      "$value": [
+        0.4,
+        0,
+        0.2,
+        1
+      ]
     }
   },
   "reduced-motion": {
     "duration": {
       "$type": "duration",
-      "$value": "0ms"
+      "$value": {
+        "value": 0,
+        "unit": "ms"
+      }
     }
   }
 } as const;
