@@ -6,7 +6,7 @@
 //!
 //! # Steps
 //!
-//! - `turn`: one Messages API call over the run's history (the cached
+//! - `turn`: one model call over the run's history (the cached
 //!   system prompt, the request, every turn and tool result so far), with
 //!   the tools `run_script`, `finish` and `give_up`, one call a turn, its
 //!   `max_tokens` no more than the person's credits can pay. Its payload
@@ -45,8 +45,8 @@ use clax_core::working::Clock;
 use clax_core::{CoreError, Result};
 use clax_sample::messages::{
     ApiKey, AssistantMessage, Block, CacheControl, Delta, Message, MessagesClient, MessagesError,
-    MessagesRequest, RetryPolicy, Role, StopReason, SystemBlock, Thinking, Timeouts, Tool,
-    ToolCall, ToolChoice, Usage,
+    MessagesRequest, ModelApi, RetryPolicy, Role, StopReason, SystemBlock, Thinking, Timeouts,
+    Tool, ToolCall, ToolChoice, Usage,
 };
 use clax_store::Store;
 use clax_store::bot_runs::{
@@ -76,6 +76,9 @@ use std::time::Duration;
 pub struct RunSettings {
     /// The instance runs ClaxBot at all.
     pub enabled: bool,
+    /// The API the provider at `base_url` speaks; the history stays the
+    /// Messages API's whatever it is.
+    pub api: ModelApi,
     pub base_url: String,
     pub max_tokens: u32,
     pub max_steps: u32,
@@ -115,6 +118,7 @@ impl Default for RunSettings {
     fn default() -> Self {
         RunSettings {
             enabled: true,
+            api: ModelApi::Anthropic,
             base_url: "https://api.anthropic.com".into(),
             max_tokens: 32_000,
             max_steps: 40,
@@ -146,6 +150,11 @@ impl RunSettings {
         let int = |s: Setting| -> Result<u64> { Ok(store.bot_setting(s)?.as_u64().unwrap_or(0)) };
         let d = RunSettings::default();
         Ok(RunSettings {
+            api: store
+                .bot_setting(Setting::Api)?
+                .as_str()
+                .and_then(ModelApi::parse)
+                .unwrap_or(d.api),
             base_url: store
                 .bot_setting(Setting::BaseUrl)?
                 .as_str()
@@ -1691,45 +1700,51 @@ impl Tick<'_> {
             let seen = progress.clone();
             let on_delta = observe.clone();
             let mut deltas = 0usize;
-            let stream = client.stream(&self.settings.base_url, &key, &req, move |d| {
-                let mut p = seen.lock().unwrap_or_else(|e| e.into_inner());
-                let (v, bytes) = match d {
-                    Delta::MessageStart { usage, .. } | Delta::MessageDelta { usage, .. } => {
-                        p.0 = usage;
+            let stream = client.stream(
+                self.settings.api,
+                &self.settings.base_url,
+                &key,
+                &req,
+                move |d| {
+                    let mut p = seen.lock().unwrap_or_else(|e| e.into_inner());
+                    let (v, bytes) = match d {
+                        Delta::MessageStart { usage, .. } | Delta::MessageDelta { usage, .. } => {
+                            p.0 = usage;
+                            on_delta(p.0, p.1);
+                            return;
+                        }
+                        Delta::Text { index, text } => {
+                            let b = text.len();
+                            (json!({"type": "text", "index": index, "text": text}), b)
+                        }
+                        Delta::Thinking { index, thinking } => {
+                            let b = thinking.len();
+                            (
+                                json!({"type": "thinking", "index": index, "text": thinking}),
+                                b,
+                            )
+                        }
+                        Delta::ToolInput {
+                            index,
+                            partial_json,
+                        } => {
+                            let b = partial_json.len();
+                            (
+                                json!({"type": "tool_input", "index": index, "text": partial_json}),
+                                b,
+                            )
+                        }
+                        _ => return,
+                    };
+                    p.1 += bytes;
+                    deltas += 1;
+                    if deltas.is_multiple_of(OBSERVE_EVERY) {
                         on_delta(p.0, p.1);
-                        return;
                     }
-                    Delta::Text { index, text } => {
-                        let b = text.len();
-                        (json!({"type": "text", "index": index, "text": text}), b)
-                    }
-                    Delta::Thinking { index, thinking } => {
-                        let b = thinking.len();
-                        (
-                            json!({"type": "thinking", "index": index, "text": thinking}),
-                            b,
-                        )
-                    }
-                    Delta::ToolInput {
-                        index,
-                        partial_json,
-                    } => {
-                        let b = partial_json.len();
-                        (
-                            json!({"type": "tool_input", "index": index, "text": partial_json}),
-                            b,
-                        )
-                    }
-                    _ => return,
-                };
-                p.1 += bytes;
-                deltas += 1;
-                if deltas.is_multiple_of(OBSERVE_EVERY) {
-                    on_delta(p.0, p.1);
-                }
-                drop(p);
-                events.emit(&run_id, n, attempt, Event::TurnDelta(v));
-            });
+                    drop(p);
+                    events.emit(&run_id, n, attempt, Event::TurnDelta(v));
+                },
+            );
             let raced = async {
                 futures::pin_mut!(stream);
                 let stopped = cancel.cancelled();

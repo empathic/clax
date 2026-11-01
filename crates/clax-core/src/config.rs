@@ -619,6 +619,14 @@ impl HomeConfig {
                 ),
             ));
         }
+        // The default base URL is Anthropic's: another API's key must not
+        // be sent there.
+        if b.api != ModelApi::Anthropic && self.source("bot.base_url") == Source::Default {
+            return Err(bad(
+                "api",
+                format!("api = \"{}\" needs base_url set too", b.api.as_str()),
+            ));
+        }
         for (tier, id) in [
             ("quick", &b.models.quick),
             ("default", &b.models.default),
@@ -1057,12 +1065,14 @@ impl Default for ToolpathConfig {
 pub struct BotConfig {
     /// The instance may run ClaxBot at all (default true).
     pub enabled: bool,
+    /// The API `base_url` speaks ([`ModelApi`], default `anthropic`). Any
+    /// other needs `base_url` set too.
+    pub api: ModelApi,
     /// The environment variable the daemon reads the instance's API key
     /// from (`ANTHROPIC_API_KEY`); not empty. A key there takes precedence
     /// over a stored instance key (spec §8.1).
     pub api_key_env: String,
-    /// Where the Messages API is; the key is sent nowhere else
-    /// ([`base_url_ok`]).
+    /// Where the API is; the key is sent nowhere else ([`base_url_ok`]).
     pub base_url: String,
     /// `max_tokens` of each model turn: 1 to 1,000,000 (default 32,000).
     pub max_tokens: u32,
@@ -1091,6 +1101,7 @@ impl Default for BotConfig {
     fn default() -> Self {
         BotConfig {
             enabled: true,
+            api: ModelApi::Anthropic,
             api_key_env: "ANTHROPIC_API_KEY".into(),
             base_url: "https://api.anthropic.com".into(),
             max_tokens: 32000,
@@ -1104,6 +1115,45 @@ impl Default for BotConfig {
             models: BotModels::default(),
             script: BotScript::default(),
         }
+    }
+}
+
+/// The wire API a model provider speaks at its base URL. ClaxBot's turns are
+/// kept as Messages API blocks whatever it is; the client translates each
+/// call to and from the others.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelApi {
+    /// Anthropic's Messages API: `POST {base_url}/v1/messages`, `x-api-key`.
+    #[default]
+    Anthropic,
+    /// OpenAI's Chat Completions API, as Mistral, Subconscious and most
+    /// other hosts serve it: `POST {base_url}/chat/completions`, `Authorization:
+    /// Bearer`. The base URL names the version (`https://api.mistral.ai/v1`).
+    #[serde(rename = "openai")]
+    OpenAi,
+    /// Google's Gemini API: `POST {base_url}/models/{model}:streamGenerateContent`,
+    /// `x-goog-api-key`. The base URL names the version
+    /// (`https://generativelanguage.googleapis.com/v1beta`).
+    Gemini,
+}
+
+impl ModelApi {
+    /// Every API, in the order the admin page offers them.
+    pub const ALL: [ModelApi; 3] = [ModelApi::Anthropic, ModelApi::OpenAi, ModelApi::Gemini];
+
+    /// `anthropic`, `openai` or `gemini`, as configured and stored.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelApi::Anthropic => "anthropic",
+            ModelApi::OpenAi => "openai",
+            ModelApi::Gemini => "gemini",
+        }
+    }
+
+    /// The API named `s` ([`ModelApi::as_str`]).
+    pub fn parse(s: &str) -> Option<ModelApi> {
+        ModelApi::ALL.into_iter().find(|a| a.as_str() == s)
     }
 }
 
@@ -2114,6 +2164,25 @@ mod tests {
             (5, 10, "m")
         );
         assert_eq!(b.base_url, "http://127.0.0.1:9");
+        assert_eq!(b.api, ModelApi::Anthropic);
+        let b = under(
+            "[bot]\napi = \"openai\"\nbase_url = \"https://api.mistral.ai/v1\"\n",
+            &[],
+        )
+        .bot()
+        .unwrap();
+        assert_eq!(b.api, ModelApi::OpenAi);
+        let b = under(
+            "[bot]\nbase_url = \"https://generativelanguage.googleapis.com/v1beta\"\n",
+            &[("CLAX_BOT__API", "gemini")],
+        )
+        .bot()
+        .unwrap();
+        assert_eq!(b.api, ModelApi::Gemini);
+        for a in ModelApi::ALL {
+            assert_eq!(ModelApi::parse(a.as_str()), Some(a));
+        }
+        assert_eq!(ModelApi::parse("OpenAI"), None);
     }
 
     #[test]
@@ -2124,6 +2193,8 @@ mod tests {
             "[bot]\nenabled = \"yes\"\n",
             "[bot]\napi_key_env = \" \"\n",
             "[bot]\nbase_url = \"http://api.anthropic.com\"\n",
+            "[bot]\napi = \"gemini\"\n",
+            "[bot]\napi = \"cohere\"\nbase_url = \"https://api.cohere.com\"\n",
             "[bot]\nmax_tokens = 0\n",
             "[bot]\nmax_steps = 0\n",
             "[bot]\nconcurrency = 65\n",

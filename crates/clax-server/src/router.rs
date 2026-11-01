@@ -613,6 +613,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/admin/pricing",
             get(admin::pricing).put(admin::set_pricing),
         )
+        .route(
+            "/api/admin/pricing/tokenulator",
+            post(admin::price_from_tokenulator),
+        )
         .route("/api/admin/usage", get(admin::usage))
         .route("/api/audit", get(audit_trail::list))
         .route("/api/audit/{seq}", get(audit_trail::get))

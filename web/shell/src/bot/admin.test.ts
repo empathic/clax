@@ -182,6 +182,40 @@ describe("Admin › Provider", () => {
     await settle();
     expect(calls.find(c => c.method === "PUT")!.body).toEqual({ models: { quick: "claude-haiku-9" } });
   });
+
+  it("picks another API with a base URL known for it, and keeps a base URL of its own", async () => {
+    const calls = stubFetch({
+      "GET /api/admin/provider": provider(),
+      "GET /api/admin/provider/models": { models: [], fetched_at: "x" },
+      "PUT /api/admin/provider": (b: unknown) => provider(b as Partial<ReturnType<typeof provider>>),
+    });
+    const m = mount(AdminProvider, {});
+    await settle();
+    const api = m.root.querySelector<HTMLSelectElement>("#pv-api")!;
+    const base = m.root.querySelector<HTMLInputElement>("#pv-base")!;
+    expect(api.value).toBe("anthropic");
+    choose(api, "gemini");
+    expect(base.value).toBe("https://generativelanguage.googleapis.com/v1beta");
+    choose(api, "openai");
+    expect(base.value).toBe("https://api.mistral.ai/v1");
+    expect([...m.root.querySelectorAll("#pv-base-urls option")].map(o => (o as HTMLOptionElement).value)).toContain("https://api.subconscious.dev/v1");
+    type(base, "https://api.subconscious.dev/v1");
+    choose(api, "openai");
+    expect(base.value).toBe("https://api.subconscious.dev/v1");
+    click(button(m.root, "Save"));
+    await settle();
+    expect(calls.find(c => c.method === "PUT")!.body).toEqual({ api: "openai", base_url: "https://api.subconscious.dev/v1" });
+    expect(m.root.querySelector('[role="status"] .ok')!.textContent).toBe("Saved. Set the key again for the new base URL.");
+  });
+
+  it("leaves the API read-only when the configuration sets it", async () => {
+    stubFetch({ "GET /api/admin/provider": provider({ api: "gemini", sources: { ...provider().sources, api: "file" } }), "GET /api/admin/provider/models": { models: [], fetched_at: "x" } });
+    const m = mount(AdminProvider, {});
+    await settle();
+    const api = m.root.querySelector<HTMLSelectElement>("#pv-api")!;
+    expect(api.value).toBe("gemini");
+    expect(api.disabled).toBe(true);
+  });
 });
 
 describe("Admin › Pricing", () => {
@@ -200,6 +234,29 @@ describe("Admin › Pricing", () => {
     const put = calls.find(c => c.method === "PUT")!.body as { free_weekly_milli: number; lines: { id: string; margin_bp: number }[] };
     expect(put.free_weekly_milli).toBe(2_500_000);
     expect(put.lines.map(l => [l.id, l.margin_bp])).toEqual([["sonnet-in", 5000], ["compute", 9000], ["harness", 0]]);
+  });
+
+  it("prices a model from tokenulator.dev and says when it is not listed", async () => {
+    const priced = pricing();
+    const calls = stubFetch({
+      "GET /api/admin/pricing": pricing(),
+      "POST /api/admin/pricing/tokenulator": (b: unknown) => (b as { model: string }).model === "gemini-3.5-flash"
+        ? priced
+        : [404, { error: { code: "not_on_tokenulator", message: "tokenulator.dev lists no price for zai-glm-5-3-flash from mistral" } }],
+    });
+    const m = mount(AdminPricing, {});
+    await settle();
+    type(m.root.querySelector<HTMLInputElement>("#pr-t-model")!, "gemini-3.5-flash");
+    click(button(m.root, "Look up and price"));
+    await settle();
+    expect(calls.find(c => c.method === "POST")).toEqual({ url: "/api/admin/pricing/tokenulator", method: "POST", body: { model: "gemini-3.5-flash" } });
+    expect(m.root.querySelector("section[aria-labelledby=pr-t] .ok")!.textContent).toBe("Priced gemini-3.5-flash from tokenulator.dev.");
+    type(m.root.querySelector<HTMLInputElement>("#pr-t-model")!, "zai-glm-5-3-flash");
+    type(m.root.querySelector<HTMLInputElement>("#pr-t-provider")!, "mistral");
+    click(button(m.root, "Look up and price"));
+    await settle();
+    expect(calls.filter(c => c.method === "POST")[1].body).toEqual({ model: "zai-glm-5-3-flash", provider: "mistral" });
+    expect(m.root.querySelector("section[aria-labelledby=pr-t] .err")!.textContent).toContain("lists no price");
   });
 });
 

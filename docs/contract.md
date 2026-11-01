@@ -6359,6 +6359,7 @@ router), and a test fails when it differs:
 | `GET /api/admin/perf/verify` | Denied | no |
 | `GET /api/admin/pricing` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/admin/pricing` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/admin/pricing/tokenulator` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/admin/provider` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/admin/provider` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/admin/provider/key` | Denied | yes: 403 `not_for_agents` |
@@ -8901,6 +8902,7 @@ optional; the defaults are:
 ```toml
 [bot]
 enabled = true                  # the instance may run ClaxBot at all
+api = "anthropic"               # or "openai" or "gemini"; either needs base_url
 api_key_env = "ANTHROPIC_API_KEY"
 base_url = "https://api.anthropic.com"
 max_tokens = 32000              # 1 to 1,000,000
@@ -8923,10 +8925,26 @@ memory_mib = 64                 # 1 to 4,096
 max_calls = 200                 # 1 to 100,000
 ```
 
+`api` names the wire API the provider at `base_url` speaks, and the key's
+header: `anthropic`, the Messages API (`POST {base_url}/v1/messages`,
+`x-api-key`); `openai`, OpenAI's Chat Completions as most other hosts
+serve it (`POST {base_url}/chat/completions`, `Authorization: Bearer`;
+`base_url` names the version, as `https://api.mistral.ai/v1` or
+`https://api.subconscious.dev/v1`); `gemini`, Google's Gemini API (`POST
+{base_url}/models/{model}:streamGenerateContent?alt=sse`, `x-goog-api-key`;
+`https://generativelanguage.googleapis.com/v1beta`). ClaxBot keeps a run's
+turns as Messages API blocks whatever the API, and translates each call:
+Gemini's thought signatures go back on the parts they came on; reasoning
+a Chat Completions host streams (`reasoning_content`, a `thinking` part or
+a leading `<think>…</think>`) shows as thinking and is not sent back; a
+stream that carries no token usage fails the turn. A model ID may hold
+`/` (`subconscious/glm-5.3-marathon`).
+
 A `[bot]` table that is invalid (not a table, an unknown key, a mistyped
-value, an empty `api_key_env` or model ID, a `base_url` refused as
-`[sample]`'s is, or a value outside the range above) turns ClaxBot off and
-the daemon starts anyway. `clax doctor` prints a `config_tables` line that
+value, an `api` other than those three, an `api` other than `anthropic`
+without a `base_url`, an empty `api_key_env` or model ID, a `base_url`
+refused as `[sample]`'s is, or a value outside the range above) turns
+ClaxBot off and the daemon starts anyway. `clax doctor` prints a `config_tables` line that
 warns for an invalid `[toolpath]`, `[questions]` or `[bot]`.
 
 #### Settings
@@ -9948,7 +9966,7 @@ handle, `*system` as "Clax".
 | `GET /api/admin/people`, `PUT …/<person>/flags`, `…/credits` | admins | `view.admin {page: people}`, `admin.flag`, `admin.credits` |
 | `PUT /api/admin/people/<person>/role {role}` | the owner alone (403 `owner_only`); the owner's own role 400 `owner_role` | `admin.role` |
 | `GET`/`PUT /api/admin/provider`, `PUT`/`DELETE …/key`, `POST …/test`, `GET …/models` | admins | `view.admin {page: provider\|provider.test\|provider.models}`, `admin.provider`, `admin.key` (scope `instance`) |
-| `GET`/`PUT /api/admin/pricing`, `GET /api/admin/usage?week=` | admins | `view.admin {page: pricing\|usage}`, `admin.cost_line` |
+| `GET`/`PUT /api/admin/pricing`, `POST …/tokenulator`, `GET /api/admin/usage?week=` | admins | `view.admin {page: pricing\|usage}`, `admin.cost_line` |
 | `GET /api/audit?…`, `GET /api/audit/<seq>` | admins every event (on a hosted Clax every event but those naming an artifact out of their own reach), anyone else their scope (Toolpath journal, "Kinds"); a live page's events the owner's alone | `view.audit {filters}` |
 | `GET /api/toolpath/export` | the owner, and admins (live pages refused); on a hosted Clax each exports their own reach | — |
 

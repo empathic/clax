@@ -148,17 +148,19 @@ export type AdminPerson = {
   runs_week: number; refused_week: number;
 };
 export type Models = { default: string; quick: string; complex: string };
+/** The wire API the provider at the base URL speaks. */
+export type ModelApi = "anthropic" | "openai" | "gemini";
 /** `GET /api/admin/provider`. `caps` are the run limits by config name
  * (`max_steps`, `max_run_credits`, …); `sources` say where each field's
- * value comes from, by its dotted name (`base_url`, `models.default`,
+ * value comes from, by its dotted name (`api`, `base_url`, `models.default`,
  * `caps.max_steps`, `key`); a field from the file or the environment is
  * read-only here. */
 export type Provider = {
-  provider: "anthropic"; base_url: string; models: Models; key: KeyInfo;
+  api: ModelApi; base_url: string; models: Models; key: KeyInfo;
   caps: Record<string, number>; sources: Record<string, Source>;
 };
 /** What `PUT /api/admin/provider` changes: any of the editable fields. */
-export type ProviderPatch = { base_url?: string; models?: Partial<Models>; caps?: Record<string, number> };
+export type ProviderPatch = { api?: ModelApi; base_url?: string; models?: Partial<Models>; caps?: Record<string, number> };
 export type ProviderModels = { models: { id: string; display_name: string }[]; fetched_at: string };
 export type Unit = "mtok_input" | "mtok_cached_input" | "mtok_cache_write" | "mtok_output" | "cpu_gb_s" | "mreq" | "gb_month" | "run";
 /** A cost line (§7.2). `fixed_credits_milli`: a line charged at fixed credits per
@@ -295,6 +297,10 @@ export const setInstanceKey = (key: string) => call<Provider>("/api/admin/provid
 export const clearInstanceKey = () => call<Provider>("/api/admin/provider/key", "DELETE");
 export const testProvider = () => call<{ ok: boolean; latency_ms: number; error?: string | null }>("/api/admin/provider/test", "POST", {});
 export const providerModels = () => call<ProviderModels>("/api/admin/provider/models");
+/** `POST /api/admin/pricing/tokenulator`: prices `model`'s token lines from
+ * tokenulator.dev, as `providerId` (its provider ID) lists it, or as the
+ * provider the base URL names. */
+export const priceFromTokenulator = (model: string, providerId?: string) => call<Pricing>("/api/admin/pricing/tokenulator", "POST", providerId ? { model, provider: providerId } : { model });
 export const pricing = () => call<Pricing>("/api/admin/pricing");
 export const setPricing = (p: Pricing) => call<Pricing>("/api/admin/pricing", "PUT", p);
 export const adminUsage = (week?: string) => call<AdminUsage>(`/api/admin/usage${query({ week })}`);

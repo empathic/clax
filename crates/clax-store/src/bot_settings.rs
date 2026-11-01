@@ -62,6 +62,7 @@ macro_rules! settings {
 }
 
 settings! {
+    Api = "api", Api, "anthropic";
     BaseUrl = "base_url", Url, "https://api.anthropic.com";
     ModelDefault = "models.default", Model, "claude-sonnet-5-5";
     ModelQuick = "models.quick", Model, "claude-haiku-5-5";
@@ -81,9 +82,12 @@ settings! {
 /// What a setting's value is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
+    /// A wire API's name ([`clax_core::config::ModelApi`]).
+    Api,
     /// An `http://` or `https://` URL with a host.
     Url,
-    /// A model ID: 1 to 128 of `[A-Za-z0-9._:-]`.
+    /// A model ID: 1 to 128 of `[A-Za-z0-9._:/-]` (`/` for a host's
+    /// namespaced IDs, such as `subconscious/glm-5.3-marathon`).
     Model,
     /// An integer from 1 to 10^12.
     Positive,
@@ -124,6 +128,17 @@ impl Setting {
             CoreError::invalid("invalid_setting", format!("{} takes {what}", self.key()))
         };
         match self.kind() {
+            Kind::Api => {
+                let names: Vec<&str> = clax_core::config::ModelApi::ALL
+                    .iter()
+                    .map(|a| a.as_str())
+                    .collect();
+                let what = format!("one of {}", names.join(", "));
+                let s = value.as_str().ok_or_else(|| bad(&what))?.trim();
+                clax_core::config::ModelApi::parse(s)
+                    .map(|a| Value::from(a.as_str()))
+                    .ok_or_else(|| bad(&what))
+            }
             Kind::Url => {
                 let s = value.as_str().ok_or_else(|| bad("a URL"))?.trim();
                 let what = "an https URL (http only on localhost or a loopback address), without a query or fragment";
@@ -143,10 +158,12 @@ impl Setting {
                 let ok = !s.is_empty()
                     && s.len() <= 128
                     && s.bytes().all(|b| {
-                        b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-')
+                        b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'/' | b'-')
                     });
                 if !ok {
-                    return Err(bad("a model ID (letters, digits, '.', '_', ':' and '-')"));
+                    return Err(bad(
+                        "a model ID (letters, digits, '.', '_', ':', '/' and '-')",
+                    ));
                 }
                 Ok(Value::from(s))
             }
@@ -680,6 +697,32 @@ mod tests {
     }
 
     #[test]
+    fn the_api_is_one_of_three_and_a_model_id_may_hold_a_slash() {
+        let (_d, st) = store();
+        assert_eq!(st.bot_setting(Setting::Api).unwrap(), json!("anthropic"));
+        for api in ["anthropic", "openai", "gemini"] {
+            assert_eq!(Setting::Api.check(&json!(api)).unwrap(), json!(api));
+        }
+        assert_eq!(
+            Setting::ModelDefault
+                .check(&json!("subconscious/glm-5.3-marathon"))
+                .unwrap(),
+            json!("subconscious/glm-5.3-marathon")
+        );
+        let changed = st
+            .set_bot_settings(
+                DAEMON,
+                &[
+                    (Setting::Api, Some(json!("openai"))),
+                    (Setting::BaseUrl, Some(json!("https://api.mistral.ai/v1"))),
+                ],
+            )
+            .unwrap();
+        assert_eq!(changed, [Setting::Api, Setting::BaseUrl]);
+        assert_eq!(st.bot_setting(Setting::Api).unwrap(), json!("openai"));
+    }
+
+    #[test]
     fn settings_are_checked_set_cleared_and_recorded() {
         let (_d, st) = store();
         for (s, bad) in [
@@ -690,6 +733,10 @@ mod tests {
             (Setting::BaseUrl, json!("https://proxy.example/?token=x")),
             (Setting::BaseUrl, json!(3)),
             (Setting::ModelQuick, json!("a b")),
+            (Setting::ModelQuick, json!("a?b")),
+            (Setting::Api, json!("cohere")),
+            (Setting::Api, json!("OpenAI")),
+            (Setting::Api, json!(1)),
             (Setting::MaxSteps, json!(0)),
             (Setting::FreeWeeklyMilli, json!(-1)),
         ] {

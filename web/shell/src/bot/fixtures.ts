@@ -14,7 +14,7 @@ export const adminPerson = (o: Partial<AdminPerson> = {}): AdminPerson => ({
   week: { weekly_milli: 2_500_000, lift_milli: 500_000, spent_milli: 440_000 }, tokens_week: 1_300_000, runs_week: 4, refused_week: 1, ...o,
 });
 export const provider = (o: Partial<Provider> = {}): Provider => ({
-  provider: "anthropic", base_url: "https://api.anthropic.com", models: { default: "claude-sonnet-5-5", quick: "claude-haiku-5-5", complex: "claude-opus-5-5" },
+  api: "anthropic", base_url: "https://api.anthropic.com", models: { default: "claude-sonnet-5-5", quick: "claude-haiku-5-5", complex: "claude-opus-5-5" },
   key: { set: true, last4: "77d1", set_at: "2026-10-21T09:00:00Z", set_by: { id: "*owner", name: "Alex" }, last_ok_at: "2026-10-21T11:58:00Z" },
   caps: { max_steps: 40, max_run_credits: 200 }, sources: { base_url: "default", key: "db", "models.default": "db", "models.quick": "default", "models.complex": "default", "caps.max_steps": "file", "caps.max_run_credits": "default" }, ...o,
 });

@@ -5,10 +5,13 @@
   // sells for, the free credits everyone gets each week, and every cost
   // line, with what it costs Clax, the margin on it (editable here), and the
   // credits one unit then spends (cost × (1 + margin) ÷ credit price, rounded
-  // up; the harness fee is fixed). A change applies to new usage only.
+  // up; the harness fee is fixed). A change applies to new usage only. A
+  // model's token lines can be priced from tokenulator.dev: its standard
+  // rates as the provider the base URL names lists them (or another of its
+  // provider IDs), each line naming the page they came from.
   import { onMount } from "svelte";
   import { refusal } from "../people/refusal";
-  import { type CostLine, type Pricing, pricing, setPricing } from "./api";
+  import { type CostLine, type Pricing, priceFromTokenulator, pricing, setPricing } from "./api";
   import { UNITS, credits, money, perUnitMilli } from "./model";
 
   let p = $state<Pricing | null>(null);
@@ -38,6 +41,19 @@
       take(await setPricing({ credit_price_micro_usd: priceMicro, free_weekly_milli: Math.round(f * 1000), lines: p.lines.map(l => ({ ...l, margin_bp: marginBp(l) })) }));
       saved = "Saved. New usage is charged at these rates.";
     } catch (e) { err = refusal(e); } finally { busy = false; }
+  }
+  let tModel = $state("");
+  let tProvider = $state("");
+  let tBusy = $state(false);
+  let tNote = $state<{ ok: boolean; text: string } | null>(null);
+  async function lookUp() {
+    const model = tModel.trim();
+    if (!model || tBusy) return;
+    tBusy = true; tNote = null;
+    try {
+      take(await priceFromTokenulator(model, tProvider.trim() || undefined));
+      tNote = { ok: true, text: `Priced ${model} from tokenulator.dev.` };
+    } catch (e) { tNote = { ok: false, text: refusal(e) }; } finally { tBusy = false; }
   }
   onMount(() => { void pricing().then(take, e => { err = refusal(e); }); });
 </script>
@@ -72,6 +88,18 @@
       </table>
     </div>
     <p class="note">Credits per unit = our cost × (1 + margin) ÷ credit price, rounded up. Each line names where its cost comes from; a change applies to new usage only.</p>
+  </section>
+  <section class="bcard" aria-labelledby="pr-t">
+    <h3 id="pr-t">Price a model from tokenulator.dev</h3>
+    <p>Sets the model's input, cached input, cache-write and output lines at the standard rates <a href="https://tokenulator.dev" target="_blank" rel="noreferrer">tokenulator.dev</a> lists, at the token margin. The provider is the one the base URL names unless you give its tokenulator.dev ID (<code>google</code>, <code>mistral</code>, <code>zai</code>, …).</p>
+    <div class="fields">
+      <div class="field"><label for="pr-t-model">Model ID</label><input id="pr-t-model" type="text" spellcheck="false" placeholder="gemini-3.5-flash" bind:value={tModel} /></div>
+      <div class="field"><label for="pr-t-provider">Provider ID (optional)</label><input id="pr-t-provider" type="text" spellcheck="false" bind:value={tProvider} /></div>
+    </div>
+    <div class="acts">
+      <button type="button" aria-disabled={tBusy || !tModel.trim()} onclick={lookUp}>{tBusy ? "Looking up…" : "Look up and price"}</button>
+      <span role="status">{#if tNote}<span class={tNote.ok ? "ok" : "err"}>{tNote.text}</span>{/if}</span>
+    </div>
   </section>
   <div class="acts">
     <button type="button" class="primary" aria-disabled={busy} onclick={save}>{busy ? "Saving…" : "Save"}</button>

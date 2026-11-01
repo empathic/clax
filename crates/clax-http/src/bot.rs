@@ -196,6 +196,7 @@ impl Bot {
 const CONFIGURED: &[(&str, clax_store::bot_settings::Setting, i64)] = {
     use clax_store::bot_settings::Setting::*;
     &[
+        ("api", Api, 1),
         ("base_url", BaseUrl, 1),
         ("models.default", ModelDefault, 1),
         ("models.quick", ModelQuick, 1),

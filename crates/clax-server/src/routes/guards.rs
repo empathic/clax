@@ -140,6 +140,7 @@ mod l10 {
         ("admin::models", Bot),
         ("admin::pricing", Bot),
         ("admin::set_pricing", Bot),
+        ("admin::price_from_tokenulator", Bot),
         ("admin::usage", Bot),
         ("audit_trail::list", Bot),
         ("audit_trail::get", Bot),

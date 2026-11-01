@@ -622,7 +622,7 @@ async fn provider_layers_configuration_over_stored_settings() {
     )
     .await;
     assert_eq!(s, 200, "{v}");
-    assert_eq!(v["provider"], "anthropic");
+    assert_eq!(v["api"], "anthropic");
     assert_eq!(v["models"]["default"], "claude-opus-5-5");
     assert_eq!(v["models"]["quick"], "claude-haiku-x");
     assert_eq!(v["caps"]["max_steps"], 9);
@@ -655,7 +655,33 @@ async fn provider_layers_configuration_over_stored_settings() {
     )
     .await;
     assert_eq!((s, code(&v)), (400, "unknown_setting"), "{v}");
+    let (s, v) = call(
+        ts,
+        &Who::OwnerBrowser,
+        Method::PUT,
+        "/api/admin/provider",
+        json!({"api": "cohere"}),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (400, "invalid_setting"), "{v}");
     assert_eq!(events(ts, "admin.provider").len(), 1);
+    // Another API and its base URL, set together.
+    let (s, v) = call(
+        ts,
+        &Who::OwnerBrowser,
+        Method::PUT,
+        "/api/admin/provider",
+        json!({"api": "gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta"}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["api"], "gemini");
+    assert_eq!(v["sources"]["api"], "db");
+    assert_eq!(
+        v["base_url"],
+        "https://generativelanguage.googleapis.com/v1beta"
+    );
+    assert_eq!(events(ts, "admin.provider").len(), 2);
     // Without a key, testing says so and listing models is a conflict.
     let (s, v) = call(
         ts,

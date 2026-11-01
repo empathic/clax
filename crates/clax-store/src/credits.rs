@@ -872,20 +872,20 @@ pub struct CostLinePatch {
     pub model: Option<Option<String>>,
 }
 
-/// `id` checked as a cost line ID: 1 to 160 of `[A-Za-z0-9._:-]` (a
+/// `id` checked as a cost line ID: 1 to 160 of `[A-Za-z0-9._:/-]` (a
 /// model's token lines are its ID and a suffix).
 fn check_line_id(id: &str) -> Result<()> {
     let ok = !id.is_empty()
         && id.len() <= 160
         && id
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'));
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'/' | b'-'));
     if ok {
         Ok(())
     } else {
         Err(CoreError::invalid(
             "invalid_cost_line",
-            "a cost line ID is 1 to 160 letters, digits, '.', '_', ':' or '-'",
+            "a cost line ID is 1 to 160 letters, digits, '.', '_', ':', '/' or '-'",
         ))
     }
 }
@@ -1230,7 +1230,7 @@ impl Store {
             .map_err(|_| {
                 CoreError::invalid(
                     "invalid_cost_line",
-                    "a model ID is 1 to 128 letters, digits, '.', '_', ':' and '-'",
+                    "a model ID is 1 to 128 letters, digits, '.', '_', ':', '/' and '-'",
                 )
             })?;
         self.with_tx(|tx| {

@@ -10,6 +10,8 @@
 //!   key, URL-encoded (`%2Aowner`).
 //! - `GET/PUT /api/admin/provider`, `PUT/DELETE /api/admin/provider/key`,
 //!   `POST /api/admin/provider/test`, `GET /api/admin/provider/models`.
+//!   `api` names the wire API the base URL speaks (`anthropic`, `openai`,
+//!   `gemini`).
 //!   A field the daemon's configuration sets (`config.toml` or the
 //!   environment) shows its source and is refused 409
 //!   `setting_overridden` here. The instance key is write-only; a key in
@@ -17,7 +19,8 @@
 //!   (`sources.key` `env:<NAME>`).
 //! - `GET/PUT /api/admin/pricing`: the credit price, the free tier and
 //!   the cost lines; `PUT` takes the whole object (a line left out is
-//!   deleted).
+//!   deleted). `POST /api/admin/pricing/tokenulator {model, provider?}`
+//!   prices a model's token lines from tokenulator.dev.
 //! - `GET /api/admin/usage?week=`.
 //!
 //! Who may: the owner and admins ([`clax_http::bot::may_admin`]); agents
@@ -42,7 +45,7 @@ use clax_http::error::ApiError;
 use clax_http::identity::Identity;
 use clax_http::state::AppState;
 use clax_http::viewer::SameOrigin;
-use clax_sample::messages::{ApiKey, MessagesClient};
+use clax_sample::messages::{ApiKey, MessagesClient, ModelApi};
 use clax_store::Store;
 use clax_store::bot_settings::Setting;
 use clax_store::credits::{Applies, CostLinePatch, Unit};
@@ -309,6 +312,7 @@ pub fn provider_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
         }
     };
     let mut sources = serde_json::Map::new();
+    sources.insert("api".into(), json!(src(Setting::Api)));
     sources.insert("base_url".into(), json!(src(Setting::BaseUrl)));
     sources.insert("key".into(), json!(key_source));
     let mut models = serde_json::Map::new();
@@ -322,7 +326,7 @@ pub fn provider_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
         sources.insert(format!("caps.{name}"), json!(src(*s)));
     }
     Ok(json!({
-        "provider": "anthropic",
+        "api": get(Setting::Api),
         "base_url": get(Setting::BaseUrl),
         "models": models, "key": key, "caps": caps, "sources": sources,
     }))
@@ -351,6 +355,8 @@ pub async fn provider(
 #[serde(deny_unknown_fields)]
 pub struct ProviderBody {
     #[serde(default)]
+    api: Option<Value>,
+    #[serde(default)]
     base_url: Option<Value>,
     #[serde(default)]
     models: Option<serde_json::Map<String, Value>>,
@@ -358,7 +364,7 @@ pub struct ProviderBody {
     caps: Option<serde_json::Map<String, Value>>,
 }
 
-/// `PUT /api/admin/provider {base_url?, models?, caps?}`: each field given
+/// `PUT /api/admin/provider {api?, base_url?, models?, caps?}`: each field given
 /// is set (null: back to its default). 400 `unknown_setting` for a model
 /// tier or cap the page does not show; 409 `setting_overridden` for one
 /// the daemon's configuration sets.
@@ -374,6 +380,9 @@ pub async fn set_provider(
     let b = body(req)?;
     let mut changes: Vec<(Setting, Option<Value>)> = Vec::new();
     let some = |v: Value| (!v.is_null()).then_some(v);
+    if let Some(a) = b.api {
+        changes.push((Setting::Api, some(a)));
+    }
     if let Some(u) = b.base_url {
         changes.push((Setting::BaseUrl, some(u)));
     }
@@ -451,6 +460,15 @@ pub async fn clear_key(
 /// (`None` for the environment's).
 type KeyInUse = (ApiKey, Option<SecretSlot>);
 
+/// The API the base URL speaks.
+fn effective_api(st: &Store) -> clax_core::Result<ModelApi> {
+    Ok(st
+        .bot_setting(Setting::Api)?
+        .as_str()
+        .and_then(ModelApi::parse)
+        .unwrap_or_default())
+}
+
 /// The instance key in effect (the environment's while the base URL is
 /// the owner's, `Bot::env_key_for`; else the stored one, with its slot to
 /// mark when a request with it succeeds) and the base URL, for the
@@ -505,7 +523,12 @@ async fn models_of(
     ApiError,
 > {
     let bot = s.bot.clone();
-    let (key, base_url) = s.store_call(move |st| effective_key(st, &bot)).await?;
+    let (key, base_url, api) = s
+        .store_call(move |st| {
+            let (key, base_url) = effective_key(st, &bot)?;
+            Ok((key, base_url, effective_api(st)?))
+        })
+        .await?;
     let Some((key, slot)) = key else {
         return Ok((Err(NO_KEY.into()), None));
     };
@@ -513,7 +536,7 @@ async fn models_of(
     // The provider's request is not `Send` on the Worker's one thread.
     let r = clax_rt::sendable(async move {
         messages_client(&store)
-            .list_models(&base_url, &key)
+            .list_models(api, &base_url, &key)
             .await
             // Its own words, never the answer's text: the base URL may be
             // anyone's host.
@@ -553,7 +576,7 @@ pub async fn test(
 }
 
 /// `GET /api/admin/provider/models` → `{models: [{id, display_name}],
-/// fetched_at}`: the provider's `GET /v1/models` with the instance key
+/// fetched_at}`: the provider's model list with the instance key
 /// and base URL in effect (502 `provider_error` when it fails, 409
 /// `no_key` without a key), recorded as `view.admin {page:
 /// "provider.models"}`.
@@ -720,6 +743,124 @@ pub async fn set_pricing(
                 lines.push((l.id, patch));
             }
             st.replace_pricing(&ctx, &settings, lines)?;
+            pricing_view(st)
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TokenulatorBody {
+    model: String,
+    /// tokenulator.dev's provider ID; by default the one the API and base
+    /// URL in effect name (`clax_sample::tokenulator::provider_for`).
+    #[serde(default)]
+    provider: Option<String>,
+}
+
+/// How long each wait for tokenulator.dev may last.
+const TOKENULATOR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `POST /api/admin/pricing/tokenulator {model, provider?}` → the pricing:
+/// prices `model`'s input, cached input, cache-write and output lines at
+/// `provider`'s standard rates on tokenulator.dev (a missing cache rate at
+/// the input rate), at the token margin, with tokenulator.dev and the page
+/// it read as the lines' source ([`Store::price_model`]). 400
+/// `no_provider` when no provider is given and the base URL names none;
+/// 404 `not_on_tokenulator` when tokenulator.dev lists no such model; 502
+/// `tokenulator_error` when it cannot be read.
+pub async fn price_from_tokenulator(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    audit: DeferredAudit,
+    req: Result<Json<TokenulatorBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    use clax_sample::tokenulator::{self, LookupError, micro_usd};
+    d.refuse_agents()?;
+    admin(&s, &d).await?;
+    let b = body(req)?;
+    let model = b.model.trim().to_string();
+    let provider = match b
+        .provider
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+    {
+        Some(p) => p,
+        None => {
+            let (api, base_url) = s
+                .store_call(|st| {
+                    let url = st.bot_setting(Setting::BaseUrl)?;
+                    Ok((
+                        effective_api(st)?,
+                        url.as_str().unwrap_or_default().to_string(),
+                    ))
+                })
+                .await?;
+            tokenulator::provider_for(api, &base_url)
+                .ok_or_else(|| {
+                    ApiError::bad_request(
+                        "no_provider",
+                        "tokenulator.dev knows this provider by another name: give its provider ID",
+                    )
+                })?
+                .to_string()
+        }
+    };
+    // The request is not `Send` on the Worker's one thread.
+    let found = clax_rt::sendable(async move {
+        let site = tokenulator::fetch(tokenulator::SITE_DATA_URL, TOKENULATOR_TIMEOUT).await?;
+        tokenulator::find(&site, &provider, &model).map(|l| (l, model))
+    })
+    .await;
+    let (listing, model) = match found {
+        Ok(f) => f,
+        Err(e @ LookupError::NotListed { .. }) => {
+            return Err(ApiError::new(
+                axum::http::StatusCode::NOT_FOUND,
+                "not_on_tokenulator",
+                e.to_string(),
+            ));
+        }
+        Err(e) => {
+            return Err(ApiError::new(
+                axum::http::StatusCode::BAD_GATEWAY,
+                "tokenulator_error",
+                e.to_string(),
+            ));
+        }
+    };
+    let r = &listing.rates;
+    let prices = clax_store::credits::ModelPrices {
+        name: if listing.name.is_empty() {
+            model.clone()
+        } else {
+            listing.name.clone()
+        },
+        input: micro_usd(r.input),
+        cached_input: micro_usd(r.cache_read.unwrap_or(r.input)),
+        cache_write: micro_usd(r.cache_write.unwrap_or(r.input)),
+        output: micro_usd(r.output),
+        margin_bp: clax_store::credits::TOKEN_MARGIN_BP,
+        source: format!(
+            "tokenulator.dev: {} {} standard rates from {}, observed {}{}",
+            listing.provider_id,
+            listing.model_id,
+            listing.source,
+            listing.observed_at,
+            match (r.cache_read, r.cache_write) {
+                (Some(_), Some(_)) => "",
+                (None, None) => " (no cache rates listed: input rate)",
+                (None, _) => " (no cache read rate listed: input rate)",
+                (_, None) => " (no cache write rate listed: input rate)",
+            }
+        ),
+    };
+    let v = s
+        .store_call(move |st| {
+            let ctx = audit.resolve(st)?;
+            st.price_model(&ctx, &model, prices)?;
             pricing_view(st)
         })
         .await?;
