@@ -304,6 +304,12 @@ pub enum B {
 
 /// The event stream of one assistant turn.
 pub fn stream(blocks: &[B], stop: &str, usage: Tokens) -> Reply {
+    stream_billed(blocks, stop, usage, None)
+}
+
+/// [`stream`], its final usage reporting the provider billed the call
+/// `billed` micro-USD when `Some`.
+pub fn stream_billed(blocks: &[B], stop: &str, usage: Tokens, billed: Option<u64>) -> Reply {
     let mut s = message_start(usage);
     let mut ev = |name: &str, data: Value| s.push_str(&event(name, data));
     for (i, b) in blocks.iter().enumerate() {
@@ -348,9 +354,13 @@ pub fn stream(blocks: &[B], stop: &str, usage: Tokens) -> Reply {
             json!({"type": "content_block_stop", "index": i}),
         );
     }
+    let mut last = json!({"output_tokens": usage.3});
+    if let Some(b) = billed {
+        last["billed_micro_usd"] = json!(b);
+    }
     ev(
         "message_delta",
-        json!({"type": "message_delta", "delta": {"stop_reason": stop}, "usage": {"output_tokens": usage.3}}),
+        json!({"type": "message_delta", "delta": {"stop_reason": stop}, "usage": last}),
     );
     ev("message_stop", json!({"type": "message_stop"}));
     Reply::Sse { body: s, usage }
@@ -605,6 +615,15 @@ impl Env {
     }
 
     pub fn run_as(&self, request: RequestKind) -> String {
+        self.run_with(request, "claude-sonnet-5-5", KeySource::Instance)
+    }
+
+    /// A thread run on `model`, recorded as on a `key_source` key.
+    pub fn run_on(&self, model: &str, key_source: KeySource) -> String {
+        self.run_with(RequestKind::Thread, model, key_source)
+    }
+
+    pub fn run_with(&self, request: RequestKind, model: &str, key_source: KeySource) -> String {
         self.store
             .create_run(
                 &clax_bot::run::bot_ctx(OWNER),
@@ -613,8 +632,8 @@ impl Env {
                     person: OWNER.into(),
                     request,
                     thread_ids: vec![self.t1.clone()],
-                    model: "claude-sonnet-5-5".into(),
-                    key_source: KeySource::Instance,
+                    model: model.into(),
+                    key_source,
                     base_version: 1,
                     agent_grant: None,
                 },
