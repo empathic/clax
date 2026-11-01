@@ -112,8 +112,10 @@ just dev claude         # terminal 2: this branch's plugin on this checkout's de
 
 Terminal 2's first line names the dev home and its port (7481 in the main
 checkout, its own in a worktree); the dev daemon's inbox is at that port.
-A browser opens it as the owner through a login link: `just clax login`
-prints one.
+A browser sees it once signed in to that home: the first `just dev` on a
+new home opens its gallery signed in, and `just clax open` (or `just clax
+login` for a link) signs in another browser. A plain `clax open` reaches
+your everyday Clax, not the dev home.
 
 In the browser, open the owner sign-in link terminal 1 printed, so you are
 signed in to clax.dev's address as the person the dev daemon will act as.

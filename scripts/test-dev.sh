@@ -258,6 +258,21 @@ if grep -q "home=$HOME/.clax-dev-wt-feature " "$T/calls" && grep -qx 'port = 759
 else fail "just dev in a worktree ($(cat "$T/calls" "$T/err"))"; fi
 rm -rf "$HOME/.clax-dev-wt-feature"
 
+# A new dev home opens a signed-in browser once; a home with a database
+# only says how.
+printf '#!/bin/sh\necho "clax $*" >> "%s/clax-calls"\nif [ "$1" = serve ]; then : > "$CLAX_HOME/clax.db"; fi\necho "clax 9.9.9-dev"\n' "$T" | fake_exe "$T/clax-opens"
+rm -rf "$HOME/.clax-dev" "$T/clax-calls"
+CLAX_BUILD=native CLAX_DEV_BIN="$T/clax-opens" PATH="$FAKE:$PATH" "$HERE/dev.sh" pi >"$T/out" 2>"$T/err"
+if grep -qx "clax open" "$T/clax-calls" && grep -q "opened this dev home's gallery in your browser, signed in" "$T/out"; then
+    pass "a new dev home opens its gallery in a signed-in browser"
+else fail "a new dev home's browser ($(cat "$T/clax-calls" "$T/out" "$T/err"))"; fi
+rm -f "$T/clax-calls"
+CLAX_BUILD=native CLAX_DEV_BIN="$T/clax-opens" PATH="$FAKE:$PATH" "$HERE/dev.sh" pi >"$T/out" 2>"$T/err"
+if ! grep -qx "clax open" "$T/clax-calls" && grep -q "to sign a browser in to this dev home: just clax open" "$T/out"; then
+    pass "a dev home with a database opens nothing and says how to sign a browser in"
+else fail "an existing dev home's browser ($(cat "$T/clax-calls" "$T/out"))"; fi
+rm -rf "$HOME/.clax-dev"
+
 # A home the build cannot open (another build's migrations) stops `just dev`
 # before the harness, saying why and what to do; the home is left as it is.
 printf '#!/bin/sh\nif [ "$1" = serve ]; then mkdir -p "$CLAX_HOME/logs"; echo "error: could not upgrade the database from schema version 49: table person_roles already exists" >> "$CLAX_HOME/logs/daemon.log"; echo "error: daemon exited during startup" >&2; exit 1; fi\necho "clax 9.9.9-dev"\n' | fake_exe "$T/clax-old-home"

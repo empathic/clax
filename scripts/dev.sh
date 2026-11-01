@@ -61,6 +61,9 @@ export CLAX_BIN="$tmp/clax"
 export PATH="$tmp:$PATH"
 watch_settings
 export CLAX_HOME="$DEV_HOME"
+# A home with no database yet has no signed-in browser either.
+new_home=""
+[ -e "$CLAX_HOME/clax.db" ] || new_home=1
 # The dev home's config.toml names its port; CLAX_PORT would override it.
 unset CLAX_PORT
 ensure_dev_home "$CLAX_HOME" "$DEV_PORT"
@@ -72,6 +75,15 @@ log_from="$(log_size "$CLAX_HOME")"
 if ! CLAX_NO_OPEN=1 "$tmp/clax" serve >/dev/null; then
     explain_home_failure "$CLAX_HOME" "$log_from" || echo "clax dev: the daemon did not start on $CLAX_HOME; see $CLAX_HOME/logs/daemon.log" >&2
     exit 1
+fi
+# A browser sees this home's inbox, cards and pages once signed in to it
+# (a login link; the home's daemon trusts no browser for being on this
+# machine): a new home opens one signed in, and every run says how.
+if [ -n "$new_home" ] && [ -z "${CLAX_NO_OPEN:-}" ]; then
+    "$tmp/clax" open >/dev/null || true
+    echo "clax dev: opened this dev home's gallery in your browser, signed in"
+else
+    echo "clax dev: to sign a browser in to this dev home: just clax open (or just clax login for a link)"
 fi
 
 # Not exec: the EXIT trap removes the temporary directory after the harness.
