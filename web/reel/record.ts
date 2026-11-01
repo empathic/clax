@@ -96,7 +96,7 @@ const { deterministicCamera, fastCamera, FPS, REEL_EPOCH } = await import("./cam
 const { installCursor } = await import("./cursor.ts");
 const { FocusLog, parseFocus, targetBoxes } = await import("./focus.ts");
 const { Director } = await import("./director.ts");
-const { NO_KEY_CONFIG, startDaemon } = await import("../e2e/fixtures.ts");
+const { NO_KEY_CONFIG, startDaemon, trustContext } = await import("../e2e/fixtures.ts");
 const { SECRET, freePort } = await import("../e2e/hosted-helpers.ts");
 type Stage = import("./director.ts").Stage;
 type Vignette = import("./director.ts").Vignette;
@@ -158,6 +158,11 @@ const stage: Stage = {
       // only pad it. Deterministic mode captures those, as screenshots.
       ...(videoDir ? { recordVideo: { dir: videoDir, size: { width, height } } } : {}),
     });
+    // The camera is a browser of the owner's on every local daemon the
+    // vignette starts, as a login link opened in it would make it (a local
+    // daemon trusts no browser for being on this machine); a hosted
+    // daemon's sign-in comes from storageState.
+    await trustContext(context);
     await context.clock.install({ time: REEL_EPOCH });
     if (mode === "deterministic") await context.addInitScript(SEEDED_RANDOM);
     const page = await context.newPage();

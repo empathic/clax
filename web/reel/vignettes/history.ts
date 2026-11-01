@@ -52,9 +52,26 @@ type Cast = { page: Page; base: string; token: string; sid: string; aid: string;
  * parsed and before its deferred scripts, the shell's, run. Each call's map
  * replaces the last one's. The document itself is the daemon's, untouched
  * in transit: one the recorder answered would lose its local address, and
- * Chromium's local network checks would refuse it the artifact's frame.
+ * Chromium's local network checks would refuse it the artifact's frame. The
+ * artifact's API answers, which the shell reads when its first load came
+ * without the owner's data (a page load carries no owner proof), name the
+ * staged times too: those are fetches, answered with the daemon's own body
+ * so rewritten.
  */
 async function stageTimes(page: Page, base: string, staged: Map<string, string>): Promise<void> {
+  const unrouted = !routed.has(page);
+  routed.set(page, staged);
+  if (unrouted) await page.context().route(
+    (url) => url.origin === base && /^\/api\/artifacts\/[^/]+(\/versions)?$/.test(url.pathname),
+    async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      const res = await route.fetch();
+      if (!(res.headers()["content-type"] ?? "").includes("json")) return route.fulfill({ response: res });
+      let body = await res.text();
+      for (const [real, shown] of routed.get(page) ?? []) body = body.replaceAll(real, shown);
+      await route.fulfill({ response: res, body });
+    },
+  );
   await page.addInitScript(
     ([origin, pairs]) => {
       if (window !== window.top || location.origin !== origin) return;
@@ -74,6 +91,9 @@ async function stageTimes(page: Page, base: string, staged: Map<string, string>)
   );
 }
 
+/** The map each page's API answers are rewritten from: stageTimes' latest. */
+const routed = new WeakMap<Page, Map<string, string>>();
+
 /** Version `n`'s page, from the vignette's fixtures. */
 const fixture = (n: number) => readFileSync(new URL(`../fixtures/history/v${n}.html`, import.meta.url), "utf8");
 
@@ -86,8 +106,13 @@ const rowOf = (page: Page, n: number) => page.locator(".vmenu .vrow a").filter({
 /** What the shell's version button says, read without a gesture. */
 const shownText = (page: Page) => quietIn<string>(page, page.mainFrame(), `document.querySelector("button.vbtn")?.textContent ?? ""`);
 
-/** Waits off camera until the shell shows version `n` of `latest`, its page loaded in the frame. */
+/** Waits off camera until the shell shows version `n` of `latest`, its page
+ * loaded in the frame. The shell loads without its first-load data (a page
+ * load carries no owner proof), so it starts after its first paint: the
+ * wait lets the page's clock run (`settle`). */
 async function landed(d: Director, cast: Cast, n: number, latest: number): Promise<void> {
+  const url = new RegExp(`${cast.aid}\\.localhost:\\d+/_clax/v/${n}/(#.*)?$`);
+  await d.settle(async () => cast.page.frame({ url }) !== null, `the frame shows v${n}`);
   await d.offstage(() => contentFrame(cast.page, cast.aid, n));
   await d.until(async () => (await shownText(cast.page)).startsWith(`v${n}of ${latest}`), `the shell shows v${n} of ${latest}`);
   await closeThreads(d, cast.page);
