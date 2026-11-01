@@ -8916,6 +8916,7 @@ concurrency = 4                 # runs at once; 1 to 64
 per_person_concurrency = 1      # one person's runs at once; 1 to 64
 free_weekly_credits = 2000
 credit_price_micro_usd = 10000  # at least 1
+price_catalog_url = "https://tokenulator.dev/data/site.json"  # https://, or http:// on loopback; "" or "off": never fetched
 
 [bot.models]
 default = "claude-sonnet-5-5"
@@ -9851,9 +9852,12 @@ credits at most 10^9 milli-credits. Each usage row (`usage_rows`) snapshots thos
 inputs (cost per unit, margin, fixed credits, credit price, base), so
 changing a line or the price never reprices history. Each model is seeded
 with input, cached input (cache read), cache-write (5-minute writes, 1.25
-times input) and output lines; a run is refused (`model_not_priced`) on a
-model missing any of them until an admin prices it, and a line a run that
-has not ended may charge cannot be deleted (`cost_line_in_use`). Usage is
+times input) and output lines. A model without them is priced from the
+price catalog or the default rates ("Pricing" below); only with
+`require_explicit_price` is a run on the instance key refused
+(`model_not_priced`) on a model missing any of them until an admin prices
+it (a run on a person's own key never is). A line a run that has not
+ended may charge cannot be deleted (`cost_line_in_use`). Usage is
 charged only with a run step's commit. A line that applies to the instance key only (the
 token lines) writes its rows with cost and credits 0 on a person's own key;
 lines that apply always (compute, requests, storage, the fee) charge on
@@ -9969,7 +9973,8 @@ handle, `*system` as "Clax".
 | `GET /api/admin/people`, `PUT …/<person>/flags`, `…/credits` | admins | `view.admin {page: people}`, `admin.flag`, `admin.credits` |
 | `PUT /api/admin/people/<person>/role {role}` | the owner alone (403 `owner_only`); the owner's own role 400 `owner_role` | `admin.role` |
 | `GET`/`PUT /api/admin/provider`, `PUT`/`DELETE …/key`, `POST …/test`, `GET …/models` | admins | `view.admin {page: provider\|provider.test\|provider.models}`, `admin.provider`, `admin.key` (scope `instance`) |
-| `GET`/`PUT /api/admin/pricing`, `POST`/`DELETE …/models`, `POST …/catalog/refresh`, `POST …/tokenulator`, `GET /api/admin/usage?week=` | admins | `view.admin {page: pricing\|usage}`, `admin.cost_line` |
+| `GET`/`PUT /api/admin/pricing`, `POST`/`DELETE …/models`, `POST …/tokenulator`, `GET /api/admin/usage?week=` | admins | `view.admin {page: pricing\|usage}`, `admin.cost_line` |
+| `POST /api/admin/pricing/catalog/refresh` | admins | — (it replaces the cached public price catalog alone) |
 | `GET /api/audit?…`, `GET /api/audit/<seq>` | admins every event (on a hosted Clax every event but those naming an artifact out of their own reach), anyone else their scope (Toolpath journal, "Kinds"); a live page's events the owner's alone | `view.audit {filters}` |
 | `GET /api/toolpath/export` | the owner, and admins (live pages refused); on a hosted Clax each exports their own reach | — |
 
@@ -10065,22 +10070,27 @@ the cached price catalog's listing of the model by the provider the `api`
 and `base_url` in effect name (`catalog`: model IDs compared ignoring
 case, a missing cache rate at the input rate, at the token margin); the
 instance's default rates (`default`: fixed milli-credits per million
-tokens). With `require_explicit_price` only the line counts, and a model
-without one is refused `model_not_priced`.
+tokens). With `require_explicit_price` only the line counts, and a run on
+the instance key on a model without one is refused `model_not_priced` (a
+run on a person's own key is charged no token lines, and never is).
 
 `GET /api/admin/pricing` → `{credit_price_micro_usd, free_weekly_milli,
-default_rates: {input, cached_input, cache_write, output},
+token_margin_bp, default_rates: {input, cached_input, cache_write, output},
 require_explicit_price, lines: [line], models: [model], catalog:
 {fetched_at, provider}, sources}`:
 
+- `token_margin_bp` is the margin the catalog's prices are charged at
+  (4000), the one a new cost-based rate card starts from.
 - `default_rates` are milli-credits per million tokens (defaults 560000,
   28000, 700000, 2800000); `sources` names, beside
   `credit_price_micro_usd` and `free_weekly_milli`, the source of each
   `default_rates.<unit>` and of `require_explicit_price` (`default`, `db`,
   `file` or `env:<NAME>`).
 - `models` are the models of the three tiers in effect, then every other
-  model with a token line, by ID: `{model, tiers: ["default"|"quick"|"complex"],
-  units: {input, cached_input, cache_write, output}, listing, drift}`. Each
+  model with a token line, by ID: `{model, name, tiers: ["default"|"quick"|"complex"],
+  units: {input, cached_input, cache_write, output}, listing, drift}`.
+  `name` is the model's display name: as its lines' labels give it (`<name>
+  input tokens`), else its catalog listing's, else `null`. Each
   unit is `{source: "line"|"catalog"|"default"|null, cost_micro_usd,
   margin_bp, fixed_credits_milli, applies, credits_milli_per_mtok,
   catalog_micro_usd, drift}`: the rate it resolves to now
@@ -10100,42 +10110,57 @@ require_explicit_price, lines: [line], models: [model], catalog:
 
 `PUT /api/admin/pricing` takes the same object: `default_rates` (any of
 its four keys) and `require_explicit_price` may be left out, and are kept;
-`models`, `catalog` and `sources` are ignored. A value the configuration
+`token_margin_bp`, `models`, `catalog` and `sources` are ignored. A value the configuration
 sets is refused 409 `setting_overridden` only when it differs from the
 value in effect; a value out of range 400 `invalid_setting`.
+Its `lines` are the lines that are not token lines (`unit`
+`mtok_input`, `mtok_cached_input`, `mtok_cache_write` or `mtok_output`,
+or a token line's ID): each is made or changed and one left out deleted
+(409 `cost_line_in_use` for one a run that has not ended may charge). A
+token line belongs to its model's rate card and changes only through
+`/api/admin/pricing/models`: one sent is refused 400 `invalid_cost_line`
+(and nothing is written), and every one is kept, sent or not. `GET`
+lists every line.
 
 `POST /api/admin/pricing/models {model, name?, input, cached_input,
 cache_write, output}`, each unit `{cost_micro_usd, margin_bp,
 fixed_credits_milli}`, sets the model's rate card: its four token lines,
 each cost-based (`fixed_credits_milli` `null`: cost plus margin) or
 credit-based (`fixed_credits_milli` per million tokens, the cost for
-information), labelled with `name` (the model ID by default) and sourced
+information), labelled with `name` (left out: the name the model's lines
+have, else the model ID) and sourced
 "set by an admin", in one transaction; 400 `invalid_cost_line` for a
 model ID or a value out of range. `DELETE
 /api/admin/pricing/models?model=<id>` deletes them, so the model's tokens
-resolve past the lines from then on; 404 `not_found` when it has none,
-409 `cost_line_in_use` while a run on it has not ended (nothing is
-deleted). Each line written or deleted is recorded as `admin.cost_line`.
+resolve past the lines from then on; 400 `invalid_query` without
+`model`, 404 `not_found` when it has none, 409 `cost_line_in_use` while
+a run on it has not ended (nothing is deleted). Each line written or deleted is recorded as `admin.cost_line`.
 Both answer the pricing, as `GET` does.
 
 `POST /api/admin/pricing/catalog/refresh` fetches the price catalog
 (tokenulator.dev's) now and replaces the cache with its listings, then
-answers the pricing; 502 `tokenulator_error` when it cannot be read or
-lists no valid price, and the cache is kept. `POST
-/api/admin/pricing/tokenulator {model, provider?}` refreshes the catalog
-the same way, then prices the model's four lines at `provider`'s listing
-in it (by default the catalog provider in effect; 400 `no_provider` when
-there is none), at the token margin; 404 `not_on_tokenulator` when the
-catalog lists no such model, 502 `tokenulator_error` when it cannot be
-read.
+answers the pricing; 502 `tokenulator_error` when it cannot be read
+within 30 s or lists no valid price, and the cache is kept. A refresh is
+not recorded in the audit trail. `POST /api/admin/pricing/tokenulator
+{model, provider?}` refreshes the catalog the same way, then prices the
+model's four lines at `provider`'s listing in it (by default the catalog
+provider in effect; 400 `no_provider` when there is none), at the token
+margin; when the refresh fails but the cache lists the model, it is
+priced from the cache; 404 `not_on_tokenulator` when the catalog lists
+no such model, 502 `tokenulator_error` when it cannot be read and the
+cache does not list it. One refresh runs at a time: requests that come
+while one runs take its outcome.
 
-The local daemon refreshes the catalog when it starts and every 24 hours,
-from `CLAX_PRICE_CATALOG_URL` (unset: tokenulator.dev's
-`https://tokenulator.dev/data/site.json`; empty: never, and the two
-routes above answer 502 `tokenulator_error`); a failed refresh is logged
-and keeps the cache. The hosted Worker refreshes it from its alarm once
-the cache is 24 hours old by the instance's clock, trying at most once
-an hour, and sets no alarm for it alone.
+The local daemon fetches the catalog from `[bot] price_catalog_url`
+(`config.toml` or `CLAX_BOT__PRICE_CATALOG_URL`; in `/api/settings` the
+owner's alone to write, and never a setting of the admin pages)
+once its cache is 24 hours old by the daemon's clock, looking at start
+and every hour after; with the URL empty or `off`, never, and the two
+routes above answer 502 `tokenulator_error`. A failed refresh is logged
+and keeps the cache. The hosted Worker fetches tokenulator.dev's from its
+alarm, after the alarm's ClaxBot runs, once the cache is 24 hours old by
+the instance's clock, trying at most once an hour for at most 45 s, and
+sets no alarm for it alone.
 
 `GET /api/admin/provider/models` gives each model its `pricing`:
 `{source, input_credits_milli_per_mtok, output_credits_milli_per_mtok}`,

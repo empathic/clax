@@ -1282,6 +1282,17 @@ impl Store {
         self.with_read(|c| model_rate_in(c, &ov, model, unit))
     }
 
+    /// The catalog provider the `api` and `base_url` in effect name, by
+    /// the rule [`Store::model_rate`] and [`Store::model_pricing`] use;
+    /// `None` for a host the catalog does not name.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn catalog_provider(&self) -> Result<Option<&'static str>> {
+        let ov = self.bot_overrides();
+        self.with_read(|c| catalog_provider_in(c, &ov))
+    }
+
     /// Every cost line, by ID.
     ///
     /// # Errors

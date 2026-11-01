@@ -83,10 +83,12 @@ pub fn may_edit_settings(st: &clax_store::Store, caller: &Caller) -> Result<(), 
 /// instance key goes to a base URL from the configuration alone, so only
 /// the owner writes one there (admins set theirs on the provider page,
 /// in the database, which the environment's key is never sent to; spec
-/// §8.1). Admins change the rest of `[bot]` and `[questions]`.
+/// §8.1). `bot.price_catalog_url` too: it names a host the daemon fetches
+/// from. Admins change the rest of `[bot]` and `[questions]`.
 pub fn owner_only_setting(key: &str) -> bool {
     key == "bin"
         || key == "bot.base_url"
+        || key == "bot.price_catalog_url"
         || key.ends_with("_env")
         || ["serve.", "sample.", "hosted.", "toolpath."]
             .iter()

@@ -4,11 +4,13 @@
 //! model without cost lines is priced from it and the pricing page shows
 //! each line's drift from it.
 //!
-//! The daemon refreshes it at start and every [`REFRESH_EVERY`]
-//! ([`spawn_refresher`]); the hosted Worker from its alarm once the cache is
-//! older than that ([`refresh_if_stale`]); `POST /api/admin/pricing/catalog/refresh`
-//! and `POST /api/admin/pricing/tokenulator` on demand. A failed fetch
-//! keeps the cache as it was.
+//! The daemon (checking every [`CHECK_EVERY`], [`spawn_refresher`]) and
+//! the hosted Worker (from its alarm) refresh it once the cache is
+//! [`REFRESH_EVERY`] old by the store's clock ([`refresh_if_stale`]);
+//! `POST /api/admin/pricing/catalog/refresh` and `POST
+//! /api/admin/pricing/tokenulator` on demand. One refresh runs at a time,
+//! and those that waited on it take its outcome ([`refresh`]). A failed
+//! fetch keeps the cache as it was.
 
 use chrono::{DateTime, Utc};
 use clax_http::error::ApiError;
@@ -20,21 +22,26 @@ use std::time::Duration;
 
 /// How old the cache may grow before it is fetched again.
 pub const REFRESH_EVERY: Duration = Duration::from_secs(24 * 3600);
-/// How long each wait for the catalog may last.
+/// How often the daemon looks whether the cache is due.
+pub const CHECK_EVERY: Duration = Duration::from_secs(3600);
+/// The longest one fetch of the catalog may take, its answer and its
+/// whole body.
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
-/// The variable that names the daemon's catalog URL: unset, tokenulator.dev's
-/// ([`tokenulator::SITE_DATA_URL`]); empty, none (the catalog is never
-/// fetched); else that URL.
-pub const URL_ENV: &str = "CLAX_PRICE_CATALOG_URL";
 
-/// The catalog URL `var` (the value of [`URL_ENV`]) names.
+/// The catalog URL a daemon configured by `cfg` fetches from: its `[bot]
+/// price_catalog_url` (none when that is empty, `off` or not a URL
+/// [`clax_core::config::base_url_ok`] takes); with no configuration,
+/// tokenulator.dev's.
 #[must_use]
-pub fn url_from(var: Option<&str>) -> Option<String> {
-    match var.map(str::trim) {
-        None => Some(tokenulator::SITE_DATA_URL.to_string()),
-        Some("") => None,
-        Some(u) => Some(u.to_string()),
-    }
+pub fn url_of(cfg: Option<&clax_core::config::HomeConfig>) -> Option<String> {
+    let Some(cfg) = cfg else {
+        return Some(clax_core::config::PRICE_CATALOG_URL.to_string());
+    };
+    let v = cfg
+        .value("bot.price_catalog_url")
+        .and_then(|v| v.into_string())
+        .unwrap_or_else(|| clax_core::config::PRICE_CATALOG_URL.to_string());
+    clax_core::config::catalog_url_of(&v).map(String::from)
 }
 
 /// A refresh that took: how many listings the cache holds and when it
@@ -70,22 +77,60 @@ fn unavailable(why: impl std::fmt::Display) -> ApiError {
 }
 
 /// Fetches the catalog from the state's URL and replaces the cache with
-/// its listings, stamped with the store's time.
+/// its listings, stamped with the store's time. One runs at a time: a
+/// refresh that waited while another ran takes that one's outcome.
 ///
 /// # Errors
 /// 502 `tokenulator_error` when no URL is set, the catalog cannot be
-/// fetched or read, or it lists no valid price (the cache is kept); the
-/// store's.
+/// fetched or read within [`FETCH_TIMEOUT`], or it lists no valid price
+/// (the cache is kept); the store's.
 pub async fn refresh(s: &AppState) -> Result<Refreshed, ApiError> {
+    use std::sync::atomic::Ordering;
+    let flight = s.bot.catalog_flight.clone();
+    let seen = flight.done.load(Ordering::Acquire);
+    let mut last = flight.last.lock().await;
+    if flight.done.load(Ordering::Acquire) != seen
+        && let Some(o) = last.clone()
+    {
+        return from_outcome(o);
+    }
+    let r = fetch_and_store(s).await;
+    *last = Some(match &r {
+        Ok(r) => Ok((r.listings, r.fetched_at)),
+        Err(e) => Err((e.status, e.code, e.message.clone())),
+    });
+    flight.done.fetch_add(1, Ordering::AcqRel);
+    r
+}
+
+/// A refresh's outcome kept in the flight, as [`refresh`] answers it.
+fn from_outcome(o: clax_http::bot::CatalogOutcome) -> Result<Refreshed, ApiError> {
+    o.map(|(listings, fetched_at)| Refreshed {
+        listings,
+        fetched_at,
+    })
+    .map_err(|(status, code, message)| ApiError::new(status, code, message))
+}
+
+/// [`refresh`]'s work: the fetch, then the cache replaced.
+async fn fetch_and_store(s: &AppState) -> Result<Refreshed, ApiError> {
     let url = s
         .bot
         .catalog_url
         .clone()
         .ok_or_else(|| unavailable("no price catalog URL is configured"))?;
     // The request is not `Send` on the Worker's one thread.
-    let site = clax_rt::sendable(async move { tokenulator::fetch(&url, FETCH_TIMEOUT).await })
-        .await
-        .map_err(unavailable)?;
+    let site = clax_rt::sendable(async move {
+        clax_rt::time::timeout(FETCH_TIMEOUT, tokenulator::fetch(&url, FETCH_TIMEOUT)).await
+    })
+    .await
+    .map_err(|_| {
+        unavailable(LookupError::Unavailable(format!(
+            "the catalog was not read within {} s",
+            FETCH_TIMEOUT.as_secs()
+        )))
+    })?
+    .map_err(unavailable)?;
     let listings: Vec<CatalogListing> = tokenulator::listings(&site)
         .into_iter()
         .map(cached)
@@ -132,9 +177,10 @@ pub async fn refresh_if_stale(s: &AppState) -> Option<Result<Refreshed, ApiError
     Some(refresh(s).await)
 }
 
-/// Refreshes the catalog now and then every `every` (the daemon passes
-/// [`REFRESH_EVERY`]), until the task is aborted; a failure is logged and
-/// the cache kept. Nothing runs without a catalog URL.
+/// Looks now and then every `every` (the daemon passes [`CHECK_EVERY`])
+/// whether the cache is due, and refreshes it when it is
+/// ([`refresh_if_stale`]), until the task is aborted; a failure is logged
+/// and the cache kept. Nothing runs without a catalog URL.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn spawn_refresher(s: AppState, every: Duration) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -145,9 +191,10 @@ pub fn spawn_refresher(s: AppState, every: Duration) -> tokio::task::JoinHandle<
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tick.tick().await;
-            match refresh(&s).await {
-                Ok(r) => tracing::info!(listings = r.listings, "refreshed the price catalog"),
-                Err(e) => {
+            match refresh_if_stale(&s).await {
+                None => {}
+                Some(Ok(r)) => tracing::info!(listings = r.listings, "refreshed the price catalog"),
+                Some(Err(e)) => {
                     tracing::warn!(error = %e.message, "price catalog refresh failed; kept the cache")
                 }
             }
@@ -175,13 +222,42 @@ mod tests {
     }
 
     #[test]
-    fn the_variable_names_the_url_or_none() {
-        assert_eq!(url_from(None).as_deref(), Some(tokenulator::SITE_DATA_URL));
-        assert_eq!(url_from(Some("")), None);
-        assert_eq!(url_from(Some("  ")), None);
+    fn the_configuration_names_the_url_or_none() {
+        let cfg = |text: &str, env: &[(&str, &str)]| {
+            clax_core::config::HomeConfig::from_text(
+                std::path::PathBuf::from("/h/config.toml"),
+                text,
+                env.iter().map(|(k, v)| (k.to_string(), v.to_string())),
+            )
+            .unwrap()
+        };
+        let site = clax_core::config::PRICE_CATALOG_URL;
+        assert_eq!(url_of(None).as_deref(), Some(site));
+        assert_eq!(url_of(Some(&cfg("", &[]))).as_deref(), Some(site));
         assert_eq!(
-            url_from(Some("http://127.0.0.1:9/site.json")).as_deref(),
+            url_of(Some(&cfg("", &[("CLAX_BOT__PRICE_CATALOG_URL", "off")]))),
+            None
+        );
+        assert_eq!(
+            url_of(Some(&cfg("[bot]\nprice_catalog_url = \"\"\n", &[]))),
+            None
+        );
+        assert_eq!(
+            url_of(Some(&cfg(
+                "[bot]\nprice_catalog_url = \"http://127.0.0.1:9/site.json\"\n",
+                &[]
+            )))
+            .as_deref(),
             Some("http://127.0.0.1:9/site.json")
+        );
+        // Not a URL the key may name: none, as an invalid [bot] turns
+        // ClaxBot off.
+        assert_eq!(
+            url_of(Some(&cfg(
+                "[bot]\nprice_catalog_url = \"http://evil.example/\"\n",
+                &[]
+            ))),
+            None
         );
     }
 }

@@ -110,7 +110,8 @@
 //! the last one once a request that may write was served. An alarm that
 //! fires for any of them also refreshes the price catalog once its cache
 //! is a day old (`clax_server::catalog::refresh_if_stale`, tried at most
-//! once an hour); none is set for the catalog alone. After every
+//! once an hour, within 45 s), after ClaxBot's drive; none is set for the
+//! catalog alone. After every
 //! request, socket event and alarm the object works that time out again and
 //! moves the alarm earlier when it must; with nothing due it holds no
 //! alarm, so an idle object, open sockets or not, sleeps until a request or
@@ -200,6 +201,8 @@ const OPTIMIZE_MS: f64 = clax_store::OPTIMIZE_INTERVAL.as_millis() as f64;
 /// How long after one try of a price catalog refresh the alarm tries
 /// again, while the cache is stale.
 const CATALOG_RETRY_MS: f64 = 3_600_000.0;
+/// The longest an alarm spends on a price catalog refresh.
+const CATALOG_DEADLINE: std::time::Duration = std::time::Duration::from_secs(45);
 /// The most bytes of one room socket message (as the daemon's room route).
 const MAX_ROOM_MESSAGE: usize = 64 * 1024;
 
@@ -621,7 +624,8 @@ fn worker_bot(env: &Env, app: &mut AppState) -> crate::bot::WorkerBot {
     let mut first = crate::bot::routes_bot(kek, enabled, Arc::new(clax_http::bot::NoRuns));
     first.catalog_url = catalog_url(env);
     let (events, views, keys) = (first.events.clone(), first.views.clone(), first.keys());
-    let first_catalog_url = first.catalog_url.clone();
+    let (first_catalog_url, catalog_flight) =
+        (first.catalog_url.clone(), first.catalog_flight.clone());
     app.bot = Arc::new(first);
     // The server's own host, over the state the routes see.
     let server_host = Arc::new(clax_server::bot::ServerHost::new(app.clone()));
@@ -646,6 +650,7 @@ fn worker_bot(env: &Env, app: &mut AppState) -> crate::bot::WorkerBot {
         runs: kicks,
         events,
         catalog_url: first_catalog_url,
+        catalog_flight,
     });
     bot
 }
@@ -663,15 +668,15 @@ fn resume_after(env: &Env) -> std::time::Duration {
 }
 
 /// Where the alarm and the pricing routes fetch the price catalog:
-/// tokenulator.dev's ([`clax_sample::tokenulator::SITE_DATA_URL`]); with the
+/// tokenulator.dev's ([`clax_core::config::PRICE_CATALOG_URL`]); with the
 /// test routes on (`CLAX_TEST_ROUTES` = `1`), the var
-/// `CLAX_PRICE_CATALOG_URL`, none when it is unset or empty, so no test
-/// instance reaches tokenulator.dev.
+/// `CLAX_PRICE_CATALOG_URL` (none when it is unset, empty or `off`), so no
+/// test instance reaches tokenulator.dev.
 fn catalog_url(env: &Env) -> Option<String> {
     if var(env, "CLAX_TEST_ROUTES") == "1" {
-        clax_server::catalog::url_from(Some(&var(env, "CLAX_PRICE_CATALOG_URL")))
+        clax_core::config::catalog_url_of(&var(env, "CLAX_PRICE_CATALOG_URL")).map(String::from)
     } else {
-        clax_server::catalog::url_from(None)
+        Some(clax_core::config::PRICE_CATALOG_URL.to_string())
     }
 }
 
@@ -1724,6 +1729,8 @@ impl DurableObject for InstanceDo {
             futures_util::pin_mut!(timed);
             let _ = futures_util::future::select(drive, timed).await;
         }
+        // After the runs, never ahead of them or of the heartbeat.
+        self.refresh_catalog(&inst).await;
         inst.settle().await;
         self.schedule(&inst).await;
         Response::ok("")
@@ -1731,9 +1738,32 @@ impl DurableObject for InstanceDo {
 }
 
 impl InstanceDo {
+    /// The price catalog, once its cache is a day old by the store's clock
+    /// (`clax_server::catalog::refresh_if_stale`), tried at most once in
+    /// [`CATALOG_RETRY_MS`] and for at most [`CATALOG_DEADLINE`]; a failure
+    /// keeps the cache.
+    async fn refresh_catalog(&self, inst: &Instance) {
+        let now = now_ms();
+        if now - self.last_catalog_try.get() < CATALOG_RETRY_MS {
+            return;
+        }
+        self.last_catalog_try.set(now);
+        let r = clax_rt::time::timeout(
+            CATALOG_DEADLINE,
+            clax_server::catalog::refresh_if_stale(&inst.app),
+        )
+        .await;
+        let why = match r {
+            Ok(Some(Err(e))) => e.message,
+            Err(_) => format!("not done within {} s", CATALOG_DEADLINE.as_secs()),
+            Ok(_) => return,
+        };
+        worker::console_warn!("price catalog refresh failed; kept the cache: {why}");
+    }
+
     /// The instance's timed work that is due (the module docs' Alarm):
-    /// the sweep, grants expired, sessions unseen, the planner refresh,
-    /// the prune of ended ClaxBot runs and the price catalog's refresh.
+    /// the sweep, grants expired, sessions unseen, the planner refresh and
+    /// the prune of ended ClaxBot runs.
     async fn timed_work(&self, inst: &Instance) {
         inst.app.sweep().await;
         let now = now_ms();
@@ -1767,18 +1797,6 @@ impl InstanceDo {
             // Ended ClaxBot runs' journals and drafts past their keep, at
             // the planner refresh's pace (a run's end is a write).
             let _ = inst.app.store.call(|st| st.prune_ended_runs()).await;
-        }
-        // The price catalog, once the cache is a day old by the store's
-        // clock (`clax_server::catalog::refresh_if_stale`), tried at most
-        // once an hour; a failure keeps the cache.
-        if now - self.last_catalog_try.get() >= CATALOG_RETRY_MS {
-            self.last_catalog_try.set(now);
-            if let Some(Err(e)) = clax_server::catalog::refresh_if_stale(&inst.app).await {
-                worker::console_warn!(
-                    "price catalog refresh failed; kept the cache: {}",
-                    e.message
-                );
-            }
         }
     }
 }

@@ -408,13 +408,17 @@ fn loose_mode(path: &std::path::Path) -> Option<u32> {
 /// made on first use; none when it cannot be read, so no key is stored),
 /// and the instance key in `[bot] api_key_env`'s variable, which takes
 /// precedence over a stored one. A hosted core reads no `[bot]` and no
-/// such variable. Either takes its price catalog's URL from
-/// [`crate::catalog::URL_ENV`].
+/// such variable. Either takes its price catalog's URL from `[bot]
+/// price_catalog_url` ([`crate::catalog::url_of`]).
 fn local_bot(s: &AppState) -> clax_http::bot::Bot {
+    // A hosted core reads its price catalog's URL from the file and the
+    // environment too, though no other `[bot]` key.
+    let read = match &s.settings.running {
+        Some(c) => Some(c.clone()),
+        None => clax_core::config::HomeConfig::load(s.home.root()).ok(),
+    };
     let mut bot = clax_http::bot::Bot {
-        catalog_url: crate::catalog::url_from(
-            std::env::var(crate::catalog::URL_ENV).ok().as_deref(),
-        ),
+        catalog_url: crate::catalog::url_of(read.as_ref()),
         ..Default::default()
     };
     clax_store::secrets::sweep_leftovers(&s.home, s.store.now_utc());
@@ -578,8 +582,9 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
         }
     });
 
-    // The price catalog at start, then once a day.
-    let catalog = crate::catalog::spawn_refresher(state.clone(), crate::catalog::REFRESH_EVERY);
+    // The price catalog, once its cache is a day old: looked at on start
+    // and every hour after.
+    let catalog = crate::catalog::spawn_refresher(state.clone(), crate::catalog::CHECK_EVERY);
 
     vec![
         reaper,

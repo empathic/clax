@@ -1179,6 +1179,7 @@ pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
         runs,
         events: bot.events.clone(),
         catalog_url: bot.catalog_url.clone(),
+        catalog_flight: bot.catalog_flight.clone(),
     });
     driver
 }

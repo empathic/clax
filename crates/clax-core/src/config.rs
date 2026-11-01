@@ -601,7 +601,8 @@ impl HomeConfig {
     /// `Invalid { code: "bad_config" }` naming the file (or the variable)
     /// and `[bot]` when it is not a table, has an unknown key or a
     /// mistyped value, leaves `api_key_env` or a model ID empty, sets a
-    /// `base_url` that [`base_url_ok`] refuses, or sets a count, cap or
+    /// `base_url` or a `price_catalog_url` (other than empty or `off`) that
+    /// [`base_url_ok`] refuses, or sets a count, cap or
     /// price outside its range ([`BotConfig`]). The caller turns ClaxBot
     /// off; it never stops the daemon.
     pub fn bot(&self) -> Result<BotConfig> {
@@ -616,6 +617,16 @@ impl HomeConfig {
                 format!(
                     "base_url must be https://, or http:// on localhost, 127.0.0.1 or [::1], not \"{}\"",
                     b.base_url
+                ),
+            ));
+        }
+        let off = |v: &str| v.trim().is_empty() || v.trim().eq_ignore_ascii_case("off");
+        if !off(&b.price_catalog_url) && !base_url_ok(b.price_catalog_url.trim()) {
+            return Err(bad(
+                "price_catalog_url",
+                format!(
+                    "price_catalog_url must be empty, off, https://, or http:// on localhost, 127.0.0.1 or [::1], not \"{}\"",
+                    b.price_catalog_url
                 ),
             ));
         }
@@ -1095,6 +1106,32 @@ pub struct BotConfig {
     pub credit_price_micro_usd: u64,
     pub models: BotModels,
     pub script: BotScript,
+    /// Where the daemon fetches the price catalog from
+    /// ([`PRICE_CATALOG_URL`] by default): `https://`, or `http://` on
+    /// localhost, 127.0.0.1 or [::1] ([`base_url_ok`]); empty or `off`,
+    /// never (`off` for the environment, where an empty variable is unset:
+    /// `CLAX_BOT__PRICE_CATALOG_URL=off`). Read from the file and the
+    /// environment alone, never from the admin pages ([`BotConfig::catalog_url`]).
+    pub price_catalog_url: String,
+}
+
+/// tokenulator.dev's price catalog, `[bot] price_catalog_url`'s default.
+pub const PRICE_CATALOG_URL: &str = "https://tokenulator.dev/data/site.json";
+
+impl BotConfig {
+    /// The price catalog URL `price_catalog_url` names: `None` when it is
+    /// empty or `off` (never fetched), or not a URL [`base_url_ok`] takes.
+    #[must_use]
+    pub fn catalog_url(&self) -> Option<&str> {
+        catalog_url_of(&self.price_catalog_url)
+    }
+}
+
+/// [`BotConfig::catalog_url`] of the value `v`.
+#[must_use]
+pub fn catalog_url_of(v: &str) -> Option<&str> {
+    let v = v.trim();
+    (!v.is_empty() && !v.eq_ignore_ascii_case("off") && base_url_ok(v)).then_some(v)
 }
 
 impl Default for BotConfig {
@@ -1114,6 +1151,7 @@ impl Default for BotConfig {
             credit_price_micro_usd: 10_000,
             models: BotModels::default(),
             script: BotScript::default(),
+            price_catalog_url: PRICE_CATALOG_URL.into(),
         }
     }
 }
@@ -2046,6 +2084,38 @@ mod tests {
         );
         assert_eq!(c.serve_port().unwrap(), Some(7481));
         assert_eq!(c.bin().unwrap(), None);
+    }
+
+    #[test]
+    fn the_price_catalog_url_is_tokenulators_a_url_or_off() {
+        let b = under("", &[]).bot().unwrap();
+        assert_eq!(b.catalog_url(), Some(PRICE_CATALOG_URL));
+        let b = under("", &[("CLAX_BOT__PRICE_CATALOG_URL", "off")])
+            .bot()
+            .unwrap();
+        assert_eq!(b.catalog_url(), None);
+        let b = under("[bot]\nprice_catalog_url = \"\"\n", &[])
+            .bot()
+            .unwrap();
+        assert_eq!(b.catalog_url(), None);
+        let b = under(
+            "",
+            &[(
+                "CLAX_BOT__PRICE_CATALOG_URL",
+                "http://127.0.0.1:9/site.json",
+            )],
+        )
+        .bot()
+        .unwrap();
+        assert_eq!(b.catalog_url(), Some("http://127.0.0.1:9/site.json"));
+        let e = under(
+            "[bot]\nprice_catalog_url = \"http://evil.example/x\"\n",
+            &[],
+        )
+        .bot()
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("price_catalog_url"), "{e}");
     }
 
     #[test]
