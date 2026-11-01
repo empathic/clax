@@ -23,8 +23,9 @@ problem with one harness).
    first (section 4 of the agreement). Signed agreements are kept by
    Empathic and are not published; the
    [Privacy Policy](docs/legal/privacy.md) covers the details they carry.
-2. **Build and test it.** [Developing Clax](docs/usage.md#developing-clax)
-   covers building from source, the tests and the checks. Run `just check`
+2. **Build and test it.** [DEVELOPING.md](DEVELOPING.md) shows how to run
+   what you change, and [Developing Clax](docs/usage.md#developing-clax)
+   covers the build, the tests and the checks in full. Run `just check`
    before you open the pull request.
 3. **Open a pull request** against `main`, describing what the change does
    and why. Say in it that you have sent the signed agreement.
