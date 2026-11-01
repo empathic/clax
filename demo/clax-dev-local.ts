@@ -394,14 +394,30 @@ function onWorkerExit(r: RunningWorker): void {
 // web/dist) and restarts the Worker on the same port and data; a change
 // made during a rebuild runs one more. Reload the page to see it.
 // --no-build serves the build it started with.
-const WATCH_SKIP = /(^|\/)(node_modules|dist|dist-extension|reel)(\/|$)|\.qual$|\.DS_Store$/;
+// Only sources count: a path git ignores (a build's own output, such as
+// web/dist-sdk, which the web build rewrites) or a .qual record changes
+// nothing the Worker serves.
+const WATCH_SKIP = /(^|\/)(node_modules|\.git)(\/|$)|\.qual$|\.DS_Store$/;
+/** The paths among `paths` (relative to the repository) git does not ignore. */
+function sources(paths: string[]): string[] {
+  if (!paths.length) return [];
+  const r = spawnSync("git", ["check-ignore", "--stdin", "-z"], { cwd: ROOT, input: paths.join("\0") + "\0", encoding: "utf8" });
+  // 0: some are ignored (listed), 1: none are; anything else, count them all.
+  if (r.status !== 0 && r.status !== 1) return paths;
+  const ignored = new Set(r.stdout.split("\0"));
+  return paths.filter((p) => !ignored.has(p));
+}
 let rebuilding = false;
 let restarting = false;
 let again = false;
 let settleTimer: ReturnType<typeof setTimeout> | undefined;
+/** The paths changed since the last settle, and the sources among the last ones that started a rebuild. */
+const changed = new Set<string>();
+let changedSources: string[] = [];
 /** Rebuilds the web UI and the Worker, then restarts the Worker; false when the build failed. */
 async function rebuildOnce(): Promise<boolean> {
-  console.log("\nA source changed: rebuilding.");
+  const shown = changedSources.slice(0, 3).join(", ") + (changedSources.length > 3 ? ` and ${changedSources.length - 3} more` : "");
+  console.log(`\nA source changed (${shown}): rebuilding.`);
   try {
     await builds.web();
     await builds.worker();
@@ -448,8 +464,15 @@ function watchSources(): void {
     watchers.push(
       watch(join(ROOT, dir), { recursive: true }, (_, file) => {
         if (!file || stopping || WATCH_SKIP.test(file.toString())) return;
+        changed.add(`${dir}/${file.toString()}`);
         clearTimeout(settleTimer);
-        settleTimer = setTimeout(() => void rebuild(), 300);
+        settleTimer = setTimeout(() => {
+          const found = sources([...changed]);
+          changed.clear();
+          if (!found.length) return;
+          changedSources = found;
+          void rebuild();
+        }, 300);
       }),
     );
   }
