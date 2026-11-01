@@ -205,47 +205,139 @@ async fn reasoning_inside_think_tags_streams_as_thinking() {
     assert_eq!(msg.stop_reason, Some(StopReason::EndTurn));
 }
 
-#[tokio::test]
-async fn a_usage_cost_is_the_billed_cost_in_micro_usd() {
-    let turn = |cost: Option<Value>| {
-        let mut usage = json!({"prompt_tokens": 1200, "completion_tokens": 87,
-                               "prompt_tokens_details": {"cached_tokens": 1000}});
-        if let Some(c) = cost {
-            usage["cost"] = c;
-        }
-        data(&[
-            chunk(json!({"content": "hi"}), Some("stop")),
-            json!({"choices": [], "usage": usage}),
-        ]) + "data: [DONE]\n\n"
-    };
-    let cases = [
-        (Some(json!(0.0012345)), Some(1235)),
-        (Some(json!(0)), Some(0)),
-        (None, None),
-        (Some(json!(-0.5)), None),
-        (Some(json!("0.25")), None),
-        (Some(Value::Null), None),
-    ];
-    let replies = cases.iter().map(|(c, _)| ok(turn(c.clone()), 9)).collect();
-    let (base, _) = serve(replies).await;
-    let client = MessagesClient::new();
-    for (cost, billed) in cases {
-        let msg = client
-            .stream(ModelApi::OpenAi, &base, &key(), &request(), |_| {})
-            .await
-            .unwrap();
-        assert_eq!(
-            msg.usage,
-            Usage {
-                input_tokens: 200,
-                cache_creation_input_tokens: 0,
-                cache_read_input_tokens: 1000,
-                output_tokens: 87,
-                billed_micro_usd: billed,
-            },
-            "cost {cost:?}"
-        );
+/// The usage of one OpenAI-API turn streamed as `chunks`, then `[DONE]`.
+async fn usage_of(chunks: &[Value]) -> Usage {
+    let (base, _) = serve(vec![ok(data(chunks) + "data: [DONE]\n\n", 9)]).await;
+    MessagesClient::new()
+        .stream(ModelApi::OpenAi, &base, &key(), &request(), |_| {})
+        .await
+        .unwrap()
+        .usage
+}
+
+/// OpenRouter's Chat Completions usage, with `extra` fields merged in.
+fn usage(extra: Value) -> Value {
+    let mut u = json!({"prompt_tokens": 1200, "completion_tokens": 87,
+                       "prompt_tokens_details": {"cached_tokens": 1000}});
+    for (k, v) in extra.as_object().unwrap() {
+        u[k] = v.clone();
     }
+    u
+}
+
+fn billed(billed_micro_usd: Option<u64>) -> Usage {
+    Usage {
+        input_tokens: 200,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 1000,
+        output_tokens: 87,
+        billed_micro_usd,
+    }
+}
+
+#[tokio::test]
+async fn a_usage_cost_is_the_billed_cost_in_micro_usd_rounded_up() {
+    let upstream = |c: Value| json!({"upstream_inference_cost": c});
+    let cases = [
+        (json!({"cost": 0.0012345}), Some(1235)),
+        (json!({"cost": 0.0000004}), Some(1)),
+        (json!({"cost": 0.000003}), Some(3)),
+        (json!({"cost": 0.0019}), Some(1900)),
+        (json!({"cost": 0}), Some(0)),
+        (json!({}), None),
+        (json!({"cost": -0.5}), None),
+        (json!({"cost": "0.25"}), None),
+        (json!({"cost": null}), None),
+        // BYOK: cost is OpenRouter's fee; the upstream charge is added.
+        (
+            json!({"cost": 0, "is_byok": true, "cost_details": upstream(json!(0.0019))}),
+            Some(1900),
+        ),
+        (
+            json!({"cost": 0.0001, "is_byok": true, "cost_details": upstream(json!(0.002))}),
+            Some(2100),
+        ),
+        (json!({"cost": 0, "is_byok": true}), None),
+        (
+            json!({"cost": 0, "is_byok": true, "cost_details": upstream(Value::Null)}),
+            None,
+        ),
+        (
+            json!({"cost": 0, "is_byok": true, "cost_details": upstream(json!(-1.0))}),
+            None,
+        ),
+        (
+            json!({"cost": 0.0001, "is_byok": false, "cost_details": upstream(json!(0.002))}),
+            Some(100),
+        ),
+    ];
+    for (extra, want) in cases {
+        let got = usage_of(&[
+            chunk(json!({"content": "hi"}), Some("stop")),
+            json!({"choices": [], "usage": usage(extra.clone())}),
+        ])
+        .await;
+        assert_eq!(got, billed(want), "{extra}");
+    }
+}
+
+#[tokio::test]
+async fn the_billed_cost_is_read_wherever_the_usage_comes_and_kept_by_a_later_one() {
+    let costed = usage(json!({"cost": 0.0019}));
+    let mut with_finish = chunk(json!({"content": "hi"}), Some("stop"));
+    with_finish["usage"] = costed.clone();
+    assert_eq!(usage_of(&[with_finish]).await, billed(Some(1900)));
+    let mut before = chunk(json!({"content": "hi"}), None);
+    before["usage"] = costed.clone();
+    let finish = chunk(json!({}), Some("stop"));
+    assert_eq!(
+        usage_of(&[before, finish.clone()]).await,
+        billed(Some(1900))
+    );
+    let later = json!({"choices": [], "usage": usage(json!({}))});
+    assert_eq!(
+        usage_of(&[
+            chunk(json!({"content": "hi"}), None),
+            json!({"choices": [], "usage": costed}),
+            finish,
+            later,
+        ])
+        .await,
+        billed(Some(1900))
+    );
+}
+
+#[tokio::test]
+async fn cache_written_tokens_are_cache_creation_not_input() {
+    let u = json!({"prompt_tokens": 1500, "completion_tokens": 87,
+                   "prompt_tokens_details": {"cached_tokens": 1000, "cache_write_tokens": 300}});
+    let got = usage_of(&[
+        chunk(json!({"content": "hi"}), Some("stop")),
+        json!({"choices": [], "usage": u}),
+    ])
+    .await;
+    assert_eq!(
+        got,
+        Usage {
+            input_tokens: 200,
+            cache_creation_input_tokens: 300,
+            cache_read_input_tokens: 1000,
+            output_tokens: 87,
+            billed_micro_usd: None,
+        }
+    );
+    // A count past the prompt is held to it.
+    let u = json!({"prompt_tokens": 1200, "completion_tokens": 1,
+                   "prompt_tokens_details": {"cached_tokens": 1000, "cache_write_tokens": 900}});
+    let got = usage_of(&[
+        chunk(json!({"content": "hi"}), Some("stop")),
+        json!({"choices": [], "usage": u}),
+    ])
+    .await;
+    assert_eq!(
+        (got.input_tokens, got.cache_creation_input_tokens),
+        (0, 200)
+    );
 }
 
 #[tokio::test]

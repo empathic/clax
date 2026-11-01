@@ -395,8 +395,8 @@ pub struct Usage {
 }
 
 impl Usage {
-    /// Overwrites each count (and the billed cost) `v` carries (`message_start`'s, then each
-    /// `message_delta`'s cumulative counts).
+    /// Overwrites each count, and the billed cost, `v` carries
+    /// (`message_start`'s, then each `message_delta`'s cumulative counts).
     fn merge(&mut self, v: &Value) {
         let set = |slot: &mut u64, k: &str| {
             if let Some(n) = v[k].as_u64() {

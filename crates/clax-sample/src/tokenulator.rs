@@ -135,15 +135,25 @@ fn listing(m: &Value) -> Option<Listing> {
     })
 }
 
-/// Every listing in `site` with finite non-negative standard input and
-/// output rates, in catalog order; the rest are skipped.
+/// Every listing in `site` with a provider ID, a model ID and finite
+/// non-negative standard input and output rates, in catalog order: of
+/// listings whose IDs are the same ignoring case, only the first, the one
+/// [`find`] returns.
 #[must_use]
 pub fn listings(site: &Value) -> Vec<Listing> {
+    let mut seen = std::collections::HashSet::new();
     site["catalog"]["models"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(listing)
+        .filter(|l| !l.provider_id.is_empty() && !l.model_id.is_empty())
+        .filter(|l| {
+            seen.insert((
+                l.provider_id.to_ascii_lowercase(),
+                l.model_id.to_ascii_lowercase(),
+            ))
+        })
         .collect()
 }
 
@@ -246,9 +256,18 @@ mod tests {
             "pricing": {"standard": {"input": "1.0", "output": 2.0}}}),
         );
         models.push(json!({"provider_id": "mistral", "model_id": "bare", "model": "Bare"}));
+        models.push(json!({"provider_id": "mistral", "model": "No ID",
+            "pricing": {"standard": {"input": 1.0, "output": 2.0}}}));
+        models.push(json!({"provider_id": "", "model_id": "no-provider",
+            "pricing": {"standard": {"input": 1.0, "output": 2.0}}}));
+        models.push(
+            json!({"provider_id": "Google", "model_id": "GEMINI-3.5-flash",
+            "model": "Duplicate", "pricing": {"standard": {"input": 9.0, "output": 9.0}}}),
+        );
         let all = listings(&site);
         let ids: Vec<&str> = all.iter().map(|l| l.model_id.as_str()).collect();
         assert_eq!(ids, ["gemini-3.5-flash", "free-1"]);
+        assert_eq!(all[0].name, "Gemini 3.5 Flash");
         assert_eq!(all[0], find(&site, "google", "gemini-3.5-flash").unwrap());
         assert_eq!(
             all[1].rates,
@@ -261,6 +280,22 @@ mod tests {
         );
         assert!(listings(&json!({})).is_empty());
         assert!(listings(&json!({"catalog": {"models": {}}})).is_empty());
+    }
+
+    #[test]
+    fn find_returns_the_first_listing_with_rates_of_the_same_ids() {
+        let site = json!({"catalog": {"models": [
+            {"provider_id": "zai", "model_id": "glm-6", "model": "No rates",
+             "pricing": {"standard": {"input": null, "output": 1.0}}},
+            {"provider_id": "ZAI", "model_id": "GLM-6", "model": "First",
+             "pricing": {"standard": {"input": 1.0, "output": 2.0}}},
+            {"provider_id": "zai", "model_id": "glm-6", "model": "Second",
+             "pricing": {"standard": {"input": 3.0, "output": 4.0}}},
+        ]}});
+        assert_eq!(find(&site, "zai", "glm-6").unwrap().name, "First");
+        let all = listings(&site);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].name, "First");
     }
 
     #[tokio::test]

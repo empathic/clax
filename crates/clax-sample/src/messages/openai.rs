@@ -19,8 +19,9 @@
 //! `<think>…</think>` (models that reason inline) into thinking blocks with
 //! an empty signature; each tool call into a `tool_use` block whose
 //! arguments stream as `input_json_delta`s. `finish_reason` closes the
-//! blocks; `usage` (`prompt_tokens` counting cached ones) sets the usage,
-//! its `cost` (US dollars, as OpenRouter reports it) the billed cost;
+//! blocks; `usage` (`prompt_tokens` counting the cached and, on OpenRouter,
+//! the cache-written ones, `prompt_tokens_details.cache_write_tokens`) sets
+//! the usage, and OpenRouter's `cost` the billed cost ([`billed_micro_usd`]);
 //! `data: [DONE]` ends the message, which must have carried its usage.
 
 use super::{Block, MessagesError, MessagesRequest, ModelInfo, Role, ToolChoice};
@@ -56,12 +57,30 @@ fn text_of(content: &Value) -> String {
     }
 }
 
-/// A usage `cost` in US dollars as micro-USD, rounded: `None` unless a
-/// finite non-negative number.
-fn billed_micro_usd(cost: &Value) -> Option<u64> {
-    let dollars = cost.as_f64().filter(|d| d.is_finite() && *d >= 0.0)?;
-    // In range for any real bill; `as` saturates past u64::MAX.
-    Some((dollars * 1_000_000.0).round() as u64)
+/// What a call billed, in micro-USD, from OpenRouter's `usage`: its `cost`
+/// (US dollars), plus `cost_details.upstream_inference_cost` when
+/// `is_byok` is true (`cost` is then only OpenRouter's fee). `None` unless
+/// each figure needed is a finite non-negative number.
+fn billed_micro_usd(u: &Value) -> Option<u64> {
+    let dollars = |v: &Value| v.as_f64().filter(|d| d.is_finite() && *d >= 0.0);
+    let mut total = dollars(&u["cost"])?;
+    if u["is_byok"] == true {
+        total += dollars(&u["cost_details"]["upstream_inference_cost"])?;
+    }
+    Some(micro_usd_up(total))
+}
+
+/// US dollars as micro-USD, rounded up so that only zero is 0; a product
+/// within 10⁻⁶ of a whole number (binary floating-point error) is that
+/// number. `as` saturates past `u64::MAX`, beyond any real bill.
+fn micro_usd_up(dollars: f64) -> u64 {
+    let micro = dollars * 1_000_000.0;
+    let near = micro.round();
+    if (micro - near).abs() < 1e-6 {
+        near as u64
+    } else {
+        micro.ceil() as u64
+    }
 }
 
 /// The message(s) `m` is in Chat Completions.
@@ -426,15 +445,17 @@ impl Translator {
             let u = &v["usage"];
             let n = |x: &Value| x.as_u64().unwrap_or(0);
             let prompt = n(&u["prompt_tokens"]);
-            let cached = n(&u["prompt_tokens_details"]["cached_tokens"]).min(prompt);
+            let details = &u["prompt_tokens_details"];
+            let cached = n(&details["cached_tokens"]).min(prompt);
+            let written = n(&details["cache_write_tokens"]).min(prompt - cached);
             self.usage_seen = true;
             let mut usage = json!({
-                "input_tokens": prompt - cached,
+                "input_tokens": prompt - cached - written,
                 "cache_read_input_tokens": cached,
-                "cache_creation_input_tokens": 0,
+                "cache_creation_input_tokens": written,
                 "output_tokens": n(&u["completion_tokens"]),
             });
-            if let Some(billed) = billed_micro_usd(&u["cost"]) {
+            if let Some(billed) = billed_micro_usd(u) {
                 usage["billed_micro_usd"] = json!(billed);
             }
             out.push(json!({"type": "message_delta", "delta": {}, "usage": usage}));
