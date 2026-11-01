@@ -30,9 +30,9 @@
   const off = $derived(readOnly || models === null);
   const priced = $derived(listed.find(m => m.id === value)?.pricing);
   const note = $derived(!priced ? null
-    : priced.source === "catalog" ? "Estimated: no price set. Runs are charged at tokenulator.dev's price until it is priced under Pricing."
-    : priced.source === "default" ? "Estimated: no price set. Runs are charged at the default rates until it is priced under Pricing."
-    : priced.source ? null : "No price set: runs on it are refused until it is priced under Pricing.");
+    : !priced.source ? "No price set: runs on it are refused until it is priced under Pricing."
+    : !priced.estimated ? null
+    : `Estimated: ${priced.source === "mixed" ? "only part of its price is set. The rest is" : "no price set. Runs are"} charged at ${priced.source === "default" ? "the default rates" : priced.source === "catalog" ? "tokenulator.dev's price" : "tokenulator.dev's price or the default rates"} until it is priced under Pricing.`);
   const name = (m: ProviderModels["models"][number]) => {
     const n = m.display_name && m.display_name !== m.id ? `${m.display_name} (${m.id})` : m.id;
     return m.pricing ? `${n} — ${priceSummary(m.pricing)}` : n;

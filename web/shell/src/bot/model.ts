@@ -132,11 +132,12 @@ export const TOKEN_UNITS: { id: TokenUnit; label: string }[] = [
 /** Where a model's token rate comes from, as its badge says it: any rate an admin did not set is an estimate (the store's `RateSource::is_estimated`). */
 export const RATE_SOURCES: Record<RateSource, string> = { line: "set", catalog: "tokenulator.dev, estimated", default: "default rate, estimated", provider: "billed by the provider" };
 export const estimated = (s: RateSource | null | undefined): boolean => s === "catalog" || s === "default";
-/** A model's price in one line, input / output: "105 / 630 credits per Mtok, tokenulator.dev"; "no price" when it resolves to none. */
+/** A model's price in one line, input / output: "105 / 630 credits per Mtok, tokenulator.dev, estimated"; "no price" when it resolves to none. */
 export function priceSummary(p: PriceSummary): string {
   const [i, o] = [p.input_credits_milli_per_mtok, p.output_credits_milli_per_mtok];
   if (!p.source || i === null || o === null) return "no price";
-  return `${credits(i)} / ${credits(o)} credits per Mtok, ${RATE_SOURCES[p.source]}`;
+  const from = p.source === "mixed" ? (p.estimated ? "set in part, estimated" : "set") : RATE_SOURCES[p.source];
+  return `${credits(i)} / ${credits(o)} credits per Mtok, ${from}`;
 }
 
 /** Gross margin before and after the free tier, in basis points (null without revenue). */

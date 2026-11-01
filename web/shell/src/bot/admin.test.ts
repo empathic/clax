@@ -211,22 +211,24 @@ describe("Admin › Provider", () => {
   });
 
   it("shows each listed model's price, and says when the selected one's is estimated or missing", async () => {
-    const priced = (source: "line" | "catalog" | "default" | null, i: number | null, o: number | null) => ({ source, input_credits_milli_per_mtok: i, output_credits_milli_per_mtok: o });
+    const priced = (source: "line" | "catalog" | "default" | "mixed" | null, i: number | null, o: number | null) => ({ source, estimated: source !== "line" && source !== null, input_credits_milli_per_mtok: i, output_credits_milli_per_mtok: o });
     stubFetch({
       "GET /api/admin/provider": provider({ models: { default: "acme-small-2", quick: "gemini-3.5-flash", complex: "claude-opus-5-5" } }),
       "GET /api/admin/provider/models": { models: [
         { id: "gemini-3.5-flash", display_name: "Gemini 3.5 Flash", pricing: priced("catalog", 105_000, 630_000) },
         { id: "acme-small-2", display_name: "acme-small-2", pricing: priced("default", 560_000, 2_800_000) },
         { id: "claude-opus-5-5", display_name: "Claude Opus 5.5", pricing: priced(null, null, null) },
+        { id: "claude-haiku-5-5", display_name: "Claude Haiku 5.5", pricing: priced("mixed", 140_000, 700_000) },
       ], fetched_at: "x" },
     });
     const m = mount(AdminProvider, {});
     await settle();
     const sel = m.root.querySelector<HTMLSelectElement>("#pv-model-default")!;
-    expect([...sel.options].slice(0, 3).map(o => o.textContent)).toEqual([
+    expect([...sel.options].slice(0, 4).map(o => o.textContent)).toEqual([
       "Gemini 3.5 Flash (gemini-3.5-flash) — 105 / 630 credits per Mtok, tokenulator.dev, estimated",
       "acme-small-2 — 560 / 2,800 credits per Mtok, default rate, estimated",
       "Claude Opus 5.5 (claude-opus-5-5) — no price",
+      "Claude Haiku 5.5 (claude-haiku-5-5) — 140 / 700 credits per Mtok, set in part, estimated",
     ]);
     const note = m.root.querySelector("#pv-model-default-price")!;
     expect(note.getAttribute("role")).toBe("status");
@@ -235,6 +237,9 @@ describe("Admin › Provider", () => {
     // A model priced from the catalog is estimated too; one with no price says runs on it are refused.
     expect(m.root.querySelector("#pv-model-quick-price")!.textContent).toContain("Estimated: no price set. Runs are charged at tokenulator.dev's price");
     expect(m.root.querySelector("#pv-model-complex-price")!.textContent).toContain("refused");
+    // A price set in part is estimated in part.
+    choose(sel, "claude-haiku-5-5");
+    expect(m.root.querySelector("#pv-model-default-price")!.textContent).toBe("Estimated: only part of its price is set. The rest is charged at tokenulator.dev's price or the default rates until it is priced under Pricing.");
   });
 
   it("leaves the API read-only when the configuration sets it", async () => {

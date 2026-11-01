@@ -55,10 +55,10 @@ export const tokenLines = (m: ModelPricing, source = "Anthropic list price as of
     fixed_credits_milli: m.units[u].fixed_credits_milli, applies: "instance_key", source, model: m.model,
   }));
 export const OTHER_LINES: CostLine[] = [
-  { id: "compute", label: "Script compute", unit: "cpu_gb_s", cost_micro_usd: 4000, margin_bp: 9000, applies: "always", source: "Cloudflare" },
-  { id: "harness", label: "Harness fee", unit: "run", cost_micro_usd: 0, margin_bp: 0, applies: "always", source: "fixed", fixed_credits_milli: 1000 },
+  { id: "compute", label: "Script compute", unit: "cpu_gb_s", cost_micro_usd: 4000, margin_bp: 9000, fixed_credits_milli: null, applies: "always", source: "Cloudflare", model: null },
+  { id: "harness", label: "Harness fee", unit: "run", cost_micro_usd: 0, margin_bp: 0, fixed_credits_milli: 1000, applies: "always", source: "fixed", model: null },
 ];
-/** As `GET /api/admin/pricing` answers (docs/contract.md "Pricing"): `lines` hold the token lines of `models`' line-sourced units, then the others. */
+/** As `GET /api/admin/pricing` answers (docs/contract.md "Pricing"), every field as the server sends it: `lines` hold the token lines of `models`' line-sourced units, then the others. */
 export const pricing = (o: Partial<Pricing> = {}): Pricing => {
   const models = o.models ?? [modelPricing(), defaultPriced("acme-small-2", ["quick"])];
   return {

@@ -162,9 +162,11 @@ export type Provider = {
 /** What `PUT /api/admin/provider` changes: any of the editable fields. */
 export type ProviderPatch = { api?: ModelApi; base_url?: string; models?: Partial<Models>; caps?: Record<string, number> };
 /** A listed model's price now, as `GET /api/admin/provider/models` gives
- * it: the milli-credits a million input and output tokens charge and where
- * the output rate comes from; each `null` when it resolves to no price. */
-export type PriceSummary = { source: RateSource | null; input_credits_milli_per_mtok: number | null; output_credits_milli_per_mtok: number | null };
+ * it: the source its four token units share, else `mixed`; whether any
+ * unit is an estimate (priced from the catalog or the default rates); and
+ * the milli-credits a million input and output tokens charge (`source` and
+ * the credits `null` when it resolves to no price). */
+export type PriceSummary = { source: Exclude<RateSource, "provider"> | "mixed" | null; estimated: boolean; input_credits_milli_per_mtok: number | null; output_credits_milli_per_mtok: number | null };
 export type ProviderModels = { models: { id: string; display_name: string; pricing?: PriceSummary | null }[]; fetched_at: string };
 export type Unit = "mtok_input" | "mtok_cached_input" | "mtok_cache_write" | "mtok_output" | "cpu_gb_s" | "mreq" | "gb_month" | "run";
 /** A cost line (§7.2). `fixed_credits_milli`: a line charged at fixed credits per
