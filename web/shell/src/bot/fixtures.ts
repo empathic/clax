@@ -1,6 +1,6 @@
 // ClaxBot fixtures for the unit tests: the shapes of spec 2026-10-21-claxbot
 // §10 with plausible values, each overridable.
-import type { AdminPerson, AdminUsage, BotRun, CatalogListing, MeBot, ModelPricing, Pricing, Provider, Settings, UnitPricing, Week } from "./api";
+import type { AdminPerson, AdminUsage, BotRun, CatalogListing, CostLine, MeBot, ModelPricing, Pricing, Provider, Settings, TokenUnit, UnitPricing, Week } from "./api";
 
 export const WEEK_START = "2026-10-19T00:00:00Z";
 export const WEEK_END = "2026-10-26T00:00:00Z";
@@ -28,7 +28,7 @@ export const listing = (o: Partial<CatalogListing> = {}): CatalogListing => ({
 });
 /** A model on the pricing page: Sonnet 5.5, the default tier, its four units set as cost lines. */
 export const modelPricing = (o: Partial<ModelPricing> = {}): ModelPricing => ({
-  model: "claude-sonnet-5-5", tiers: ["default"],
+  model: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", tiers: ["default"],
   units: {
     input: unitPricing(),
     cached_input: unitPricing({ cost_micro_usd: 300_000, credits_milli_per_mtok: 42_000 }),
@@ -39,7 +39,7 @@ export const modelPricing = (o: Partial<ModelPricing> = {}): ModelPricing => ({
 });
 /** A model with no line and no catalog listing: every unit at the default rates. */
 export const defaultPriced = (model: string, tiers: ModelPricing["tiers"] = []): ModelPricing => ({
-  model, tiers, listing: null, drift: false,
+  model, name: null, tiers, listing: null, drift: false,
   units: {
     input: unitPricing({ source: "default", cost_micro_usd: 0, margin_bp: 0, fixed_credits_milli: 560_000, credits_milli_per_mtok: 560_000 }),
     cached_input: unitPricing({ source: "default", cost_micro_usd: 0, margin_bp: 0, fixed_credits_milli: 28_000, credits_milli_per_mtok: 28_000 }),
@@ -47,20 +47,30 @@ export const defaultPriced = (model: string, tiers: ModelPricing["tiers"] = []):
     output: unitPricing({ source: "default", cost_micro_usd: 0, margin_bp: 0, fixed_credits_milli: 2_800_000, credits_milli_per_mtok: 2_800_000 }),
   },
 });
-/** As `GET /api/admin/pricing` answers (docs/contract.md "Pricing"). */
-export const pricing = (o: Partial<Pricing> = {}): Pricing => ({
-  credit_price_micro_usd: 10_000, free_weekly_milli: 2_000_000,
-  lines: [
-    { id: "sonnet-in", label: "Claude Sonnet 5.5 input tokens", unit: "mtok_input", cost_micro_usd: 3_000_000, margin_bp: 4000, applies: "instance_key", source: "Anthropic list price", model: "claude-sonnet-5-5" },
-    { id: "compute", label: "Script compute", unit: "cpu_gb_s", cost_micro_usd: 4000, margin_bp: 9000, applies: "always", source: "Cloudflare" },
-    { id: "harness", label: "Harness fee", unit: "run", cost_micro_usd: 0, margin_bp: 0, applies: "always", source: "fixed", fixed_credits_milli: 1000 },
-  ],
-  default_rates: { input: 560_000, cached_input: 28_000, cache_write: 700_000, output: 2_800_000 }, require_explicit_price: false,
-  models: [modelPricing(), defaultPriced("acme-small-2", ["quick"])],
-  catalog: { fetched_at: "2026-10-31T06:00:00Z", provider: "anthropic" },
-  sources: { credit_price_micro_usd: "default", free_weekly_milli: "db", "default_rates.input": "default", "default_rates.cached_input": "default", "default_rates.cache_write": "file", "default_rates.output": "default", require_explicit_price: "default" },
-  ...o,
-});
+const WHAT: Record<TokenUnit, [string, CostLine["unit"]]> = { input: ["input", "mtok_input"], cached_input: ["cached input", "mtok_cached_input"], cache_write: ["cache write", "mtok_cache_write"], output: ["output", "mtok_output"] };
+/** The token lines of `m`'s line-sourced units, as the store keeps them: `<model>.<unit>`, labelled "<name> <unit> tokens". */
+export const tokenLines = (m: ModelPricing, source = "Anthropic list price as of 2026-10-06 (check)"): CostLine[] =>
+  (Object.keys(WHAT) as TokenUnit[]).filter(u => m.units[u].source === "line").map(u => ({
+    id: `${m.model}.${u}`, label: `${m.name ?? m.model} ${WHAT[u][0]} tokens`, unit: WHAT[u][1], cost_micro_usd: m.units[u].cost_micro_usd ?? 0, margin_bp: m.units[u].margin_bp ?? 0,
+    fixed_credits_milli: m.units[u].fixed_credits_milli, applies: "instance_key", source, model: m.model,
+  }));
+export const OTHER_LINES: CostLine[] = [
+  { id: "compute", label: "Script compute", unit: "cpu_gb_s", cost_micro_usd: 4000, margin_bp: 9000, applies: "always", source: "Cloudflare" },
+  { id: "harness", label: "Harness fee", unit: "run", cost_micro_usd: 0, margin_bp: 0, applies: "always", source: "fixed", fixed_credits_milli: 1000 },
+];
+/** As `GET /api/admin/pricing` answers (docs/contract.md "Pricing"): `lines` hold the token lines of `models`' line-sourced units, then the others. */
+export const pricing = (o: Partial<Pricing> = {}): Pricing => {
+  const models = o.models ?? [modelPricing(), defaultPriced("acme-small-2", ["quick"])];
+  return {
+    credit_price_micro_usd: 10_000, free_weekly_milli: 2_000_000,
+    lines: [...models.flatMap(m => tokenLines(m)), ...OTHER_LINES],
+    default_rates: { input: 560_000, cached_input: 28_000, cache_write: 700_000, output: 2_800_000 }, require_explicit_price: false, token_margin_bp: 4000,
+    models,
+    catalog: { fetched_at: "2026-10-31T06:00:00Z", provider: "anthropic" },
+    sources: { credit_price_micro_usd: "default", free_weekly_milli: "db", "default_rates.input": "default", "default_rates.cached_input": "default", "default_rates.cache_write": "file", "default_rates.output": "default", require_explicit_price: "default" },
+    ...o,
+  };
+};
 export const usage = (o: Partial<AdminUsage> = {}): AdminUsage => ({
   week: { start: WEEK_START, end: WEEK_END }, paid_milli: 3_410_000, free_milli: 710_000, runs: 186, refused: 4,
   revenue_micro_usd: 34_100_000, cost_micro_usd: 22_900_000, free_cost_micro_usd: 4_600_000,

@@ -193,23 +193,29 @@ export type CatalogListing = {
   provider_id: string; model_id: string; name: string; input_micro_usd: number; output_micro_usd: number;
   cache_read_micro_usd: number | null; cache_write_micro_usd: number | null; source: string; observed_at: string;
 };
-/** A model the pricing page shows: the tiers it is in effect for, each unit's rate, the catalog's listing and whether any unit drifted. */
-export type ModelPricing = { model: string; tiers: (keyof Models)[]; units: Record<TokenUnit, UnitPricing>; listing: CatalogListing | null; drift: boolean };
+/** A model the pricing page shows: its display name (`null` when it has
+ * none), the tiers it is in effect for, each unit's rate, the catalog's
+ * listing and whether any unit drifted. Its token lines are `<model>.<unit>`
+ * in `lines`. */
+export type ModelPricing = { model: string; name: string | null; tiers: (keyof Models)[]; units: Record<TokenUnit, UnitPricing>; listing: CatalogListing | null; drift: boolean };
 /** `GET /api/admin/pricing`. `default_rates` are milli-credits per million
  * tokens; `catalog` the cache's age and the catalog provider in effect
- * (`null` for a host it does not name); `sources` where the credit price,
+ * (`null` for a host it does not name); `token_margin_bp` the margin
+ * tokenulator.dev's prices are charged at; `sources` where the credit price,
  * the free tier, each `default_rates.<unit>` and `require_explicit_price`
  * come from. */
 export type Pricing = {
   credit_price_micro_usd: number; free_weekly_milli: number; lines: CostLine[];
-  default_rates: Record<TokenUnit, number>; require_explicit_price: boolean;
+  default_rates: Record<TokenUnit, number>; require_explicit_price: boolean; token_margin_bp: number;
   models: ModelPricing[]; catalog: { fetched_at: string | null; provider: string | null }; sources: Record<string, Source>;
 };
-/** What `PUT /api/admin/pricing` takes: every line (one left out is deleted); the default rates and `require_explicit_price` may be left out. */
+/** What `PUT /api/admin/pricing` takes: every line but the token lines (one
+ * left out is deleted; token lines are refused, and change only as rate
+ * cards); the default rates and `require_explicit_price` may be left out. */
 export type PricingPatch = Pick<Pricing, "credit_price_micro_usd" | "free_weekly_milli" | "lines"> & { default_rates?: Partial<Record<TokenUnit, number>>; require_explicit_price?: boolean };
 /** One unit of a rate card: cost-based (`fixed_credits_milli` `null`: cost per million tokens plus margin) or credit-based (fixed milli-credits per million tokens, the cost for information). */
 export type UnitRate = { cost_micro_usd: number; margin_bp: number; fixed_credits_milli: number | null };
-/** `POST /api/admin/pricing/models`: a model's rate card; `name` labels its lines (the model ID by default). */
+/** `POST /api/admin/pricing/models`: a model's rate card; `name` labels its lines (left out: the name it has, else the model ID). */
 export type ModelRates = { model: string; name?: string } & Record<TokenUnit, UnitRate>;
 /** `GET /api/admin/usage?week=`. `cost_micro_usd` is what the paid credits
  * cost; `free_cost_micro_usd` what the free tier's did. */

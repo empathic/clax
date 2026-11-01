@@ -2,9 +2,10 @@
 // §11): credits from milli-credits, money from micro-USD, margins from
 // basis points; the week's meter and its warn and exhausted states; the
 // Send menu's availability line; a cost line's credits per unit; where a
-// model's token rates come from and its price in a line; the margin before and after the free tier; a run's state as its events
-// arrive; the audit's time ranges; and the settings' sections. Pure: no
-// clock but the one passed in.
+// model's token rates come from and its price in a line; the margin
+// before and after the free tier; a run's state as its events arrive; the
+// audit's time ranges; and the settings' sections. Pure: no clock but the
+// one passed in.
 import type { AdminUsage, BotCall, BotRun, BotStep, CostLine, MeBot, PriceSummary, RateSource, RunEvent, RunStatus, SettingField, Source, TokenUnit, Unavailable, Unit, Week } from "./api";
 
 /** A setting as its section lists it: its dotted name and the rest of it after the section. */
@@ -128,10 +129,9 @@ export const BASE_UNITS: Record<Unit, string> = {
 export const TOKEN_UNITS: { id: TokenUnit; label: string }[] = [
   { id: "input", label: "Input" }, { id: "cached_input", label: "Cached input" }, { id: "cache_write", label: "Cache write" }, { id: "output", label: "Output" },
 ];
-/** The margin tokenulator.dev's prices are charged at (crates/clax-store's `TOKEN_MARGIN_BP`), the one a new rate card starts from. */
-export const TOKEN_MARGIN_BP = 4000;
-/** Where a model's token rate comes from, as its badge says it. */
-export const RATE_SOURCES: Record<RateSource, string> = { line: "set", catalog: "tokenulator.dev", default: "default rate, estimated", provider: "billed by the provider" };
+/** Where a model's token rate comes from, as its badge says it: any rate an admin did not set is an estimate (the store's `RateSource::is_estimated`). */
+export const RATE_SOURCES: Record<RateSource, string> = { line: "set", catalog: "tokenulator.dev, estimated", default: "default rate, estimated", provider: "billed by the provider" };
+export const estimated = (s: RateSource | null | undefined): boolean => s === "catalog" || s === "default";
 /** A model's price in one line, input / output: "105 / 630 credits per Mtok, tokenulator.dev"; "no price" when it resolves to none. */
 export function priceSummary(p: PriceSummary): string {
   const [i, o] = [p.input_credits_milli_per_mtok, p.output_credits_milli_per_mtok];

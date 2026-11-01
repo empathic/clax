@@ -4,26 +4,33 @@
   // A model's rate card editor (docs/contract.md "Pricing"): each token unit
   // charged at its cost plus a margin (US dollars per million tokens, a
   // percentage) or at fixed credits per million tokens, starting from the
-  // rate it is charged at now (`from`; a new card at cost plus the token
-  // margin). Each unit shows the credits a million tokens then charge at the
-  // credit price. Save hands the four units over as `POST
+  // rate it is charged at now (`from`). A unit that is not cost-based now
+  // (new, fixed, or at the default rates) starts its margin at the token
+  // margin (`marginBp`), and one at the default rates with no cost. Each
+  // unit shows the credits a million tokens then charge at the saved credit
+  // price (`priceMicro`). Save hands the four units over as `POST
   // /api/admin/pricing/models` takes them; a fixed unit keeps its cost and
   // margin, for information.
   import { onMount, untrack } from "svelte";
   import type { ModelPricing, TokenUnit, UnitPricing, UnitRate } from "./api";
-  import { TOKEN_MARGIN_BP, TOKEN_UNITS, credits, perUnitMilli } from "./model";
+  import { TOKEN_UNITS, credits, perUnitMilli } from "./model";
 
-  let { id, model, from = null, priceMicro, busy = false, focus = false, saveLabel = "Save rates", onSave, onCancel }: {
-    id: string; model: string; from?: ModelPricing | null; priceMicro: number; busy?: boolean; focus?: boolean; saveLabel?: string;
+  let { id, model, from = null, priceMicro, marginBp, busy = false, saving = false, focus = false, saveLabel = "Save rates", onSave, onCancel }: {
+    id: string; model: string; from?: ModelPricing | null; priceMicro: number; marginBp: number;
+    /** `busy`: another write is in flight, so Save waits; `saving`: this card's is. */
+    busy?: boolean; saving?: boolean; focus?: boolean; saveLabel?: string;
     onSave(units: Record<TokenUnit, UnitRate>): void; onCancel?(): void;
   } = $props();
   type Draft = { fixed: boolean; usd: string; margin: string; credits: string };
-  const draft = (u: UnitPricing | undefined): Draft => ({
-    fixed: u?.fixed_credits_milli != null,
-    usd: u?.cost_micro_usd != null ? String(u.cost_micro_usd / 1e6) : "",
-    margin: String((u?.margin_bp ?? TOKEN_MARGIN_BP) / 100),
-    credits: u?.credits_milli_per_mtok != null ? String(u.credits_milli_per_mtok / 1000) : "",
-  });
+  const draft = (u: UnitPricing | undefined): Draft => {
+    const costed = !!u?.source && u.fixed_credits_milli === null && u.margin_bp !== null;
+    return {
+      fixed: u?.fixed_credits_milli != null,
+      usd: u?.cost_micro_usd != null && u.source !== "default" ? String(u.cost_micro_usd / 1e6) : "",
+      margin: String((costed ? u!.margin_bp! : marginBp) / 100),
+      credits: u?.credits_milli_per_mtok != null ? String(u.credits_milli_per_mtok / 1000) : "",
+    };
+  };
   let d = $state(untrack(() => Object.fromEntries(TOKEN_UNITS.map(u => [u.id, draft(from?.units[u.id])])) as Record<TokenUnit, Draft>));
   let err = $state<string | null>(null);
   let form: HTMLFormElement | undefined = $state();
@@ -46,7 +53,7 @@
   const preview = (x: Draft) => { const r = rate(x, ""); return typeof r === "string" ? "—" : credits(perUnitMilli(r, priceMicro)); };
   function save(e: Event) {
     e.preventDefault();
-    if (busy) return;
+    if (busy || saving) return;
     const out: Partial<Record<TokenUnit, UnitRate>> = {};
     for (const u of TOKEN_UNITS) {
       const r = rate(d[u.id], u.label);
@@ -83,7 +90,7 @@
   </div>
   {#if err}<p class="err" role="alert">{err}</p>{/if}
   <div class="acts">
-    <button type="submit" class="primary" aria-disabled={busy}>{busy ? "Saving…" : saveLabel}</button>
+    <button type="submit" class="primary" aria-disabled={busy || saving}>{saving ? "Saving…" : saveLabel}</button>
     {#if onCancel}<button type="button" onclick={onCancel}>Cancel</button>{/if}
   </div>
 </form>
