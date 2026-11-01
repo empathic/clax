@@ -507,6 +507,20 @@ describe("Admin › Pricing", () => {
     expect(document.activeElement).toBe(editOf(m.root, SONNET));
   });
 
+  it("says what charges a model in no tier once its card is removed, though the pricing no longer lists it", async () => {
+    const haiku = modelPricing({ model: "claude-haiku-5-5", name: "Claude Haiku 5.5", tiers: [], listing: null });
+    stubFetch({ "GET /api/admin/pricing": pricing({ models: [modelPricing(), haiku] }), "DELETE /api/admin/pricing/models?model=claude-haiku-5-5": pricing({ models: [modelPricing()] }) });
+    vi.stubGlobal("confirm", () => true);
+    const m = mount(AdminPricing, {});
+    await settle();
+    click(removeOf(m.root, "claude-haiku-5-5"));
+    await settle();
+    expect(row(m.root, "claude-haiku-5-5")).toBeNull();
+    expect(status(m.root, "pr-m")).toBe("Removed the rates set for claude-haiku-5-5: its tokens are charged at the default rates, an estimate.");
+    // Its row is gone: focus goes to the Models heading.
+    expect(document.activeElement).toBe(m.root.querySelector("#pr-m"));
+  });
+
   it("warns that removing a card refuses runs on the model when an explicit price is required", async () => {
     stubFetch({ "GET /api/admin/pricing": pricing({ require_explicit_price: true }) });
     const asked: string[] = [];

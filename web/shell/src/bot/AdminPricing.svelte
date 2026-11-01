@@ -95,9 +95,11 @@
   const lineSource = (m: ModelPricing, units: TokenUnit[]) => [...new Set(units.map(u => p?.lines.find(l => l.id === `${m.model}.${u}`)?.source).filter(Boolean))].join("; ") || undefined;
   /** What charges `m`'s tokens once its rate card is removed. */
   const next = (m: ModelPricing) => (p?.require_explicit_price ? "no price: runs on it are refused" : m.listing ? "tokenulator.dev's price, an estimate" : "the default rates, an estimate");
-  /** Where `model`'s input tokens resolve in `x`, in words. */
-  function resolvesTo(x: Pricing, model: string): string {
-    const s = x.models.find(m => m.model === model)?.units.input.source;
+  /** Where `model`'s input tokens resolve in `x`, in words; `was`, what was foreseen, when `x` no longer lists it (a model in no tier, once its lines are gone). */
+  function resolvesTo(x: Pricing, model: string, was: string): string {
+    const listed = x.models.find(m => m.model === model);
+    if (!listed) return was;
+    const s = listed.units.input.source;
     return s === "catalog" ? "tokenulator.dev's price, an estimate" : s === "default" ? "the default rates, an estimate" : "no price: runs on it are refused";
   }
   async function focusOn(id: string) { await tick(); (document.getElementById(id) ?? document.getElementById("pr-m"))?.focus(); }
@@ -112,9 +114,10 @@
     void write("catalog", "m", () => priceFromTokenulator(m.model, m.listing?.provider_id), () => `Priced ${m.model} at tokenulator.dev's price.`);
   }
   async function remove(m: ModelPricing) {
-    if (busy || !confirm(`Remove the rates set for ${m.model}? Its tokens are then charged at ${next(m)}.`)) return;
+    const then = next(m);
+    if (busy || !confirm(`Remove the rates set for ${m.model}? Its tokens are then charged at ${then}.`)) return;
     target = m.model;
-    const done = await write("remove", "m", () => deleteModelRates(m.model), x => `Removed the rates set for ${m.model}: its tokens are charged at ${resolvesTo(x, m.model)}.`,
+    const done = await write("remove", "m", () => deleteModelRates(m.model), x => `Removed the rates set for ${m.model}: its tokens are charged at ${resolvesTo(x, m.model, then)}.`,
       e => (e as { code?: unknown }).code === "cost_line_in_use" ? `A run on ${m.model} has not ended yet: remove its rates once it has.` : null);
     if (done) { if (editing === m.model) editing = null; void focusOn(editId(m.model)); }
   }
