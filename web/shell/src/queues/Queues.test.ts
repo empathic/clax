@@ -28,6 +28,42 @@ describe("Queues", () => {
     expect(document.title).toBe("Queues · Clax");
   });
 
+  it("watches the queues topic, updates the counts in place at a ping and says what rose, moving no focus", async () => {
+    let reports = [{ state: "open" }, { state: "open" }, { state: "claimed" }];
+    const calls = stubFetch(routes({ "GET /api/queues/q1/reports": () => ({ reports, next: null }) }));
+    let hear: ((e: { type: string }) => void) | null = null;
+    const off = vi.fn();
+    const watch = vi.fn((_t: string[], on: (e: { type: string }) => void) => { hear = on; return off; });
+    const m = mount(Queues, { stream: { watch } as unknown as import("../stream").EventStream });
+    await settle();
+    expect(watch.mock.calls[0][0]).toEqual(["queues"]);
+    const card = m.root.querySelector('[data-id="q1"]')!;
+    const counts = card.querySelector(".counts")!;
+    expect(counts.textContent).toBe("2 open · 1 claimed · 0 resolved");
+    const button = [...m.root.querySelectorAll("button")].find(b => b.textContent === "New queue")!;
+    button.focus();
+    // The agent claims one: the same element now counts it, and the status line says so.
+    reports = [{ state: "open" }, { state: "claimed" }, { state: "claimed" }];
+    hear!({ type: "queues" });
+    await settle();
+    expect(card.querySelector(".counts")).toBe(counts);
+    expect(counts.textContent).toBe("1 open · 2 claimed · 0 resolved");
+    const heard = m.root.querySelector(".qheard")!;
+    expect(heard.getAttribute("role")).toBe("status");
+    expect(heard.textContent).toBe("1 report claimed in Bugs.");
+    expect(document.activeElement).toBe(button);
+    // A stream that comes back refetches and says nothing.
+    reports = [{ state: "open" }, { state: "claimed" }, { state: "resolved" }];
+    const before = calls.length;
+    hear!({ type: "ready" });
+    await settle();
+    expect(calls.length).toBeGreaterThan(before);
+    expect(counts.textContent).toBe("1 open · 1 claimed · 1 resolved");
+    expect(heard.textContent).toBe("1 report claimed in Bugs.");
+    m.unmount();
+    expect(off).toHaveBeenCalled();
+  });
+
   it("makes a queue from the form, its origins one per line, and refuses a line that is not an origin", async () => {
     const calls = stubFetch(routes({ "POST /api/queues": { queue: { ...QUEUE, id: "q2" } } }));
     const m = mount(Queues, {});
