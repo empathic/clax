@@ -208,9 +208,10 @@ fn new_report(f: Fields, reporter_id: &str) -> Result<NewReport, ApiError> {
     })
 }
 
-/// Broadcasts report `tid`'s `thread` event, as a thread's routes do; a
-/// failure is logged, the change being made.
+/// Broadcasts report `tid`'s `thread` event, as a thread's routes do, and
+/// the `queues` ping; a failure is logged, the change being made.
 async fn announce(s: &AppState, tid: String) {
+    s.events.publish(clax_core::Event::Queues);
     let ctx = s.feedback_ctx();
     let r = s
         .store_call(move |st| {

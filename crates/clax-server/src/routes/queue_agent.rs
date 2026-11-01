@@ -209,6 +209,7 @@ pub async fn claim(
             st.claim(&ctx, &qid, &tid, &sess.id)
         })
         .await?;
+    s.events.publish(Event::Queues);
     Ok(Json(json!(lease)))
 }
 
@@ -253,6 +254,7 @@ pub async fn release(
                 .ok_or(CoreError::NotFound)
         })
         .await?;
+    s.events.publish(Event::Queues);
     Ok(Json(json!({"report": report})))
 }
 
@@ -294,6 +296,7 @@ pub async fn reply(
             Ok(json!({"comment": c, "report": report}))
         })
         .await?;
+    s.events.publish(Event::Queues);
     Ok((StatusCode::CREATED, Json(out)).into_response())
 }
 
@@ -338,6 +341,7 @@ pub async fn resolve(
             Ok(report)
         })
         .await?;
+    s.events.publish(Event::Queues);
     Ok(Json(json!({"report": report})))
 }
 
