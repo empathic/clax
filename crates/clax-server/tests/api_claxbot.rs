@@ -1509,3 +1509,681 @@ async fn the_environments_key_goes_only_to_the_owners_base_url() {
     .await;
     assert_eq!((s, code(&v)), (403, "owner_only"), "{v}");
 }
+
+// ---------------------------------------------------------------------------
+// Pricing: models, rate cards, default rates and the price catalog
+// ---------------------------------------------------------------------------
+
+/// A price catalog on a loopback port: each `GET` is answered with what
+/// `body` holds (`None`: 500) and told on `hits` (whether it was answered
+/// 200).
+struct Catalog {
+    url: String,
+    body: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    hits: tokio::sync::mpsc::UnboundedReceiver<bool>,
+}
+
+impl Catalog {
+    async fn start(site: Value) -> Catalog {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/data/site.json", l.local_addr().unwrap());
+        let body = std::sync::Arc::new(std::sync::Mutex::new(Some(site.to_string())));
+        let (tx, hits) = tokio::sync::mpsc::unbounded_channel();
+        let served = body.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = l.accept().await {
+                let body = served.lock().unwrap().clone();
+                let _ = tx.send(body.is_some());
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 8192];
+                    let _ = sock.read(&mut buf).await;
+                    let res = match body {
+                        Some(b) => format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{b}",
+                            b.len()
+                        ),
+                        None => "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".into(),
+                    };
+                    let _ = sock.write_all(res.as_bytes()).await;
+                });
+            }
+        });
+        Catalog { url, body, hits }
+    }
+
+    /// Answers 500 from now on.
+    fn fail(&self) {
+        *self.body.lock().unwrap() = None;
+    }
+
+    /// Waits (at most 30 s) for the next request: whether it was answered
+    /// 200.
+    async fn hit(&mut self) -> bool {
+        tokio::time::timeout(std::time::Duration::from_secs(30), self.hits.recv())
+            .await
+            .expect("a catalog request within 30 s")
+            .expect("the catalog server runs")
+    }
+}
+
+/// A catalog listing each `(provider, model, input, output, cache_read)`,
+/// in US dollars per million tokens.
+fn site(models: &[(&str, &str, f64, f64, Option<f64>)]) -> Value {
+    json!({"schema_version": 1, "catalog": {"models": models.iter().map(|(p, m, i, o, cr)| json!({
+        "provider_id": p, "model_id": m, "model": format!("Model {m}"),
+        "pricing": {"standard": {"input": i, "output": o, "cache_read": cr, "cache_write": null}},
+        "source": "https://example.test/pricing", "observed_at": "2026-11-01T00:00:00+00:00",
+    })).collect::<Vec<_>>()}})
+}
+
+/// A daemon whose price catalog is at `url`.
+async fn with_catalog(url: &str) -> TestServer {
+    let url = url.to_string();
+    TestServer::spawn_with(move |s| {
+        let kek = s.bot.kek.clone();
+        s.bot = std::sync::Arc::new(clax_http::bot::Bot {
+            kek,
+            catalog_url: Some(url),
+            ..Default::default()
+        });
+    })
+    .await
+}
+
+/// The owner's `GET /api/admin/pricing`.
+async fn pricing(ts: &TestServer) -> Value {
+    let (s, v) = call(
+        ts,
+        &Who::OwnerBrowser,
+        Method::GET,
+        "/api/admin/pricing",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    v
+}
+
+/// Model `id` of a pricing view.
+fn model<'a>(v: &'a Value, id: &str) -> &'a Value {
+    v["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["model"] == id)
+        .unwrap_or_else(|| panic!("no model {id} in {v}"))
+}
+
+#[tokio::test]
+async fn pricing_shows_each_models_rates_and_where_they_come_from() {
+    let cat = Catalog::start(site(&[
+        // The seeded Sonnet's lines cost $2 input: $3 drifts.
+        ("anthropic", "claude-sonnet-5-5", 3.0, 10.0, Some(0.2)),
+        ("anthropic", "Claude-New-1", 1.0, 5.0, None),
+        ("openai", "gpt-x", 1.0, 2.0, None),
+    ]))
+    .await;
+    let ts = with_catalog(&cat.url).await;
+    let v = pricing(&ts).await;
+    assert_eq!(
+        v["catalog"],
+        json!({"fetched_at": null, "provider": "anthropic"})
+    );
+    assert_eq!(
+        v["default_rates"],
+        json!({"input": 560_000, "cached_input": 28_000, "cache_write": 700_000,
+               "output": 2_800_000})
+    );
+    assert_eq!(v["require_explicit_price"], false);
+    assert_eq!(v["sources"]["default_rates.output"], "default");
+    assert_eq!(v["sources"]["require_explicit_price"], "default");
+    // The tiers' models first, then the other models with lines.
+    let ids: Vec<&str> = v["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["model"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "claude-opus-5-5",
+            "claude-fable-5-1"
+        ]
+    );
+    let sonnet = model(&v, "claude-sonnet-5-5");
+    assert_eq!(sonnet["tiers"], json!(["default"]));
+    assert_eq!(model(&v, "claude-fable-5-1")["tiers"], json!([]));
+    assert_eq!(
+        sonnet["units"]["input"],
+        json!({"source": "line", "cost_micro_usd": 2_000_000, "margin_bp": 4_000,
+               "fixed_credits_milli": null, "applies": "instance_key",
+               "credits_milli_per_mtok": 280_000, "catalog_micro_usd": null, "drift": false})
+    );
+    assert_eq!(sonnet["listing"], Value::Null);
+
+    // A model with neither lines nor a listing takes the default rates.
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::PUT,
+        "/api/admin/provider",
+        json!({"models": {"quick": "claude-new-1"}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let v = pricing(&ts).await;
+    let new = model(&v, "claude-new-1");
+    assert_eq!(new["tiers"], json!(["quick"]));
+    assert_eq!(new["units"]["output"]["source"], "default");
+    assert_eq!(new["units"]["output"]["fixed_credits_milli"], 2_800_000);
+    assert_eq!(new["units"]["output"]["credits_milli_per_mtok"], 2_800_000);
+
+    // Refreshed, it is priced from the catalog (IDs ignoring case), and
+    // Sonnet's input line drifts from its listing.
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::POST,
+        "/api/admin/pricing/catalog/refresh",
+        json!({}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let fetched_at = v["catalog"]["fetched_at"].clone();
+    assert!(fetched_at.is_string(), "{v}");
+    let new = model(&v, "claude-new-1");
+    assert_eq!(new["listing"]["model_id"], "Claude-New-1");
+    assert_eq!(
+        new["units"]["output"],
+        json!({"source": "catalog", "cost_micro_usd": 5_000_000, "margin_bp": 4_000,
+               "fixed_credits_milli": null, "applies": "instance_key",
+               "credits_milli_per_mtok": 700_000, "catalog_micro_usd": 5_000_000,
+               "drift": false})
+    );
+    // No cache rate listed: charged at the input rate, shown as none.
+    assert_eq!(new["units"]["cached_input"]["cost_micro_usd"], 1_000_000);
+    assert_eq!(
+        new["units"]["cached_input"]["catalog_micro_usd"],
+        Value::Null
+    );
+    let sonnet = model(&v, "claude-sonnet-5-5");
+    assert_eq!(sonnet["units"]["input"]["catalog_micro_usd"], 3_000_000);
+    assert_eq!(sonnet["units"]["input"]["drift"], true);
+    assert_eq!(sonnet["units"]["output"]["drift"], false);
+    assert_eq!(sonnet["drift"], true);
+
+    // A refresh that fails keeps the cache.
+    cat.fail();
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::POST,
+        "/api/admin/pricing/catalog/refresh",
+        json!({}),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (502, "tokenulator_error"), "{v}");
+    let v = pricing(&ts).await;
+    assert_eq!(v["catalog"]["fetched_at"], fetched_at);
+    assert_eq!(
+        model(&v, "claude-new-1")["units"]["output"]["source"],
+        "catalog"
+    );
+    // Agents are refused.
+    let (s, v) = call(
+        &ts,
+        &Who::Agent,
+        Method::POST,
+        "/api/admin/pricing/catalog/refresh",
+        json!({}),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "not_for_agents"), "{v}");
+}
+
+#[tokio::test]
+async fn model_rates_are_set_and_deleted_by_hand() {
+    let ts = TestServer::spawn().await;
+    configured(&ts).await;
+    let card = |model: &str| {
+        json!({"model": model, "name": "Custom One",
+               "input": {"cost_micro_usd": 1_000_000, "margin_bp": 5_000, "fixed_credits_milli": null},
+               "cached_input": {"cost_micro_usd": 100_000, "margin_bp": 5_000, "fixed_credits_milli": null},
+               "cache_write": {"cost_micro_usd": 1_250_000, "margin_bp": 5_000, "fixed_credits_milli": null},
+               "output": {"cost_micro_usd": 0, "margin_bp": 0, "fixed_credits_milli": 900_000}})
+    };
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::POST,
+        "/api/admin/pricing/models",
+        card("custom-1"),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let m = model(&v, "custom-1");
+    assert_eq!(m["tiers"], json!([]));
+    assert_eq!(m["units"]["input"]["source"], "line");
+    assert_eq!(m["units"]["input"]["credits_milli_per_mtok"], 150_000);
+    assert_eq!(m["units"]["output"]["fixed_credits_milli"], 900_000);
+    assert_eq!(m["units"]["output"]["credits_milli_per_mtok"], 900_000);
+    let line = v["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["id"] == "custom-1.output")
+        .unwrap();
+    assert_eq!(line["label"], "Custom One output tokens");
+    assert_eq!(line["source"], "set by an admin");
+    assert_eq!(line["model"], "custom-1");
+    assert_eq!(events(&ts, "admin.cost_line").len(), 4);
+
+    // Values out of range, a bad model ID or an unknown field write nothing.
+    let mut bad = card("custom-2");
+    bad["output"]["margin_bp"] = json!(-5);
+    let mut no_name = card("");
+    no_name["name"] = Value::Null;
+    let mut extra = card("custom-2");
+    extra["note"] = json!("x");
+    for (body, want) in [
+        (bad, "invalid_cost_line"),
+        (no_name, "invalid_cost_line"),
+        (extra, "invalid_json"),
+    ] {
+        let (s, v) = call(
+            &ts,
+            &Who::OwnerBrowser,
+            Method::POST,
+            "/api/admin/pricing/models",
+            body,
+        )
+        .await;
+        assert_eq!((s, code(&v)), (400, want), "{v}");
+    }
+    assert_eq!(events(&ts, "admin.cost_line").len(), 4);
+
+    // Deleted, its lines go, and it leaves the page (no tier uses it).
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::DELETE,
+        "/api/admin/pricing/models?model=custom-1",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert!(
+        !v["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["model"] == "custom-1")
+    );
+    assert!(
+        !v["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["model"] == "custom-1")
+    );
+    assert_eq!(events(&ts, "admin.cost_line").len(), 8);
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::DELETE,
+        "/api/admin/pricing/models?model=custom-1",
+        Value::Null,
+    )
+    .await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::DELETE,
+        "/api/admin/pricing/models",
+        Value::Null,
+    )
+    .await;
+    assert_eq!((s, code(&v)), (400, "invalid_query"), "{v}");
+
+    // A model a run that has not ended uses keeps its lines.
+    let (aid, tid) = artifact_with_thread(&ts).await;
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::POST,
+        "/api/bot/runs",
+        json!({"thread_ids": [tid], "artifact_id": aid}),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::DELETE,
+        "/api/admin/pricing/models?model=claude-sonnet-5-5",
+        Value::Null,
+    )
+    .await;
+    assert_eq!((s, code(&v)), (409, "cost_line_in_use"), "{v}");
+    assert_eq!(
+        model(&pricing(&ts).await, "claude-sonnet-5-5")["units"]["input"]["source"],
+        "line"
+    );
+}
+
+#[tokio::test]
+async fn default_rates_and_explicit_prices_round_trip_and_overrides_are_refused() {
+    let ts = TestServer::spawn().await;
+    let mut put = pricing(&ts).await;
+    put["default_rates"]["output"] = json!(1_000_000);
+    put["require_explicit_price"] = json!(true);
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::PUT,
+        "/api/admin/pricing",
+        put.clone(),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["default_rates"]["output"], 1_000_000);
+    assert_eq!(v["default_rates"]["input"], 560_000);
+    assert_eq!(v["require_explicit_price"], true);
+    assert_eq!(v["sources"]["default_rates.output"], "db");
+    assert_eq!(v["sources"]["default_rates.input"], "default");
+    assert_eq!(v["sources"]["require_explicit_price"], "db");
+    let ops: Vec<Value> = events(&ts, "admin.cost_line")
+        .into_iter()
+        .map(|(_, b)| b["line"].clone())
+        .collect();
+    assert_eq!(ops, [json!("*instance")]);
+    // With explicit prices required, a model without lines has no price.
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::PUT,
+        "/api/admin/provider",
+        json!({"models": {"quick": "claude-unlined"}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let v = pricing(&ts).await;
+    assert_eq!(
+        model(&v, "claude-unlined")["units"]["input"],
+        json!({"source": null, "cost_micro_usd": null, "margin_bp": null,
+               "fixed_credits_milli": null, "applies": null,
+               "credits_milli_per_mtok": null, "catalog_micro_usd": null, "drift": false})
+    );
+    // Both may be left out of a PUT: they are kept.
+    let mut short = v.clone();
+    let o = short.as_object_mut().unwrap();
+    o.remove("default_rates");
+    o.remove("require_explicit_price");
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::PUT,
+        "/api/admin/pricing",
+        short,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["require_explicit_price"], true);
+    // Bad values are refused.
+    for (key, bad) in [
+        ("default_rates", json!({"input": -1})),
+        ("require_explicit_price", json!("yes")),
+    ] {
+        let mut b = v.clone();
+        b[key] = bad;
+        let (s, e) = call(
+            &ts,
+            &Who::OwnerBrowser,
+            Method::PUT,
+            "/api/admin/pricing",
+            b,
+        )
+        .await;
+        assert_eq!((s, code(&e)), (400, "invalid_setting"), "{key}: {e}");
+    }
+    // A value the configuration sets is refused when it differs, and
+    // taken as no change when it is the same.
+    let mut ov = Overrides::default();
+    ov.set(Setting::DefaultRateInput, &json!(10), "file")
+        .unwrap();
+    ts.store.set_bot_overrides(ov);
+    let v = pricing(&ts).await;
+    assert_eq!(v["sources"]["default_rates.input"], "file");
+    assert_eq!(v["default_rates"]["input"], 10);
+    let (s, _) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::PUT,
+        "/api/admin/pricing",
+        v.clone(),
+    )
+    .await;
+    assert_eq!(s, 200);
+    let mut b = v.clone();
+    b["default_rates"]["input"] = json!(11);
+    let (s, e) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::PUT,
+        "/api/admin/pricing",
+        b,
+    )
+    .await;
+    assert_eq!((s, code(&e)), (409, "setting_overridden"), "{e}");
+}
+
+#[tokio::test]
+async fn tokenulator_prices_a_model_from_the_refreshed_catalog() {
+    let cat = Catalog::start(site(&[
+        ("anthropic", "claude-x", 1.5, 7.5, Some(0.15)),
+        ("mistral", "mistral-large", 2.0, 6.0, None),
+    ]))
+    .await;
+    let ts = with_catalog(&cat.url).await;
+    let price = |body: Value| {
+        let ts = &ts;
+        async move {
+            call(
+                ts,
+                &Who::OwnerBrowser,
+                Method::POST,
+                "/api/admin/pricing/tokenulator",
+                body,
+            )
+            .await
+        }
+    };
+    let (s, v) = price(json!({"model": "claude-x"})).await;
+    assert_eq!(s, 200, "{v}");
+    assert!(v["catalog"]["fetched_at"].is_string(), "{v}");
+    let line = |v: &Value, id: &str| {
+        v["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["id"] == id)
+            .unwrap_or_else(|| panic!("no line {id} in {v}"))
+            .clone()
+    };
+    let input = line(&v, "claude-x.input");
+    assert_eq!(input["cost_micro_usd"], 1_500_000);
+    assert_eq!(input["margin_bp"], 4_000);
+    assert_eq!(input["label"], "Model claude-x input tokens");
+    assert!(
+        input["source"].as_str().unwrap().starts_with(
+            "tokenulator.dev: anthropic claude-x standard rates from https://example.test/pricing"
+        ),
+        "{input}"
+    );
+    assert_eq!(line(&v, "claude-x.cached_input")["cost_micro_usd"], 150_000);
+    // No cache write listed: the input rate.
+    assert_eq!(
+        line(&v, "claude-x.cache_write")["cost_micro_usd"],
+        1_500_000
+    );
+    assert_eq!(model(&v, "claude-x")["units"]["output"]["source"], "line");
+    // Another provider by its ID.
+    let (s, v) = price(json!({"model": "mistral-large", "provider": "mistral"})).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        line(&v, "mistral-large.output")["cost_micro_usd"],
+        6_000_000
+    );
+    // Not listed.
+    let (s, v) = price(json!({"model": "claude-nope"})).await;
+    assert_eq!((s, code(&v)), (404, "not_on_tokenulator"), "{v}");
+    // The catalog cannot be read.
+    cat.fail();
+    let (s, v) = price(json!({"model": "claude-x"})).await;
+    assert_eq!((s, code(&v)), (502, "tokenulator_error"), "{v}");
+    // A base URL the catalog knows no provider of needs one named.
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::PUT,
+        "/api/admin/provider",
+        json!({"api": "openai", "base_url": "https://api.subconscious.dev/v1"}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(pricing(&ts).await["catalog"]["provider"], Value::Null);
+    let (s, v) = price(json!({"model": "claude-x"})).await;
+    assert_eq!((s, code(&v)), (400, "no_provider"), "{v}");
+}
+
+#[tokio::test]
+async fn the_daemon_refreshes_the_catalog_at_start_and_keeps_it_through_failures() {
+    let mut cat = Catalog::start(site(&[("anthropic", "claude-x", 1.0, 2.0, None)])).await;
+    let ts = with_catalog(&cat.url).await;
+    // A short period, so its later refreshes follow at once.
+    let task = clax_server::catalog::spawn_refresher(
+        ts.state.clone(),
+        std::time::Duration::from_millis(1),
+    );
+    // The second request comes once the first refresh is stored.
+    cat.hit().await;
+    cat.hit().await;
+    let fetched_at = ts.store.catalog_fetched_at().unwrap();
+    assert!(fetched_at.is_some());
+    assert_eq!(
+        ts.store
+            .catalog_listing("anthropic", "claude-x")
+            .unwrap()
+            .unwrap()
+            .output_micro_usd,
+        2_000_000
+    );
+    // Failing refreshes keep what the cache holds: once a request after
+    // one answered 500 came, that failed refresh has ended.
+    cat.fail();
+    while cat.hit().await {}
+    cat.hit().await;
+    assert!(
+        ts.store
+            .catalog_listing("anthropic", "claude-x")
+            .unwrap()
+            .is_some()
+    );
+    task.abort();
+    let _ = task.await;
+    // Without a URL nothing is fetched and the task ends.
+    let none = TestServer::spawn_with(|s| {
+        s.bot = std::sync::Arc::new(clax_http::bot::Bot {
+            catalog_url: None,
+            ..Default::default()
+        });
+    })
+    .await;
+    clax_server::catalog::spawn_refresher(none.state.clone(), std::time::Duration::from_millis(1))
+        .await
+        .unwrap();
+    assert_eq!(none.store.catalog_fetched_at().unwrap(), None);
+}
+
+#[tokio::test]
+async fn a_stale_catalog_is_refreshed_by_the_stores_clock() {
+    let mut cat = Catalog::start(site(&[("anthropic", "claude-x", 1.0, 2.0, None)])).await;
+    let clock = std::sync::Arc::new(clax_core::working::ManualClock::at("2026-11-01T09:00:00Z"));
+    let url = cat.url.clone();
+    let ts = TestServer::spawn_with_clock_and(clock.clone(), move |s| {
+        let kek = s.bot.kek.clone();
+        s.bot = std::sync::Arc::new(clax_http::bot::Bot {
+            kek,
+            catalog_url: Some(url),
+            ..Default::default()
+        });
+    })
+    .await;
+    // Empty: refreshed.
+    let r = clax_server::catalog::refresh_if_stale(&ts.state)
+        .await
+        .expect("an empty cache is stale")
+        .unwrap();
+    assert_eq!(r.listings, 1);
+    assert_eq!(r.fetched_at.to_rfc3339(), "2026-11-01T09:00:00+00:00");
+    cat.hit().await;
+    // Fresh until a day has passed.
+    clock.advance(24 * 3600 - 1);
+    assert!(
+        clax_server::catalog::refresh_if_stale(&ts.state)
+            .await
+            .is_none()
+    );
+    clock.advance(1);
+    let r = clax_server::catalog::refresh_if_stale(&ts.state)
+        .await
+        .expect("a day-old cache is stale")
+        .unwrap();
+    assert_eq!(r.fetched_at.to_rfc3339(), "2026-11-02T09:00:00+00:00");
+    cat.hit().await;
+    assert!(cat.hits.try_recv().is_err(), "two fetches, not more");
+}
+
+#[tokio::test]
+async fn the_providers_models_say_how_each_is_priced() {
+    use clax_testkit::fake_messages::FakeMessages;
+    let fake = FakeMessages::start(vec![]).await;
+    let ts = TestServer::spawn().await;
+    ts.store
+        .set_bot_settings(
+            &AuditCtx::DAEMON,
+            &[(Setting::BaseUrl, Some(json!(fake.base)))],
+        )
+        .unwrap();
+    configured(&ts).await;
+    // Haiku's lines go: it takes the default rates.
+    ts.store
+        .delete_model_rates(&AuditCtx::DAEMON, "claude-haiku-5-5")
+        .unwrap();
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::GET,
+        "/api/admin/provider/models",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let models = v["models"].as_array().unwrap();
+    assert_eq!(
+        models[0],
+        json!({"id": "claude-sonnet-5-5", "display_name": "Claude Sonnet 5.5",
+               "pricing": {"source": "line", "input_credits_milli_per_mtok": 280_000,
+                           "output_credits_milli_per_mtok": 1_400_000}})
+    );
+    assert_eq!(
+        models[1]["pricing"],
+        json!({"source": "default", "input_credits_milli_per_mtok": 560_000,
+               "output_credits_milli_per_mtok": 2_800_000})
+    );
+}

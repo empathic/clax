@@ -17,10 +17,17 @@
 //!   `setting_overridden` here. The instance key is write-only; a key in
 //!   `[bot] api_key_env`'s variable takes precedence over a stored one
 //!   (`sources.key` `env:<NAME>`).
-//! - `GET/PUT /api/admin/pricing`: the credit price, the free tier and
-//!   the cost lines; `PUT` takes the whole object (a line left out is
-//!   deleted). `POST /api/admin/pricing/tokenulator {model, provider?}`
-//!   prices a model's token lines from tokenulator.dev.
+//! - `GET/PUT /api/admin/pricing`: the credit price, the free tier, the
+//!   default token rates, `require_explicit_price` and the cost lines,
+//!   with each priced model's rates and where they come from (`models`)
+//!   and the price catalog's age (`catalog`); `PUT` takes the whole object
+//!   (a line left out is deleted; `default_rates` and
+//!   `require_explicit_price` may be left out). `POST
+//!   /api/admin/pricing/models` sets a model's rate card and `DELETE
+//!   /api/admin/pricing/models?model=` deletes it. `POST
+//!   /api/admin/pricing/catalog/refresh` fetches the price catalog now;
+//!   `POST /api/admin/pricing/tokenulator {model, provider?}` refreshes it
+//!   and prices a model's token lines from it.
 //! - `GET /api/admin/usage?week=`.
 //!
 //! Who may: the owner and admins ([`clax_http::bot::may_admin`]); agents
@@ -48,7 +55,10 @@ use clax_http::viewer::SameOrigin;
 use clax_sample::messages::{ApiKey, MessagesClient, ModelApi};
 use clax_store::Store;
 use clax_store::bot_settings::Setting;
-use clax_store::credits::{Applies, CostLinePatch, Unit};
+use clax_store::credits::{
+    Applies, CostLinePatch, ModelPrices, ModelPricing, ModelRates, Rate, TOKEN_MARGIN_BP, Unit,
+    UnitPricing, UnitRate, credits_per_unit_milli, parse_token_line,
+};
 use clax_store::roles::Role;
 use clax_store::secrets::SecretSlot;
 use serde::Deserialize;
@@ -575,10 +585,11 @@ pub async fn test(
     }))
 }
 
-/// `GET /api/admin/provider/models` → `{models: [{id, display_name}],
-/// fetched_at}`: the provider's model list with the instance key
+/// `GET /api/admin/provider/models` → `{models: [{id, display_name,
+/// pricing}], fetched_at}`: the provider's model list with the instance key
 /// and base URL in effect (502 `provider_error` when it fails, 409
-/// `no_key` without a key), recorded as `view.admin {page:
+/// `no_key` without a key), each with how it is priced now
+/// ([`model_summary`]), recorded as `view.admin {page:
 /// "provider.models"}`.
 pub async fn models(
     State(s): State<AppState>,
@@ -590,19 +601,25 @@ pub async fn models(
     let (r, slot) = models_of(&s).await?;
     let bot = s.bot.clone();
     let ok = r.is_ok();
-    let fetched_at = s
+    let ids: Vec<String> = r
+        .as_ref()
+        .map(|l| l.iter().map(|m| m.id.clone()).collect())
+        .unwrap_or_default();
+    let (fetched_at, pricing) = s
         .store_call(move |st| {
             if let (true, Some(slot)) = (ok, &slot) {
                 st.mark_secret_ok(slot)?;
             }
             viewed(st, &bot, &who, &caller, "provider.models", None)?;
-            Ok(st.now())
+            let pricing: Vec<Value> = st.model_pricing(&ids)?.iter().map(model_summary).collect();
+            Ok((st.now(), pricing))
         })
         .await?;
     match r {
         Ok(list) => Ok(Json(json!({
-            "models": list.iter().map(|m| json!({"id": m.id, "display_name": m.display_name}))
-                .collect::<Vec<_>>(),
+            "models": list.iter().zip(pricing).map(|(m, p)| json!({
+                "id": m.id, "display_name": m.display_name, "pricing": p,
+            })).collect::<Vec<_>>(),
             "fetched_at": fetched_at,
         }))),
         Err(e) if e == NO_KEY => Err(ApiError::new(
@@ -618,9 +635,110 @@ pub async fn models(
     }
 }
 
+/// A model's pricing as the model picker shows it: `{source,
+/// input_credits_milli_per_mtok, output_credits_milli_per_mtok}`, the
+/// milli-credits a million input and output tokens charge now and where
+/// the output rate comes from (`line`, `catalog`, `default`); each `null`
+/// when the model resolves to no price (`require_explicit_price` without
+/// its lines).
+fn model_summary(p: &ModelPricing) -> Value {
+    let unit = |u: Unit| {
+        p.units
+            .iter()
+            .find(|x| x.unit == u)
+            .and_then(|x| x.resolved)
+    };
+    let (input, output) = (unit(Unit::MtokInput), unit(Unit::MtokOutput));
+    json!({
+        "source": output.map(|r| r.source.as_str()),
+        "input_credits_milli_per_mtok": input.map(|r| credits_per_mtok(&r.rate)),
+        "output_credits_milli_per_mtok": output.map(|r| credits_per_mtok(&r.rate)),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Pricing and usage
 // ---------------------------------------------------------------------------
+
+/// The default token rates, by the key `default_rates` names them, with
+/// their settings.
+const DEFAULT_RATES: &[(&str, Setting)] = &[
+    ("input", Setting::DefaultRateInput),
+    ("cached_input", Setting::DefaultRateCachedInput),
+    ("cache_write", Setting::DefaultRateCacheWrite),
+    ("output", Setting::DefaultRateOutput),
+];
+
+/// The key a token unit goes by in a rate card (`input`, `cached_input`,
+/// `cache_write`, `output`).
+fn unit_key(u: Unit) -> &'static str {
+    match u {
+        Unit::MtokCachedInput => "cached_input",
+        Unit::MtokCacheWrite => "cache_write",
+        Unit::MtokOutput => "output",
+        _ => "input",
+    }
+}
+
+/// Milli-credits a million tokens at `r` charge: its fixed credits, else
+/// its cost and margin at its credit price, rounded up.
+fn credits_per_mtok(r: &Rate) -> i64 {
+    r.fixed_credits_milli.unwrap_or_else(|| {
+        credits_per_unit_milli(r.cost_micro_usd, r.margin_bp, r.credit_price_micro_usd)
+    })
+}
+
+/// One token unit of a model as the pricing page shows it: the rate it
+/// resolves to now and where from (`source` `null`, and every rate field
+/// with it, when it resolves to none), the milli-credits a million
+/// tokens charge, the catalog's cost for it and whether the line's cost
+/// drifted from that.
+fn unit_view(u: &UnitPricing) -> Value {
+    let r = u.resolved.map(|r| r.rate);
+    json!({
+        "source": u.resolved.map(|r| r.source.as_str()),
+        "cost_micro_usd": r.map(|r| r.cost_micro_usd),
+        "margin_bp": r.map(|r| r.margin_bp),
+        "fixed_credits_milli": r.and_then(|r| r.fixed_credits_milli),
+        "applies": r.map(|r| r.applies.as_str()),
+        "credits_milli_per_mtok": r.as_ref().map(credits_per_mtok),
+        "catalog_micro_usd": u.catalog_micro_usd,
+        "drift": u.drift,
+    })
+}
+
+/// The catalog provider the API and base URL in effect name
+/// (`ModelApi::catalog_provider`), or `None`.
+fn catalog_provider(st: &Store) -> clax_core::Result<Option<&'static str>> {
+    let url = st.bot_setting(Setting::BaseUrl)?;
+    Ok(effective_api(st)?.catalog_provider(url.as_str().unwrap_or_default()))
+}
+
+/// The models the pricing page shows: the three tiers' models in effect,
+/// then every other model with a token line, by ID; each with the tiers
+/// it is in effect for.
+fn priced_models(st: &Store) -> clax_core::Result<Vec<(String, Vec<&'static str>)>> {
+    let mut out: Vec<(String, Vec<&'static str>)> = Vec::new();
+    for (tier, s) in MODELS {
+        let Some(m) = st.bot_setting(*s)?.as_str().map(str::to_string) else {
+            continue;
+        };
+        match out.iter_mut().find(|(id, _)| *id == m) {
+            Some((_, tiers)) => tiers.push(tier),
+            None => out.push((m, vec![*tier])),
+        }
+    }
+    let mut lined: Vec<String> = st
+        .cost_lines()?
+        .iter()
+        .filter_map(|l| parse_token_line(&l.id).map(|(m, _)| m.to_string()))
+        .filter(|m| !out.iter().any(|(id, _)| id == m))
+        .collect();
+    lined.sort();
+    lined.dedup();
+    out.extend(lined.into_iter().map(|m| (m, Vec::new())));
+    Ok(out)
+}
 
 /// The pricing as `GET /api/admin/pricing` shows it.
 fn pricing_view(st: &Store) -> clax_core::Result<Value> {
@@ -636,14 +754,53 @@ fn pricing_view(st: &Store) -> clax_core::Result<Value> {
         .collect();
     let eff = st.effective_bot_settings()?;
     let src = |s: Setting| eff.get(&s).map(|e| e.source.label());
+    let get = |s: Setting| eff.get(&s).map(|e| e.value.clone()).unwrap_or(Value::Null);
+    let mut sources = serde_json::Map::new();
+    sources.insert(
+        "credit_price_micro_usd".into(),
+        json!(src(Setting::CreditPriceMicroUsd)),
+    );
+    sources.insert(
+        "free_weekly_milli".into(),
+        json!(src(Setting::FreeWeeklyMilli)),
+    );
+    let mut default_rates = serde_json::Map::new();
+    for (key, s) in DEFAULT_RATES {
+        default_rates.insert((*key).into(), get(*s));
+        sources.insert(format!("default_rates.{key}"), json!(src(*s)));
+    }
+    sources.insert(
+        "require_explicit_price".into(),
+        json!(src(Setting::RequireExplicitPrice)),
+    );
+    let priced = priced_models(st)?;
+    let ids: Vec<String> = priced.iter().map(|(m, _)| m.clone()).collect();
+    let models: Vec<Value> = st
+        .model_pricing(&ids)?
+        .iter()
+        .zip(&priced)
+        .map(|(p, (_, tiers))| {
+            let units: serde_json::Map<String, Value> = p
+                .units
+                .iter()
+                .map(|u| (unit_key(u.unit).to_string(), unit_view(u)))
+                .collect();
+            json!({"model": p.model, "tiers": tiers, "units": units,
+                   "listing": p.listing, "drift": p.drift})
+        })
+        .collect();
     Ok(json!({
         "credit_price_micro_usd": st.credit_price_micro_usd()?,
         "free_weekly_milli": st.free_weekly_milli()?,
+        "default_rates": default_rates,
+        "require_explicit_price": get(Setting::RequireExplicitPrice),
         "lines": lines,
-        "sources": {
-            "credit_price_micro_usd": src(Setting::CreditPriceMicroUsd),
-            "free_weekly_milli": src(Setting::FreeWeeklyMilli),
+        "models": models,
+        "catalog": {
+            "fetched_at": st.catalog_fetched_at()?.map(clax_core::time::stamp),
+            "provider": catalog_provider(st)?,
         },
+        "sources": sources,
     }))
 }
 
@@ -682,24 +839,53 @@ pub struct LineBody {
     model: Option<String>,
 }
 
+/// The default token rates a `PUT /api/admin/pricing` sets; each left out
+/// is kept.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DefaultRatesBody {
+    #[serde(default)]
+    input: Option<Value>,
+    #[serde(default)]
+    cached_input: Option<Value>,
+    #[serde(default)]
+    cache_write: Option<Value>,
+    #[serde(default)]
+    output: Option<Value>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PricingBody {
     credit_price_micro_usd: i64,
     free_weekly_milli: i64,
     lines: Vec<LineBody>,
+    #[serde(default)]
+    default_rates: Option<DefaultRatesBody>,
+    #[serde(default)]
+    require_explicit_price: Option<Value>,
     /// What `GET` shows beside the rest; ignored.
     #[serde(default)]
     #[allow(dead_code)]
     sources: Option<Value>,
+    /// What `GET` shows beside the rest; ignored.
+    #[serde(default)]
+    #[allow(dead_code)]
+    models: Option<Value>,
+    /// What `GET` shows beside the rest; ignored.
+    #[serde(default)]
+    #[allow(dead_code)]
+    catalog: Option<Value>,
 }
 
 /// `PUT /api/admin/pricing` (see the module documentation): the credit
-/// price and free tier (unless the daemon's configuration sets them, 409
-/// `setting_overridden` when they differ), each line made or changed, and
-/// the lines left out deleted (409 `cost_line_in_use` for one a run that
-/// has not ended may charge), every value checked first and all of it in
-/// one transaction ([`Store::replace_pricing`]): a refusal writes nothing.
+/// price, the free tier, the default token rates and
+/// `require_explicit_price` (each the daemon's configuration sets is
+/// refused 409 `setting_overridden` when it differs), each line made or
+/// changed, and the lines left out deleted (409 `cost_line_in_use` for one
+/// a run that has not ended may charge), every value checked first and all
+/// of it in one transaction ([`Store::replace_pricing`]): a refusal writes
+/// nothing.
 pub async fn set_pricing(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -713,13 +899,33 @@ pub async fn set_pricing(
     let v = s
         .store_call(move |st| {
             let ctx = audit.resolve(st)?;
+            let mut given = vec![
+                (
+                    Setting::CreditPriceMicroUsd,
+                    json!(b.credit_price_micro_usd),
+                ),
+                (Setting::FreeWeeklyMilli, json!(b.free_weekly_milli)),
+            ];
+            if let Some(r) = b.default_rates {
+                for (s, v) in [
+                    (Setting::DefaultRateInput, r.input),
+                    (Setting::DefaultRateCachedInput, r.cached_input),
+                    (Setting::DefaultRateCacheWrite, r.cache_write),
+                    (Setting::DefaultRateOutput, r.output),
+                ] {
+                    given.extend(v.map(|v| (s, v)));
+                }
+            }
+            given.extend(
+                b.require_explicit_price
+                    .map(|v| (Setting::RequireExplicitPrice, v)),
+            );
+            // A value as it is already in effect is no change, so a page
+            // that sends back what it read never trips an override.
             let mut settings = Vec::new();
-            for (s, v) in [
-                (Setting::CreditPriceMicroUsd, b.credit_price_micro_usd),
-                (Setting::FreeWeeklyMilli, b.free_weekly_milli),
-            ] {
-                if st.bot_setting(s)?.as_i64() != Some(v) {
-                    settings.push((s, Some(json!(v))));
+            for (s, v) in given {
+                if st.bot_setting(s)? != v {
+                    settings.push((s, Some(v)));
                 }
             }
             let bad = |what: &str| CoreError::invalid("invalid_cost_line", what.to_string());
@@ -749,6 +955,108 @@ pub async fn set_pricing(
     Ok(Json(v))
 }
 
+/// What a rate card set by hand gives as its lines' source.
+const SET_BY_ADMIN: &str = "set by an admin";
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelRatesBody {
+    model: String,
+    /// Shown in the lines' labels; the model ID by default.
+    #[serde(default)]
+    name: Option<String>,
+    input: UnitRate,
+    cached_input: UnitRate,
+    cache_write: UnitRate,
+    output: UnitRate,
+}
+
+/// `POST /api/admin/pricing/models {model, name?, input, cached_input,
+/// cache_write, output}`, each unit `{cost_micro_usd, margin_bp,
+/// fixed_credits_milli}` → the pricing: sets `model`'s rate card, its four
+/// token lines, each cost-based (`fixed_credits_milli` null) or
+/// credit-based, in one transaction, with "set by an admin" as their
+/// source ([`Store::set_model_rates`]). 400 `invalid_cost_line` for a
+/// model ID or a value out of range.
+pub async fn set_model_rates(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    audit: DeferredAudit,
+    req: Result<Json<ModelRatesBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    admin(&s, &d).await?;
+    let b = body(req)?;
+    let model = b.model.trim().to_string();
+    let rates = ModelRates {
+        name: b
+            .name
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| model.clone()),
+        input: b.input,
+        cached_input: b.cached_input,
+        cache_write: b.cache_write,
+        output: b.output,
+        source: SET_BY_ADMIN.into(),
+    };
+    let v = s
+        .store_call(move |st| {
+            let ctx = audit.resolve(st)?;
+            st.set_model_rates(&ctx, &model, rates)?;
+            pricing_view(st)
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+pub struct ModelQuery {
+    model: String,
+}
+
+/// `DELETE /api/admin/pricing/models?model=<id>` → the pricing: deletes
+/// the model's token lines ([`Store::delete_model_rates`]), so its tokens
+/// resolve to the catalog or the default rates from then on. 404
+/// `not_found` when it has none; 409 `cost_line_in_use` while a run on it
+/// has not ended (nothing is deleted).
+pub async fn delete_model_rates(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    audit: DeferredAudit,
+    q: Result<Query<ModelQuery>, QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    admin(&s, &d).await?;
+    let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let v = s
+        .store_call(move |st| {
+            let ctx = audit.resolve(st)?;
+            st.delete_model_rates(&ctx, q.model.trim())?;
+            pricing_view(st)
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+/// `POST /api/admin/pricing/catalog/refresh` → the pricing: fetches the
+/// price catalog now and replaces the cache with it
+/// ([`crate::catalog::refresh`]), so `catalog.fetched_at` moves and the
+/// models priced from it and their drift follow. 502 `tokenulator_error`
+/// when it cannot be read or lists no valid price (the cache is kept).
+pub async fn refresh_catalog(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    admin(&s, &d).await?;
+    crate::catalog::refresh(&s).await?;
+    Ok(Json(s.store_call(pricing_view).await?))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TokenulatorBody {
@@ -759,16 +1067,14 @@ pub struct TokenulatorBody {
     provider: Option<String>,
 }
 
-/// How long each wait for tokenulator.dev may last.
-const TOKENULATOR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
 /// `POST /api/admin/pricing/tokenulator {model, provider?}` → the pricing:
-/// prices `model`'s input, cached input, cache-write and output lines at
-/// `provider`'s standard rates on tokenulator.dev (a missing cache rate at
-/// the input rate), at the token margin, with tokenulator.dev and the page
-/// it read as the lines' source ([`Store::price_model`]). 400
-/// `no_provider` when no provider is given and the base URL names none;
-/// 404 `not_on_tokenulator` when tokenulator.dev lists no such model; 502
+/// refreshes the price catalog ([`crate::catalog::refresh`]), then prices
+/// `model`'s input, cached input, cache-write and output lines at
+/// `provider`'s listing in it (a missing cache rate at the input rate), at
+/// the token margin, with tokenulator.dev and the page it read as the
+/// lines' source ([`Store::price_model`]). 400 `no_provider` when no
+/// provider is given and the base URL names none; 404
+/// `not_on_tokenulator` when the catalog lists no such model; 502
 /// `tokenulator_error` when it cannot be read.
 pub async fn price_from_tokenulator(
     State(s): State<AppState>,
@@ -777,7 +1083,7 @@ pub async fn price_from_tokenulator(
     audit: DeferredAudit,
     req: Result<Json<TokenulatorBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    use clax_sample::tokenulator::{self, LookupError, micro_usd};
+    use clax_sample::tokenulator::LookupError;
     d.refuse_agents()?;
     admin(&s, &d).await?;
     let b = body(req)?;
@@ -788,82 +1094,58 @@ pub async fn price_from_tokenulator(
         .filter(|p| !p.is_empty())
     {
         Some(p) => p,
-        None => {
-            let (api, base_url) = s
-                .store_call(|st| {
-                    let url = st.bot_setting(Setting::BaseUrl)?;
-                    Ok((
-                        effective_api(st)?,
-                        url.as_str().unwrap_or_default().to_string(),
-                    ))
-                })
-                .await?;
-            api.catalog_provider(&base_url)
-                .ok_or_else(|| {
-                    ApiError::bad_request(
-                        "no_provider",
-                        "tokenulator.dev knows this provider by another name: give its provider ID",
-                    )
-                })?
-                .to_string()
-        }
+        None => s
+            .store_call(catalog_provider)
+            .await?
+            .ok_or_else(|| {
+                ApiError::bad_request(
+                    "no_provider",
+                    "tokenulator.dev knows this provider by another name: give its provider ID",
+                )
+            })?
+            .to_string(),
     };
-    // The request is not `Send` on the Worker's one thread.
-    let found = clax_rt::sendable(async move {
-        let site = tokenulator::fetch(tokenulator::SITE_DATA_URL, TOKENULATOR_TIMEOUT).await?;
-        tokenulator::find(&site, &provider, &model).map(|l| (l, model))
-    })
-    .await;
-    let (listing, model) = match found {
-        Ok(f) => f,
-        Err(e @ LookupError::NotListed { .. }) => {
-            return Err(ApiError::new(
-                axum::http::StatusCode::NOT_FOUND,
-                "not_on_tokenulator",
-                e.to_string(),
-            ));
-        }
-        Err(e) => {
-            return Err(ApiError::new(
-                axum::http::StatusCode::BAD_GATEWAY,
-                "tokenulator_error",
-                e.to_string(),
-            ));
-        }
-    };
-    let r = &listing.rates;
-    let prices = clax_store::credits::ModelPrices {
-        name: if listing.name.is_empty() {
-            model.clone()
-        } else {
-            listing.name.clone()
-        },
-        input: micro_usd(r.input),
-        cached_input: micro_usd(r.cache_read.unwrap_or(r.input)),
-        cache_write: micro_usd(r.cache_write.unwrap_or(r.input)),
-        output: micro_usd(r.output),
-        margin_bp: clax_store::credits::TOKEN_MARGIN_BP,
-        source: format!(
-            "tokenulator.dev: {} {} standard rates from {}, observed {}{}",
-            listing.provider_id,
-            listing.model_id,
-            listing.source,
-            listing.observed_at,
-            match (r.cache_read, r.cache_write) {
-                (Some(_), Some(_)) => "",
-                (None, None) => " (no cache rates listed: input rate)",
-                (None, _) => " (no cache read rate listed: input rate)",
-                (_, None) => " (no cache write rate listed: input rate)",
-            }
-        ),
-    };
+    crate::catalog::refresh(&s).await?;
     let v = s
         .store_call(move |st| {
+            let Some(l) = st.catalog_listing(&provider, &model)? else {
+                let e = LookupError::NotListed {
+                    provider_id: provider,
+                    model_id: model,
+                };
+                return Ok(Err(e.to_string()));
+            };
+            let prices = ModelPrices {
+                name: if l.name.is_empty() {
+                    model.clone()
+                } else {
+                    l.name.clone()
+                },
+                input: l.input_micro_usd,
+                cached_input: l.cache_read_micro_usd.unwrap_or(l.input_micro_usd),
+                cache_write: l.cache_write_micro_usd.unwrap_or(l.input_micro_usd),
+                output: l.output_micro_usd,
+                margin_bp: TOKEN_MARGIN_BP,
+                source: format!(
+                    "tokenulator.dev: {} {} standard rates from {}, observed {}{}",
+                    l.provider_id,
+                    l.model_id,
+                    l.source,
+                    l.observed_at,
+                    match (l.cache_read_micro_usd, l.cache_write_micro_usd) {
+                        (Some(_), Some(_)) => "",
+                        (None, None) => " (no cache rates listed: input rate)",
+                        (None, _) => " (no cache read rate listed: input rate)",
+                        (_, None) => " (no cache write rate listed: input rate)",
+                    }
+                ),
+            };
             let ctx = audit.resolve(st)?;
             st.price_model(&ctx, &model, prices)?;
-            pricing_view(st)
+            Ok(Ok(pricing_view(st)?))
         })
-        .await?;
+        .await?
+        .map_err(|m| ApiError::new(axum::http::StatusCode::NOT_FOUND, "not_on_tokenulator", m))?;
     Ok(Json(v))
 }
 

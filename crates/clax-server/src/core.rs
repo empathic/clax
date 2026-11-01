@@ -91,7 +91,8 @@ impl Core {
     /// `progress` hears the audit backfill's progress) and starts the
     /// state, the journal, the listeners and the background tasks: the
     /// session reaper, the grant sweeper, the planner statistics refresh,
-    /// the drafts sweeper and the working sweeper. Runs on the caller's
+    /// the drafts sweeper, the working sweeper and the price catalog's
+    /// refresh. Runs on the caller's
     /// Tokio runtime.
     ///
     /// # Errors
@@ -407,9 +408,15 @@ fn loose_mode(path: &std::path::Path) -> Option<u32> {
 /// made on first use; none when it cannot be read, so no key is stored),
 /// and the instance key in `[bot] api_key_env`'s variable, which takes
 /// precedence over a stored one. A hosted core reads no `[bot]` and no
-/// variable.
+/// such variable. Either takes its price catalog's URL from
+/// [`crate::catalog::URL_ENV`].
 fn local_bot(s: &AppState) -> clax_http::bot::Bot {
-    let mut bot = clax_http::bot::Bot::default();
+    let mut bot = clax_http::bot::Bot {
+        catalog_url: crate::catalog::url_from(
+            std::env::var(crate::catalog::URL_ENV).ok().as_deref(),
+        ),
+        ..Default::default()
+    };
     clax_store::secrets::sweep_leftovers(&s.home, s.store.now_utc());
     bot.kek = match clax_store::secrets::Kek::load_or_create(&s.home) {
         Ok(k) => Some(k),
@@ -459,8 +466,8 @@ pub(crate) async fn stop_store(store: Arc<Store>, within: Duration) -> bool {
 }
 
 /// The background tasks a core runs: the session reaper, the grant
-/// sweeper, the planner statistics refresh, the drafts sweeper and the
-/// working sweeper.
+/// sweeper, the planner statistics refresh, the drafts sweeper, the
+/// working sweeper and the price catalog's refresh.
 fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::task::JoinHandle<()>> {
     let fctx = state.feedback_ctx();
     let reap_state = state.clone();
@@ -571,7 +578,17 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
         }
     });
 
-    vec![reaper, grant_sweeper, optimizer, drafts_sweeper, sweeper]
+    // The price catalog at start, then once a day.
+    let catalog = crate::catalog::spawn_refresher(state.clone(), crate::catalog::REFRESH_EVERY);
+
+    vec![
+        reaper,
+        grant_sweeper,
+        optimizer,
+        drafts_sweeper,
+        sweeper,
+        catalog,
+    ]
 }
 
 #[cfg(test)]

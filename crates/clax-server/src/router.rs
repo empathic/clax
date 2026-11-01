@@ -617,6 +617,14 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/admin/pricing/tokenulator",
             post(admin::price_from_tokenulator),
         )
+        .route(
+            "/api/admin/pricing/models",
+            post(admin::set_model_rates).delete(admin::delete_model_rates),
+        )
+        .route(
+            "/api/admin/pricing/catalog/refresh",
+            post(admin::refresh_catalog),
+        )
         .route("/api/admin/usage", get(admin::usage))
         .route("/api/audit", get(audit_trail::list))
         .route("/api/audit/{seq}", get(audit_trail::get))

@@ -79,6 +79,11 @@ pub struct Bot {
     /// Every run's live events, which the driver emits and
     /// `GET /api/bot/runs/<id>/events` streams.
     pub events: Arc<clax_bot::EventHub>,
+    /// Where the price catalog is fetched from
+    /// ([`clax_sample::tokenulator::SITE_DATA_URL`] by default; tests pass a
+    /// local server's). `None`: it is never fetched, and the routes that
+    /// fetch it answer 502 `tokenulator_error`.
+    pub catalog_url: Option<String>,
 }
 
 impl Default for Bot {
@@ -90,6 +95,7 @@ impl Default for Bot {
             views: Arc::default(),
             runs: Arc::new(NoRuns),
             events: Arc::default(),
+            catalog_url: Some(clax_sample::tokenulator::SITE_DATA_URL.to_string()),
         }
     }
 }

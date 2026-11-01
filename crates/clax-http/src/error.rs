@@ -190,6 +190,11 @@ impl From<CoreError> for ApiError {
                 code: "nothing_to_send",
                 message,
             } => ApiError::new(StatusCode::CONFLICT, "nothing_to_send", message),
+            // A cost line a ClaxBot run that has not ended may charge.
+            CoreError::Invalid {
+                code: "cost_line_in_use",
+                message,
+            } => ApiError::new(StatusCode::CONFLICT, "cost_line_in_use", message),
             // A joined site's unfinished join or un-merge (spec §7.2): finish it first.
             CoreError::Invalid {
                 code: code @ ("joining" | "unmerging"),

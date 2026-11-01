@@ -143,6 +143,7 @@
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod bot;
+pub mod catalog;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod core;
 pub mod github;
