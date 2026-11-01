@@ -39,9 +39,12 @@
   let again = false;
   let sayAgain = false;
   let lapse: (() => void) | undefined;
+  // The page unmounted: a fetch still in flight sets nothing and plants no timer.
+  let gone = false;
 
   /** Fetches the queues and their counts; `say`: announce what rose. */
   function load(say = false): Promise<void> {
+    if (gone) return Promise.resolve();
     if (running) {
       again = true;
       sayAgain ||= say;
@@ -66,8 +69,10 @@
     let list: api.Queue[];
     try {
       list = (await api.listQueues()).queues;
+      if (gone) return;
       loadError = null;
     } catch (x) {
+      if (gone) return;
       // A refetch that fails keeps what is shown.
       if (!queues) loadError = `Could not load the queues: ${refusal(x)}`;
       return;
@@ -75,6 +80,7 @@
     // The first time, the list shows while its reports are counted.
     queues ??= list;
     const got = await Promise.all(list.map(q => countReports(c => api.reportPage(q.id, c)).catch(() => "failed" as const)));
+    if (gone) return;
     const said: string[] = [];
     list.forEach((q, i) => {
       const was = counts[q.id];
@@ -135,7 +141,7 @@
       if (e.type === "queues") void load(true);
       else if (e.type === "ready" || e.type === "resync") void load();
     });
-    return () => { off?.(); lapse?.(); };
+    return () => { gone = true; off?.(); lapse?.(); };
   });
 </script>
 

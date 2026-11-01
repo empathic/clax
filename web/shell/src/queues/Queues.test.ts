@@ -2,6 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { flush, mount } from "../test/svelte";
 import { settle, stubFetch } from "../people/fixtures";
 import Queues from "./Queues.svelte";
+import { after } from "../clock";
+
+vi.mock("../clock", async orig => {
+  const real = await orig<typeof import("../clock")>();
+  return { ...real, after: vi.fn(real.after) };
+});
+const lapseTimers = () => vi.mocked(after).mock.calls.filter(c => c[2] === "queues.lapse").length;
 
 const QUEUE = { id: "q1", name: "Bugs", origins: ["https://app.example"], reporters_see: "own", created_at: "2026-10-27T10:00:00Z", role: "admin" };
 const routes = (o: Record<string, unknown> = {}) => ({
@@ -62,6 +69,20 @@ describe("Queues", () => {
     expect(heard.textContent).toBe("1 report claimed in Bugs.");
     m.unmount();
     expect(off).toHaveBeenCalled();
+  });
+
+  it("fetches again when the soonest lease shown lapses, and a page gone mid-fetch plants no timer", async () => {
+    const claimed = { state: "claimed", claim: { holder_name: "claude", expires_at: new Date(Date.now() + 60_000).toISOString() } };
+    stubFetch(routes({ "GET /api/queues/q1/reports": { reports: [claimed], next: null } }));
+    const n = lapseTimers();
+    const shown = mount(Queues, {});
+    await settle();
+    expect(lapseTimers()).toBe(n + 1);
+    shown.unmount();
+    const gone = mount(Queues, {});
+    gone.unmount();
+    await settle();
+    expect(lapseTimers()).toBe(n + 1);
   });
 
   it("makes a queue from the form, its origins one per line, and refuses a line that is not an origin", async () => {
