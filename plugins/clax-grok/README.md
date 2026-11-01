@@ -162,7 +162,7 @@ tiers 1, 2 and 4.
 ## Working from a source checkout
 
 `just dev grok` runs Grok with the installed clax-grok plugin, the fresh
-build named in `CLAX_BIN`, and `CLAX_HOME=~/.clax-dev`. Grok runs its installed
+build named in `CLAX_BIN`, and the checkout's dev home in `CLAX_HOME`. Grok runs its installed
 copy of the plugin, so to try changes to the skill, the hooks or the wrapper,
 run `just install`, which reinstalls the plugin from the copy built into the
 new binary.

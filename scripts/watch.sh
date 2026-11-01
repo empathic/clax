@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # `just watch`: runs the daemon and the web bundlers with auto-reload. By
-# default it serves its own home ($CLAX_HOME, else ~/.clax-dev) on port
-# $CLAX_DEV_PORT, else 7481, so rebuilding never takes the agents' daemon
-# down; `--shared` serves the agents' home (~/.clax) on 7480 (stop the
+# default it serves this checkout's dev home (scripts/dev-home.sh,
+# watch_settings: ~/.clax-dev on 7481, a linked worktree's own
+# ~/.clax-dev-<name>, or $CLAX_HOME and $CLAX_DEV_PORT), so rebuilding never
+# takes the agents' daemon down; `--shared` serves the agents' home (~/.clax) on 7480 (stop the
 # installed daemon first). Other arguments go to `clax serve`. Outside
 # --shared, a daemon an earlier `just dev` left in the dev home, whose
 # temporary binary is gone, is stopped first; ~/.clax and port 7480 are never

@@ -10,11 +10,11 @@ default: help
 help:
     @just --list --unsorted
 
-# Build clax and start a harness on ~/.clax-dev and port 7481 (claude and pi load this checkout's plugin; codex and grok use the installed one); with no harness, `just watch`
+# Build clax and start a harness on this checkout's dev home (~/.clax-dev on 7481; a linked worktree's own ~/.clax-dev-<name>) (claude and pi load this checkout's plugin; codex and grok use the installed one); with no harness, `just watch`
 dev *ARGS:
     ./scripts/dev.sh "$@"
 
-# Run the auto-reloading daemon and web UI (~/.clax-dev on 7481, or $CLAX_DEV_PORT; --shared: ~/.clax on 7480)
+# Run the auto-reloading daemon and web UI on this checkout's dev home (~/.clax-dev on 7481; a linked worktree's own ~/.clax-dev-<name>; or $CLAX_HOME, $CLAX_DEV_PORT; --shared: ~/.clax on 7480)
 watch *ARGS:
     ./scripts/watch.sh "$@"
 
@@ -69,17 +69,21 @@ uninstall:
     -cargo uninstall --root "${CARGO_HOME:-$HOME/.cargo}" clax-cli 2>/dev/null
     rm -f "${CARGO_HOME:-$HOME/.cargo}/bin/clax"
 
-# Run the dev daemon in the foreground on ~/.clax-dev, port 7481 (extra args go to `clax serve`)
+# Run the dev daemon in the foreground on this checkout's dev home and port (extra args go to `clax serve`)
 serve *ARGS:
-    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" ./scripts/run.sh clax serve --foreground --port 7481 "$@"
+    . scripts/dev-home.sh && watch_settings && CLAX_HOME="$DEV_HOME" ./scripts/run.sh clax serve --foreground --port "$DEV_PORT" "$@"
 
-# Stop the dev daemon (~/.clax-dev)
+# Stop the daemon of this checkout's dev home
 stop:
-    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" ./scripts/run.sh clax stop
+    . scripts/dev-home.sh && watch_settings && CLAX_HOME="$DEV_HOME" ./scripts/run.sh clax stop
 
-# Check the dev home and its daemon (~/.clax-dev)
+# Check this checkout's dev home and its daemon
 doctor:
-    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" ./scripts/run.sh clax doctor
+    . scripts/dev-home.sh && watch_settings && CLAX_HOME="$DEV_HOME" ./scripts/run.sh clax doctor
+
+# Run a clax command with the checkout's build on this checkout's dev home (`just clax remote add http://localhost:8789`)
+clax *ARGS:
+    . scripts/dev-home.sh && watch_settings && CLAX_HOME="$DEV_HOME" ./scripts/run.sh clax "$@"
 
 # The Clax app (apps/clax_app). With Bazel each builds or checks from the
 # shared cache (docs/bazel.md, "The Clax app"); each has a `-native` twin

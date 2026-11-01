@@ -528,11 +528,16 @@ sits beside `clax-cli`, over `clax-server` and `clax-embedded`. `scripts/check-c
 gate, holds the rule crate by crate (its `ALLOWED` map) and fails a
 dependency out of order.
 
-Two loops, both on a home of their own, `~/.clax-dev`, whose daemon listens on
-port 7481 (its `config.toml` says `[serve] port = 7481`, or the port in
-`CLAX_DEV_PORT`, written by whichever of `just watch` and `just dev` runs
-first). Your agents' home, `~/.clax`, their daemon on 7480, and the `clax`
-they have installed are never touched.
+Two loops, both on the checkout's dev home (`scripts/dev-home.sh`). The
+repository's main checkout uses `~/.clax-dev`, whose daemon listens on port
+7481. Each linked git worktree uses a home of its own,
+`~/.clax-dev-<worktree directory name>`, on the first port of 7482-7499 that
+no other dev home records when the home is made, so one branch's migrations
+never upgrade the database another branch's build opens. A home's
+`config.toml` records its port (`[serve] port = …`), written by whichever of
+`just watch` and `just dev` runs first; `CLAX_HOME` and `CLAX_DEV_PORT` name
+another home or port. Your agents' home, `~/.clax`, their daemon on 7480,
+and the `clax` they have installed are never touched.
 
 **The daemon and the web UI: `just watch`.** An auto-reloading server at
 http://localhost:7481, which can be left running. A Rust change rebuilds and
@@ -544,12 +549,16 @@ agents' home, `~/.clax`, on 7480 instead: stop their daemon first with
 `clax stop`, and expect an agent to start its own daemon there while a Rust
 change rebuilds. `just dev` with no harness, or with an option first
 (`just dev --shared`), runs `just watch`. `just serve`, `just stop` and
-`just doctor` run the checkout's build on `~/.clax-dev` (`just serve` on
-7481). `just watch` needs `cargo-watch` (`cargo install cargo-watch`).
+`just doctor` run the checkout's build on the dev home and its port, and
+`just clax <arguments>` runs any other `clax` command there (`just clax
+remote list`). `just watch` needs `cargo-watch` (`cargo install cargo-watch`).
 
 **An agent on your working tree: `just dev claude|codex|grok|pi`.** It builds
 `clax`, copies it into a temporary directory put first on `PATH` (removed
-when the session ends), and starts the harness on `~/.clax-dev`:
+when the session ends), starts the dev home's daemon, and starts the harness
+on that home. A home whose database the build cannot open (upgraded by a
+build with other migrations) stops it before the harness, with the error and
+what to do:
 
 ```
 just dev claude
@@ -567,10 +576,10 @@ just dev claude --resume  # extra arguments go to the harness
   off your other Pi extensions for that session too.
 - Codex cannot load a plugin from a directory, so `just dev codex` runs your
   installed Clax plugin, with your own `~/.codex` as it is, on the fresh
-  build and `~/.clax-dev`. To try plugin, skill or hook changes in Codex, run
+  build and the dev home. To try plugin, skill or hook changes in Codex, run
   `just install`.
 - Grok works like Codex: `just dev grok` runs your installed clax-grok
-  plugin, with your own `~/.grok`, on the fresh build and `~/.clax-dev`. To
+  plugin, with your own `~/.grok`, on the fresh build and the dev home. To
   try plugin, skill or hook changes in Grok, run `just install`.
 
 **A second person: `scripts/dev-second-person.sh <invite>`.** To try People

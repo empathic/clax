@@ -90,7 +90,8 @@ run it through the command the plugin's session context gives.
 ## Homes, daemons and git
 
 - Never run an unmerged build against the owner's `~/.clax` or its daemon
-  on 7480. Use `just watch`/`just dev` (`~/.clax-dev`), or a scratch
+  on 7480. Use `just watch`/`just dev` (the checkout's dev home: `~/.clax-dev`,
+  or a linked worktree's own `~/.clax-dev-<name>`), or a scratch
   `CLAX_HOME` on a free port, and stop any daemon you start by its PID.
 - Migrations are numbered contiguously in
   `crates/clax-store/src/migrations.rs`; a branch takes the next free

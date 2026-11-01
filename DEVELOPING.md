@@ -22,19 +22,16 @@ while developing touches the Clax your everyday agents use.
 | What | Data | Port | Started by |
 |---|---|---|---|
 | Your everyday Clax | `~/.clax` | 7480 | your installed `clax`; never touched by the recipes below |
-| The dev daemon | `~/.clax-dev`, shared by every worktree (`CLAX_HOME`) | 7481 (`CLAX_DEV_PORT`) | `just watch`, `just dev <harness>`, `just serve` |
+| The dev daemon, main checkout | `~/.clax-dev` | 7481 | `just watch`, `just dev <harness>`, `just serve` |
+| The dev daemon, a linked worktree | `~/.clax-dev-<worktree directory name>` | its own, from 7482-7499 | the same recipes, run in the worktree |
 | clax.dev on this machine | `target/clax-dev-local/` | the first free of 8788-8797 | `just clax-dev-local` |
 | The remote end-to-end check | `target/remote-e2e/` | free ports | `just remote-e2e` |
 
-Every worktree's `just watch` and `just dev` use `~/.clax-dev` unless you
-say otherwise, and a database upgraded by one branch's migrations may not
-open under another's. A branch with migrations of its own, or one you
-switch to from such a branch, is best run on a home of its own, on its own
-port:
-
-```
-CLAX_HOME=~/.clax-dev-<branch> CLAX_DEV_PORT=7482 just dev claude
-```
+Each worktree's dev daemon has its own home, so one branch's migrations
+never upgrade the database another branch's build opens. A worktree's home
+takes the first port no other dev home records and keeps it; the line
+`clax dev: … CLAX_HOME=… (port …)` names both. `CLAX_HOME` and
+`CLAX_DEV_PORT` still name another home or port when you want one.
 
 ## The dev daemon and web UI
 
@@ -42,19 +39,15 @@ CLAX_HOME=~/.clax-dev-<branch> CLAX_DEV_PORT=7482 just dev claude
 just watch
 ```
 
-Serves `~/.clax-dev` at http://localhost:7481 and rebuilds as you edit: a
-Rust change restarts the daemon, a web change rebuilds the web UI (reload
-the page). Ctrl-C stops it. `just serve`, `just stop` and `just doctor`
-run the checkout's build on the same home.
-
-To run any other `clax` command against the dev home, use the checkout's
-build:
+Serves the checkout's dev home (http://localhost:7481 in the main checkout)
+and rebuilds as you edit: a Rust change restarts the daemon, a web change
+rebuilds the web UI (reload the page). Ctrl-C stops it. `just serve`,
+`just stop` and `just doctor` run the checkout's build on the same home,
+and `just clax` runs any other `clax` command there:
 
 ```
-CLAX_HOME=~/.clax-dev "$(scripts/run.sh bin)" <command>
+just clax remote list
 ```
-
-`scripts/run.sh bin` builds the debug `clax` and prints its path.
 
 ## An agent on your working tree
 
@@ -62,8 +55,10 @@ CLAX_HOME=~/.clax-dev "$(scripts/run.sh bin)" <command>
 just dev claude     # or codex, grok, pi; extra arguments go to the harness
 ```
 
-Builds `clax`, puts it first on `PATH` for the session, and starts the
-harness on `~/.clax-dev`. Claude Code and Pi load this checkout's plugin
+Builds `clax`, puts it first on `PATH` for the session, starts the dev
+home's daemon, and starts the harness on that home. When the build cannot
+open the home's database, it stops before the harness and says why and what
+to do. Claude Code and Pi load this checkout's plugin
 (Claude Code with `--plugin-dir plugins/claude-code`, and your installed
 `clax@clax` is off for that session); Codex and Grok cannot load a plugin
 from a directory, so they run your installed plugin on the fresh build, and
@@ -96,8 +91,8 @@ owner sign-in link.
 - **Browsers share localhost's cookies across ports.** Use a separate
   browser profile, or a private window, for each person you sign in as.
 - **Edits rebuild it.** A change under `web/` or `crates/` to a file git
-  does not ignore (so not a build's own output) rebuilds the web UI and the Worker and restarts it on the same
-  data; the line `A source changed (<file>): rebuilding.` names the file.
+  does not ignore (so not a build's own output) rebuilds the web UI and the
+  Worker and restarts it on the same data; the line `A source changed (<file>): rebuilding.` names the file.
   `--no-build` serves the last build and watches nothing.
 - **The landing page's reel** (`/start/`) builds in the background after
   the Worker is up (`target/clax-dev-local/reel.log`). The first build
@@ -112,8 +107,13 @@ Two terminals, both in this checkout:
 
 ```
 just clax-dev-local     # terminal 1: note its address, e.g. http://localhost:8789
-just dev claude         # terminal 2: this branch's plugin on ~/.clax-dev
+just dev claude         # terminal 2: this branch's plugin on this checkout's dev home
 ```
+
+Terminal 2's first line names the dev home and its port (7481 in the main
+checkout, its own in a worktree); the dev daemon's inbox is at that port.
+A browser opens it as the owner through a login link: `just clax login`
+prints one.
 
 In the browser, open the owner sign-in link terminal 1 printed, so you are
 signed in to clax.dev's address as the person the dev daemon will act as.
@@ -122,8 +122,8 @@ Then connect the dev daemon to it, either way:
 - **As an agent would.** Ask the agent in terminal 2 to read a page there
   by its URL, or to connect to `http://localhost:8789`. A read answers
   `remote_sign_in_required`, naming `connect_instance`; the agent calls
-  that, and a card appears in the dev daemon's inbox
-  (http://localhost:7481): "… wants to connect to …". Choose **Connect**.
+  that, and a card appears in the dev daemon's inbox: "… wants to connect
+  to …". Choose **Connect**.
   A new tab opens clax.dev's approval page; approve there. The agent's
   call answers `connected` and the read goes on.
 - **By hand.** In a third terminal (not inside the agent's session: an
@@ -131,7 +131,7 @@ Then connect the dev daemon to it, either way:
   counts as one):
 
   ```
-  CLAX_HOME=~/.clax-dev "$(scripts/run.sh bin)" remote add http://localhost:8789
+  just clax remote add http://localhost:8789
   ```
 
   It prints a code and opens clax.dev's approval page; check the code and
@@ -139,13 +139,13 @@ Then connect the dev daemon to it, either way:
 
 Once connected, from the dev daemon:
 
-- the Publish button on an artifact's page in the dev daemon, or `clax
-  push <ID>` (with the `CLAX_HOME` and binary above), publishes it there,
-  and an agent's `publish_public` asks you first;
+- the Publish button on an artifact's page in the dev daemon, or `just clax
+  push <ID>`, publishes it there, and an agent's `publish_public` asks you
+  first;
 - an agent can `read` and `watch` pages there, and a comment written there
   reaches the agent as a local one does;
-- `clax remote list` shows the connection, and `clax remote remove
-  http://localhost:8789` ends it, revoking the token there.
+- `just clax remote list` shows the connection, and `just clax remote
+  remove http://localhost:8789` ends it, revoking the token there.
 
 `http` is allowed for a Clax on this machine; any other remote is `https`.
 `docs/usage.md` ("Publishing to a public Clax", "Reading another Clax from
@@ -173,13 +173,13 @@ step passes.
   column`, `no such table`): an earlier build of a branch migrated its data,
   and a branch edits its own unmerged migrations in place, so that data is
   not upgraded. Start over with `just clax-dev-local --fresh`.
-- **The dev daemon will not start: `could not upgrade the database from
-  schema version …`** (in `~/.clax-dev/logs/daemon.log`; an agent sees
-  `daemon_unreachable`): another branch's build upgraded the shared dev
-  home with migrations numbered differently from this branch's. Run this
-  branch on a home of its own (`CLAX_HOME=… CLAX_DEV_PORT=…`, above), or,
-  when nothing in the dev home matters, `just stop` and move `~/.clax-dev`
-  aside.
+- **`just dev` says this build cannot open the dev home** (`could not
+  upgrade the database from schema version …`): a build with other
+  migrations upgraded it, such as an earlier build of this branch whose
+  unmerged migrations have changed since, or, in the main checkout, a
+  branch you ran there before. It names the home and stops before the
+  harness. Move the home aside as it says (nothing is deleted, and moving
+  it back restores it) and run `just dev` again.
 - **The Worker did not come up.** The message says what `/healthz` last
   answered and shows wrangler's output from that run; all of it is in
   `target/clax-dev-local/wrangler.log` (every run's, appended), and the

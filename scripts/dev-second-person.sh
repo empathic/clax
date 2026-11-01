@@ -36,11 +36,12 @@ if [ -z "$bin" ]; then
 fi
 
 # refuse_home <home>: exits unless <home> is a scratch home: not ~/.clax
-# (the agents' home), not ~/.clax-dev or $CLAX_HOME (the dev daemon's).
+# (the agents' home), not a dev daemon's (~/.clax-dev, a worktree's
+# ~/.clax-dev-<name>, or $CLAX_HOME).
 refuse_home() {
     local h dir
     h="$(cd "$1" && pwd -P)"
-    for dir in "$HOME/.clax" "$HOME/.clax-dev" "${CLAX_HOME:-}"; do
+    for dir in "$HOME/.clax" "$HOME"/.clax-dev* "${CLAX_HOME:-}"; do
         [ -n "$dir" ] && [ -d "$dir" ] || continue
         if [ "$h" = "$(cd "$dir" && pwd -P)" ]; then
             echo "dev-second-person: $1 is $dir, not a scratch home; refusing" >&2
