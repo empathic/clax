@@ -57,8 +57,9 @@ use clax_sample::messages::{ApiKey, MessagesClient, ModelApi};
 use clax_store::Store;
 use clax_store::bot_settings::Setting;
 use clax_store::credits::{
-    Applies, CostLine, CostLinePatch, ModelPrices, ModelPricing, ModelRates, Rate, TOKEN_MARGIN_BP,
-    Unit, UnitPricing, UnitRate, credits_per_unit_milli, parse_token_line, token_line,
+    Applies, CostLine, CostLinePatch, ModelPrices, ModelPricing, ModelRates, Rate, RateSource,
+    TOKEN_MARGIN_BP, Unit, UnitPricing, UnitRate, credits_per_unit_milli, parse_token_line,
+    token_line,
 };
 use clax_store::roles::Role;
 use clax_store::secrets::SecretSlot;
@@ -636,12 +637,13 @@ pub async fn models(
     }
 }
 
-/// A model's pricing as the model picker shows it: `{source,
-/// input_credits_milli_per_mtok, output_credits_milli_per_mtok}`, the
-/// milli-credits a million input and output tokens charge now and where
-/// the output rate comes from (`line`, `catalog`, `default`); each `null`
-/// when the model resolves to no price (`require_explicit_price` without
-/// its lines).
+/// A model's pricing as the model picker shows it: `{source, estimated,
+/// input_credits_milli_per_mtok, output_credits_milli_per_mtok}`: the
+/// source its four token units share (`line`, `catalog`, `default`), else
+/// `mixed`; whether any unit is priced by an estimate (the catalog or the
+/// default rates); the milli-credits a million input and output tokens
+/// charge now. `source` and the credits are `null` when the model resolves
+/// to no price (`require_explicit_price` without its lines).
 fn model_summary(p: &ModelPricing) -> Value {
     let unit = |u: Unit| {
         p.units
@@ -649,9 +651,21 @@ fn model_summary(p: &ModelPricing) -> Value {
             .find(|x| x.unit == u)
             .and_then(|x| x.resolved)
     };
+    let sources: Vec<Option<RateSource>> = p
+        .units
+        .iter()
+        .map(|u| u.resolved.map(|r| r.source))
+        .collect();
+    let source = match sources.first() {
+        Some(first) if sources.iter().all(|s| s == first) => first.map(RateSource::as_str),
+        Some(_) => Some("mixed"),
+        None => None,
+    };
+    let estimated = sources.iter().flatten().any(|s| s.is_estimated());
     let (input, output) = (unit(Unit::MtokInput), unit(Unit::MtokOutput));
     json!({
-        "source": output.map(|r| r.source.as_str()),
+        "source": source,
+        "estimated": estimated,
         "input_credits_milli_per_mtok": input.map(|r| credits_per_mtok(&r.rate)),
         "output_credits_milli_per_mtok": output.map(|r| credits_per_mtok(&r.rate)),
     })
@@ -966,11 +980,6 @@ pub async fn set_pricing(
             let mut lines = Vec::new();
             for l in b.lines {
                 let unit = Unit::parse(&l.unit).ok_or_else(|| bad("unknown unit"))?;
-                if is_token_line(&l.id, unit) {
-                    return Err(bad(
-                        "token lines are set per model: POST /api/admin/pricing/models",
-                    ));
-                }
                 let patch = CostLinePatch {
                     label: Some(l.label),
                     unit: Some(unit),
@@ -986,38 +995,13 @@ pub async fn set_pricing(
                 };
                 lines.push((l.id, patch));
             }
-            // Every token line is kept as it is: rate cards change only
-            // through /api/admin/pricing/models.
-            for l in st.cost_lines()? {
-                if is_token_line(&l.id, l.unit) {
-                    lines.push((l.id.clone(), unchanged(l)));
-                }
-            }
+            // The store refuses a token line and keeps every one: rate
+            // cards change only through /api/admin/pricing/models.
             st.replace_pricing(&ctx, &settings, lines)?;
             pricing_view(st)
         })
         .await?;
     Ok(Json(v))
-}
-
-/// Whether line `id` of `unit` belongs to a model's rate card: a token
-/// unit, or a token line's ID.
-fn is_token_line(id: &str, unit: Unit) -> bool {
-    unit.is_tokens() || parse_token_line(id).is_some()
-}
-
-/// `l` as a patch that changes nothing.
-fn unchanged(l: CostLine) -> CostLinePatch {
-    CostLinePatch {
-        label: Some(l.label),
-        unit: Some(l.unit),
-        cost_micro_usd: Some(l.cost_micro_usd),
-        margin_bp: Some(l.margin_bp),
-        fixed_credits_milli: Some(l.fixed_credits_milli),
-        applies: Some(l.applies),
-        source: Some(l.source),
-        model: Some(l.model),
-    }
 }
 
 /// What a rate card set by hand gives as its lines' source.

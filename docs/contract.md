@@ -10163,10 +10163,12 @@ the instance's clock, trying at most once an hour for at most 45 s, and
 sets no alarm for it alone.
 
 `GET /api/admin/provider/models` gives each model its `pricing`:
-`{source, input_credits_milli_per_mtok, output_credits_milli_per_mtok}`,
-the milli-credits a million input and output tokens charge now and where
-the output rate comes from (each `null` when the model resolves to no
-price).
+`{source, estimated, input_credits_milli_per_mtok,
+output_credits_milli_per_mtok}`: the source its four token units share
+(`line`, `catalog` or `default`), else `mixed`; `estimated`, true when
+any unit is priced from the catalog or the default rates; and the
+milli-credits a million input and output tokens charge now (`source` and
+the credits `null` when the model resolves to no price).
 
 ## Security model
 

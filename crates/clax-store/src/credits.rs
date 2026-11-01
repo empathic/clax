@@ -1662,16 +1662,19 @@ impl Store {
     }
 
     /// Replaces the whole pricing, as the admin pages' `PUT
-    /// /api/admin/pricing` sends it, in one transaction: the credit price
-    /// and free tier (`settings`, as [`Store::set_bot_settings`] takes
-    /// them), each of `lines` made or changed ([`Store::put_cost_line`]),
-    /// and every other line deleted ([`Store::delete_cost_line`]). Every
-    /// value is checked before anything is written, and a refusal of any
-    /// line writes nothing.
+    /// /api/admin/pricing` sends it, in one transaction: the credit price,
+    /// free tier and other pricing settings (`settings`, as
+    /// [`Store::set_bot_settings`] takes them), each of `lines` made or
+    /// changed ([`Store::put_cost_line`]), and every other line deleted
+    /// ([`Store::delete_cost_line`]), but the token lines: those belong to
+    /// the models' rate cards ([`Store::set_model_rates`]), so one in
+    /// `lines` is refused and every one is kept as it is. Every value is
+    /// checked before anything is written, and a refusal of any line
+    /// writes nothing.
     ///
     /// # Errors
-    /// `setting_overridden`, `invalid_setting`, `invalid_cost_line`,
-    /// `cost_line_in_use`; the store's.
+    /// `setting_overridden`, `invalid_setting`, `invalid_cost_line` (a
+    /// token line among `lines` too), `cost_line_in_use`; the store's.
     pub fn replace_pricing(
         &self,
         ctx: &AuditCtx,
@@ -1679,23 +1682,42 @@ impl Store {
         lines: Vec<(String, CostLinePatch)>,
     ) -> Result<()> {
         let checked = self.checked_settings(settings)?;
-        for (id, _) in &lines {
+        let token = || {
+            CoreError::invalid(
+                "invalid_cost_line",
+                "token lines are set per model: POST /api/admin/pricing/models",
+            )
+        };
+        for (id, patch) in &lines {
             check_line_id(id)?;
+            if parse_token_line(id).is_some() || patch.unit.is_some_and(Unit::is_tokens) {
+                return Err(token());
+            }
         }
         self.with_tx(|tx| {
+            // A line made a token line by its unit alone, already stored.
+            for (id, _) in &lines {
+                if line_in(tx, id)?.is_some_and(|l| l.unit.is_tokens()) {
+                    return Err(token());
+                }
+            }
             self.apply_settings_in(tx, ctx, &checked)?;
             let mut kept = std::collections::BTreeSet::new();
             for (id, patch) in lines {
                 self.put_line_in(tx, ctx, &id, patch)?;
                 kept.insert(id);
             }
-            let all: Vec<String> = {
-                let mut q = tx.prepare_cached("SELECT id FROM cost_lines ORDER BY id")?;
-                let rows = q.query_map([], |r| r.get(0))?;
+            let all: Vec<(String, String)> = {
+                let mut q = tx.prepare_cached("SELECT id, unit FROM cost_lines ORDER BY id")?;
+                let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
                 rows.collect::<rusqlite::Result<_>>()?
             };
-            for id in all.iter().filter(|id| !kept.contains(*id)) {
-                self.delete_line_in(tx, ctx, id)?;
+            for (id, unit) in &all {
+                let is_token = parse_token_line(id).is_some()
+                    || Unit::parse(unit).is_some_and(Unit::is_tokens);
+                if !is_token && !kept.contains(id) {
+                    self.delete_line_in(tx, ctx, id)?;
+                }
             }
             Ok(())
         })
@@ -2015,6 +2037,70 @@ mod tests {
                 r.rate.fixed_credits_milli,
             )
         })
+    }
+
+    #[test]
+    fn replacing_the_pricing_keeps_every_token_line_and_refuses_one() {
+        let (_d, st) = store();
+        let before = st.cost_lines().unwrap();
+        let tokens = |ls: &[CostLine]| -> Vec<CostLine> {
+            ls.iter().filter(|l| l.unit.is_tokens()).cloned().collect()
+        };
+        let patch = |l: &CostLine| CostLinePatch {
+            label: Some(l.label.clone()),
+            unit: Some(l.unit),
+            cost_micro_usd: Some(l.cost_micro_usd),
+            margin_bp: Some(l.margin_bp),
+            fixed_credits_milli: Some(l.fixed_credits_milli),
+            applies: Some(l.applies),
+            source: Some(l.source.clone()),
+            model: Some(l.model.clone()),
+        };
+        let others: Vec<(String, CostLinePatch)> = before
+            .iter()
+            .filter(|l| !l.unit.is_tokens() && l.id != LINE_TOOLPATH_STORAGE)
+            .map(|l| (l.id.clone(), patch(l)))
+            .collect();
+        // A token line given, by its ID or by its unit, is refused and
+        // nothing is written.
+        let sonnet = before
+            .iter()
+            .find(|l| l.id == "claude-sonnet-5-5.input")
+            .unwrap();
+        let mut by_unit = patch(sonnet);
+        by_unit.model = Some(None);
+        for given in [
+            ("claude-sonnet-5-5.input".to_string(), patch(sonnet)),
+            ("custom.tokens".to_string(), by_unit),
+        ] {
+            let mut lines = others.clone();
+            lines.push(given);
+            let e = st
+                .replace_pricing(
+                    DAEMON,
+                    &[(Setting::FreeWeeklyMilli, Some(serde_json::json!(5)))],
+                    lines,
+                )
+                .unwrap_err();
+            assert!(
+                matches!(
+                    &e,
+                    CoreError::Invalid {
+                        code: "invalid_cost_line",
+                        ..
+                    }
+                ),
+                "{e:?}"
+            );
+        }
+        assert_eq!(st.cost_lines().unwrap(), before);
+        assert_eq!(st.free_weekly_milli().unwrap(), 2_000_000);
+        // Without them, every token line is kept as it was; another line
+        // left out goes.
+        st.replace_pricing(DAEMON, &[], others).unwrap();
+        let after = st.cost_lines().unwrap();
+        assert_eq!(tokens(&after), tokens(&before));
+        assert!(!after.iter().any(|l| l.id == LINE_TOOLPATH_STORAGE));
     }
 
     #[test]
@@ -2365,7 +2451,6 @@ mod tests {
                     applies: Some(Applies::InstanceKey),
                     source: Some("by hand".into()),
                     model: Some(Some("gpt-5".into())),
-                    ..Default::default()
                 },
             )
             .unwrap();

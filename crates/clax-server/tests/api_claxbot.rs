@@ -2338,9 +2338,10 @@ async fn the_providers_models_say_how_each_is_priced() {
         )
         .unwrap();
     configured(&ts).await;
-    // Haiku's lines go: it takes the default rates.
+    // Haiku's output line goes: that unit takes the default rate, the
+    // rest their lines.
     ts.store
-        .delete_model_rates(&AuditCtx::DAEMON, "claude-haiku-5-5")
+        .delete_cost_line(&AuditCtx::DAEMON, "claude-haiku-5-5.output")
         .unwrap();
     let (s, v) = call(
         &ts,
@@ -2355,12 +2356,30 @@ async fn the_providers_models_say_how_each_is_priced() {
     assert_eq!(
         models[0],
         json!({"id": "claude-sonnet-5-5", "display_name": "Claude Sonnet 5.5",
-               "pricing": {"source": "line", "input_credits_milli_per_mtok": 280_000,
+               "pricing": {"source": "line", "estimated": false,
+                           "input_credits_milli_per_mtok": 280_000,
                            "output_credits_milli_per_mtok": 1_400_000}})
     );
     assert_eq!(
         models[1]["pricing"],
-        json!({"source": "default", "input_credits_milli_per_mtok": 560_000,
+        json!({"source": "mixed", "estimated": true, "input_credits_milli_per_mtok": 14_000,
+               "output_credits_milli_per_mtok": 2_800_000})
+    );
+    // All four lines gone: every unit at the default rates.
+    ts.store
+        .delete_model_rates(&AuditCtx::DAEMON, "claude-haiku-5-5")
+        .unwrap();
+    let (_, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::GET,
+        "/api/admin/provider/models",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        v["models"][1]["pricing"],
+        json!({"source": "default", "estimated": true, "input_credits_milli_per_mtok": 560_000,
                "output_credits_milli_per_mtok": 2_800_000})
     );
 }
