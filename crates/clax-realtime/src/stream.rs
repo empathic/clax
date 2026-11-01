@@ -70,7 +70,9 @@ pub const MAX_DETACHED: usize = 4096;
 /// bare `agents` ping whenever the agents roster may have changed, for the
 /// owner and connected people; §13), and `docs:<B>?reader=<A>` (B's `doc`
 /// events as app A reads them),
-/// and `jobs` (the app's jobs and their queue owner, for the owner alone).
+/// and `jobs` (the app's jobs and their queue owner, for the owner alone),
+/// and `queues` (a bare `queues` ping whenever a queue's reports may have
+/// changed, for the owner and connected people).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Topic {
     Gallery,
@@ -109,6 +111,7 @@ pub enum Topic {
     People,
     Agents,
     Jobs,
+    Queues,
 }
 
 impl Topic {
@@ -136,6 +139,9 @@ impl Topic {
         }
         if s == "jobs" {
             return Ok(Topic::Jobs);
+        }
+        if s == "queues" {
+            return Ok(Topic::Queues);
         }
         if let Some(origin) = s.strip_prefix("site:") {
             let normal = clax_core::live::parse_page_url(origin)
@@ -194,6 +200,7 @@ impl Topic {
             Topic::People => "people".into(),
             Topic::Agents => "agents".into(),
             Topic::Jobs => "jobs".into(),
+            Topic::Queues => "queues".into(),
         }
     }
 
@@ -209,7 +216,8 @@ impl Topic {
             | Topic::Inbox
             | Topic::People
             | Topic::Agents
-            | Topic::Jobs => None,
+            | Topic::Jobs
+            | Topic::Queues => None,
             Topic::Artifact(a)
             | Topic::ArtifactQuiet(a)
             | Topic::Presence(a)
@@ -306,6 +314,8 @@ impl Topic {
             Topic::Jobs => vec![Chan::Jobs],
             // Every person sees every agent's name and state (§13, §18).
             Topic::Agents => person.map(|_| Chan::Agents).into_iter().collect(),
+            // A bare ping: each person's refetch shows only their own queues.
+            Topic::Queues => person.map(|_| Chan::Queues).into_iter().collect(),
             Topic::DocsRead { source, reader } => {
                 vec![Chan::DocsRead(source.clone(), reader.clone())]
             }
@@ -365,6 +375,9 @@ enum Chan {
     Agents,
     /// The app's jobs and their queue owners; only owner streams subscribe.
     Jobs,
+    /// A queue's reports changed; the streams of the owner and connected
+    /// people subscribe. Every event on it is a bare `queues` ping.
+    Queues,
 }
 
 impl Chan {
@@ -377,6 +390,7 @@ impl Chan {
             Chan::People => "people".into(),
             Chan::Agents => "agents".into(),
             Chan::Jobs => "jobs".into(),
+            Chan::Queues => "queues".into(),
             Chan::Artifact(a) | Chan::ArtifactQuiet(a) => format!("artifact:{a}"),
             Chan::Presence(a) => format!("presence:{a}"),
             Chan::Working(a) | Chan::Drafts(a) => format!("working:{a}"),
@@ -608,7 +622,8 @@ pub fn live_only_admits(live: &crate::live::LiveIds, t: &Topic) -> bool {
         | Topic::DocsRead { .. }
         | Topic::People
         | Topic::Agents
-        | Topic::Jobs => false,
+        | Topic::Jobs
+        | Topic::Queues => false,
         Topic::Site(_) | Topic::Questions | Topic::Inbox => true,
         Topic::Artifact(a) | Topic::ArtifactQuiet(a) | Topic::Presence(a) | Topic::Working(a) => {
             live.contains(a)
@@ -865,6 +880,7 @@ fn routes_loud(ev: &Event) -> Vec<(Chan, Gate)> {
             vec![(Chan::Artifact(a), Gate::Any)]
         }
         Event::Job { .. } | Event::JobsOwner { .. } => vec![(Chan::Jobs, Gate::Any)],
+        Event::Queues => vec![(Chan::Queues, Gate::Any)],
         // Tag names are the owner's, shown with every artifact anyone sees;
         // the event carries no name, only what to refetch.
         Event::Tags {
@@ -924,6 +940,10 @@ fn project(
     // (a question, request or working record is its person's alone).
     if matches!(chan, Chan::Agents) {
         return Some(("agents", json!({"topic": topic})));
+    }
+    // Nor does the queues channel: clients refetch `GET /api/queues`.
+    if matches!(chan, Chan::Queues) {
+        return Some(("queues", json!({"topic": topic})));
     }
     let data = match (ev, chan) {
         (
@@ -3573,6 +3593,41 @@ mod tests {
             drain(&mut lan).is_empty(),
             "a stream of no person holds no roster"
         );
+    }
+
+    #[test]
+    fn the_queues_topic_pings_every_person_and_names_nothing() {
+        assert_eq!(Topic::parse("queues"), Ok(Topic::Queues));
+        assert_eq!(Topic::Queues.name(), "queues");
+        assert_eq!(Topic::Queues.artifact(), None);
+        assert!(!live_only_admits(
+            &crate::live::LiveIds::default(),
+            &Topic::Queues
+        ));
+        let hub = Hub::new(Default::default());
+        let owner = viewer(Level::Owner, Some("u_o"));
+        let sam = viewer(Level::Interact, Some("u_sam"));
+        let mut o = hub.open_for(owner.clone(), true, None, None, Some(String::new()));
+        let mut s = hub.open_for(sam.clone(), true, None, None, Some("u_sam".into()));
+        let mut lan = hub.open_for(sam.clone(), true, None, None, None);
+        let mut g = hub.open_for(owner.clone(), true, None, None, Some(String::new()));
+        hub.update(&o.id, &owner, &[Topic::Queues], &[]).unwrap();
+        hub.update(&s.id, &sam, &[Topic::Queues], &[]).unwrap();
+        hub.update(&lan.id, &sam, &[Topic::Queues], &[]).unwrap();
+        hub.update(&g.id, &owner, &[Topic::Gallery], &[]).unwrap();
+        hub.dispatch(&Event::Queues);
+        for q in [&mut o, &mut s] {
+            let got = drain(q);
+            assert_eq!(got.len(), 1, "{got:?}");
+            let frame = &got[0].1;
+            assert!(frame.starts_with("event: queues\n"), "{frame}");
+            assert!(frame.contains(r#"data: {"topic":"queues"}"#), "{frame}");
+        }
+        assert!(
+            drain(&mut lan).is_empty(),
+            "a stream of no person holds no queues"
+        );
+        assert!(drain(&mut g).is_empty(), "only the queues topic carries it");
     }
 
     #[test]
