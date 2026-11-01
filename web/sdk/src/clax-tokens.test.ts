@@ -130,7 +130,7 @@ describe("clax.tokens.json", () => {
   it.each([
     { rel: "shell/src/theme.css", specs: ["theme.light base", "theme.dark over theme.light", "theme.dark over theme.light"] },
     { rel: "overlay/src/tokens.css", specs: [
-      "public theme.light base except tag pin", "public theme.dark over theme.light except tag pin",
+      "public theme.light base except tag pin space text leading", "public theme.dark over theme.light except tag pin",
       "public theme.light-more over theme.light except tag pin", "public theme.dark-more over theme.dark except tag pin",
       "theme.forced except tag pin", "reduced-motion",
     ] },

@@ -1,17 +1,10 @@
-/* The overlay's root, in a shadow root on the deployer's page: no rule of
-   the page reaches in, and none of these reaches out, except the page's
-   public custom properties: each role reads --clax-<role> first (custom
-   properties inherit into a shadow root, and `all` resets none), so a page
-   maps its own design system onto the overlay by setting them
-   (web/sdk/tokens/README.md). The tokens between tokens:begin and
-   tokens:end are generated from web/sdk/tokens/clax.tokens.json, as the
-   shell's theme.css's are: the dark ones under the system's dark scheme,
-   the more-contrast ones under prefers-contrast: more, and under forced
-   colours the system colours, which no --clax-* property and no page theme
-   overrides; do not edit them (see web/shell/src/theme.css). */
+/* The overlay's root, in a shadow root on the deployer's page. Each role
+   reads the page's --clax-<role> first (web/sdk/tokens/README.md), except
+   under forced colours and reduced motion. tokens:begin..end is generated
+   from web/sdk/tokens/clax.tokens.json; do not edit it. */
 :host {
   all: initial;
-  /* tokens:begin public theme.light base except tag pin */
+  /* tokens:begin public theme.light base except tag pin space text leading */
   --bg: var(--clax-bg, #f7f7f5);
   --card: var(--clax-card, #ffffff);
   --raised: var(--clax-raised, #ffffff);
@@ -48,16 +41,6 @@
   --radius-sm: var(--clax-radius-sm, 8px);
   --radius-xs: var(--clax-radius-xs, 4px);
   --gutter: var(--clax-gutter, 16px);
-  --space-1: var(--clax-space-1, 4px);
-  --space-2: var(--clax-space-2, 8px);
-  --space-3: var(--clax-space-3, 12px);
-  --space-4: var(--clax-space-4, 16px);
-  --space-6: var(--clax-space-6, 24px);
-  --text-sm: var(--clax-text-sm, 12px);
-  --text-md: var(--clax-text-md, 14px);
-  --text-lg: var(--clax-text-lg, 16px);
-  --text-xl: var(--clax-text-xl, 20px);
-  --leading: var(--clax-leading, 1.5);
   --duration: var(--clax-duration, 120ms);
   --ease: var(--clax-ease, cubic-bezier(0.4,0,0.2,1));
   /* tokens:end */

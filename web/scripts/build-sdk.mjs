@@ -251,6 +251,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     define: { "process.env.NODE_ENV": JSON.stringify("production") },
     build: {
       outDir: out, emptyOutDir: false, minify: false, sourcemap: false, cssCodeSplit: false,
+      // The CSS is minified: it ships as strings in the script (the tokens'
+      // ?inline sheet, the components' CSS), which an app's bundler never
+      // minifies, and its comments are for this repository's readers.
+      cssMinify: true,
       // The oldest browsers the package's code runs in already: those with
       // Object.hasOwn (web/bridge/src/describe.ts), which /_clax/overlay.js
       // needs too. Vite's default target lowers the syntax for older ones,
