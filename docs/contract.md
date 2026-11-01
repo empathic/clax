@@ -10093,12 +10093,14 @@ require_explicit_price, lines: [line], models: [model], catalog:
   units: {input, cached_input, cache_write, output}, listing, drift}`.
   `name` is the model's display name: as its lines' labels give it (`<name>
   input tokens`), else its catalog listing's, else `null`. Each
-  unit is `{source: "line"|"catalog"|"default"|null, cost_micro_usd,
+  unit is `{source: "line"|"catalog"|"default"|null, line_source, cost_micro_usd,
   margin_bp, fixed_credits_milli, applies, credits_milli_per_mtok,
   catalog_micro_usd, drift}`: the rate it resolves to now
   (`credits_milli_per_mtok` the milli-credits a million tokens charge at
   the credit price, rounded up; every rate field `null` with `source`
-  `null`, when it resolves to none), the catalog's cost for the unit
+  `null`, when it resolves to none), `line_source` the cost line's own
+  `source` text (where its figure comes from; `null` without a line), the
+  catalog's cost for the unit
   (`null` where the listing has none), and `drift`, true when a
   cost-based line's cost differs from the catalog's by more than 1 %.
   `listing` is the catalog's `{provider_id, model_id, name,

@@ -708,11 +708,13 @@ fn credits_per_mtok(r: &Rate) -> i64 {
 /// resolves to now and where from (`source` `null`, and every rate field
 /// with it, when it resolves to none), the milli-credits a million
 /// tokens charge, the catalog's cost for it and whether the line's cost
-/// drifted from that.
-fn unit_view(u: &UnitPricing) -> Value {
+/// drifted from that; `line_source`, where the cost line's figure comes
+/// from as the line says (`null` without a line).
+fn unit_view(u: &UnitPricing, line: Option<&CostLine>) -> Value {
     let r = u.resolved.map(|r| r.rate);
     json!({
         "source": u.resolved.map(|r| r.source.as_str()),
+        "line_source": line.map(|l| l.source.as_str()),
         "cost_micro_usd": r.map(|r| r.cost_micro_usd),
         "margin_bp": r.map(|r| r.margin_bp),
         "fixed_credits_milli": r.and_then(|r| r.fixed_credits_milli),
@@ -822,7 +824,11 @@ fn pricing_view(st: &Store) -> clax_core::Result<Value> {
             let units: serde_json::Map<String, Value> = p
                 .units
                 .iter()
-                .map(|u| (unit_key(u.unit).to_string(), unit_view(u)))
+                .map(|u| {
+                    let id = token_line(&p.model, u.unit);
+                    let line = all_lines.iter().find(|l| l.id == id);
+                    (unit_key(u.unit).to_string(), unit_view(u, line))
+                })
                 .collect();
             let name = lines_name(&all_lines, &p.model)
                 .or_else(|| p.listing.as_ref().map(|l| l.name.clone()))

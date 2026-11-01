@@ -1713,7 +1713,8 @@ async fn pricing_shows_each_models_rates_and_where_they_come_from() {
     assert_eq!(model(&v, "claude-fable-5-1")["tiers"], json!([]));
     assert_eq!(
         sonnet["units"]["input"],
-        json!({"source": "line", "cost_micro_usd": 2_000_000, "margin_bp": 4_000,
+        json!({"source": "line", "line_source": "Anthropic list price as of 2026-10-06 (check)",
+               "cost_micro_usd": 2_000_000, "margin_bp": 4_000,
                "fixed_credits_milli": null, "applies": "instance_key",
                "credits_milli_per_mtok": 280_000, "catalog_micro_usd": null, "drift": false})
     );
@@ -1756,7 +1757,7 @@ async fn pricing_shows_each_models_rates_and_where_they_come_from() {
     assert_eq!(new["name"], "Model Claude-New-1");
     assert_eq!(
         new["units"]["output"],
-        json!({"source": "catalog", "cost_micro_usd": 5_000_000, "margin_bp": 4_000,
+        json!({"source": "catalog", "line_source": null, "cost_micro_usd": 5_000_000, "margin_bp": 4_000,
                "fixed_credits_milli": null, "applies": "instance_key",
                "credits_milli_per_mtok": 700_000, "catalog_micro_usd": 5_000_000,
                "drift": false})
@@ -2051,7 +2052,7 @@ async fn default_rates_and_explicit_prices_round_trip_and_overrides_are_refused(
     let v = pricing(&ts).await;
     assert_eq!(
         model(&v, "claude-unlined")["units"]["input"],
-        json!({"source": null, "cost_micro_usd": null, "margin_bp": null,
+        json!({"source": null, "line_source": null, "cost_micro_usd": null, "margin_bp": null,
                "fixed_credits_milli": null, "applies": null,
                "credits_milli_per_mtok": null, "catalog_micro_usd": null, "drift": false})
     );
@@ -2169,6 +2170,11 @@ async fn tokenulator_prices_a_model_from_the_refreshed_catalog() {
         1_500_000
     );
     assert_eq!(model(&v, "claude-x")["units"]["output"]["source"], "line");
+    // The page reads each unit's line source from the view itself.
+    assert_eq!(
+        model(&v, "claude-x")["units"]["input"]["line_source"],
+        input["source"]
+    );
     // Another provider by its ID.
     let (s, v) = price(json!({"model": "mistral-large", "provider": "mistral"})).await;
     assert_eq!(s, 200, "{v}");
