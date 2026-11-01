@@ -59,6 +59,15 @@ describe("Changeling's mapping (examples/changeling.css)", () => {
     }
     expect(contrastFailures(withHost(values))).toEqual([]);
   });
+
+  it("needs dist/clax.css under it when Changeling's data-theme differs from the system's scheme", () => {
+    // Changeling dark on a light system, without dist/clax.css: the mapped
+    // roles are Changeling's dark ones, the rest the overlay's light fallbacks.
+    const crossed: Record<string, string> = {};
+    for (const [role, token] of mapping) if (!BASE.includes(role)) crossed[role] = (changeling.dark as Record<string, string>)[token];
+    expect(contrastFailures(withHost({ light: crossed, dark: {} })).length).toBeGreaterThan(0);
+    expect(css).toContain("load web/sdk/tokens/dist/clax.css before this file");
+  });
 });
 
 describe("a viewer's theme file (examples/fold-viewer.theme.tokens.json)", () => {

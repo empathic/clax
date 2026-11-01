@@ -4,7 +4,10 @@
    its data-theme and the system's scheme on :root, and a var() resolves on
    the element that declares it, so these follow them too: one rule, no
    media query. Roles left out (--clax-you, the pins, the tags, …) keep
-   Clax's. Under forced colours and reduced motion the overlay ignores
+   Clax's: load web/sdk/tokens/dist/clax.css before this file so they
+   follow Changeling's data-theme too. Without it the overlay picks them by
+   the system's scheme, and Changeling dark on a light system draws Clax's
+   light comment highlight and tints on Changeling's dark surface. Under forced colours and reduced motion the overlay ignores
    these and uses its own (web/sdk/tokens/README.md). Checked against
    Clax's contrast contract by web/sdk/src/adoption.test.ts, which is why
    muted text is Changeling's --gutter and the agents' tint stays Clax's:

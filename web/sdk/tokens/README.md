@@ -62,9 +62,16 @@ A `var()` resolves on the element that declares it. If your own tokens
 already switch with your `data-theme`, class or media queries, these follow
 them, and one rule is enough.
 
+The roles you leave out fall back to the overlay's own values, which follow
+the system's colour scheme, not your page's switch. If your page can be
+dark on a light system (or the reverse), load `dist/clax.css` before your
+mapping: it sets every role for the profile your `data-theme` or class
+chooses, and your mapping overrides the roles it names.
+
 **Worked example: Changeling.** `examples/changeling.css` maps Changeling's
 tokens (empathic/changelist, `web/src/styles/tokens.css`) onto Clax's
-roles. `sdk/src/adoption.test.ts` checks it against the contract with
+roles, after `dist/clax.css`, because Changeling has its own `data-theme`.
+`sdk/src/adoption.test.ts` checks it against the contract with
 Changeling's light and dark values. That check is what moved muted text to
 Changeling's `--gutter`: its `--muted` is 4.4:1 on Clax's comment highlight,
 below AA.
@@ -96,7 +103,8 @@ setting `--clax-agent` after it moves the accent too.
   `--clax-*` property, and a `theme` option sits inside
   `@media not all and (forced-colors: active)`.
 - **Reduced motion.** Under `prefers-reduced-motion: reduce` the overlay's
-  `--duration` is `0ms`, whatever `--clax-duration` says.
+  `--duration` is `0ms`, whatever `--clax-duration` says, and a `theme`
+  option's durations sit in `@media (prefers-reduced-motion: no-preference)`.
 - **More contrast is yours once you map a role.** A `--clax-*` property you
   set wins under `prefers-contrast: more` too. If your design system has a
   more-contrast set, switch your tokens with the media query, as Clax's own
