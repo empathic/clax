@@ -90,6 +90,20 @@
         '';
       });
 
+      # `nix develop`: what the native build (scripts/lib/build-system.sh's
+      # `_native_usable`) and `just watch` need, so `CLAX_BUILD=native just
+      # watch` runs in it with nothing installed by hand. Cargo here is
+      # nixpkgs', the one the package builds with; rust-toolchain.toml's
+      # channel and its extra targets are rustup's, not this shell's.
+      devShells = forAll (pkgs: {
+        default = pkgs.mkShell {
+          packages = [
+            pkgs.cargo pkgs.rustc pkgs.cargo-watch pkgs.clippy pkgs.rustfmt
+            pkgs.just pkgs.nodejs pkgs.pnpm_12 pkgs.curl
+          ];
+        };
+      });
+
       homeManagerModules.clax = import ./modules/clax.nix self;
       homeManagerModules.default = self.homeManagerModules.clax;
     };
