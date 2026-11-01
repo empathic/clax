@@ -394,18 +394,30 @@ function onWorkerExit(r: RunningWorker): void {
 // web/dist) and restarts the Worker on the same port and data; a change
 // made during a rebuild runs one more. Reload the page to see it.
 // --no-build serves the build it started with.
-// Only sources count: a path git ignores (a build's own output, such as
-// web/dist-sdk, which the web build rewrites) or a .qual record changes
-// nothing the Worker serves.
+// Only sources count: a file git ignores (a build's own output, such as
+// web/dist-sdk, which the web build rewrites), a directory (its own event
+// comes with each file's), a file that came and went untracked (a package
+// install's temporary file) or a .qual record changes nothing the Worker
+// serves.
 const WATCH_SKIP = /(^|\/)(node_modules|\.git)(\/|$)|\.qual$|\.DS_Store$/;
-/** The paths among `paths` (relative to the repository) git does not ignore. */
+/** The paths among `paths` (relative to the repository) that are sources:
+ * files git does not ignore, and files git tracks that are gone. */
 function sources(paths: string[]): string[] {
   if (!paths.length) return [];
-  const r = spawnSync("git", ["check-ignore", "--stdin", "-z"], { cwd: ROOT, input: paths.join("\0") + "\0", encoding: "utf8" });
+  const isFile = (p: string) => {
+    try {
+      return statSync(join(ROOT, p)).isFile();
+    } catch {
+      return null;
+    }
+  };
+  const there = paths.filter((p) => isFile(p) === true);
+  const gone = paths.filter((p) => isFile(p) === null);
+  const ignored = spawnSync("git", ["check-ignore", "--stdin", "-z"], { cwd: ROOT, input: there.join("\0") + "\0", encoding: "utf8" });
   // 0: some are ignored (listed), 1: none are; anything else, count them all.
-  if (r.status !== 0 && r.status !== 1) return paths;
-  const ignored = new Set(r.stdout.split("\0"));
-  return paths.filter((p) => !ignored.has(p));
+  const skip = ignored.status === 0 || ignored.status === 1 ? new Set(ignored.stdout.split("\0")) : new Set<string>();
+  const tracked = gone.length ? new Set(spawnSync("git", ["ls-files", "-z", "--", ...gone], { cwd: ROOT, encoding: "utf8" }).stdout.split("\0")) : new Set<string>();
+  return [...there.filter((p) => !skip.has(p)), ...gone.filter((p) => tracked.has(p))];
 }
 let rebuilding = false;
 let restarting = false;
