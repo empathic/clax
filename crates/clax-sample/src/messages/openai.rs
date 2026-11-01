@@ -70,13 +70,13 @@ fn billed_micro_usd(u: &Value) -> Option<u64> {
     Some(micro_usd_up(total))
 }
 
-/// US dollars as micro-USD, rounded up so that only zero is 0; a product
-/// within 10⁻⁶ of a whole number (binary floating-point error) is that
-/// number. `as` saturates past `u64::MAX`, beyond any real bill.
+/// US dollars as micro-USD, rounded up so that only zero is 0; a nonzero
+/// product within 10⁻⁶ of a whole number (binary floating-point error) is
+/// that number. `as` saturates past `u64::MAX`, beyond any real bill.
 fn micro_usd_up(dollars: f64) -> u64 {
     let micro = dollars * 1_000_000.0;
     let near = micro.round();
-    if (micro - near).abs() < 1e-6 {
+    if near > 0.0 && (micro - near).abs() < 1e-6 {
         near as u64
     } else {
         micro.ceil() as u64

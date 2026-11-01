@@ -241,6 +241,7 @@ async fn a_usage_cost_is_the_billed_cost_in_micro_usd_rounded_up() {
     let cases = [
         (json!({"cost": 0.0012345}), Some(1235)),
         (json!({"cost": 0.0000004}), Some(1)),
+        (json!({"cost": 1e-13}), Some(1)),
         (json!({"cost": 0.000003}), Some(3)),
         (json!({"cost": 0.0019}), Some(1900)),
         (json!({"cost": 0}), Some(0)),
