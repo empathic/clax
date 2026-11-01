@@ -1,6 +1,6 @@
 // ClaxBot fixtures for the unit tests: the shapes of spec 2026-10-21-claxbot
 // §10 with plausible values, each overridable.
-import type { AdminPerson, AdminUsage, BotRun, MeBot, Pricing, Provider, Settings, Week } from "./api";
+import type { AdminPerson, AdminUsage, BotRun, CatalogListing, MeBot, ModelPricing, Pricing, Provider, Settings, UnitPricing, Week } from "./api";
 
 export const WEEK_START = "2026-10-19T00:00:00Z";
 export const WEEK_END = "2026-10-26T00:00:00Z";
@@ -18,13 +18,48 @@ export const provider = (o: Partial<Provider> = {}): Provider => ({
   key: { set: true, last4: "77d1", set_at: "2026-10-21T09:00:00Z", set_by: { id: "*owner", name: "Alex" }, last_ok_at: "2026-10-21T11:58:00Z" },
   caps: { max_steps: 40, max_run_credits: 200 }, sources: { base_url: "default", key: "db", "models.default": "db", "models.quick": "default", "models.complex": "default", "caps.max_steps": "file", "caps.max_run_credits": "default" }, ...o,
 });
+/** A unit of a model's pricing: by default a cost line at $3.00 per million tokens and the token margin (420 credits at $0.01). */
+export const unitPricing = (o: Partial<UnitPricing> = {}): UnitPricing => ({
+  source: "line", cost_micro_usd: 3_000_000, margin_bp: 4000, fixed_credits_milli: null, applies: "instance_key", credits_milli_per_mtok: 420_000, catalog_micro_usd: null, drift: false, ...o,
+});
+export const listing = (o: Partial<CatalogListing> = {}): CatalogListing => ({
+  provider_id: "anthropic", model_id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", input_micro_usd: 3_000_000, output_micro_usd: 15_000_000,
+  cache_read_micro_usd: 300_000, cache_write_micro_usd: 3_750_000, source: "https://www.anthropic.com/pricing", observed_at: "2026-10-30", ...o,
+});
+/** A model on the pricing page: Sonnet 5.5, the default tier, its four units set as cost lines. */
+export const modelPricing = (o: Partial<ModelPricing> = {}): ModelPricing => ({
+  model: "claude-sonnet-5-5", tiers: ["default"],
+  units: {
+    input: unitPricing(),
+    cached_input: unitPricing({ cost_micro_usd: 300_000, credits_milli_per_mtok: 42_000 }),
+    cache_write: unitPricing({ cost_micro_usd: 3_750_000, credits_milli_per_mtok: 525_000 }),
+    output: unitPricing({ cost_micro_usd: 15_000_000, credits_milli_per_mtok: 2_100_000 }),
+  },
+  listing: listing(), drift: false, ...o,
+});
+/** A model with no line and no catalog listing: every unit at the default rates. */
+export const defaultPriced = (model: string, tiers: ModelPricing["tiers"] = []): ModelPricing => ({
+  model, tiers, listing: null, drift: false,
+  units: {
+    input: unitPricing({ source: "default", cost_micro_usd: 0, margin_bp: 0, fixed_credits_milli: 560_000, credits_milli_per_mtok: 560_000 }),
+    cached_input: unitPricing({ source: "default", cost_micro_usd: 0, margin_bp: 0, fixed_credits_milli: 28_000, credits_milli_per_mtok: 28_000 }),
+    cache_write: unitPricing({ source: "default", cost_micro_usd: 0, margin_bp: 0, fixed_credits_milli: 700_000, credits_milli_per_mtok: 700_000 }),
+    output: unitPricing({ source: "default", cost_micro_usd: 0, margin_bp: 0, fixed_credits_milli: 2_800_000, credits_milli_per_mtok: 2_800_000 }),
+  },
+});
+/** As `GET /api/admin/pricing` answers (docs/contract.md "Pricing"). */
 export const pricing = (o: Partial<Pricing> = {}): Pricing => ({
   credit_price_micro_usd: 10_000, free_weekly_milli: 2_000_000,
   lines: [
-    { id: "sonnet-in", label: "Sonnet 5.5 input", unit: "mtok_input", cost_micro_usd: 3_000_000, margin_bp: 4000, applies: "instance_key", source: "Anthropic list price", model: "claude-sonnet-5-5" },
+    { id: "sonnet-in", label: "Claude Sonnet 5.5 input tokens", unit: "mtok_input", cost_micro_usd: 3_000_000, margin_bp: 4000, applies: "instance_key", source: "Anthropic list price", model: "claude-sonnet-5-5" },
     { id: "compute", label: "Script compute", unit: "cpu_gb_s", cost_micro_usd: 4000, margin_bp: 9000, applies: "always", source: "Cloudflare" },
     { id: "harness", label: "Harness fee", unit: "run", cost_micro_usd: 0, margin_bp: 0, applies: "always", source: "fixed", fixed_credits_milli: 1000 },
-  ], ...o,
+  ],
+  default_rates: { input: 560_000, cached_input: 28_000, cache_write: 700_000, output: 2_800_000 }, require_explicit_price: false,
+  models: [modelPricing(), defaultPriced("acme-small-2", ["quick"])],
+  catalog: { fetched_at: "2026-10-31T06:00:00Z", provider: "anthropic" },
+  sources: { credit_price_micro_usd: "default", free_weekly_milli: "db", "default_rates.input": "default", "default_rates.cached_input": "default", "default_rates.cache_write": "file", "default_rates.output": "default", require_explicit_price: "default" },
+  ...o,
 });
 export const usage = (o: Partial<AdminUsage> = {}): AdminUsage => ({
   week: { start: WEEK_START, end: WEEK_END }, paid_milli: 3_410_000, free_milli: 710_000, runs: 186, refused: 4,

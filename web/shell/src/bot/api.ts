@@ -161,7 +161,11 @@ export type Provider = {
 };
 /** What `PUT /api/admin/provider` changes: any of the editable fields. */
 export type ProviderPatch = { api?: ModelApi; base_url?: string; models?: Partial<Models>; caps?: Record<string, number> };
-export type ProviderModels = { models: { id: string; display_name: string }[]; fetched_at: string };
+/** A listed model's price now, as `GET /api/admin/provider/models` gives
+ * it: the milli-credits a million input and output tokens charge and where
+ * the output rate comes from; each `null` when it resolves to no price. */
+export type PriceSummary = { source: RateSource | null; input_credits_milli_per_mtok: number | null; output_credits_milli_per_mtok: number | null };
+export type ProviderModels = { models: { id: string; display_name: string; pricing?: PriceSummary | null }[]; fetched_at: string };
 export type Unit = "mtok_input" | "mtok_cached_input" | "mtok_cache_write" | "mtok_output" | "cpu_gb_s" | "mreq" | "gb_month" | "run";
 /** A cost line (§7.2). `fixed_credits_milli`: a line charged at fixed credits per
  * unit (the harness fee) rather than from its cost. */
@@ -169,7 +173,44 @@ export type CostLine = {
   id: string; label: string; unit: Unit; cost_micro_usd: number; margin_bp: number;
   applies: "instance_key" | "always"; source: string; model?: string | null; fixed_credits_milli?: number | null;
 };
-export type Pricing = { credit_price_micro_usd: number; free_weekly_milli: number; lines: CostLine[] };
+/** Where a model's token rate comes from (docs/contract.md "Pricing"): its
+ * cost line, the cached price catalog (tokenulator.dev's), the instance's
+ * default rates, or (a usage row only) the provider's bill. */
+export type RateSource = "line" | "catalog" | "default" | "provider";
+/** A token unit as a rate card names it. */
+export type TokenUnit = "input" | "cached_input" | "cache_write" | "output";
+/** One unit of a model as it resolves now: every rate field `null`, with
+ * `source`, when it resolves to none. `credits_milli_per_mtok` is what a
+ * million tokens charge (rounded up); `catalog_micro_usd` the catalog's
+ * cost for the unit; `drift` whether a cost-based line's cost differs from
+ * it by more than 1 %. */
+export type UnitPricing = {
+  source: RateSource | null; cost_micro_usd: number | null; margin_bp: number | null; fixed_credits_milli: number | null;
+  applies: "instance_key" | "always" | null; credits_milli_per_mtok: number | null; catalog_micro_usd: number | null; drift: boolean;
+};
+/** The price catalog's listing of a model, in micro-USD per million tokens (cache rates `null` where it lists none). */
+export type CatalogListing = {
+  provider_id: string; model_id: string; name: string; input_micro_usd: number; output_micro_usd: number;
+  cache_read_micro_usd: number | null; cache_write_micro_usd: number | null; source: string; observed_at: string;
+};
+/** A model the pricing page shows: the tiers it is in effect for, each unit's rate, the catalog's listing and whether any unit drifted. */
+export type ModelPricing = { model: string; tiers: (keyof Models)[]; units: Record<TokenUnit, UnitPricing>; listing: CatalogListing | null; drift: boolean };
+/** `GET /api/admin/pricing`. `default_rates` are milli-credits per million
+ * tokens; `catalog` the cache's age and the catalog provider in effect
+ * (`null` for a host it does not name); `sources` where the credit price,
+ * the free tier, each `default_rates.<unit>` and `require_explicit_price`
+ * come from. */
+export type Pricing = {
+  credit_price_micro_usd: number; free_weekly_milli: number; lines: CostLine[];
+  default_rates: Record<TokenUnit, number>; require_explicit_price: boolean;
+  models: ModelPricing[]; catalog: { fetched_at: string | null; provider: string | null }; sources: Record<string, Source>;
+};
+/** What `PUT /api/admin/pricing` takes: every line (one left out is deleted); the default rates and `require_explicit_price` may be left out. */
+export type PricingPatch = Pick<Pricing, "credit_price_micro_usd" | "free_weekly_milli" | "lines"> & { default_rates?: Partial<Record<TokenUnit, number>>; require_explicit_price?: boolean };
+/** One unit of a rate card: cost-based (`fixed_credits_milli` `null`: cost per million tokens plus margin) or credit-based (fixed milli-credits per million tokens, the cost for information). */
+export type UnitRate = { cost_micro_usd: number; margin_bp: number; fixed_credits_milli: number | null };
+/** `POST /api/admin/pricing/models`: a model's rate card; `name` labels its lines (the model ID by default). */
+export type ModelRates = { model: string; name?: string } & Record<TokenUnit, UnitRate>;
 /** `GET /api/admin/usage?week=`. `cost_micro_usd` is what the paid credits
  * cost; `free_cost_micro_usd` what the free tier's did. */
 export type AdminUsage = {
@@ -297,12 +338,18 @@ export const setInstanceKey = (key: string) => call<Provider>("/api/admin/provid
 export const clearInstanceKey = () => call<Provider>("/api/admin/provider/key", "DELETE");
 export const testProvider = () => call<{ ok: boolean; latency_ms: number; error?: string | null }>("/api/admin/provider/test", "POST", {});
 export const providerModels = () => call<ProviderModels>("/api/admin/provider/models");
-/** `POST /api/admin/pricing/tokenulator`: prices `model`'s token lines from
- * tokenulator.dev, as `providerId` (its provider ID) lists it, or as the
- * provider the base URL names. */
+/** `POST /api/admin/pricing/tokenulator`: refreshes the price catalog, then
+ * prices `model`'s token lines from it, as `providerId` (its tokenulator.dev
+ * provider ID) lists it, or as the provider the API and base URL name. */
 export const priceFromTokenulator = (model: string, providerId?: string) => call<Pricing>("/api/admin/pricing/tokenulator", "POST", providerId ? { model, provider: providerId } : { model });
 export const pricing = () => call<Pricing>("/api/admin/pricing");
-export const setPricing = (p: Pricing) => call<Pricing>("/api/admin/pricing", "PUT", p);
+export const setPricing = (p: PricingPatch) => call<Pricing>("/api/admin/pricing", "PUT", p);
+/** Sets a model's rate card, its four token lines. */
+export const setModelRates = (r: ModelRates) => call<Pricing>("/api/admin/pricing/models", "POST", r);
+/** Deletes a model's token lines, so its tokens resolve past them (409 `cost_line_in_use` while a run on it has not ended). */
+export const deleteModelRates = (model: string) => call<Pricing>(`/api/admin/pricing/models${query({ model })}`, "DELETE");
+/** Fetches the price catalog now (502 `tokenulator_error` when it cannot be read; the cache is kept). */
+export const refreshCatalog = () => call<Pricing>("/api/admin/pricing/catalog/refresh", "POST", {});
 export const adminUsage = (week?: string) => call<AdminUsage>(`/api/admin/usage${query({ week })}`);
 
 /** The daemon's settings, or null on a daemon that has none to show (404: a hosted one). */
