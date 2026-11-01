@@ -38,8 +38,7 @@
   let rates = $state<Record<string, string>>({});
   let strict = $state(false);
   let margin = $state<Record<string, string>>({});
-  const isToken = (l: CostLine) => l.unit.startsWith("mtok_");
-  const margins = (x: Pricing) => Object.fromEntries(x.lines.filter(l => !isToken(l)).map(l => [l.id, String(l.margin_bp / 100)]));
+  const margins = (x: Pricing) => Object.fromEntries(x.lines.map(l => [l.id, String(l.margin_bp / 100)]));
   /** Takes the pricing; `all` resets the form to it, else only lines new to the form join it. */
   function take(x: Pricing, all: boolean) {
     p = x;
@@ -62,14 +61,13 @@
   const priceMicro = $derived(Math.round(Number(price) * 1e6));
   const marginBp = (l: CostLine) => { const n = Number(margin[l.id]); return Number.isFinite(n) ? Math.round(n * 100) : l.margin_bp; };
   const perUnit = (l: CostLine) => perUnitMilli({ ...l, margin_bp: marginBp(l) }, priceMicro);
-  const others = $derived(p?.lines.filter(l => !isToken(l)) ?? []);
   function save() {
     if (!p || busy) return;
     const bad = (text: string) => { notes.s = { ok: false, text }; };
     if (!(priceMicro > 0)) return bad("A credit's price is more than $0.");
     const f = Number(free);
     if (!Number.isFinite(f) || f < 0) return bad("The free tier is a number of credits, 0 or more.");
-    const patch: PricingPatch = { credit_price_micro_usd: priceMicro, free_weekly_milli: Math.round(f * 1000), lines: others.map(l => ({ ...l, margin_bp: marginBp(l) })) };
+    const patch: PricingPatch = { credit_price_micro_usd: priceMicro, free_weekly_milli: Math.round(f * 1000), lines: p.lines.map(l => ({ ...l, margin_bp: marginBp(l) })) };
     const dr: Partial<Record<TokenUnit, number>> = {};
     for (const u of TOKEN_UNITS) {
       if (ro(`default_rates.${u.id}`)) continue;
@@ -92,7 +90,7 @@
   /** The one source of a model's four units, when they share one. */
   const shared = (m: ModelPricing): RateSource | null | undefined => { const s = TOKEN_UNITS.map(u => m.units[u.id].source); return s.every(x => x === s[0]) ? s[0] : undefined; };
   /** Where the lines of `units` say their costs come from, for a "set" badge's title. */
-  const lineSource = (m: ModelPricing, units: TokenUnit[]) => [...new Set(units.map(u => p?.lines.find(l => l.id === `${m.model}.${u}`)?.source).filter(Boolean))].join("; ") || undefined;
+  const lineSource = (m: ModelPricing, units: TokenUnit[]) => [...new Set(units.map(u => m.units[u].line_source).filter(Boolean))].join("; ") || undefined;
   /** What charges `m`'s tokens once its rate card is removed. */
   const next = (m: ModelPricing) => (p?.require_explicit_price ? "no price: runs on it are refused" : m.listing ? "tokenulator.dev's price, an estimate" : "the default rates, an estimate");
   /** Where `model`'s input tokens resolve in `x`, in words; `was`, what was foreseen, when `x` no longer lists it (a model in no tier, once its lines are gone). */
@@ -253,7 +251,7 @@
       <table class="pr">
         <thead><tr><th>Cost line</th><th>Unit</th><th class="num">Our cost</th><th class="num">Margin</th><th class="num">Credits per unit</th><th>Applies</th></tr></thead>
         <tbody>
-          {#each others as l (l.id)}
+          {#each p.lines as l (l.id)}
             <tr>
               <td><b>{l.label}</b>{#if l.source}<small class="src">{l.source}</small>{/if}</td>
               <td>{UNITS[l.unit] ?? l.unit}</td>

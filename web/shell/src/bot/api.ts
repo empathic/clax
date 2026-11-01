@@ -182,12 +182,13 @@ export type RateSource = "line" | "catalog" | "default" | "provider";
 /** A token unit as a rate card names it. */
 export type TokenUnit = "input" | "cached_input" | "cache_write" | "output";
 /** One unit of a model as it resolves now: every rate field `null`, with
- * `source`, when it resolves to none. `credits_milli_per_mtok` is what a
+ * `source`, when it resolves to none; `line_source` the cost line's own
+ * source text (`null` without a line). `credits_milli_per_mtok` is what a
  * million tokens charge (rounded up); `catalog_micro_usd` the catalog's
  * cost for the unit; `drift` whether a cost-based line's cost differs from
  * it by more than 1 %. */
 export type UnitPricing = {
-  source: RateSource | null; cost_micro_usd: number | null; margin_bp: number | null; fixed_credits_milli: number | null;
+  source: RateSource | null; line_source: string | null; cost_micro_usd: number | null; margin_bp: number | null; fixed_credits_milli: number | null;
   applies: "instance_key" | "always" | null; credits_milli_per_mtok: number | null; catalog_micro_usd: number | null; drift: boolean;
 };
 /** The price catalog's listing of a model, in micro-USD per million tokens (cache rates `null` where it lists none). */
@@ -197,12 +198,12 @@ export type CatalogListing = {
 };
 /** A model the pricing page shows: its display name (`null` when it has
  * none), the tiers it is in effect for, each unit's rate, the catalog's
- * listing and whether any unit drifted. Its token lines are `<model>.<unit>`
- * in `lines`. */
+ * listing and whether any unit drifted. */
 export type ModelPricing = { model: string; name: string | null; tiers: (keyof Models)[]; units: Record<TokenUnit, UnitPricing>; listing: CatalogListing | null; drift: boolean };
 /** `GET /api/admin/pricing`. `default_rates` are milli-credits per million
  * tokens; `catalog` the cache's age and the catalog provider in effect
- * (`null` for a host it does not name); `token_margin_bp` the margin
+ * (`null` for a host it does not name); `lines` every cost line but the
+ * token lines, which belong to `models`' rate cards; `token_margin_bp` the margin
  * tokenulator.dev's prices are charged at; `sources` where the credit price,
  * the free tier, each `default_rates.<unit>` and `require_explicit_price`
  * come from. */
@@ -211,9 +212,9 @@ export type Pricing = {
   default_rates: Record<TokenUnit, number>; require_explicit_price: boolean; token_margin_bp: number;
   models: ModelPricing[]; catalog: { fetched_at: string | null; provider: string | null }; sources: Record<string, Source>;
 };
-/** What `PUT /api/admin/pricing` takes: every line but the token lines (one
- * left out is deleted; token lines are refused, and change only as rate
- * cards); the default rates and `require_explicit_price` may be left out. */
+/** What `PUT /api/admin/pricing` takes: the lines as `GET` lists them (one
+ * left out is deleted; a token line is refused, and changes only as a rate
+ * card); the default rates and `require_explicit_price` may be left out. */
 export type PricingPatch = Pick<Pricing, "credit_price_micro_usd" | "free_weekly_milli" | "lines"> & { default_rates?: Partial<Record<TokenUnit, number>>; require_explicit_price?: boolean };
 /** One unit of a rate card: cost-based (`fixed_credits_milli` `null`: cost per million tokens plus margin) or credit-based (fixed milli-credits per million tokens, the cost for information). */
 export type UnitRate = { cost_micro_usd: number; margin_bp: number; fixed_credits_milli: number | null };

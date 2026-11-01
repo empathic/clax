@@ -260,7 +260,7 @@ describe("Admin › Pricing", () => {
   const editOf = (root: Element, model: string) => root.querySelector<HTMLButtonElement>(`[aria-label="Edit the rates of ${model}"]`)!;
   const removeOf = (root: Element, model: string) => root.querySelector<HTMLButtonElement>(`[aria-label="Remove the rates set for ${model}"]`)!;
   /** Sonnet with its four units at tokenulator.dev's price, its lines gone. */
-  const fromCatalog = () => modelPricing({ units: Object.fromEntries(Object.entries(modelPricing().units).map(([k, u]) => [k, { ...u, source: "catalog" }])) as ModelPricing["units"] });
+  const fromCatalog = () => modelPricing({ units: Object.fromEntries(Object.entries(modelPricing().units).map(([k, u]) => [k, { ...u, source: "catalog", line_source: null }])) as ModelPricing["units"] });
 
   it("derives the other lines' credits per unit, and saves their margins, the default rates and the explicit-price switch, never a token line", async () => {
     const calls = stubFetch({ "GET /api/admin/pricing": pricing(), "PUT /api/admin/pricing": pricing() });
@@ -313,6 +313,8 @@ describe("Admin › Pricing", () => {
     click(button(m.root, "Save"));
     await settle();
     expect(calls.find(c => c.method === "PUT")!.body).not.toHaveProperty("require_explicit_price");
+    // The lines go back exactly as GET listed them: no token line among them.
+    expect((calls.find(c => c.method === "PUT")!.body as { lines: unknown }).lines).toEqual(pricing().lines);
   });
 
   it("lists each model's rates as charged with its name, tiers and sources, and refreshes the catalog", async () => {
@@ -338,6 +340,8 @@ describe("Admin › Pricing", () => {
     // Mixed sources: a badge per unit.
     expect(cell(m.root, "claude-haiku-5-5", "input").querySelector(".bsrc")!.textContent).toBe("tokenulator.dev, estimated");
     expect(cell(m.root, "claude-haiku-5-5", "output").querySelector(".bsrc")!.textContent).toBe("set");
+    expect(cell(m.root, "claude-haiku-5-5", "output").querySelector(".bsrc")!.getAttribute("title")).toBe("Anthropic list price as of 2026-10-06 (check)");
+    expect(cell(m.root, "claude-haiku-5-5", "input").querySelector(".bsrc")!.getAttribute("title")).toBeNull();
     // A model with no rate card set has nothing to remove.
     expect(removeOf(m.root, "acme-small-2")).toBeNull();
     const cat = m.root.querySelector(".pr-cat")!;
