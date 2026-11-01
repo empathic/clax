@@ -1,0 +1,35 @@
+/* Worked example: Changeling (empathic/changelist) draws the Clax overlay in
+   its own design system by mapping its tokens (web/src/styles/tokens.css
+   there) onto Clax's public properties. Changeling's tokens already follow
+   its data-theme and the system's scheme on :root, and a var() resolves on
+   the element that declares it, so these follow them too: one rule, no
+   media query. Roles left out (--clax-you, the pins, the tags, …) keep
+   Clax's. Under forced colours and reduced motion the overlay ignores
+   these and uses its own (web/sdk/tokens/README.md). Checked against
+   Clax's contrast contract by web/sdk/src/adoption.test.ts, which is why
+   muted text is Changeling's --gutter and the agents' tint stays Clax's:
+   its --muted (#687065) is 4.4:1 on Clax's comment highlight and 4.2:1 on
+   its --soft, and --gutter is 4.5:1 on neither its --soft nor (dark) its
+   --goodbg, all under AA's 4.5. */
+:root {
+  --clax-bg: var(--bg);
+  --clax-card: var(--surface);
+  --clax-raised: var(--surface);
+  --clax-hover: var(--code);
+  --clax-fg: var(--fg);
+  --clax-muted: var(--gutter);
+  --clax-border: var(--line);
+  --clax-border-hover: var(--line);
+  --clax-border-strong: var(--gutter);
+  --clax-agent: var(--review-color);
+  --clax-agent-ink: var(--good);
+  --clax-accent: var(--accent);
+  --clax-accent-ink: var(--accent);
+  --clax-on-accent: var(--surface);
+  --clax-focus: var(--accent);
+  --clax-danger: var(--bad);
+  --clax-danger-tint: var(--badbg);
+  --clax-selection-bg: var(--sel);
+  --clax-selection-fg: var(--fg);
+  --clax-radius: var(--radius);
+}

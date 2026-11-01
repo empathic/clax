@@ -1,0 +1,52 @@
+{
+  "$description": "Worked example: a viewer with its own token file (roles paper, card, ink, soft, line, accent, warn, as the fold viewer names them) passes this as the SDK's `theme` option: its palette, then Clax's roles aliased to it. The colour values are illustrative, not the fold viewer's. Roles left out keep Clax's; more contrast, forced colours and reduced motion stay Clax's (web/sdk/tokens/README.md). Checked against Clax's contrast contract by web/sdk/src/adoption.test.ts.",
+  "viewer": {
+    "$type": "color",
+    "light": {
+      "paper": { "$value": "#fbfaf7" },
+      "card": { "$value": "#ffffff" },
+      "ink": { "$value": "#1d1f1c" },
+      "soft": { "$value": "#56594f" },
+      "line": { "$value": "#7d8075" },
+      "accent": { "$value": "#2d5f8a" },
+      "warn": { "$value": "#9c3a1a" }
+    },
+    "dark": {
+      "paper": { "$value": "#121412" },
+      "card": { "$value": "#1b1e1b" },
+      "ink": { "$value": "#e8e9e3" },
+      "soft": { "$value": "#b3b6ab" },
+      "line": { "$value": "#7f8378" },
+      "accent": { "$value": "#8fb8e0" },
+      "warn": { "$value": "#f0a487" }
+    }
+  },
+  "theme": {
+    "light": {
+      "bg": { "$value": "{viewer.light.paper}" },
+      "card": { "$value": "{viewer.light.card}" },
+      "raised": { "$value": "{viewer.light.card}" },
+      "fg": { "$value": "{viewer.light.ink}" },
+      "muted": { "$value": "{viewer.light.soft}" },
+      "border-strong": { "$value": "{viewer.light.line}" },
+      "agent": { "$value": "{viewer.light.accent}" },
+      "agent-ink": { "$value": "{viewer.light.accent}" },
+      "accent": { "$value": "{theme.light.agent}" },
+      "focus": { "$value": "{theme.light.agent}" },
+      "danger": { "$value": "{viewer.light.warn}" }
+    },
+    "dark": {
+      "bg": { "$value": "{viewer.dark.paper}" },
+      "card": { "$value": "{viewer.dark.card}" },
+      "raised": { "$value": "{viewer.dark.card}" },
+      "fg": { "$value": "{viewer.dark.ink}" },
+      "muted": { "$value": "{viewer.dark.soft}" },
+      "border-strong": { "$value": "{viewer.dark.line}" },
+      "agent": { "$value": "{viewer.dark.accent}" },
+      "agent-ink": { "$value": "{viewer.dark.accent}" },
+      "accent": { "$value": "{theme.dark.agent}" },
+      "focus": { "$value": "{theme.dark.agent}" },
+      "danger": { "$value": "{viewer.dark.warn}" }
+    }
+  }
+}

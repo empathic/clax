@@ -61,6 +61,15 @@ overlay({
 });
 ```
 
+A page can also skip the option and set Clax's public custom properties
+(`--clax-bg`, `--clax-fg`, `--clax-accent`, …) on any ancestor of the
+overlay, mapping its own design system's tokens onto them; the overlay
+reads them through its shadow root. Under forced colours the overlay uses
+system colours, and under reduced motion it does not animate, whatever the
+page sets. The profiles, the generated `--clax-*` stylesheet, a template
+token file and two worked examples are in `tokens/README.md` in the
+repository.
+
 ## The reporter client
 
 ```ts
