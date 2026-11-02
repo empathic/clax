@@ -256,6 +256,18 @@ sh_test(
     env = {"CARGO": "$(rootpath @rules_rust//rust/toolchain:current_cargo_files)"},
 )
 
+# scripts/check-contract.py, the API contract's breaking-change check, on
+# changes made to a copy of the committed contract. The check itself reads
+# the v* tags and runs outside Bazel (scripts/bazel-test.sh).
+sh_test(
+    name = "contract_compat",
+    srcs = ["test-check-contract.sh"],
+    data = [
+        ":all",
+        "//web:sdk_contract",
+    ],
+)
+
 # scripts/sync-tokens.py on a copy of its inputs: in step, stale, low
 # contrast, drifted app-mode colours.
 sh_test(

@@ -126,6 +126,9 @@ lane_lint() {
     run "no unsafe code"        scripts/check-no-unsafe.sh &&
     # Each crate depends only on the crates above it in the layout.
     run "crate layers"          scripts/test-check-crate-layers.sh &&
+    # The API contract breaks no client of the last release without a
+    # major version (spec 2026-10-27-clax-sdk-design §4.1).
+    run "contract compatibility" bash -c "scripts/test-check-contract.sh >/dev/null && scripts/check-contract.py" &&
     # No hard links in any source or script; a symbolic link does instead.
     run "no hard links"         bash -c "scripts/test-check-no-hard-links.sh >/dev/null && scripts/check-no-hard-links.sh" &&
     # No pipefail pipeline ends in a reader that stops early (grep -q,

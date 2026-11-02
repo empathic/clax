@@ -584,6 +584,8 @@ the test and exits with its result.
 `scripts/bazel-test.sh --ci` runs these as they are, after the Bazel
 passes, because each reads git, runs `just` or `cargo`, writes into the
 checkout, or runs Bazel itself: `scripts/test-plugins.sh` (git tags),
+`scripts/check-contract.py` (the API contract against the newest `v*`
+tag's),
 `scripts/test-justfile.sh`, `scripts/test-dev.sh`,
 `scripts/test-extension-signing.sh` (writes `web/dist-extension`),
 `scripts/check-no-hard-links.sh` and `scripts/check-pipefail-pipes.sh` over
@@ -646,6 +648,7 @@ Performance gates nothing in either (`just perf` measures on demand).
 | no unsafe code | `//scripts:no_unsafe` |
 | no process launch on iOS | `//scripts:ios_spawns` (`scripts/check-ios-spawns.sh` against `scripts/ios-spawns.allow`), and the check's own test `//scripts:ios_spawns_test` |
 | crate layers | `//scripts:crate_layers` |
+| contract compatibility | `//scripts:contract_compat` (the check's own test), and `scripts/check-contract.py` against the newest `v*` tag outside Bazel |
 | no hard links | `//scripts:no_hard_links` (the check's own test), and `scripts/check-no-hard-links.sh` over the tracked files outside Bazel |
 | pipefail pipes | `//scripts:pipefail_pipes`, and `scripts/check-pipefail-pipes.sh` over the tracked files outside Bazel |
 | app (flutter analyze + test) | `//apps/clax_app:dart_analyze` and the test files' targets, with `:prompt_sync`, `:version_sync`, `:apk_test`, `:macos_app_test` and `:ios_app_test` ("The Clax app") |

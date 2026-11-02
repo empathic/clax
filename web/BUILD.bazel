@@ -194,11 +194,15 @@ filegroup(
 )
 
 # The API contract the routes generate (crates/clax-server/src/contract.rs),
-# which clax-server's tests compare with what they generate.
+# which clax-server's tests compare with what they generate, and which the
+# breaking-change check's test changes (scripts/test-check-contract.sh).
 filegroup(
     name = "sdk_contract",
     srcs = ["sdk/openapi.json"],
-    visibility = ["//crates:__subpackages__"],
+    visibility = [
+        "//crates:__subpackages__",
+        "//scripts:__pkg__",
+    ],
 )
 
 # The SDK's request signing, which the Worker's feedback check signs a

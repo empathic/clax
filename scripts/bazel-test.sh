@@ -242,6 +242,9 @@ if [ "$ci" = 1 ]; then
     # (_run_keyed): a whole-tree key where they are many, as for the plugin
     # checks, which read the plugins, skills, docs, versions and tags.
     _run_keyed "plugins" . -- ./scripts/test-plugins.sh
+    # The API contract against the newest v* tag's: a break needs a major
+    # version (its own test is a Bazel test).
+    _run_keyed "contract compatibility" web/sdk/openapi.json scripts/check-contract.py -- ./scripts/check-contract.py
     _run_keyed "dev scripts" . -- ./scripts/test-dev.sh
     _run "extension signing" ./scripts/test-extension-signing.sh
     # These two test Bazel's setup, not the code: they rerun when a Cargo,
