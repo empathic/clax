@@ -988,6 +988,29 @@ fn open_hands_the_browser_a_login_link_and_prints_none() {
         .as_str()
         .unwrap()
         .to_string();
+    // `clax status` says whether a browser is signed in, and with none,
+    // what signs one in.
+    let signed_in = || {
+        let out = e
+            .cmd()
+            .args(["status", "--json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        serde_json::from_slice::<serde_json::Value>(&out).unwrap()["browser_signed_in"]
+            .as_bool()
+            .expect("browser_signed_in")
+    };
+    assert!(!signed_in(), "no browser has signed in yet");
+    e.cmd()
+        .args(["status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "no browser is signed in: `clax open` signs yours in",
+        ));
     let bin = e.dir.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let opened = bin.join("got");
@@ -1068,6 +1091,7 @@ fn open_hands_the_browser_a_login_link_and_prints_none() {
             .status()
     };
     assert_eq!(token(&cookie), 200);
+    assert!(signed_in(), "the login signed one in");
     let out = e
         .cmd()
         .args(["logout", "--json"])
@@ -1081,6 +1105,7 @@ fn open_hands_the_browser_a_login_link_and_prints_none() {
         .unwrap();
     assert!(ended >= 1, "{ended}");
     assert_eq!(token(&cookie), 401);
+    assert!(!signed_in(), "logout ended it");
     e.cmd()
         .args(["login", "a/x"])
         .assert()

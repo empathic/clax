@@ -49,6 +49,9 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
                 out["upgrade_held"] = h.to_json(home);
             }
             out["working"] = json!(working(&c));
+            if let Some(b) = browser_signed_in(&c) {
+                out["browser_signed_in"] = json!(b);
+            }
             super::print(cli, out, |j| {
                 let mut text = format!(
                     "running at {} (pid {}, v{}, commit {})",
@@ -59,6 +62,9 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
                         .as_str()
                         .map_or("unknown", |c| c.get(..7).unwrap_or(c))
                 );
+                if j["browser_signed_in"] == false {
+                    text.push_str("\nno browser is signed in: `clax open` signs yours in");
+                }
                 if let Some(h) = &hold {
                     text.push_str(&format!(
                         "\nupgrade held: {}\nwhy: {}",
@@ -105,6 +111,13 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         eprintln!("error: {e}");
     }
     Ok(())
+}
+
+/// Whether any browser is signed in to the daemon as the owner's
+/// (`GET /api/browser-login`); `None` when it cannot say, as a hosted
+/// daemon, or one from before the route, cannot.
+fn browser_signed_in(c: &Client) -> Option<bool> {
+    c.get("/api/browser-login").ok()?["signed_in"].as_bool()
 }
 
 /// The working roster: each agent working on an artifact now, newest first,

@@ -209,6 +209,16 @@ impl OwnerSessions {
         self.len() == 0
     }
 
+    /// Whether any session is live: not ended and not past its expiry.
+    pub fn any_live(&self) -> bool {
+        let now = self.clock.now();
+        self.map
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .any(|l| l.expires > now)
+    }
+
     /// Ends, in `st` and here, every live session whose proof is among
     /// `proofs`, except `keep` (a cookie's SHA-256): how many ended. Only
     /// a request proven with `keep`'s cookie calls it, presenting the
@@ -765,7 +775,7 @@ fn query_token(req: &Request, token: &str) -> bool {
 }
 
 /// The page a browser gets for a page load with no credential on a local
-/// daemon: how to open Clax from the terminal.
+/// daemon: how to open Clax, through the agent or the terminal.
 pub const COLD_BROWSER_PAGE: &str = r#"<!doctype html>
 <html lang="en">
 <head>
@@ -785,9 +795,9 @@ code { background: var(--code); color: var(--fg); padding: .1rem .35rem; border-
 </head>
 <body>
 <main>
-<h1>Open Clax from your terminal</h1>
-<p>Run <code>clax open</code> (or <code>clax login</code> for a link).</p>
-<p>This browser is not signed in to this machine's Clax yet. Opening it from the terminal signs it in once.</p>
+<h1>Open Clax through your agent or terminal</h1>
+<p>Ask your agent to open Clax, or run <code>clax open</code> (<code>clax login</code> for a link).</p>
+<p>This browser is not signed in to this machine's Clax yet. Opening Clax that way signs it in once.</p>
 </main>
 </body>
 </html>
@@ -830,7 +840,7 @@ fn refuse(method: &Method, path: &str, headers: &HeaderMap) -> Response {
     ApiError::new(
         StatusCode::UNAUTHORIZED,
         "no_credential",
-        "this needs a credential: open Clax from the terminal (`clax open`, or `clax login` for a link)",
+        "this needs a credential: ask your agent to open Clax, or run `clax open` (`clax login` for a link)",
     )
     .into_response()
 }

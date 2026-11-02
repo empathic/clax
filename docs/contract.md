@@ -1747,8 +1747,8 @@ app's versions with the bundle each carries.
   and makes Download .clax a button (a link to `/api/…` would be opened by
   a middle-click without the proof) that fetches the bundle with the proofs
   and saves it from the bytes, saying under it when the fetch failed; it
-  shows how to open Clax from the terminal when the browser holds no proof
-  or the proof is refused. The owner's agents (the daemon token with a
+  shows how to open Clax (through the agent or the terminal) when the
+  browser holds no proof or the proof is refused. The owner's agents (the daemon token with a
   session, or the agent-channel marker) are refused 403 `not_for_agents`,
   whatever the page; any other agent credential (`Bearer cxa_…`, or a
   signed grant) is refused 403 `forbidden`. On a hosted Clax a page the
@@ -2019,7 +2019,11 @@ Codex and the hook's parent-PID join applies.
 The `UserPromptSubmit` hook (`clax hook --agent claude prompt`) and the
 `Stop` hook (`clax hook --agent claude stop`) hand comments over (tiers 3
 and 2 under "Comments and feedback"); the `SessionStart` hook also appends
-comments already waiting for the session to its context.
+comments already waiting for the session to its context. When the daemon
+says no browser is signed in (`GET /api/browser-login`), the `SessionStart`
+hook's context also tells the agent to run `clax open` once before it gives
+the person a link, since until then every link to the daemon opens the
+cold-browser page.
 
 Without hooks the row is still keyed by the session ID; it ends when the shim
 exits or through the reaper.
@@ -2771,6 +2775,10 @@ redeeming a one-use login code a holder of the token made:
   browser address). `next`, `/` by default, must be a path of this
   daemon (one leading `/`, no `\`, no control character, at most 2048
   bytes): else 400 `invalid_next`. 404 on a hosted daemon.
+- `GET /api/browser-login` (the token) → `{signed_in}`: whether any owner
+  browser session is live. An agent asks before it hands the person a
+  link: with none, a link to this daemon opens the cold-browser page, and
+  `clax open` signs the person's browser in. 404 on a hosted daemon.
 - `DELETE /api/browser-login` (the token, by hand: 403 `not_for_agents`
   for the owner's agents) → `{ended}`: ends every owner browser session
   (`ended`, how many were live); each browser then needs a new code. The
@@ -6426,6 +6434,7 @@ router), and a test fails when it differs:
 | `GET /api/bot/runs/{id}/draft/{*path}` | Denied | no |
 | `GET /api/bot/runs/{id}/events` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/browser-login` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/browser-login` | Denied | no |
 | `POST /api/browser-login` | Denied | no |
 | `POST /api/browser-login/retire` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/client-imports/{key}` | Denied | yes: 403 `not_for_agents` |
@@ -10358,8 +10367,9 @@ the credits `null` when the model resolves to no price).
   (`GET /login`), and the invite and connect flows (`/connect/...`,
   `/join/...`, `/api/grants...`), which carry codes and signatures of their
   own. Anything else answers 401 `no_credential`; a browser's page load
-  (`GET` accepting `text/html`) gets a page instead: "Open Clax from your
-  terminal: `clax open` (or `clax login` for a link)". So reaching the port
+  (`GET` accepting `text/html`) gets a page instead: "Open Clax through your
+  agent or terminal: ask your agent to open Clax, or run `clax open`
+  (`clax login` for a link)". So reaching the port
   mints no viewer, writes no comment and sends nothing to an agent.
 - `GET /api/token` hands the token to the shell of a browser of the
   owner's: a request carrying a live owner browser session, cookie and
@@ -10367,7 +10377,8 @@ the credits `null` when the model resolves to no price).
   `Host`, `Origin` or `Sec-Fetch-Site`; the owner cookie without its
   proof is no credential (401 `no_credential`). It sets no cookie. A
   shell whose request is refused 401 `no_credential` (its session ended
-  while the page was open) shows how to open Clax from the terminal.
+  while the page was open) shows how to open Clax, through the agent or
+  the terminal.
 - The decisions only a person at the owner's browser makes (approving or
   denying a connection, inviting, setting a person's rights, revoking a
   person) need an owner browser session, never the bearer token alone
