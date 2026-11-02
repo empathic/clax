@@ -1,6 +1,7 @@
 name: Preview
 
-# Each pull request from a branch of this repository gets a preview
+# Each pull request that an owner or member of the organization opens from
+# a branch of this repository gets a preview
 # (docs/environments.md): the Worker clax-pr-<N> at https://pr-<N>.<preview
 # host zone>, its sites at <ID>.pr-<N>.<preview site zone>, its versions in
 # memory, fresh at its first deploy, with GitHub sign-in through the
@@ -27,11 +28,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Only pull requests that Empathic's people open: an owner or member of
+  # the organization that owns this repository (the event's
+  # author_association), since the run executes the pull request's own
+  # scripts with the preview environment's token (docs/environments.md,
+  # "Credentials"). Anyone else's pull request gets no preview; this job
+  # shows as skipped.
   deploy:
     if: >-
       github.event.action != 'closed'
       && github.event.pull_request.head.repo.full_name == github.repository
-      && github.event.pull_request.user.login != 'dependabot[bot]'
+      && contains(fromJSON('["OWNER", "MEMBER"]'), github.event.pull_request.author_association)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     environment: preview
