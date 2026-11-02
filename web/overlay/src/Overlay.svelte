@@ -8,9 +8,17 @@
   // draft, which comes back when the panel closes. The composer or the
   // panel, the notice and the launcher stack up from the bottom right corner,
   // none over another; closing the composer gives focus back to Report.
+  // On mount it reads "Your reports" once (`check`), before anyone clicks:
+  // a refusal of the queue or the instance (`problemOf`) shows as a polite
+  // notice that takes no focus, says what is wrong and offers what fixes
+  // it here: Try again when Clax could not be reached, and, on a page of
+  // the instance's own origin whose viewer is the queue's admin (`admin`,
+  // their own Clax session), a button that adds the page's origin to the
+  // queue. Dismissed, a problem stays away for the page load unless the
+  // person's own send or reply meets it again.
   import { onDestroy, untrack } from "svelte";
   import type { Report } from "../../sdk/src/types";
-  import { type Clip, type Draft, POLL_MS, Poll, type ReporterApi, type Timers, canSend, clipStatus, failureText, newDraft, pageOrigin, pageUrl, quoteOf, realTimers, reportOf, takeClip } from "./model";
+  import { type AdminQueue, type Clip, type Draft, POLL_MS, Poll, type QueueAdminApi, type QueueProblem, type ReporterApi, type Timers, canSend, clipStatus, failureText, listsOrigin, newDraft, pageOrigin, pageUrl, problemOf, quoteOf, realTimers, reportOf, takeClip, withOrigin } from "./model";
   import type { Picked, Picker } from "./picker";
   import Reports from "./Reports.svelte";
 
@@ -25,8 +33,77 @@
     externalId?: string;
     metadata?: unknown;
     timers?: Timers;
+    /** The queue's admin routes with the viewer's own session; `null` off
+     * the instance's origin. */
+    admin?: QueueAdminApi | null;
+    /** Reads the queue once on mount. */
+    check?: boolean;
   };
-  let { client, doc, host, picker: makePicker, externalId, metadata, timers = realTimers }: Props = $props();
+  let { client, doc, host, picker: makePicker, externalId, metadata, timers = realTimers, admin = null, check: checkOnMount = true }: Props = $props();
+  const origin = untrack(() => pageOrigin(doc));
+
+  let problem = $state<QueueProblem | null>(null);
+  /** The queue, when the viewer is its admin and the problem may be its origins. */
+  let adminQueue = $state<AdminQueue | null>(null);
+  let fixing = $state(false);
+  let fixError = $state<string | null>(null);
+  /** The problems shown this page load, by code. */
+  const shown = new Set<string>();
+
+  /** Shows `e`'s problem, if it is one: one the page met by itself
+   * (`prompted` false) only if it was not shown yet. */
+  function raise(e: unknown, prompted: boolean): void {
+    const p = problemOf(e, origin);
+    if (!p || problem?.code === p.code || (!prompted && shown.has(p.code))) return;
+    shown.add(p.code);
+    problem = p;
+    adminQueue = null;
+    fixError = null;
+    const code = p.code;
+    if (p.addOrigin && admin) {
+      admin.queue().then(q => { if (problem?.code === code) adminQueue = q; }, () => {});
+    }
+  }
+
+  /** Reads the queue; a refusal shows as a problem, and a read that holds clears it. */
+  async function check(prompted: boolean): Promise<boolean> {
+    try {
+      await client.myReports();
+      problem = null;
+      return true;
+    } catch (e) {
+      raise(e, prompted);
+      return false;
+    }
+  }
+  if (untrack(() => checkOnMount)) void check(false);
+
+  /** Adds the page's origin to the queue, then reads it again. */
+  async function allow(): Promise<void> {
+    const q = adminQueue;
+    if (!q || !admin || fixing) return;
+    fixing = true;
+    fixError = null;
+    try {
+      adminQueue = await admin.setOrigins(withOrigin(q.origins, origin));
+      if (await check(true)) say(`${origin} may now report into ${q.name}.`);
+    } catch (e) {
+      fixError = `Not changed: ${failureText(e)}`;
+    } finally {
+      fixing = false;
+    }
+  }
+
+  const fixText = $derived.by(() => {
+    if (!problem) return null;
+    if (problem.addOrigin && adminQueue) {
+      return listsOrigin(adminQueue.origins, origin)
+        ? `${adminQueue.name} lists ${origin} already, so this page's reporter token was made for another origin. Whoever runs this site has to fix how its page gets one.`
+        : `You are an admin of ${adminQueue.name}.`;
+    }
+    return problem.fix;
+  });
+  const canAllow = $derived(!!problem?.addOrigin && !!adminQueue && !listsOrigin(adminQueue.origins, origin));
 
   let picking = $state(false);
   let draft = $state<Draft | null>(null);
@@ -126,12 +203,14 @@
     try {
       if (clipFor?.of === d) d.clip = await clipFor.clip;
       const report = await client.fileReport(reportOf(d, { url: pageUrl(doc), title: doc.title }, { externalId, metadata }));
+      problem = null;
       if (draft !== d) return;
       cancel();
       if (reports) reports = [report, ...reports.filter(r => r.id !== report.id)];
       say("Report sent. Replies show under Your reports.");
     } catch (e) {
-      d.error = failureText(e, pageOrigin(doc));
+      d.error = failureText(e, origin);
+      raise(e, true);
     } finally {
       d.sending = false;
     }
@@ -139,10 +218,11 @@
 
   const poll = untrack(() => new Poll(async () => {
     const page = await client.myReports();
+    problem = null;
     if (!open) return;
     reports = page.reports;
     loadError = null;
-  }, timers, POLL_MS, e => { loadError = failureText(e, pageOrigin(doc)); }));
+  }, timers, POLL_MS, e => { loadError = failureText(e, origin); raise(e, false); }));
 
   function toggleReports(): void {
     open = !open;
@@ -151,7 +231,13 @@
   }
 
   async function reply(id: string, body: string): Promise<void> {
-    const r = await client.comment(id, body);
+    let r: Report;
+    try {
+      r = await client.comment(id, body);
+    } catch (e) {
+      raise(e, true);
+      throw e;
+    }
     if (reports) reports = reports.map(x => (x.id === r.id ? r : x));
   }
 
@@ -192,7 +278,22 @@
   {/if}
 
   {#if open}
-    <Reports reports={reports} error={loadError} onReply={reply} onClose={toggleReports} />
+    <Reports reports={reports} error={loadError} {origin} onReply={reply} onClose={toggleReports} />
+  {/if}
+
+  {#if problem}
+    <section class="problem" aria-label="Reporting problem">
+      <p role="status">{problem.text}</p>
+      {#if fixText}<p class="small">{fixText}</p>{/if}
+      {#if fixError}<p class="error small" role="alert">{fixError}</p>{/if}
+      <div class="actions">
+        {#if canAllow && adminQueue}
+          <button type="button" class="primary" disabled={fixing} onclick={() => void allow()}>{fixing ? "Allowing…" : `Let ${origin} report into ${adminQueue.name}`}</button>
+        {/if}
+        {#if problem.retry}<button type="button" onclick={() => void check(true)}>Try again</button>{/if}
+        <button type="button" onclick={() => { problem = null; }}>Dismiss</button>
+      </div>
+    </section>
   {/if}
 
   {#if notice}<p class="notice" role="status">{notice}</p>{/if}
@@ -225,6 +326,8 @@
   .composer > p[role="status"] { margin-bottom: 8px; }
   .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }
   .error { margin-top: 6px; color: var(--danger); }
+  .problem { flex: none; width: min(360px, calc(100vw - 32px)); padding: 10px 12px; background: var(--raised); border: 1px solid var(--border-hover); border-left: 3px solid var(--danger); border-radius: var(--radius-sm); box-shadow: var(--elev-lg); font-size: 13px; overflow-wrap: anywhere; }
+  .problem p { margin: 0 0 6px; }
   .notice { flex: none; margin: 0; max-width: min(360px, calc(100vw - 32px)); padding: 8px 12px; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius-sm); box-shadow: var(--elev-lg); font-size: 13px; }
   @media (max-width: 480px) {
     .composer { position: fixed; left: 0; right: 0; bottom: 0; width: auto; max-height: 70vh; border-width: 3px 0 0; border-radius: var(--radius) var(--radius) 0 0; z-index: 4; }

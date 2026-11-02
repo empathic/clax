@@ -1,12 +1,13 @@
 <script lang="ts">
   // "Your reports": the reports this reporter may see, newest first, each
   // with its state and its replies, and a box to answer on one that is open.
-  // `reports` is null until the first page arrived.
+  // `reports` is null until the first page arrived. A refused reply names
+  // `origin`, the page's.
   import type { Report } from "../../sdk/src/types";
   import { failureText, repliesOf, summaryOf } from "./model";
 
-  type Props = { reports: Report[] | null; error: string | null; onReply(id: string, body: string): Promise<void>; onClose(): void };
-  let { reports, error, onReply, onClose }: Props = $props();
+  type Props = { reports: Report[] | null; error: string | null; origin?: string; onReply(id: string, body: string): Promise<void>; onClose(): void };
+  let { reports, error, origin, onReply, onClose }: Props = $props();
 
   let expanded = $state<string | null>(null);
   let text = $state("");
@@ -29,7 +30,7 @@
       await onReply(id, text.trim());
       text = "";
     } catch (e) {
-      replyError = failureText(e);
+      replyError = failureText(e, origin);
     } finally {
       sending = false;
     }

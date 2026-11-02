@@ -10,7 +10,7 @@ import { mount, unmount } from "svelte";
 import { OVERLAY_TAG } from "../../bridge/src/anchor";
 import { addSheet } from "../../bridge/src/sheet";
 import { ReporterClient } from "../../sdk/src/reporter";
-import { externalIdOf, type OverlayOptions } from "./model";
+import { externalIdOf, type OverlayOptions, queueAdminApi } from "./model";
 import Overlay from "./Overlay.svelte";
 import { commentPicker, type Picked } from "./picker";
 import TOKENS from "./tokens.css?inline";
@@ -55,6 +55,9 @@ export function overlay(opts: OverlayOptions, doc: Document = document): Overlay
       picker: (onPick: (p: Picked) => void, onCancel: () => void) => commentPicker(doc, onPick, onCancel),
       externalId: externalIdOf(doc, opts.externalId),
       metadata: opts.metadata,
+      // A queue's admin may fix its origins only from the instance's own
+      // origin, where the browser sends their Clax session.
+      admin: queueAdminApi(opts.instance, opts.queue, doc),
     },
   });
   let open = true;

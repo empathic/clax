@@ -4,7 +4,7 @@ import type { Anchor } from "../../bridge/src/protocol";
 import type { NewReport } from "../../sdk/src/reporter";
 import type { Report, ReportPage } from "../../sdk/src/types";
 import { mount, type Mounted } from "../../shell/src/test/svelte";
-import { POLL_MS, type ReporterApi, type Timers } from "./model";
+import { POLL_MS, type QueueAdminApi, type ReporterApi, type Timers } from "./model";
 import Overlay from "./Overlay.svelte";
 import type { Picked, Picker } from "./picker";
 
@@ -67,7 +67,8 @@ beforeEach(() => {
   };
   host = document.createElement("div");
   document.body.append(host);
-  view = mount(Overlay as never, { client, doc: document, host, picker, externalId: "shop-cart", metadata: { build: "7" }, timers }, host);
+  // The check on mount has its own tests ("the queue check").
+  view = mount(Overlay as never, { client, doc: document, host, picker, externalId: "shop-cart", metadata: { build: "7" }, timers, check: false }, host);
 });
 afterEach(() => {
   view.unmount();
@@ -299,5 +300,100 @@ describe("the overlay", () => {
       document.removeEventListener("mousedown", page, true);
       outside.remove();
     }
+  });
+});
+
+describe("the queue check", () => {
+  const refused = (code: string) => Object.assign(new Error(code), { code });
+  /** Mounts an overlay whose reads answer `answers` in turn (an Error is thrown), with `admin`. */
+  function overlayWith(answers: (ReportPage | Error)[], admin: QueueAdminApi | null = null, fails: Error | null = null) {
+    view.unmount();
+    const client: ReporterApi = {
+      fileReport: async r => { if (fails) throw fails; filed.push(r); return report("t9", [r.body]); },
+      myReports: async () => { listed++; const a = answers.shift() ?? { reports: [], next: null }; if (a instanceof Error) throw a; return a; },
+      comment: async (id, body) => { comments.push([id, body]); return report(id, ["first", body]); },
+    };
+    const picker = (p: (x: Picked) => void): Picker => { onPick = p; return { set: () => {}, done: () => {}, destroy: () => {} }; };
+    view = mount(Overlay as never, { client, doc: document, host, picker, timers, admin }, host);
+  }
+  const problem = () => q(".problem");
+
+  it("reads the queue once on mount, and says nothing when it holds", async () => {
+    overlayWith([]);
+    await settle();
+    expect(listed).toBe(1);
+    expect(problem()).toBeNull();
+  });
+
+  it("says politely, without taking focus, that the queue refuses the page's origin, and who has been told", async () => {
+    const before = document.activeElement;
+    overlayWith([refused("wrong_origin")]);
+    await settle();
+    expect(q(".problem [role=status]")?.textContent).toBe(`This page (${location.origin}) may not report into this queue.`);
+    expect(problem()?.textContent).toMatch(/The owner of this Clax has been told/);
+    expect(problem()?.querySelector("[role=alert]")).toBeNull();
+    expect(document.activeElement).toBe(before);
+    expect(button(`Let ${location.origin} report into Shop`)).toBeUndefined();
+    click(button("Dismiss"));
+    expect(problem()).toBeNull();
+  });
+
+  it("offers a queue's admin to add the page's origin, then reads the queue again", async () => {
+    const set: string[][] = [];
+    const admin: QueueAdminApi = {
+      queue: async () => ({ id: "q1", name: "Shop", origins: ["https://shop.example"] }),
+      setOrigins: async o => { set.push(o); return { id: "q1", name: "Shop", origins: o }; },
+    };
+    overlayWith([refused("wrong_origin"), { reports: [], next: null }], admin);
+    await settle();
+    expect(problem()?.textContent).toMatch(/You are an admin of Shop/);
+    click(button(`Let ${location.origin} report into Shop`));
+    await settle();
+    expect(set).toEqual([["https://shop.example", location.origin]]);
+    expect(listed).toBe(2);
+    expect(problem()).toBeNull();
+    expect(q(".notice")?.textContent).toBe(`${location.origin} may now report into Shop.`);
+  });
+
+  it("tells an admin whose queue lists the origin already that the token is the site's to fix", async () => {
+    const admin: QueueAdminApi = { queue: async () => ({ id: "q1", name: "Shop", origins: [`${location.origin}/`] }), setOrigins: async () => { throw new Error("not called"); } };
+    overlayWith([refused("wrong_origin")], admin);
+    await settle();
+    expect(problem()?.textContent).toMatch(/Shop lists .* already, so this page's reporter token was made for another origin/);
+    expect([...problem()!.querySelectorAll("button")].map(b => b.textContent?.trim())).toEqual(["Dismiss"]);
+  });
+
+  it("offers Try again when Clax could not be reached, and says each other refusal with who fixes it", async () => {
+    overlayWith([refused("network"), { reports: [], next: null }]);
+    await settle();
+    expect(q(".problem [role=status]")?.textContent).toMatch(/could not be reached/);
+    click(button("Try again"));
+    await settle();
+    expect(problem()).toBeNull();
+    for (const [code, says] of [["token_expired", /refused this page's sign-in/], ["not_a_member", /was not found/]] as const) {
+      overlayWith([refused(code)]);
+      await settle();
+      expect(problem()?.textContent).toMatch(says);
+      expect(problem()?.textContent).toMatch(/Whoever runs this site/);
+    }
+  });
+
+  it("does not show a dismissed problem again by itself, but does when a send meets it", async () => {
+    overlayWith([refused("wrong_origin"), refused("wrong_origin")], null, refused("wrong_origin"));
+    await settle();
+    click(button("Dismiss"));
+    click(button("Your reports"));
+    await settle();
+    expect(q(".panel [role=alert]")?.textContent).toMatch(/may not report/);
+    expect(problem()).toBeNull();
+    click(button("Your reports"));
+    click(button("Report"));
+    onPick({ anchor, render: async () => new ArrayBuffer(0) });
+    await settle();
+    type("Wrong total");
+    click(button("Send"));
+    await settle();
+    expect(q(".composer [role=alert]")?.textContent).toBe(`Not sent: This page (${location.origin}) may not report into this queue.`);
+    expect(problem()).not.toBeNull();
   });
 });

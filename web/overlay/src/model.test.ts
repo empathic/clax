@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Anchor } from "../../bridge/src/protocol";
 import type { Report } from "../../sdk/src/types";
-import { canSend, clipStatus, externalIdOf, failureText, newDraft, Poll, POLL_MS, quoteOf, repliesOf, reportOf, summaryOf, takeClip, type Timers } from "./model";
+import { canSend, clipStatus, externalIdOf, failureText, listsOrigin, newDraft, originOf, Poll, POLL_MS, problemOf, queueAdminApi, quoteOf, repliesOf, reportOf, summaryOf, takeClip, type Timers, withOrigin } from "./model";
 
 const anchor: Anchor = { kind: "element", selector: "#save", quote: "Save   the\nform", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
 
@@ -172,5 +172,56 @@ describe("the reports poll", () => {
     await settle();
     expect(errors).toEqual([]);
     expect(t.pending()).toEqual([]);
+  });
+});
+
+describe("queue problems", () => {
+  const O = "https://app.example";
+  it("says each refusal of the queue with what fixes it, and nothing of a draft's own failure", () => {
+    expect(problemOf({ code: "network" }, O)).toMatchObject({ code: "network", retry: true, addOrigin: false });
+    expect(problemOf({ code: "wrong_origin" }, O)).toMatchObject({ text: "This page (https://app.example) may not report into this queue.", addOrigin: true, retry: false });
+    for (const code of ["invalid_token", "token_expired", "invalid_signature", "not_a_member"]) {
+      expect(problemOf({ code }, O)?.fix).toMatch(/Whoever runs this site/);
+    }
+    expect(problemOf(new Error("too big"), O)).toBeNull();
+    expect(problemOf({ code: "limit_reached" }, O)).toBeNull();
+  });
+
+  it("reads origins as URL writes them, and adds one only when it is not listed", () => {
+    expect(originOf("https://App.Example:443/x")).toBe(O);
+    expect(originOf("not a url")).toBeNull();
+    expect(listsOrigin([`${O}/`], O)).toBe(true);
+    expect(withOrigin([`${O}/`], O)).toEqual([`${O}/`]);
+    expect(withOrigin(["https://b.example"], "https://App.example")).toEqual(["https://b.example", O]);
+  });
+});
+
+describe("the queue's admin API", () => {
+  const doc = (url: string) => ({ URL: url, defaultView: { location: { href: url } } }) as unknown as Document;
+  it("is offered only on a page of the instance's own origin", () => {
+    expect(queueAdminApi("https://clax.example/", "q1", doc("https://app.example/x"))).toBeNull();
+    expect(queueAdminApi("https://clax.example/", "q1", doc("https://clax.example/fold/"))).not.toBeNull();
+  });
+
+  it("finds the queue the viewer administers, and sets its origins with their session", async () => {
+    const calls: [string, RequestInit | undefined][] = [];
+    const answers = [
+      { queues: [{ id: "q1", name: "Shop", origins: ["https://a.example"], role: "triage" }] },
+      { queues: [{ id: "q1", name: "Shop", origins: ["https://a.example"], role: "admin" }] },
+      { queue: { id: "q1", name: "Shop", origins: ["https://a.example", "https://clax.example"], role: "admin" } },
+    ];
+    const f = (async (i: string, init?: RequestInit) => { calls.push([i, init]); return new Response(JSON.stringify(answers.shift())); }) as typeof fetch;
+    const api = queueAdminApi("https://clax.example/", "q1", doc("https://clax.example/fold/"), f)!;
+    expect(await api.queue()).toBeNull();
+    expect(await api.queue()).toEqual({ id: "q1", name: "Shop", origins: ["https://a.example"] });
+    expect(await api.setOrigins(["https://a.example", "https://clax.example"])).toEqual({ id: "q1", name: "Shop", origins: ["https://a.example", "https://clax.example"] });
+    expect(calls[2][0]).toBe("https://clax.example/api/queues/q1");
+    expect(calls[2][1]).toMatchObject({ method: "PATCH", credentials: "same-origin", body: JSON.stringify({ origins: ["https://a.example", "https://clax.example"] }) });
+  });
+
+  it("throws the daemon's refusal with its code", async () => {
+    const f = (async () => new Response(JSON.stringify({ error: { code: "invalid_origin", message: "bad origin" } }), { status: 400 })) as unknown as typeof fetch;
+    const api = queueAdminApi("https://clax.example", "q1", doc("https://clax.example/"), f)!;
+    await expect(api.setOrigins(["x"])).rejects.toMatchObject({ code: "invalid_origin", message: "bad origin" });
   });
 });

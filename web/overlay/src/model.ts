@@ -130,6 +130,115 @@ export function failureText(e: unknown, origin?: string): string {
   return m || "Something went wrong. Try again.";
 }
 
+/** A refusal of the overlay's calls by the queue or the instance, as the
+ * overlay's notice says it, with what fixes it. */
+export interface QueueProblem {
+  /** The refusal's code: the notice shows each at most once a page load
+   * unless the person's own action meets it again. */
+  code: string;
+  /** What is wrong, in words, naming the page's origin. */
+  text: string;
+  /** Who can fix it, and how, when no button here does. */
+  fix: string | null;
+  /** Trying again may fix it (Clax could not be reached). */
+  retry: boolean;
+  /** The page's origin may be missing from the queue's origins: a queue
+   * admin can add it here. */
+  addOrigin: boolean;
+}
+
+/** `e`, a failure of a call from the page of `origin`, as a problem of the
+ * queue; `null` for a failure that is not one (such as a draft's own). */
+export function problemOf(e: unknown, origin: string): QueueProblem | null {
+  const code = (e as { code?: unknown } | null)?.code;
+  const p = (text: string, fix: string | null, more: Partial<QueueProblem> = {}): QueueProblem =>
+    ({ code: String(code), text, fix, retry: false, addOrigin: false, ...more });
+  switch (code) {
+    case "network":
+      return p("Clax could not be reached, so this page can't send reports right now.", null, { retry: true });
+    case "wrong_origin":
+      // The refusal of a read files a note for the instance's owner.
+      return p(`This page (${origin}) may not report into this queue.`, "The owner of this Clax has been told, and can allow this page's origin.", { addOrigin: true });
+    case "invalid_token":
+    case "token_expired":
+    case "invalid_signature":
+      return p("Clax refused this page's sign-in, so it can't send reports.", "Whoever runs this site has to fix how its page gets a Clax reporter token.");
+    case "not_a_member":
+      return p("The queue this page reports into was not found.", "Whoever runs this site has to point it at a queue that exists.");
+    case "unsupported_browser":
+      return p(failureText(e), null);
+    default:
+      return null;
+  }
+}
+
+/** `origin` as `URL` writes an origin, or `null` when it is none. */
+export function originOf(origin: string): string | null {
+  try {
+    const o = new URL(origin).origin;
+    return o === "null" ? null : o;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether queue `origins` lists `origin`, both read as `URL` writes them. */
+export function listsOrigin(origins: readonly string[], origin: string): boolean {
+  const want = originOf(origin);
+  return want !== null && origins.some(o => originOf(o) === want);
+}
+
+/** `origins` with `origin` added, unless it is listed. */
+export function withOrigin(origins: readonly string[], origin: string): string[] {
+  return listsOrigin(origins, origin) ? [...origins] : [...origins, originOf(origin) ?? origin];
+}
+
+/** A queue as its admin reads it. */
+export interface AdminQueue {
+  id: string;
+  name: string;
+  origins: string[];
+}
+
+/** The queue's admin routes, called with the viewer's own Clax session
+ * (never the reporter token); only on a page of the instance's own origin,
+ * where the browser sends that session. */
+export interface QueueAdminApi {
+  /** The queue, when this viewer is its admin; else `null`. */
+  queue(): Promise<AdminQueue | null>;
+  /** Sets the queue's origins. */
+  setOrigins(origins: string[]): Promise<AdminQueue>;
+}
+
+/** The admin API of queue `queue` on `instance`, through `fetch`: `null`
+ * unless the page `doc` is of the instance's own origin. */
+export function queueAdminApi(instance: string, queue: string, doc: Document, f: typeof fetch = (i, init) => globalThis.fetch(i, init)): QueueAdminApi | null {
+  const base = originOf(instance);
+  if (base === null || base !== pageOrigin(doc)) return null;
+  const root = instance.replace(/\/+$/, "");
+  const call = async <T>(path: string, init?: RequestInit): Promise<T> => {
+    const res = await f(`${root}${path}`, { credentials: "same-origin", ...init });
+    let body: { error?: { code?: string; message?: string } } & T = {} as never;
+    try { body = await res.json(); } catch { /* no JSON */ }
+    if (!res.ok) throw Object.assign(new Error(body.error?.message || `HTTP ${res.status}`), { code: body.error?.code ?? `http_${res.status}` });
+    return body;
+  };
+  const pick = (q: AdminQueue): AdminQueue => ({ id: q.id, name: q.name, origins: q.origins });
+  return {
+    async queue() {
+      const { queues } = await call<{ queues?: (AdminQueue & { role?: string })[] }>("/api/queues");
+      const q = queues?.find(x => x.id === queue && x.role === "admin");
+      return q ? pick(q) : null;
+    },
+    async setOrigins(origins) {
+      const { queue: q } = await call<{ queue: AdminQueue }>(`/api/queues/${encodeURIComponent(queue)}`, {
+        method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ origins }),
+      });
+      return pick(q);
+    },
+  };
+}
+
 /** The replies on a report: every comment after the report's own first one. */
 export function repliesOf(r: Report): ReportComment[] {
   return r.comments.slice(1);
