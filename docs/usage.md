@@ -731,10 +731,14 @@ the overlay's other dependencies bundled, and declarations under
 - Its manifest is `web/sdk/package.json`: its name, its version (its own,
   not Clax's) and the rest of its metadata. The build publishes it
   without `private` (which keeps `npm publish` from shipping the source
-  directory) and adds `exports`, `types` and `typesVersions`; it refuses a
-  manifest that sets those or any dependencies, since the package bundles
-  its own. `just release-sdk` publishes it ("Releasing the SDK package"
-  below).
+  directory) and adds `sideEffects`, `exports`, `types` and
+  `typesVersions`; it refuses a manifest that sets any field but its
+  metadata (`MANIFEST_FIELDS` in `web/scripts/build-sdk.mjs`), so no
+  dependency (the package bundles its own), script or executable is
+  published unseen. The file is also the nearest `package.json` of
+  `web/sdk/src` in Clax's own builds, so it sets nothing that changes how
+  they bundle. `just release-sdk` publishes it ("Releasing the SDK
+  package" below).
 
 To use the checkout's build from another app while developing, link the
 directory, which keeps the package's own name:
@@ -1772,11 +1776,15 @@ and `pnpm` is on `PATH`. Then it signs the tag `sdk-v<version>`, "Clax SDK
 it: the Release and fleet-image workflows take `v*` tags), and runs
 `.github/workflows/publish-sdk.yml` from the commit (`gh workflow run
 publish-sdk.yml --ref prod -f dry_run=false -f sha=<commit>`), waiting for
-it. The workflow checks again that the commit is on `prod` with CI's
-`bazel` job passed, builds `web/dist-sdk` (`pnpm run build:sdk`), runs its
-test (`pnpm run test:sdk`), refuses a version npm has already, and
-publishes `web/dist-sdk` with provenance through npm trusted publishing,
-in the `npm` environment.
+it and then for npm to list the version. The workflow's `build` job checks
+again that the commit is on `prod` with CI's `bazel` job passed, and that
+origin's tag `sdk-v<version>` names it (a run by hand publishes only a
+commit this command tagged), builds `web/dist-sdk` (`pnpm run
+build:sdk`), runs its test (`pnpm run test:sdk`), refuses a version npm
+has already and packs the tarball; its `publish` job, alone in the `npm`
+environment and alone able to request npm's token, publishes that tarball
+with provenance through npm trusted publishing, with a pinned npm and
+nothing else.
 
 npm lets a package name a trusted publisher only once it exists, so while
 `npm view @empathic/clax-client-sdk` finds nothing, the command publishes
@@ -1784,18 +1792,26 @@ the first version from your machine instead: in a temporary worktree of the
 commit under `target/release-sdk/`, `pnpm install --frozen-lockfile`,
 `pnpm run build:sdk` and `pnpm run test:sdk` in `web/`, then `npm publish
 --access public` from `web/dist-sdk` on your terminal, for npm's
-one-time-password prompt. It then prints the one-time setup: on
-npmjs.com, the package's Settings, Trusted Publisher, GitHub Actions,
-organization `empathic`, repository `clax`, workflow `publish-sdk.yml`,
-environment `npm`.
+one-time-password prompt. From then on, each run ends with the one-time
+setup (and a failed publish through the workflow says it too), until a
+version publishes through the workflow: on npmjs.com, the package's
+Settings, Trusted Publisher, GitHub Actions, organization `empathic`,
+repository `clax`, workflow `publish-sdk.yml`, environment `npm`; then
+Settings, Publishing access: Require two-factor authentication and
+disallow tokens, so that only the workflow can publish it.
 
 The dry run changes nothing (it fetches `prod`, which moves only
 `origin/prod`), and no run changes the checkout's branch or work tree. A
 step that fails stops the run; run the same command again: the tag, here
 and on origin, the workflow's runs (titled after their commit) and the
 versions npm has say what is done, so it resumes at the first step not
-done, waiting for a publish run still under way or dispatching a failed
-one anew, from the tag's commit even once `prod` has moved on. A version
+done, waiting for a publish run still under way (or, for one that
+succeeded, for npm to list the version) or dispatching a failed one anew,
+from the tag's commit even once `prod` has moved on. A tag here that is
+not signed is refused (delete it, `git tag -d sdk-v<version>`, and run
+again). A version `prod` has moved past is published from the commit on
+`prod` that carries it, once you tag that commit by hand (`git tag -s
+sdk-v<version> -m "Clax SDK <version>" <commit>`). A version
 npm has is refused, unless it is this command's own finished publish (npm
 has it and origin has its tag), which reports every step done.
 

@@ -29,7 +29,8 @@ cutting a release is `docs/usage.md`, "Releasing".
 5. When the release brought a new SDK package version (the `version` in
    `web/sdk/package.json`) to `prod`, `just release-sdk X.Y.Z`
    tags `sdk-vX.Y.Z` on `prod` and publishes `@empathic/clax-client-sdk` from it
-   (docs/usage.md, "Releasing the SDK package").
+   (docs/usage.md, "Releasing the SDK package"); the release's last step,
+   "Left by hand", names the command while npm lacks that version.
 
 ## One-time GitHub setup
 
